@@ -326,3 +326,40 @@ async def test_resolve_video_prompt_frame_over_empty_version(
     await session.commit()
     text = await resolve_video_prompt(session, project, fr, 1)
     assert text == "anim from frame"
+
+
+@pytest.mark.asyncio
+async def test_prepare_grafts_style_on_vo_parent_without_lock(
+    session: AsyncSession, project: Project
+) -> None:
+    session.add(project)
+    donor = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="aa" * 12,
+        voiceover_text="vo",
+        image_prompt=(
+            "Full-bleed frame: office.\n\n"
+            "STYLE: noir watercolour.\n"
+            "Final style lock: archival noir.\n"
+            "Negative: photorealism."
+        ),
+        attrs={"camera_subdivide": {"role": "vo_parent", "parent_uuid": "aa" * 12}},
+    )
+    orphan = Frame(
+        project_id=project.id,
+        number=9,
+        uuid="bb" * 12,
+        voiceover_text="vo9",
+        image_prompt="сцена с референса (кадр 7), крупность ДЕТАЛЬ Сейчас в кадре: фото.",
+        attrs={"camera_subdivide": {"role": "vo_parent", "parent_uuid": "bb" * 12}},
+    )
+    session.add_all([donor, orphan])
+    await session.flush()
+    (project.data_dir / "scenes").mkdir(parents=True, exist_ok=True)
+
+    prep = await prepare_image_regen(session, project, 9, shot=1, mode="same_prompt")
+    assert prep.prompt_text.startswith("сцена с референса")
+    assert "STYLE:" in prep.prompt_text
+    assert "Negative:" in prep.prompt_text
+    assert prep.refs == []

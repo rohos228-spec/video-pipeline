@@ -414,6 +414,19 @@ async def prepare_image_regen(
                 fr,
                 ref_person_ids=ref_person_ids,
             )
+            if not has_parent:
+                from app.services.img_pr_style import ensure_style_lock
+
+                siblings = list(
+                    (
+                        await session.execute(
+                            select(Frame)
+                            .where(Frame.project_id == project.id)
+                            .order_by(Frame.number)
+                        )
+                    ).scalars().all()
+                )
+                prompt_text = ensure_style_lock(prompt_text, siblings, fr)
             prompt_text = append_manual_ref_note(prompt_text, fr)
             prompt_text, refs = _lock_montage_image_refs(
                 project, fr, prompt_text, refs, child=has_parent
@@ -446,6 +459,19 @@ async def prepare_image_regen(
             )
         if shot == 1:
             refs, has_parent = await _montage_shot1_refs(session, project, fr)
+            if not has_parent:
+                from app.services.img_pr_style import ensure_style_lock
+
+                siblings = list(
+                    (
+                        await session.execute(
+                            select(Frame)
+                            .where(Frame.project_id == project.id)
+                            .order_by(Frame.number)
+                        )
+                    ).scalars().all()
+                )
+                prompt_text = ensure_style_lock(prompt_text, siblings, fr)
             prompt_text = append_manual_ref_note(prompt_text, fr)
             prompt_text, refs = _lock_montage_image_refs(
                 project, fr, prompt_text, refs, child=has_parent

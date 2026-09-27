@@ -6,9 +6,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from loguru import logger
+
+_STYLE_LOCK_LINE_RE = re.compile(
+    r"(?im)^(?:\*\*)?(?:STYLE|Final style lock|Negative)\b"
+)
 
 _STYLE_MARKER = "Archival Noir Watercolor Grunge Dossier Poster Illustration"
 
@@ -246,3 +251,55 @@ def wrap_ops_styles(
     """No-op: ops без STYLE-обёртки."""
     _ = style_id, style_block
     return list(ops)
+
+
+def split_style_lock(text: str) -> tuple[str, str]:
+    """Сцена и хвост STYLE / Final style lock / Negative."""
+    raw = text or ""
+    match = _STYLE_LOCK_LINE_RE.search(raw)
+    start = match.start() if match else -1
+    if start < 0:
+        start = raw.find("STYLE:")
+    if start < 0:
+        return raw, ""
+    return raw[:start].rstrip(), raw[start:].strip()
+
+
+def prompt_has_style_lock(text: str) -> bool:
+    return bool(split_style_lock(text)[1])
+
+
+def style_lock_from_frames(frames: list[Any]) -> str:
+    """STYLE-хвост с живого VO-родителя, иначе с любого кадра с lock."""
+    from app.services.vo_shot_expand import is_coverage_leftover, uses_parent_still
+
+    def _style(fr: Any) -> str:
+        return split_style_lock(str(getattr(fr, "image_prompt", None) or ""))[1]
+
+    parents: list[str] = []
+    any_lock: list[str] = []
+    for fr in frames:
+        if is_coverage_leftover(fr):
+            continue
+        style = _style(fr)
+        if not style:
+            continue
+        any_lock.append(style)
+        if not uses_parent_still(fr):
+            parents.append(style)
+    if parents:
+        return parents[0]
+    return any_lock[0] if any_lock else ""
+
+
+def ensure_style_lock(prompt: str, frames: list[Any], frame: Any) -> str:
+    """VO-родитель без lock получает STYLE с донора. Дети — с PNG родителя."""
+    from app.services.vo_shot_expand import uses_parent_still
+
+    raw = (prompt or "").strip()
+    if not raw or uses_parent_still(frame) or prompt_has_style_lock(raw):
+        return raw
+    donor = style_lock_from_frames(frames)
+    if not donor:
+        return raw
+    return f"{raw}\n\n{donor}"

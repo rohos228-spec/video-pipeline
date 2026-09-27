@@ -1672,6 +1672,21 @@ async def _generate_and_send(
             frame.attrs = attrs
         await session.flush()
         return
+    if not is_shot2:
+        from app.services.img_pr_style import ensure_style_lock
+        from app.services.vo_shot_expand import uses_parent_still
+
+        if not uses_parent_still(frame):
+            siblings = list(
+                (
+                    await session.execute(
+                        select(Frame)
+                        .where(Frame.project_id == project.id)
+                        .order_by(Frame.number)
+                    )
+                ).scalars().all()
+            )
+            prompt_text = ensure_style_lock(prompt_text, siblings, frame)
     # Проверяем последний HITL: если последнее решение было regenerate —
     # используем кнопку «Повторить» (без перезаполнения промта); иначе —
     # обычная генерация с текущим image_prompt.
