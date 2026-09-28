@@ -161,10 +161,16 @@ async def run():
                 result['diagnosis']=response.json()
                 (ROOT/'diagnosis.json').write_text(json.dumps(result['diagnosis'],ensure_ascii=False,indent=2))
                 formats=[i for i in result['diagnosis']['incidents'] if i['type'] in {'invalid_json','missing_payload'}]
-                if mode in {'malformed','unrepaired'}:
+                if mode=='malformed':
                     assert len(formats)==1,result['diagnosis']
-                    assert formats[0]['status']==('resolved_confirmed' if mode=='malformed' else 'human_review'),formats
-                assert sum(fixtures.FixtureHandler.counts.values()) == (2 if mode=='unrepaired' else 6 if mode=='malformed' else 5)
+                    assert formats[0]['status']=='resolved_confirmed',formats
+                if mode=='unrepaired':
+                    attempts={e['attempt_id'] for e in history['events'] if e['kind']=='node_start'}
+                    assert {i['attempt_id'] for i in formats}==attempts
+                    assert all(i['status']=='human_review' for i in formats)
+                    assert sum(fixtures.FixtureHandler.counts.values())==2*len(attempts)
+                else:
+                    assert sum(fixtures.FixtureHandler.counts.values()) == (6 if mode=='malformed' else 5)
                 if mode == "stop":
                     assert result["context"]["observer_state"] == "stopped"
                 with sqlite3.connect(DATA / "state.db") as conn:

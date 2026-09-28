@@ -2,7 +2,7 @@ import type {Diagnosis, DiagnosticIncident} from './observations';
 
 export function groupIncidents(incidents: DiagnosticIncident[]) {
   return {
-    attention: incidents.filter(i=>i.status!=='resolved_confirmed' && i.currently_relevant),
+    attention: incidents.filter(i=>i.status!=='resolved_confirmed'),
     repaired: incidents.filter(i=>i.status==='resolved_confirmed' && i.resolution?.kind==='format_recovery'),
     other: incidents.filter(i=>i.status==='resolved_confirmed' && i.resolution?.kind!=='format_recovery'),
   };

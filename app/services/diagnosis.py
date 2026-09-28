@@ -19,7 +19,7 @@ from app.models import Base, WorkflowRun
 from app.services.error_catalog import ERROR_CATALOG
 from app.services.observation import ExecutionControl, ObservationEvent, digest, panel_safe, business_snapshot
 
-RULE_VERSION = 'diagnose-v1.1'
+RULE_VERSION = 'diagnose-v1.2'
 
 
 class DiagnosisState(Base):
@@ -223,6 +223,16 @@ def derive_incidents(scope, events, snapshot):
     for gap in [*(scope.gaps or []),*snapshot.get('gaps',[])]:
         evidence=[e for e in rows if e['event_id']==gap.get('event_id')]
         issue('journal_gap',digest(gap),evidence,blocking=False,severity='warning',action='restore_journal',incomplete=True,fact='Не хватает доказательств: '+str(gap.get('kind') or gap.get('error_type') or 'observer gap'))
+    # A later recorded worker start supersedes the active attempt, but cannot
+    # prove recovery of an earlier attempt. Preserve its unresolved history.
+    latest_attempt = {}
+    for e in rows:
+        if e['kind']=='node_start' and e.get('attempt_id'):
+            latest_attempt[e.get('node_key')]=e['attempt_id']
+    for item in issues.values():
+        active=latest_attempt.get(item['node_key'])
+        if item['attempt_id'] and active and active!=item['attempt_id']:
+            item.update(currently_relevant=False,blocking=False,historical_attempt=True)
     return list(issues.values())
 
 

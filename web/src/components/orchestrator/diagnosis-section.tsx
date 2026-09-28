@@ -7,6 +7,7 @@ function IncidentCard({incident:i}:{incident:DiagnosticIncident}) {
   return <article data-incident-id={i.incident_id} className="rounded border border-white/10 p-2 space-y-1">
     <strong>{i.node_title} · {i.title}</strong>
     <p>{status}{i.severity==='info' ? ' · ожидание/ограничение, не ошибка' : ''}{i.blocking && i.currently_relevant ? ' · мешает выполнению' : ''}</p>
+    {!i.currently_relevant && i.status!=='resolved_confirmed' && <p className="text-white/50">Предыдущая попытка: сохранена для разбора, текущей блокировкой не является. Исправление этой попытки не доказано.</p>}
     <p>Факт: {i.fact}</p>
     <p>Возможная причина: {i.cause.hypothesis ?? 'не установлена'}</p>
     <p>Наблюдавшееся восстановление: {i.recovery.length ? `штатный JSON retry (${i.recovery.length}); ${i.recovery.some(r=>r.accepted_response_observed) ? 'принятый ответ записан' : 'принятый ответ не подтверждён'}` : 'не зафиксировано'}</p>

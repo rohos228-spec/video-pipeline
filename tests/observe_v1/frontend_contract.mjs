@@ -30,4 +30,5 @@ assert.equal(diagnosisSummary({available:false}).includes('недоступна'
 assert.equal(diagnosisSummary({available:true,lagging:true}).includes('отстаёт'),true);
 assert.equal(diagnosisSummary({available:true,lagging:false,blocking_count:0,evidence_complete:false}).includes('неполны'),true);
 assert.equal(diagnosisSummary({available:true,lagging:false,blocking_count:1,evidence_complete:true}).includes('1'),true);
-console.log('Frontend metadata/diagnosis contracts: 16 assertions passed');
+assert.equal(groupIncidents([{...open,currently_relevant:false,status:'human_review'}]).attention.length,1);
+console.log('Frontend metadata/diagnosis contracts: 17 assertions passed');
