@@ -424,6 +424,7 @@ def observe_model(function):
             context = getattr(exc,"context",None) or {}
             await record_fact("model_error", {"error_type": type(exc).__name__, "complete": False,
                 "error_code":describe_error(exc)[0],"error_kind":context.get("error_kind") if isinstance(context,dict) else None,
+                "catalog_source":"structured_exception_context" if isinstance(context,dict) and context.get("error_kind") else "exception_type_or_text",
                 "status_code":context.get("status_code") if isinstance(context,dict) else None,
                 "uncertain":type(exc).__name__ in {"CancelledError","ReadTimeout"} or (isinstance(context,dict) and context.get("error_kind") in {"timeout","network"})})
             raise

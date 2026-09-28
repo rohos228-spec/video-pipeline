@@ -164,6 +164,9 @@ def derive_incidents(scope, events, snapshot):
 
         for e in related:
             p=e['payload']; kind=e['kind']
+            if kind=='domain_check' and p.get('verdict') in {'fail','reject'}:
+                issue('contract_rejected',(node,attempt,'verdict',e.get('request_id') or e['event_id']),[e],
+                    fact='Исходная предметная проверка вернула verdict fail/reject. Проверка качества относится только к этому контракту.')
             if kind=='runtime_check' and p.get('performed') is True and p.get('status') in {'failed','rejected'}:
                 issue('contract_rejected',(node,attempt,p.get('check'),e.get('request_id') or e['event_id']),[e],fact=f"Проверка {p.get('check','unknown')} отклонила результат.")
             if kind in {'apply_error','node_error','model_error'}:
@@ -182,6 +185,8 @@ def derive_incidents(scope, events, snapshot):
                         fact=title if code!='unknown' else 'Записано исключение транспорта; причина не установлена.',
                         action='review_provider_response' if uncertain else 'human_review',incomplete=uncertain)
                     item['catalog_code']=code; item['status']='human_review'
+                    if p.get('catalog_source')=='exception_type_or_text':
+                        item['fact']+=' Код каталога выведен из типа/текста исключения; этот вывод менее надёжен.'
                 else:
                     item=issue('contract_rejected',(node,attempt,e['event_id']),[e],fact='Исходный runtime записал ошибку применения/выполнения; точная причина неизвестна.',
                         action='check_database' if kind=='apply_error' else 'human_review')
@@ -216,7 +221,8 @@ def derive_incidents(scope, events, snapshot):
         item=issue('db_disagreement','snapshot',[],blocking=False,severity='warning',action='check_database',fact='Зафиксировано несовпадение master/project snapshot; причина неизвестна.')
         item['status']='human_review'; item['snapshot_evidence']=snapshot.get('snapshot_evidence')
     for gap in [*(scope.gaps or []),*snapshot.get('gaps',[])]:
-        issue('journal_gap',digest(gap),[],blocking=False,severity='warning',action='restore_journal',incomplete=True,fact='Не хватает доказательств: '+str(gap.get('kind') or gap.get('error_type') or 'observer gap'))
+        evidence=[e for e in rows if e['event_id']==gap.get('event_id')]
+        issue('journal_gap',digest(gap),evidence,blocking=False,severity='warning',action='restore_journal',incomplete=True,fact='Не хватает доказательств: '+str(gap.get('kind') or gap.get('error_type') or 'observer gap'))
     return list(issues.values())
 
 
@@ -241,8 +247,12 @@ class Diagnoser:
                     project=replica_project
             except Exception as exc: gaps.append({'kind':'project_snapshot_unavailable','error_type':type(exc).__name__})
         else: gaps.append({'kind':'project_database_not_available'})
+        def proof(snapshot):
+            if snapshot is None: return None
+            return {'project_status':snapshot['project_status'],'workflow_status':snapshot['workflow_status'],
+                'nodes':{k:{'status':v['status'],'progress':v['progress'],'attempts':v['attempts'],'error_recorded':bool(v['error'])} for k,v in snapshot['nodes'].items()}}
         return {'nodes':(replica or master)['nodes'],'user_stop':bool((project.meta or {}).get('user_stop')) if project else None,
-                'disagreement':replica is not None and replica!=master,'snapshot_evidence':{'master':master,'project':replica},'gaps':gaps,'titles':titles}
+                'disagreement':replica is not None and replica!=master,'snapshot_evidence':{'master':proof(master),'project':proof(replica)},'gaps':gaps,'titles':titles}
 
     async def update(self,execution_id,*,snapshot=None):
         async with self.lock:
