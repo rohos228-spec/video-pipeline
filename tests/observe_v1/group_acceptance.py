@@ -105,8 +105,29 @@ async def run():
             if execution_id:
                 response = await client.post(base + f"/observations/{execution_id}/pin")
                 response.raise_for_status()
-            response = await client.post(base + "/steps/excel_gpt/run", params={"node_key": fixtures.NODES[0]})
-            response.raise_for_status()
+            if mode == "actions":
+                run_response = await client.get(base + "/run")
+                run_response.raise_for_status()
+                run_snapshot = run_response.json()
+                graph_nodes = {str(n.get("id")): n for n in run_snapshot.get("nodes_snapshot", [])}
+                selected = [graph_nodes.get(key) for key in fixtures.NODES]
+                assert all(selected), "managed test nodes missing from immutable workflow graph"
+                group_ids = {str((n.get("data") or {}).get("groupId") or "") for n in selected}
+                assert len(group_ids) == 1 and "" not in group_ids, group_ids
+                scope_response = await client.post(base + f"/observations/{execution_id}/actions/enable", json={
+                    "group_id": group_ids.pop(), "node_keys": list(fixtures.NODES),
+                    "rationale": "synthetic isolated actions-v1 group acceptance", "request_limit": 12,
+                })
+                scope_response.raise_for_status()
+                start_response = await client.post(base + f"/observations/{execution_id}/actions/start", json={
+                    "node_key": fixtures.NODES[0], "step_code": str(selected[0].get("type") or ""),
+                    "rationale": "synthetic isolated acceptance start", "idempotency_key": "actions-test-start-0001",
+                })
+                assert start_response.is_success, start_response.text
+                result["managed_start"] = start_response.json()
+            else:
+                response = await client.post(base + "/steps/excel_gpt/run", params={"node_key": fixtures.NODES[0]})
+                response.raise_for_status()
             if mode == "stop":
                 response = await client.post(base + f"/observations/{execution_id}/stop")
                 response.raise_for_status()
@@ -171,6 +192,34 @@ async def run():
                     assert sum(fixtures.FixtureHandler.counts.values())==2*len(attempts)
                 else:
                     assert sum(fixtures.FixtureHandler.counts.values()) == (6 if mode=='malformed' else 5)
+                if mode == "actions":
+                    controls = await client.get(base + f"/observations/{execution_id}/actions")
+                    controls.raise_for_status()
+                    managed = controls.json()
+                    assert managed["enabled"] and not managed["held"], managed
+                    assert managed["requests_used"] == 5, managed
+                    assert any(a["action_kind"] == "start_node" and a["status"] == "submitted"
+                               for a in managed["records"]), managed
+                    result["actions"] = managed
+                    verification = await client.post(base + f"/observations/{execution_id}/actions/verify", json={
+                        "node_key": fixtures.NODES[-1],
+                        "rationale": "verify synthetic terminal node runtime completion",
+                        "idempotency_key": "actions-test-verify-0001",
+                    })
+                    assert verification.is_success, verification.text
+                    result["verification"] = verification.json()
+                    assert result["verification"]["status"] == "verified", result["verification"]
+                    run_after = await client.get(base + "/run")
+                    run_after.raise_for_status()
+                    all_states = {str(n["node_key"]): n["status"] for n in run_after.json().get("node_runs", [])}
+                    boundary_targets = {str(edge.get("target")) for edge in run_snapshot.get("edges_snapshot", [])
+                        if str(edge.get("source")) in set(fixtures.NODES)
+                        and str(edge.get("target")) not in set(fixtures.NODES)}
+                    assert boundary_targets, "selected managed group must have an outgoing graph boundary"
+                    assert all(all_states.get(key) == "pending" for key in boundary_targets), {
+                        "boundary_targets": sorted(boundary_targets), "node_states": all_states,
+                    }
+                    result["group_boundary"] = {key: all_states[key] for key in sorted(boundary_targets)}
                 if mode == "stop":
                     assert result["context"]["observer_state"] == "stopped"
                 with sqlite3.connect(DATA / "state.db") as conn:
@@ -227,6 +276,14 @@ async def run():
             # the dedicated history_replay.py process. Binding in this process
             # races the original HTTP socket's shutdown (captured Errno 98).
             (ROOT / "browser-history-mode.json").write_text(json.dumps({"worker":"stopped by test runner at group boundary", "lifespan":"off", "frontend_sha256":hashlib.sha256((SOURCE / "web/out/index.html").read_bytes()).hexdigest()}))
+        if result.get("accepted") and not pending:
+            # Background executor threads may outlive the cancelled synthetic
+            # app even after all test-owned artifacts and hashes are flushed.
+            # Exit this disposable runner cleanly only after acceptance evidence
+            # and loaded-module verification have been persisted.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(0)
 
 
 if __name__ == "__main__":

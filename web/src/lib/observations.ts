@@ -19,7 +19,16 @@ export interface Diagnosis {
 
 export interface ObservationScope {
   execution_id: string; project_id: number; node_keys: string[];
-  observer_state: string; created_at: string;
+  observer_state: string; created_at: string; graph_version?: string;
+}
+export interface ActionRecord {
+  action_id:string;action_kind:string;node_key:string|null;attempt_id:string|null;
+  initiator:string;rationale:string;preconditions:Record<string,unknown>;status:string;
+  verification:Record<string,unknown>;created_at:string;
+}
+export interface ActionState {
+  configured:boolean;enabled:boolean;held:boolean;group_id:string|null;node_keys:string[];
+  graph_version:string|null;request_limit:number|null;requests_used:number;records:ActionRecord[];
 }
 interface NodeState {status: string; progress: number | null; attempts: number | null; error: string | null; progress_text: string | null}
 export interface ObservationContext extends ObservationScope {
@@ -39,4 +48,17 @@ export const observations = {
   diagnoses: (project:number,execution:string) => http<Diagnosis>(path(project,execution)+"/diagnoses"),
   events: (project: number, execution: string, after=0) => http<{events: ObservationEvent[]; next_cursor: number; has_more: boolean}>(path(project,execution)+`/events?after=${after}&limit=200`),
   stop: (project: number, execution: string) => http(path(project,execution)+"/stop", {method:"POST"}),
+  actions: (project:number,execution:string) => http<ActionState>(path(project,execution)+"/actions"),
+  enableActions: (project:number,execution:string,payload:{group_id:string;node_keys:string[];rationale:string;request_limit:number}) =>
+    http(path(project,execution)+"/actions/enable",{method:"POST",body:JSON.stringify(payload)}),
+  controlActions: (project:number,execution:string,held:boolean,rationale:string,idempotency_key:string) =>
+    http(path(project,execution)+"/actions/control",{method:"POST",body:JSON.stringify({held,rationale,idempotency_key})}),
+  closeActions: (project:number,execution:string,rationale:string,idempotency_key:string) =>
+    http(path(project,execution)+"/actions/close",{method:"POST",body:JSON.stringify({rationale,idempotency_key})}),
+  startManagedNode: (project:number,execution:string,payload:{node_key:string;step_code:string;rationale:string;idempotency_key:string}) =>
+    http<{action_id:string;status:string;idempotent_replay:boolean}>(path(project,execution)+"/actions/start",{method:"POST",body:JSON.stringify(payload)}),
+  verifyNode: (project:number,execution:string,payload:{node_key:string;rationale:string;idempotency_key:string}) =>
+    http<{action_id:string;status:string;verification:Record<string,unknown>}>(path(project,execution)+"/actions/verify",{method:"POST",body:JSON.stringify(payload)}),
+  reviewIncident: (project:number,execution:string,payload:{incident_id:string;rationale:string;idempotency_key:string}) =>
+    http<{action_id:string;status:string;business_action:boolean}>(path(project,execution)+"/actions/review",{method:"POST",body:JSON.stringify(payload)}),
 };

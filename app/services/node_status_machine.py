@@ -186,6 +186,29 @@ def transition_node_status(
     if old == new_status:
         return False
 
+    # Managed actions impose a single execution-scope gate at the FSM boundary,
+    # covering worker, API, and auto-advance callers. Unmanaged projects retain
+    # their existing behavior; a missing managed permission is never inferred.
+    if new_status == NodeRunStatus.running:
+        from app.services.actions_v1 import check_managed_start
+
+        decision = check_managed_start(project_id=project_id, node_key=nr.node_key)
+        if decision is not None and not decision.allowed:
+            logger.warning(
+                "actions-v1 blocked start project={} node={} reason={}",
+                project_id, nr.node_key, decision.reason,
+            )
+            _log_line(
+                node_key=nr.node_key,
+                node_type=nr.node_type,
+                old=old,
+                new=new_status,
+                initiator=f"actions_v1:{decision.reason}",
+                project_id=project_id,
+                blocked=True,
+            )
+            return False
+
     if new_status == NodeRunStatus.pending and initiator in _RESET_INITIATORS:
         _apply_side_effects(nr, old, new_status, initiator=initiator, error=error)
         _log_line(
@@ -271,6 +294,24 @@ def queue_node_for_start(nr: NodeRun, *, project_id: int | None, initiator: str 
 def start_node_running(nr: NodeRun, *, project_id: int | None, initiator: str = "api") -> bool:
     """queued → running (воркер взял шаг)."""
     if nr.status == NodeRunStatus.running:
+        return False
+    from app.services.actions_v1 import check_managed_start
+
+    decision = check_managed_start(project_id=project_id, node_key=nr.node_key)
+    if decision is not None and not decision.allowed:
+        logger.warning(
+            "actions-v1 blocked start project={} node={} reason={}",
+            project_id, nr.node_key, decision.reason,
+        )
+        _log_line(
+            node_key=nr.node_key,
+            node_type=nr.node_type,
+            old=nr.status,
+            new=NodeRunStatus.running,
+            initiator=f"actions_v1:{decision.reason}",
+            project_id=project_id,
+            blocked=True,
+        )
         return False
     if nr.status == NodeRunStatus.queued:
         return transition_node_status(

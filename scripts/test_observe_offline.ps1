@@ -21,7 +21,7 @@ New-Item -ItemType Directory -Path $stagePath, $configPath, $artifactPath | Out-
 $gitSafety = 'safe.directory=' + $sourceRoot.Replace('\', '/')
 $tracked = & git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files app prompts templates pyproject.toml
 if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate tracked source' }
-$files = @($tracked) + @('tests/observe_v1/test_journal.py', 'tests/observe_v1/test_runtime.py', 'tests/observe_v1/container_test_entry.py', 'tests/observe_v1/group_acceptance.py', 'tests/observe_v1/coverage_capture.py', 'tests/observe_v1/socket_bridge.py')
+$files = @($tracked) + @('app/services/actions_v1.py', 'tests/observe_v1/test_actions_v1_contract.py', 'tests/observe_v1/test_journal.py', 'tests/observe_v1/test_runtime.py', 'tests/observe_v1/container_test_entry.py', 'tests/observe_v1/group_acceptance.py', 'tests/observe_v1/coverage_capture.py', 'tests/observe_v1/socket_bridge.py')
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
 $manifest = @{}
@@ -39,6 +39,7 @@ $name = 'vp-observe-test-' + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + ([guid]
 $docker = 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
 $entryFile = 'tests/observe_v1/container_test_entry.py'
 if ($Target -eq 'group') { $entryFile = 'tests/observe_v1/group_acceptance.py' }
+if ($Target -eq 'actions') { $entryFile = 'tests/observe_v1/container_test_entry.py' }
 $connectionArgs = @('--config', $configPath, '--host', 'npipe:////./pipe/dockerDesktopLinuxEngine')
 $dockerArgs = $connectionArgs + @(
     'create', '--pull', 'never', '--name', $name, '--network', 'none', '--cap-drop', 'ALL',
@@ -78,8 +79,15 @@ if ($Browser) {
     Write-Output "Browser container running: $name; evidence: $artifactPath"
     exit 0
 }
-$output = & $docker @connectionArgs start --attach $name 2>&1
-$testExit = $LASTEXITCODE
+$started = & $docker @connectionArgs start $name 2>$null
+if ($LASTEXITCODE -ne 0) { throw 'Cannot start offline test container' }
+$waitOutput = & $docker @connectionArgs wait $name 2>$null
+if ($LASTEXITCODE -ne 0) { throw 'Cannot wait for offline test container' }
+$testExit = [int]($waitOutput | Select-Object -Last 1)
+$savedErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue' # Windows PowerShell reports native stderr as non-terminating errors.
+$output = & $docker @connectionArgs logs $name 2>&1
+$ErrorActionPreference = $savedErrorActionPreference
 & $docker @connectionArgs cp "${name}:/results/." $artifactPath
 if ($LASTEXITCODE -ne 0) { throw 'Cannot collect offline test artifacts' }
 [IO.File]::WriteAllText((Join-Path $artifactPath 'test-output.txt'), ($output | Out-String), $utf8)

@@ -179,6 +179,8 @@ class Observer:
         for scope in scopes:
             await self.ensure_project_schema(scope.project_id)
         self.scopes = {s.workflow_run_id: s for s in scopes}
+        from app.services.actions_v1 import reload_permissions
+        await reload_permissions(self.master)
 
     async def stop(self, execution_id, *, initiator=None):
         async with self.master() as session:
@@ -197,7 +199,7 @@ class Observer:
     def stage(self, session, scope, kind, *, db_scope, node_key=None, attempt_id=None,
               request_id=None, project_id=None, payload=None):
         """No commit here. A rollback removes this event with the business change."""
-        if scope.mode != "observe" or scope.observer_state not in {"active", "degraded"}:
+        if scope.mode not in {"observe", "managed"} or scope.observer_state not in {"active", "degraded"}:
             return False
         if project_id is not None and project_id != scope.project_id:
             return False
@@ -404,6 +406,16 @@ def observe_model(function):
         from urllib.parse import urlsplit
         endpoint = urlsplit(str(kwargs.get("url") or ""))
         settings = {k: v for k, v in body.items() if k not in {"input", "messages", "instructions"}}
+        if ctx.scope.mode == "managed":
+            try:
+                from app.services.actions_v1 import ActionSupervisor
+                await ActionSupervisor(ctx.observer.master).charge_request(ctx.scope.execution_id)
+            except Exception as exc:
+                await record_fact("action_blocked", {
+                    "action": "model_request", "reason": type(exc).__name__,
+                    "request_id": request_id,
+                }, request_id=request_id)
+                raise
         await record_fact("model_start", {"method": "POST", "host": endpoint.hostname,
             "path": endpoint.path, "model": kwargs.get("use_model"),
             "previous_request_id": previous_request_id,
@@ -477,6 +489,15 @@ async def observe_attempt(session, project):
     node_key = active_excel_gpt_node_key(project)
     scope = next((s for s in observer.scopes.values()
                   if s.project_id == project.id and node_key in s.node_keys), None)
+    if scope is None:
+        # Stopping observation must not implicitly remove a managed execution's
+        # request-budget gate. Rehydrate the durable scope for accounting only;
+        # its stopped observer state still prevents new journal writes.
+        from app.services.actions_v1 import get_permission
+        permission = get_permission(project.id)
+        if permission is not None and node_key in permission.node_keys:
+            async with observer.master() as master_session:
+                scope = await master_session.get(ExecutionControl, permission.execution_id)
     if scope is None:
         yield
         return
@@ -633,9 +654,11 @@ def panel_safe(value):
 async def migrate_observation_schema(conn):
     """Additive migration used by the same startup path as existing schema migrations."""
     from app.services.diagnosis import Incident, DiagnosisState
+    from app.services.actions_v1 import ActionExecutionControl, ActionRecord
     await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=[
         ExecutionControl.__table__, ObservationOutbox.__table__, ObservationEvent.__table__,
-        Incident.__table__, DiagnosisState.__table__,
+        Incident.__table__, DiagnosisState.__table__, ActionExecutionControl.__table__,
+        ActionRecord.__table__,
     ]))
 
 

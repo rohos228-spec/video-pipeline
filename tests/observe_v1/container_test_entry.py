@@ -33,6 +33,8 @@ try:
         sys.argv = [str(SOURCE / "tests/observe_v1/test_runtime.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "diagnose":
         sys.argv = [str(SOURCE / "tests/observe_v1/test_diagnosis.py")]
+    if os.environ.get("OBSERVE_TEST_TARGET") == "actions":
+        sys.argv = [str(SOURCE / "tests/observe_v1/test_actions_v1_contract.py")]
     runpy.run_path(sys.argv[0], run_name="__main__")
 except SystemExit as exc:
     exit_code = int(exc.code or 0)

@@ -667,6 +667,10 @@ async def run_project_step(
             payload=payload,
         )
         return p
+    from app.services.actions_v1 import get_permission
+    if get_permission(project_id) is not None:
+        raise HTTPException(status_code=409,
+            detail="managed execution must be started from the Actions-v1 panel for audit and idempotency")
     resolved_force_wipe = bool(force_wipe) if force_wipe is not None else False
     try:
         await start_step(

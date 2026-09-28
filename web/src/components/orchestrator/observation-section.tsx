@@ -2,13 +2,13 @@
 
 import {useEffect, useRef, useState} from "react";
 import {api} from "@/lib/api";
-import {observations, type ObservationContext, type ObservationScope, type Diagnosis} from "@/lib/observations";
+import {observations, type ObservationContext, type ObservationScope, type Diagnosis, type ActionState, type DiagnosticIncident} from "@/lib/observations";
 import {DiagnosisSection} from './diagnosis-section';
 import {eventLabel, mergeEvents, usageLabel, type ObservationEvent} from "@/lib/observation-view";
 import {Button} from "@/components/ui/button";
 
 export function ObservationSection({projectId}: {projectId: number | null}) {
-  const [groups,setGroups] = useState<{id:string;title:string;keys:string[]}[]>([]);
+  const [groups,setGroups] = useState<{id:string;title:string;keys:string[];steps:Record<string,string>}[]>([]);
   const [group,setGroup] = useState("");
   const [scopes,setScopes] = useState<ObservationScope[]>([]);
   const [execution,setExecution] = useState("");
@@ -18,6 +18,9 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
   const [busy,setBusy] = useState(false);
   const [diagnosis,setDiagnosis]=useState<Diagnosis|null>(null);
   const [diagnosisError,setDiagnosisError]=useState('');
+  const [actionState,setActionState]=useState<ActionState|null>(null);
+  const [actionRationale,setActionRationale]=useState('');
+  const [actionError,setActionError]=useState('');
   const generation = useRef(0);
   const key = `studio-observation-execution-${projectId}`;
 
@@ -28,12 +31,12 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     let retry: ReturnType<typeof setTimeout> | undefined;
     const load = () => { void Promise.all([api.getProjectRun(projectId), observations.list(projectId)]).then(([run,list]) => {
       if (generation.current !== epoch) return;
-      const grouped = new Map<string,{id:string;title:string;keys:string[]}>();
+      const grouped = new Map<string,{id:string;title:string;keys:string[];steps:Record<string,string>}>();
       for (const node of run.nodes_snapshot) {
         const id = typeof node.data?.groupId === "string" ? node.data.groupId : null;
         if (!id) continue;
-        const existing = grouped.get(id) ?? {id,title:String(node.data.groupTitle ?? id),keys:[]};
-        existing.keys.push(node.id); grouped.set(id,existing);
+        const existing = grouped.get(id) ?? {id,title:String(node.data.groupTitle ?? id),keys:[],steps:{}};
+        existing.keys.push(node.id); existing.steps[node.id]=String(node.type ?? ""); grouped.set(id,existing);
       }
       setGroups([...grouped.values()]); setGroup([...grouped.keys()][0] ?? ""); setScopes(list);
       let saved = "";
@@ -50,7 +53,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
   }, [projectId,key]);
 
   useEffect(() => {
-    setEvents([]); setContext(null); setDiagnosis(null); setDiagnosisError('');
+    setEvents([]); setContext(null); setDiagnosis(null); setDiagnosisError(''); setActionState(null); setActionError('');
     if (!execution || projectId == null) return;
     try { localStorage.setItem(key,execution); } catch { /* Server remains source of history. */ }
     let cancelled = false;
@@ -61,6 +64,8 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         const next = await observations.context(projectId,execution);
         if (cancelled) return;
         setContext(next);
+        try { const actions=await observations.actions(projectId,execution); if(!cancelled) setActionState(actions); }
+        catch { if(!cancelled) setActionError('Execution controls unavailable; no new execution permission can be assumed.'); }
         try {
           const diagnostic=await observations.diagnoses(projectId,execution);
           if(cancelled) return;
@@ -108,6 +113,82 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     finally {setBusy(false);}
   }
 
+  async function enableActions() {
+    if(projectId==null || !execution) return;
+    const selected=groups.find(g=>g.id===group);
+    const scope=scopes.find(s=>s.execution_id===execution);
+    if(!selected || !scope || selected.keys.some(k=>!scope.node_keys.includes(k)) || actionRationale.trim().length<3) {
+      setActionError('Нужны активное наблюдение с совпадающим scope и явное обоснование.'); return;
+    }
+    setBusy(true); setActionError('');
+    try {
+      await observations.enableActions(projectId,execution,{group_id:selected.id,node_keys:selected.keys,rationale:actionRationale.trim(),request_limit:12});
+      setActionState(await observations.actions(projectId,execution));
+    } catch { setActionError('Разрешение выполнения не подтверждено; запуск остаётся закрыт.'); }
+    finally {setBusy(false);}
+  }
+
+  async function setActionsHeld(held:boolean) {
+    if(projectId==null || !execution || actionRationale.trim().length<3) return;
+    setBusy(true); setActionError('');
+    try {
+      await observations.controlActions(projectId,execution,held,actionRationale.trim(),crypto.randomUUID());
+      setActionState(await observations.actions(projectId,execution));
+    } catch { setActionError(held ? 'Пауза выполнения не подтверждена.' : 'Возобновление не подтверждено; выполнение остаётся закрытым.'); }
+    finally {setBusy(false);}
+  }
+
+  async function closeActions() {
+    if(projectId==null || !execution || !actionRationale.trim()) return;
+    setBusy(true); setActionError('');
+    try {
+      await observations.closeActions(projectId,execution,actionRationale.trim(),crypto.randomUUID());
+      setActionState(await observations.actions(projectId,execution));
+    } catch {setActionError('Закрытие не подтверждено; разрешение остаётся в текущем состоянии.');}
+    finally {setBusy(false);}
+  }
+
+  async function runManagedGroup() {
+    if(projectId==null || !execution || !context || !actionState?.enabled || actionState.held) return;
+    const selected=groups.find(g=>g.id===actionState.group_id);
+    const states=context.project?.nodes ?? context.master.nodes;
+    const node=selected?.keys.find(k=>actionState.node_keys.includes(k) && states[k]?.status==='pending');
+    const step=node ? selected?.steps[node] : undefined;
+    if(!node || !step || actionRationale.trim().length<3) {
+      setActionError('Нет доступной pending-ноды в разрешённой группе или отсутствует обоснование.'); return;
+    }
+    setBusy(true); setActionError('');
+    try {
+      await observations.startManagedNode(projectId,execution,{node_key:node,step_code:step,
+        rationale:actionRationale.trim(),idempotency_key:crypto.randomUUID()});
+      setActionState(await observations.actions(projectId,execution));
+    } catch { setActionError('Запуск не подтверждён; повторно не отправляйте без проверки action status.'); }
+    finally {setBusy(false);}
+  }
+
+  async function verifyManagedNode(node_key:string) {
+    if(projectId==null || !execution || !actionState?.enabled || actionRationale.trim().length<3) return;
+    setBusy(true); setActionError('');
+    try {
+      const result=await observations.verifyNode(projectId,execution,{node_key,rationale:actionRationale.trim(),idempotency_key:crypto.randomUUID()});
+      setActionError(result.status==='verified' ? 'Runtime-проверка подтверждена; семантическое качество не оценивалось.' : 'Доказательств недостаточно — действие передано на ручную проверку.');
+      setActionState(await observations.actions(projectId,execution));
+    } catch {setActionError('Результат не удалось подтвердить; сохранённое состояние не изменено.');}
+    finally {setBusy(false);}
+  }
+
+  async function markIncidentForReview(incident:DiagnosticIncident) {
+    if(projectId==null || !execution || actionRationale.trim().length<3) {
+      setActionError('Для передачи человеку укажите обоснование.'); return;
+    }
+    setBusy(true); setActionError('');
+    try {
+      await observations.reviewIncident(projectId,execution,{incident_id:incident.incident_id,rationale:actionRationale.trim(),idempotency_key:crypto.randomUUID()});
+      setActionState(await observations.actions(projectId,execution));
+    } catch {setActionError('Передача на ручную проверку не подтверждена.');}
+    finally {setBusy(false);}
+  }
+
   if(projectId == null) return <p className="text-xs text-white/50">Выберите проект в студии для наблюдения.</p>;
   const active=scopes.some(s=>s.observer_state!=="stopped");
   const states=context?.project?.nodes ?? context?.master.nodes ?? {};
@@ -123,6 +204,22 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       <Button size="sm" variant="outline" disabled={busy || !context || context.observer_state==="stopped"} onClick={()=>void stop()}>Остановить наблюдение</Button>
     </div>
     <p className="text-white/45">Наблюдение читает выполнение. Эти кнопки не запускают и не останавливают задачу.</p>
+    {context && <div className="space-y-2 rounded border border-sky-400/20 p-2">
+      <strong>Actions-v1 · управляемое выполнение</strong>
+      <p className="text-white/50">По умолчанию выключено. Разрешение ограничено одним execution, выбранной группой и снимком графа; общий бюджет — 12 модельных запросов. Остановка наблюдения и пауза выполнения — разные действия.</p>
+      <label className="block">Обоснование оператора
+        <input value={actionRationale} onChange={e=>setActionRationale(e.target.value)} maxLength={1000} className="ml-2 w-72 rounded border border-white/15 bg-[#161616] p-1.5" placeholder="Почему разрешается это выполнение"/>
+      </label>
+      {!actionState?.configured ? <Button size="sm" variant="outline" disabled={busy || !execution || context.observer_state==='stopped' || !actionRationale.trim()} onClick={()=>void enableActions()}>Разрешить выполнение выбранной группы</Button> : !actionState.enabled ? <p className="text-white/50">Managed execution закрыт. Для нового разрешения создайте новое наблюдение.</p> : <>
+        <span>Статус: {actionState.held ? '⏸ на паузе' : '🟢 разрешено'} · запросы: {actionState.requests_used}/{actionState.request_limit}</span>
+        <Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void setActionsHeld(!actionState.held)}>{actionState.held ? 'Возобновить группу' : 'Пауза группы'}</Button>
+        <Button size="sm" variant="outline" disabled={busy || actionState.held || !actionRationale.trim()} onClick={()=>void runManagedGroup()}>Запустить следующую ноду группы</Button>
+        <Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void closeActions()}>Закрыть execution</Button>
+        <p className="text-white/50">Разрешённые ноды: {actionState.node_keys.join(', ')} · graph: {actionState.graph_version?.slice(0,12)}</p>
+        <ol className="space-y-1">{actionState.records.slice(0,5).map(a=><li key={a.action_id}>{a.action_kind} · {a.created_at?.slice(0,19)} · {a.initiator} · {a.rationale}</li>)}</ol>
+      </>}
+      {actionError && <p role="alert" className="text-amber-200">{actionError}</p>}
+    </div>}
     <label className="flex items-center gap-2">История запуска
       <select aria-label="История наблюдения" value={execution} onChange={e=>setExecution(e.target.value)} className="rounded border border-white/15 bg-[#161616] p-1.5">
         {!scopes.length && <option value="">Наблюдение ещё не включено</option>}
@@ -140,11 +237,11 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         <p>Неполнота журнала: {context.data_gaps.length ? context.data_gaps.map(g=>g.kind ?? g.error_type ?? "неизвестно").join(", ") : "зафиксированных gaps нет; это не гарантия полноты"}</p>
         {context.history_window_limited && <p className="text-amber-200">Контекст ограничен последними 500 событиями; история ниже загружается с курсором.</p>}
       </div>
-      <DiagnosisSection diagnosis={diagnosis} error={diagnosisError}/>
+      <DiagnosisSection diagnosis={diagnosis} error={diagnosisError} onReview={actionState?.enabled ? markIncidentForReview : undefined}/>
       <div className="overflow-x-auto"><table className="w-full text-left"><thead><tr>{["Нода","Состояние / прогресс","Попытка","Модель / usage","Проверки / ожидание"].map(x=><th key={x} className="p-1 text-white/40">{x}</th>)}</tr></thead><tbody>
         {context.node_keys.map(node=>{
           const nc=context.node_contexts[node]; const state=states[node]; const latest=models.filter(e=>e.node_key===node).at(-1);
-          return <tr key={node} className="border-t border-white/10"><td className="p-1">{node}</td><td className="p-1">{state?.status ?? "неизвестно"} · {state?.progress == null ? "прогресс неизвестен" : `${state.progress}%`}</td><td className="p-1">{nc?.latest_attempt_id?.slice(0,8) ?? "неизвестно"}</td><td className="p-1">{nc?.model ?? "модель неизвестна"}<br/>{usageLabel(latest?.payload.usage as Record<string,unknown> | null)}</td><td className="p-1">{nc?.checks.length ? nc.checks.slice(0,4).map((check,i)=><div key={i}>{eventLabel({kind:check.kind,payload:check.result})}</div>) : "not_checked"}<br/>{context.wait_reasons?.[node]?.reason ?? "причина ожидания неизвестна"}</td></tr>;
+          return <tr key={node} className="border-t border-white/10"><td className="p-1">{node}</td><td className="p-1">{state?.status ?? "неизвестно"} · {state?.progress == null ? "прогресс неизвестен" : `${state.progress}%`}</td><td className="p-1">{nc?.latest_attempt_id?.slice(0,8) ?? "неизвестно"}</td><td className="p-1">{nc?.model ?? "модель неизвестна"}<br/>{usageLabel(latest?.payload.usage as Record<string,unknown> | null)}</td><td className="p-1">{nc?.checks.length ? nc.checks.slice(0,4).map((check,i)=><div key={i}>{eventLabel({kind:check.kind,payload:check.result})}</div>) : "not_checked"}<br/>{context.wait_reasons?.[node]?.reason ?? "причина ожидания неизвестна"}{actionState?.enabled && state?.status==='done' && <div><Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void verifyManagedNode(node)}>Проверить результат</Button></div>}</td></tr>;
         })}
       </tbody></table></div>
       <div><strong>Хронология · {events.length} событий</strong><ol data-testid="observation-timeline" className="mt-2 max-h-64 overflow-y-auto space-y-1">
