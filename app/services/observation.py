@@ -181,7 +181,9 @@ class Observer:
                 raise ValueError("Observation not found")
             scope.observer_state = "stopped"
             await session.commit()
-        self.scopes.pop(scope.workflow_run_id, None)
+        cached = self.scopes.pop(scope.workflow_run_id, None)
+        if cached:
+            cached.observer_state = "stopped"
 
     def stage(self, session, scope, kind, *, db_scope, node_key=None, attempt_id=None,
               request_id=None, project_id=None, payload=None):
@@ -274,7 +276,11 @@ class Observer:
 
     async def catch_up(self):
         from app.project_db import get_project_sessionmaker
-        for scope in list(self.scopes.values()):
+        # Stopped scopes may still have a transaction committing its recorded
+        # tail. Delivery remains enabled; production hooks stay disabled.
+        async with self.master() as session:
+            deliveries = (await session.scalars(select(ExecutionControl))).all()
+        for scope in deliveries:
             try:
                 for _ in range(20):
                     if not await self.consume(scope.execution_id, "master", self.master):
@@ -290,7 +296,8 @@ class Observer:
                 if scope.execution_id in self.failures:
                     async with self.master() as session:
                         stored = await session.get(ExecutionControl, scope.execution_id)
-                        stored.observer_state = "degraded"
+                        if stored.observer_state != "stopped":
+                            stored.observer_state = "degraded"
                         stored.gaps = list(stored.gaps or []) + [{"error_type": self.failures[scope.execution_id],
                             "at": datetime.utcnow().isoformat(), "detail": "Observer data may be incomplete"}]
                         await session.commit()
@@ -317,7 +324,7 @@ def get_observer():
 def emit(kind, payload=None, *, request_id=None, body=None):
     """Stage a scoped runtime fact; caller's transaction still decides visibility."""
     ctx = _attempt.get()
-    if ctx is None:
+    if ctx is None or ctx.scope.observer_state == "stopped":
         return
     try:
         payload = dict(payload or {})
@@ -336,7 +343,7 @@ async def record_fact(kind, payload=None, *, request_id=None, body=None):
     excluded from the business-row hook.
     """
     ctx = _attempt.get()
-    if ctx is None:
+    if ctx is None or ctx.scope.observer_state == "stopped":
         return
     if ctx.db_scope == "master":
         # Fallback execution shares the master business transaction; a second
