@@ -60,7 +60,7 @@ class Rules(unittest.TestCase):
 
     def test_required_empty_payload_and_explicit_gate_failure(self):
         rows=[event('parse_result',payload_required=True,parsed=True,payload_present=False,ops_count=0),
-            event('runtime_check',check='frame_coverage_gate',status='failed',missing=1)]
+            event('runtime_check',check='frame_coverage_gate',status='failed',performed=True,missing=1)]
         self.assertEqual({i['type'] for i in derive_incidents(SCOPE,rows,{})},{'missing_payload','contract_rejected'})
 
     def test_wait_and_stop_are_not_errors_or_blind_retry(self):
@@ -84,6 +84,13 @@ class Rules(unittest.TestCase):
 
     def test_other_project_and_nodes_excluded(self):
         self.assertEqual(derive_incidents(SCOPE,[bad(project=1),bad(node='video')],{}),[])
+
+    def test_catalog_transport_and_uncertain_no_blind_retry(self):
+        result=derive_incidents(SCOPE,[event('model_error',error_code='gpt_auth',uncertain=False)],{})
+        self.assertEqual(result[0]['catalog_code'],'gpt_auth')
+        self.assertEqual(result[0]['status'],'human_review')
+        result=derive_incidents(SCOPE,[event('model_error',uncertain=True,error_code='gpt_timeout')],{})
+        self.assertEqual(result[0]['recommendation']['action'],'review_provider_response')
 
     def test_saved_normal_and_malformed_full_history(self):
         summaries={}
@@ -135,5 +142,30 @@ class Persistence(test_journal.JournalAcceptance):
             self.assertIsNone(await s.get(DiagnosisState,self.scope.execution_id))
         await self.service.update(self.scope.execution_id,snapshot={})
         async with self.master() as s: self.assertEqual(len((await s.scalars(select(Incident))).all()),1)
+
+    async def test_read_only_api_scope_unavailable_and_restart(self):
+        import httpx
+        from fastapi import FastAPI
+        from app.services import observation
+        from app.web.routers.observations import router
+        previous=observation._observer;observation._observer=self.observer
+        self.observer.diagnoser=self.service
+        app=FastAPI();app.include_router(router,prefix='/api')
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://localhost') as client:
+                url=f'/api/projects/2/observations/{self.scope.execution_id}/diagnoses'
+                self.assertFalse((await client.get(url)).json()['available'])
+                await self.insert([bad()]+recovery()); await self.service.update(self.scope.execution_id,snapshot={})
+                first=(await client.get(url)).json()
+                self.assertEqual(first['incidents'][0]['status'],'resolved_confirmed')
+                self.assertFalse(first['automatic_actions'])
+                self.assertEqual((await client.get(url.replace('/projects/2/','/projects/1/'))).status_code,404)
+                self.observer.diagnoser=Diagnoser(self.observer)
+                again=(await client.get(url)).json()
+                self.assertEqual(first['incidents'],again['incidents'])
+                self.assertEqual(first['cursor'],again['cursor'])
+                self.observer.diagnoser.failures[self.scope.execution_id]='OSError'
+                self.assertFalse((await client.get(url)).json()['available'])
+        finally: observation._observer=previous
 
 if __name__=='__main__': unittest.main(verbosity=2)

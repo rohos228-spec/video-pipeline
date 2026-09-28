@@ -7,7 +7,7 @@ from pathlib import Path
 
 def begin(source):
     files = {str(source / relative): set() for relative in (
-        "app/services/observation.py", "app/web/routers/observations.py")}
+        "app/services/observation.py", "app/web/routers/observations.py", "app/services/diagnosis.py")}
 
     def collect(frame, event, _arg):
         filename = frame.f_code.co_filename

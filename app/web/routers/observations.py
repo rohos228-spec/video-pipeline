@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.models import NodeRun, Project, WorkflowRun
 from app.services.observation import ExecutionControl, ObservationEvent, digest, get_observer, redact, panel_safe
+from app.services.observation import business_snapshot as _business_snapshot
 
 router = APIRouter(prefix="/projects/{project_id}/observations", tags=["observations"])
 
@@ -80,19 +81,6 @@ async def history(project_id: int, execution_id: str, after: int = Query(0, ge=0
             "attempt_id", "request_id", "db_scope", "kind", "payload", "created_at",
         )} for row in rows[:limit]], "has_more": len(rows) > limit,
             "next_cursor": rows[min(len(rows), limit)-1].id if rows else after})
-
-
-async def _business_snapshot(session, scope):
-    project = await session.get(Project, scope.project_id)
-    run = await session.get(WorkflowRun, scope.workflow_run_id)
-    nodes = (await session.scalars(select(NodeRun).where(
-        NodeRun.workflow_run_id == scope.workflow_run_id, NodeRun.node_key.in_(scope.node_keys),
-    ))).all()
-    return {"project_status": project.status.value if project else None,
-        "workflow_status": run.status.value if run else None,
-        "nodes": {n.node_key: {"status": n.status.value, "progress": n.progress,
-            "progress_text": redact(n.progress_text), "error": redact(n.error),
-            "attempts": n.attempts} for n in nodes}}, project
 
 
 @router.get("/{execution_id}/context")
@@ -196,3 +184,31 @@ async def pin_observation(project_id: int, execution_id: str):
         await _scope(session, project_id, execution_id)
     observer.pin(execution_id)
     return {"pinned": True}
+
+
+@router.get("/{execution_id}/diagnoses")
+async def diagnoses(project_id: int, execution_id: str):
+    """Read-only persisted projection; no provider, worker or diagnostic writes."""
+    from datetime import datetime
+    from sqlalchemy import func
+    from app.services.diagnosis import Incident, DiagnosisState, get_diagnoser
+    observer=get_observer()
+    service=get_diagnoser(observer)
+    async with observer.master() as session:
+        await _scope(session,project_id,execution_id)
+        state=await session.get(DiagnosisState,execution_id)
+        head=(await session.scalar(select(func.max(ObservationEvent.id)).where(
+            ObservationEvent.execution_id==execution_id,ObservationEvent.project_id==project_id))) or 0
+        incidents=(await session.scalars(select(Incident).where(Incident.execution_id==execution_id,
+            Incident.project_id==project_id).order_by(Incident.detected_at,Incident.incident_id))).all()
+        error=service.failures.get(execution_id) or service.failures.get('consumer')
+        available=state is not None and error is None
+        lagging=state is None or state.cursor<head or (datetime.utcnow()-state.checked_at).total_seconds()>8
+        items=[{**row.details,'incident_id':row.incident_id,'status':row.status,
+                'detected_at':row.detected_at,'updated_at':row.updated_at} for row in incidents]
+        return panel_safe({'available':available,'lagging':lagging,'error_type':error,
+            'cursor':state.cursor if state else 0,'journal_head':head,'checked_at':state.checked_at if state else None,
+            'rule_version':state.rule_version if state else None,'incidents':items,
+            'evidence_complete':available and not lagging and not any(i.get('evidence_incomplete') for i in items if i.get('currently_relevant')),
+            'blocking_count':sum(bool(i.get('blocking') and i.get('currently_relevant') and i['status']!='resolved_confirmed') for i in items),
+            'automatic_actions':False,'semantic_quality_verified':False})

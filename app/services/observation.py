@@ -330,6 +330,8 @@ class Observer:
                     await self.reload()
                     loaded = True
                 await self.catch_up()
+                from app.services.diagnosis import get_diagnoser
+                await get_diagnoser(self).catch_up()
             except Exception as exc:
                 for scope in self.scopes.values():
                     self.mark_gap(scope.execution_id, exc)
@@ -418,7 +420,12 @@ def observe_model(function):
             }, body={"text": getattr(result, "text", ""), "response": raw})
             return result
         except BaseException as exc:
-            await record_fact("model_error", {"error_type": type(exc).__name__, "complete": False})
+            from app.services.error_catalog import describe_error
+            context = getattr(exc,"context",None) or {}
+            await record_fact("model_error", {"error_type": type(exc).__name__, "complete": False,
+                "error_code":describe_error(exc)[0],"error_kind":context.get("error_kind") if isinstance(context,dict) else None,
+                "status_code":context.get("status_code") if isinstance(context,dict) else None,
+                "uncertain":type(exc).__name__ in {"CancelledError","ReadTimeout"} or (isinstance(context,dict) and context.get("error_kind") in {"timeout","network"})})
             raise
         finally:
             _request.reset(request_token)
@@ -454,7 +461,7 @@ def observe_apply(function):
         except BaseException as exc:
             await record_fact("apply_error", {"error_type": type(exc).__name__})
             raise
-        emit("data_applied", {"result": result, "transactional": True})
+        emit("data_applied", {"result": result, "transactional": True},request_id=_attempt.get().last_request_id)
         emit("runtime_check", {"check": "apply_ops_validation", "status": "passed",
             "performed": True, "result": result, "initiator": "worker",
             "business_commit_claim": False})
@@ -624,6 +631,21 @@ def panel_safe(value):
 
 async def migrate_observation_schema(conn):
     """Additive migration used by the same startup path as existing schema migrations."""
+    from app.services.diagnosis import Incident, DiagnosisState
     await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=[
         ExecutionControl.__table__, ObservationOutbox.__table__, ObservationEvent.__table__,
+        Incident.__table__, DiagnosisState.__table__,
     ]))
+
+
+async def business_snapshot(session, scope):
+    project = await session.get(Project, scope.project_id)
+    run = await session.get(WorkflowRun, scope.workflow_run_id)
+    nodes = (await session.scalars(select(NodeRun).where(
+        NodeRun.workflow_run_id == scope.workflow_run_id, NodeRun.node_key.in_(scope.node_keys),
+    ))).all()
+    return {"project_status": project.status.value if project else None,
+        "workflow_status": run.status.value if run else None,
+        "nodes": {n.node_key: {"status": n.status.value, "progress": n.progress,
+            "progress_text": redact(n.progress_text), "error": redact(n.error),
+            "attempts": n.attempts} for n in nodes}}, project
