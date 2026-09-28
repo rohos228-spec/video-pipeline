@@ -199,13 +199,10 @@ async def run():
             sys.stderr.flush()
             os._exit(3)
         if browser_mode and result.get("accepted"):
-            # At the boundary the real runner has stopped app.main. Serve the
-            # original app/router/static export for history only; no worker or
-            # external transport is started by this replay server.
-            import uvicorn
-            from app.web.api import create_app
+            # At the boundary app.main is cancelled. Replay saved history in
+            # the dedicated history_replay.py process. Binding in this process
+            # races the original HTTP socket's shutdown (captured Errno 98).
             (ROOT / "browser-history-mode.json").write_text(json.dumps({"worker":"stopped by test runner at group boundary", "lifespan":"off", "frontend_sha256":hashlib.sha256((SOURCE / "web/out/index.html").read_bytes()).hexdigest()}))
-            await uvicorn.Server(uvicorn.Config(create_app(), host="127.0.0.1", port=18765, lifespan="off", log_level="warning")).serve()
 
 
 if __name__ == "__main__":

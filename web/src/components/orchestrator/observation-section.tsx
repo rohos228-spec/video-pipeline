@@ -22,7 +22,8 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     const epoch = ++generation.current;
     setGroups([]); setGroup(""); setScopes([]); setExecution(""); setContext(null); setEvents([]); setError("");
     if (projectId == null) return;
-    Promise.all([api.getProjectRun(projectId), observations.list(projectId)]).then(([run,list]) => {
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const load = () => { void Promise.all([api.getProjectRun(projectId), observations.list(projectId)]).then(([run,list]) => {
       if (generation.current !== epoch) return;
       const grouped = new Map<string,{id:string;title:string;keys:string[]}>();
       for (const node of run.nodes_snapshot) {
@@ -35,8 +36,14 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       let saved = "";
       try { saved = localStorage.getItem(key) ?? ""; } catch { /* History still available from API. */ }
       setExecution(list.some(s => s.execution_id === saved) ? saved : list[0]?.execution_id ?? "");
-    }).catch(() => {if (generation.current === epoch) setError("Не удалось загрузить наблюдение. История не подтверждена; переподключение повторит чтение.");});
-    return () => {generation.current++;};
+      setError("");
+    }).catch(() => {
+      if (generation.current !== epoch) return;
+      setError("Не удалось загрузить наблюдение. История не подтверждена; переподключение повторит чтение.");
+      retry = setTimeout(load,2000);
+    }); };
+    load();
+    return () => {generation.current++; clearTimeout(retry);};
   }, [projectId,key]);
 
   useEffect(() => {
