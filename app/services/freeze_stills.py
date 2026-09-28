@@ -15,9 +15,13 @@ _START_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _END_RE = re.compile(
-    r"КОНЕЦ\s*\([^)]*\)\s*:\s*(.+?)(?=\s*(?:Предметы в конце:|$))",
+    r"КОНЕЦ\s*\([^)]*\)\s*:\s*(.+?)(?=\s*(?:Предметы в конце:|В кадре меняется:|"
+    r"В референсе|Референса нет|Смена:|$))",
     re.IGNORECASE | re.DOTALL,
 )
+# Case-sensitive: scene_plan writes the markers upper-case; «старт»/«конец» in an action is not freeze.
+_START_MARK_RE = re.compile(r"СТАРТ\s*\([^)]*\)\s*:")
+_END_MARK_RE = re.compile(r"КОНЕЦ\s*\([^)]*\)\s*:")
 
 
 def layout_text(frame: Any) -> str:
@@ -57,8 +61,8 @@ def layout_text(frame: Any) -> str:
 
 
 def layout_is_freeze(layout: str) -> bool:
-    text = (layout or "").upper()
-    return "СТАРТ" in text and "КОНЕЦ" in text
+    text = layout or ""
+    return bool(_START_MARK_RE.search(text) and _END_MARK_RE.search(text))
 
 
 def layout_start_text(layout: str) -> str:
@@ -128,9 +132,21 @@ def seed_end_still_prompt(frame: Any) -> bool:
     return True
 
 
-def video_end_still(scenes_dir: Path, frame_number: int, shot: int) -> Path | None:
-    """PNG конечного кадра для видео shot1. Shot2 сам уже конец — не дублируем."""
+def frame_is_freeze(frame: Any) -> bool:
+    return layout_is_freeze(layout_text(frame))
+
+
+def video_end_still(
+    scenes_dir: Path, frame_number: int, shot: int, *, frame: Any = None
+) -> Path | None:
+    """PNG конечного кадра для видео shot1. Shot2 сам уже конец — не дублируем.
+
+    С ``frame`` — только для раскладки СТАРТ/КОНЕЦ: у legacy shot2 картинка —
+    старт второго клипа, а не конец первого.
+    """
     if int(shot) != 1:
+        return None
+    if frame is not None and not frame_is_freeze(frame):
         return None
     png = find_shot2_image(scenes_dir, int(frame_number))
     if png is not None and png.is_file():

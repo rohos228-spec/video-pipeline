@@ -143,3 +143,101 @@ def test_ui_has_start_end_rows() -> None:
     assert text.index('{ key: "scene_info" as RowKey, label: "Сцена" }') < text.index(
         "...frameRow"
     )
+
+
+def test_process_with_start_end_words_is_not_freeze() -> None:
+    layout = (
+        "ДЕЙСТВИЕ (процесс в одном кадре): бежит от старта к концу коридора, "
+        "старт гонки, конец дистанции. План СРЕДНИЙ."
+    )
+    assert layout_is_freeze(layout) is False
+    assert layout_is_freeze(layout.upper()) is False
+
+
+def test_layout_end_stops_before_reference_lines() -> None:
+    layout = (
+        "СТАРТ (первый кадр, до действия): папка закрыта. План СРЕДНИЙ. "
+        "КОНЕЦ (последний кадр действия): папка открыта. "
+        "В кадре меняется: папка → открыта. "
+        "В референсе: план ОБЩИЙ, ракурс фронт. Смена: план СРЕДНИЙ."
+    )
+    end = layout_end_text(layout)
+    assert end == "папка открыта."
+    no_ref = layout.replace("В референсе: план ОБЩИЙ, ракурс фронт. Смена: план СРЕДНИЙ.", "")
+    no_ref = no_ref.replace("В кадре меняется: папка → открыта. ", "Референса нет — первый кадр места.")
+    assert layout_end_text(no_ref) == "папка открыта."
+
+
+def test_video_end_still_skips_legacy_shot2(tmp_path: Path) -> None:
+    png = tmp_path / "frame_007_s2_abc.png"
+    png.write_bytes(b"png")
+    legacy = SimpleNamespace(number=7, attrs={SHOT2_PROMPT_ATTR: "второй шот: крупно руки"})
+    freeze = SimpleNamespace(number=7, attrs={"раскладка": FREEZE})
+    assert video_end_still(tmp_path, 7, 1, frame=legacy) is None
+    assert video_end_still(tmp_path, 7, 1, frame=freeze) == png
+
+
+def test_scene_image_ops_end_still_only_for_freeze() -> None:
+    from app.services.montage_action_gpt import build_scene_image_ops
+
+    legacy = SimpleNamespace(
+        number=3, attrs={SHOT2_PROMPT_ATTR: "второй шот: крупно руки"}, voiceover_text="vo"
+    )
+    freeze = SimpleNamespace(number=4, attrs={"раскладка": FREEZE}, voiceover_text="vo")
+    ops = build_scene_image_ops([legacy, freeze], passport={}, chain="шаг → шаг")
+    shot2 = [(op["frame_number"], op["shot"]) for op in ops if op.get("shot") == 2]
+    assert shot2 == [(4, 2)]
+
+
+async def test_claim_shot2_video_skips_freeze_end_still(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models import Base, Frame, Project
+    from app.orchestrator.steps import generate_videos as gv
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    monkeypatch.setattr("app.settings.settings.data_dir", str(data_root))
+
+    async def _shot1_on_disk(*_a, **_k):
+        return tmp_path / "clip.mp4"
+
+    monkeypatch.setattr(gv, "_scene_video_file_on_disk", _shot1_on_disk)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'claim.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    anim = "камера медленно наезжает, рука кладёт ладонь на стопку листов"
+    async with factory() as session:
+        project = Project(id=77, slug="freeze-claim", topic="t", hero_mode="auto")
+        freeze = Frame(
+            project_id=77,
+            number=1,
+            voiceover_text="vo",
+            status="planned",
+            animation_prompt=anim,
+            attrs={"раскладка": FREEZE, SHOT2_PROMPT_ATTR: "конечный кадр"},
+        )
+        legacy = Frame(
+            project_id=77,
+            number=2,
+            voiceover_text="vo",
+            status="planned",
+            animation_prompt=anim,
+            attrs={SHOT2_PROMPT_ATTR: "второй шот: крупно руки на столе"},
+        )
+        session.add_all([project, freeze, legacy])
+        await session.flush()
+        scenes = tmp_path / "scenes"
+        videos = tmp_path / "videos"
+        scenes.mkdir()
+        videos.mkdir()
+        (scenes / "frame_001_s2_a.png").write_bytes(b"png")
+        (scenes / "frame_002_s2_b.png").write_bytes(b"png")
+        claimed = await gv._claim_shot2_video_batch(
+            session, project, videos, scenes, limit=5
+        )
+        assert [fr.number for fr, _p, _img in claimed] == [2]
+    await engine.dispose()

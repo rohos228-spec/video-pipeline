@@ -342,6 +342,7 @@ async def _claim_shot2_video_batch(
             .execution_options(populate_existing=True)
         )
     ).scalars().all()
+    from app.services.freeze_stills import frame_is_freeze
     from app.services.vo_shot_expand import is_shot_child
 
     claimed: list[tuple[Frame, str, Path]] = []
@@ -351,6 +352,13 @@ async def _claim_shot2_video_batch(
             continue
         info = shot2_by.get(fr.number)
         has_plan = info is not None and info.has_shot2
+        # Freeze END still is the last_frame of shot1, not the start of a second clip.
+        if (
+            not has_plan
+            and frame_is_freeze(fr)
+            and not str(attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
+        ):
+            continue
         if not has_plan and is_skippable_empty_prompt(
             str(attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or attrs.get(SHOT2_PROMPT_ATTR) or "")
         ):
@@ -403,7 +411,7 @@ async def _generate_shot1_one(
     start = await _shot1_start_frame(session, project, fr, scenes_dir)
     from app.services.freeze_stills import video_end_still
 
-    end = video_end_still(scenes_dir, fr.number, 1)
+    end = video_end_still(scenes_dir, fr.number, 1, frame=fr)
     short_uuid = uuid.uuid4().hex[:8]
     file_path = out_dir / f"clip_{fr.number:03d}_{short_uuid}.mp4"
     async with clips_lock:
@@ -589,7 +597,7 @@ async def _shot1_job(
             start = await _shot1_start_frame(session, project, fr, scenes_dir)
             from app.services.freeze_stills import video_end_still
 
-            end = video_end_still(scenes_dir, fr.number, 1)
+            end = video_end_still(scenes_dir, fr.number, 1, frame=fr)
             prompt = fr.animation_prompt
             frame_number = fr.number
             model_slug, res_slug, aspect, relax = _video_opts(project)

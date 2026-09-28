@@ -1166,7 +1166,7 @@ async def build_montage_board(
         shot2_timeline_end = vo_end if has_shot2 else None
         prompts = prompts_by_frame.get(fr.number) or {}
         from app.services.freeze_stills import (
-            frame_needs_end_still,
+            frame_is_freeze,
             layout_end_text,
             layout_start_text,
             layout_text,
@@ -1206,7 +1206,7 @@ async def build_montage_board(
                 "end_ts": fr.end_ts,
                 "duration_seconds": fr.duration_seconds,
                 "has_shot2": has_shot2,
-                "has_end_still": frame_needs_end_still(fr),
+                "has_end_still": frame_is_freeze(fr),
                 "layout_start": layout_start_text(layout),
                 "layout_end": layout_end_text(layout),
                 "shot1_use_seconds": shot1_use,

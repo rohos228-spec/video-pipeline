@@ -326,12 +326,10 @@ function startStillUrl(fr: MontageBoardFrame): string {
   return (fr.image_shot1_url || "").trim();
 }
 
+/** Только freeze СТАРТ/КОНЕЦ: у legacy shot2 вторая картинка — отдельный шот, не конец. */
 function frameNeedsEndStill(fr: MontageBoardFrame): boolean {
-  if (fr.has_end_still === true || fr.has_shot2 === true) return true;
-  if ((fr.layout_end || "").trim()) return true;
-  if ((fr.image_prompt_shot2 || "").trim()) return true;
-  if ((fr.image_shot2_url || "").trim()) return true;
-  return false;
+  if (fr.has_end_still === true) return true;
+  return Boolean((fr.layout_end || "").trim());
 }
 
 function patchBoardFrameMedia(

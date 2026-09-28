@@ -674,7 +674,7 @@ async def prepare_video_regen(
         start_frame = find_shot1_image(scenes_dir, frame_number)
         from app.services.freeze_stills import video_end_still
 
-        end_frame = video_end_still(scenes_dir, frame_number, 1)
+        end_frame = video_end_still(scenes_dir, frame_number, 1, frame=fr)
     if start_frame is None:
         raise RuntimeError(f"нет стартового кадра для видео shot {shot} (папка scenes/)")
 

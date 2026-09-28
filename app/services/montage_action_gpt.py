@@ -535,7 +535,7 @@ def build_scene_image_ops(
         return []
     beats = split_scene_action_beats(chain)
     ops: list[dict[str, Any]] = []
-    from app.services.freeze_stills import frame_needs_end_still
+    from app.services.freeze_stills import frame_is_freeze
 
     for i, fr in enumerate(visible):
         beat = ""
@@ -559,7 +559,7 @@ def build_scene_image_ops(
                 ),
             }
         )
-        if frame_needs_end_still(fr):
+        if frame_is_freeze(fr):
             ops.append(
                 {
                     "type": "image_ai_change",
