@@ -297,6 +297,30 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any(r['status']=='rejected' and r['action_kind']=='recovery_denied' for r in state.json()['records']))
         await self.assert_no_dispatch()
 
+    async def test_verify_endpoint_records_matching_runtime_completion(self):
+        import httpx
+        from fastapi import FastAPI
+        from app.web.routers import observations as api
+        from app.web.deps import get_project_session
+        await self.exhausted_fixture()
+        async with self.sessions() as s:
+            n=await s.scalar(select(NodeRun).where(NodeRun.node_key=='n1'))
+            n.status=NodeRunStatus.done
+            s.add(observation.ObservationEvent(event_id=str(uuid.uuid4()),execution_id='exec-durable',
+                project_id=7,workflow_run_id=11,node_key='n1',attempt_id='source-attempt',
+                db_scope='project',kind='node_end',payload={},created_at=datetime.utcnow()))
+            await s.commit()
+        app=FastAPI();app.include_router(api.router,prefix='/api')
+        async def dependency():
+            async with self.sessions() as s: yield s
+        app.dependency_overrides[get_project_session]=dependency
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://local') as client:
+            response=await client.post('/api/projects/7/observations/exec-durable/actions/verify',json={
+                'node_key':'n1','rationale':'synthetic runtime completion','idempotency_key':'verify-endpoint-0001'})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['status'],'verified')
+        self.assertFalse(response.json()['verification']['semantic_quality_verified'])
+
     async def test_recovery_first_http_body_is_checked_before_transport(self):
         from app.services.actions_recovery import check_body
         from types import SimpleNamespace

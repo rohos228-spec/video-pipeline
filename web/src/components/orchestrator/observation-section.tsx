@@ -226,7 +226,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       </label>
       <p data-testid="actions-mode">{actionState?.enabled ? (actionState.held ? 'Управление включено · execution удержан' : 'Управление включено') : actionState?.configured ? 'Execution завершён · управление выключено' : 'Управление выключено'}</p>
       <p className="text-white/50">Закрытие execution не означает done всего WorkflowRun. User_stop supervisor не снимает.</p>
-      <p className="text-white/50">По умолчанию выключено. Разрешение ограничено одним execution, выбранной группой и снимком графа; общий бюджет — 12 модельных запросов. Остановка наблюдения и пауза выполнения — разные действия.</p>
+      <p className="text-white/50">По умолчанию выключено. Разрешение ограничено одним execution, выбранной группой и снимком графа; общий бюджет задаётся выше до включения. Остановка наблюдения и пауза выполнения — разные действия.</p>
       <label className="block">Обоснование оператора
         <input value={actionRationale} onChange={e=>setActionRationale(e.target.value)} maxLength={1000} className="ml-2 w-72 rounded border border-white/15 bg-[#161616] p-1.5" placeholder="Почему разрешается это выполнение"/>
       </label>

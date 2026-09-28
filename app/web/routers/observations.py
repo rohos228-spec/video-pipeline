@@ -1,4 +1,4 @@
-"""Explicit observe-only scope and durable history. No execution/recovery endpoints."""
+"""Observation history and explicit, policy-gated Actions-v1 controls."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.models import NodeRun, Project, WorkflowRun
+from app.models import NodeRun, NodeRunStatus, Project, WorkflowRun
 from app.project_db import push_runtime_to_master
 from app.services.project_steps import start_step
 from app.services.run_sync import sync_run_for_project
