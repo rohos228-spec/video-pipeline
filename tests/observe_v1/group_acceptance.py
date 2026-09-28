@@ -196,6 +196,26 @@ async def run():
                     break
                 await asyncio.sleep(0.1)
             result.update({"execution_id":execution_id,"state":state})
+            if mode in {'actions','recovery-a','recovery-b'}:
+                # Do not manufacture a group boundary by stopping the runner
+                # immediately after HTML/error. Four normal five-second cycles.
+                before_posts = sum(fixtures.FixtureHandler.counts.values())
+                samples = []
+                for _ in range(4):
+                    await asyncio.sleep(5)
+                    live = (await client.get(base+'/run')).json()
+                    states = {n['node_key']:n['status'] for n in live['node_runs']}
+                    assert states.get('n_script') == 'pending', states
+                    assert sum(fixtures.FixtureHandler.counts.values()) == before_posts
+                    samples.append({'n_script':states['n_script'],'model_posts':before_posts})
+                result['boundary_live_cycles'] = samples
+                if mode != 'recovery-b':
+                    denied = await client.post(base+f'/observations/{execution_id}/actions/start',json={
+                        'node_key':'n_script','step_code':'script','rationale':'synthetic boundary scope denial',
+                        'idempotency_key':'boundary-outside-scope-0001'})
+                    assert denied.status_code == 409 and 'outside' in denied.text, denied.text
+                    assert sum(fixtures.FixtureHandler.counts.values()) == before_posts
+                    result['boundary_scope_denial'] = denied.json()
             if mode in {"unrepaired", "recovery-b"}:
                 assert state['nodes'][fixtures.NODES[0]]['status']=='failed',state
                 assert all(state['nodes'][key]['status']=='pending' for key in fixtures.NODES[1:]),state
