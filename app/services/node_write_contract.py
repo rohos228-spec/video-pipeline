@@ -102,6 +102,13 @@ def _keep_field(key: str, node_kind: str) -> bool:
     return True
 
 
+from app.services.observation import observe_check
+
+
+@observe_check("write_contract", lambda args, kw, result: {
+    "status": "filtered", "node_kind": kw.get("node_kind"),
+    "input_count": len(args[0] or []) if args else 0, "output_count": len(result),
+})
 def filter_ops_for_node(
     ops: list[dict[str, Any]] | None,
     *,
@@ -154,6 +161,10 @@ def _unique_uuids(values: Iterable[Any]) -> list[str]:
     return out
 
 
+@observe_check("frame_coverage_gate", lambda args, kw, result: {
+    "status": "passed" if result.ok else "failed", "matched": len(result.matched),
+    "missing": len(result.missing), "extra": len(result.extra),
+})
 def coverage_report(
     ops: list[dict[str, Any]] | None,
     expected_uuids: list[str] | None,

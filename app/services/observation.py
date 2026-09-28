@@ -131,6 +131,7 @@ class Observer:
         self._delivery_lock = asyncio.Lock()
         self._enable_lock = asyncio.Lock()
         self.failures: dict[str, str] = {}
+        self.commit_uncertainty: dict[str, str] = {}
 
     async def enable(self, *, project_id, workflow_run_id, node_keys, graph_version):
         if not node_keys or len(set(node_keys)) != len(node_keys):
@@ -200,7 +201,16 @@ class Observer:
             project_id=scope.project_id, workflow_run_id=scope.workflow_run_id, node_key=node_key,
             attempt_id=attempt_id, request_id=request_id, db_scope=db_scope,
             kind=kind, payload=redact(payload or {})))
+        session.info.setdefault("observation_pending", set()).add(scope.execution_id)
         return True
+
+    def pin(self, execution_id):
+        folder = self.body_root / str(uuid.UUID(execution_id))
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (folder / ".pinned").touch(mode=0o600, exist_ok=True)
+
+    def is_pinned(self, execution_id):
+        return (self.body_root / str(uuid.UUID(execution_id)) / ".pinned").is_file()
 
     def save_body(self, execution_id, value):
         # UUID is validated before any path construction; callers cannot escape body_root.
@@ -212,13 +222,11 @@ class Observer:
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(folder, 0o700)
         total = 0
-        now = time.time()
+        # No automatic deletion: diagnostic evidence, pinned and active scopes
+        # survive age and restart. Exhaustion is an explicit body_total_limit gap.
         for item in self.body_root.glob("*/*.json"):
             stat = item.stat()
-            if now - stat.st_mtime > self.RETENTION_SECONDS:
-                item.unlink()
-            else:
-                total += stat.st_size
+            total += stat.st_size
         sha = hashlib.sha256(raw).hexdigest()
         path = folder / (sha + ".json")
         if not path.exists():
@@ -306,9 +314,17 @@ class Observer:
                 self.mark_gap(scope.execution_id, exc)
 
     async def loop(self):
-        await self.reload()
+        loaded = False
         while True:
-            await self.catch_up()
+            try:
+                if not loaded:
+                    await self.reload()
+                    loaded = True
+                await self.catch_up()
+            except Exception as exc:
+                for scope in self.scopes.values():
+                    self.mark_gap(scope.execution_id, exc)
+                logger.warning("observer consumer unavailable: {}", type(exc).__name__)
             await asyncio.sleep(1)
 
 
@@ -430,6 +446,9 @@ def observe_apply(function):
             await record_fact("apply_error", {"error_type": type(exc).__name__})
             raise
         emit("data_applied", {"result": result, "transactional": True})
+        emit("runtime_check", {"check": "apply_ops_validation", "status": "passed",
+            "performed": True, "result": result, "initiator": "worker",
+            "business_commit_claim": False})
         return result
     return wrapped
 
@@ -488,11 +507,66 @@ def _stage_node_changes(session, _flush_context, _instances):
         ctx = _attempt.get()
         attempt_id = ctx.attempt_id if ctx and ctx.node_key == row.node_key and ctx.scope.execution_id == scope.execution_id else None
         try:
+            transitions = row.__dict__.pop("_observation_transitions", [])
             observer.stage(session, scope, "node_change", db_scope=source, node_key=row.node_key,
                 attempt_id=attempt_id, payload={"changes": changed, "transactional": True,
+                                              "transitions": transitions,
                                               "attempt_known": attempt_id is not None})
         except Exception as exc:
             observer.mark_gap(scope.execution_id, exc)
+
+
+@event.listens_for(Session, "after_commit")
+def _clear_committed_observation(session):
+    session.info.pop("observation_pending", None)
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _shared_commit_failure(session, previous_transaction):
+    pending = session.info.get("observation_pending", set())
+    if _observer is None or not pending or session.is_active:
+        return
+    error = getattr(session.get_transaction(), "_rollback_exception", None)
+    statement = str(getattr(error, "statement", ""))
+    for execution_id in pending:
+        _observer.commit_uncertainty[execution_id] = "business_commit_unconfirmed"
+        if "observation_outbox" in statement:
+            _observer.mark_gap(execution_id, error or RuntimeError())
+
+
+def observe_check(name, summarize):
+    """Wrap existing checks only; preserve return value and exception behavior."""
+    def decorate(function):
+        @functools.wraps(function)
+        def wrapped(*args, **kwargs):
+            if _attempt.get() is None:
+                return function(*args, **kwargs)
+            try:
+                result = function(*args, **kwargs)
+            except Exception as exc:
+                emit("runtime_check", {"check": name, "status": "failed", "performed": True,
+                    "error_type": type(exc).__name__, "initiator": "worker"})
+                raise
+            emit("runtime_check", {"check": name, "performed": True, "initiator": "worker",
+                                   **summarize(args, kwargs, result)})
+            return result
+        return wrapped
+    return decorate
+
+
+def panel_safe(value):
+    """Metadata projection; full input/output bodies remain local only."""
+    value = redact(value)
+    if isinstance(value, dict):
+        hidden = {"text", "raw", "response", "event", "accumulated_text", "ops",
+                  "characters", "scenes", "prompt", "instructions", "input", "messages"}
+        return {k: panel_safe(v) for k, v in value.items() if k not in hidden}
+    if isinstance(value, list):
+        return [panel_safe(v) for v in value]
+    if isinstance(value, str):
+        return re.sub(r"[A-Za-z]:[\\/][^\s\"']*|\\\\[^\s\"']+|/(?:srv|results|home|root|tmp|observe-source)/[^\s\"']*",
+                      "[local path]", value)
+    return value
 
 
 async def migrate_observation_schema(conn):

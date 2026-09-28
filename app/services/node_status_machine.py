@@ -130,6 +130,12 @@ def _apply_side_effects(
     error: str | None,
 ) -> None:
     now = datetime.utcnow()
+    nr.__dict__.setdefault("_observation_transitions", []).append({
+        "from": old.value, "to": new.value, "initiator": initiator,
+        "actor": "worker" if initiator == "worker" else (
+            "operator_route" if initiator in {"api_stop", "ui_reset", "api_reset", "ui_restart"} else "runtime"),
+        "human_identity": None,
+    })
     token = _status_machine_write.set(True)
     try:
         nr.status = new

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.models import NodeRun, Project, WorkflowRun
-from app.services.observation import ExecutionControl, ObservationEvent, digest, get_observer, redact
+from app.services.observation import ExecutionControl, ObservationEvent, digest, get_observer, redact, panel_safe
 
 router = APIRouter(prefix="/projects/{project_id}/observations", tags=["observations"])
 
@@ -18,9 +18,9 @@ class EnableObservation(BaseModel):
 
 
 def scope_json(scope):
-    return {key: getattr(scope, key) for key in (
+    return panel_safe({key: getattr(scope, key) for key in (
         "execution_id", "project_id", "workflow_run_id", "node_keys", "graph_version",
-        "mode", "observer_state", "created_at", "cursors", "gaps")}
+        "mode", "observer_state", "created_at", "cursors", "gaps")})
 
 
 async def _scope(session, project_id, execution_id):
@@ -75,11 +75,11 @@ async def history(project_id: int, execution_id: str, after: int = Query(0, ge=0
         rows = (await session.scalars(select(ObservationEvent).where(
             ObservationEvent.execution_id == execution_id, ObservationEvent.id > after,
         ).order_by(ObservationEvent.id).limit(limit + 1))).all()
-        return {"events": [{key: getattr(row, key) for key in (
+        return panel_safe({"events": [{key: getattr(row, key) for key in (
             "id", "event_id", "execution_id", "project_id", "workflow_run_id", "node_key",
             "attempt_id", "request_id", "db_scope", "kind", "payload", "created_at",
         )} for row in rows[:limit]], "has_more": len(rows) > limit,
-            "next_cursor": rows[min(len(rows), limit)-1].id if rows else after}
+            "next_cursor": rows[min(len(rows), limit)-1].id if rows else after})
 
 
 async def _business_snapshot(session, scope):
@@ -159,13 +159,15 @@ async def context(project_id: int, execution_id: str):
                              "body": row.payload.get("body")} for row in node_rows
                             if row.kind in {"model_end", "node_output", "artifact_created"}],
             "checks": [{"kind": row.kind, "request_id": row.request_id, "result": row.payload}
-                       for row in node_rows if row.kind in {"parse_result", "domain_check"}],
+                       for row in node_rows if row.kind in {"parse_result", "domain_check", "runtime_check"}],
             "retry_recorded": any(row.kind == "json_retry" for row in node_rows),
         }
     problem = next((row for row in rows if row.kind in {"node_error", "model_error", "apply_error"}
                     or (row.kind == "parse_result" and row.payload.get("payload_required")
                         and not row.payload.get("payload_present"))), None)
     result.update({"master": master, "project": replica, "node_contexts": node_contexts,
+        "pinned": observer.is_pinned(execution_id),
+        "commit_confirmation": observer.commit_uncertainty.get(execution_id),
         "disagreement": replica is not None and master != replica,
         "business_group_outcome": outcome,
         "current_nodes": [key for key, state in states.items() if state["status"] in {"running", "queued", "waiting_hitl"}],
@@ -178,4 +180,13 @@ async def context(project_id: int, execution_id: str):
                     "Formal node schema validation is not instrumented", "Queue/HITL/operator stop details are not instrumented"],
         "history_window_limited": len(rows) == 500,
     })
-    return result
+    return panel_safe(result)
+
+
+@router.post("/{execution_id}/pin")
+async def pin_observation(project_id: int, execution_id: str):
+    observer = get_observer()
+    async with observer.master() as session:
+        await _scope(session, project_id, execution_id)
+    observer.pin(execution_id)
+    return {"pinned": True}
