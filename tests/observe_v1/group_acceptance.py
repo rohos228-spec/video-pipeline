@@ -84,6 +84,10 @@ async def run():
                     node = meta.get("active_excel_gpt_node_key", "")
             assert node in fixtures.NODES[:-1], "Provider call outside selected text group"
             request.headers["x-diagnostic-node"] = node
+            if recovery_mode and recovery_transport['active']:
+                # Synthetic external transport latency only, allowing capture
+                # of a real running action for later offline browser checks.
+                await asyncio.sleep(3)
         return await original_send(client, request, **kwargs)
 
     httpx.AsyncClient.send = send  # External transport only; no worker/planner/DB replacements.
@@ -189,6 +193,15 @@ async def run():
                 result["recovery_replay"] = replay.json()
             deadline = time.monotonic() + 120
             while time.monotonic() < deadline:
+                if recovery_mode and not (ROOT/'running-phase').exists():
+                    phase = (await client.get(base+f'/observations/{execution_id}/actions')).json()
+                    if phase['recoveries'][0]['status'] == 'claimed':
+                        target=ROOT/'running-phase'/'free-run-data'
+                        shutil.copytree(DATA,target,ignore=shutil.ignore_patterns('*-wal','*-shm'))
+                        for db in DATA.rglob('*.db'):
+                            with sqlite3.connect(db) as src, sqlite3.connect(target/db.relative_to(DATA)) as dst:
+                                src.backup(dst)
+                        (ROOT/'running-phase'/'observed-actions.json').write_text(json.dumps(phase,default=str))
                 state = fixtures.snapshot()
                 if state["nodes"].get(fixtures.NODES[-1], {}).get("status") == "done":
                     break
