@@ -147,7 +147,7 @@ export interface LibraryConfigDTO {
   created_at: string;
 }
 
-async function http<T>(
+export async function http<T>(
   path: string,
   options: RequestInit = {},
   timeoutMs = 30_000,

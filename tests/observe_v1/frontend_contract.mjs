@@ -5,7 +5,7 @@ const require = createRequire('/dependencies/package.json');
 const ts = require('typescript');
 const file = '/observe-source/web/src/lib/observation-view.ts';
 const source = fs.readFileSync(file, 'utf8');
-const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText;
+const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 const { usageLabel, mergeEvents, eventLabel } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
 assert.equal(usageLabel(null), 'usage неизвестен');
 assert.equal(usageLabel({total_tokens: 0}), 'total_tokens: 0');
