@@ -92,6 +92,11 @@ class Rules(unittest.TestCase):
         result=derive_incidents(SCOPE,[event('model_error',uncertain=True,error_code='gpt_timeout')],{})
         self.assertEqual(result[0]['recommendation']['action'],'review_provider_response')
 
+    def test_actual_failed_verdict_is_gate_rejection_not_optional_json_error(self):
+        rows=[event('parse_result',node='check',payload_required=False,parsed=False),event('domain_check',node='check',verdict='fail')]
+        result=derive_incidents(SCOPE,rows,{})
+        self.assertEqual([i['type'] for i in result],['contract_rejected'])
+
     def test_saved_normal_and_malformed_full_history(self):
         summaries={}
         for mode in ('normal','malformed'):
