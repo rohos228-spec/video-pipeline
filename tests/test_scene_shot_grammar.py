@@ -177,3 +177,25 @@ def test_empty_vo_and_glue_fail() -> None:
     assert "склейка" in (
         shots_grammar_reason(shots, "Он вошёл в кабинет следователя, сел.") or ""
     )
+
+
+def test_vo_over_80_splits_by_meaning_not_counter() -> None:
+    chunk = (
+        "Самый страшный парадокс этой истории заключается в том, "
+        "что следствие искало его по своим же правилам."
+    )
+    assert len(chunk) > 80
+    shots = [
+        {
+            "id": "1-K1",
+            "действие": "идёт вдоль стеллажей архива",
+            "объект": "тело",
+            "план": "СРЕДНИЙ",
+            "линза_мм": 50,
+            "точка": "3/4",
+            "закадр": chunk,
+        }
+    ]
+    reason = shots_grammar_reason(shots, chunk) or ""
+    assert "по смыслу" in reason
+    assert "13" in reason or "80" in reason

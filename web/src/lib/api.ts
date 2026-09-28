@@ -1377,6 +1377,7 @@ export const api = {
       mode?: string;
       job?: { status?: string; total_ops?: number };
       improve_report?: MontageImproveReport;
+      image_ops?: MontagePendingOp[];
     }>(
       `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-improve`,
       { method: "POST", body: JSON.stringify(body) },

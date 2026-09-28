@@ -1,7 +1,7 @@
 """Грамматика сцены → кадры: действие целиком, камера из таблицы, не T0–T10.
 
 GPT пишет видимое действие сцены и объект шага. Код:
-режет закадр 13–80 (цель ~45), подставляет камеру, parent, место_новое.
+режет закадр по смыслу (фраза/клауза), затем доп. правило 13–80; камеру, parent, место_новое.
 Каталог T/X для монтажа не трогаем.
 """
 
@@ -234,6 +234,7 @@ def merge_same_place_scenes(action: str) -> str:
 
 
 def _split_vo_for_steps(vo: str, n: int) -> list[str]:
+    """Сначала смысл (фразы/клаузы), потом доп. склейка кусков короче 13."""
     from app.services.scene_design.camera_expand import split_text_into_parts
 
     text = " ".join((vo or "").split())
@@ -605,7 +606,8 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
     if len(shots) == 1 and visible_len(vo) > SHOT_VO_MAX:
         return (
             f"{prefix}один кадр на закадр {visible_len(vo)} симв. "
-            f"(больше {SHOT_VO_MAX} — нужен ещё шаг действия)"
+            f"(больше {SHOT_VO_MAX} — разрежь по смыслу на клаузы, "
+            f"доп. {SHOT_VO_MIN}–{SHOT_VO_MAX} на кадр)"
         )
     stems: set[str] = set()
     prev: dict[str, Any] | None = None
@@ -643,12 +645,12 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
         ):
             return (
                 f"{prefix}кадр закадр {n} симв. "
-                f"(нужно {SHOT_VO_MIN}–{SHOT_VO_MAX})"
+                f"(смысл куска цел, доп. {SHOT_VO_MIN}–{SHOT_VO_MAX})"
             )
-        if chunk and n > SHOT_VO_MAX:
+        if n > SHOT_VO_MAX:
             return (
                 f"{prefix}кадр закадр {n} симв. "
-                f"(нужно {SHOT_VO_MIN}–{SHOT_VO_MAX})"
+                f"(разрежь по смыслу на клаузы, доп. {SHOT_VO_MIN}–{SHOT_VO_MAX})"
             )
         stem = action_stem(step)
         if stem:

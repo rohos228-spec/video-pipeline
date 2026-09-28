@@ -282,7 +282,15 @@ async def test_execute_image_regen_api_skips_cdp(
 async def test_execute_video_regen_api_skips_cdp(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    start = tmp_path / "start.png"
+    start.write_bytes(b"png")
+    end = tmp_path / "end.png"
+    end.write_bytes(b"end")
+    captured: dict = {}
+
     async def _fake_gen(outsee, gpt, **kwargs):
+        captured["last_frame_image"] = kwargs.get("last_frame_image")
+        captured["start_frame"] = kwargs.get("start_frame")
         out = Path(kwargs["out_path"])
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"v" * 1000)
@@ -297,8 +305,6 @@ async def test_execute_video_regen_api_skips_cdp(
         "app.services.montage_board_regen.generate_video_with_retries", _fake_gen
     )
 
-    start = tmp_path / "start.png"
-    start.write_bytes(b"png")
     prep = VideoRegenPrep(
         project_id=1,
         frame_number=1,
@@ -306,9 +312,12 @@ async def test_execute_video_regen_api_skips_cdp(
         prompt_text="vid",
         file_path=tmp_path / "clip_001_x.mp4",
         start_frame=start,
+        end_frame=end,
     )
     out = await execute_video_regen(prep)
     assert out.is_file()
+    assert captured["start_frame"] == start
+    assert captured["last_frame_image"] == end
 
 
 @pytest.mark.asyncio

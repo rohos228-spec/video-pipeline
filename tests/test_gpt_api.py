@@ -576,6 +576,20 @@ async def test_chat_cf_continue_after_truncated_salvage(monkeypatch) -> None:
     assert looks_truncated_llm_text(res.text) is False
 
 
+def test_skip_cf_continue_when_salvage_has_complete_ops() -> None:
+    from app.services.gpt_api import skip_cf_continue_for_salvaged_ops
+
+    complete = (
+        '{"ops":['
+        '{"frame_uuid":"aaa","fields":{"место":"лес"}},'
+        '{"frame_uuid":"bbb","fields":{"место":"город"}},'
+        '{"frame_uuid":"ccc","fields":{"место":"обрез'
+    )
+    assert skip_cf_continue_for_salvaged_ops(complete, "apply_ops") is True
+    assert skip_cf_continue_for_salvaged_ops(complete, "tsv") is False
+    assert skip_cf_continue_for_salvaged_ops('{"ops":[{"a":1', "apply_ops") is False
+
+
 @pytest.mark.asyncio
 async def test_chat_keeps_salvage_when_cf_continue_empty(monkeypatch) -> None:
     """Цельный длинный ответ обрезан — continue пустой. Не терять salvage."""

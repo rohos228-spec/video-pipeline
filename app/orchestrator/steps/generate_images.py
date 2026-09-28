@@ -1476,7 +1476,11 @@ async def _all_frames_have_image_or_failed(
 
 
 def _skip_legacy_shot2(project: Project | None, frames: list[Frame]) -> bool:
-    """True — не генерить shot2: каждый кадр уже свой кусок закадра."""
+    """True — не генерить legacy shot2-колонку: каждый кадр уже свой кусок закадра.
+
+    Freeze СТАРТ/КОНЕЦ всё равно ставит в очередь конечный still (см.
+    ``_queue_freeze_end_stills``).
+    """
     from app.services.node_groups import canvas_has_script_frames_qc
     from app.services.vo_shot_expand import is_shot_child
 
@@ -1496,7 +1500,7 @@ async def _init_shot2_queue(
     from app.services.vo_shot_expand import is_shot_child
 
     if _skip_legacy_shot2(project, frames):
-        return 0
+        return await _queue_freeze_end_stills(session, frames, out_dir)
     by_num = read_shot2_columns(xlsx_path)
     queued = 0
     for fr in frames:
@@ -1529,6 +1533,36 @@ async def _init_shot2_queue(
             attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
             queued += 1
         fr.attrs = attrs
+    await session.flush()
+    return queued
+
+
+async def _queue_freeze_end_stills(
+    session: AsyncSession,
+    frames: list[Frame],
+    out_dir: Path,
+) -> int:
+    """При skip_legacy: конечный still раскладки СТАРТ/КОНЕЦ всё равно в очередь."""
+    from app.services.freeze_stills import frame_needs_end_still, seed_end_still_prompt
+
+    queued = 0
+    for fr in frames:
+        seed_end_still_prompt(fr)
+        if not frame_needs_end_still(fr):
+            continue
+        attrs = dict(fr.attrs or {})
+        if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
+            attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+        prompt = str(attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
+        if is_skippable_empty_prompt(prompt):
+            continue
+        if disk_has_shot2_image(out_dir, fr.number):
+            attrs[SHOT2_STATUS_ATTR] = "image_generated"
+            fr.attrs = attrs
+            continue
+        attrs[SHOT2_STATUS_ATTR] = "image_prompt_ready"
+        fr.attrs = attrs
+        queued += 1
     await session.flush()
     return queued
 

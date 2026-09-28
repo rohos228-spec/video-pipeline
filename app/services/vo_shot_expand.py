@@ -126,7 +126,7 @@ def compose_coverage_child_prompt(child: Any, parent: Any | None = None) -> str:
         head += f"{sep}РАКУРС {angle}"
     if not layout:
         return head
-    if layout.lower().startswith("сейчас в кадре"):
+    if layout.lower().startswith(("сейчас в кадре", "старт")):
         return f"{head} {layout}"
     return f"{head} {layout}"
 
@@ -1191,12 +1191,30 @@ def leftover_later_duplicate_vo_frames(
 
     Повторный expand копирует фразы на хвост (tkach #65 и #129). Карточку
     без картинки прячем. PNG второго прохода не трогаем: это другой still.
+    Шоты живой ячейки (parent_uuid → этот прогон) не прячем: иначе монтаж
+    оставляет у сцены один кадр.
     """
+    uuid_of = {
+        str(getattr(fr, "uuid", "") or ""): fr
+        for fr in frames
+        if str(getattr(fr, "uuid", "") or "")
+    }
     seen: set[str] = set()
     n = 0
     for fr in _ordered_pipeline_frames(frames):
         if is_coverage_leftover(fr):
             continue
+        if is_shot_child(fr):
+            parent_uid = str(_cs(fr).get("parent_uuid") or "").strip()
+            parent = uuid_of.get(parent_uid) if parent_uid else None
+            try:
+                parent_n = int(getattr(parent, "number", 0) or 0) if parent else 0
+                self_n = int(getattr(fr, "number", 0) or 0)
+            except (TypeError, ValueError):
+                parent_n, self_n = 0, 0
+            if parent is not None and parent_n and parent_n != self_n:
+                if not is_coverage_leftover(parent):
+                    continue
         key = _norm_vo_key(str(getattr(fr, "voiceover_text", "") or ""))
         if not key:
             continue

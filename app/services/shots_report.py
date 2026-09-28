@@ -176,6 +176,8 @@ def _collect_shots(frames: list[Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for fr in frames:
+        if is_shot_child(fr):
+            continue
         kadry = _kadry_list(fr)
         if len(kadry) > 1:
             sources = kadry
@@ -441,7 +443,8 @@ def _shot_tr(i: int, sh: dict[str, Any]) -> str:
         "<tr>"
         f"<td>{i}</td>"
         f"<td>{_esc(sh.get('plan') or '—')}</td>"
-        f"<td><b>{_esc(sh.get('id') or '—')}</b> — {_esc(sh.get('action') or '—')}</td>"
+        f"<td><div class=rel>{_esc(sh.get('rel') or '—')}</div>"
+        f"<b>{_esc(sh.get('id') or '—')}</b> — {_esc(sh.get('action') or '—')}</td>"
         f"<td>{_esc(sh.get('vo') or '—')}</td>"
         f"<td class=layout>{_esc(sh.get('layout') or '—')}</td>"
         f"<td><div class=vo-bit>картинка: {img}</div>"
@@ -553,6 +556,7 @@ th,td{{border:1px solid #ddd;vertical-align:top;padding:8px 10px;background:#fff
 th{{text-align:left;background:#f4f4f4}}
 th:first-child,td:first-child{{width:44px;text-align:center;color:#666;font-weight:650}}
 .vo-bit{{color:#666;margin-top:2px}}
+.rel{{color:#8a4b00;font-size:12px;font-weight:700;margin:0 0 4px}}
 .layout{{color:#333;font-size:13px;min-width:200px}}
 .plan{{background:#f7f7f5;padding:8px 12px;margin:8px 0 12px;border-radius:6px;overflow-x:auto}}
 .plan ul{{margin:6px 0 0;padding-left:18px}}

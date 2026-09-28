@@ -88,6 +88,7 @@ class VideoRegenPrep:
     prompt_text: str
     file_path: Path
     start_frame: Path
+    end_frame: Path | None = None
     prompt_id_prefix: str = ""
     aspect_slug: str = "9:16"
     video_model_slug: str | None = None
@@ -477,8 +478,13 @@ async def prepare_image_regen(
                 project, fr, prompt_text, refs, child=has_parent
             )
         elif shot == 2:
+            from app.services.montage_frame_refs import manual_ref_paths
+
             ref1 = find_shot1_image(scenes_dir, frame_number)
             refs = [ref1] if ref1 is not None else []
+            refs.extend(manual_ref_paths(project.data_dir, fr))
+            refs = refs[:_OUTSEE_MAX_REFS]
+            prompt_text = append_manual_ref_note(prompt_text, fr)
             if refs:
                 prompt_text, refs = _lock_montage_image_refs(
                     project, fr, prompt_text, refs, child=True
@@ -663,8 +669,12 @@ async def prepare_video_regen(
 
     if shot == 2:
         start_frame = find_shot2_image(scenes_dir, frame_number)
+        end_frame = None
     else:
         start_frame = find_shot1_image(scenes_dir, frame_number)
+        from app.services.freeze_stills import video_end_still
+
+        end_frame = video_end_still(scenes_dir, frame_number, 1)
     if start_frame is None:
         raise RuntimeError(f"нет стартового кадра для видео shot {shot} (папка scenes/)")
 
@@ -687,6 +697,7 @@ async def prepare_video_regen(
         prompt_text=prompt_text,
         file_path=file_path,
         start_frame=start_frame,
+        end_frame=end_frame,
         prompt_id_prefix=prompt_id_prefix,
         aspect_slug=ar.outsee_slug if ar else "9:16",
         video_model_slug=vg.outsee_slug if vg else None,
@@ -734,6 +745,7 @@ async def execute_video_regen(prep: VideoRegenPrep) -> Path:
             gpt_rewrite=True,
             project_id=prep.project_id,
             start_frame=prep.start_frame,
+            last_frame_image=prep.end_frame,
             aspect_ratio=prep.aspect_slug,
             timeout=1200,
             model_slug=prep.video_model_slug,

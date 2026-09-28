@@ -535,6 +535,8 @@ def build_scene_image_ops(
         return []
     beats = split_scene_action_beats(chain)
     ops: list[dict[str, Any]] = []
+    from app.services.freeze_stills import frame_needs_end_still
+
     for i, fr in enumerate(visible):
         beat = ""
         if i < len(beats):
@@ -557,6 +559,63 @@ def build_scene_image_ops(
                 ),
             }
         )
+        if frame_needs_end_still(fr):
+            ops.append(
+                {
+                    "type": "image_ai_change",
+                    "frame_number": int(fr.number),
+                    "shot": 2,
+                    "instruction": (
+                        scene_image_instruction(
+                            beat=beat,
+                            passport=passport,
+                            shot=shot,
+                            master=False,
+                        )
+                        + " Конечный кадр сцены — состояние КОНЕЦ раскладки."
+                    ),
+                }
+            )
+    return ops
+
+
+def scene_then_frame_image_ops(
+    parent: Any,
+    members: list[Any],
+    *,
+    operator_prompt: str = "",
+    passport: dict[str, Any] | None = None,
+    chain: str = "",
+    kadry: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Сначала still сцены (промт + рефы), затем кадры: старт, при freeze — конец."""
+    from app.services.montage_frame_refs import append_manual_ref_note
+
+    shot0 = kadry[0] if kadry else None
+    instr = (operator_prompt or "").strip() or scene_image_instruction(
+        beat=chain,
+        passport=passport,
+        shot=shot0,
+        master=True,
+    )
+    instr = append_manual_ref_note(instr, parent)
+    ops: list[dict[str, Any]] = [
+        {
+            "type": "image_ai_change",
+            "frame_number": int(parent.number),
+            "shot": 1,
+            "slot": "parent",
+            "instruction": instr,
+        }
+    ]
+    ops.extend(
+        build_scene_image_ops(
+            members,
+            passport=passport,
+            chain=chain,
+            kadry=kadry,
+        )
+    )
     return ops
 
 
@@ -668,8 +727,26 @@ async def generate_cell_scene_with_images(
         )
     if frame is None:
         raise RuntimeError(f"кадр {frame_id} не найден после generate")
-    result["image_ops"] = []
-    result["images"] = 0
+    from app.services.montage_coverage_ops import _visible_cell_members
+
+    parent, members = scene_group(frames, frame)
+    visible = _visible_cell_members(parent, members)
+    kadry = None
+    report = result.get("report")
+    if isinstance(report, dict):
+        raw_kadry = report.get("kadry") or report.get("shots")
+        if isinstance(raw_kadry, list):
+            kadry = [s for s in raw_kadry if isinstance(s, dict)]
+    if not result.get("image_ops"):
+        result["image_ops"] = scene_then_frame_image_ops(
+            parent,
+            visible,
+            operator_prompt=operator_prompt,
+            passport=passport,
+            chain=str(result.get("chain") or ""),
+            kadry=kadry,
+        )
+    result["images"] = len(result.get("image_ops") or [])
     result["mode"] = mode
     if gen_error and "generate_error" not in result:
         result["generate_error"] = gen_error

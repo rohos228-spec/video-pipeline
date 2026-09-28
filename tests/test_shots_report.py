@@ -310,7 +310,7 @@ def test_report_shows_scene_card_with_action_and_vo() -> None:
     assert "Закадр." in html
     assert "Самые странные преступления в истории" in html
     assert 'id="scene-1"' in html
-    assert "родительский" not in html
+    assert "родительский" in html
 
 
 def test_report_scene_action_ignores_child_shot_main_action() -> None:
@@ -345,6 +345,8 @@ def test_report_scene_action_ignores_child_shot_main_action() -> None:
     )
     assert "вошёл → сел к столу → открыл папку" in html
     assert "папка уже лежит на столе" not in html.split("Кадры")[0]
+    assert "родительский" in html
+    assert "дочерний" in html
 
 
 def test_plan_section_legend_and_skips_shot_child() -> None:

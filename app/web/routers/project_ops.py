@@ -1035,7 +1035,7 @@ async def montage_board_scene_generate_with_images(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """GPT-сцены ячейки. Картинки отсюда не запускаются."""
+    """GPT-сцены ячейки. Картинки ставит очередь: сцена → кадры."""
     from app.services.montage_action_gpt import generate_cell_scene_with_images
 
     p = _project_or_404(await session.get(Project, project_id))
@@ -1070,8 +1070,7 @@ async def montage_board_scene_generate_with_images(
             status_code=502, detail=f"GPT не ответил: {type(e).__name__}: {e}"
         ) from e
 
-    result.pop("image_ops", None)
-    result.pop("images", None)
+    image_ops = result.get("image_ops") or []
     await session.commit()
     await publish_project_event(
         project_id,
@@ -1080,17 +1079,22 @@ async def montage_board_scene_generate_with_images(
             "montage_scene_action_generate": True,
             "refresh_board": True,
             "frame_id": frame_id,
-            "with_images": False,
+            "with_images": bool(image_ops),
         },
     )
     return {
         "ok": True,
         **{k: v for k, v in result.items() if k != "report"},
         "report": result.get("report"),
+        "image_ops": image_ops,
         "started": False,
         "already_running": False,
-        "images": 0,
-        "message": "сцены записаны",
+        "images": len(image_ops),
+        "message": (
+            "сцены записаны · очередь: сцена → кадры"
+            if image_ops
+            else "сцены записаны"
+        ),
     }
 
 
@@ -1101,7 +1105,7 @@ async def montage_board_scene_improve(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """fw_action → fw_shots → fw_qc на одну ячейку. Без PNG."""
+    """fw_action → fw_shots → fw_qc на одну ячейку, затем очередь картинок: сцена → кадры."""
     payload = dict(body or {})
     payload["mode"] = "improve"
     return await montage_board_scene_generate_with_images(

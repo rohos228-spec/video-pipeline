@@ -1225,6 +1225,9 @@ async def apply_coverage_scene_action(
     for i, member in enumerate(group[:used]):
         shot = kadry[i]
         _apply_shot_meta(member, shot)
+        from app.services.freeze_stills import seed_end_still_prompt
+
+        seed_end_still_prompt(member)
         piece = " ".join(str(shot.get("закадр") or "").split())
         if piece:
             member.voiceover_text = piece

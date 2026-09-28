@@ -148,11 +148,13 @@ def split_frames(frames: list[Any], size: int) -> list[list[Any]]:
         size = 1
     if not frames:
         return []
-    # Если первый кадр супер-жирный (сценарий / биты > 5000 символов) — выделяем его в соло-пачку
+    # Соло только если закадр первого кадра > 5000. attrs/кадры/площадка
+    # в len(str(frame)) не считаем — иначе любая жирная карточка становится
+    # 1-cell GPT-пачкой и модель сваливает весь фильм на один uuid.
     first_fr = frames[0]
     first_heavy = False
     if isinstance(first_fr, dict):
-        first_len = len(str(first_fr.get("voiceover_text") or first_fr.get("закадр") or "")) + len(str(first_fr))
+        first_len = _frame_vo_chars(first_fr)
         if first_len >= 5000:
             first_heavy = True
     if first_heavy:
@@ -162,6 +164,11 @@ def split_frames(frames: list[Any], size: int) -> list[list[Any]]:
             packs.extend([rest[i : i + size] for i in range(0, len(rest), size)])
         return packs
     return [frames[i : i + size] for i in range(0, len(frames), size)]
+
+
+def _frame_vo_chars(frame: dict[str, Any]) -> int:
+    """Длина закадра, без attrs/кадры/площадка."""
+    return len(str(frame.get("voiceover_text") or frame.get("закадр") or ""))
 
 
 def _vo_unit_key(frame: dict[str, Any]) -> str:
@@ -202,13 +209,10 @@ def split_vo_units(
     if not units:
         return [list(frames)]
     packs: list[list[dict[str, Any]]] = []
-    # Если первый юнит супер-жирный (> 5000 символов) — выделяем в отдельную соло-пачку
+    # Соло только по сумме закадра юнита, не по len(str(frame)).
     start_idx = 0
     first_unit = units[0]
-    first_len = sum(
-        len(str(f.get("voiceover_text") or f.get("закадр") or "")) + len(str(f))
-        for f in first_unit
-    )
+    first_len = sum(_frame_vo_chars(f) for f in first_unit)
     if first_len >= 5000:
         packs.append(first_unit)
         start_idx = 1
@@ -1151,7 +1155,7 @@ def shots_coverage_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Кадры = шаги действия сцены: камера из таблицы, закадр 13–80, без повторов."""
+    """Кадры = шаги, что иллюстрируют смысл закадра; доп. 13–80; без повторов."""
     apply_grammar_to_ops(ops, frames)
     by_uid = _frames_by_uuid(frames)
     for op in ops or []:
@@ -1246,11 +1250,15 @@ def _batch_footer(
             f"{SCRIPT_FRAMES_QC_PARALLEL_BATCHES} параллельно)\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.кадры. "
-            "Один кадр = один видимый шаг действия сцены. "
+            "Один кадр = картина к смыслу своего куска закадра. "
             "Поле объект: место|тело|двое|предмет|лицо|взгляд. "
             "Камеру (план, линза_мм, ракурс, движение) можно не писать — "
-            "код подставит из таблицы. Закадр кадра 13–80 символов, цель ~45. "
-            "Склейка закадр = весь voiceover_text. Без повтора действия. "
+            "код подставит из таблицы. Сначала режь закадр по смыслу "
+            "(мысль/клауза); дополнительно 13–80 символов, цель ~45: "
+            "короче — склей с соседней мыслью, длиннее — разрежь по смыслу, "
+            "не посреди фразы. Склейка закадр = весь voiceover_text. "
+            "СТАРТ/КОНЕЦ только если точность жеста обязательна "
+            "(открыл/положил/достал улику); иначе одно действие-процесс. "
             "По площадке ячейки: зона, камера {где, смотрит}, люди "
             "{кто, где, лицом, движется}, меняет {предмет, состояние} — "
             "лево/право и раскладку посчитает код. "
@@ -1262,7 +1270,9 @@ def _batch_footer(
             f"(QC полей кадров, пачка {batch_i})\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Чини только нарушителей: fields.кадры. "
-            "Проверь склейку закадра, 13–80, уникальность действия, "
+            "Проверь: картина кадра = смысл его закадра; склейка = весь текст; "
+            "доп. 13–80 на кусок (режь по клаузе, не по счётчику); "
+            "нет микрожестов без закадра; СТАРТ/КОНЕЦ только у точных жестов; "
             "объект enum, parent_id на одном месте, зоны из площадки, "
             "одну сторону оси у двоих, направление бега по экрану. "
             "Не пиши промт_картинки и промт_видео. Пустые ops = ок, если всё чисто. "

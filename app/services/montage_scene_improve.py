@@ -39,8 +39,10 @@ from app.services.montage_scene_editor import (
 )
 from app.services.prompt_library import resolve_script_frames_qc_prompt_path
 from app.services.scene_plan import (
+    angles_under_30,
     apply_scene_plan,
     apply_scene_plan_cells,
+    next_named_angle_30,
     plan_fix_notes,
     plan_hard_reasons,
     with_plan_notes,
@@ -194,8 +196,10 @@ def smooth_plan_sequence(shots: list[dict[str, Any]]) -> list[str]:
         shot["план"] = "СРЕДНИЙ"
         if is_threshold_step(_norm(prev.get("действие"))):
             shot["стык"] = "cut_on_action"
-        if shot.get("план") == prev.get("план") and shot.get("ракурс") == prev.get("ракурс"):
-            shot["ракурс"] = "3/4" if shot.get("ракурс") != "3/4" else "фронт"
+        if shot.get("ракурс") == prev.get("ракурс"):
+            shot["ракурс"] = next_named_angle_30(
+                shot.get("ракурс") or prev.get("ракурс"), shot.get("объект")
+            )
         fixed.append(f"кадр {shot.get('порядок') or i + 1}: {reason} → СРЕДНИЙ")
     return fixed
 
@@ -265,16 +269,19 @@ SHOT_ACTION_BODY_RULES = """Каждое действие — полный ка�
 В действии этого кадра обязательно:
 • место: где стоим именно в этом кадре;
 • окружение: что вокруг — стены, дверь, предметы, фон этого кадра;
+  положение каждого предмета, который должен быть в кадре;
 • мизансцена: кто слева, кто справа, кто в центре, лицом или спиной;
 • субъект: кто совершает действие (код и имя из реестра) и что делает телом;
-• старт: где субъект в начале кадра и что уже открыто/закрыто — ровно то,
-  чем закончился прошлый кадр.
-«Слева/справа» — как видно с точки этого кадра. Кадр снят с другой стороны
-(изнутри дома, навстречу) — лево и право меняются местами, в кадре видно то,
-что раньше было за спиной зрителя.
+• старт: первый кадр ДО начала жеста (не середина движения) — поза, где
+  стоит каждый человек и каждый предмет; это же конец прошлого кадра;
+• конец: последний кадр жеста — куда пришло действие.
+Не описывай середину жеста. «Слева/справа» — как видно с точки этого кадра.
+Кадр снят с другой стороны (изнутри дома, навстречу) — лево и право
+меняются местами, в кадре видно то, что раньше было за спиной зрителя.
 Нельзя писать «идёт», «хватает», «стоит» без места, раскладки и исполнителя.
 Общей карточки ячейки нет — место и окружение только внутри действия кадра.
-Камера, план, ракурс — отдельные поля, не в тексте действия."""
+Камера, план, ракурс — отдельные поля, не в тексте действия.
+Смена плана обязана сменить угол камеры ≥30° (правило 30°)."""
 
 
 SCENE_PHYSICS_RULES = """Физика действия (важнее краткости):
@@ -327,9 +334,11 @@ IMPROVE_SHOTS_RULES = """# Агент: сцены → кадры
    (`dissolve`/`fade`) или это финал сцены.
 3. Кадр после двери/порога — СРЕДНИЙ изнутри, навстречу входящему,
    стык `cut_on_action`. Не ОБЩИЙ.
-4. Идёт/бежит два кадра подряд — другой план или ракурс, `следование`;
+4. Смена плана обязана сменить угол ≥30° (правило 30°). Идёт/бежит два
+   кадра подряд — другой план **и** другой ракурс, `следование`;
    герой уже дальше по пути.
 5. Двое или герой и цель взгляда — камера с одной стороны от линии между ними.
+У каждого кадра поля `старт` (кадр до жеста) и `конец` (кадр после жеста).
 """
 
 
@@ -1296,7 +1305,7 @@ def coverage_is_flat(shots: list[dict[str, Any]]) -> bool:
     return len(plans) < 2
 
 
-_ANGLE_LADDER = ("3/4", "с плеча", "фронт", "сверху")
+_ANGLE_30_LADDER = ("3/4", "фронт", "сверху", "снизу")
 
 
 def diversify_shot_coverage(shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1320,11 +1329,13 @@ def diversify_shot_coverage(shots: list[dict[str, Any]]) -> list[dict[str, Any]]
                 plan, angle, move = "КРУПНЫЙ", "с плеча", "статика"
         else:
             plan = "СРЕДНИЙ"
-            angle = _ANGLE_LADDER[i % len(_ANGLE_LADDER)]
+            angle = _ANGLE_30_LADDER[i % len(_ANGLE_30_LADDER)]
             move = "статика"
         prev = shots[i - 1] if i else None
-        if prev and _norm(prev.get("план")) == plan and _norm(prev.get("ракурс")) == angle:
-            angle = _ANGLE_LADDER[(i + 1) % len(_ANGLE_LADDER)]
+        prev_ang = _norm(prev.get("ракурс")) if prev else ""
+        too_close = {prev_ang, _norm(angle)} == {"3/4", "с плеча"}
+        if prev and (prev_ang == _norm(angle) or too_close):
+            angle = next_named_angle_30(prev.get("ракурс"), obj)
         shot["план"] = plan
         shot["ракурс"] = angle
         shot["движение"] = move
@@ -1365,10 +1376,14 @@ def build_improve_shots_prompt(
         "Главное_действие этой ячейки → кадры. Один шаг `→` = один кадр, "
         "порядок тот же. Новых кадров не добавляй.\n"
         "Для каждого кадра заполни покрытие: `роль`, `план`, `ракурс`, "
-        "`движение`, `стык` — только из списков "
+        "`движение`, `стык`, `старт`, `конец` — план/ракурс/движение/стык "
+        "только из списков "
         f"(роли: {', '.join(SHOT_ROLES)}; план: {', '.join(COVERAGE_PLAN_CHOICES)}; "
         f"ракурс: {', '.join(COVERAGE_ANGLE_CHOICES)}; "
         f"движение: {', '.join(COVERAGE_MOVE_CHOICES)}).\n"
+        "Смена плана обязана сменить угол камеры ≥30°. "
+        "`старт` — первый кадр до жеста, `конец` — последний кадр жеста; "
+        "середину не описывай. Положение каждого предмета в кадре — в действии.\n"
         "`роль` — метка покрытия, не повод выдумать кадр.\n"
         "Якорей, паспорта и закадра как сюжета нет — не добавляй."
     )
@@ -1524,6 +1539,29 @@ def _trim_to_cap(shots: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
     return out[:cap] if len(out) > cap else out
 
 
+def _ensure_coverage_angle_30(
+    shot: dict[str, Any], prev: dict[str, Any] | None
+) -> str | None:
+    """Смена плана или тот же объект — ракурс не тот же (правило 30°)."""
+    if prev is None:
+        return None
+    if shot.get("ракурс") != prev.get("ракурс") and not angles_under_30(
+        prev.get("ракурс"), shot.get("ракурс")
+    ):
+        return None
+    plan_changed = shot.get("план") != prev.get("план")
+    same_obj = shot.get("объект") == prev.get("объект")
+    if not plan_changed and not same_obj:
+        return None
+    alt = next_named_angle_30(
+        shot.get("ракурс") or prev.get("ракурс"), shot.get("объект")
+    )
+    if alt == shot.get("ракурс"):
+        alt = next_named_angle_30(alt, shot.get("объект"))
+    shot["ракурс"] = alt
+    return f"30°: кадр {shot.get('порядок')} ракурс → {alt}"
+
+
 def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> list[str]:
     """Детерминированные правки fw_qc по якорям. Возвращает, что починено."""
     fixed: list[str] = []
@@ -1555,14 +1593,15 @@ def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> li
     fixed.extend(smooth_plan_sequence(shots))
     prev: dict[str, Any] | None = None
     for shot in shots:
-        if prev is not None and shot.get("объект") == prev.get("объект"):
-            if shot.get("план") == prev.get("план") and shot.get("ракурс") == prev.get("ракурс"):
-                alt = "3/4" if shot.get("ракурс") != "3/4" else "фронт"
-                shot["ракурс"] = alt
-                fixed.append(f"30°: кадр {shot.get('порядок')} ракурс → {alt}")
+        note = _ensure_coverage_angle_30(shot, prev)
+        if note:
+            fixed.append(note)
         if shot.get("объект") == "предмет" and shot.get("ракурс") == "с плеча":
             shot["ракурс"] = "сверху"
             fixed.append(f"кадр {shot.get('порядок')}: предмет не с плеча → сверху")
+            extra = _ensure_coverage_angle_30(shot, prev)
+            if extra:
+                fixed.append(extra)
         prev = shot
     for i, shot in enumerate(shots, start=1):
         shot["порядок"] = i
@@ -1624,12 +1663,14 @@ def qc_reasons(
             wide = wide_return_reason(shot, prev)
             if wide:
                 hard.append(f"кадр {n}: {wide}")
-            if (
-                shot.get("объект") == prev.get("объект")
-                and shot.get("план") == prev.get("план")
-                and shot.get("ракурс") == prev.get("ракурс")
+            if angles_under_30(prev.get("ракурс"), shot.get("ракурс")) and (
+                shot.get("план") != prev.get("план")
+                or shot.get("объект") == prev.get("объект")
             ):
-                hard.append(f"кадр {n}: план и ракурс как у предыдущего (30°)")
+                hard.append(
+                    f"кадр {n}: ракурс как у предыдущего (30°); "
+                    "при смене плана угол тоже ≥30°"
+                )
         prev = shot
     return hard, soft
 
@@ -1862,6 +1903,7 @@ async def improve_cell_scene(
     from app.services.gpt_client import gpt_ask_fresh
     from app.services.montage_action_gpt import apply_cell_passport
     from app.services.montage_coverage_ops import _visible_cell_members
+    from app.services.montage_frame_refs import manual_ref_prompt_note
     from app.services.montage_scene_direct import build_kadry, pick_scene_characters
     from app.services.montage_scene_editor import cell_full_text, scene_group
     from app.services.scene_character_match import (
@@ -1882,6 +1924,9 @@ async def improve_cell_scene(
     if not vo:
         raise RuntimeError("у сцены нет закадрового текста")
     op_prompt = _norm(operator_prompt)
+    ref_note = manual_ref_prompt_note(parent)
+    if ref_note:
+        op_prompt = f"{op_prompt}\n{ref_note}".strip() if op_prompt else ref_note
     entities = await load_character_registry(session, int(project.id))
     haystack = f"{op_prompt}\n{vo}"
     matched = match_registry_characters(haystack, entities)
@@ -2044,6 +2089,16 @@ async def improve_cell_scene(
         len(shots),
         apply_report.get("inserted_frames"),
     )
+    from app.services.montage_action_gpt import scene_then_frame_image_ops
+
+    image_ops = scene_then_frame_image_ops(
+        parent,
+        visible,
+        operator_prompt=op_prompt,
+        passport={},
+        chain=chain_text,
+        kadry=shots,
+    )
     return {
         "ok": True,
         "mode": "improve",
@@ -2058,6 +2113,6 @@ async def improve_cell_scene(
         "frame_numbers": [int(m.number) for m in visible],
         "report": apply_report,
         "improve_report": report,
-        "image_ops": [],
-        "images": 0,
+        "image_ops": image_ops,
+        "images": len(image_ops),
     }

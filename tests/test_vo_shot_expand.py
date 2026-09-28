@@ -293,6 +293,8 @@ def test_group_prompts_for_four_node_markup_exist() -> None:
     shots = _load_script_frames_qc_prompt("scenes_to_frames_ru")
     assert "главное_действие" in action
     assert "видимый шаг" in shots or "объект" in shots
+    assert "Правило 30°" in shots
+    assert "`старт`" in shots and "`конец`" in shots
 
 
 def test_kadry_from_bits_covers_full_vo() -> None:

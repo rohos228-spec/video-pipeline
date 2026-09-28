@@ -241,6 +241,31 @@ def test_leftover_later_duplicate_vo_hides_copy_without_png(tmp_path: Path) -> N
     assert not is_coverage_leftover(copy_png)
 
 
+def test_leftover_later_keeps_live_cell_children() -> None:
+    """Одинаковый закадр у шотов одной ячейки — не leftover и не отрыв от родителя."""
+    from app.services.vo_shot_expand import leftover_later_duplicate_vo_frames
+
+    pu = "p" * 24
+    vo = "следователь открывает папку"
+    parent = _fr(1, uuid=pu, role="vo_parent", shot_id="1-S1-K1", vo=vo, shot_index=1)
+    kid = _fr(
+        2,
+        uuid="c" * 24,
+        role="shot",
+        shot_id="1-S1-K2",
+        parent_uuid=pu,
+        coverage_kind="child",
+        vo=vo,
+        shot_index=2,
+    )
+    n = leftover_later_duplicate_vo_frames([parent, kid], None)
+    assert n == 0
+    assert not is_coverage_leftover(parent)
+    assert not is_coverage_leftover(kid)
+    assert kid.attrs["camera_subdivide"]["parent_uuid"] == pu
+    assert is_shot_child(kid)
+
+
 def test_apply_ordered_voiceover_to_stills(tmp_path: Path) -> None:
     from app.services.vo_shot_expand import apply_ordered_voiceover_to_stills
 

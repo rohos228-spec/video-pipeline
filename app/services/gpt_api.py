@@ -1686,6 +1686,43 @@ def looks_truncated_llm_text(text: str) -> bool:
     return t.endswith((",", ":", "\\"))
 
 
+def skip_cf_continue_for_salvaged_ops(
+    text: str, xlsx_write_contract: str | None
+) -> bool:
+    """После timeout уже есть целые apply-ops — не жечь ещё 300с на continue."""
+    if xlsx_write_contract != "apply_ops":
+        return False
+    from app.services.db_apply import (
+        extract_apply_ops_json,
+        salvage_ops_from_partial_json,
+    )
+
+    salvaged = extract_apply_ops_json(text or "")
+    if isinstance(salvaged, dict):
+        ops = salvaged.get("ops") or []
+        real_ops = [
+            o
+            for o in ops
+            if isinstance(o, dict) and (o.get("frame_uuid") or o.get("target"))
+        ]
+        if real_ops or salvaged.get("characters") or salvaged.get("scenes"):
+            logger.info(
+                "gpt_api.chat truncated JSON closed locally chars={} ops={} — skip continue",
+                len(text or ""),
+                len(real_ops),
+            )
+            return True
+    partial = salvage_ops_from_partial_json(text or "")
+    if partial:
+        logger.info(
+            "gpt_api.chat truncated JSON salvaged ops={} chars={} — skip continue",
+            len(partial),
+            len(text or ""),
+        )
+        return True
+    return False
+
+
 def stitch_llm_continuation(base: str, cont: str) -> str:
     """Склеить base + continuation; убрать повтор хвоста, если модель пересказала."""
     a = base or ""
@@ -2758,22 +2795,10 @@ async def chat(
                 # незакрыт — добираем хвост коротким continue (без тяжёлых файлов).
                 cont_round = 0
                 while cont_round < 2 and looks_truncated_llm_text(result.text):
-                    if xlsx_write_contract == "apply_ops":
-                        from app.services.db_apply import extract_apply_ops_json
-
-                        salvaged = extract_apply_ops_json(result.text or "")
-                        if isinstance(salvaged, dict) and (
-                            salvaged.get("ops")
-                            or salvaged.get("characters")
-                            or salvaged.get("scenes")
-                        ):
-                            logger.info(
-                                "gpt_api.chat truncated JSON closed locally "
-                                "chars={} ops={} — skip continue",
-                                len(result.text or ""),
-                                len(salvaged.get("ops") or []),
-                            )
-                            break
+                    if skip_cf_continue_for_salvaged_ops(
+                        result.text, xlsx_write_contract
+                    ):
+                        break
                     cont_round += 1
                     tail = (result.text or "")[-4000:]
                     cont_prompt = (
@@ -2878,22 +2903,10 @@ async def chat(
                 )
                 cont_round = 0
                 while cont_round < 2 and looks_truncated_llm_text(result.text):
-                    if xlsx_write_contract == "apply_ops":
-                        from app.services.db_apply import extract_apply_ops_json
-
-                        salvaged = extract_apply_ops_json(result.text or "")
-                        if isinstance(salvaged, dict) and (
-                            salvaged.get("ops")
-                            or salvaged.get("characters")
-                            or salvaged.get("scenes")
-                        ):
-                            logger.info(
-                                "gpt_api.chat truncated JSON closed locally "
-                                "chars={} ops={} — skip continue",
-                                len(result.text or ""),
-                                len(salvaged.get("ops") or []),
-                            )
-                            break
+                    if skip_cf_continue_for_salvaged_ops(
+                        result.text, xlsx_write_contract
+                    ):
+                        break
                     cont_round += 1
                     tail = (result.text or "")[-4000:]
                     cont_prompt = (

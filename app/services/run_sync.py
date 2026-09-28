@@ -1544,26 +1544,25 @@ def _node_already_succeeded_for_project(project: Project, nr: NodeRun) -> bool:
     return False
 
 
-async def _reconcile_stale_node_runs(
+async def _reconcile_stale_in_session(
+    session: AsyncSession,
     *,
     initiator: str,
-    require_no_live_task: bool = False,
-    grace_sec: float = _STALE_GRACE_SEC,
-) -> int:
-    """NodeRun running/queued без живого воркера → failed (или heal → done)."""
+    require_no_live_task: bool,
+    now: datetime,
+    grace: timedelta,
+) -> tuple[int, int]:
+    """Один SQLite: state.db или изолированный project.db."""
     from app.services.step_cancel import is_generation_active
 
     fixed = 0
     healed = 0
-    now = datetime.utcnow()
-    grace = timedelta(seconds=grace_sec)
-    async with session_scope() as session:
-        runs = (
-            await session.execute(
-                select(WorkflowRun).options(selectinload(WorkflowRun.node_runs))
-            )
-        ).scalars().all()
-        for run in runs:
+    runs = (
+        await session.execute(
+            select(WorkflowRun).options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalars().all()
+    for run in runs:
             if run.project_id is None:
                 continue
             project = await session.get(Project, run.project_id)
@@ -1754,13 +1753,109 @@ async def _reconcile_stale_node_runs(
                         old.value,
                         initiator,
                     )
+    return fixed, healed
+
+
+async def _reconcile_isolated_project_dbs(
+    pids: list[int],
+    *,
+    initiator: str,
+    require_no_live_task: bool,
+    now: datetime,
+    grace: timedelta,
+) -> int:
+    """UI читает project.db; reconcile по state.db его не видит."""
+    from pathlib import Path
+
+    from app.project_db import (
+        get_project_data_dir,
+        project_session_scope,
+        push_runtime_to_master,
+        resolve_project_db_path,
+    )
+    from app.settings import settings
+
+    extra = 0
+    try:
+        master = Path(settings.sqlite_path).resolve()
+    except Exception:  # noqa: BLE001
+        master = None
+    for pid in pids:
+        try:
+            data_dir = await get_project_data_dir(pid)
+            if data_dir is None:
+                continue
+            db_path = resolve_project_db_path(data_dir)
+            if not db_path.is_file():
+                continue
+            if master is not None and db_path.resolve() == master:
+                continue
+            async with project_session_scope(data_dir) as ps:
+                fixed, healed = await _reconcile_stale_in_session(
+                    ps,
+                    initiator=initiator,
+                    require_no_live_task=require_no_live_task,
+                    now=now,
+                    grace=grace,
+                )
+                if fixed or healed:
+                    extra += fixed + healed
+                    pp = await ps.get(Project, pid)
+                    if pp is not None:
+                        await push_runtime_to_master(ps, pp)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "reconcile isolated #{} failed ({})",
+                pid,
+                initiator,
+                exc_info=True,
+            )
+    return extra
+
+
+async def _reconcile_stale_node_runs(
+    *,
+    initiator: str,
+    require_no_live_task: bool = False,
+    grace_sec: float = _STALE_GRACE_SEC,
+) -> int:
+    """NodeRun running/queued без живого воркера → failed (или heal → done)."""
+    now = datetime.utcnow()
+    grace = timedelta(seconds=grace_sec)
+    async with session_scope() as session:
+        fixed, healed = await _reconcile_stale_in_session(
+            session,
+            initiator=initiator,
+            require_no_live_task=require_no_live_task,
+            now=now,
+            grace=grace,
+        )
         if fixed or healed:
             await session.commit()
+        pids = [
+            int(i)
+            for i in (await session.execute(select(Project.id))).scalars().all()
+        ]
+    isolated = 0
+    try:
+        isolated = await _reconcile_isolated_project_dbs(
+            pids,
+            initiator=initiator,
+            require_no_live_task=require_no_live_task,
+            now=now,
+            grace=grace,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("reconcile isolated project.db failed ({})", initiator)
     if fixed:
         logger.info("reconcile stale NodeRun: {} → failed ({})", fixed, initiator)
     if healed:
         logger.info("reconcile stale NodeRun: {} → done heal ({})", healed, initiator)
-    return fixed + healed
+    if isolated:
+        logger.info(
+            "reconcile stale NodeRun isolated: {} ({})", isolated, initiator
+        )
+    return fixed + healed + isolated
 
 
 async def reconcile_stale_node_runs_on_startup() -> int:

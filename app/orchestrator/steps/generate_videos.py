@@ -401,6 +401,9 @@ async def _generate_shot1_one(
     if not fr.animation_prompt:
         raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
     start = await _shot1_start_frame(session, project, fr, scenes_dir)
+    from app.services.freeze_stills import video_end_still
+
+    end = video_end_still(scenes_dir, fr.number, 1)
     short_uuid = uuid.uuid4().hex[:8]
     file_path = out_dir / f"clip_{fr.number:03d}_{short_uuid}.mp4"
     async with clips_lock:
@@ -415,6 +418,7 @@ async def _generate_shot1_one(
         gpt_rewrite=True,
         project_id=project.id,
         start_frame=start,
+        last_frame_image=end,
         aspect_ratio=aspect,
         timeout=1200,
         model_slug=model_slug,
@@ -583,6 +587,9 @@ async def _shot1_job(
             if not fr.animation_prompt:
                 raise RuntimeError(f"у кадра {fr.number} нет animation_prompt")
             start = await _shot1_start_frame(session, project, fr, scenes_dir)
+            from app.services.freeze_stills import video_end_still
+
+            end = video_end_still(scenes_dir, fr.number, 1)
             prompt = fr.animation_prompt
             frame_number = fr.number
             model_slug, res_slug, aspect, relax = _video_opts(project)
@@ -602,6 +609,7 @@ async def _shot1_job(
                 gpt_rewrite=True,
                 project_id=project_id,
                 start_frame=start,
+                last_frame_image=end,
                 aspect_ratio=aspect,
                 timeout=1200,
                 model_slug=model_slug,

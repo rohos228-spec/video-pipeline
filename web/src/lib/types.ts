@@ -372,6 +372,10 @@ export interface MontageBoardFrame {
   end_ts: number | null;
   duration_seconds: number | null;
   has_shot2: boolean;
+  /** Freeze СТАРТ/КОНЕЦ: колонка конечного still, даже без PNG. */
+  has_end_still?: boolean;
+  layout_start?: string;
+  layout_end?: string;
   shot1_use_seconds: number | null;
   shot2_use_seconds: number | null;
   shot1_timeline_start: number | null;

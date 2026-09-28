@@ -9,7 +9,9 @@ GPT (fw_action) пишет ``площадка`` на VO-ячейку, GPT (fw_sh
 * чинит физику: проход через закрытую дверь (вставляет кадр на пороге),
   «к открытой двери» при закрытой, «идёт на месте», переворот направления
   движения на экране, переход оси 180° в паре;
-* пишет в кадр ``раскладка`` — текст старта кадра для промта картинки.
+* пишет в кадр ``раскладка``: для точного жеста (смена предмета) —
+  старт до / конец после; для процесса — одно действие в разгаре,
+  без пары «до/после». Положения предметов и отличие от референса.
 
 Направления: север / восток / юг / запад / центр. Модель мира плоская,
 без метрики: сторона зоны = где стоит предмет, человек или камера.
@@ -60,6 +62,21 @@ _AT = {
 
 OPEN = "открыта"
 CLOSED = "закрыта"
+ABSENT = "нет"
+
+_PLACE_VERB_RE = re.compile(
+    r"клад[её]т|кладет|ставит|оставляет|полож",
+    re.IGNORECASE,
+)
+_ARRIVE_STATE_RE = re.compile(
+    r"лежит|на столе|рядом|поставлена|положена",
+    re.IGNORECASE,
+)
+_UNFOLD_RE = re.compile(r"разверн|разворач", re.IGNORECASE)
+_ALREADY_CLAUSE_RE = re.compile(
+    r"^.{0,80}?\bуже\b[^,.]*,\s*",
+    re.IGNORECASE,
+)
 
 _DOOR_RE = re.compile(r"двер|калитк|ворот|люк", re.IGNORECASE)
 _OPEN_VERB_RE = re.compile(
@@ -618,6 +635,265 @@ def _step_away_plan(plan: str, obj: str) -> str:
     return _plan_name(nxt)
 
 
+# Соседние имена ≥45° номинал — запас к правилу 30°. «с плеча» рядом с 3/4 не ставим.
+_NAMED_ANGLE_30 = ("фронт", "3/4", "сверху", "снизу")
+_ANGLE_TOKENS = ("с плеча", "макро", "сверху", "снизу", "3/4", "фронт")
+
+
+def named_angle_token(raw: Any) -> str:
+    """Короткое имя ракурса из поля (в т.ч. «уровень глаз, …, фронт»)."""
+    k = _key(raw)
+    if not k:
+        return ""
+    for name in _ANGLE_TOKENS:
+        if _key(name) in k:
+            return name
+    return ""
+
+
+def angles_under_30(prev: Any, cur: Any) -> bool:
+    """True = именованные ракурсы ближе 30° (совпали или 3/4↔с плеча)."""
+    a = named_angle_token(prev)
+    b = named_angle_token(cur)
+    if not a and not b:
+        return True
+    if a and b and a == b:
+        return True
+    return {a, b} == {"3/4", "с плеча"}
+
+
+def next_named_angle_30(raw: Any, obj: Any = "") -> str:
+    """Следующий именованный ракурс с шагом ≥30°."""
+    cur = named_angle_token(raw) or _key(raw)
+    objk = _key(obj)
+    if objk in {"предмет", "взгляд"}:
+        return "3/4" if cur in {"сверху", "макро"} else "сверху"
+    order = list(_NAMED_ANGLE_30)
+    if cur in order:
+        return order[(order.index(cur) + 1) % len(order)]
+    if cur == "с плеча":
+        return "фронт"
+    return "3/4"
+
+
+def _with_angle_token(raw: Any, nxt: str) -> str:
+    text = str(raw or "").strip()
+    tok = named_angle_token(text)
+    if tok and tok in text:
+        return text.replace(tok, nxt)
+    return nxt
+
+
+def _core_action(shot: dict[str, Any]) -> str:
+    """Действие без префикса «уже лежит…,» — это конец прошлого кадра, не жест."""
+    act = " ".join(str(shot.get("действие") or shot.get("action") or "").split())
+    stripped = _ALREADY_CLAUSE_RE.sub("", act, count=1).strip()
+    return stripped or act
+
+
+def _actor_name(shot: dict[str, Any]) -> str:
+    for row in shot.get("люди") or []:
+        if isinstance(row, dict) and str(row.get("кто") or "").strip():
+            return str(row["кто"]).strip()
+    return ""
+
+
+def _is_arrival(shot: dict[str, Any], state: str) -> bool:
+    return bool(_PLACE_VERB_RE.search(_core_action(shot))) and bool(
+        _ARRIVE_STATE_RE.search(state or "")
+    )
+
+
+def _freeze_copies_action(text: str, act: str) -> bool:
+    if not text or not act:
+        return False
+    return _key(act) in _key(text)
+
+
+_PRECISE_VERB_RE = re.compile(
+    r"открыл|открыва|закрыл|закрыва|положил|клад[её]т|достал|вынул|"
+    r"взял|бер[её]т|вставл|сунул|сорвал|разорв|подписал|поставил печат|"
+    r"раскрыл|раскрыва",
+    re.IGNORECASE,
+)
+_CONTENT_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"фотограф\w*|фото\b", "фотография"),
+    (r"протокол\w*", "протокол"),
+    (r"жалоб\w*", "жалоба"),
+    (r"признан\w*", "признание"),
+    (r"алиби", "лист алиби"),
+    (r"отчёт\w*|отчет\w*", "отчёт"),
+    (r"штамп\w*", "штамп"),
+    (r"печат\w*", "печать"),
+    (r"портрет\w*", "портрет"),
+    (r"надпис\w*", "надпись на обложке"),
+)
+
+
+def _named_contents(shot: dict[str, Any]) -> str:
+    blob = " ".join(
+        str(shot.get(k) or "")
+        for k in ("действие", "закадр", "конец", "старт", "объект")
+    )
+    hits: list[str] = []
+    for rx, label in _CONTENT_PATTERNS:
+        if re.search(rx, blob, re.IGNORECASE) and label not in hits:
+            hits.append(label)
+    return ", ".join(hits)
+
+
+def _precision_flag(raw: Any) -> bool | None:
+    if raw is True:
+        return True
+    if raw is False:
+        return False
+    s = str(raw or "").strip().casefold()
+    if s in {"да", "1", "true", "точность"}:
+        return True
+    if s in {"нет", "0", "false", "процесс"}:
+        return False
+    return None
+
+
+def _is_generic_freeze(start: str, end: str) -> bool:
+    blob = f"{start} {end}".casefold()
+    return any(
+        bit in blob
+        for bit in (
+            "жест завершён",
+            "жест завершен",
+            "позе до жеста",
+            "действие ещё не началось",
+            "ещё до жеста —",
+        )
+    )
+
+
+def needs_freeze(shot: dict[str, Any]) -> bool:
+    """Пара старт/конец только у точного жеста (смена предмета), не у процесса."""
+    flag = _precision_flag(shot.get("точность"))
+    if flag is False:
+        return False
+    for c in shot.get("меняет") or []:
+        if (
+            isinstance(c, dict)
+            and str(c.get("предмет") or "").strip()
+            and str(c.get("состояние") or "").strip()
+        ):
+            return True
+    if flag is True:
+        return True
+    start = " ".join(str(shot.get("старт") or "").split())
+    end = " ".join(str(shot.get("конец") or "").split())
+    if _is_generic_freeze(start, end):
+        return False
+    act = _core_action(shot)
+    if start and end and not _freeze_broken(start, end, act):
+        return True
+    return bool(_PRECISE_VERB_RE.search(act))
+
+
+def _freeze_broken(start: str, end: str, act: str) -> bool:
+    """Старт = конец или оба копируют глагол — в кадре нет видимого изменения."""
+    if not start or not end:
+        return True
+    if _key(start) == _key(end):
+        return True
+    if _freeze_copies_action(start, act) and _freeze_copies_action(end, act):
+        return True
+    if start.startswith("ещё до жеста —") and end.startswith("жест завершён —"):
+        rest_s = start.split("—", 1)[-1].strip()
+        rest_e = end.split("—", 1)[-1].strip()
+        if _key(rest_s) == _key(rest_e) or _key(rest_s) == _key(act):
+            return True
+    return False
+
+
+def _freeze_from_changes(shot: dict[str, Any]) -> tuple[str, str]:
+    """Состояние до жеста / после жеста. Не копировать глагол действия."""
+    who = _actor_name(shot) or "герой"
+    act = _core_action(shot)
+    start_bits: list[str] = []
+    end_bits: list[str] = []
+    contents = _named_contents(shot)
+    for c in shot.get("меняет") or []:
+        if not isinstance(c, dict):
+            continue
+        prop = str(c.get("предмет") or "").strip()
+        st = str(c.get("состояние") or "").strip()
+        if not prop or not st:
+            continue
+        if _is_arrival(shot, st):
+            start_bits.append(
+                f"стола без «{prop}», {who} ещё держит её в руках"
+            )
+            end_bits.append(f"«{prop}» уже {st}, руки на ней")
+        elif st == OPEN or st in {"раскрыта", "раскрыт"}:
+            start_bits.append(
+                f"«{prop}» ещё закрыта, руки ещё не трогают"
+            )
+            if contents:
+                end_bits.append(
+                    f"«{prop}» {st}, на развороте видно: {contents}"
+                )
+            else:
+                end_bits.append(
+                    f"«{prop}» {st}, на развороте заполненные листы дела "
+                    f"(заголовки, пометки, штампы — не пустая бумага)"
+                )
+        elif "развёрнут" in st or _UNFOLD_RE.search(st) or _UNFOLD_RE.search(act):
+            start_bits.append(f"«{prop}» ещё не развёрнут")
+            end_bits.append(f"«{prop}» {st}")
+        else:
+            start_bits.append(f"«{prop}» ещё не {st}")
+            end_bits.append(f"«{prop}» {st}")
+    if not start_bits:
+        start_bits.append(f"ещё до «{act}»: {who} не начал это действие")
+        if contents:
+            end_bits.append(f"уже сделано: {act}; видно: {contents}")
+        else:
+            end_bits.append(f"уже сделано: {act}")
+    return ", ".join(start_bits), ", ".join(end_bits)
+
+
+def _freeze_pair(shot: dict[str, Any]) -> tuple[str, str]:
+    start = " ".join(str(shot.get("старт") or "").split())
+    end = " ".join(str(shot.get("конец") or "").split())
+    act = _core_action(shot)
+    if not _freeze_broken(start, end, act):
+        return start, end
+    return _freeze_from_changes(shot)
+
+
+def _cam_brief(shot: dict[str, Any]) -> str:
+    cam = shot.get("камера") if isinstance(shot.get("камера"), dict) else {}
+    plan = str(shot.get("план") or "").strip()
+    ang = str(shot.get("ракурс") or "").strip() or "не задан"
+    where = str(cam.get("где") or "")
+    look = str(cam.get("смотрит") or "")
+    bits: list[str] = []
+    if plan:
+        bits.append(f"план {plan}")
+    if where in _FROM and look:
+        bits.append(f"камера {_FROM[where]}, смотрит на {look}")
+    bits.append(f"ракурс {ang}")
+    return ", ".join(bits)
+
+
+def _people_at_end(shot: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in shot.get("люди") or []:
+        if not isinstance(row, dict):
+            continue
+        r = dict(row)
+        move = r.get("движется")
+        if move in DIRS:
+            r["где"] = _step_toward(r.get("где", CENTER), move)
+            r["_arrived"] = True
+        out.append(r)
+    return out
+
+
 def _prop_label(
     prop: dict[str, Any],
     start: dict[str, str],
@@ -1073,30 +1349,74 @@ class _Sim:
             prev = shot
 
     def vary_repeated_camera(self) -> None:
-        """Тот же ракурс и план подряд в зоне = скачок. Камеру на 90°."""
+        """Правило 30°: смена плана или тот же объект — угол не тот же.
+
+        Компас: соседняя сторона (90°), если ось 180° и стороны людей держатся.
+        Имя ракурса: ступень ≥30°, если совпало с прошлым кадром.
+        """
         for i in range(1, len(self.shots)):
             prev, cur = self.shots[i - 1], self.shots[i]
             if prev["_zk"] != cur["_zk"] or not self.owned(cur):
                 continue
-            if cur["камера"] != prev["камера"]:
+            plan_changed = _key(cur.get("план")) != _key(prev.get("план"))
+            same_subject = _key(cur.get("объект")) == _key(prev.get("объект"))
+            if not plan_changed and not same_subject:
                 continue
-            if _key(cur.get("план")) != _key(prev.get("план")):
+            if cur["камера"] == prev["камера"]:
+                sides = self._people_sides(i)
+                where = cur["камера"]["где"]
+                for side in (d for d in DIRS if d not in (where, _OPPOSITE[where])):
+                    cam = _turn(cur["камера"], side)
+                    if (
+                        self._angle_keeps_sides(cur, cam, sides)
+                        and self._movers_ok(prev, cur, cam)
+                    ):
+                        cur["камера"] = cam
+                        why = (
+                            "смена плана без смены угла — камера "
+                            if plan_changed
+                            else "тот же угол, что у прошлого кадра — камера "
+                        )
+                        self.issues.append(_issue(
+                            cur, "ракурс",
+                            f"{why}{_FROM[side]} (≥30°)",
+                            fixed=True,
+                        ))
+                        break
+            prev_ang = prev.get("ракурс")
+            cur_ang = cur.get("ракурс")
+            if not angles_under_30(prev_ang, cur_ang):
                 continue
-            if cur.get("вставлен") or prev.get("вставлен"):
+            nxt = next_named_angle_30(
+                cur_ang or prev_ang or "фронт", cur.get("объект")
+            )
+            if named_angle_token(nxt) == named_angle_token(cur_ang):
+                nxt = next_named_angle_30(nxt, cur.get("объект"))
+            cur["ракурс"] = _with_angle_token(cur_ang, nxt)
+            self.issues.append(_issue(
+                cur, "ракурс",
+                f"правило 30°: ракурс {named_angle_token(cur_ang) or 'не задан'} → {nxt}",
+                fixed=True,
+            ))
+
+    def _angle_keeps_sides(
+        self,
+        shot: dict[str, Any],
+        cam: dict[str, str],
+        sides: dict[str, int],
+    ) -> bool:
+        """90° не ломает лево/право и не прячет человека за камеру."""
+        look = cam["смотрит"]
+        for row in shot.get("люди") or []:
+            if row.get("движется") or row.get("где") not in DIRS:
                 continue
-            sides = self._people_sides(i)
-            where = cur["камера"]["где"]
-            for side in (d for d in DIRS if d not in (where, _OPPOSITE[where])):
-                cam = _turn(cur["камера"], side)
-                if self._lateral_ok(cur, cam, sides) and self._movers_ok(prev, cur, cam):
-                    cur["камера"] = cam
-                    self.issues.append(_issue(
-                        cur, "ракурс",
-                        f"тот же ракурс и план, что у прошлого кадра — камера "
-                        f"{_FROM[side]}",
-                        fixed=True,
-                    ))
-                    break
+            want = sides.get(row["кто"])
+            got = lateral(look, row["где"])
+            if want and got != want:
+                return False
+            if screen_of(look, row["где"]) == "за камерой":
+                return False
+        return True
 
     def _movers_ok(self, prev: dict[str, Any], cur: dict[str, Any],
                    cam: dict[str, str]) -> bool:
@@ -1180,20 +1500,124 @@ class _Sim:
             ))
 
     # 5. раскладка
+    def _hide_arrivals_at_start(
+        self, shot: dict[str, Any], start_states: dict[str, str]
+    ) -> None:
+        """Кладёт/ставит: на старте предмета ещё нет на столе."""
+        for c in shot.get("меняет") or []:
+            if not isinstance(c, dict):
+                continue
+            st = str(c.get("состояние") or "")
+            if not _is_arrival(shot, st):
+                continue
+            pk = self.plan.find_prop(shot["_zk"], c.get("предмет") or "")
+            if pk:
+                start_states[pk] = ABSENT
+
     def compile_layouts(self) -> None:
         states = self.plan.initial_states()
+        prev_owned: dict[str, Any] | None = None
         for shot in self.shots:
-            shot["_start"] = dict(states)
+            start_states = dict(states)
+            self._hide_arrivals_at_start(shot, start_states)
+            shot["_start"] = start_states
+            end_states = dict(states)
+            self._apply_changes(end_states, shot)
+            shot["_end"] = end_states
             self._apply_changes(states, shot)
             if self.owned(shot):
-                shot["раскладка"] = self._layout(shot)
+                freeze = needs_freeze(shot)
+                shot["точность"] = freeze
+                if freeze:
+                    freeze_s, freeze_e = _freeze_pair(shot)
+                    shot["старт"] = freeze_s
+                    shot["конец"] = freeze_e
+                shot["раскладка"] = self._layout(
+                    shot, prev_owned, freeze=freeze
+                )
+                prev_owned = shot
 
-    def _layout(self, shot: dict[str, Any]) -> str:
+    def _prop_buckets(
+        self,
+        *,
+        look: str,
+        states: dict[str, str],
+        props: dict[str, dict[str, Any]],
+        zone_what: str,
+        close: bool,
+        focals: set[str],
+    ) -> tuple[dict[str, list[str]], set[str]]:
+        buckets: dict[str, list[str]] = {}
+        shown: set[str] = set()
+        for pk, prop in props.items():
+            if states.get(pk) == ABSENT:
+                continue
+            spot = screen_of(look, prop["где"])
+            if spot == "за камерой":
+                continue
+            if close and focals and pk not in focals:
+                continue
+            shown.add(pk)
+            buckets.setdefault(spot, []).append(
+                _prop_label(prop, states, pk, zone_what=zone_what)
+            )
+        return buckets, shown
+
+    @staticmethod
+    def _bucket_lines(buckets: dict[str, list[str]]) -> list[str]:
+        lines: list[str] = []
+        for spot in ("в глубине", "слева", "справа", "в центре"):
+            if buckets.get(spot):
+                lines.append(f"{spot.capitalize()}: {', '.join(buckets[spot])}.")
+        return lines
+
+    def _people_lines(
+        self,
+        shot: dict[str, Any],
+        people: list[dict[str, Any]],
+        look: str,
+        *,
+        at_end: bool,
+    ) -> list[str]:
+        lines: list[str] = []
+        for row in people:
+            where = row.get("где", CENTER)
+            bits = [f"{row['кто']} — {_AT.get(where, 'в центре')}"]
+            spot = screen_of(look, where)
+            if spot == "за камерой":
+                bits.append("у камеры, спиной или плечом в кадре")
+            elif spot != "в центре":
+                bits.append(f"на экране {spot}")
+            if at_end or row.get("_arrived"):
+                lines.append(", ".join(bits) + ".")
+                continue
+            move = row.get("движется")
+            if move:
+                bits.append(
+                    f"движется на {move}, на экране {motion_on_screen(look, move)}"
+                )
+            elif row.get("лицом"):
+                face = _facing_on_screen(look, row["лицом"])
+                if face == "спиной к камере" and _is_close(shot):
+                    face = "в три четверти со спины, лицо видно в профиль"
+                if face:
+                    bits.append(face)
+            lines.append(", ".join(bits) + ".")
+        return lines
+
+    def _layout(
+        self,
+        shot: dict[str, Any],
+        prev: dict[str, Any] | None,
+        *,
+        freeze: bool | None = None,
+    ) -> str:
         zk = shot["_zk"]
         zone = self.plan.zones[zk]
         cam = shot["камера"]
         look = cam["смотрит"]
         start = shot.get("_start") or {}
+        end = shot.get("_end") or start
         props = zone["предметы"]
         rung = _plan_rung(shot.get("план"))
         if rung is None:
@@ -1202,64 +1626,69 @@ class _Sim:
         obj = _key(shot.get("объект"))
         close = rung >= 3
         detail = rung >= 4
-        act = " ".join(str(shot.get("действие") or "").split())
-        parts: list[str] = []
-        if act:
-            parts.append(f"Сейчас в кадре: {act}.")
-        parts.append(f"План {plan_name}.")
-        if not close:
-            zwhat = str(zone.get("что") or "").strip()
-            parts.append(
-                f"Зона «{zone['id']}»" + (f": {zwhat}" if zwhat else "") + "."
-            )
-        else:
-            parts.append(
-                f"Зона «{zone['id']}», {plan_name} — не общий вид помещения."
-            )
-        parts.append(f"Камера {_FROM.get(cam['где'], '')}, смотрит на {look}.")
+        if freeze is None:
+            freeze = needs_freeze(shot)
+        freeze_start, freeze_end = ("", "")
+        if freeze:
+            freeze_start, freeze_end = _freeze_pair(shot)
+        zwhat = str(zone.get("что") or "").strip()
         focals = _focal_prop_keys(shot, props)
         if detail and not focals:
             focals = {
                 pk for pk, prop in props.items()
                 if str(prop.get("где") or "") == CENTER
             }
-        shown: set[str] = set()
-        buckets: dict[str, list[str]] = {}
-        for pk, prop in props.items():
-            spot = screen_of(look, prop["где"])
-            if spot == "за камерой":
-                continue
-            if close and focals and pk not in focals:
-                continue
-            shown.add(pk)
-            buckets.setdefault(spot, []).append(
-                _prop_label(prop, start, pk, zone_what=str(zone.get("что") or ""))
-            )
-        for spot in ("в глубине", "слева", "справа", "в центре"):
-            if buckets.get(spot):
-                parts.append(f"{spot.capitalize()}: {', '.join(buckets[spot])}.")
+        start_buckets, shown = self._prop_buckets(
+            look=look,
+            states=start,
+            props=props,
+            zone_what=zwhat,
+            close=close,
+            focals=focals,
+        )
+        end_buckets, _ = self._prop_buckets(
+            look=look,
+            states=end,
+            props=props,
+            zone_what=zwhat,
+            close=close,
+            focals=focals,
+        )
         show_people = not (detail and obj in {"предмет", "взгляд"})
+        arrival = ABSENT in start.values()
+        act = " ".join(str(shot.get("действие") or "").split())
+        if freeze:
+            parts: list[str] = [
+                f"СТАРТ (первый кадр, до действия): {freeze_start}.",
+                f"План {plan_name}.",
+            ]
+        else:
+            parts = [
+                f"ДЕЙСТВИЕ (процесс в одном кадре): {act}. "
+                "Картинка = этот процесс в разгаре, не пара «до/после».",
+                f"План {plan_name}.",
+            ]
+        if not close:
+            extra = f": {zwhat}" if zwhat and not arrival else ""
+            parts.append(f"Зона «{zone['id']}»" + extra + ".")
+        else:
+            parts.append(
+                f"Зона «{zone['id']}», {plan_name} — не общий вид помещения."
+            )
+        parts.append(f"Камера {_FROM.get(cam['где'], '')}, смотрит на {look}.")
+        ang = str(shot.get("ракурс") or "").strip()
+        if ang:
+            parts.append(f"Ракурс {ang}.")
+        vis_buckets = start_buckets if freeze else end_buckets
+        if vis_buckets:
+            parts.append("Предметы на старте:" if freeze else "Предметы в кадре:")
+            parts.extend(self._bucket_lines(vis_buckets))
+        else:
+            parts.append("Предметов площадки в кадре нет.")
         if show_people:
-            for row in shot.get("люди") or []:
-                where = row.get("где", CENTER)
-                bits = [f"{row['кто']} — {_AT.get(where, 'в центре')}"]
-                spot = screen_of(look, where)
-                if spot == "за камерой":
-                    bits.append("у камеры, спиной или плечом в кадре")
-                elif spot != "в центре":
-                    bits.append(f"на экране {spot}")
-                move = row.get("движется")
-                if move:
-                    bits.append(
-                        f"движется на {move}, на экране {motion_on_screen(look, move)}"
-                    )
-                elif row.get("лицом"):
-                    face = _facing_on_screen(look, row["лицом"])
-                    if face == "спиной к камере" and _is_close(shot):
-                        face = "в три четверти со спины, лицо видно в профиль"
-                    if face:
-                        bits.append(face)
-                parts.append(", ".join(bits) + ".")
+            parts.extend(
+                self._people_lines(shot, list(shot.get("люди") or []), look, at_end=False)
+            )
         elif any(shot.get("люди") or []):
             parts.append("В кадре руки и жест, фигура целиком не читается.")
         hidden = [
@@ -1269,21 +1698,36 @@ class _Sim:
         ]
         if close and hidden:
             parts.append(f"Не видно при этой крупности: {', '.join(hidden)}.")
+        if freeze:
+            parts.append(f"КОНЕЦ (последний кадр действия): {freeze_end}.")
+            end_people = _people_at_end(shot) if show_people else []
+            if end_buckets:
+                parts.append("Предметы в конце:")
+                parts.extend(self._bucket_lines(end_buckets))
+            if end_people:
+                parts.extend(self._people_lines(shot, end_people, look, at_end=True))
         changes = [
             f"{c['предмет']} → {c['состояние']}" for c in shot.get("меняет") or []
         ]
         if changes:
             parts.append(f"В кадре меняется: {'; '.join(changes)}.")
-        return " ".join(parts)
-        changes = [
-            f"{c['предмет']} → {c['состояние']}" for c in shot.get("меняет") or []
-        ]
-        if changes:
-            parts.append(f"В кадре меняется: {'; '.join(changes)}.")
+        if prev is None:
+            parts.append("Референса нет — первый кадр места.")
+        elif prev.get("_zk") != shot.get("_zk"):
+            parts.append(
+                f"В референсе (другое место): {_cam_brief(prev)}. "
+                "Это новый кадр места, не punch-in с прошлого."
+            )
+        else:
+            parts.append(f"В референсе: {_cam_brief(prev)}.")
+            parts.append(
+                f"Смена: {_cam_brief(shot)}. "
+                "Угол камеры относительно референса ≥30°."
+            )
         return " ".join(parts)
 
 
-_TMP_KEYS = ("_zk", "_start", "_ro", "_cell", "_cam_given")
+_TMP_KEYS = ("_zk", "_start", "_end", "_ro", "_cell", "_cam_given")
 
 
 def _merge_plans(raws: list[Any]) -> dict[str, Any]:

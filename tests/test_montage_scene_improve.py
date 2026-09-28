@@ -230,6 +230,13 @@ def test_fallback_cards_follow_operator_chain() -> None:
         "тед банди преследует девушку",
         "на нее нападает",
     ]
+    forest = cards_from_operator_prompt("выходит в лес → скрывается в тени", "лес", VO)
+    archive = cards_from_operator_prompt(
+        "кладёт папку на стол → читает штамп", "архив", VO
+    )
+    assert [c["action"] for c in forest] != [c["action"] for c in archive]
+    assert forest[0]["action"] == "выходит в лес"
+    assert archive[0]["action"] == "кладёт папку на стол"
 
 
 def test_cards_raw_from_flat_json_array_and_numbered() -> None:
@@ -402,6 +409,37 @@ def test_repair_keeps_each_anchor_text_inside_its_shots() -> None:
     assert hard == []
 
 
+def test_repair_changes_angle_when_plan_changes() -> None:
+    text = "Он стоит у стола и берёт папку."
+    units = anchor_units(text, [{"якорь": "Он стоит у стола"}], "стоит → берёт")
+    shots = normalize_shots(
+        [
+            {
+                "действие": "стоит у стола",
+                "объект": "тело",
+                "план": "СРЕДНИЙ",
+                "ракурс": "3/4",
+                "закадр": "Он стоит у стола",
+            },
+            {
+                "действие": "берёт папку",
+                "объект": "тело",
+                "план": "КРУПНЫЙ",
+                "ракурс": "3/4",
+                "закадр": "и берёт папку.",
+            },
+        ],
+        cell_number=1,
+        place="дом",
+    )
+    fixed = repair_shots(shots, units)
+    assert shots[1]["план"] != shots[0]["план"]
+    assert shots[1]["ракурс"] != shots[0]["ракурс"]
+    assert any("30°" in f for f in fixed)
+    hard, _soft = qc_reasons(shots, units)
+    assert not any("30°" in h for h in hard)
+
+
 def test_qc_soft_warns_plan_jump_and_missing_reaction() -> None:
     text = "Он стоит у стола, потом у окна и садится."
     units = anchor_units(text, [{"якорь": "Он стоит у стола"}], "стоит → окно → садится")
@@ -510,8 +548,9 @@ async def test_improve_matches_registry_and_keeps_medium_parent(
     assert all("voiceover_text" not in p for p in prompts)
     nodes = [n["node"] for n in result["improve_report"]["nodes"]]
     assert nodes == ["fw_action", "fw_shots", "fw_qc", "characters"]
-    assert result["images"] == 0
-    assert result["image_ops"] == []
+    assert result["images"] >= 1
+    assert result["image_ops"][0].get("slot") == "parent"
+    assert "ткач пришёл домой" in (result["image_ops"][0].get("instruction") or "")
     codes = [c["code"] for c in result["improve_report"]["characters"]]
     assert codes == ["c01", "c02"]
     glued = " ".join(s["закадр"] for s in result["improve_report"]["shots"])
@@ -656,7 +695,9 @@ async def test_improve_writes_full_scene_card_and_shot_coverage(
         operator_prompt="ткач кладёт носок → девушка кричит и бежит",
         passport={"place": "дом"},
     )
-    assert result["images"] == 0
+    assert result["images"] >= 1
+    assert result["image_ops"][0].get("slot") == "parent"
+    assert "ткач кладёт носок" in (result["image_ops"][0].get("instruction") or "")
     frames = await _cell_frames(session, project)
     cell = _members(frames)
     board = _coverage_fields_for_frames(_snapshot_frames(frames), enabled=True)

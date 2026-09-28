@@ -359,6 +359,59 @@ def _frame(i: int) -> dict:
     }
 
 
+def test_split_vo_units_fat_attrs_do_not_solo_first_cell() -> None:
+    """Жирные кадры[]/площадка не делают первую ячейку соло-пачкой."""
+    uid = f"{0:024d}"
+    fat = {
+        "uuid": uid,
+        "voiceover_text": "короткий закадр первой ячейки",
+        "кадры": [{"id": i, "шум": "x" * 900} for i in range(8)],
+        "площадка": {
+            "зоны": [{"id": f"зона {i}", "что": "y" * 400} for i in range(40)]
+        },
+        "camera_subdivide": {"role": "vo_parent", "parent_uuid": uid},
+    }
+    rest = [_frame(i) for i in range(1, 9)]
+    for fr in rest:
+        fr["camera_subdivide"] = {
+            "role": "vo_parent",
+            "parent_uuid": fr["uuid"],
+        }
+    packs = split_vo_units([fat, *rest], 8)
+    assert len(packs) == 2
+    assert len(packs[0]) == 8
+    assert packs[0][0]["uuid"] == uid
+
+
+def test_split_vo_units_solos_only_when_voiceover_is_5000() -> None:
+    uid = f"{0:024d}"
+    fat_vo = {
+        "uuid": uid,
+        "voiceover_text": "ж" * 5000,
+        "camera_subdivide": {"role": "vo_parent", "parent_uuid": uid},
+    }
+    rest = [_frame(i) for i in range(1, 4)]
+    for fr in rest:
+        fr["camera_subdivide"] = {
+            "role": "vo_parent",
+            "parent_uuid": fr["uuid"],
+        }
+    packs = split_vo_units([fat_vo, *rest], 8)
+    assert [len(p) for p in packs] == [1, 3]
+    assert packs[0][0]["uuid"] == uid
+
+
+def test_split_frames_fat_attrs_do_not_solo_first() -> None:
+    fat = {
+        "uuid": f"{0:024d}",
+        "voiceover_text": "короткий текст",
+        "шум": "z" * 8000,
+    }
+    rest = [{"uuid": f"{i:024d}", "voiceover_text": f"vo {i}"} for i in range(1, 5)]
+    packs = split_frames([fat, *rest], 4)
+    assert [len(p) for p in packs] == [4, 1]
+
+
 def test_split_vo_units_keeps_shots_in_cell_packs() -> None:
     """145 кадров = 115 ячеек → 4 пачки по 30 ячеек, не 5 по кадрам."""
     frames: list[dict] = []

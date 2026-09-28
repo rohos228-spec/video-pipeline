@@ -507,3 +507,59 @@ def test_skip_legacy_shot2_when_script_frames_qc() -> None:
         attrs={"camera_subdivide": {"role": "vo_parent"}},
     )
     assert _skip_legacy_shot2(project, [parent]) is True
+
+
+async def test_skip_legacy_still_queues_freeze_end_still(tmp_path: Path) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models import Base
+    from app.orchestrator.steps.generate_images import _init_shot2_queue
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        project = Project(
+            slug="qc-freeze",
+            topic="t",
+            meta={
+                "canvas_graph": {
+                    "nodes": [
+                        {
+                            "id": "n_excel_gpt_fw_frames",
+                            "data": {"groupId": "script_frames_qc"},
+                        }
+                    ],
+                    "edges": [],
+                }
+            },
+        )
+        session.add(project)
+        await session.flush()
+        fr = Frame(
+            project_id=project.id,
+            number=1,
+            voiceover_text="v",
+            image_prompt="p" * 20,
+            attrs={
+                "раскладка": (
+                    "СТАРТ (первый кадр, до действия): рука над стопкой. "
+                    "План СРЕДНИЙ. КОНЕЦ (последний кадр действия): ладонь на стопке."
+                ),
+                "camera_subdivide": {"role": "vo_parent"},
+                SHOT2_STATUS_ATTR: "skipped",
+            },
+        )
+        session.add(fr)
+        await session.flush()
+        out_dir = tmp_path / "scenes"
+        out_dir.mkdir()
+        xlsx = tmp_path / "project.xlsx"
+        xlsx.write_bytes(b"")
+        n = await _init_shot2_queue(session, project, [fr], out_dir, xlsx)
+        assert n == 1
+        await session.refresh(fr)
+        assert (fr.attrs or {}).get(SHOT2_STATUS_ATTR) == "image_prompt_ready"
+        assert "ладонь на стопке" in str((fr.attrs or {}).get(SHOT2_PROMPT_ATTR) or "")
+    await engine.dispose()

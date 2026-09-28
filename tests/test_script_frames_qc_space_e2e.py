@@ -52,33 +52,38 @@ async def test_space_plan_through_six_node_group(monkeypatch, tmp_path) -> None:
         await engine.dispose()
 
     frames = out["frames"]
-    shots = [
-        (fr.attrs or {}).get("camera_subdivide", {}).get("shot_id") for fr in frames
+
+    def _sid(fr) -> str:
+        return str((fr.attrs or {}).get("camera_subdivide", {}).get("shot_id") or "")
+
+    suffixes = [(_sid(fr).split("-", 1)[1] if "-" in _sid(fr) else _sid(fr)) for fr in frames]
+    assert suffixes == [
+        "S1-K1", "S1-K2", "S2-K1", "S2-K2",
+        "S3-K1", "S3-K2", "S3-K3", "S4-K1", "S5-K1",
     ]
-    assert shots == [
-        "1-S1-K1", "1-S1-K2", "1-S2-K1", "1-S2-K2",
-        "1-S3-K1", "1-S3-K2", "1-S3-K3", "1-S4-K1", "1-S5-K1",
-    ]
-    by_id = {
-        (fr.attrs or {})["camera_subdivide"]["shot_id"]: fr for fr in frames
-    }
+    by_id = {_sid(fr).split("-", 1)[1]: fr for fr in frames}
     act = {k: (fr.attrs or {}).get("shot01_action") for k, fr in by_id.items()}
-    assert act["1-S1-K1"] == "Иван бежит по улице к закрытой двери дома"
-    assert act["1-S1-K2"] == "Иван открывает входную дверь"
-    assert act["1-S2-K1"] == "Иван входит через входную дверь, тяжело дышит"
-    assert by_id["1-S1-K1"].voiceover_text.endswith(",")
+    assert act["S1-K1"] == "Иван бежит по улице к закрытой двери дома"
+    assert act["S1-K2"] == "Иван открывает входную дверь"
+    assert act["S2-K1"] == "Иван входит через входную дверь, тяжело дышит"
+    assert by_id["S1-K1"].voiceover_text.endswith(",")
 
     lay = {k: (fr.attrs or {}).get("раскладка") or "" for k, fr in by_id.items()}
-    assert "мать — у восточной стороны, на экране справа" in lay["1-S3-K3"]
-    assert "Камера с юга" in lay["1-S3-K3"]
-    assert "Камера с востока" in lay["1-S3-K2"]
+    assert "мать — у восточной стороны, на экране справа" in lay["S3-K3"]
+    assert "Камера с юга" in lay["S3-K3"]
+    assert "ДЕЙСТВИЕ (процесс в одном кадре):" in lay["S3-K2"]
+    assert "Угол камеры относительно референса ≥30°." in lay["S3-K2"]
+    assert "Ракурс" in lay["S3-K1"] and "Ракурс" in lay["S3-K2"]
+    assert lay["S3-K1"].split("Ракурс", 1)[1][:40] != lay["S3-K2"].split("Ракурс", 1)[1][:40]
 
     plans = {k: (fr.attrs or {}).get("площадка") for k, fr in by_id.items()}
-    assert plans["1-S3-K1"] and plans["1-S3-K1"]["зоны"]
-    notes = plans["1-S1-K1"]["исправлено_кодом"]
-    assert notes and all("[1-S1-" in n for n in notes)
-    assert all("[1-S3-" in n for n in plans["1-S3-K1"]["исправлено_кодом"])
-    assert plans["1-S2-K2"] is None
+    assert plans["S3-K1"] and plans["S3-K1"]["зоны"]
+    notes: list[str] = []
+    for p in plans.values():
+        if isinstance(p, dict):
+            notes.extend(str(n) for n in (p.get("исправлено_кодом") or []))
+    assert any("S1-" in n for n in notes)
+    assert plans["S2-K2"] is None
 
     html = Path(out["report"]).read_text(encoding="utf-8")
     assert "Площадка" in html

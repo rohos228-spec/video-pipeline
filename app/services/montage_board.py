@@ -918,6 +918,14 @@ def _coverage_fields_for_frames(
                 "shot_stitch_label": stitch_label(stitch),
             }
         )
+        if kind == "child" and parent_number:
+            vo_n = row.get("vo_scene_number")
+            try:
+                vo_int = int(vo_n) if vo_n is not None else 0
+            except (TypeError, ValueError):
+                vo_int = 0
+            if vo_int <= 0 or vo_int == int(fr.number):
+                row["vo_scene_number"] = parent_number
         out[fr.number] = row
     return out
 
@@ -1106,12 +1114,16 @@ async def build_montage_board(
         img2_quick = find_shot2_image(scenes_dir, fr.number)
         shot2_info = shot2_by.get(fr.number)
         attrs = fr.attrs or {}
+        from app.services.freeze_stills import frame_needs_end_still
+
+        has_end_still = frame_needs_end_still(fr)
         has_shot2 = bool(
             (shot2_info is not None and shot2_info.has_shot2)
             or (attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
             or (attrs.get(SHOT2_VIDEO_PROMPT_ATTR) or "").strip()
             or img2_quick is not None
             or (vid2 is not None and vid2.is_file())
+            or has_end_still
         )
         has_shot2_video = has_shot2 and vid2 is not None and vid2.is_file()
         frame_videos.append((fr, vid1, vid2, ex, has_shot2, has_shot2_video))
@@ -1148,6 +1160,20 @@ async def build_montage_board(
         shot2_timeline_start = shot1_timeline_end
         shot2_timeline_end = vo_end if has_shot2 else None
         prompts = prompts_by_frame.get(fr.number) or {}
+        from app.services.freeze_stills import (
+            frame_needs_end_still,
+            layout_end_text,
+            layout_start_text,
+            layout_text,
+        )
+
+        layout = layout_text(fr)
+        img1_prompt = (prompts.get("image_prompt_shot1") or "").strip() or layout_start_text(
+            layout
+        )
+        img2_prompt = (prompts.get("image_prompt_shot2") or "").strip() or layout_end_text(
+            layout
+        )
         if is_shot_child(fr):
             characters = ""
             character_refs: list[dict[str, str | None]] = []
@@ -1175,6 +1201,9 @@ async def build_montage_board(
                 "end_ts": fr.end_ts,
                 "duration_seconds": fr.duration_seconds,
                 "has_shot2": has_shot2,
+                "has_end_still": frame_needs_end_still(fr),
+                "layout_start": layout_start_text(layout),
+                "layout_end": layout_end_text(layout),
                 "shot1_use_seconds": shot1_use,
                 "shot2_use_seconds": shot2_use,
                 "shot1_timeline_start": shot1_timeline_start,
@@ -1188,8 +1217,8 @@ async def build_montage_board(
                 "image_parent_url": _preview_url(img_parent),
                 "video_shot1_url": _preview_url(vid1),
                 "video_shot2_url": _preview_url(vid2),
-                "image_prompt_shot1": prompts.get("image_prompt_shot1") or "",
-                "image_prompt_shot2": prompts.get("image_prompt_shot2") or "",
+                "image_prompt_shot1": img1_prompt,
+                "image_prompt_shot2": img2_prompt,
                 "animation_prompt_shot1": prompts.get("animation_prompt_shot1") or "",
                 "animation_prompt_shot2": prompts.get("animation_prompt_shot2") or "",
                 "plan_column": plan_column_for_frame(fr.number),

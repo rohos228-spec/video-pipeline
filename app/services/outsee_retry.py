@@ -1487,6 +1487,7 @@ async def generate_video_with_retries(
                 duration=int(dur) if dur else None,
                 generate_audio=False,
                 reference_image=attempt_kwargs.get("start_frame"),
+                last_frame_image=attempt_kwargs.get("last_frame_image"),
                 prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
                 timeout=float(attempt_kwargs.get("timeout") or 900),
                 gen_id=attempt_kwargs.get("gen_id"),
@@ -1514,8 +1515,13 @@ async def generate_video_with_retries(
             except Exception:  # noqa: BLE001
                 logger.debug("outsee video sidecar skipped", exc_info=True)
             return result
+        cdp_kwargs = {
+            k: v
+            for k, v in attempt_kwargs.items()
+            if k not in {"last_frame_image", "end_frame", "generate_audio"}
+        }
         return await outsee.generate_video(
-            send_prompt, out_path, project_id=project_id, **attempt_kwargs
+            send_prompt, out_path, project_id=project_id, **cdp_kwargs
         )
 
     async def _rewrite_prompt_after_fail(err: BaseException) -> None:

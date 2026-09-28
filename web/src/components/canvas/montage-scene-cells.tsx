@@ -1246,7 +1246,7 @@ export function SceneGenerateBlock({
       {onImprove ? (
         <button
           type="button"
-          title="Ячейка через 3 ноды: действие → кадры → QC. Промт — заказ. Закадр и якоря не входят. Картинки не запускает."
+          title="Ячейка через 3 ноды: действие → кадры → QC. Промт + рефы → still сцены, затем кадры (старт и конец). Закадр и якоря не входят в сюжет."
           disabled={disabled || Boolean(busy)}
           onClick={() => void improve()}
           className={cn(
@@ -1284,8 +1284,8 @@ export function SceneGenerateBlock({
       ) : (
         <p className={cn(HINT, "mt-1.5")}>
           промт — заказ сцены: GPT ставит кадры по нему, не копирует текст
-          в действие. закадр и якоря не задают сюжет. «Улучшить сцену» картинки
-          не запускает.
+          в действие. закадр и якоря не задают сюжет. «Улучшить сцену» пишет
+          сцену, затем картинки: сцена → кадры (промт + рефы).
         </p>
       )}
       {report ? <ImproveReportView report={report} onClose={() => setReport(null)} /> : null}
@@ -1489,15 +1489,18 @@ export function SceneCell({
   anchors,
   data,
   generate,
+  still,
 }: {
   action?: React.ReactNode;
   anchors?: React.ReactNode;
   data?: React.ReactNode;
   generate?: React.ReactNode;
+  still?: React.ReactNode;
 }) {
-  if (!action && !anchors && !data && !generate) return null;
+  if (!action && !anchors && !data && !generate && !still) return null;
   return (
     <div className="min-w-0 space-y-2">
+      {still}
       {generate}
       {action}
       {data}

@@ -149,7 +149,8 @@ type RowKey =
 
 const GRID_ROWS: { key: RowKey; label: string }[] = [
   { key: "voiceover", label: "Закадровый текст" },
-  { key: "image1", label: "Кадр" },
+  { key: "image1", label: "Начальный кадр" },
+  { key: "image2", label: "Конечный кадр" },
   { key: "video1", label: "Видео 1" },
   { key: "timestamps", label: "Таймкоды" },
 ];
@@ -321,6 +322,18 @@ function frameStillUrl(fr: MontageBoardFrame): string {
   return shot1 || parent;
 }
 
+function startStillUrl(fr: MontageBoardFrame): string {
+  return (fr.image_shot1_url || "").trim();
+}
+
+function frameNeedsEndStill(fr: MontageBoardFrame): boolean {
+  if (fr.has_end_still === true || fr.has_shot2 === true) return true;
+  if ((fr.layout_end || "").trim()) return true;
+  if ((fr.image_prompt_shot2 || "").trim()) return true;
+  if ((fr.image_shot2_url || "").trim()) return true;
+  return false;
+}
+
 function patchBoardFrameMedia(
   data: MontageBoardDTO,
   frameNumber: number,
@@ -463,9 +476,10 @@ function coverageCorrection(
     .join(". ");
 }
 
-/** image_ai_change: родительский still, затем shot1 детей. leftover пропускаем. */
+/** Сначала still сцены, затем кадры: старт и при freeze — конец. leftover пропускаем. */
 function sceneImageOpsForFrames(
   frames: MontageBoardFrame[],
+  scenePrompt?: string,
 ): MontagePendingOp[] {
   const live = frames.filter((fr) => !fr.shot_leftover);
   if (!live.length) return [];
@@ -476,7 +490,6 @@ function sceneImageOpsForFrames(
     const p = fr.shot_parent_number;
     if (typeof p === "number" && p >= 1 && p !== fr.number) parentNums.add(p);
   }
-  const hasChild = live.some((fr) => fr.shot_kind === "child");
   const ops: MontagePendingOp[] = [];
   const instructionOf = (fr: MontageBoardFrame, master: boolean) => {
     const pending: PendingCoverage = {
@@ -486,10 +499,9 @@ function sceneImageOpsForFrames(
       move: fr.shot_move,
       characters: (fr.characters || "").trim(),
     };
-    const instruction = coverageCorrection(pending, fr);
-    if (!master) return instruction;
-    return instruction;
+    return coverageCorrection(pending, fr);
   };
+  const sceneInstr = (scenePrompt || "").trim();
   for (const n of [...parentNums].sort((a, b) => a - b)) {
     const fr = byNumber.get(n);
     if (!fr) continue;
@@ -498,25 +510,24 @@ function sceneImageOpsForFrames(
       frame_number: n,
       shot: 1,
       slot: "parent",
-      instruction: instructionOf(fr, true),
+      instruction: sceneInstr || instructionOf(fr, true),
     });
-    if (!hasChild && fr.shot_kind === "parent") {
-      ops.push({
-        type: "image_ai_change",
-        frame_number: n,
-        shot: 1,
-        instruction: instructionOf(fr, false),
-      });
-    }
   }
   for (const fr of live) {
-    if (fr.shot_kind === "parent") continue;
     ops.push({
       type: "image_ai_change",
       frame_number: fr.number,
       shot: 1,
       instruction: instructionOf(fr, false),
     });
+    if (frameNeedsEndStill(fr)) {
+      ops.push({
+        type: "image_ai_change",
+        frame_number: fr.number,
+        shot: 2,
+        instruction: `${instructionOf(fr, false)} Конечный кадр сцены.`,
+      });
+    }
   }
   return ops;
 }
@@ -749,6 +760,8 @@ function parentFrameOf(
 function voSceneNumber(fr: MontageBoardFrame): number {
   const n = fr.vo_scene_number;
   if (typeof n === "number" && n > 0) return n;
+  const parent = fr.shot_parent_number;
+  if (typeof parent === "number" && parent > 0) return parent;
   return fr.number;
 }
 
@@ -2171,13 +2184,19 @@ export function AssembleMontageBoard({
   const colRem = coverageOn ? frameColRem(frameAspect) : FRAME_COL_REM;
   const gridRows = useMemo(() => {
     if (!coverageOn) return GRID_ROWS;
-    // Сверху картинка кадра; строка «Сцены» — последовательность кадров и якоря
-    // всей VO-ячейки. Ниже — данные каждого кадра.
-    const frameRow = GRID_ROWS.filter((r) => r.key === "image1");
+    // Сцена ячейки сверху; под ней начальный и конечный still каждого кадра.
+    const frameRow = GRID_ROWS.filter(
+      (r) => r.key === "image1" || r.key === "image2",
+    );
     const rest = GRID_ROWS.filter(
-      (r) => r.key !== "image1" && r.key !== "voiceover",
+      (r) =>
+        r.key !== "image1" &&
+        r.key !== "image2" &&
+        r.key !== "voiceover" &&
+        r.key !== "scene_info",
     );
     return [
+      { key: "scene_info" as RowKey, label: "Сцена" },
       ...frameRow,
       ...SCENE_SHOT_ROWS,
       ...rest,
@@ -3459,8 +3478,13 @@ export function AssembleMontageBoard({
     const fr = frames.find((f) => f.number === frameNumber);
     if (!fr) return "";
     if (kind === "image") {
+      if (shot === 1) {
+        return (
+          (fr.image_prompt_shot1 || fr.layout_start || "")
+        ).trim();
+      }
       return (
-        (shot === 1 ? fr.image_prompt_shot1 : fr.image_prompt_shot2) ?? ""
+        (fr.image_prompt_shot2 || fr.layout_end || "")
       ).trim();
     }
     return (
@@ -3846,7 +3870,46 @@ export function AssembleMontageBoard({
         });
         afterSceneActionGenerate(frameNumber, frameNumbers, SCENE_IMPROVE_CLEAR_TYPES);
         const extra = Number(res.inserted_frames || 0);
-        toast.message(res.message || `Сцена улучшена${extra ? ` · +${extra} кадров` : ""}`);
+        const live = frames.filter(
+          (fr) => frameNumbers.includes(fr.number) && !fr.shot_leftover,
+        );
+        const apiOps = Array.isArray(res.image_ops)
+          ? (res.image_ops.filter(
+              (op) =>
+                op &&
+                typeof op === "object" &&
+                String(op.type || "").startsWith("image_"),
+            ) as MontagePendingOp[])
+          : [];
+        const ops = apiOps.length ? apiOps : sceneImageOpsForFrames(live, prompt);
+        if (ops.length) {
+          const numbers = [
+            ...new Set(ops.map((op) => Number(op.frame_number))),
+          ].filter((n) => n >= 1);
+          localQueueDirtyRef.current = true;
+          setPendingOps((prev) => {
+            const next = [
+              ...prev.filter(
+                (x) =>
+                  !numbers.includes(x.frame_number) ||
+                  !String(x.type).startsWith("image_"),
+              ),
+              ...ops,
+            ];
+            pendingOpsRef.current = next;
+            persistQueue(next, true);
+            return next;
+          });
+          toast.message(
+            res.message ||
+              `Сцена улучшена${extra ? ` · +${extra} кадров` : ""} · картинки: сцена → кадры`,
+          );
+          await applyMutation.mutateAsync({ frameNumbers: numbers });
+        } else {
+          toast.message(
+            res.message || `Сцена улучшена${extra ? ` · +${extra} кадров` : ""}`,
+          );
+        }
         return res.improve_report;
       } catch (err) {
         toast.error(errorMessageFromUnknown(err));
@@ -3855,13 +3918,13 @@ export function AssembleMontageBoard({
         setFrameEditBusy(false);
       }
     },
-    [afterSceneActionGenerate, projectId],
+    [afterSceneActionGenerate, applyMutation, frames, persistQueue, projectId],
   );
 
   const generateSceneImagesNow = useCallback(
-    async (range: SceneRange) => {
+    async (range: SceneRange, scenePrompt?: string) => {
       if (projectId == null) return;
-      const ops = sceneImageOpsForFrames(range.frames);
+      const ops = sceneImageOpsForFrames(range.frames, scenePrompt);
       if (!ops.length) {
         toast.error("Нет живых кадров сцены для картинок");
         return;
@@ -3909,8 +3972,32 @@ export function AssembleMontageBoard({
     const anchorsPending = range.frames.some((fr) =>
       hasPendingType(fr.number, "coverage_anchors"),
     );
+    const parentStill = (head.image_parent_url || "").trim();
     return (
       <SceneCell
+        still={
+          parentStill ? (
+            <button
+              type="button"
+              title="Still сцены"
+              className="block overflow-hidden rounded-md border border-white/10"
+              onClick={() =>
+                showPreview({
+                  url: parentStill,
+                  kind: "image",
+                  label: `Сцена · #${head.number}`,
+                })
+              }
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={parentStill}
+                alt={`Сцена #${head.number}`}
+                className="max-h-28 w-full object-cover"
+              />
+            </button>
+          ) : null
+        }
         generate={
           projectId != null ? (
             <SceneGenerateBlock
@@ -4550,11 +4637,6 @@ export function AssembleMontageBoard({
                                   {range.frames.length} кадра
                                 </p>
                               ) : null}
-                              {coverageOn ? (
-                                <div className="mt-1.5 font-normal normal-case tracking-normal">
-                                  {renderSceneSpanCell("scene_info", range)}
-                                </div>
-                              ) : null}
                             </th>
                           </Fragment>
                         );
@@ -4612,11 +4694,9 @@ export function AssembleMontageBoard({
                           range.frames.map((fr, fi) => {
                             const isMediaRow =
                               row.key.startsWith("image") || row.key.startsWith("video");
-                            const parentSlot =
-                              fr.shot_kind === "parent" ? ("parent" as const) : undefined;
                             const mediaUrl =
                               row.key === "image1"
-                                ? frameStillUrl(fr)
+                                ? startStillUrl(fr)
                                 : row.key === "image2"
                                   ? fr.image_shot2_url
                                   : row.key === "video1"
@@ -4680,7 +4760,7 @@ export function AssembleMontageBoard({
                                 <TimestampCell fr={fr} />
                               ) : row.key === "image1" ? (
                                 <ClickableMedia
-                                  url={frameStillUrl(fr)}
+                                  url={startStillUrl(fr)}
                                   kind="image"
                                   tall={coverageOn}
                                   tallAspect={frameAspect}
@@ -4728,15 +4808,14 @@ export function AssembleMontageBoard({
                                       />
                                     </>
                                   }
-                                  label={`Кадр #${fr.number} · картинка`}
+                                  label={`Начальный кадр · #${fr.number}`}
                                   onPreview={showPreview}
                                   scrollRootRef={tableScrollRef}
-                                  imageSlot={{ frameNumber: fr.number, shot: 1, slot: parentSlot }}
+                                  imageSlot={{ frameNumber: fr.number, shot: 1 }}
                                   onImageDrop={(from) =>
                                     void handleMoveImage(from, {
                                       frameNumber: fr.number,
                                       shot: 1,
-                                      slot: parentSlot,
                                     })
                                   }
                                   onRegen={() =>
@@ -4744,7 +4823,6 @@ export function AssembleMontageBoard({
                                       type: "image_regen",
                                       frame_number: fr.number,
                                       shot: 1,
-                                      slot: parentSlot,
                                       prompt: sourcePromptFor("image", fr.number, 1),
                                     })
                                   }
@@ -4755,15 +4833,11 @@ export function AssembleMontageBoard({
                                   onRegenWithCorrection={() =>
                                     openPromptModal("image", fr.number, 1, "correction")
                                   }
-                                  onDelete={() => void handleDeleteImage(fr.number, 1, parentSlot)}
+                                  onDelete={() => void handleDeleteImage(fr.number, 1)}
                                   onUpload={(file) =>
-                                    void handleUploadImage(fr.number, 1, file, parentSlot)
+                                    void handleUploadImage(fr.number, 1, file)
                                   }
-                                  slotTone={toneForSlot(
-                                    parentSlot
-                                      ? `${fr.number}:image_parent`
-                                      : `${fr.number}:image1`,
-                                  )}
+                                  slotTone={toneForSlot(`${fr.number}:image1`)}
                                   onSwapPick={() =>
                                     void handleSwapPick({
                                       kind: "image",
@@ -4778,7 +4852,9 @@ export function AssembleMontageBoard({
                                 <ClickableMedia
                                   url={fr.image_shot2_url}
                                   kind="image"
-                                  label={`Изображение 2 · кадр #${fr.number}`}
+                                  tall={coverageOn}
+                                  tallAspect={frameAspect}
+                                  label={`Конечный кадр · #${fr.number}`}
                                   onPreview={showPreview}
                                   scrollRootRef={tableScrollRef}
                                   imageSlot={{ frameNumber: fr.number, shot: 2 }}

@@ -406,8 +406,9 @@ async def test_generate_with_images_falls_back_when_gpt_empty(
     )
     assert result["ok"] is True
     assert "выходит в лес" in (result.get("chain") or "")
-    assert result["images"] == 0
-    assert result["image_ops"] == []
+    assert result["images"] >= 1
+    assert result["image_ops"][0].get("slot") == "parent"
+    assert "выходит в лес" in (result["image_ops"][0].get("instruction") or "")
 
 
 @pytest.mark.asyncio
@@ -457,8 +458,9 @@ async def test_improve_fallback_grows_and_images_new_shots(
     assert result["ok"] is True
     assert result.get("mode") == "improve"
     assert int(result.get("inserted_frames") or 0) == 1
-    assert result["images"] == 0
-    assert result["image_ops"] == []
+    assert result["images"] >= 1
+    assert result["image_ops"][0].get("slot") == "parent"
+    assert "выходит в лес" in (result["image_ops"][0].get("instruction") or "")
     nodes = [n["node"] for n in result["improve_report"]["nodes"]]
     assert nodes == ["fw_action", "fw_shots", "fw_qc", "characters"]
     acts = [s["действие"] for s in result["improve_report"]["shots"]]

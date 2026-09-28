@@ -38,7 +38,7 @@ _GPT_ATTEMPTS = 3
 _BATCH_FOOTER = """
 # BATCH {batch_i}/{batch_n} — только эти {n} кадров из db_frames.json
 Верни ТОЛЬКО валидный JSON (без markdown, без прозы):
-{{"ops":[{{"frame_uuid":"<uuid>","fields":{{"промт_картинки":"…","персонажи":"c01"}}}}]}}
+{{"ops":[{{"frame_uuid":"<uuid>","fields":{{"промт_картинки":"…СТАРТ или процесс…","промт_картинки_2":"…КОНЕЦ или опусти…","персонажи":"c01"}}}}]}}
 
 ЖЁСТКО:
 - `персонажи` ТОЛЬКО внутри `fields`, не рядом с frame_uuid;
@@ -62,18 +62,28 @@ lock / Negative из мастера. Оркестратор НИЧЕГО не д
 - Без читаемого текста, если надпись не задана во входе (никакой каши/латиницы).
 
 === РАСКЛАДКА (план площадки) ===
-- Есть `раскладка` у кадра — это СТАРТ клипа с точки ЭТОЙ камеры: что в глубине,
-  что слева/справа, где люди, куда движутся по экрану, какие двери открыты/закрыты.
-- Пиши Фон/Действие/План по раскладке: лево/право не переворачивай, закрытая дверь
-  на картинке закрыта, идущий стоит там, где сказано (дальше по пути, не на старом месте).
+- Есть `раскладка` у кадра.
+- Если блок «ДЕЙСТВИЕ (процесс в одном кадре)» — картинка = этот процесс
+  в разгаре (один кадр). Не выдумывай пару старт/конец.
+- Если блоки СТАРТ / КОНЕЦ — ДВА промта на один uuid:
+  `промт_картинки` = СТАРТ (первый кадр ДО жеста, точка ЭТОЙ камеры);
+  `промт_картинки_2` = КОНЕЦ (последний кадр действия, тот же сет / лица /
+  камера). Оба полные: сцена + STYLE LOCK / Negative. Не середина жеста.
+  Каждый предмет на указанном месте; двери как в соответствующем блоке.
+- Если блок «ДЕЙСТВИЕ (процесс)» — только `промт_картинки`, поле
+  `промт_картинки_2` не пиши.
+- «В референсе» / «Смена»: как было на предыдущем кадре (PNG родителя) и
+  как должно измениться. Смена плана = угол камеры ≥30° (другая точка или
+  другой ракурс). Лево/право не переворачивай.
 - Другая `зона` чем у родителя (внутри дома vs улица) — фон этой зоны, не фасад родителя.
 
 === ДЕЙСТВИЕ / АНТИ-TWIN (КРИТИЧНО) ===
-- Action = mid-motion freeze (тело/рука/предмет В ДВИЖЕНИИ), не поза.
-- БРАК: стоит/сидит/смотрит/замер/posed/standing looking без глагола движения.
+- Action = из раскладки: процесс в разгаре ИЛИ СТАРТ до жеста. Не «замер без глагола».
+- БРАК: стоит/сидит/смотрит/замер/posed/standing looking без указания, какой жест сейчас в кадре.
+- БРАК: «жест завершён», «листы видны» без того, ЧТО на листах и КАКОЙ жест.
 - Один place на соседних кадрах = ЦЕПЬ фаз (не 4 одинаковых постера).
-- Соседи отличаются ≥2 из: фаза действия, поза тела, состояние пропа, камера/accent.
-- Визуальный twin (тот же силуэт+prop+дистанция) = брак — перепиши Action/камеру.
+- Соседи отличаются ≥2 из: фаза, поза тела, состояние пропа, камера/accent.
+- Визуальный twin (тот же силуэт+prop+дистанция+тот же угол) = брак — перепиши Action/камеру (≥30°).
 
 === COVERAGE K2/K3 (КРИТИЧНО) ===
 Если у кадра есть coverage_parent — это НЕ новая сцена, а следующий ракурс той же.
@@ -88,7 +98,7 @@ Change: camera + действие ЭТОГО шота (shot01_description / shot
 
 _FOLLOWUP_MSG = """
 Следующий батч. Те же правила. Полный промт: сцена + STYLE LOCK / Negative.
-Фон и план священны; ≤4877; 1 cXX = 1 тело; 2 cXX = 2 разных лица; mid-motion; анти-клон.
+Фон и план священны; ≤4877; 1 cXX = 1 тело; 2 cXX = 2 разных лица; СТАРТ до жеста; анти-клон.
 K2/K3 с coverage_parent: Preserve/Change, тот же сет/состав/предметы что у родителя, только камера.
 Мастер-промт и db_frames.json во вложении — только кадры этого батча.
 {footer}
@@ -225,13 +235,16 @@ def repartition_remaining(
     )
 
 
-_PROMPT_FIELD_KEYS = (
+_SHOT1_PROMPT_KEYS = (
     "промт_картинки",
     "image_prompt",
     "промпт_картинки",
+)
+_SHOT2_PROMPT_KEYS = (
     "промт_картинки_2",
     "image_prompt_shot2",
 )
+_PROMPT_FIELD_KEYS = _SHOT1_PROMPT_KEYS + _SHOT2_PROMPT_KEYS
 
 
 _FRAME_UUID_RE = re.compile(r"^[a-fA-F0-9]{3,64}$")
@@ -244,12 +257,29 @@ def _is_real_frame_uuid(value: Any) -> bool:
     return bool(_FRAME_UUID_RE.fullmatch(str(value or "").strip()))
 
 
-def _prompt_text_of(fields: dict[str, Any]) -> str:
-    for key in _PROMPT_FIELD_KEYS:
+def _field_prompt(fields: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
         text = str(fields.get(key) or "").strip()
         if text:
             return text
     return ""
+
+
+def _shot1_prompt_of(fields: dict[str, Any]) -> str:
+    return _field_prompt(fields, _SHOT1_PROMPT_KEYS)
+
+
+def _shot2_prompt_of(fields: dict[str, Any]) -> str:
+    return _field_prompt(fields, _SHOT2_PROMPT_KEYS)
+
+
+def _prompt_text_of(fields: dict[str, Any]) -> str:
+    return _shot1_prompt_of(fields) or _shot2_prompt_of(fields)
+
+
+def _prompt_slot_ok(text: str) -> bool:
+    body = (text or "").strip()
+    return bool(body) and body not in _PLACEHOLDER_PROMPT and len(body) >= 12
 
 
 def filter_prompt_ops(ops: list[Any]) -> list[dict]:
@@ -280,8 +310,9 @@ def filter_prompt_ops(ops: list[Any]) -> list[dict]:
         uid = str(op.get("frame_uuid") or op.get("uuid") or "").strip()
         if not _is_real_frame_uuid(uid):
             continue
-        prompt = _prompt_text_of(fields)
-        if prompt in _PLACEHOLDER_PROMPT or len(prompt) < 12:
+        shot1 = _shot1_prompt_of(fields)
+        shot2 = _shot2_prompt_of(fields)
+        if not _prompt_slot_ok(shot1) and not _prompt_slot_ok(shot2):
             continue
         out = {**op, "fields": fields}
         if uid and not str(out.get("frame_uuid") or "").strip():
@@ -294,8 +325,13 @@ def writeable_img_pr_ops(ops: list[Any]) -> list[dict]:
     """Ops, которые можно писать в DB: реальный uuid + полный промт."""
     kept: list[dict] = []
     for op in filter_prompt_ops(ops):
-        text = _prompt_text_of(op.get("fields") or {})
-        if len(text) < IMG_PR_MIN_WRITE_CHARS:
+        fields = op.get("fields") or {}
+        shot1 = _shot1_prompt_of(fields)
+        shot2 = _shot2_prompt_of(fields)
+        if (
+            len(shot1) < IMG_PR_MIN_WRITE_CHARS
+            and len(shot2) < IMG_PR_MIN_WRITE_CHARS
+        ):
             continue
         kept.append(op)
     return kept
