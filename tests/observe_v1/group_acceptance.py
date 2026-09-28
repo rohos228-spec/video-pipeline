@@ -110,6 +110,13 @@ async def run():
                 kinds = {key: [e["kind"] for e in history["events"] if e["node_key"] == key] for key in fixtures.NODES}
                 for key in fixtures.NODES:
                     assert "node_start" in kinds[key] and "node_end" in kinds[key], (key, kinds[key])
+                for key in fixtures.NODES[:-1]:
+                    assert "model_start" in kinds[key] and "model_end" in kinds[key], (key, kinds[key])
+                assert "artifact_created" in kinds[fixtures.NODES[-1]]
+                assert "node_input" in kinds[fixtures.NODES[-1]]
+                if mode == "malformed":
+                    assert "json_retry" in kinds[fixtures.NODES[0]]
+                    assert "parse_result" in kinds[fixtures.NODES[0]]
                 response = await client.get(base + f"/observations/{execution_id}/context")
                 response.raise_for_status()
                 result["context"] = response.json()
