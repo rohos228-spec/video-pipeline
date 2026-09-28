@@ -125,15 +125,57 @@ async def context(project_id: int, execution_id: str):
                   if row.kind == "node_start" and row.attempt_id not in end_attempts]
     if incomplete:
         gaps.append({"kind": "attempts_without_recorded_end", "attempts": incomplete})
+    ended_requests = {row.request_id for row in rows if row.kind in {"model_end", "model_error"}}
+    stream_completed = {row.request_id for row in rows if row.kind == "model_stream_event" and row.payload.get("complete")}
+    pending_requests = [{"request_id": row.request_id, "node_key": row.node_key,
+                         "transport_completed": row.request_id in stream_completed,
+                         "completion_unknown": row.request_id not in stream_completed}
+                        for row in rows if row.kind == "model_start" and row.request_id not in ended_requests]
+    if pending_requests:
+        gaps.append({"kind": "requests_without_recorded_end", "requests": pending_requests})
+    for row in rows:
+        reference = (row.payload or {}).get("body")
+        if isinstance(reference, dict) and reference.get("gap"):
+            gaps.append({"kind": "body_not_saved", "event_id": row.event_id, "reason": reference["gap"]})
+        elif isinstance(reference, dict) and reference.get("path"):
+            target = (observer.body_root / reference["path"]).resolve()
+            if not target.is_relative_to(observer.body_root.resolve()) or not target.is_file():
+                gaps.append({"kind": "body_not_available", "event_id": row.event_id})
     if execution_id in observer.failures:
         gaps.append({"kind": "observer_error", "error_type": observer.failures[execution_id]})
-    result.update({"master": master, "project": replica,
+    node_contexts = {}
+    for key in scope.node_keys:
+        node_rows = [row for row in rows if row.node_key == key]
+        start = next((row for row in node_rows if row.kind == "node_start"), None)
+        model = next((row for row in node_rows if row.kind == "model_start"), None)
+        node_contexts[key] = {
+            "latest_attempt_id": start.attempt_id if start else None,
+            "model": model.payload.get("model") if model else None,
+            "settings_revision": model.payload.get("settings_revision") if model else None,
+            "input_refs": [{"event_id": row.event_id, "request_id": row.request_id,
+                            "body": row.payload.get("body")} for row in node_rows
+                           if row.kind in {"model_start", "node_input", "apply_input"}],
+            "output_refs": [{"event_id": row.event_id, "request_id": row.request_id,
+                             "body": row.payload.get("body")} for row in node_rows
+                            if row.kind in {"model_end", "node_output", "artifact_created"}],
+            "checks": [{"kind": row.kind, "request_id": row.request_id, "result": row.payload}
+                       for row in node_rows if row.kind in {"parse_result", "domain_check"}],
+            "retry_recorded": any(row.kind == "json_retry" for row in node_rows),
+        }
+    problem = next((row for row in rows if row.kind in {"node_error", "model_error", "apply_error"}
+                    or (row.kind == "parse_result" and row.payload.get("payload_required")
+                        and not row.payload.get("payload_present"))), None)
+    result.update({"master": master, "project": replica, "node_contexts": node_contexts,
         "disagreement": replica is not None and master != replica,
         "business_group_outcome": outcome,
         "current_nodes": [key for key, state in states.items() if state["status"] in {"running", "queued", "waiting_hitl"}],
-        "latest_problem": next(({"kind": r.kind, "node_key": r.node_key, "payload": r.payload}
-                                for r in rows if r.kind in {"node_error", "parse_error", "observer_error"}), None),
+        "latest_problem": {"kind": problem.kind, "node_key": problem.node_key,
+            "event_id": problem.event_id, "request_id": problem.request_id, "payload": problem.payload,
+            "later_apply_committed": any(row.node_key == problem.node_key and row.id > problem.id
+                                        and row.kind == "data_applied" for row in rows)} if problem else None,
         "data_gaps": gaps,
-        "unknown": ["Semantic diagnosis is not implemented", "Scope does not stop the pipeline"],
+        "unknown": ["Semantic diagnosis is not implemented", "Scope does not stop the pipeline",
+                    "Formal node schema validation is not instrumented", "Queue/HITL/operator stop details are not instrumented"],
+        "history_window_limited": len(rows) == 500,
     })
     return result

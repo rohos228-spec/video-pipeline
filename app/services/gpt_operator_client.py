@@ -391,7 +391,7 @@ async def _run_operator_api_real(
         apply_ops = extract_apply_ops_json(reply_text or "")
         from app.services.observation import record_parse
 
-        await record_parse(reply_text or "", apply_ops)
+        await record_parse(reply_text or "", apply_ops, payload_required=not is_check)
         if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
             if not (check_mode and not check_fix):
                 logger.warning(

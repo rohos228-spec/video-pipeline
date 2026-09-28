@@ -181,6 +181,21 @@ asyncio.run(main())
             body = rows[-1].payload["body"]
             self.assertIn("synthetic partial", (self.root / "bodies" / body["path"]).read_text())
 
+    async def test_stop_prevents_further_attempt_events_but_drains_committed_tail(self):
+        from app.services.observation import emit, observe_attempt
+        async with self.master() as session:
+            project = await session.get(Project, 2)
+            project.meta = {"active_excel_gpt_node_key": "script"}
+            await session.commit()
+            async with observe_attempt(session, project):
+                await self.observer.stop(self.scope.execution_id)
+                emit("must_not_be_recorded", {"synthetic": True})
+            await session.commit()
+        await self.observer.catch_up()
+        async with self.master() as session:
+            rows = (await session.scalars(select(observation.ObservationEvent))).all()
+            self.assertEqual([r.kind for r in rows], ["node_start"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

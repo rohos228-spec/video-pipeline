@@ -402,6 +402,7 @@ async def record_parse(text, parsed, *, payload_required=True):
     ctx = _attempt.get()
     await record_fact("parse_result", {"syntax_valid": syntax_valid,
         "parsed": parsed is not None, "schema_valid": None,
+        "contract": "json_apply_ops" if payload_required else "text_verdict_or_optional_apply_ops",
         "schema_note": "Extraction does not prove node schema validation",
         "payload_required": payload_required,
         "payload_present": bool(parsed and any(parsed.get(k) for k in ("ops", "characters", "scenes", "actions"))),
