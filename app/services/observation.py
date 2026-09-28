@@ -132,6 +132,7 @@ class Observer:
         if not node_keys or len(set(node_keys)) != len(node_keys):
             raise ValueError("Explicit, unique node scope required")
         async with self._enable_lock:
+            await self.ensure_project_schema(project_id)
             async with self.master() as session:
                 existing = (await session.scalars(select(ExecutionControl).where(
                     ExecutionControl.project_id == project_id,
@@ -148,12 +149,26 @@ class Observer:
             self.scopes[workflow_run_id] = scope
             return scope
 
+    async def ensure_project_schema(self, project_id):
+        # Existing project.db files bypass init_project_db at application startup.
+        # Migrate only the explicitly observed source before installing its scope.
+        async with self.master() as session:
+            project = await session.get(Project, project_id)
+            directory = project.data_dir if project else None
+        if directory and (Path(directory) / "project.db").exists():
+            from app.project_db import get_project_engine
+            engine = await get_project_engine(directory)
+            async with engine.begin() as conn:
+                await migrate_observation_schema(conn)
+
     async def reload(self):
         async with self.master() as session:
             scopes = (await session.scalars(select(ExecutionControl).where(
                 ExecutionControl.observer_state.in_(["active", "degraded"])
             ))).all()
-            self.scopes = {s.workflow_run_id: s for s in scopes}
+        for scope in scopes:
+            await self.ensure_project_schema(scope.project_id)
+        self.scopes = {s.workflow_run_id: s for s in scopes}
 
     async def stop(self, execution_id):
         async with self.master() as session:
