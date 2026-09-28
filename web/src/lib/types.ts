@@ -374,6 +374,8 @@ export interface MontageBoardFrame {
   has_shot2: boolean;
   /** Freeze СТАРТ/КОНЕЦ: колонка конечного still, даже без PNG. */
   has_end_still?: boolean;
+  /** В кадре есть текст раскладки — иначе конечный кадр не угадываем. */
+  has_layout?: boolean;
   layout_start?: string;
   layout_end?: string;
   shot1_use_seconds: number | null;

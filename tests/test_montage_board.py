@@ -400,8 +400,67 @@ async def test_montage_board_freeze_layout_exposes_end_still(
     row = board["frames"][0]
     assert row["has_shot2"] is True
     assert row["has_end_still"] is True
+    assert row["has_layout"] is True
     assert "рука над стопкой" in (row.get("layout_start") or "")
     assert "ладонь на стопке" in (row.get("layout_end") or row.get("image_prompt_shot2") or "")
+
+
+@pytest.mark.asyncio
+async def test_montage_board_process_layout_has_no_end_still(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    wb.save(xlsx)
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        image_prompt="",
+        status="planned",
+        attrs={
+            "раскладка": (
+                "ДЕЙСТВИЕ (процесс в одном кадре): идёт по коридору. План СРЕДНИЙ."
+            )
+        },
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+    board = await build_montage_board(session, montage_project)
+    row = board["frames"][0]
+    assert row["has_end_still"] is False
+    assert row["has_layout"] is True
+
+
+@pytest.mark.asyncio
+async def test_montage_board_empty_layout_marks_unknown_end(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    wb.save(xlsx)
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        image_prompt="",
+        status="planned",
+        attrs={},
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+    board = await build_montage_board(session, montage_project)
+    row = board["frames"][0]
+    assert row["has_end_still"] is False
+    assert row["has_layout"] is False
 
 
 @pytest.mark.asyncio

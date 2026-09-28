@@ -149,8 +149,7 @@ type RowKey =
 
 const GRID_ROWS: { key: RowKey; label: string }[] = [
   { key: "voiceover", label: "Закадровый текст" },
-  { key: "image1", label: "Начальный кадр" },
-  { key: "image2", label: "Конечный кадр" },
+  { key: "image1", label: "Кадры" },
   { key: "video1", label: "Видео 1" },
   { key: "timestamps", label: "Таймкоды" },
 ];
@@ -326,10 +325,23 @@ function startStillUrl(fr: MontageBoardFrame): string {
   return (fr.image_shot1_url || "").trim();
 }
 
-/** Только freeze СТАРТ/КОНЕЦ: у legacy shot2 вторая картинка — отдельный шот, не конец. */
+type EndStillState = "yes" | "no" | "unknown";
+
+/** Конечный still только у СТАРТ/КОНЕЦ. Пустая раскладка — не угадываем. */
+function endStillState(fr: MontageBoardFrame): EndStillState {
+  if (fr.has_end_still === true) return "yes";
+  if (fr.has_layout === false) return "unknown";
+  if (fr.has_layout === true) return "no";
+  if (fr.has_end_still === false) return "no";
+  return "unknown";
+}
+
 function frameNeedsEndStill(fr: MontageBoardFrame): boolean {
-  if (fr.has_end_still === true) return true;
-  return Boolean((fr.layout_end || "").trim());
+  return endStillState(fr) === "yes";
+}
+
+function framePairRem(fr: MontageBoardFrame, colRem: number): number {
+  return endStillState(fr) === "yes" ? colRem * 2 : colRem;
 }
 
 function patchBoardFrameMedia(
@@ -836,10 +848,9 @@ function sceneColSpan(frameCount: number): number {
   return Math.max(1, frameCount * 2 - 1);
 }
 
-function sceneBlockWidthPx(frameCount: number, colRem: number): number {
-  return (
-    frameCount * colRem * 16 + Math.max(0, frameCount - 1) * SHOT_GAP_REM * 16
-  );
+function sceneBlockWidthPx(frames: MontageBoardFrame[], colRem: number): number {
+  const cols = frames.reduce((sum, fr) => sum + framePairRem(fr, colRem), 0);
+  return cols * 16 + Math.max(0, frames.length - 1) * SHOT_GAP_REM * 16;
 }
 
 function MontageColGroup({
@@ -850,7 +861,6 @@ function MontageColGroup({
   colRem: number;
 }) {
   const label = 11 * 16;
-  const frame = colRem * 16;
   const scene = SCENE_GAP_REM * 16;
   const shot = SHOT_GAP_REM * 16;
   return (
@@ -861,7 +871,7 @@ function MontageColGroup({
           <col style={{ width: scene }} />
           {range.frames.map((fr, fi) => (
             <Fragment key={`colf-${fr.frame_id}`}>
-              <col style={{ width: frame }} />
+              <col style={{ width: framePairRem(fr, colRem) * 16 }} />
               {fi < range.frames.length - 1 ? (
                 <col style={{ width: shot }} />
               ) : null}
@@ -2182,14 +2192,11 @@ export function AssembleMontageBoard({
   const colRem = coverageOn ? frameColRem(frameAspect) : FRAME_COL_REM;
   const gridRows = useMemo(() => {
     if (!coverageOn) return GRID_ROWS;
-    // Сцена ячейки сверху; под ней начальный и конечный still каждого кадра.
-    const frameRow = GRID_ROWS.filter(
-      (r) => r.key === "image1" || r.key === "image2",
-    );
+    // Сцена ячейки сверху; под ней кадры: старт и рядом конец, если freeze.
+    const frameRow = GRID_ROWS.filter((r) => r.key === "image1");
     const rest = GRID_ROWS.filter(
       (r) =>
         r.key !== "image1" &&
-        r.key !== "image2" &&
         r.key !== "voiceover" &&
         r.key !== "scene_info",
     );
@@ -3592,7 +3599,6 @@ export function AssembleMontageBoard({
 
   const tableWidthPx = useMemo(() => {
     const rowLabel = 11 * 16;
-    const col = colRem * 16;
     const sceneGap = SCENE_GAP_REM * 16;
     const shotGap = SHOT_GAP_REM * 16;
     const sceneGaps = frames.length > 0 ? ranges.length + 1 : 0;
@@ -3600,8 +3606,12 @@ export function AssembleMontageBoard({
       (n, r) => n + Math.max(0, r.frames.length - 1),
       0,
     );
-    return rowLabel + frames.length * col + sceneGaps * sceneGap + shotGaps * shotGap;
-  }, [frames.length, ranges, colRem]);
+    const framePx = frames.reduce(
+      (sum, fr) => sum + framePairRem(fr, colRem) * 16,
+      0,
+    );
+    return rowLabel + framePx + sceneGaps * sceneGap + shotGaps * shotGap;
+  }, [frames, ranges, colRem]);
 
   const syncScrollLeft = useCallback((from: HTMLDivElement, to: HTMLDivElement) => {
     if (Math.abs(to.scrollLeft - from.scrollLeft) < 0.5) return;
@@ -4529,7 +4539,7 @@ export function AssembleMontageBoard({
                                   "border-b border-white/10 px-1.5 py-2 text-center font-mono text-xs",
                                   fi === 0 ? "border-l border-white/15" : null,
                                 )}
-                                style={frameColStyle(colRem)}
+                                style={frameColStyle(framePairRem(fr, colRem))}
                               >
                                 <span className="flex items-center justify-center gap-1">
                                   <span>#{fr.number}</span>
@@ -4605,7 +4615,7 @@ export function AssembleMontageBoard({
                             <GapCell as="th" gap="scene" />
                             <th
                               colSpan={sceneColSpan(range.frames.length)}
-                              style={{ width: sceneBlockWidthPx(range.frames.length, colRem) }}
+                              style={{ width: sceneBlockWidthPx(range.frames, colRem) }}
                               className="border-b border-x border-white/20 bg-white/[0.05] px-2 py-1.5 text-left align-top"
                             >
                               <p className="flex items-center gap-1.5 truncate text-[11px] font-semibold text-white/80">
@@ -4679,7 +4689,7 @@ export function AssembleMontageBoard({
                           {SCENE_SPAN_ROWS.has(row.key) ? (
                             <td
                               colSpan={sceneColSpan(range.frames.length)}
-                              style={{ width: sceneBlockWidthPx(range.frames.length, colRem) }}
+                              style={{ width: sceneBlockWidthPx(range.frames, colRem) }}
                               className="border-l border-white/15 px-2 py-2 align-top"
                             >
                               {collapsed ? (
@@ -4690,18 +4700,18 @@ export function AssembleMontageBoard({
                             </td>
                           ) : (
                           range.frames.map((fr, fi) => {
+                            const pairRem = framePairRem(fr, colRem);
+                            const endState = endStillState(fr);
                             const isMediaRow =
                               row.key.startsWith("image") || row.key.startsWith("video");
                             const mediaUrl =
                               row.key === "image1"
-                                ? startStillUrl(fr)
-                                : row.key === "image2"
-                                  ? fr.image_shot2_url
-                                  : row.key === "video1"
-                                    ? fr.video_shot1_url
-                                    : row.key === "video2"
-                                      ? fr.video_shot2_url
-                                      : "";
+                                ? `${startStillUrl(fr)}|${endState === "yes" ? fr.image_shot2_url || "" : ""}`
+                                : row.key === "video1"
+                                  ? fr.video_shot1_url
+                                  : row.key === "video2"
+                                    ? fr.video_shot2_url
+                                    : "";
                             return (
                             <Fragment key={
                               isMediaRow
@@ -4716,9 +4726,9 @@ export function AssembleMontageBoard({
                               )}
                               style={
                                 isMediaRow || row.key === "voiceover"
-                                  ? frameColStyle(colRem)
+                                  ? frameColStyle(pairRem)
                                   : {
-                                      ...frameColStyle(colRem),
+                                      ...frameColStyle(pairRem),
                                       contentVisibility: "auto",
                                       // `auto` = помнить последний размер клетки:
                                       // иначе отрисовка соседней строки меняла
@@ -4757,139 +4767,192 @@ export function AssembleMontageBoard({
                               ) : row.key === "timestamps" ? (
                                 <TimestampCell fr={fr} />
                               ) : row.key === "image1" ? (
-                                <ClickableMedia
-                                  url={startStillUrl(fr)}
-                                  kind="image"
-                                  tall={coverageOn}
-                                  tallAspect={frameAspect}
-                                  overlay={null}
-                                  caption={
-                                    <>
-                                      {coverageOn ? renderSceneFrameCell("role", fr) : null}
-                                      {coverageOn ? (
-                                        <CoverageMenu
-                                          title={`покрытие кадра #${fr.number}`}
-                                          groups={coverageGroups(fr)}
-                                          disabled={sceneDisabled}
-                                        />
-                                      ) : null}
-                                      <FrameRefsStrip
-                                        projectId={projectId}
-                                        frame={frameForRefs(
-                                          fr,
-                                          pendingCoverageForFrame(pendingOps, fr.number),
-                                          kindOverride[fr.number],
-                                        )}
-                                        parentFrame={
-                                          effectiveShotKind(
-                                            fr,
-                                            pendingCoverageForFrame(pendingOps, fr.number),
-                                            kindOverride[fr.number],
-                                          ) === "parent"
-                                            ? null
-                                            : parentFrameOf(frames, fr)
-                                        }
-                                        pendingKind={
-                                          effectiveShotKind(
-                                            fr,
-                                            pendingCoverageForFrame(pendingOps, fr.number),
-                                            kindOverride[fr.number],
-                                          ) || undefined
-                                        }
-                                        onPromoteToParent={() =>
-                                          applyKindNow(fr.number, "parent")
-                                        }
-                                        kinds={board.data?.ref_kind_choices}
-                                        disabled={frameEditBusy || applyRunning}
+                                <div className="flex flex-col gap-1">
+                                  <div className="flex items-start gap-1">
+                                    <div className="min-w-0 flex-1">
+                                      <ClickableMedia
+                                        url={startStillUrl(fr)}
+                                        kind="image"
+                                        tall={coverageOn}
+                                        tallAspect={frameAspect}
+                                        overlay={null}
+                                        label={`Начальный кадр · #${fr.number}`}
                                         onPreview={showPreview}
-                                        onChanged={() => void board.refetch()}
+                                        scrollRootRef={tableScrollRef}
+                                        imageSlot={{ frameNumber: fr.number, shot: 1 }}
+                                        onImageDrop={(from) =>
+                                          void handleMoveImage(from, {
+                                            frameNumber: fr.number,
+                                            shot: 1,
+                                          })
+                                        }
+                                        onRegen={() =>
+                                          queueOp({
+                                            type: "image_regen",
+                                            frame_number: fr.number,
+                                            shot: 1,
+                                            prompt: sourcePromptFor("image", fr.number, 1),
+                                          })
+                                        }
+                                        onEditPrompt={() =>
+                                          openPromptModal("image", fr.number, 1, "prompt")
+                                        }
+                                        onAiChange={() =>
+                                          openAiChangeModal("image", fr.number, 1)
+                                        }
+                                        onRegenWithCorrection={() =>
+                                          openPromptModal(
+                                            "image",
+                                            fr.number,
+                                            1,
+                                            "correction",
+                                          )
+                                        }
+                                        onDelete={() =>
+                                          void handleDeleteImage(fr.number, 1)
+                                        }
+                                        onUpload={(file) =>
+                                          void handleUploadImage(fr.number, 1, file)
+                                        }
+                                        slotTone={toneForSlot(`${fr.number}:image1`)}
+                                        onSwapPick={() =>
+                                          void handleSwapPick({
+                                            kind: "image",
+                                            frameNumber: fr.number,
+                                            shot: 1,
+                                          })
+                                        }
+                                        swapSelected={isSwapSelected(
+                                          "image",
+                                          fr.number,
+                                          1,
+                                        )}
+                                        swapBusy={swapBusy}
                                       />
-                                    </>
-                                  }
-                                  label={`Начальный кадр · #${fr.number}`}
-                                  onPreview={showPreview}
-                                  scrollRootRef={tableScrollRef}
-                                  imageSlot={{ frameNumber: fr.number, shot: 1 }}
-                                  onImageDrop={(from) =>
-                                    void handleMoveImage(from, {
-                                      frameNumber: fr.number,
-                                      shot: 1,
-                                    })
-                                  }
-                                  onRegen={() =>
-                                    queueOp({
-                                      type: "image_regen",
-                                      frame_number: fr.number,
-                                      shot: 1,
-                                      prompt: sourcePromptFor("image", fr.number, 1),
-                                    })
-                                  }
-                                  onEditPrompt={() => openPromptModal("image", fr.number, 1, "prompt")}
-                                  onAiChange={() =>
-                                    openAiChangeModal("image", fr.number, 1)
-                                  }
-                                  onRegenWithCorrection={() =>
-                                    openPromptModal("image", fr.number, 1, "correction")
-                                  }
-                                  onDelete={() => void handleDeleteImage(fr.number, 1)}
-                                  onUpload={(file) =>
-                                    void handleUploadImage(fr.number, 1, file)
-                                  }
-                                  slotTone={toneForSlot(`${fr.number}:image1`)}
-                                  onSwapPick={() =>
-                                    void handleSwapPick({
-                                      kind: "image",
-                                      frameNumber: fr.number,
-                                      shot: 1,
-                                    })
-                                  }
-                                  swapSelected={isSwapSelected("image", fr.number, 1)}
-                                  swapBusy={swapBusy}
-                                />
-                              ) : row.key === "image2" ? (
-                                <ClickableMedia
-                                  url={fr.image_shot2_url}
-                                  kind="image"
-                                  tall={coverageOn}
-                                  tallAspect={frameAspect}
-                                  label={`Конечный кадр · #${fr.number}`}
-                                  onPreview={showPreview}
-                                  scrollRootRef={tableScrollRef}
-                                  imageSlot={{ frameNumber: fr.number, shot: 2 }}
-                                  onImageDrop={(from) =>
-                                    void handleMoveImage(from, {
-                                      frameNumber: fr.number,
-                                      shot: 2,
-                                    })
-                                  }
-                                  onRegen={() =>
-                                    queueOp({
-                                      type: "image_regen",
-                                      frame_number: fr.number,
-                                      shot: 2,
-                                      prompt: sourcePromptFor("image", fr.number, 2),
-                                    })
-                                  }
-                                  onEditPrompt={() => openPromptModal("image", fr.number, 2, "prompt")}
-                                  onAiChange={() =>
-                                    openAiChangeModal("image", fr.number, 2)
-                                  }
-                                  onRegenWithCorrection={() =>
-                                    openPromptModal("image", fr.number, 2, "correction")
-                                  }
-                                  onDelete={() => void handleDeleteImage(fr.number, 2)}
-                                  onUpload={(file) => void handleUploadImage(fr.number, 2, file)}
-                                  slotTone={toneForSlot(`${fr.number}:image2`)}
-                                  onSwapPick={() =>
-                                    void handleSwapPick({
-                                      kind: "image",
-                                      frameNumber: fr.number,
-                                      shot: 2,
-                                    })
-                                  }
-                                  swapSelected={isSwapSelected("image", fr.number, 2)}
-                                  swapBusy={swapBusy}
-                                />
+                                    </div>
+                                    {endState === "yes" ? (
+                                      <div className="min-w-0 flex-1">
+                                        <ClickableMedia
+                                          url={fr.image_shot2_url}
+                                          kind="image"
+                                          tall={coverageOn}
+                                          tallAspect={frameAspect}
+                                          label={`Конечный кадр · #${fr.number}`}
+                                          onPreview={showPreview}
+                                          scrollRootRef={tableScrollRef}
+                                          imageSlot={{
+                                            frameNumber: fr.number,
+                                            shot: 2,
+                                          }}
+                                          onImageDrop={(from) =>
+                                            void handleMoveImage(from, {
+                                              frameNumber: fr.number,
+                                              shot: 2,
+                                            })
+                                          }
+                                          onRegen={() =>
+                                            queueOp({
+                                              type: "image_regen",
+                                              frame_number: fr.number,
+                                              shot: 2,
+                                              prompt: sourcePromptFor(
+                                                "image",
+                                                fr.number,
+                                                2,
+                                              ),
+                                            })
+                                          }
+                                          onEditPrompt={() =>
+                                            openPromptModal(
+                                              "image",
+                                              fr.number,
+                                              2,
+                                              "prompt",
+                                            )
+                                          }
+                                          onAiChange={() =>
+                                            openAiChangeModal("image", fr.number, 2)
+                                          }
+                                          onRegenWithCorrection={() =>
+                                            openPromptModal(
+                                              "image",
+                                              fr.number,
+                                              2,
+                                              "correction",
+                                            )
+                                          }
+                                          onDelete={() =>
+                                            void handleDeleteImage(fr.number, 2)
+                                          }
+                                          onUpload={(file) =>
+                                            void handleUploadImage(fr.number, 2, file)
+                                          }
+                                          slotTone={toneForSlot(
+                                            `${fr.number}:image2`,
+                                          )}
+                                          onSwapPick={() =>
+                                            void handleSwapPick({
+                                              kind: "image",
+                                              frameNumber: fr.number,
+                                              shot: 2,
+                                            })
+                                          }
+                                          swapSelected={isSwapSelected(
+                                            "image",
+                                            fr.number,
+                                            2,
+                                          )}
+                                          swapBusy={swapBusy}
+                                        />
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                  {endState === "unknown" ? (
+                                    <p className="px-0.5 text-[11px] leading-snug text-muted-foreground">
+                                      Раскладка пустая — неясно, нужен ли конечный
+                                      кадр
+                                    </p>
+                                  ) : null}
+                                  {coverageOn ? renderSceneFrameCell("role", fr) : null}
+                                  {coverageOn ? (
+                                    <CoverageMenu
+                                      title={`покрытие кадра #${fr.number}`}
+                                      groups={coverageGroups(fr)}
+                                      disabled={sceneDisabled}
+                                    />
+                                  ) : null}
+                                  <FrameRefsStrip
+                                    projectId={projectId}
+                                    frame={frameForRefs(
+                                      fr,
+                                      pendingCoverageForFrame(pendingOps, fr.number),
+                                      kindOverride[fr.number],
+                                    )}
+                                    parentFrame={
+                                      effectiveShotKind(
+                                        fr,
+                                        pendingCoverageForFrame(pendingOps, fr.number),
+                                        kindOverride[fr.number],
+                                      ) === "parent"
+                                        ? null
+                                        : parentFrameOf(frames, fr)
+                                    }
+                                    pendingKind={
+                                      effectiveShotKind(
+                                        fr,
+                                        pendingCoverageForFrame(pendingOps, fr.number),
+                                        kindOverride[fr.number],
+                                      ) || undefined
+                                    }
+                                    onPromoteToParent={() =>
+                                      applyKindNow(fr.number, "parent")
+                                    }
+                                    kinds={board.data?.ref_kind_choices}
+                                    disabled={frameEditBusy || applyRunning}
+                                    onPreview={showPreview}
+                                    onChanged={() => void board.refetch()}
+                                  />
+                                </div>
                               ) : row.key === "video1" ? (
                                 <VideoMediaCell
                                   fr={fr}

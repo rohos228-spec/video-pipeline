@@ -132,13 +132,15 @@ def test_ui_has_start_end_rows() -> None:
         / "web/src/components/canvas/assemble-montage-board.tsx"
     )
     text = board.read_text(encoding="utf-8")
-    assert 'key: "image2"' in text
+    assert 'key: "image1"' in text
+    assert 'label: "Кадры"' in text
     assert "Начальный кадр" in text
     assert "Конечный кадр" in text
+    assert "endStillState" in text
+    assert "неясно, нужен ли конечный" in text
     assert "layout_end" in text
     assert "shot_parent_number" in text
     assert "startStillUrl" in text
-    assert "нет конечного кадра" not in text
     assert '{ key: "scene_info" as RowKey, label: "Сцена" }' in text
     assert text.index('{ key: "scene_info" as RowKey, label: "Сцена" }') < text.index(
         "...frameRow"

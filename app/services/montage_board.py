@@ -1207,6 +1207,7 @@ async def build_montage_board(
                 "duration_seconds": fr.duration_seconds,
                 "has_shot2": has_shot2,
                 "has_end_still": frame_is_freeze(fr),
+                "has_layout": bool(str(layout or "").strip()),
                 "layout_start": layout_start_text(layout),
                 "layout_end": layout_end_text(layout),
                 "shot1_use_seconds": shot1_use,
