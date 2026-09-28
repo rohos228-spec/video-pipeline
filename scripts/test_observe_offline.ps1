@@ -20,7 +20,7 @@ New-Item -ItemType Directory -Path $stagePath, $configPath, $artifactPath | Out-
 $gitSafety = 'safe.directory=' + $sourceRoot.Replace('\', '/')
 $tracked = & git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files app prompts templates pyproject.toml
 if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate tracked source' }
-$files = @($tracked) + @('tests/observe_v1/test_journal.py', 'tests/observe_v1/test_runtime.py', 'tests/observe_v1/container_test_entry.py', 'tests/observe_v1/group_acceptance.py')
+$files = @($tracked) + @('tests/observe_v1/test_journal.py', 'tests/observe_v1/test_runtime.py', 'tests/observe_v1/container_test_entry.py', 'tests/observe_v1/group_acceptance.py', 'tests/observe_v1/coverage_capture.py')
 $manifest = @{}
 foreach ($relative in $files) {
     if ($relative -match '(^|/)\.env($|\.)|(^|/)\.git(/|$)|\.(db|sqlite|pem|key)$') { throw "Disallowed source: $relative" }
@@ -32,7 +32,7 @@ foreach ($relative in $files) {
 }
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $stagePath 'source-manifest.json'), ($manifest | ConvertTo-Json -Depth 4), $utf8)
-$name = 'vp-observe-test-' + (Get-Date -Format 'yyyyMMddHHmmss')
+$name = 'vp-observe-test-' + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $docker = 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
 $entryFile = 'tests/observe_v1/container_test_entry.py'
 if ($Target -eq 'group') { $entryFile = 'tests/observe_v1/group_acceptance.py' }

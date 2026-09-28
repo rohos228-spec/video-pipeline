@@ -389,6 +389,9 @@ async def _run_operator_api_real(
         from app.services.db_apply import extract_apply_ops_json
 
         apply_ops = extract_apply_ops_json(reply_text or "")
+        from app.services.observation import record_parse
+
+        await record_parse(reply_text or "", apply_ops)
         if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
             if not (check_mode and not check_fix):
                 logger.warning(
@@ -492,6 +495,10 @@ async def _run_operator_api_real(
                 or "apply-ops JSON → DB (scene_registry / frames)"
             )
         gate_status = analysis.verdict
+        from app.services.observation import record_fact
+
+        await record_fact("domain_check", {"verdict": gate_status, "mode": mode,
+            "contract": "text_verdict", "model_quality_verified": False})
         output_paths.insert(0, write_analysis_json(out_dir, analysis))
         report_path = write_check_report_txt(
             out_dir, analysis, mode=mode, source_prompts=source_keys
@@ -504,6 +511,9 @@ async def _run_operator_api_real(
     # project_file (не check): только apply-ops. Без TSV-fallback — иначе
     # модель пишет Excel-диалект, а enrich_xlsx его отвергает.
     if effective_output == "project_file" and not is_check and apply_ops is None:
+        from app.services.observation import record_fact, record_parse
+
+        await record_fact("json_retry", {"reason": "missing_write_payload", "strategy": "fixed_contract_prompt"})
         from dataclasses import replace
 
         from app.services.db_apply import extract_apply_ops_json
@@ -567,6 +577,7 @@ async def _run_operator_api_real(
 
             result = SimpleNamespace(text=reply_text)
         apply_ops = extract_apply_ops_json(reply_text or "")
+        await record_parse(reply_text or "", apply_ops)
         if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
             apply_ops = None
         # Retry тоже пуст — последний шанс: salvage из pre-retry (частичные ops).

@@ -22,6 +22,9 @@ os.environ.update({
 })
 RESULTS.mkdir(parents=True, exist_ok=True)
 expected = json.loads((SOURCE / "source-manifest.json").read_text())
+sys.path.insert(0, str(SOURCE / "tests/observe_v1"))
+from coverage_capture import begin
+finish_coverage = begin(SOURCE)
 exit_code = 0
 try:
     sys.path.insert(0, str(SOURCE / "tests/observe_v1"))
@@ -36,6 +39,7 @@ except BaseException:
     traceback.print_exc()
     exit_code = 1
 finally:
+    finish_coverage(RESULTS)
     loaded = []
     mismatch = []
     for name, module in sorted(sys.modules.items()):

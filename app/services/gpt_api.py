@@ -1902,6 +1902,10 @@ async def fetch_completed_response(
     return "", last_status, last_raw
 
 
+from app.services.observation import observe_model, record_fact
+
+
+@observe_model
 async def _chat_responses_stream(
     *,
     url: str,
@@ -1922,6 +1926,7 @@ async def _chat_responses_stream(
     logged_task_id = False
     saw_text_done = False
     saw_completed = False
+    observation_text = ""
     stream_err: BaseException | None = None
     sto = _stream_timeout(timeout)
     deadline = _sse_deadline_s(timeout)
@@ -1953,6 +1958,11 @@ async def _chat_responses_stream(
                         if not isinstance(ev, dict):
                             continue
                         et = str(ev.get("type") or "")
+                        if et == "response.output_text.delta":
+                            observation_text += str(ev.get("delta") or "")
+                        await record_fact("model_stream_event", {"type": et,
+                            "complete": et == "response.completed"},
+                            body={"event": ev, "accumulated_text": observation_text})
                         if et == "response.output_text.delta":
                             delta = str(ev.get("delta") or "")
                             if delta and on_delta:
@@ -2179,6 +2189,7 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
     return text, finish or "stop", last
 
 
+@observe_model
 async def _chat_completions_nostream(
     *,
     url: str,
@@ -2219,6 +2230,7 @@ async def _chat_completions_nostream(
     )
 
 
+@observe_model
 async def _chat_completions_stream(
     *,
     url: str,

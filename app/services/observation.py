@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import hashlib
+import functools
 import json
 import os
 import re
@@ -109,9 +110,11 @@ class AttemptContext:
     db_scope: str
     node_key: str
     attempt_id: str
+    last_request_id: str | None = None
 
 
 _attempt = contextvars.ContextVar("observation_attempt", default=None)
+_request = contextvars.ContextVar("observation_request", default=None)
 _observer = None
 
 
@@ -325,6 +328,103 @@ def emit(kind, payload=None, *, request_id=None, body=None):
         ctx.observer.mark_gap(ctx.scope.execution_id, exc)
 
 
+async def record_fact(kind, payload=None, *, request_id=None, body=None):
+    """External/runtime facts survive project rollback; source is master, explicitly.
+
+    These facts never claim project data was committed. Own journal writes are
+    excluded from the business-row hook.
+    """
+    ctx = _attempt.get()
+    if ctx is None:
+        return
+    if ctx.db_scope == "master":
+        # Fallback execution shares the master business transaction; a second
+        # writer would deadlock. Its events have the same rollback semantics.
+        emit(kind, payload, request_id=request_id or _request.get(), body=body)
+        return
+    try:
+        details = dict(payload or {})
+        if body is not None:
+            details["body"] = ctx.observer.save_body(ctx.scope.execution_id, body)
+        async with ctx.observer.master() as session:
+            ctx.observer.stage(session, ctx.scope, kind, db_scope="master", node_key=ctx.node_key,
+                attempt_id=ctx.attempt_id, request_id=request_id or _request.get(), payload=details)
+            await session.commit()
+    except Exception as exc:
+        ctx.observer.mark_gap(ctx.scope.execution_id, exc)
+
+
+def observe_model(function):
+    """One request identity for each low-level POST, including retry/split calls."""
+    @functools.wraps(function)
+    async def wrapped(*args, **kwargs):
+        ctx = _attempt.get()
+        if ctx is None:
+            return await function(*args, **kwargs)
+        request_id = str(uuid.uuid4())
+        previous_request_id = ctx.last_request_id
+        ctx.last_request_id = request_id
+        request_token = _request.set(request_id)
+        body = kwargs.get("body") or {}
+        from urllib.parse import urlsplit
+        endpoint = urlsplit(str(kwargs.get("url") or ""))
+        settings = {k: v for k, v in body.items() if k not in {"input", "messages", "instructions"}}
+        await record_fact("model_start", {"method": "POST", "host": endpoint.hostname,
+            "path": endpoint.path, "model": kwargs.get("use_model"),
+            "previous_request_id": previous_request_id,
+            "settings_revision": digest(settings), "input_revision": digest(body)}, body=body)
+        try:
+            result = await function(*args, **kwargs)
+            raw = getattr(result, "raw", {}) or {}
+            await record_fact("model_end", {"model": getattr(result, "model", None),
+                "response_id": getattr(result, "response_id", None),
+                "finish_reason": getattr(result, "finish_reason", None),
+                "usage": getattr(result, "usage", None),
+                "complete": raw.get("status") == "completed" and not raw.get("sse_salvaged"),
+                "retrieved_by_id": bool(raw.get("retrieved_by_id")),
+            }, body={"text": getattr(result, "text", ""), "response": raw})
+            return result
+        except BaseException as exc:
+            await record_fact("model_error", {"error_type": type(exc).__name__, "complete": False})
+            raise
+        finally:
+            _request.reset(request_token)
+    return wrapped
+
+
+async def record_parse(text, parsed, *, payload_required=True):
+    try:
+        json.loads(text)
+        syntax_valid = True
+    except (ValueError, TypeError):
+        syntax_valid = False
+    ctx = _attempt.get()
+    await record_fact("parse_result", {"syntax_valid": syntax_valid,
+        "parsed": parsed is not None, "schema_valid": None,
+        "schema_note": "Extraction does not prove node schema validation",
+        "payload_required": payload_required,
+        "payload_present": bool(parsed and any(parsed.get(k) for k in ("ops", "characters", "scenes", "actions"))),
+        "ops_count": len((parsed or {}).get("ops") or [])}, body={"text": text, "parsed": parsed},
+        request_id=ctx.last_request_id if ctx else None)
+
+
+def observe_apply(function):
+    @functools.wraps(function)
+    async def wrapped(session, project, *args, **kwargs):
+        if _attempt.get() is None:
+            return await function(session, project, *args, **kwargs)
+        emit("apply_input", {"node_kind": kwargs.get("node_kind")}, body={"ops": args[0] if args else kwargs.get("ops"),
+            "characters": kwargs.get("characters"), "scenes": kwargs.get("scenes")})
+        try:
+            result = await function(session, project, *args, **kwargs)
+        except BaseException as exc:
+            await record_fact("apply_error", {"error_type": type(exc).__name__})
+            raise
+        emit("data_applied", {"result": result, "transactional": True})
+        return result
+    return wrapped
+
+
 @asynccontextmanager
 async def observe_attempt(session, project):
     observer = get_observer()
@@ -338,17 +438,16 @@ async def observe_attempt(session, project):
     source = "project" if Path(str(session.bind.url.database)).name == "project.db" else "master"
     ctx = AttemptContext(observer, scope, session, source, node_key, str(uuid.uuid4()))
     token = _attempt.set(ctx)
-    emit("node_start", {"project_status": project.status.value, "node_contract": node_key})
+    await record_fact("node_start", {"project_status": project.status.value, "node_contract": node_key})
     try:
         yield
     except BaseException as exc:
-        # This same-transaction record may roll back. The persistent start without end is a gap,
-        # not proof of success. Cancellation/restart never synthesizes node_end.
-        emit("node_error", {"error_type": type(exc).__name__})
+        await record_fact("node_error", {"error_type": type(exc).__name__})
         raise
     else:
-        emit("node_end", {"project_status": project.status.value,
-                          "next_node_key": active_excel_gpt_node_key(project)})
+        await record_fact("node_end", {"project_status": project.status.value,
+                          "next_node_key": active_excel_gpt_node_key(project), "worker_returned": True,
+                          "business_commit_claim": False})
     finally:
         _attempt.reset(token)
 

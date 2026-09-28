@@ -27,6 +27,8 @@ SOURCE = Path("/observe-source")
 sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, "/observe-fixtures")
 import group_runner as fixtures
+from coverage_capture import begin
+finish_coverage = begin(SOURCE)
 
 
 async def run():
@@ -133,6 +135,7 @@ async def run():
         result["error"] = observation.redact(str(exc))
         raise
     finally:
+        finish_coverage(ROOT)
         result["fixture_counts"] = dict(fixtures.FixtureHandler.counts)
         task.cancel()
         try:

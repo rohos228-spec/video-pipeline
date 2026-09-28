@@ -980,6 +980,9 @@ async def _maybe_auto_chain_excel_gpt(
         await session.flush()
         return
     next_key, typ, next_slot = succ
+    from app.services.observation import emit
+
+    emit("planner_successor", {"from": finished_key, "to": next_key, "type": typ, "slot": next_slot})
     if not is_excel_gpt_node_type(typ):
         # Стрелка ведёт не в excel_gpt — цепочку не форсим.
         # auto_mode иначе сразу стартует hero/img_pr («нода отработала →
@@ -1154,7 +1157,17 @@ async def _run_fw_report_node(
             )
         ).scalars().all()
     )
+    from app.services.observation import emit
+
+    emit("node_input", {"contract": "html_report", "frame_count": len(frames)},
+        body=[{"uuid": fr.uuid, "number": fr.number, "attrs": fr.attrs} for fr in frames])
     paths = write_shots_report(project, frames, node_key=node_key)
+    from hashlib import sha256
+
+    for report_path in paths:
+        emit("artifact_created", {"name": report_path.name, "bytes": report_path.stat().st_size,
+            "sha256": sha256(report_path.read_bytes()).hexdigest()}, body=report_path.read_text(encoding="utf-8"))
+    emit("node_output", {"contract": "html_report", "file_count": len(paths)})
     save_operator_result(
         project,
         node_key,

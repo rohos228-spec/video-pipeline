@@ -1246,6 +1246,10 @@ def export_project_xlsx(
     }
 
 
+from app.services.observation import observe_apply
+
+
+@observe_apply
 async def apply_ops(
     session: AsyncSession,
     project: Project,

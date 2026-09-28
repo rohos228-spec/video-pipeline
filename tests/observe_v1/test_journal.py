@@ -103,12 +103,15 @@ class JournalAcceptance(unittest.IsolatedAsyncioTestCase):
 
     async def test_redaction_preserves_numeric_usage_and_removes_credentials(self):
         body = {"Authorization": "Bearer synthetic-secret-123", "api_key": "synthetic-key",
+                "GPT_API_KEY": "synthetic-provider-key", "X-API-Key": "synthetic-header-key",
                 "Cookie": "session=synthetic-cookie", "access_token": "synthetic-access",
                 "usage": {"input_tokens": 12, "output_tokens": 9, "total_tokens": 21},
-                "nested": [{"message": "Authorization: Bearer synthetic-secret-123"}]}
+                "nested": [{"message": "Authorization: Bearer synthetic-secret-123"}],
+                "text": '{"api_key":"synthetic-json-key"}'}
         sanitized = redact(body)
         self.assertEqual(sanitized["usage"], body["usage"])
-        for secret in ("synthetic-secret-123", "synthetic-key", "synthetic-cookie", "synthetic-access"):
+        for secret in ("synthetic-secret-123", "synthetic-key", "synthetic-cookie", "synthetic-access",
+                       "synthetic-provider-key", "synthetic-header-key", "synthetic-json-key"):
             self.assertNotIn(secret, json.dumps(sanitized))
 
     async def test_body_files_are_bounded_and_do_not_expose_secret(self):
