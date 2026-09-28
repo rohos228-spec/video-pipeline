@@ -22,6 +22,7 @@ $gitSafety = 'safe.directory=' + $sourceRoot.Replace('\', '/')
 $tracked = & git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files app prompts templates pyproject.toml
 if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate tracked source' }
 $files = @($tracked) + @('tests/observe_v1/test_journal.py', 'tests/observe_v1/test_runtime.py', 'tests/observe_v1/container_test_entry.py', 'tests/observe_v1/group_acceptance.py', 'tests/observe_v1/coverage_capture.py', 'tests/observe_v1/socket_bridge.py')
+if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
 $manifest = @{}
 foreach ($relative in $files) {
@@ -53,6 +54,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot create offline test container' }
 # Docker cp avoids host drive sharing; no customer directory is mounted at all.
 & $docker @connectionArgs cp "$stagePath/." "${name}:/observe-source"
 if ($LASTEXITCODE -ne 0) { throw 'Cannot copy fresh test source' }
+if ($Target -eq 'diagnose') {
+    $historyPath = Join-Path $resultsPath 'history'
+    New-Item -ItemType Directory -Path $historyPath | Out-Null
+    Copy-Item -LiteralPath (Join-Path $sourceRoot '../../outputs/observe-v1/20260928-ui-group-observe/artifacts/api-history.json') -Destination (Join-Path $historyPath 'normal.json')
+    Copy-Item -LiteralPath (Join-Path $sourceRoot '../../outputs/observe-v1/20260928-ui-group-malformed/artifacts/api-history.json') -Destination (Join-Path $historyPath 'malformed.json')
+    & $docker @connectionArgs cp "$historyPath/." "${name}:/observe-history"
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot copy existing synthetic histories' }
+}
 if ($Target -eq 'group') {
     $fixturePath = Join-Path $resultsPath 'fixtures'
     New-Item -ItemType Directory -Path $fixturePath | Out-Null
