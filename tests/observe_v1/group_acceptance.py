@@ -46,7 +46,10 @@ async def run():
         "OUTSEE_HTTP_FALLBACK_CDP": "false", "AUDIO_USE_ELEVENLABS_FALLBACK": "false",
         "NVIDIA_ASR_PRELOAD_ON_STARTUP": "false",
     })
-    fixtures.MODE = "malformed" if mode == "malformed" else "group"
+    fixtures.MODE = "malformed" if mode in {"malformed","unrepaired"} else "group"
+    if mode == "unrepaired":
+        original_answer=fixtures.synthetic_answer
+        fixtures.synthetic_answer=lambda node,attempt: original_answer(node,1) if node==fixtures.NODES[0] else original_answer(node,attempt)
     sock = socket.socket()
     sock.settimeout(1)
     try:
@@ -117,12 +120,16 @@ async def run():
                 if any(n["status"] == "failed" for n in state["nodes"].values()):
                     break
                 await asyncio.sleep(0.1)
-            assert all(state["nodes"].get(key, {}).get("status") == "done" for key in fixtures.NODES), state
-            path = Path(state["report_path"])
-            assert path.exists() and path.stat().st_size > 0
-            result.update({"execution_id": execution_id, "state": state,
-                "html": {"path": str(path), "bytes": path.stat().st_size,
-                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}})
+            result.update({"execution_id":execution_id,"state":state})
+            if mode == "unrepaired":
+                assert state['nodes'][fixtures.NODES[0]]['status']=='failed',state
+                assert all(state['nodes'][key]['status']=='pending' for key in fixtures.NODES[1:]),state
+                result['fault']='external synthetic transport always returns prepared malformed answer'
+            else:
+                assert all(state["nodes"].get(key, {}).get("status") == "done" for key in fixtures.NODES), state
+                path = Path(state["report_path"])
+                assert path.exists() and path.stat().st_size > 0
+                result['html']={"path":str(path),"bytes":path.stat().st_size,"sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
             if execution_id:
                 await observation.get_observer().catch_up()
                 response = await client.get(base + f"/observations/{execution_id}/events", params={"limit": 500})
@@ -130,7 +137,7 @@ async def run():
                 history = response.json()
                 (ROOT / "api-history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2))
                 kinds = {key: [e["kind"] for e in history["events"] if e["node_key"] == key] for key in fixtures.NODES}
-                if mode != "stop":
+                if mode not in {"stop","unrepaired"}:
                     for key in fixtures.NODES:
                         assert "node_start" in kinds[key] and "node_end" in kinds[key], (key, kinds[key])
                     for key in fixtures.NODES[:-1]:
@@ -146,7 +153,18 @@ async def run():
                 response.raise_for_status()
                 result["context"] = response.json()
                 assert "node_contexts" in result["context"], "Persistent per-node inputs/model/checks missing"
-                assert result["context"]["business_group_outcome"] == "done"
+                assert result["context"]["business_group_outcome"] == ("failed" if mode=='unrepaired' else "done")
+                from app.services.diagnosis import get_diagnoser
+                await get_diagnoser(observation.get_observer()).update(execution_id)
+                response=await client.get(base+f"/observations/{execution_id}/diagnoses")
+                response.raise_for_status()
+                result['diagnosis']=response.json()
+                (ROOT/'diagnosis.json').write_text(json.dumps(result['diagnosis'],ensure_ascii=False,indent=2))
+                formats=[i for i in result['diagnosis']['incidents'] if i['type'] in {'invalid_json','missing_payload'}]
+                if mode in {'malformed','unrepaired'}:
+                    assert len(formats)==1,result['diagnosis']
+                    assert formats[0]['status']==('resolved_confirmed' if mode=='malformed' else 'human_review'),formats
+                assert sum(fixtures.FixtureHandler.counts.values()) == (2 if mode=='unrepaired' else 6 if mode=='malformed' else 5)
                 if mode == "stop":
                     assert result["context"]["observer_state"] == "stopped"
                 with sqlite3.connect(DATA / "state.db") as conn:

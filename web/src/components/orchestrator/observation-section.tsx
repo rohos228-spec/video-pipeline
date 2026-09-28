@@ -2,7 +2,8 @@
 
 import {useEffect, useRef, useState} from "react";
 import {api} from "@/lib/api";
-import {observations, type ObservationContext, type ObservationScope} from "@/lib/observations";
+import {observations, type ObservationContext, type ObservationScope, type Diagnosis} from "@/lib/observations";
+import {DiagnosisSection} from './diagnosis-section';
 import {eventLabel, mergeEvents, usageLabel, type ObservationEvent} from "@/lib/observation-view";
 import {Button} from "@/components/ui/button";
 
@@ -15,6 +16,8 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
   const [events,setEvents] = useState<ObservationEvent[]>([]);
   const [error,setError] = useState("");
   const [busy,setBusy] = useState(false);
+  const [diagnosis,setDiagnosis]=useState<Diagnosis|null>(null);
+  const [diagnosisError,setDiagnosisError]=useState('');
   const generation = useRef(0);
   const key = `studio-observation-execution-${projectId}`;
 
@@ -47,7 +50,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
   }, [projectId,key]);
 
   useEffect(() => {
-    setEvents([]); setContext(null);
+    setEvents([]); setContext(null); setDiagnosis(null); setDiagnosisError('');
     if (!execution || projectId == null) return;
     try { localStorage.setItem(key,execution); } catch { /* Server remains source of history. */ }
     let cancelled = false;
@@ -58,6 +61,11 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         const next = await observations.context(projectId,execution);
         if (cancelled) return;
         setContext(next);
+        try {
+          const diagnostic=await observations.diagnoses(projectId,execution);
+          if(cancelled) return;
+          setDiagnosis(diagnostic);setDiagnosisError('');
+        } catch {if(!cancelled) setDiagnosisError('Диагностика недоступна; сохранённые выводы могут быть устаревшими.');}
         let more = true;
         while(more && !cancelled) {
           const page = await observations.events(projectId,execution,cursor);
@@ -67,7 +75,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
           cursor = page.next_cursor; more = page.has_more;
         }
         setError("");
-      } catch { if(!cancelled) setError("Связь с журналом потеряна. Показана последняя полученная история, сохранность новых событий неизвестна."); }
+      } catch { if(!cancelled) {setError("Связь с журналом потеряна. Показана последняя полученная история, сохранность новых событий неизвестна.");setDiagnosisError('Текущее состояние диагностики не подтверждено: чтение журнала недоступно.');} }
       if(!cancelled) timer=setTimeout(poll,2000);
     };
     void poll();
@@ -128,11 +136,11 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         <p>Scope: {context.node_keys.join(" → ")}</p>
         <p>Текущая нода: {context.current_nodes.join(", ") || "нет активной по снимку БД"}</p>
         {context.disagreement && <p className="text-amber-200">Расхождение master/project: состояния отличаются; показана проектная БД.</p>}
-        {context.latest_problem && <p className="text-amber-200">Последняя проблема: {context.latest_problem.node_key} · {context.latest_problem.kind} {context.latest_problem.payload.error_type ?? ""}; последующее применение БД: {context.latest_problem.later_apply_committed ? "записано" : "не подтверждено"}</p>}
         {context.commit_confirmation && <p className="text-red-300">{context.commit_confirmation}: бизнес-результат не подтверждён.</p>}
         <p>Неполнота журнала: {context.data_gaps.length ? context.data_gaps.map(g=>g.kind ?? g.error_type ?? "неизвестно").join(", ") : "зафиксированных gaps нет; это не гарантия полноты"}</p>
         {context.history_window_limited && <p className="text-amber-200">Контекст ограничен последними 500 событиями; история ниже загружается с курсором.</p>}
       </div>
+      <DiagnosisSection diagnosis={diagnosis} error={diagnosisError}/>
       <div className="overflow-x-auto"><table className="w-full text-left"><thead><tr>{["Нода","Состояние / прогресс","Попытка","Модель / usage","Проверки / ожидание"].map(x=><th key={x} className="p-1 text-white/40">{x}</th>)}</tr></thead><tbody>
         {context.node_keys.map(node=>{
           const nc=context.node_contexts[node]; const state=states[node]; const latest=models.filter(e=>e.node_key===node).at(-1);
@@ -140,7 +148,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         })}
       </tbody></table></div>
       <div><strong>Хронология · {events.length} событий</strong><ol data-testid="observation-timeline" className="mt-2 max-h-64 overflow-y-auto space-y-1">
-        {events.map(e=><li key={e.event_id} data-event-id={e.event_id} className="border-l border-white/15 pl-2 text-white/60">{e.created_at?.slice(11,19)} · {e.node_key ?? "scope"} · {eventLabel(e)} · {e.db_scope ?? "источник неизвестен"}</li>)}
+        {events.map(e=><li key={e.event_id} id={`observation-event-${e.event_id}`} data-event-id={e.event_id} className="border-l border-white/15 pl-2 text-white/60">{e.created_at?.slice(11,19)} · {e.node_key ?? "scope"} · {eventLabel(e)} · {e.db_scope ?? "источник неизвестен"}</li>)}
       </ol></div>
     </>}
   </section>;

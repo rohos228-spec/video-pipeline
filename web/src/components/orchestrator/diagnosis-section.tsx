@@ -18,6 +18,7 @@ function IncidentCard({incident:i}:{incident:DiagnosticIncident}) {
       <p>requests: {i.request_ids.join(', ') || 'неизвестно'}</p>
       <ul>{i.evidence.map(e=><li key={e.event_id}><a className="underline" href={`#observation-event-${encodeURIComponent(e.event_id)}`}>{e.kind} · {e.db_scope ?? 'источник неизвестен'} · {e.event_id}</a></li>)}</ul>
       {!i.evidence.length && <p>Основание: текущий снимок БД/метаданные доступности журнала, а не событие выполнения.</p>}
+      {i.snapshot_evidence && <pre className="whitespace-pre-wrap break-all text-white/50">{JSON.stringify(i.snapshot_evidence,null,2)}</pre>}
       <p>Условия потенциального повторного запуска: {i.recommendation.safety_conditions.join(' ')}</p>
     </details>
   </article>;
