@@ -14,4 +14,8 @@ const a = {id: 1, event_id: 'a', project_id: 2, kind: 'json_retry', payload: {te
 assert.equal(mergeEvents([a], [a, {...a, id:2, event_id:'b', project_id:1}], 2).length, 1);
 assert.equal(eventLabel(a).includes('raw-secret'), false);
 assert.equal(eventLabel({kind:'runtime_check', payload:{check:'schema'}}).includes('неизвестно'), true);
-console.log('Frontend metadata contracts: 6 assertions passed');
+assert.deepEqual(mergeEvents([{...a,created_at:'2026-09-28 11:20:20'}],
+  [{...a,id:2,event_id:'earlier',created_at:'2026-09-28 11:20:10'}],2).map(e=>e.event_id),['earlier','a']);
+assert.equal(eventLabel({kind:'observer_control',payload:{action:'stopped',initiator:'observation_api'}}),
+  'Наблюдение: stopped (observation_api)');
+console.log('Frontend metadata contracts: 8 assertions passed');
