@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+const require = createRequire('/dependencies/package.json');
+const ts = require('typescript');
+const file = '/observe-source/web/src/lib/observation-view.ts';
+const source = fs.readFileSync(file, 'utf8');
+const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText;
+const { usageLabel, mergeEvents, eventLabel } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
+assert.equal(usageLabel(null), 'usage неизвестен');
+assert.equal(usageLabel({total_tokens: 0}), 'total_tokens: 0');
+assert.equal(usageLabel({input_tokens: 12, output_tokens: 9}), 'input_tokens: 12 · output_tokens: 9');
+const a = {id: 1, event_id: 'a', project_id: 2, kind: 'json_retry', payload: {text: 'raw-secret'}};
+assert.equal(mergeEvents([a], [a, {...a, id:2, event_id:'b', project_id:1}], 2).length, 1);
+assert.equal(eventLabel(a).includes('raw-secret'), false);
+assert.equal(eventLabel({kind:'runtime_check', payload:{check:'schema'}}).includes('неизвестно'), true);
+console.log('Frontend metadata contracts: 6 assertions passed');
