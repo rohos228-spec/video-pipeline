@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import html
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from app.project_root import find_project_root
+from app.services.node_rules import (
+    FIELD_WRITERS,
+    NODE_FLOW,
+    RULES,
+    node_label,
+    node_local_key,
+    rule_title,
+)
+from app.services.node_trace import latest_diary, list_runs
 from app.services.shot_templates import parse_scene_chain, plain_scene_vo
 from app.services.vo_shot_expand import is_shot_child
 
@@ -186,8 +198,9 @@ def _collect_shots(frames: list[Any]) -> list[dict[str, Any]]:
         else:
             sources = [_synth_shot(fr)]
         number = _int(_top(fr).get("number") or getattr(fr, "number", 0), 0)
-        for shot in sources:
+        for pos, shot in enumerate(sources, start=1):
             item = dict(shot)
+            item["_pos"] = pos
             item["_frame"] = _pick_overlay(item, index, fr)
             if not item.get("ячейка"):
                 item["ячейка"] = number
@@ -292,6 +305,8 @@ def _build_row(
         "qc": _camera_bits(overlay, shot),
         "layout": _get(shot, "раскладка")
         or _get(_attrs(overlay) if overlay is not None else {}, "раскладка"),
+        "pos": _int(shot.get("_pos"), 0),
+        "diary": [],
     }
 
 
@@ -367,7 +382,61 @@ def _plans(frames: list[Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]
     return out
 
 
-def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
+def _frame_numbers_by_uuid(frames: list[Any]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for fr in frames:
+        top = _top(fr)
+        uid = str(top.get("uuid") or getattr(fr, "uuid", "") or "").strip()
+        n = _int(top.get("number") or getattr(fr, "number", 0), 0)
+        if uid and n:
+            out[uid] = n
+    return out
+
+
+def _attach_diary(
+    frames: list[Any],
+    rows: list[dict[str, Any]],
+    scenes: list[dict[str, Any]],
+    diary: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Записи дневника → строка кадра / сцена. Возвращает записи без кадра."""
+    number_of = _frame_numbers_by_uuid(frames)
+    rows_by_cell: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        rows_by_cell.setdefault(_int(row.get("cell"), 0), []).append(row)
+    scene_of_cell: dict[int, dict[str, Any]] = {}
+    for sc in scenes:
+        sc.setdefault("diary", [])
+        for sh in sc.get("shots") or []:
+            scene_of_cell.setdefault(_int(sh.get("cell"), 0), sc)
+    orphans: list[dict[str, Any]] = []
+    for item in diary:
+        cell = number_of.get(str(item.get("frame_uuid") or ""), 0)
+        cell_rows = rows_by_cell.get(cell) or []
+        shot = item.get("shot")
+        sid = str(item.get("shot_id") or "")
+        target = None
+        if shot:
+            by_id = [r for r in cell_rows if sid and r.get("id") == sid]
+            by_pos = [r for r in cell_rows if _int(r.get("pos"), 0) == _int(shot, 0)]
+            hit = by_id or by_pos
+            target = hit[0] if hit else None
+        if target is not None:
+            target["diary"].append(item)
+        elif cell in scene_of_cell:
+            scene_of_cell[cell]["diary"].append({**item, "cell": cell})
+        else:
+            orphans.append({**item, "cell": cell or None})
+    return orphans
+
+
+def build_shots_report_model(
+    frames: list[Any],
+    *,
+    diary: list[dict[str, Any]] | None = None,
+    runs: list[dict[str, Any]] | None = None,
+    check: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     collected = _collect_shots(frames)
     ids = {_shot_id(s) for s in collected if _shot_id(s)}
     scene_meta = _scene_meta(frames)
@@ -405,6 +474,7 @@ def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
                 "shots": shots,
             }
         )
+    orphans = _attach_diary(frames, built, scenes, list(diary or []))
     return {
         "scenes": scenes,
         "plans": _plans(frames, collected),
@@ -412,6 +482,9 @@ def build_shots_report_model(frames: list[Any]) -> dict[str, Any]:
         "shot_count": len(built),
         "templates": [],
         "when_catalog": [],
+        "diary_orphans": orphans,
+        "runs": list(runs or []),
+        "check": dict(check or {}),
     }
 
 
@@ -427,6 +500,141 @@ def _plan_block(pl: dict[str, Any]) -> str:
     return (
         f"<details class=plan><summary>Площадка · Ячейка {_esc(pl.get('cell'))}</summary>"
         f"{pl.get('svg') or ''}<ul>{items}{extra}</ul></details>"
+    )
+
+
+_DIARY_KIND = {"fix": "починила", "warn": "заметила", "stop": "остановила", "info": "решила"}
+
+
+def _diary_li(item: dict[str, Any], *, with_cell: bool = False) -> str:
+    kind = str(item.get("kind") or "fix")
+    who = node_label(str(item.get("node_key") or ""))
+    where = []
+    if with_cell and item.get("cell"):
+        where.append(f"ячейка {item.get('cell')}")
+    if item.get("shot"):
+        where.append(f"кадр {item.get('shot')}")
+    if item.get("field"):
+        where.append(f"поле «{item.get('field')}»")
+    head = f"{who}: программа {_DIARY_KIND.get(kind, kind)}"
+    if where:
+        head += " · " + ", ".join(where)
+    change = ""
+    if item.get("before") is not None or item.get("after") is not None:
+        change = (
+            f"<div class=chg><s>{_esc(item.get('before') or '—')}</s>"
+            f" → <b>{_esc(item.get('after') or '—')}</b></div>"
+        )
+    note = f"<div class=note>{_esc(item.get('note'))}</div>" if item.get("note") else ""
+    rule = str(item.get("rule") or "")
+    return (
+        f"<li class=d-{_esc(kind)}>{_esc(head)}{change}{note}"
+        f"<div class=rule>{_esc(rule)} · {_esc(rule_title(rule))}</div></li>"
+    )
+
+
+def _diary_block(items: list[dict[str, Any]], *, title: str, with_cell: bool = False) -> str:
+    if not items:
+        return ""
+    lis = "".join(_diary_li(it, with_cell=with_cell) for it in items)
+    return (
+        f"<details class=diary><summary>{_esc(title)} ({len(items)})</summary>"
+        f"<ul>{lis}</ul></details>"
+    )
+
+
+def _counts_line(counts: dict[str, Any]) -> str:
+    parts = [
+        f"{_DIARY_KIND.get(k, k)} {int(v)}"
+        for k, v in sorted((counts or {}).items())
+        if int(v or 0)
+    ]
+    return ", ".join(parts) or "правок нет"
+
+
+def _runs_block(runs: list[dict[str, Any]], check: dict[str, Any]) -> str:
+    latest: dict[str, dict[str, Any]] = {}
+    script_runs = 0
+    for run in runs:
+        nk = str(run.get("node_key") or "")
+        latest[nk] = run
+        if node_local_key(nk) == "script":
+            script_runs += 1
+    order = {f.key: i for i, f in enumerate(NODE_FLOW)}
+    rows = "".join(
+        "<tr>"
+        f"<td>{_esc(node_label(nk))}</td>"
+        f"<td>{_esc(run.get('finished') or run.get('started') or '—')}</td>"
+        f"<td class=st-{_esc(run.get('status') or '')}>{_esc(run.get('status') or '—')}</td>"
+        f"<td>{_esc(run.get('calls') or 0)}</td>"
+        f"<td>{_esc(_counts_line(run.get('counts') or {}))}</td>"
+        f"<td class=path>{_esc(run.get('dir') or '')}</td>"
+        "</tr>"
+        for nk, run in sorted(latest.items(), key=lambda kv: order.get(node_local_key(kv[0]), 99))
+    )
+    table = (
+        "<table class=runs><thead><tr><th>Нода</th><th>Когда</th><th>Итог</th>"
+        "<th>Вызовов GPT</th><th>Что сделала программа</th><th>Папка прогона</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table>"
+        if rows
+        else "<p>Дневника ещё нет: он появится после следующего прогона нод.</p>"
+    )
+    check_html = ""
+    if check:
+        verdict = str(check.get("verdict") or "").lower()
+        word = "Ок — пропустила дальше" if verdict == "pass" else "Не ок — вернула на сценарий"
+        bad = "".join(
+            f"<li>{_esc(c.get('id'))}: {_esc(c.get('note') or 'не прошло')}</li>"
+            for c in check.get("checks") or []
+            if isinstance(c, dict) and not c.get("ok", True)
+        )
+        check_html = (
+            f"<p><b>Проверка сценария (последняя):</b> {_esc(word)}."
+            f" {_esc(check.get('summary') or '')}</p>"
+            + (f"<ul>{bad}</ul>" if bad else "")
+        )
+    if script_runs:
+        back = max(script_runs - 1, 0)
+        check_html += (
+            f"<p><b>Сценарий писался {script_runs} раз(а)</b> из сохранённых прогонов"
+            f" → проверка возвращала его на доработку {back} раз(а).</p>"
+        )
+    return (
+        "<section class=runs-box><h2>Дневник группы нод</h2>"
+        f"{check_html}{table}</section>"
+    )
+
+
+def _rules_block() -> str:
+    rules = "".join(
+        f"<tr><td>{_esc(r.id)}</td><td>{_esc(r.title)}</td><td>{_esc(r.plain)}</td>"
+        f"<td>{_esc(r.action)}</td></tr>"
+        for r in RULES
+    )
+    flow = "".join(
+        f"<tr><td>{_esc(f.label)}</td><td>{_esc(', '.join(f.reads) or '—')}</td>"
+        f"<td>{_esc('; '.join(f.gpt_writes) or '—')}</td>"
+        f"<td>{_esc(', '.join(f.code_rules) or '—')}</td>"
+        f"<td>{_esc('; '.join(f.code_writes) or '—')}"
+        + (f"<br>«Не ок» → {_esc(node_label(f.on_fail))}" if f.on_fail else "")
+        + "</td></tr>"
+        for f in NODE_FLOW
+    )
+    writers = "".join(
+        f"<tr><td>{_esc(fld)}</td><td>{_esc(' → '.join(who))}</td></tr>"
+        for fld, who in FIELD_WRITERS
+    )
+    return (
+        "<section class=runs-box>"
+        "<details><summary>Схема группы нод: кто что читает и пишет</summary>"
+        "<table><thead><tr><th>Нода</th><th>Читает</th><th>Пишет GPT</th>"
+        f"<th>Потом программа</th><th>Пишет программа</th></tr></thead><tbody>{flow}</tbody></table>"
+        "<h3>Кто по очереди пишет одно поле (последний побеждает)</h3>"
+        f"<table><tbody>{writers}</tbody></table></details>"
+        "<details><summary>Все правила программы</summary>"
+        "<table><thead><tr><th>ID</th><th>Правило</th><th>Простыми словами</th>"
+        f"<th>Что делает</th></tr></thead><tbody>{rules}</tbody></table></details>"
+        "</section>"
     )
 
 
@@ -449,7 +657,8 @@ def _shot_tr(i: int, sh: dict[str, Any]) -> str:
         f"<td class=layout>{_esc(sh.get('layout') or '—')}</td>"
         f"<td><div class=vo-bit>картинка: {img}</div>"
         f"<div class=vo-bit>видео: {vid}</div>"
-        f"<div class=vo-bit>QC: {qc_line}</div></td>"
+        f"<div class=vo-bit>QC: {qc_line}</div>"
+        f"{_diary_block(sh.get('diary') or [], title='Дневник кадра')}</td>"
         "</tr>"
     )
 
@@ -522,6 +731,7 @@ def render_shots_report_html(
             f"</div>"
             f"<p class=vo-full><b>Закадр.</b> {_esc(vo or '—')}</p>"
             f"{plan_html}"
+            f"{_diary_block(sc.get('diary') or [], title='Что поменяла программа в ячейке', with_cell=True)}"
             "<h3>Кадры</h3>"
             "<table><thead><tr>"
             "<th>№</th><th>План</th><th>Действие</th><th>Закадр</th>"
@@ -534,6 +744,13 @@ def render_shots_report_html(
         f"<h2>Площадка без сцены</h2>{leftover}" if leftover else ""
     )
     body_scenes = "".join(articles) or "<p class=meta>сцен с номером нет</p>"
+    orphans = _diary_block(
+        list(model.get("diary_orphans") or []),
+        title="Правки программы без кадра в отчёте",
+        with_cell=True,
+    )
+    runs_html = _runs_block(list(model.get("runs") or []), dict(model.get("check") or {}))
+    runs_html += (f"<section class=runs-box>{orphans}</section>" if orphans else "") + _rules_block()
     return f"""<!doctype html><html lang=ru><head><meta charset=utf-8>
 <title>Отчёт кадров · {html.escape(slug or 'проект')}</title>
 <style>
@@ -563,10 +780,21 @@ th:first-child,td:first-child{{width:44px;text-align:center;color:#666;font-weig
 .plan-svg{{display:block;max-width:100%;height:auto}}
 .plan-legend{{color:#9a9a9a;margin:0 0 14px;max-width:72rem}}
 .fix{{color:#8a4b00}} .der{{color:#666}}
+.runs-box{{background:#fff;padding:12px 16px;margin:0 0 16px;border-radius:8px}}
+.runs-box summary{{cursor:pointer;font-weight:650;margin:4px 0}}
+.path{{font-size:11px;color:#666;word-break:break-all}}
+.st-ok{{color:#11772b}} .st-failed{{color:#b00020}} .st-running{{color:#8a4b00}}
+.diary{{margin-top:6px;font-size:12px}}
+.diary summary{{cursor:pointer;color:#0b57d0}}
+.diary ul{{margin:4px 0 0;padding-left:16px}}
+.diary li{{margin:0 0 6px}}
+.diary .chg s{{color:#999}} .diary .note{{color:#333}} .diary .rule{{color:#888;font-size:11px}}
+.d-warn{{color:#8a4b00}} .d-stop{{color:#b00020}} .d-info{{color:#555}}
 </style></head><body>
 <h1>Сцены</h1>
 <p class=meta>проект {html.escape(pid)}{html.escape(slug or '—')} · {html.escape(stamp)} · сцен {scene_n} · кадров {shot_n}. Жёлтый блок — Действие. Шаблонов T нет.</p>
 <nav class=toc>{toc}</nav>
+{runs_html}
 <p class=plan-legend>Площадка внутри сцены (свёрнута). Север сверху. К — камера кадра, стрелка — куда смотрит объектив, не куда идёт герой.</p>
 {body_scenes}
 {leftover_html}
@@ -592,13 +820,44 @@ def existing_shots_report_path(
     return next((p for p in report_paths(project, node_key=node_key) if p.is_file()), None)
 
 
+def _safe_load(fn: Any, default: Any) -> Any:
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001
+        logger.debug("shots_report: diary load failed", exc_info=True)
+        return default
+
+
+def _latest_check(data_dir: Path) -> dict[str, Any]:
+    """Последний вердикт ноды «Проверка сценария» (analysis.json)."""
+    paths = sorted(
+        (data_dir / "excel_gpt_uploads").glob("*_fw_check_script/analysis.json"),
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not paths:
+        return {}
+    raw = json.loads(paths[-1].read_text(encoding="utf-8"))
+    return raw if isinstance(raw, dict) and raw.get("verdict") else {}
+
+
 def write_shots_report(
     project: Any,
     frames: list[Any],
     *,
     node_key: str = "n_excel_gpt_fw_report",
 ) -> list[Path]:
-    model = build_shots_report_model(frames)
+    data_dir = Path(project.data_dir)
+    group = {f.key for f in NODE_FLOW}
+
+    def _mine(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [it for it in items if node_local_key(str(it.get("node_key") or "")) in group]
+
+    model = build_shots_report_model(
+        frames,
+        diary=_safe_load(lambda: _mine(latest_diary(data_dir)), []),
+        runs=_safe_load(lambda: _mine(list_runs(data_dir)), []),
+        check=_safe_load(lambda: _latest_check(data_dir), {}),
+    )
     html_text = render_shots_report_html(
         model,
         slug=str(getattr(project, "slug", None) or ""),

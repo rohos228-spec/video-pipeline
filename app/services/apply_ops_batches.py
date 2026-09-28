@@ -12,12 +12,23 @@ import json
 import re
 import unicodedata
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
 from app.services.gpt_operator_client import OperatorApiResult, run_operator_api
+from app.services.node_trace import (
+    Change,
+    NodeRunRecorder,
+    changes_to_entries,
+    diff_ops,
+    entry,
+    snapshot,
+    uuid_in_text,
+)
 from app.services.scene_design.camera_expand import vo_chunk_is_dangling
 from app.services.scene_shot_grammar import (
     SHOT_VO_MAX,
@@ -1040,13 +1051,19 @@ _PLAN_CONTEXT_CELLS = 2
 def apply_scene_plan_ops(
     ops: list[Any],
     frames: list[dict[str, Any]],
+    *,
+    issues_out: list[dict[str, Any]] | None = None,
+    decisions_out: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Кадры ячейки через план площадки: состояния, порог, путь, экран.
 
     Пишет fields.площадка (канон + выведенное кодом) и ``раскладка`` в
     каждый кадр. Возвращает (исправлено, не исправлено).
+    ``issues_out`` / ``decisions_out`` — для дневника: проблемы площадки и
+    решения СТАРТ/КОНЕЦ с ``frame_uuid``.
     """
     from app.services.scene_plan import (
+        FREEZE_DECISIONS,
         apply_scene_plan_cells,
         plan_fix_notes,
         plan_hard_reasons,
@@ -1109,7 +1126,16 @@ def apply_scene_plan_ops(
                 "plan": fields.get("площадка"),
                 "owned": True,
             })
-    base, issues_by = apply_scene_plan_cells(cells)
+    decisions: list[dict[str, Any]] = []
+    token = FREEZE_DECISIONS.set(decisions)
+    try:
+        base, issues_by = apply_scene_plan_cells(cells)
+    finally:
+        FREEZE_DECISIONS.reset(token)
+    if decisions_out is not None:
+        decisions_out.extend(
+            {**d, "frame_uuid": d.pop("cell")} for d in decisions if d.get("cell") in op_by_uid
+        )
     fixed: list[str] = []
     hard: list[str] = []
     for cell in cells:
@@ -1117,6 +1143,18 @@ def apply_scene_plan_ops(
             continue
         uid = cell["key"]
         issues = issues_by.get(uid, [])
+        if issues_out is not None:
+            issues_out.extend(
+                {
+                    "frame_uuid": uid,
+                    "кадр": it.get("кадр") or 0,
+                    "id": str(it.get("id") or ""),
+                    "вид": str(it.get("вид") or ""),
+                    "текст": str(it.get("текст") or ""),
+                    "исправлено": bool(it.get("исправлено")),
+                }
+                for it in issues
+            )
         op_by_uid[uid]["fields"]["площадка"] = with_plan_notes(
             base, cell["plan"], issues, cell["shots"]
         )
@@ -1332,6 +1370,393 @@ def _batch_footer(
     )
 
 
+@dataclass
+class PassCtx:
+    """Для логов: те же ``[#проект] node call L`` что и раньше."""
+
+    project_id: int
+    node_key: str
+    call: int
+    level: int
+
+
+@dataclass
+class CodePassesResult:
+    ops: list[dict[str, Any]]
+    entries: list[dict[str, Any]] = field(default_factory=list)
+
+
+class PassStopError(RuntimeError):
+    """Проверка кода остановила пачку. Текст — как раньше; + дневник до остановки."""
+
+    def __init__(self, message: str, *, rule: str, diary: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.rule = rule
+        self.diary = diary
+
+
+def run_code_passes(
+    ops: list[Any],
+    chunk: list[dict[str, Any]],
+    *,
+    kind: str,
+    all_frames: list[dict[str, Any]] | None = None,
+    ctx: PassCtx | None = None,
+) -> CodePassesResult:
+    """Все правки программы после ответа GPT, по порядку. Пишет дневник.
+
+    Один и тот же код для живой ноды и для ``scripts/replay_node.py``.
+    """
+    from app.services.db_apply import remap_frame_number_uuids, repair_near_miss_frame_uuids
+    from app.services.node_rules import PASS_RULES, PLAN_FIELD_RULES, PLAN_ISSUE_RULES
+
+    ctx = ctx or PassCtx(0, "", 0, 1)
+    project_id, node_key, my_i, level = ctx.project_id, ctx.node_key, ctx.call, ctx.level
+    entries: list[dict[str, Any]] = []
+    ops = list(ops or [])
+
+    known_list = [
+        str(fr.get("uuid") or "").strip()
+        for fr in chunk
+        if str(fr.get("uuid") or "").strip()
+    ]
+
+    def _traced(name: str, fn: Callable[[], Any]) -> Any:
+        before = snapshot(ops)
+        out = fn()
+        entries.extend(
+            changes_to_entries(diff_ops(before, ops), rule=PASS_RULES[name], pass_name=name)
+        )
+        return out
+
+    def _warn(name: str, reason: str) -> None:
+        entries.append(
+            entry(
+                rule=PASS_RULES[name],
+                pass_name=name,
+                kind="warn",
+                frame_uuid=uuid_in_text(reason, known_list),
+                note=reason,
+            )
+        )
+
+    def _stop(name: str, reason: str) -> PassStopError:
+        return PassStopError(
+            f"excel_gpt node={node_key}: L{level} call {my_i} {reason}",
+            rule=PASS_RULES[name],
+            diary=list(entries),
+        )
+
+    # Автопочинка UUID: remap по номеру кадра + repair near-miss (опечатки hex)
+    known = set(known_list)
+    num_to_uuid: dict[int, str] = {}
+    for fr in chunk:
+        n = fr.get("number") or fr.get("номер")
+        u = str(fr.get("uuid") or "").strip()
+        if n is not None and u:
+            with suppress(ValueError, TypeError):
+                num_to_uuid[int(n)] = u
+    uids_before = [
+        str(op.get("frame_uuid") or "").strip() if isinstance(op, dict) else None
+        for op in ops
+    ]
+    if num_to_uuid:
+        remap_frame_number_uuids(ops, num_to_uuid)
+    if known_list:
+        repair_near_miss_frame_uuids(ops, known_list, max_distance=2)
+    for was, op in zip(uids_before, ops, strict=False):
+        now = str(op.get("frame_uuid") or "").strip() if isinstance(op, dict) else None
+        if was is not None and now != was:
+            entries.append(
+                entry(
+                    rule=PASS_RULES["uuid"],
+                    pass_name="uuid",
+                    frame_uuid=now or "",
+                    field_name="frame_uuid",
+                    before=was,
+                    after=now,
+                )
+            )
+
+    dropped = 0
+    kept: list[dict[str, Any]] = []
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        if uid in known:
+            kept.append(op)
+        else:
+            dropped += 1
+            entries.append(
+                entry(
+                    rule=PASS_RULES["uuid"],
+                    pass_name="uuid",
+                    kind="warn",
+                    frame_uuid=uid,
+                    note="uuid не из этой пачки — ops выброшен",
+                )
+            )
+    if dropped:
+        logger.warning(
+            "[#{}] apply_ops batched node={!r}: call {} L{} "
+            "dropped {} unknown frame_uuid",
+            project_id,
+            node_key,
+            my_i,
+            level,
+            dropped,
+        )
+    ops = kept
+    if kind in {"bits", "script_beats"}:
+        repaired = _traced("bits_repair", lambda: repair_bits_ops(ops, chunk))
+        if repaired:
+            logger.info(
+                "[#{}] apply_ops batched node={!r}: call {} "
+                "починил биты ×{}",
+                project_id,
+                node_key,
+                my_i,
+                repaired,
+            )
+        bad_bits = bits_ops_reason(ops, chunk)
+        if bad_bits:
+            _warn("bits_check", bad_bits)
+            logger.warning(
+                "[#{}] apply_ops batched node={!r}: call {} L{} "
+                "биты слабоваты (пишем как есть): {}",
+                project_id,
+                node_key,
+                my_i,
+                level,
+                bad_bits,
+            )
+    if kind in {
+        "analytics",
+        "scene_analytics",
+        "54_59",
+    }:
+        collapsed = analytics_ops_collapsed_reason(ops, chunk)
+        if collapsed:
+            raise _stop("analytics_check", collapsed)
+    if kind in {"action_chain", "main_action"}:
+        _traced("action_format", lambda: auto_repair_action_chain_ops(ops, chunk))
+        n_plan = _traced("action_plan", lambda: normalize_action_plan_ops(ops))
+        if n_plan < len(ops):
+            logger.info(
+                "[#{}] apply_ops batched node={!r}: call {} площадка "
+                "{}/{} (остальное выведет код на кадрах)",
+                project_id,
+                node_key,
+                my_i,
+                n_plan,
+                len(ops),
+            )
+        repaired = _traced("action_repair", lambda: repair_action_ops(ops))
+        if repaired:
+            logger.info(
+                "[#{}] apply_ops batched node={!r}: call {} "
+                "починил главное_действие ×{}",
+                project_id,
+                node_key,
+                my_i,
+                repaired,
+            )
+        bad_action = action_chain_ops_reason(ops, chunk)
+        if bad_action:
+            _warn("action_check", bad_action)
+            logger.warning(
+                "[#{}] apply_ops batched node={!r}: call {} L{} "
+                "действие слабовато (пишем как есть): {}",
+                project_id,
+                node_key,
+                my_i,
+                level,
+                bad_action,
+            )
+    if kind in _SHOTS_FOOTER_KINDS:
+        repaired_parents = _traced("shot_parent", lambda: repair_same_place_shot_parents(ops))
+        if repaired_parents:
+            logger.info(
+                "[#{}] apply_ops batched node={!r}: parent_id проставлен "
+                "по таблице у {} кадров (GPT оставил null)",
+                project_id,
+                node_key,
+                repaired_parents,
+            )
+        before = _count_shots(ops)
+        _traced("shot_grammar", lambda: apply_grammar_to_ops(ops, chunk))
+        filled = max(0, _count_shots(ops) - before)
+        if filled:
+            logger.info(
+                "[#{}] apply_ops batched node={!r}: грамматика кадров "
+                "дописала +{} шагов из главное_действие",
+                project_id,
+                node_key,
+                filled,
+            )
+        _traced("shot_parent_again", lambda: repair_same_place_shot_parents(ops))
+        repaired_vo = _traced("shot_vo_fill", lambda: repair_shot_vo_ops(ops, chunk))
+        plan_before = snapshot(ops)
+        plan_issues: list[dict[str, Any]] = []
+        plan_decisions: list[dict[str, Any]] = []
+        plan_fixed, plan_hard = apply_scene_plan_ops(
+            ops,
+            all_frames or chunk,
+            issues_out=plan_issues,
+            decisions_out=plan_decisions,
+        )
+        entries.extend(
+            _scene_plan_entries(
+                diff_ops(plan_before, ops),
+                plan_issues,
+                plan_decisions,
+                pass_rule=PASS_RULES["scene_plan"],
+                field_rules=PLAN_FIELD_RULES,
+                issue_rules=PLAN_ISSUE_RULES,
+            )
+        )
+        if plan_fixed:
+            logger.info(
+                "[#{}] apply_ops batched node={!r}: call {} площадка "
+                "починила ×{}: {}",
+                project_id,
+                node_key,
+                my_i,
+                len(plan_fixed),
+                "; ".join(plan_fixed[:6]),
+            )
+        if plan_hard:
+            logger.warning(
+                "[#{}] apply_ops batched node={!r}: call {} L{} "
+                "площадка: {}",
+                project_id,
+                node_key,
+                my_i,
+                level,
+                "; ".join(plan_hard[:6]),
+            )
+        if repaired_vo:
+            logger.info(
+                "[#{}] apply_ops batched node={!r}: call {} "
+                "дописал пустой закадр ×{}",
+                project_id,
+                node_key,
+                my_i,
+                repaired_vo,
+            )
+        # shots_coverage_ops_reason сам ещё раз гоняет грамматику — это тоже правка.
+        bad_shots = _traced("shots_check", lambda: shots_coverage_ops_reason(ops, chunk))
+        if bad_shots:
+            _warn("shots_check", bad_shots)
+            logger.warning(
+                "[#{}] apply_ops batched node={!r}: call {} L{} "
+                "кадры слабоваты (пишем как есть): {}",
+                project_id,
+                node_key,
+                my_i,
+                level,
+                bad_shots,
+            )
+    if kind in {"prompts", "img"}:
+        bad_prompts = prompts_ops_reason(ops, chunk)
+        if bad_prompts:
+            raise _stop("prompts_check", bad_prompts)
+    return CodePassesResult(ops=ops, entries=entries)
+
+
+def _count_shots(ops: list[Any]) -> int:
+    n = 0
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields") or {}
+        shots = fields.get("кадры") or fields.get("shots")
+        if isinstance(shots, list):
+            n += len(shots)
+    return n
+
+
+def _scene_plan_entries(
+    changes: list[Change],
+    issues: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    *,
+    pass_rule: str,
+    field_rules: dict[str, str],
+    issue_rules: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Правки площадки: «что поменялось» + «почему» из заметок площадки."""
+    out: list[dict[str, Any]] = []
+    for c in changes:
+        base = c.field.split(".", 1)[0]
+        rule = pass_rule if base == "площадка" else field_rules.get(base, pass_rule)
+        out.extend(changes_to_entries([c], rule=rule, pass_name="scene_plan"))
+    for it in issues:
+        rule = issue_rules.get(it["вид"], pass_rule)
+        shot = int(it.get("кадр") or 0) or None
+        hits = [
+            e
+            for e in out
+            if e["frame_uuid"] == it["frame_uuid"]
+            and e["shot"] == shot
+            and e["rule"] == rule
+            and not e["note"]
+        ]
+        if not hits:
+            hits = [
+                e
+                for e in out
+                if e["frame_uuid"] == it["frame_uuid"]
+                and e["shot"] == shot
+                and e["rule"] == pass_rule
+                and e["field"] in ("действие", "кадр")
+                and not e["note"]
+            ][:1]
+        for e in hits:
+            e["rule"] = rule
+            e["note"] = it["текст"]
+        if not hits:
+            out.append(
+                entry(
+                    rule=rule,
+                    pass_name="scene_plan",
+                    kind="fix" if it["исправлено"] else "warn",
+                    frame_uuid=it["frame_uuid"],
+                    shot=shot,
+                    shot_id=it.get("id") or "",
+                    note=it["текст"],
+                )
+            )
+    for d in decisions:
+        shot = int(d.get("кадр") or 0) or None
+        value = "да" if d.get("точность") else "нет"
+        hits = [
+            e
+            for e in out
+            if e["frame_uuid"] == d["frame_uuid"]
+            and e["shot"] == shot
+            and e["field"] == "точность"
+        ]
+        for e in hits:
+            e["note"] = d["почему"]
+        if not hits:
+            out.append(
+                entry(
+                    rule=field_rules["точность"],
+                    pass_name="scene_plan",
+                    kind="info",
+                    frame_uuid=d["frame_uuid"],
+                    shot=shot,
+                    shot_id=d.get("id") or "",
+                    field_name="точность",
+                    after=value,
+                    note=d["почему"],
+                )
+            )
+    return out
+
+
 async def run_apply_ops_batched(
     *,
     project_dir: Path,
@@ -1416,6 +1841,12 @@ async def run_apply_ops_batched(
         dense,
     )
 
+    recorder = NodeRunRecorder.start(
+        project_dir,
+        node_key,
+        kind=(footer_kind or "").strip().lower(),
+        all_frames=all_frames,
+    )
     merged_ops: list[dict[str, Any]] = []
     replies: list[str] = []
     last_paths: list[Path] = [ctx_path]
@@ -1481,204 +1912,39 @@ async def run_apply_ops_batched(
         if isinstance(res.apply_ops, dict):
             ops = list(res.apply_ops.get("ops") or [])
 
-        # Автопочинка UUID: remap по номеру кадра + repair near-miss (опечатки hex)
-        from app.services.db_apply import remap_frame_number_uuids, repair_near_miss_frame_uuids
-
-        known_list = [
-            str(fr.get("uuid") or "").strip()
-            for fr in chunk
-            if str(fr.get("uuid") or "").strip()
-        ]
-        known = set(known_list)
-        num_to_uuid: dict[int, str] = {}
-        for fr in chunk:
-            n = fr.get("number") or fr.get("номер")
-            u = str(fr.get("uuid") or "").strip()
-            if n is not None and u:
-                try:
-                    num_to_uuid[int(n)] = u
-                except (ValueError, TypeError):
-                    pass
-        if num_to_uuid:
-            remap_frame_number_uuids(ops, num_to_uuid)
-        if known_list:
-            repair_near_miss_frame_uuids(ops, known_list, max_distance=2)
-
-        dropped = 0
-        kept: list[dict[str, Any]] = []
-        for op in ops:
-            if not isinstance(op, dict):
-                continue
-            uid = str(op.get("frame_uuid") or "").strip()
-            if uid in known:
-                kept.append(op)
-            else:
-                dropped += 1
-        if dropped:
-            logger.warning(
-                "[#{}] apply_ops batched node={!r}: call {} L{} "
-                "dropped {} unknown frame_uuid",
-                project_id,
-                node_key,
-                my_i,
-                level,
-                dropped,
+        ops_gpt = snapshot(ops)
+        try:
+            passes = run_code_passes(
+                ops,
+                chunk,
+                kind=(footer_kind or "").strip().lower(),
+                all_frames=all_frames,
+                ctx=PassCtx(project_id, node_key, my_i, level),
             )
-        ops = kept
-        kind = (footer_kind or "").strip().lower()
-        if kind in {"bits", "script_beats"}:
-            repaired = repair_bits_ops(ops, chunk)
-            if repaired:
-                logger.info(
-                    "[#{}] apply_ops batched node={!r}: call {} "
-                    "починил биты ×{}",
-                    project_id,
-                    node_key,
-                    my_i,
-                    repaired,
-                )
-            bad_bits = bits_ops_reason(ops, chunk)
-            if bad_bits:
-                logger.warning(
-                    "[#{}] apply_ops batched node={!r}: call {} L{} "
-                    "биты слабоваты (пишем как есть): {}",
-                    project_id,
-                    node_key,
-                    my_i,
-                    level,
-                    bad_bits,
-                )
-        if kind in {
-            "analytics",
-            "scene_analytics",
-            "54_59",
-        }:
-            collapsed = analytics_ops_collapsed_reason(ops, chunk)
-            if collapsed:
-                raise RuntimeError(
-                    f"excel_gpt node={node_key}: L{level} call {my_i} "
-                    f"{collapsed}"
-                )
-        if kind in {"action_chain", "main_action"}:
-            auto_repair_action_chain_ops(ops, chunk)
-            n_plan = normalize_action_plan_ops(ops)
-            if n_plan < len(ops):
-                logger.info(
-                    "[#{}] apply_ops batched node={!r}: call {} площадка "
-                    "{}/{} (остальное выведет код на кадрах)",
-                    project_id,
-                    node_key,
-                    my_i,
-                    n_plan,
-                    len(ops),
-                )
-            repaired = repair_action_ops(ops)
-            if repaired:
-                logger.info(
-                    "[#{}] apply_ops batched node={!r}: call {} "
-                    "починил главное_действие ×{}",
-                    project_id,
-                    node_key,
-                    my_i,
-                    repaired,
-                )
-            bad_action = action_chain_ops_reason(ops, chunk)
-            if bad_action:
-                logger.warning(
-                    "[#{}] apply_ops batched node={!r}: call {} L{} "
-                    "действие слабовато (пишем как есть): {}",
-                    project_id,
-                    node_key,
-                    my_i,
-                    level,
-                    bad_action,
-                )
-        if kind in _SHOTS_FOOTER_KINDS:
-            repaired_parents = repair_same_place_shot_parents(ops)
-            if repaired_parents:
-                logger.info(
-                    "[#{}] apply_ops batched node={!r}: parent_id проставлен "
-                    "по таблице у {} кадров (GPT оставил null)",
-                    project_id,
-                    node_key,
-                    repaired_parents,
-                )
-            before = 0
-            for op in ops:
-                if not isinstance(op, dict):
-                    continue
-                fields = op.get("fields") or {}
-                shots = fields.get("кадры") or fields.get("shots")
-                if isinstance(shots, list):
-                    before += len(shots)
-            apply_grammar_to_ops(ops, chunk)
-            after = 0
-            for op in ops:
-                if not isinstance(op, dict):
-                    continue
-                fields = op.get("fields") or {}
-                shots = fields.get("кадры") or fields.get("shots")
-                if isinstance(shots, list):
-                    after += len(shots)
-            filled = max(0, after - before)
-            if filled:
-                logger.info(
-                    "[#{}] apply_ops batched node={!r}: грамматика кадров "
-                    "дописала +{} шагов из главное_действие",
-                    project_id,
-                    node_key,
-                    filled,
-                )
-            repaired_parents = repair_same_place_shot_parents(ops)
-            repaired_vo = repair_shot_vo_ops(ops, chunk)
-            plan_fixed, plan_hard = apply_scene_plan_ops(ops, all_frames or chunk)
-            if plan_fixed:
-                logger.info(
-                    "[#{}] apply_ops batched node={!r}: call {} площадка "
-                    "починила ×{}: {}",
-                    project_id,
-                    node_key,
-                    my_i,
-                    len(plan_fixed),
-                    "; ".join(plan_fixed[:6]),
-                )
-            if plan_hard:
-                logger.warning(
-                    "[#{}] apply_ops batched node={!r}: call {} L{} "
-                    "площадка: {}",
-                    project_id,
-                    node_key,
-                    my_i,
-                    level,
-                    "; ".join(plan_hard[:6]),
-                )
-            if repaired_vo:
-                logger.info(
-                    "[#{}] apply_ops batched node={!r}: call {} "
-                    "дописал пустой закадр ×{}",
-                    project_id,
-                    node_key,
-                    my_i,
-                    repaired_vo,
-                )
-            bad_shots = shots_coverage_ops_reason(ops, chunk)
-            if bad_shots:
-                logger.warning(
-                    "[#{}] apply_ops batched node={!r}: call {} L{} "
-                    "кадры слабоваты (пишем как есть): {}",
-                    project_id,
-                    node_key,
-                    my_i,
-                    level,
-                    bad_shots,
-                )
-        if kind in {"prompts", "img"}:
-            bad_prompts = prompts_ops_reason(ops, chunk)
-            if bad_prompts:
-                raise RuntimeError(
-                    f"excel_gpt node={node_key}: L{level} call {my_i} "
-                    f"{bad_prompts}"
-                )
+        except Exception as exc:
+            recorder.record_call(
+                call=my_i,
+                level=level,
+                chunk=chunk,
+                reply_text=res.reply_text or "",
+                ops_gpt=ops_gpt,
+                ops_final=None,
+                entries=list(getattr(exc, "diary", []) or [])
+                + [entry(rule=str(getattr(exc, "rule", "") or ""), pass_name="stop",
+                         kind="stop", note=str(exc)[:500])],
+                error=str(exc),
+            )
+            raise
+        ops = passes.ops
+        recorder.record_call(
+            call=my_i,
+            level=level,
+            chunk=chunk,
+            reply_text=res.reply_text or "",
+            ops_gpt=ops_gpt,
+            ops_final=ops,
+            entries=passes.entries,
+        )
         logger.info(
             "[#{}] apply_ops batched node={!r}: call {} L{} sent={} got_ops={}",
             project_id,
@@ -1843,40 +2109,48 @@ async def run_apply_ops_batched(
             await asyncio.sleep(delay)
         await _run_adaptive(pack, 1)
 
-    if wave_n <= 1 or len(packs) <= 1:
-        for pack in packs:
-            await _run_adaptive(pack, 1)
-    else:
-        for wave_start in range(0, len(packs), wave_n):
-            wave = packs[wave_start : wave_start + wave_n]
-            logger.info(
-                "[#{}] apply_ops node={!r}: wave {}–{} / {} "
-                "(parallel={}, stagger={}s)",
-                project_id,
-                node_key,
-                wave_start + 1,
-                wave_start + len(wave),
-                len(packs),
-                wave_n,
-                delay_s,
-            )
-            if on_progress is not None:
-                try:
-                    await on_progress(
-                        f"волна {wave_start + 1}–{wave_start + len(wave)} / {len(packs)}"
-                    )
-                except Exception:
-                    logger.debug("apply_ops progress callback failed", exc_info=True)
-            results = await asyncio.gather(
-                *[
-                    _run_pack(i * delay_s, pack)
-                    for i, pack in enumerate(wave)
-                ],
-                return_exceptions=True,
-            )
-            errs = [r for r in results if isinstance(r, BaseException)]
-            if errs:
-                raise errs[0]
+    async def _run_waves() -> None:
+        if wave_n <= 1 or len(packs) <= 1:
+            for pack in packs:
+                await _run_adaptive(pack, 1)
+        else:
+            for wave_start in range(0, len(packs), wave_n):
+                wave = packs[wave_start : wave_start + wave_n]
+                logger.info(
+                    "[#{}] apply_ops node={!r}: wave {}–{} / {} "
+                    "(parallel={}, stagger={}s)",
+                    project_id,
+                    node_key,
+                    wave_start + 1,
+                    wave_start + len(wave),
+                    len(packs),
+                    wave_n,
+                    delay_s,
+                )
+                if on_progress is not None:
+                    try:
+                        await on_progress(
+                            f"волна {wave_start + 1}–{wave_start + len(wave)} / {len(packs)}"
+                        )
+                    except Exception:
+                        logger.debug("apply_ops progress callback failed", exc_info=True)
+                results = await asyncio.gather(
+                    *[
+                        _run_pack(i * delay_s, pack)
+                        for i, pack in enumerate(wave)
+                    ],
+                    return_exceptions=True,
+                )
+                errs = [r for r in results if isinstance(r, BaseException)]
+                if errs:
+                    raise errs[0]
+
+    try:
+        await _run_waves()
+    except BaseException as exc:
+        recorder.finish(ok=False, error=f"{type(exc).__name__}: {exc}")
+        raise
+    recorder.finish(ok=True)
 
     ctx_path.write_text(
         json.dumps(db_ctx, ensure_ascii=False, indent=2),

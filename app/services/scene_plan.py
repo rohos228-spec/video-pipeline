@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import html
 import re
+from contextvars import ContextVar
 from typing import Any
 
 from app.services.scene_shot_grammar import (
@@ -771,26 +772,37 @@ def _is_generic_freeze(start: str, end: str) -> bool:
 
 def needs_freeze(shot: dict[str, Any]) -> bool:
     """Пара старт/конец только у точного жеста (смена предмета), не у процесса."""
+    return freeze_decision(shot)[0]
+
+
+def freeze_decision(shot: dict[str, Any]) -> tuple[bool, str]:
+    """``needs_freeze`` + причина простыми словами (для дневника кадра)."""
     flag = _precision_flag(shot.get("точность"))
     if flag is False:
-        return False
+        return False, "GPT пометил «точность: нет» — это процесс, одна картинка"
     for c in shot.get("меняет") or []:
         if (
             isinstance(c, dict)
             and str(c.get("предмет") or "").strip()
             and str(c.get("состояние") or "").strip()
         ):
-            return True
+            return True, (
+                f"в кадре меняется предмет «{str(c['предмет']).strip()}» → "
+                f"{str(c['состояние']).strip()}"
+            )
     if flag is True:
-        return True
+        return True, "GPT пометил «точность: да»"
     start = " ".join(str(shot.get("старт") or "").split())
     end = " ".join(str(shot.get("конец") or "").split())
     if _is_generic_freeze(start, end):
-        return False
+        return False, "старт/конец — пустые шаблоны без изменения, значит процесс"
     act = _core_action(shot)
     if start and end and not _freeze_broken(start, end, act):
-        return True
-    return bool(_PRECISE_VERB_RE.search(act))
+        return True, "GPT дал разные старт и конец"
+    verb = _PRECISE_VERB_RE.search(act)
+    if verb:
+        return True, f"в действии точный жест «{verb.group(0)}»"
+    return False, "нет смены предмета и точного жеста — процесс, одна картинка"
 
 
 def _freeze_broken(start: str, end: str, act: str) -> bool:
@@ -1526,7 +1538,8 @@ class _Sim:
             shot["_end"] = end_states
             self._apply_changes(states, shot)
             if self.owned(shot):
-                freeze = needs_freeze(shot)
+                freeze, why = freeze_decision(shot)
+                shot["_почему_точность"] = why
                 shot["точность"] = freeze
                 if freeze:
                     freeze_s, freeze_e = _freeze_pair(shot)
@@ -1727,7 +1740,12 @@ class _Sim:
         return " ".join(parts)
 
 
-_TMP_KEYS = ("_zk", "_start", "_end", "_ro", "_cell", "_cam_given")
+_TMP_KEYS = ("_zk", "_start", "_end", "_ro", "_cell", "_cam_given", "_почему_точность")
+
+# Дневник: apply_scene_plan_ops ставит список — сюда падают решения СТАРТ/КОНЕЦ.
+FREEZE_DECISIONS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "scene_plan_freeze_decisions", default=None
+)
 
 
 def _merge_plans(raws: list[Any]) -> dict[str, Any]:
@@ -1817,6 +1835,20 @@ def apply_scene_plan_cells(
             if shot.get("id"):
                 it["id"] = str(shot["id"])
             issues_by.setdefault(key, []).append(it)
+        decisions = FREEZE_DECISIONS.get()
+        if decisions is not None:
+            for c in cells:
+                if not c.get("owned"):
+                    continue
+                for n, s in enumerate(c["shots"], start=1):
+                    if "_почему_точность" in s:
+                        decisions.append({
+                            "cell": str(c["key"]),
+                            "кадр": n,
+                            "id": str(s.get("id") or ""),
+                            "точность": bool(s.get("точность")),
+                            "почему": s["_почему_точность"],
+                        })
         for s in flat:
             for k in _TMP_KEYS:
                 s.pop(k, None)
