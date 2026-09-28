@@ -19,6 +19,29 @@ import test_journal
 
 
 class RuntimeAcceptance(test_journal.JournalAcceptance):
+    async def test_real_worker_wait_is_scoped_and_not_guessed_from_status(self):
+        async with self.master() as session:
+            project = await session.get(Project, 2)
+            project.meta = {"active_excel_gpt_node_key": "script"}
+            observation.stage_project_fact(session, project, "runtime_wait", {"reason":"queue_predecessor", "blocking_project_id":1, "initiator":"worker"})
+            await session.commit()
+        await self.observer.consume(self.scope.execution_id, "master", self.master)
+        response=await self.client.get(f"/api/projects/2/observations/{self.scope.execution_id}/context")
+        self.assertEqual(response.json()["wait_reasons"]["script"]["reason"], "queue_predecessor")
+
+    async def test_actual_json_repair_records_performed_not_semantic_success(self):
+        from app.services.db_apply import repair_apply_ops_json_text
+        async with self.master() as session:
+            project = await session.get(Project, 2)
+            project.meta = {"active_excel_gpt_node_key":"script"}
+            async with observation.observe_attempt(session,project):
+                self.assertEqual(repair_apply_ops_json_text('{""order":1}'), '{"order":1}')
+            await session.commit()
+        await self.observer.consume(self.scope.execution_id,"master",self.master)
+        async with self.master() as session:
+            rows=(await session.scalars(select(observation.ObservationEvent))).all()
+            self.assertTrue(any(r.kind=="runtime_check" and r.payload.get("check")=="json_text_repair" and r.payload.get("changed") for r in rows))
+
     async def test_retention_never_deletes_old_acceptance_bodies_and_can_pin(self):
         old = self.observer.save_body(self.scope.execution_id, {"acceptance": "old"})
         path = self.observer.body_root / old["path"]
