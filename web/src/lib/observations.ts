@@ -9,9 +9,9 @@ interface NodeState {status: string; progress: number | null; attempts: number |
 export interface ObservationContext extends ObservationScope {
   business_group_outcome: string; current_nodes: string[];
   master: {nodes: Record<string, NodeState>}; project: {nodes: Record<string, NodeState>} | null;
-  node_contexts: Record<string, {latest_attempt_id: string | null; model: string | null; checks: unknown[]}>;
+  node_contexts: Record<string, {latest_attempt_id: string | null; model: string | null; checks: {kind:string; result:Record<string,unknown>}[]}>;
   disagreement: boolean; data_gaps: {kind?: string; reason?: string; error_type?: string}[];
-  latest_problem: {kind: string; node_key: string; later_apply_committed: boolean} | null;
+  latest_problem: {kind: string; node_key: string; later_apply_committed: boolean; payload: {error_type?:string}} | null;
   commit_confirmation: string | null; history_window_limited: boolean; pinned: boolean;
   wait_reasons?: Record<string, {reason: string; initiator?: string}>;
 }

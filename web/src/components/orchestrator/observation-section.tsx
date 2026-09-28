@@ -121,7 +121,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         <p>Scope: {context.node_keys.join(" → ")}</p>
         <p>Текущая нода: {context.current_nodes.join(", ") || "нет активной по снимку БД"}</p>
         {context.disagreement && <p className="text-amber-200">Расхождение master/project: состояния отличаются; показана проектная БД.</p>}
-        {context.latest_problem && <p className="text-amber-200">Последняя проблема: {context.latest_problem.node_key} · {context.latest_problem.kind}; последующее применение БД: {context.latest_problem.later_apply_committed ? "записано" : "не подтверждено"}</p>}
+        {context.latest_problem && <p className="text-amber-200">Последняя проблема: {context.latest_problem.node_key} · {context.latest_problem.kind} {context.latest_problem.payload.error_type ?? ""}; последующее применение БД: {context.latest_problem.later_apply_committed ? "записано" : "не подтверждено"}</p>}
         {context.commit_confirmation && <p className="text-red-300">{context.commit_confirmation}: бизнес-результат не подтверждён.</p>}
         <p>Неполнота журнала: {context.data_gaps.length ? context.data_gaps.map(g=>g.kind ?? g.error_type ?? "неизвестно").join(", ") : "зафиксированных gaps нет; это не гарантия полноты"}</p>
         {context.history_window_limited && <p className="text-amber-200">Контекст ограничен последними 500 событиями; история ниже загружается с курсором.</p>}
@@ -129,7 +129,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       <div className="overflow-x-auto"><table className="w-full text-left"><thead><tr>{["Нода","Состояние / прогресс","Попытка","Модель / usage","Проверки / ожидание"].map(x=><th key={x} className="p-1 text-white/40">{x}</th>)}</tr></thead><tbody>
         {context.node_keys.map(node=>{
           const nc=context.node_contexts[node]; const state=states[node]; const latest=models.filter(e=>e.node_key===node).at(-1);
-          return <tr key={node} className="border-t border-white/10"><td className="p-1">{node}</td><td className="p-1">{state?.status ?? "неизвестно"} · {state?.progress == null ? "прогресс неизвестен" : `${state.progress}%`}</td><td className="p-1">{nc?.latest_attempt_id?.slice(0,8) ?? "неизвестно"}</td><td className="p-1">{nc?.model ?? "модель неизвестна"}<br/>{usageLabel(latest?.payload.usage as Record<string,unknown> | null)}</td><td className="p-1">{nc?.checks.length ? `${nc.checks.length} записанных проверок` : "not_checked"}<br/>{context.wait_reasons?.[node]?.reason ?? "причина ожидания неизвестна"}</td></tr>;
+          return <tr key={node} className="border-t border-white/10"><td className="p-1">{node}</td><td className="p-1">{state?.status ?? "неизвестно"} · {state?.progress == null ? "прогресс неизвестен" : `${state.progress}%`}</td><td className="p-1">{nc?.latest_attempt_id?.slice(0,8) ?? "неизвестно"}</td><td className="p-1">{nc?.model ?? "модель неизвестна"}<br/>{usageLabel(latest?.payload.usage as Record<string,unknown> | null)}</td><td className="p-1">{nc?.checks.length ? nc.checks.slice(0,4).map((check,i)=><div key={i}>{eventLabel({kind:check.kind,payload:check.result})}</div>) : "not_checked"}<br/>{context.wait_reasons?.[node]?.reason ?? "причина ожидания неизвестна"}</td></tr>;
         })}
       </tbody></table></div>
       <div><strong>Хронология · {events.length} событий</strong><ol data-testid="observation-timeline" className="mt-2 max-h-64 overflow-y-auto space-y-1">

@@ -23,6 +23,7 @@ export function eventLabel(event: Pick<ObservationEvent, "kind" | "payload">): s
   if (event.kind === "runtime_check") return `${p.check ?? "проверка"}: ${p.status ?? "неизвестно"}`;
   if (event.kind === "parse_result") return `Разбор: ${p.parsed === true ? "извлечён" : p.parsed === false ? "не извлечён" : "неизвестно"}; schema ${p.schema_valid == null ? "not_checked" : String(p.schema_valid)}`;
   if (event.kind === "json_retry") return "Штатный JSON retry";
+  if (event.kind === "domain_check") return `Вердикт: ${p.verdict ?? "неизвестно"}; качество модели не проверено`;
   if (event.kind === "node_change") {
     const transitions = p.transitions as {from: string; to: string; initiator?: string}[] | undefined;
     return transitions?.length ? transitions.map(t => `${t.from} → ${t.to} (${t.initiator ?? "инициатор неизвестен"})`).join("; ") : "Изменение состояния БД; инициатор неизвестен";
