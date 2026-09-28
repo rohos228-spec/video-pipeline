@@ -26,6 +26,7 @@ $files = @($tracked) + @('app/services/actions_v1.py', 'tests/observe_v1/test_ac
 $files += 'app/services/actions_recovery.py'
 $files += 'tests/observe_v1/recovery_denials.py'
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
+if ($Target -eq 'decision') { $files += 'tests/observe_v1/test_decision_v1.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
 $manifest = @{}
 foreach ($relative in $files) {
