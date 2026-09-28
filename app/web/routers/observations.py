@@ -44,7 +44,7 @@ async def enable_observation(project_id: int, payload: EnableObservation):
         run_id = run.id
     try:
         scope = await observer.enable(project_id=project_id, workflow_run_id=run_id,
-            node_keys=payload.node_keys, graph_version=graph_version)
+            node_keys=payload.node_keys, graph_version=graph_version, initiator="observation_api")
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     return scope_json(scope)
@@ -63,7 +63,7 @@ async def stop_observation(project_id: int, execution_id: str):
     observer = get_observer()
     async with observer.master() as session:
         await _scope(session, project_id, execution_id)
-    await observer.stop(execution_id)
+    await observer.stop(execution_id, initiator="observation_api")
     return {"observer_state": "stopped", "business_action": None}
 
 
@@ -166,6 +166,11 @@ async def context(project_id: int, execution_id: str):
                     or (row.kind == "parse_result" and row.payload.get("payload_required")
                         and not row.payload.get("payload_present"))), None)
     result.update({"master": master, "project": replica, "node_contexts": node_contexts,
+        "wait_reasons": {key: next((row.payload for row in rows if row.kind == "runtime_wait" and row.node_key == key
+                                   and row.id > max((r.id for r in rows if r.kind == "node_start" and r.node_key == key), default=0)),
+            {"reason": "waiting_hitl", "initiator": None}) for key, state in states.items()
+            if state["status"] == "waiting_hitl" or (state["status"] not in {"done", "skipped"} and any(row.kind == "runtime_wait" and row.node_key == key
+                and row.id > max((r.id for r in rows if r.kind == "node_start" and r.node_key == key), default=0) for row in rows))},
         "pinned": observer.is_pinned(execution_id),
         "commit_confirmation": observer.commit_uncertainty.get(execution_id),
         "disagreement": replica is not None and master != replica,
@@ -177,7 +182,8 @@ async def context(project_id: int, execution_id: str):
                                         and row.kind == "data_applied" for row in rows)} if problem else None,
         "data_gaps": gaps,
         "unknown": ["Semantic diagnosis is not implemented", "Scope does not stop the pipeline",
-                    "Formal node schema validation is not instrumented", "Queue/HITL/operator stop details are not instrumented"],
+                    "Formal node schema validation is not_checked unless an actual check event is recorded",
+                    "Wait reasons and human identity remain unknown when no runtime fact is recorded"],
         "history_window_limited": len(rows) == 500,
     })
     return panel_safe(result)

@@ -371,6 +371,10 @@ def _hamming_distance(a: str, b: str) -> int:
     return sum(1 for x, y in zip(a, b, strict=True) if x != y)
 
 
+from app.services.observation import observe_check
+
+
+@observe_check("frame_uuid_repair", lambda args, kw, result: {"status": "performed", "changed": bool(result), "repairs": len(result)})
 def repair_near_miss_frame_uuids(
     ops: list[dict[str, Any]],
     known_uuids: list[str] | set[str],
@@ -453,6 +457,7 @@ _DOUBLE_KEY_QUOTE_RE = re.compile(
 )
 
 
+@observe_check("json_text_repair", lambda args, kw, result: {"status": "performed", "changed": result != args[0]})
 def repair_apply_ops_json_text(text: str) -> str:
     """Типичный обрыв/опечатка kie: ``{""порядок":27`` вместо ``{"порядок":27``."""
     if not text:

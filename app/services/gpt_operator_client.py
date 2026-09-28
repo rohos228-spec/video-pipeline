@@ -513,7 +513,7 @@ async def _run_operator_api_real(
     if effective_output == "project_file" and not is_check and apply_ops is None:
         from app.services.observation import record_fact, record_parse
 
-        await record_fact("json_retry", {"reason": "missing_write_payload", "strategy": "fixed_contract_prompt"})
+        await record_fact("json_retry", {"reason": "missing_write_payload", "strategy": "fixed_contract_prompt", "initiator": "runtime_json_retry"})
         from dataclasses import replace
 
         from app.services.db_apply import extract_apply_ops_json

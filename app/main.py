@@ -557,6 +557,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
 
                 for p in projects:
                     if is_user_stopped(p):
+                        from app.services.observation import stage_project_fact
+                        stage_project_fact(s, p, "runtime_wait", {"reason": "user_stop", "initiator": "worker", "human_identity": None})
                         logger.debug(
                             "worker: #{} {} — user_stop, пропуск тика",
                             p.id,
@@ -631,6 +633,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         continue
                     queue_blocker = await gen_queue_blocks_project(s, p.id)
                     if queue_blocker is not None:
+                        from app.services.observation import stage_project_fact
+                        stage_project_fact(s, p, "runtime_wait", {"reason": "queue_predecessor", "blocking_project_id": queue_blocker, "initiator": "worker"})
                         logger.debug(
                             "worker: #{} {} — ждём очередь, блокирует #{}",
                             p.id,
@@ -639,6 +643,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         )
                         continue
                     if is_sleeping(p):
+                        from app.services.observation import stage_project_fact
+                        stage_project_fact(s, p, "runtime_wait", {"reason": "failure_sleep", "until": str(failure_sleep_until(p)), "initiator": "worker"})
                         logger.info(
                             "worker: #{} {} — пауза после ошибок до {}, пропуск тика",
                             p.id,
@@ -649,6 +655,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         if is_sleeping(p):
                             continue
                     if slots_free <= 0:
+                        from app.services.observation import stage_project_fact
+                        stage_project_fact(s, p, "runtime_wait", {"reason": "parallel_slots_full", "max_parallel": max_parallel, "initiator": "worker"})
                         logger.debug(
                             "worker: #{} {} — нет свободных слотов "
                             "(max_parallel={})",

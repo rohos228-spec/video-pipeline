@@ -34,6 +34,7 @@ finish_coverage = begin(SOURCE)
 async def run():
     shutil.copytree("/srv/seed", DATA)
     mode = os.environ.get("OBSERVE_GROUP_MODE", "observe")
+    browser_mode = os.environ.get("OBSERVE_BROWSER", "").lower() == "true"
     os.environ.update({
         "DATA_DIR": str(DATA), "SQLITE_PATH": str(DATA / "state.db"),
         "TEXT_LLM_PROVIDER": "kie", "GPT_API_KEY": "synthetic-fixture-token",
@@ -83,12 +84,31 @@ async def run():
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
             base = "http://127.0.0.1:18765/api/projects/2"
             execution_id = None
-            if mode != "off":
+            if browser_mode:
+                # User enables observation in the real panel. No node is started
+                # until the explicit test-runner signal is written via docker exec.
+                (ROOT / "browser-ready.json").write_text(json.dumps({"project_id":2,"nodes":list(fixtures.NODES),"state":fixtures.snapshot()}))
+                while not (ROOT / "browser-run-requested").exists():
+                    await asyncio.sleep(0.2)
+                response = await client.get(base + "/observations")
+                response.raise_for_status()
+                active = [s for s in response.json() if s["observer_state"] != "stopped"]
+                assert len(active) == 1, "UI must explicitly enable one scope"
+                execution_id = active[0]["execution_id"]
+            elif mode != "off":
                 response = await client.post(base + "/observations", json={"node_keys": list(fixtures.NODES)})
                 response.raise_for_status()
                 execution_id = response.json()["execution_id"]
+            if execution_id:
+                response = await client.post(base + f"/observations/{execution_id}/pin")
+                response.raise_for_status()
             response = await client.post(base + "/steps/excel_gpt/run", params={"node_key": fixtures.NODES[0]})
             response.raise_for_status()
+            if mode == "stop":
+                response = await client.post(base + f"/observations/{execution_id}/stop")
+                response.raise_for_status()
+                assert response.json()["business_action"] is None
+                result["observer_stop_during_pipeline"] = True
             deadline = time.monotonic() + 240
             while time.monotonic() < deadline:
                 state = fixtures.snapshot()
@@ -110,12 +130,13 @@ async def run():
                 history = response.json()
                 (ROOT / "api-history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2))
                 kinds = {key: [e["kind"] for e in history["events"] if e["node_key"] == key] for key in fixtures.NODES}
-                for key in fixtures.NODES:
-                    assert "node_start" in kinds[key] and "node_end" in kinds[key], (key, kinds[key])
-                for key in fixtures.NODES[:-1]:
-                    assert "model_start" in kinds[key] and "model_end" in kinds[key], (key, kinds[key])
-                assert "artifact_created" in kinds[fixtures.NODES[-1]]
-                assert "node_input" in kinds[fixtures.NODES[-1]]
+                if mode != "stop":
+                    for key in fixtures.NODES:
+                        assert "node_start" in kinds[key] and "node_end" in kinds[key], (key, kinds[key])
+                    for key in fixtures.NODES[:-1]:
+                        assert "model_start" in kinds[key] and "model_end" in kinds[key], (key, kinds[key])
+                    assert "artifact_created" in kinds[fixtures.NODES[-1]]
+                    assert "node_input" in kinds[fixtures.NODES[-1]]
                 text_check = [e for e in history["events"] if e["node_key"] == fixtures.NODES[1] and e["kind"] == "parse_result"]
                 assert all(not e["payload"]["payload_required"] for e in text_check), "Text verdict must not require apply-ops"
                 if mode == "malformed":
@@ -126,6 +147,8 @@ async def run():
                 result["context"] = response.json()
                 assert "node_contexts" in result["context"], "Persistent per-node inputs/model/checks missing"
                 assert result["context"]["business_group_outcome"] == "done"
+                if mode == "stop":
+                    assert result["context"]["observer_state"] == "stopped"
                 with sqlite3.connect(DATA / "state.db") as conn:
                     assert conn.execute("SELECT count(*) FROM observation_events WHERE project_id!=2").fetchone()[0] == 0
             else:
@@ -140,11 +163,18 @@ async def run():
     finally:
         finish_coverage(ROOT)
         result["fixture_counts"] = dict(fixtures.FixtureHandler.counts)
+        # Persist the reached group boundary before cancellation. A shutdown
+        # failure must not hide completed nodes or already-written evidence.
+        (ROOT / "group-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        done, pending = await asyncio.wait({task}, timeout=10)
+        if pending:
+            result["shutdown_gap"] = "app.main cancellation did not finish within 10 seconds"
+            (ROOT / "group-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        elif not task.cancelled():
+            error = task.exception()
+            if error:
+                result["shutdown_error_type"] = type(error).__name__
         server.shutdown()
         server.server_close()
         httpx.AsyncClient.send = original_send
@@ -162,6 +192,20 @@ async def run():
             loaded.append({"module": name, "path": relative, "sha256": sha})
         (ROOT / "loaded-modules.json").write_text(json.dumps(loaded, indent=2))
         (ROOT / "group-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        if pending:
+            # Only this synthetic runner process; preserve data, do not claim a
+            # clean application shutdown. Prevent infinite cancellation loops.
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(3)
+        if browser_mode and result.get("accepted"):
+            # At the boundary the real runner has stopped app.main. Serve the
+            # original app/router/static export for history only; no worker or
+            # external transport is started by this replay server.
+            import uvicorn
+            from app.web.api import create_app
+            (ROOT / "browser-history-mode.json").write_text(json.dumps({"worker":"stopped by test runner at group boundary", "lifespan":"off", "frontend_sha256":hashlib.sha256((SOURCE / "web/out/index.html").read_bytes()).hexdigest()}))
+            await uvicorn.Server(uvicorn.Config(create_app(), host="127.0.0.1", port=18765, lifespan="off", log_level="warning")).serve()
 
 
 if __name__ == "__main__":

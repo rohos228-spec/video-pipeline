@@ -2,7 +2,8 @@ param(
     [string]$ResultsRoot,
     [string]$Image = 'vp-offline-diagnostic:20260924',
     [string]$Target = 'journal',
-    [string]$GroupMode = 'observe'
+    [string]$GroupMode = 'observe',
+    [switch]$Browser
 )
 $ErrorActionPreference = 'Stop'
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -20,7 +21,8 @@ New-Item -ItemType Directory -Path $stagePath, $configPath, $artifactPath | Out-
 $gitSafety = 'safe.directory=' + $sourceRoot.Replace('\', '/')
 $tracked = & git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files app prompts templates pyproject.toml
 if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate tracked source' }
-$files = @($tracked) + @('tests/observe_v1/test_journal.py', 'tests/observe_v1/test_runtime.py', 'tests/observe_v1/container_test_entry.py', 'tests/observe_v1/group_acceptance.py', 'tests/observe_v1/coverage_capture.py')
+$files = @($tracked) + @('tests/observe_v1/test_journal.py', 'tests/observe_v1/test_runtime.py', 'tests/observe_v1/container_test_entry.py', 'tests/observe_v1/group_acceptance.py', 'tests/observe_v1/coverage_capture.py', 'tests/observe_v1/socket_bridge.py')
+if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
 $manifest = @{}
 foreach ($relative in $files) {
     if ($relative -match '(^|/)\.env($|\.)|(^|/)\.git(/|$)|\.(db|sqlite|pem|key)$') { throw "Disallowed source: $relative" }
@@ -43,6 +45,7 @@ $dockerArgs = $connectionArgs + @(
     '--workdir', '/observe-source', '--env', 'PYTHONPATH=/observe-source', '--env', 'OBSERVE_SOURCE=/observe-source',
     '--env', "OBSERVE_TEST_TARGET=$Target",
     '--env', "OBSERVE_GROUP_MODE=$GroupMode",
+    '--env', "OBSERVE_BROWSER=$Browser",
     $Image, 'python', $entryFile)
 $containerId = & $docker @dockerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Cannot create offline test container' }
@@ -59,6 +62,12 @@ if ($Target -eq 'group') {
     }
     & $docker @connectionArgs cp "$fixturePath/." "${name}:/observe-fixtures"
     if ($LASTEXITCODE -ne 0) { throw 'Cannot copy prepared synthetic fixture helpers' }
+}
+if ($Browser) {
+    & $docker @connectionArgs start $name | Out-Null
+    @{container=$name;network='none';browser_port=18767;source_commit=(& git -c $gitSafety -C $sourceRoot rev-parse HEAD)} | ConvertTo-Json | Set-Content (Join-Path $artifactPath 'browser-config.json')
+    Write-Output "Browser container running: $name; evidence: $artifactPath"
+    exit 0
 }
 $output = & $docker @connectionArgs start --attach $name 2>&1
 $testExit = $LASTEXITCODE

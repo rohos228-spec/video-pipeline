@@ -24,6 +24,7 @@ from sqlalchemy import JSON, String, UniqueConstraint, event, inspect, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.models import Base, NodeRun, Project, WorkflowRun
+from app.services.observation_files import secure_directory
 
 
 class ExecutionControl(Base):
@@ -132,8 +133,9 @@ class Observer:
         self._enable_lock = asyncio.Lock()
         self.failures: dict[str, str] = {}
         self.commit_uncertainty: dict[str, str] = {}
+        self.last_project_facts: dict[tuple, str] = {}
 
-    async def enable(self, *, project_id, workflow_run_id, node_keys, graph_version):
+    async def enable(self, *, project_id, workflow_run_id, node_keys, graph_version, initiator=None):
         if not node_keys or len(set(node_keys)) != len(node_keys):
             raise ValueError("Explicit, unique node scope required")
         async with self._enable_lock:
@@ -150,6 +152,9 @@ class Observer:
                     graph_version=str(graph_version), mode="observe", observer_state="active",
                     cursors={}, gaps=[])
                 session.add(scope)
+                if initiator:
+                    self.stage(session, scope, "observer_control", db_scope="master",
+                        payload={"action":"enabled", "initiator":initiator, "actor":"observer_api", "human_identity":None, "business_action":None})
                 await session.commit()
             self.scopes[workflow_run_id] = scope
             return scope
@@ -175,11 +180,14 @@ class Observer:
             await self.ensure_project_schema(scope.project_id)
         self.scopes = {s.workflow_run_id: s for s in scopes}
 
-    async def stop(self, execution_id):
+    async def stop(self, execution_id, *, initiator=None):
         async with self.master() as session:
             scope = await session.get(ExecutionControl, execution_id)
             if scope is None:
                 raise ValueError("Observation not found")
+            if initiator and scope.observer_state != "stopped":
+                self.stage(session, scope, "observer_control", db_scope="master",
+                    payload={"action":"stopped", "initiator":initiator, "actor":"observer_api", "human_identity":None, "business_action":None})
             scope.observer_state = "stopped"
             await session.commit()
         cached = self.scopes.pop(scope.workflow_run_id, None)
@@ -207,6 +215,7 @@ class Observer:
     def pin(self, execution_id):
         folder = self.body_root / str(uuid.UUID(execution_id))
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        secure_directory(folder)
         (folder / ".pinned").touch(mode=0o600, exist_ok=True)
 
     def is_pinned(self, execution_id):
@@ -220,7 +229,7 @@ class Observer:
             return {"gap": "body_size_limit", "bytes": len(raw)}
         folder = self.body_root / execution_id
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(folder, 0o700)
+        secure_directory(folder)
         total = 0
         # No automatic deletion: diagnostic evidence, pinned and active scopes
         # survive age and restart. Exhaustion is an explicit body_total_limit gap.
@@ -488,6 +497,16 @@ def _stage_node_changes(session, _flush_context, _instances):
         return
     source = "project" if Path(str(session.bind.url.database)).name == "project.db" else "master"
     for row in list(session.dirty):
+        if isinstance(row, Project) and inspect(row).attrs.meta.history.has_changes():
+            meta = row.meta or {}
+            history = inspect(row).attrs.meta.history
+            before = history.deleted[0] if history.deleted else {}
+            flags = ("user_stop", "mass_lane_user_stop", "auto_await_manual_start")
+            if any(bool(meta.get(k)) != bool((before or {}).get(k)) for k in flags):
+                stage_project_fact(session, row, "project_control", {
+                    **{k: bool(meta.get(k)) for k in flags},
+                    "initiator": "project_state_write", "human_identity": None,
+                })
         if not isinstance(row, NodeRun):
             continue  # In particular, never observe writes to our own journal/cursors.
         scope = observer.scopes.get(row.workflow_run_id)
@@ -519,6 +538,8 @@ def _stage_node_changes(session, _flush_context, _instances):
 @event.listens_for(Session, "after_commit")
 def _clear_committed_observation(session):
     session.info.pop("observation_pending", None)
+    if _observer:
+        _observer.last_project_facts.update(session.info.pop("observation_fact_signatures", {}))
 
 
 @event.listens_for(Session, "after_soft_rollback")
@@ -552,6 +573,38 @@ def observe_check(name, summarize):
             return result
         return wrapped
     return decorate
+
+
+def stage_project_fact(session, project, kind, payload):
+    """Known worker decision or project control, sharing its original transaction.
+
+    Suppress unchanged polling facts only after a confirmed commit; a rollback
+    does not suppress the next attempt to record the same fact.
+    """
+    observer = _observer
+    if observer is None or not observer.scopes:
+        return
+    scope = next((s for s in observer.scopes.values() if s.project_id == project.id), None)
+    if scope is None:
+        return
+    from app.services.excel_gpt_node import active_excel_gpt_node_key
+    node_key = active_excel_gpt_node_key(project)
+    if node_key not in scope.node_keys:
+        if kind != "project_control":
+            return
+        node_key = None
+    sync_session = getattr(session, "sync_session", session)
+    key = (scope.execution_id, node_key, kind)
+    signature = digest(payload)
+    pending = sync_session.info.setdefault("observation_fact_signatures", {})
+    if pending.get(key, observer.last_project_facts.get(key)) == signature:
+        return
+    source = "project" if Path(str(sync_session.bind.url.database)).name == "project.db" else "master"
+    try:
+        if observer.stage(sync_session, scope, kind, db_scope=source, node_key=node_key, payload=payload):
+            pending[key] = signature
+    except Exception as exc:
+        observer.mark_gap(scope.execution_id, exc)
 
 
 def panel_safe(value):
