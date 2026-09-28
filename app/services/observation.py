@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
-from sqlalchemy import JSON, String, Text, UniqueConstraint, event, inspect, select
+from sqlalchemy import JSON, String, UniqueConstraint, event, inspect, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.models import Base, NodeRun, Project, WorkflowRun
@@ -350,6 +350,9 @@ def _stage_node_changes(session, _flush_context, _instances):
             continue  # In particular, never observe writes to our own journal/cursors.
         scope = observer.scopes.get(row.workflow_run_id)
         if scope is None or row.node_key not in scope.node_keys:
+            continue
+        run = session.get(WorkflowRun, row.workflow_run_id)
+        if run is None or run.project_id != scope.project_id:
             continue
         changed = {}
         for field in ("status", "progress", "progress_text", "error", "attempts"):

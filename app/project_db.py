@@ -1004,6 +1004,9 @@ async def init_project_db(
 
         await migrate_db_v2_schema(conn)
         await migrate_scene_space_schema(conn)
+        from app.services.observation import migrate_observation_schema
+
+        await migrate_observation_schema(conn)
 
     if project is not None:
         try:

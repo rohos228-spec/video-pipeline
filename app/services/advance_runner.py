@@ -49,7 +49,10 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
 
             prev = project.status.value
             prev_status = project.status
-            await advance_project(session, project, bot)
+            from app.services.observation import observe_attempt
+
+            async with observe_attempt(session, project):
+                await advance_project(session, project, bot)
             new = project.status.value
             if new != prev:
                 await complete_active_node_for_step(

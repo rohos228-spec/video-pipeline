@@ -133,6 +133,9 @@ async def _lifespan(app: FastAPI):
 
             await migrate_db_v2_schema(conn)
             await migrate_scene_space_schema(conn)
+            from app.services.observation import migrate_observation_schema
+
+            await migrate_observation_schema(conn)
     except Exception:  # noqa: BLE001
         logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:
@@ -226,9 +229,15 @@ async def _lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("auto_migrate_legacy_projects failed (non-fatal)")
 
+    from app.services.observation import get_observer
+
+    observer_task = asyncio.create_task(get_observer().loop(), name="observation-consumer")
     try:
         yield
     finally:
+        observer_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await observer_task
         logger.remove(live_log_sink)
         try:
             from app.project_db import close_all_project_engines
@@ -271,6 +280,9 @@ def create_app() -> FastAPI:
     app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
     app.include_router(runtime_streams_router.router, prefix=API_PREFIX)
     app.include_router(runs_router.router, prefix=API_PREFIX)
+    from app.web.routers import observations
+
+    app.include_router(observations.router, prefix=API_PREFIX)
     app.include_router(prompts_router.router, prefix=API_PREFIX)
     app.include_router(prompt_studio_router.router, prefix=API_PREFIX)
     app.include_router(prompt_files_router.router, prefix=API_PREFIX)
