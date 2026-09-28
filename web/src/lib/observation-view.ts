@@ -15,11 +15,14 @@ export function usageLabel(usage: Record<string, unknown> | null | undefined): s
 export function mergeEvents(old: ObservationEvent[], incoming: ObservationEvent[], projectId: number): ObservationEvent[] {
   const unique = new Map<string, ObservationEvent>();
   for (const event of [...old, ...incoming]) if (event.project_id === projectId) unique.set(event.event_id, event);
-  return [...unique.values()].sort((a, b) => a.id - b.id);
+  // Master and project outboxes can be drained in different batches. The API
+  // cursor remains the durable journal ID; display uses the recorded time.
+  return [...unique.values()].sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? "") || a.id - b.id);
 }
 
 export function eventLabel(event: Pick<ObservationEvent, "kind" | "payload">): string {
   const p = event.payload;
+  if (event.kind === "observer_control") return `Наблюдение: ${p.action ?? "неизвестно"} (${p.initiator ?? "инициатор неизвестен"})`;
   if (event.kind === "runtime_check") return `${p.check ?? "проверка"}: ${p.status ?? "неизвестно"}`;
   if (event.kind === "parse_result") return `Разбор: ${p.parsed === true ? "извлечён" : p.parsed === false ? "не извлечён" : "неизвестно"}; schema ${p.schema_valid == null ? "not_checked" : String(p.schema_valid)}`;
   if (event.kind === "json_retry") return "Штатный JSON retry";
