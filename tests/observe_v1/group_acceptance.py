@@ -116,12 +116,15 @@ async def run():
                     assert "model_start" in kinds[key] and "model_end" in kinds[key], (key, kinds[key])
                 assert "artifact_created" in kinds[fixtures.NODES[-1]]
                 assert "node_input" in kinds[fixtures.NODES[-1]]
+                text_check = [e for e in history["events"] if e["node_key"] == fixtures.NODES[1] and e["kind"] == "parse_result"]
+                assert all(not e["payload"]["payload_required"] for e in text_check), "Text verdict must not require apply-ops"
                 if mode == "malformed":
                     assert "json_retry" in kinds[fixtures.NODES[0]]
                     assert "parse_result" in kinds[fixtures.NODES[0]]
                 response = await client.get(base + f"/observations/{execution_id}/context")
                 response.raise_for_status()
                 result["context"] = response.json()
+                assert "node_contexts" in result["context"], "Persistent per-node inputs/model/checks missing"
                 assert result["context"]["business_group_outcome"] == "done"
                 with sqlite3.connect(DATA / "state.db") as conn:
                     assert conn.execute("SELECT count(*) FROM observation_events WHERE project_id!=2").fetchone()[0] == 0

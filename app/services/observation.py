@@ -78,7 +78,7 @@ _CREDENTIAL_FIELDS = {"authorization", "proxy_authorization", "cookie", "set_coo
                       "password", "secret", "client_secret", "token"}
 _CREDENTIAL_TEXT = re.compile(
     r"(?i)(\bBearer\s+)[^\s\"'<>]+|"
-    r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|cookie)\s*[:=]\s*)[^\s\"'<>]+|"
+    r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|cookie)[\"']?\s*[:=]\s*[\"']?)[^\s\"'<>;,}\]]+|"
     r"\bsk-[A-Za-z0-9_-]{8,}"
 )
 
@@ -86,7 +86,8 @@ _CREDENTIAL_TEXT = re.compile(
 def redact(value):
     """Allow numeric usage; redact credentials by exact field or known syntax."""
     if isinstance(value, dict):
-        return {str(k): "[redacted]" if str(k).lower().replace("-", "_") in _CREDENTIAL_FIELDS
+        return {str(k): "[redacted]" if (str(k).lower().replace("-", "_") in _CREDENTIAL_FIELDS
+                or str(k).lower().replace("-", "_").endswith(("_api_key", "_access_token", "_refresh_token", "_secret")))
                 else redact(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [redact(v) for v in value]

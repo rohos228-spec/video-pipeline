@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import unittest
+import asyncio
+import sys
 from unittest.mock import patch
 
 import httpx
@@ -130,6 +132,54 @@ class RuntimeAcceptance(test_journal.JournalAcceptance):
             names = await conn.run_sync(lambda sync: inspect(sync).get_table_names())
         self.assertIn("observation_outbox", names)
         await engine.dispose()
+
+    async def test_force_kill_preserves_written_stream_and_marks_missing_end(self):
+        # Storage/crash probe, separately from the six-node worker acceptance.
+        # Kill only the child started by this test; no model/HTTP operation occurs.
+        ready = self.root / "child-ready"
+        program = '''
+import asyncio, sys
+from pathlib import Path
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from app.services import observation as o
+async def main():
+    eng = create_async_engine("sqlite+aiosqlite:///" + sys.argv[1])
+    factory = async_sessionmaker(eng, expire_on_commit=False)
+    observer = o.Observer(factory, body_root=Path(sys.argv[1]).parent / "bodies")
+    async with factory() as s:
+        scope = await s.get(o.ExecutionControl, sys.argv[2])
+    project_engine = create_async_engine("sqlite+aiosqlite:///" + sys.argv[3])
+    async with async_sessionmaker(project_engine)() as project_session:
+        o._attempt.set(o.AttemptContext(observer, scope, project_session, "project", "script", "attempt-crash"))
+        await o.record_fact("model_start", {"model": "synthetic"}, request_id="request-crash")
+        await o.record_fact("model_stream_event", {"type": "response.output_text.delta", "complete": False},
+            request_id="request-crash", body={"event": {"delta": "synthetic partial"}, "accumulated_text": "synthetic partial"})
+        Path(sys.argv[4]).write_text("ready")
+        await asyncio.Event().wait()
+asyncio.run(main())
+'''
+        child = await asyncio.create_subprocess_exec(sys.executable, "-c", program,
+            str(self.root / "master.db"), self.scope.execution_id, str(self.root / "project.db"), str(ready))
+        try:
+            for _ in range(100):
+                if ready.exists():
+                    break
+                await asyncio.sleep(0.05)
+            self.assertTrue(ready.exists(), "Synthetic producer failed before writing its events")
+        finally:
+            if child.returncode is None:
+                child.kill()
+            await child.wait()
+        restarted = observation.Observer(self.master, body_root=self.root / "bodies")
+        await restarted.consume(self.scope.execution_id, "master", self.master)
+        response = await self.client.get(f"/api/projects/2/observations/{self.scope.execution_id}/context")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any(g["kind"] == "requests_without_recorded_end" for g in response.json()["data_gaps"]))
+        async with self.master() as session:
+            rows = (await session.scalars(select(observation.ObservationEvent))).all()
+            self.assertEqual([r.kind for r in rows], ["model_start", "model_stream_event"])
+            body = rows[-1].payload["body"]
+            self.assertIn("synthetic partial", (self.root / "bodies" / body["path"]).read_text())
 
 
 if __name__ == "__main__":
