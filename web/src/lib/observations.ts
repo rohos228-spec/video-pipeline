@@ -29,6 +29,8 @@ export interface ActionRecord {
 export interface ActionState {
   configured:boolean;enabled:boolean;held:boolean;group_id:string|null;node_keys:string[];
   graph_version:string|null;request_limit:number|null;requests_used:number;records:ActionRecord[];
+  recoveries:{action_id:string;incident_id:string;node_key:string;source_attempt_id:string;new_attempt_id:string;
+    status:string;preconditions:Record<string,unknown>;verification_result:Record<string,unknown>}[];
 }
 interface NodeState {status: string; progress: number | null; attempts: number | null; error: string | null; progress_text: string | null}
 export interface ObservationContext extends ObservationScope {
@@ -61,4 +63,6 @@ export const observations = {
     http<{action_id:string;status:string;verification:Record<string,unknown>}>(path(project,execution)+"/actions/verify",{method:"POST",body:JSON.stringify(payload)}),
   reviewIncident: (project:number,execution:string,payload:{incident_id:string;rationale:string;idempotency_key:string}) =>
     http<{action_id:string;status:string;business_action:boolean}>(path(project,execution)+"/actions/review",{method:"POST",body:JSON.stringify(payload)}),
+  retryNode: (project:number,execution:string,payload:{incident_id:string;node_key:string;rationale:string;idempotency_key:string}) =>
+    http(path(project,execution)+"/actions/retry",{method:"POST",body:JSON.stringify(payload)}),
 };

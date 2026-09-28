@@ -866,6 +866,11 @@ async def _after_excel_gpt_done(
     Прыжок на hero/img_pr — только auto_mode, и даже тогда стоп, если
     следующий work не excel_gpt (ждём ручной ▶).
     """
+    from app.services.actions_recovery import defer_continuation
+    if defer_continuation(project.id, node_key):
+        from app.services.observation import emit
+        emit("recovery_continuation_deferred", {"reason": "verify_committed_attempt_first"})
+        return
     if node_key:
         try:
             from app.services.storage_node import sync_downstream_storage_from_node

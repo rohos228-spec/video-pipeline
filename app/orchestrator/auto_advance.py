@@ -1336,6 +1336,12 @@ async def maybe_auto_advance(
     Вызывается ИЗ worker-loop'а ПОСЛЕ обхода running-статусов. Только
     для проектов с `auto_mode=True` в *_ready состоянии.
     """
+    from app.services.actions_recovery import restricted_node
+    if restricted_node(project.id) is not None:
+        from app.services.observation import stage_project_fact
+        stage_project_fact(session, project, 'runtime_wait',
+            {'reason':'recovery_verification_pending','initiator':'supervisor'})
+        return False
     if (
         not force
         and not getattr(project, "auto_mode", False)

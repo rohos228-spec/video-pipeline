@@ -83,3 +83,8 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
         except Exception:  # noqa: BLE001
             logger.warning("advance_project_job: refresh #{} after cancel failed", project_id)
         raise
+    finally:
+        # Recovery tracking spans the entire original job, including project DB
+        # commit. pipeline.advance_project unregisters before that commit.
+        from app.services.actions_recovery import finish_job_tracking
+        finish_job_tracking(project_id)

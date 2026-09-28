@@ -67,6 +67,10 @@ class ReviewIncident(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=120)
 
 
+class RetryNode(ReviewIncident):
+    node_key: str = Field(min_length=1, max_length=60)
+
+
 def scope_json(scope):
     return panel_safe({key: getattr(scope, key) for key in (
         "execution_id", "project_id", "workflow_run_id", "node_keys", "graph_version",
@@ -131,6 +135,9 @@ async def action_state(project_id: int, execution_id: str):
         records = (await session.scalars(select(ActionRecord).where(
             ActionRecord.execution_id == execution_id,
         ).order_by(ActionRecord.created_at.desc()).limit(100))).all()
+        from app.services.actions_recovery import RecoveryAction, ticket_json
+        recoveries = (await session.scalars(select(RecoveryAction).where(
+            RecoveryAction.execution_id == execution_id))).all()
         return {"configured": control is not None,
             "enabled": bool(control and control.enabled),
             "held": bool(control.held) if control else False,
@@ -139,12 +146,37 @@ async def action_state(project_id: int, execution_id: str):
             "graph_version": control.graph_version if control else None,
             "request_limit": control.request_limit if control else None,
             "requests_used": control.requests_used if control else 0,
+            "recoveries": [ticket_json(r) for r in recoveries],
             "records": [{"action_id": r.action_id, "action_kind": r.action_kind,
                 "node_key": r.node_key, "attempt_id": r.attempt_id,
                 "initiator": r.initiator, "rationale": r.rationale,
                 "preconditions": r.preconditions, "status": r.status,
                 "verification": r.verification, "created_at": r.created_at}
                 for r in records]}
+
+
+@router.post("/{execution_id}/actions/retry")
+async def retry_node(project_id: int, execution_id: str, payload: RetryNode,
+                     operator: AuthDep):
+    observer = get_observer()
+    try:
+        return await ActionSupervisor(observer.master).recover_node(project_id=project_id,
+            execution_id=execution_id, incident_id=payload.incident_id, node_key=payload.node_key,
+            idempotency_key=payload.idempotency_key, initiator=_operator_id(operator), rationale=payload.rationale)
+    except (ValueError, LookupError) as exc:
+        async with observer.master() as session:
+            await _scope(session, project_id, execution_id)
+            existing = await session.scalar(select(ActionRecord).where(
+                ActionRecord.execution_id == execution_id, ActionRecord.idempotency_key == payload.idempotency_key))
+            if not existing:
+                session.add(ActionRecord(action_id=str(uuid.uuid4()), execution_id=execution_id,
+                    project_id=project_id, action_kind="recovery_denied", node_key=payload.node_key,
+                    initiator=_operator_id(operator), rationale=payload.rationale,
+                    idempotency_key=payload.idempotency_key, status="rejected",
+                    preconditions={"reason": str(exc), "incident_id": payload.incident_id},
+                    evidence_ids=[], verification={"dispatched": False}))
+                await session.commit()
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/{execution_id}/actions/enable")
@@ -419,7 +451,7 @@ async def context(project_id: int, execution_id: str):
     statuses = [v["status"] for v in states.values()]
     outcome = "done" if len(states) == len(scope.node_keys) and all(s == "done" for s in statuses) else (
         "failed" if "failed" in statuses else "incomplete")
-    end_attempts = {row.attempt_id for row in rows if row.kind == "node_end"}
+    end_attempts = {row.attempt_id for row in rows if row.kind in {"node_end", "node_error"}}
     incomplete = [{"node_key": row.node_key, "attempt_id": row.attempt_id} for row in rows
                   if row.kind == "node_start" and row.attempt_id not in end_attempts]
     if incomplete:

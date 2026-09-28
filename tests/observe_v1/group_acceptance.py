@@ -32,8 +32,9 @@ finish_coverage = begin(SOURCE)
 
 
 async def run():
-    shutil.copytree("/srv/seed", DATA)
     mode = os.environ.get("OBSERVE_GROUP_MODE", "observe")
+    denial_mode = mode.startswith('deny-')
+    shutil.copytree('/observe-denial-seed' if denial_mode else '/srv/seed', DATA)
     browser_mode = os.environ.get("OBSERVE_BROWSER", "").lower() == "true"
     os.environ.update({
         "DATA_DIR": str(DATA), "SQLITE_PATH": str(DATA / "state.db"),
@@ -46,7 +47,14 @@ async def run():
         "OUTSEE_HTTP_FALLBACK_CDP": "false", "AUDIO_USE_ELEVENLABS_FALLBACK": "false",
         "NVIDIA_ASR_PRELOAD_ON_STARTUP": "false",
     })
-    fixtures.MODE = "malformed" if mode in {"malformed","unrepaired"} else "group"
+    recovery_mode = mode in {"recovery-a", "recovery-b"}
+    fixtures.MODE = "malformed" if mode in {"malformed","unrepaired"} or recovery_mode else "group"
+    recovery_transport = {"active": False}
+    if recovery_mode:
+        original_answer = fixtures.synthetic_answer
+        fixtures.synthetic_answer = lambda node, attempt: original_answer(node,
+            2 if mode == "recovery-a" and recovery_transport["active"] else 1
+        ) if node == fixtures.NODES[0] else original_answer(node, attempt)
     if mode == "unrepaired":
         original_answer=fixtures.synthetic_answer
         fixtures.synthetic_answer=lambda node,attempt: original_answer(node,1) if node==fixtures.NODES[0] else original_answer(node,attempt)
@@ -69,6 +77,7 @@ async def run():
             ctx = observation._attempt.get()
             if ctx:
                 node = ctx.node_key
+                recovery_transport["active"] = ctx.session.info.get("recovery_attempt_id") == ctx.attempt_id
             else:
                 with sqlite3.connect(fixtures.DB) as conn:
                     meta = json.loads(conn.execute("SELECT meta FROM projects WHERE id=2").fetchone()[0])
@@ -86,8 +95,12 @@ async def run():
         await fixtures.wait_api()
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
             base = "http://127.0.0.1:18765/api/projects/2"
+            if denial_mode:
+                from recovery_denials import run as run_denial
+                await run_denial(mode,client,fixtures,observation.get_observer(),ROOT,result)
+                return
             execution_id = None
-            if browser_mode:
+            if browser_mode and not recovery_mode:
                 # User enables observation in the real panel. No node is started
                 # until the explicit test-runner signal is written via docker exec.
                 (ROOT / "browser-ready.json").write_text(json.dumps({"project_id":2,"nodes":list(fixtures.NODES),"state":fixtures.snapshot()}))
@@ -105,7 +118,7 @@ async def run():
             if execution_id:
                 response = await client.post(base + f"/observations/{execution_id}/pin")
                 response.raise_for_status()
-            if mode == "actions":
+            if mode == "actions" or recovery_mode:
                 run_response = await client.get(base + "/run")
                 run_response.raise_for_status()
                 run_snapshot = run_response.json()
@@ -116,7 +129,7 @@ async def run():
                 assert len(group_ids) == 1 and "" not in group_ids, group_ids
                 scope_response = await client.post(base + f"/observations/{execution_id}/actions/enable", json={
                     "group_id": group_ids.pop(), "node_keys": list(fixtures.NODES),
-                    "rationale": "synthetic isolated actions-v1 group acceptance", "request_limit": 12,
+                    "rationale": "synthetic isolated actions-v1 group acceptance", "request_limit": 40 if recovery_mode else 12,
                 })
                 scope_response.raise_for_status()
                 start_response = await client.post(base + f"/observations/{execution_id}/actions/start", json={
@@ -133,16 +146,57 @@ async def run():
                 response.raise_for_status()
                 assert response.json()["business_action"] is None
                 result["observer_stop_during_pipeline"] = True
-            deadline = time.monotonic() + 240
+            if recovery_mode:
+                from app.db import SessionLocal
+                from app.models import Project
+                from app.services.step_failure_policy import MAX_TOTAL_FAILS
+                from app.services.step_cancel import is_generation_active
+                deadline = time.monotonic() + 600
+                while time.monotonic() < deadline:
+                    async with SessionLocal() as session:
+                        p = await session.get(Project, 2)
+                        failure = (p.meta or {}).get("step_failure") or {}
+                    if (failure.get("abandoned_at") and max((failure.get("total_fails") or {}).values(), default=0) >= MAX_TOTAL_FAILS
+                            and not is_generation_active(2)):
+                        break
+                    await asyncio.sleep(.2)
+                assert failure.get("abandoned_at"), "native retries did not reach terminal exhaustion"
+                result["native_exhaustion"] = failure
+                await observation.get_observer().catch_up()
+                from app.services.diagnosis import get_diagnoser
+                await get_diagnoser(observation.get_observer()).update(execution_id)
+                response = await client.get(base + f"/observations/{execution_id}/diagnoses")
+                incidents = [i for i in response.json()["incidents"] if i["node_key"] == fixtures.NODES[0]
+                    and i["type"] in {"invalid_json", "missing_payload"} and i.get("currently_relevant")]
+                assert len(incidents) == 1, "current exhausted attempt must have one incident"
+                checkpoint = ROOT / 'exhausted-checkpoint'
+                shutil.copytree(DATA,checkpoint,ignore=shutil.ignore_patterns('*-wal','*-shm'))
+                for db in DATA.rglob('*.db'):
+                    with sqlite3.connect(db) as source_db, sqlite3.connect(checkpoint/db.relative_to(DATA)) as target_db:
+                        source_db.backup(target_db)
+                (ROOT/'checkpoint-provenance.json').write_text(json.dumps({
+                    'execution_id':execution_id,'native_failures':failure['total_fails'],
+                    'source_attempt_id':incidents[0]['attempt_id'],'fixture_counts':dict(fixtures.FixtureHandler.counts),
+                    'status':'exhausted before supervisor action','synthetic_only':True},indent=2))
+                payload = {"incident_id": incidents[0]["incident_id"], "node_key": fixtures.NODES[0],
+                    "rationale": "one authorized synthetic recovery after native exhaustion",
+                    "idempotency_key": "recovery-worker-test-0001"}
+                retry = await client.post(base + f"/observations/{execution_id}/actions/retry", json=payload)
+                assert retry.is_success, retry.text
+                result["recovery_action"] = retry.json()
+                replay = await client.post(base + f"/observations/{execution_id}/actions/retry", json=payload)
+                assert replay.is_success and replay.json()["idempotent_replay"]
+                result["recovery_replay"] = replay.json()
+            deadline = time.monotonic() + 120
             while time.monotonic() < deadline:
                 state = fixtures.snapshot()
                 if state["nodes"].get(fixtures.NODES[-1], {}).get("status") == "done":
                     break
-                if any(n["status"] == "failed" for n in state["nodes"].values()):
+                if any(n["status"] == "failed" for n in state["nodes"].values()) and mode != "recovery-a":
                     break
                 await asyncio.sleep(0.1)
             result.update({"execution_id":execution_id,"state":state})
-            if mode == "unrepaired":
+            if mode in {"unrepaired", "recovery-b"}:
                 assert state['nodes'][fixtures.NODES[0]]['status']=='failed',state
                 assert all(state['nodes'][key]['status']=='pending' for key in fixtures.NODES[1:]),state
                 result['fault']='external synthetic transport always returns prepared malformed answer'
@@ -158,7 +212,7 @@ async def run():
                 history = response.json()
                 (ROOT / "api-history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2))
                 kinds = {key: [e["kind"] for e in history["events"] if e["node_key"] == key] for key in fixtures.NODES}
-                if mode not in {"stop","unrepaired"}:
+                if mode not in {"stop","unrepaired", "recovery-b"}:
                     for key in fixtures.NODES:
                         assert "node_start" in kinds[key] and "node_end" in kinds[key], (key, kinds[key])
                     for key in fixtures.NODES[:-1]:
@@ -174,7 +228,7 @@ async def run():
                 response.raise_for_status()
                 result["context"] = response.json()
                 assert "node_contexts" in result["context"], "Persistent per-node inputs/model/checks missing"
-                assert result["context"]["business_group_outcome"] == ("failed" if mode=='unrepaired' else "done")
+                assert result["context"]["business_group_outcome"] == ("failed" if mode in {'unrepaired','recovery-b'} else "done")
                 from app.services.diagnosis import get_diagnoser
                 await get_diagnoser(observation.get_observer()).update(execution_id)
                 response=await client.get(base+f"/observations/{execution_id}/diagnoses")
@@ -190,8 +244,31 @@ async def run():
                     assert {i['attempt_id'] for i in formats}==attempts
                     assert all(i['status']=='human_review' for i in formats)
                     assert sum(fixtures.FixtureHandler.counts.values())==2*len(attempts)
+                elif recovery_mode:
+                    assert sum(fixtures.FixtureHandler.counts.values()) == (23 if mode=='recovery-a' else 20)
                 else:
                     assert sum(fixtures.FixtureHandler.counts.values()) == (6 if mode=='malformed' else 5)
+                if recovery_mode:
+                    managed = (await client.get(base + f"/observations/{execution_id}/actions")).json()
+                    result["actions"] = managed
+                    assert len(managed["recoveries"]) == 1
+                    recovery = managed["recoveries"][0]
+                    assert recovery["status"] == ("verified" if mode == "recovery-a" else "human_review"), recovery
+                    assert managed["held"] == (mode == "recovery-b"), managed
+                    assert fixtures.FixtureHandler.counts[fixtures.NODES[0]] == (19 if mode == "recovery-a" else 20)
+                    if mode == "recovery-a":
+                        assert any(i["incident_id"] == recovery["incident_id"] and i["status"] == "resolved_confirmed" for i in formats)
+                        recovery_events = [e for e in history['events'] if e['attempt_id'] == recovery['new_attempt_id']]
+                        assert sum(e['kind']=='node_start' for e in recovery_events)==1
+                        assert sum(e['kind']=='data_applied' for e in recovery_events)==1
+                        proof = next(e for e in recovery_events if e['kind']=='recovery_verification' and e['payload'].get('verified'))
+                        next_start = next(e for e in history['events'] if e['node_key']==fixtures.NODES[1] and e['kind']=='node_start')
+                        assert proof['id'] < next_start['id'], 'continuation must follow persisted verification'
+                        assert not result['context']['current_nodes'], result['context']['current_nodes']
+                    run_after = (await client.get(base + "/run")).json()
+                    all_states = {str(n["node_key"]): n["status"] for n in run_after.get("node_runs", [])}
+                    assert all_states.get("n_script") == "pending", all_states
+                    result["group_boundary"] = {"n_script": all_states["n_script"]}
                 if mode == "actions":
                     controls = await client.get(base + f"/observations/{execution_id}/actions")
                     controls.raise_for_status()
@@ -228,6 +305,12 @@ async def run():
                 with sqlite3.connect(DATA / "state.db") as conn:
                     assert conn.execute("SELECT count(*) FROM observation_events").fetchone()[0] == 0
             result["accepted"] = True
+            if browser_mode:
+                result["fixture_counts"] = dict(fixtures.FixtureHandler.counts)
+                (ROOT / "group-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+                (ROOT / "browser-acceptance-ready").write_text(mode)
+                while not (ROOT / "browser-finish-requested").exists():
+                    await asyncio.sleep(.2)
     except BaseException as exc:
         result["accepted"] = False
         result["error_type"] = type(exc).__name__
@@ -276,14 +359,17 @@ async def run():
             # the dedicated history_replay.py process. Binding in this process
             # races the original HTTP socket's shutdown (captured Errno 98).
             (ROOT / "browser-history-mode.json").write_text(json.dumps({"worker":"stopped by test runner at group boundary", "lifespan":"off", "frontend_sha256":hashlib.sha256((SOURCE / "web/out/index.html").read_bytes()).hexdigest()}))
-        if result.get("accepted") and not pending:
+        if not pending:
             # Background executor threads may outlive the cancelled synthetic
             # app even after all test-owned artifacts and hashes are flushed.
             # Exit this disposable runner cleanly only after acceptance evidence
             # and loaded-module verification have been persisted.
             sys.stdout.flush()
             sys.stderr.flush()
-            os._exit(0)
+            # A failed assertion must remain a failed container exit. Avoid
+            # asyncio.run waiting indefinitely for cancelled app executor
+            # threads after the complete failure evidence has been saved.
+            os._exit(0 if result.get("accepted") else 1)
 
 
 if __name__ == "__main__":

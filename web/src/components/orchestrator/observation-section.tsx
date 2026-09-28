@@ -1,4 +1,5 @@
 "use client";
+import {actionStatus} from "@/lib/actions-view";
 
 import {useEffect, useRef, useState} from "react";
 import {api} from "@/lib/api";
@@ -20,6 +21,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
   const [diagnosisError,setDiagnosisError]=useState('');
   const [actionState,setActionState]=useState<ActionState|null>(null);
   const [actionRationale,setActionRationale]=useState('');
+  const [actionRequestLimit,setActionRequestLimit]=useState(12);
   const [actionError,setActionError]=useState('');
   const generation = useRef(0);
   const key = `studio-observation-execution-${projectId}`;
@@ -122,7 +124,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     }
     setBusy(true); setActionError('');
     try {
-      await observations.enableActions(projectId,execution,{group_id:selected.id,node_keys:selected.keys,rationale:actionRationale.trim(),request_limit:12});
+      await observations.enableActions(projectId,execution,{group_id:selected.id,node_keys:selected.keys,rationale:actionRationale.trim(),request_limit:actionRequestLimit});
       setActionState(await observations.actions(projectId,execution));
     } catch { setActionError('Разрешение выполнения не подтверждено; запуск остаётся закрыт.'); }
     finally {setBusy(false);}
@@ -189,6 +191,17 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     finally {setBusy(false);}
   }
 
+  async function retryIncident(incident:DiagnosticIncident) {
+    if(projectId==null || !execution || !incident.node_key || !actionRationale.trim()) return;
+    setBusy(true);setActionError('');
+    try {
+      await observations.retryNode(projectId,execution,{incident_id:incident.incident_id,node_key:incident.node_key,
+        rationale:actionRationale.trim(),idempotency_key:crypto.randomUUID()});
+      setActionState(await observations.actions(projectId,execution));
+    } catch(e) { setActionError(String(e)); }
+    finally { setBusy(false); }
+  }
+
   if(projectId == null) return <p className="text-xs text-white/50">Выберите проект в студии для наблюдения.</p>;
   const active=scopes.some(s=>s.observer_state!=="stopped");
   const states=context?.project?.nodes ?? context?.master.nodes ?? {};
@@ -205,7 +218,14 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     </div>
     <p className="text-white/45">Наблюдение читает выполнение. Эти кнопки не запускают и не останавливают задачу.</p>
     {context && <div className="space-y-2 rounded border border-sky-400/20 p-2">
-      <strong>Actions-v1 · управляемое выполнение</strong>
+      <strong>Управление · Actions-v1</strong>
+      <label className="flex items-center gap-2">Предел model POST на execution
+        <input type="number" min={1} max={100} aria-label="Лимит запросов Actions" disabled={!!actionState?.configured}
+          value={actionState?.request_limit ?? actionRequestLimit} onChange={e=>setActionRequestLimit(Number(e.target.value))}
+          className="w-20 rounded border border-white/15 bg-[#161616] p-1.5"/>
+      </label>
+      <p data-testid="actions-mode">{actionState?.enabled ? (actionState.held ? 'Управление включено · execution удержан' : 'Управление включено') : actionState?.configured ? 'Execution завершён · управление выключено' : 'Управление выключено'}</p>
+      <p className="text-white/50">Закрытие execution не означает done всего WorkflowRun. User_stop supervisor не снимает.</p>
       <p className="text-white/50">По умолчанию выключено. Разрешение ограничено одним execution, выбранной группой и снимком графа; общий бюджет — 12 модельных запросов. Остановка наблюдения и пауза выполнения — разные действия.</p>
       <label className="block">Обоснование оператора
         <input value={actionRationale} onChange={e=>setActionRationale(e.target.value)} maxLength={1000} className="ml-2 w-72 rounded border border-white/15 bg-[#161616] p-1.5" placeholder="Почему разрешается это выполнение"/>
@@ -216,9 +236,20 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         <Button size="sm" variant="outline" disabled={busy || actionState.held || !actionRationale.trim()} onClick={()=>void runManagedGroup()}>Запустить следующую ноду группы</Button>
         <Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void closeActions()}>Закрыть execution</Button>
         <p className="text-white/50">Разрешённые ноды: {actionState.node_keys.join(', ')} · graph: {actionState.graph_version?.slice(0,12)}</p>
-        <ol className="space-y-1">{actionState.records.slice(0,5).map(a=><li key={a.action_id}>{a.action_kind} · {a.created_at?.slice(0,19)} · {a.initiator} · {a.rationale}</li>)}</ol>
+        {diagnosis?.incidents.filter(i=>i.currently_relevant && ['invalid_json','missing_payload'].includes(i.type)).map(i=><div key={i.incident_id} className="space-y-1">
+          <p>Текущий incident: {i.node_title} · {i.fact}</p>
+          <p>Действие предложено: один безопасный повтор ноды после всех штатных retry. Backend проверит условия до запуска.</p>
+          <Button size="sm" variant="outline" disabled={busy || actionState.held || !actionRationale.trim() || actionState.recoveries?.some(r=>r.node_key===i.node_key)} onClick={()=>void retryIncident(i)}>Разрешить один recovery</Button>
+        </div>)}
+        <ol data-testid="actions-history" className="space-y-1">{actionState.records.slice(0,10).map(a=><li key={a.action_id}>
+          {actionStatus(a.status)} · {a.node_key ?? 'execution'} · {a.created_at?.slice(0,19)} · {a.initiator} · {a.rationale}
+          {a.preconditions.reason != null && <p>Причина: {String(a.preconditions.reason)}</p>}
+          {a.status==='human_review' && <p>Verification не прошёл. Повторный recovery запрещён; требуется разбор человеком.</p>}
+          <details><summary>Доказательства и условия действия</summary><pre className="whitespace-pre-wrap">{JSON.stringify({action_id:a.action_id,preconditions:a.preconditions,verification:a.verification},null,2)}</pre></details>
+        </li>)}</ol>
       </>}
       {actionError && <p role="alert" className="text-amber-200">{actionError}</p>}
+      {actionState?.configured && !actionState.enabled && <ol className="space-y-1">{actionState.records.slice(0,10).map(a=><li key={a.action_id}>{actionStatus(a.status)} · {a.node_key ?? 'execution'} · {a.rationale}</li>)}</ol>}
     </div>}
     <label className="flex items-center gap-2">История запуска
       <select aria-label="История наблюдения" value={execution} onChange={e=>setExecution(e.target.value)} className="rounded border border-white/15 bg-[#161616] p-1.5">

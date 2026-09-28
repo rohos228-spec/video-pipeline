@@ -2401,6 +2401,9 @@ async def orchestrator_chat(
     """
     from app.services.gpt_client import GptApiUnavailable, get_gpt_client
 
+    from app.services.actions_v1 import managed_project_enabled
+    if await managed_project_enabled(project_id):
+        raise HTTPException(409, "Managed execution: legacy chat/Fix bugs cannot bypass Actions policy")
     project = await _project(session, project_id)
     await db_v2.backfill_project_v2(session, project)
     await session.commit()

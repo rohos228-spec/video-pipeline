@@ -1,6 +1,10 @@
 """Safety contracts for the actions-v1 execution permission layer."""
 import unittest
 import tempfile
+import uuid
+import asyncio
+from unittest.mock import patch
+from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -18,7 +22,12 @@ from app.services.actions_v1 import (
 )
 from app.models import Base, NodeRun, NodeRunStatus, Project, Workflow, WorkflowRun
 from app.services.observation import ExecutionControl, digest
+from app.services.actions_recovery import RecoveryAction
 from app.services.node_status_machine import start_node_running
+from app.services import observation
+from app.services.diagnosis import Incident, DiagnosisState
+from app.services.actions_recovery import claim, input_revision
+from sqlalchemy import select
 
 
 class ActionsContract(unittest.TestCase):
@@ -95,9 +104,14 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
             ])
             await session.commit()
         self.supervisor = ActionSupervisor(self.sessions)
+        self.saved_observer = observation._observer
+        observation._observer = observation.Observer(self.sessions, body_root=Path(self.tmp.name) / 'bodies')
 
     async def asyncTearDown(self):
         clear_permission(7)
+        from app.services.actions_recovery import finish_job_tracking
+        finish_job_tracking(7)
+        observation._observer = self.saved_observer
         await self.engine.dispose()
         self.tmp.cleanup()
 
@@ -138,6 +152,215 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             node=await session.scalar(__import__('sqlalchemy').select(NodeRun).where(NodeRun.node_key=='n1'))
             self.assertEqual(node.status,NodeRunStatus.pending)
+
+    async def test_parallel_http_reservations_never_exceed_budget(self):
+        await self.supervisor.enable(project_id=7,execution_id='exec-durable',group_id='g1',
+            node_keys=['n1'],graph_version=self.graph,initiator='test',rationale='parallel budget',request_limit=1)
+        results=await asyncio.gather(*(self.supervisor.charge_request('exec-durable') for _ in range(6)),
+            return_exceptions=True)
+        self.assertEqual(sum(isinstance(r,int) for r in results),1)
+        await reload_permissions(self.sessions)
+        self.assertEqual(get_permission(7).requests_used,1)
+
+    async def exhausted_fixture(self):
+        from app.models import ProjectStatus
+        await self.supervisor.enable(project_id=7,execution_id='exec-durable',group_id='g1',
+            node_keys=['n1'],graph_version=self.graph,initiator='test',rationale='synthetic',request_limit=20)
+        async with self.sessions() as s:
+            project = await s.get(Project,7)
+            project.status=ProjectStatus.paused
+            project.meta={'active_excel_gpt_node_key':'n1','step_failure':{
+                'total_fails':{'enriching_1':9},'last_running':'enriching_1','abandoned_at':'synthetic'}}
+            node=await s.scalar(select(NodeRun).where(NodeRun.node_key=='n1'))
+            node.status=NodeRunStatus.failed;node.finished_at=datetime.utcnow();node.attempts=9
+            revision=await input_revision(s,project,'n1')
+            facts=[('node_start',{'recovery_input_revision':revision},None),
+                ('model_start',{'input_revision':digest({'test':1})},'request-source'),
+                ('model_end',{'complete':True},'request-source'),('json_retry',{},None),
+                ('parse_result',{'payload_required':True,'payload_present':False},'request-source'),
+                ('node_error',{},None)]
+            for idx,(kind,payload,request_id) in enumerate(facts,1):
+                s.add(observation.ObservationEvent(id=idx,event_id=str(uuid.uuid4()),execution_id='exec-durable',
+                    project_id=7,workflow_run_id=11,node_key='n1',attempt_id='source-attempt',request_id=request_id,
+                    db_scope='master',kind=kind,payload=payload,created_at=datetime.utcnow()))
+            s.add(Incident(incident_id='source-incident',execution_id='exec-durable',project_id=7,node_key='n1',
+                attempt_id='source-attempt',type='missing_payload',severity='error',status='human_review',
+                details={'currently_relevant':True,'event_ids':[]}))
+            s.add(DiagnosisState(execution_id='exec-durable',cursor=6))
+            await s.commit()
+
+    async def retry(self, **overrides):
+        kwargs=dict(project_id=7,execution_id='exec-durable',incident_id='source-incident',node_key='n1',
+                    idempotency_key='safe-retry-0001',initiator='synthetic',rationale='recovery test')
+        kwargs.update(overrides)
+        @asynccontextmanager
+        async def project_sessions(_project_id):
+            async with self.sessions() as session:
+                yield session
+                await session.commit()
+        async def no_sync(*_args): pass
+        with patch('app.project_db.project_db_session_scope',project_sessions), patch('app.project_db.push_runtime_to_master',no_sync):
+            return await self.supervisor.recover_node(**kwargs)
+
+    async def test_one_reservation_claim_and_restart_never_repeats_action(self):
+        await self.exhausted_fixture()
+        first=await self.retry()
+        await reload_permissions(self.sessions)
+        replay=await self.retry()
+        self.assertEqual(first['action_id'],replay['action_id'])
+        self.assertTrue(replay['idempotent_replay'])
+        with self.assertRaisesRegex(ValueError,'already consumed'):
+            await self.retry(idempotency_key='different-retry-0002')
+        async with self.sessions() as session:
+            project=await session.get(Project,7)
+            actual=await claim(observation._observer,session,project,'n1','random-attempt',execution_id='exec-durable')
+            self.assertEqual(actual,first['new_attempt_id'])
+            await reload_permissions(self.sessions)
+            with self.assertRaisesRegex(RuntimeError,'already consumed'):
+                await claim(observation._observer,session,project,'n1','other-attempt',execution_id='exec-durable')
+            node=await session.scalar(select(NodeRun).where(NodeRun.node_key=='n1'))
+            self.assertEqual(node.attempts,9)
+            self.assertEqual(project.meta['step_failure']['total_fails']['enriching_1'],9)
+
+    async def test_old_recovery_ticket_cannot_claim_new_execution_attempt(self):
+        await self.exhausted_fixture()
+        await self.retry()
+        async with self.sessions() as session:
+            project=await session.get(Project,7)
+            actual=await claim(observation._observer,session,project,'n1','fresh-attempt',execution_id='new-execution')
+            self.assertEqual(actual,'fresh-attempt')
+            row=await session.scalar(select(RecoveryAction))
+            self.assertEqual(row.status,'queued')
+
+    async def test_user_stop_denies_without_reservation(self):
+        await self.exhausted_fixture()
+        async with self.sessions() as s:
+            p=await s.get(Project,7);p.meta={**p.meta,'user_stop':True};await s.commit()
+        with self.assertRaisesRegex(ValueError,'user_stop'): await self.retry()
+        await self.assert_no_dispatch()
+
+    async def test_hitl_denies_without_reservation(self):
+        await self.exhausted_fixture()
+        async with self.sessions() as s:
+            n=await s.scalar(select(NodeRun).where(NodeRun.node_key=='n2'))
+            n.status=NodeRunStatus.waiting_hitl
+            await s.commit()
+        with self.assertRaisesRegex(ValueError,'HITL'): await self.retry()
+        await self.assert_no_dispatch()
+
+    async def test_audit_failure_denies_without_reservation(self):
+        await self.exhausted_fixture()
+        observation._observer.failures['exec-durable']='synthetic audit write failure'
+        with self.assertRaisesRegex(ValueError,'audit/diagnosis'): await self.retry()
+        await self.assert_no_dispatch()
+
+    async def test_partial_apply_denies_without_reservation(self):
+        await self.exhausted_fixture()
+        async with self.sessions() as s:
+            e=await s.get(observation.ObservationEvent,5)
+            e.kind='apply_input'
+            await s.commit()
+        with self.assertRaisesRegex(ValueError,'partial apply'): await self.retry()
+        await self.assert_no_dispatch()
+
+    async def test_close_refuses_ticket_awaiting_verification(self):
+        await self.exhausted_fixture()
+        ticket=await self.retry()
+        async with self.sessions() as s:
+            row=await s.get(RecoveryAction,ticket['action_id']);row.status='await_verify'
+            n=await s.scalar(select(NodeRun).where(NodeRun.node_key=='n1'))
+            n.status=NodeRunStatus.done
+            await s.commit()
+        with self.assertRaisesRegex(ValueError,'awaiting verification'):
+            await self.supervisor.close(project_id=7,execution_id='exec-durable',initiator='test',
+                rationale='synthetic close',idempotency_key='close-await-verify')
+        async with self.sessions() as s:
+            self.assertTrue((await s.get(ActionExecutionControl,'exec-durable')).enabled)
+
+    async def test_real_recovery_endpoint_denies_and_audits_before_dispatch(self):
+        import httpx
+        from fastapi import FastAPI
+        from app.web.routers import observations as api
+        await self.exhausted_fixture()
+        async with self.sessions() as s:
+            p=await s.get(Project,7);p.meta={**p.meta,'user_stop':True};await s.commit()
+        app=FastAPI();app.include_router(api.router,prefix='/api')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://local') as client:
+            with patch('app.project_db.project_db_session_scope', lambda _id: self.sessions()):
+                response=await client.post('/api/projects/7/observations/exec-durable/actions/retry',json={
+                    'incident_id':'source-incident','node_key':'n1','rationale':'synthetic endpoint denial',
+                    'idempotency_key':'api-denial-test-0001'})
+            self.assertEqual(response.status_code,409,response.text)
+            self.assertIn('user_stop',response.text)
+            state=await client.get('/api/projects/7/observations/exec-durable/actions')
+            self.assertEqual(state.status_code,200)
+            self.assertTrue(any(r['status']=='rejected' and r['action_kind']=='recovery_denied' for r in state.json()['records']))
+        await self.assert_no_dispatch()
+
+    async def test_recovery_first_http_body_is_checked_before_transport(self):
+        from app.services.actions_recovery import check_body
+        from types import SimpleNamespace
+        await self.exhausted_fixture()
+        ticket=await self.retry()
+        ctx=SimpleNamespace(observer=observation._observer,scope=SimpleNamespace(execution_id='exec-durable',observer_state='active',gaps=[]),
+            attempt_id=ticket['new_attempt_id'],last_request_id=None)
+        await check_body(ctx,digest({'test':1}))
+        with self.assertRaisesRegex(RuntimeError,'before transport'):
+            await check_body(ctx,digest({'test':2}))
+
+    async def test_legacy_chat_and_fix_bugs_cannot_bypass_durable_permission(self):
+        import httpx
+        from fastapi import FastAPI
+        from app.web.routers import db_browser as api
+        from app.web.deps import get_project_session
+        await self.exhausted_fixture()
+        clear_permission(7)  # Simulate volatile registry loss, not revocation.
+        app=FastAPI();app.include_router(api.router,prefix='/api')
+        async def dependency():
+            async with self.sessions() as session: yield session
+        app.dependency_overrides[get_project_session]=dependency
+        with patch('app.services.gpt_client.get_gpt_client',side_effect=AssertionError('model must not be called')) as model:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://local') as client:
+                for fix_bugs in (False,True):
+                    response=await client.post('/api'+api.router.prefix+'/projects/7/orchestrator/chat',
+                        json={'message':'synthetic policy bypass test','history':[],'fix_bugs':fix_bugs})
+                    self.assertEqual(response.status_code,409,response.text)
+            model.assert_not_called()
+
+    async def test_uncertain_request_denies_without_reservation(self):
+        await self.exhausted_fixture()
+        async with self.sessions() as s:
+            e=await s.get(observation.ObservationEvent,3);e.payload={'complete':False};await s.commit()
+        with self.assertRaisesRegex(ValueError,'uncertain'): await self.retry()
+        await self.assert_no_dispatch()
+
+    async def test_stale_graph_denies_without_reservation(self):
+        await self.exhausted_fixture()
+        async with self.sessions() as s:
+            run=await s.get(WorkflowRun,11);run.edges_snapshot=[{'source':'n1','target':'n2'}];await s.commit()
+        with self.assertRaisesRegex(ValueError,'graph revision'): await self.retry()
+        await self.assert_no_dispatch()
+
+    async def test_stale_input_config_denies_without_reservation(self):
+        await self.exhausted_fixture()
+        async with self.sessions() as s:
+            p=await s.get(Project,7);p.gpt_text_overrides={'enrich_1':'changed'};await s.commit()
+        with self.assertRaisesRegex(ValueError,'input/config'): await self.retry()
+        await self.assert_no_dispatch()
+
+    async def test_out_of_scope_denies_without_reservation(self):
+        await self.exhausted_fixture()
+        async with self.sessions() as s:
+            i=await s.get(Incident,'source-incident');i.node_key='n2';await s.commit()
+        with self.assertRaisesRegex(ValueError,'outside recovery scope'): await self.retry(node_key='n2')
+        await self.assert_no_dispatch()
+
+    async def assert_no_dispatch(self):
+        async with self.sessions() as s:
+            self.assertIsNone(await s.scalar(select(RecoveryAction)))
+            n=await s.scalar(select(NodeRun).where(NodeRun.node_key=='n1'))
+            self.assertEqual(n.status,NodeRunStatus.failed)
+            self.assertEqual(n.attempts,9)
 
 
 if __name__ == "__main__":

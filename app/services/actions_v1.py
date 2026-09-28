@@ -10,7 +10,7 @@ from datetime import datetime
 from threading import RLock
 import uuid
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint, select
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint, select, update
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models import Base
 
@@ -91,11 +91,24 @@ def install_permission(permission: ExecutionPermission) -> None:
 def clear_permission(project_id: int) -> None:
     with _permission_lock:
         _permissions.pop(project_id, None)
+    from app.services.actions_recovery import clear_restriction
+    clear_restriction(project_id)
 
 
 def get_permission(project_id: int) -> ExecutionPermission | None:
     with _permission_lock:
         return _permissions.get(project_id)
+
+
+async def managed_project_enabled(project_id: int) -> bool:
+    """Legacy tools fail closed even if volatile permissions were not reloaded."""
+    if get_permission(project_id) is not None:
+        return True
+    from app.services.observation import get_observer
+    async with get_observer().master() as session:
+        return await session.scalar(select(ActionExecutionControl.execution_id).where(
+            ActionExecutionControl.project_id == project_id,
+            ActionExecutionControl.enabled.is_(True)).limit(1)) is not None
 
 
 def update_permission(project_id: int, *, held: bool | None = None,
@@ -110,7 +123,7 @@ def update_permission(project_id: int, *, held: bool | None = None,
         if held is not None:
             changes["held"] = held
         if requests_used is not None:
-            changes["requests_used"] = requests_used
+            changes["requests_used"] = max(current.requests_used, requests_used)
         current = replace(current, **changes)
         _permissions[project_id] = current
         return current
@@ -121,6 +134,10 @@ def check_managed_start(*, project_id: int | None, node_key: str) -> StartDecisi
     if project_id is None:
         return None
     permission = get_permission(project_id)
+    from app.services.actions_recovery import restricted_node
+    recovery_node = restricted_node(project_id)
+    if recovery_node is not None and node_key != recovery_node:
+        return StartDecision(False, "recovery_verification_pending")
     if permission is None:
         # A persisted managed execution without a loaded/valid profile is
         # blocked, never silently treated as ordinary pipeline work.
@@ -155,12 +172,18 @@ async def reload_permissions(master) -> None:
                 graph_version=item.graph_version, node_keys=tuple(item.node_keys or ()),
                 request_limit=item.request_limit, requests_used=item.requests_used,
             )
+    from app.services.actions_recovery import reload_recovery_restrictions
+    await reload_recovery_restrictions(master)
 
 
 class ActionSupervisor:
     """Durable operator controls for an already-observed execution."""
     def __init__(self, master):
         self.master = master
+
+    async def recover_node(self, **kwargs):
+        from app.services.actions_recovery import recover_node
+        return await recover_node(self, **kwargs)
 
     async def enable(self, *, project_id: int, execution_id: str, group_id: str,
                      node_keys: list[str], graph_version: str, initiator: str,
@@ -301,13 +324,18 @@ class ActionSupervisor:
     async def charge_request(self, execution_id: str) -> int:
         """Durably charge a model attempt before the provider transport starts."""
         async with self.master() as session:
-            control = await session.get(ActionExecutionControl, execution_id)
-            if control is None or not control.enabled or control.held:
-                raise RuntimeError("managed execution is absent, disabled, or held")
-            if control.requests_used >= control.request_limit:
+            reserved = (await session.execute(update(ActionExecutionControl).where(
+                ActionExecutionControl.execution_id == execution_id,
+                ActionExecutionControl.enabled.is_(True), ActionExecutionControl.held.is_(False),
+                ActionExecutionControl.requests_used < ActionExecutionControl.request_limit,
+            ).values(requests_used=ActionExecutionControl.requests_used + 1).returning(
+                ActionExecutionControl.requests_used, ActionExecutionControl.project_id))).first()
+            if reserved is None:
+                control = await session.get(ActionExecutionControl, execution_id)
+                if control is None or not control.enabled or control.held:
+                    raise RuntimeError("managed execution is absent, disabled, or held")
                 raise RuntimeError("managed execution request budget exhausted")
-            control.requests_used += 1
-            used, project_id = control.requests_used, control.project_id
+            used, project_id = reserved
             await session.commit()
         update_permission(project_id, requests_used=used)
         return used
@@ -338,6 +366,12 @@ class ActionSupervisor:
             ))).all()
             if active:
                 raise ValueError("cannot revoke while a managed node is queued/running")
+            from app.services.actions_recovery import RecoveryAction
+            recovering = await session.scalar(select(RecoveryAction).where(
+                RecoveryAction.execution_id == execution_id,
+                RecoveryAction.status.in_(["reserved", "queued", "claimed", "await_verify"])))
+            if recovering:
+                raise ValueError("cannot revoke while a recovery ticket is reserved or awaiting verification")
             scope = await session.get(ExecutionControl, execution_id)
             if scope is not None:
                 scope.mode = "observe"
@@ -380,4 +414,3 @@ def action_is_idempotent(existing_execution_id: str, existing_action_id: str,
                          execution_id: str, action_id: str) -> bool:
     """True only when the exact action identity has already been accepted."""
     return existing_execution_id == execution_id and existing_action_id == action_id
-

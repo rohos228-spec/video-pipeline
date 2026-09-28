@@ -32,3 +32,14 @@ assert.equal(diagnosisSummary({available:true,lagging:false,blocking_count:0,evi
 assert.equal(diagnosisSummary({available:true,lagging:false,blocking_count:1,evidence_complete:true}).includes('1'),true);
 assert.equal(groupIncidents([{...open,currently_relevant:false,status:'human_review'}]).attention.length,1);
 console.log('Frontend metadata/diagnosis contracts: 17 assertions passed');
+const actionSource=fs.readFileSync('/observe-source/web/src/lib/actions-view.ts','utf8');
+const actionJS=ts.transpileModule(actionSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {actionStatus}=await import('data:text/javascript;base64,'+Buffer.from(actionJS).toString('base64'));
+for(const state of ['proposed','accepted','rejected','queued','running','await_verify','verified','human_review','revoked']) {
+  assert.notEqual(actionStatus(state),state);
+  assert.equal(actionStatus(state).includes('undefined'),false);
+}
+assert.equal(actionStatus('human_review').includes('Нужен человек'),true);
+assert.equal(actionStatus('revoked').includes('Execution завершён'),true);
+assert.equal(groupIncidents([{...repaired,resolution:{kind:'supervisor_recovery_verified'}}]).repaired.length,1);
+console.log('Actions UI status contracts: 21 assertions passed');

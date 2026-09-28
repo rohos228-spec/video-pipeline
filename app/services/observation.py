@@ -334,6 +334,8 @@ class Observer:
                 await self.catch_up()
                 from app.services.diagnosis import get_diagnoser
                 await get_diagnoser(self).catch_up()
+                from app.services.actions_recovery import reconcile
+                await reconcile(self)
             except Exception as exc:
                 for scope in self.scopes.values():
                     self.mark_gap(scope.execution_id, exc)
@@ -400,9 +402,12 @@ def observe_model(function):
             return await function(*args, **kwargs)
         request_id = str(uuid.uuid4())
         previous_request_id = ctx.last_request_id
+        body = kwargs.get("body") or {}
+        if ctx.scope.mode == "managed":
+            from app.services.actions_recovery import check_body
+            await check_body(ctx, digest(body))
         ctx.last_request_id = request_id
         request_token = _request.set(request_id)
-        body = kwargs.get("body") or {}
         from urllib.parse import urlsplit
         endpoint = urlsplit(str(kwargs.get("url") or ""))
         settings = {k: v for k, v in body.items() if k not in {"input", "messages", "instructions"}}
@@ -502,20 +507,38 @@ async def observe_attempt(session, project):
         yield
         return
     source = "project" if Path(str(session.bind.url.database)).name == "project.db" else "master"
-    ctx = AttemptContext(observer, scope, session, source, node_key, str(uuid.uuid4()))
+    attempt_id = str(uuid.uuid4())
+    revision = None
+    revision_parts = {}
+    if scope.mode == "managed":
+        from app.services.actions_recovery import claim, input_revision
+        claimed_id = await claim(observer, session, project, node_key, attempt_id, execution_id=scope.execution_id)
+        if claimed_id != attempt_id:
+            session.info["recovery_attempt_id"] = claimed_id
+        attempt_id = claimed_id
+        revision = await input_revision(session, project, node_key, parts=revision_parts)
+    ctx = AttemptContext(observer, scope, session, source, node_key, attempt_id)
     token = _attempt.set(ctx)
-    await record_fact("node_start", {"project_status": project.status.value, "node_contract": node_key})
+    await record_fact("node_start", {"project_status": project.status.value, "node_contract": node_key,
+                                  "recovery_input_revision": revision, "recovery_revision_parts": revision_parts})
     try:
         yield
     except BaseException as exc:
         await record_fact("node_error", {"error_type": type(exc).__name__})
+        if session.info.get("recovery_attempt_id") == attempt_id:
+            from app.services.actions_recovery import worker_finished
+            await worker_finished(ctx, error=True)
         raise
     else:
         await record_fact("node_end", {"project_status": project.status.value,
                           "next_node_key": active_excel_gpt_node_key(project), "worker_returned": True,
                           "business_commit_claim": False})
+        if session.info.get("recovery_attempt_id") == attempt_id:
+            from app.services.actions_recovery import worker_finished
+            await worker_finished(ctx)
     finally:
         _attempt.reset(token)
+        session.info.pop("recovery_attempt_id", None)
 
 
 @event.listens_for(Session, "before_flush")
@@ -655,10 +678,11 @@ async def migrate_observation_schema(conn):
     """Additive migration used by the same startup path as existing schema migrations."""
     from app.services.diagnosis import Incident, DiagnosisState
     from app.services.actions_v1 import ActionExecutionControl, ActionRecord
+    from app.services.actions_recovery import RecoveryAction
     await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=[
         ExecutionControl.__table__, ObservationOutbox.__table__, ObservationEvent.__table__,
         Incident.__table__, DiagnosisState.__table__, ActionExecutionControl.__table__,
-        ActionRecord.__table__,
+        ActionRecord.__table__, RecoveryAction.__table__,
     ]))
 
 

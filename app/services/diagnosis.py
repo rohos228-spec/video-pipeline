@@ -286,6 +286,17 @@ class Diagnoser:
                 if execution_id in self.observer.failures: snapshot.setdefault('gaps',[]).append({'kind':'observer_error'})
                 if execution_id in self.observer.commit_uncertainty: snapshot.setdefault('gaps',[]).append({'kind':'business_commit_unconfirmed'})
                 computed=derive_incidents(scope,facts,snapshot)
+                from app.services.actions_recovery import RecoveryAction
+                verified_recoveries = (await s.scalars(select(RecoveryAction).where(
+                    RecoveryAction.execution_id == execution_id,
+                    RecoveryAction.status == "verified"))).all()
+                proofs = {r.incident_id: r for r in verified_recoveries if r.verification_result.get("verified")}
+                for item in computed:
+                    proof = proofs.get(item['incident_id'])
+                    if proof and item['attempt_id'] == proof.source_attempt_id:
+                        item.update(status='resolved_confirmed', blocking=False, currently_relevant=False,
+                            resolution={'kind':'supervisor_recovery_verified','action_id':proof.action_id,
+                                'new_attempt_id':proof.new_attempt_id,'quality_verified':False})
                 stored=(await s.scalars(select(Incident).where(Incident.execution_id==execution_id))).all()
                 lookup={i.incident_id:i for i in stored}
                 computed_ids=set()
