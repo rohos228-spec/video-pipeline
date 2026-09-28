@@ -1,6 +1,7 @@
 param(
     [string]$ResultsRoot,
-    [string]$Image = 'vp-offline-diagnostic:20260924'
+    [string]$Image = 'vp-offline-diagnostic:20260924',
+    [string]$Target = 'journal'
 )
 $ErrorActionPreference = 'Stop'
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -18,7 +19,7 @@ New-Item -ItemType Directory -Path $stagePath, $configPath, $artifactPath | Out-
 $gitSafety = 'safe.directory=' + $sourceRoot.Replace('\', '/')
 $tracked = & git -c $gitSafety -C $sourceRoot ls-files app pyproject.toml
 if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate tracked source' }
-$files = @($tracked) + @('tests/observe_v1/test_journal.py', 'tests/observe_v1/container_test_entry.py')
+$files = @($tracked) + @('tests/observe_v1/test_journal.py', 'tests/observe_v1/test_runtime.py', 'tests/observe_v1/container_test_entry.py')
 $manifest = @{}
 foreach ($relative in $files) {
     if ($relative -match '(^|/)\.env($|\.)|(^|/)\.git(/|$)|\.(db|sqlite|pem|key)$') { throw "Disallowed source: $relative" }
@@ -37,6 +38,7 @@ $dockerArgs = $connectionArgs + @(
     'create', '--pull', 'never', '--name', $name, '--network', 'none', '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
     '--workdir', '/observe-source', '--env', 'PYTHONPATH=/observe-source', '--env', 'OBSERVE_SOURCE=/observe-source',
+    '--env', "OBSERVE_TEST_TARGET=$Target",
     $Image, 'python', 'tests/observe_v1/container_test_entry.py')
 $containerId = & $docker @dockerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Cannot create offline test container' }

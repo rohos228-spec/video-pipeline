@@ -24,7 +24,10 @@ RESULTS.mkdir(parents=True, exist_ok=True)
 expected = json.loads((SOURCE / "source-manifest.json").read_text())
 exit_code = 0
 try:
+    sys.path.insert(0, str(SOURCE / "tests/observe_v1"))
     sys.argv = [str(SOURCE / "tests/observe_v1/test_journal.py")]
+    if os.environ.get("OBSERVE_TEST_TARGET") == "runtime":
+        sys.argv = [str(SOURCE / "tests/observe_v1/test_runtime.py")]
     runpy.run_path(sys.argv[0], run_name="__main__")
 except SystemExit as exc:
     exit_code = int(exc.code or 0)
