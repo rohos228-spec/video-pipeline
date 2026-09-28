@@ -97,6 +97,15 @@ class Rules(unittest.TestCase):
         result=derive_incidents(SCOPE,rows,{})
         self.assertEqual([i['type'] for i in result],['contract_rejected'])
 
+    def test_new_worker_attempt_does_not_close_old_error_or_call_it_current(self):
+        rows=[event('node_start'),bad(),event('node_error'),event('node_start',attempt='a2'),
+              event('node_change',attempt='a2',transactional=True,changes={'status':{'after':['done']}})]
+        result=derive_incidents(SCOPE,rows,{})
+        original=next(i for i in result if i['type']=='invalid_json')
+        self.assertNotEqual(original['status'],'resolved_confirmed')
+        self.assertFalse(original['blocking'])
+        self.assertFalse(original['currently_relevant'])
+
     def test_saved_normal_and_malformed_full_history(self):
         summaries={}
         for mode in ('normal','malformed'):
