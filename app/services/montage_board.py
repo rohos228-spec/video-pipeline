@@ -924,7 +924,12 @@ def _coverage_fields_for_frames(
                 vo_int = int(vo_n) if vo_n is not None else 0
             except (TypeError, ValueError):
                 vo_int = 0
-            if vo_int <= 0 or vo_int == int(fr.number):
+            try:
+                vo_size = int(row.get("vo_scene_size") or 0)
+            except (TypeError, ValueError):
+                vo_size = 0
+            # A child that opens a multi-shot VO scene stays in it; only a lone cell joins its parent.
+            if vo_int <= 0 or (vo_int == int(fr.number) and vo_size <= 1):
                 row["vo_scene_number"] = parent_number
         out[fr.number] = row
     return out
