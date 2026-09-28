@@ -166,6 +166,46 @@ def test_prepare_overflow_chain_advances_to_next() -> None:
     assert p.meta["active_excel_gpt_node_key"] == "n_excel_gpt_fw_check_script"
 
 
+def test_overflow_script_clears_stale_tail_completed_keys() -> None:
+    """Новые биты: старые action/shots/QC не остаются «готовыми»."""
+    from app.services.excel_gpt_node import (
+        overflow_excel_gpt_successors,
+        prepare_enrich_chain_for_auto_advance,
+    )
+
+    nodes = _overflow_nodes()
+    edges = _overflow_edges()
+    p = SimpleNamespace(
+        id=60,
+        status=ProjectStatus.enrich_1_ready,
+        meta={
+            "canvas_graph": {"nodes": nodes, "edges": edges},
+            "active_excel_gpt_node_key": "n_excel_gpt_fw_script",
+            "excel_gpt_completed_keys": [
+                "n_excel_gpt_fw_script",
+                "n_excel_gpt_fw_action",
+                "n_excel_gpt_fw_shots",
+                "n_excel_gpt_fw_qc",
+            ],
+        },
+    )
+    succ = overflow_excel_gpt_successors(p, "n_excel_gpt_fw_script")
+    assert "n_excel_gpt_fw_check_script" in succ
+    assert "n_excel_gpt_fw_action" in succ
+    assert "n_excel_gpt_fw_qc" in succ
+    nxt = prepare_enrich_chain_for_auto_advance(
+        p,
+        ProjectStatus.enrich_1_ready,
+        finished_key="n_excel_gpt_fw_script",
+    )
+    assert nxt is ProjectStatus.enriching_1
+    keys = p.meta["excel_gpt_completed_keys"]
+    assert "n_excel_gpt_fw_script" in keys
+    assert "n_excel_gpt_fw_action" not in keys
+    assert "n_excel_gpt_fw_shots" not in keys
+    assert "n_excel_gpt_fw_qc" not in keys
+
+
 def test_overflow_qc_does_not_chain_into_scene_agent() -> None:
     """После QC overflow-группы не хватать world/style как excel_gpt slot 1."""
     from app.models import ProjectStatus

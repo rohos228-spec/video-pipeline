@@ -248,6 +248,19 @@ _SCRIPT_FRAMES_QC_SUFFIXES = (
     "_fw_qc",
     "_fw_report",
 )
+# Ноды, которые на каждом прогоне пишут свой выход заново (не fw_frames).
+_SCRIPT_FRAMES_QC_REWRITE_SUFFIXES = (
+    "_fw_script",
+    "_fw_action",
+    "_fw_shots",
+    "_fw_qc",
+)
+
+
+def _is_script_frames_qc_rewrite_node(node_key: str | None) -> bool:
+    """Биты / действие / кадры / QC: старый выход не в GPT, apply пишет все ячейки."""
+    nk = str(node_key or "")
+    return any(nk.endswith(s) for s in _SCRIPT_FRAMES_QC_REWRITE_SUFFIXES)
 
 
 def _is_script_frames_qc_group_node(
@@ -910,11 +923,9 @@ async def _after_excel_gpt_done(
 
     # excel_gpt→excel_gpt по стрелкам — цепочка группы, не auto_mode.
     # maybe_auto_advance на img_pr/hero/… — только если auto_mode=True.
+    # force_full не снимаем здесь: хвост группы (action→shots→QC) иначе
+    # ест старые кадры/действие и skip-filled не пишет новые ops.
     if not getattr(project, "auto_mode", False):
-        if _clear_excel_gpt_ui_force_full(project):
-            from sqlalchemy.orm.attributes import flag_modified
-
-            flag_modified(project, "meta")
         logger.info(
             "[#{}] enrich_xlsx: slot {} → {} — auto_mode выкл, без pipeline auto-advance",
             project.id,
@@ -1015,6 +1026,7 @@ async def _maybe_auto_chain_excel_gpt(
     if overflow_next:
         from app.services.excel_gpt_node import (
             backfill_overflow_completed_predecessors,
+            clear_overflow_excel_gpt_successors,
             overflow_excel_gpt_predecessors,
         )
 
@@ -1047,9 +1059,16 @@ async def _maybe_auto_chain_excel_gpt(
                 )
                 await session.flush()
                 return
-            if next_key in keys:
-                keys = [k for k in keys if k != next_key]
             meta["excel_gpt_completed_keys"] = keys
+            project.meta = meta
+            tail = clear_overflow_excel_gpt_successors(project, finished_key)
+            if tail:
+                logger.info(
+                    "[#{}] enrich_xlsx auto-chain: cleared overflow tail {}",
+                    project.id,
+                    tail,
+                )
+            meta = dict(project.meta or {})
     meta["active_excel_gpt_node_key"] = next_key
     project.meta = meta
     try:
@@ -1911,17 +1930,28 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     gpt_frames = [
                         fr for fr in gpt_frames if not is_shot_child(fr)
                     ]
+                rewrite_group = _is_script_frames_qc_rewrite_node(node_key)
+                strip_keys = (
+                    force_full_strip_output_keys(node_key)
+                    if force_full or rewrite_group
+                    else ()
+                )
+                if rewrite_group and strip_keys:
+                    logger.info(
+                        "[#{}] enrich_xlsx node={!r}: group strip stale {} "
+                        "(force_full={})",
+                        project.id,
+                        node_key,
+                        strip_keys,
+                        force_full,
+                    )
                 db_ctx = build_excel_gpt_db_context(
                     project_id=project.id,
                     slug=project.slug,
                     frames=gpt_frames,
                     characters=entity_cards_for_gpt(ents),
                     strip_prompts=bool(force_full),
-                    strip_output_keys=(
-                        force_full_strip_output_keys(node_key)
-                        if force_full
-                        else ()
-                    ),
+                    strip_output_keys=strip_keys,
                     full_vo=vo_markup
                     or _is_script_frames_qc_group_node(variant, master, node_key),
                 )
@@ -2324,7 +2354,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project_id=project.id,
                     dense=not write_prompts and not scene_analytics,
                     apply_fn=_apply_batch,
-                    force_full=force_full,
+                    force_full=force_full
+                    or (
+                        script_frames_qc
+                        and _is_script_frames_qc_rewrite_node(node_key)
+                    ),
                     skip_if_field=(
                         None
                         if force_full

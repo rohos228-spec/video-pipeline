@@ -509,7 +509,7 @@ def test_excel_gpt_keeps_bits_action_shots_and_full_vo() -> None:
 
 
 def test_force_full_action_strips_old_main_action_keeps_bits() -> None:
-    """▶ fw_action: биты — вход, старая цепь сцен не должна попасть в GPT."""
+    """fw_action: биты — вход, старая цепь и старые кадры не в GPT."""
     from app.services.db_frames_context import force_full_strip_output_keys
 
     fr = SimpleNamespace(
@@ -538,14 +538,11 @@ def test_force_full_action_strips_old_main_action_keeps_bits() -> None:
     row = ctx["frames"][0]
     assert "main_action" not in row
     assert "главное_действие" not in row
+    assert "кадры" not in row
     bits = row["биты"]
     if isinstance(bits, str):
         bits = json.loads(bits)
     assert bits[0]["глагол"] == "женится"
-    stored = row["кадры"]
-    if isinstance(stored, str):
-        stored = json.loads(stored)
-    assert stored[0]["id"] == "1-K1"
 
 
 def test_force_full_shots_strips_old_kadry_keeps_action() -> None:
@@ -593,7 +590,11 @@ def test_force_full_script_strips_old_bits() -> None:
         meaning="",
         image_prompt="",
         animation_prompt="",
-        attrs={"биты": [{"порядок": 1, "глагол": "старый"}]},
+        attrs={
+            "биты": [{"порядок": 1, "глагол": "старый"}],
+            "main_action": "1. двор — старое",
+            "кадры": [{"id": "1-K1"}],
+        },
     )
     keys = force_full_strip_output_keys("n_excel_gpt_fw_script")
     ctx = build_excel_gpt_db_context(
@@ -607,17 +608,54 @@ def test_force_full_script_strips_old_bits() -> None:
     )
     row = ctx["frames"][0]
     assert "биты" not in row
+    assert "main_action" not in row
+    assert "кадры" not in row
     assert row["voiceover_text"] == "После брака с Глебом"
+
+
+def test_qc_keeps_current_kadry_for_review() -> None:
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    shots = [{"id": "1-K1", "порядок": 1, "действие": "новое с shots"}]
+    fr = SimpleNamespace(
+        number=1,
+        uuid="h" * 24,
+        voiceover_text="После брака с Глебом",
+        meaning="",
+        image_prompt="",
+        animation_prompt="",
+        attrs={
+            "биты": [{"порядок": 1, "глагол": "женится"}],
+            "main_action": "1. церковь — венчание",
+            "кадры": shots,
+        },
+    )
+    keys = force_full_strip_output_keys("n_excel_gpt_fw_qc")
+    ctx = build_excel_gpt_db_context(
+        project_id=60,
+        slug="x",
+        frames=[fr],
+        characters=[],
+        strip_prompts=True,
+        strip_output_keys=keys,
+        full_vo=True,
+    )
+    row = ctx["frames"][0]
+    stored = row["кадры"]
+    if isinstance(stored, str):
+        stored = json.loads(stored)
+    assert stored[0]["действие"] == "новое с shots"
+    assert row["main_action"].startswith("1. церковь")
 
 
 def test_force_full_frames_keeps_shots_strips_prompts() -> None:
     from app.services.db_frames_context import force_full_strip_output_keys
 
     assert force_full_strip_output_keys("n_excel_gpt_fw_frames") == ()
-    assert force_full_strip_output_keys("n_excel_gpt_fw_qc") == ("кадры",)
+    assert force_full_strip_output_keys("n_excel_gpt_fw_qc") == ()
     assert force_full_strip_output_keys(
         "n_excel_gpt_fw_qc", footer_kind="shots_qc"
-    ) == ("кадры",)
+    ) == ()
 
 
 def test_excel_gpt_exposes_vo_shot_copy_not_as_voiceover() -> None:

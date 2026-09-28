@@ -8,6 +8,7 @@ from app.orchestrator.steps.enrich_xlsx import (
     _all_frame_prompts_ready,
     _clear_excel_gpt_ui_force_full,
     _excel_gpt_ui_force_full,
+    _is_script_frames_qc_rewrite_node,
     _select_fw_frames_for_gpt,
     _should_skip_qc_gpt,
 )
@@ -90,16 +91,57 @@ def test_excel_gpt_ui_force_full_flag_roundtrip() -> None:
 def test_force_full_strip_keys_by_node() -> None:
     from app.services.db_frames_context import force_full_strip_output_keys
 
-    assert force_full_strip_output_keys("n_excel_gpt_fw_script") == ("биты",)
+    assert force_full_strip_output_keys("n_excel_gpt_fw_script") == (
+        "биты",
+        "main_action",
+        "главное_действие",
+        "площадка",
+        "кадры",
+    )
     assert force_full_strip_output_keys("n_excel_gpt_fw_action") == (
         "main_action",
         "главное_действие",
         "площадка",
+        "кадры",
     )
     assert force_full_strip_output_keys("n_excel_gpt_fw_shots") == ("кадры",)
+    assert force_full_strip_output_keys("n_excel_gpt_fw_qc") == ()
     assert force_full_strip_output_keys(
         "n_excel_gpt_fw_frames", footer_kind="action_chain"
-    ) == ("main_action", "главное_действие", "площадка")
+    ) == ("main_action", "главное_действие", "площадка", "кадры")
     assert force_full_strip_output_keys(
         None, footer_kind="shots_coverage"
     ) == ("кадры",)
+    assert force_full_strip_output_keys(None, footer_kind="shots_qc") == ()
+
+
+def test_group_rewrite_batches_include_already_filled() -> None:
+    """Группа action/shots/QC не skip-filled: новые ops должны перезаписать."""
+    from app.services.apply_ops_batches import _pending_frames
+
+    frames = [
+        {
+            "uuid": "a" * 24,
+            "voiceover_text": "one",
+            "main_action": "старое действие",
+            "shot01_description": "старое",
+        },
+        {
+            "uuid": "b" * 24,
+            "voiceover_text": "two",
+        },
+    ]
+    skipped = _pending_frames(frames, dense=True, force_full=False)
+    assert [f["uuid"] for f in skipped] == ["b" * 24]
+    rewrite = _pending_frames(frames, dense=True, force_full=True)
+    assert [f["uuid"] for f in rewrite] == ["a" * 24, "b" * 24]
+
+
+def test_group_rewrite_nodes_not_fw_frames() -> None:
+    assert _is_script_frames_qc_rewrite_node("n_excel_gpt_fw_script")
+    assert _is_script_frames_qc_rewrite_node("n_excel_gpt_fw_action")
+    assert _is_script_frames_qc_rewrite_node("n_excel_gpt_fw_shots")
+    assert _is_script_frames_qc_rewrite_node("n_excel_gpt_fw_qc")
+    assert not _is_script_frames_qc_rewrite_node("n_excel_gpt_fw_frames")
+    assert not _is_script_frames_qc_rewrite_node("n_excel_gpt_fw_report")
+    assert not _is_script_frames_qc_rewrite_node("n_excel_gpt_1")

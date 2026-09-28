@@ -223,26 +223,42 @@ def force_full_strip_output_keys(
     *,
     footer_kind: str | None = None,
 ) -> tuple[str, ...]:
-    """Поля ЭТОЙ ноды, которые нельзя кормить GPT на ручном ▶.
+    """Поля, которые нельзя кормить GPT на прогоне ноды группы.
 
-    strip_prompts оставляет биты/действие/кадры как вход следующих нод.
-    Если перезапускаем саму ноду — старый выход надо выкинуть, иначе
-    модель копирует 1-в-1 и «результат тот же».
+    Выход самой ноды + протухший downstream (кадры на action, действие
+    на script). Иначе модель копирует прошлый прогон 1-в-1.
+    QC кадры не снимает — она читает то, что только что записали shots.
     """
     kind = str(footer_kind or "").strip()
     if kind == "bits":
-        return ("биты",)
+        return (
+            "биты",
+            "main_action",
+            "главное_действие",
+            "площадка",
+            "кадры",
+        )
     if kind == "action_chain":
-        return ("main_action", "главное_действие", "площадка")
-    if kind in {"shots_coverage", "shots_qc", "qc_shots"}:
+        return ("main_action", "главное_действие", "площадка", "кадры")
+    if kind in {"shots_coverage", "shots"}:
         return ("кадры",)
+    if kind in {"shots_qc", "qc_shots"}:
+        return ()
     nk = str(node_key or "")
     if nk.endswith("_fw_script"):
-        return ("биты",)
+        return (
+            "биты",
+            "main_action",
+            "главное_действие",
+            "площадка",
+            "кадры",
+        )
     if nk.endswith("_fw_action"):
-        return ("main_action", "главное_действие", "площадка")
-    if nk.endswith(("_fw_shots", "_fw_qc")):
+        return ("main_action", "главное_действие", "площадка", "кадры")
+    if nk.endswith("_fw_shots"):
         return ("кадры",)
+    if nk.endswith("_fw_qc"):
+        return ()
     return ()
 
 

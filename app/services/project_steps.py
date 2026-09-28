@@ -446,6 +446,7 @@ async def start_step(
         from app.services.excel_gpt_node import (
             backfill_overflow_completed_predecessors,
             clear_excel_gpt_tail_completion,
+            clear_overflow_excel_gpt_successors,
             ensure_enrich_auto_chain_to,
         )
 
@@ -470,10 +471,13 @@ async def start_step(
             project.meta = meta
         if started_slot < 1:
             # overflow: не трактовать слот 0 как «сбросить enrich 1..5».
+            # Потомков группы снимаем — иначе heal считает action/QC done
+            # по ключам прошлого прогона и новые биты не записываются.
+            succ_cleared = clear_overflow_excel_gpt_successors(project, nk)
             cleared = {
                 "from_slot": 0,
                 "slots_cleared": [],
-                "keys_cleared": self_cleared,
+                "keys_cleared": self_cleared + succ_cleared,
             }
             chain_to = None
         else:
