@@ -4,11 +4,12 @@ from __future__ import annotations
 import unittest
 import asyncio
 import sys
+import os
 from unittest.mock import patch
 
 import httpx
 from fastapi import FastAPI
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, select, text
 
 from app.models import NodeRun, NodeRunStatus, Project, Workflow, WorkflowRun
 from app.services import observation
@@ -18,6 +19,84 @@ import test_journal
 
 
 class RuntimeAcceptance(test_journal.JournalAcceptance):
+    async def test_retention_never_deletes_old_acceptance_bodies_and_can_pin(self):
+        old = self.observer.save_body(self.scope.execution_id, {"acceptance": "old"})
+        path = self.observer.body_root / old["path"]
+        os.utime(path, (1, 1))
+        self.observer.pin(self.scope.execution_id)
+        self.observer.save_body(self.scope.execution_id, {"acceptance": "new"})
+        self.assertTrue(path.exists())
+        self.assertTrue(self.observer.is_pinned(self.scope.execution_id))
+
+    async def test_known_initiator_survives_actual_fsm_transaction(self):
+        async with self.master() as session:
+            node = (await session.scalars(select(NodeRun))).one()
+            start_node_running(node, project_id=2, initiator="worker")
+            await session.commit()
+        await self.observer.consume(self.scope.execution_id, "master", self.master)
+        async with self.master() as session:
+            row = (await session.scalars(select(observation.ObservationEvent))).one()
+            self.assertTrue(any(t["initiator"] == "worker" for t in row.payload["transitions"]))
+
+    async def test_real_write_contract_is_observed_without_new_validation(self):
+        from app.services.node_write_contract import filter_ops_for_node
+        async with self.master() as session:
+            project = await session.get(Project, 2)
+            project.meta = {"active_excel_gpt_node_key": "script"}
+            async with observation.observe_attempt(session, project):
+                result = filter_ops_for_node([{"target": "frame", "fields": {"img_pr": "synthetic"}}], node_kind="excel_gpt")
+            await session.commit()
+        await self.observer.consume(self.scope.execution_id, "master", self.master)
+        async with self.master() as session:
+            rows = (await session.scalars(select(observation.ObservationEvent))).all()
+            self.assertTrue(any(r.kind == "runtime_check" and r.payload["check"] == "write_contract" for r in rows))
+
+    async def test_failed_consumer_preserves_done_and_user_stop_then_drains_once(self):
+        async with self.master() as session:
+            project = await session.get(Project, 2)
+            project.meta = {"user_stop": True}
+            node = (await session.scalars(select(NodeRun))).one()
+            start_node_running(node, project_id=2, initiator="worker")
+            complete_node(node, project_id=2)
+            await session.commit()
+        with patch.object(self.observer, "consume", side_effect=OSError("synthetic consumer failure")):
+            await self.observer.catch_up()
+        self.assertIn(self.scope.execution_id, self.observer.failures)
+        await self.observer.catch_up()
+        count = await self.event_count()
+        await self.observer.catch_up()
+        self.assertEqual(await self.event_count(), count)
+        async with self.master() as session:
+            self.assertTrue((await session.get(Project, 2)).meta["user_stop"])
+            self.assertEqual((await session.scalars(select(NodeRun))).one().status, NodeRunStatus.done)
+            self.assertTrue((await session.get(observation.ExecutionControl, self.scope.execution_id)).gaps)
+
+    async def test_shared_outbox_failure_marks_commit_unconfirmed(self):
+        async with self.master_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE observation_outbox"))
+        async with self.master() as session:
+            node = (await session.scalars(select(NodeRun))).one()
+            start_node_running(node, project_id=2, initiator="worker")
+            with self.assertRaises(Exception):
+                await session.commit()
+            await session.rollback()
+        self.assertIn(self.scope.execution_id, self.observer.failures)
+        self.assertEqual(self.observer.commit_uncertainty[self.scope.execution_id], "business_commit_unconfirmed")
+        async with self.master() as session:
+            self.assertEqual((await session.scalars(select(NodeRun))).one().status, NodeRunStatus.pending)
+
+    async def test_panel_api_removes_raw_bodies_credentials_and_absolute_paths(self):
+        async with self.master() as session:
+            self.observer.stage(session, self.scope, "runtime_check", db_scope="master", node_key="script",
+                payload={"body": {"path": "relative/hash.json"}, "path": "C:\\private\\secret.txt",
+                         "text": "raw body must stay local", "api_key": "synthetic-secret"})
+            await session.commit()
+        await self.observer.consume(self.scope.execution_id, "master", self.master)
+        response = await self.client.get(f"/api/projects/2/observations/{self.scope.execution_id}/events")
+        self.assertNotIn("private", response.text)
+        self.assertNotIn("raw body must stay local", response.text)
+        self.assertNotIn("synthetic-secret", response.text)
+
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.previous = observation._observer
