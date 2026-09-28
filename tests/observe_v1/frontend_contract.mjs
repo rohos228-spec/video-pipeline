@@ -18,4 +18,16 @@ assert.deepEqual(mergeEvents([{...a,created_at:'2026-09-28 11:20:20'}],
   [{...a,id:2,event_id:'earlier',created_at:'2026-09-28 11:20:10'}],2).map(e=>e.event_id),['earlier','a']);
 assert.equal(eventLabel({kind:'observer_control',payload:{action:'stopped',initiator:'observation_api'}}),
   'Наблюдение: stopped (observation_api)');
-console.log('Frontend metadata contracts: 8 assertions passed');
+const diagnosisSource=fs.readFileSync('/observe-source/web/src/lib/diagnosis-view.ts','utf8');
+const diagnosisJS=ts.transpileModule(diagnosisSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {groupIncidents,diagnosisSummary}=await import('data:text/javascript;base64,'+Buffer.from(diagnosisJS).toString('base64'));
+const repaired={incident_id:'i1',status:'resolved_confirmed',currently_relevant:false,resolution:{kind:'format_recovery'}};
+const open={incident_id:'i2',status:'open',currently_relevant:true,type:'user_stop',blocking:false};
+const groups=groupIncidents([repaired,open,{...repaired,incident_id:'i3',resolution:{kind:'condition_not_observed'}}]);
+assert.equal(groups.repaired.length,1);assert.equal(groups.attention.length,1);assert.equal(groups.other.length,1);
+assert.equal(diagnosisSummary(null).includes('не подтверждена'),true);
+assert.equal(diagnosisSummary({available:false}).includes('недоступна'),true);
+assert.equal(diagnosisSummary({available:true,lagging:true}).includes('отстаёт'),true);
+assert.equal(diagnosisSummary({available:true,lagging:false,blocking_count:0,evidence_complete:false}).includes('неполны'),true);
+assert.equal(diagnosisSummary({available:true,lagging:false,blocking_count:1,evidence_complete:true}).includes('1'),true);
+console.log('Frontend metadata/diagnosis contracts: 16 assertions passed');
