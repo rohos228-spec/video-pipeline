@@ -47,7 +47,7 @@ export function DecisionSection({projectId,execution,managed}:{projectId:number;
         <p>Доказательства: {r.proposal.evidence_ids?.map(id=><a key={id} href={`#observation-event-${id}`} className="mr-2 underline">{id.slice(0,8)}</a>)??'нет'}</p>
         <ol>{r.turns.map(t=><li key={t.id}><strong>{t.role}</strong><pre className="whitespace-pre-wrap break-all">{JSON.stringify(t.payload,null,2)}</pre></li>)}</ol>
       </details>
-      {r.status==='human_review'&&<p className="text-amber-200">Нужен человек. Execution удержан; ещё одна recovery не разрешена.</p>}
+      {r.status==='human_review'&&<p className="text-amber-200">Нужен человек. Execution удержан; новые автоматические действия запрещены.</p>}
     </li>)}</ol>
   </section>;
 }

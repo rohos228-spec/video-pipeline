@@ -1,5 +1,5 @@
 "use client";
-import {actionStatus, actionsModeLabel} from "@/lib/actions-view";
+import {actionStatus, actionsModeLabel, actionReviewMessage} from "@/lib/actions-view";
 
 import {useEffect, useRef, useState} from "react";
 import {api} from "@/lib/api";
@@ -242,7 +242,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       {!actionState?.configured ? <Button size="sm" variant="outline" disabled={busy || !actionState || !execution || !group || context.observer_state==='stopped' || actionRationale.trim().length<3} onClick={()=>void enableActions()}>Разрешить выполнение выбранной группы</Button> : !actionState.enabled ? <p className="text-white/50">Managed execution закрыт. Для нового разрешения создайте новое наблюдение.</p> : <>
         <span>Статус: {actionState.held ? '⏸ на паузе' : '🟢 разрешено'} · запросы: {actionState.requests_used}/{actionState.request_limit}</span>
         <Button size="sm" variant="outline" disabled={busy || actionRationale.trim().length<3} onClick={()=>void setActionsHeld(!actionState.held)}>{actionState.held ? 'Возобновить управление' : 'Приостановить управление'}</Button>
-        <p className="text-white/50">Пауза управления запрещает новые управляемые запуски и запросы, но не отменяет уже отправленный запрос. Чтобы остановить задачу, используйте «Остановить шаг» над графом: это user_stop проекта, который supervisor не снимает.</p>
+        <p className="text-white/50">Пауза управления запрещает новые управляемые запуски и запросы, но не отменяет уже отправленный запрос. Чтобы остановить задачу, используйте «Остановить» над графом: это user_stop проекта, который supervisor не снимает.</p>
         <Button size="sm" variant="outline" disabled={busy || actionState.held || !actionRationale.trim()} onClick={()=>void runManagedGroup()}>Запустить следующую ноду группы</Button>
         <Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void closeActions()}>Закрыть execution</Button>
         <p className="text-white/50">Разрешённые ноды: {actionState.node_keys.join(', ')} · graph: {actionState.graph_version?.slice(0,12)}</p>
@@ -254,7 +254,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         <ol data-testid="actions-history" className="space-y-1">{actionState.records.slice(0,10).map(a=><li key={a.action_id}>
           {actionStatus(a.status)} · {a.node_key ?? 'execution'} · {a.created_at?.slice(0,19)} · {a.initiator} · {a.rationale}
           {a.preconditions.reason != null && <p>Причина: {String(a.preconditions.reason)}</p>}
-          {a.status==='human_review' && <p>Verification не прошёл. Повторный recovery запрещён; требуется разбор человеком.</p>}
+          {a.status==='human_review' && <p>{actionReviewMessage(a.action_kind)}</p>}
           <details><summary>Доказательства и условия действия</summary><pre className="whitespace-pre-wrap">{JSON.stringify({action_id:a.action_id,preconditions:a.preconditions,verification:a.verification},null,2)}</pre></details>
         </li>)}</ol>
       </>}
