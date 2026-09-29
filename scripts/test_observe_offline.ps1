@@ -39,6 +39,7 @@ $files += 'tests/observe_v1/live_decision_acceptance.py'
 if ($Target -eq 'group') { $files += @('tests/observe_v1/group_runner.py','config/managed-text-pilot.example.json') }
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
 if ($Target -eq 'media-contract') { $files += 'tests/observe_v1/test_media_contract.py' }
+if ($Target -eq 'media-jobs') { $files += 'tests/observe_v1/test_media_jobs.py' }
 if ($Target -eq 'profiles') { $files += @('tests/observe_v1/test_profiles_v1.py','tests/observe_v1/test_decision_v1.py') }
 if ($Target -eq 'decision-runtime') { $files += @('tests/observe_v1/test_decision_runtime.py','tests/observe_v1/test_profiles_v1.py','config/orchestrator-runtime.example.json') }
 if ($Target -eq 'decision-final') { $files += @('tests/observe_v1/test_decision_runtime.py','tests/observe_v1/test_profiles_v1.py','tests/observe_v1/test_planner_boundary.py','config/orchestrator-runtime.example.json') }

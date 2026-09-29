@@ -33,6 +33,8 @@ try:
         sys.argv = [str(SOURCE / "tests/observe_v1/test_runtime.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "media-contract":
         sys.argv = [str(SOURCE / "tests/observe_v1/test_media_contract.py")]
+    if os.environ.get("OBSERVE_TEST_TARGET") == "media-jobs":
+        sys.argv = [str(SOURCE / "tests/observe_v1/test_media_jobs.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "diagnose":
         sys.argv = [str(SOURCE / "tests/observe_v1/test_diagnosis.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "actions":
