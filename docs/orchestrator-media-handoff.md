@@ -77,3 +77,13 @@ calls persist_artifact: verified job/file hash, deterministic Artifact UUID,
 SQLite conflict-ignore and business-transaction event; rollback leaves no row.
 Corrupt/tampered result cannot apply; duplicate delivery produces one Artifact.
 No worker acceptance claimed yet. Next is existing group runner media mode.
+Native worker acceptance: worker-image-02 GREEN. Real managed API start ->
+project_steps -> original worker -> generate_images -> Kie loopback create/
+status/download -> verifier -> 2 Artifact rows -> original NodeRun done.
+Six HTTP operations (2 submit/status/download each); n_videos pending over
+12-second boundary, pilot project #1 new. No text model POST.
+worker-image-01 preserved: source clean seed had no frames, original worker
+stopped on missing inputs; explicit synthetic initial frames added in next run.
+Hidden anim_pr sidecar denied for managed projects (sidecar-red demonstrates
+prior behavior); it must run as its own authorized observed node, not under
+image attempt context. Next mixed text->image acceptance and UI. No active runner.

@@ -199,6 +199,12 @@ async def _sidecar_loop(project_id: int) -> None:
 
 def ensure_anim_pr_sidecar(project_id: int) -> bool:
     """Запустить sidecar-task, если ещё не крутится. True = стартовали сейчас."""
+    from app.services.actions_v1 import get_permission
+    if get_permission(project_id) is not None:
+        from app.services.observation import emit
+        emit("media_auxiliary_denied", {"operation": "anim_pr_sidecar",
+            "reason": "managed nodes execute only through observed worker"})
+        return False
     t = _TASKS.get(project_id)
     if t is not None and not t.done():
         return False
