@@ -77,6 +77,15 @@ def _accepted_empty_ops(result, data, *, allowed=False) -> bool:
         return False
 
 
+def _qc_json_valid(text) -> bool:
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return (isinstance(data, dict) and isinstance(data.get('ops'), list)
+            and not data.get('error') and not data.get('refusal'))
+
+
 def _log_apply_ops_coverage(
     node_key: str,
     apply_ops: dict | None,
@@ -412,6 +421,8 @@ async def _run_operator_api_real(
         apply_ops = extract_apply_ops_json(reply_text or "")
         from app.services.observation import record_parse
 
+        if allow_empty_ops and not _qc_json_valid(reply_text):
+            apply_ops = None
         empty_accepted = _accepted_empty_ops(result, apply_ops, allowed=allow_empty_ops and not is_check)
         await record_parse(reply_text or "", apply_ops, payload_required=not is_check,
                            empty_ops_allowed=allow_empty_ops, empty_ops_accepted=empty_accepted)
@@ -579,6 +590,14 @@ async def _run_operator_api_real(
             '{"ops":[{"frame_uuid":"<uuid>","fields":{"место":"…"}}]}\n'
             "Без markdown, без TSV, без поля error, без просьб о вложениях."
         )
+        if allow_empty_ops:
+            retry_prompt = (
+                f"{prompt_for_model}\n\n"
+                "# КОНТРАКТ QC JSON (повтор)\n"
+                "Предыдущий ответ не принят по формату. Верни только JSON-объект "
+                'с ops-массивом исправлений. Если исправлений нет: {"ops":[]}. '
+                "Без markdown, поля error и отказов."
+            )
         # Retry без xlsx — иначе модель снова упирается в «нет файла».
         retry_paths = [
             p
@@ -600,13 +619,15 @@ async def _run_operator_api_real(
             if raw.get('status') != 'completed' or raw.get('sse_salvaged'):
                 raise RuntimeError('QC retry response incomplete or uncertain')
         apply_ops = extract_apply_ops_json(reply_text or "")
+        if allow_empty_ops and not _qc_json_valid(reply_text):
+            apply_ops = None
         empty_accepted = _accepted_empty_ops(retry, apply_ops, allowed=allow_empty_ops)
         await record_parse(reply_text or "", apply_ops, empty_ops_allowed=allow_empty_ops,
                            empty_ops_accepted=empty_accepted)
         if apply_ops is not None and not _apply_ops_has_payload(apply_ops) and not empty_accepted:
             apply_ops = None
         # Retry тоже пуст — последний шанс: salvage из pre-retry (частичные ops).
-        if apply_ops is None and pre_retry_text:
+        if apply_ops is None and pre_retry_text and (not allow_empty_ops or _qc_json_valid(pre_retry_text)):
             apply_ops = extract_apply_ops_json(pre_retry_text)
             if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
                 apply_ops = None
@@ -645,7 +666,13 @@ async def _run_operator_api_real(
         output_paths.append(reply_path)
 
     if apply_ops is not None and effective_output == "project_file" and not is_check:
-        _log_apply_ops_coverage(node_key, apply_ops, list(input_paths or []))
+        if _accepted_empty_ops(result, apply_ops, allowed=allow_empty_ops):
+            from app.services.observation import record_fact
+            await record_fact('runtime_check', {'check': 'frame_coverage_gate', 'performed': False,
+                'status': 'not_applicable', 'reason': 'trusted_qc_noop_requires_no_frame_writes',
+                'semantic_quality_verified': False})
+        else:
+            _log_apply_ops_coverage(node_key, apply_ops, list(input_paths or []))
 
     return OperatorApiResult(
         reply_text=reply_text,

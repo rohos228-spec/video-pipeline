@@ -827,23 +827,23 @@ async def test_qc_allow_empty_does_not_split_on_gpt_fail(tmp_path, monkeypatch) 
     frames = [_frame(i) for i in range(8)]
     ctx = tmp_path / "db_frames.json"
     ctx.write_text("{}", encoding="utf-8")
-    res = await run_apply_ops_batched(
-        project_dir=tmp_path,
-        node_key="n_excel_gpt_fw_qc",
-        role="excel_gpt",
-        output_mode="project_file",
-        prompt="p",
-        accompanying="",
-        db_ctx={"frames": frames},
-        ctx_path=ctx,
-        project_id=1,
-        dense=False,
-        chunk_size=8,
-        parallel_max=1,
-        allow_empty_ops=True,
-    )
+    with pytest.raises(RuntimeError, match="All connection attempts failed"):
+        await run_apply_ops_batched(
+            project_dir=tmp_path,
+            node_key="n_excel_gpt_fw_qc",
+            role="excel_gpt",
+            output_mode="project_file",
+            prompt="p",
+            accompanying="",
+            db_ctx={"frames": frames},
+            ctx_path=ctx,
+            project_id=1,
+            dense=False,
+            chunk_size=8,
+            parallel_max=1,
+            allow_empty_ops=True,
+        )
     assert calls == [8]
-    assert res.apply_ops["ops"] == []
 
 
 def test_analytics_ops_rejects_copied_sense_and_place() -> None:

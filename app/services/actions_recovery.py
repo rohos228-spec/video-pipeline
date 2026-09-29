@@ -414,6 +414,9 @@ async def reconcile(observer):
                 events = [dict(kind=e.kind, request_id=e.request_id, payload=e.payload) for e in facts]
                 verification['accepted_noop'] = bool(trusted and latest_start
                     and latest_start.attempt_id == row.new_attempt_id
+                    and any(e.kind == 'node_change' and e.db_scope == 'project'
+                        and e.payload.get('transactional') is True
+                        and 'done' in ((e.payload.get('changes') or {}).get('status') or {}).get('after', []) for e in facts)
                     and any(confirmed_qc_noop(events, e.request_id) for e in facts if e.kind == 'parse_result'))
                 verification['result_confirmed'] = ((verification['data_applied'] and verification['accepted_payload'])
                                                    or verification['accepted_noop'])

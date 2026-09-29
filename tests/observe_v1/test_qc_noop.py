@@ -20,6 +20,7 @@ class QcNoopHttp(unittest.IsolatedAsyncioTestCase):
         self.applied = []
         self.answer = '{"ops":[]}'
         self.fail = False
+        self.answers = []
         self.complete = True
         self.transport_error = None
         self.context = {'frames': [{'uuid': 'frame-one', 'number': 1,
@@ -38,12 +39,13 @@ class QcNoopHttp(unittest.IsolatedAsyncioTestCase):
             self.posts.append(request)
             if self.fail:
                 return httpx.Response(500, request=request, content=b'synthetic provider failure')
+            answer = self.answers.pop(0) if self.answers else self.answer
             events = [{'type': 'response.created', 'response': {'id': 'resp_synthetic'}},
-                      {'type': 'response.output_text.delta', 'delta': self.answer}]
+                      {'type': 'response.output_text.delta', 'delta': answer}]
             if self.complete:
                 events.append({'type': 'response.completed', 'response': {
                     'id': 'resp_synthetic', 'status': 'completed',
-                    'output': [{'content': [{'type': 'output_text', 'text': self.answer}]}],
+                    'output': [{'content': [{'type': 'output_text', 'text': answer}]}],
                     'usage': {'input_tokens': 1, 'output_tokens': 1}}})
             return httpx.Response(200, headers={'content-type': 'text/event-stream'},
                 content=''.join('data: ' + json.dumps(e) + '\n\n' for e in events).encode())
@@ -67,6 +69,16 @@ class QcNoopHttp(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.apply_ops, {'ops': []})
         self.assertEqual(self.applied, [])
 
+    async def test_native_json_retry_can_accept_completed_noop_with_same_contract(self):
+        self.answers=['invalid JSON','{"ops":[]}']
+        result=await self.batch()
+        self.assertEqual(len(self.posts),2)
+        self.assertEqual(result.apply_ops,{'ops':[]})
+        self.assertEqual(self.applied,[])
+        body=self.posts[1].content.decode()
+        self.assertIn('КОНТРАКТ QC JSON',body)
+        self.assertNotIn('с непустыми полями',body)
+
     async def test_provider_error_is_not_successful_noop(self):
         self.fail = True
         with self.assertRaises(Exception): await self.batch()
@@ -81,6 +93,11 @@ class QcNoopHttp(unittest.IsolatedAsyncioTestCase):
         self.answer = '{"ops":[],"error":"synthetic refusal"}'
         with self.assertRaises(Exception): await self.batch()
         self.assertEqual(self.applied, [])
+
+    async def test_error_with_nonempty_ops_cannot_be_accepted(self):
+        self.answer='{"error":"refused","ops":[{"frame_uuid":"frame-one","fields":{"место":"улица"}}]}'
+        with self.assertRaises(Exception): await self.batch()
+        self.assertEqual(self.applied,[])
 
     async def test_creating_node_still_rejects_empty_payload(self):
         with self.assertRaises(RuntimeError): await self.batch(allowed=False)
@@ -157,16 +174,22 @@ class NoopEvidence(unittest.TestCase):
         rows=noop_facts()
         self.assertTrue(confirmed_qc_noop(rows,'r'))
         self.assertEqual(derive_incidents(scope,rows,{}),[])
-        for remove in ('model_end','runtime_check'):
+        for remove in ('model_start','model_end','runtime_check'):
             altered=[e for e in rows if e['kind']!=remove]
             self.assertFalse(confirmed_qc_noop(altered,'r'))
-            self.assertTrue(any(i['type']=='missing_payload' for i in derive_incidents(scope,altered,{})))
+            self.assertFalse(any(i['type']=='missing_payload' for i in derive_incidents(scope,altered,{})))
         other=[{**e,'attempt_id':'other'} for e in rows]
         original={**rows[2],'event_id':'bad','payload':{'payload_required':True,'parsed':False,'payload_present':False}}
         self.assertNotEqual(derive_incidents(scope,[original]+other,{})[0]['status'],'resolved_confirmed')
         db=derive_incidents(scope,rows,{'disagreement':True})
         self.assertEqual(db[0]['type'],'db_disagreement')
         self.assertNotEqual(db[0]['status'],'resolved_confirmed')
+
+    def test_valid_json_with_rejected_schema_is_not_syntax_error(self):
+        scope=SimpleNamespace(execution_id='e',project_id=2,node_keys=['id'],observer_state='active',gaps=[])
+        row=noop_facts()[2]
+        row['payload']={**row['payload'],'syntax_valid':True,'parsed':False,'empty_ops_accepted':False,'schema_valid':False}
+        self.assertEqual(derive_incidents(scope,[row],{})[0]['type'],'missing_payload')
 
     def test_noop_does_not_mask_failed_required_checks(self):
         rows=noop_facts()

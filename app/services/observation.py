@@ -539,24 +539,27 @@ def observe_model(function):
 async def record_parse(text, parsed, *, payload_required=True,
                        empty_ops_allowed=False, empty_ops_accepted=False):
     try:
-        json.loads(text)
+        strict = json.loads(text)
         syntax_valid = True
     except (ValueError, TypeError):
+        strict = None
         syntax_valid = False
+    fields = strict if isinstance(strict, dict) else parsed
     ctx = _attempt.get()
     await record_fact("parse_result", {"syntax_valid": syntax_valid,
-        "parsed": parsed is not None, "schema_valid": True if empty_ops_accepted else None,
+        "parsed": parsed is not None, "schema_valid": (True if empty_ops_accepted else
+            False if empty_ops_allowed and syntax_valid and parsed is None else None),
         "contract": "json_apply_ops" if payload_required else "text_verdict_or_optional_apply_ops",
         "schema_note": "Extraction does not prove node schema validation",
         "payload_required": payload_required,
         "nonempty_payload_required": payload_required and not empty_ops_allowed,
-        "ops_field_present": isinstance(parsed, dict) and 'ops' in parsed,
-        "ops_type_valid": isinstance(parsed, dict) and isinstance(parsed.get('ops'), list),
+        "ops_field_present": isinstance(fields, dict) and 'ops' in fields,
+        "ops_type_valid": isinstance(fields, dict) and isinstance(fields.get('ops'), list),
         "empty_ops_allowed": empty_ops_allowed,
         "empty_ops_accepted": empty_ops_accepted,
         "semantic_quality_verified": False,
         "payload_present": bool(parsed and any(parsed.get(k) for k in ("ops", "characters", "scenes", "actions"))),
-        "ops_count": len(parsed['ops']) if isinstance(parsed, dict) and isinstance(parsed.get('ops'), list) else None}, body={"text": text, "parsed": parsed},
+        "ops_count": len(fields['ops']) if isinstance(fields, dict) and isinstance(fields.get('ops'), list) else None}, body={"text": text, "parsed": parsed},
         request_id=ctx.last_request_id if ctx else None)
 
 
@@ -816,12 +819,9 @@ def confirmed_qc_noop(events, request_id):
     if not request_id:
         return False
     related = [e for e in events if e.get('request_id') == request_id]
-    parsed = any(e['kind'] == 'parse_result' and all(e['payload'].get(k) is True
-        for k in ('syntax_valid','parsed','schema_valid','ops_field_present',
-                  'ops_type_valid','empty_ops_allowed','empty_ops_accepted'))
-        and e['payload'].get('ops_count') == 0
-        and e['payload'].get('payload_present') is False for e in related)
-    complete = any(e['kind'] == 'model_end' and e['payload'].get('complete') is True for e in related)
+    parsed = any(e['kind'] == 'parse_result' and accepted_qc_noop_parse(e['payload']) for e in related)
+    complete = (any(e['kind'] == 'model_start' for e in related)
+        and any(e['kind'] == 'model_end' and e['payload'].get('complete') is True for e in related))
     checked = any(e['kind'] == 'runtime_check' and e['payload'].get('check') == 'qc_noop'
         and e['payload'].get('performed') is True and e['payload'].get('status') == 'passed'
         and e['payload'].get('empty_ops_allowed') is True
@@ -835,3 +835,10 @@ def confirmed_qc_noop(events, request_id):
         (e['kind'] == 'domain_check' and e['payload'].get('verdict') in {'fail','reject'})
         for e in events)
     return parsed and complete and checked and not failed
+
+
+def accepted_qc_noop_parse(payload):
+    """Format acceptance only. Checks, attempt completion and quality are separate."""
+    return (all(payload.get(k) is True for k in ('syntax_valid','parsed','schema_valid',
+        'ops_field_present','ops_type_valid','empty_ops_allowed','empty_ops_accepted'))
+        and payload.get('ops_count') == 0 and payload.get('payload_present') is False)

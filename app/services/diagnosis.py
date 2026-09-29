@@ -17,7 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base, WorkflowRun
 from app.services.error_catalog import ERROR_CATALOG
-from app.services.observation import ExecutionControl, ObservationEvent, digest, panel_safe, business_snapshot, confirmed_qc_noop
+from app.services.observation import ExecutionControl, ObservationEvent, digest, panel_safe, business_snapshot, confirmed_qc_noop, accepted_qc_noop_parse
 
 RULE_VERSION = 'diagnose-v1.3-qc-noop'
 
@@ -101,7 +101,7 @@ def derive_incidents(scope, events, snapshot):
         retries=[e for e in related if e['kind']=='json_retry']
         bads=[e for e in related if e['kind']=='parse_result' and e['payload'].get('payload_required') is True
               and (e['payload'].get('parsed') is False or e['payload'].get('payload_present') is False)
-              and not confirmed_qc_noop(related, e.get('request_id'))]
+              and not accepted_qc_noop_parse(e['payload'])]
         bad_requests={e.get('request_id') for e in bads if e.get('request_id')}
 
         def previous(request): return starts.get(request,{}).get('payload',{}).get('previous_request_id')
@@ -125,7 +125,8 @@ def derive_incidents(scope, events, snapshot):
 
         for bad in bads:
             request=bad.get('request_id'); origin=root(request) or bad['event_id']
-            kind='invalid_json' if bad['payload'].get('parsed') is False else 'missing_payload'
+            kind='invalid_json' if (bad['payload'].get('parsed') is False
+                                   and bad['payload'].get('syntax_valid') is not True) else 'missing_payload'
             item=issue(kind,(node,attempt,origin),[bad],incomplete=not bool(attempt and request))
             linked_retries=retry_for(origin)
             descendants=set([origin]); changed=True
