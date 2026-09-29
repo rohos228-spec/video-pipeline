@@ -33,6 +33,11 @@ class RuntimeConfig(unittest.TestCase):
             self.config.check_route(self.config.validate_config(configured(online_enabled=False)),configured()['endpoint'])
     def test_empty_production_profile_allowlist_is_not_synthetic(self):
         self.assertEqual(self.config.validate_config(configured())['profiles'],{})
+    def test_scoped_synthetic_pilot_keeps_explicit_empty_profile_catalog(self):
+        from app.services import profiles_v1
+        cfg=configured(mode='synthetic',endpoint='http://127.0.0.1:18766/codex/v1/responses',incident_scope=pilot_scope())
+        with patch.object(self.config,'runtime_config',return_value=cfg):
+            self.assertEqual(profiles_v1.active_catalog(),{})
     def test_synthetic_names_not_valid_production_models(self):
         d=configured();d['decision']['model_id']='gpt-synthetic-alt'
         with self.assertRaises(ValueError):self.config.validate_config(d)
@@ -121,6 +126,22 @@ class RuntimeAdapter(base_tests.DecisionDurability):
         self.runtime_mock.return_value['incident_scope']=pilot_scope()
         with self.assertRaisesRegex(ValueError,'bound'):
             await self.retry()
+        await self.assert_no_dispatch()
+    async def test_direct_recovery_cannot_bypass_scoped_action_allowlist(self):
+        self.runtime_mock.return_value.update(incident_scope=pilot_scope(),allowed_actions=['human_review'])
+        await self.enable_decisions()
+        await self.loop.configure(project_id=7,execution_id='exec-durable',enabled=False,
+            initiator='synthetic-operator',rationale='manual API must retain scoped allowlist')
+        with self.assertRaisesRegex(ValueError,'action outside pilot allowlist'):
+            await self.retry()
+        await self.assert_no_dispatch()
+    async def test_scoped_retry_same_does_not_authorize_profile_recovery(self):
+        self.runtime_mock.return_value.update(incident_scope=pilot_scope(),allowed_actions=['retry_same','human_review'])
+        await self.enable_decisions()
+        await self.loop.configure(project_id=7,execution_id='exec-durable',enabled=False,
+            initiator='synthetic-operator',rationale='manual profile API must retain scoped allowlist')
+        with self.assertRaisesRegex(ValueError,'action outside pilot allowlist'):
+            await self.retry(profile_overlay_id='unapproved-overlay')
         await self.assert_no_dispatch()
     async def test_bound_config_change_blocks_node_reservation_after_restart(self):
         from app.services.actions_v1 import ActionSupervisor,ActionExecutionControl
