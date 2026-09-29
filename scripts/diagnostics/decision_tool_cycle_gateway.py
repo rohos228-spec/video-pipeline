@@ -18,7 +18,7 @@ spec.loader.exec_module(base)
 base.MAX_REQUESTS = CONFIG['max_requests']
 base.MAX_BYTES = CONFIG['max_request_bytes']
 base.MAX_OUTPUT = CONFIG['max_output_tokens']
-base.EXTERNAL_CALLS_ALLOWED = True  # Only this separately authorized diagnostic entry point.
+base.EXTERNAL_CALLS_ALLOWED = False
 base.LEDGER = Path('/results/decision-gateway.sqlite')
 base.SOCKET = Path('/gateway/llm.sock')
 
@@ -44,6 +44,7 @@ class Handler(base.Handler):
 if __name__ == '__main__':
     from gateway_egress_probe import run as verify_network
     verify_network(os.environ['PINNED_KIE_IPV4'])
+    base.EXTERNAL_CALLS_ALLOWED = True  # After local policy and process probes, before serving.
     base.SOCKET.parent.mkdir(parents=True, exist_ok=True)
     if base.SOCKET.exists():
         raise SystemExit('Socket already exists; refusing to replace it')
