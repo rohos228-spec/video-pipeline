@@ -5,6 +5,7 @@ configure/begin/tick/context/live/tools. SQLite triggers forbid business writes.
 """
 import asyncio
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -16,6 +17,9 @@ import threading
 import time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
+
+import httpx
 
 ROOT=Path('/results');SOURCE=Path('/observe-source');DATA=ROOT/'free-run-data'
 SERVICE={'observation_executions','observation_outbox','observation_events',
@@ -71,12 +75,13 @@ def context_from(body):
     return contexts[0],strings
 
 class Fixture(BaseHTTPRequestHandler):
-    bodies=[];responses=[];unexpected=[];sizes=[]
+    bodies=[];responses=[];unexpected=[];sizes=[];request_hashes=[]
     def log_message(self,*args):pass
     def do_POST(self):
         try:
             assert self.path=='/codex/v1/responses'
             raw=self.rfile.read(int(self.headers['Content-Length']));body=json.loads(raw)
+            type(self).request_hashes.append(hashlib.sha256(raw).hexdigest())
             type(self).sizes.append(len(raw))
             ctx,_=context_from(body)
             assert len(type(self).bodies)<3,'physical synthetic POST cap'
@@ -91,7 +96,8 @@ class Fixture(BaseHTTPRequestHandler):
             save('requests.json',type(self).bodies);save('fixture-responses.json',type(self).responses)
             response={'id':f'resp_readonly_{turn}','status':'completed',
                 'output':[{'content':[{'type':'output_text','text':answer}]}],
-                'usage':{'input_tokens':0,'output_tokens':0,'synthetic':True}}
+                'usage':{'input_tokens':100+turn,'output_tokens':40+turn,'synthetic':True},
+                'credits_consumed':0.01}
             events=[{'type':'response.created','response':{'id':response['id']}},
                 {'type':'response.output_text.delta','delta':answer},
                 {'type':'response.completed','response':response}]
@@ -104,6 +110,19 @@ class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
         type(self).unexpected.append('GET forbidden');self.send_response(403);self.end_headers()
 
+def setup_gateway():
+    spec=importlib.util.spec_from_file_location('diagnostic_gateway',SOURCE/'gateway.py')
+    gateway=importlib.util.module_from_spec(spec);spec.loader.exec_module(gateway)
+    gateway.KIE='http://127.0.0.1:18767'
+    gateway.SOCKET=ROOT/'llm.sock';gateway.LEDGER=ROOT/'gateway.sqlite'
+    gateway.MAX_REQUESTS=3;gateway.MAX_OUTPUT=1024;gateway.FIXTURE=False
+    gateway.recover_pending()
+    class Handler(gateway.Handler):
+        def do_GET(self):self.reject(403,'test_no_retrieval')
+    server=gateway.Server(str(gateway.SOCKET),Handler)
+    threading.Thread(target=server.serve_forever,daemon=True).start()
+    return gateway,server
+
 async def run():
     assert Path('/.dockerenv').exists()
     ROOT.mkdir(exist_ok=True)
@@ -112,12 +131,14 @@ async def run():
     save('checkpoint-provenance.json',provenance)
     assert provenance['synthetic_only'] and provenance['status']=='exhausted before supervisor action'
     cfg={'version':1,'mode':'synthetic','online_enabled':True,
-         'endpoint':'http://127.0.0.1:18766/codex/v1/responses',
+         'endpoint':'http://127.0.0.1/codex/v1/responses',
          'decision':{'catalog_id':'gpt-kie','model_id':'gpt-5-6-sol','reasoning_effort':'low','max_output_tokens':1024,'timeout_s':30},
-         'profiles':{},'allowed_actions':['read_events','read_contract','wait','human_review']}
+         'profiles':{},'allowed_actions':['read_events','read_contract','wait','human_review'],
+         'model_transport':'fixture','external_calls_enabled':False,'retrieval_allowed':False,
+         'continuation_allowed':False,'gateway_ack':True}
     save('runtime-config.json',cfg)
     os.environ.update({'DATA_DIR':str(DATA),'SQLITE_PATH':str(DATA/'state.db'),
-        'GPT_API_KEY':'synthetic-readonly-test-key','GPT_BASE_URL':'http://127.0.0.1:18766',
+        'GPT_API_KEY':'synthetic-readonly-test-key','GPT_BASE_URL':'http://127.0.0.1',
         'GPT_API_MODE':'responses','GPT_CHAT_PATH':'/codex/v1/responses','GPT_MAX_RETRIES':'0',
         'ORCHESTRATOR_RUNTIME_CONFIG':str(ROOT/'runtime-config.json'),
         'TELEGRAM_ENABLED':'false','TELEGRAM_BOT_TOKEN':'','FLEET_ENABLED':'false'})
@@ -127,7 +148,7 @@ async def run():
     from sqlalchemy import select
     from app.db import engine,SessionLocal
     from app.models import Project
-    from app.services import observation
+    from app.services import observation,gpt_api
     from app.services.actions_v1 import ActionExecutionControl,ActionSupervisor
     from app.services.decision_v1 import get_decider,validate_proposal
     from app.services.decision_state import DecisionRecord,DecisionTurn
@@ -157,8 +178,15 @@ async def run():
         if event=='call' and frame.f_code.co_filename.endswith('/app/services/decision_v1.py'):
             calls.add(frame.f_code.co_name)
     sys.setprofile(profile)
-    server=ThreadingHTTPServer(('127.0.0.1',18766),Fixture)
+    server=ThreadingHTTPServer(('127.0.0.1',18767),Fixture)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    gateway,gateway_server=setup_gateway()
+    def socket_client(**kwargs):
+        kwargs['transport']=httpx.AsyncHTTPTransport(uds=str(gateway.SOCKET),retries=0)
+        kwargs['trust_env']=False
+        return httpx.AsyncClient(**kwargs)
+    transport_patch=patch.object(gpt_api,'_async_client',socket_client)
+    transport_patch.start()
     task=asyncio.create_task(observer.loop())
     try:
         deadline=time.monotonic()+40
@@ -184,6 +212,34 @@ async def run():
         ends=[t for t in turns if t.role=='http_event' and t.payload.get('kind')=='decision_model_end']
         assert len(starts)==len(ends)==3
         assert all(t.payload['metadata'].get('complete') and t.payload['metadata'].get('usage') is not None for t in ends)
+        acks=[t.payload for t in turns if t.role=='http_event' and t.payload.get('kind')=='decision_gateway_ack']
+        expected_ids=[f'resp_readonly_{n}' for n in range(1,4)]
+        assert [(a['metadata']['response_id'],a['metadata']['stage']) for a in acks]==[
+            (response_id,stage) for response_id in expected_ids for stage in ('received','accepted')]
+        with sqlite3.connect(gateway.LEDGER) as db:
+            gateway_rows=db.execute('''SELECT ordinal,state,method,body_sha256,response_id,
+                upstream_complete,downstream_complete,application_received_at,application_accepted_at,
+                terminal_body_path,accumulated_body_path,usage_json,event_count,credits
+                FROM requests ORDER BY ordinal''').fetchall()
+            batches=db.execute('''SELECT request_ordinal,body_path,sha256 FROM event_batches
+                ORDER BY request_ordinal,batch_index''').fetchall()
+        assert len(gateway_rows)==len(Fixture.request_hashes)==3 and len(batches)>=3
+        assert [r[2] for r in gateway_rows]==['POST']*3
+        assert [r[3] for r in gateway_rows]==Fixture.request_hashes==[
+            s.payload['metadata']['request_body_sha256'] for s in starts]
+        assert [r[4] for r in gateway_rows]==expected_ids
+        assert all(r[1]=='complete' and r[5]==r[6]==1 and r[7] and r[8] and r[12]>=3 for r in gateway_rows)
+        assert all(r[13]==0.01 for r in gateway_rows)
+        for row in gateway_rows:
+            terminal=json.loads((gateway.BODY_ROOT/row[9]).read_text())
+            accumulated=json.loads((gateway.BODY_ROOT/row[10]).read_text())
+            usage=json.loads(row[11])
+            assert terminal['type']=='response.completed' and terminal['response']['id']==row[4]
+            assert usage['output_tokens']==40+row[0]
+            assert json.loads(accumulated['text'])['action']==('read_events','read_contract','human_review')[row[0]-1]
+            assert ends[row[0]-1].payload['metadata']['usage']['output_tokens']==usage['output_tokens']
+        assert all(hashlib.sha256((gateway.BODY_ROOT/path).read_bytes()).hexdigest()==sha
+                   for _,path,sha in batches)
         for index,tool in enumerate(tools,1):
             _,strings=context_from(Fixture.bodies[index])
             decoded=[]
@@ -229,11 +285,21 @@ async def run():
             'worker_started':False,'actions_dispatched':0,'recovery_records':0,
             'forbidden_proposals_denied':forbidden,'executor_denial':executor_denial,'database_denial':database_denial,
             'runtime_calls':sorted(calls),'request_bytes':Fixture.sizes,'persisted_model_reservations':len(starts),'persisted_model_responses_with_usage':len(ends),
+            'gateway_response_ids':expected_ids,'gateway_request_hashes_match':True,
+            'gateway_terminal_usage_and_ack':True,'gateway_event_batches':len(batches),
             'request_limit_remaining':0,'next_turn_authorized':False,
             'audit':[{'kind':a.action_kind,'status':a.status,'idempotency_key':a.idempotency_key} for a in audit]})
     finally:
         sys.setprofile(None);task.cancel();await asyncio.gather(task,return_exceptions=True)
+        transport_patch.stop()
+        gateway_server.shutdown();gateway_server.server_close()
         server.shutdown();server.server_close();await engine.dispose()
+    manifest=json.loads((SOURCE/'source-manifest.json').read_text())
+    loaded={'gateway.py':hashlib.sha256((SOURCE/'gateway.py').read_bytes()).hexdigest(),
+        'app/services/gpt_api.py':hashlib.sha256(Path(gpt_api.__file__).read_bytes()).hexdigest(),
+        'app/services/decision_v1.py':hashlib.sha256(Path(sys.modules['app.services.decision_v1'].__file__).read_bytes()).hexdigest()}
+    assert all(manifest[path]==sha for path,sha in loaded.items())
+    save('loaded-source-hashes.json',loaded)
 
 if __name__=='__main__':
     code=0

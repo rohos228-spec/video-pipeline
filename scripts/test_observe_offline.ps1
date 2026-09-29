@@ -79,7 +79,7 @@ if ($Target -eq 'readonly-pilot') {
     $pilotInputs = @{
         'pilot-context.json' = '../../outputs/read-only-qc-pilot-v1/context.json'
         'pilot_gateway.py' = '../../outputs/read-only-qc-pilot-v1/pilot_gateway.py'
-        'existing_gateway.py' = '../diag_v2/gateway.py'
+        'existing_gateway.py' = 'scripts/diagnostics/gateway.py'
     }
     foreach ($name in $pilotInputs.Keys) {
         $toPath = Join-Path $stagePath $name
@@ -87,12 +87,15 @@ if ($Target -eq 'readonly-pilot') {
         $manifest[$name] = (Get-FileHash -LiteralPath $toPath -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
-if ($Target -eq 'decision-stream') {
-    if ($StreamCase -notin @('fast','slow','timeout','late_terminal')) { throw 'Unknown stream case' }
-    $fromGateway = [IO.Path]::GetFullPath((Join-Path $sourceRoot '../diag_v2/gateway.py'))
+if ($Target -in @('decision-stream','decision-readonly')) {
+    $fromGateway = Join-Path $sourceRoot 'scripts/diagnostics/gateway.py'
+    if (-not (Test-Path -LiteralPath $fromGateway)) { throw 'Versioned diagnostic gateway missing' }
     $toGateway = Join-Path $stagePath 'gateway.py'
     Copy-Item -LiteralPath $fromGateway -Destination $toGateway
     $manifest['gateway.py'] = (Get-FileHash -LiteralPath $toGateway -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+if ($Target -eq 'decision-stream') {
+    if ($StreamCase -notin @('fast','slow','timeout','late_terminal')) { throw 'Unknown stream case' }
 }
 [IO.File]::WriteAllText((Join-Path $stagePath 'source-manifest.json'), ($manifest | ConvertTo-Json -Depth 4), $utf8)
 $name = 'vp-observe-test-' + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
