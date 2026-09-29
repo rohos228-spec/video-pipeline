@@ -52,7 +52,7 @@ class RuntimeConfig(unittest.TestCase):
 class RuntimeAdapter(base_tests.DecisionDurability):
     async def asyncSetUp(self):
         await super().asyncSetUp();self.config=importlib.import_module('app.services.decision_config')
-        self.runtime=patch.object(self.config,'runtime_config',return_value=configured());self.runtime.start();self.addCleanup(self.runtime.stop)
+        self.runtime=patch.object(self.config,'runtime_config',return_value=configured());self.runtime_mock=self.runtime.start();self.addCleanup(self.runtime.stop)
     async def test_config_binding_persists_and_stale_configuration_stops(self):
         await self.enable_decisions();d=await self.begin();token=await self.loop.claim(d['decision_id'])
         async with self.sessions() as s:
@@ -63,7 +63,7 @@ class RuntimeAdapter(base_tests.DecisionDurability):
                 row=await s.get(self.service.DecisionRecord,d['decision_id'])
                 with self.assertRaisesRegex(ValueError,'configuration'):await self.loop._live(s,row,token)
     async def test_read_only_policy_removes_recovery_from_context(self):
-        self.runtime.return_value['allowed_actions']=['read_events','read_contract','human_review']
+        self.runtime_mock.return_value['allowed_actions']=['read_events','read_contract','human_review']
         await self.enable_decisions();d=await self.begin();ctx=await self.loop.context(d['decision_id'])
         self.assertNotIn('retry_same',ctx['allowed_actions']);self.assertNotIn('retry_profile',ctx['allowed_actions'])
     async def test_real_client_boundary_receives_model_and_token_limit(self):
@@ -81,6 +81,57 @@ class RuntimeAdapter(base_tests.DecisionDurability):
             turns=(await s.scalars(__import__('sqlalchemy').select(self.service.DecisionTurn))).all()
             start=next(t for t in turns if t.role=='http_event' and t.payload.get('kind')=='decision_model_start')
             self.assertEqual(start.payload['metadata']['purpose'],'decision');self.assertEqual(start.payload['metadata']['max_output_tokens'],1024)
+
+    async def test_node_user_stop_is_checked_before_http(self):
+        from app.models import Project
+        from app.services.gpt_api import GptChatResult
+        sends=[]
+        async def transport(**kw):sends.append(kw);return GptChatResult(text='fixture',model='gpt-5-6-sol',raw={'status':'completed'})
+        async with self.sessions() as s:
+            project=await s.get(Project,7);project.meta={**project.meta,'user_stop':True};await s.commit()
+            scope=await s.get(observation.ExecutionControl,'exec-durable')
+            ctx=observation.AttemptContext(observation._observer,scope,s,'project','n1','source-attempt')
+            token=observation._attempt.set(ctx)
+            try:
+                with self.assertRaises(RuntimeError):await observation.observe_model(transport)(url=configured()['endpoint'],body={'test':1},use_model='gpt-5-6-sol')
+            finally:observation._attempt.reset(token)
+        self.assertEqual(sends,[])
+    async def test_partial_node_response_holds_before_next_post(self):
+        from app.services.gpt_api import GptChatResult
+        sends=[]
+        async def transport(**kw):sends.append(kw);return GptChatResult(text='partial',model='gpt-5-6-sol',raw={'status':'in_progress','sse_salvaged':True})
+        async with self.sessions() as s:
+            scope=await s.get(observation.ExecutionControl,'exec-durable')
+            token=observation._attempt.set(observation.AttemptContext(observation._observer,scope,s,'project','n1','source-attempt'))
+            try:
+                for _ in range(2):
+                    with self.assertRaises(RuntimeError):await observation.observe_model(transport)(url=configured()['endpoint'],body={'test':1},use_model='gpt-5-6-sol')
+            finally:observation._attempt.reset(token)
+        self.assertEqual(len(sends),1)
+    async def test_retrieval_uses_same_durable_limit(self):
+        from app.services import decision_transport
+        from app.services.actions_v1 import ActionExecutionControl
+        await self.enable_decisions();d=await self.begin();token=await self.loop.claim(d['decision_id']);ctx=await self.loop.context(d['decision_id'])
+        hook=self.service.HttpDecision(self.loop,d['decision_id'],token,ctx['context_version'])
+        async with self.sessions() as s:
+            c=await s.get(ActionExecutionControl,'exec-durable');c.request_limit=1;await s.commit()
+        bound=decision_transport.current.set(hook)
+        try:
+            await observation.authorize_model_retrieve(configured()['endpoint']+'/resp_test')
+            with self.assertRaisesRegex(RuntimeError,'budget exhausted'):await observation.authorize_model_retrieve(configured()['endpoint']+'/resp_test')
+        finally:decision_transport.current.reset(bound)
+        async with self.sessions() as s:self.assertEqual((await s.get(ActionExecutionControl,'exec-durable')).requests_used,1)
+    async def test_worker_body_audit_failure_prevents_transport(self):
+        sends=[]
+        async def transport(**kw):sends.append(kw)
+        async with self.sessions() as s:
+            scope=await s.get(observation.ExecutionControl,'exec-durable')
+            bound=observation._attempt.set(observation.AttemptContext(observation._observer,scope,s,'project','n1','source-attempt'))
+            try:
+                with patch.object(observation._observer,'save_body',return_value={'gap':'disk_failure'}):
+                    with self.assertRaises(RuntimeError):await observation.observe_model(transport)(url=configured()['endpoint'],body={'test':1},use_model='gpt-5-6-sol')
+            finally:observation._attempt.reset(bound)
+        self.assertEqual(sends,[])
 
 # Inherit fixtures, not historical suites.
 for _name in list(dir(RuntimeAdapter)):
