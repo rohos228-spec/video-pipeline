@@ -23,7 +23,7 @@ _current=ContextVar('attempt_profile_overlay',default=None)
 def active_catalog():
     from app.services.decision_config import runtime_config
     cfg=runtime_config()
-    return CATALOG if cfg['mode']=='synthetic' else cfg['profiles']
+    return CATALOG if cfg['mode']=='synthetic' and not cfg.get('incident_scope') else cfg['profiles']
 
 def catalog_hash():return digest(active_catalog())
 
