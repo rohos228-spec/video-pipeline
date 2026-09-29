@@ -102,4 +102,3 @@ finally:
     if mismatch:
         exit_code = 2
 raise SystemExit(exit_code)
-

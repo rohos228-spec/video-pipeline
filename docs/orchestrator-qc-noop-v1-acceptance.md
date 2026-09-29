@@ -2,7 +2,7 @@
 
 Дата: 2026-09-29. Ветка: feature/orchestrator-observe-v1.
 Начальная база: c8edfd0184db9668828401ae4dae729bc3068107.
-Runtime checkpoint: 270608c27023a72c7a246508f4a0eb4ba304b2bc.
+Runtime checkpoint: 090d3ba5 (полный SHA — в final-state-v2.json). Предыдущий checkpoint 270608c27023a72c7a246508f4a0eb4ba304b2bc сохранён.
 Корень стенда: `C:/Users/Никита/Documents/Codex/2026-09-24/files-mentioned-by-the-user-doc`. Все пути `outputs/...` ниже относительно этого корня.
 Все новые проверки локальные, synthetic, Docker --network none.
 Новых реальных API-вызовов: 0. Frontend и production-конфигурация не изменены.
@@ -130,6 +130,19 @@ online pilot и не подтверждение надёжности модел�
   Исходный API запускает первую ноду; worker, planner, БД и HTML остаются настоящими.
   Managed scope включён штатным API. Следующие ноды вручную не запускались.
 
+### Дополнительная защита неполного SSE
+
+red-uncertain: ошибка селектора тестового harness, исправлена только диспетчеризация;
+контейнер и snapshot сохранены. red-uncertain-2: настоящий HTTP/operator RED —
+поток без response.completed отклонён, но при raw.status=None persisted held=false.
+Это конкретный пробел защиты managed QC от следующего POST.
+Исправление: initial и JSON-retry QC ветки используют общий узкий
+_require_completed_qc_response; он вызывает уже существующий hold_uncertain_request
+перед отклонением неопределённого ответа. Worker, generic payload и native retries
+не переписаны. green-uncertain: persisted hold=true, последующее charge_request
+запрещено, один фактический synthetic POST, ноль apply. Финальный набор 41/41
+включает этот сценарий. Архивные failures и журналы не удалены.
+
 ## 6. Ограничения
 
 QC no-op означает принятый структурный ответ без правок, а не доказанное качество кадров.
@@ -147,9 +160,9 @@ UI/build и длинные exhaustion/browser наборы не повторен
 
 | Набор | Результат | Фактический журнал |
 | --- | --- | --- |
-| HTTP batch→operator→gpt + policy/diagnosis/verify/audit | 39/39 | outputs/qc-noop-v1/accepted-qc-noop/artifacts/test-output.txt |
+| HTTP batch→operator→gpt + policy/diagnosis/verify/audit | 41/41 | outputs/qc-noop-v1/accepted-qc-noop-v2/artifacts/test-output.txt |
 | Дополнительные чистые no-op rules, включая same-attempt JSON retry resolution | 6/6 | outputs/qc-noop-v1/accepted-noop-rules/artifacts/test-output.txt |
-| Прежние operator/apply_ops_batches pytest | 71/71 | outputs/qc-noop-v1/accepted-operator-regression/artifacts/test-output.txt |
+| Прежние operator/apply_ops_batches pytest | 71/71 | outputs/qc-noop-v1/accepted-operator-regression-v2/artifacts/test-output.txt |
 | Runtime | 25/25 | outputs/qc-noop-v1/accepted-runtime/artifacts/test-output.txt |
 | Diagnosis | 25/25 | outputs/qc-noop-v1/accepted-diagnose/artifacts/test-output.txt |
 | Decision runtime | 28/28 | outputs/qc-noop-v1/accepted-decision-final/artifacts/regression-summary.json |
@@ -158,7 +171,7 @@ UI/build и длинные exhaustion/browser наборы не повторен
 | Profiles | 17/17 | тот же regression-summary.json |
 | Planner boundary | 2/2 | тот же regression-summary.json |
 | Journal | 8/8 | тот же regression-summary.json |
-| Штатный API→worker→все шесть нод→HTML | PASS | outputs/qc-noop-v1/accepted-group/artifacts/group-result.json |
+| Штатный API→worker→все шесть нод→HTML | PASS | outputs/qc-noop-v1/accepted-group-v2/artifacts/group-result.json |
 
 Числа не суммируются как количество уникальных тестов: QC target включает
 18 импортированных DurableActions случаев, rules target повторяет существующие
@@ -166,28 +179,30 @@ UI/build и длинные exhaustion/browser наборы не повторен
 
 ### Фактические версии
 
-QA не подменяет SHA256 номинальным git SHA. Для каждого запуска сохранены
-source/source-manifest.json и artifacts/loaded-modules.json. Все loaded modules
-проверены против неизменного скопированного source. Текущие затронутые runtime
-модули совпадают с загруженными версиями соответствующих GREEN наборов.
-Ранние accepted targets соответствуют 5a0cc4e5 с ещё прежними metadata в
-Decision.read_contract; runtime/diagnosis/operator/no-op функции после них не менялись.
-Уточнённый Decision модуль проверен повторно всем набором 33 тестов, остальными
-79 GREEN тестами aggregate и финальным worker-прогоном. Полные загруженные файлы
-последних Decision/group запусков совпадают с итоговым runtime checkpoint 270608c2.
-Это перечислено по модулям в acceptance-proof.json; прежний metadata SHA не скрыт.
-Пять новых функций политики и подтверждения имеют 100% исполняемых строк
-по локальной трассировке. Это coverage этих функций, не всего приложения.
+SHA256 реально скопированных и загруженных файлов сохранены для каждого запуска
+в source/source-manifest.json и artifacts/loaded-modules.json; номинальный git SHA
+не заменяет эти сведения. Финальные 41 QC и 71 operator тестов и новая полная
+worker-группа проверяют QC completion guard из 090d3ba5. Остальные функции
+runtime/diagnosis/actions/decision/profiles после соответствующих GREEN наборов
+не менялись; их результаты переиспользованы по хешам соответствующих модулей.
+Старый hash QC operator в этих ранних наборах явно исключён из утверждения
+о совпадении актуальных файлов и покрыт новыми тестами, а не скрыт.
+Decision metadata refinement подтверждён полным повтором 33/33.
+Сверка по модулям: outputs/qc-noop-v1/acceptance-proof-v2.json;
+офлайн verifier: outputs/qc-noop-v1/verify_acceptance_v2.py.
+Предыдущие proof/verifier/checkpoints сохранены.
+Шесть новых функций имеют 100% исполняемых строк по сохранённой трассировке;
+это coverage этих функций, не всего приложения.
 
 ### Полная группа
 
-Run ID: `observe-20260928-f5c0079d-bf98-438d-b5ca-eca470228ccc`; execution ID: `a3ebe765-530a-4832-8723-53b5e9a483ba`.
+Run ID: `observe-20260928-d6372be5-d9bc-4d83-a44b-d24ffbf8fda9`; execution ID: `6e815166-32ac-4ace-ac59-067c43e9fe17`.
 Все 6 нод done. Незавершённых нод scope: 0.
 Всего model POST: 5 (локальный fixture), QC POST: 1, QC data_applied events: 0.
 Снимок uuid/number/voiceover/всех attrs кадров до QC идентичен снимку после HTML.
 Supervisor recoveries отсутствуют; QC missing_payload/invalid_json отсутствуют.
 n_script вне scope pending, после HTML проверены четыре штатных цикла.
-HTML: 8113 байт, SHA256 `e50d5de1d371199a36a63a1e876d79522296cae35c9c8877d660c190d7bffbd5`.
+HTML: 8113 байт, SHA256 `aedd3c80a1a2680e4fc2cbd141bbc576dda79d48b1edbaf79cfb496e3abd847b`.
 Создан исходной `_run_fw_report_node`, не fixture и не обёрткой.
 Проверено содержимое HTML: 1 сцена, 3 строки логических кадров,
 все ожидаемые shot IDs присутствуют. В БД 3 frame-строки и
@@ -200,15 +215,15 @@ role=shot детей и дедуплицирует id. Разница 5/3 не �
 Наивный snapshot shot_voiceover_matches для parent не использован как
 семантический gate: он сравнивает агрегат shots с VO отдельной DB-ячейки.
 
-Артефакт: outputs/qc-noop-v1/accepted-group/artifacts/free-run-data/videos/
+Артефакт: outputs/qc-noop-v1/accepted-group-v2/artifacts/free-run-data/videos/
 diagnostic-synthetic-scene-2026-09-24/reports/shots-report.html.
 Качество реальной модели и семантическое качество кадров этим не подтверждаются.
 
 ### Охват реально записанных событий
 
-Все следующие виды доступны в accepted-group/artifacts/api-history.json
+Все следующие виды доступны в accepted-group-v2/artifacts/api-history.json
 и в сохранённых synthetic state/project DB; полные тела — в
-accepted-group/artifacts/free-run-data/observations/bodies (ссылки и SHA256 в событиях).
+accepted-group-v2/artifacts/free-run-data/observations/bodies (ссылки и SHA256 в событиях).
 
 | Факт | Событие/состояние | Что подтверждено |
 | --- | --- | --- |
