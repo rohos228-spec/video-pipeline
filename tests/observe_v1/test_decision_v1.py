@@ -247,8 +247,9 @@ class DecisionDurability(actions_tests.DurableActions):
         async def http(**kw):raise AssertionError('external request must not execute')
         with self.assertRaisesRegex(ValueError,'route differs from approved configuration'):
             await hook.send(http,(),{'url':'https://example.invalid','body':{}})
+        from app.services.actions_v1 import ActionExecutionControl
         async with self.sessions() as s:
-            self.assertEqual((await s.get(self.service.ActionExecutionControl,'exec-durable')).requests_used,0)
+            self.assertEqual((await s.get(ActionExecutionControl,'exec-durable')).requests_used,0)
 
     async def test_api_history_scoped_and_mode_cannot_grant_actions_permission(self):
         import httpx
