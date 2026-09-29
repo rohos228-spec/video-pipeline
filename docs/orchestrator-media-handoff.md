@@ -87,3 +87,47 @@ stopped on missing inputs; explicit synthetic initial frames added in next run.
 Hidden anim_pr sidecar denied for managed projects (sidecar-red demonstrates
 prior behavior); it must run as its own authorized observed node, not under
 image attempt context. Next mixed text->image acceptance and UI. No active runner.
+## Resume boundary: Docker unavailable during mixed run
+
+Last worker-verified checkpoint: ee93326342005ce4523df4c6b609a715dee5aea7.
+Active group runner session 54039 is waiting on Docker container
+vp-observe-test-20260930024256-8443a6a2, mode media-mixed, results
+outputs/media-v1-20260930/mixed-01. Docker start succeeded; docker wait CLI
+PID 27068 remains. Do NOT start a duplicate runner until this container's state
+is known and existing artifacts are collected. Its source snapshot is immutable.
+The separate hung docker ps probe PID 23124/session 5043 was positively identified
+and stopped; no container, engine or foreign process was stopped.
+A bounded read-only docker info probe timed out after 15 seconds with no stdout
+or stderr: mixed-01/daemon-probe.json. Engine outage reason is UNKNOWN, not
+assumed OOM. Desktop UI state requested asynchronously from user. No repair,
+restart, installation, reset, daemon/WSL/firewall change attempted.
+
+Pending source (not GREEN): media_view/context API + media UI labels/links and
+contract tests; close refuses unresolved media jobs/reservations; worker/API
+reject unintegrated managed types. Audio and assembly now advertise managed=false;
+video start requires ffprobe. Existing text Action unit fixture now calls actual
+additive migration so the new durable job tables exist in isolated tests.
+Only Python AST syntax and git diff whitespace checked after these edits.
+UI version/export remains v648; no frontend build/browser tests run on drafts.
+A syntax indentation error in the first draft was caught and corrected locally.
+None of the older GREEN totals validate these pending changes.
+
+Next exact sequence:
+1. Recover/collect existing mixed-01, including group-result/source/loaded hashes.
+   If still running, inspect bounded progress; no second concurrent runner.
+2. Stage newly added source modules before runner copies git-tracked sources.
+   Run media-observation (8 tests incl new UI/gate/sidecar), media-jobs (6), then
+   affected common Decision/Actions regression and runtime. One runner at a time.
+3. Address mixed failure narrowly, if any. No repeat native exhaustion.
+4. Verify artifact route containment/hash for previews; cover file recovery after
+   download-before-apply (legacy disk recovery currently lacks job provenance).
+   Add final native media completion verifier; don't trust disk existence alone.
+5. Finish UI typecheck/build/version/export/browser on actual image/mixed history.
+6. Missing ffmpeg/ffprobe/ASR means real video/audio/assembly acceptance blocked.
+   Do not install or claim those adapters complete. Video service transport is
+   only partial: business apply hook/caught-error path still needs integration.
+   Available subtitle generation and publication dry-run remain independent work.
+7. Full final regression/evidence matrix, reproducible handoff, clean checkpoint.
+
+See docs/orchestrator-media.md for current matrix and adding-adapter guide.
+Goal remains ACTIVE and incomplete. No real API requests/key reads this work.

@@ -647,6 +647,14 @@ async def observe_attempt(session, project):
                                   "recovery_input_revision": revision, "recovery_revision_parts": revision_parts})
     profile_stack = ExitStack()
     try:
+        if scope.mode == "managed":
+            from app.services.node_capabilities import require_managed_capability
+            try:
+                require_managed_capability(capability.node_type)
+            except ValueError as exc:
+                from app.services.media_jobs import _hold
+                await _hold(ctx, str(exc), "native-capability:"+node_key)
+                raise
         from app.services.profiles_v1 import load_attempt, bind_attempt
         overlay = await load_attempt(ctx)
         profile_stack.enter_context(bind_attempt(overlay))

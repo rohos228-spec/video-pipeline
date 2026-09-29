@@ -98,3 +98,16 @@ function FirstClientRender(){const [value]=hookModule.exports.usePersistedState(
 assert.equal(ReactServer.renderToString(React.createElement(FirstClientRender)),'<span>server-default</span>');
 assert.equal(storageReads,0);
 console.log('Persisted UI first-render contracts: 2 assertions passed');
+
+const mediaSource=fs.readFileSync('/observe-source/web/src/lib/media-view.ts','utf8');
+const mediaJS=ts.transpileModule(mediaSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {mediaPhase,mediaVerification,artifactLink}=await import('data:text/javascript;base64,'+Buffer.from(mediaJS).toString('base64'));
+assert.match(mediaPhase('running'),/выполняется/);
+assert.doesNotMatch(mediaPhase('running'),/завис|%/);
+assert.match(mediaPhase('unknown'),/неизвестен/);
+assert.doesNotMatch(mediaPhase('completed'),/проверен/);
+assert.match(mediaVerification('passed'),/качество.*не оценивалось/);
+assert.match(mediaVerification(),/не подтверждена/);
+assert.equal(artifactLink('a'.repeat(32)),'/api/artifacts/'+ 'a'.repeat(32)+'/file');
+for(const unsafe of ['../../secret','http://evil.test','/tmp/output.mp4'])assert.equal(artifactLink(unsafe),null);
+console.log('Media UI contracts: 10 assertions passed');

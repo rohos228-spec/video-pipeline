@@ -157,6 +157,20 @@ class MediaJobs(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "revision"):
             await job.reserve("generation_submit")
 
+    async def test_close_cannot_release_unknown_or_active_provider_job(self):
+        job = await self.open_job()
+        await job.reserve("generation_submit")
+        with self.assertRaisesRegex(ValueError, "media"):
+            await ActionSupervisor(self.sessions).close(project_id=7,
+                execution_id=self.scope.execution_id, initiator="test",
+                rationale="close must not release an outstanding provider operation",
+                idempotency_key="close-media-job")
+        await job.update(phase="running", provider_job_id="known-provider-job")
+        with self.assertRaisesRegex(ValueError, "media"):
+            await ActionSupervisor(self.sessions).close(project_id=7,
+                execution_id=self.scope.execution_id, initiator="test",
+                rationale="running external job remains tracked", idempotency_key="close-media-known")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

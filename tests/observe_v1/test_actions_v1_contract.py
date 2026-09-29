@@ -87,6 +87,7 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
         self.engine = create_async_engine(f"sqlite+aiosqlite:///{Path(self.tmp.name) / 'master.db'}")
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await observation.migrate_observation_schema(conn)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.nodes = [{"id":"n1","type":"plan","data":{"groupId":"g1"}},
                       {"id":"n2","type":"script","data":{"groupId":"g2"}}]

@@ -48,10 +48,20 @@ export interface DecisionState {
     turns:{id:number;role:string;payload:Record<string,unknown>}[]}[];
 }
 interface NodeState {status: string; progress: number | null; attempts: number | null; error: string | null; progress_text: string | null}
+export interface MediaContext {
+  result_kind:string; limited_management:boolean; synthetic_only:boolean;
+  production_profile_configured:boolean; blockers:string[];
+  allowed_actions:string[];
+  requests:Record<string,number>;
+  jobs:{job_id:string;provider_job_id:string|null;phase:string;model_id:string;
+    progress:number|null;error:string|null;attempt_id:string;
+    verification:{status?:string;reason?:string;bytes?:number;width?:number;height?:number;duration?:number};
+    artifact_uuid:string|null}[];
+}
 export interface ObservationContext extends ObservationScope {
   business_group_outcome: string; current_nodes: string[];
   master: {nodes: Record<string, NodeState>}; project: {nodes: Record<string, NodeState>} | null;
-  node_contexts: Record<string, {latest_attempt_id: string | null; model: string | null; checks: {kind:string; result:Record<string,unknown>}[]}>;
+  node_contexts: Record<string, {latest_attempt_id: string | null; model: string | null; checks: {kind:string; result:Record<string,unknown>}[]; media?:MediaContext}>;
   disagreement: boolean; data_gaps: {kind?: string; reason?: string; error_type?: string}[];
   latest_problem: {kind: string; node_key: string; later_apply_committed: boolean; payload: {error_type?:string}} | null;
   commit_confirmation: string | null; history_window_limited: boolean; pinned: boolean;

@@ -350,6 +350,11 @@ async def start_managed_node(project_id: int, execution_id: str, payload: Manage
                        if str(n.get("id")) == payload.node_key), None)
     if graph_node is None or str(graph_node.get("type") or "") != payload.step_code:
         raise HTTPException(409, "node type does not match immutable workflow snapshot")
+    from app.services.node_capabilities import require_managed_capability
+    try:
+        require_managed_capability(str(graph_node.get("type") or ""))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     node_run = await session.scalar(select(NodeRun).where(
         NodeRun.workflow_run_id == control.workflow_run_id, NodeRun.node_key == payload.node_key,
     ))
@@ -513,6 +518,8 @@ async def context(project_id: int, execution_id: str):
         rows = (await session.scalars(select(ObservationEvent).where(
             ObservationEvent.execution_id == execution_id).order_by(ObservationEvent.id.desc()).limit(500))).all()
         result = scope_json(scope)
+        from app.services.media_view import context_for_nodes
+        media = await context_for_nodes(session, scope)
     gaps = list(result["gaps"] or [])
     replica = None
     if project and (Path(project.data_dir) / "project.db").exists():
@@ -521,6 +528,8 @@ async def context(project_id: int, execution_id: str):
             factory = await get_project_sessionmaker(project.data_dir)
             async with factory() as session:
                 replica, _ = await _business_snapshot(session, scope)
+                async with observer.master() as master_session:
+                    media = await context_for_nodes(master_session, scope, project_session=session)
         except Exception as exc:
             gaps.append({"kind": "project_snapshot_unavailable", "error_type": type(exc).__name__})
     else:
@@ -558,6 +567,7 @@ async def context(project_id: int, execution_id: str):
         start = next((row for row in node_rows if row.kind == "node_start"), None)
         model = next((row for row in node_rows if row.kind == "model_start"), None)
         node_contexts[key] = {
+            **({"media":media[key]} if key in media else {}),
             "latest_attempt_id": start.attempt_id if start else None,
             "model": model.payload.get("model") if model else None,
             "settings_revision": model.payload.get("settings_revision") if model else None,

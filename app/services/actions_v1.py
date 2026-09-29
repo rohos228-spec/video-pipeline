@@ -393,6 +393,15 @@ class ActionSupervisor:
                 RecoveryAction.status.in_(["reserved", "queued", "claimed", "await_verify"])))
             if recovering:
                 raise ValueError("cannot revoke while a recovery ticket is reserved or awaiting verification")
+            from app.services.media_jobs import MediaJob, MediaRequest
+            media_job = await session.scalar(select(MediaJob).where(
+                MediaJob.execution_id==execution_id,
+                MediaJob.phase.not_in(["verified", "failed", "cancelled"])))
+            media_request = await session.scalar(select(MediaRequest).where(
+                MediaRequest.execution_id==execution_id,
+                MediaRequest.status.in_(["reserved", "unknown"])))
+            if media_job or media_request:
+                raise ValueError("cannot revoke while media job or request outcome is unresolved")
             scope = await session.get(ExecutionControl, execution_id)
             if scope is not None:
                 scope.mode = "observe"

@@ -9,6 +9,33 @@ import {DecisionSection} from './decision-section';
 import {ProfilesSection} from './profiles-section';
 import {eventLabel, mergeEvents, usageLabel, groupForScope, type ObservationEvent} from "@/lib/observation-view";
 import {Button} from "@/components/ui/button";
+import {mediaPhase, mediaVerification, artifactLink} from "@/lib/media-view";
+import type {MediaContext} from "@/lib/observations";
+
+function MediaDetails({media}:{media:MediaContext}) {
+  return <div className="space-y-2" data-testid="media-node-details">
+    <p>{media.limited_management ? "Ограниченное управление" : "Только наблюдение"} · {media.result_kind}</p>
+    <p>Проверено только синтетически · рабочий профиль не настроен</p>
+    {media.blockers.length>0 && <p className="text-amber-200">{media.blockers.join("; ")}</p>}
+    {media.jobs.length===0 && <p>Job ещё не зарегистрирован; результат не подтверждён.</p>}
+    {media.jobs.map(job=>{
+      const href=job.artifact_uuid ? artifactLink(job.artifact_uuid) : null;
+      return <details key={job.job_id} className="rounded border border-white/15 p-2">
+        <summary className="cursor-pointer">{mediaPhase(job.phase)} · {job.model_id}</summary>
+        <p>Прогресс: {job.progress==null ? "провайдер не сообщил" : `${job.progress}%`}</p>
+        <p>Job провайдера: {job.provider_job_id ?? "не подтверждён"}</p>
+        <p>Попытка: {job.attempt_id}</p>
+        <p>{mediaVerification(job.verification.status)}</p>
+        {job.error && <p className="text-amber-200">Проблема: {job.error}</p>}
+        {job.verification.reason && <p>Причина проверки: {job.verification.reason}</p>}
+        {href && <a href={href} target="_blank" rel="noreferrer" className="underline">Открыть проверенный локальный файл</a>}
+      </details>;
+    })}
+    <p>Отправки генерации: {media.requests.generation_submit??0} · статусы: {media.requests.status??0} · загрузки: {media.requests.download??0}</p>
+    <p>Тариф операций неизвестен. Лимит запросов не является денежным потолком.</p>
+    <p>Разрешено: чтение событий и контракта, ожидание, обращение к человеку. Автоматический повтор генерации недоступен.</p>
+  </div>;
+}
 
 export function ObservationSection({projectId}: {projectId: number | null}) {
   const [groups,setGroups] = useState<{id:string;title:string;keys:string[];steps:Record<string,string>}[]>([]);
@@ -283,7 +310,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       <div className="overflow-x-auto"><table className="w-full text-left"><thead><tr>{["Нода","Состояние / прогресс","Попытка","Модель / usage","Проверки / ожидание"].map(x=><th key={x} className="p-1 text-white/40">{x}</th>)}</tr></thead><tbody>
         {context.node_keys.map(node=>{
           const nc=context.node_contexts[node]; const state=states[node]; const latest=models.filter(e=>e.node_key===node).at(-1);
-          return <tr key={node} className="border-t border-white/10"><td className="p-1">{node}</td><td className="p-1">{state?.status ?? "неизвестно"} · {state?.progress == null ? "прогресс неизвестен" : `${state.progress}%`}</td><td className="p-1">{nc?.latest_attempt_id?.slice(0,8) ?? "неизвестно"}</td><td className="p-1">{nc?.model ?? "модель неизвестна"}<br/>{usageLabel(latest?.payload.usage as Record<string,unknown> | null)}</td><td className="p-1">{nc?.checks.length ? nc.checks.slice(0,4).map((check,i)=><div key={i}>{eventLabel({kind:check.kind,payload:check.result})}</div>) : "not_checked"}<br/>{context.wait_reasons?.[node]?.reason ?? "причина ожидания неизвестна"}{actionState?.enabled && state?.status==='done' && <div><Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void verifyManagedNode(node)}>Проверить результат</Button></div>}</td></tr>;
+          return <tr key={node} className="border-t border-white/10"><td className="p-1">{node}</td><td className="p-1">{state?.status ?? "неизвестно"} · {nc?.media || state?.progress == null ? "прогресс неизвестен" : `${state.progress}%`}</td><td className="p-1">{nc?.latest_attempt_id?.slice(0,8) ?? "неизвестно"}</td><td className="p-1">{nc?.model ?? "модель неизвестна"}<br/>{usageLabel(latest?.payload.usage as Record<string,unknown> | null)}</td><td className="p-1">{nc?.media ? <MediaDetails media={nc.media}/> : <>{nc?.checks.length ? nc.checks.slice(0,4).map((check,i)=><div key={i}>{eventLabel({kind:check.kind,payload:check.result})}</div>) : "not_checked"}<br/>{context.wait_reasons?.[node]?.reason ?? "причина ожидания неизвестна"}{actionState?.enabled && state?.status==='done' && <div><Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void verifyManagedNode(node)}>Проверить результат</Button></div>}</>}</td></tr>;
         })}
       </tbody></table></div>
       <div><strong>Хронология · {events.length} событий</strong><ol data-testid="observation-timeline" className="mt-2 max-h-64 overflow-y-auto space-y-1">

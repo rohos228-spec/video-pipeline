@@ -7,6 +7,25 @@ from app.services import observation
 
 
 class MediaObservation(MediaJobs):
+    async def test_unintegrated_family_cannot_be_enabled_as_managed_executor(self):
+        from app.services.node_capabilities import require_managed_capability
+        require_managed_capability("images")
+        require_managed_capability("excel_gpt")
+        for kind in ("publish", "audio", "assemble", "unregistered"):
+            with self.assertRaisesRegex(ValueError, "adapter"):
+                require_managed_capability(kind)
+
+    async def test_panel_media_context_has_no_fake_progress_or_paths(self):
+        from app.services.media_view import context_for_nodes
+        async with self.sessions() as s:
+            result = await context_for_nodes(s, self.scope)
+        self.assertEqual(set(result), {"image"})
+        self.assertEqual(result["image"]["result_kind"], "image")
+        self.assertEqual(result["image"]["jobs"], [])
+        self.assertFalse(result["image"]["production_profile_configured"])
+        self.assertTrue(result["image"]["synthetic_only"])
+        self.assertNotIn("retry_same", result["image"]["allowed_actions"])
+
     async def test_managed_image_cannot_start_unscoped_animation_sidecar(self):
         from app.services.anim_pr_sidecar import ensure_anim_pr_sidecar, _TASKS
         try:
