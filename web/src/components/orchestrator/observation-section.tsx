@@ -1,5 +1,5 @@
 "use client";
-import {actionStatus} from "@/lib/actions-view";
+import {actionStatus, actionsModeLabel} from "@/lib/actions-view";
 
 import {useEffect, useRef, useState} from "react";
 import {api} from "@/lib/api";
@@ -7,7 +7,7 @@ import {observations, type ObservationContext, type ObservationScope, type Diagn
 import {DiagnosisSection} from './diagnosis-section';
 import {DecisionSection} from './decision-section';
 import {ProfilesSection} from './profiles-section';
-import {eventLabel, mergeEvents, usageLabel, type ObservationEvent} from "@/lib/observation-view";
+import {eventLabel, mergeEvents, usageLabel, groupForScope, type ObservationEvent} from "@/lib/observation-view";
 import {Button} from "@/components/ui/button";
 
 export function ObservationSection({projectId}: {projectId: number | null}) {
@@ -25,6 +25,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
   const [actionRationale,setActionRationale]=useState('');
   const [actionRequestLimit,setActionRequestLimit]=useState(12);
   const [actionError,setActionError]=useState('');
+  const [controlsError,setControlsError]=useState('');
   const generation = useRef(0);
   const key = `studio-observation-execution-${projectId}`;
 
@@ -57,7 +58,12 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
   }, [projectId,key]);
 
   useEffect(() => {
-    setEvents([]); setContext(null); setDiagnosis(null); setDiagnosisError(''); setActionState(null); setActionError('');
+    const savedScope=scopes.find(s=>s.execution_id===execution);
+    if(savedScope) setGroup(groupForScope(groups,savedScope.node_keys));
+  }, [execution,scopes,groups]);
+
+  useEffect(() => {
+    setEvents([]); setContext(null); setDiagnosis(null); setDiagnosisError(''); setActionState(null); setActionError(''); setControlsError('');
     if (!execution || projectId == null) return;
     try { localStorage.setItem(key,execution); } catch { /* Server remains source of history. */ }
     let cancelled = false;
@@ -68,8 +74,8 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         const next = await observations.context(projectId,execution);
         if (cancelled) return;
         setContext(next);
-        try { const actions=await observations.actions(projectId,execution); if(!cancelled) setActionState(actions); }
-        catch { if(!cancelled) setActionError('Execution controls unavailable; no new execution permission can be assumed.'); }
+        try { const actions=await observations.actions(projectId,execution); if(!cancelled) {setActionState(actions);setControlsError('');} }
+        catch { if(!cancelled) {setActionState(null);setControlsError('Состояние управления недоступно. Кнопки управления отключены до подтверждённого чтения.');} }
         try {
           const diagnostic=await observations.diagnoses(projectId,execution);
           if(cancelled) return;
@@ -84,7 +90,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
           cursor = page.next_cursor; more = page.has_more;
         }
         setError("");
-      } catch { if(!cancelled) {setError("Связь с журналом потеряна. Показана последняя полученная история, сохранность новых событий неизвестна.");setDiagnosisError('Текущее состояние диагностики не подтверждено: чтение журнала недоступно.');} }
+      } catch { if(!cancelled) {setActionState(null);setControlsError('Состояние управления не подтверждено: чтение журнала недоступно.');setError("Связь с журналом потеряна. Показана последняя полученная история, сохранность новых событий неизвестна.");setDiagnosisError('Текущее состояние диагностики не подтверждено: чтение журнала недоступно.');} }
       if(!cancelled) timer=setTimeout(poll,2000);
     };
     void poll();
@@ -211,8 +217,9 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
   return <section data-testid="observation-panel" className="space-y-3 text-xs text-white/80">
     <div className="flex flex-wrap items-center gap-2">
       <strong>Наблюдение · проект #{projectId}</strong>
-      <select aria-label="Группа наблюдения" value={group} onChange={e=>setGroup(e.target.value)} className="max-w-72 rounded border border-white/15 bg-[#161616] p-1.5">
+      <select aria-label="Группа наблюдения" value={group} disabled={busy || active} onChange={e=>setGroup(e.target.value)} className="max-w-72 rounded border border-white/15 bg-[#161616] p-1.5">
         {!groups.length && <option value="">Нет групп в текущем графе</option>}
+        {!!groups.length && !group && <option value="">Сохранённая область не совпадает с группами графа</option>}
         {groups.map(g=><option key={g.id} value={g.id}>{g.title} ({g.keys.length})</option>)}
       </select>
       <Button size="sm" variant="outline" disabled={busy || !group || active} onClick={()=>void enable()}>Включить наблюдение</Button>
@@ -226,15 +233,16 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
           value={actionState?.request_limit ?? actionRequestLimit} onChange={e=>setActionRequestLimit(Number(e.target.value))}
           className="w-20 rounded border border-white/15 bg-[#161616] p-1.5"/>
       </label>
-      <p data-testid="actions-mode">{actionState?.enabled ? (actionState.held ? 'Управление включено · execution удержан' : 'Управление включено') : actionState?.configured ? 'Execution завершён · управление выключено' : 'Управление выключено'}</p>
+      <p data-testid="actions-mode">{actionsModeLabel(actionState)}</p>
       <p className="text-white/50">Закрытие execution не означает done всего WorkflowRun. User_stop supervisor не снимает.</p>
       <p className="text-white/50">По умолчанию выключено. Разрешение ограничено одним execution, выбранной группой и снимком графа; общий бюджет задаётся выше до включения. Остановка наблюдения и пауза выполнения — разные действия.</p>
       <label className="block">Обоснование оператора
         <input value={actionRationale} onChange={e=>setActionRationale(e.target.value)} maxLength={1000} className="ml-2 w-72 rounded border border-white/15 bg-[#161616] p-1.5" placeholder="Почему разрешается это выполнение"/>
       </label>
-      {!actionState?.configured ? <Button size="sm" variant="outline" disabled={busy || !execution || context.observer_state==='stopped' || !actionRationale.trim()} onClick={()=>void enableActions()}>Разрешить выполнение выбранной группы</Button> : !actionState.enabled ? <p className="text-white/50">Managed execution закрыт. Для нового разрешения создайте новое наблюдение.</p> : <>
+      {!actionState?.configured ? <Button size="sm" variant="outline" disabled={busy || !actionState || !execution || !group || context.observer_state==='stopped' || actionRationale.trim().length<3} onClick={()=>void enableActions()}>Разрешить выполнение выбранной группы</Button> : !actionState.enabled ? <p className="text-white/50">Managed execution закрыт. Для нового разрешения создайте новое наблюдение.</p> : <>
         <span>Статус: {actionState.held ? '⏸ на паузе' : '🟢 разрешено'} · запросы: {actionState.requests_used}/{actionState.request_limit}</span>
-        <Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void setActionsHeld(!actionState.held)}>{actionState.held ? 'Возобновить группу' : 'Пауза группы'}</Button>
+        <Button size="sm" variant="outline" disabled={busy || actionRationale.trim().length<3} onClick={()=>void setActionsHeld(!actionState.held)}>{actionState.held ? 'Возобновить управление' : 'Приостановить управление'}</Button>
+        <p className="text-white/50">Пауза управления запрещает новые управляемые запуски и запросы, но не отменяет уже отправленный запрос. Чтобы остановить задачу, используйте «Остановить шаг» над графом: это user_stop проекта, который supervisor не снимает.</p>
         <Button size="sm" variant="outline" disabled={busy || actionState.held || !actionRationale.trim()} onClick={()=>void runManagedGroup()}>Запустить следующую ноду группы</Button>
         <Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void closeActions()}>Закрыть execution</Button>
         <p className="text-white/50">Разрешённые ноды: {actionState.node_keys.join(', ')} · graph: {actionState.graph_version?.slice(0,12)}</p>
@@ -251,6 +259,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         </li>)}</ol>
       </>}
       {actionError && <p role="alert" className="text-amber-200">{actionError}</p>}
+      {controlsError && <p role="alert" className="text-amber-200">{controlsError}</p>}
       {actionState?.configured && !actionState.enabled && <ol className="space-y-1">{actionState.records.slice(0,10).map(a=><li key={a.action_id}>{actionStatus(a.status)} · {a.node_key ?? 'execution'} · {a.rationale}</li>)}</ol>}
     </div>}
     <label className="flex items-center gap-2">История запуска

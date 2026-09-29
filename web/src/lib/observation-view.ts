@@ -5,6 +5,13 @@ export interface ObservationEvent {
   payload: Record<string, unknown>;
 }
 
+/** Restore the exact saved scope; never silently choose the first graph group. */
+export function groupForScope(groups: {id:string;keys:string[]}[], nodeKeys: string[]): string {
+  if (!nodeKeys.length) return '';
+  const keys = new Set(nodeKeys);
+  return groups.find(g => g.keys.length === keys.size && g.keys.every(k => keys.has(k)))?.id ?? '';
+}
+
 export function usageLabel(usage: Record<string, unknown> | null | undefined): string {
   if (!usage) return "usage неизвестен";
   const fields = ["input_tokens", "output_tokens", "total_tokens", "credits_consumed"];
