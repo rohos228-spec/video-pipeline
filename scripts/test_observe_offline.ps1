@@ -45,6 +45,18 @@ foreach ($relative in $files) {
     $manifest[$relative.Replace('\', '/')] = (Get-FileHash -LiteralPath $toPath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 $utf8 = New-Object System.Text.UTF8Encoding($false)
+if ($Target -eq 'readonly-pilot') {
+    $pilotInputs = @{
+        'pilot-context.json' = '../../outputs/read-only-qc-pilot-v1/context.json'
+        'pilot_gateway.py' = '../../outputs/read-only-qc-pilot-v1/pilot_gateway.py'
+        'existing_gateway.py' = '../diag_v2/gateway.py'
+    }
+    foreach ($name in $pilotInputs.Keys) {
+        $toPath = Join-Path $stagePath $name
+        Copy-Item -LiteralPath (Join-Path $sourceRoot $pilotInputs[$name]) -Destination $toPath
+        $manifest[$name] = (Get-FileHash -LiteralPath $toPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
 [IO.File]::WriteAllText((Join-Path $stagePath 'source-manifest.json'), ($manifest | ConvertTo-Json -Depth 4), $utf8)
 $name = 'vp-observe-test-' + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $docker = 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
