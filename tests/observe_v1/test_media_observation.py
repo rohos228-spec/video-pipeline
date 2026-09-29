@@ -7,6 +7,34 @@ from app.services import observation
 
 
 class MediaObservation(MediaJobs):
+    async def test_decision_reads_media_contract_and_never_offers_text_recovery(self):
+        import json
+        from app.services.decision_state import DecisionRecord
+        from app.services.decision_v1 import DecisionSupervisor
+        from app.services.diagnosis import Incident
+        cfg = json.loads(self.cfg.read_text())
+        cfg["allowed_actions"] = ["read_events", "read_contract", "retry_same", "wait", "human_review", "finish"]
+        self.cfg.write_text(json.dumps(cfg))
+        async with self.sessions() as s:
+            s.add(Incident(incident_id="media-incident", execution_id=self.scope.execution_id,
+                project_id=7, node_key="image", attempt_id="attempt-original", type="media_failure",
+                severity="error", status="human_review", details={"currently_relevant": True}))
+            s.add(DecisionRecord(decision_id="media-decision", execution_id=self.scope.execution_id,
+                project_id=7, incident_id="media-incident", node_key="image",
+                source_attempt_id="attempt-original", context_version="pending"))
+            await s.commit()
+        supervisor = DecisionSupervisor(self.observer)
+        from unittest.mock import patch
+        # Unit-level DB dependency binding only; no worker/HTTP replacement.
+        with patch("app.project_db.project_db_session_scope", lambda _id: self.sessions()):
+            context = await supervisor.context("media-decision")
+            self.assertNotIn("retry_same", context["allowed_actions"])
+            self.assertNotIn("finish", context["allowed_actions"])
+            contract = await supervisor.read_contract("media-decision")
+        self.assertEqual(contract["result_kind"], "image")
+        self.assertNotIn("empty_ops_allowed", contract)
+        self.assertFalse(contract["semantic_quality_verified"])
+
     async def test_managed_start_maps_existing_node_type_to_native_step_code(self):
         from app.web.routers.observations import managed_step_code
         self.assertEqual(managed_step_code({"id": "image", "type": "images"}), "img")
