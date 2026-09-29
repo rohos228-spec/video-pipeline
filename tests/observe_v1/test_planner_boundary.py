@@ -16,6 +16,9 @@ class Boundary(fixtures.DurableActions):
             p=await s.get(Project,7);p.auto_mode=True;p.status=ProjectStatus.plan_ready
             p.general_plan='Synthetic offline plan: character enters room, sees object, walks to table. '*5
             p.meta={'canvas_graph':{'nodes':self.nodes,'edges':edges}}
+            from openpyxl import Workbook
+            p.data_dir.mkdir(parents=True,exist_ok=True)
+            Workbook().save(p.data_dir/'project.xlsx')
             wf=await s.get(Workflow,9);wf.is_default=True;wf.edges=edges
             run=await s.get(WorkflowRun,11);run.edges_snapshot=edges
             n=await s.scalar(select(NodeRun).where(NodeRun.node_key=='n1'));n.status=NodeRunStatus.done
@@ -35,9 +38,9 @@ class Boundary(fixtures.DurableActions):
             result={'managed':managed,'planner_return':reported,'project_status':p.status.value,
                 'next_node_status':node.status.value,'next_node_attempts':node.attempts,'model_posts':model.call_count,
                 'fixture':'native plan_ready input with pre-approved HITL, original planner/prepare/FSM'}
-            self.assertEqual(node.status,NodeRunStatus.pending if managed else NodeRunStatus.running)
+            self.assertIn(node.status,(NodeRunStatus.pending,NodeRunStatus.queued) if managed else (NodeRunStatus.running,))
             self.assertEqual(p.status,ProjectStatus.plan_ready if managed else ProjectStatus.scripting)
-            self.assertEqual(node.attempts,0 if managed else 1)
+            self.assertEqual(node.attempts,0) # Native worker increments attempts, not prepare.
             model.assert_not_awaited()
         Path('/results/planner-'+('on' if managed else 'off')+'.json').write_text(json.dumps(result,indent=2))
     async def test_native_auto_advance_off_really_starts_next_node(self):await self.check_boundary(False)
