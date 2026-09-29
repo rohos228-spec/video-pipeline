@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import threading
 import time
+import traceback
 import uuid
 from pathlib import Path
 from http.server import ThreadingHTTPServer
@@ -161,7 +162,11 @@ async def run():
               "network": "none", "operator_starts": 1, "scope_boundary": "test runner"}
     try:
         await fixtures.wait_api()
-        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+        # A busy synchronous node can outlive Uvicorn's idle keepalive window.
+        # Fresh control-plane connections avoid reusing a server-closed socket;
+        # there is no retry or exception suppression (including for POST).
+        async with httpx.AsyncClient(timeout=30, trust_env=False,
+                limits=httpx.Limits(max_keepalive_connections=0)) as client:
             base = "http://127.0.0.1:18765/api/projects/2"
             if live_decision:
                 assert browser_mode,'live acceptance requires the browser'
@@ -443,6 +448,7 @@ async def run():
         result["accepted"] = False
         result["error_type"] = type(exc).__name__
         result["error"] = observation.redact(str(exc))
+        result["error_traceback"] = observation.redact(traceback.format_exc())
         raise
     finally:
         finish_coverage(ROOT)
