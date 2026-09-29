@@ -220,7 +220,10 @@ class DecisionSupervisor:
                 'graph_version':scope.graph_version,'context_version':context['context_version'],
                 'node_config':{k:cfg[k] for k in ('inputSource','outputMode','workMode') if k in cfg},
                 'contract_kind':kind,'target_frame_count':count,
-                'empty_ops_allowed':noop_allowed,'nonempty_payload_required':not noop_allowed,
+                'empty_ops_allowed':noop_allowed,
+                'nonempty_payload_required':(effective.get('outputMode')=='project_file'
+                    and not effective.get('checkMode') and effective.get('role') not in {'review','gate','compare'}
+                    and not noop_allowed),
                 'semantic_quality_verified':False,
                 'contract':_batch_footer(1,0,max(1,count),footer_kind=kind),
                 'source':'original apply_ops_batches._batch_footer + workflow snapshot + node_config',

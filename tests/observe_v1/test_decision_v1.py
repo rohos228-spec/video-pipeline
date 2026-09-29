@@ -290,12 +290,20 @@ class DecisionDurability(actions_tests.DurableActions):
 
     async def test_contract_uses_actual_target_count_not_example_batch(self):
         record,_=await self.dialogue()
-        from app.models import Frame
+        from app.models import Frame, Project
         async with self.sessions() as s:
             s.add_all([Frame(project_id=7,number=i,uuid=f'synthetic-contract-{i}',voiceover_text='synthetic') for i in range(1,4)])
             await s.commit()
         contract=await self.loop.read_contract(record['decision_id'])
         self.assertEqual(contract['target_frame_count'],3)
+        self.assertTrue(contract['nonempty_payload_required'])
+        async with self.sessions() as s:
+            project=await s.get(Project,7)
+            project.meta={**project.meta,'excel_gpt_nodes':{'n1':{'outputMode':'text','role':'review'}}}
+            await s.commit()
+        text_contract=await self.loop.read_contract(record['decision_id'])
+        self.assertFalse(text_contract['nonempty_payload_required'])
+        self.assertFalse(text_contract['empty_ops_allowed'])
 
 
 def load_tests(loader,tests,pattern):

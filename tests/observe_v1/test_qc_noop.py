@@ -199,6 +199,20 @@ class NoopEvidence(unittest.TestCase):
         row['payload']={**row['payload'],'syntax_valid':True,'parsed':False,'empty_ops_accepted':False,'schema_valid':False}
         self.assertEqual(derive_incidents(scope,[row],{})[0]['type'],'missing_payload')
 
+    def test_native_retry_to_noop_closes_only_matching_format_incident(self):
+        scope=SimpleNamespace(execution_id='e',project_id=2,node_keys=['id'],observer_state='active',gaps=[])
+        rows=noop_facts()
+        for e in rows:e['id']+=2
+        rows[0]['payload']={'previous_request_id':'r0'}
+        bad={**rows[2],'id':1,'event_id':'bad-root','request_id':'r0',
+             'payload':{'payload_required':True,'parsed':False,'syntax_valid':False,'payload_present':False}}
+        retry={**bad,'id':2,'event_id':'retry','kind':'json_retry','payload':{'source_request_id':'r0'}}
+        result=derive_incidents(scope,[bad,retry]+rows,{})
+        self.assertEqual(len(result),1)
+        self.assertEqual(result[0]['status'],'resolved_confirmed')
+        self.assertEqual(result[0]['resolution']['correlation'],'confirmed_qc_noop_same_attempt')
+        self.assertFalse(result[0]['resolution']['quality_verified'])
+
     def test_noop_does_not_mask_failed_required_checks(self):
         rows=noop_facts()
         for kind,payload in (('runtime_check',{'performed':True,'status':'failed'}),
