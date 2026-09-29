@@ -138,6 +138,12 @@ async def run():
                 if mode.startswith("profiles-"):
                     from profiles_acceptance import verify
                     await verify(client,base,result["execution_id"],fixtures,ROOT,result)
+                if browser_mode and mode=='decision-runtime-bad':
+                    (ROOT/'browser-ready.json').write_text(json.dumps({'project_id':2,'application':'live','state':'human_review'}))
+                    (ROOT/'group-result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str))
+                    deadline=time.monotonic()+300
+                    while not (ROOT/'browser-finish-requested').exists() and time.monotonic()<deadline:await asyncio.sleep(.2)
+                    assert (ROOT/'browser-finish-requested').exists(),'capture live negative UI and finish explicitly'
                 return
             if denial_mode:
                 from recovery_denials import run as run_denial
@@ -427,7 +433,7 @@ async def run():
             sys.stdout.flush()
             sys.stderr.flush()
             os._exit(3)
-        if browser_mode and result.get("accepted") and not live_decision:
+        if browser_mode and result.get("accepted") and not live_decision and mode!='decision-runtime-bad':
             # At the boundary app.main is cancelled. Replay saved history in
             # the dedicated history_replay.py process. Binding in this process
             # races the original HTTP socket's shutdown (captured Errno 98).

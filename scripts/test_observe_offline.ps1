@@ -30,6 +30,7 @@ $files += 'tests/observe_v1/live_decision_acceptance.py'
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
 if ($Target -eq 'profiles') { $files += @('tests/observe_v1/test_profiles_v1.py','tests/observe_v1/test_decision_v1.py') }
 if ($Target -eq 'decision-runtime') { $files += @('tests/observe_v1/test_decision_runtime.py','tests/observe_v1/test_profiles_v1.py','config/orchestrator-runtime.example.json') }
+if ($Target -eq 'decision-final') { $files += @('tests/observe_v1/test_decision_runtime.py','tests/observe_v1/test_profiles_v1.py','tests/observe_v1/test_planner_boundary.py','config/orchestrator-runtime.example.json') }
 if ($Target -eq 'planner-boundary') { $files += 'tests/observe_v1/test_planner_boundary.py' }
 if ($Target.StartsWith('decision')) { $files += 'tests/observe_v1/test_decision_v1.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }

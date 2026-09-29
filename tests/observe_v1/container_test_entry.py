@@ -46,6 +46,14 @@ try:
         sys.argv=[str(SOURCE / "tests/observe_v1/test_profiles_v1.py")]
     if os.environ.get("OBSERVE_TEST_TARGET")=="planner-boundary":
         sys.argv=[str(SOURCE / "tests/observe_v1/test_planner_boundary.py")]
+    if os.environ.get('OBSERVE_TEST_TARGET')=='decision-final':
+        import importlib,unittest
+        results=[]
+        for name in ('test_decision_runtime','test_decision_v1','test_actions_v1_contract','test_profiles_v1','test_planner_boundary','test_journal'):
+            result=unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromModule(importlib.import_module(name)))
+            results.append({'module':name,'tests':result.testsRun,'failures':len(result.failures),'errors':len(result.errors),'green':result.wasSuccessful()})
+        (RESULTS/'regression-summary.json').write_text(json.dumps(results,indent=2))
+        raise SystemExit(0 if all(r['green'] for r in results) else 1)
     runpy.run_path(sys.argv[0], run_name="__main__")
 except SystemExit as exc:
     exit_code = int(exc.code or 0)
