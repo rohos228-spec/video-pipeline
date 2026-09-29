@@ -33,6 +33,19 @@ and per-category request rows in the common budget transaction. Five tests pass
 in jobs-green-02, including parallel limit, restart, uncertain submit, scope and
 config revision. jobs-green-01 retains initial test schema ordering failure.
 No real HTTP media integration or worker acceptance claimed at this checkpoint.
+Kie transport now integrated into original run_generation/create_task/poll_task/
+download. transport-green-03: 6/6 actual loopback HTTP tests; image decode, duplicate
+result (one submit), known-job wait cancellation + observer reload (one submit),
+unknown submit, corrupt file, provider failure and redirect denial. No worker
+acceptance claimed yet. Before that: green-01 omitted untracked module after
+an elevated git ownership refusal; green-02 correctly blocked audit on test's
+non-UUID execution. Both failed runs preserved; protection unchanged.
+common-regression-01: all 125 existing Decision/Actions/Profiles/planner/journal
+tests pass on this source snapshot. Actual loaded module hashes in artifacts.
+Other installed media backends checked: no av, cv2 or imageio_ffmpeg either.
+Next: media worker identity binding, diagnosis, registry step-code mapping and
+Decision contracts; then real worker fixture acceptance and UI. New
+test_media_observation.py drafted but not yet run at this checkpoint.
 Potential blocker: audio requires local ASR package + cached weights. Inventory
 is recorded by media-contract; no model download or fake transcription.
 

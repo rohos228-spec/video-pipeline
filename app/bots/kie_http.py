@@ -148,7 +148,12 @@ async def create_task(api: str, endpoint: str | None, body: dict[str, Any]) -> s
             # suno/runway требуют callBackUrl — мы поллим, колбэк-заглушка
             body = {**body, "callBackUrl": _CALLBACK_PLACEHOLDER}
     url = f"{kie_api_base_url()}{path}"
-    r, payload, _src = await kie_post_json(url, body, timeout=120.0)
+    from app.services.media_transport import current_job, json_request
+    if current_job.get() is not None:
+        r = await json_request("POST", path, payload=body)
+        payload = r.json()
+    else:
+        r, payload, _src = await kie_post_json(url, body, timeout=120.0)
     data = _check(payload, http_status=r.status_code, where=f"create {path}")
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
     task_id = str(
@@ -280,14 +285,27 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
     url = f"{kie_api_base_url()}{path}"
     deadline = asyncio.get_event_loop().time() + max(60.0, timeout_s)
     net_fails = 0
+    from app.services.media_transport import current_job, json_request
+    from app.services.media_jobs import MediaPolicyError
+    job = current_job.get()
+    polls = 0
+    interval = job.config["media"]["poll_interval_s"] if job else _POLL_INTERVAL_S
+    if job:
+        deadline = asyncio.get_event_loop().time() + min(timeout_s, job.config["media"]["timeout_s"])
     async with httpx.AsyncClient(timeout=60.0) as client:
         while True:
             try:
-                r = await client.get(
-                    url, headers=_headers(), params={"taskId": task_id}
-                )
+                if job:
+                    if polls >= job.config["media"]["max_polls"]:
+                        raise MediaPolicyError("media status polling allowance exhausted")
+                    r = await json_request("GET", path, params={"taskId": task_id})
+                    polls += 1
+                else:
+                    r = await client.get(url, headers=_headers(), params={"taskId": task_id})
                 net_fails = 0
             except (httpx.TransportError, httpx.TimeoutException) as e:
+                if job:
+                    raise  # known job survives; never enter native resubmit/retry ladder
                 net_fails += 1
                 if net_fails >= 8 or asyncio.get_event_loop().time() >= deadline:
                     raise KieHttpError(
@@ -303,6 +321,14 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
             data = _check(payload, http_status=r.status_code, where=f"poll {path}")
             inner = data.get("data") if isinstance(data.get("data"), dict) else {}
             state = _task_state(api, inner)
+            if job:
+                raw_state = str(inner.get("state") or "").lower()
+                phase = {"success": "completed", "fail": "failed", "cancelled": "cancelled",
+                    "queued": "queued", "queuing": "queued", "waiting": "queued",
+                    "pending": "queued", "generating": "running", "running": "running"}.get(raw_state, "unknown")
+                await job.update(phase=phase)
+                if phase in {"unknown", "cancelled"}:
+                    raise MediaPolicyError("provider state " + phase)
             # FIRST_SUCCESS у Suno часто без audioUrl — ждём SUCCESS, иначе качаем jpeg/stream.
             if (
                 state == "success"
@@ -327,10 +353,13 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
                     f"kie: таймаут ожидания task {task_id}",
                     context={"provider_code": 504, "task_id": task_id, "kind": "timeout"},
                 )
-            await asyncio.sleep(_POLL_INTERVAL_S)
+            await asyncio.sleep(interval)
 
 
 async def download(url: str, out_path: Path) -> Path:
+    from app.services.media_transport import current_job, download as managed_download
+    if current_job.get() is not None:
+        return await managed_download(current_job.get(), url)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
         r = await client.get(url)
@@ -351,6 +380,9 @@ async def run_generation(
     timeout_s: float = _POLL_MAX_S,
 ) -> GenerationResult:
     """create → poll → download. spec.api выбирает семейство эндпоинтов."""
+    from app.services.media_jobs import assert_entry
+    if await assert_entry(provider="kie") is not None:
+        return await _managed_generation(spec, payload, out_path, timeout_s=timeout_s)
     api = str(spec.get("api") or "jobs")
     task_id = await create_task(api, spec.get("endpoint"), payload)
     logger.info("kie_http: task {} создана (model={})", task_id, spec.get("id"))
@@ -364,6 +396,53 @@ async def run_generation(
     path = await download(urls[0], out_path)
     logger.info("kie_http: ok {} → {} ({} bytes)", task_id, path.name, path.stat().st_size)
     return GenerationResult(file_path=path, gen_id=task_id, raw_url=urls[0])
+
+
+async def _managed_generation(spec, payload, out_path, *, timeout_s):
+    """Same create/poll/download functions with durable managed bookkeeping."""
+    from app.services.media_jobs import open_job, _hold, MediaPolicyError
+    from app.services.media_transport import current_job, verify
+    from app.services.observation import _attempt, record_fact
+    if spec.get("api") != "jobs" or spec.get("result") not in {"image", "video", "audio"}:
+        raise MediaPolicyError("provider family has no approved managed route")
+    job = await open_job(provider="kie", kind=spec["result"], model_id=spec["id"],
+                         payload=payload, out_path=out_path)
+    token = current_job.set(job)
+    try:
+        if job.phase == "verified":
+            await verify(job)
+            return GenerationResult(file_path=job.path, gen_id=job.provider_job_id, raw_url=None)
+        task_id = job.provider_job_id
+        if not task_id:
+            task_id = await create_task("jobs", spec.get("endpoint"), payload)
+            await job.update(phase="queued", provider_job_id=task_id)
+        data = await poll_task("jobs", task_id, timeout_s=timeout_s)
+        urls = _result_media_urls(data)
+        if not urls:
+            raise MediaPolicyError("completed job has no artifact URL")
+        path = await download(urls[0], job.path)
+        await verify(job)
+        return GenerationResult(file_path=path, gen_id=task_id, raw_url=urls[0])
+    except asyncio.CancelledError:
+        if job.provider_job_id:
+            await record_fact("media_wait", {"job_id": job.job_id,
+                "provider_job_id": job.provider_job_id, "reason": "local_wait_cancelled",
+                "provider_cancelled": False, "cost_refunded": False})
+        else:
+            await job.update(phase="unknown", error="submit_interrupted")
+            await _hold(_attempt.get(), "unknown media submit; no repeat", job.job_id)
+        raise
+    except Exception as exc:
+        if job.phase not in {"verified", "failed", "cancelled"}:
+            await job.update(phase="unknown",
+                             error=type(exc).__name__)
+        await record_fact("media_failure", {"job_id": job.job_id, "phase": job.phase,
+            "error_type": type(exc).__name__, "provider_job_id": job.provider_job_id,
+            "uncertain": not bool(job.provider_job_id), "protective_stop": isinstance(exc, MediaPolicyError)})
+        await _hold(_attempt.get(), "media result requires review: " + type(exc).__name__, job.job_id)
+        raise
+    finally:
+        current_job.reset(token)
 
 
 # Маппинг генераторов видео на ID модели в kie_catalog

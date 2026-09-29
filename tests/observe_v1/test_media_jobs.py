@@ -50,11 +50,11 @@ class MediaJobs(unittest.IsolatedAsyncioTestCase):
             s.add(WorkflowRun(id=1, workflow_id=1, project_id=7, nodes_snapshot=self.nodes, edges_snapshot=[]))
             s.add_all([NodeRun(workflow_run_id=1, node_key=n["id"], node_type=n["type"],
                                status=NodeRunStatus.pending) for n in self.nodes])
-            self.scope = ExecutionControl(execution_id="media-exec", project_id=7, workflow_run_id=1,
+            self.scope = ExecutionControl(execution_id="52b01b6a-8625-47f1-a605-8596dc45dad2", project_id=7, workflow_run_id=1,
                 node_keys=["image"], graph_version=graph, mode="observe", observer_state="active")
             s.add(self.scope)
             await s.commit()
-        await ActionSupervisor(self.sessions).enable(project_id=7, execution_id="media-exec",
+        await ActionSupervisor(self.sessions).enable(project_id=7, execution_id="52b01b6a-8625-47f1-a605-8596dc45dad2",
             group_id="media", node_keys=["image"], graph_version=graph,
             initiator="test", rationale="synthetic HTTP only", request_limit=8)
         await self.observer.reload()
@@ -97,7 +97,7 @@ class MediaJobs(unittest.IsolatedAsyncioTestCase):
         await recovered.reserve("status")
         async with self.sessions() as s:
             from app.services.actions_v1 import ActionExecutionControl
-            self.assertEqual((await s.get(ActionExecutionControl, "media-exec")).requests_used, 2)
+            self.assertEqual((await s.get(ActionExecutionControl, "52b01b6a-8625-47f1-a605-8596dc45dad2")).requests_used, 2)
 
     async def test_uncertain_submit_never_resubmits_after_reload(self):
         job = await self.open_job()

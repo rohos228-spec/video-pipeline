@@ -109,7 +109,7 @@ class MediaHTTP(MediaJobs):
             requests = (await s.scalars(select(MediaRequest))).all()
             self.assertEqual([r.category for r in requests], ["generation_submit", "status", "download"])
             self.assertTrue(all(r.status == "received" for r in requests))
-        await self.observer.consume("media-exec", "master", self.sessions)
+        await self.observer.consume("52b01b6a-8625-47f1-a605-8596dc45dad2", "master", self.sessions)
         from app.services.observation import ObservationEvent
         async with self.sessions() as s:
             events = (await s.scalars(select(ObservationEvent))).all()
