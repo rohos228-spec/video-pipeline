@@ -167,6 +167,23 @@ class MediaHTTP(MediaJobs):
             await self.generate()
         self.assertEqual(self.downloads, 1)
 
+    async def test_http_existing_image_wrapper_reaches_managed_adapter(self):
+        from app.services.outsee_retry import generate_image_with_retries
+        result = await generate_image_with_retries(None, None, prompt="synthetic",
+            out_path=self.output, project_id=7, model_slug="z-image", gpt_rewrite=False)
+        self.assertTrue(result.file_path.is_file())
+        self.assertEqual(self.posts, 1)
+
+    async def test_http_legacy_direct_service_cannot_bypass_project_permission(self):
+        from app.bots.kie_http import generate_kie_image
+        token = observation._attempt.set(None)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "context"):
+                await generate_kie_image("synthetic", self.output, project_id=7, model_slug="z-image")
+        finally:
+            observation._attempt.reset(token)
+        self.assertEqual(self.posts, 0)
+
 
 if __name__ == "__main__":
     # Inherited state tests are run separately, once.
