@@ -1836,8 +1836,11 @@ async def fetch_completed_response(
                 return "", "", {}
             for url in urls:
                 for attempt in range(max(1, int(polls))):
+                    from app.services.observation import authorize_model_retrieve,record_fact
+                    await authorize_model_retrieve(url)
                     try:
                         resp = await client.get(url, headers=headers)
+                        await record_fact('model_retrieve_end',{'method':'GET','status_code':resp.status_code})
                     except Exception as e:  # noqa: BLE001
                         logger.warning(
                             "gpt_api.retrieve {} failed attempt={}/{}: {}: {}",

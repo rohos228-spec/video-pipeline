@@ -35,6 +35,7 @@ async def run():
     mode = os.environ.get("OBSERVE_GROUP_MODE", "observe")
     denial_mode = mode.startswith('deny-')
     decision_mode = mode.startswith('decision-') or mode.startswith('profiles-')
+    live_decision = mode=='live-decision'
     shutil.copytree('/observe-denial-seed' if denial_mode or decision_mode else '/srv/seed', DATA)
     browser_mode = os.environ.get("OBSERVE_BROWSER", "").lower() == "true"
     os.environ.update({
@@ -48,6 +49,13 @@ async def run():
         "OUTSEE_HTTP_FALLBACK_CDP": "false", "AUDIO_USE_ELEVENLABS_FALLBACK": "false",
         "NVIDIA_ASR_PRELOAD_ON_STARTUP": "false",
     })
+    if live_decision or mode=='decision-runtime-bad':
+        config={'version':1,'mode':'production','online_enabled':True,
+            'endpoint':'http://127.0.0.1:18766/codex/v1/responses',
+            'decision':{'catalog_id':'gpt-kie','model_id':'gpt-5-6-sol','reasoning_effort':'low','max_output_tokens':1024,'timeout_s':30},
+            'profiles':{},'allowed_actions':['read_events','read_contract','retry_same','human_review','wait','finish']}
+        path=ROOT/'synthetic-production-adapter.json';path.write_text(json.dumps(config,indent=2))
+        os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
     recovery_mode = mode in {"recovery-a", "recovery-b"}
     fixtures.MODE = "malformed" if mode in {"malformed","unrepaired"} or recovery_mode else "group"
     recovery_transport = {"active": False}
@@ -67,13 +75,13 @@ async def run():
     finally:
         sock.close()
     handler=fixtures.FixtureHandler
-    if decision_mode:
+    if decision_mode or live_decision:
         from decision_acceptance import handler_for
         handler=handler_for(fixtures,ROOT,mode)
-        if mode in {'decision-bad','profiles-bad'}:
+        if mode in {'decision-bad','profiles-bad','decision-runtime-bad'} or live_decision:
             fixtures.MODE='malformed'
             original_answer=fixtures.synthetic_answer
-            fixtures.synthetic_answer=lambda node,attempt:original_answer(node,1) if node==fixtures.NODES[0] else original_answer(node,attempt)
+            fixtures.synthetic_answer=lambda node,attempt:original_answer(node,2 if live_decision and recovery_transport['active'] else 1) if node==fixtures.NODES[0] else original_answer(node,attempt)
     server = ThreadingHTTPServer(("127.0.0.1", 18766), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     from app.services import observation
@@ -86,7 +94,7 @@ async def run():
             ctx = observation._attempt.get()
             from app.services.decision_transport import current
             if current.get() is not None:
-                assert decision_mode,'unexpected decision HTTP'
+                assert decision_mode or live_decision,'unexpected decision HTTP'
                 request.headers['x-diagnostic-node']='__decision__'
                 return await original_send(client,request,**kwargs)
             if ctx:
@@ -104,10 +112,10 @@ async def run():
                     node = meta.get("active_excel_gpt_node_key", "")
             assert node in fixtures.NODES[:-1], "Provider call outside selected text group"
             request.headers["x-diagnostic-node"] = node
-            if recovery_mode and recovery_transport['active']:
+            if (recovery_mode or live_decision) and recovery_transport['active']:
                 # Synthetic external transport latency only, allowing capture
                 # of a real running action for later offline browser checks.
-                await asyncio.sleep(3)
+                await asyncio.sleep(10 if live_decision else 3)
         return await original_send(client, request, **kwargs)
 
     httpx.AsyncClient.send = send  # External transport only; no worker/planner/DB replacements.
@@ -119,6 +127,11 @@ async def run():
         await fixtures.wait_api()
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
             base = "http://127.0.0.1:18765/api/projects/2"
+            if live_decision:
+                assert browser_mode,'live acceptance requires the browser'
+                from live_decision_acceptance import run as run_live
+                await run_live(client,fixtures,observation.get_observer(),ROOT,result)
+                return
             if decision_mode:
                 from decision_acceptance import run as run_decision
                 await run_decision(mode,client,fixtures,observation.get_observer(),ROOT,result)
@@ -414,7 +427,7 @@ async def run():
             sys.stdout.flush()
             sys.stderr.flush()
             os._exit(3)
-        if browser_mode and result.get("accepted"):
+        if browser_mode and result.get("accepted") and not live_decision:
             # At the boundary app.main is cancelled. Replay saved history in
             # the dedicated history_replay.py process. Binding in this process
             # races the original HTTP socket's shutdown (captured Errno 98).

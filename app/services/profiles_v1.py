@@ -20,15 +20,30 @@ CATALOG={'synthetic-json-v1':{'model_id':'gpt-synthetic-alt','provider':'kie',
 PRODUCTION_CATALOG={}
 _current=ContextVar('attempt_profile_overlay',default=None)
 
-def catalog_hash():return digest(CATALOG)
+def active_catalog():
+    from app.services.decision_config import runtime_config
+    cfg=runtime_config()
+    return CATALOG if cfg['mode']=='synthetic' else cfg['profiles']
+
+def catalog_hash():return digest(active_catalog())
 
 def validate_candidate(candidate):
     if not isinstance(candidate,dict) or set(candidate)!=set(CATALOG['synthetic-json-v1']):
         raise ValueError('unknown profile parameters')
-    if candidate not in CATALOG.values():raise ValueError('incompatible profile or forbidden provider')
+    if candidate not in active_catalog().values():raise ValueError('incompatible profile or forbidden provider')
 
 def synthetic_transport(url=None,key=None):
     from app.settings import settings
+    from app.services.decision_config import runtime_config,check_route
+    cfg=runtime_config()
+    if cfg['mode']=='production':
+        from app.services.gpt_api import _chat_url
+        from app.services.llm_override import NodeLlmOverride,use_override
+        m=cfg['decision']
+        if not m:raise ValueError('production profile not configured')
+        with use_override(NodeLlmOverride(m['model_id'],'stable','text','kie',m['model_id'],m['reasoning_effort'])):
+            check_route(cfg,url if url is not None else _chat_url(m['model_id']))
+        return
     host=urlsplit(str(url if url is not None else settings.gpt_base_url)).hostname
     credential=str(key if key is not None else settings.gpt_api_key)
     if host not in {'localhost','127.0.0.1','::1'} or not credential.startswith('synthetic'):
@@ -98,15 +113,15 @@ class ProfilesSupervisor:
             for row in rows:
                 ticket=await s.scalar(select(RecoveryAction).where(RecoveryAction.execution_id==execution_id,RecoveryAction.new_attempt_id==row.attempt_id)) if row.attempt_id else None
                 views.append({**overlay_json(row),'recovery':{'status':ticket.status,'verification':ticket.verification_result} if ticket else None})
-            return {'base_version':version,'catalog_hash':catalog_hash(),'synthetic_only':True,
-                'catalog':[{'profile_id':k,**v} for k,v in CATALOG.items()], 'available':available,'reason':reason,
+            return {'base_version':version,'catalog_hash':catalog_hash(),'synthetic_only':__import__('app.services.decision_config',fromlist=['runtime_config']).runtime_config()['mode']=='synthetic',
+                'catalog':[{'profile_id':k,**v} for k,v in active_catalog().items()], 'available':available,'reason':reason,
                 'overlays':views}
 
     async def approve(self,*,project_id,execution_id,node_key,profile_id,base_version,catalog_hash,initiator,rationale):
         synthetic_transport()
         if not initiator or len(rationale.strip())<3:raise ValueError('explicit approval rationale required')
         if catalog_hash!=globals()['catalog_hash']():raise ValueError('stale catalog hash')
-        candidate=CATALOG.get(profile_id)
+        candidate=active_catalog().get(profile_id)
         if not candidate:raise ValueError('unknown or incompatible profile / provider')
         validate_candidate(candidate)
         async with self.master() as s:

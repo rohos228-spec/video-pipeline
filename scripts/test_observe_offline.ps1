@@ -26,6 +26,7 @@ $files = @($tracked) + @('app/services/actions_v1.py', 'tests/observe_v1/test_ac
 $files += @('app/services/actions_recovery.py','app/services/profiles_state.py','app/services/profiles_v1.py')
 $files += 'tests/observe_v1/recovery_denials.py'
 $files += @('tests/observe_v1/decision_acceptance.py','tests/observe_v1/profiles_acceptance.py')
+$files += 'tests/observe_v1/live_decision_acceptance.py'
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
 if ($Target -eq 'profiles') { $files += @('tests/observe_v1/test_profiles_v1.py','tests/observe_v1/test_decision_v1.py') }
 if ($Target -eq 'decision-runtime') { $files += 'tests/observe_v1/test_decision_runtime.py' }

@@ -101,7 +101,9 @@ async def decisions(project_id:int,execution_id:str):
             turns=(await s.scalars(select(DecisionTurn).where(DecisionTurn.decision_id==row.decision_id,
                 DecisionTurn.role.in_(['assistant','tool'])).order_by(DecisionTurn.id))).all()
             records.append({**record_json(row),'turns':[{'id':t.id,'role':t.role,'payload':t.payload} for t in turns]})
-        return panel_safe({'enabled':bool(control and control.enabled),'synthetic_only':True,
+        from app.services.decision_config import status
+        runtime=status()
+        return panel_safe({'enabled':bool(control and control.enabled),'synthetic_only':runtime['mode']=='synthetic','runtime':runtime,
             'max_model_steps':MAX_STEPS,'records':records})
 
 

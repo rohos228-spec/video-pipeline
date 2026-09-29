@@ -3,7 +3,7 @@ export type ProfileOverlay = {overlay_id:string;node_key:string;attempt_id:strin
   candidate_hash:string;candidate:{model_id:string};initiator:string;rationale:string;status:string;history:unknown[];
   recovery?:{status:string;verification:{verified?:boolean}}|null};
 export type ProfileState = {base_version:string|null;catalog_hash:string;synthetic_only:boolean;available:boolean;reason:string|null;
-  catalog:{profile_id:string;model_id:string}[];overlays:ProfileOverlay[]};
+  catalog:{profile_id:string;model_id:string;reasoning_effort?:string;max_output_tokens?:number;prompt_variant?:string}[];overlays:ProfileOverlay[]};
 import { http } from "./api";
 import type { ObservationEvent } from "./observation-view";
 
@@ -40,6 +40,8 @@ export interface ActionState {
 }
 export interface DecisionState {
   enabled:boolean;synthetic_only:boolean;max_model_steps:number;
+  runtime?:{mode:string;configured:boolean;reason:string|null;allowed_actions:string[];
+    decision_model:{model_id:string;reasoning_effort:string;max_output_tokens:number}|null};
   records:{decision_id:string;incident_id:string;node_key:string;status:string;model_steps:number;
     action_id:string|null;context_version:string;proposal:{action?:string;explanation?:string;evidence_ids?:string[]};
     policy_result:{allowed?:boolean;reason?:string};verification:{verified?:boolean};

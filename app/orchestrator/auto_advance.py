@@ -794,6 +794,18 @@ async def _commit_running_after_prepare(
     allow_restart: bool = True,
 ) -> bool:
     """Pin excel_gpt → prepare NodeRun → только потом Project.status."""
+    from app.services.actions_v1 import managed_project_enabled,check_managed_start
+    if await managed_project_enabled(project.id):
+        from app.orchestrator.graph.planner import load_graph_for_project
+        graph=await load_graph_for_project(session,project)
+        key=graph.next_work_node_key_after_ready(project,ready_status)
+        gate=check_managed_start(project_id=project.id,node_key=key or '')
+        if gate is None or not gate.allowed:
+            from app.services.observation import stage_project_fact
+            stage_project_fact(session,project,'runtime_wait',{
+                'reason':gate.reason if gate else 'managed_permission_unavailable',
+                'node_key':key,'initiator':'auto_advance'})
+            return False
     await _pin_excel_gpt_key_after_ready(session, project, ready_status, nxt)
     prepared = await _prepare_node_run_for_status(
         session, project, nxt, allow_restart=allow_restart
@@ -1670,6 +1682,10 @@ def _artifact_for_kind(project: Project, kind: HITLKind) -> str | None:
     return None
 
 
+from app.services.observation import observe_review
+
+
+@observe_review
 async def _run_verdict_review_for_step(
     session: AsyncSession,
     project: Project,
@@ -1719,6 +1735,7 @@ async def _run_verdict_review_for_step(
     )
 
 
+@observe_review
 async def _run_text_review(
     project: Project, kind: HITLKind, artifact: str
 ) -> ReviewResult:

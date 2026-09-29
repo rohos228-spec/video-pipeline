@@ -394,8 +394,74 @@ async def record_fact(kind, payload=None, *, request_id=None, body=None):
             ctx.observer.stage(session, ctx.scope, kind, db_scope="master", node_key=ctx.node_key,
                 attempt_id=ctx.attempt_id, request_id=request_id or _request.get(), payload=details)
             await session.commit()
+        if isinstance(details.get('body'),dict) and details['body'].get('gap'):
+            ctx.observer.mark_gap(ctx.scope.execution_id,RuntimeError('mandatory body unavailable'))
     except Exception as exc:
         ctx.observer.mark_gap(ctx.scope.execution_id, exc)
+
+
+async def hold_uncertain_request(ctx,request_id):
+    from app.services.actions_v1 import ActionSupervisor
+    await ActionSupervisor(ctx.observer.master).set_held(project_id=ctx.scope.project_id,
+        execution_id=ctx.scope.execution_id,held=True,initiator='http_policy',
+        rationale='Неопределённый внешний ответ: повторный POST запрещён до разбора человеком',
+        idempotency_key='uncertain-http:'+request_id)
+
+
+async def authorize_model_retrieve(url):
+    """Retrieval GET shares the same durable request limit, never a POST retry."""
+    ctx=_attempt.get()
+    if ctx is None:
+        from app.services.decision_transport import current
+        hook=current.get()
+        if hook is not None:await hook.retrieve(url)
+        return
+    if ctx.scope.mode!='managed':return
+    from app.services.actions_v1 import ActionSupervisor
+    await record_fact('model_retrieve_start',{'method':'GET','purpose':'node','url':url})
+    await ActionSupervisor(ctx.observer.master).charge_request(ctx.scope.execution_id)
+
+
+def observe_review(function):
+    """Bind native text reviews to the existing scope, without creating an attempt.
+
+    Unknown/ambiguous review ownership fails closed in managed mode. Unmanaged
+    projects retain the native behavior. This is accounting, not a new executor.
+    """
+    import inspect
+    signature=inspect.signature(function)
+    @functools.wraps(function)
+    async def wrapped(*args,**kwargs):
+        bound=signature.bind(*args,**kwargs).arguments
+        project=bound['project']
+        from app.services.actions_v1 import managed_project_enabled,ActionExecutionControl
+        if not await managed_project_enabled(project.id):
+            return await function(*args,**kwargs)
+        observer=get_observer()
+        kind=bound.get('kind',bound.get('step_code'))
+        name=str(getattr(kind,'value',kind))
+        node_type={'approve_plan':'plan','approve_script':'script','plan':'plan','script':'script'}.get(name)
+        from app.models import NodeRun
+        async with observer.master() as master:
+            scopes=(await master.scalars(select(ExecutionControl).where(
+                ExecutionControl.project_id==project.id,ExecutionControl.mode=='managed',
+                ExecutionControl.observer_state=='active'))).all()
+            if len(scopes)!=1 or node_type is None:
+                raise RuntimeError('managed review scope unavailable')
+            scope=scopes[0]
+            permission=await master.get(ActionExecutionControl,scope.execution_id)
+            if permission is None or not permission.enabled:
+                raise RuntimeError('managed review scope permission unavailable')
+            keys=(await master.scalars(select(NodeRun.node_key).where(
+                NodeRun.workflow_run_id==scope.workflow_run_id,NodeRun.node_type==node_type,
+                NodeRun.node_key.in_(set(scope.node_keys)&set(permission.node_keys))))).all()
+            if len(keys)!=1:raise RuntimeError('managed review outside scope or ambiguous node')
+        ctx=AttemptContext(observer,scope,None,'project',keys[0],'review-'+str(uuid.uuid4()))
+        ctx.purpose='review'
+        token=_attempt.set(ctx)
+        try:return await function(*args,**kwargs)
+        finally:_attempt.reset(token)
+    return wrapped
 
 
 def observe_model(function):
@@ -431,12 +497,16 @@ def observe_model(function):
                     "action": "model_request", "reason": type(exc).__name__,
                     "request_id": request_id,
                 }, request_id=request_id)
+                _request.reset(request_token)
                 raise
         await record_fact("model_start", {"method": "POST", "host": endpoint.hostname,
             "path": endpoint.path, "model": kwargs.get("use_model"),
+            "purpose":getattr(ctx,'purpose','node'),
             "previous_request_id": previous_request_id,
             "settings_revision": digest(settings), "input_revision": digest(body)}, body=body)
         try:
+            if ctx.scope.mode=='managed' and (ctx.scope.gaps or ctx.scope.execution_id in ctx.observer.failures or ctx.scope.execution_id in ctx.observer.commit_uncertainty):
+                raise RuntimeError('managed request blocked before transport: mandatory audit unavailable')
             result = await function(*args, **kwargs)
             raw = getattr(result, "raw", {}) or {}
             await record_fact("model_end", {"model": getattr(result, "model", None),
@@ -446,6 +516,9 @@ def observe_model(function):
                 "complete": raw.get("status") == "completed" and not raw.get("sse_salvaged"),
                 "retrieved_by_id": bool(raw.get("retrieved_by_id")),
             }, body={"text": getattr(result, "text", ""), "response": raw})
+            if ctx.scope.mode=='managed' and (raw.get('sse_salvaged') or raw.get('status') not in {None,'completed'}):
+                await hold_uncertain_request(ctx,request_id)
+                raise RuntimeError('uncertain external result; managed execution held, no repeat POST')
             return result
         except BaseException as exc:
             from app.services.error_catalog import describe_error
@@ -455,6 +528,8 @@ def observe_model(function):
                 "catalog_source":"structured_exception_context" if isinstance(context,dict) and context.get("error_kind") else "exception_type_or_text",
                 "status_code":context.get("status_code") if isinstance(context,dict) else None,
                 "uncertain":type(exc).__name__ in {"CancelledError","ReadTimeout"} or (isinstance(context,dict) and context.get("error_kind") in {"timeout","network"})})
+            if ctx.scope.mode=='managed' and (type(exc).__name__ in {'CancelledError','ReadTimeout','ConnectTimeout'} or (isinstance(context,dict) and context.get('error_kind') in {'timeout','network'})):
+                await hold_uncertain_request(ctx,request_id)
             raise
         finally:
             _request.reset(request_token)
@@ -703,11 +778,12 @@ async def migrate_observation_schema(conn):
     from app.services.actions_recovery import RecoveryAction
     from app.services.decision_state import DecisionControl, DecisionRecord, DecisionTurn
     from app.services.profiles_state import ProfileOverlay
+    from app.services.decision_config import DecisionRuntimeBinding
     await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=[
         ExecutionControl.__table__, ObservationOutbox.__table__, ObservationEvent.__table__,
         Incident.__table__, DiagnosisState.__table__, ActionExecutionControl.__table__,
         ActionRecord.__table__, RecoveryAction.__table__,
-        DecisionControl.__table__, DecisionRecord.__table__, DecisionTurn.__table__, ProfileOverlay.__table__,
+        DecisionControl.__table__, DecisionRecord.__table__, DecisionTurn.__table__, ProfileOverlay.__table__, DecisionRuntimeBinding.__table__,
     ]))
 
 

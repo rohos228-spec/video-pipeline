@@ -326,6 +326,18 @@ class ActionSupervisor:
     async def charge_request(self, execution_id: str) -> int:
         """Durably charge a model attempt before the provider transport starts."""
         async with self.master() as session:
+            from app.services.observation import ExecutionControl,get_observer,digest
+            from app.models import Project,WorkflowRun
+            control=await session.get(ActionExecutionControl,execution_id)
+            scope=await session.get(ExecutionControl,execution_id)
+            project=await session.get(Project,control.project_id) if control else None
+            run=await session.get(WorkflowRun,control.workflow_run_id) if control else None
+            observer=get_observer()
+            if (not scope or scope.observer_state!='active' or scope.gaps or not project
+                    or (project.meta or {}).get('user_stop') or execution_id in observer.failures
+                    or execution_id in observer.commit_uncertainty or not run
+                    or digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot})!=control.graph_version):
+                raise RuntimeError('managed request blocked: stop, audit, scope or graph revision')
             reserved = (await session.execute(update(ActionExecutionControl).where(
                 ActionExecutionControl.execution_id == execution_id,
                 ActionExecutionControl.enabled.is_(True), ActionExecutionControl.held.is_(False),

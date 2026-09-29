@@ -220,8 +220,8 @@ class DecisionDurability(actions_tests.DurableActions):
         from app.services.gpt_api import GptChatResult
         sends=[]
         async def http(**kw):sends.append(kw);return GptChatResult(text='synthetic',model='synthetic',raw={'status':'completed'})
-        await hook.send(http,(),{'url':'http://127.0.0.1:18766','body':{}})
-        with self.assertRaisesRegex(RuntimeError,'budget exhausted'):await hook.send(http,(),{'url':'http://127.0.0.1:18766','body':{}})
+        await hook.send(http,(),{'url':'http://127.0.0.1:18766/codex/v1/responses','body':{'model':'gpt-5-6-sol'}})
+        with self.assertRaisesRegex(RuntimeError,'budget exhausted'):await hook.send(http,(),{'url':'http://127.0.0.1:18766/codex/v1/responses','body':{'model':'gpt-5-6-sol'}})
         self.assertEqual(len(sends),1)
         async with self.sessions() as s:self.assertEqual((await s.get(actions_tests.ActionExecutionControl,'exec-durable')).requests_used,1)
 
@@ -230,7 +230,7 @@ class DecisionDurability(actions_tests.DurableActions):
         hook=self.service.HttpDecision(self.loop,record['decision_id'],token,ctx['context_version'])
         from app.services.gpt_api import GptChatResult
         async def http(**kw):return GptChatResult(text='partial',model='synthetic',raw={'status':'completed','sse_salvaged':True})
-        with self.assertRaisesRegex(ValueError,'uncertain'):await hook.send(http,(),{'url':'http://127.0.0.1:18766','body':{}})
+        with self.assertRaisesRegex(ValueError,'uncertain'):await hook.send(http,(),{'url':'http://127.0.0.1:18766/codex/v1/responses','body':{'model':'gpt-5-6-sol'}})
 
     async def test_uncertain_incident_blocks_brain_before_http(self):
         record,_=await self.dialogue()
@@ -280,7 +280,7 @@ class DecisionDurability(actions_tests.DurableActions):
         async def http(**kw):sends.append(True);return GptChatResult(text='synthetic',model='synthetic',raw={'status':'completed'})
         with patch.object(observation._observer,'save_body',return_value={'gap':'body_total_limit'}):
             with self.assertRaisesRegex(ValueError,'mandatory body'):
-                await hook.send(http,(),{'url':'http://127.0.0.1:18766','body':{}})
+                await hook.send(http,(),{'url':'http://127.0.0.1:18766/codex/v1/responses','body':{'model':'gpt-5-6-sol'}})
         self.assertFalse(sends)
         async with self.sessions() as s:self.assertEqual((await s.get(actions_tests.ActionExecutionControl,'exec-durable')).requests_used,0)
 

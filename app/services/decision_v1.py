@@ -7,6 +7,8 @@ import json
 import uuid
 from datetime import datetime,timedelta
 from urllib.parse import urlsplit
+from app.services.decision_config import DecisionRuntimeBinding
+from app.services import decision_config
 from sqlalchemy import select,update,func
 from sqlalchemy.dialects.sqlite import insert
 from app.models import Project,WorkflowRun
@@ -68,14 +70,20 @@ class DecisionSupervisor:
             if not permission or permission.project_id!=project_id or not permission.enabled or not scope or scope.observer_state!='active':
                 raise ValueError('active observed managed execution required')
             row=await s.get(DecisionControl,execution_id)
-            if row is None:row=DecisionControl(execution_id=execution_id,project_id=project_id);s.add(row)
+            if row is None:row=DecisionControl(execution_id=execution_id,project_id=project_id,initiator=initiator,rationale=rationale);s.add(row)
+            cfg=decision_config.runtime_config()
+            if enabled:decision_config.check_route(cfg,cfg['endpoint'])
+            binding=await s.get(DecisionRuntimeBinding,execution_id)
+            if enabled:
+                if binding and binding.config_hash!=digest(cfg):raise ValueError('runtime configuration changed for execution; create a new authorized execution')
+                if not binding:s.add(DecisionRuntimeBinding(execution_id=execution_id,config_hash=digest(cfg),config=cfg))
             row.enabled=enabled;row.initiator=initiator;row.rationale=rationale.strip();row.updated_at=datetime.utcnow()
             s.add(ActionRecord(action_id=str(uuid.uuid4()),execution_id=execution_id,project_id=project_id,
                 action_kind='decision_mode',initiator=initiator,rationale=rationale.strip(),evidence_ids=[],
-                preconditions={'enabled':enabled,'max_model_steps':MAX_STEPS,'synthetic_only':True},
+                preconditions={'enabled':enabled,'max_model_steps':MAX_STEPS,'synthetic_only':cfg['mode']=='synthetic','runtime_config_hash':digest(cfg)},
                 idempotency_key='decision-mode:'+str(uuid.uuid4()),status='accepted',verification={}))
             await s.commit()
-        return {'enabled':enabled,'max_model_steps':MAX_STEPS,'synthetic_only':True}
+        return {'enabled':enabled,'max_model_steps':MAX_STEPS,'synthetic_only':cfg['mode']=='synthetic','runtime':decision_config.status()}
 
     async def _context(self,s,row):
         from app.services.diagnosis import Incident
@@ -110,7 +118,10 @@ class DecisionSupervisor:
             ProfileOverlay.project_id==row.project_id,ProfileOverlay.node_key==row.node_key,
             ProfileOverlay.source_attempt_id==row.source_attempt_id,ProfileOverlay.status=='approved'))).all()
         approved=[{k:getattr(o,k) for k in ('overlay_id','profile_id','candidate_hash','base_version')} for o in profiles]
-        version=digest({'approved_profiles':approved,'graph':graph,'config':revision,'latest_attempt':latest.attempt_id if latest else None,
+        binding=await s.get(DecisionRuntimeBinding,row.execution_id)
+        cfg=decision_config.runtime_config()
+        if binding and binding.config_hash!=digest(cfg):raise ValueError('runtime configuration revision changed')
+        version=digest({'runtime_config':digest(cfg),'approved_profiles':approved,'graph':graph,'config':revision,'latest_attempt':latest.attempt_id if latest else None,
             'user_stop':bool((project.meta or {}).get('user_stop')) if project else True,
             'incident_status':incident.status,'event_ids':[e.event_id for e in events]})
         action=await s.get(RecoveryAction,row.action_id) if row.action_id else None
@@ -119,7 +130,8 @@ class DecisionSupervisor:
             'incident':panel_safe(incident.details),'evidence_ids':[e.event_id for e in events],
             'facts':[panel_safe({k:getattr(e,k) for k in ('event_id','kind','attempt_id','request_id','payload')}) for e in events[:20]],
             'approved_profiles':approved,
-            'allowed_actions':list(ACTIONS)+(['retry_profile'] if approved else []) if not action else ['read_events','read_contract','human_review','wait','finish'],
+            'allowed_actions':[a for a in (list(ACTIONS)+(['retry_profile'] if approved else []) if not action else ['read_events','read_contract','human_review','wait','finish']) if a in cfg['allowed_actions']],
+            'decision_runtime':{'mode':cfg['mode'],'model':cfg['decision'],'config_hash':digest(cfg)},
             'limits':{'request_limit':permission.request_limit,'requests_used':permission.requests_used,'max_model_steps':MAX_STEPS},
             'graph_matches':graph==permission.graph_version==scope.graph_version,
             'observer_active':scope.observer_state=='active','audit_gaps':bool(scope.gaps or row.execution_id in self.observer.failures or row.execution_id in self.observer.commit_uncertainty),
@@ -253,8 +265,12 @@ class DecisionSupervisor:
             hook=HttpDecision(self,decision_id,token,context['context_version'])
             ct=decision_transport.current.set(hook)
             try:
-                response=await gpt_api.chat(prompt=json.dumps(context,ensure_ascii=False,default=str),system=SYSTEM,
-                    history=history,auto_pack=False,volume_complete=False,max_retries=0,timeout=30)
+                cfg=decision_config.runtime_config()
+                from app.services.llm_override import NodeLlmOverride,use_override
+                m=cfg['decision']
+                with use_override(NodeLlmOverride(m['model_id'],'stable','text','kie',m['model_id'],m['reasoning_effort'])):
+                    response=await gpt_api.chat(model=m['model_id'],prompt=json.dumps(context,ensure_ascii=False,default=str),system=SYSTEM,
+                    history=history,auto_pack=False,volume_complete=False,max_retries=0,timeout=m['timeout_s'])
             finally:decision_transport.current.reset(ct)
             try:proposal=validate_proposal(response.text,context)
             except ValueError as exc:
@@ -370,16 +386,31 @@ class HttpDecision:
             self.supervisor.observer.mark_gap(self.execution_id,error)
             raise error
 
+    async def retrieve(self,url):
+        from app.services.actions_v1 import ActionSupervisor
+        cfg=decision_config.runtime_config()
+        original=urlsplit(cfg['endpoint'] or '');target=urlsplit(url)
+        if original.scheme!=target.scheme or original.netloc!=target.netloc or not target.path.startswith(original.path+'/'):
+            raise ValueError('retrieval outside approved response route')
+        async with self.supervisor.master() as s:
+            row=await s.get(DecisionRecord,self.decision_id)
+            await self.supervisor._live(s,row,self.token,version=self.version);self.execution_id=row.execution_id
+        await self.fact('decision_retrieve_start',{'method':'GET','purpose':'decision','url':url})
+        await ActionSupervisor(self.supervisor.master).charge_request(self.execution_id)
+
     async def send(self,function,args,kwargs):
         from app.settings import settings
         from app.services.actions_v1 import ActionSupervisor
-        if urlsplit(kwargs.get('url','')).hostname not in {'127.0.0.1','localhost'} or not str(settings.gpt_api_key).startswith('synthetic'):
-            raise ValueError('Decision-v1 transport is synthetic loopback only')
+        cfg=decision_config.runtime_config()
+        decision_config.check_route(cfg,kwargs.get('url',''))
+        m=cfg['decision']
+        if (kwargs.get('body') or {}).get('model')!=m['model_id']:raise ValueError('decision model differs from approved profile')
+        kwargs={**kwargs,'body':{**kwargs['body'],'max_output_tokens':m['max_output_tokens'],'reasoning':{'effort':m['reasoning_effort']}}}
         async with self.supervisor.master() as s:
             row=await s.get(DecisionRecord,self.decision_id);await self.supervisor._live(s,row,self.token,version=self.version)
             self.execution_id=row.execution_id
         self.request_id=str(uuid.uuid4())
-        await self.fact('decision_model_start',{'method':'POST'},body=kwargs.get('body'))
+        await self.fact('decision_model_start',{'method':'POST','purpose':'decision','model':m['model_id'],'max_output_tokens':m['max_output_tokens'],'reasoning_effort':m['reasoning_effort'],'route':cfg['endpoint'],'config_hash':digest(cfg)},body=kwargs.get('body'))
         try:await ActionSupervisor(self.supervisor.master).charge_request(self.execution_id)
         except Exception as exc:
             await self.fact('decision_request_blocked',{'sent':False,'guard':type(exc).__name__})

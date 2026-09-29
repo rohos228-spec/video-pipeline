@@ -200,7 +200,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       await observations.retryNode(projectId,execution,{incident_id:incident.incident_id,node_key:incident.node_key,
         rationale:actionRationale.trim(),idempotency_key:crypto.randomUUID()});
       setActionState(await observations.actions(projectId,execution));
-    } catch(e) { setActionError(String(e)); }
+    } catch { setActionError('Сервер отклонил действие: проверьте область, разрешение, остановку и лимиты. Подробности доступны в истории действий.'); }
     finally { setBusy(false); }
   }
 

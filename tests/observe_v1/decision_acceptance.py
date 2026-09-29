@@ -85,7 +85,7 @@ async def run(mode,client,fixtures,observer,root,result):
         interventions=['copy historical synthetic checkpoint','enable synthetic decision mode through original API'])
     assert len(decisions['records'])==1,decisions
     decision=decisions['records'][0]
-    if mode in {'decision-bad','profiles-bad'}:
+    if mode in {'decision-bad','profiles-bad','decision-runtime-bad'}:
         assert decision['status']=='human_review' and decision['model_steps']==2,decision
         actions=(await client.get(base+f'/observations/{execution}/actions')).json()
         assert actions['held'] and actions['requests_used']==22,actions
