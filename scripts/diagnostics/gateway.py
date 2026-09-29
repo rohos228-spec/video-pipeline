@@ -125,6 +125,9 @@ def connect() -> sqlite3.Connection:
                "saved_at REAL NOT NULL, PRIMARY KEY(request_ordinal,batch_index))")
     db.execute("CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id=1), "
                "blocked_reason TEXT)")
+    db.execute("CREATE TABLE IF NOT EXISTS ack_events (response_id TEXT NOT NULL, stage TEXT NOT NULL, "
+               "first_at REAL NOT NULL, last_at REAL NOT NULL, attempts INTEGER NOT NULL, "
+               "accepted INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(response_id,stage))")
     db.execute("INSERT OR IGNORE INTO state(id,blocked_reason) VALUES(1,NULL)")
     return db
 
@@ -235,18 +238,25 @@ def save_batch(ordinal: int, batch_index: int, first_event: int, events: list[di
 
 
 def acknowledge(response_id: str, stage: str) -> bool:
-    if stage not in {'received', 'accepted'} or not re.fullmatch(r'resp_[A-Za-z0-9_-]{1,160}', response_id):
-        return False
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        if stage == 'received':
-            result = db.execute('UPDATE requests SET application_received_at=COALESCE(application_received_at,?) '
-                'WHERE response_id=? AND upstream_complete=1', (time.time(), response_id))
-        else:
-            result = db.execute('UPDATE requests SET application_accepted_at=COALESCE(application_accepted_at,?) '
-                'WHERE response_id=? AND application_received_at IS NOT NULL', (time.time(), response_id))
+        valid = stage in {'received', 'accepted'} and bool(re.fullmatch(r'resp_[A-Za-z0-9_-]{1,160}', response_id))
+        rows = db.execute('SELECT ordinal,upstream_complete,application_received_at FROM requests '
+                          'WHERE response_id=?', (response_id,)).fetchall() if valid else []
+        reason = ('invalid_binding' if not valid else 'foreign_or_ambiguous_response' if len(rows) != 1
+                  else 'upstream_incomplete' if not rows[0][1]
+                  else 'received_required' if stage == 'accepted' and not rows[0][2] else 'recorded')
+        ok = reason == 'recorded'
+        now = time.time()
+        if ok:
+            field = 'application_received_at' if stage == 'received' else 'application_accepted_at'
+            db.execute(f'UPDATE requests SET {field}=COALESCE({field},?) WHERE ordinal=?', (now, rows[0][0]))
+        db.execute('INSERT INTO ack_events(response_id,stage,first_at,last_at,attempts,accepted,reason) '
+                   'VALUES(?,?,?,?,1,?,?) ON CONFLICT(response_id,stage) DO UPDATE SET '
+                   'last_at=excluded.last_at,attempts=ack_events.attempts+1,accepted=excluded.accepted,reason=excluded.reason',
+                   (response_id, stage, now, now, int(ok), reason))
         db.execute('COMMIT')
-        return result.rowcount == 1
+        return ok
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -276,6 +286,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not 1 <= size <= 512:
                     self.reject(413, 'ack_size_blocked'); return
                 payload = json.loads(self.rfile.read(size))
+                if not isinstance(payload, dict):
+                    payload = {}
                 ok = acknowledge(str(payload.get('response_id') or ''), str(payload.get('stage') or ''))
             except (ValueError, TypeError, sqlite3.Error):
                 ok = False

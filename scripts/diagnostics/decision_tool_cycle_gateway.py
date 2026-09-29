@@ -27,7 +27,7 @@ class Handler(base.Handler):
         self.reject(403, 'decision_retrieval_forbidden')
 
     def do_POST(self):
-        if self.path != '/codex/v1/responses':
+        if self.path not in ('/codex/v1/responses', '/local/decision-ack'):
             self.reject(403, 'route_blocked')
             return
         super().do_POST()

@@ -113,7 +113,8 @@ def setup_gateway():
         def do_GET(self): self.reject(403, 'test_no_retrieval')
     rejected=[]
     gateway.KIE='https://api.kie.ai'
-    Handler.forward(SimpleNamespace(reject=lambda code,label: rejected.append((code,label))), b'{}')
+    Handler.forward(SimpleNamespace(command='POST', path='/codex/v1/responses',
+                                    reject=lambda code,label: rejected.append((code,label))), b'{}')
     assert rejected == [(403, 'external_gateway_disabled')]
     gateway.KIE='http://127.0.0.1:18767'
     server = gateway.Server(str(gateway.SOCKET), Handler)

@@ -22,6 +22,9 @@ from unittest.mock import patch
 import httpx
 
 ROOT=Path('/results');SOURCE=Path('/observe-source');DATA=ROOT/'free-run-data'
+REPLAY=SOURCE/'replay-response.json'
+ACK_FAILURE=os.environ.get('OBSERVE_ACK_FAILURE')=='1'
+ACK_FAILURE_STAGE=os.environ.get('OBSERVE_ACK_FAILURE_STAGE') or ('received' if ACK_FAILURE else '')
 SERVICE={'observation_executions','observation_outbox','observation_events',
          'observation_incidents','observation_diagnosis','action_execution_controls',
          'action_v1_records','decision_execution_controls','decision_runtime_bindings',
@@ -87,20 +90,30 @@ class Fixture(BaseHTTPRequestHandler):
             assert len(type(self).bodies)<3,'physical synthetic POST cap'
             assert set(ctx['allowed_actions'])=={'read_events','read_contract','wait','human_review'}
             turn=len(type(self).bodies)+1
-            action=('read_events','read_contract','human_review')[turn-1]
+            action=(('read_contract','read_events','human_review') if REPLAY.exists()
+                    else ('read_events','read_contract','human_review'))[turn-1]
             args={'event_ids':ctx['evidence_ids'][:2]} if action=='read_events' else {}
             proposal={'action':action,'arguments':args,'evidence_ids':ctx['evidence_ids'][:1],
                 'context_version':ctx['context_version'],'explanation':'Synthetic read-only decision; request human assessment after reading actual tools.'}
-            answer=json.dumps(proposal,ensure_ascii=False)
+            archived=(json.loads(REPLAY.read_text(encoding='utf-8')) if turn==1 and REPLAY.exists() else None)
+            answer=(archived['response']['output'][0]['content'][0]['text'] if archived
+                    else json.dumps(proposal,ensure_ascii=False))
+            if turn==1 and REPLAY.exists():
+                replay=json.loads(answer)
+                assert replay['context_version']==ctx['context_version']
+                assert all(e in ctx['evidence_ids'] for e in replay['evidence_ids'])
+                assert replay['action']=='read_contract'
+                proposal=replay
             type(self).bodies.append(body);type(self).responses.append(proposal)
             save('requests.json',type(self).bodies);save('fixture-responses.json',type(self).responses)
-            response={'id':f'resp_readonly_{turn}','status':'completed',
+            response=(archived['response'] if archived else {
+                'id':f'resp_readonly_{turn}','status':'completed',
                 'output':[{'content':[{'type':'output_text','text':answer}]}],
                 'usage':{'input_tokens':100+turn,'output_tokens':40+turn,'synthetic':True},
-                'credits_consumed':0.01}
+                'credits_consumed':0.01})
             events=[{'type':'response.created','response':{'id':response['id']}},
                 {'type':'response.output_text.delta','delta':answer},
-                {'type':'response.completed','response':response}]
+                (archived if archived else {'type':'response.completed','response':response})]
             data=''.join('data: '+json.dumps(e)+'\n\n' for e in events).encode()
             self.send_response(200);self.send_header('Content-Type','text/event-stream')
             self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
@@ -111,16 +124,23 @@ class Fixture(BaseHTTPRequestHandler):
         type(self).unexpected.append('GET forbidden');self.send_response(403);self.end_headers()
 
 def setup_gateway():
-    spec=importlib.util.spec_from_file_location('diagnostic_gateway',SOURCE/'gateway.py')
-    gateway=importlib.util.module_from_spec(spec);spec.loader.exec_module(gateway)
+    staged=Path('/gateway-source');staged.mkdir(exist_ok=True)
+    shutil.copy2(SOURCE/'gateway.py',staged/'gateway.py')
+    shutil.copy2(SOURCE/'scripts/diagnostics/decision_tool_cycle_gateway.py',staged/'decision_tool_cycle_gateway.py')
+    shutil.copy2(SOURCE/'config/decision-tool-cycle.example.json',staged/'pilot-config.json')
+    spec=importlib.util.spec_from_file_location('pilot_gateway',staged/'decision_tool_cycle_gateway.py')
+    pilot=importlib.util.module_from_spec(spec);spec.loader.exec_module(pilot)
+    gateway=pilot.base
     gateway.KIE='http://127.0.0.1:18767'
     gateway.SOCKET=ROOT/'llm.sock';gateway.LEDGER=ROOT/'gateway.sqlite'
     gateway.MAX_REQUESTS=3;gateway.MAX_OUTPUT=1024;gateway.FIXTURE=False
     gateway.recover_pending()
-    class Handler(gateway.Handler):
-        def do_GET(self):self.reject(403,'test_no_retrieval')
-    server=gateway.Server(str(gateway.SOCKET),Handler)
+    server=gateway.Server(str(gateway.SOCKET),pilot.Handler)
     threading.Thread(target=server.serve_forever,daemon=True).start()
+    save('gateway-handler.json',{'class':'decision_tool_cycle_gateway.Handler',
+        'pilot_sha256':hashlib.sha256(Path(pilot.__file__).read_bytes()).hexdigest(),
+        'base_sha256':hashlib.sha256(Path(gateway.__file__).read_bytes()).hexdigest(),
+        'pilot_config_sha256':hashlib.sha256((staged/'pilot-config.json').read_bytes()).hexdigest()})
     return gateway,server
 
 async def run():
@@ -130,11 +150,12 @@ async def run():
     provenance=json.loads(Path('/observe-checkpoint-provenance.json').read_text())
     save('checkpoint-provenance.json',provenance)
     assert provenance['synthetic_only'] and provenance['status']=='exhausted before supervisor action'
-    cfg={'version':1,'mode':'synthetic','online_enabled':True,
+    cfg={'version':1,'mode':'production' if REPLAY.exists() else 'synthetic','online_enabled':True,
          'endpoint':'http://127.0.0.1/codex/v1/responses',
-         'decision':{'catalog_id':'gpt-kie','model_id':'gpt-5-6-sol','reasoning_effort':'low','max_output_tokens':1024,'timeout_s':30},
+         'decision':{'catalog_id':'gpt-kie','model_id':'gpt-5-6-sol','reasoning_effort':'low','max_output_tokens':1024,'timeout_s':90 if REPLAY.exists() else 30},
          'profiles':{},'allowed_actions':['read_events','read_contract','wait','human_review'],
-         'model_transport':'fixture','external_calls_enabled':False,'retrieval_allowed':False,
+         'model_transport':'real' if REPLAY.exists() else 'fixture',
+         'external_calls_enabled':REPLAY.exists(),'retrieval_allowed':False,
          'continuation_allowed':False,'gateway_ack':True}
     save('runtime-config.json',cfg)
     os.environ.update({'DATA_DIR':str(DATA),'SQLITE_PATH':str(DATA/'state.db'),
@@ -181,6 +202,13 @@ async def run():
     server=ThreadingHTTPServer(('127.0.0.1',18767),Fixture)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     gateway,gateway_server=setup_gateway()
+    if ACK_FAILURE_STAGE:
+        real_ack=gateway.acknowledge
+        def reject_ack_storage(response_id,stage):
+            if stage==ACK_FAILURE_STAGE:
+                raise sqlite3.OperationalError('synthetic_ack_storage_failure')
+            return real_ack(response_id,stage)
+        gateway.acknowledge=reject_ack_storage
     def socket_client(**kwargs):
         kwargs['transport']=httpx.AsyncHTTPTransport(uds=str(gateway.SOCKET),retries=0)
         kwargs['trust_env']=False
@@ -197,6 +225,39 @@ async def run():
             await asyncio.sleep(.1)
         else:raise AssertionError('Original observer loop did not complete three read-only turns')
         await asyncio.sleep(2.2)
+        if ACK_FAILURE_STAGE:
+            async with SessionLocal() as s:
+                record=(await s.scalars(select(DecisionRecord))).one()
+                turns=(await s.scalars(select(DecisionTurn).order_by(DecisionTurn.id))).all()
+                control=await s.get(ActionExecutionControl,execution)
+                assert not (await s.scalars(select(RecoveryAction))).all()
+            errors=[t.payload for t in turns if t.role=='http_event' and t.payload.get('kind')=='decision_model_error']
+            tools=[t.payload for t in turns if t.role=='tool' and t.payload.get('action') in {'read_events','read_contract'}]
+            assert len(Fixture.bodies)==1 and record.model_steps==1 and record.status=='human_review'
+            assert control.requests_used==initial_used+1 and control.held and not tools
+            if ACK_FAILURE_STAGE=='received':
+                assert len(errors)==1 and errors[0]['metadata']['complete'] is True
+                assert errors[0]['metadata']['phase']=='local_ack'
+                assert not [t for t in turns if t.role=='assistant']
+            else:
+                assert not errors
+                assert len([t for t in turns if t.role=='assistant'])==1
+                ack_errors=[t.payload for t in turns if t.role=='http_event' and t.payload.get('kind')=='decision_gateway_ack_error']
+                assert len(ack_errors)==1 and ack_errors[0]['metadata']['stage']=='accepted'
+            with sqlite3.connect(gateway.LEDGER) as db:
+                assert db.execute('SELECT COUNT(*) FROM requests').fetchone()[0]==1
+                assert db.execute('SELECT COUNT(*) FROM ack_events').fetchone()[0]==(1 if ACK_FAILURE_STAGE=='accepted' else 0)
+                received,accepted=db.execute('SELECT application_received_at,application_accepted_at FROM requests').fetchone()
+                assert bool(received)==(ACK_FAILURE_STAGE=='accepted') and accepted is None
+            after=snapshot();assert before==after
+            save('result.json',{'accepted':True,'case':'local_'+ACK_FAILURE_STAGE+'_ack_storage_failure',
+                'synthetic_posts':1,'local_ack_received':int(bool(received)),
+                'local_ack_accepted':0,'upstream_get':0,
+                'model_steps':1,'status':record.status,'held':control.held,
+                'provider_complete':True,'application_accepted':False,
+                'error_phase':'local_ack_'+ACK_FAILURE_STAGE,'tool_count':0,'business_tables_unchanged':True,
+                'worker_started':False,'recovery_records':0,'real_api_calls':0})
+            return
         assert len(Fixture.bodies)==3 and not Fixture.unexpected
         async with SessionLocal() as s:
             rows=(await s.scalars(select(DecisionRecord))).all();assert len(rows)==1
@@ -207,13 +268,15 @@ async def run():
             assert not (await s.scalars(select(RecoveryAction))).all()
             context=await decider.context(record.decision_id)
         tools=[t.payload for t in turns if t.role=='tool' and t.payload.get('action') in {'read_events','read_contract'}]
-        assert [t['action'] for t in tools]==['read_events','read_contract']
+        expected_tools=['read_contract','read_events'] if REPLAY.exists() else ['read_events','read_contract']
+        assert [t['action'] for t in tools]==expected_tools
         starts=[t for t in turns if t.role=='http_event' and t.payload.get('kind')=='decision_model_start']
         ends=[t for t in turns if t.role=='http_event' and t.payload.get('kind')=='decision_model_end']
         assert len(starts)==len(ends)==3
         assert all(t.payload['metadata'].get('complete') and t.payload['metadata'].get('usage') is not None for t in ends)
         acks=[t.payload for t in turns if t.role=='http_event' and t.payload.get('kind')=='decision_gateway_ack']
-        expected_ids=[f'resp_readonly_{n}' for n in range(1,4)]
+        expected_ids=([json.loads(REPLAY.read_text(encoding='utf-8'))['response']['id']]
+                      if REPLAY.exists() else [f'resp_readonly_1'])+[f'resp_readonly_{n}' for n in range(2,4)]
         assert [(a['metadata']['response_id'],a['metadata']['stage']) for a in acks]==[
             (response_id,stage) for response_id in expected_ids for stage in ('received','accepted')]
         with sqlite3.connect(gateway.LEDGER) as db:
@@ -229,17 +292,20 @@ async def run():
             s.payload['metadata']['request_body_sha256'] for s in starts]
         assert [r[4] for r in gateway_rows]==expected_ids
         assert all(r[1]=='complete' and r[5]==r[6]==1 and r[7] and r[8] and r[12]>=3 for r in gateway_rows)
-        assert all(r[13]==0.01 for r in gateway_rows)
+        assert all(r[13]==(0.97 if REPLAY.exists() and r[0]==1 else 0.01) for r in gateway_rows)
         for row in gateway_rows:
             terminal=json.loads((gateway.BODY_ROOT/row[9]).read_text())
             accumulated=json.loads((gateway.BODY_ROOT/row[10]).read_text())
             usage=json.loads(row[11])
             assert terminal['type']=='response.completed' and terminal['response']['id']==row[4]
-            assert usage['output_tokens']==40+row[0]
-            assert json.loads(accumulated['text'])['action']==('read_events','read_contract','human_review')[row[0]-1]
+            assert usage['output_tokens']==(213 if REPLAY.exists() and row[0]==1 else 40+row[0])
+            assert json.loads(accumulated['text'])['action']==(expected_tools+['human_review'])[row[0]-1]
             assert ends[row[0]-1].payload['metadata']['usage']['output_tokens']==usage['output_tokens']
         assert all(hashlib.sha256((gateway.BODY_ROOT/path).read_bytes()).hexdigest()==sha
                    for _,path,sha in batches)
+        with sqlite3.connect(gateway.LEDGER) as db:
+            ack_rows=db.execute('SELECT response_id,stage,accepted FROM ack_events ORDER BY response_id,stage').fetchall()
+        assert len(ack_rows)==6 and all(row[2]==1 for row in ack_rows)
         for index,tool in enumerate(tools,1):
             _,strings=context_from(Fixture.bodies[index])
             decoded=[]
@@ -287,6 +353,8 @@ async def run():
             'runtime_calls':sorted(calls),'request_bytes':Fixture.sizes,'persisted_model_reservations':len(starts),'persisted_model_responses_with_usage':len(ends),
             'gateway_response_ids':expected_ids,'gateway_request_hashes_match':True,
             'gateway_terminal_usage_and_ack':True,'gateway_event_batches':len(batches),
+            'pilot_handler':'decision_tool_cycle_gateway.Handler','replay_full_terminal':REPLAY.exists(),
+            'local_ack_count':len(ack_rows),'upstream_get':0,
             'request_limit_remaining':0,'next_turn_authorized':False,
             'audit':[{'kind':a.action_kind,'status':a.status,'idempotency_key':a.idempotency_key} for a in audit]})
     finally:

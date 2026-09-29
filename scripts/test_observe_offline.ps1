@@ -4,6 +4,9 @@ param(
     [string]$Target = 'journal',
     [string]$GroupMode = 'observe',
     [string]$DenialSeed,
+    [string]$ReplayResponsePath,
+    [switch]$AckFailure,
+    [ValidateSet('','accepted')][string]$AckFailureStage = '',
     [string]$StreamCase = 'fast',
     [switch]$StreamRed,
     [switch]$Browser
@@ -37,7 +40,8 @@ if ($Target -eq 'planner-boundary') { $files += 'tests/observe_v1/test_planner_b
 if ($Target -eq 'readonly-pilot') { $files += @('scripts/readonly_qc_pilot.py','tests/observe_v1/test_readonly_pilot.py') }
 if ($Target -eq 'operator-regression') { $files += @('tests/test_gpt_operator_apply_ops.py','tests/test_apply_ops_batches.py') }
 if ($Target.StartsWith('qc-noop')) { $files += 'tests/observe_v1/test_qc_noop.py' }
-if ($Target -eq 'decision-readonly') { $files += 'tests/observe_v1/decision_readonly_acceptance.py' }
+if ($Target -eq 'decision-readonly') { $files += @('tests/observe_v1/decision_readonly_acceptance.py',
+    'scripts/diagnostics/decision_tool_cycle_gateway.py','config/decision-tool-cycle.example.json') }
 if ($Target -eq 'decision-stream') { $files += 'tests/observe_v1/decision_stream_acceptance.py' }
 if ($Target.StartsWith('decision')) { $files += 'tests/observe_v1/test_decision_v1.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
@@ -97,6 +101,11 @@ if ($Target -in @('decision-stream','decision-readonly')) {
 if ($Target -eq 'decision-stream') {
     if ($StreamCase -notin @('fast','slow','timeout','late_terminal')) { throw 'Unknown stream case' }
 }
+if ($Target -eq 'decision-readonly' -and $ReplayResponsePath) {
+    if (-not (Test-Path -LiteralPath $ReplayResponsePath)) { throw 'Replay response missing' }
+    Copy-Item -LiteralPath $ReplayResponsePath -Destination (Join-Path $stagePath 'replay-response.json')
+    $manifest['replay-response.json'] = (Get-FileHash -LiteralPath (Join-Path $stagePath 'replay-response.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+}
 [IO.File]::WriteAllText((Join-Path $stagePath 'source-manifest.json'), ($manifest | ConvertTo-Json -Depth 4), $utf8)
 $name = 'vp-observe-test-' + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $docker = 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
@@ -115,6 +124,8 @@ $dockerArgs = $connectionArgs + @(
     '--env', "OBSERVE_BROWSER=$Browser",
     '--env', "OBSERVE_STREAM_CASE=$StreamCase",
     '--env', "OBSERVE_STREAM_RED=$([int]$StreamRed.IsPresent)",
+    '--env', "OBSERVE_ACK_FAILURE=$([int]$AckFailure.IsPresent)",
+    '--env', "OBSERVE_ACK_FAILURE_STAGE=$AckFailureStage",
     $Image, 'python', $entryFile)
 $containerId = & $docker @dockerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Cannot create offline test container' }

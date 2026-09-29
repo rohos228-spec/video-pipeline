@@ -301,7 +301,10 @@ class DecisionSupervisor:
                 row.last_signature=signature;row.proposal=proposal;row.policy_result={'allowed':True,'evidence_verified':True}
                 await self._turn(s,row,'proposal:'+str(row.model_steps),'assistant',proposal)
                 row.status='acting';await s.commit()
-            await hook.ack_gateway('accepted')
+            try:await hook.ack_gateway('accepted')
+            except Exception as exc:
+                await hook.fact('decision_gateway_ack_error',{'stage':'accepted','provider_complete':True,'error_type':type(exc).__name__})
+                raise ValueError('completed decision HTTP response; local accepted acknowledgement failed; no repeat POST') from exc
             action=proposal['action']
             if action in {'retry_same','retry_profile'}:
                 from app.services.actions_v1 import ActionSupervisor
@@ -455,18 +458,24 @@ class HttpDecision:
         except Exception as exc:
             await self.fact('decision_request_blocked',{'sent':False,'guard':type(exc).__name__})
             raise
+        provider_complete = False
+        phase = 'provider'
         try:
             result=await function(*args,**kwargs)
             complete=(result.raw or {}).get('status')=='completed' and not (result.raw or {}).get('sse_salvaged')
+            provider_complete = complete
             await self.fact('decision_model_end',{'complete':complete,'usage':result.usage},body={'text':result.text,'response':result.raw})
             if (result.raw or {}).get('status')!='completed' or (result.raw or {}).get('sse_salvaged'):
                 raise ValueError('uncertain decision model response')
             self.response_id=result.response_id or (result.raw or {}).get('id')
+            phase = 'local_ack'
             await self.ack_gateway('received')
             return result
         except BaseException as exc:
-            await self.fact('decision_model_error',{'complete':False,'error_type':type(exc).__name__})
-            await self.supervisor.escalate(self.decision_id,'uncertain decision HTTP result; no repeat POST')
+            await self.fact('decision_model_error',{'complete':provider_complete,'phase':phase,'error_type':type(exc).__name__})
+            reason = ('completed decision HTTP response; local gateway acknowledgement failed; no repeat POST'
+                      if provider_complete and phase == 'local_ack' else 'uncertain decision HTTP result; no repeat POST')
+            await self.supervisor.escalate(self.decision_id,reason)
             raise
 
 
