@@ -35,8 +35,11 @@ try:
         sys.argv = [str(SOURCE / "tests/observe_v1/test_diagnosis.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "actions":
         sys.argv = [str(SOURCE / "tests/observe_v1/test_actions_v1_contract.py")]
-    if os.environ.get("OBSERVE_TEST_TARGET") == "decision":
+    if os.environ.get("OBSERVE_TEST_TARGET",'').startswith("decision"):
         sys.argv = [str(SOURCE / "tests/observe_v1/test_decision_v1.py")]
+        if os.environ.get('OBSERVE_TEST_TARGET')=='decision-audit':
+            sys.argv.extend(['DecisionDurability.test_missing_mandatory_body_blocks_http_before_charge',
+                'DecisionDurability.test_contract_uses_actual_target_count_not_example_batch'])
     runpy.run_path(sys.argv[0], run_name="__main__")
 except SystemExit as exc:
     exit_code = int(exc.code or 0)

@@ -13,6 +13,7 @@ import uuid
 from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint, select, update
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models import Base
+from app.services.decision_state import DecisionControl, DecisionRecord, DecisionTurn
 
 
 class ActionExecutionControl(Base):

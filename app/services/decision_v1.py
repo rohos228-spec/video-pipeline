@@ -7,7 +7,7 @@ import json
 import uuid
 from datetime import datetime,timedelta
 from urllib.parse import urlsplit
-from sqlalchemy import select,update
+from sqlalchemy import select,update,func
 from sqlalchemy.dialects.sqlite import insert
 from app.models import Project,WorkflowRun
 from app.services.decision_state import DecisionControl,DecisionRecord,DecisionTurn
@@ -162,6 +162,38 @@ class DecisionSupervisor:
                 ObservationEvent.node_key==row.node_key,ObservationEvent.attempt_id==row.source_attempt_id))).all()
             return [panel_safe({k:getattr(e,k) for k in ('event_id','kind','request_id','payload')}) for e in events]
 
+    async def read_contract(self,decision_id):
+        from app.models import Frame
+        from app.services.excel_gpt_node import node_config
+        from app.orchestrator.steps.enrich_xlsx import _script_frames_qc_footer_kind
+        from app.services.apply_ops_batches import _batch_footer
+        async with self.master() as s:
+            row=await s.get(DecisionRecord,decision_id)
+            if not row:raise LookupError('decision not found')
+            context=await self._context(s,row)
+            scope=await s.get(ExecutionControl,row.execution_id)
+            run=await s.get(WorkflowRun,scope.workflow_run_id)
+            node=next((n for n in run.nodes_snapshot if str(n.get('id'))==row.node_key),None)
+            if not node:raise ValueError('node contract missing from graph')
+            project=await s.get(Project,row.project_id)
+            cfg=node_config(project,row.node_key)
+            count=await s.scalar(select(func.count()).select_from(Frame).where(Frame.project_id==row.project_id))
+            if project.data_dir:
+                from app.project_db import project_db_session_scope
+                async with project_db_session_scope(row.project_id) as ps:
+                    pp=await ps.get(Project,row.project_id)
+                    if not pp:raise ValueError('project contract unavailable')
+                    cfg=node_config(pp,row.node_key)
+                    count=await ps.scalar(select(func.count()).select_from(Frame).where(Frame.project_id==row.project_id))
+            kind=_script_frames_qc_footer_kind(None,None,row.node_key)
+            return panel_safe({'node_key':row.node_key,'node_type':node.get('type'),
+                'graph_version':scope.graph_version,'context_version':context['context_version'],
+                'node_config':{k:cfg[k] for k in ('inputSource','outputMode','workMode') if k in cfg},
+                'contract_kind':kind,'target_frame_count':count,
+                'contract':_batch_footer(1,0,max(1,count),footer_kind=kind),
+                'source':'original apply_ops_batches._batch_footer + workflow snapshot + node_config',
+                'write_authority':'original runtime only; no direct writes'})
+
     async def _live(self,s,row,token,*,version=None):
         control=await s.get(DecisionControl,row.execution_id)
         if not control or not control.enabled or row.lease_token!=token or row.status not in {'model_pending','acting'}:
@@ -248,7 +280,7 @@ class DecisionSupervisor:
                     row.lease_token=None;row.lease_until=None;await s.commit()
             else:
                 if action=='read_events':result=await self.read_events(decision_id,proposal['arguments']['event_ids'])
-                elif action=='read_contract':result={'node_key':row.node_key,'payload':'mandatory JSON ops','write_authority':'original node contract; no direct writes','recovery':'one attempt after native exhaustion; same input/graph/config'}
+                elif action=='read_contract':result=await self.read_contract(decision_id)
                 else:result={'status':'waiting','business_action':False}
                 async with self.master() as s:
                     row=await s.get(DecisionRecord,decision_id);await self._turn(s,row,'tool:'+str(row.model_steps),'tool',{'action':action,'result':result})
@@ -257,11 +289,15 @@ class DecisionSupervisor:
 
     async def tick(self):
         from app.services.actions_recovery import RecoveryAction
+        from app.services.actions_v1 import ActionExecutionControl
         from app.services.diagnosis import Incident
         from app.services.step_failure_policy import MAX_TOTAL_FAILS
+        pending=[]
         async with self.master() as s:
             controls=(await s.scalars(select(DecisionControl).where(DecisionControl.enabled.is_(True)))).all()
             for control in controls:
+                permission=await s.get(ActionExecutionControl,control.execution_id)
+                if not permission or not permission.enabled or permission.held:continue
                 project=await s.get(Project,control.project_id)
                 fs=(project.meta or {}).get('step_failure',{}) if project else {}
                 if fs.get('abandoned_at') and max((fs.get('total_fails') or {}).values(),default=0)>=MAX_TOTAL_FAILS:
@@ -269,7 +305,10 @@ class DecisionSupervisor:
                         Incident.type.in_(['invalid_json','missing_payload']),Incident.status!='resolved_confirmed'))).all()
                     for incident in incidents:
                         if incident.details.get('currently_relevant'):
-                            await self.begin(project_id=control.project_id,execution_id=control.execution_id,incident_id=incident.incident_id)
+                            pending.append((control.project_id,control.execution_id,incident.incident_id))
+        for project_id,execution_id,incident_id in pending:
+            await self.begin(project_id=project_id,execution_id=execution_id,incident_id=incident_id)
+        async with self.master() as s:
             records=(await s.scalars(select(DecisionRecord).where(DecisionRecord.status.in_(['ready','waiting_worker','model_pending','acting'])))).all()
         for row in records:
             if row.status=='waiting_worker':
@@ -279,7 +318,12 @@ class DecisionSupervisor:
                         record=await s.get(DecisionRecord,row.decision_id);record.status='ready';record.verification=ticket.verification_result
                         await self._turn(s,record,'worker:'+ticket.action_id,'tool',{'action':'worker_result','status':ticket.status,'verification':ticket.verification_result})
                         await s.commit()
-                    elif ticket and ticket.status=='human_review':await self.escalate(row.decision_id,'recovery failed verification; no further attempt')
+                    failed=ticket and ticket.status=='human_review'
+                    if failed:
+                        record=await s.get(DecisionRecord,row.decision_id);record.verification=ticket.verification_result
+                        await self._turn(s,record,'worker:'+ticket.action_id,'tool',{'action':'worker_result','status':ticket.status,'verification':ticket.verification_result})
+                        await s.commit()
+                if failed:await self.escalate(row.decision_id,'recovery failed verification; no further attempt')
                 continue
             if row.status in {'model_pending','acting'}:
                 if row.lease_until and row.lease_until<datetime.utcnow():
@@ -290,7 +334,7 @@ class DecisionSupervisor:
                             RecoveryAction.idempotency_key=='decision-retry:'+row.decision_id))
                         if ticket:
                             record=await s.get(DecisionRecord,row.decision_id);record.action_id=ticket.action_id;record.status='waiting_worker';await s.commit()
-                        else:await self.escalate(row.decision_id,'interrupted decision turn is uncertain; no repeat POST')
+                    if not ticket:await self.escalate(row.decision_id,'interrupted decision turn is uncertain; no repeat POST')
                 continue
             if row.model_steps>=MAX_STEPS:await self.escalate(row.decision_id,'model step limit exhausted')
             else:await self.step(row.decision_id)
@@ -306,6 +350,10 @@ class HttpDecision:
             row=await s.get(DecisionRecord,self.decision_id)
             await self.supervisor._turn(s,row,str(uuid.uuid4()),'http_event',{'kind':kind,'request_id':request_id or self.request_id,'metadata':payload,'body':ref})
             await s.commit()
+        if ref and ref.get('gap'):
+            error=ValueError('mandatory body unavailable: '+str(ref['gap']))
+            self.supervisor.observer.mark_gap(self.execution_id,error)
+            raise error
 
     async def send(self,function,args,kwargs):
         from app.settings import settings
@@ -317,14 +365,20 @@ class HttpDecision:
             self.execution_id=row.execution_id
         self.request_id=str(uuid.uuid4())
         await self.fact('decision_model_start',{'method':'POST'},body=kwargs.get('body'))
-        await ActionSupervisor(self.supervisor.master).charge_request(self.execution_id)
+        try:await ActionSupervisor(self.supervisor.master).charge_request(self.execution_id)
+        except Exception as exc:
+            await self.fact('decision_request_blocked',{'sent':False,'guard':type(exc).__name__})
+            raise
         try:
             result=await function(*args,**kwargs)
-            await self.fact('decision_model_end',{'complete':(result.raw or {}).get('status')=='completed','usage':result.usage},body={'text':result.text,'response':result.raw})
-            if (result.raw or {}).get('status')!='completed':raise ValueError('uncertain decision model response')
+            complete=(result.raw or {}).get('status')=='completed' and not (result.raw or {}).get('sse_salvaged')
+            await self.fact('decision_model_end',{'complete':complete,'usage':result.usage},body={'text':result.text,'response':result.raw})
+            if (result.raw or {}).get('status')!='completed' or (result.raw or {}).get('sse_salvaged'):
+                raise ValueError('uncertain decision model response')
             return result
         except BaseException as exc:
             await self.fact('decision_model_error',{'complete':False,'error_type':type(exc).__name__})
+            await self.supervisor.escalate(self.decision_id,'uncertain decision HTTP result; no repeat POST')
             raise
 
 

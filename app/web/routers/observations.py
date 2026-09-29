@@ -71,6 +71,40 @@ class RetryNode(ReviewIncident):
     node_key: str = Field(min_length=1, max_length=60)
 
 
+class DecisionMode(BaseModel):
+    enabled: bool
+    rationale: str = Field(min_length=3,max_length=1000)
+
+
+@router.post('/{execution_id}/decisions/control')
+async def decision_mode(project_id:int,execution_id:str,payload:DecisionMode,operator:AuthDep):
+    from app.services.decision_v1 import get_decider
+    observer=get_observer()
+    async with observer.master() as s:await _scope(s,project_id,execution_id)
+    try:
+        return await get_decider(observer).configure(project_id=project_id,execution_id=execution_id,
+            enabled=payload.enabled,initiator=_operator_id(operator),rationale=payload.rationale)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+
+
+@router.get('/{execution_id}/decisions')
+async def decisions(project_id:int,execution_id:str):
+    from app.services.decision_state import DecisionControl,DecisionRecord,DecisionTurn
+    from app.services.decision_v1 import record_json,MAX_STEPS
+    async with get_observer().master() as s:
+        await _scope(s,project_id,execution_id)
+        control=await s.get(DecisionControl,execution_id)
+        rows=(await s.scalars(select(DecisionRecord).where(DecisionRecord.execution_id==execution_id,
+            DecisionRecord.project_id==project_id).order_by(DecisionRecord.created_at))).all()
+        records=[]
+        for row in rows:
+            turns=(await s.scalars(select(DecisionTurn).where(DecisionTurn.decision_id==row.decision_id,
+                DecisionTurn.role.in_(['assistant','tool'])).order_by(DecisionTurn.id))).all()
+            records.append({**record_json(row),'turns':[{'id':t.id,'role':t.role,'payload':t.payload} for t in turns]})
+        return panel_safe({'enabled':bool(control and control.enabled),'synthetic_only':True,
+            'max_model_steps':MAX_STEPS,'records':records})
+
+
 def scope_json(scope):
     return panel_safe({key: getattr(scope, key) for key in (
         "execution_id", "project_id", "workflow_run_id", "node_keys", "graph_version",

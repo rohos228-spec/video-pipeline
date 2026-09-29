@@ -1,6 +1,6 @@
 """Additive durable state for the opt-in, bounded Decision-v1 supervisor."""
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, JSON, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, JSON, String, UniqueConstraint,select
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models import Base
 
@@ -50,7 +50,9 @@ class DecisionTurn(Base):
 
 async def authorize_recovery(session,execution_id,incident_id,decision_id):
     control=await session.get(DecisionControl,execution_id)
-    if not control or not control.enabled:return
+    owner=await session.scalar(select(DecisionRecord).where(DecisionRecord.execution_id==execution_id,
+        DecisionRecord.incident_id==incident_id))
+    if not owner and (not control or not control.enabled):return
     record=await session.get(DecisionRecord,decision_id) if decision_id else None
-    if not record or record.execution_id!=execution_id or record.incident_id!=incident_id or record.status!='acting':
+    if not control or not control.enabled or not record or record.execution_id!=execution_id or record.incident_id!=incident_id or record.status!='acting':
         raise ValueError('incident is held by its decision owner; no competing recovery')

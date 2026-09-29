@@ -3,6 +3,7 @@ import asyncio
 import json
 import sqlite3
 import time
+import re
 from sqlalchemy import select
 
 
@@ -25,9 +26,12 @@ def handler_for(fixtures,root,mode):
             walk(body)
             contexts=[]
             for text in strings:
-                try:x=json.loads(text)
-                except ValueError:continue
-                if isinstance(x,dict) and 'allowed_actions' in x:contexts.append(x)
+                # Existing Kie client flattens role messages into one input
+                # string. Read the supplied JSON context inside that envelope.
+                for opening in re.finditer(r'\{',text):
+                    try:x,_=json.JSONDecoder().raw_decode(text[opening.start():])
+                    except ValueError:continue
+                    if isinstance(x,dict) and 'allowed_actions' in x:contexts.append(x)
             assert len(contexts)==1
             ctx=contexts[0];turn=len(type(self).requests)
             if turn>1:assert any('tool_result' in text for text in strings),'actual tool result missing from next request'
@@ -76,6 +80,17 @@ async def run(mode,client,fixtures,observer,root,result):
         interventions=['copy historical synthetic checkpoint','enable synthetic decision mode through original API'])
     assert len(decisions['records'])==1,decisions
     decision=decisions['records'][0]
+    if mode=='decision-bad':
+        assert decision['status']=='human_review' and decision['model_steps']==2,decision
+        actions=(await client.get(base+f'/observations/{execution}/actions')).json()
+        assert actions['held'] and actions['requests_used']==22,actions
+        assert len(actions['recoveries'])==1 and actions['recoveries'][0]['status']=='human_review',actions
+        before=dict(fixtures.FixtureHandler.counts)
+        await asyncio.sleep(5)
+        assert before==dict(fixtures.FixtureHandler.counts),'must not repeat failed recovery'
+        result.update(accepted=True,actions=actions,brain_posts=2,worker_posts=2,real_api_calls=0,
+            outcome='one recovery failed; original worker verification escalated and execution held')
+        return
     assert decision['status']=='done',decision
     assert decision['model_steps']==3 and decision['verification'].get('verified'),decision
     assert all(n['status']=='done' for n in state['nodes'].values()),state
@@ -88,7 +103,7 @@ async def run(mode,client,fixtures,observer,root,result):
     assert next(n for n in run['node_runs'] if n['node_key']=='n_script')['status']=='pending'
     async with SessionLocal() as s:
         rows=(await s.scalars(select(DecisionTurn).where(DecisionTurn.decision_id==decision['decision_id']))).all()
-        assert any(t.role=='http_event' and t.payload.get('kind')=='sse_event' for t in rows),'brain SSE must persist'
+        assert any(t.role=='http_event' and t.payload.get('kind')=='model_stream_event' for t in rows),'brain SSE must persist'
         ticket=await s.get(RecoveryAction,decision['action_id'])
         events=(await s.scalars(select(ObservationEvent).where(ObservationEvent.execution_id==execution).order_by(ObservationEvent.id))).all()
         attempt=[e for e in events if e.attempt_id==ticket.new_attempt_id]

@@ -336,6 +336,8 @@ class Observer:
                 await get_diagnoser(self).catch_up()
                 from app.services.actions_recovery import reconcile
                 await reconcile(self)
+                from app.services.decision_v1 import get_decider
+                await get_decider(self).tick()
             except Exception as exc:
                 for scope in self.scopes.values():
                     self.mark_gap(scope.execution_id, exc)
@@ -375,6 +377,9 @@ async def record_fact(kind, payload=None, *, request_id=None, body=None):
     """
     ctx = _attempt.get()
     if ctx is None or ctx.scope.observer_state == "stopped":
+        if ctx is None:
+            from app.services.decision_transport import fact
+            await fact(kind, payload, body=body, request_id=request_id)
         return
     if ctx.db_scope == "master":
         # Fallback execution shares the master business transaction; a second
@@ -399,6 +404,10 @@ def observe_model(function):
     async def wrapped(*args, **kwargs):
         ctx = _attempt.get()
         if ctx is None:
+            from app.services.decision_transport import current
+            hook = current.get()
+            if hook is not None:
+                return await hook.send(function, args, kwargs)
             return await function(*args, **kwargs)
         request_id = str(uuid.uuid4())
         previous_request_id = ctx.last_request_id
@@ -679,10 +688,12 @@ async def migrate_observation_schema(conn):
     from app.services.diagnosis import Incident, DiagnosisState
     from app.services.actions_v1 import ActionExecutionControl, ActionRecord
     from app.services.actions_recovery import RecoveryAction
+    from app.services.decision_state import DecisionControl, DecisionRecord, DecisionTurn
     await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=[
         ExecutionControl.__table__, ObservationOutbox.__table__, ObservationEvent.__table__,
         Incident.__table__, DiagnosisState.__table__, ActionExecutionControl.__table__,
         ActionRecord.__table__, RecoveryAction.__table__,
+        DecisionControl.__table__, DecisionRecord.__table__, DecisionTurn.__table__,
     ]))
 
 

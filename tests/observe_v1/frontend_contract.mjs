@@ -43,3 +43,13 @@ assert.equal(actionStatus('human_review').includes('Нужен человек'),
 assert.equal(actionStatus('revoked').includes('Execution завершён'),true);
 assert.equal(groupIncidents([{...repaired,resolution:{kind:'supervisor_recovery_verified'}}]).repaired.length,1);
 console.log('Actions UI status contracts: 21 assertions passed');
+const decisionSource=fs.readFileSync('/observe-source/web/src/lib/decision-view.ts','utf8');
+const decisionJS=ts.transpileModule(decisionSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {decisionStatus}=await import('data:text/javascript;base64,'+Buffer.from(decisionJS).toString('base64'));
+for(const state of ['ready','model_pending','acting','waiting_worker','done','human_review'])assert.notEqual(decisionStatus(state),state);
+assert.match(decisionStatus('human_review'),/Нужен человек/);
+assert.match(decisionStatus('waiting_worker'),/verify/);
+const decisionPanel=fs.readFileSync('/observe-source/web/src/components/orchestrator/decision-section.tsx','utf8');
+assert.match(decisionPanel,/controlDecisions/);assert.match(decisionPanel,/rationale.trim\(\).length<3/);
+assert.match(decisionPanel,/verification.verified/);assert.doesNotMatch(decisionPanel,/edit_files|shell|\.env/);
+console.log('Decision UI contracts: 12 assertions passed');

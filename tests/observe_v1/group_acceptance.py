@@ -34,7 +34,8 @@ finish_coverage = begin(SOURCE)
 async def run():
     mode = os.environ.get("OBSERVE_GROUP_MODE", "observe")
     denial_mode = mode.startswith('deny-')
-    shutil.copytree('/observe-denial-seed' if denial_mode else '/srv/seed', DATA)
+    decision_mode = mode.startswith('decision-')
+    shutil.copytree('/observe-denial-seed' if denial_mode or decision_mode else '/srv/seed', DATA)
     browser_mode = os.environ.get("OBSERVE_BROWSER", "").lower() == "true"
     os.environ.update({
         "DATA_DIR": str(DATA), "SQLITE_PATH": str(DATA / "state.db"),
@@ -65,7 +66,15 @@ async def run():
         assert error != 0, "Network none not enforced"
     finally:
         sock.close()
-    server = ThreadingHTTPServer(("127.0.0.1", 18766), fixtures.FixtureHandler)
+    handler=fixtures.FixtureHandler
+    if decision_mode:
+        from decision_acceptance import handler_for
+        handler=handler_for(fixtures,ROOT,mode)
+        if mode=='decision-bad':
+            fixtures.MODE='malformed'
+            original_answer=fixtures.synthetic_answer
+            fixtures.synthetic_answer=lambda node,attempt:original_answer(node,1) if node==fixtures.NODES[0] else original_answer(node,attempt)
+    server = ThreadingHTTPServer(("127.0.0.1", 18766), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     from app.services import observation
     original_send = httpx.AsyncClient.send
@@ -75,6 +84,11 @@ async def run():
             raise RuntimeError("Test transport refuses non-loopback request")
         if request.url.port == 18766 and request.method == "POST":
             ctx = observation._attempt.get()
+            from app.services.decision_transport import current
+            if current.get() is not None:
+                assert decision_mode,'unexpected decision HTTP'
+                request.headers['x-diagnostic-node']='__decision__'
+                return await original_send(client,request,**kwargs)
             if ctx:
                 node = ctx.node_key
                 recovery_transport["active"] = ctx.session.info.get("recovery_attempt_id") == ctx.attempt_id
@@ -99,6 +113,10 @@ async def run():
         await fixtures.wait_api()
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
             base = "http://127.0.0.1:18765/api/projects/2"
+            if decision_mode:
+                from decision_acceptance import run as run_decision
+                await run_decision(mode,client,fixtures,observation.get_observer(),ROOT,result)
+                return
             if denial_mode:
                 from recovery_denials import run as run_denial
                 await run_denial(mode,client,fixtures,observation.get_observer(),ROOT,result)

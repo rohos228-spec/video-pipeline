@@ -32,6 +32,13 @@ export interface ActionState {
   recoveries:{action_id:string;incident_id:string;node_key:string;source_attempt_id:string;new_attempt_id:string;
     status:string;preconditions:Record<string,unknown>;verification_result:Record<string,unknown>}[];
 }
+export interface DecisionState {
+  enabled:boolean;synthetic_only:boolean;max_model_steps:number;
+  records:{decision_id:string;incident_id:string;node_key:string;status:string;model_steps:number;
+    action_id:string|null;context_version:string;proposal:{action?:string;explanation?:string;evidence_ids?:string[]};
+    policy_result:{allowed?:boolean;reason?:string};verification:{verified?:boolean};
+    turns:{id:number;role:string;payload:Record<string,unknown>}[]}[];
+}
 interface NodeState {status: string; progress: number | null; attempts: number | null; error: string | null; progress_text: string | null}
 export interface ObservationContext extends ObservationScope {
   business_group_outcome: string; current_nodes: string[];
@@ -44,6 +51,9 @@ export interface ObservationContext extends ObservationScope {
 }
 const path = (project: number, execution?: string) => `/api/projects/${project}/observations${execution ? `/${encodeURIComponent(execution)}` : ""}`;
 export const observations = {
+  decisions:(project:number,execution:string)=>http<DecisionState>(path(project,execution)+'/decisions'),
+  controlDecisions:(project:number,execution:string,enabled:boolean,rationale:string)=>
+    http(path(project,execution)+'/decisions/control',{method:'POST',body:JSON.stringify({enabled,rationale})}),
   list: (project: number) => http<ObservationScope[]>(path(project)),
   enable: (project: number, node_keys: string[]) => http<ObservationScope>(path(project), {method:"POST",body:JSON.stringify({node_keys})}),
   context: (project: number, execution: string) => http<ObservationContext>(path(project,execution)+"/context"),

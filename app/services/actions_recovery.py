@@ -110,7 +110,7 @@ async def input_revision(session, project, node_key, *, parts=None):
 
 
 async def recover_node(supervisor, *, project_id, execution_id, incident_id, node_key,
-                       idempotency_key, initiator, rationale):
+                       idempotency_key, initiator, rationale, decision_id=None):
     from app.services.diagnosis import Incident, DiagnosisState, get_diagnoser
     from app.services.observation import ExecutionControl, ObservationEvent, digest, get_observer, business_snapshot
     from app.services.step_failure_policy import MAX_TOTAL_FAILS, is_sleeping
@@ -131,6 +131,8 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             ActionRecord.execution_id == execution_id, ActionRecord.idempotency_key == idempotency_key))
         if prior_decision:
             raise ValueError("idempotency key has a prior decision; no redispatch")
+        from app.services.decision_state import authorize_recovery
+        await authorize_recovery(master, execution_id, incident_id, decision_id)
         incident = await master.get(Incident, incident_id)
         if (incident is None or incident.execution_id != execution_id or incident.project_id != project_id
                 or incident.node_key != node_key or incident.type not in {"invalid_json", "missing_payload"}

@@ -2,6 +2,7 @@
 import {useEffect,useState} from 'react';
 import {observations,type DecisionState} from '@/lib/observations';
 import {Button} from '@/components/ui/button';
+import {decisionStatus} from '@/lib/decision-view';
 
 export function DecisionSection({projectId,execution,managed}:{projectId:number;execution:string;managed:boolean}) {
   const [state,setState]=useState<DecisionState|null>(null);
@@ -32,7 +33,7 @@ export function DecisionSection({projectId,execution,managed}:{projectId:number;
     <Button size="sm" variant="outline" disabled={busy||!state||!managed||rationale.trim().length<3} onClick={()=>void toggle()}>{state?.enabled?'Выключить цикл решений':'Включить цикл решений'}</Button>
     {error&&<p role="alert">{error}</p>}
     <ol>{state?.records.map(r=><li key={r.decision_id} data-testid="decision-record" className="border-t border-white/10 mt-2 pt-2">
-      <p>{r.node_key} · {r.status} · шаги {r.model_steps}/{state.max_model_steps}</p>
+      <p>{r.node_key} · {decisionStatus(r.status)} · шаги {r.model_steps}/{state.max_model_steps}</p>
       <p>Предложение: {r.proposal.action??'ещё не получено'} · {r.proposal.explanation}</p>
       <p>Policy: {r.policy_result.allowed===true?'разрешено':r.policy_result.reason??'ожидается проверка'}</p>
       <p>Action: {r.action_id??'не выполнялся'} · Verification: {r.verification.verified?'подтверждена runtime':'не подтверждена'}</p>
