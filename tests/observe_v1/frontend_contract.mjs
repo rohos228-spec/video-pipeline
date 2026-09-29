@@ -6,7 +6,13 @@ const ts = require('typescript');
 const file = '/observe-source/web/src/lib/observation-view.ts';
 const source = fs.readFileSync(file, 'utf8');
 const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
-const { usageLabel, mergeEvents, eventLabel } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
+const { usageLabel, mergeEvents, eventLabel, groupForScope } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
+// A persisted execution can belong to a group other than the first graph group.
+const graphGroups=[{id:'other',keys:['outside']},{id:'script_frames_qc',keys:['script','qc']}];
+assert.equal(groupForScope(graphGroups,['qc','script']),'script_frames_qc');
+assert.equal(groupForScope(graphGroups,['script']),'');
+assert.equal(groupForScope(graphGroups,['removed']),'');
+assert.equal(groupForScope(graphGroups,[]),'');
 assert.equal(usageLabel(null), 'usage неизвестен');
 assert.equal(usageLabel({total_tokens: 0}), 'total_tokens: 0');
 assert.equal(usageLabel({input_tokens: 12, output_tokens: 9}), 'input_tokens: 12 · output_tokens: 9');
@@ -34,7 +40,11 @@ assert.equal(groupIncidents([{...open,currently_relevant:false,status:'human_rev
 console.log('Frontend metadata/diagnosis contracts: 17 assertions passed');
 const actionSource=fs.readFileSync('/observe-source/web/src/lib/actions-view.ts','utf8');
 const actionJS=ts.transpileModule(actionSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
-const {actionStatus}=await import('data:text/javascript;base64,'+Buffer.from(actionJS).toString('base64'));
+const {actionStatus,actionsModeLabel}=await import('data:text/javascript;base64,'+Buffer.from(actionJS).toString('base64'));
+assert.match(actionsModeLabel(null),/не подтверждено/);
+assert.equal(actionsModeLabel({configured:false,enabled:false,held:false}),'Управление выключено');
+assert.match(actionsModeLabel({configured:true,enabled:true,held:true}),/удержан/);
+assert.match(actionsModeLabel({configured:true,enabled:false,held:true}),/завершён/);
 for(const state of ['proposed','accepted','rejected','queued','running','await_verify','verified','human_review','revoked']) {
   assert.notEqual(actionStatus(state),state);
   assert.equal(actionStatus(state).includes('undefined'),false);
