@@ -17,9 +17,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base, WorkflowRun
 from app.services.error_catalog import ERROR_CATALOG
-from app.services.observation import ExecutionControl, ObservationEvent, digest, panel_safe, business_snapshot
+from app.services.observation import ExecutionControl, ObservationEvent, digest, panel_safe, business_snapshot, confirmed_qc_noop
 
-RULE_VERSION = 'diagnose-v1.2'
+RULE_VERSION = 'diagnose-v1.3-qc-noop'
 
 
 class DiagnosisState(Base):
@@ -100,7 +100,8 @@ def derive_incidents(scope, events, snapshot):
         starts={e['request_id']:e for e in related if e['kind']=='model_start' and e.get('request_id')}
         retries=[e for e in related if e['kind']=='json_retry']
         bads=[e for e in related if e['kind']=='parse_result' and e['payload'].get('payload_required') is True
-              and (e['payload'].get('parsed') is False or e['payload'].get('payload_present') is False)]
+              and (e['payload'].get('parsed') is False or e['payload'].get('payload_present') is False)
+              and not confirmed_qc_noop(related, e.get('request_id'))]
         bad_requests={e.get('request_id') for e in bads if e.get('request_id')}
 
         def previous(request): return starts.get(request,{}).get('payload',{}).get('previous_request_id')
@@ -142,6 +143,8 @@ def derive_incidents(scope, events, snapshot):
                   and 'done' in e['payload'].get('changes',{}).get('status',{}).get('after',[])]
             commits=[e for e in related if attempt and e['kind']=='data_applied' and e['payload'].get('transactional') is True
                      and e['payload'].get('result',{}).get('ok') is True]
+            noops=[e for e in related if e['kind']=='parse_result' and e.get('request_id') in descendants
+                   and confirmed_qc_noop(related, e.get('request_id'))]
             proof=[]; correlation=None
             for parsed in accepted:
                 linked=[e for e in commits if e.get('request_id')==parsed['request_id']]
@@ -151,6 +154,11 @@ def derive_incidents(scope, events, snapshot):
                 elif linked: correlation='explicit_request_link'
                 if linked and done and linked_retries:
                     proof=[parsed,*linked,*done]; break
+            if not proof and noops and done and linked_retries:
+                request=noops[0]['request_id']
+                proof=[e for e in related if e.get('request_id')==request
+                       and e['kind'] in {'parse_result','model_end','runtime_check'}]+done
+                correlation='confirmed_qc_noop_same_attempt'
             issue(kind,(node,attempt,origin),[*linked_retries,*[starts[r] for r in descendants if r in starts],*proof])
             item['recovery']=[{'kind':'runtime_json_retry','event_id':e['event_id'],'source_request_id':origin,
                                'accepted_response_observed':bool(accepted)} for e in linked_retries]
@@ -159,7 +167,7 @@ def derive_incidents(scope, events, snapshot):
                     resolution={'kind':'format_recovery','correlation':correlation,
                         'event_ids':[e['event_id'] for e in proof],'quality_verified':False})
                 item['recommendation'].update(action='wait',title=RECOMMENDATIONS['wait'],
-                    reason='Штатный повтор принят; применение и done подтверждены в этой попытке. Семантическое качество не проверено.')
+                    reason='Штатный повтор принят; результат (применение или разрешённый no-op) и done подтверждены в этой попытке. Семантическое качество не проверено.')
             elif any(e['kind']=='node_error' for e in related): item['status']='human_review'
 
         for e in related:

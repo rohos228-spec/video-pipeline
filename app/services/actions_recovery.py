@@ -400,8 +400,27 @@ async def reconcile(observer):
                     "transactional_done": any(e.kind == "node_change" and e.db_scope == "project"
                         and "done" in ((e.payload.get("changes") or {}).get("status") or {}).get("after", []) for e in facts),
                 }
-                verified = row.status == "await_verify" and all(verification.values())
-                completion_checks = ('node_done','node_end','data_applied','accepted_payload',
+                from app.services.observation import confirmed_qc_noop
+                from app.services.node_write_contract import allows_qc_noop
+                from app.services.gpt_operator import operator_config
+                cfg = operator_config(project, row.node_key) if project else {}
+                variant = (((project.meta or {}).get('prompt_slot_variants') or {}).get(row.node_key) or {}).get('main') if project else None
+                trusted = bool(project and allows_qc_noop(project, row.node_key, variant=variant,
+                    output_mode=cfg.get('outputMode'), check_mode=cfg.get('checkMode')))
+                latest_start = await master.scalar(select(ObservationEvent).where(
+                    ObservationEvent.execution_id == row.execution_id,
+                    ObservationEvent.node_key == row.node_key,
+                    ObservationEvent.kind == 'node_start').order_by(ObservationEvent.id.desc()).limit(1))
+                events = [dict(kind=e.kind, request_id=e.request_id, payload=e.payload) for e in facts]
+                verification['accepted_noop'] = bool(trusted and latest_start
+                    and latest_start.attempt_id == row.new_attempt_id
+                    and any(confirmed_qc_noop(events, e.request_id) for e in facts if e.kind == 'parse_result'))
+                verification['result_confirmed'] = ((verification['data_applied'] and verification['accepted_payload'])
+                                                   or verification['accepted_noop'])
+                required_checks = ('node_done','node_end','result_confirmed','graph_matches','audit_available',
+                                   'no_user_stop','permission_active','requests_complete','transactional_done')
+                verified = row.status == "await_verify" and all(verification[k] for k in required_checks)
+                completion_checks = ('node_done','node_end','result_confirmed',
                                      'requests_complete','transactional_done')
                 pending = [key for key in completion_checks if not verification[key]]
                 finished_at = row.result.get('worker_returned_at')

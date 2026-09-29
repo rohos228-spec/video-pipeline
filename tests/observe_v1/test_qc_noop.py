@@ -21,6 +21,7 @@ class QcNoopHttp(unittest.IsolatedAsyncioTestCase):
         self.answer = '{"ops":[]}'
         self.fail = False
         self.complete = True
+        self.transport_error = None
         self.context = {'frames': [{'uuid': 'frame-one', 'number': 1,
             'voiceover_text': 'Синтетический диктор открывает дверь и выходит на улицу.',
             'fields': {'закадр': 'Синтетический диктор открывает дверь и выходит на улицу.'}}]}
@@ -32,6 +33,8 @@ class QcNoopHttp(unittest.IsolatedAsyncioTestCase):
             p.start()
             self.addCleanup(p.stop)
         def response(request):
+            if request.method == 'GET': return httpx.Response(404, request=request)
+            if self.transport_error: raise self.transport_error
             self.posts.append(request)
             if self.fail:
                 return httpx.Response(500, request=request, content=b'synthetic provider failure')
@@ -88,6 +91,161 @@ class QcNoopHttp(unittest.IsolatedAsyncioTestCase):
         await self.batch()
         self.assertEqual(len(self.posts), 1)
         self.assertEqual(len(self.applied), 1)
+
+    async def test_wrong_ops_types_and_empty_object_do_not_pass(self):
+        for answer in ('{}','{"ops":null}','{"ops":{}}','{"ops":"bad"}','{"refusal":"no"}'):
+            with self.subTest(answer=answer):
+                self.answer=answer
+                with self.assertRaises(Exception): await self.batch()
+                self.assertEqual(self.applied, [])
+
+    async def test_incomplete_noop_does_not_pass_or_repeat(self):
+        self.complete=False
+        with self.assertRaises(Exception): await self.batch()
+        self.assertEqual(len(self.posts),1)
+        self.assertEqual(self.applied,[])
+
+    async def test_protection_exceptions_retain_type_and_do_not_repeat(self):
+        from app.services.step_cancel import StepCancelledError
+        for exc in (StepCancelledError('synthetic stop'), RuntimeError('mandatory audit unavailable'),
+                    RuntimeError('request budget exhausted')):
+            with self.subTest(error=type(exc).__name__):
+                self.transport_error=exc
+                with self.assertRaises(type(exc)) as caught: await self.batch()
+                self.assertIs(caught.exception,exc)
+                self.assertEqual(self.posts,[])
+                self.assertEqual(self.applied,[])
+
+
+from types import SimpleNamespace
+from app.services.node_write_contract import allows_qc_noop
+from app.services.observation import confirmed_qc_noop
+from app.services.diagnosis import derive_incidents
+
+
+def noop_facts():
+    facts=[('model_start',{}),('model_end',{'complete':True}),('parse_result',{
+        'payload_required':True,'payload_present':False,'ops_count':0,
+        **{k:True for k in ('syntax_valid','parsed','schema_valid','ops_field_present',
+                           'ops_type_valid','empty_ops_allowed','empty_ops_accepted')}}),
+        ('runtime_check',{'check':'qc_noop','performed':True,'status':'passed',
+            'empty_ops_allowed':True,'response_complete':True,'required_checks':[
+                'strict_json_ops_array','completed_response','trusted_empty_ops_policy']}),
+        ('node_change',{'transactional':True,'changes':{'status':{'after':['done']}}}),
+        ('node_end',{})]
+    return [dict(id=i,event_id=f'noop-{i}',execution_id='e',project_id=2,node_key='id',
+        attempt_id='a',request_id='r',db_scope='project',kind=k,payload=p)
+        for i,(k,p) in enumerate(facts,1)]
+
+
+class NoopEvidence(unittest.TestCase):
+    def test_policy_uses_config_not_node_name_or_prompt(self):
+        p=SimpleNamespace(meta={'canvas_graph':{'nodes':[{'id':'arbitrary','type':'excel_gpt',
+            'data':{'groupId':'script_frames_qc#instance'}}]},
+            'prompt_slot_variants':{'arbitrary':{'main':'shots_qc_ru'}}})
+        args=dict(variant='shots_qc_ru',output_mode='project_file',check_mode=False)
+        self.assertTrue(allows_qc_noop(p,'arbitrary',**args))
+        for key, val in [('variant','default'),('output_mode','text'),('check_mode',True)]:
+            self.assertFalse(allows_qc_noop(p,'arbitrary',**{**args,key:val}))
+        self.assertFalse(allows_qc_noop(p,'n_excel_gpt_fw_qc',**args))
+        for group in ('foreign','QC','script_frames_qc_fake'):
+            p.meta['canvas_graph']['nodes'][0]['data']['groupId']=group
+            self.assertFalse(allows_qc_noop(p,'arbitrary',**args))
+
+    def test_diagnosis_no_false_missing_payload_or_quality_claim(self):
+        scope=SimpleNamespace(execution_id='e',project_id=2,node_keys=['id'],observer_state='active',gaps=[])
+        rows=noop_facts()
+        self.assertTrue(confirmed_qc_noop(rows,'r'))
+        self.assertEqual(derive_incidents(scope,rows,{}),[])
+        for remove in ('model_end','runtime_check'):
+            altered=[e for e in rows if e['kind']!=remove]
+            self.assertFalse(confirmed_qc_noop(altered,'r'))
+            self.assertTrue(any(i['type']=='missing_payload' for i in derive_incidents(scope,altered,{})))
+        other=[{**e,'attempt_id':'other'} for e in rows]
+        original={**rows[2],'event_id':'bad','payload':{'payload_required':True,'parsed':False,'payload_present':False}}
+        self.assertNotEqual(derive_incidents(scope,[original]+other,{})[0]['status'],'resolved_confirmed')
+        db=derive_incidents(scope,rows,{'disagreement':True})
+        self.assertEqual(db[0]['type'],'db_disagreement')
+        self.assertNotEqual(db[0]['status'],'resolved_confirmed')
+
+    def test_noop_does_not_mask_failed_required_checks(self):
+        rows=noop_facts()
+        for kind,payload in (('runtime_check',{'performed':True,'status':'failed'}),
+                             ('node_error',{}),('domain_check',{'verdict':'reject'})):
+            self.assertFalse(confirmed_qc_noop(rows+[dict(kind=kind,payload=payload,request_id='r')],'r'))
+
+
+from test_actions_v1_contract import DurableActions
+from contextlib import asynccontextmanager
+from datetime import datetime
+from sqlalchemy import select
+from app.models import Project, WorkflowRun, NodeRun, NodeRunStatus
+from app.services import observation
+from app.services.observation import digest, ObservationEvent
+from app.services.actions_recovery import RecoveryAction, reconcile
+from app.services.actions_v1 import ActionExecutionControl
+
+
+class NoopRecoveryVerify(unittest.IsolatedAsyncioTestCase):
+    asyncSetUp=DurableActions.asyncSetUp
+    asyncTearDown=DurableActions.asyncTearDown
+    exhausted_fixture=DurableActions.exhausted_fixture
+    retry=DurableActions.retry
+
+    async def verify_noop(self, *, missing_check=False, newer_attempt=False, wrong_contract=False):
+        await self.exhausted_fixture()
+        ticket=await self.retry()
+        async with self.sessions() as s:
+            row=await s.get(RecoveryAction,ticket['action_id']);row.status='await_verify'
+            row.result={'worker_returned_at':'2020-01-01T00:00:00'}
+            node=await s.scalar(select(NodeRun).where(NodeRun.node_key=='n1'));node.status=NodeRunStatus.done
+            project=await s.get(Project,7)
+            graph=[{'id':'n1','type':'excel_gpt','data':{'groupId':'script_frames_qc'}}]
+            project.meta={'canvas_graph':{'nodes':graph},'prompt_slot_variants':{
+                'n1':{'main':'default' if wrong_contract else 'shots_qc_ru'}}}
+            run=await s.get(WorkflowRun,11);run.nodes_snapshot=graph
+            control=await s.get(ActionExecutionControl,'exec-durable');control.graph_version=digest({'nodes':graph,'edges':[]})
+            facts=[dict(kind='node_start',payload={},request_id=None)]+noop_facts()
+            for e in facts:
+                if missing_check and e['kind']=='runtime_check':continue
+                s.add(ObservationEvent(event_id=__import__('uuid').uuid4().hex,execution_id='exec-durable',
+                    project_id=7,workflow_run_id=11,node_key='n1',attempt_id=row.new_attempt_id,
+                    request_id=e['request_id'],db_scope='project',kind=e['kind'],payload=e['payload'],created_at=datetime.utcnow()))
+            if newer_attempt:
+                await s.flush()
+                s.add(ObservationEvent(event_id=__import__('uuid').uuid4().hex,execution_id='exec-durable',
+                    project_id=7,workflow_run_id=11,node_key='n1',attempt_id='newer',db_scope='project',
+                    kind='node_start',payload={},created_at=datetime.utcnow()))
+            await s.commit()
+        @asynccontextmanager
+        async def project_session(_id):
+            async with self.sessions() as s: yield s
+        async def no_sync(*args): pass
+        async def no_continue(*args,**kw): pass
+        with patch('app.project_db.project_db_session_scope',project_session), \
+             patch('app.project_db.pull_master_runtime_into_project',no_sync), \
+             patch('app.project_db.push_runtime_to_master',no_sync), \
+             patch('app.orchestrator.steps.enrich_xlsx._after_excel_gpt_done',no_continue):
+            await reconcile(observation._observer)
+        async with self.sessions() as s:
+            return (await s.get(RecoveryAction,ticket['action_id'])).verification_result
+
+    async def test_valid_noop_verified_without_fake_apply(self):
+        result=await self.verify_noop()
+        self.assertTrue(result['verified'],result)
+        self.assertTrue(result['accepted_noop'])
+        self.assertFalse(result['data_applied'])
+        self.assertFalse(result['accepted_payload'])
+        self.assertFalse(result['semantic_quality_verified'])
+
+    async def test_missing_checks_cannot_verify(self):
+        self.assertFalse((await self.verify_noop(missing_check=True))['verified'])
+
+    async def test_other_current_attempt_cannot_verify(self):
+        self.assertFalse((await self.verify_noop(newer_attempt=True))['verified'])
+
+    async def test_wrong_contract_cannot_verify(self):
+        self.assertFalse((await self.verify_noop(wrong_contract=True))['verified'])
 
 
 if __name__ == '__main__': unittest.main()

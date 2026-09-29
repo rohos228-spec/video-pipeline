@@ -37,6 +37,7 @@ class OperatorApiResult:
     # применяет вызывающий (enrich_xlsx) через db_apply.
     apply_ops: dict | None = None
     applied_in_runner: bool = False
+    empty_ops_accepted: bool = False
 
 
 def _needs_check_writeback_retry(reply_text: str) -> bool:
@@ -61,6 +62,19 @@ def _apply_ops_has_payload(data: dict | None) -> bool:
         or data.get("characters")
         or data.get("scenes")
     )
+
+
+def _accepted_empty_ops(result, data, *, allowed=False) -> bool:
+    """Explicit old no-change contract only; no salvage/refusal/unknown response."""
+    if not allowed or data != {'ops': []}:
+        return False
+    raw = getattr(result, 'raw', None) or {}
+    if raw.get('status') != 'completed' or raw.get('sse_salvaged'):
+        return False
+    try:
+        return json.loads(result.text) == {'ops': []}
+    except (ValueError, TypeError):
+        return False
 
 
 def _log_apply_ops_coverage(
@@ -144,6 +158,7 @@ async def run_operator_api(
     check_streams: int | None = None,
     db_sot_check: bool = False,
     auto_pack: bool = True,
+    allow_empty_ops: bool = False,
 ) -> OperatorApiResult:
     """Вызов API-оператора GPT.
 
@@ -197,6 +212,7 @@ async def run_operator_api(
             source_prompt_keys=source_prompt_keys,
             db_sot_check=db_sot_check,
             auto_pack=auto_pack,
+            allow_empty_ops=allow_empty_ops,
         )
 
     out_dir = project_dir / "excel_gpt_uploads" / node_key
@@ -296,6 +312,7 @@ async def _run_operator_api_real(
     source_prompt_keys: list[str] | None = None,
     db_sot_check: bool = False,
     auto_pack: bool = True,
+    allow_empty_ops: bool = False,
 ) -> OperatorApiResult:
     """Реальный вызов GPT через OpenAI-совместимый API (без браузера/CDP)."""
     from app.services.gpt_api import chat, collect_result_urls, download_content
@@ -345,6 +362,10 @@ async def _run_operator_api_real(
         xlsx_write_contract=xlsx_contract,
         auto_pack=auto_pack,
     )
+    if allow_empty_ops:
+        raw = getattr(result, 'raw', None) or {}
+        if raw.get('status') != 'completed' or raw.get('sse_salvaged'):
+            raise RuntimeError('QC response incomplete/uncertain; empty-ops acceptance forbidden')
     reply_text = result.text
 
     # report_only: модель иногда копирует assemble JSON. Один повтор — TXT-отчёт.
@@ -391,8 +412,10 @@ async def _run_operator_api_real(
         apply_ops = extract_apply_ops_json(reply_text or "")
         from app.services.observation import record_parse
 
-        await record_parse(reply_text or "", apply_ops, payload_required=not is_check)
-        if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
+        empty_accepted = _accepted_empty_ops(result, apply_ops, allowed=allow_empty_ops and not is_check)
+        await record_parse(reply_text or "", apply_ops, payload_required=not is_check,
+                           empty_ops_allowed=allow_empty_ops, empty_ops_accepted=empty_accepted)
+        if apply_ops is not None and not _apply_ops_has_payload(apply_ops) and not empty_accepted:
             if not (check_mode and not check_fix):
                 logger.warning(
                     "gpt_operator/api: node={} — пустой apply-ops "
@@ -571,16 +594,16 @@ async def _run_operator_api_real(
             auto_pack=auto_pack,
         )
         reply_text = retry.text or ""
-        try:
-            result = replace(result, text=reply_text)
-        except TypeError:
-            # тесты / моки могут отдавать SimpleNamespace, не dataclass
-            from types import SimpleNamespace
-
-            result = SimpleNamespace(text=reply_text)
+        result = retry
+        if allow_empty_ops:
+            raw = getattr(retry, 'raw', None) or {}
+            if raw.get('status') != 'completed' or raw.get('sse_salvaged'):
+                raise RuntimeError('QC retry response incomplete or uncertain')
         apply_ops = extract_apply_ops_json(reply_text or "")
-        await record_parse(reply_text or "", apply_ops)
-        if apply_ops is not None and not _apply_ops_has_payload(apply_ops):
+        empty_accepted = _accepted_empty_ops(retry, apply_ops, allowed=allow_empty_ops)
+        await record_parse(reply_text or "", apply_ops, empty_ops_allowed=allow_empty_ops,
+                           empty_ops_accepted=empty_accepted)
+        if apply_ops is not None and not _apply_ops_has_payload(apply_ops) and not empty_accepted:
             apply_ops = None
         # Retry тоже пуст — последний шанс: salvage из pre-retry (частичные ops).
         if apply_ops is None and pre_retry_text:
@@ -630,6 +653,7 @@ async def _run_operator_api_real(
         gate_status=gate_status,
         analysis=analysis,
         apply_ops=apply_ops,
+        empty_ops_accepted=_accepted_empty_ops(result, apply_ops, allowed=allow_empty_ops and not is_check),
     )
 
 

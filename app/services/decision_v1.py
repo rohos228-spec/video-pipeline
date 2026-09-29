@@ -198,6 +198,7 @@ class DecisionSupervisor:
             node=next((n for n in run.nodes_snapshot if str(n.get('id'))==row.node_key),None)
             if not node:raise ValueError('node contract missing from graph')
             project=await s.get(Project,row.project_id)
+            contract_project=project
             cfg=node_config(project,row.node_key)
             count=await s.scalar(select(func.count()).select_from(Frame).where(Frame.project_id==row.project_id))
             if project.data_dir:
@@ -205,13 +206,22 @@ class DecisionSupervisor:
                 async with project_db_session_scope(row.project_id) as ps:
                     pp=await ps.get(Project,row.project_id)
                     if not pp:raise ValueError('project contract unavailable')
+                    contract_project=pp
                     cfg=node_config(pp,row.node_key)
                     count=await ps.scalar(select(func.count()).select_from(Frame).where(Frame.project_id==row.project_id))
+            from app.services.node_write_contract import allows_qc_noop
+            from app.services.gpt_operator import operator_config
+            effective=operator_config(contract_project,row.node_key)
+            variant=(((contract_project.meta or {}).get('prompt_slot_variants') or {}).get(row.node_key) or {}).get('main')
+            noop_allowed=allows_qc_noop(contract_project,row.node_key,variant=variant,
+                output_mode=effective.get('outputMode'),check_mode=effective.get('checkMode'))
             kind=_script_frames_qc_footer_kind(None,None,row.node_key)
             return panel_safe({'node_key':row.node_key,'node_type':node.get('type'),
                 'graph_version':scope.graph_version,'context_version':context['context_version'],
                 'node_config':{k:cfg[k] for k in ('inputSource','outputMode','workMode') if k in cfg},
                 'contract_kind':kind,'target_frame_count':count,
+                'empty_ops_allowed':noop_allowed,'nonempty_payload_required':not noop_allowed,
+                'semantic_quality_verified':False,
                 'contract':_batch_footer(1,0,max(1,count),footer_kind=kind),
                 'source':'original apply_ops_batches._batch_footer + workflow snapshot + node_config',
                 'write_authority':'original runtime only; no direct writes'})

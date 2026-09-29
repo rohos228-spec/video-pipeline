@@ -59,6 +59,10 @@ async def run():
     recovery_mode = mode in {"recovery-a", "recovery-b"}
     fixtures.MODE = "malformed" if mode in {"malformed","unrepaired"} or recovery_mode else "group"
     recovery_transport = {"active": False}
+    noop_before = None
+    if mode == 'qc-noop':
+        original_answer = fixtures.synthetic_answer
+        fixtures.synthetic_answer = lambda node, attempt: '{"ops":[]}' if node == fixtures.NODES[4] else original_answer(node, attempt)
     if recovery_mode:
         original_answer = fixtures.synthetic_answer
         fixtures.synthetic_answer = lambda node, attempt: original_answer(node,
@@ -88,6 +92,7 @@ async def run():
     original_send = httpx.AsyncClient.send
 
     async def send(client, request, **kwargs):
+        nonlocal noop_before
         if request.url.host not in {"127.0.0.1", "localhost"}:
             raise RuntimeError("Test transport refuses non-loopback request")
         if request.url.port == 18766 and request.method == "POST":
@@ -112,6 +117,9 @@ async def run():
                     node = meta.get("active_excel_gpt_node_key", "")
             assert node in fixtures.NODES[:-1], "Provider call outside selected text group"
             request.headers["x-diagnostic-node"] = node
+            if mode == 'qc-noop' and node == fixtures.NODES[4]:
+                assert noop_before is None, 'QC no-op must not retry'
+                noop_before = fixtures.frames()
             if (recovery_mode or live_decision) and recovery_transport['active']:
                 # Synthetic external transport latency only, allowing capture
                 # of a real running action for later offline browser checks.
@@ -168,7 +176,7 @@ async def run():
             if execution_id:
                 response = await client.post(base + f"/observations/{execution_id}/pin")
                 response.raise_for_status()
-            if mode == "actions" or recovery_mode:
+            if mode in {"actions", "qc-noop"} or recovery_mode:
                 run_response = await client.get(base + "/run")
                 run_response.raise_for_status()
                 run_snapshot = run_response.json()
@@ -255,7 +263,7 @@ async def run():
                     break
                 await asyncio.sleep(0.1)
             result.update({"execution_id":execution_id,"state":state})
-            if mode in {'actions','recovery-a','recovery-b'}:
+            if mode in {'actions','qc-noop','recovery-a','recovery-b'}:
                 # Do not manufacture a group boundary by stopping the runner
                 # immediately after HTML/error. Four normal five-second cycles.
                 before_posts = sum(fixtures.FixtureHandler.counts.values())
@@ -348,7 +356,7 @@ async def run():
                     all_states = {str(n["node_key"]): n["status"] for n in run_after.get("node_runs", [])}
                     assert all_states.get("n_script") == "pending", all_states
                     result["group_boundary"] = {"n_script": all_states["n_script"]}
-                if mode == "actions":
+                if mode in {"actions", "qc-noop"}:
                     controls = await client.get(base + f"/observations/{execution_id}/actions")
                     controls.raise_for_status()
                     managed = controls.json()
@@ -376,6 +384,19 @@ async def run():
                         "boundary_targets": sorted(boundary_targets), "node_states": all_states,
                     }
                     result["group_boundary"] = {key: all_states[key] for key in sorted(boundary_targets)}
+                if mode == 'qc-noop':
+                    assert noop_before is not None and fixtures.frames() == noop_before, 'QC changed frame content'
+                    qc_events = [e for e in history['events'] if e['node_key'] == fixtures.NODES[4]]
+                    assert fixtures.FixtureHandler.counts[fixtures.NODES[4]] == 1
+                    assert not any(e['kind'] in {'data_applied','json_retry','node_error'} for e in qc_events)
+                    from app.services.observation import confirmed_qc_noop
+                    assert any(confirmed_qc_noop(qc_events, e.get('request_id')) for e in qc_events if e['kind']=='parse_result')
+                    assert not [i for i in result['diagnosis']['incidents'] if i['node_key']==fixtures.NODES[4]
+                                and i['type'] in {'invalid_json','missing_payload'}]
+                    assert not managed['recoveries']
+                    result['qc_noop'] = {'model_posts':1,'frame_content_unchanged':True,
+                        'data_applied_events':0,'semantic_quality_verified':False,
+                        'frame_content_sha256':hashlib.sha256(json.dumps(noop_before,ensure_ascii=False,sort_keys=True).encode()).hexdigest()}
                 if mode == "stop":
                     assert result["context"]["observer_state"] == "stopped"
                 with sqlite3.connect(DATA / "state.db") as conn:

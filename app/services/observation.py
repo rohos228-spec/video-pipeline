@@ -536,7 +536,8 @@ def observe_model(function):
     return wrapped
 
 
-async def record_parse(text, parsed, *, payload_required=True):
+async def record_parse(text, parsed, *, payload_required=True,
+                       empty_ops_allowed=False, empty_ops_accepted=False):
     try:
         json.loads(text)
         syntax_valid = True
@@ -544,12 +545,18 @@ async def record_parse(text, parsed, *, payload_required=True):
         syntax_valid = False
     ctx = _attempt.get()
     await record_fact("parse_result", {"syntax_valid": syntax_valid,
-        "parsed": parsed is not None, "schema_valid": None,
+        "parsed": parsed is not None, "schema_valid": True if empty_ops_accepted else None,
         "contract": "json_apply_ops" if payload_required else "text_verdict_or_optional_apply_ops",
         "schema_note": "Extraction does not prove node schema validation",
         "payload_required": payload_required,
+        "nonempty_payload_required": payload_required and not empty_ops_allowed,
+        "ops_field_present": isinstance(parsed, dict) and 'ops' in parsed,
+        "ops_type_valid": isinstance(parsed, dict) and isinstance(parsed.get('ops'), list),
+        "empty_ops_allowed": empty_ops_allowed,
+        "empty_ops_accepted": empty_ops_accepted,
+        "semantic_quality_verified": False,
         "payload_present": bool(parsed and any(parsed.get(k) for k in ("ops", "characters", "scenes", "actions"))),
-        "ops_count": len((parsed or {}).get("ops") or [])}, body={"text": text, "parsed": parsed},
+        "ops_count": len(parsed['ops']) if isinstance(parsed, dict) and isinstance(parsed.get('ops'), list) else None}, body={"text": text, "parsed": parsed},
         request_id=ctx.last_request_id if ctx else None)
 
 
@@ -798,3 +805,33 @@ async def business_snapshot(session, scope):
         "nodes": {n.node_key: {"status": n.status.value, "progress": n.progress,
             "progress_text": redact(n.progress_text), "error": redact(n.error),
             "attempts": n.attempts} for n in nodes}}, project
+
+
+def confirmed_qc_noop(events, request_id):
+    """Request/attempt-scoped evidence, not a semantic quality verdict.
+
+    Caller supplies one attempt. DB completion and current-attempt checks are
+    separate, so a parsed no-op cannot close another attempt or DB incident.
+    """
+    if not request_id:
+        return False
+    related = [e for e in events if e.get('request_id') == request_id]
+    parsed = any(e['kind'] == 'parse_result' and all(e['payload'].get(k) is True
+        for k in ('syntax_valid','parsed','schema_valid','ops_field_present',
+                  'ops_type_valid','empty_ops_allowed','empty_ops_accepted'))
+        and e['payload'].get('ops_count') == 0
+        and e['payload'].get('payload_present') is False for e in related)
+    complete = any(e['kind'] == 'model_end' and e['payload'].get('complete') is True for e in related)
+    checked = any(e['kind'] == 'runtime_check' and e['payload'].get('check') == 'qc_noop'
+        and e['payload'].get('performed') is True and e['payload'].get('status') == 'passed'
+        and e['payload'].get('empty_ops_allowed') is True
+        and e['payload'].get('response_complete') is True
+        and set(e['payload'].get('required_checks', [])) >= {
+            'strict_json_ops_array','completed_response','trusted_empty_ops_policy'} for e in related)
+    failed = any(e['kind'] in {'node_error','apply_error'} or
+        (e['kind'] == 'model_error' and e.get('request_id') == request_id) or
+        (e['kind'] == 'runtime_check' and e['payload'].get('performed') is True
+            and e['payload'].get('status') in {'failed','rejected'}) or
+        (e['kind'] == 'domain_check' and e['payload'].get('verdict') in {'fail','reject'})
+        for e in events)
+    return parsed and complete and checked and not failed

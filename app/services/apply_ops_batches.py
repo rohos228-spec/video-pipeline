@@ -1466,6 +1466,8 @@ async def run_apply_ops_batched(
             input_paths=[batch_path],
             auto_pack=False,
         )
+        if allow_empty_ops:
+            api_kw['allow_empty_ops'] = True
         pack_timeout = pack_call_timeout_s(footer_kind)
         try:
             res = await asyncio.wait_for(
@@ -1699,7 +1701,17 @@ async def run_apply_ops_batched(
                 logger.debug("apply_ops progress callback failed", exc_info=True)
         if not ops:
             if allow_empty_ops:
-                # QC: ops только по нарушителям; пустой пакет = ок.
+                if not res.empty_ops_accepted:
+                    raise RuntimeError('QC empty result not accepted by the operator contract')
+                from app.services.observation import record_fact, _attempt
+                ctx = _attempt.get()
+                await record_fact('runtime_check', {'check': 'qc_noop', 'performed': True,
+                    'status': 'passed', 'empty_ops_allowed': True, 'response_complete': True,
+                    'required_checks': ['strict_json_ops_array', 'completed_response', 'trusted_empty_ops_policy'],
+                    'semantic_quality_verified': False}, request_id=ctx.last_request_id if ctx else None)
+                async with meta_lock:
+                    last_paths = list(res.output_paths or []) or [batch_path]
+                    replies.append(res.reply_text or '')
                 return []
             raise RuntimeError(
                 f"excel_gpt node={node_key}: L{level} call {my_i} "
@@ -1753,15 +1765,8 @@ async def run_apply_ops_batched(
             missing = await _one_chunk(chunk, level)
         except Exception as exc:
             if allow_empty_ops:
-                logger.warning(
-                    "[#{}] apply_ops node={!r}: L{} fail ({}) — "
-                    "QC не ретраим пачку (промты уже в БД)",
-                    project_id,
-                    node_key,
-                    level,
-                    str(exc)[:160],
-                )
-                return
+                # No-op is a validated result, never an exception fallback.
+                raise
             nxt = next_split_level(level)
             if nxt is None or len(chunk) <= 1:
                 raise

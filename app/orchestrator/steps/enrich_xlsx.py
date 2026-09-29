@@ -478,7 +478,7 @@ async def _run_four_node_markup_pass(
         force_full_strip_output_keys,
     )
     from app.services.excel_characters import entity_cards_for_gpt
-    from app.services.node_write_contract import filter_ops_for_node
+    from app.services.node_write_contract import filter_ops_for_node, allows_qc_noop
 
     prompt = _load_script_frames_qc_prompt(prompt_name)
     db_ctx = build_excel_gpt_db_context(
@@ -2202,7 +2202,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 run_apply_ops_batched,
             )
             from app.services import db_apply as _db_apply
-            from app.services.node_write_contract import filter_ops_for_node
+            from app.services.node_write_contract import filter_ops_for_node, allows_qc_noop
 
             nk = str(node_key or "")
             frame_prompts = _is_frame_prompts_prompt(variant, master) or nk.endswith(
@@ -2437,7 +2437,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     on_progress=_progress,
-                    allow_empty_ops=qc_prompts or shots_qc,
+                    allow_empty_ops=allows_qc_noop(project, node_key, variant=variant,
+                        output_mode=output_mode, check_mode=check_mode),
                 )
                 if fw_frames:
                     from sqlalchemy import select as _sel_fw
@@ -2647,7 +2648,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             # leftover fw_frames / старый prompts_qc — пишут.
             apply_node_kind: str | None = None
             if ops_list and not check_mode:
-                from app.services.node_write_contract import filter_ops_for_node
+                from app.services.node_write_contract import filter_ops_for_node, allows_qc_noop
 
                 nk = str(node_key or "")
                 write_prompts = (
