@@ -18,6 +18,13 @@ outputs/first-version-local-20260930. Reuse unchanged evidence; never rerun real
 | publish | steps/publish → publishers | External accounts | Observe/validate/dryrun only | Input validation, no external delivery |
 
 First chunk: registry-backed capabilities and local verifiers with RED tests.
+Contract chunk implemented: node_capabilities + artifact_verifier. Offline
+contract-green: 7 tests, 6 passed, video/audio execution test skipped for missing
+ffmpeg/ffprobe. RED contract-red: six imports failed before implementation.
+Image decode/dimensions/hash, ASS structure/intervals, path containment and
+unknown unsupported results are tested. No claim of runtime integration yet.
+Environment evidence: contract-green/artifacts/media-environment.json under
+outputs/media-v1-20260930. No ffmpeg, ffprobe, faster_whisper, torch, nemo or ASR cache.
 Next: persistent media job/request correlation and shared policy; hook original
 services/worker without replacing executor; then family/mixed acceptance and UI.
 Potential blocker: audio requires local ASR package + cached weights. Inventory
