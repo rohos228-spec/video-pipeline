@@ -61,7 +61,8 @@ class Profiles(DecisionDurability):
     async def test_real_credentials_never_make_synthetic_catalog_production_approved(self):
         from app.settings import settings
         with patch.object(settings,'gpt_api_key','real-looking-credential'):
-            with self.assertRaisesRegex(ValueError,'synthetic'):await self.approve()
+            self.assertEqual(self.profiles.active_catalog(),{})
+            with self.assertRaises(ValueError):await self.approve()
 
     async def test_candidate_is_exact_fixed_transformation(self):
         overlay=await self.approve()

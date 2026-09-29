@@ -3,6 +3,7 @@ import copy,importlib,json,unittest
 from unittest.mock import patch,AsyncMock
 from pathlib import Path
 import test_decision_v1 as base_tests
+import test_profiles_v1 as profile_tests
 from app.services import observation
 
 def configured(**extra):
@@ -48,6 +49,25 @@ class RuntimeConfig(unittest.TestCase):
     def test_unknown_profile_parameters_rejected(self):
         d=configured();d['profiles']={'bad':{'model_id':'gpt-synthetic-alt'}}
         with self.assertRaises(ValueError):self.config.validate_config(d)
+    def test_default_example_is_disabled_and_valid(self):
+        raw=json.loads((Path(__file__).resolve().parents[2]/'config/orchestrator-runtime.example.json').read_text())
+        cfg=self.config.validate_config(raw)
+        self.assertEqual(cfg['profiles'],{});self.assertEqual(cfg['allowed_actions'],[])
+        with self.assertRaises(ValueError):self.config.check_route(cfg,'https://unapproved.invalid/codex/v1/responses')
+    def test_production_catalog_does_not_reuse_test_profiles(self):
+        from app.services import profiles_v1
+        with patch.object(self.config,'runtime_config',return_value=configured()):
+            self.assertEqual(profiles_v1.active_catalog(),{})
+            with self.assertRaises(ValueError):profiles_v1.validate_candidate(profiles_v1.CATALOG['synthetic-json-v1'])
+    def test_explicit_production_profile_transformation_is_bounded(self):
+        from app.services import profiles_v1
+        d=configured();candidate={'model_id':'gpt-5-6-sol','provider':'kie','kind':'text','channel':'stable','reasoning_effort':'medium','max_output_tokens':2048,'prompt_variant':'require-apply-ops-v1','synthetic_only':False}
+        d['profiles']={'approved-json':candidate}
+        with patch.object(self.config,'runtime_config',return_value=self.config.validate_config(d)):
+            profiles_v1.validate_candidate(candidate)
+            body=profiles_v1.effective_body({'input':'original contract','model':'gpt-5-6-sol'},candidate)
+            self.assertTrue(body['input'].startswith('original contract'))
+            self.assertEqual(body['max_output_tokens'],2048);self.assertEqual(body['reasoning'],{'effort':'medium'})
 
 class RuntimeAdapter(base_tests.DecisionDurability):
     async def asyncSetUp(self):
@@ -121,6 +141,28 @@ class RuntimeAdapter(base_tests.DecisionDurability):
             with self.assertRaisesRegex(RuntimeError,'budget exhausted'):await observation.authorize_model_retrieve(configured()['endpoint']+'/resp_test')
         finally:decision_transport.current.reset(bound)
         async with self.sessions() as s:self.assertEqual((await s.get(ActionExecutionControl,'exec-durable')).requests_used,1)
+    async def test_actual_client_retrieval_cannot_exceed_common_budget(self):
+        from app.services import decision_transport,gpt_api
+        from app.services.actions_v1 import ActionExecutionControl
+        from contextlib import asynccontextmanager
+        import httpx
+        await self.enable_decisions();d=await self.begin();token=await self.loop.claim(d['decision_id']);ctx=await self.loop.context(d['decision_id'])
+        hook=self.service.HttpDecision(self.loop,d['decision_id'],token,ctx['context_version'])
+        async with self.sessions() as s:
+            c=await s.get(ActionExecutionControl,'exec-durable');c.request_limit=1;await s.commit()
+        calls=[]
+        async def get(url,**kw):
+            calls.append(url);return httpx.Response(200,json={'id':'resp_test','status':'in_progress'},request=httpx.Request('GET',url))
+        mock=AsyncMock();mock.get.side_effect=get
+        @asynccontextmanager
+        async def client(**kw):yield mock
+        bound=decision_transport.current.set(hook)
+        try:
+            with patch.object(gpt_api,'_async_client',client):
+                await gpt_api.fetch_completed_response(post_url=configured()['endpoint'],headers={},response_id='resp_test',polls=3,poll_s=0)
+        finally:decision_transport.current.reset(bound)
+        self.assertEqual(len(calls),1)
+        async with self.sessions() as s:self.assertEqual((await s.get(ActionExecutionControl,'exec-durable')).requests_used,1)
     async def test_worker_body_audit_failure_prevents_transport(self):
         sends=[]
         async def transport(**kw):sends.append(kw)
@@ -170,4 +212,39 @@ class RuntimeAdapter(base_tests.DecisionDurability):
 # Inherit fixtures, not historical suites.
 for _name in list(dir(RuntimeAdapter)):
     if _name.startswith('test_') and _name not in RuntimeAdapter.__dict__:setattr(RuntimeAdapter,_name,None)
+
+class RuntimeProfiles(profile_tests.Profiles):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.config=importlib.import_module('app.services.decision_config')
+        candidate={'model_id':'gpt-5-6-sol','provider':'kie','kind':'text','channel':'stable','reasoning_effort':'medium','max_output_tokens':2048,'prompt_variant':'require-apply-ops-v1','synthetic_only':False}
+        self.cfg=configured(profiles={'approved-json':candidate})
+        self.runtime=patch.object(self.config,'runtime_config',return_value=self.cfg)
+        self.runtime.start();self.addCleanup(self.runtime.stop)
+    async def approve_production(self):
+        state=await self.store.state(7,'exec-durable','n1')
+        return await self.store.approve(project_id=7,execution_id='exec-durable',node_key='n1',profile_id='approved-json',
+            base_version=state['base_version'],catalog_hash=state['catalog_hash'],initiator='synthetic-operator',rationale='offline production policy')
+    async def test_explicit_production_overlay_persists_exact_candidate(self):
+        overlay=await self.approve_production()
+        self.assertEqual(overlay['candidate'],self.cfg['profiles']['approved-json'])
+        state=await self.store.state(7,'exec-durable','n1')
+        self.assertFalse(state['synthetic_only']);self.assertEqual(len(state['overlays']),1)
+    async def test_production_catalog_revision_revokes_old_candidate(self):
+        await self.approve_production()
+        old=(await self.store.state(7,'exec-durable','n1'))['catalog_hash']
+        self.cfg['profiles']['approved-json']['reasoning_effort']='high'
+        state=await self.store.state(7,'exec-durable','n1')
+        self.assertNotEqual(old,state['catalog_hash'])
+        with self.assertRaisesRegex(ValueError,'catalog'):
+            await self.store.approve(project_id=7,execution_id='exec-durable',node_key='n1',profile_id='approved-json',
+                base_version=state['base_version'],catalog_hash=old,initiator='operator',rationale='old policy')
+    async def test_synthetic_candidate_cannot_be_approved_in_production_mode(self):
+        state=await self.store.state(7,'exec-durable','n1')
+        with self.assertRaises(ValueError):
+            await self.store.approve(project_id=7,execution_id='exec-durable',node_key='n1',profile_id='synthetic-json-v1',
+                base_version=state['base_version'],catalog_hash=state['catalog_hash'],initiator='operator',rationale='not approved')
+
+for _name in dir(RuntimeProfiles):
+    if _name.startswith('test_') and _name not in RuntimeProfiles.__dict__:setattr(RuntimeProfiles,_name,None)
 if __name__=='__main__':unittest.main()
