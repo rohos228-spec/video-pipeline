@@ -1,7 +1,7 @@
 """Actual API -> worker -> six-node group; only the external HTTP transport is synthetic.
 
 The test runner stops the app at the group boundary. Observation itself does not.
-Prepared answers are reused unchanged from diag_v2/group_runner.py.
+Prepared answers are reused unchanged from the versioned group_runner.py.
 """
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ ROOT = Path("/results")
 DATA = ROOT / "free-run-data"
 SOURCE = Path("/observe-source")
 sys.path.insert(0, str(SOURCE))
-sys.path.insert(0, "/observe-fixtures")
 import group_runner as fixtures
 from coverage_capture import begin
 finish_coverage = begin(SOURCE)
@@ -49,6 +48,35 @@ async def run():
         "OUTSEE_HTTP_FALLBACK_CDP": "false", "AUDIO_USE_ELEVENLABS_FALLBACK": "false",
         "NVIDIA_ASR_PRELOAD_ON_STARTUP": "false",
     })
+    if mode.startswith('decision-managed-'):
+        plan=json.loads((SOURCE/'config/managed-text-pilot.example.json').read_text())
+        provenance=json.loads(Path('/observe-checkpoint-provenance.json').read_text())
+        assert provenance['synthetic_only'] and provenance['status']=='exhausted before supervisor action'
+        assert plan['online_authorized'] is False and plan['runtime']['external_calls_enabled'] is False
+        target=plan['target_node']
+        with sqlite3.connect(DATA/'state.db') as db:
+            execution=provenance['execution_id']
+            control=db.execute('SELECT requests_used,graph_version,node_keys FROM action_execution_controls WHERE execution_id=?',(execution,)).fetchone()
+            assert control and control[0]==plan['inherited_requests']==18
+            assert not db.execute('SELECT 1 FROM action_node_recoveries').fetchone()
+            attempt=db.execute('SELECT attempt_id FROM observation_events WHERE execution_id=? AND node_key=? AND kind=? ORDER BY id DESC LIMIT 1',(execution,target,'node_start')).fetchone()[0]
+            incident=db.execute('SELECT incident_id FROM observation_incidents WHERE execution_id=? AND node_key=? AND attempt_id=?',(execution,target,attempt)).fetchone()[0]
+            assert attempt==provenance['source_attempt_id']
+            assert set(json.loads(control[2]))==set(fixtures.NODES)
+            b=plan['budget'];assert b['new_request_limit']==b['decision_max_posts']+b['worker_base_posts']+b['worker_json_retry_slots']
+            assert b['managed_request_limit']==18+b['new_request_limit']
+            # Authorized service-budget setup on this fresh copy only; no attempts/business writes.
+            db.execute('UPDATE action_execution_controls SET request_limit=? WHERE execution_id=?',(b['managed_request_limit'],execution))
+        cfg=plan['runtime'];cfg['online_enabled']=True  # loopback fixture only
+        cfg['incident_scope'].update(execution_id=execution,incident_id=incident,source_attempt_id=attempt)
+        path=ROOT/'synthetic-managed-runtime.json';path.write_text(json.dumps(cfg,indent=2))
+        os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
+        plan.update(run_id='managed-synthetic-'+str(uuid.uuid4()),execution_id=execution,
+            test_db_instance=str(DATA/'state.db'),graph_revision=control[1],
+            runtime_file_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            operator_changes=['copy genuine exhausted seed','reduce total request_limit from 40 to 30',
+                              'bind one incident/source attempt','enable loopback fixtures; preserve seed settings including transport retries'])
+        (ROOT/'prepared-managed-pilot.json').write_text(json.dumps(plan,indent=2))
     if live_decision or mode=='decision-runtime-bad':
         config={'version':1,'mode':'production','online_enabled':True,
             'endpoint':'http://127.0.0.1:18766/codex/v1/responses',
@@ -146,12 +174,12 @@ async def run():
                 if mode.startswith("profiles-"):
                     from profiles_acceptance import verify
                     await verify(client,base,result["execution_id"],fixtures,ROOT,result)
-                if browser_mode and mode=='decision-runtime-bad':
-                    (ROOT/'browser-ready.json').write_text(json.dumps({'project_id':2,'application':'live','state':'human_review'}))
+                if browser_mode and (mode=='decision-runtime-bad' or mode.startswith('decision-managed-')):
+                    (ROOT/'browser-ready.json').write_text(json.dumps({'project_id':2,'application':'live','state':result['decisions']['records'][0]['status']}))
                     (ROOT/'group-result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str))
                     deadline=time.monotonic()+300
                     while not (ROOT/'browser-finish-requested').exists() and time.monotonic()<deadline:await asyncio.sleep(.2)
-                    assert (ROOT/'browser-finish-requested').exists(),'capture live negative UI and finish explicitly'
+                    assert (ROOT/'browser-finish-requested').exists(),'capture live UI and finish explicitly'
                 return
             if denial_mode:
                 from recovery_denials import run as run_denial
@@ -454,7 +482,7 @@ async def run():
             sys.stdout.flush()
             sys.stderr.flush()
             os._exit(3)
-        if browser_mode and result.get("accepted") and not live_decision and mode!='decision-runtime-bad':
+        if browser_mode and result.get("accepted") and not live_decision and mode!='decision-runtime-bad' and not mode.startswith('decision-managed-'):
             # At the boundary app.main is cancelled. Replay saved history in
             # the dedicated history_replay.py process. Binding in this process
             # races the original HTTP socket's shutdown (captured Errno 98).

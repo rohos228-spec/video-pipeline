@@ -36,6 +36,7 @@ $files += @('app/services/actions_recovery.py','app/services/profiles_state.py',
 $files += 'tests/observe_v1/recovery_denials.py'
 $files += @('tests/observe_v1/decision_acceptance.py','tests/observe_v1/profiles_acceptance.py')
 $files += 'tests/observe_v1/live_decision_acceptance.py'
+if ($Target -eq 'group') { $files += @('tests/observe_v1/group_runner.py','config/managed-text-pilot.example.json') }
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
 if ($Target -eq 'profiles') { $files += @('tests/observe_v1/test_profiles_v1.py','tests/observe_v1/test_decision_v1.py') }
 if ($Target -eq 'decision-runtime') { $files += @('tests/observe_v1/test_decision_runtime.py','tests/observe_v1/test_profiles_v1.py','config/orchestrator-runtime.example.json') }
@@ -201,20 +202,18 @@ if ($Target -eq 'decision-gateway-faults') {
 }
 if ($Target -eq 'group') {
     if ($GroupMode.StartsWith('deny-') -or $GroupMode.StartsWith('decision-') -or $GroupMode.StartsWith('profiles-')) {
-        if (-not $DenialSeed) { $DenialSeed = Join-Path $sourceRoot '../../outputs/actions-v1-final/recovery-a-02/artifacts/free-run-data' }
+        if (-not $DenialSeed) { throw 'Explicit immutable synthetic -DenialSeed required for checkpoint scenarios' }
         if (-not (Test-Path -LiteralPath $DenialSeed)) { throw 'Existing exhausted synthetic checkpoint required' }
         if (Get-ChildItem -LiteralPath $DenialSeed -Recurse -Force -File | Where-Object { $_.Name -match '^\.env($|\.)|\.(key|pem)$' }) { throw 'Unexpected secret file in synthetic checkpoint' }
         & $docker @connectionArgs cp "$DenialSeed/." "${name}:/observe-denial-seed"
         if ($LASTEXITCODE -ne 0) { throw 'Cannot copy exhausted synthetic checkpoint' }
+        if ($GroupMode.StartsWith('decision-managed-')) {
+            $provenance=Join-Path (Split-Path -Parent $DenialSeed) 'checkpoint-provenance.json'
+            & $docker @connectionArgs cp $provenance "${name}:/observe-checkpoint-provenance.json"
+            if ($LASTEXITCODE -ne 0) { throw 'Synthetic checkpoint provenance required' }
+        }
     }
-    $fixturePath = Join-Path $resultsPath 'fixtures'
-    New-Item -ItemType Directory -Path $fixturePath | Out-Null
-    $preparedFixtures = [IO.Path]::GetFullPath((Join-Path $sourceRoot '../diag_v2'))
-    foreach ($filename in @('group_runner.py', 'free_runner.py', 'store.py')) {
-        Copy-Item -LiteralPath (Join-Path $preparedFixtures $filename) -Destination (Join-Path $fixturePath $filename)
-    }
-    & $docker @connectionArgs cp "$fixturePath/." "${name}:/observe-fixtures"
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot copy prepared synthetic fixture helpers' }
+    # Prepared HTTP answers are versioned in tests/observe_v1/group_runner.py.
 }
 if ($Browser) {
     & $docker @connectionArgs start $name | Out-Null

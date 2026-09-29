@@ -36,6 +36,7 @@ def handler_for(fixtures,root,mode):
             ctx=contexts[0];turn=len(type(self).requests)
             if turn>1:assert any('tool_result' in text for text in strings),'actual tool result missing from next request'
             action=['read_events','retry_same','finish'][turn-1]
+            if mode=='decision-managed-review':action='human_review'
             arguments={'event_ids':ctx['evidence_ids'][:1]} if action=='read_events' else {}
             if mode.startswith('profiles-') and action=='retry_same':
                 action='retry_profile';arguments={'overlay_id':ctx['approved_profiles'][0]['overlay_id']}
@@ -85,6 +86,14 @@ async def run(mode,client,fixtures,observer,root,result):
         interventions=['copy historical synthetic checkpoint','enable synthetic decision mode through original API'])
     assert len(decisions['records'])==1,decisions
     decision=decisions['records'][0]
+    if mode=='decision-managed-review':
+        actions=(await client.get(base+f'/observations/{execution}/actions')).json()
+        assert decision['status']=='human_review' and decision['model_steps']==1
+        assert actions['held'] and actions['requests_used']==19 and actions['request_limit']==30
+        assert not actions['recoveries'] and sum(fixtures.FixtureHandler.counts.values())==1
+        result.update(accepted=True,actions=actions,brain_posts=1,worker_posts=0,real_api_calls=0,
+            outcome='fixture chose human review without forced retry; no worker dispatched')
+        return
     if mode in {'decision-bad','profiles-bad','decision-runtime-bad'}:
         assert decision['status']=='human_review' and decision['model_steps']==2,decision
         actions=(await client.get(base+f'/observations/{execution}/actions')).json()
@@ -103,6 +112,13 @@ async def run(mode,client,fixtures,observer,root,result):
     assert fixtures.FixtureHandler.counts['__decision__']==3
     actions=(await client.get(base+f'/observations/{execution}/actions')).json()
     assert actions['requests_used']==26,actions
+    if mode=='decision-managed-pilot':
+        assert actions['request_limit']==30
+        from app.services.decision_config import DecisionRuntimeBinding
+        async with SessionLocal() as s:
+            binding=await s.get(DecisionRuntimeBinding,execution)
+            assert binding.config['incident_scope']['incident_id']==decision['incident_id']
+            result['bound_runtime_hash']=binding.config_hash
     assert len(actions['recoveries'])==1 and actions['recoveries'][0]['status']=='verified',actions
     run=(await client.get(base+'/run')).json()
     assert next(n for n in run['node_runs'] if n['node_key']=='n_script')['status']=='pending'
