@@ -40,7 +40,11 @@ assert.equal(groupIncidents([{...open,currently_relevant:false,status:'human_rev
 console.log('Frontend metadata/diagnosis contracts: 17 assertions passed');
 const actionSource=fs.readFileSync('/observe-source/web/src/lib/actions-view.ts','utf8');
 const actionJS=ts.transpileModule(actionSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
-const {actionStatus,actionsModeLabel}=await import('data:text/javascript;base64,'+Buffer.from(actionJS).toString('base64'));
+const {actionStatus,actionsModeLabel,actionReviewMessage}=await import('data:text/javascript;base64,'+Buffer.from(actionJS).toString('base64'));
+assert.doesNotMatch(actionStatus('human_review'),/recovery/);
+assert.match(actionReviewMessage('human_review'),/Причина/);
+assert.doesNotMatch(actionReviewMessage('human_review'),/Verification не прошёл/);
+assert.match(actionReviewMessage('node_recovery'),/не подтверждён/);
 assert.match(actionsModeLabel(null),/не подтверждено/);
 assert.equal(actionsModeLabel({configured:false,enabled:false,held:false}),'Управление выключено');
 assert.match(actionsModeLabel({configured:true,enabled:true,held:true}),/удержан/);
