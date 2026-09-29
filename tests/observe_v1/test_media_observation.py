@@ -7,6 +7,18 @@ from app.services import observation
 
 
 class MediaObservation(MediaJobs):
+    async def test_managed_image_cannot_start_unscoped_animation_sidecar(self):
+        from app.services.anim_pr_sidecar import ensure_anim_pr_sidecar, _TASKS
+        try:
+            self.assertFalse(ensure_anim_pr_sidecar(7))
+        finally:
+            task = _TASKS.get(7)
+            if task:
+                import asyncio
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                _TASKS.pop(7, None)
+
     async def test_decision_reads_media_contract_and_never_offers_text_recovery(self):
         import json
         from app.services.decision_state import DecisionRecord

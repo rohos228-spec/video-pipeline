@@ -86,6 +86,10 @@ async def run():
         path=ROOT/'synthetic-production-adapter.json';path.write_text(json.dumps(config,indent=2))
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
     recovery_mode = mode in {"recovery-a", "recovery-b"}
+    media_mode = mode in {"media-image", "media-mixed"}
+    if media_mode:
+        from media_acceptance import prepare
+        media_prepared = prepare(fixtures, ROOT, mode)
     fixtures.MODE = "malformed" if mode in {"malformed","unrepaired"} or recovery_mode else "group"
     recovery_transport = {"active": False}
     noop_before = None
@@ -108,6 +112,9 @@ async def run():
     finally:
         sock.close()
     handler=fixtures.FixtureHandler
+    if media_mode:
+        from media_acceptance import handler_for as media_handler
+        handler = media_handler(fixtures, ROOT)
     if decision_mode or live_decision:
         from decision_acceptance import handler_for
         handler=handler_for(fixtures,ROOT,mode)
@@ -126,6 +133,9 @@ async def run():
             raise RuntimeError("Test transport refuses non-loopback request")
         if request.url.port == 18766 and request.method == "POST":
             ctx = observation._attempt.get()
+            if media_mode and request.url.path == "/api/v1/jobs/createTask":
+                assert ctx and ctx.node_key == "n_images", "media call outside observed image worker"
+                return await original_send(client, request, **kwargs)
             from app.services.decision_transport import current
             if current.get() is not None:
                 assert decision_mode or live_decision,'unexpected decision HTTP'
@@ -168,6 +178,11 @@ async def run():
         async with httpx.AsyncClient(timeout=30, trust_env=False,
                 limits=httpx.Limits(max_keepalive_connections=0)) as client:
             base = "http://127.0.0.1:18765/api/projects/2"
+            if media_mode:
+                from media_acceptance import run as run_media
+                await run_media(client, fixtures, observation.get_observer(), ROOT,
+                                result, media_prepared, handler)
+                return
             if live_decision:
                 assert browser_mode,'live acceptance requires the browser'
                 from live_decision_acceptance import run as run_live
