@@ -13,6 +13,9 @@ class MediaObservation(MediaJobs):
         from app.services.decision_v1 import DecisionSupervisor
         from app.services.diagnosis import Incident
         cfg = json.loads(self.cfg.read_text())
+        cfg["decision"] = {"catalog_id": "gpt-kie", "model_id": "gpt-5-6-sol",
+            "reasoning_effort": "low", "max_output_tokens": 1024, "timeout_s": 30}
+        cfg["endpoint"] = "http://127.0.0.1:18766/codex/v1/responses"
         cfg["allowed_actions"] = ["read_events", "read_contract", "retry_same", "wait", "human_review", "finish"]
         self.cfg.write_text(json.dumps(cfg))
         async with self.sessions() as s:

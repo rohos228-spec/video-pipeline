@@ -96,6 +96,9 @@ class DecisionSupervisor:
             raise ValueError('incident / execution scope unavailable')
         if row.node_key not in permission.node_keys or row.node_key not in scope.node_keys:raise ValueError('node outside decision scope')
         run=await s.get(WorkflowRun,scope.workflow_run_id);project=await s.get(Project,row.project_id)
+        from app.services.node_capabilities import capability_for
+        node=next((n for n in run.nodes_snapshot if str(n.get('id'))==row.node_key),{}) if run else {}
+        capability=capability_for(str(node.get('type') or ''))
         graph=digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot}) if run else None
         events=[];cursor=0
         while True:
@@ -133,7 +136,8 @@ class DecisionSupervisor:
             'incident':panel_safe(incident.details),'evidence_ids':[e.event_id for e in events],
             'facts':[panel_safe({k:getattr(e,k) for k in ('event_id','kind','attempt_id','request_id','payload')}) for e in events[:20]],
             'approved_profiles':approved,
-            'allowed_actions':[a for a in (list(ACTIONS)+(['retry_profile'] if approved else []) if not action else ['read_events','read_contract','human_review','wait','finish']) if a in cfg['allowed_actions']],
+            'allowed_actions':[a for a in (list(ACTIONS)+(['retry_profile'] if approved else []) if not action else ['read_events','read_contract','human_review','wait','finish']) if a in cfg['allowed_actions'] and a in capability.actions],
+            'node_capability':capability.contract(),
             'decision_runtime':{'mode':cfg['mode'],'model':cfg['decision'],'config_hash':digest(cfg)},
             'incident_scope':cfg.get('incident_scope'),
             'limits':{'request_limit':permission.request_limit,'requests_used':permission.requests_used,'max_model_steps':MAX_STEPS},
@@ -201,6 +205,20 @@ class DecisionSupervisor:
             run=await s.get(WorkflowRun,scope.workflow_run_id)
             node=next((n for n in run.nodes_snapshot if str(n.get('id'))==row.node_key),None)
             if not node:raise ValueError('node contract missing from graph')
+            from app.services.node_capabilities import capability_for
+            capability=capability_for(str(node.get('type') or ''))
+            if capability.result_kind!='structured':
+                from app.services.media_jobs import MediaJob
+                jobs=(await s.scalars(select(MediaJob).where(MediaJob.execution_id==row.execution_id,
+                    MediaJob.project_id==row.project_id,MediaJob.node_key==row.node_key))).all()
+                return panel_safe({**capability.contract(),'node_key':row.node_key,
+                    'graph_version':scope.graph_version,'context_version':context['context_version'],
+                    'source':'existing node registry + persisted media jobs',
+                    'jobs':[{'job_id':j.job_id,'provider_job_id':j.provider_job_id,
+                        'phase':j.phase,'attempt_id':j.attempt_id,'verification':j.verification,
+                        'error':j.error} for j in jobs],
+                    'retry_policy':'never resubmit unknown job; known job status uses original provider client',
+                    'cost_status':'unknown_tariff','production_profile_configured':False})
             project=await s.get(Project,row.project_id)
             contract_project=project
             cfg=node_config(project,row.node_key)

@@ -67,3 +67,8 @@ previous random cancellation during audit correctly triggered commit uncertainty
 This change makes the tested checkpoint explicit; audit guard is not weakened.
 Next: Decision type capabilities, verified artifact provenance/idempotence and
 true image worker acceptance through the existing group runner. No active runner.
+Decision capability chunk: decision-capability-green 5/5. read_contract for
+native media returns registry contract/jobs/structural verification; generic
+text retry/profile/finish excluded by capability allowlist. First two RED runs
+exposed missing unit DB binding and invalid synthetic config, preserved. Third
+RED confirmed unsafe retry_same offer. No model call in these unit tests.
