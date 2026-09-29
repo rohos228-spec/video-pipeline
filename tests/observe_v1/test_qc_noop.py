@@ -316,6 +316,45 @@ class NoopRecoveryVerify(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(any(e.payload.get('body',{}).get('gap')=='body_total_limit' for e in facts))
             finally:observation._attempt.reset(token)
 
+    async def test_incomplete_sse_holds_managed_execution_before_next_post(self):
+        execution='00000000-0000-4000-8000-000000000007'
+        async with self.sessions() as session:
+            scope=await session.get(observation.ExecutionControl,'exec-durable')
+            scope.execution_id=execution
+            await session.commit()
+        await self.supervisor.enable(project_id=7,execution_id=execution,group_id='g1',
+            node_keys=['n1'],graph_version=self.graph,initiator='test',rationale='incomplete SSE',request_limit=20)
+        posts=[];applied=[]
+        def response(request):
+            if request.method=='GET':return httpx.Response(404,request=request)
+            posts.append(request)
+            events=[{'type':'response.created','response':{'id':'resp_incomplete'}},
+                    {'type':'response.output_text.delta','delta':'{"ops":[]}'}]
+            return httpx.Response(200,headers={'content-type':'text/event-stream'},
+                content=''.join('data: '+json.dumps(e)+'\n\n' for e in events).encode(),request=request)
+        def client(**kw):return httpx.AsyncClient(transport=httpx.MockTransport(response),**kw)
+        async def apply(payload):applied.append(payload)
+        root=Path(self.tmp.name);frames={'frames':[{'uuid':'u','voiceover_text':'synthetic voiceover','fields':{}}]}
+        path=root/'input.json';path.write_text(json.dumps(frames))
+        async with self.sessions() as session:
+            scope=await session.get(observation.ExecutionControl,execution)
+            token=observation._attempt.set(observation.AttemptContext(observation._observer,scope,session,'project','n1','uncertain-attempt'))
+            try:
+                with patch.object(gpt_api,'_async_client',client),patch.object(settings,'gpt_max_retries',0), \
+                     patch.object(settings,'gpt_api_mode','responses'),patch.object(settings,'gpt_chat_path','/codex/v1/responses'):
+                    with self.assertRaisesRegex(RuntimeError,'incomplete|uncertain'):
+                        await run_apply_ops_batched(project_dir=root,node_key='n1',role='assist',output_mode='project_file',
+                            prompt='synthetic no-op',accompanying='',db_ctx=frames,ctx_path=path,project_id=7,
+                            dense=False,footer_kind='shots_qc',force_full=True,allow_empty_ops=True,apply_fn=apply)
+                self.assertEqual(len(posts),1)
+                self.assertEqual(applied,[])
+                async with self.sessions() as master:
+                    control=await master.get(ActionExecutionControl,execution)
+                    self.assertTrue(control.held,'incomplete response must durably forbid another POST')
+                with self.assertRaisesRegex(RuntimeError,'held'):
+                    await self.supervisor.charge_request(execution)
+            finally:observation._attempt.reset(token)
+
     async def test_valid_noop_verified_without_fake_apply(self):
         result=await self.verify_noop()
         self.assertTrue(result['verified'],result)

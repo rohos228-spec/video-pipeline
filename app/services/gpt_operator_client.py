@@ -40,6 +40,17 @@ class OperatorApiResult:
     empty_ops_accepted: bool = False
 
 
+async def _require_completed_qc_response(result) -> None:
+    raw = getattr(result, 'raw', None) or {}
+    if raw.get('status') == 'completed' and not raw.get('sse_salvaged'):
+        return
+    from app.services.observation import _attempt, hold_uncertain_request
+    ctx = _attempt.get()
+    if ctx and ctx.scope.mode == 'managed' and ctx.last_request_id:
+        await hold_uncertain_request(ctx, ctx.last_request_id)
+    raise RuntimeError('QC response incomplete/uncertain; empty-ops acceptance forbidden')
+
+
 def _needs_check_writeback_retry(reply_text: str) -> bool:
     """True если check+fix ответ без пригодного TSV writeback."""
     from app.services.check_analysis import CHECK_WRITEBACK_MARKER
@@ -372,9 +383,7 @@ async def _run_operator_api_real(
         auto_pack=auto_pack,
     )
     if allow_empty_ops:
-        raw = getattr(result, 'raw', None) or {}
-        if raw.get('status') != 'completed' or raw.get('sse_salvaged'):
-            raise RuntimeError('QC response incomplete/uncertain; empty-ops acceptance forbidden')
+        await _require_completed_qc_response(result)
     reply_text = result.text
 
     # report_only: модель иногда копирует assemble JSON. Один повтор — TXT-отчёт.
@@ -615,9 +624,7 @@ async def _run_operator_api_real(
         reply_text = retry.text or ""
         result = retry
         if allow_empty_ops:
-            raw = getattr(retry, 'raw', None) or {}
-            if raw.get('status') != 'completed' or raw.get('sse_salvaged'):
-                raise RuntimeError('QC retry response incomplete or uncertain')
+            await _require_completed_qc_response(retry)
         apply_ops = extract_apply_ops_json(reply_text or "")
         if allow_empty_ops and not _qc_json_valid(reply_text):
             apply_ops = None

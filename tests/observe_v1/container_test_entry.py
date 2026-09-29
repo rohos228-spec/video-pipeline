@@ -52,6 +52,8 @@ try:
         sys.argv=[str(SOURCE / "tests/observe_v1/test_qc_noop.py")]
         if os.environ.get('OBSERVE_TEST_TARGET')=='qc-noop-rules':
             sys.argv.append('NoopEvidence')
+        if os.environ.get('OBSERVE_TEST_TARGET')=='qc-noop-uncertain':
+            sys.argv.append('NoopRecoveryVerify.test_incomplete_sse_holds_managed_execution_before_next_post')
         if os.environ.get('OBSERVE_TEST_TARGET')=='qc-noop-audit':
             sys.argv.append('NoopRecoveryVerify.test_real_journal_body_limit_after_http_blocks_managed_noop')
     if os.environ.get('OBSERVE_TEST_TARGET')=='operator-regression':
@@ -100,3 +102,4 @@ finally:
     if mismatch:
         exit_code = 2
 raise SystemExit(exit_code)
+
