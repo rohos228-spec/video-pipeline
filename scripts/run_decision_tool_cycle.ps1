@@ -1,10 +1,76 @@
 param(
-    [Parameter(Mandatory=$true)][string]$KeySourcePath,
+    [string]$KeySourcePath,
     [Parameter(Mandatory=$true)][string]$ResultsRoot,
-    [switch]$OnlineAuthorized
+    [switch]$OnlineAuthorized,
+    [switch]$OfflineDrainCheck,
+    [string]$GatewayContainer,
+    [ValidateRange(1,30)][int]$OfflineDrainSeconds=5
 )
 $ErrorActionPreference = 'Stop'
+function Invoke-GatewayDrain {
+    param([string]$Docker,[string[]]$DockerArgs,[string]$Gateway,[string]$Results,
+          [int]$MaxWaitSeconds,[int]$StopWaitSeconds=30)
+    $drainRequestOutput=& $Docker @DockerArgs exec $Gateway sh -c 'touch /results/gateway-drain-requested.marker' 2>&1
+    $drainRequested=($LASTEXITCODE -eq 0)
+    $drainRequestError=if ($drainRequested) { $null } else { (@($drainRequestOutput) | ForEach-Object { $_.ToString() }) -join "`n" }
+    $deadline=(Get-Date).ToUniversalTime().AddSeconds($MaxWaitSeconds)
+    if (-not $drainRequested) { $deadline=(Get-Date).ToUniversalTime() }
+    $pending='unknown'; $unresolved='unknown'; $readErrors=0; $lastError=$null; $graceful=$false
+    do {
+        $snapshot=& $Docker @DockerArgs exec $Gateway python -c 'import json,sqlite3; d=sqlite3.connect("file:/results/decision-gateway.sqlite?mode=ro",uri=True,timeout=5); print(json.dumps({"pending":d.execute("SELECT COUNT(*) FROM requests WHERE state=?",("reserved",)).fetchone()[0],"unresolved":d.execute("SELECT COUNT(*) FROM requests WHERE state!=? OR response_id IS NULL OR application_received_at IS NULL OR application_accepted_at IS NULL",("complete",)).fetchone()[0]})); d.close()' 2>&1
+        try {
+            if ($LASTEXITCODE -ne 0) { throw 'ledger read failed' }
+            $counts="$snapshot" | ConvertFrom-Json
+            if ($null -eq $counts.pending -or $null -eq $counts.unresolved) { throw 'ledger count missing' }
+            $pending=[int]$counts.pending; $unresolved=[int]$counts.unresolved; $readErrors=0
+        } catch {
+            $pending='unknown'; $unresolved='unknown'; $readErrors++
+            $lastError='ledger_read_failed: ' + ((@($snapshot) | ForEach-Object { $_.ToString() }) -join "`n")
+            if ($readErrors -ge 3) { break }
+            Start-Sleep -Seconds 2
+            continue
+        }
+        if ($unresolved -eq 0) { break }
+        Start-Sleep -Seconds ([Math]::Min(5,$MaxWaitSeconds))
+    } while ((Get-Date).ToUniversalTime() -lt $deadline)
+    if ($drainRequested -and $unresolved -is [int] -and $unresolved -eq 0) {
+        $stopAccepted=$false
+        for ($attempt=0;$attempt -lt $StopWaitSeconds;$attempt++) {
+            $stopResult=& $Docker @DockerArgs exec $Gateway python -c 'import httpx; c=httpx.Client(transport=httpx.HTTPTransport(uds="/gateway/llm.sock"),base_url="http://localhost",timeout=15); r=c.post("/local/gateway-stop"); print(r.status_code); c.close()' 2>&1
+            if ($LASTEXITCODE -eq 0 -and "$stopResult" -eq '200') { $stopAccepted=$true; break }
+            $lastError='gateway_stop_attempt_failed: ' + ((@($stopResult) | ForEach-Object { $_.ToString() }) -join "`n")
+            Start-Sleep -Seconds 1
+        }
+        if ($stopAccepted) {
+            for ($i=0;$i -lt $StopWaitSeconds;$i++) {
+                & $Docker @DockerArgs exec $Gateway test -S /gateway/llm.sock 2>$null
+                if ($LASTEXITCODE -ne 0) { $graceful=$true; break }
+                Start-Sleep -Seconds 1
+            }
+            if (-not $graceful) { $lastError='gateway_stop_socket_did_not_close' }
+        }
+    }
+    $report=@{utc=(Get-Date).ToUniversalTime().ToString('o');pending=$pending;unresolved=$unresolved;
+      settled=($unresolved -is [int] -and $unresolved -eq 0);drain_requested=$drainRequested;
+      drain_request_error=$drainRequestError;gateway_process_graceful=$graceful;
+      forced_container_stop=(-not $graceful);read_errors=$readErrors;last_error=$lastError;
+      max_wait_seconds=$MaxWaitSeconds;stop_wait_seconds=$StopWaitSeconds}
+    $report | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $Results 'gateway-drain.json')
+    & $Docker @DockerArgs stop --time 5 $Gateway | Out-Null
+    return $report
+}
+if ($OfflineDrainCheck) {
+    if ($OnlineAuthorized -or $KeySourcePath -or -not $GatewayContainer) { throw 'Offline drain requires only an existing test container' }
+    $offlineResults=[IO.Path]::GetFullPath($ResultsRoot)
+    if (-not (Test-Path -LiteralPath $offlineResults)) { throw 'Offline results directory missing' }
+    $offlineDocker='C:\Program Files\Docker\Docker\resources\bin\docker.exe'
+    $offlineConfig=Join-Path $offlineResults 'empty-docker-config'
+    $offlineArgs=@('--config',$offlineConfig,'--host','npipe:////./pipe/dockerDesktopLinuxEngine')
+    Invoke-GatewayDrain -Docker $offlineDocker -DockerArgs $offlineArgs -Gateway $GatewayContainer -Results $offlineResults -MaxWaitSeconds $OfflineDrainSeconds -StopWaitSeconds $OfflineDrainSeconds | Out-Null
+    exit 0
+}
 if (-not $OnlineAuthorized) { throw 'A new explicit online authorization is required; no POST' }
+if (-not $KeySourcePath) { throw 'Authorized key source path required; no POST' }
 $source = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $root = [IO.Path]::GetFullPath((Join-Path $source '..\..'))
 $results = [IO.Path]::GetFullPath($ResultsRoot)
@@ -163,58 +229,8 @@ try {
     $appExit=& $docker @dc wait $app
 } finally {
     $key=$null
-    # This marker is visible to reserve() before it can open another model POST.
-    # Keep ACK and in-flight stream handlers alive while the ledger drains.
-    $drainRequestOutput=& $docker @dc exec $gateway sh -c 'touch /results/gateway-drain-requested.marker' 2>&1
-    $drainRequested=($LASTEXITCODE -eq 0)
-    $drainRequestError=if ($drainRequested) { $null } else { (@($drainRequestOutput) | ForEach-Object { $_.ToString() }) -join "`n" }
-    # The app can stop reading before a paid upstream stream finishes. Keep the
-    # isolated gateway alive until its reserved requests settle, bounded by its
-    # 900 s upstream timeout plus 30 s for persistence and Docker scheduling.
-    $drainDeadline=(Get-Date).ToUniversalTime().AddSeconds(930)
-    if (-not $drainRequested) { $drainDeadline=(Get-Date).ToUniversalTime() }
-    $pending='unknown'
-    $readErrors=0
-    $lastReadError=$null
-    $graceful=$false
-    do {
-        $pendingOutput=& $docker @dc exec $gateway python -c 'import sqlite3; db=sqlite3.connect("file:/results/decision-gateway.sqlite?mode=ro",uri=True,timeout=5); print(db.execute("SELECT COUNT(*) FROM requests WHERE state=?", ("reserved",)).fetchone()[0]); db.close()' 2>&1
-        if ($LASTEXITCODE -ne 0 -or "$pendingOutput" -notmatch '^\d+$') {
-            $pending='unknown'
-            $readErrors++
-            $lastReadError=(@($pendingOutput) | ForEach-Object { $_.ToString() }) -join "`n"
-            if ($readErrors -ge 3) { break }
-            Start-Sleep -Seconds 2
-            continue
-        }
-        $readErrors=0
-        $pending=[int]$pendingOutput
-        if ($pending -eq 0) { break }
-        Start-Sleep -Seconds 5
-    } while ((Get-Date).ToUniversalTime() -lt $drainDeadline)
-    if ($drainRequested -and $pending -ceq 0) {
-        $stopAccepted=$false
-        for ($attempt=0;$attempt -lt 30;$attempt++) {
-            $stopResult=& $docker @dc exec $gateway python -c 'import httpx; c=httpx.Client(transport=httpx.HTTPTransport(uds="/gateway/llm.sock"),base_url="http://localhost",timeout=15); r=c.post("/local/gateway-stop"); print(r.status_code); c.close()' 2>&1
-            if ($LASTEXITCODE -eq 0 -and "$stopResult" -eq '200') { $stopAccepted=$true; break }
-            $lastReadError='gateway_stop_attempt_failed: ' + ((@($stopResult) | ForEach-Object { $_.ToString() }) -join "`n")
-            Start-Sleep -Seconds 1
-        }
-        if ($stopAccepted) {
-            for ($i=0;$i -lt 30;$i++) {
-                & $docker @dc exec $gateway test -S /gateway/llm.sock 2>$null
-                if ($LASTEXITCODE -ne 0) { $graceful=$true; break }
-                Start-Sleep -Seconds 1
-            }
-            if (-not $graceful) { $lastReadError='gateway_stop_socket_did_not_close' }
-        }
-    }
-    @{utc=(Get-Date).ToUniversalTime().ToString('o');pending=$pending;settled=($pending -ceq 0);
-      drain_requested=$drainRequested;drain_request_error=$drainRequestError;
-      gateway_process_graceful=$graceful;
-      forced_container_stop=(-not $graceful);read_errors=$readErrors;last_error=$lastReadError;
-      max_wait_seconds=930} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $results 'gateway-drain.json')
-    & $docker @dc stop --time 5 $gateway | Out-Null
+    # Same drain path is exercised by -OfflineDrainCheck with a short test deadline.
+    Invoke-GatewayDrain -Docker $docker -DockerArgs $dc -Gateway $gateway -Results $results -MaxWaitSeconds 930 -StopWaitSeconds 30 | Out-Null
 }
 $gatewayExit=& $docker @dc wait $gateway
 @{app_exit=$appExit;gateway_exit=$gatewayExit} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $results 'container-exits.json')

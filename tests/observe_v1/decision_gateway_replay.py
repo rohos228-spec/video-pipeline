@@ -17,6 +17,7 @@ from unittest.mock import patch
 ROOT = Path('/results')
 REPLAY = Path('/observe-replay')
 SOURCE = Path('/observe-source')
+LAUNCHER_CASE = os.environ.get('OBSERVE_LAUNCHER_CASE', '')
 
 
 def context(body):
@@ -56,6 +57,7 @@ def replay_events(ordinal):
 class Fixture(BaseHTTPRequestHandler):
     posts = []
     errors = []
+    first_body = None
     def log_message(self, *_args):
         pass
     def do_GET(self):
@@ -68,7 +70,20 @@ class Fixture(BaseHTTPRequestHandler):
             body = json.loads(raw)
             ctx = context(body)
             ordinal = len(type(self).posts) + 1
+            if ordinal == 3 and LAUNCHER_CASE == 'hung_handler':
+                type(self).posts.append({'action': 'synthetic_hung_stream', 'bytes': len(raw)})
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.end_headers()
+                chunk = b'data: {"type":"response.created","response":{"id":"resp_hung_fixture"}}\n\n'
+                self.wfile.write(f'{len(chunk):x}\r\n'.encode() + chunk + b'\r\n')
+                self.wfile.flush()
+                time.sleep(60)
+                return
             assert ordinal <= 2, 'third fixture POST forbidden'
+            if ordinal == 1:
+                type(self).first_body = raw
             events = replay_events(ordinal)
             response = events[-1]['response']
             texts = [part.get('text') for item in response['output']
@@ -198,18 +213,57 @@ async def main():
                 references.add(ref)
         actual = {str(path.relative_to(gateway.BODY_ROOT)) for path in gateway.BODY_ROOT.rglob('*.json')}
         assert actual == references, 'unindexed or missing body files'
-        gateway.DRAIN_REQUEST.touch()
-        with httpx.Client(transport=httpx.HTTPTransport(uds=str(gateway.SOCKET)), base_url='http://localhost', timeout=10) as client:
-            assert client.post('/local/gateway-stop').status_code == 200
-        gateway_thread.join(timeout=10)
-        assert not gateway_thread.is_alive()
         summary = {'source_entry': hashlib.sha256((SOURCE / 'scripts/diagnostics/decision_tool_cycle_entry.py').read_bytes()).hexdigest(),
                    'pilot_handler': hashlib.sha256((gateway_source / 'decision_tool_cycle_gateway.py').read_bytes()).hexdigest(),
                    'base_gateway': hashlib.sha256((gateway_source / 'gateway.py').read_bytes()).hexdigest(),
                    'posts': Fixture.posts, 'acks': len(acks), 'pending': pending,
                    'batch_count': len(batches), 'business_unchanged': True,
-                   'tool_result_present': True, 'graceful_gateway_stop': True,
+                   'tool_result_present': True, 'graceful_gateway_stop': False,
                    'provider_gets': 0, 'real_api_calls': 0}
+        if LAUNCHER_CASE:
+            assert LAUNCHER_CASE in {'normal', 'ledger_unavailable', 'hung_handler'}
+            if LAUNCHER_CASE == 'hung_handler':
+                def send_hung_request():
+                    with httpx.Client(transport=httpx.HTTPTransport(uds=str(gateway.SOCKET)),
+                                      base_url='http://localhost', timeout=120) as client:
+                        with client.stream('POST', '/codex/v1/responses', content=Fixture.first_body,
+                                           headers={'Authorization': 'Bearer synthetic-readonly-test-key',
+                                                    'Content-Type': 'application/json'}) as response:
+                            for _ in response.iter_bytes():
+                                pass
+                threading.Thread(target=send_hung_request, daemon=True).start()
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    with sqlite3.connect(gateway.LEDGER) as db:
+                        if db.execute("SELECT COUNT(*) FROM requests WHERE state='reserved'").fetchone()[0] == 1:
+                            break
+                    time.sleep(.05)
+                else:
+                    raise AssertionError('hung handler did not reserve')
+            if LAUNCHER_CASE == 'ledger_unavailable':
+                gateway.LEDGER.rename(ROOT / 'decision-gateway-preserved.sqlite')
+                gateway.LEDGER.mkdir()
+            def close_socket_after_shutdown():
+                gateway_thread.join()
+                server.server_close()
+                gateway.SOCKET.unlink(missing_ok=True)
+                (ROOT / 'gateway-process-exited.marker').write_text('graceful', encoding='utf-8')
+            threading.Thread(target=close_socket_after_shutdown, daemon=True).start()
+            (ROOT / 'replay-summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+            (ROOT / 'launcher-ready.json').write_text(json.dumps({'case': LAUNCHER_CASE,
+                'fixture_posts': len(Fixture.posts), 'ledger_path': str(gateway.LEDGER),
+                'results_mode': oct(ROOT.stat().st_mode & 0o777),
+                'results_uid': ROOT.stat().st_uid, 'results_gid': ROOT.stat().st_gid,
+                'ledger_mode': oct(gateway.LEDGER.stat().st_mode & 0o777),
+                'bodies_mode': oct(gateway.BODY_ROOT.stat().st_mode & 0o777)}), encoding='utf-8')
+            while True:
+                await asyncio.sleep(1)
+        gateway.DRAIN_REQUEST.touch()
+        with httpx.Client(transport=httpx.HTTPTransport(uds=str(gateway.SOCKET)), base_url='http://localhost', timeout=10) as client:
+            assert client.post('/local/gateway-stop').status_code == 200
+        gateway_thread.join(timeout=10)
+        assert not gateway_thread.is_alive()
+        summary['graceful_gateway_stop'] = True
         (ROOT / 'replay-summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
         print(json.dumps({'posts': 2, 'acks': 4, 'pending': 0, 'graceful_stop': True}))
     finally:

@@ -7,6 +7,7 @@ param(
     [string]$ReplayResponsePath,
     [string]$ReplayArchivePath,
     [switch]$ReplayStorageFailure,
+    [ValidateSet('','normal','ledger_unavailable','hung_handler')][string]$LauncherCase='',
     [switch]$AckFailure,
     [ValidateSet('','accepted')][string]$AckFailureStage = '',
     [string]$StreamCase = 'fast',
@@ -15,6 +16,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if ($LauncherCase -and $Target -ne 'decision-gateway-replay') { throw 'LauncherCase requires decision-gateway-replay' }
 if (-not $ResultsRoot) {
     $ResultsRoot = Join-Path $sourceRoot ('../../outputs/observe-v1/' + (Get-Date -Format 'yyyyMMddTHHmmss'))
 }
@@ -133,6 +135,8 @@ if ($Target -eq 'decision-stream') { $entryFile = 'tests/observe_v1/decision_str
 if ($Target -eq 'group') { $entryFile = 'tests/observe_v1/group_acceptance.py' }
 if ($Target -eq 'actions') { $entryFile = 'tests/observe_v1/container_test_entry.py' }
 $connectionArgs = @('--config', $configPath, '--host', 'npipe:////./pipe/dockerDesktopLinuxEngine')
+$launcherMount = @()
+if ($LauncherCase) { $launcherMount = @('--mount', "type=bind,src=$artifactPath,dst=/results") }
 $dockerArgs = $connectionArgs + @(
     'create', '--pull', 'never', '--name', $name, '--network', 'none', '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
@@ -143,9 +147,9 @@ $dockerArgs = $connectionArgs + @(
     '--env', "OBSERVE_STREAM_CASE=$StreamCase",
     '--env', "OBSERVE_STREAM_RED=$([int]$StreamRed.IsPresent)",
     '--env', "OBSERVE_REPLAY_STORAGE_FAILURE=$([int]$ReplayStorageFailure.IsPresent)",
+    '--env', "OBSERVE_LAUNCHER_CASE=$LauncherCase",
     '--env', "OBSERVE_ACK_FAILURE=$([int]$AckFailure.IsPresent)",
-    '--env', "OBSERVE_ACK_FAILURE_STAGE=$AckFailureStage",
-    $Image, 'python', $entryFile)
+    '--env', "OBSERVE_ACK_FAILURE_STAGE=$AckFailureStage") + $launcherMount + @($Image, 'python', $entryFile)
 $containerId = & $docker @dockerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Cannot create offline test container' }
 # Copy into a fresh directory, not over the image's old application files.
@@ -216,6 +220,39 @@ if ($Browser) {
     & $docker @connectionArgs start $name | Out-Null
     @{container=$name;network='none';browser_port=18767;source_commit=(& git -c $gitSafety -C $sourceRoot rev-parse HEAD)} | ConvertTo-Json | Set-Content (Join-Path $artifactPath 'browser-config.json')
     Write-Output "Browser container running: $name; evidence: $artifactPath"
+    exit 0
+}
+if ($LauncherCase) {
+    & $docker @connectionArgs start $name | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot start offline launcher check' }
+    $readyPath=Join-Path $artifactPath 'launcher-ready.json'
+    $ready=$false
+    for ($i=0;$i -lt 180;$i++) {
+        if (Test-Path -LiteralPath $readyPath) { $ready=$true; break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $ready) {
+        & $docker @connectionArgs logs $name 2>&1 | Set-Content -Encoding UTF8 (Join-Path $artifactPath 'test-output.txt')
+        throw 'Offline Decision replay did not reach launcher drain'
+    }
+    & (Join-Path $sourceRoot 'scripts/run_decision_tool_cycle.ps1') -OfflineDrainCheck -ResultsRoot $resultsPath -GatewayContainer $name -OfflineDrainSeconds 5
+    $drain=Get-Content -Raw (Join-Path $resultsPath 'gateway-drain.json') | ConvertFrom-Json
+    $graceMarker=Test-Path -LiteralPath (Join-Path $artifactPath 'gateway-process-exited.marker')
+    $passed=if ($LauncherCase -eq 'normal') {
+        $drain.settled -and $drain.gateway_process_graceful -and -not $drain.forced_container_stop -and $graceMarker -and
+        $drain.pending -eq 0 -and $drain.unresolved -eq 0
+    } elseif ($LauncherCase -eq 'ledger_unavailable') {
+        -not $drain.settled -and $drain.forced_container_stop -and $drain.pending -eq 'unknown' -and $drain.unresolved -eq 'unknown'
+    } else {
+        -not $drain.settled -and $drain.forced_container_stop -and $drain.pending -ge 1 -and $drain.unresolved -ge 1
+    }
+    & $docker @connectionArgs logs $name 2>&1 | Set-Content -Encoding UTF8 (Join-Path $artifactPath 'test-output.txt')
+    @{container=$name;image=$Image;network='none';launcher_case=$LauncherCase;
+      test_exit_code=$(if($passed){0}else{1});gateway_process_graceful=$graceMarker;
+      source_commit=(& git -c $gitSafety -C $sourceRoot rev-parse HEAD);paid_calls=0} |
+      ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $artifactPath 'run-config.json')
+    Write-Output "Launcher case=$LauncherCase pass=$passed; artifacts: $artifactPath"
+    if (-not $passed) { exit 1 }
     exit 0
 }
 $started = & $docker @connectionArgs start $name 2>$null

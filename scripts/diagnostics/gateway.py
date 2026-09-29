@@ -384,12 +384,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.reject(409, 'drain_not_requested'); return
             try:
                 with connection() as db:
-                    pending = db.execute("SELECT COUNT(*) FROM requests WHERE state='reserved'").fetchone()[0]
+                    unresolved = db.execute("SELECT COUNT(*) FROM requests WHERE state!='complete' "
+                        "OR response_id IS NULL OR application_received_at IS NULL "
+                        "OR application_accepted_at IS NULL").fetchone()[0]
             except sqlite3.Error as exc:
                 degrade('gateway_drain_storage_failure', exc, operation='drain_pending')
                 self.reject(503, 'drain_state_unknown'); return
-            if pending:
-                self.reject(409, 'drain_pending'); return
+            if unresolved:
+                self.reject(409, 'drain_unresolved'); return
             with self.server.active_lock:
                 busy = self.server.active_handlers != 1
             if busy:
