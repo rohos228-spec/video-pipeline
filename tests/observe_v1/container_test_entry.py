@@ -48,8 +48,10 @@ try:
         sys.argv=[str(SOURCE / "tests/observe_v1/test_planner_boundary.py")]
     if os.environ.get("OBSERVE_TEST_TARGET")=="readonly-pilot":
         sys.argv=[str(SOURCE / "tests/observe_v1/test_readonly_pilot.py")]
-    if os.environ.get("OBSERVE_TEST_TARGET")=="qc-noop":
+    if os.environ.get("OBSERVE_TEST_TARGET", "").startswith("qc-noop"):
         sys.argv=[str(SOURCE / "tests/observe_v1/test_qc_noop.py")]
+        if os.environ.get('OBSERVE_TEST_TARGET')=='qc-noop-audit':
+            sys.argv.append('NoopRecoveryVerify.test_real_journal_body_limit_after_http_blocks_managed_noop')
     if os.environ.get('OBSERVE_TEST_TARGET')=='operator-regression':
         sys.path.append(str(SOURCE/'test-vendor'))
         os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD']='1'

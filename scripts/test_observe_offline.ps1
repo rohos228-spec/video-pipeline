@@ -34,7 +34,7 @@ if ($Target -eq 'decision-final') { $files += @('tests/observe_v1/test_decision_
 if ($Target -eq 'planner-boundary') { $files += 'tests/observe_v1/test_planner_boundary.py' }
 if ($Target -eq 'readonly-pilot') { $files += @('scripts/readonly_qc_pilot.py','tests/observe_v1/test_readonly_pilot.py') }
 if ($Target -eq 'operator-regression') { $files += @('tests/test_gpt_operator_apply_ops.py','tests/test_apply_ops_batches.py') }
-if ($Target -eq 'qc-noop') { $files += 'tests/observe_v1/test_qc_noop.py' }
+if ($Target.StartsWith('qc-noop')) { $files += 'tests/observe_v1/test_qc_noop.py' }
 if ($Target.StartsWith('decision')) { $files += 'tests/observe_v1/test_decision_v1.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
 $manifest = @{}

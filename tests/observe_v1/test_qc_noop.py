@@ -156,6 +156,14 @@ def noop_facts():
 
 
 class NoopEvidence(unittest.TestCase):
+    def test_noop_requires_complete_unsalvaged_strict_reply_and_request_identity(self):
+        from app.services.gpt_operator_client import _accepted_empty_ops
+        data={'ops':[]}
+        for text,raw in (('{"ops":[]}',{}),('{"ops":[]}',{'status':'completed','sse_salvaged':True}),
+                         ('broken',{'status':'completed'}),('[]',{'status':'completed'})):
+            self.assertFalse(_accepted_empty_ops(SimpleNamespace(text=text,raw=raw),data,allowed=True))
+        self.assertFalse(confirmed_qc_noop(noop_facts(),None))
+
     def test_policy_uses_config_not_node_name_or_prompt(self):
         p=SimpleNamespace(meta={'canvas_graph':{'nodes':[{'id':'arbitrary','type':'excel_gpt',
             'data':{'groupId':'script_frames_qc#instance'}}]},
@@ -252,6 +260,47 @@ class NoopRecoveryVerify(unittest.IsolatedAsyncioTestCase):
             await reconcile(observation._observer)
         async with self.sessions() as s:
             return (await s.get(RecoveryAction,ticket['action_id'])).verification_result
+
+    async def test_real_journal_body_limit_after_http_blocks_managed_noop(self):
+        async with self.sessions() as session:
+            scope=await session.get(observation.ExecutionControl,'exec-durable')
+            scope.execution_id='00000000-0000-4000-8000-000000000007'
+            await session.commit()
+        await self.supervisor.enable(project_id=7,execution_id='00000000-0000-4000-8000-000000000007',group_id='g1',
+            node_keys=['n1'],graph_version=self.graph,initiator='test',rationale='post-response audit fault',request_limit=2)
+        posts=[];applied=[]
+        def response(request):
+            posts.append(request)
+            # Fault in the actual journal limit, after initial model_start was saved.
+            # No scheduler/operator/parser/storage method is replaced.
+            observation._observer.MAX_TOTAL=0
+            payload={'type':'response.completed','response':{'id':'resp_audit_test','status':'completed',
+                'output':[{'content':[{'type':'output_text','text':'{"ops":[]}'}]}]}}
+            return httpx.Response(200,headers={'content-type':'text/event-stream'},
+                content=('data: '+json.dumps(payload)+'\n\n').encode(),request=request)
+        def client(**kw):return httpx.AsyncClient(transport=httpx.MockTransport(response),**kw)
+        async def apply(payload):applied.append(payload)
+        root=Path(self.tmp.name);frames={'frames':[{'uuid':'u','voiceover_text':'synthetic voiceover','fields':{}}]}
+        path=root/'input.json';path.write_text(json.dumps(frames))
+        async with self.sessions() as s:
+            scope=await s.get(observation.ExecutionControl,'00000000-0000-4000-8000-000000000007')
+            token=observation._attempt.set(observation.AttemptContext(observation._observer,scope,s,'project','n1','audit-attempt'))
+            try:
+                with patch.object(gpt_api,'_async_client',client),patch.object(settings,'gpt_max_retries',0), \
+                     patch.object(settings,'gpt_api_mode','responses'),patch.object(settings,'gpt_chat_path','/codex/v1/responses'):
+                    with self.assertRaisesRegex(RuntimeError,'mandatory audit unavailable'):
+                        await run_apply_ops_batched(project_dir=root,node_key='n1',role='assist',output_mode='project_file',
+                            prompt='synthetic no-op',accompanying='',db_ctx=frames,ctx_path=path,project_id=7,
+                            dense=False,footer_kind='shots_qc',force_full=True,allow_empty_ops=True,apply_fn=apply)
+                self.assertEqual(len(posts),1)
+                self.assertEqual(applied,[])
+                self.assertIn(scope.execution_id,observation._observer.failures)
+                async with self.sessions() as master:
+                    facts=(await master.scalars(select(observation.ObservationOutbox).where(observation.ObservationOutbox.attempt_id=='audit-attempt'))).all()
+                    self.assertFalse(any(e.kind=='runtime_check' and e.payload.get('check')=='qc_noop'
+                                         and e.payload.get('status')=='passed' for e in facts))
+                    self.assertTrue(any(e.payload.get('body',{}).get('gap')=='body_total_limit' for e in facts))
+            finally:observation._attempt.reset(token)
 
     async def test_valid_noop_verified_without_fake_apply(self):
         result=await self.verify_noop()

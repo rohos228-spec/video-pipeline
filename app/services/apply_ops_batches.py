@@ -1705,10 +1705,18 @@ async def run_apply_ops_batched(
                     raise RuntimeError('QC empty result not accepted by the operator contract')
                 from app.services.observation import record_fact, _attempt
                 ctx = _attempt.get()
+                if ctx and ctx.scope.mode == 'managed' and (ctx.scope.gaps or
+                        ctx.scope.execution_id in ctx.observer.failures or
+                        ctx.scope.execution_id in ctx.observer.commit_uncertainty):
+                    raise RuntimeError('managed QC no-op blocked: mandatory audit unavailable')
                 await record_fact('runtime_check', {'check': 'qc_noop', 'performed': True,
                     'status': 'passed', 'empty_ops_allowed': True, 'response_complete': True,
                     'required_checks': ['strict_json_ops_array', 'completed_response', 'trusted_empty_ops_policy'],
                     'semantic_quality_verified': False}, request_id=ctx.last_request_id if ctx else None)
+                if ctx and ctx.scope.mode == 'managed' and (ctx.scope.gaps or
+                        ctx.scope.execution_id in ctx.observer.failures or
+                        ctx.scope.execution_id in ctx.observer.commit_uncertainty):
+                    raise RuntimeError('managed QC no-op blocked: mandatory audit unavailable')
                 async with meta_lock:
                     last_paths = list(res.output_paths or []) or [batch_path]
                     replies.append(res.reply_text or '')
