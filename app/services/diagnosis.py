@@ -19,7 +19,7 @@ from app.models import Base, WorkflowRun
 from app.services.error_catalog import ERROR_CATALOG
 from app.services.observation import ExecutionControl, ObservationEvent, digest, panel_safe, business_snapshot, confirmed_qc_noop, accepted_qc_noop_parse
 
-RULE_VERSION = 'diagnose-v1.3-qc-noop'
+RULE_VERSION = 'diagnose-v1.4-media'
 
 
 class DiagnosisState(Base):
@@ -47,6 +47,8 @@ class Incident(Base):
 
 
 TITLES = {
+    'media_failure':'Результат медиа-задачи не подтверждён',
+    'media_policy':'Отправка остановлена защитным ограничением',
     'invalid_json':'Ответ не разобран как обязательный JSON',
     'missing_payload':'Нет обязательных данных в ответе',
     'contract_rejected':'Ответ отклонён существующей проверкой',
@@ -173,12 +175,29 @@ def derive_incidents(scope, events, snapshot):
 
         for e in related:
             p=e['payload']; kind=e['kind']
+            if kind == 'media_failure':
+                uncertain = p.get('uncertain') is True or p.get('phase') == 'unknown'
+                item = issue('uncertain_request' if uncertain else 'media_failure',
+                    (node, attempt, p.get('job_id') or e['event_id']), [e],
+                    fact=('Исход внешней медиа-задачи неизвестен. Новый submit запрещён.'
+                          if uncertain else 'Медиа-задача завершилась ошибкой либо файл не прошёл проверку.'),
+                    action='human_review', incomplete=uncertain)
+                item['status'] = 'human_review'
+                item['provider_job_known'] = bool(p.get('provider_job_id'))
+                item['semantic_quality_verified'] = False
+            if kind == 'media_policy_denied' and not any(r['kind']=='media_failure' for r in related):
+                item = issue('media_policy', (node, attempt, p.get('job_id') or e['event_id']),
+                    [e], fact='Защитная policy остановила дальнейшие медиа-операции.',
+                    action='human_review')
+                item['status'] = 'human_review'
             if kind=='domain_check' and p.get('verdict') in {'fail','reject'}:
                 issue('contract_rejected',(node,attempt,'verdict',e.get('request_id') or e['event_id']),[e],
                     fact='Исходная предметная проверка вернула verdict fail/reject. Проверка качества относится только к этому контракту.')
             if kind=='runtime_check' and p.get('performed') is True and p.get('status') in {'failed','rejected'}:
                 issue('contract_rejected',(node,attempt,p.get('check'),e.get('request_id') or e['event_id']),[e],fact=f"Проверка {p.get('check','unknown')} отклонила результат.")
             if kind in {'apply_error','node_error','model_error'}:
+                if kind == 'node_error' and any(r['kind']=='media_failure' for r in related):
+                    continue  # the typed media evidence already owns this failure
                 if kind=='node_error' and bads:
                     for item in issues.values():
                         if item['node_key']==node and item['attempt_id']==attempt and item['type'] in {'invalid_json','missing_payload'}:

@@ -51,3 +51,9 @@ is recorded by media-contract; no model download or fake transcription.
 
 No current test processes owned by this task at start; unrelated Supabase
 containers left alone. Historical reports/archives/containers preserved.
+Native-media observation chunk: 4/4 tests in observation-green-01; actual native
+node/attempt identity, registered step code, typed failure/uncertain evidence.
+Runtime regression: 25/25 in runtime-regression-01. Diagnosis regression: 25/25
+in diagnosis-regression-01. Waiting running job is not diagnosed as hung.
+Next: two HTTP RED tests for legacy high-level service bypass and unreachable
+Kie image wrapper branch; no active runners at this checkpoint.

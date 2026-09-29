@@ -588,6 +588,31 @@ async def observe_attempt(session, project):
     observer = get_observer()
     from app.services.excel_gpt_node import active_excel_gpt_node_key
     node_key = active_excel_gpt_node_key(project)
+    # Native media (and other registry nodes) do not use the excel active key.
+    # Resolve from the immutable run and actual running NodeRun, never a guessed
+    # first node of a repeated type or a stale key left by a previous text step.
+    from app.orchestrator.node_registry import RUNNING_TO_NODE_TYPE, spec_for_node
+    native_type = RUNNING_TO_NODE_TYPE.get(project.status)
+    project_scope = next((s for s in observer.scopes.values() if s.project_id == project.id), None)
+    if project_scope and native_type and not native_type.startswith("enrich_"):
+        from app.models import NodeRunStatus
+        async with observer.master() as master:
+            run = await master.get(WorkflowRun, project_scope.workflow_run_id)
+            candidates = {n["id"] for n in (run.nodes_snapshot if run else [])
+                          if spec_for_node(n) and spec_for_node(n).running_status == project.status}
+            active = (await master.scalars(select(NodeRun).where(
+                NodeRun.workflow_run_id == project_scope.workflow_run_id,
+                NodeRun.node_key.in_(candidates), NodeRun.status == NodeRunStatus.running))).all()
+        keys = [n.node_key for n in active] if active else list(candidates)
+        if len(keys) != 1:
+            if project_scope.mode == "managed":
+                raise RuntimeError("managed native node identity missing or ambiguous")
+            observer.mark_gap(project_scope.execution_id, ValueError("native node identity ambiguous"))
+            node_key = None
+        else:
+            node_key = keys[0]
+            if project_scope.mode == "managed" and node_key not in project_scope.node_keys:
+                raise RuntimeError("native worker node outside managed scope")
     scope = next((s for s in observer.scopes.values()
                   if s.project_id == project.id and node_key in s.node_keys), None)
     if scope is None:
@@ -615,7 +640,10 @@ async def observe_attempt(session, project):
         revision = await input_revision(session, project, node_key, parts=revision_parts)
     ctx = AttemptContext(observer, scope, session, source, node_key, attempt_id)
     token = _attempt.set(ctx)
+    from app.services.node_capabilities import capability_for
+    capability = capability_for("excel_gpt" if not native_type or native_type.startswith("enrich_") else native_type)
     await record_fact("node_start", {"project_status": project.status.value, "node_contract": node_key,
+                                  "result_kind": capability.result_kind,
                                   "recovery_input_revision": revision, "recovery_revision_parts": revision_parts})
     profile_stack = ExitStack()
     try:

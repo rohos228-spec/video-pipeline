@@ -296,6 +296,14 @@ async def close_actions(project_id: int, execution_id: str, payload: CloseAction
         raise HTTPException(409, str(exc)) from exc
 
 
+def managed_step_code(node):
+    from app.orchestrator.node_registry import spec_for_node
+    spec = spec_for_node(node)
+    if spec is None:
+        raise ValueError("node type has no native runtime step")
+    return spec.step_code
+
+
 @router.post("/{execution_id}/actions/start")
 async def start_managed_node(project_id: int, execution_id: str, payload: ManagedStart,
                              operator: AuthDep,
@@ -359,7 +367,7 @@ async def start_managed_node(project_id: int, execution_id: str, payload: Manage
             status="dispatching", verification={}))
         await master.commit()
     try:
-        await start_step(session, project, payload.step_code, node_key=payload.node_key,
+        await start_step(session, project, managed_step_code(graph_node), node_key=payload.node_key,
                          require_node_fsm=True, explicit_ui_start=False)
         await session.commit()
         await session.refresh(project)
