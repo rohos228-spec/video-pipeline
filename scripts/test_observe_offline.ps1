@@ -35,6 +35,7 @@ if ($Target -eq 'planner-boundary') { $files += 'tests/observe_v1/test_planner_b
 if ($Target -eq 'readonly-pilot') { $files += @('scripts/readonly_qc_pilot.py','tests/observe_v1/test_readonly_pilot.py') }
 if ($Target -eq 'operator-regression') { $files += @('tests/test_gpt_operator_apply_ops.py','tests/test_apply_ops_batches.py') }
 if ($Target.StartsWith('qc-noop')) { $files += 'tests/observe_v1/test_qc_noop.py' }
+if ($Target -eq 'decision-readonly') { $files += 'tests/observe_v1/decision_readonly_acceptance.py' }
 if ($Target.StartsWith('decision')) { $files += 'tests/observe_v1/test_decision_v1.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
 $manifest = @{}
@@ -87,6 +88,7 @@ if ($Target -eq 'readonly-pilot') {
 $name = 'vp-observe-test-' + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $docker = 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
 $entryFile = 'tests/observe_v1/container_test_entry.py'
+if ($Target -eq 'decision-readonly') { $entryFile = 'tests/observe_v1/decision_readonly_acceptance.py' }
 if ($Target -eq 'group') { $entryFile = 'tests/observe_v1/group_acceptance.py' }
 if ($Target -eq 'actions') { $entryFile = 'tests/observe_v1/container_test_entry.py' }
 $connectionArgs = @('--config', $configPath, '--host', 'npipe:////./pipe/dockerDesktopLinuxEngine')
@@ -111,6 +113,15 @@ if ($Target -eq 'diagnose') {
     Copy-Item -LiteralPath (Join-Path $sourceRoot '../../outputs/observe-v1/20260928-ui-group-malformed/artifacts/api-history.json') -Destination (Join-Path $historyPath 'malformed.json')
     & $docker @connectionArgs cp "$historyPath/." "${name}:/observe-history"
     if ($LASTEXITCODE -ne 0) { throw 'Cannot copy existing synthetic histories' }
+}
+if ($Target -eq 'decision-readonly') {
+    if (-not $DenialSeed) { throw 'Explicit immutable exhausted checkpoint required' }
+    if (Get-ChildItem -LiteralPath $DenialSeed -Recurse -Force -File | Where-Object { $_.Name -match '^\.env($|\.)|\.(key|pem)$' }) { throw 'Unexpected secret file in synthetic checkpoint' }
+    & $docker @connectionArgs cp "$DenialSeed/." "${name}:/observe-denial-seed"
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot copy synthetic checkpoint' }
+    Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $DenialSeed) 'checkpoint-provenance.json') -Destination (Join-Path $artifactPath 'checkpoint-provenance.json')
+    & $docker @connectionArgs cp (Join-Path $artifactPath 'checkpoint-provenance.json') "${name}:/observe-checkpoint-provenance.json"
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot copy synthetic provenance' }
 }
 if ($Target -eq 'group') {
     if ($GroupMode.StartsWith('deny-') -or $GroupMode.StartsWith('decision-') -or $GroupMode.StartsWith('profiles-')) {
