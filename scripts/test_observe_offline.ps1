@@ -28,6 +28,7 @@ $files += 'tests/observe_v1/recovery_denials.py'
 $files += @('tests/observe_v1/decision_acceptance.py','tests/observe_v1/profiles_acceptance.py')
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
 if ($Target -eq 'profiles') { $files += @('tests/observe_v1/test_profiles_v1.py','tests/observe_v1/test_decision_v1.py') }
+if ($Target -eq 'decision-runtime') { $files += 'tests/observe_v1/test_decision_runtime.py' }
 if ($Target.StartsWith('decision')) { $files += 'tests/observe_v1/test_decision_v1.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
 $manifest = @{}

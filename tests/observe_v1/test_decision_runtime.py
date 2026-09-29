@@ -1,0 +1,88 @@
+"""Production adapter safety, exercised offline; no real credentials."""
+import copy,importlib,json,unittest
+from unittest.mock import patch
+from pathlib import Path
+import test_decision_v1 as base_tests
+from app.services import observation
+
+def configured(**extra):
+    d={'version':1,'mode':'production','online_enabled':True,
+       'endpoint':'http://127.0.0.1:18766/codex/v1/responses',
+       'decision':{'catalog_id':'gpt-kie','model_id':'gpt-5-6-sol','reasoning_effort':'low','max_output_tokens':1024,'timeout_s':30},
+       'profiles':{},'allowed_actions':['read_events','read_contract','retry_same','human_review','wait','finish']}
+    d.update(extra);return d
+
+class RuntimeConfig(unittest.TestCase):
+    def setUp(self):self.config=importlib.import_module('app.services.decision_config')
+    def test_explicit_production_adapter_uses_existing_catalog(self):
+        cfg=self.config.validate_config(configured());self.assertEqual(cfg['decision']['model_id'],'gpt-5-6-sol')
+    def test_disabled_example_cannot_send(self):
+        with self.assertRaisesRegex(ValueError,'disabled'):
+            self.config.check_route(self.config.validate_config(configured(online_enabled=False)),configured()['endpoint'])
+    def test_empty_production_profile_allowlist_is_not_synthetic(self):
+        self.assertEqual(self.config.validate_config(configured())['profiles'],{})
+    def test_synthetic_names_not_valid_production_models(self):
+        d=configured();d['decision']['model_id']='gpt-synthetic-alt'
+        with self.assertRaises(ValueError):self.config.validate_config(d)
+    def test_unknown_provider_catalog_rejected(self):
+        d=configured();d['decision']['catalog_id']='unapproved-provider'
+        with self.assertRaises(ValueError):self.config.validate_config(d)
+    def test_extra_parameters_and_arbitrary_prompt_rejected(self):
+        for key in ('temperature','system','shell'):
+            d=configured();d['decision'][key]='arbitrary'
+            with self.assertRaises(ValueError):self.config.validate_config(d)
+    def test_output_token_limit_is_positive_bounded(self):
+        for n in (0,-1,999999,True):
+            d=configured();d['decision']['max_output_tokens']=n
+            with self.assertRaises(ValueError):self.config.validate_config(d)
+    def test_route_change_is_not_approved(self):
+        with self.assertRaises(ValueError):self.config.check_route(configured(),'https://other.invalid/codex/v1/responses')
+    def test_non_https_external_route_is_rejected(self):
+        with self.assertRaises(ValueError):self.config.validate_config(configured(endpoint='http://outside.invalid/codex/v1/responses'))
+    def test_diagnostic_configuration_forbids_write_tools(self):
+        d=configured();d['allowed_actions']=['read_events','read_contract','human_review']
+        cfg=self.config.validate_config(d);self.assertNotIn('retry_same',cfg['allowed_actions'])
+    def test_production_profile_is_explicit_and_catalog_checked(self):
+        d=configured();d['profiles']={'approved-json':{'model_id':'gpt-5-6-sol','provider':'kie','kind':'text','channel':'stable','reasoning_effort':'medium','max_output_tokens':2048,'prompt_variant':'require-apply-ops-v1','synthetic_only':False}}
+        self.assertIn('approved-json',self.config.validate_config(d)['profiles'])
+    def test_unknown_profile_parameters_rejected(self):
+        d=configured();d['profiles']={'bad':{'model_id':'gpt-synthetic-alt'}}
+        with self.assertRaises(ValueError):self.config.validate_config(d)
+
+class RuntimeAdapter(base_tests.DecisionDurability):
+    async def asyncSetUp(self):
+        await super().asyncSetUp();self.config=importlib.import_module('app.services.decision_config')
+        self.runtime=patch.object(self.config,'runtime_config',return_value=configured());self.runtime.start();self.addCleanup(self.runtime.stop)
+    async def test_config_binding_persists_and_stale_configuration_stops(self):
+        await self.enable_decisions();d=await self.begin();token=await self.loop.claim(d['decision_id'])
+        async with self.sessions() as s:
+            binding=await s.get(self.config.DecisionRuntimeBinding,'exec-durable');self.assertEqual(binding.config['mode'],'production')
+        changed=configured();changed['decision']['reasoning_effort']='high';self.runtime.stop()
+        with patch.object(self.config,'runtime_config',return_value=changed):
+            async with self.sessions() as s:
+                row=await s.get(self.service.DecisionRecord,d['decision_id'])
+                with self.assertRaisesRegex(ValueError,'configuration'):await self.loop._live(s,row,token)
+    async def test_read_only_policy_removes_recovery_from_context(self):
+        self.runtime.return_value['allowed_actions']=['read_events','read_contract','human_review']
+        await self.enable_decisions();d=await self.begin();ctx=await self.loop.context(d['decision_id'])
+        self.assertNotIn('retry_same',ctx['allowed_actions']);self.assertNotIn('retry_profile',ctx['allowed_actions'])
+    async def test_real_client_boundary_receives_model_and_token_limit(self):
+        from app.services.gpt_api import GptChatResult
+        captured=[]
+        async def transport(**kw):
+            captured.append(kw)
+            hook=__import__('app.services.decision_transport',fromlist=['current']).current.get()
+            async def send(**args):return GptChatResult(text='{}',model=args['use_model'],finish_reason='stop',usage={},raw={'status':'completed'})
+            return await hook.send(send,(),{'url':configured()['endpoint'],'headers':{'Authorization':'Bearer synthetic-fixture'},'body':{'model':'gpt-5-6-sol','input':'context','stream':True},'use_model':'gpt-5-6-sol'})
+        await self.enable_decisions();d=await self.begin()
+        with patch('app.services.gpt_api.chat',side_effect=transport):await self.loop.step(d['decision_id'])
+        self.assertEqual(captured[0]['model'],'gpt-5-6-sol')
+        async with self.sessions() as s:
+            turns=(await s.scalars(__import__('sqlalchemy').select(self.service.DecisionTurn))).all()
+            start=next(t for t in turns if t.role=='http_event' and t.payload.get('kind')=='decision_model_start')
+            self.assertEqual(start.payload['metadata']['purpose'],'decision');self.assertEqual(start.payload['metadata']['max_output_tokens'],1024)
+
+# Inherit fixtures, not historical suites.
+for _name in list(dir(RuntimeAdapter)):
+    if _name.startswith('test_') and _name not in RuntimeAdapter.__dict__:setattr(RuntimeAdapter,_name,None)
+if __name__=='__main__':unittest.main()
