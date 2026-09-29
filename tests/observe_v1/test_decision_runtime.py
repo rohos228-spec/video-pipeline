@@ -1,6 +1,6 @@
 """Production adapter safety, exercised offline; no real credentials."""
 import copy,importlib,json,unittest
-from unittest.mock import patch
+from unittest.mock import patch,AsyncMock
 from pathlib import Path
 import test_decision_v1 as base_tests
 from app.services import observation
@@ -132,6 +132,40 @@ class RuntimeAdapter(base_tests.DecisionDurability):
                     with self.assertRaises(RuntimeError):await observation.observe_model(transport)(url=configured()['endpoint'],body={'test':1},use_model='gpt-5-6-sol')
             finally:observation._attempt.reset(bound)
         self.assertEqual(sends,[])
+
+    async def test_actual_auto_review_uses_shared_http_budget(self):
+        from app.orchestrator.auto_advance import _run_text_review
+        from app.models import Project,HITLKind
+        from app.services.gpt_api import GptChatResult
+        from app.services.actions_v1 import ActionExecutionControl
+        sends=[]
+        async def transport(**kw):
+            sends.append(kw);return GptChatResult(text='fixture',model='gpt-5-6-sol',raw={'status':'completed'})
+        async def review(**kw):
+            return await observation.observe_model(transport)(url=configured()['endpoint'],body={'input':'review'},use_model='gpt-5-6-sol')
+        async with self.sessions() as s:
+            c=await s.get(ActionExecutionControl,'exec-durable');c.request_limit=1;await s.commit()
+            project=await s.get(Project,7)
+            with patch('app.services.gpt_client.get_gpt_client',return_value=AsyncMock()),patch('app.services.auto_review.review_plan',side_effect=review):
+                await _run_text_review(project,HITLKind.approve_plan,'synthetic plan')
+                with self.assertRaisesRegex(RuntimeError,'budget exhausted'):
+                    await _run_text_review(project,HITLKind.approve_plan,'synthetic plan')
+        self.assertEqual(len(sends),1)
+        async with self.sessions() as s:
+            self.assertEqual((await s.get(ActionExecutionControl,'exec-durable')).requests_used,1)
+            facts=(await s.scalars(__import__('sqlalchemy').select(observation.ObservationOutbox))).all()
+            self.assertTrue(any(x.kind=='model_start' and x.payload.get('purpose')=='review' for x in facts))
+
+    async def test_review_outside_managed_scope_cannot_send(self):
+        from app.orchestrator.auto_advance import _run_text_review
+        from app.models import Project,HITLKind
+        sends=AsyncMock()
+        async with self.sessions() as s:
+            project=await s.get(Project,7)
+            with patch('app.services.gpt_client.get_gpt_client',return_value=AsyncMock()),patch('app.services.auto_review.review_script',sends):
+                with self.assertRaisesRegex(RuntimeError,'scope'):
+                    await _run_text_review(project,HITLKind.approve_script,'synthetic script')
+        sends.assert_not_awaited()
 
 # Inherit fixtures, not historical suites.
 for _name in list(dir(RuntimeAdapter)):
