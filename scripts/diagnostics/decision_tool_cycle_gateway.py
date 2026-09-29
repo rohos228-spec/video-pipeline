@@ -42,6 +42,8 @@ class Handler(base.Handler):
         super().forward(body)
 
 if __name__ == '__main__':
+    from gateway_egress_probe import run as verify_network
+    verify_network(os.environ['PINNED_KIE_IPV4'])
     base.SOCKET.parent.mkdir(parents=True, exist_ok=True)
     if base.SOCKET.exists():
         raise SystemExit('Socket already exists; refusing to replace it')

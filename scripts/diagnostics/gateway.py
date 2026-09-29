@@ -304,7 +304,15 @@ class Handler(BaseHTTPRequestHandler):
         self.forward(body)
 
     def forward(self, body: bytes) -> None:
-        upstream_host = urlsplit(KIE).hostname
+        upstream = urlsplit(KIE)
+        upstream_host = upstream.hostname
+        if not FIXTURE and upstream_host not in {'127.0.0.1', 'localhost', '::1'}:
+            if (upstream.scheme != 'https' or upstream_host != 'api.kie.ai'
+                    or upstream.port not in (None, 443) or upstream.username or upstream.password
+                    or upstream.path not in ('', '/') or upstream.query or upstream.fragment
+                    or self.command != 'POST' or self.path != '/codex/v1/responses'):
+                self.reject(403, 'external_route_blocked')
+                return
         if not FIXTURE and upstream_host not in {'127.0.0.1', 'localhost', '::1'} and not EXTERNAL_CALLS_ALLOWED:
             self.reject(403, 'external_gateway_disabled')
             return
@@ -375,7 +383,7 @@ class Handler(BaseHTTPRequestHandler):
             headers["Accept-Encoding"] = "identity"
             if body:
                 headers["Content-Type"] = "application/json"
-            with httpx.Client(trust_env=False, follow_redirects=False, timeout=900.0) as client:
+            with httpx.Client(trust_env=False, follow_redirects=False, verify=True, timeout=900.0) as client:
                 with client.stream(self.command, KIE + self.path, headers=headers, content=body) as upstream:
                     status = upstream.status_code
                     self.connection.settimeout(15.0)
