@@ -72,3 +72,8 @@ native media returns registry contract/jobs/structural verification; generic
 text retry/profile/finish excluded by capability allowlist. First two RED runs
 exposed missing unit DB binding and invalid synthetic config, preserved. Third
 RED confirmed unsafe retry_same offer. No model call in these unit tests.
+Artifact chunk: artifact-green-01 10/10 HTTP tests. Existing image executor now
+calls persist_artifact: verified job/file hash, deterministic Artifact UUID,
+SQLite conflict-ignore and business-transaction event; rollback leaves no row.
+Corrupt/tampered result cannot apply; duplicate delivery produces one Artifact.
+No worker acceptance claimed yet. Next is existing group runner media mode.

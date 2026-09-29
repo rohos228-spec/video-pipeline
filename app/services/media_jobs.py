@@ -59,6 +59,43 @@ class MediaRequest(Base):
 class MediaPolicyError(RuntimeError):
     """Protective stop; not a model quality or native pipeline defect."""
 
+async def persist_artifact(session, artifact):
+    """Original business transaction owns apply/rollback; job UUID deduplicates it."""
+    from app.models import Artifact
+    ctx = _attempt.get()
+    if not ctx or ctx.scope.mode != "managed":
+        session.add(artifact)
+        return artifact
+    bound = await assert_entry(project_id=artifact.project_id, provider="kie")
+    async with ctx.observer.master() as master:
+        job = await master.scalar(select(MediaJob).where(
+            MediaJob.execution_id==ctx.scope.execution_id, MediaJob.node_key==ctx.node_key,
+            MediaJob.project_id==artifact.project_id, MediaJob.path==str(Path(artifact.path).resolve())))
+        project = await master.get(Project, artifact.project_id)
+    if not job or job.phase != "verified":
+        raise MediaPolicyError("artifact has no verified job in this execution/node")
+    from app.services.artifact_verifier import verify_artifact
+    proof = await verify_artifact(artifact.path, root=project.data_dir, kind=job.kind)
+    if proof["status"] != "passed" or proof.get("sha256") != job.verification.get("sha256"):
+        raise MediaPolicyError("artifact verification changed before business apply")
+    identity = uuid.uuid5(uuid.UUID(job.job_id), "artifact").hex
+    meta = {**(artifact.meta or {}), "orchestrator": {
+        "execution_id":job.execution_id, "node_key":job.node_key, "attempt_id":job.attempt_id,
+        "applying_attempt_id":ctx.attempt_id,"job_id":job.job_id,
+        "provider_job_id":job.provider_job_id,"verification":proof}}
+    inserted = await session.execute(insert(Artifact).values(uuid=identity,
+        project_id=artifact.project_id,frame_id=artifact.frame_id,kind=artifact.kind,
+        path=job.path,meta=meta).on_conflict_do_nothing(index_elements=["uuid"]))
+    actual = await session.scalar(select(Artifact).where(Artifact.uuid==identity))
+    if (not actual or actual.project_id != artifact.project_id or actual.frame_id != artifact.frame_id
+            or actual.kind != artifact.kind or actual.path != job.path):
+        raise MediaPolicyError("artifact business identity conflict")
+    ctx.observer.stage(session, ctx.scope, "artifact_saved", db_scope=ctx.db_scope,
+        node_key=ctx.node_key,attempt_id=ctx.attempt_id,payload={
+            "artifact_uuid":identity,"job_id":job.job_id,"transactional":True,
+            "duplicate_delivery":inserted.rowcount==0,"verification":proof})
+    return actual
+
 
 def validate_media_config(raw, *, mode):
     expected = {"enabled", "provider", "origin", "download_origins", "model_ids",

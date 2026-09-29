@@ -1976,7 +1976,8 @@ async def _generate_and_send(
             "shot": shot,
         },
     )
-    session.add(art)
+    from app.services.media_jobs import persist_artifact
+    art = await persist_artifact(session, art)
     if is_shot2:
         attrs = dict(frame.attrs or {})
         attrs[SHOT2_STATUS_ATTR] = "image_generated"
