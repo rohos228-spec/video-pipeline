@@ -27,7 +27,7 @@ class Handler(base.Handler):
         self.reject(403, 'decision_retrieval_forbidden')
 
     def do_POST(self):
-        if self.path not in ('/codex/v1/responses', '/local/decision-ack'):
+        if self.path not in ('/codex/v1/responses', '/local/decision-ack', '/local/gateway-stop'):
             self.reject(403, 'route_blocked')
             return
         super().do_POST()
@@ -53,3 +53,4 @@ if __name__ == '__main__':
         os.chmod(base.SOCKET, 0o666)
         print('gateway_ready', flush=True)
         server.serve_forever()
+    base.SOCKET.unlink(missing_ok=True)

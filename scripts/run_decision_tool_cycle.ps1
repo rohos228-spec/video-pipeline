@@ -152,6 +152,7 @@ if (-not $key -or $key.Length -lt 12) { throw 'GPT_API_KEY unavailable; no POST'
     throw
 }
 # The key enters only the app process stdin and is never passed as CLI/env/file.
+$appExit=-1
 try {
     $priorPreference=$ErrorActionPreference
     $ErrorActionPreference='Continue'
@@ -162,21 +163,58 @@ try {
     $appExit=& $docker @dc wait $app
 } finally {
     $key=$null
+    # This marker is visible to reserve() before it can open another model POST.
+    # Keep ACK and in-flight stream handlers alive while the ledger drains.
+    $drainRequestOutput=& $docker @dc exec $gateway sh -c 'touch /results/gateway-drain-requested.marker' 2>&1
+    $drainRequested=($LASTEXITCODE -eq 0)
+    $drainRequestError=if ($drainRequested) { $null } else { (@($drainRequestOutput) | ForEach-Object { $_.ToString() }) -join "`n" }
     # The app can stop reading before a paid upstream stream finishes. Keep the
     # isolated gateway alive until its reserved requests settle, bounded by its
     # 900 s upstream timeout plus 30 s for persistence and Docker scheduling.
     $drainDeadline=(Get-Date).ToUniversalTime().AddSeconds(930)
+    if (-not $drainRequested) { $drainDeadline=(Get-Date).ToUniversalTime() }
     $pending='unknown'
+    $readErrors=0
+    $lastReadError=$null
+    $graceful=$false
     do {
-        $pendingOutput=& $docker @dc exec $gateway python -c 'import sqlite3; db=sqlite3.connect("/results/decision-gateway.sqlite"); print(db.execute("SELECT COUNT(*) FROM requests WHERE state=?", ("reserved",)).fetchone()[0]); db.close()' 2>$null
-        if ($LASTEXITCODE -ne 0 -or "$pendingOutput" -notmatch '^\d+$') { break }
+        $pendingOutput=& $docker @dc exec $gateway python -c 'import sqlite3; db=sqlite3.connect("file:/results/decision-gateway.sqlite?mode=ro",uri=True,timeout=5); print(db.execute("SELECT COUNT(*) FROM requests WHERE state=?", ("reserved",)).fetchone()[0]); db.close()' 2>&1
+        if ($LASTEXITCODE -ne 0 -or "$pendingOutput" -notmatch '^\d+$') {
+            $pending='unknown'
+            $readErrors++
+            $lastReadError=(@($pendingOutput) | ForEach-Object { $_.ToString() }) -join "`n"
+            if ($readErrors -ge 3) { break }
+            Start-Sleep -Seconds 2
+            continue
+        }
+        $readErrors=0
         $pending=[int]$pendingOutput
         if ($pending -eq 0) { break }
         Start-Sleep -Seconds 5
     } while ((Get-Date).ToUniversalTime() -lt $drainDeadline)
+    if ($drainRequested -and $pending -ceq 0) {
+        $stopAccepted=$false
+        for ($attempt=0;$attempt -lt 30;$attempt++) {
+            $stopResult=& $docker @dc exec $gateway python -c 'import httpx; c=httpx.Client(transport=httpx.HTTPTransport(uds="/gateway/llm.sock"),base_url="http://localhost",timeout=15); r=c.post("/local/gateway-stop"); print(r.status_code); c.close()' 2>&1
+            if ($LASTEXITCODE -eq 0 -and "$stopResult" -eq '200') { $stopAccepted=$true; break }
+            $lastReadError='gateway_stop_attempt_failed: ' + ((@($stopResult) | ForEach-Object { $_.ToString() }) -join "`n")
+            Start-Sleep -Seconds 1
+        }
+        if ($stopAccepted) {
+            for ($i=0;$i -lt 30;$i++) {
+                & $docker @dc exec $gateway test -S /gateway/llm.sock 2>$null
+                if ($LASTEXITCODE -ne 0) { $graceful=$true; break }
+                Start-Sleep -Seconds 1
+            }
+            if (-not $graceful) { $lastReadError='gateway_stop_socket_did_not_close' }
+        }
+    }
     @{utc=(Get-Date).ToUniversalTime().ToString('o');pending=$pending;settled=($pending -ceq 0);
+      drain_requested=$drainRequested;drain_request_error=$drainRequestError;
+      gateway_process_graceful=$graceful;
+      forced_container_stop=(-not $graceful);read_errors=$readErrors;last_error=$lastReadError;
       max_wait_seconds=930} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $results 'gateway-drain.json')
-    & $docker @dc stop $gateway | Out-Null
+    & $docker @dc stop --time 5 $gateway | Out-Null
 }
 $gatewayExit=& $docker @dc wait $gateway
 @{app_exit=$appExit;gateway_exit=$gatewayExit} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $results 'container-exits.json')

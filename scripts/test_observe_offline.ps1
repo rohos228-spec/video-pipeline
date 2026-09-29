@@ -5,6 +5,8 @@ param(
     [string]$GroupMode = 'observe',
     [string]$DenialSeed,
     [string]$ReplayResponsePath,
+    [string]$ReplayArchivePath,
+    [switch]$ReplayStorageFailure,
     [switch]$AckFailure,
     [ValidateSet('','accepted')][string]$AckFailureStage = '',
     [string]$StreamCase = 'fast',
@@ -42,6 +44,19 @@ if ($Target -eq 'operator-regression') { $files += @('tests/test_gpt_operator_ap
 if ($Target.StartsWith('qc-noop')) { $files += 'tests/observe_v1/test_qc_noop.py' }
 if ($Target -eq 'decision-readonly') { $files += @('tests/observe_v1/decision_readonly_acceptance.py',
     'scripts/diagnostics/decision_tool_cycle_gateway.py','config/decision-tool-cycle.example.json') }
+if ($Target -eq 'decision-gateway-replay') { $files += @(
+    'tests/observe_v1/decision_gateway_replay.py',
+    'scripts/diagnostics/decision_tool_cycle_entry.py',
+    'scripts/diagnostics/decision_tool_cycle_gateway.py',
+    'config/decision-tool-cycle.example.json') }
+if ($Target -eq 'decision-gateway-faults') { $files += @(
+    'tests/observe_v1/gateway_storage_faults.py',
+    'scripts/diagnostics/decision_tool_cycle_gateway.py',
+    'config/decision-tool-cycle.example.json') }
+if ($Target -eq 'decision-gateway-ack') { $files += @(
+    'tests/observe_v1/test_decision_tool_cycle_gateway_ack.py',
+    'scripts/diagnostics/decision_tool_cycle_gateway.py',
+    'config/decision-tool-cycle.example.json') }
 if ($Target -eq 'decision-stream') { $files += 'tests/observe_v1/decision_stream_acceptance.py' }
 if ($Target.StartsWith('decision')) { $files += 'tests/observe_v1/test_decision_v1.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
@@ -91,7 +106,7 @@ if ($Target -eq 'readonly-pilot') {
         $manifest[$name] = (Get-FileHash -LiteralPath $toPath -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
-if ($Target -in @('decision-stream','decision-readonly')) {
+if ($Target -in @('decision-stream','decision-readonly','decision-gateway-replay','decision-gateway-faults','decision-gateway-ack')) {
     $fromGateway = Join-Path $sourceRoot 'scripts/diagnostics/gateway.py'
     if (-not (Test-Path -LiteralPath $fromGateway)) { throw 'Versioned diagnostic gateway missing' }
     $toGateway = Join-Path $stagePath 'gateway.py'
@@ -111,6 +126,9 @@ $name = 'vp-observe-test-' + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + ([guid]
 $docker = 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
 $entryFile = 'tests/observe_v1/container_test_entry.py'
 if ($Target -eq 'decision-readonly') { $entryFile = 'tests/observe_v1/decision_readonly_acceptance.py' }
+if ($Target -eq 'decision-gateway-replay') { $entryFile = 'tests/observe_v1/decision_gateway_replay.py' }
+if ($Target -eq 'decision-gateway-faults') { $entryFile = 'tests/observe_v1/gateway_storage_faults.py' }
+if ($Target -eq 'decision-gateway-ack') { $entryFile = 'tests/observe_v1/test_decision_tool_cycle_gateway_ack.py' }
 if ($Target -eq 'decision-stream') { $entryFile = 'tests/observe_v1/decision_stream_acceptance.py' }
 if ($Target -eq 'group') { $entryFile = 'tests/observe_v1/group_acceptance.py' }
 if ($Target -eq 'actions') { $entryFile = 'tests/observe_v1/container_test_entry.py' }
@@ -124,6 +142,7 @@ $dockerArgs = $connectionArgs + @(
     '--env', "OBSERVE_BROWSER=$Browser",
     '--env', "OBSERVE_STREAM_CASE=$StreamCase",
     '--env', "OBSERVE_STREAM_RED=$([int]$StreamRed.IsPresent)",
+    '--env', "OBSERVE_REPLAY_STORAGE_FAILURE=$([int]$ReplayStorageFailure.IsPresent)",
     '--env', "OBSERVE_ACK_FAILURE=$([int]$AckFailure.IsPresent)",
     '--env', "OBSERVE_ACK_FAILURE_STAGE=$AckFailureStage",
     $Image, 'python', $entryFile)
@@ -141,7 +160,7 @@ if ($Target -eq 'diagnose') {
     & $docker @connectionArgs cp "$historyPath/." "${name}:/observe-history"
     if ($LASTEXITCODE -ne 0) { throw 'Cannot copy existing synthetic histories' }
 }
-if ($Target -in @('decision-readonly','decision-stream')) {
+if ($Target -in @('decision-readonly','decision-stream','decision-gateway-replay')) {
     if (-not $DenialSeed) { throw 'Explicit immutable exhausted checkpoint required' }
     if (Get-ChildItem -LiteralPath $DenialSeed -Recurse -Force -File | Where-Object { $_.Name -match '^\.env($|\.)|\.(key|pem)$' }) { throw 'Unexpected secret file in synthetic checkpoint' }
     & $docker @connectionArgs cp "$DenialSeed/." "${name}:/observe-denial-seed"
@@ -149,6 +168,32 @@ if ($Target -in @('decision-readonly','decision-stream')) {
     Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $DenialSeed) 'checkpoint-provenance.json') -Destination (Join-Path $artifactPath 'checkpoint-provenance.json')
     & $docker @connectionArgs cp (Join-Path $artifactPath 'checkpoint-provenance.json') "${name}:/observe-checkpoint-provenance.json"
     if ($LASTEXITCODE -ne 0) { throw 'Cannot copy synthetic provenance' }
+}
+if ($Target -eq 'decision-gateway-replay') {
+    if (-not $ReplayArchivePath -or -not (Test-Path -LiteralPath $ReplayArchivePath)) { throw 'Existing run-02 archive required' }
+    $replayStage = Join-Path $resultsPath 'replay-events'
+    foreach ($ordinal in 1,2) {
+        $fromDir = Join-Path $ReplayArchivePath "gateway-results/gateway-bodies/$ordinal"
+        $toDir = Join-Path $replayStage "$ordinal"
+        New-Item -ItemType Directory -Force -Path $toDir | Out-Null
+        $events = @(Get-ChildItem -LiteralPath $fromDir -Filter 'events-*.json' -File)
+        if (-not $events) { throw "Missing archived events for response $ordinal" }
+        foreach ($eventFile in $events) { Copy-Item -LiteralPath $eventFile.FullName -Destination $toDir }
+    }
+    & $docker @connectionArgs cp "$replayStage/." "${name}:/observe-replay"
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot stage archived sanitized SSE events' }
+}
+if ($Target -eq 'decision-gateway-faults') {
+    if (-not $ReplayArchivePath -or -not (Test-Path -LiteralPath $ReplayArchivePath)) { throw 'Existing run-02 archive required' }
+    $historicalCopy = Join-Path $resultsPath 'historical-ledger-copy'
+    New-Item -ItemType Directory -Path $historicalCopy | Out-Null
+    foreach ($filename in @('decision-gateway.sqlite','decision-gateway.sqlite-wal','decision-gateway.sqlite-shm')) {
+        $original = Join-Path $ReplayArchivePath "gateway-results/$filename"
+        if (Test-Path -LiteralPath $original) { Copy-Item -LiteralPath $original -Destination $historicalCopy }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $historicalCopy 'decision-gateway.sqlite'))) { throw 'Copied historical ledger required' }
+    & $docker @connectionArgs cp "$historicalCopy/." "${name}:/historical-ledger"
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot stage historical ledger copy' }
 }
 if ($Target -eq 'group') {
     if ($GroupMode.StartsWith('deny-') -or $GroupMode.StartsWith('decision-') -or $GroupMode.StartsWith('profiles-')) {

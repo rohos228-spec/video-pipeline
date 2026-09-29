@@ -3,9 +3,16 @@ import importlib.util
 import json
 import sqlite3
 import threading
+import shutil
 from pathlib import Path
 
 import httpx
+
+Path('/results').mkdir(exist_ok=True)
+Path('/gateway-source').mkdir(exist_ok=True)
+shutil.copy2('/observe-source/gateway.py', '/gateway-source/gateway.py')
+shutil.copy2('/observe-source/scripts/diagnostics/decision_tool_cycle_gateway.py', '/gateway-source/decision_tool_cycle_gateway.py')
+shutil.copy2('/observe-source/config/decision-tool-cycle.example.json', '/gateway-source/pilot-config.json')
 
 spec = importlib.util.spec_from_file_location('pilot_gateway', '/gateway-source/decision_tool_cycle_gateway.py')
 pilot = importlib.util.module_from_spec(spec)

@@ -14,7 +14,12 @@ import os
 import re
 import socketserver
 import sqlite3
+import sys
+import tempfile
+import threading
 import time
+import traceback
+from contextlib import contextmanager
 from collections import Counter
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -41,6 +46,10 @@ EXTERNAL_CALLS_ALLOWED = False  # Explicit online binding only; never inferred f
 AUDIT_FAILURE = Path('/results/gateway-audit-failure.marker')
 BODY_ROOT = Path('/results/gateway-bodies')
 AUDIT_DEGRADED = False
+_SCHEMA_LOCK = threading.Lock()
+_WRITE_LOCK = threading.RLock()
+_SCHEMA_PATH = None
+DRAIN_REQUEST = Path('/results/gateway-drain-requested.marker')
 
 
 def safe_event(value):
@@ -63,27 +72,54 @@ def durable_body(ordinal: int, kind: str, value) -> dict:
     directory = BODY_ROOT / str(ordinal)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = directory / f'{kind}-{sha}.json'
+    if path.exists() and hashlib.sha256(path.read_bytes()).hexdigest() != sha:
+        raise OSError('existing_body_hash_mismatch')
     if not path.exists():
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'wb') as file:
-            file.write(raw); file.flush(); os.fsync(file.fileno())
-        fd = os.open(directory, os.O_RDONLY)
-        try: os.fsync(fd)
-        finally: os.close(fd)
+        fd, temporary = tempfile.mkstemp(prefix='.body-', dir=directory)
+        try:
+            with os.fdopen(fd, 'wb') as file:
+                file.write(raw); file.flush(); os.fsync(file.fileno())
+            os.replace(temporary, path)
+            fd = os.open(directory, os.O_RDONLY)
+            try: os.fsync(fd)
+            finally: os.close(fd)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     return {'path': str(path.relative_to(BODY_ROOT)), 'sha256': sha, 'bytes': len(raw)}
 
 
-def degrade(reason: str) -> None:
+def degrade(reason: str, exc: BaseException | None = None, *, operation: str = '',
+            ordinal: int | None = None, response_id: str | None = None,
+            connection_id: int | None = None, db: sqlite3.Connection | None = None) -> None:
     global AUDIT_DEGRADED
     AUDIT_DEGRADED = True
+    entry = {'at': time.time(), 'operation': operation or reason, 'reason': reason,
+             'exception_type': type(exc).__name__ if exc else None,
+             'exception_text': safe_event(str(exc)) if exc else None,
+             'sqlite_errorcode': getattr(exc, 'sqlite_errorcode', None),
+             'sqlite_errorname': getattr(exc, 'sqlite_errorname', None),
+             'traceback': safe_event(''.join(traceback.format_exception(exc))) if exc else None,
+             'request_ordinal': ordinal, 'response_id': response_id,
+             'pid': os.getpid(), 'thread_id': threading.get_ident(),
+             'connection_id': connection_id or (id(db) if db else None),
+             'transaction_open': db.in_transaction if db else None}
+    line = json.dumps(entry, ensure_ascii=False, separators=(',', ':')) + '\n'
+    # The fallback must not depend on the failing SQLite database.
     try:
-        with connect() as db:
-            db.execute("UPDATE state SET blocked_reason=COALESCE(blocked_reason,?) WHERE id=1", (reason,))
-    except Exception:
+        AUDIT_FAILURE.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(AUDIT_FAILURE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as file:
+            file.write(line); file.flush(); os.fsync(file.fileno())
+    except Exception as marker_exc:
+        try:
+            print('gateway_emergency_marker_unavailable:' + type(marker_exc).__name__, file=sys.stderr, flush=True)
+        except OSError:
+            pass
+    try:
+        print('gateway_audit_degraded:' + line, file=sys.stderr, flush=True)
+    except OSError:
         pass
-    AUDIT_FAILURE.parent.mkdir(parents=True, exist_ok=True)
-    with AUDIT_FAILURE.open('a', encoding='utf-8') as file:
-        file.write(reason + '\n'); file.flush(); os.fsync(file.fileno())
 
 
 def completion_credits(event: dict) -> float | None:
@@ -97,10 +133,24 @@ def completion_credits(event: dict) -> float | None:
 
 
 def connect() -> sqlite3.Connection:
+    global _SCHEMA_PATH
     db = sqlite3.connect(LEDGER, timeout=30, isolation_level=None)
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA synchronous=FULL")
-    db.execute("PRAGMA busy_timeout=30000")
+    try:
+        db.execute("PRAGMA busy_timeout=30000")
+        db.execute("PRAGMA synchronous=FULL")
+        with _SCHEMA_LOCK:
+            schema_key = (str(LEDGER), os.stat(LEDGER).st_ino)
+            if _SCHEMA_PATH != schema_key:
+                db.execute("PRAGMA journal_mode=WAL")
+                _initialize_schema(db)
+                _SCHEMA_PATH = schema_key
+    except BaseException:
+        db.close()
+        raise
+    return db
+
+
+def _initialize_schema(db: sqlite3.Connection) -> None:
     db.execute("CREATE TABLE IF NOT EXISTS requests (ordinal INTEGER PRIMARY KEY, "
                "at REAL NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, "
                "state TEXT NOT NULL, http_status INTEGER, credits REAL)")
@@ -129,7 +179,16 @@ def connect() -> sqlite3.Connection:
                "first_at REAL NOT NULL, last_at REAL NOT NULL, attempts INTEGER NOT NULL, "
                "accepted INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(response_id,stage))")
     db.execute("INSERT OR IGNORE INTO state(id,blocked_reason) VALUES(1,NULL)")
-    return db
+
+
+@contextmanager
+def connection():
+    db = connect()
+    try:
+        with _WRITE_LOCK:
+            yield db
+    finally:
+        db.close()
 
 
 def recover_pending() -> None:
@@ -145,7 +204,14 @@ def recover_pending() -> None:
 
 
 def reserve(method: str, path: str, body_sha256: str | None = None) -> int:
-    if AUDIT_DEGRADED or AUDIT_FAILURE.exists():
+    if AUDIT_DEGRADED or AUDIT_FAILURE.exists() or DRAIN_REQUEST.exists():
+        raise RuntimeError('gateway_audit_storage_degraded')
+    with _WRITE_LOCK:
+        return _reserve_locked(method, path, body_sha256)
+
+
+def _reserve_locked(method: str, path: str, body_sha256: str | None) -> int:
+    if AUDIT_DEGRADED or AUDIT_FAILURE.exists() or DRAIN_REQUEST.exists():
         raise RuntimeError('gateway_audit_storage_degraded')
     db = connect()
     try:
@@ -178,15 +244,31 @@ def reserve(method: str, path: str, body_sha256: str | None = None) -> int:
 
 
 def finish(ordinal: int, *, status: int | None, credits: float | None, complete: bool,
-           downstream_complete: bool = False, delivery_error: str | None = None) -> None:
+           downstream_complete: bool = False, delivery_error: str | None = None,
+           terminal_info: dict | None = None) -> None:
+    with _WRITE_LOCK:
+        _finish_locked(ordinal, status=status, credits=credits, complete=complete,
+                       downstream_complete=downstream_complete, delivery_error=delivery_error,
+                       terminal_info=terminal_info)
+
+
+def _finish_locked(ordinal, *, status, credits, complete, downstream_complete,
+                   delivery_error, terminal_info):
     db = connect()
     try:
         db.execute("BEGIN IMMEDIATE")
         state = 'complete' if complete and downstream_complete else ('delivery_failed' if complete else 'uncertain')
         db.execute("UPDATE requests SET state=?,http_status=?,credits=?,downstream_complete=?,"
-                   "downstream_finished_at=?,delivery_error=? WHERE ordinal=? AND state='reserved'",
+                   "downstream_finished_at=?,delivery_error=?,upstream_complete=?,"
+                   "upstream_completed_at=?,response_id=?,usage_json=?,terminal_body_path=?,"
+                   "accumulated_body_path=? WHERE ordinal=? AND state='reserved'",
                    (state, status, credits, int(downstream_complete),
-                    time.time() if downstream_complete else None, delivery_error, ordinal))
+                    time.time() if downstream_complete else None, delivery_error,
+                    int(bool(terminal_info)), terminal_info.get('at') if terminal_info else None,
+                    terminal_info.get('response_id') if terminal_info else None,
+                    terminal_info.get('usage_json') if terminal_info else None,
+                    terminal_info.get('terminal_path') if terminal_info else None,
+                    terminal_info.get('accumulated_path') if terminal_info else None, ordinal))
         if db.execute("SELECT changes()").fetchone()[0] != 1:
             raise RuntimeError("gateway_request_state_missing")
         if state != 'complete':
@@ -198,6 +280,9 @@ def finish(ordinal: int, *, status: int | None, credits: float | None, complete:
                 db.execute("UPDATE state SET blocked_reason=COALESCE(blocked_reason,'credit_limit_reached') WHERE id=1")
         db.execute("COMMIT")
     except BaseException:
+        exc = sys.exc_info()[1]
+        degrade('gateway_ledger_failure:' + type(exc).__name__, exc,
+                operation='settlement_transaction', ordinal=ordinal, db=db)
         if db.in_transaction:
             db.execute("ROLLBACK")
         raise
@@ -207,7 +292,7 @@ def finish(ordinal: int, *, status: int | None, credits: float | None, complete:
 
 def save_batch(ordinal: int, batch_index: int, first_event: int, events: list[dict],
                accumulated_text: str, *, terminal: bool = False,
-               terminal_at: float | None = None) -> float:
+               terminal_at: float | None = None) -> tuple[float, dict | None]:
     """Persist a bounded batch before forwarding its final upstream chunk."""
     started = time.perf_counter()
     last_event = first_event + len(events) - 1
@@ -221,29 +306,43 @@ def save_batch(ordinal: int, batch_index: int, first_event: int, events: list[di
     response = last.get('response') if isinstance(last.get('response'), dict) else {}
     response_id = response.get('id') if response else None
     usage = response.get('usage') if isinstance(response.get('usage'), dict) else None
-    with connect() as db:
-        db.execute('BEGIN IMMEDIATE')
-        db.execute('INSERT INTO event_batches(request_ordinal,batch_index,first_event,last_event,body_path,sha256,bytes,saved_at) VALUES(?,?,?,?,?,?,?,?)',
-                   (ordinal, batch_index, first_event, last_event, ref['path'], ref['sha256'], ref['bytes'], time.time()))
-        db.execute('UPDATE requests SET event_count=?,upstream_complete=CASE WHEN ? THEN 1 ELSE upstream_complete END,'
-                   'upstream_completed_at=CASE WHEN ? THEN ? ELSE upstream_completed_at END,'
-                   'response_id=COALESCE(?,response_id),usage_json=COALESCE(?,usage_json),'
-                   'terminal_body_path=COALESCE(?,terminal_body_path),accumulated_body_path=COALESCE(?,accumulated_body_path) WHERE ordinal=?',
-                   (last_event, int(terminal), int(terminal), terminal_at if terminal else None,
-                    response_id, json.dumps(safe_event(usage)) if usage is not None else None,
-                    terminal_ref['path'] if terminal_ref else None,
-                    accumulated_ref['path'] if accumulated_ref else None, ordinal))
-        db.execute('COMMIT')
-    return (time.perf_counter() - started) * 1000.0
+    with connection() as db:
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('INSERT INTO event_batches(request_ordinal,batch_index,first_event,last_event,body_path,sha256,bytes,saved_at) VALUES(?,?,?,?,?,?,?,?)',
+                       (ordinal, batch_index, first_event, last_event, ref['path'], ref['sha256'], ref['bytes'], time.time()))
+            db.execute('UPDATE requests SET event_count=? WHERE ordinal=?', (last_event, ordinal))
+            db.execute('COMMIT')
+        except BaseException as exc:
+            degrade('mandatory_storage_failure:' + type(exc).__name__, exc,
+                    operation='save_batch_transaction', ordinal=ordinal,
+                    response_id=response_id, db=db)
+            raise
+    info = ({'at': terminal_at, 'response_id': response_id,
+             'usage_json': json.dumps(safe_event(usage)) if usage is not None else None,
+             'terminal_path': terminal_ref['path'], 'accumulated_path': accumulated_ref['path']}
+            if terminal else None)
+    return (time.perf_counter() - started) * 1000.0, info
 
 
 def acknowledge(response_id: str, stage: str) -> bool:
-    with connect() as db:
+    # A terminal can reach the app before the gateway's final ledger commit.
+    # Wait without holding a transaction; never acknowledge a file alone.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not (AUDIT_DEGRADED or AUDIT_FAILURE.exists()):
+        with connection() as lookup:
+            row = lookup.execute('SELECT state FROM requests WHERE response_id=?', (response_id,)).fetchone()
+            pending = lookup.execute("SELECT COUNT(*) FROM requests WHERE state='reserved'").fetchone()[0]
+        if (row and row[0] != 'reserved') or not pending:
+            break
+        time.sleep(0.02)
+    with connection() as db:
         db.execute('BEGIN IMMEDIATE')
         valid = stage in {'received', 'accepted'} and bool(re.fullmatch(r'resp_[A-Za-z0-9_-]{1,160}', response_id))
-        rows = db.execute('SELECT ordinal,upstream_complete,application_received_at FROM requests '
+        rows = db.execute('SELECT ordinal,upstream_complete,application_received_at,state,downstream_complete FROM requests '
                           'WHERE response_id=?', (response_id,)).fetchall() if valid else []
         reason = ('invalid_binding' if not valid else 'foreign_or_ambiguous_response' if len(rows) != 1
+                  else 'settlement_incomplete' if rows[0][3] != 'complete' or not rows[0][4]
                   else 'upstream_incomplete' if not rows[0][1]
                   else 'received_required' if stage == 'accepted' and not rows[0][2] else 'recorded')
         ok = reason == 'recorded'
@@ -280,7 +379,26 @@ class Handler(BaseHTTPRequestHandler):
         self.forward(b"")
 
     def do_POST(self):
+        if self.path == '/local/gateway-stop':
+            if not DRAIN_REQUEST.exists():
+                self.reject(409, 'drain_not_requested'); return
+            try:
+                with connection() as db:
+                    pending = db.execute("SELECT COUNT(*) FROM requests WHERE state='reserved'").fetchone()[0]
+            except sqlite3.Error as exc:
+                degrade('gateway_drain_storage_failure', exc, operation='drain_pending')
+                self.reject(503, 'drain_state_unknown'); return
+            if pending:
+                self.reject(409, 'drain_pending'); return
+            with self.server.active_lock:
+                busy = self.server.active_handlers != 1
+            if busy:
+                self.reject(409, 'drain_handlers_active'); return
+            self.reject(200, 'gateway_stopping')
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if self.path == '/local/decision-ack':
+            payload = {}
             try:
                 size = int(self.headers.get('Content-Length', '-1'))
                 if not 1 <= size <= 512:
@@ -289,7 +407,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(payload, dict):
                     payload = {}
                 ok = acknowledge(str(payload.get('response_id') or ''), str(payload.get('stage') or ''))
-            except (ValueError, TypeError, sqlite3.Error):
+            except (ValueError, TypeError, sqlite3.Error) as exc:
+                if isinstance(exc, sqlite3.Error):
+                    degrade('gateway_ack_storage_failure', exc, operation='acknowledge',
+                            response_id=str(payload.get('response_id') or '') if isinstance(payload, dict) else None)
                 ok = False
             self.reject(200 if ok else 409, 'ack_recorded' if ok else 'ack_rejected')
             return
@@ -378,16 +499,20 @@ class Handler(BaseHTTPRequestHandler):
         last_write_at = None
         first_upstream = False
         terminal_received_at = None
+        terminal_info = None
         upstream_deadline = time.monotonic() + MAX_UPSTREAM_WALL_S
 
         def persist_batch(terminal=False):
-            nonlocal events, batch_index, storage_ms
+            nonlocal events, batch_index, storage_ms, terminal_info
             if not events:
                 return
             batch_index += 1
-            storage_ms += save_batch(ordinal, batch_index, event_count - len(events) + 1,
-                                     events, accumulated_text, terminal=terminal,
-                                     terminal_at=terminal_received_at)
+            elapsed, info = save_batch(ordinal, batch_index, event_count - len(events) + 1,
+                                       events, accumulated_text, terminal=terminal,
+                                       terminal_at=terminal_received_at)
+            storage_ms += elapsed
+            if info:
+                terminal_info = info
             events = []
 
         try:
@@ -410,7 +535,7 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         if not first_upstream:
                             first_upstream = True
-                            with connect() as db:
+                            with connection() as db:
                                 db.execute('UPDATE requests SET upstream_first_at=? WHERE ordinal=?', (time.time(), ordinal))
                         parser += chunk
                         if len(parser) > 1_000_000:
@@ -440,7 +565,8 @@ class Handler(BaseHTTPRequestHandler):
                                         try: persist_batch(terminal=terminal)
                                         except Exception as exc:
                                             delivery_error = 'mandatory_storage_failure:' + type(exc).__name__
-                                            degrade(delivery_error)
+                                            degrade(delivery_error, exc, operation='save_batch', ordinal=ordinal,
+                                                    response_id=terminal_info.get('response_id') if terminal_info else None)
                                             events = []
                         if downstream_open:
                             started = time.perf_counter()
@@ -456,7 +582,8 @@ class Handler(BaseHTTPRequestHandler):
                         try: persist_batch()
                         except Exception as exc:
                             delivery_error = 'mandatory_storage_failure:' + type(exc).__name__
-                            degrade(delivery_error)
+                            degrade(delivery_error, exc, operation='save_batch_tail', ordinal=ordinal,
+                                    response_id=terminal_info.get('response_id') if terminal_info else None)
                     if downstream_open:
                         started = time.perf_counter()
                         try:
@@ -472,20 +599,38 @@ class Handler(BaseHTTPRequestHandler):
                         complete = False  # Without settled credits, stop all later sends.
         except BaseException as exc:
             delivery_error = delivery_error or ('upstream_or_gateway_error:' + type(exc).__name__)
+            degrade(delivery_error, exc, operation='forward', ordinal=ordinal,
+                    response_id=terminal_info.get('response_id') if terminal_info else None)
         finally:
             try:
-                with connect() as db:
+                with connection() as db:
                     db.execute('UPDATE requests SET storage_ms=?,socket_write_ms=?,downstream_last_write_at=? WHERE ordinal=?',
                                (storage_ms, socket_write_ms, last_write_at, ordinal))
                 finish(ordinal, status=status, credits=credits, complete=complete,
                        downstream_complete=downstream_complete and delivery_error is None,
-                       delivery_error=delivery_error)
+                       delivery_error=delivery_error, terminal_info=terminal_info)
             except Exception as exc:
-                degrade('gateway_ledger_failure:' + type(exc).__name__)
+                degrade('gateway_ledger_failure:' + type(exc).__name__, exc,
+                        operation='settlement', ordinal=ordinal,
+                        response_id=terminal_info.get('response_id') if terminal_info else None)
 
 
 class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self.active_lock = threading.Lock()
+        self.active_handlers = 0
+        super().__init__(*args, **kwargs)
+
+    def process_request_thread(self, request, client_address):
+        with self.active_lock:
+            self.active_handlers += 1
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self.active_lock:
+                self.active_handlers -= 1
 
 
 if __name__ == "__main__":
