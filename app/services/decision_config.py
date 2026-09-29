@@ -17,6 +17,16 @@ class DecisionRuntimeBinding(Base):
 READ_ACTIONS={'read_events','read_contract','human_review','wait','finish'}
 ALL_ACTIONS=READ_ACTIONS|{'retry_same','retry_profile'}
 
+def incident_in_scope(config, *, execution_id, incident_id, node_key, source_attempt_id):
+    scope=config.get('incident_scope')
+    return scope is None or all(scope[k]==v for k,v in {
+        'execution_id':execution_id,'incident_id':incident_id,'node_key':node_key,
+        'source_attempt_id':source_attempt_id}.items())
+
+def check_incident_scope(config, **identity):
+    if not incident_in_scope(config, **identity):
+        raise ValueError('incident scope does not authorize this execution/node/attempt')
+
 
 def validate_model(model):
     from app.services.text_llm_catalog import CATALOG
@@ -36,9 +46,17 @@ def validate_model(model):
 
 def validate_config(raw):
     expected={'version','mode','online_enabled','endpoint','decision','profiles','allowed_actions'}
-    optional={'model_transport','external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack'}
+    optional={'model_transport','external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack','incident_scope'}
     if not isinstance(raw,dict) or not expected<=set(raw) or set(raw)-expected-optional or raw['version']!=1 or raw['mode'] not in {'synthetic','production'} or type(raw['online_enabled'])!=bool:
         raise ValueError('invalid runtime configuration')
+    if 'incident_scope' in raw:
+        scope=raw['incident_scope']
+        ids={'execution_id','incident_id','node_key','source_attempt_id'}
+        if (not isinstance(scope,dict) or set(scope)!=ids|{'recovery_limit'}
+                or type(scope.get('recovery_limit'))!=int or scope['recovery_limit']!=1
+                or any(not isinstance(scope.get(k),str) or not 1<=len(scope[k])<=120
+                       or scope[k].strip()!=scope[k] or any(c in scope[k] for c in '*?[]') for k in ids)):
+            raise ValueError('invalid explicit incident scope / single recovery limit')
     for key in ('external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack'):
         if key in raw and type(raw[key])!=bool:raise ValueError('invalid decision network policy')
     transport=raw.get('model_transport')

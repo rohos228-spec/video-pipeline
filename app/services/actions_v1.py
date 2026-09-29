@@ -338,6 +338,10 @@ class ActionSupervisor:
                     or execution_id in observer.commit_uncertainty or not run
                     or digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot})!=control.graph_version):
                 raise RuntimeError('managed request blocked: stop, audit, scope or graph revision')
+            from app.services.decision_config import DecisionRuntimeBinding,runtime_config
+            binding=await session.get(DecisionRuntimeBinding,execution_id)
+            if binding and binding.config_hash!=digest(runtime_config()):
+                raise RuntimeError('runtime configuration revision changed; blocked before HTTP reservation')
             reserved = (await session.execute(update(ActionExecutionControl).where(
                 ActionExecutionControl.execution_id == execution_id,
                 ActionExecutionControl.enabled.is_(True), ActionExecutionControl.held.is_(False),

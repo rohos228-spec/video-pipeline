@@ -122,6 +122,8 @@ class DecisionSupervisor:
         binding=await s.get(DecisionRuntimeBinding,row.execution_id)
         cfg=decision_config.runtime_config()
         if binding and binding.config_hash!=digest(cfg):raise ValueError('runtime configuration revision changed')
+        decision_config.check_incident_scope(cfg,execution_id=row.execution_id,incident_id=row.incident_id,
+            node_key=row.node_key,source_attempt_id=row.source_attempt_id)
         version=digest({'runtime_config':digest(cfg),'approved_profiles':approved,'graph':graph,'config':revision,'latest_attempt':latest.attempt_id if latest else None,
             'user_stop':bool((project.meta or {}).get('user_stop')) if project else True,
             'incident_status':incident.status,'event_ids':[e.event_id for e in events]})
@@ -133,6 +135,7 @@ class DecisionSupervisor:
             'approved_profiles':approved,
             'allowed_actions':[a for a in (list(ACTIONS)+(['retry_profile'] if approved else []) if not action else ['read_events','read_contract','human_review','wait','finish']) if a in cfg['allowed_actions']],
             'decision_runtime':{'mode':cfg['mode'],'model':cfg['decision'],'config_hash':digest(cfg)},
+            'incident_scope':cfg.get('incident_scope'),
             'limits':{'request_limit':permission.request_limit,'requests_used':permission.requests_used,'max_model_steps':MAX_STEPS},
             'graph_matches':graph==permission.graph_version==scope.graph_version,
             'observer_active':scope.observer_state=='active','audit_gaps':bool(scope.gaps or row.execution_id in self.observer.failures or row.execution_id in self.observer.commit_uncertainty),
@@ -353,7 +356,9 @@ class DecisionSupervisor:
                     incidents=(await s.scalars(select(Incident).where(Incident.execution_id==control.execution_id,
                         Incident.type.in_(['invalid_json','missing_payload']),Incident.status!='resolved_confirmed'))).all()
                     for incident in incidents:
-                        if incident.details.get('currently_relevant'):
+                        if (incident.details.get('currently_relevant') and decision_config.incident_in_scope(
+                                decision_config.runtime_config(),execution_id=control.execution_id,
+                                incident_id=incident.incident_id,node_key=incident.node_key,source_attempt_id=incident.attempt_id)):
                             pending.append((control.project_id,control.execution_id,incident.incident_id))
         for project_id,execution_id,incident_id in pending:
             await self.begin(project_id=project_id,execution_id=execution_id,incident_id=incident_id)

@@ -145,6 +145,16 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             raise ValueError("managed execution disabled or held")
         if node_key not in control.node_keys:
             raise ValueError("node outside recovery scope")
+        from app.services.decision_config import DecisionRuntimeBinding,runtime_config,check_incident_scope
+        cfg=runtime_config()
+        binding=await master.get(DecisionRuntimeBinding,execution_id)
+        if cfg.get('incident_scope') or (binding and binding.config.get('incident_scope')):
+            if not binding:raise ValueError('pilot recovery requires a bound runtime configuration')
+            if binding.config_hash!=digest(cfg):raise ValueError('runtime configuration revision changed')
+            check_incident_scope(cfg,execution_id=execution_id,incident_id=incident_id,
+                node_key=node_key,source_attempt_id=incident.attempt_id)
+            consumed=await master.scalar(select(RecoveryAction.action_id).where(RecoveryAction.execution_id==execution_id))
+            if consumed:raise ValueError('single pilot recovery already consumed')
         if (not scope or scope.observer_state != "active" or scope.gaps
                 or execution_id in observer.failures or execution_id in observer.commit_uncertainty
                 or get_diagnoser(observer).failures):
