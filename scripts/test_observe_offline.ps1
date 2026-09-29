@@ -4,6 +4,8 @@ param(
     [string]$Target = 'journal',
     [string]$GroupMode = 'observe',
     [string]$DenialSeed,
+    [string]$StreamCase = 'fast',
+    [switch]$StreamRed,
     [switch]$Browser
 )
 $ErrorActionPreference = 'Stop'
@@ -36,6 +38,7 @@ if ($Target -eq 'readonly-pilot') { $files += @('scripts/readonly_qc_pilot.py','
 if ($Target -eq 'operator-regression') { $files += @('tests/test_gpt_operator_apply_ops.py','tests/test_apply_ops_batches.py') }
 if ($Target.StartsWith('qc-noop')) { $files += 'tests/observe_v1/test_qc_noop.py' }
 if ($Target -eq 'decision-readonly') { $files += 'tests/observe_v1/decision_readonly_acceptance.py' }
+if ($Target -eq 'decision-stream') { $files += 'tests/observe_v1/decision_stream_acceptance.py' }
 if ($Target.StartsWith('decision')) { $files += 'tests/observe_v1/test_decision_v1.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
 $manifest = @{}
@@ -84,11 +87,19 @@ if ($Target -eq 'readonly-pilot') {
         $manifest[$name] = (Get-FileHash -LiteralPath $toPath -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
+if ($Target -eq 'decision-stream') {
+    if ($StreamCase -notin @('fast','slow','timeout','late_terminal')) { throw 'Unknown stream case' }
+    $fromGateway = [IO.Path]::GetFullPath((Join-Path $sourceRoot '../diag_v2/gateway.py'))
+    $toGateway = Join-Path $stagePath 'gateway.py'
+    Copy-Item -LiteralPath $fromGateway -Destination $toGateway
+    $manifest['gateway.py'] = (Get-FileHash -LiteralPath $toGateway -Algorithm SHA256).Hash.ToLowerInvariant()
+}
 [IO.File]::WriteAllText((Join-Path $stagePath 'source-manifest.json'), ($manifest | ConvertTo-Json -Depth 4), $utf8)
 $name = 'vp-observe-test-' + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8))
 $docker = 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
 $entryFile = 'tests/observe_v1/container_test_entry.py'
 if ($Target -eq 'decision-readonly') { $entryFile = 'tests/observe_v1/decision_readonly_acceptance.py' }
+if ($Target -eq 'decision-stream') { $entryFile = 'tests/observe_v1/decision_stream_acceptance.py' }
 if ($Target -eq 'group') { $entryFile = 'tests/observe_v1/group_acceptance.py' }
 if ($Target -eq 'actions') { $entryFile = 'tests/observe_v1/container_test_entry.py' }
 $connectionArgs = @('--config', $configPath, '--host', 'npipe:////./pipe/dockerDesktopLinuxEngine')
@@ -99,6 +110,8 @@ $dockerArgs = $connectionArgs + @(
     '--env', "OBSERVE_TEST_TARGET=$Target",
     '--env', "OBSERVE_GROUP_MODE=$GroupMode",
     '--env', "OBSERVE_BROWSER=$Browser",
+    '--env', "OBSERVE_STREAM_CASE=$StreamCase",
+    '--env', "OBSERVE_STREAM_RED=$([int]$StreamRed.IsPresent)",
     $Image, 'python', $entryFile)
 $containerId = & $docker @dockerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Cannot create offline test container' }
@@ -114,7 +127,7 @@ if ($Target -eq 'diagnose') {
     & $docker @connectionArgs cp "$historyPath/." "${name}:/observe-history"
     if ($LASTEXITCODE -ne 0) { throw 'Cannot copy existing synthetic histories' }
 }
-if ($Target -eq 'decision-readonly') {
+if ($Target -in @('decision-readonly','decision-stream')) {
     if (-not $DenialSeed) { throw 'Explicit immutable exhausted checkpoint required' }
     if (Get-ChildItem -LiteralPath $DenialSeed -Recurse -Force -File | Where-Object { $_.Name -match '^\.env($|\.)|\.(key|pem)$' }) { throw 'Unexpected secret file in synthetic checkpoint' }
     & $docker @connectionArgs cp "$DenialSeed/." "${name}:/observe-denial-seed"

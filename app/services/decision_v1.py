@@ -4,6 +4,7 @@ Facts are untrusted, proposals are server-bound, actions still use Actions-v1.
 The initial model transport is deliberately restricted to synthetic loopback.
 """
 import json
+import hashlib
 import uuid
 from datetime import datetime,timedelta
 from urllib.parse import urlsplit
@@ -300,6 +301,7 @@ class DecisionSupervisor:
                 row.last_signature=signature;row.proposal=proposal;row.policy_result={'allowed':True,'evidence_verified':True}
                 await self._turn(s,row,'proposal:'+str(row.model_steps),'assistant',proposal)
                 row.status='acting';await s.commit()
+            await hook.ack_gateway('accepted')
             action=proposal['action']
             if action in {'retry_same','retry_profile'}:
                 from app.services.actions_v1 import ActionSupervisor
@@ -386,7 +388,25 @@ class DecisionSupervisor:
 
 class HttpDecision:
     def __init__(self,supervisor,decision_id,token,version):
-        self.supervisor=supervisor;self.decision_id=decision_id;self.token=token;self.version=version;self.request_id=None
+        self.supervisor=supervisor;self.decision_id=decision_id;self.token=token;self.version=version;self.request_id=None;self.response_id=None
+
+    async def ack_gateway(self,stage):
+        cfg=decision_config.runtime_config()
+        if not cfg.get('gateway_ack'):
+            return
+        if not self.response_id:
+            raise ValueError('gateway acknowledgement missing response id')
+        from app.services import gpt_api
+        from urllib.parse import urlsplit
+        origin=urlsplit(cfg['endpoint'])
+        if origin.hostname not in {'127.0.0.1','localhost','::1'}:
+            raise ValueError('gateway acknowledgement requires isolated loopback route')
+        url=f'{origin.scheme}://{origin.netloc}/local/decision-ack'
+        async with gpt_api._async_client(timeout=5.0) as client:
+            response=await client.post(url,json={'response_id':self.response_id,'stage':stage})
+        if response.status_code!=200:
+            raise ValueError('gateway acknowledgement not durable')
+        await self.fact('decision_gateway_ack',{'stage':stage,'response_id':self.response_id,'local_only':True})
 
     async def fact(self,kind,payload,*,body=None,request_id=None):
         ref=self.supervisor.observer.save_body(self.execution_id,body) if body is not None else None
@@ -408,6 +428,9 @@ class HttpDecision:
         async with self.supervisor.master() as s:
             row=await s.get(DecisionRecord,self.decision_id)
             await self.supervisor._live(s,row,self.token,version=self.version);self.execution_id=row.execution_id
+        if cfg.get('retrieval_allowed') is False:
+            await self.fact('decision_retrieve_denied',{'method':'GET','sent':False,'reason':'execution_policy'})
+            raise ValueError('decision retrieval disabled for execution')
         await self.fact('decision_retrieve_start',{'method':'GET','purpose':'decision','url':url})
         await ActionSupervisor(self.supervisor.master).charge_request(self.execution_id)
 
@@ -416,6 +439,9 @@ class HttpDecision:
         from app.services.actions_v1 import ActionSupervisor
         cfg=decision_config.runtime_config()
         decision_config.check_route(cfg,kwargs.get('url',''))
+        if self.request_id is not None and cfg.get('continuation_allowed') is False:
+            await self.fact('decision_continuation_denied',{'method':'POST','sent':False,'reason':'execution_policy'})
+            raise ValueError('decision continuation disabled for execution')
         m=cfg['decision']
         if (kwargs.get('body') or {}).get('model')!=m['model_id']:raise ValueError('decision model differs from approved profile')
         kwargs={**kwargs,'body':{**kwargs['body'],'max_output_tokens':m['max_output_tokens'],'reasoning':{'effort':m['reasoning_effort']}}}
@@ -423,7 +449,8 @@ class HttpDecision:
             row=await s.get(DecisionRecord,self.decision_id);await self.supervisor._live(s,row,self.token,version=self.version)
             self.execution_id=row.execution_id
         self.request_id=str(uuid.uuid4())
-        await self.fact('decision_model_start',{'method':'POST','purpose':'decision','model':m['model_id'],'max_output_tokens':m['max_output_tokens'],'reasoning_effort':m['reasoning_effort'],'route':cfg['endpoint'],'config_hash':digest(cfg)},body=kwargs.get('body'))
+        encoded=json.dumps(kwargs['body'],ensure_ascii=False,separators=(',', ':'),allow_nan=False).encode('utf-8')
+        await self.fact('decision_model_start',{'method':'POST','purpose':'decision','model':m['model_id'],'max_output_tokens':m['max_output_tokens'],'reasoning_effort':m['reasoning_effort'],'route':cfg['endpoint'],'config_hash':digest(cfg),'request_body_sha256':hashlib.sha256(encoded).hexdigest()},body=kwargs.get('body'))
         try:await ActionSupervisor(self.supervisor.master).charge_request(self.execution_id)
         except Exception as exc:
             await self.fact('decision_request_blocked',{'sent':False,'guard':type(exc).__name__})
@@ -434,6 +461,8 @@ class HttpDecision:
             await self.fact('decision_model_end',{'complete':complete,'usage':result.usage},body={'text':result.text,'response':result.raw})
             if (result.raw or {}).get('status')!='completed' or (result.raw or {}).get('sse_salvaged'):
                 raise ValueError('uncertain decision model response')
+            self.response_id=result.response_id or (result.raw or {}).get('id')
+            await self.ack_gateway('received')
             return result
         except BaseException as exc:
             await self.fact('decision_model_error',{'complete':False,'error_type':type(exc).__name__})

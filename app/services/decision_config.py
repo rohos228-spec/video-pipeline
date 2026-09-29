@@ -36,8 +36,19 @@ def validate_model(model):
 
 def validate_config(raw):
     expected={'version','mode','online_enabled','endpoint','decision','profiles','allowed_actions'}
-    if not isinstance(raw,dict) or set(raw)!=expected or raw['version']!=1 or raw['mode'] not in {'synthetic','production'} or type(raw['online_enabled'])!=bool:
+    optional={'model_transport','external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack'}
+    if not isinstance(raw,dict) or not expected<=set(raw) or set(raw)-expected-optional or raw['version']!=1 or raw['mode'] not in {'synthetic','production'} or type(raw['online_enabled'])!=bool:
         raise ValueError('invalid runtime configuration')
+    for key in ('external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack'):
+        if key in raw and type(raw[key])!=bool:raise ValueError('invalid decision network policy')
+    transport=raw.get('model_transport')
+    if transport is not None and transport not in {'fixture','real'}:raise ValueError('invalid model transport')
+    if transport=='real' and (raw['mode']!='production' or raw.get('external_calls_enabled') is not True):
+        raise ValueError('real model transport requires explicit production external authorization')
+    if raw['mode']=='synthetic' and raw.get('external_calls_enabled',False):
+        raise ValueError('synthetic mode cannot authorize external calls')
+    if transport=='fixture' and raw.get('external_calls_enabled',False):
+        raise ValueError('fixture transport cannot authorize external calls')
     if not isinstance(raw['profiles'],dict) or not isinstance(raw['allowed_actions'],list) or any(a not in ALL_ACTIONS for a in raw['allowed_actions']):
         raise ValueError('unknown profile/action policy')
     model=raw['decision']

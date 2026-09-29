@@ -18,6 +18,7 @@ import json
 import re
 import socket
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1930,6 +1931,23 @@ async def _chat_responses_stream(
     saw_text_done = False
     saw_completed = False
     observation_text = ""
+    stream_batch: list[dict[str, Any]] = []
+    stream_batch_started = time.monotonic()
+    journal_ms = 0.0
+    journal_batches = 0
+
+    async def flush_stream_batch() -> None:
+        nonlocal stream_batch, stream_batch_started, journal_ms, journal_batches
+        if not stream_batch:
+            return
+        completed = any(item.get("type") == "response.completed" for item in stream_batch)
+        started = time.perf_counter()
+        await record_fact("model_stream_event", {"type": "batch", "events": len(stream_batch),
+            "complete": completed}, body={"events": stream_batch, "accumulated_text": observation_text})
+        journal_ms += (time.perf_counter() - started) * 1000.0
+        journal_batches += 1
+        stream_batch = []
+        stream_batch_started = time.monotonic()
     stream_err: BaseException | None = None
     sto = _stream_timeout(timeout)
     deadline = _sse_deadline_s(timeout)
@@ -1963,9 +1981,11 @@ async def _chat_responses_stream(
                         et = str(ev.get("type") or "")
                         if et == "response.output_text.delta":
                             observation_text += str(ev.get("delta") or "")
-                        await record_fact("model_stream_event", {"type": et,
-                            "complete": et == "response.completed"},
-                            body={"event": ev, "accumulated_text": observation_text})
+                        stream_batch.append(ev)
+                        if (et in {"response.completed", "response.failed", "response.incomplete"}
+                                or len(stream_batch) >= 16
+                                or time.monotonic() - stream_batch_started >= 0.25):
+                            await flush_stream_batch()
                         if et == "response.output_text.delta":
                             delta = str(ev.get("delta") or "")
                             if delta and on_delta:
@@ -1996,6 +2016,7 @@ async def _chat_responses_stream(
                                 use_model,
                             )
                             logged_task_id = True
+                    await flush_stream_batch()
                     logger.info(
                         "gpt_api.chat SSE EOF lines={} text_done={} completed={} "
                         "cf_ray={}",
@@ -2005,6 +2026,7 @@ async def _chat_responses_stream(
                         cf_ray or "-",
                     )
         except TimeoutError as e:
+            await flush_stream_batch()
             stream_err = e
             logger.warning(
                 "gpt_api.chat SSE wall-clock timeout after {}s lines={} "
@@ -2015,6 +2037,7 @@ async def _chat_responses_stream(
                 saw_completed,
             )
         except (httpx.TimeoutException, httpx.HTTPError) as e:
+            await flush_stream_batch()
             stream_err = e
             logger.warning(
                 "gpt_api.chat SSE interrupted lines={} text_done={} completed={} "
@@ -2026,6 +2049,8 @@ async def _chat_responses_stream(
                 e,
             )
 
+    logger.info("gpt_api.chat SSE journal batches={} total_write_ms={:.1f}",
+                journal_batches, journal_ms)
     text = ""
     finish = ""
     final_payload: dict[str, Any] = {}

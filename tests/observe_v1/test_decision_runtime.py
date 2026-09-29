@@ -43,6 +43,19 @@ class RuntimeConfig(unittest.TestCase):
     def test_diagnostic_configuration_forbids_write_tools(self):
         d=configured();d['allowed_actions']=['read_events','read_contract','human_review']
         cfg=self.config.validate_config(d);self.assertNotIn('retry_same',cfg['allowed_actions'])
+    def test_synthetic_label_cannot_authorize_real_transport(self):
+        d=configured(mode='synthetic',model_transport='real',external_calls_enabled=True)
+        with self.assertRaisesRegex(ValueError,'real model transport'):
+            self.config.validate_config(d)
+        d=configured(mode='synthetic',model_transport='fixture',external_calls_enabled=True)
+        with self.assertRaisesRegex(ValueError,'synthetic mode'):
+            self.config.validate_config(d)
+    def test_real_transport_requires_explicit_external_authorization(self):
+        d=configured(model_transport='real',external_calls_enabled=False)
+        with self.assertRaisesRegex(ValueError,'external authorization'):
+            self.config.validate_config(d)
+        d['external_calls_enabled']=True
+        self.assertEqual(self.config.validate_config(d)['model_transport'],'real')
     def test_production_profile_is_explicit_and_catalog_checked(self):
         d=configured();d['profiles']={'approved-json':{'model_id':'gpt-5-6-sol','provider':'kie','kind':'text','channel':'stable','reasoning_effort':'medium','max_output_tokens':2048,'prompt_variant':'require-apply-ops-v1','synthetic_only':False}}
         self.assertIn('approved-json',self.config.validate_config(d)['profiles'])
@@ -141,6 +154,39 @@ class RuntimeAdapter(base_tests.DecisionDurability):
             with self.assertRaisesRegex(RuntimeError,'budget exhausted'):await observation.authorize_model_retrieve(configured()['endpoint']+'/resp_test')
         finally:decision_transport.current.reset(bound)
         async with self.sessions() as s:self.assertEqual((await s.get(ActionExecutionControl,'exec-durable')).requests_used,1)
+    async def test_execution_retrieval_denial_does_not_reserve_request(self):
+        from app.services import decision_transport
+        from app.services.actions_v1 import ActionExecutionControl
+        self.runtime_mock.return_value=configured(retrieval_allowed=False)
+        await self.enable_decisions();d=await self.begin();token=await self.loop.claim(d['decision_id']);ctx=await self.loop.context(d['decision_id'])
+        hook=self.service.HttpDecision(self.loop,d['decision_id'],token,ctx['context_version'])
+        bound=decision_transport.current.set(hook)
+        try:
+            with self.assertRaisesRegex(ValueError,'retrieval disabled'):
+                await observation.authorize_model_retrieve(configured()['endpoint']+'/resp_test')
+        finally:decision_transport.current.reset(bound)
+        async with self.sessions() as s:
+            self.assertEqual((await s.get(ActionExecutionControl,'exec-durable')).requests_used,0)
+            turns=(await s.scalars(__import__('sqlalchemy').select(self.service.DecisionTurn))).all()
+            self.assertTrue(any(t.payload.get('kind')=='decision_retrieve_denied' for t in turns))
+            self.assertFalse(any(t.payload.get('kind')=='decision_retrieve_start' for t in turns))
+    async def test_execution_continuation_denied_before_reservation(self):
+        from app.services.gpt_api import GptChatResult
+        from app.services.actions_v1 import ActionExecutionControl
+        self.runtime_mock.return_value=configured(continuation_allowed=False)
+        await self.enable_decisions();d=await self.begin();token=await self.loop.claim(d['decision_id']);ctx=await self.loop.context(d['decision_id'])
+        hook=self.service.HttpDecision(self.loop,d['decision_id'],token,ctx['context_version'])
+        calls=[]
+        async def send(**kw):
+            calls.append(kw)
+            return GptChatResult(text='{}',model='gpt-5-6-sol',raw={'status':'completed'})
+        kwargs={'url':configured()['endpoint'],'headers':{},'body':{'model':'gpt-5-6-sol','input':[]},'use_model':'gpt-5-6-sol'}
+        await hook.send(send,(),kwargs)
+        with self.assertRaisesRegex(ValueError,'continuation disabled'):
+            await hook.send(send,(),kwargs)
+        self.assertEqual(len(calls),1)
+        async with self.sessions() as s:
+            self.assertEqual((await s.get(ActionExecutionControl,'exec-durable')).requests_used,1)
     async def test_actual_client_retrieval_cannot_exceed_common_budget(self):
         from app.services import decision_transport,gpt_api
         from app.services.actions_v1 import ActionExecutionControl
