@@ -117,12 +117,22 @@ class MediaHTTP(MediaJobs):
 
     async def test_http_restart_after_known_job_polls_without_resubmit(self):
         self.case = "restart"
+        cfg = policy(self.origin)
+        cfg["media"]["poll_interval_s"] = 0.5
+        self.cfg.write_text(json.dumps(cfg))
         task = asyncio.create_task(self.generate())
         try:
+            from app.services.observation import ObservationOutbox
+            durable_running = False
             for _ in range(100):
-                if self.status_gets:
+                async with self.sessions() as s:
+                    rows = (await s.scalars(select(ObservationOutbox).where(
+                        ObservationOutbox.kind == "media_phase"))).all()
+                    durable_running = any(r.payload.get("phase") == "running" for r in rows)
+                if durable_running:
                     break
                 await asyncio.sleep(0.02)
+            self.assertTrue(durable_running, "cancel local wait only after running was durably observed")
             self.assertGreater(self.status_gets, 0)
         finally:
             task.cancel()

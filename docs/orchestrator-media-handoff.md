@@ -57,3 +57,13 @@ Runtime regression: 25/25 in runtime-regression-01. Diagnosis regression: 25/25
 in diagnosis-regression-01. Waiting running job is not diagnosed as hung.
 Next: two HTTP RED tests for legacy high-level service bypass and unreachable
 Kie image wrapper branch; no active runners at this checkpoint.
+Native wrapper chunk: wrapper-red confirms unreachable Kie image branch and
+high-level direct service missing project guard. wrapper-green-01: 8/8 pass.
+Managed wrappers now invoke original Kie service with explicit catalog/profile,
+no native rewrite/fallback ladder; unsupported reference upload is denied.
+Native images avoid CDP in managed mode. Ordinary mode branch is unchanged.
+Restart test now waits for durable running event before cancelling local wait;
+previous random cancellation during audit correctly triggered commit uncertainty.
+This change makes the tested checkpoint explicit; audit guard is not weakened.
+Next: Decision type capabilities, verified artifact provenance/idempotence and
+true image worker acceptance through the existing group runner. No active runner.

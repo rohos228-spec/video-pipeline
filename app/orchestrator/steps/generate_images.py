@@ -93,6 +93,10 @@ from app.storage import for_project as _sheet_for_project
 def _img_http_primary() -> bool:
     """Outsee HTTP — без Chrome CDP (как excel_hero)."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
+    from app.services.observation import _attempt
+    ctx = _attempt.get()
+    if ctx and ctx.scope.mode == "managed":
+        return True  # provider entry gate rejects unsupported profiles before HTTP
 
     return bool(outsee_api_enabled_for_image() or outsee_api_configured())
 

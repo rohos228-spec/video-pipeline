@@ -976,6 +976,19 @@ async def generate_image_with_retries(
         _settings, "outsee_default_image_model", None
     )
     backend = image_provider_for(str(raw_slug) if raw_slug else None)
+    from app.services.media_jobs import assert_entry
+    managed = await assert_entry(project_id=kwargs.get("project_id"), provider=backend)
+    if managed:
+        # The original provider service owns submit/status/download. Its durable
+        # job replaces this legacy retry/rewrite/fallback ladder in managed mode.
+        from app.bots.kie_http import generate_kie_image
+        refs = kwargs.get("reference_image")
+        return await generate_kie_image(prompt, out_path, model_slug=str(raw_slug),
+            aspect_ratio=str(kwargs.get("aspect_ratio") or "9:16"),
+            resolution=str(kwargs.get("resolution") or kwargs.get("image_resolution") or "2K"),
+            reference_images=[refs] if isinstance(refs, Path) else refs,
+            timeout=float(kwargs.get("timeout") or 600),
+            project_id=kwargs.get("project_id"), gen_id=kwargs.get("gen_id"))
     use_outsee_api = backend == "outsee" and outsee_api_configured()
     if backend == "outsee" and not outsee_api_configured() and outsee is None:
         raise OutseeImageError(
@@ -1368,6 +1381,17 @@ async def generate_video_with_retries(
     from app.settings import settings as _settings
 
     primary_backend = video_provider_for(primary_slug)
+    from app.services.media_jobs import assert_entry
+    managed = await assert_entry(project_id=project_id, provider=primary_backend)
+    if managed:
+        from app.bots.kie_http import generate_kie_video
+        return await generate_kie_video(prompt, out_path, model_slug=primary_slug,
+            start_frame=kwargs.get("start_frame"),
+            aspect_ratio=str(kwargs.get("aspect_ratio") or "9:16"),
+            resolution=str(kwargs.get("resolution") or "720p"),
+            duration=kwargs.get("duration") or 5,
+            generate_audio=False, timeout=float(kwargs.get("timeout") or 900),
+            project_id=project_id, gen_id=kwargs.get("gen_id"))
     use_outsee_api_video = primary_backend == "outsee" and outsee_api_configured()
     primary_is_kling = primary_backend == "kie"
     if primary_backend == "outsee" and not outsee_api_configured() and outsee is None:

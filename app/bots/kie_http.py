@@ -508,8 +508,10 @@ async def generate_kie_video(
     """Генерация видео через KIE для любой из поддерживаемых KIE-моделей."""
     from app.bots.kie_kling import _frame_to_public_url
     from app.services import kie_catalog
+    from app.services.media_jobs import assert_entry, MediaPolicyError
 
-    if not kie_configured():
+    managed = await assert_entry(project_id=project_id, provider="kie")
+    if not managed and not kie_configured():
         raise KieHttpError(
             f"kie {model_slug}: API не настроен (KIE_API_KEY / GPT_API_KEY)",
             context={"provider_code": 401, "error_kind": "no_key"},
@@ -518,6 +520,8 @@ async def generate_kie_video(
     kie_id = VIDEO_GENERATOR_TO_KIE_ID.get(model_slug) or model_slug.replace("_", "-")
     spec = kie_catalog.get_model(kie_id)
     if not spec:
+        if managed:
+            raise MediaPolicyError("managed video requires an explicit catalog model; no fallback")
         from app.bots.kie_kling import generate_video as kie_kling_generate_video
 
         return await kie_kling_generate_video(
@@ -532,7 +536,11 @@ async def generate_kie_video(
             gen_id=gen_id,
         )
 
-    image_url = await _frame_to_public_url(start_frame)
+    field_names = {f["name"] for f in spec.get("fields") or []}
+    image_fields = {"first_frame_url", "image_url", "image_urls", "imageUrls", "input_image_url"}
+    if managed and start_frame and field_names & image_fields:
+        raise MediaPolicyError("managed reference upload has no authorized adapter")
+    image_url = None if managed else await _frame_to_public_url(start_frame)
     values: dict[str, Any] = {
         "prompt": prompt,
         "aspect_ratio": (aspect_ratio or "9:16").replace("_", ":"),
@@ -582,8 +590,12 @@ async def generate_kie_image(
     """Генерация изображения через KIE."""
     from app.bots.kie_kling import _frame_to_public_url
     from app.services import kie_catalog
+    from app.services.media_jobs import assert_entry, MediaPolicyError
 
-    if not kie_configured():
+    managed = await assert_entry(project_id=project_id, provider="kie")
+    if managed and reference_images:
+        raise MediaPolicyError("managed reference upload has no authorized adapter")
+    if not managed and not kie_configured():
         raise KieHttpError(
             f"kie {model_slug}: API не настроен (KIE_API_KEY / GPT_API_KEY)",
             context={"provider_code": 401, "error_kind": "no_key"},
