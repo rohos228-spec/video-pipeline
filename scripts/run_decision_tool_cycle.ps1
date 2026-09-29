@@ -71,6 +71,8 @@ $policyText=$policyTemplate.Replace('@PINNED_IPV4@',$pinnedIp).Replace("`r`n","`
 [IO.File]::WriteAllText((Join-Path $policyDir 'gateway-egress.nft'),$policyText,(New-Object System.Text.UTF8Encoding($false)))
 & $docker @dc volume create $volume | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Cannot create isolated socket volume' }
+$gatewayStarted=$false
+try {
 & $docker @dc create --pull never --name $gateway --network bridge --add-host "api.kie.ai:$pinnedIp" --cap-drop ALL --security-opt no-new-privileges --mount "type=volume,src=$volume,dst=/gateway" --mount "type=bind,src=$gatewayResults,dst=/results" $nftImage sleep infinity | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Cannot create gateway; no POST' }
 & $docker @dc create --pull never -i --name $app --network none --cap-drop ALL --security-opt no-new-privileges --mount "type=volume,src=$volume,dst=/gateway" --mount "type=bind,src=$appResults,dst=/results" $image python /observe-source/scripts/diagnostics/decision_tool_cycle_entry.py | Out-Null
@@ -92,6 +94,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot stage provenance; no POST' }
   ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $results 'run-metadata.json')
 & $docker @dc start $gateway | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Gateway keyless preparation start failed; no POST' }
+$gatewayStarted=$true
 & $docker @dc create --pull never --name $helper --network "container:$gateway" --cap-drop ALL --cap-add NET_ADMIN --security-opt no-new-privileges $nftImage sh -c 'nft -f /policy/gateway-egress.nft && nft -j list chain inet decision_gateway_egress output' | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Keyless nft helper creation failed; no key read' }
 & $docker @dc cp $policyDir "${helper}:/policy"
@@ -112,7 +115,8 @@ $probe=Get-Content -Raw (Join-Path $gatewayResults 'gateway-network-probe.json')
 if ($probe.pinned_ipv4 -ne $pinnedIp -or -not $probe.tls_hostname_verified -or -not $probe.nft_change_denied -or
     $probe.capabilities.CapEff -ne '0000000000000000' -or $probe.capabilities.CapBnd -ne '0000000000000000' -or
     -not $probe.controlled_listener_active -or $probe.gateway_direct_connect_errno -eq 0 -or
-    $probe.child_direct_connect_errno -eq 0 -or $probe.docker_dns_connect_errno -eq 0 -or $probe.http_requests -ne 0) {
+    $probe.child_direct_connect_errno -eq 0 -or $probe.ipv6_direct_connect_errno -eq 0 -or
+    $probe.docker_dns_connect_errno -eq 0 -or $probe.http_requests -ne 0) {
     throw 'Gateway direct-socket/TLS/capability probe failed; no key read'
 }
 $counters=@(& $docker @dc run --pull never --name $counterHelper --network "container:$gateway" --cap-drop ALL --cap-add NET_ADMIN --security-opt no-new-privileges $nftImage nft -j list chain inet decision_gateway_egress output)
@@ -125,7 +129,7 @@ if ($chain.Count -ne 1 -or $chain[0].chain.policy -ne 'drop' -or $entries.Count 
     $entries[0].rule.expr[0].match.right -ne $pinnedIp -or
     $entries[0].rule.expr[1].match.right -ne 443 -or
     $entries[0].rule.expr[2].counter.packets -lt 1 -or
-    $entries[1].rule.expr[0].counter.packets -lt 3 -or
+    $entries[1].rule.expr[0].counter.packets -lt 4 -or
     -not ($entries[0].rule.expr[3].PSObject.Properties.Name -contains 'accept') -or
     -not ($entries[1].rule.expr[1].PSObject.Properties.Name -contains 'drop')) {
     throw 'nft rule/counter attestation failed; no key read'
@@ -139,6 +143,10 @@ foreach ($line in [IO.File]::ReadLines($KeySourcePath)) {
     }
 }
 if (-not $key -or $key.Length -lt 12) { throw 'GPT_API_KEY unavailable; no POST' }
+} catch {
+    if ($gatewayStarted) { & $docker @dc stop $gateway | Out-Null }
+    throw
+}
 # The key enters only the app process stdin and is never passed as CLI/env/file.
 try {
     $priorPreference=$ErrorActionPreference

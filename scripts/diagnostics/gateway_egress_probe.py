@@ -43,6 +43,20 @@ def run(pinned_ip: str) -> dict:
             raise RuntimeError('gateway or child reached controlled listener')
     finally:
         listener.close()
+    listener6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    listener6.bind(('::1', 18773))
+    listener6.listen(1)
+    try:
+        direct6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        direct6.settimeout(0.6)
+        try:
+            ipv6_result = direct6.connect_ex(('::1', 18773))
+        finally:
+            direct6.close()
+        if ipv6_result == 0:
+            raise RuntimeError('IPv6 loopback bypassed default-deny policy')
+    finally:
+        listener6.close()
     dns_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     dns_socket.settimeout(0.6)
     try:
@@ -61,6 +75,7 @@ def run(pinned_ip: str) -> dict:
               'nft_change_denied': True, 'controlled_listener_active': True,
               'gateway_direct_connect_errno': local_result,
               'child_direct_connect_errno': child_result,
+              'ipv6_direct_connect_errno': ipv6_result,
               'docker_dns_connect_errno': dns_result,
               'tls_hostname_verified': True, 'tls_version': tls_version,
               'http_requests': 0, 'bearer_present': False}
