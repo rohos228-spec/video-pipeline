@@ -194,6 +194,44 @@ class MediaHTTP(MediaJobs):
             observation._attempt.reset(token)
         self.assertEqual(self.posts, 0)
 
+    async def test_http_verified_artifact_applies_once_in_business_transaction(self):
+        from app.models import Artifact, ArtifactKind
+        from app.services.media_jobs import persist_artifact
+        result = await self.generate()
+        def artifact(uid):
+            return Artifact(project_id=7, kind=ArtifactKind.scene_image,
+                uuid=uid, path=str(result.file_path), meta={})
+        async with self.sessions() as s:
+            first = await persist_artifact(s, artifact("first-artifact"))
+            await s.commit()
+        async with self.sessions() as s:
+            second = await persist_artifact(s, artifact("duplicate-artifact"))
+            self.assertEqual(second.uuid, first.uuid)
+            await s.commit()
+            rows = (await s.scalars(select(Artifact))).all()
+            self.assertEqual(len(rows), 1)
+            proof = rows[0].meta["orchestrator"]
+            self.assertEqual(proof["execution_id"], self.scope.execution_id)
+            self.assertEqual(proof["node_key"], "image")
+            self.assertTrue(proof["attempt_id"])
+            self.assertEqual(proof["verification"]["status"], "passed")
+        self.assertEqual(self.posts, 1)
+
+    async def test_http_artifact_apply_rollback_and_tampering(self):
+        from app.models import Artifact, ArtifactKind
+        from app.services.media_jobs import persist_artifact
+        result = await self.generate()
+        async with self.sessions() as s:
+            await persist_artifact(s, Artifact(project_id=7, kind=ArtifactKind.scene_image,
+                uuid="rolled-back", path=str(result.file_path), meta={}))
+            await s.rollback()
+        async with self.sessions() as s:
+            self.assertIsNone(await s.scalar(select(Artifact)))
+            result.file_path.write_bytes(b"tampered")
+            with self.assertRaisesRegex(RuntimeError, "verification"):
+                await persist_artifact(s, Artifact(project_id=7, kind=ArtifactKind.scene_image,
+                    uuid="bad-artifact", path=str(result.file_path), meta={}))
+            self.assertIsNone(await s.scalar(select(Artifact)))
 
 if __name__ == "__main__":
     # Inherited state tests are run separately, once.
