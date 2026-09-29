@@ -46,7 +46,7 @@ def validate_model(model):
 
 def validate_config(raw):
     expected={'version','mode','online_enabled','endpoint','decision','profiles','allowed_actions'}
-    optional={'model_transport','external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack','incident_scope'}
+    optional={'model_transport','external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack','incident_scope','media'}
     if not isinstance(raw,dict) or not expected<=set(raw) or set(raw)-expected-optional or raw['version']!=1 or raw['mode'] not in {'synthetic','production'} or type(raw['online_enabled'])!=bool:
         raise ValueError('invalid runtime configuration')
     if 'incident_scope' in raw:
@@ -57,6 +57,9 @@ def validate_config(raw):
                 or any(not isinstance(scope.get(k),str) or not 1<=len(scope[k])<=120
                        or scope[k].strip()!=scope[k] or any(c in scope[k] for c in '*?[]') for k in ids)):
             raise ValueError('invalid explicit incident scope / single recovery limit')
+    if 'media' in raw:
+        from app.services.media_jobs import validate_media_config
+        validate_media_config(raw['media'], mode=raw['mode'])
     for key in ('external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack'):
         if key in raw and type(raw[key])!=bool:raise ValueError('invalid decision network policy')
     transport=raw.get('model_transport')

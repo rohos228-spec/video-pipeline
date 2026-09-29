@@ -36,6 +36,7 @@ class MediaJobs(unittest.IsolatedAsyncioTestCase):
         self.engine = create_async_engine(f"sqlite+aiosqlite:///{self.root / 'state.db'}")
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await observation.migrate_observation_schema(conn)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.old = observation._observer
         self.observer = observation.Observer(self.sessions, body_root=self.root / "bodies")
@@ -108,15 +109,17 @@ class MediaJobs(unittest.IsolatedAsyncioTestCase):
     async def test_shared_atomic_budget_has_durable_operation_categories(self):
         from app.services.media_jobs import MediaRequest
         job = await self.open_job()
+        await job.reserve("generation_submit")
+        await job.update(phase="running", provider_job_id="budget-job")
         results = await asyncio.gather(*(job.reserve("status") for _ in range(12)), return_exceptions=True)
-        self.assertEqual(sum(isinstance(x, str) for x in results), 8)
+        self.assertEqual(sum(isinstance(x, str) for x in results), 7)
         await reload_permissions(self.sessions)
         with self.assertRaises(RuntimeError):
             await job.reserve("download")
         async with self.sessions() as s:
             rows = (await s.scalars(select(MediaRequest))).all()
             self.assertEqual(len(rows), 8)
-            self.assertEqual({r.category for r in rows}, {"status"})
+            self.assertEqual({r.category for r in rows}, {"status", "generation_submit"})
             self.assertEqual({r.cost_status for r in rows}, {"unknown_tariff"})
 
     async def test_stop_scope_revision_and_direct_service_bypass_block(self):

@@ -323,7 +323,7 @@ class ActionSupervisor:
         update_permission(project_id, held=held)
         return response
 
-    async def charge_request(self, execution_id: str) -> int:
+    async def charge_request(self, execution_id: str, *, media_reservation=None) -> int:
         """Durably charge a model attempt before the provider transport starts."""
         async with self.master() as session:
             from app.services.observation import ExecutionControl,get_observer,digest
@@ -354,6 +354,9 @@ class ActionSupervisor:
                     raise RuntimeError("managed execution is absent, disabled, or held")
                 raise RuntimeError("managed execution request budget exhausted")
             used, project_id = reserved
+            if media_reservation is not None:
+                from app.services.media_jobs import stage_reservation
+                await stage_reservation(session, media_reservation)
             await session.commit()
         update_permission(project_id, requests_used=used)
         return used

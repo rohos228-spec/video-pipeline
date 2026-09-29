@@ -27,6 +27,12 @@ Environment evidence: contract-green/artifacts/media-environment.json under
 outputs/media-v1-20260930. No ffmpeg, ffprobe, faster_whisper, torch, nemo or ASR cache.
 Next: persistent media job/request correlation and shared policy; hook original
 services/worker without replacing executor; then family/mixed acceptance and UI.
+Persistent storage chunk: media_jobs plus optional strict synthetic media policy;
+job/resource/input/config identity, permanent submit reservation, scope/stop gates,
+and per-category request rows in the common budget transaction. Five tests pass
+in jobs-green-02, including parallel limit, restart, uncertain submit, scope and
+config revision. jobs-green-01 retains initial test schema ordering failure.
+No real HTTP media integration or worker acceptance claimed at this checkpoint.
 Potential blocker: audio requires local ASR package + cached weights. Inventory
 is recorded by media-contract; no model download or fake transcription.
 
