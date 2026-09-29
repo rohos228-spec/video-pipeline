@@ -145,6 +145,10 @@ async def run(key):
                     records = (await s.scalars(select(DecisionRecord))).all()
                     if records and records[0].status in {'human_review', 'done'}:
                         break
+                    if (records and records[0].status == 'ready' and records[0].model_steps > 0
+                            and isinstance(records[0].proposal, dict)
+                            and records[0].proposal.get('action') == 'wait'):
+                        break  # A substantive wait decision needs no further model POST now.
                 await asyncio.sleep(.2)
             else:
                 raise RuntimeError('pilot deadline reached; no further POST authorized')

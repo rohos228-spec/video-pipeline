@@ -87,8 +87,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot stage synthetic seed; no POST' }
 $provenance = Join-Path $root 'outputs\actions-v1-final\recovery-a-08\artifacts\checkpoint-provenance.json'
 & $docker @dc cp $provenance "${app}:/observe-checkpoint-provenance.json"
 if ($LASTEXITCODE -ne 0) { throw 'Cannot stage provenance; no POST' }
-@{source_commit=$sha;app=$app;gateway=$gateway;socket_volume=$volume;model='gpt-5-6-sol';
+$seedProvenance=Get-Content -Raw $provenance | ConvertFrom-Json
+@{source_commit=$sha;run_id=$suffix;execution_id=$seedProvenance.execution_id;
+  test_db_instance=(Join-Path $appResults 'free-run-data\state.db');
+  app=$app;gateway=$gateway;socket_volume=$volume;model='gpt-5-6-sol';
   endpoint='https://api.kie.ai/codex/v1/responses';max_requests=3;max_output_tokens=1024;
+  reasoning_effort='low';app_timeout_seconds=90;gateway_upstream_timeout_seconds=900;
   app_network='none';gateway_network='bridge-with-nft-default-drop';pinned_ipv4=$pinnedIp;
   nft_image_id=$actualNftImageId;key_in_files=$false;key_in_env=$false} |
   ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $results 'run-metadata.json')
@@ -158,6 +162,20 @@ try {
     $appExit=& $docker @dc wait $app
 } finally {
     $key=$null
+    # The app can stop reading before a paid upstream stream finishes. Keep the
+    # isolated gateway alive until its reserved requests settle, bounded by its
+    # 900 s upstream timeout plus 30 s for persistence and Docker scheduling.
+    $drainDeadline=(Get-Date).ToUniversalTime().AddSeconds(930)
+    $pending='unknown'
+    do {
+        $pendingOutput=& $docker @dc exec $gateway python -c 'import sqlite3; db=sqlite3.connect("/results/decision-gateway.sqlite"); print(db.execute("SELECT COUNT(*) FROM requests WHERE state=?", ("reserved",)).fetchone()[0]); db.close()' 2>$null
+        if ($LASTEXITCODE -ne 0 -or "$pendingOutput" -notmatch '^\d+$') { break }
+        $pending=[int]$pendingOutput
+        if ($pending -eq 0) { break }
+        Start-Sleep -Seconds 5
+    } while ((Get-Date).ToUniversalTime() -lt $drainDeadline)
+    @{utc=(Get-Date).ToUniversalTime().ToString('o');pending=$pending;settled=($pending -ceq 0);
+      max_wait_seconds=930} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $results 'gateway-drain.json')
     & $docker @dc stop $gateway | Out-Null
 }
 $gatewayExit=& $docker @dc wait $gateway
