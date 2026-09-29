@@ -13,8 +13,19 @@ def configured(**extra):
        'profiles':{},'allowed_actions':['read_events','read_contract','retry_same','human_review','wait','finish']}
     d.update(extra);return d
 
+def pilot_scope(**extra):
+    scope={'execution_id':'exec-durable','incident_id':'source-incident','node_key':'n1',
+           'source_attempt_id':'source-attempt','recovery_limit':1}
+    scope.update(extra);return scope
+
 class RuntimeConfig(unittest.TestCase):
     def setUp(self):self.config=importlib.import_module('app.services.decision_config')
+    def test_pilot_scope_is_explicit_and_single_recovery(self):
+        cfg=self.config.validate_config(configured(incident_scope=pilot_scope()))
+        self.assertEqual(cfg['incident_scope'],pilot_scope())
+        for change in ({'node_key':'*'},{'recovery_limit':2},{'recovery_limit':True},{'execution_id':''},{'shell':'x'}):
+            with self.assertRaises(ValueError):
+                self.config.validate_config(configured(incident_scope=pilot_scope(**change)))
     def test_explicit_production_adapter_uses_existing_catalog(self):
         cfg=self.config.validate_config(configured());self.assertEqual(cfg['decision']['model_id'],'gpt-5-6-sol')
     def test_disabled_example_cannot_send(self):
@@ -86,6 +97,40 @@ class RuntimeAdapter(base_tests.DecisionDurability):
     async def asyncSetUp(self):
         await super().asyncSetUp();self.config=importlib.import_module('app.services.decision_config')
         self.runtime=patch.object(self.config,'runtime_config',return_value=configured());self.runtime_mock=self.runtime.start();self.addCleanup(self.runtime.stop)
+    async def test_pilot_scope_rejects_wrong_incident_before_decision(self):
+        self.runtime_mock.return_value['incident_scope']=pilot_scope(incident_id='other-incident')
+        await self.enable_decisions()
+        with self.assertRaisesRegex(ValueError,'incident scope'):
+            await self.begin()
+        await self.assert_no_dispatch()
+    async def test_pilot_scope_visible_and_bound_to_execution(self):
+        self.runtime_mock.return_value['incident_scope']=pilot_scope()
+        await self.enable_decisions();record=await self.begin()
+        context=await self.loop.context(record['decision_id'])
+        self.assertEqual(context['incident_scope'],pilot_scope())
+        self.assertIn('retry_same',context['allowed_actions'])
+    async def test_direct_recovery_cannot_bypass_pilot_source_attempt(self):
+        self.runtime_mock.return_value['incident_scope']=pilot_scope(source_attempt_id='other-attempt')
+        await self.enable_decisions()
+        await self.loop.configure(project_id=7,execution_id='exec-durable',enabled=False,
+            initiator='synthetic-operator',rationale='test manual recovery retains binding restrictions')
+        with self.assertRaisesRegex(ValueError,'incident scope'):
+            await self.retry()
+        await self.assert_no_dispatch()
+    async def test_pilot_recovery_requires_persisted_binding(self):
+        self.runtime_mock.return_value['incident_scope']=pilot_scope()
+        with self.assertRaisesRegex(ValueError,'bound'):
+            await self.retry()
+        await self.assert_no_dispatch()
+    async def test_bound_config_change_blocks_node_reservation_after_restart(self):
+        from app.services.actions_v1 import ActionSupervisor,ActionExecutionControl
+        await self.enable_decisions()
+        async with self.sessions() as s:before=(await s.get(ActionExecutionControl,'exec-durable')).requests_used
+        self.runtime_mock.return_value['decision']['max_output_tokens']=512
+        restarted=ActionSupervisor(self.sessions)
+        with self.assertRaisesRegex(RuntimeError,'configuration revision'):
+            await restarted.charge_request('exec-durable')
+        async with self.sessions() as s:self.assertEqual((await s.get(ActionExecutionControl,'exec-durable')).requests_used,before)
     async def test_config_binding_persists_and_stale_configuration_stops(self):
         await self.enable_decisions();d=await self.begin();token=await self.loop.claim(d['decision_id'])
         async with self.sessions() as s:
