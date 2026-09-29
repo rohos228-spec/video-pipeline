@@ -44,6 +44,8 @@ try:
         sys.argv=[str(SOURCE / "tests/observe_v1/test_decision_runtime.py")]
     if os.environ.get("OBSERVE_TEST_TARGET")=="profiles":
         sys.argv=[str(SOURCE / "tests/observe_v1/test_profiles_v1.py")]
+    if os.environ.get("OBSERVE_TEST_TARGET")=="planner-boundary":
+        sys.argv=[str(SOURCE / "tests/observe_v1/test_planner_boundary.py")]
     runpy.run_path(sys.argv[0], run_name="__main__")
 except SystemExit as exc:
     exit_code = int(exc.code or 0)

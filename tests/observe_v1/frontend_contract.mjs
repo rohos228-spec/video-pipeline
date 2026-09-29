@@ -45,7 +45,14 @@ assert.equal(groupIncidents([{...repaired,resolution:{kind:'supervisor_recovery_
 console.log('Actions UI status contracts: 21 assertions passed');
 const decisionSource=fs.readFileSync('/observe-source/web/src/lib/decision-view.ts','utf8');
 const decisionJS=ts.transpileModule(decisionSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
-const {decisionStatus}=await import('data:text/javascript;base64,'+Buffer.from(decisionJS).toString('base64'));
+const {decisionStatus,decisionRuntimeLabel,decisionActionLabel,decisionPolicyLabel}=await import('data:text/javascript;base64,'+Buffer.from(decisionJS).toString('base64'));
+assert.match(decisionRuntimeLabel({mode:'production',configured:false}),/не настроена/);
+assert.match(decisionRuntimeLabel({mode:'synthetic',configured:true}),/Тестовый/);
+assert.match(decisionRuntimeLabel({mode:'production',configured:true}),/Рабочий/);
+assert.match(decisionActionLabel('retry_same'),/Повтор/);
+assert.match(decisionPolicyLabel({allowed:false,reason:'context version changed'}),/измен/);
+assert.match(decisionPolicyLabel({allowed:false,reason:'unmapped-private-detail'}),/Подробности/);
+assert.doesNotMatch(decisionPolicyLabel({allowed:false,reason:'unmapped-private-detail'}),/unmapped/);
 for(const state of ['ready','model_pending','acting','waiting_worker','done','human_review'])assert.notEqual(decisionStatus(state),state);
 assert.match(decisionStatus('human_review'),/Нужен человек/);
 assert.match(decisionStatus('waiting_worker'),/verify/);
