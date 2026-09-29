@@ -15,6 +15,10 @@ $stage = Join-Path $results 'app-source'
 $gatewayStage = Join-Path $results 'gateway-source'
 $appResults = Join-Path $results 'app-results'
 $gatewayResults = Join-Path $results 'gateway-results'
+# No verified packet filter is available in the pinned diagnostic image. A
+# URL check in gateway.py does not restrict direct sockets or child processes.
+# Keep this gate before opening the key source or starting a networked container.
+throw 'Gateway egress allowlist is unavailable: the pinned image has no nft/iptables/ip6tables. No key read or online start.'
 if (-not (Test-Path -LiteralPath $KeySourcePath)) { throw 'Authorized key source absent' }
 $safe = 'safe.directory=' + $source.Replace('\','/')
 if ((& git -c $safe -C $source status --porcelain)) { throw 'Source worktree is not clean' }
