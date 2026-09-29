@@ -53,3 +53,27 @@ const decisionPanel=fs.readFileSync('/observe-source/web/src/components/orchestr
 assert.match(decisionPanel,/controlDecisions/);assert.match(decisionPanel,/rationale.trim\(\).length<3/);
 assert.match(decisionPanel,/verification.verified/);assert.doesNotMatch(decisionPanel,/edit_files|shell|\.env/);
 console.log('Decision UI contracts: 12 assertions passed');
+
+const profileSource=fs.readFileSync('/observe-source/web/src/lib/profiles-view.ts','utf8');
+const profileJS=ts.transpileModule(profileSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {profileStatus}=await import('data:text/javascript;base64,'+Buffer.from(profileJS).toString('base64'));
+for(const state of ['approved','reserved','active','applied','failed','cancelled'])assert.notEqual(profileStatus(state),state);
+assert.match(profileStatus('cancelled'),/данные и бюджет сохранены/);
+assert.match(profileStatus('failed'),/нужен человек/);
+const profilePanel=fs.readFileSync('/observe-source/web/src/components/orchestrator/profiles-section.tsx','utf8');
+assert.match(profilePanel,/approveProfile/);assert.match(profilePanel,/cancelProfile/);
+assert.match(profilePanel,/verification\?\.verified/);assert.doesNotMatch(profilePanel,/edit_files|shell|\.env/);
+console.log('Profiles UI contracts: 12 assertions passed');
+
+// Same first render on server and client, even when persisted UI differs.
+const vm=await import('node:vm');
+const React=require('react');const ReactServer=require('react-dom/server');
+const hookSource=fs.readFileSync('/observe-source/web/src/hooks/use-persisted-state.ts','utf8');
+const hookJS=ts.transpileModule(hookSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+let storageReads=0;const hookModule={exports:{}};
+vm.runInNewContext(hookJS,{exports:hookModule.exports,require,window:{},localStorage:{
+  getItem:()=>{storageReads++;return JSON.stringify('persisted-client-value');},setItem:()=>{}}});
+function FirstClientRender(){const [value]=hookModule.exports.usePersistedState('synthetic-ui-key','server-default');return React.createElement('span',null,value);}
+assert.equal(ReactServer.renderToString(React.createElement(FirstClientRender)),'<span>server-default</span>');
+assert.equal(storageReads,0);
+console.log('Persisted UI first-render contracts: 2 assertions passed');

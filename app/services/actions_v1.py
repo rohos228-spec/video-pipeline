@@ -14,6 +14,7 @@ from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueCon
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models import Base
 from app.services.decision_state import DecisionControl, DecisionRecord, DecisionTurn
+from app.services.profiles_state import ProfileOverlay
 
 
 class ActionExecutionControl(Base):

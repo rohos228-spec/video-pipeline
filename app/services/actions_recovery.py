@@ -110,7 +110,7 @@ async def input_revision(session, project, node_key, *, parts=None):
 
 
 async def recover_node(supervisor, *, project_id, execution_id, incident_id, node_key,
-                       idempotency_key, initiator, rationale, decision_id=None):
+                       idempotency_key, initiator, rationale, decision_id=None, profile_overlay_id=None):
     from app.services.diagnosis import Incident, DiagnosisState, get_diagnoser
     from app.services.observation import ExecutionControl, ObservationEvent, digest, get_observer, business_snapshot
     from app.services.step_failure_policy import MAX_TOTAL_FAILS, is_sleeping
@@ -215,6 +215,12 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             if not parts_match and source.payload.get("recovery_input_revision") != revision:
                 changed = [k for k,v in current_parts.items() if previous_parts.get(k) != v]
                 raise ValueError("input/config revision changed or not recorded: " + ",".join(changed))
+            profile = None
+            if profile_overlay_id:
+                from app.services.profiles_v1 import reservation
+                profile = await reservation(master, profile_overlay_id, execution_id=execution_id,
+                    project_id=project_id,node_key=node_key,source_attempt_id=source.attempt_id,
+                    revision=revision,graph=control.graph_version,body_hash=starts[0].payload["input_revision"])
             action = RecoveryAction(action_id=str(uuid.uuid4()), execution_id=execution_id,
                 project_id=project_id, incident_id=incident_id, node_key=node_key,
                 source_attempt_id=source.attempt_id, new_attempt_id=str(uuid.uuid4()),
@@ -229,9 +235,16 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                     "no_partial_apply": True, "user_stop": False, "node_scope_authorized": True},
                 budget_state={"request_limit": control.request_limit, "requests_used": control.requests_used,
                     "recovery_limit": 1, "recoveries_reserved": 1}, status="reserved", result={}, verification_result={})
+            if profile:
+                action.preconditions = {**action.preconditions,"action_type":"retry_profile",
+                    "profile_overlay_id":profile.overlay_id,"candidate_hash":profile.candidate_hash,
+                    "source_body_hash":profile.source_body_hash,"first_body_hash":profile.expected_body_hash}
+                profile.attempt_id=action.new_attempt_id;profile.status="reserved"
+                profile.history=[*profile.history,{"kind":"recovery_reserved","action_id":action.action_id,
+                    "attempt_id":action.new_attempt_id,"at":datetime.utcnow().isoformat()}]
             master.add(action)
             master.add(ActionRecord(action_id=action.action_id, execution_id=execution_id, project_id=project_id,
-                action_kind="node_recovery", node_key=node_key, attempt_id=action.new_attempt_id,
+                action_kind="node_profile_recovery" if profile else "node_recovery", node_key=node_key, attempt_id=action.new_attempt_id,
                 initiator=initiator, rationale=rationale, evidence_ids=incident.details.get("event_ids", []),
                 preconditions=action.preconditions, idempotency_key=idempotency_key, status="reserved", verification={}))
             await master.commit()  # Durable before dispatch; UNIQUE prevents races.

@@ -105,6 +105,40 @@ async def decisions(project_id:int,execution_id:str):
             'max_model_steps':MAX_STEPS,'records':records})
 
 
+
+class ApproveProfile(BaseModel):
+    model_config = {"extra":"forbid"}
+    node_key: str = Field(min_length=1,max_length=60)
+    profile_id: str = Field(min_length=1,max_length=80)
+    base_version: str = Field(min_length=64,max_length=64)
+    catalog_hash: str = Field(min_length=64,max_length=64)
+    rationale: str = Field(min_length=3,max_length=1000)
+
+class CancelProfile(BaseModel):
+    model_config = {"extra":"forbid"}
+    rationale: str = Field(min_length=3,max_length=1000)
+
+@router.get('/{execution_id}/profiles')
+async def profiles(project_id:int,execution_id:str,node_key:str):
+    from app.services.profiles_v1 import ProfilesSupervisor
+    try:return await ProfilesSupervisor(get_observer()).state(project_id,execution_id,node_key)
+    except ValueError as exc:raise HTTPException(404,str(exc)) from exc
+
+@router.post('/{execution_id}/profiles/approve')
+async def approve_profile(project_id:int,execution_id:str,payload:ApproveProfile,operator:AuthDep):
+    from app.services.profiles_v1 import ProfilesSupervisor
+    try:return await ProfilesSupervisor(get_observer()).approve(project_id=project_id,execution_id=execution_id,
+        initiator=_operator_id(operator),**payload.model_dump())
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+
+@router.post('/{execution_id}/profiles/{overlay_id}/cancel')
+async def cancel_profile(project_id:int,execution_id:str,overlay_id:str,payload:CancelProfile,operator:AuthDep):
+    from app.services.profiles_v1 import ProfilesSupervisor
+    try:return await ProfilesSupervisor(get_observer()).cancel(project_id=project_id,execution_id=execution_id,
+        overlay_id=overlay_id,initiator=_operator_id(operator),rationale=payload.rationale)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+
+
 def scope_json(scope):
     return panel_safe({key: getattr(scope, key) for key in (
         "execution_id", "project_id", "workflow_run_id", "node_keys", "graph_version",

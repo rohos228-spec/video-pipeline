@@ -23,10 +23,11 @@ $gitSafety = 'safe.directory=' + $sourceRoot.Replace('\', '/')
 $tracked = & git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files app prompts templates pyproject.toml
 if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate tracked source' }
 $files = @($tracked) + @('app/services/actions_v1.py', 'tests/observe_v1/test_actions_v1_contract.py', 'tests/observe_v1/test_journal.py', 'tests/observe_v1/test_runtime.py', 'tests/observe_v1/container_test_entry.py', 'tests/observe_v1/group_acceptance.py', 'tests/observe_v1/coverage_capture.py', 'tests/observe_v1/socket_bridge.py')
-$files += 'app/services/actions_recovery.py'
+$files += @('app/services/actions_recovery.py','app/services/profiles_state.py','app/services/profiles_v1.py')
 $files += 'tests/observe_v1/recovery_denials.py'
-$files += 'tests/observe_v1/decision_acceptance.py'
+$files += @('tests/observe_v1/decision_acceptance.py','tests/observe_v1/profiles_acceptance.py')
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
+if ($Target -eq 'profiles') { $files += @('tests/observe_v1/test_profiles_v1.py','tests/observe_v1/test_decision_v1.py') }
 if ($Target.StartsWith('decision')) { $files += 'tests/observe_v1/test_decision_v1.py' }
 if ($Browser) { $files += @(& git -c $gitSafety -c core.quotepath=false -C $sourceRoot ls-files web/out web/STUDIO_VERSION) }
 $manifest = @{}
@@ -69,7 +70,7 @@ if ($Target -eq 'diagnose') {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot copy existing synthetic histories' }
 }
 if ($Target -eq 'group') {
-    if ($GroupMode.StartsWith('deny-') -or $GroupMode.StartsWith('decision-')) {
+    if ($GroupMode.StartsWith('deny-') -or $GroupMode.StartsWith('decision-') -or $GroupMode.StartsWith('profiles-')) {
         if (-not $DenialSeed) { $DenialSeed = Join-Path $sourceRoot '../../outputs/actions-v1-final/recovery-a-02/artifacts/free-run-data' }
         if (-not (Test-Path -LiteralPath $DenialSeed)) { throw 'Existing exhausted synthetic checkpoint required' }
         if (Get-ChildItem -LiteralPath $DenialSeed -Recurse -Force -File | Where-Object { $_.Name -match '^\.env($|\.)|\.(key|pem)$' }) { throw 'Unexpected secret file in synthetic checkpoint' }

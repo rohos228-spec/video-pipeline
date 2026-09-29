@@ -37,6 +37,8 @@ def handler_for(fixtures,root,mode):
             if turn>1:assert any('tool_result' in text for text in strings),'actual tool result missing from next request'
             action=['read_events','retry_same','finish'][turn-1]
             arguments={'event_ids':ctx['evidence_ids'][:1]} if action=='read_events' else {}
+            if mode.startswith('profiles-') and action=='retry_same':
+                action='retry_profile';arguments={'overlay_id':ctx['approved_profiles'][0]['overlay_id']}
             proposal=dict(action=action,arguments=arguments,evidence_ids=ctx['evidence_ids'][:1],
                 context_version=ctx['context_version'],explanation='synthetic bounded proposal from recorded runtime facts')
             answer=json.dumps(proposal,ensure_ascii=False)
@@ -63,6 +65,9 @@ async def run(mode,client,fixtures,observer,root,result):
         scope=await s.scalar(select(ExecutionControl).where(ExecutionControl.project_id==2))
         execution=scope.execution_id
         assert not (await s.scalars(select(RecoveryAction))).all(),'checkpoint must precede supervisor recovery'
+    if mode.startswith('profiles-'):
+        from profiles_acceptance import approve
+        await approve(client,base,execution,fixtures,root)
     response=await client.post(base+f'/observations/{execution}/decisions/control',json={
         'enabled':True,'rationale':'synthetic decision-v1 acceptance on copied genuine exhausted checkpoint'})
     response.raise_for_status()
@@ -80,7 +85,7 @@ async def run(mode,client,fixtures,observer,root,result):
         interventions=['copy historical synthetic checkpoint','enable synthetic decision mode through original API'])
     assert len(decisions['records'])==1,decisions
     decision=decisions['records'][0]
-    if mode=='decision-bad':
+    if mode in {'decision-bad','profiles-bad'}:
         assert decision['status']=='human_review' and decision['model_steps']==2,decision
         actions=(await client.get(base+f'/observations/{execution}/actions')).json()
         assert actions['held'] and actions['requests_used']==22,actions

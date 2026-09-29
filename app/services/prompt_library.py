@@ -966,3 +966,11 @@ def make_template_for_new(step_code: str, name: str) -> str:
         "\n"
         "Опиши задачу для модели здесь...\n"
     )
+
+
+# Fixed approved variant after original prompt resolution. Never writes a template.
+def apply_approved_profile_prompt(resolved: str, variant: str) -> str:
+    if variant != "require-apply-ops-v1":
+        raise ValueError("unknown approved profile prompt variant")
+    suffix = "\n\n[Approved synthetic profile: require-apply-ops-v1] Return the mandatory apply-ops JSON specified by the original node contract."
+    return resolved if resolved.endswith(suffix) else resolved + suffix

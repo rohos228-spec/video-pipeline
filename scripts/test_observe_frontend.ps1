@@ -8,7 +8,7 @@ $safety='safe.directory=' + $repo.Replace('\','/')
 $files=& git -c $safety -c core.quotepath=false -C $repo ls-files web scripts/bump_studio_version.py
 $files=@($files | Where-Object { $_ -notmatch '^web/out/' })
 $files+=@('tests/observe_v1/frontend_contract.mjs','web/src/lib/observation-view.ts','web/src/lib/observations.ts','web/src/components/orchestrator/observation-section.tsx')
-$files+='web/src/lib/actions-view.ts'
+$files+=@('web/src/lib/actions-view.ts','web/src/lib/profiles-view.ts','web/src/components/orchestrator/profiles-section.tsx')
 $manifest=@{}
 foreach($relative in ($files | Select-Object -Unique)) {
     if($relative -match '(^|/)\.env($|\.)|(^|/)node_modules/|(^|/)\.git/|\.(db|key|pem)$') { continue }

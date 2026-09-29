@@ -34,7 +34,7 @@ finish_coverage = begin(SOURCE)
 async def run():
     mode = os.environ.get("OBSERVE_GROUP_MODE", "observe")
     denial_mode = mode.startswith('deny-')
-    decision_mode = mode.startswith('decision-')
+    decision_mode = mode.startswith('decision-') or mode.startswith('profiles-')
     shutil.copytree('/observe-denial-seed' if denial_mode or decision_mode else '/srv/seed', DATA)
     browser_mode = os.environ.get("OBSERVE_BROWSER", "").lower() == "true"
     os.environ.update({
@@ -70,7 +70,7 @@ async def run():
     if decision_mode:
         from decision_acceptance import handler_for
         handler=handler_for(fixtures,ROOT,mode)
-        if mode=='decision-bad':
+        if mode in {'decision-bad','profiles-bad'}:
             fixtures.MODE='malformed'
             original_answer=fixtures.synthetic_answer
             fixtures.synthetic_answer=lambda node,attempt:original_answer(node,1) if node==fixtures.NODES[0] else original_answer(node,attempt)
@@ -90,6 +90,12 @@ async def run():
                 request.headers['x-diagnostic-node']='__decision__'
                 return await original_send(client,request,**kwargs)
             if ctx:
+                if mode.startswith('profiles-'):
+                    payload=json.loads(request.content)
+                    p=ROOT/'actual-worker-requests.json'
+                    bodies=json.loads(p.read_text()) if p.exists() else []
+                    bodies.append({'node_key':ctx.node_key,'attempt_id':ctx.attempt_id,'body':payload})
+                    p.write_text(json.dumps(bodies,ensure_ascii=False,indent=2))
                 node = ctx.node_key
                 recovery_transport["active"] = ctx.session.info.get("recovery_attempt_id") == ctx.attempt_id
             else:
@@ -116,6 +122,9 @@ async def run():
             if decision_mode:
                 from decision_acceptance import run as run_decision
                 await run_decision(mode,client,fixtures,observation.get_observer(),ROOT,result)
+                if mode.startswith("profiles-"):
+                    from profiles_acceptance import verify
+                    await verify(client,base,result["execution_id"],fixtures,ROOT,result)
                 return
             if denial_mode:
                 from recovery_denials import run as run_denial

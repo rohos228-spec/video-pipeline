@@ -1,3 +1,9 @@
+
+export type ProfileOverlay = {overlay_id:string;node_key:string;attempt_id:string|null;profile_id:string;base_version:string;
+  candidate_hash:string;candidate:{model_id:string};initiator:string;rationale:string;status:string;history:unknown[];
+  recovery?:{status:string;verification:{verified?:boolean}}|null};
+export type ProfileState = {base_version:string|null;catalog_hash:string;synthetic_only:boolean;available:boolean;reason:string|null;
+  catalog:{profile_id:string;model_id:string}[];overlays:ProfileOverlay[]};
 import { http } from "./api";
 import type { ObservationEvent } from "./observation-view";
 
@@ -73,6 +79,11 @@ export const observations = {
     http<{action_id:string;status:string;verification:Record<string,unknown>}>(path(project,execution)+"/actions/verify",{method:"POST",body:JSON.stringify(payload)}),
   reviewIncident: (project:number,execution:string,payload:{incident_id:string;rationale:string;idempotency_key:string}) =>
     http<{action_id:string;status:string;business_action:boolean}>(path(project,execution)+"/actions/review",{method:"POST",body:JSON.stringify(payload)}),
+  profiles: (project:number,execution:string,node:string)=>http<ProfileState>(path(project,execution)+"/profiles?node_key="+encodeURIComponent(node)),
+  approveProfile: (project:number,execution:string,payload:{node_key:string;profile_id:string;base_version:string;catalog_hash:string;rationale:string})=>
+    http(path(project,execution)+"/profiles/approve",{method:"POST",body:JSON.stringify(payload)}),
+  cancelProfile: (project:number,execution:string,overlay:string,rationale:string)=>
+    http(path(project,execution)+"/profiles/"+encodeURIComponent(overlay)+"/cancel",{method:"POST",body:JSON.stringify({rationale})}),
   retryNode: (project:number,execution:string,payload:{incident_id:string;node_key:string;rationale:string;idempotency_key:string}) =>
     http(path(project,execution)+"/actions/retry",{method:"POST",body:JSON.stringify(payload)}),
 };

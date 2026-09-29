@@ -6,6 +6,7 @@ import {api} from "@/lib/api";
 import {observations, type ObservationContext, type ObservationScope, type Diagnosis, type ActionState, type DiagnosticIncident} from "@/lib/observations";
 import {DiagnosisSection} from './diagnosis-section';
 import {DecisionSection} from './decision-section';
+import {ProfilesSection} from './profiles-section';
 import {eventLabel, mergeEvents, usageLabel, type ObservationEvent} from "@/lib/observation-view";
 import {Button} from "@/components/ui/button";
 
@@ -280,6 +281,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         {events.map(e=><li key={e.event_id} id={`observation-event-${e.event_id}`} data-event-id={e.event_id} className="border-l border-white/15 pl-2 text-white/60">{e.created_at?.slice(11,19)} · {e.node_key ?? "scope"} · {eventLabel(e)} · {e.db_scope ?? "источник неизвестен"}</li>)}
       </ol></div>
     </>}
+    {projectId!=null && execution && <ProfilesSection projectId={projectId} execution={execution} nodes={context?.node_keys??groups.find(g=>g.id===group)?.keys??[]} managed={Boolean(actionState?.enabled)}/>}
     {projectId!=null && execution && <DecisionSection projectId={projectId} execution={execution} managed={Boolean(actionState?.enabled)}/>}
   </section>;
 }

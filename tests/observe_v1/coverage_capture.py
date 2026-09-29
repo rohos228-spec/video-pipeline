@@ -9,7 +9,7 @@ def begin(source):
     files = {str(source / relative): set() for relative in (
         "app/services/observation.py", "app/web/routers/observations.py", "app/services/diagnosis.py",
         "app/services/actions_v1.py", "app/services/actions_recovery.py",
-        "app/services/decision_state.py", "app/services/decision_transport.py", "app/services/decision_v1.py")}
+        "app/services/profiles_state.py", "app/services/profiles_v1.py", "app/services/decision_state.py", "app/services/decision_transport.py", "app/services/decision_v1.py")}
 
     def collect(frame, event, _arg):
         filename = frame.f_code.co_filename

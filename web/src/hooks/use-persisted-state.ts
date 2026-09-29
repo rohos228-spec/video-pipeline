@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 function readStorage<T>(key: string, defaultValue: T): T {
   if (typeof window === "undefined") return defaultValue;
@@ -18,7 +18,13 @@ export function usePersistedState<T>(
   key: string,
   defaultValue: T,
 ): [T, (next: T | ((prev: T) => T)) => void] {
-  const [value, setValueState] = useState<T>(() => readStorage(key, defaultValue));
+  // SSR and the first client render must match. Load persisted state only
+  // after mount; reading storage in the initializer caused React #418.
+  const defaultRef = useRef(defaultValue);
+  const [value, setValueState] = useState<T>(() => defaultValue);
+  useEffect(() => {
+    setValueState(() => readStorage(key, defaultRef.current));
+  }, [key]);
 
   const setValue = useCallback(
     (next: T | ((prev: T) => T)) => {
