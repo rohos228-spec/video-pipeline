@@ -11,8 +11,10 @@ TEXT=('Синтетический текст: человек находит па
 def prepare(fixtures,root,mode):
     typ='plan' if mode=='launch-plan' else 'script'
     key='native-'+typ+'-A';outside='outside-native-text-Z'
-    nodes=[{'id':key,'type':typ,'data':{'label':'Synthetic native '+typ,'modelId':'gpt-kie'}},
-        {'id':outside,'type':'script' if typ=='plan' else 'plan','data':{'label':'Outside scope'}}]
+    nodes=[{'id':key,'type':typ,'position':{'x':100,'y':100},
+            'data':{'label':'Synthetic native '+typ,'modelId':'gpt-kie'}},
+        {'id':outside,'type':'script' if typ=='plan' else 'plan','position':{'x':500,'y':100},
+            'data':{'label':'Outside scope'}}]
     edges=[{'id':'native-text-edge','source':key,'target':outside,'data':{'kind':'after'}}]
     for path in (fixtures.DATA/'state.db',fixtures.DB):
         with sqlite3.connect(path) as db:
