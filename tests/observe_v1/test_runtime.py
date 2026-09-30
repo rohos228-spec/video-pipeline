@@ -5,6 +5,7 @@ import unittest
 import asyncio
 import sys
 import os
+from datetime import datetime
 from unittest.mock import patch
 
 import httpx
@@ -41,7 +42,8 @@ class RuntimeAcceptance(test_journal.JournalAcceptance):
             # older pending approval must still be read by exact scoped ID.
             session.add_all([observation.ObservationEvent(event_id='approval-noise-'+str(i),
                 execution_id=self.scope.execution_id,project_id=2,workflow_run_id=7,
-                node_key='report',attempt_id='noise',db_scope='master',kind='runtime_check',payload={})
+                node_key='report',attempt_id='noise',db_scope='master',kind='runtime_check',payload={},
+                created_at=datetime(2026,9,30,12,0,0))
                 for i in range(510)])
             await session.commit()
         url=f'/api/projects/2/observations/{self.scope.execution_id}/context'
