@@ -1,5 +1,37 @@
 # Text + media goal: current handoff
 
+## Resume boundary — 2026-09-30 04:49 MSK
+
+Code HEAD `259dc487` on the same feature/worktree. Only documentation follows.
+See `media-local-acceptance.md` for current matrix and exact evidence.
+
+- Common compatible regression: 125 pass. common-current-02 has 84 unaffected
+  passes plus one legacy-review fixture error among runtime-adapter; corrected
+  runtime-adapter-current-03 passes all 41. Production source unchanged.
+- runtime-current-02: 25/25. Its ASGI fixture now calls the original startup
+  migration; runtime-current-01 failed due missing lazy-import media tables.
+- UI v649: 80 assertions, TypeScript/build GREEN, 195 manifest files unchanged.
+- Engine failed during diagnosis-current-01: list API 500, then named pipe
+  dockerDesktopLinuxEngine absent. Runner exited1 Cannot wait for offline test
+  container. Test result unknown, artifacts not collected; do not claim GREEN.
+- Container `vp-observe-test-20260930044407-43da6922` must be inspected/collected
+  FIRST when Engine returns. Host sessions 89703/7560/61125 have finished.
+  No runner/probe was left active on host; container state remains unknown.
+- Current media-observation (added plan denial) and mixed/browser acceptance
+  are outstanding. Run sequentially after resolving that container state.
+- No source changes are needed just because Docker failed. No restart/reset,
+  dependency install, real API, keys, dotenv, remote Git or host policy changes.
+
+Next command after Engine recovery: bounded read-only inspect of that exact
+container, then collect /results and logs. Preserve its empty/failed attempt.
+Next fresh acceptance: existing group runner media-mixed -Browser, after the
+current diagnosis and media-observation results. Do not repeat frontend build
+or native text exhaustion unless an actual changed-code risk requires it.
+
+The goal is incomplete: mixed/live UI acceptance has not run on the current
+snapshot. Video/audio/assembly remain explicitly disabled for missing tools;
+the user permits that exact boundary, not a claim of implemented adapters.
+
 Base: 2d1ad7bc139818f2b207e262c23466b4597bc9e3, existing feature/worktree.
 All work is offline, synthetic, one runner. No real API/key/env/installation.
 Text UI/integration evidence: docs/first-version-local-acceptance.md and

@@ -1,10 +1,14 @@
-# Text and media: local handoff (work in progress)
+# Text and media: implementation and extension guide
 
 This document describes the offline extension on feature/orchestrator-observe-v1.
 It is not production acceptance. No new provider calls, customer dotenv/key
 reads, dependency installations, publication or remote Git changes were made.
 
 ## Verified baseline
+
+Current acceptance status, matrix and exact evidence are in
+[media-local-acceptance.md](media-local-acceptance.md). The snapshot below records
+the earlier baseline; it is not the current test checklist.
 
 Text UI and full script_frames_qc evidence remains in
 [first-version-local-acceptance.md](first-version-local-acceptance.md).
@@ -46,7 +50,7 @@ No text model POST occurred in that run. Full details are local:
 `worker-image-02/artifacts/group-result.json`, `api-history.json`,
 `loaded-modules.json` and `test-output.txt`.
 
-## Current capability matrix
+## Earlier baseline capability matrix
 
 | Family / existing node | Connected behavior | Safe actions | Verified | Remaining restriction |
 | --- | --- | --- | --- | --- |
@@ -109,16 +113,16 @@ tariff; it is not labelled free. Production media transport is disabled.
 8. Only after those gates, enable the type in a synthetic local configuration.
    Real provider routes, keys, pricing and expenditure remain separate approval.
 
-## Reproducing / resuming
+## Reproducing
 
 Use the existing cached Docker image and `scripts/test_observe_offline.ps1`.
 One runner at a time; no frontend build alongside a worker run.
 
-After Docker is healthy, FIRST inspect/collect the existing mixed-01 runner;
-do not create a duplicate while its state is unknown. Source snapshots inside
-test containers are immutable; host UI drafts do not change that running copy.
+The interrupted mixed-01 container was collected after Docker recovered:
+exit 255, OOMKilled=false, no group result. Its archives are retained. Source
+snapshots inside test containers are immutable; host edits do not change them.
 
-Then use fresh result directories for targets `media-observation`,
+Use fresh result directories for targets `media-observation`,
 `media-jobs`, affected `decision-final`/runtime/diagnosis regressions.
 Group modes `media-image` and `media-mixed` use the same group runner,
 original API/worker and a loopback fixture in a network-none container.
@@ -129,19 +133,13 @@ not that the model invented a high-quality image prompt from a script.
 Frontend build uses the existing `scripts/test_observe_frontend.ps1 -Build`.
 Bump Studio with `scripts/bump_studio_version.py --no-build`, build offline,
 then refresh the tracked export only after GREEN. No dependency install.
-Current media UI draft has not yet been built or browser-accepted.
+The v649 export has passed its offline build and frontend contracts. Live
+browser and mixed-run evidence is recorded in the current acceptance report.
 
-No final delivery/checkpoint claim while mixed acceptance, current regression,
-UI, publication dry-run and the remaining safety checks are outstanding.
+### Artifact safety checks
 
-### Pending artifact safety checks (not accepted)
-
-`test_media_transport.py` now includes preview hash/containment and original
-disk-recovery provenance/idempotence tests. Every media unit case has its own
-temporary DATA_DIR and SQLite DB. These new cases have not run because Docker
-Engine remains unreachable. Existing preview/disk-recovery code is not claimed
-to enforce these requirements yet; do not promote the media UI draft.
-
-The mixed runner's host `docker wait` command has failed; the existing
-container's state and test outcome are still unknown. Inspect and collect it
-first when Engine returns. See the handoff for its exact identity and evidence.
+`test_media_transport.py` covers preview hash/containment, original disk-recovery
+provenance/idempotence and original final image validation (13/13). Each media
+unit case uses a temporary DATA_DIR and SQLite DB. The actual worker denial
+scenario confirms unproven disk files cause a protective hold, zero HTTP calls
+and zero applied artifacts. RED and GREEN evidence are both retained.
