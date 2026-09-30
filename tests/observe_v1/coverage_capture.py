@@ -9,6 +9,8 @@ from pathlib import Path
 def begin(source):
     files = {str(source / relative): set() for relative in (
         "app/services/observation.py", "app/services/gpt_operator_client.py",
+        "app/services/node_capabilities.py", "app/orchestrator/steps/generate_image_prompts.py",
+        "app/services/xlsx_step_runners.py",
         "app/services/node_write_contract.py", "app/services/apply_ops_batches.py", "app/web/routers/observations.py", "app/services/diagnosis.py",
         "app/services/actions_v1.py", "app/services/actions_recovery.py",
         "app/services/profiles_state.py", "app/services/profiles_v1.py", "app/services/decision_state.py", "app/services/decision_transport.py", "app/services/decision_v1.py", "app/services/decision_config.py")}

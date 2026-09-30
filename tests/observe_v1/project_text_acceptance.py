@@ -29,6 +29,8 @@ def prepare(fixtures,root,mode):
                 for number,vo in enumerate((' '.join(words[:mid]),' '.join(words[mid:])),1):
                     db.execute("INSERT INTO frames(project_id,number,voiceover_text,status,attrs,uuid,sort_key,created_at,updated_at) VALUES(2,?,?,'planned','{}',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
                         (number,vo,('af' if number==1 else 'bf')*16,number))
+                if mode=='launch-image-prompts-short':
+                    db.execute('UPDATE frames SET image_prompt=? WHERE project_id=2 AND number=1',('x'*199,))
             run=db.execute('SELECT id FROM workflow_runs WHERE project_id=2 ORDER BY id DESC LIMIT 1').fetchone()[0]
             db.execute('UPDATE workflow_runs SET nodes_snapshot=?,edges_snapshot=? WHERE id=?',(json.dumps(nodes),json.dumps(edges),run))
             db.execute('DELETE FROM node_runs WHERE workflow_run_id=?',(run,))
@@ -54,15 +56,19 @@ def prepare(fixtures,root,mode):
     if typ=='image_prompts':
         prompt=('Синтетический кадр: человек читает записку у стола. Полная сцена, освещение, план камеры и фон. '*4).strip()
         answer=json.dumps({'ops':[{'frame_uuid':code*16,'fields':{'промт_картинки':prompt}}
-            for code in (('af',) if mode=='launch-image-prompts-loss' else ('af','bf'))]},ensure_ascii=False)
+            for code in (('af',) if mode=='launch-image-prompts-loss' else
+                (('bf',) if mode=='launch-image-prompts-short' else ('af','bf')))]},ensure_ascii=False)
     fixtures.NODES=(key,outside)
     fixtures.synthetic_answer=lambda node,attempt:answer
     prepared={'node_type':typ,'node_key':key,'outside':outside,
         'output_field':'general_plan' if typ=='plan' else 'script_text','expect_split_loss':mode=='launch-split-loss',
         'expect_image_prompt_loss':mode=='launch-image-prompts-loss',
+        'expect_image_prompt_short':mode=='launch-image-prompts-short',
         'interventions':['fresh pending graph before startup; no successful status manufactured',
             ('image_prompts starts with two synthetic frames, preserved voiceover and empty prompts'
                 if typ=='image_prompts' else 'native project text/split initial synthetic state; no successful output injected'),
+            ('explicit negative source fixture: first preexisting prompt has 199 characters; second empty'
+                if mode=='launch-image-prompts-short' else 'no preexisting prompt failure seeded'),
             'explicit compatible gpt-kie choice before startup; loopback transport only, native prompts unchanged',
             'no HITL approval, next node start or manual recovery']}
     (root/'project-text-prepared.json').write_text(json.dumps(prepared,indent=2))
@@ -254,6 +260,12 @@ async def run_image_prompts(client,fixtures,observer,root,result,prepared,*,pref
             states=dict(db.execute('SELECT node_key,status FROM node_runs').fetchall())
             rows=db.execute('SELECT uuid,number,voiceover_text,image_prompt FROM frames WHERE project_id=2 ORDER BY number').fetchall()
         actions=(await client.get(prefix+'/actions')).json()
+        failed_attempt=False
+        if prepared['expect_image_prompt_loss'] or prepared['expect_image_prompt_short']:
+            with sqlite3.connect(fixtures.DATA/'state.db') as db:
+                failed_attempt=bool(db.execute("SELECT count(*) FROM observation_events WHERE execution_id=? AND node_key=? AND kind='node_error'",
+                    (result['execution_id'],key)).fetchone()[0])
+        if failed_attempt:break
         if states[key] in {'done','failed'} or actions['held']:break
         await asyncio.sleep(.25)
     result['image_prompt_state']={'nodes':states,'frame_count':len(rows),'held':actions['held']}
@@ -267,17 +279,21 @@ async def run_image_prompts(client,fixtures,observer,root,result,prepared,*,pref
     (root/'api-history.json').write_text(json.dumps({'events':history},ensure_ascii=False,indent=2))
     facts=[e for e in history if e['node_key']==key]
     requests=json.loads((root/'actual-worker-requests.json').read_text())
-    rejected=prepared['expect_image_prompt_loss']
+    rejected=prepared['expect_image_prompt_loss'] or prepared['expect_image_prompt_short']
     assert (states[key]!='done' if rejected else states[key]=='done'),result['image_prompt_state']
     assert states[prepared['outside']]=='pending','outside image generation must not run'
-    expected_requests=2 if rejected else 1
+    # The original node has two attempts internally before returning an error.
+    # No supervisor retry, prompt/config change or manual repair is used.
+    expected_requests=2 if prepared['expect_image_prompt_loss'] else 1
     assert len(requests)==expected_requests and all(r['node_key']==key for r in requests)
     assert all(r['body']['model']=='gpt-5-6-sol' for r in requests)
     assert len(rows)==2 and [r[0] for r in rows]==['af'*16,'bf'*16]
     assert [r[1] for r in rows]==[1,2]
     assert ' '.join(' '.join(r[2] for r in rows).split())==' '.join(TEXT.split())
-    if rejected:
+    if prepared['expect_image_prompt_loss']:
         assert len(rows[0][3] or '')>=200 and not rows[1][3], 'actual partial native write must remain visible'
+    elif prepared['expect_image_prompt_short']:
+        assert len(rows[0][3])==199 and len(rows[1][3] or '')>=200
     else:
         assert all(len(r[3] or '')>=200 for r in rows)
     assert len([e for e in facts if e['kind']=='node_start'])==1
@@ -285,9 +301,10 @@ async def run_image_prompts(client,fixtures,observer,root,result,prepared,*,pref
     parsed=[e for e in facts if e['kind']=='parse_result']
     assert len(parsed)==expected_requests and all(e['payload']['syntax_valid'] is True for e in parsed)
     assert parsed[0]['payload']['schema_valid'] is True
-    if rejected:
+    if prepared['expect_image_prompt_loss']:
         assert all(not e['payload']['batch_coverage_complete'] for e in parsed)
-        assert parsed[1]['payload']['schema_valid'] is False
+    else:
+        assert parsed[0]['payload']['batch_coverage_complete'] is True
     outputs=[e for e in facts if e['kind']=='node_output']
     assert len(outputs)==1 and outputs[0]['payload']['body']['sha256']
     proofs=[e for e in facts if e['kind']=='node_result_verification']
@@ -300,7 +317,7 @@ async def run_image_prompts(client,fixtures,observer,root,result,prepared,*,pref
         assert len([e for e in facts if e['kind']=='node_error'])==1
         assert not [e for e in facts if e['kind']=='node_end']
         assert any(a['initiator']=='native_image_prompt_verifier'
-            and a['preconditions']['operator_request'] is False for a in actions['records'])
+            and a['preconditions']['explicit_operator_request'] is False for a in actions['records'])
     assert not (await client.get(prefix+'/decisions')).json()['records']
     before=dict(fixtures.FixtureHandler.counts);await asyncio.sleep(12)
     assert dict(fixtures.FixtureHandler.counts)==before=={key:expected_requests}

@@ -8,6 +8,9 @@ from app.models import Project,ProjectStatus,Workflow,WorkflowRun,NodeRun,NodeRu
 from app.services.observation import ExecutionControl,digest
 
 class Boundary(fixtures.DurableActions):
+    # This suite tests the native plan -> script graph, unlike Excel recovery.
+    fixture_node_type = 'plan'
+
     async def check_boundary(self,managed):
         from app.orchestrator.auto_advance import maybe_auto_advance
         edges=[{'id':'after-plan','source':'n1','target':'n2'}]
