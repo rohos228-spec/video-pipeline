@@ -27,7 +27,7 @@ from coverage_capture import begin
 finish_coverage = begin(SOURCE)
 exit_code = 0
 tracked_unit_targets={'native-checkpoint','runtime-projection','native-entities','scene-contracts',
-    'managed-restart','native-sfx-plan','native-animation','hitl-authority','animation-observation','scene-observation','sfx-observation'}
+    'managed-restart','native-sfx-plan','native-animation','hitl-authority','animation-observation','scene-observation','sfx-observation','native-video-routing'}
 unit_executions=[]
 if os.environ.get('OBSERVE_TEST_TARGET') in tracked_unit_targets:
     import unittest
@@ -57,6 +57,8 @@ try:
         sys.argv=[str(SOURCE/'tests/observe_v1/test_native_scene_observation.py')]
     if os.environ.get('OBSERVE_TEST_TARGET')=='sfx-observation':
         sys.argv=[str(SOURCE/'tests/observe_v1/test_native_sfx_observation.py')]
+    if os.environ.get('OBSERVE_TEST_TARGET')=='native-video-routing':
+        sys.argv=[str(SOURCE/'tests/observe_v1/test_native_video_routing.py')]
     if os.environ.get("OBSERVE_TEST_TARGET") == "media-jobs":
         sys.argv = [str(SOURCE / "tests/observe_v1/test_media_jobs.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "media-observation":

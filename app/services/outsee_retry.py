@@ -1393,7 +1393,9 @@ async def generate_video_with_retries(
             generate_audio=False, timeout=float(kwargs.get("timeout") or 900),
             project_id=project_id, gen_id=kwargs.get("gen_id"))
     use_outsee_api_video = primary_backend == "outsee" and outsee_api_configured()
-    primary_is_kling = primary_backend == "kie"
+    # KIE also hosts primary models such as Seedance.  Only the actual Kling
+    # fallback starts in the fallback phase.
+    primary_is_kling = _video_fallback_active(primary_kwargs)
     if primary_backend == "outsee" and not outsee_api_configured() and outsee is None:
         raise OutseeImageError(
             "OUTSEE_API_KEY пуст — генерация идёт через ключ Outsee",
@@ -1453,10 +1455,11 @@ async def generate_video_with_retries(
         attempt_kwargs: dict[str, Any],
         *,
         kling: bool,
+        kie: bool,
     ) -> GenerationResult:
         attempt_kwargs = dict(attempt_kwargs)
         attempt_kwargs["generate_audio"] = False
-        if kling:
+        if kie:
             raw_slug = attempt_kwargs.get("model_slug") or "kling-2-6"
             from app.bots.kie_http import generate_kie_video
 
@@ -1637,7 +1640,8 @@ async def generate_video_with_retries(
             send_prompt = await _prepare_send(
                 current_prompt, attempt_kwargs, kling=use_kling
             )
-            return await _dispatch(send_prompt, attempt_kwargs, kling=use_kling)
+            return await _dispatch(send_prompt, attempt_kwargs, kling=use_kling,
+                                   kie=use_kling or primary_backend == "kie")
         except StepCancelledError:
             raise
         except OutseeDownloadError as e:

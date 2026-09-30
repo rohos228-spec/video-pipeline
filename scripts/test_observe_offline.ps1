@@ -99,6 +99,7 @@ if ($Target -eq 'hitl-authority') { $files += 'tests/observe_v1/test_hitl_projec
 if ($Target -eq 'animation-observation') { $files += 'tests/observe_v1/test_native_animation_observation.py' }
 if ($Target -eq 'scene-observation') { $files += 'tests/observe_v1/test_native_scene_observation.py' }
 if ($Target -eq 'sfx-observation') { $files += 'tests/observe_v1/test_native_sfx_observation.py' }
+if ($Target -eq 'native-video-routing') { $files += 'tests/observe_v1/test_native_video_routing.py' }
 if ($Target -eq 'managed-restart') { $files += 'tests/observe_v1/test_media_jobs.py' }
 if ($Target -eq 'media-jobs') { $files += 'tests/observe_v1/test_media_jobs.py' }
 if ($Target -eq 'media-observation') { $files += @('tests/observe_v1/test_media_jobs.py','tests/observe_v1/test_media_observation.py') }
