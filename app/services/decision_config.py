@@ -55,6 +55,24 @@ def validate_model(model):
     if type(n)!=int or not 1<=n<=16384:raise ValueError('invalid output token cap')
 
 
+def validate_profile(candidate,mode):
+    from app.services.prompt_library import APPROVED_PROFILE_PROMPTS
+    fields={'model_id','provider','kind','channel','reasoning_effort','max_output_tokens','prompt_variant','synthetic_only'}
+    if not isinstance(candidate,dict) or set(candidate)!=fields:raise ValueError('unknown profile parameters')
+    c=candidate
+    if (c['provider']!='kie' or c['kind']!='text' or c['channel']!='stable'
+            or c['prompt_variant'] not in APPROVED_PROFILE_PROMPTS or type(c['synthetic_only'])!=bool):
+        raise ValueError('incompatible registered profile')
+    if mode=='synthetic':
+        if (c['synthetic_only'] is not True or c['model_id']!='gpt-synthetic-alt'
+                or c['reasoning_effort'] not in {'low','medium','high','xhigh'}
+                or type(c['max_output_tokens'])!=int or not 1<=c['max_output_tokens']<=16384):
+            raise ValueError('invalid bounded synthetic profile')
+    else:
+        if c['synthetic_only']:raise ValueError('synthetic profile not production')
+        validate_model({'catalog_id':'gpt-kie',**c})
+
+
 def validate_config(raw):
     expected={'version','mode','online_enabled','endpoint','decision','profiles','allowed_actions'}
     optional={'model_transport','external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack','incident_scope','media','budget_policy'}
@@ -99,11 +117,10 @@ def validate_config(raw):
     if endpoint.hostname not in {'127.0.0.1','localhost','::1'} and endpoint.scheme!='https':raise ValueError('external route requires HTTPS')
     if raw['mode']=='synthetic' and endpoint.hostname not in {'127.0.0.1','localhost','::1'}:raise ValueError('synthetic configuration loopback only')
     for key,c in raw['profiles'].items():
-        if not key or not isinstance(c,dict) or set(c)!={'model_id','provider','kind','channel','reasoning_effort','max_output_tokens','prompt_variant','synthetic_only'}:raise ValueError('unknown profile parameters')
-        if c['provider']!='kie' or c['kind']!='text' or c['channel']!='stable' or c['prompt_variant']!='require-apply-ops-v1':raise ValueError('incompatible profile')
+        if not key or not isinstance(key,str):raise ValueError('unknown profile parameters')
+        validate_profile(c,raw['mode'])
         if raw['mode']=='production':
-            if c['synthetic_only'] or 'synthetic' in key:raise ValueError('synthetic profile not production')
-            validate_model({'catalog_id':'gpt-kie',**c})
+            if 'synthetic' in key:raise ValueError('synthetic profile not production')
     return json.loads(json.dumps(raw))
 
 

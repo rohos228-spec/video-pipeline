@@ -17,13 +17,16 @@ from app.services.observation import ExecutionControl,ObservationEvent,digest,pa
 CATALOG={'synthetic-json-v1':{'model_id':'gpt-synthetic-alt','provider':'kie',
     'kind':'text','channel':'stable','reasoning_effort':'medium','max_output_tokens':2048,
     'prompt_variant':'require-apply-ops-v1','synthetic_only':True}}
+CATALOG.update({name:{**CATALOG['synthetic-json-v1'],'reasoning_effort':'low','max_output_tokens':1024,
+    'prompt_variant':variant} for name,variant in (
+        ('synthetic-original-v1','original-contract-v1'),('synthetic-format-v1','repair-json-only-v1'))})
 PRODUCTION_CATALOG={}
 _current=ContextVar('attempt_profile_overlay',default=None)
 
 def active_catalog():
     from app.services.decision_config import runtime_config
     cfg=runtime_config()
-    return CATALOG if cfg['mode']=='synthetic' and not cfg.get('incident_scope') else cfg['profiles']
+    return CATALOG if cfg['mode']=='synthetic' and not cfg.get('incident_scope') and not cfg['profiles'] else cfg['profiles']
 
 def catalog_hash():return digest(active_catalog())
 
@@ -31,6 +34,8 @@ def validate_candidate(candidate):
     if not isinstance(candidate,dict) or set(candidate)!=set(CATALOG['synthetic-json-v1']):
         raise ValueError('unknown profile parameters')
     if candidate not in active_catalog().values():raise ValueError('incompatible profile or forbidden provider')
+    from app.services.decision_config import validate_profile,runtime_config
+    validate_profile(candidate,runtime_config()['mode'])
 
 def synthetic_transport(url=None,key=None):
     from app.settings import settings
@@ -81,10 +86,12 @@ class ProfilesSupervisor:
         if not scope or scope.project_id!=project_id or not control or control.project_id!=project_id:
             raise ValueError('execution outside project scope')
         if node_key not in scope.node_keys or node_key not in control.node_keys:raise ValueError('node outside scope')
-        if control.group_id!='script_frames_qc':raise ValueError('incompatible node group')
         run=await s.get(WorkflowRun,control.workflow_run_id)
         node=next((n for n in (run.nodes_snapshot if run else []) if n.get('id')==node_key),None)
-        if not node or node.get('type')!='excel_gpt':raise ValueError('incompatible text node contract')
+        from app.services.node_capabilities import capability_for
+        capability=capability_for(str(node.get('type') or '')) if node else None
+        if not capability or not capability.managed or capability.result_kind!='structured' or node.get('type')!='excel_gpt':
+            raise ValueError('incompatible accepted text node contract')
         project=await s.get(Project,project_id)
         if not control.enabled or control.held or scope.observer_state!='active' or scope.gaps or (project.meta or {}).get('user_stop'):
             raise ValueError('stop, permission or audit blocker')
@@ -138,6 +145,13 @@ class ProfilesSupervisor:
                 ObservationEvent.node_key==node_key,ObservationEvent.attempt_id==source.attempt_id,
                 ObservationEvent.kind=='model_start').order_by(ObservationEvent.id).limit(1)) if source else None
             if not event:raise ValueError('recorded source request required')
+            if candidate['prompt_variant']!='original-contract-v1':
+                parsed=await s.scalar(select(ObservationEvent).where(ObservationEvent.execution_id==execution_id,
+                    ObservationEvent.project_id==project_id,ObservationEvent.node_key==node_key,
+                    ObservationEvent.attempt_id==source.attempt_id,ObservationEvent.kind=='parse_result')
+                    .order_by(ObservationEvent.id.desc()).limit(1))
+                if not parsed or parsed.payload.get('payload_required') is not True:
+                    raise ValueError('registered JSON prompt variant requires recorded structured payload contract')
             ref=event.payload.get('body') or {};path=(self.observer.body_root/ref.get('path','')).resolve()
             if not path.is_relative_to(self.observer.body_root.resolve()) or not path.is_file():raise ValueError('source body audit unavailable')
             raw=path.read_bytes()
