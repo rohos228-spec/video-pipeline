@@ -222,3 +222,7 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self._assert_pending(response.json(), 7, [(71, "master-stale-target")])
         self.assertEqual(entered, [str(self.master_path)])
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)
