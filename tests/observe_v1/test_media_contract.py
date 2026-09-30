@@ -24,6 +24,34 @@ class Environment(unittest.TestCase):
 
 
 class Capabilities(unittest.TestCase):
+    def test_project_text_contract_uses_native_validation_and_preserves_hitl(self):
+        from app.services.node_capabilities import capability_for,project_text_contract
+        for typ,field in (('plan','general_plan'),('script','script_text')):
+            cap=capability_for(typ)
+            self.assertEqual(cap.result_kind,'project_text')
+            self.assertTrue(cap.managed)
+            self.assertNotIn('retry_same',cap.actions)
+            self.assertNotIn('retry_profile',cap.actions)
+            contract=project_text_contract(typ)
+            self.assertEqual(contract['output_field'],field)
+            self.assertTrue(contract['human_approval_preserved'])
+            self.assertFalse(contract['semantic_quality_verified'])
+        self.assertFalse(capability_for('sd_agent').managed)
+
+    def test_project_text_verification_never_accepts_unknown_or_short_output(self):
+        from types import SimpleNamespace
+        from app.services.node_capabilities import verify_project_text
+        for value in (None,'', 'short'):
+            result=verify_project_text(SimpleNamespace(general_plan=value,script_text=value),'plan')
+            self.assertEqual(result['status'],'failed')
+        good='Один синтетический абзац для структурной проверки. '*6
+        for typ in ('plan','script'):
+            result=verify_project_text(SimpleNamespace(general_plan=good,script_text=good),typ)
+            self.assertEqual(result['status'],'passed')
+            self.assertEqual(len(result['sha256']),64)
+            self.assertFalse(result['semantic_quality_verified'])
+        with self.assertRaises(ValueError):verify_project_text(SimpleNamespace(),'sd_agent')
+
     def test_only_existing_types_and_no_generic_retry(self):
         from app.services.node_capabilities import capability_for
         from app.orchestrator.node_registry import WORK_NODES
