@@ -227,6 +227,11 @@ async def continue_managed_image(session, project, source_key, target_key, node_
         run = await master.get(WorkflowRun, scope.workflow_run_id)
         incidents = (await master.scalars(select(Incident).where(
             Incident.execution_id == scope.execution_id))).all()
+        human_decision = await master.scalar(select(DecisionRecord.decision_id).where(
+            DecisionRecord.execution_id == scope.execution_id,
+            DecisionRecord.status == "human_review").limit(1))
+        master_nodes = (await master.scalars(select(NodeRun).where(
+            NodeRun.workflow_run_id == scope.workflow_run_id))).all()
     if (not control or not durable or not master_project or not run
             or control.project_id != project.id or control.workflow_run_id != scope.workflow_run_id
             or not control.enabled or control.held or control.requests_used >= control.request_limit
@@ -241,8 +246,8 @@ async def continue_managed_image(session, project, source_key, target_key, node_
         return denied("graph_revision_changed")
     if binding and binding.config_hash != ctx.runtime_config_hash:
         return denied("runtime_binding_changed")
-    if any(i.status != "resolved_confirmed" and i.details.get("currently_relevant")
-           and (i.status == "human_review" or i.type in {"uncertain_request", "journal_gap", "user_stop"})
+    if human_decision or any(i.status != "resolved_confirmed" and i.details.get("currently_relevant")
+           and (i.details.get("blocking") or i.type in {"uncertain_request", "journal_gap", "user_stop"})
            for i in incidents):
         return denied("incident_requires_human")
     flags = ("user_stop", "mass_lane_user_stop", "auto_await_manual_start")
@@ -257,6 +262,16 @@ async def continue_managed_image(session, project, source_key, target_key, node_
             or target.node_type != node_type or target.status != NodeRunStatus.pending
             or any(n.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_hitl} for n in rows)):
         return denied("node_state_not_ready")
+    # Diagnosis snapshots can lag while this worker owns the project transaction.
+    # Only its source running -> done transition may differ from master; other
+    # node disagreement is not treated as a harmless cached warning.
+    replicas = {n.node_key: n for n in master_nodes}
+    if set(replicas) != {n.node_key for n in rows} or any(
+            (n.node_key == source_key and replicas[n.node_key].status not in
+                {NodeRunStatus.running, NodeRunStatus.done}) or
+            (n.node_key != source_key and (n.status, n.attempts) !=
+                (replicas[n.node_key].status, replicas[n.node_key].attempts)) for n in rows):
+        return denied("current_node_replicas_disagree")
     from app.orchestrator.graph.planner import WorkflowGraph
     selected = WorkflowGraph(run.nodes_snapshot, run.edges_snapshot).next_work_node_after_ready(
         project, project.status)
