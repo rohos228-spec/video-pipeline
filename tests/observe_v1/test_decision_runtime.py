@@ -100,6 +100,12 @@ class RuntimeConfig(unittest.TestCase):
 
 class RuntimeAdapter(base_tests.DecisionDurability):
     async def asyncSetUp(self):
+        # Legacy review tests exercise approve_plan, not the Excel JSON contract.
+        if self._testMethodName in {
+            'test_actual_auto_review_uses_shared_http_budget',
+            'test_review_outside_managed_scope_cannot_send',
+        }:
+            self.fixture_node_type = 'plan'
         await super().asyncSetUp();self.config=importlib.import_module('app.services.decision_config')
         self.runtime=patch.object(self.config,'runtime_config',return_value=configured());self.runtime_mock=self.runtime.start();self.addCleanup(self.runtime.stop)
     async def test_pilot_scope_rejects_wrong_incident_before_decision(self):
