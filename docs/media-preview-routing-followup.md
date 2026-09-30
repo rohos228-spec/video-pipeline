@@ -1,6 +1,21 @@
 # Mixed media: archive recovery and preview routing follow-up
 
 Date: 2026-09-30. Base checkpoint: `99381ee2e7c8230c9261ab9268517db3e66b9fe8`.
+
+## Executed RED after normal Desktop startup
+
+At `3708b2499aa2e95d555e14961c4b37cf85ab4294`, Docker Desktop was closed.
+The previously authorized normal launch restored Engine 29.8.1; no configuration
+or resource settings were changed. `preview-routing-red-01` ran 17 tests:
+7 expected assertion failures (including subtests), no setup errors. Real HTTP
+returned 404 for the project artifact and ignored explicit project scope, serving
+the master copy for wrong/invalid project IDs. The 13 previous transport tests
+passed. `preview-ui-red-01` failed on the exact missing `?project_id=2` URL.
+Both used existing images, `--network none`, synthetic data, and zero paid calls.
+The new imagePreviewLink assertions have not been reached yet; do not claim their
+execution from this first URL assertion failure. Next change: scoped route/link.
+
+The original blocked checkpoint notes below are retained as history.
 This checkpoint contains prepared tests and documentation only. No application,
 gateway, production configuration or exported UI changes. No provider requests,
 credentials, dependency installation or Docker/host configuration changes.
