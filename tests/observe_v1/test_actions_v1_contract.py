@@ -3,7 +3,7 @@ import unittest
 import tempfile
 import uuid
 import asyncio
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
@@ -598,6 +598,215 @@ class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
 
     async def test_structured_excel_retry_profile_persists_capability_admission(self):
         await self.assert_persisted_admission(profile=True)
+
+
+class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
+    # Old queued rows must be exercised without passing through new admission.
+    asyncSetUp = DurableActions.asyncSetUp
+    asyncTearDown = DurableActions.asyncTearDown
+    exhausted_fixture = DurableActions.exhausted_fixture
+    mixed_recovery_fixture = RecoveryCapabilityAdmission.mixed_recovery_fixture
+    approved_profile_fixture = RecoveryCapabilityAdmission.approved_profile_fixture
+    recovery_side_effects = RecoveryCapabilityAdmission.recovery_side_effects
+
+    async def legacy_queued_fixture(self, node_type, *, marker=None, profile=False):
+        from app.models import ProjectStatus
+        from app.orchestrator.node_registry import spec_for_node
+        from app.services.actions_v1 import ActionRecord
+        from app.services.actions_recovery import finish_job_tracking, restricted_node
+
+        await self.mixed_recovery_fixture(node_type, marker=marker)
+        overlay_id = await self.approved_profile_fixture() if profile else None
+        async with self.sessions() as session:
+            project = await session.get(Project, 7)
+            spec = spec_for_node(self.nodes[0])
+            project.status = spec.running_status if spec else ProjectStatus.enriching_1
+            project.meta = {**project.meta, 'step_failure': {
+                'total_fails': {project.status.value: 9}, 'last_running': project.status.value,
+                'abandoned_at': 'synthetic'}}
+            node = await session.scalar(select(NodeRun).where(NodeRun.node_key == 'n1'))
+            node.status = NodeRunStatus.running
+            await session.flush()
+            revision = await input_revision(session, project, 'n1')
+            preconditions = {'native_failures': 9, 'running_status': project.status.value,
+                'input_revision': revision, 'graph_version': self.graph,
+                'first_body_hash': digest({'test': 1}), 'prior_attempt_terminal': True,
+                'no_partial_apply': True, 'user_stop': False, 'node_scope_authorized': True}
+            if profile:
+                overlay = await session.get(ProfileOverlay, overlay_id)
+                overlay.base_version = revision
+                overlay.attempt_id = 'legacy-attempt'
+                overlay.status = 'reserved'
+                overlay.history = [{'kind': 'recovery_reserved', 'action_id': 'legacy-recovery',
+                                    'attempt_id': 'legacy-attempt'}]
+                # Historical profile tickets already recorded the strategy and overlay.
+                preconditions.update(action_type='retry_profile', profile_overlay_id=overlay_id,
+                    candidate_hash=overlay.candidate_hash, source_body_hash=overlay.source_body_hash,
+                    first_body_hash=overlay.expected_body_hash)
+            self.assertNotIn('effective_node_type', preconditions)
+            self.assertNotIn('capability_actions', preconditions)
+            if not profile:
+                self.assertNotIn('action_type', preconditions)
+            session.add(RecoveryAction(action_id='legacy-recovery', execution_id='exec-durable',
+                project_id=7, incident_id='source-incident', node_key='n1',
+                source_attempt_id='source-attempt', new_attempt_id='legacy-attempt',
+                idempotency_key='legacy-ticket-key', preconditions=preconditions,
+                budget_state={'request_limit': 20, 'requests_used': 0,
+                              'recovery_limit': 1, 'recoveries_reserved': 1},
+                status='queued', result={}, verification_result={}))
+            session.add(ActionRecord(action_id='legacy-recovery', execution_id='exec-durable',
+                project_id=7, action_kind='node_profile_recovery' if profile else 'node_recovery',
+                node_key='n1', attempt_id='legacy-attempt', initiator='synthetic',
+                rationale='legacy queued recovery fixture', evidence_ids=[],
+                preconditions=dict(preconditions), idempotency_key='legacy-ticket-key',
+                status='queued', verification={}))
+            await session.commit()
+        # Recreate volatile state from the persisted submitted launch and ticket.
+        clear_permission(7)
+        finish_job_tracking(7)
+        await reload_permissions(self.sessions)
+        self.assertTrue(get_permission(7).enabled)
+        self.assertFalse(get_permission(7).held)
+        self.assertEqual(restricted_node(7), 'n1')
+        async with self.sessions() as session:
+            scope = await session.get(ExecutionControl, 'exec-durable')
+            control = await session.get(ActionExecutionControl, 'exec-durable')
+            run = await session.get(WorkflowRun, 11)
+            ticket = await session.get(RecoveryAction, 'legacy-recovery')
+            project = await session.get(Project, 7)
+            self.assertEqual(ticket.preconditions['graph_version'], digest({
+                'nodes': run.nodes_snapshot, 'edges': run.edges_snapshot}))
+            self.assertEqual(ticket.preconditions['graph_version'], control.graph_version)
+            self.assertEqual(ticket.preconditions['input_revision'],
+                             await input_revision(session, project, 'n1'))
+        observation._observer.scopes = {11: scope}
+
+    async def claim_persistence(self):
+        from app.services.actions_v1 import ActionRecord
+
+        state = {'business': await self.recovery_side_effects()}
+        async with self.sessions() as session:
+            for model in (RecoveryAction, ActionRecord):
+                rows = (await session.scalars(select(model).order_by(
+                    *model.__table__.primary_key.columns))).all()
+                state[model.__tablename__] = [
+                    {column.name: getattr(row, column.name) for column in model.__table__.columns}
+                    for row in rows]
+        return digest(state)
+
+    async def assert_legacy_claim_denied(self, node_type, *, marker=None, profile=False,
+                                       through_worker=False):
+        from app.services.actions_recovery import _inflight_projects, restricted_node
+        from app.services.profiles_v1 import load_attempt
+
+        await self.legacy_queued_fixture(node_type, marker=marker, profile=profile)
+        before = await self.claim_persistence()
+        permission = get_permission(7)
+        body = AsyncMock()
+        self.assertNotIn(7, _inflight_projects)
+        with patch('app.services.profiles_v1.load_attempt', wraps=load_attempt) as load_profile, \
+             patch('app.services.gpt_client.get_gpt_client', side_effect=AssertionError('no model start')) as model, \
+             patch('app.services.node_capabilities.observe_project_text_result', new=AsyncMock()), \
+             patch('app.services.node_capabilities.observe_split_result', new=AsyncMock()), \
+             patch('app.services.node_capabilities.observe_image_prompt_result', new=AsyncMock()):
+            async with self.sessions() as session:
+                project = await session.get(Project, 7)
+                with self.assertRaisesRegex(RuntimeError, 'capability'):
+                    if through_worker:
+                        async with observation.observe_attempt(session, project):
+                            await body()
+                    else:
+                        await claim(observation._observer, session, project, 'n1',
+                                    'ordinary-attempt', execution_id='exec-durable')
+                self.assertNotIn('recovery_attempt_id', session.info)
+            body.assert_not_awaited()
+            load_profile.assert_not_awaited()
+            model.assert_not_called()
+        self.assertEqual(await self.claim_persistence(), before)
+        self.assertEqual(get_permission(7), permission)
+        self.assertEqual(restricted_node(7), 'n1')
+        self.assertNotIn(7, _inflight_projects)
+
+    async def test_old_retry_same_plan_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('plan')
+
+    async def test_old_retry_profile_plan_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('plan', profile=True)
+
+    async def test_old_retry_same_script_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('script')
+
+    async def test_old_retry_profile_script_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('script', profile=True)
+
+    async def test_old_retry_same_split_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('split')
+
+    async def test_old_retry_profile_split_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('split', profile=True)
+
+    async def test_old_retry_same_image_prompts_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('image_prompts')
+
+    async def test_old_retry_profile_image_prompts_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('image_prompts', profile=True)
+
+    async def test_old_retry_same_marked_scene_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('excel_gpt', marker='camera')
+
+    async def test_old_retry_profile_marked_scene_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('excel_gpt', marker='camera', profile=True)
+
+    async def test_old_retry_same_scene_assembler_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('excel_gpt', marker='assemble')
+
+    async def test_old_retry_profile_scene_assembler_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('excel_gpt', marker='assemble', profile=True)
+
+    async def test_old_retry_same_unsupported_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('future-unsupported')
+
+    async def test_old_retry_profile_unsupported_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('future-unsupported', profile=True)
+
+    async def test_old_native_retry_same_cannot_enter_worker_body_after_restart(self):
+        await self.assert_legacy_claim_denied('plan', through_worker=True)
+
+    async def test_old_native_retry_profile_cannot_activate_profile_or_enter_body_after_restart(self):
+        await self.assert_legacy_claim_denied('plan', profile=True, through_worker=True)
+
+    async def assert_old_excel_claims_once(self, *, profile=False):
+        from app.services.actions_v1 import ActionRecord
+
+        await self.legacy_queued_fixture('excel_gpt', profile=profile)
+        before_business = await self.recovery_side_effects()
+        async with self.sessions() as session:
+            project = await session.get(Project, 7)
+            actual = await claim(observation._observer, session, project, 'n1',
+                                 'ordinary-attempt', execution_id='exec-durable')
+        self.assertEqual(actual, 'legacy-attempt')
+        async with self.sessions() as session:
+            row = await session.get(RecoveryAction, 'legacy-recovery')
+            record = await session.get(ActionRecord, 'legacy-recovery')
+            self.assertEqual(row.status, 'claimed')
+            self.assertTrue(row.result['worker_claimed'])
+            self.assertEqual(record.status, 'running')
+            self.assertEqual(len((await session.scalars(select(RecoveryAction))).all()), 1)
+        self.assertEqual(await self.recovery_side_effects(), before_business)
+        await reload_permissions(self.sessions)
+        after_claim = await self.claim_persistence()
+        async with self.sessions() as session:
+            project = await session.get(Project, 7)
+            with self.assertRaisesRegex(RuntimeError, 'already consumed'):
+                await claim(observation._observer, session, project, 'n1',
+                            'second-attempt', execution_id='exec-durable')
+        self.assertEqual(await self.claim_persistence(), after_claim)
+
+    async def test_old_excel_retry_same_without_new_proof_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once()
+
+    async def test_old_excel_retry_profile_without_new_capability_proof_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(profile=True)
 
 
 if __name__ == "__main__":
