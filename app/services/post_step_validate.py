@@ -452,6 +452,9 @@ async def finalize_or_retry(
     running_status,
 ) -> bool:
     """True если шаг можно перевести в ready, False если остались на running."""
+    if step == "images":
+        from app.services.media_jobs import require_verified_images
+        await require_verified_images(session, project)
     validators = {
         "video": validate_after_videos,
         "images": validate_after_images,

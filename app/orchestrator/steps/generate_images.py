@@ -547,6 +547,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     # PNG на диске без Artifact (после partial wipe / restore) → подтянуть в БД,
     # иначе шаг «всё есть» по диску, а compute_actual_status видит дыры.
+    from app.services.media_jobs import MediaPolicyError
     try:
         from app.services.artifact_recovery import recover_scene_images_from_disk
 
@@ -557,6 +558,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project.id,
                 recovered[:40],
             )
+    except MediaPolicyError as exc:
+        from app.services.media_jobs import _hold
+        from app.services.observation import _attempt
+        ctx = _attempt.get()
+        if ctx and ctx.scope.mode == "managed":
+            await _hold(ctx, str(exc), "image-recovery:"+ctx.node_key+":"+ctx.attempt_id)
+        raise
     except Exception:  # noqa: BLE001
         logger.exception(
             "[#{}] generate_images: recover_scene_images_from_disk failed",

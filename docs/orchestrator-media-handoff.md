@@ -191,3 +191,11 @@ start, and again proves the same false done with no provider POST. This isolates
 the managed-worker boundary; assertion on zero newly applied artifacts remains.
 Next fix: propagate MediaPolicyError into a durable hold and check job/artifact
 provenance again at the original final validation, before status becomes ready.
+
+`final-gate-green-01`: 13/13 HTTP cases pass. `worker-proof-green-01`: real
+managed worker records media_policy_denied and holds execution, no artifacts or
+HTTP, n_videos pending. Original image recovery now propagates protective
+failure; original final validator rechecks applied artifacts against durable
+job identity and file hash. No ordinary-mode validation behavior was replaced.
+Next: pending media-observation/gates and publication read-only preview tests,
+then the current mixed graph and common/UI acceptance. No runner active here.

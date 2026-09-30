@@ -59,14 +59,7 @@ class MediaRequest(Base):
 class MediaPolicyError(RuntimeError):
     """Protective stop; not a model quality or native pipeline defect."""
 
-async def persist_artifact(session, artifact):
-    """Original business transaction owns apply/rollback; job UUID deduplicates it."""
-    from app.models import Artifact
-    ctx = _attempt.get()
-    if not ctx or ctx.scope.mode != "managed":
-        session.add(artifact)
-        return artifact
-    bound = await assert_entry(project_id=artifact.project_id, provider="kie")
+async def _verified_artifact_job(ctx, artifact):
     async with ctx.observer.master() as master:
         job = await master.scalar(select(MediaJob).where(
             MediaJob.execution_id==ctx.scope.execution_id, MediaJob.node_key==ctx.node_key,
@@ -75,9 +68,24 @@ async def persist_artifact(session, artifact):
     if not job or job.phase != "verified":
         raise MediaPolicyError("artifact has no verified job in this execution/node")
     from app.services.artifact_verifier import verify_artifact
-    proof = await verify_artifact(artifact.path, root=project.data_dir, kind=job.kind)
+    try:
+        proof = await verify_artifact(artifact.path, root=project.data_dir, kind=job.kind)
+    except (ValueError, OSError) as exc:
+        raise MediaPolicyError("artifact verification path unavailable") from exc
     if proof["status"] != "passed" or proof.get("sha256") != job.verification.get("sha256"):
         raise MediaPolicyError("artifact verification changed before business apply")
+    return job, proof
+
+
+async def persist_artifact(session, artifact):
+    """Original business transaction owns apply/rollback; job UUID deduplicates it."""
+    from app.models import Artifact
+    ctx = _attempt.get()
+    if not ctx or ctx.scope.mode != "managed":
+        session.add(artifact)
+        return artifact
+    await assert_entry(project_id=artifact.project_id, provider="kie")
+    job, proof = await _verified_artifact_job(ctx, artifact)
     identity = uuid.uuid5(uuid.UUID(job.job_id), "artifact").hex
     meta = {**(artifact.meta or {}), "orchestrator": {
         "execution_id":job.execution_id, "node_key":job.node_key, "attempt_id":job.attempt_id,
@@ -95,6 +103,49 @@ async def persist_artifact(session, artifact):
             "artifact_uuid":identity,"job_id":job.job_id,"transactional":True,
             "duplicate_delivery":inserted.rowcount==0,"verification":proof})
     return actual
+
+
+async def require_verified_images(session, project):
+    """Final managed gate inside original validator; never applies or regenerates."""
+    bound = await assert_entry(project_id=project.id, provider="kie")
+    if bound is None:
+        return
+    ctx, _ = bound
+    from app.models import Artifact, ArtifactKind, Frame
+    from app.generation_options import is_skippable_empty_prompt
+    from app.services.scan_frames import newest_frame_image_path, frame_image_prompt_text
+    from app.services.vo_shot_expand import is_coverage_leftover
+
+    try:
+        frames = (await session.scalars(select(Frame).where(Frame.project_id==project.id))).all()
+        verified = []
+        for frame in frames:
+            if is_coverage_leftover(frame) or is_skippable_empty_prompt(frame_image_prompt_text(frame, list(frames))):
+                continue
+            path = newest_frame_image_path(project.data_dir / "scenes", frame.number)
+            if path is None:
+                raise MediaPolicyError("artifact verification missing required image")
+            artifacts = (await session.scalars(select(Artifact).where(
+                Artifact.project_id==project.id, Artifact.frame_id==frame.id,
+                Artifact.kind==ArtifactKind.scene_image))).all()
+            matching = [a for a in artifacts if a.path and Path(a.path).resolve()==path.resolve()]
+            if len(matching) != 1:
+                raise MediaPolicyError("artifact verification missing or ambiguous business record")
+            artifact = matching[0]
+            job, proof = await _verified_artifact_job(ctx, artifact)
+            identity = uuid.uuid5(uuid.UUID(job.job_id), "artifact").hex
+            binding = (artifact.meta or {}).get("orchestrator") or {}
+            if (artifact.uuid != identity or binding.get("job_id") != job.job_id
+                    or binding.get("execution_id") != ctx.scope.execution_id
+                    or binding.get("node_key") != ctx.node_key
+                    or binding.get("verification", {}).get("sha256") != proof["sha256"]):
+                raise MediaPolicyError("artifact verification provenance conflict")
+            verified.append(identity)
+        await record_fact("media_node_verified", {"status":"passed", "artifact_uuids":verified,
+                                                  "semantic_quality_verified":False})
+    except MediaPolicyError as exc:
+        await _hold(ctx, str(exc), "final-verification:"+ctx.node_key+":"+ctx.attempt_id)
+        raise
 
 
 def validate_media_config(raw, *, mode):
