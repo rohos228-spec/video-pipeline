@@ -104,8 +104,9 @@ class DecisionSupervisor:
         if row.node_key not in permission.node_keys or row.node_key not in scope.node_keys:raise ValueError('node outside decision scope')
         run=await s.get(WorkflowRun,scope.workflow_run_id);project=await s.get(Project,row.project_id)
         from app.services.node_capabilities import capability_for
+        from app.services.excel_gpt_node import effective_node_type
         node=next((n for n in run.nodes_snapshot if str(n.get('id'))==row.node_key),{}) if run else {}
-        capability=capability_for(str(node.get('type') or ''))
+        capability=capability_for(effective_node_type(node))
         graph=digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot}) if run else None
         events=[];cursor=0
         while True:
@@ -235,7 +236,15 @@ class DecisionSupervisor:
             node=next((n for n in run.nodes_snapshot if str(n.get('id'))==row.node_key),None)
             if not node:raise ValueError('node contract missing from graph')
             from app.services.node_capabilities import capability_for
-            capability=capability_for(str(node.get('type') or ''))
+            from app.services.excel_gpt_node import effective_node_type
+            capability=capability_for(effective_node_type(node))
+            if capability.result_kind=='unsupported':
+                return panel_safe({**capability.contract(),'node_key':row.node_key,
+                    'ui_node_type':node.get('type'),'graph_version':scope.graph_version,
+                    'context_version':context['context_version'],
+                    'source':'existing runtime effective_node_type + managed capability registry',
+                    'verification_status':'unavailable: no accepted managed executor',
+                    'compatible_profiles':[],'cost_status':'unknown_tariff'})
             if capability.result_kind=='project_text':
                 from app.services.node_capabilities import project_text_contract,verify_project_text
                 project=await s.get(Project,row.project_id)

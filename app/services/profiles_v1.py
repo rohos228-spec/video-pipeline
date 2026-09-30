@@ -104,7 +104,8 @@ class ProfilesSupervisor:
         run=await s.get(WorkflowRun,control.workflow_run_id)
         node=next((n for n in (run.nodes_snapshot if run else []) if n.get('id')==node_key),None)
         from app.services.node_capabilities import capability_for
-        capability=capability_for(str(node.get('type') or '')) if node else None
+        from app.services.excel_gpt_node import effective_node_type
+        capability=capability_for(effective_node_type(node)) if node else None
         if not capability or not capability.managed or capability.result_kind!='structured' or node.get('type')!='excel_gpt':
             raise ValueError('incompatible accepted text node contract')
         project=await s.get(Project,project_id)
