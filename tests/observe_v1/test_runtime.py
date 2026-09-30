@@ -122,6 +122,11 @@ class RuntimeAcceptance(test_journal.JournalAcceptance):
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
+        # ASGITransport skips lifespan; use the same additive migration as
+        # app startup instead of depending on model import order in create_all.
+        for engine in (self.master_engine, self.project_engine):
+            async with engine.begin() as conn:
+                await observation.migrate_observation_schema(conn)
         self.previous = observation._observer
         observation._observer = self.observer
         async with self.master() as session:
