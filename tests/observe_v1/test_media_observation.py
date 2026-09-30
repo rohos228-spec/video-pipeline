@@ -7,6 +7,114 @@ from app.services import observation
 
 
 class MediaObservation(MediaJobs):
+    async def continuation_fixture(self):
+        from app.models import Project, ProjectStatus, Workflow, WorkflowRun, NodeRun, NodeRunStatus, Frame
+        from app.services.actions_v1 import ActionExecutionControl, reload_permissions
+        from app.services.decision_config import runtime_config
+        from sqlalchemy import select
+        self.nodes.insert(0, {"id":"text", "type":"excel_gpt", "data":{"groupId":"media", "slotIndex":0}})
+        self.edges=[{"id":"text-image", "source":"text", "target":"image", "data":{"kind":"after"}}]
+        version=observation.digest({"nodes":self.nodes, "edges":self.edges})
+        async with self.sessions() as s:
+            p=await s.get(Project,7);p.status=ProjectStatus.enrich_1_ready;p.auto_mode=False
+            p.meta={"canvas_graph":{"nodes":self.nodes,"edges":self.edges},
+                    "excel_gpt_completed_keys":["text"],"active_excel_gpt_node_key":"text"}
+            w=await s.get(Workflow,1);w.nodes=self.nodes;w.edges=self.edges;w.is_default=True
+            r=await s.get(WorkflowRun,1);r.nodes_snapshot=self.nodes;r.edges_snapshot=self.edges
+            s.add(NodeRun(workflow_run_id=1,node_key="text",node_type="excel_gpt",status=NodeRunStatus.done))
+            s.add(Frame(project_id=7,number=1,voiceover_text="Synthetic scene",image_prompt="Synthetic image"))
+            scope=await s.get(observation.ExecutionControl,self.scope.execution_id)
+            scope.node_keys=["text","image"];scope.graph_version=version
+            c=await s.get(ActionExecutionControl,self.scope.execution_id);c.node_keys=scope.node_keys;c.graph_version=version
+            await s.commit()
+        await self.observer.reload()
+        self.scope=self.observer.scopes[1]
+        await self.session.refresh(self.project)
+        ctx=observation._attempt.get();ctx.scope=self.scope;ctx.node_key="text"
+        ctx.runtime_config_hash=observation.digest(runtime_config())
+        self.image_node=await self.session.scalar(select(NodeRun).where(NodeRun.node_key=="image"))
+
+    async def continue_native(self):
+        from app.orchestrator.steps.enrich_xlsx import _maybe_auto_chain_excel_gpt
+        from app.models import ProjectStatus
+        await _maybe_auto_chain_excel_gpt(self.session,self.project,1,ProjectStatus.enrich_1_ready,finished_key="text")
+
+    async def test_managed_text_to_image_continues_once_via_original_fsm(self):
+        from app.models import ProjectStatus,NodeRunStatus
+        from sqlalchemy import select
+        await self.continuation_fixture()
+        await self.continue_native()
+        self.assertEqual(self.project.status,ProjectStatus.generating_images)
+        self.assertEqual(self.image_node.status,NodeRunStatus.running)
+        await self.continue_native()  # must not reset/restart the scheduled target
+        self.assertEqual(self.image_node.attempts,0)
+        await self.session.commit()
+        facts=(await self.session.scalars(select(observation.ObservationOutbox).where(
+            observation.ObservationOutbox.kind=="managed_successor"))).all()
+        self.assertEqual(len(facts),1)
+        self.assertEqual(facts[0].payload["to"],"image")
+
+    async def test_managed_media_continuation_preserves_stop_scope_and_uncertainty(self):
+        from app.models import NodeRunStatus
+        from app.services.actions_v1 import ActionExecutionControl,update_permission
+        await self.continuation_fixture()
+        ctx=observation._attempt.get()
+        baseline=dict(self.project.meta)
+        for flag in ("user_stop","mass_lane_user_stop","auto_await_manual_start"):
+            with self.subTest(flag=flag):
+                self.project.meta={**baseline,flag:True}
+                await self.continue_native()
+                self.assertTrue(self.project.meta[flag]);self.assertEqual(self.image_node.status,NodeRunStatus.pending)
+        self.project.meta=baseline
+        for reason in ("scope","audit","uncertain","config","held","budget"):
+            with self.subTest(reason=reason):
+                old_keys=list(ctx.scope.node_keys);old_hash=ctx.runtime_config_hash
+                if reason=="scope":ctx.scope.node_keys=["text"]
+                if reason=="audit":self.observer.failures[self.scope.execution_id]="disk"
+                if reason=="uncertain":self.observer.commit_uncertainty[self.scope.execution_id]="unknown"
+                if reason=="config":ctx.runtime_config_hash="stale"
+                if reason=="held":update_permission(7,held=True)
+                if reason=="budget":update_permission(7,requests_used=8)
+                await self.continue_native()
+                self.assertEqual(self.image_node.status,NodeRunStatus.pending)
+                ctx.scope.node_keys=old_keys;ctx.runtime_config_hash=old_hash
+                self.observer.failures.clear();self.observer.commit_uncertainty.clear()
+                from app.services.actions_v1 import reload_permissions
+                await reload_permissions(self.sessions)
+
+    async def test_managed_media_continuation_requires_input_pending_and_revision(self):
+        from app.models import NodeRunStatus,Frame
+        from sqlalchemy import select
+        await self.continuation_fixture()
+        original=self.project.meta
+        self.project.meta={**original,"canvas_graph":{"nodes":self.nodes,"edges":[]}}
+        await self.continue_native();self.assertEqual(self.image_node.status,NodeRunStatus.pending)
+        self.project.meta=original
+        frame=await self.session.scalar(select(Frame).where(Frame.project_id==7))
+        frame.image_prompt=""
+        await self.continue_native();self.assertEqual(self.image_node.status,NodeRunStatus.pending)
+        frame.image_prompt="Synthetic image"
+        for status in (NodeRunStatus.failed,NodeRunStatus.waiting_hitl,NodeRunStatus.done):
+            self.image_node.status=status
+            await self.continue_native();self.assertEqual(self.image_node.status,status)
+        self.image_node.status=NodeRunStatus.pending
+        observation._attempt.get().scope.mode="observe"
+        await self.continue_native();self.assertEqual(self.image_node.status,NodeRunStatus.pending)
+
+    async def test_managed_media_continuation_rolls_back_with_project(self):
+        from app.models import NodeRun,NodeRunStatus
+        from sqlalchemy import select
+        await self.continuation_fixture()
+        await self.continue_native()
+        self.assertEqual(self.image_node.status,NodeRunStatus.running)
+        await self.session.rollback()
+        async with self.sessions() as s:
+            node=await s.scalar(select(NodeRun).where(NodeRun.node_key=="image"))
+            self.assertEqual(node.status,NodeRunStatus.pending)
+            facts=(await s.scalars(select(observation.ObservationOutbox).where(
+                observation.ObservationOutbox.kind=="managed_successor"))).all()
+            self.assertEqual(facts,[])
+
     async def test_unintegrated_family_cannot_be_enabled_as_managed_executor(self):
         from app.services.node_capabilities import require_managed_capability, capability_for
         require_managed_capability("images")
