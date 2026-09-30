@@ -4,6 +4,8 @@ The worker acceptance is separate. These tests exercise permission persistence,
 the real initial FSM transition, rejection and replay through the ASGI API.
 """
 import asyncio
+import sqlite3
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -11,7 +13,7 @@ import httpx
 from fastapi import FastAPI
 from sqlalchemy import delete, select
 
-from app.models import NodeRun, NodeRunStatus, Project, Workflow, WorkflowRun
+from app.models import NodeRun, NodeRunStatus, Project, ProjectStatus, Workflow, WorkflowRun
 from app.services import observation
 from app.services.actions_v1 import ActionExecutionControl, clear_permission, get_permission
 from app.services.decision_config import DecisionRuntimeBinding
@@ -179,6 +181,28 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await s.scalar(select(DecisionControl)))
             self.assertIsNone(await s.scalar(select(DecisionRuntimeBinding)))
         self.assertIsNone(get_permission(7))
+
+    async def test_idle_project_projection_refreshed_without_changing_node_attempts(self):
+        from sqlalchemy.ext.asyncio import create_async_engine,async_sessionmaker
+        from app.services.managed_launch import prepare
+        replica=Path(self.tmp.name)/'project.db'
+        with sqlite3.connect(Path(self.tmp.name)/'master.db') as source,sqlite3.connect(replica) as target:
+            source.backup(target)
+        engine=create_async_engine('sqlite+aiosqlite:///'+str(replica))
+        sessions=async_sessionmaker(engine,expire_on_commit=False)
+        try:
+            async with sessions() as s:
+                project=await s.get(Project,7);project.status=ProjectStatus.script_ready;await s.commit()
+            async with sessions() as s:
+                launch,replay=await prepare(observation.get_observer(),s,project_id=7,request=self.payload,initiator='test')
+                self.assertFalse(replay)
+            async with self.sessions() as s:
+                self.assertEqual((await s.get(Project,7)).status,ProjectStatus.script_ready)
+                self.assertEqual(launch.policy['initial_status_projection']['from'],'new')
+                self.assertEqual(launch.policy['initial_status_projection']['source'],'project_db')
+                nodes=(await s.scalars(select(NodeRun))).all()
+                self.assertTrue(all(node.status==NodeRunStatus.pending and node.attempts==0 for node in nodes))
+        finally:await engine.dispose()
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
