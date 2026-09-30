@@ -39,6 +39,21 @@ class _LocalFallbackNeeded(RuntimeError):
     """kie outage слишком долгий — добиваем локальным composer."""
 
 
+async def _animation_fact(callback, *args, **kwargs):
+    """Diagnostic failure is a journal gap, never a replacement native error."""
+    from app.services.observation import _attempt
+
+    ctx = _attempt.get()
+    if ctx is None or getattr(ctx, "native_attempt_closed", False):
+        return
+    if getattr(ctx, "native_node_type", "animation_prompts") != "animation_prompts":
+        return
+    try:
+        await callback(*args, **kwargs)
+    except Exception as exc:
+        ctx.observer.mark_gap(ctx.scope.execution_id, exc)
+
+
 async def _gate_then_mark_anim_ready(session: AsyncSession, project: Project) -> None:
     """Harness N/N first; animation_prompts_ready only if the gate passes."""
     from app.services.agent_harness import harness_gate_or_raise
@@ -48,12 +63,12 @@ async def _gate_then_mark_anim_ready(session: AsyncSession, project: Project) ->
         report = await harness_gate_or_raise(session, project, step="anim_pr")
     except Exception as exc:
         if _attempt.get() is not None:
-            await record_fact("runtime_check", {"check": "original_harness_gate",
+            await _animation_fact(record_fact, "runtime_check", {"check": "original_harness_gate",
                 "step": "anim_pr", "status": "failed", "performed": True,
                 "error_type": type(exc).__name__, "business_commit_claim": False})
         raise
     if _attempt.get() is not None:
-        await record_fact("runtime_check", {"check": "original_harness_gate",
+        await _animation_fact(record_fact, "runtime_check", {"check": "original_harness_gate",
             "step": "anim_pr", "status": "passed", "performed": True,
             "business_commit_claim": False}, body={"checks": [
                 {"name": check.name, "ok": check.ok, "detail": check.detail}
@@ -222,7 +237,7 @@ async def fill_animation_prompts(
         )
 
     from app.services.native_animation_contracts import record_animation_input
-    await record_animation_input(project, frames, finalize_status=finalize_status)
+    await _animation_fact(record_animation_input, project, frames, finalize_status=finalize_status)
     pending = apg.collect_batch_items(project, frames)
     pending_shot2 = (
         apg.collect_shot2_batch_items(project, frames) if finalize_status else []
@@ -510,7 +525,7 @@ async def _save_anim_pr_batch(
     if apg.is_apply_ops_blob(reply) and not apg.parse_apply_ops_animation_reply(
         reply, frames
     ):
-        await record_animation_parse(reply, [], [], shot=shot, target_uuids=targets)
+        await _animation_fact(record_animation_parse, reply, [], [], shot=shot, target_uuids=targets)
         raise RuntimeError(
             f"anim_pr: ответ — битый JSON apply-ops для кадров "
             f"{[it.frame.number for it in batch]} (shot_0{shot})"
@@ -518,7 +533,7 @@ async def _save_anim_pr_batch(
 
     pairs = apg.parse_animation_reply(reply, frames, batch_items=batch)
     if not pairs:
-        await record_animation_parse(reply, pairs, [], shot=shot, target_uuids=targets)
+        await _animation_fact(record_animation_parse, reply, pairs, [], shot=shot, target_uuids=targets)
         raise RuntimeError(
             "ChatGPT не вернул пары «ID изображения» / «текст анимации» "
             f"для кадров {[it.frame.number for it in batch]} (shot_0{shot})"
@@ -531,7 +546,7 @@ async def _save_anim_pr_batch(
         and len(p.animation_text.strip()) >= apg.MIN_ANIM_PROMPT_LEN
     ]
     if not pairs:
-        await record_animation_parse(reply, pairs, [], shot=shot, target_uuids=targets)
+        await _animation_fact(record_animation_parse, reply, pairs, [], shot=shot, target_uuids=targets)
         raise RuntimeError(
             f"anim_pr: после фильтра blob/коротких текстов нет валидных пар "
             f"для {[it.frame.number for it in batch]} (shot_0{shot})"
@@ -539,7 +554,7 @@ async def _save_anim_pr_batch(
 
     plan_row = 48 if shot == 1 else 64
     ops = apg.build_apply_ops_from_pairs(pairs, frames, shot=shot)
-    await record_animation_parse(reply, pairs, ops, shot=shot, target_uuids=targets)
+    await _animation_fact(record_animation_parse, reply, pairs, ops, shot=shot, target_uuids=targets)
     if not ops:
         raise RuntimeError(
             f"anim_pr: нет валидных операций для кадров "

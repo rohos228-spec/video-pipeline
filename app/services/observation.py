@@ -664,6 +664,7 @@ async def observe_attempt(session, project):
     token = _attempt.set(ctx)
     from app.services.node_capabilities import capability_for
     capability = capability_for("excel_gpt" if not native_type or native_type.startswith("enrich_") else native_type)
+    ctx.native_node_type = capability.node_type
     await record_fact("node_start", {"project_status": project.status.value, "node_contract": node_key,
                                   "result_kind": capability.result_kind,
                                   "recovery_input_revision": revision, "recovery_revision_parts": revision_parts})
@@ -729,6 +730,7 @@ async def observe_attempt(session, project):
             from app.services.actions_recovery import worker_finished
             await worker_finished(ctx)
     finally:
+        ctx.native_attempt_closed = True
         profile_stack.close()
         _attempt.reset(token)
         session.info.pop("recovery_attempt_id", None)

@@ -268,12 +268,34 @@ def verify_animation_prompts(frames, *, project_id, project, snapshot):
     }
 
 
-async def record_animation_input(project, frames, finalize_status=True):
-    """Capture detached native inputs without flushing or changing authority."""
-    from app.services.observation import _attempt, digest, record_fact
+async def _animation_context():
+    from app.models import WorkflowRun
+    from app.services.excel_gpt_node import effective_node_type
+    from app.services.observation import _attempt
 
     ctx = _attempt.get()
-    if ctx is None or ctx.scope.observer_state == "stopped":
+    if (ctx is None or ctx.scope.observer_state == "stopped"
+            or getattr(ctx, "native_attempt_closed", False)):
+        return None
+    node_type = getattr(ctx, "native_node_type", None)
+    if node_type is None:
+        # Older/internal contexts still require the immutable node identity.
+        # A copied sidecar context cannot turn an image NodeRun into animation.
+        async with ctx.observer.master() as master:
+            run = await master.get(WorkflowRun, ctx.scope.workflow_run_id)
+            node = next((node for node in (run.nodes_snapshot if run else [])
+                         if node.get("id") == ctx.node_key), None)
+        node_type = effective_node_type(node) if node is not None else None
+        ctx.native_node_type = node_type
+    return ctx if node_type == "animation_prompts" else None
+
+
+async def record_animation_input(project, frames, finalize_status=True):
+    """Capture detached native inputs without flushing or changing authority."""
+    from app.services.observation import digest, record_fact
+
+    ctx = await _animation_context()
+    if ctx is None:
         return
     snapshot = animation_prompt_input_snapshot(
         frames, project_id=ctx.scope.project_id, project=project,
@@ -291,11 +313,11 @@ async def record_animation_parse(reply, pairs, ops, *, shot, target_uuids):
     import json
     from dataclasses import asdict
     from app.services.observation import (
-        _attempt, completed_model_request_id, digest, record_fact,
+        completed_model_request_id, digest, record_fact,
     )
 
-    ctx = _attempt.get()
-    if ctx is None or ctx.scope.observer_state == "stopped":
+    ctx = await _animation_context()
+    if ctx is None:
         return
     try:
         json.loads(reply)
@@ -333,11 +355,10 @@ async def observe_animation_result(session, project, node_type="animation_prompt
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
     from app.models import Frame, Project
-    from app.services.observation import _attempt, record_fact
+    from app.services.observation import record_fact
 
-    ctx = _attempt.get()
-    if (ctx is None or ctx.scope.observer_state == "stopped"
-            or node_type != "animation_prompts"
+    ctx = await _animation_context()
+    if (ctx is None or node_type != "animation_prompts"
             or getattr(ctx, "animation_verification_recorded", False)):
         return
     project_id = ctx.scope.project_id  # Native ORM attributes may be expired.
