@@ -340,7 +340,10 @@ async def worker_finished(ctx, error=False):
             return
         row.status = "human_review" if error else "await_verify"
         row.result = {**row.result, "worker_returned": not error, "worker_error": error,
-                      "worker_returned_at": datetime.utcnow().isoformat()}
+                      "worker_returned_at": datetime.utcnow().isoformat(),
+                      # Retain the configuration captured at attempt entry. Reading
+                      # runtime_config here would silently authorize a later change.
+                      "runtime_config_hash": ctx.runtime_config_hash}
         control = await session.get(ActionExecutionControl, row.execution_id)
         row.budget_state = {**row.budget_state, "requests_used_after_attempt": control.requests_used}
         record = await session.get(ActionRecord, row.action_id)
@@ -473,7 +476,11 @@ async def reconcile(observer):
                     from app.services.excel_gpt_node import slot_index_from_node
                     from app.orchestrator.steps.enrich_xlsx import _after_excel_gpt_done
                     graph_node = next(n for n in run.nodes_snapshot if str(n.get("id")) == row.node_key)
-                    token = _attempt.set(AttemptContext(observer,scope,session,'project',row.node_key,row.new_attempt_id))
+                    # Reconcile can run after the worker context/process is gone.
+                    # Old tickets without proof remain blocked by the media gate;
+                    # never backfill a missing hash from the current configuration.
+                    token = _attempt.set(AttemptContext(observer,scope,session,'project',row.node_key,row.new_attempt_id,
+                        runtime_config_hash=row.result.get("runtime_config_hash")))
                     try:
                         await _after_excel_gpt_done(session, project, node_key=row.node_key,
                             slot_idx=slot_index_from_node(graph_node), ready_status=project.status)
