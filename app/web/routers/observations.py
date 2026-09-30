@@ -113,7 +113,7 @@ async def managed_launch_options(project_id:int,operator:AuthDep):
                 'group_id':data.get('groupId'),'supported':capability.managed,
                 'status':state.status.value if state else 'unknown',
                 'reason':None if capability.managed else 'исполнитель и проверка ещё не приняты',
-                'result_kind':capability.result_kind})
+                'result_kind':capability.result_kind,'actions':list(capability.actions)})
         runtime=status()
         maximum=runtime.get('budget_policy',{'max_requests':100})['max_requests']
         from app.services.profiles_v1 import active_catalog,catalog_hash
@@ -595,6 +595,8 @@ async def context(project_id: int, execution_id: str):
         rows = (await session.scalars(select(ObservationEvent).where(
             ObservationEvent.execution_id == execution_id).order_by(ObservationEvent.id.desc()).limit(500))).all()
         result = scope_json(scope)
+        from app.services.observation import pending_approval_context
+        approvals = await pending_approval_context(session, scope, rows)
         from app.services.media_view import context_for_nodes
         media = await context_for_nodes(session, scope)
     gaps = list(result["gaps"] or [])
@@ -605,6 +607,7 @@ async def context(project_id: int, execution_id: str):
             factory = await get_project_sessionmaker(project.data_dir)
             async with factory() as session:
                 replica, _ = await _business_snapshot(session, scope)
+                approvals = await pending_approval_context(session, scope, rows)
                 async with observer.master() as master_session:
                     media = await context_for_nodes(master_session, scope, project_session=session)
         except Exception as exc:
@@ -662,11 +665,11 @@ async def context(project_id: int, execution_id: str):
                     or (row.kind == "parse_result" and row.payload.get("payload_required")
                         and not row.payload.get("payload_present"))), None)
     result.update({"master": master, "project": replica, "node_contexts": node_contexts,
-        "wait_reasons": {key: next((row.payload for row in rows if row.kind == "runtime_wait" and row.node_key == key
+        "wait_reasons": {**{key: next((row.payload for row in rows if row.kind == "runtime_wait" and row.node_key == key
                                    and row.id > max((r.id for r in rows if r.kind == "node_start" and r.node_key == key), default=0)),
             {"reason": "waiting_hitl", "initiator": None}) for key, state in states.items()
             if state["status"] == "waiting_hitl" or (state["status"] not in {"done", "skipped"} and any(row.kind == "runtime_wait" and row.node_key == key
-                and row.id > max((r.id for r in rows if r.kind == "node_start" and r.node_key == key), default=0) for row in rows))},
+                and row.id > max((r.id for r in rows if r.kind == "node_start" and r.node_key == key), default=0) for row in rows))}, **approvals},
         "pinned": observer.is_pinned(execution_id),
         "commit_confirmation": observer.commit_uncertainty.get(execution_id),
         "disagreement": replica is not None and master != replica,

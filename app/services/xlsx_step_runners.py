@@ -288,6 +288,8 @@ async def run_plan_xlsx(
     """
     from app.services.plan_validation import is_meaningful_general_plan
 
+    from app.services.node_capabilities import record_project_text_input, record_project_text_parse
+    await record_project_text_input(project, 'plan')
     proj_xlsx = _ensure_project_xlsx(project)
     actual_topic = topic if topic is not None else (project.topic or "")
 
@@ -318,6 +320,7 @@ async def run_plan_xlsx(
 
     reply = await xgf.run_under_xlsx_lock(project.id, "plan", _gpt)
     plan_text = extract_general_plan_from_gpt_reply(reply)
+    await record_project_text_parse(reply, plan_text, 'plan')
     if not is_meaningful_general_plan(plan_text):
         raise RuntimeError(
             "GPT не вернул общий_план в apply-ops JSON "
@@ -355,6 +358,8 @@ async def run_script_xlsx(
         extract_voiceover_block,
     )
 
+    from app.services.node_capabilities import record_project_text_input, record_project_text_parse
+    await record_project_text_input(project, 'script')
     proj_xlsx = _ensure_project_xlsx(project)
     source_voiceover = cx.ensure_current_voiceover(project)
 
@@ -422,6 +427,7 @@ async def run_script_xlsx(
         raw = (reply or "").strip()
         if raw and '"ops"' not in raw[:40] and len(raw) >= 200:
             voiceover_text = raw
+    await record_project_text_parse(reply, voiceover_text, 'script')
     if len(voiceover_text) < 200:
         raise RuntimeError(
             "GPT не вернул закадр (apply-ops закадровый_текст или "

@@ -29,6 +29,29 @@ def recovery():
         event('node_change',request=None,changes={'status':{'after':['done']}},transactional=True)]
 
 class Rules(unittest.TestCase):
+    def test_native_voiceover_not_required_json_and_plan_missing_field_is_typed(self):
+        from app.services.node_capabilities import project_text_parse_evidence
+        vo='Синтетический закадр. '*20
+        proof=project_text_parse_evidence('<<<VOICEOVER>>>'+vo+'<<<END>>>',vo,'script')
+        self.assertEqual(derive_incidents(SCOPE,[event('parse_result',**proof)],{}),[])
+        missing=project_text_parse_evidence('{"ops":[]}','', 'plan')
+        result=derive_incidents(SCOPE,[event('parse_result',**missing)],{})
+        self.assertEqual([i['type'] for i in result],['missing_payload'])
+        self.assertEqual(result[0]['cause']['certainty'],'unknown')
+
+    def test_native_pending_approval_is_current_even_after_done_and_has_no_auto_action(self):
+        snapshot={'nodes':{'script':{'status':'done'}},'pending_approvals':{
+            'script':{'hitl_request_id':8,'reason':'подтверждение сценария человеком','event_id':'actual-proof'},
+            'outside':{'hitl_request_id':9,'reason':'чужое подтверждение'}}}
+        result=derive_incidents(SCOPE,[],snapshot)
+        self.assertEqual(len(result),1)
+        self.assertEqual(result[0]['type'],'runtime_wait')
+        self.assertEqual(result[0]['node_key'],'script')
+        self.assertFalse(result[0]['blocking'])
+        self.assertFalse(result[0]['recommendation']['automatic_action'])
+        self.assertEqual(result[0]['recommendation']['action'],'human_review')
+        self.assertEqual(derive_incidents(SCOPE,[],{'nodes':snapshot['nodes'],'pending_approvals':{}}),[])
+
     def test_format_retry_requires_accepted_response_and_same_attempt_commit(self):
         original=bad(); result=derive_incidents(SCOPE,[original]+recovery(),{})
         self.assertEqual(len(result),1)

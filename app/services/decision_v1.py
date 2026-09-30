@@ -236,6 +236,21 @@ class DecisionSupervisor:
             if not node:raise ValueError('node contract missing from graph')
             from app.services.node_capabilities import capability_for
             capability=capability_for(str(node.get('type') or ''))
+            if capability.result_kind=='project_text':
+                from app.services.node_capabilities import project_text_contract,verify_project_text
+                project=await s.get(Project,row.project_id)
+                if not project:raise ValueError('project contract unavailable')
+                if project.data_dir:
+                    from app.project_db import project_db_session_scope
+                    async with project_db_session_scope(row.project_id) as ps:
+                        project=await ps.get(Project,row.project_id)
+                        if not project:raise ValueError('project contract unavailable')
+                return panel_safe({**capability.contract(),'node_key':row.node_key,
+                    'graph_version':scope.graph_version,'context_version':context['context_version'],
+                    'source':'native project text executor/validator; authoritative project DB',
+                    'contract':project_text_contract(capability.node_type),
+                    'current_output':verify_project_text(project,capability.node_type),
+                    'compatible_profiles':[],'cost_status':'unknown_tariff'})
             if capability.result_kind!='structured':
                 from app.services.media_jobs import MediaJob
                 jobs=(await s.scalars(select(MediaJob).where(MediaJob.execution_id==row.execution_id,

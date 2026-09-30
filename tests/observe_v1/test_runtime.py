@@ -19,6 +19,34 @@ import test_journal
 
 
 class RuntimeAcceptance(test_journal.JournalAcceptance):
+    async def test_pending_native_approval_visible_after_done_and_clears_on_real_decision(self):
+        from app.models import HITLRequest, HITLKind, HITLDecision
+        async with self.master() as session:
+            node=(await session.scalars(select(NodeRun))).one()
+            start_node_running(node,project_id=2,initiator='worker')
+            complete_node(node,project_id=2)
+            req=HITLRequest(project_id=2,kind=HITLKind.approve_plan)
+            other=HITLRequest(project_id=2,kind=HITLKind.approve_script)
+            session.add_all([req,other]);await session.flush()
+            req_id=req.id
+            self.observer.stage(session,self.scope,'node_start',db_scope='master',
+                node_key='script',attempt_id='native-attempt',payload={})
+            self.observer.stage(session,self.scope,'human_approval_pending',db_scope='master',
+                node_key='script',attempt_id='native-attempt',payload={'hitl_request_id':req_id,
+                    'kind':'approve_plan','reason':'подтверждение плана человеком','initiator':'original executor'})
+            await session.commit()
+        await self.observer.consume(self.scope.execution_id,'master',self.master)
+        url=f'/api/projects/2/observations/{self.scope.execution_id}/context'
+        context=(await self.client.get(url)).json()
+        self.assertEqual(context['wait_reasons']['script']['hitl_request_id'],req_id)
+        self.assertEqual(context['master']['nodes']['script']['status'],'done')
+        async with self.master() as session:
+            req=await session.get(HITLRequest,req_id)
+            self.assertEqual(req.decision,HITLDecision.pending,'read must not approve HITL')
+            req.decision=HITLDecision.approved
+            await session.commit()
+        self.assertNotIn('script',(await self.client.get(url)).json()['wait_reasons'])
+
     async def test_real_worker_wait_is_scoped_and_not_guessed_from_status(self):
         async with self.master() as session:
             project = await session.get(Project, 2)

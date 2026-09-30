@@ -665,6 +665,9 @@ async def observe_attempt(session, project):
         if overlay:
             await record_fact("profile_effective_context", {k:overlay[k] for k in ("overlay_id","profile_id","candidate_hash","base_version","attempt_id","candidate")})
         yield
+        if scope.mode == 'managed':
+            from app.services.node_capabilities import observe_project_text_result
+            await observe_project_text_result(project, capability.node_type)
     except BaseException as exc:
         from app.services.profiles_v1 import finish_attempt
         await finish_attempt(ctx, True)
@@ -852,6 +855,43 @@ async def business_snapshot(session, scope):
         "nodes": {n.node_key: {"status": n.status.value, "progress": n.progress,
             "progress_text": redact(n.progress_text), "error": redact(n.error),
             "attempts": n.attempts} for n in nodes}}, project
+
+
+async def pending_approval_context(session, scope, events):
+    """Read only committed, scoped HITL creation plus the current native decision.
+
+    Native text nodes can be done while approval is pending. Content/approval
+    state is authoritative in project.db; it is not a master replica mismatch.
+    """
+    from app.models import HITLRequest, HITLDecision
+    latest_starts = {}
+    approvals = {}
+    for event in sorted(events, key=lambda row: row.id):
+        if (event.execution_id != scope.execution_id or event.project_id != scope.project_id
+                or event.node_key not in scope.node_keys):
+            continue
+        if event.kind == 'node_start':
+            latest_starts[event.node_key] = event.attempt_id
+            approvals.pop(event.node_key, None)
+        elif (event.kind == 'human_approval_pending' and event.attempt_id
+                and latest_starts.get(event.node_key) == event.attempt_id):
+            payload = event.payload or {}
+            if (payload.get('kind') in {'approve_plan', 'approve_script'}
+                    and type(payload.get('hitl_request_id')) is int):
+                approvals[event.node_key] = event
+    if not approvals:
+        return {}
+    ids = [event.payload['hitl_request_id'] for event in approvals.values()]
+    pending = {row.id: row for row in (await session.scalars(select(HITLRequest).where(
+        HITLRequest.project_id == scope.project_id, HITLRequest.id.in_(ids),
+        HITLRequest.decision == HITLDecision.pending))).all()}
+    result = {}
+    for key, event in approvals.items():
+        row = pending.get(event.payload['hitl_request_id'])
+        if row and row.kind.value == event.payload['kind']:
+            result[key] = {**event.payload, 'event_id': event.event_id,
+                'attempt_id': event.attempt_id, 'decision': 'pending'}
+    return result
 
 
 def confirmed_qc_noop(events, request_id):

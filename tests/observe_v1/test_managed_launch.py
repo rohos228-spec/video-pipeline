@@ -151,10 +151,22 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
         data=response.json()
         self.assertEqual(data['workflow_run_id'],11)
         self.assertEqual(data['graph_version'],self.graph)
-        self.assertEqual({n['node_key'] for n in data['nodes'] if n['supported']},{'draft-A','report-Z'})
+        self.assertEqual({n['node_key'] for n in data['nodes'] if n['supported']},{'draft-A','report-Z','outside'})
+        native=next(n for n in data['nodes'] if n['node_key']=='outside')
+        self.assertEqual(native['result_kind'],'project_text')
+        self.assertNotIn('retry_same',native['actions'])
         self.assertEqual(data['request_limit_max'],100)
         self.assertEqual(data['online_authorized'],False)
         async with self.sessions() as s:self.assertIsNone(await s.scalar(select(ActionExecutionControl)))
+
+    async def test_native_scope_cannot_preapprove_an_unimplemented_recovery_strategy(self):
+        from app.services.managed_launch import prepare
+        request={**self.payload,'node_keys':['outside'],'strategies':['wait','human_review','retry_same']}
+        async with self.sessions() as session:
+            with self.assertRaisesRegex(ValueError,'strategy.*node|node.*strategy'):
+                await prepare(observation.get_observer(),session,project_id=7,request=request,initiator='test')
+        async with self.sessions() as s:
+            self.assertIsNone(await s.scalar(select(ActionExecutionControl)))
 
     async def test_interrupted_launch_is_held_on_reload_and_manual_resume_cannot_bypass(self):
         from app.services.managed_launch import prepare,ManagedLaunch

@@ -69,6 +69,12 @@ async def create_hitl(
     )
     session.add(req)
     await session.flush()
+    from app.services.observation import _attempt, emit
+    ctx = _attempt.get()
+    if ctx and ctx.scope.project_id == project.id and kind in {HITLKind.approve_plan, HITLKind.approve_script}:
+        emit('human_approval_pending', {'hitl_request_id': req.id, 'kind': kind.value,
+            'reason': 'подтверждение плана человеком' if kind == HITLKind.approve_plan else 'подтверждение сценария человеком',
+            'initiator': 'original executor', 'transactional': True})
     return req
 
 

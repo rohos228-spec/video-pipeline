@@ -24,6 +24,46 @@ class Environment(unittest.TestCase):
 
 
 class Capabilities(unittest.TestCase):
+    def test_native_parse_distinguishes_json_syntax_from_required_plan_field(self):
+        from app.services.node_capabilities import project_text_parse_evidence
+        missing=project_text_parse_evidence('{"ops":[]}', '', 'plan')
+        self.assertTrue(missing['syntax_valid'])
+        self.assertTrue(missing['parsed'])
+        self.assertFalse(missing['payload_present'])
+        self.assertFalse(missing['schema_valid'])
+        self.assertTrue(missing['payload_required'])
+        malformed=project_text_parse_evidence('{"ops":}', '', 'plan')
+        self.assertFalse(malformed['syntax_valid'])
+        self.assertFalse(malformed['parsed'])
+
+    def test_native_voiceover_is_not_misdiagnosed_as_required_json(self):
+        from app.services.node_capabilities import project_text_parse_evidence
+        text='Синтетический закадр. '*20
+        proof=project_text_parse_evidence('<<<VOICEOVER>>>'+text+'<<<END>>>',text,'script')
+        self.assertFalse(proof['syntax_valid'])
+        self.assertTrue(proof['parsed'])
+        self.assertTrue(proof['schema_valid'])
+        self.assertFalse(proof['payload_required'])
+        self.assertFalse(proof['semantic_quality_verified'])
+        self.assertFalse(project_text_parse_evidence('short','short','script')['schema_valid'])
+
+    def test_registered_kie_node_choice_binds_exact_api_model_and_route(self):
+        from types import SimpleNamespace
+        from app.models import ProjectStatus
+        from app.services.vibecode_catalog import find_model
+        from app.services.llm_override import bind_project_llm
+        from app.services import gpt_api
+        choice=find_model('gpt-kie')
+        self.assertIsNotNone(choice,'native node catalog must recognize the existing Kie text choice')
+        self.assertEqual(choice['provider'],'kie')
+        self.assertEqual(choice['api_model'],'gpt-5-6-sol')
+        project=SimpleNamespace(id=2,meta={'canvas_graph':{'nodes':[{'id':'native-A','type':'plan','data':{'modelId':'gpt-kie'}}]}})
+        with bind_project_llm(project,ProjectStatus.planning) as bound:
+            self.assertEqual(bound.provider,'kie')
+            self.assertEqual(bound.model_id,'gpt-5-6-sol')
+            self.assertEqual(gpt_api._chat_url(bound.model_id),'http://127.0.0.1:18766/codex/v1/responses')
+            self.assertTrue(gpt_api.is_responses_mode())
+
     def test_project_text_contract_uses_native_validation_and_preserves_hitl(self):
         from app.services.node_capabilities import capability_for,project_text_contract
         for typ,field in (('plan','general_plan'),('script','script_text')):

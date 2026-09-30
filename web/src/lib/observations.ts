@@ -70,7 +70,7 @@ export interface ManagedLaunchOptions {
   workflow_run_id:number;graph_version:string;configured:boolean;mode:string;reason:string|null;
   online_authorized:boolean;request_limit_default:number;request_limit_max:number;strategies:string[];
   profile_catalog_hash:string|null;profiles:ProfileState['catalog'];
-  nodes:{node_key:string;title:string;group_id:string|null;supported:boolean;status:string;reason:string|null;result_kind:string}[];
+  nodes:{node_key:string;title:string;group_id:string|null;supported:boolean;status:string;reason:string|null;result_kind:string;actions?:string[]}[];
   latest_launch:ManagedLaunch|null;
 }
 export interface ManagedLaunchRequest {

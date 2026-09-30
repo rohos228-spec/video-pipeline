@@ -19,8 +19,19 @@ export function actionsModeLabel(state:{configured:boolean;enabled:boolean;held:
   return state.configured ? 'Execution завершён · управление выключено' : 'Управление выключено';
 }
 
+export function scopedLaunchStrategies(options:{nodes:{node_key:string;supported:boolean;actions?:string[]}[];
+  strategies:string[]}|null,nodeKeys:string[]):string[] {
+  if(!options || !nodeKeys.length) return [];
+  const selected=nodeKeys.map(key=>options.nodes.find(node=>node.node_key===key && node.supported));
+  if(selected.some(node=>!node)) return [];
+  // Older metadata has no actions field; the current backend independently
+  // validates contracts before persisting any permission.
+  const actions=new Set(selected.flatMap(node=>node?.actions ?? options.strategies));
+  return options.strategies.filter(strategy=>actions.has(strategy));
+}
+
 export function managedLaunchError(options:{configured:boolean;request_limit_max:number;
-  nodes:{node_key:string;supported:boolean}[];strategies:string[];
+  nodes:{node_key:string;supported:boolean;actions?:string[]}[];strategies:string[];
   profiles?:{profile_id:string}[];profile_catalog_hash?:string|null}|null,
   selection:{node_keys:string[];strategies:string[];request_limit:number;
     profile_ids?:string[];profile_catalog_hash?:string|null}):string|null {
@@ -32,7 +43,7 @@ export function managedLaunchError(options:{configured:boolean;request_limit_max
   if(!Number.isSafeInteger(selection.request_limit) || selection.request_limit<1 || selection.request_limit>options.request_limit_max)
     return 'Лимит запросов должен быть целым числом в разрешённых пределах.';
   if(!selection.strategies.length || new Set(selection.strategies).size!==selection.strategies.length ||
-    selection.strategies.some(strategy=>!options.strategies.includes(strategy)))
+    selection.strategies.some(strategy=>!scopedLaunchStrategies(options,selection.node_keys).includes(strategy)))
     return 'Выберите разрешённые стратегии.';
   const profiles=selection.profile_ids ?? [];
   if(selection.strategies.includes('retry_profile')) {

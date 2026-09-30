@@ -2,7 +2,7 @@
 
 import {useEffect,useRef,useState} from 'react';
 import {Button} from '@/components/ui/button';
-import {managedLaunchError,actionStatus} from '@/lib/actions-view';
+import {managedLaunchError,actionStatus,scopedLaunchStrategies} from '@/lib/actions-view';
 import {observations,type ManagedLaunchOptions,type ManagedLaunchRequest,type ManagedLaunch,
   type ObservationContext,type ActionState,type Diagnosis} from '@/lib/observations';
 
@@ -53,6 +53,16 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
     }).catch(()=>{if(!cancelled)setMessage('Не удалось прочитать текущий граф и разрешения. Запуск закрыт.');});
     return ()=>{cancelled=true;generation.current++;};
   },[projectId,storageKey]);
+
+  useEffect(()=>{
+    if(!options || !nodes.length) return;
+    const allowed=scopedLaunchStrategies(options,nodes);
+    setStrategies(previous=>{
+      const next=previous.filter(strategy=>allowed.includes(strategy));
+      return next.length===previous.length ? previous : next;
+    });
+    if(!allowed.includes('retry_profile')) setProfiles(previous=>previous.length ? [] : previous);
+  },[options,nodes]);
 
   async function refresh() {
     const epoch=generation.current;setBusy(true);
@@ -114,7 +124,7 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
             <span>{node.title} · {node.status}{!node.supported && <span className="text-amber-200"> · {node.reason}</span>}</span>
           </label>)}
         </div>
-        <div className="space-y-1">{options?.strategies.map(strategy=><label key={strategy} className="flex items-center gap-2">
+        <div className="space-y-1">{(nodes.length ? scopedLaunchStrategies(options,nodes) : options?.strategies ?? []).map(strategy=><label key={strategy} className="flex items-center gap-2">
           <input type="checkbox" checked={strategies.includes(strategy)} onChange={event=>{
             setStrategies(previous=>event.target.checked ? [...previous,strategy] : previous.filter(value=>value!==strategy));
             if(strategy==='retry_profile' && !event.target.checked)setProfiles([]);

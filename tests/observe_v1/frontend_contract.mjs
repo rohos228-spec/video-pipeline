@@ -56,6 +56,16 @@ assert.match(managedLaunchError(launchOptions,{...selection,request_limit:101}),
 assert.match(managedLaunchError(launchOptions,{...selection,strategies:['shell']}),/стратег/i);
 assert.match(managedLaunchError({...launchOptions,configured:false},selection),/выключ|настро/i);
 console.log('Unified launch capability/selection contracts: 9 assertions passed');
+const {scopedLaunchStrategies}=await import('data:text/javascript;base64,'+Buffer.from(actionJS).toString('base64'));
+assert.equal(typeof scopedLaunchStrategies,'function');
+const nativeOptions={...launchOptions,nodes:[{node_key:'plan',supported:true,actions:['wait','human_review']} ]};
+assert.deepEqual(scopedLaunchStrategies(nativeOptions,['plan']),['wait','human_review']);
+assert.match(managedLaunchError(nativeOptions,{...selection,node_keys:['plan'],strategies:['retry_same']}),/стратег/i);
+assert.equal(managedLaunchError(nativeOptions,{...selection,node_keys:['plan']}),null);
+assert.deepEqual(scopedLaunchStrategies(nativeOptions,['foreign']),[]);
+assert.deepEqual(scopedLaunchStrategies({...nativeOptions,nodes:[...nativeOptions.nodes,
+  {node_key:'text',supported:true,actions:['wait','human_review','retry_same']}]},['plan','text']),['wait','human_review','retry_same']);
+console.log('Per-family launch strategy contracts: 6 assertions passed');
 const catalogOptions={...launchOptions,strategies:[...launchOptions.strategies,'retry_profile'],
   profiles:[{profile_id:'format-approved'}],profile_catalog_hash:'catalog-v1'};
 assert.match(managedLaunchError(catalogOptions,{...selection,strategies:['retry_profile']}),/профил/i);

@@ -143,6 +143,9 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
         if not strategies or len(strategies)!=len(set(strategies)) or not set(strategies)<= {'wait','human_review','retry_same','retry_profile'}:
             raise ValueError('unsupported strategy catalog')
         if not set(strategies)<=set(cfg['allowed_actions']):raise ValueError('strategy outside configured owner policy')
+        family_actions={action for contract in contracts.values() for action in contract['actions']}
+        if not set(strategies)<=family_actions:
+            raise ValueError('strategy unavailable for selected node contracts')
         from app.services.profiles_v1 import active_catalog,catalog_hash,validate_candidate
         profile_ids=request.get('profile_ids',[])
         profile_hash=request.get('profile_catalog_hash')

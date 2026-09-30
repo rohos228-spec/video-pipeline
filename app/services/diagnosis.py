@@ -19,7 +19,7 @@ from app.models import Base, WorkflowRun
 from app.services.error_catalog import ERROR_CATALOG
 from app.services.observation import ExecutionControl, ObservationEvent, digest, panel_safe, business_snapshot, confirmed_qc_noop, accepted_qc_noop_parse
 
-RULE_VERSION = 'diagnose-v1.4-media'
+RULE_VERSION = 'diagnose-v1.5-native-hitl'
 
 
 class DiagnosisState(Base):
@@ -243,6 +243,14 @@ def derive_incidents(scope, events, snapshot):
         if state.get('status')=='waiting_hitl' and not any(i['type']=='runtime_wait' and i['node_key']==node for i in issues.values()):
             item=issue('runtime_wait',('hitl',node),[],blocking=False,severity='info',action='wait',fact='В БД waiting_hitl; ожидается подтверждение. Это не ошибка.')
             item['node_key']=node
+    for node,approval in snapshot.get('pending_approvals',{}).items():
+        if node not in scope.node_keys:
+            continue
+        item=issue('runtime_wait',('native_approval',node,approval['hitl_request_id']),[],
+            blocking=False,severity='info',action='human_review',
+            fact='Исходный runtime ожидает: '+approval['reason']+'. Supervisor не снимает это подтверждение.')
+        item['node_key']=node
+        item['snapshot_evidence']={'approval':approval}
     if snapshot.get('user_stop') and not any(i['type']=='user_stop' for i in issues.values()):
         issue('user_stop','control',[],blocking=False,severity='info',action='wait',fact='В текущей БД установлен user_stop. Автоматическое продолжение запрещено.')
     if snapshot.get('disagreement'):
@@ -274,6 +282,11 @@ class Diagnoser:
         observer=self.observer
         async with observer.master() as s:
             master,project=await business_snapshot(s,scope)
+            approval_events=(await s.scalars(select(ObservationEvent).where(
+                ObservationEvent.execution_id==scope.execution_id,
+                ObservationEvent.kind.in_(['node_start','human_approval_pending'])))).all()
+            from app.services.observation import pending_approval_context
+            approvals=await pending_approval_context(s,scope,approval_events)
             run=await s.get(WorkflowRun,scope.workflow_run_id)
             titles={n['id']:str((n.get('data') or {}).get('label') or (n.get('data') or {}).get('title') or n['id']) for n in (run.nodes_snapshot if run else [])}
         replica=None; gaps=[]
@@ -283,13 +296,15 @@ class Diagnoser:
                 async with (await get_project_sessionmaker(project.data_dir))() as s:
                     replica,replica_project=await business_snapshot(s,scope)
                     project=replica_project
+                    approvals=await pending_approval_context(s,scope,approval_events)
             except Exception as exc: gaps.append({'kind':'project_snapshot_unavailable','error_type':type(exc).__name__})
         else: gaps.append({'kind':'project_database_not_available'})
         def proof(snapshot):
             if snapshot is None: return None
             return {'project_status':snapshot['project_status'],'workflow_status':snapshot['workflow_status'],
                 'nodes':{k:{'status':v['status'],'progress':v['progress'],'attempts':v['attempts'],'error_recorded':bool(v['error'])} for k,v in snapshot['nodes'].items()}}
-        return {'nodes':(replica or master)['nodes'],'user_stop':bool((project.meta or {}).get('user_stop')) if project else None,
+        return {'nodes':(replica or master)['nodes'],'pending_approvals':approvals,
+                'user_stop':bool((project.meta or {}).get('user_stop')) if project else None,
                 'disagreement':replica is not None and replica!=master,'snapshot_evidence':{'master':proof(master),'project':proof(replica)},'gaps':gaps,'titles':titles}
 
     async def update(self,execution_id,*,snapshot=None):

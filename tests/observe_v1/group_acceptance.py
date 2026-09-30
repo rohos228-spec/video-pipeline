@@ -87,6 +87,10 @@ async def run():
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
     recovery_mode = mode in {"recovery-a", "recovery-b"}
     unified_launch = mode in {'launch-text','launch-images'}
+    project_text_mode=mode in {'launch-plan','launch-script'}
+    if project_text_mode:
+        from project_text_acceptance import prepare
+        project_text_prepared=prepare(fixtures,ROOT,mode)
     if mode=='launch-text':
         (ROOT/'launch-prepared.json').write_text(json.dumps(fixtures.prepare_launch_graph(),indent=2))
     media_mode = mode in {"media-image", "media-mixed", "media-unverified", "media-recovery", 'launch-images','media-decision-recovery'}
@@ -152,7 +156,7 @@ async def run():
                 request.headers['x-diagnostic-node']='__decision__'
                 return await original_send(client,request,**kwargs)
             if ctx:
-                if mode.startswith('profiles-') or os.environ.get('OBSERVE_APPROVED_PROFILE'):
+                if mode.startswith('profiles-') or os.environ.get('OBSERVE_APPROVED_PROFILE') or project_text_mode:
                     payload=json.loads(request.content)
                     p=ROOT/'actual-worker-requests.json'
                     bodies=json.loads(p.read_text()) if p.exists() else []
@@ -188,6 +192,10 @@ async def run():
         async with httpx.AsyncClient(timeout=30, trust_env=False,
                 limits=httpx.Limits(max_keepalive_connections=0)) as client:
             base = "http://127.0.0.1:18765/api/projects/2"
+            if project_text_mode:
+                from project_text_acceptance import run as run_project_text
+                await run_project_text(client,fixtures,observation.get_observer(),ROOT,result,project_text_prepared)
+                return
             if media_mode:
                 from media_acceptance import run as run_media
                 await run_media(client, fixtures, observation.get_observer(), ROOT,
