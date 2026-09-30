@@ -684,6 +684,13 @@ async def observe_attempt(session, project):
         if overlay:
             await record_fact("profile_effective_context", {k:overlay[k] for k in ("overlay_id","profile_id","candidate_hash","base_version","attempt_id","candidate")})
         yield
+        if capability.node_type in {'sfx_plan', 'sfx_gen'}:
+            try:
+                from app.services.sfx_plan import observe_sfx_result
+                await observe_sfx_result(session, project, capability.node_type)
+                ctx.sfx_result_observed = True
+            except Exception as snapshot_error:
+                observer.mark_gap(scope.execution_id, snapshot_error)
         if getattr(ctx, 'scene_native_node', None) is not None:
             try:
                 from app.services.scene_contracts import observe_scene_result
@@ -705,6 +712,13 @@ async def observe_attempt(session, project):
             await observe_split_result(session,project,capability.node_type)
             await observe_image_prompt_result(session,project,capability.node_type)
     except BaseException as exc:
+        if (isinstance(exc, Exception) and capability.node_type in {'sfx_plan', 'sfx_gen'}
+                and not getattr(ctx, 'sfx_result_observed', False)):
+            try:
+                from app.services.sfx_plan import observe_sfx_result
+                await observe_sfx_result(session, project, capability.node_type)
+            except Exception as snapshot_error:
+                observer.mark_gap(scope.execution_id, snapshot_error)
         if (isinstance(exc, Exception) and getattr(ctx, 'scene_native_node', None) is not None
                 and not getattr(ctx, 'scene_result_observed', False)):
             try:
