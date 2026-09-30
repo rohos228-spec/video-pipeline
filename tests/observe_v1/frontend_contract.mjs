@@ -41,6 +41,21 @@ console.log('Frontend metadata/diagnosis contracts: 17 assertions passed');
 const actionSource=fs.readFileSync('/observe-source/web/src/lib/actions-view.ts','utf8');
 const actionJS=ts.transpileModule(actionSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
 const {actionStatus,actionsModeLabel,actionReviewMessage}=await import('data:text/javascript;base64,'+Buffer.from(actionJS).toString('base64'));
+const {managedLaunchError}=await import('data:text/javascript;base64,'+Buffer.from(actionJS).toString('base64'));
+const launchOptions={configured:true,request_limit_max:100,
+  nodes:[{node_key:'a',supported:true},{node_key:'z',supported:true},{node_key:'video',supported:false}],
+  strategies:['wait','human_review','retry_same']};
+const selection={node_keys:['a','z'],strategies:['wait','human_review'],request_limit:12};
+assert.equal(typeof managedLaunchError,'function','simple launch must validate the server capability catalog');
+assert.equal(managedLaunchError(launchOptions,selection),null);
+assert.match(managedLaunchError(launchOptions,{...selection,node_keys:[]}),/область/i);
+assert.match(managedLaunchError(launchOptions,{...selection,node_keys:['video']}),/поддерж/i);
+assert.match(managedLaunchError(launchOptions,{...selection,node_keys:['unknown']}),/поддерж/i);
+assert.match(managedLaunchError(launchOptions,{...selection,request_limit:NaN}),/лимит/i);
+assert.match(managedLaunchError(launchOptions,{...selection,request_limit:101}),/лимит/i);
+assert.match(managedLaunchError(launchOptions,{...selection,strategies:['shell']}),/стратег/i);
+assert.match(managedLaunchError({...launchOptions,configured:false},selection),/выключ|настро/i);
+console.log('Unified launch capability/selection contracts: 9 assertions passed');
 assert.doesNotMatch(actionStatus('human_review'),/recovery/);
 assert.match(actionReviewMessage('human_review'),/Причина/);
 assert.doesNotMatch(actionReviewMessage('human_review'),/Verification не прошёл/);

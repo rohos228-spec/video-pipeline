@@ -42,8 +42,12 @@ if($Build) { $program+=' node node_modules/typescript/bin/tsc --noEmit > /result
 & $docker @base create --pull never --network none --cap-drop ALL --security-opt no-new-privileges --name $name vp-observe-frontend-deps:20260928 sh -c $program | Out-Null
 & $docker @base cp "$root/source/." "${name}:/observe-source"
 & $docker @base cp "$root/font-fixtures/." "${name}:/font-fixtures"
-& $docker @base start --attach $name *> "$root/artifacts/console.txt"
-$result=$LASTEXITCODE
+& $docker @base start $name
+if ($LASTEXITCODE -ne 0) { throw 'Cannot start offline frontend test' }
+$exitText=& $docker @base wait $name
+if ($LASTEXITCODE -ne 0) { throw 'Cannot wait for offline frontend test' }
+$result=[int]($exitText | Select-Object -Last 1)
+& $docker @base logs $name *> "$root/artifacts/console.txt"
 & $docker @base cp "${name}:/results/." "$root/artifacts"
 @{container=$name;network='none';test_exit=$result;image='vp-observe-frontend-deps:20260928';paid_calls=0} | ConvertTo-Json | Set-Content "$root/artifacts/config.json"
 Write-Output "Frontend exit: $result; evidence: $root"
