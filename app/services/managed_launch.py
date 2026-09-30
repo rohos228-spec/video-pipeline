@@ -108,7 +108,8 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
         active=await s.scalar(select(ExecutionControl.execution_id).where(ExecutionControl.project_id==project_id,
             ExecutionControl.observer_state.in_(['active','degraded'])))
         prior_control=await s.scalar(select(ActionExecutionControl.execution_id).where(
-            ActionExecutionControl.project_id==project_id))
+            ActionExecutionControl.project_id==project_id,
+            (ActionExecutionControl.workflow_run_id==request['workflow_run_id']) | ActionExecutionControl.enabled.is_(True)))
         if active or prior_control:raise ValueError('existing observation/managed history must be handled explicitly')
         run=await s.get(WorkflowRun,request['workflow_run_id'])
         project=await s.get(Project,project_id)
@@ -142,12 +143,18 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
         if not strategies or len(strategies)!=len(set(strategies)) or not set(strategies)<= {'wait','human_review','retry_same'}:
             raise ValueError('unsupported strategy catalog')
         if not set(strategies)<=set(cfg['allowed_actions']):raise ValueError('strategy outside configured owner policy')
-        if not 1<=request['request_limit']<=100:raise ValueError('request budget outside owner default')
+        from app.services.decision_config import owner_budget_policy
+        from app.services.actions_v1 import claim_run_allowance
+        owner_policy=owner_budget_policy(cfg)
+        if type(request['request_limit'])!=int or not 1<=request['request_limit']<=owner_policy['max_requests']:
+            raise ValueError('request budget outside configured owner policy')
         execution=str(uuid.uuid4());launch_id=str(uuid.uuid4())
         policy={'graph_version':revision,'node_keys':list(request['node_keys']),
             'allowed_actions':sorted(set(strategies)|({'read_events','read_contract','finish'}&set(cfg['allowed_actions']))),
             'request_limit':request['request_limit'],'max_decision_steps':3,'node_recovery_limit':1,
-            'contracts':contracts,'runtime_config_hash':digest(cfg)}
+            'contracts':contracts,'runtime_config_hash':digest(cfg),'owner_budget_policy':owner_policy}
+        await claim_run_allowance(s,project_id=project_id,workflow_run_id=run.id,
+            execution_id=execution,request_limit=request['request_limit'],owner_policy=owner_policy)
         if initial_status_projection:
             project.status=primary.status
             policy['initial_status_projection']=initial_status_projection

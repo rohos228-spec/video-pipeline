@@ -34,7 +34,7 @@ class EnableActions(BaseModel):
     group_id: str = Field(min_length=1, max_length=120)
     node_keys: list[str] = Field(min_length=1, max_length=100)
     rationale: str = Field(min_length=3, max_length=1000)
-    request_limit: int = Field(default=12, ge=1, le=100)
+    request_limit: int = Field(default=12, ge=1, le=100000,strict=True)
 
 
 class ActionsControl(BaseModel):
@@ -56,7 +56,7 @@ class ManagedLaunchRequest(BaseModel):
     graph_version: str = Field(min_length=64,max_length=64)
     node_keys: list[str] = Field(min_length=1,max_length=100)
     strategies: list[str] = Field(min_length=1,max_length=3)
-    request_limit: int = Field(default=12,ge=1,le=100)
+    request_limit: int = Field(default=12,ge=1,le=100000,strict=True)
     rationale: str = Field(min_length=3,max_length=1000)
     idempotency_key: str = Field(min_length=8,max_length=120)
 
@@ -113,9 +113,10 @@ async def managed_launch_options(project_id:int,operator:AuthDep):
                 'reason':None if capability.managed else 'исполнитель и проверка ещё не приняты',
                 'result_kind':capability.result_kind})
         runtime=status()
+        maximum=runtime.get('budget_policy',{'max_requests':100})['max_requests']
         return panel_safe({'workflow_run_id':run.id,'graph_version':digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot}),
             'nodes':nodes,'strategies':[a for a in ('wait','human_review','retry_same') if a in runtime['allowed_actions']],
-            'request_limit_default':12,'request_limit_max':100,'configured':runtime['configured'],
+            'request_limit_default':min(12,maximum),'request_limit_max':maximum,'configured':runtime['configured'],
             'mode':runtime['mode'],'online_authorized':False,
             'reason':runtime['reason'],'latest_launch':launch_json(latest) if latest else None})
 

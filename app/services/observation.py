@@ -824,7 +824,7 @@ def panel_safe(value):
 async def migrate_observation_schema(conn):
     """Additive migration used by the same startup path as existing schema migrations."""
     from app.services.diagnosis import Incident, DiagnosisState
-    from app.services.actions_v1 import ActionExecutionControl, ActionRecord
+    from app.services.actions_v1 import ActionExecutionControl, ActionRecord, ManagedRunAllowance
     from app.services.actions_recovery import RecoveryAction
     from app.services.decision_state import DecisionControl, DecisionRecord, DecisionTurn
     from app.services.profiles_state import ProfileOverlay
@@ -837,7 +837,7 @@ async def migrate_observation_schema(conn):
         ActionRecord.__table__, RecoveryAction.__table__,
         DecisionControl.__table__, DecisionRecord.__table__, DecisionTurn.__table__, ProfileOverlay.__table__, DecisionRuntimeBinding.__table__,
         MediaJob.__table__, MediaRequest.__table__,
-        ManagedLaunch.__table__,
+        ManagedLaunch.__table__, ManagedRunAllowance.__table__,
     ]))
 
 

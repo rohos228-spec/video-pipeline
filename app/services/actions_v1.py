@@ -56,6 +56,34 @@ class ActionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ManagedRunAllowance(Base):
+    """An immutable execution owns this run's existing common request counter.
+
+    Closing controls cannot free ownership. No business state or allowance is
+    reset; historical controls are checked before registering new ownership.
+    """
+    __tablename__='managed_run_allowances'
+    project_id: Mapped[int]=mapped_column(Integer,primary_key=True)
+    workflow_run_id: Mapped[int]=mapped_column(Integer,primary_key=True)
+    execution_id: Mapped[str]=mapped_column(String(36),unique=True)
+    request_limit: Mapped[int]=mapped_column(Integer)
+    owner_policy: Mapped[dict]=mapped_column(JSON)
+    created_at: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
+
+
+async def claim_run_allowance(session,*,project_id,workflow_run_id,execution_id,request_limit,owner_policy):
+    from sqlalchemy.dialects.sqlite import insert
+    history=await session.scalar(select(ActionExecutionControl.execution_id).where(
+        ActionExecutionControl.project_id==project_id,ActionExecutionControl.workflow_run_id==workflow_run_id,
+        ActionExecutionControl.execution_id!=execution_id))
+    if history:raise ValueError('workflow allowance already belongs to managed history; no reset by new execution')
+    await session.execute(insert(ManagedRunAllowance).values(project_id=project_id,workflow_run_id=workflow_run_id,
+        execution_id=execution_id,request_limit=request_limit,owner_policy=owner_policy).on_conflict_do_nothing())
+    binding=await session.get(ManagedRunAllowance,(project_id,workflow_run_id))
+    if not binding or binding.execution_id!=execution_id or binding.request_limit!=request_limit or binding.owner_policy!=owner_policy:
+        raise ValueError('workflow allowance already reserved or changed; no new execution budget')
+
+
 @dataclass(frozen=True)
 class ExecutionPermission:
     enabled: bool
@@ -329,8 +357,10 @@ class ActionSupervisor:
         from app.services.observation import ExecutionControl, digest
         if not initiator or not rationale.strip() or not group_id.strip():
             raise ValueError("initiator, group id and rationale are required")
-        if not 1 <= request_limit <= 100:
-            raise ValueError("request limit must be between 1 and 100")
+        from app.services.decision_config import runtime_config,owner_budget_policy
+        cfg=runtime_config();owner_policy=owner_budget_policy(cfg)
+        if type(request_limit)!=int or not 1 <= request_limit <= owner_policy['max_requests']:
+            raise ValueError('request limit exceeds configured owner budget policy')
         if not node_keys or len(node_keys) != len(set(node_keys)):
             raise ValueError("explicit unique node scope required")
         async with self.master() as session:
@@ -390,6 +420,8 @@ class ActionSupervisor:
                     ))
                     return result
                 raise ValueError("managed permission already exists with different scope")
+            await claim_run_allowance(session,project_id=project_id,workflow_run_id=scope.workflow_run_id,
+                execution_id=execution_id,request_limit=request_limit,owner_policy=owner_policy)
             control = ActionExecutionControl(
                 execution_id=execution_id, project_id=project_id,
                 workflow_run_id=scope.workflow_run_id, group_id=group_id,
@@ -404,7 +436,7 @@ class ActionSupervisor:
                 project_id=project_id, action_kind="enable", initiator=initiator,
                 rationale=rationale.strip(), evidence_ids=[],
                 preconditions={"graph_version_matches": True, "scope_subset": True,
-                    "user_stop": False, "selected_nodes_idle": True},
+                    "user_stop": False, "selected_nodes_idle": True,'owner_budget_policy':owner_policy},
                 idempotency_key="enable:" + execution_id, status="accepted", verification={},
             ))
             await session.commit()
@@ -477,6 +509,11 @@ class ActionSupervisor:
                     or digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot})!=control.graph_version):
                 raise RuntimeError('managed request blocked: stop, audit, scope or graph revision')
             from app.services.decision_config import DecisionRuntimeBinding,runtime_config
+            from app.services.decision_config import owner_budget_policy
+            allowance=await session.get(ManagedRunAllowance,(control.project_id,control.workflow_run_id))
+            if allowance and (allowance.execution_id!=execution_id or control.request_limit>allowance.request_limit
+                    or allowance.owner_policy!=owner_budget_policy()):
+                raise RuntimeError('owner budget configuration revision changed; blocked before HTTP reservation')
             binding=await session.get(DecisionRuntimeBinding,execution_id)
             if binding and binding.config_hash!=digest(runtime_config()):
                 raise RuntimeError('runtime configuration revision changed; blocked before HTTP reservation')

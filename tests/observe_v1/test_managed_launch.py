@@ -182,6 +182,27 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await s.scalar(select(DecisionRuntimeBinding)))
         self.assertIsNone(get_permission(7))
 
+    async def test_explicit_owner_policy_exposes_and_binds_scale_limit(self):
+        from app.services import decision_config
+        from app.services.actions_v1 import ManagedRunAllowance
+        cfg=decision_config.runtime_config()
+        cfg={**cfg,'budget_policy':{'policy_id':'synthetic-scale-1000','max_requests':1000}}
+        with patch.object(decision_config,'runtime_config',return_value=decision_config.validate_config(cfg)):
+            options=await self.client.get('/api/projects/7/observations/launch-options')
+            self.assertEqual(options.json()['request_limit_max'],1000)
+            response=await self.client.post(self.url,json={**self.payload,'request_limit':1000})
+            self.assertEqual(response.status_code,201,response.text)
+            self.assertEqual(response.json()['policy']['owner_budget_policy'],cfg['budget_policy'])
+            async with self.sessions() as s:
+                allowance=await s.get(ManagedRunAllowance,(7,11))
+                self.assertEqual(allowance.execution_id,response.json()['execution_id'])
+                self.assertEqual(allowance.request_limit,1000)
+
+    async def test_launch_request_cannot_change_owner_policy(self):
+        response=await self.client.post(self.url,json={**self.payload,'budget_policy':{'max_requests':1000}})
+        self.assertEqual(response.status_code,422,response.text)
+        async with self.sessions() as s:self.assertIsNone(await s.scalar(select(ActionExecutionControl)))
+
     async def test_idle_project_projection_refreshed_without_changing_node_attempts(self):
         from sqlalchemy.ext.asyncio import create_async_engine,async_sessionmaker
         from app.services.managed_launch import prepare

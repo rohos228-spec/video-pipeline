@@ -17,6 +17,17 @@ class DecisionRuntimeBinding(Base):
 READ_ACTIONS={'read_events','read_contract','human_review','wait','finish'}
 ALL_ACTIONS=READ_ACTIONS|{'retry_same','retry_profile'}
 
+def owner_budget_policy(config=None):
+    """Local owner configuration only. Models and execution requests cannot raise it."""
+    cfg=runtime_config() if config is None else config
+    policy=cfg.get('budget_policy',{'policy_id':'default-100','max_requests':100})
+    if (not isinstance(policy,dict) or set(policy)!={'policy_id','max_requests'}
+            or not isinstance(policy['policy_id'],str) or not 1<=len(policy['policy_id'])<=120
+            or policy['policy_id'].strip()!=policy['policy_id']
+            or type(policy['max_requests'])!=int or not 1<=policy['max_requests']<=100000):
+        raise ValueError('invalid owner request budget policy')
+    return dict(policy)
+
 def incident_in_scope(config, *, execution_id, incident_id, node_key, source_attempt_id):
     scope=config.get('incident_scope')
     return scope is None or all(scope[k]==v for k,v in {
@@ -46,9 +57,10 @@ def validate_model(model):
 
 def validate_config(raw):
     expected={'version','mode','online_enabled','endpoint','decision','profiles','allowed_actions'}
-    optional={'model_transport','external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack','incident_scope','media'}
+    optional={'model_transport','external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack','incident_scope','media','budget_policy'}
     if not isinstance(raw,dict) or not expected<=set(raw) or set(raw)-expected-optional or raw['version']!=1 or raw['mode'] not in {'synthetic','production'} or type(raw['online_enabled'])!=bool:
         raise ValueError('invalid runtime configuration')
+    owner_budget_policy(raw)
     if 'incident_scope' in raw:
         scope=raw['incident_scope']
         ids={'execution_id','incident_id','node_key','source_attempt_id'}
@@ -122,6 +134,7 @@ def status():
         cfg=runtime_config()
         available=bool(cfg['decision'] and cfg['online_enabled'])
         return {'mode':cfg['mode'],'configured':available,'decision_model':cfg['decision'],
+            'budget_policy':owner_budget_policy(cfg),
             'allowed_actions':cfg['allowed_actions'],'profile_count':len(cfg['profiles']),
             'route':cfg['endpoint'],'reason':None if available else 'Модель принятия решений не настроена или выключена'}
     except (ValueError,OSError,TypeError):return {'mode':'production','configured':False,'decision_model':None,'allowed_actions':[],
