@@ -46,6 +46,24 @@ class Profiles(DecisionDurability):
         self.assertTrue(state['available'],state['reason'])
         self.assertEqual((await self.approve())['status'],'approved')
 
+    async def test_marked_scene_profiles_rejected_despite_excel_gpt_ui_type(self):
+        from app.models import WorkflowRun
+        for marker in ('skeleton','assemble','camera'):
+            with self.subTest(marker=marker):
+                async with self.sessions() as s:
+                    run=await s.get(WorkflowRun,11)
+                    run.nodes_snapshot=[{**n,'data':{**n.get('data',{}),'sd_agent':marker}}
+                        if n['id']=='n1' else n for n in run.nodes_snapshot]
+                    graph=observation.digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot})
+                    (await s.get(observation.ExecutionControl,'exec-durable')).graph_version=graph
+                    (await s.get(ActionExecutionControl,'exec-durable')).graph_version=graph
+                    await s.commit()
+                state=await self.store.state(7,'exec-durable','n1')
+                self.assertFalse(state['available'])
+                self.assertEqual(state['overlays'],[])
+                with self.assertRaisesRegex(ValueError,'incompatible accepted text node contract'):
+                    await self.approve()
+
     async def test_explicit_synthetic_catalog_is_not_replaced_by_legacy_defaults(self):
         from app.services import decision_config
         cfg=decision_config.runtime_config()

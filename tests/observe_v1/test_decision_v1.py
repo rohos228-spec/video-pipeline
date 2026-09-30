@@ -451,11 +451,12 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertFalse(text_contract['nonempty_payload_required'])
         self.assertFalse(text_contract['empty_ops_allowed'])
 
-    async def native_contract_fixture(self,node_type):
+    async def native_contract_fixture(self,node_type,node_data=None):
         from app.models import Project,Workflow,WorkflowRun,NodeRun
         from app.services.actions_v1 import ActionExecutionControl
         async with self.sessions() as s:
-            nodes=[{**n,'type':node_type if n['id']=='n1' else n['type']} for n in self.nodes]
+            nodes=[{**n,'type':node_type,'data':{**n.get('data',{}),**(node_data or {})}}
+                if n['id']=='n1' else n for n in self.nodes]
             (await s.get(Workflow,9)).nodes=nodes
             (await s.get(WorkflowRun,11)).nodes_snapshot=nodes
             graph=observation.digest({'nodes':nodes,'edges':[]})
@@ -493,6 +494,35 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertNotIn('retry_same',before['allowed_actions'])
         self.assertNotIn('retry_profile',before['allowed_actions'])
         self.assertEqual((await self.loop.context(record['decision_id']))['context_version'],before['context_version'])
+
+    async def test_marked_scene_node_never_inherits_structured_text_recovery(self):
+        for data,typ in (({'sd_agent':'skeleton'},'sd_agent'),
+                         ({'sd_agent':'assemble'},'sd_assemble'),
+                         ({'agent':'camera'},'sd_agent')):
+            with self.subTest(data=data):
+                record=await self.native_contract_fixture('excel_gpt',data)
+                context=await self.loop.context(record['decision_id'])
+                self.assertEqual(context['node_capability']['node_type'],typ)
+                self.assertFalse(context['node_capability']['managed'])
+                self.assertNotIn('retry_same',context['allowed_actions'])
+                self.assertNotIn('retry_profile',context['allowed_actions'])
+                self.assertNotIn('finish',context['allowed_actions'])
+                self.assertEqual(context['eligible_profiles'],[])
+                contract=await self.loop.read_contract(record['decision_id'])
+                self.assertEqual(contract['node_type'],typ)
+                self.assertEqual(contract['result_kind'],'unsupported')
+                self.assertEqual(contract['compatible_profiles'],[])
+                self.assertNotIn('nonempty_payload_required',contract)
+                self.assertNotIn('jobs',contract)
+
+    async def test_unsupported_native_contract_does_not_claim_media_verification(self):
+        record=await self.native_contract_fixture('hero')
+        contract=await self.loop.read_contract(record['decision_id'])
+        self.assertFalse(contract['managed'])
+        self.assertEqual(contract['result_kind'],'unsupported')
+        self.assertEqual(contract['verification_status'],'unavailable: no accepted managed executor')
+        self.assertNotIn('jobs',contract)
+        self.assertNotIn('contract',contract)
 
 
 def load_tests(loader,tests,pattern):
