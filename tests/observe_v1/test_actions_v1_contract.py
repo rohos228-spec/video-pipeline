@@ -161,6 +161,38 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(control.held)
             self.assertEqual(control.requests_used,0)
 
+    async def test_worker_admission_preserves_other_projects_and_observation_stop(self):
+        from app.services.actions_v1 import worker_entry_admission
+        self.assertTrue((await worker_entry_admission(8)).allowed)
+        await self.supervisor.enable(project_id=7,execution_id='exec-durable',group_id='g1',
+            node_keys=['n1'],graph_version=self.graph,initiator='test-operator',
+            rationale='independent observation stop',request_limit=8)
+        async with self.sessions() as s:
+            (await s.get(ExecutionControl,'exec-durable')).observer_state='stopped'
+            await s.commit()
+        self.assertTrue((await worker_entry_admission(7)).allowed)
+        await self.supervisor.set_held(project_id=7,execution_id='exec-durable',held=True,
+            initiator='test-operator',rationale='hold only this execution',idempotency_key='hold-scope-test')
+        self.assertFalse((await worker_entry_admission(7)).allowed)
+        self.assertTrue((await worker_entry_admission(8)).allowed)
+
+    async def test_verifier_hold_is_not_a_user_action_and_cannot_automatically_resume(self):
+        from sqlalchemy import select
+        from app.services.actions_v1 import ActionRecord
+        await self.supervisor.enable(project_id=7,execution_id='exec-durable',group_id='g1',
+            node_keys=['n1'],graph_version=self.graph,initiator='test-operator',
+            rationale='verifier provenance',request_limit=8)
+        await self.supervisor.set_held(project_id=7,execution_id='exec-durable',held=True,
+            initiator='native_split_verifier',rationale='coverage failed',idempotency_key='verifier-hold-test',
+            operator_request=False)
+        async with self.sessions() as s:
+            row=await s.scalar(select(ActionRecord).where(ActionRecord.idempotency_key=='verifier-hold-test'))
+            self.assertFalse(row.preconditions['explicit_operator_request'])
+        with self.assertRaisesRegex(ValueError,'automatic resume'):
+            await self.supervisor.set_held(project_id=7,execution_id='exec-durable',held=False,
+                initiator='native_split_verifier',rationale='not permitted',idempotency_key='verifier-resume-test',
+                operator_request=False)
+
     async def test_recovery_requires_actual_current_incident_before_any_dispatch(self):
         await self.supervisor.enable(project_id=7,execution_id="exec-durable",group_id="g1",
             node_keys=["n1"],graph_version=self.graph,initiator="test-operator",
