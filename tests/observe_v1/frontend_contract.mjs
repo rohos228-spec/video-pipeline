@@ -56,6 +56,16 @@ assert.match(managedLaunchError(launchOptions,{...selection,request_limit:101}),
 assert.match(managedLaunchError(launchOptions,{...selection,strategies:['shell']}),/стратег/i);
 assert.match(managedLaunchError({...launchOptions,configured:false},selection),/выключ|настро/i);
 console.log('Unified launch capability/selection contracts: 9 assertions passed');
+const catalogOptions={...launchOptions,strategies:[...launchOptions.strategies,'retry_profile'],
+  profiles:[{profile_id:'format-approved'}],profile_catalog_hash:'catalog-v1'};
+assert.match(managedLaunchError(catalogOptions,{...selection,strategies:['retry_profile']}),/профил/i);
+assert.equal(managedLaunchError(catalogOptions,{...selection,strategies:['retry_profile'],
+  profile_ids:['format-approved'],profile_catalog_hash:'catalog-v1'}),null);
+assert.match(managedLaunchError(catalogOptions,{...selection,strategies:['retry_profile'],
+  profile_ids:['unknown'],profile_catalog_hash:'catalog-v1'}),/профил/i);
+assert.match(managedLaunchError(catalogOptions,{...selection,strategies:['retry_profile'],
+  profile_ids:['format-approved'],profile_catalog_hash:'old'}),/каталог/i);
+console.log('Preapproved profile launch contracts: 4 assertions passed');
 assert.doesNotMatch(actionStatus('human_review'),/recovery/);
 assert.match(actionReviewMessage('human_review'),/Причина/);
 assert.doesNotMatch(actionReviewMessage('human_review'),/Verification не прошёл/);
