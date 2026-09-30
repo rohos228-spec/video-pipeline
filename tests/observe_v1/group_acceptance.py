@@ -86,7 +86,7 @@ async def run():
         path=ROOT/'synthetic-production-adapter.json';path.write_text(json.dumps(config,indent=2))
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
     recovery_mode = mode in {"recovery-a", "recovery-b"}
-    media_mode = mode in {"media-image", "media-mixed", "media-unverified"}
+    media_mode = mode in {"media-image", "media-mixed", "media-unverified", "media-recovery"}
     if media_mode:
         from media_acceptance import prepare
         media_prepared = prepare(fixtures, ROOT, mode)
@@ -101,6 +101,13 @@ async def run():
         fixtures.synthetic_answer = lambda node, attempt: original_answer(node,
             2 if mode == "recovery-a" and recovery_transport["active"] else 1
         ) if node == fixtures.NODES[0] else original_answer(node, attempt)
+    if mode == "media-recovery":
+        original_answer = fixtures.synthetic_answer
+        # Same malformed JSON as the existing exhaustion fixture, but at the
+        # last model node (QC). Only the external answer changes for recovery.
+        fixtures.synthetic_answer = lambda node, attempt: '{"ops": }' if (
+            node == fixtures.NODES[4] and not recovery_transport["active"]
+        ) else original_answer(node, attempt)
     if mode == "unrepaired":
         original_answer=fixtures.synthetic_answer
         fixtures.synthetic_answer=lambda node,attempt: original_answer(node,1) if node==fixtures.NODES[0] else original_answer(node,attempt)

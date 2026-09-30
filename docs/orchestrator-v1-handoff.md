@@ -1,5 +1,11 @@
 # Оркестратор v1: локальная передача
 
+**Последующее подтверждение настоящим worker:** native QC exhaustion → одна
+Actions recovery → verification → image done — GREEN. В точечном графе пять
+text-нод и image завершены, video pending; 26 синтетических операций, 0 внешних.
+Полный отчёт и границы (без принудительного process restart):
+[recovery-worker-image-acceptance.md](recovery-worker-image-acceptance.md).
+
 **Дополнение 30.09, после этой приёмки:** в коде `d38a9a8a` исправлено сохранение
 конфигурации recovery и её восстановление для перехода text→images.
 Текущая узкая регрессия: media/recovery24, общая125, QC41 — все GREEN.
