@@ -41,6 +41,8 @@ try:
         sys.argv = [str(SOURCE / "tests/observe_v1/test_media_transport.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "diagnose":
         sys.argv = [str(SOURCE / "tests/observe_v1/test_diagnosis.py")]
+    if os.environ.get("OBSERVE_TEST_TARGET") == "managed-launch":
+        sys.argv = [str(SOURCE / "tests/observe_v1/test_managed_launch.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "actions":
         sys.argv = [str(SOURCE / "tests/observe_v1/test_actions_v1_contract.py")]
     if os.environ.get("OBSERVE_TEST_TARGET",'').startswith("decision"):

@@ -38,6 +38,7 @@ $files += @('tests/observe_v1/decision_acceptance.py','tests/observe_v1/profiles
 $files += 'tests/observe_v1/live_decision_acceptance.py'
 if ($Target -eq 'group') { $files += @('tests/observe_v1/group_runner.py','tests/observe_v1/media_acceptance.py','config/managed-text-pilot.example.json') }
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
+if ($Target -eq 'managed-launch') { $files += 'tests/observe_v1/test_managed_launch.py' }
 if ($Target -eq 'media-contract') { $files += 'tests/observe_v1/test_media_contract.py' }
 if ($Target -eq 'media-jobs') { $files += 'tests/observe_v1/test_media_jobs.py' }
 if ($Target -eq 'media-observation') { $files += @('tests/observe_v1/test_media_jobs.py','tests/observe_v1/test_media_observation.py') }
@@ -258,9 +259,9 @@ if ($LauncherCase) {
     if (-not $passed) { exit 1 }
     exit 0
 }
-$started = & $docker @connectionArgs start $name 2>$null
+& $docker @connectionArgs start $name | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Cannot start offline test container' }
-$waitOutput = & $docker @connectionArgs wait $name 2>$null
+$waitOutput = & $docker @connectionArgs wait $name
 if ($LASTEXITCODE -ne 0) { throw 'Cannot wait for offline test container' }
 $testExit = [int]($waitOutput | Select-Object -Last 1)
 $savedErrorActionPreference = $ErrorActionPreference
