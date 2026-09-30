@@ -444,6 +444,177 @@ class ImagePromptsContract(unittest.TestCase):
         self._assert_verification(output, snapshot, "failed")
 
 
+class ImagePromptFailedDatabase(unittest.IsolatedAsyncioTestCase):
+    fixture_node_type = "image_prompts"
+
+    async def asyncSetUp(self):
+        from test_actions_v1_contract import DurableActions
+
+        await DurableActions.asyncSetUp(self)
+
+    async def asyncTearDown(self):
+        from test_actions_v1_contract import DurableActions
+
+        await DurableActions.asyncTearDown(self)
+
+    async def test_managed_native_integrity_error_snapshots_committed_partial_rows(self):
+        from unittest.mock import patch
+        from sqlalchemy import event, select
+        from sqlalchemy.engine import Engine
+        from sqlalchemy.exc import IntegrityError, PendingRollbackError
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from app.models import Base, Frame, NodeRun, NodeRunStatus, Project, ProjectStatus
+        from app.services import observation
+        from app.services.actions_v1 import ActionExecutionControl, ActionRecord
+        from app.services.node_capabilities import record_image_prompt_input
+        from app.settings import settings
+
+        execution_id = "00000000-0000-4000-8000-000000000007"
+        async with self.sessions() as master:
+            scope = await master.get(observation.ExecutionControl, "exec-durable")
+            scope.execution_id = execution_id
+            await master.commit()
+        await self.supervisor.enable(project_id=7, execution_id=execution_id, group_id="g1",
+            node_keys=["n1"], graph_version=self.graph, initiator="test-operator",
+            rationale="native failed-session output evidence", request_limit=1)
+        observer = observation.get_observer()
+        async with self.sessions() as master:
+            (await master.get(Project, 7)).status = ProjectStatus.generating_image_prompts
+            node = await master.scalar(select(NodeRun).where(NodeRun.node_key == "n1"))
+            node.status = NodeRunStatus.running
+            await master.commit()
+            scope = await master.get(observation.ExecutionControl, execution_id)
+        # Load only this real persisted scope; avoid project discovery outside the fixture.
+        observer.scopes[scope.workflow_run_id] = scope
+
+        with patch.object(settings, "data_dir", Path(self.tmp.name)):
+            directory = Path(self.tmp.name) / "videos" / "actions-fixture"
+            directory.mkdir(parents=True)
+            database = directory / "project.db"
+            engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+            sessions = async_sessionmaker(engine, expire_on_commit=False)
+            error_phase = False
+            wrapper_sql = []
+
+            @event.listens_for(Engine, "before_cursor_execute")
+            def record_business_sql(conn, cursor, statement, parameters, context, executemany):
+                if error_phase and Path(str(conn.engine.url.database)).resolve() == database.resolve():
+                    wrapper_sql.append(statement)
+
+            try:
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
+                    await observation.migrate_observation_schema(conn)
+                async with sessions() as seed:
+                    seed.add(Project(id=7, slug="actions-fixture", topic="synthetic",
+                        status=ProjectStatus.generating_image_prompts, meta={}))
+                    seed.add_all([
+                        Frame(project_id=7, number=1, uuid="af" * 16,
+                            voiceover_text="Первая исходная строка.", image_prompt=None, attrs={}),
+                        Frame(project_id=7, number=2, uuid="bf" * 16,
+                            voiceover_text="Вторая исходная строка.", image_prompt=None, attrs={}),
+                    ])
+                    await seed.commit()
+                original_error = None
+                committed_frames = None
+                committed_project = None
+                async with sessions() as business:
+                    project = await business.get(Project, 7)
+                    with self.assertRaises(IntegrityError) as raised:
+                        async with observation.observe_attempt(business, project):
+                            frames = (await business.scalars(select(Frame)
+                                .where(Frame.project_id == 7).order_by(Frame.number))).all()
+                            await record_image_prompt_input(frames, project)
+                            frames[0].image_prompt = "A complete synthetic native scene. " * 10
+                            await business.commit()  # Actual partial result, no ready/done status.
+                            committed_frames = [dict(row) for row in (await business.execute(
+                                select(Frame.__table__).where(Frame.project_id == 7)
+                                .order_by(Frame.number))).mappings().all()]
+                            committed_project = dict((await business.execute(
+                                select(Project.__table__).where(Project.id == 7))).mappings().one())
+                            # These changes must roll back with the genuine constraint failure.
+                            frames[1].voiceover_text = "Незафиксированная замена закадра."
+                            frames[1].image_prompt = "Uncommitted synthetic prompt. " * 10
+                            business.add(Frame(project_id=7, number=1, uuid="cf" * 16,
+                                voiceover_text="Duplicate frame number.", attrs={}))
+                            try:
+                                await business.flush()
+                            except IntegrityError as exc:
+                                original_error = exc
+                                self.assertFalse(business.is_active)
+                                with self.assertRaises(PendingRollbackError):
+                                    await business.execute(select(Frame.id))
+                                error_phase = True
+                                raise
+                            self.fail("SQLite must reject duplicate (project_id, number)")
+                    self.assertIs(raised.exception, original_error,
+                        "observation must preserve the original native DB exception")
+                    self.assertFalse(business.is_active,
+                        "observation must not repair or roll back the native business session")
+                    with self.assertRaises(PendingRollbackError):
+                        await business.execute(select(Frame.id))
+                    self.assertTrue(any(statement.lstrip().upper().startswith("SELECT")
+                        and "frames" in statement.lower() for statement in wrapper_sql),
+                        "error output must read committed frames through another session")
+                    self.assertFalse([statement for statement in wrapper_sql
+                        if statement.lstrip().split(None, 1)[0].upper()
+                        in {"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "ALTER", "DROP"}],
+                        "error observation must not write or autoflush business data")
+                    error_phase = False
+                async with sessions() as fresh:
+                    actual = [dict(row) for row in (await fresh.execute(
+                        select(Frame.__table__).where(Frame.project_id == 7)
+                        .order_by(Frame.number))).mappings().all()]
+                    actual_project = dict((await fresh.execute(
+                        select(Project.__table__).where(Project.id == 7))).mappings().one())
+                self.assertEqual(actual, committed_frames)
+                self.assertEqual(actual_project, committed_project)
+                self.assertEqual(actual_project["status"], ProjectStatus.generating_image_prompts)
+
+                async with self.sessions() as master:
+                    facts = (await master.scalars(select(observation.ObservationEvent).where(
+                        observation.ObservationEvent.execution_id == execution_id,
+                        observation.ObservationEvent.node_key == "n1")
+                        .order_by(observation.ObservationEvent.id))).all()
+                    control = await master.get(ActionExecutionControl, execution_id)
+                    self.assertTrue(control.held)
+                    self.assertEqual(control.requests_used, 0)
+                    holds = (await master.scalars(select(ActionRecord).where(
+                        ActionRecord.execution_id == execution_id,
+                        ActionRecord.action_kind == "hold"))).all()
+                    self.assertEqual(len(holds), 1)
+                    self.assertEqual(holds[0].initiator, "native_image_prompt_verifier")
+                    self.assertFalse(holds[0].preconditions["explicit_operator_request"])
+                    states = {node.node_key: node.status for node in
+                        (await master.scalars(select(NodeRun))).all()}
+                    self.assertNotEqual(states["n1"], NodeRunStatus.done)
+                    self.assertEqual(states["n2"], NodeRunStatus.pending)
+                for kind in ("node_start", "node_input", "node_output",
+                             "node_result_verification", "node_error"):
+                    self.assertEqual(sum(fact.kind == kind for fact in facts), 1, kind)
+                self.assertFalse(any(fact.kind == "node_end" for fact in facts))
+                node_error = next(fact for fact in facts if fact.kind == "node_error")
+                self.assertEqual(node_error.payload["error_type"], "IntegrityError")
+                proof = next(fact for fact in facts if fact.kind == "node_result_verification")
+                self.assertIn(proof.payload["status"], ("failed", "unknown"))
+                self.assertFalse(proof.payload["semantic_quality_verified"])
+                self.assertFalse(proof.payload["business_commit_claim"])
+                output = next(fact for fact in facts if fact.kind == "node_output")
+                body = json.loads((observer.body_root / output.payload["body"]["path"])
+                    .read_text(encoding="utf-8"))
+                self.assertEqual(body["project_id"], 7)
+                self.assertEqual([(row["uuid"], row["number"], row["voiceover_text"],
+                    row["image_prompt"]) for row in body["frames"]],
+                    [(row["uuid"], row["number"], row["voiceover_text"], row["image_prompt"])
+                     for row in committed_frames])
+                attempt_ids = {fact.attempt_id for fact in facts}
+                self.assertEqual(len(attempt_ids), 1)
+                self.assertNotIn(None, attempt_ids)
+            finally:
+                event.remove(Engine, "before_cursor_execute", record_business_sql)
+                await engine.dispose()
+
+
 class Artifacts(unittest.IsolatedAsyncioTestCase):
     async def test_native_parallel_batch_parse_keeps_its_own_model_request(self):
         import asyncio
