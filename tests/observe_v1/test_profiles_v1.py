@@ -5,6 +5,7 @@ from sqlalchemy import select
 from app.services import observation
 from app.services.actions_v1 import ActionExecutionControl
 from app.services.actions_recovery import RecoveryAction
+from app.services.managed_launch import ManagedLaunch
 from test_decision_v1 import DecisionDurability
 
 class Profiles(DecisionDurability):
@@ -194,6 +195,78 @@ class Profiles(DecisionDurability):
         self.assertEqual(validate_proposal(json.dumps(proposal),ctx)['arguments'],{'overlay_id':'allowed'})
         for args in ({'overlay_id':'foreign'},{'overlay_id':'allowed','model':'custom'}):
             with self.assertRaises(ValueError):validate_proposal(json.dumps({**proposal,'arguments':args}),ctx)
+
+    async def approved_launch_decision(self):
+        await self.enable_decisions();record=await self.begin()
+        async with self.sessions() as s:
+            s.add(ManagedLaunch(launch_id='launch-policy',execution_id='exec-durable',project_id=7,
+                workflow_run_id=11,idempotency_key='launch-policy-test',request_hash='test',entry_node='n1',
+                status='submitted',result={},policy={'allowed_actions':['read_events','read_contract','wait',
+                    'human_review','retry_same','retry_profile','finish'],'profile_ids':['synthetic-format-v1'],
+                    'profile_catalog_hash':self.profiles.catalog_hash(),
+                    'profiles':{'synthetic-format-v1':self.profiles.active_catalog()['synthetic-format-v1']}}))
+            await s.commit()
+        return record
+
+    async def test_preapproved_choices_are_readonly_context_not_operator_overlays(self):
+        record=await self.approved_launch_decision()
+        context=await self.loop.context(record['decision_id'])
+        self.assertEqual([p['profile_id'] for p in context['eligible_profiles']],['synthetic-format-v1'])
+        self.assertIn('retry_profile',context['allowed_actions'])
+        self.assertEqual((await self.store.state(7,'exec-durable','n1'))['overlays'],[])
+        proposal={'action':'retry_profile','arguments':{'profile_id':'synthetic-format-v1'},
+            'evidence_ids':context['evidence_ids'][:1],'context_version':context['context_version'],
+            'explanation':'Use the preapproved format strategy after native exhaustion'}
+        self.service.validate_proposal(json.dumps(proposal),context)
+        for args in ({'profile_id':'synthetic-json-v1'},{'profile_id':'synthetic-format-v1','model':'arbitrary'}):
+            with self.assertRaises(ValueError):self.service.validate_proposal(json.dumps({**proposal,'arguments':args}),context)
+
+    async def test_legacy_execution_has_no_automatically_approved_choices(self):
+        await self.enable_decisions();record=await self.begin()
+        context=await self.loop.context(record['decision_id'])
+        self.assertEqual(context['eligible_profiles'],[])
+        with self.assertRaises(ValueError):await self.store.select_for_decision(record['decision_id'],'synthetic-format-v1')
+        self.assertEqual((await self.store.state(7,'exec-durable','n1'))['overlays'],[])
+
+    async def test_selection_requires_claimed_acting_decision_and_fresh_catalog(self):
+        record=await self.approved_launch_decision()
+        with self.assertRaisesRegex(ValueError,'acting'):
+            await self.store.select_for_decision(record['decision_id'],'synthetic-format-v1')
+        async with self.sessions() as s:
+            row=await s.get(self.service.DecisionRecord,record['decision_id']);row.status='acting'
+            row.lease_token='owner';row.lease_until=__import__('datetime').datetime.utcnow()+__import__('datetime').timedelta(seconds=60)
+            row.proposal={'action':'retry_profile','arguments':{'profile_id':'synthetic-format-v1'}}
+            await s.commit()
+        with patch.object(self.profiles,'catalog_hash',return_value='changed'):
+            with self.assertRaisesRegex(ValueError,'catalog'):
+                await self.store.select_for_decision(record['decision_id'],'synthetic-format-v1')
+        selected=await self.store.select_for_decision(record['decision_id'],'synthetic-format-v1')
+        replay=await self.store.select_for_decision(record['decision_id'],'synthetic-format-v1')
+        self.assertEqual(selected['overlay_id'],replay['overlay_id'])
+        self.assertTrue(any(h['kind']=='decision_selected' and h['decision_id']==record['decision_id'] for h in replay['history']))
+
+    async def test_decision_selects_preapproved_profile_and_uses_one_recovery_ticket(self):
+        record=await self.approved_launch_decision()
+        from app.services.gpt_api import GptChatResult
+        async def reply(**kw):
+            ctx=json.loads(kw['prompt'])
+            return GptChatResult(text=json.dumps({'action':'retry_profile',
+                'arguments':{'profile_id':'synthetic-format-v1'},'evidence_ids':ctx['evidence_ids'][:1],
+                'context_version':ctx['context_version'],'explanation':'Native retries exhausted; use approved format strategy'}),
+                model='synthetic',raw={'status':'completed'})
+        with patch('app.services.gpt_api.chat',side_effect=reply) as chat:
+            await self.loop.step(record['decision_id'])
+            await self.service.DecisionSupervisor(observation._observer).tick()
+            self.assertEqual(chat.call_count,1)
+        async with self.sessions() as s:
+            row=await s.get(self.service.DecisionRecord,record['decision_id'])
+            self.assertEqual(row.status,'waiting_worker',row.policy_result)
+            tickets=(await s.scalars(select(RecoveryAction))).all()
+            self.assertEqual(len(tickets),1)
+            self.assertEqual(tickets[0].preconditions['action_type'],'retry_profile')
+        state=await self.store.state(7,'exec-durable','n1')
+        self.assertEqual(len(state['overlays']),1)
+        self.assertEqual(state['overlays'][0]['profile_id'],'synthetic-format-v1')
 
 def load_tests(loader,tests,pattern):
     return unittest.TestSuite(Profiles(name) for name in Profiles.__dict__ if name.startswith('test_'))
