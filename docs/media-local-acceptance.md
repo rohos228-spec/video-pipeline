@@ -1,10 +1,81 @@
 # Текст и медиа: локальная приёмка — 30.09.2026
 
-Статус: частичная приёмка; Docker Engine стал недоступен во время diagnosis.
-Финальные mixed/browser и diagnosis GREEN не заявляются. Production выключен;
+Статус: смешанный worker завершил семь нод; окончательная приёмка прервана OOM,
+затем Docker Engine вернул `_ping: 500 Internal Server Error`. Production выключен;
 новых реальных запросов, чтения ключей, публикаций и установок зависимостей — 0.
-Проверенная текущая production-база — `259dc487` (полный SHA в Git/run-config);
-последующий checkpoint этого отчёта меняет только документацию.
+Текущая кодовая база — `10ff17bc86d8e2344783822a9b7da7b820cc646c`.
+Следующий checkpoint меняет только отчёт/инструкцию. Полный GREEN не заявляется.
+
+## Продолжение 30.09: что подтверждено сейчас
+
+- `continuation-warning-green-01`: **19/19**. Все 358 app-файлов совпадают с
+  текущими; изменённые Actions/Observation/enrich реально импортированы и
+  сверены по SHA-256. Переход text → images использует исходный planner/FSM,
+  проверяет обе реплики нод, scope, stop/backoff, revision, hold, budget, inputs,
+  blocking incident/Decision review и обязательный транзакционный audit.
+  Измеренное покрытие нового helper: 113/117 строк (96,6%).
+- `mixed-current-05`, execution `80b56fb1-e446-4007-ac9c-d287fa6c51d5`:
+  один старт через API, все шесть text + images **done**, video вне scope pending.
+  Исходный writer создал HTML **4684 байта**, исходный image worker — PNG
+  **295737 байт, 256×384**, verified; один Artifact и один `managed_successor`.
+  Счётчик **8/32**: пять text POST, один image submit, один status, одна загрузка.
+  Все обращения — loopback fixtures, не провайдер. Decision выключен.
+- Живая v649 панель показала scope, group done, нет активной ноды, job, verifier,
+  synthetic-only/production-unconfigured, unknown progress и раздельные операции.
+  После reload сохранились execution и 8/32. `ui-media.png/txt`, `ui-reload.txt`
+  и хеши 13 реально указанных DOM-ресурсов сохранены.
+- Прямая навигация к PNG заблокирована клиентом браузера
+  `ERR_BLOCKED_BY_CLIENT`; визуальное превью файла не принято. Позднее приложение
+  завершено с **exit137/OOMKilled=true**, поэтому финальная проверка неизменности
+  счётчиков при закрытии UI и штатного shutdown не выполнена.
+- Копирование `/results` прервалось после отказа Engine. На хосте сохранены
+  полный JSON `api-history.json` (140 событий), UI и исходники/manifest. Полные
+  тела, БД, PNG/HTML, `group-result.json` остаются в сохранённом контейнере
+  `vp-observe-test-20260930053306-bb8d5ad8`; их сбор **не завершён**.
+  Финальный worker `loaded-modules.json` не записался из-за OOM.
+- `common-after-continuation-01` не начал тесты: create получил Docker `_ping`
+  500. Прежние 125/25/25 не переименованы в актуальную регрессию после новых
+  трёх app-модулей. Общий набор, runtime/diagnosis и чистое завершение mixed
+  остаются необходимыми проверками. Неизменённый frontend повторно не собирался.
+
+Доказательства: `outputs/media-v1-20260930/continuation-source-evidence.json`,
+`continuation-boundary.json`, `mixed-current-05/artifacts/short-timeline.json`.
+Исходные event/failed-файлы сохранены; хронология их не заменяет.
+
+### Вмешательства и обнаруженные границы
+
+1. Исходный runtime продолжал автоматически только excel → excel. Добавлен
+   узкий opt-in managed переход к images; ручной `run_step` не используется,
+   stop/backoff и attempts не снимаются, новый worker не создаётся.
+2. `mixed-current-03` остановлен из-за слишком широкого нового gate:
+   неблокирующий snapshot warning был принят за hold. Исправлено различение;
+   актуальные состояния остальных нод теперь должны совпадать в обеих БД.
+3. `mixed-current-04` корректно остановлен на `image_inputs_missing`.
+   Непоследовательная фикстура задала две ячейки поверх полного старого VO;
+   исходный fw_script пересоздал их и отбросил prompts. Только новый исходный
+   synthetic seed приведён к контракту: одна ячейка равна полному короткому VO,
+   image prompt задан заранее. После старта данные/статусы не исправлялись.
+   Это не проверка генерации image prompt из сценария или качества модели.
+4. Диагностика по-прежнему показывает неблокирующее master/project disagreement;
+   оно не скрыто. Snapshot включает агрегат WorkflowRun, который исходная
+   проекция не копирует. Не объявляем любые расхождения безвредными.
+5. Media recovery последней text-ноды после restart без сохранённой конфигурации
+   attempt не продолжает images автоматически: hash обязателен. Универсальный
+   media retry/profile и новые провайдеры не включались.
+6. В общей форме лимита сохранилась старая подпись «model POST», хотя media
+   используют общий budget также для status/download. Раздельные значения в
+   media-строке верны; подпись требует точечной правки и frontend-проверки после
+   восстановления тестов. Число 8 не выдаётся за восемь платных POST.
+
+### Следующий шаг после доступности Engine
+
+Сначала собрать `/results` и inspect именно контейнера mixed-current-05.
+Не продолжать его worker и не выставлять статусы. Затем один runner за раз:
+текущие `decision-final`, `runtime`, `diagnose`; при доступных ресурсах —
+`group -GroupMode media-mixed` без браузера для итогового loaded-module manifest
+и чистого shutdown. Живые preview/завершение UI остаются отдельным непринятым
+пунктом. Не повторять неизменённые SSE/online, frontend build или длинный native
+exhaustion без конкретной необходимости. Чужие процессы/настройки не менять.
 
 ## Что входит в текущую версию
 
@@ -69,7 +140,7 @@ job, общий счётчик перед HTTP, статус провайдер�
 
 ## Изменения по результатам проверок
 
-### Текущая остановка и точка продолжения
+### Историческая остановка до текущего продолжения (04:49 MSK)
 
 30.09.2026 около 04:46–04:49 MSK Docker API вернул 500 на read-only список
 контейнеров, затем inspect сообщил отсутствие `dockerDesktopLinuxEngine`.
@@ -95,7 +166,7 @@ host runner и probe завершились. Worker внутри недосту�
 5. Записать итог группы/HTML/PNG и checkpoint. Полный текстовый exhaustion и
    неизменённый frontend build повторять не нужно.
 
-### Совместимость сохранённых результатов
+### Историческая совместимость на базе 259dc487
 
 `outputs/media-v1-20260930/source-compatibility-current.json` сравнивает реальные
 файлы с manifests. Все 358 app-файлов совпадают у common-current-02,

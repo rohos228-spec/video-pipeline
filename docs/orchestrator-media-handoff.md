@@ -1,5 +1,45 @@
 # Text + media goal: current handoff
 
+## CURRENT: Engine _ping 500 after successful mixed worker / UI OOM
+
+Code HEAD `10ff17bc86d8e2344783822a9b7da7b820cc646c`; following checkpoint docs only.
+No active runner/bridge/probe remains on host. Do not create a replacement stand.
+
+- **19/19** current media-observation tests; all 358 app sources and 3 changed
+  loaded modules match current. Core changes: original graph/FSM managed text →
+  images continuation, with explicit inputs/replica/permission/stop/revision/
+  budget/audit/prerequisite checks. No manual-start clearing or worker dispatch.
+- Mixed-current-05 actual worker: seven scoped nodes done, video pending;
+  one start, text POST5 + image submit1/status1/download1 = 8/32; HTML4684,
+  PNG295737/256x384 verified and one artifact. Execution
+  `80b56fb1-e446-4007-ac9c-d287fa6c51d5`. Initial fixture is one short full-VO
+  seed with explicit image prompt; prior inconsistent cell seed archived.
+- Live UI v649 and reload showed same execution/group done/job/verifier/8/32.
+  PNG navigation blocked by browser client; no successful preview claim.
+  Then own app container exited137/OOM=true; UI completion not accepted.
+- Container **vp-observe-test-20260930053306-bb8d5ad8** retained. `/results` copy
+  was interrupted after Engine failed; only api-history140 + UI/source files are
+  on host. Collect full bodies/data/group-result first after Engine recovers.
+  Runtime final loaded-module manifest was not reached because OOM.
+- `common-after-continuation-01`: create failed on Docker `_ping` HTTP500;
+  no tests ran. No Engine restart/host change attempted. Current broad/runtime/
+  diagnosis regressions remain; before these changes diagnosis-current-02
+  passed25 and observation-current-01 passed11. Do not relabel old results.
+- Own host bridge34326, collect91179 and runner91692 have exited. Temporary
+  live UI tab18 closed. No real API, keys/dotenv, new deps or remote Git actions.
+
+Next permitted work when Engine is available: inspect/collect the exact retained
+container above; run current decision-final/runtime/diagnose sequentially, then
+non-Browser media-mixed to close clean shutdown/hash evidence (not another UI
+load alongside worker). Preserve preview/UI-OOM limitation until actually tested.
+Do not rerun unrelated online/SSE or unchanged frontend build. Resource diagnosis
+does not authorize stopping other containers or changing Docker settings.
+
+Full current report: `media-local-acceptance.md`; evidence root
+`outputs/media-v1-20260930`; `continuation-boundary.json` and source hashes there.
+
+The notes below are historical, not the next action list.
+
 ## Resume boundary — managed continuation, 2026-09-30
 
 Mixed-current-04 at `0fd0b400`: six text done, images correctly denied
