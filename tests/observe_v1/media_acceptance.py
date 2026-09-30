@@ -64,6 +64,10 @@ def prepare(fixtures, root, mode):
                     "download_origins":["http://127.0.0.1:18766"],"model_ids":["z-image"],
                     "max_bytes":1048576,"timeout_s":30,"poll_interval_s":0.1,"max_polls":4}}
     path = root / "synthetic-media-runtime.json"
+    if mode=='launch-images':
+        cfg.update(online_enabled=True,endpoint='http://127.0.0.1:18766/codex/v1/responses',
+            decision={'catalog_id':'gpt-kie','model_id':'gpt-5-6-sol','reasoning_effort':'low','max_output_tokens':1024,'timeout_s':30},
+            allowed_actions=['read_events','read_contract','wait','human_review','finish'])
     path.write_text(json.dumps(cfg, indent=2))
     os.environ["ORCHESTRATOR_RUNTIME_CONFIG"] = str(path)
     os.environ["KIE_API_BASE_URL"] = "http://127.0.0.1:18766"
@@ -129,20 +133,29 @@ def handler_for(fixtures, root):
     return Handler
 
 
-async def run(client, fixtures, observer, root, result, prepared, handler):
+async def run(client, fixtures, observer, root, result, prepared, handler, *, unified_launch=False):
     base = "http://127.0.0.1:18765/api/projects/2"
     async def post(suffix, body):
         response = await client.post(base+suffix, json=body)
         assert response.is_success, (suffix, response.status_code, response.text)
         return response.json()
     selected = prepared["scope"]
-    scope = await post("/observations", {"node_keys":selected})
+    if unified_launch:
+        options=await client.get(base+'/observations/launch-options');options.raise_for_status()
+        options=options.json()
+        scope=await post('/observations/launch',{'workflow_run_id':options['workflow_run_id'],
+            'graph_version':options['graph_version'],'node_keys':selected,'strategies':['wait','human_review'],
+            'request_limit':32,'rationale':'one synthetic unified image launch; original executor and verifier',
+            'idempotency_key':'unified-launch-images-01'})
+        result['managed_launch']=scope
+    else:scope = await post("/observations", {"node_keys":selected})
     execution = scope["execution_id"]
     result["execution_id"] = execution
     prefix = "/observations/"+execution
-    await post(prefix+"/pin", {})
-    await post(prefix+"/actions/enable", {"group_id":"media-test", "node_keys":selected,
-        "rationale":"synthetic existing worker media acceptance", "request_limit":32})
+    if not unified_launch:
+        await post(prefix+"/pin", {})
+        await post(prefix+"/actions/enable", {"group_id":"media-test", "node_keys":selected,
+            "rationale":"synthetic existing worker media acceptance", "request_limit":32})
     if prepared["scenario"] == "media-unverified":
         # After managed enable: unmanaged startup maintenance must not create
         # baseline artifacts before this managed-worker denial test begins.
@@ -153,9 +166,10 @@ async def run(client, fixtures, observer, root, result, prepared, handler):
             Image.frombytes("RGB", (256, 384), rng.randbytes(256*384*3)).save(
                 scenes / f"frame_{number:03d}_deadbeef.png", "PNG")
     first_type = "images" if selected[0]=="n_images" else "excel_gpt"
-    result["managed_start"] = await post(prefix+"/actions/start", {"node_key":selected[0],
-        "step_code":first_type,"rationale":"one start; following nodes belong to original planner",
-        "idempotency_key":"synthetic-media-start-01"})
+    if not unified_launch:
+        result["managed_start"] = await post(prefix+"/actions/start", {"node_key":selected[0],
+            "step_code":first_type,"rationale":"one start; following nodes belong to original planner",
+            "idempotency_key":"synthetic-media-start-01"})
     if prepared["scenario"] == "media-recovery":
         await recover_exhausted_qc(client, fixtures, root, result, base, prefix)
     deadline = time.monotonic()+180
@@ -236,6 +250,12 @@ async def run(client, fixtures, observer, root, result, prepared, handler):
     with sqlite3.connect(fixtures.DATA/"state.db") as db:
         result["pilot_project_1_status"] = db.execute("SELECT status FROM projects WHERE id=1").fetchone()[0]
         assert result["pilot_project_1_status"]=="new"
+    if unified_launch:
+        actions=(await client.get(base+prefix+'/actions')).json()
+        decisions=(await client.get(base+prefix+'/decisions')).json()
+        assert actions['requests_used']==sum(handler.media_counts.values()) and not actions['recoveries']
+        assert decisions['enabled'] and not decisions['records'],'healthy images must not invoke Decision'
+        result.update(one_user_launch=True,actions=actions)
     result.update(accepted=True,scope_boundary="original managed gate",
         semantic_quality_verified=False,full_media_chain_blocker="ffmpeg/ffprobe/ASR dependencies absent")
 

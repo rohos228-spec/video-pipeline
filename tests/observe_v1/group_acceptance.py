@@ -86,7 +86,8 @@ async def run():
         path=ROOT/'synthetic-production-adapter.json';path.write_text(json.dumps(config,indent=2))
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
     recovery_mode = mode in {"recovery-a", "recovery-b"}
-    media_mode = mode in {"media-image", "media-mixed", "media-unverified", "media-recovery"}
+    unified_launch = mode in {'launch-text','launch-images'}
+    media_mode = mode in {"media-image", "media-mixed", "media-unverified", "media-recovery", 'launch-images'}
     if media_mode:
         from media_acceptance import prepare
         media_prepared = prepare(fixtures, ROOT, mode)
@@ -188,7 +189,7 @@ async def run():
             if media_mode:
                 from media_acceptance import run as run_media
                 await run_media(client, fixtures, observation.get_observer(), ROOT,
-                                result, media_prepared, handler)
+                                result, media_prepared, handler, unified_launch=unified_launch)
                 if browser_mode:
                     (ROOT/'browser-ready.json').write_text(json.dumps({
                         'project_id':2, 'execution_id':result['execution_id'],
@@ -236,14 +237,26 @@ async def run():
                 active = [s for s in response.json() if s["observer_state"] != "stopped"]
                 assert len(active) == 1, "UI must explicitly enable one scope"
                 execution_id = active[0]["execution_id"]
-            elif mode != "off":
+            elif mode != "off" and not unified_launch:
                 response = await client.post(base + "/observations", json={"node_keys": list(fixtures.NODES)})
                 response.raise_for_status()
                 execution_id = response.json()["execution_id"]
             if execution_id:
                 response = await client.post(base + f"/observations/{execution_id}/pin")
                 response.raise_for_status()
-            if mode in {"actions", "qc-noop"} or recovery_mode:
+            if unified_launch:
+                run_response=await client.get(base+'/run');run_response.raise_for_status()
+                run_snapshot=run_response.json()
+                options=await client.get(base+'/observations/launch-options');options.raise_for_status()
+                options=options.json()
+                response=await client.post(base+'/observations/launch',json={
+                    'workflow_run_id':options['workflow_run_id'],'graph_version':options['graph_version'],
+                    'node_keys':list(fixtures.NODES),'strategies':['wait','human_review','retry_same'],
+                    'request_limit':12,'rationale':'one synthetic unified launch; original worker owns all transitions',
+                    'idempotency_key':'unified-launch-text-01'})
+                assert response.is_success,response.text
+                result['managed_launch']=response.json();execution_id=response.json()['execution_id']
+            elif mode in {"actions", "qc-noop"} or recovery_mode:
                 run_response = await client.get(base + "/run")
                 run_response.raise_for_status()
                 run_snapshot = run_response.json()
@@ -330,7 +343,7 @@ async def run():
                     break
                 await asyncio.sleep(0.1)
             result.update({"execution_id":execution_id,"state":state})
-            if mode in {'actions','qc-noop','recovery-a','recovery-b'}:
+            if mode in {'actions','qc-noop','recovery-a','recovery-b','launch-text'}:
                 # Do not manufacture a group boundary by stopping the runner
                 # immediately after HTML/error. Four normal five-second cycles.
                 before_posts = sum(fixtures.FixtureHandler.counts.values())
@@ -343,7 +356,7 @@ async def run():
                     assert sum(fixtures.FixtureHandler.counts.values()) == before_posts
                     samples.append({'n_script':states['n_script'],'model_posts':before_posts})
                 result['boundary_live_cycles'] = samples
-                if mode != 'recovery-b':
+                if mode != 'recovery-b' and not unified_launch:
                     denied = await client.post(base+f'/observations/{execution_id}/actions/start',json={
                         'node_key':'n_script','step_code':'script','rationale':'synthetic boundary scope denial',
                         'idempotency_key':'boundary-outside-scope-0001'})
@@ -423,7 +436,7 @@ async def run():
                     all_states = {str(n["node_key"]): n["status"] for n in run_after.get("node_runs", [])}
                     assert all_states.get("n_script") == "pending", all_states
                     result["group_boundary"] = {"n_script": all_states["n_script"]}
-                if mode in {"actions", "qc-noop"}:
+                if mode in {"actions", "qc-noop",'launch-text'}:
                     controls = await client.get(base + f"/observations/{execution_id}/actions")
                     controls.raise_for_status()
                     managed = controls.json()
@@ -432,14 +445,20 @@ async def run():
                     assert any(a["action_kind"] == "start_node" and a["status"] == "submitted"
                                for a in managed["records"]), managed
                     result["actions"] = managed
-                    verification = await client.post(base + f"/observations/{execution_id}/actions/verify", json={
-                        "node_key": fixtures.NODES[-1],
-                        "rationale": "verify synthetic terminal node runtime completion",
-                        "idempotency_key": "actions-test-verify-0001",
-                    })
-                    assert verification.is_success, verification.text
-                    result["verification"] = verification.json()
-                    assert result["verification"]["status"] == "verified", result["verification"]
+                    if unified_launch:
+                        assert not managed['recoveries'],'healthy graph must not need recovery'
+                        decisions=(await client.get(base+f'/observations/{execution_id}/decisions')).json()
+                        assert decisions['enabled'] and not decisions['records'],'no Decision call on healthy nodes'
+                        result['one_user_launch']=True
+                    if not unified_launch:
+                        verification = await client.post(base + f"/observations/{execution_id}/actions/verify", json={
+                            "node_key": fixtures.NODES[-1],
+                            "rationale": "verify synthetic terminal node runtime completion",
+                            "idempotency_key": "actions-test-verify-0001",
+                        })
+                        assert verification.is_success, verification.text
+                        result["verification"] = verification.json()
+                        assert result["verification"]["status"] == "verified", result["verification"]
                     run_after = await client.get(base + "/run")
                     run_after.raise_for_status()
                     all_states = {str(n["node_key"]): n["status"] for n in run_after.json().get("node_runs", [])}
