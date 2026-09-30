@@ -15,6 +15,9 @@ Native input capture is AFTER backfill/unpack and BEFORE pending collection.
 The synthetic Scene and Frame links are initialized before startup, so that
 backfill preserves every asserted Frame field. Both actual HTTP input phases
 are calibrated against original message builders and gpt_api.build_input.
+Startup may derive script_ready from the seeded script/frames. That is an
+input baseline, not an animation success. Calibrate that baseline and the
+original can_enter_running guard without writing statuses or progress flags.
 
 Corruption is a completed HTTP 200 carrying malformed apply-ops, not a provider
 outage. After the first real parser/node error the runner calls the original
@@ -175,12 +178,14 @@ def prepare(fixtures, root, mode):
         "harness_enabled": True, "primary_png_count": 0,
         "scene_id": scene_id,
         "native_input_boundary": "after backfill/unpack, before pending collection",
+        "startup_status_policy": "initial new or original compute_actual_status; no animation execution/output",
         "initial_state": _state(fixtures),
         "interventions": [
             "fresh synthetic graph, Scene and two linked parent Frame inputs in both DB replicas before startup",
             "UUID/order/scene links/attrs initialized before startup; no patches after native input capture",
             "image prompts and VO are source inputs; animation prompts remain NULL; nodes pending",
             "original workbook retained, manual auto_mode=False, original harness enabled",
+            "startup may derive input status; original animation data guard checked before the one API start",
             "explicit existing gpt-kie model choice; loopback HTTP responses only",
             "observation API plus one original anim_pr step API start; no managed admission",
             "corrupt mode: one original stop API call after first actual node error to bound retries",
@@ -304,9 +309,16 @@ async def _history(client, prefix):
 
 
 async def run(client, fixtures, observer, root, result, prepared, *, browser=False):
+    result.update(accepted=False, operator_starts=0, operator_stops=0,
+                  admission="observation_only", managed_eligible=False)
+    from app.models import Project, ProjectStatus
+    from app.project_db import project_db_session_scope
     from app.services import animation_prompt_gpt as native_animation, gpt_api
     from app.services.native_animation_contracts import animation_prompt_input_snapshot, verify_animation_prompts
     from app.services.node_capabilities import capability_for
+    from app.services.project_state import compute_actual_status
+    from app.services.step_data_guard import can_enter_running
+    from app.telegram.menu import step_by_code
 
     assert not browser, "initial native animation acceptance uses original HTTP step API"
     assert not capability_for("animation_prompts").managed, "managed animation guards require separate acceptance"
@@ -316,7 +328,36 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     assert all(row["scene_id"] == prepared["scene_id"] for row in state_before["frames"])
     assert state_before["gpt_text_overrides"] == prepared["initial_state"]["gpt_text_overrides"]
     assert state_before["nodes"] == {NODE_KEY: "pending", OUTSIDE_KEY: "pending"}
-    assert state_before["auto_mode"] is False and state_before["project_status"] == "new"
+    assert state_before["auto_mode"] is False
+    assert all(row["animation_prompt"] is None for row in state_before["frames"])
+    async with project_db_session_scope(PROJECT_ID) as input_session:
+        native_project = await input_session.get(Project, PROJECT_ID)
+        assert native_project is not None and native_project.auto_mode is False
+        actual_status = await compute_actual_status(input_session, native_project)
+        ok, reason, suggested_status = await can_enter_running(
+            input_session, native_project, ProjectStatus.generating_animation_prompts,
+        )
+        step = step_by_code("anim_pr")
+        assert step is not None and step.running_status is ProjectStatus.generating_animation_prompts
+        admission_calibration = {
+            "original_guard": "step_data_guard.can_enter_running",
+            "allowed": ok, "reason": reason,
+            "suggested_status": suggested_status.value if suggested_status is not None else None,
+            "original_actual_status": actual_status.value,
+            "baseline_project_status": state_before["project_status"],
+            "declared_step_requires": step.requires.value if step.requires is not None else None,
+            "primary_png_count": prepared["primary_png_count"],
+            "status_or_progress_writes": False,
+            "managed_eligible": False,
+        }
+    _write(root, "native-animation-baseline-after-startup.json", state_before)
+    _write(root, "native-animation-admission-calibration.json", admission_calibration)
+    assert ok, admission_calibration
+    assert state_before["project_status"] in {"new", actual_status.value}, admission_calibration
+    assert actual_status is ProjectStatus.script_ready, "the initial inputs have no split-completion claim or animation output"
+    guard_state = _state(fixtures)
+    for field in ("frames", "scenes", "nodes", "auto_mode", "gpt_text_overrides"):
+        assert guard_state[field] == state_before[field], (field, "guard calibration changed source inputs")
     project = SimpleNamespace(id=PROJECT_ID, data_dir=fixtures.DB.parent,
                               gpt_text_overrides=state_before["gpt_text_overrides"])
     snapshot = animation_prompt_input_snapshot(
@@ -331,12 +372,22 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     prefix = base + "/observations/" + scope["execution_id"]
     result.update(execution_id=scope["execution_id"], observation_scope=scope,
                   admission="observation_only", managed_launch=None, managed_eligible=False,
-                  operator_starts=1, operator_stops=0, scope_boundary="original manual API; auto_mode=False",
+                  operator_starts=0, operator_stops=0, scope_boundary="original manual API; auto_mode=False",
                   interventions=prepared["interventions"], native_exhaustion_tested=False,
-                  outage_backoff_tested=False, local_fallback_tested=False)
-    response = await client.post(base + "/steps/anim_pr/run", params={"node_key": NODE_KEY})
+                  outage_backoff_tested=False, local_fallback_tested=False,
+                  baseline_after_startup=state_before, admission_calibration=admission_calibration)
+    start_params = {"node_key": NODE_KEY, "dry_run": False, "mode": "resume", "force_wipe": False}
+    _write(root, "native-animation-api-start-request.json",
+           {"method": "POST", "url": base + "/steps/anim_pr/run", "params": start_params})
+    response = await client.post(base + "/steps/anim_pr/run", params=start_params)
+    result["operator_starts"] = 1
+    start_response = response.json()
+    _write(root, "native-animation-api-start.json", start_response)
+    _write(root, "native-animation-state-after-api-start.json", _state(fixtures))
     response.raise_for_status()
-    _write(root, "native-animation-api-start.json", response.json())
+    assert start_response["status"] in {"generating_animation_prompts", "animation_prompts_ready"}, (
+        "original API did not dispatch animation; this is not a worker logging RED", start_response,
+    )
     deadline = time.monotonic() + 90
     reached = False
     while time.monotonic() < deadline:
