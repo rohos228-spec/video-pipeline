@@ -7,6 +7,8 @@ is started. Parent alone imports/executes this module in isolated Docker.
 import asyncio
 from contextlib import ExitStack
 from datetime import datetime
+import hashlib
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -222,6 +224,125 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self._assert_pending(response.json(), 7, [(71, "master-stale-target")])
         self.assertEqual(entered, [str(self.master_path)])
+
+    async def _guard_master_fixture(self, project_id, *, slug=None):
+        project = self._project(project_id)
+        if slug is not None:
+            project.slug = slug
+        async with self.sessions() as session:
+            session.add(project)
+            await session.flush()
+            session.add(self._request(101, project_id, "guard-stale-master"))
+            await session.commit()
+        return project
+
+    async def _guard_external_file_fixture(self, folder, project):
+        # Outside DATA_DIR but still inside this test's isolated temporary
+        # root. Fixture construction is allowed; the GET must never open it.
+        self.assertTrue(folder.resolve().is_relative_to(self.root.resolve()))
+        engine = await project_db.get_project_engine(folder)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        sessions = await project_db.get_project_sessionmaker(folder)
+        async with sessions() as session:
+            owner = self._project(project.id)
+            owner.slug = project.slug
+            session.add(owner)
+            await session.flush()
+            session.add(self._request(71, project.id, "blocked-external-pending"))
+            await session.commit()
+        return folder / "project.db"
+
+    def _guard_snapshot(self, unreadable):
+        # Original eight tests retain their logical snapshot helper. Here
+        # malformed files and dangling links must not be opened by the test.
+        # Record links/bytes/directories plus logical rows of valid databases.
+        unreadable = set(unreadable)
+        inventory = {}
+        logical = {}
+        for path in sorted(self.root.rglob("*")):
+            if path.name.endswith(("-wal", "-shm")):
+                continue  # operational SQLite caches; logical rows below cover WAL
+            key = str(path.relative_to(self.root))
+            if path.is_symlink():
+                inventory[key] = ("symlink", os.readlink(path))
+            elif path.is_dir():
+                inventory[key] = ("directory",)
+            elif path.is_file():
+                inventory[key] = ("file", hashlib.sha256(path.read_bytes()).hexdigest())
+                if path.suffix == ".db" and path not in unreadable:
+                    with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as connection:
+                        logical[key] = tuple(connection.iterdump())
+        return {"inventory": inventory, "logical": logical}
+
+    async def _guarded_get(self, project_id, status, *, unreadable=(), read_folder=None):
+        before = self._guard_snapshot(unreadable)
+        self.assertFalse(self.app.dependency_overrides)
+        with ExitStack() as guards:
+            factory = guards.enter_context(patch.object(
+                hitl, "get_project_sessionmaker", wraps=project_db.get_project_sessionmaker))
+            forbidden = [guards.enter_context(patch.object(project_db, name, wraps=getattr(project_db, name)))
+                         for name in ("init_project_db", "migrate_project_by_id", "migrate_single_project_data",
+                                      "pull_master_runtime_into_project", "sync_project_row_to_project_db")]
+            try:
+                response = await self.client.get(f"/api/hitl/project/{project_id}")
+            finally:
+                self.assertEqual(self._guard_snapshot(unreadable), before,
+                                 "blocked GET must not create storage, replace links, repair corrupt bytes or write data/schema")
+                for operation in forbidden:
+                    operation.assert_not_called()
+                if read_folder is None:
+                    factory.assert_not_called()
+                else:
+                    factory.assert_awaited_once_with(read_folder.resolve())
+        self.assertEqual(response.status_code, status, response.text)
+        self.assertIsInstance(response.json().get("detail"), str)
+
+    async def test_project_folder_outside_data_dir_is_rejected_without_open_or_master_fallback(self):
+        project = await self._guard_master_fixture(31, slug="../../outside-data")
+        outside = project.data_dir.resolve()
+        self.assertFalse(outside.is_relative_to(settings.data_dir.resolve()))
+        await self._guard_external_file_fixture(outside, project)
+        await self._guarded_get(31, 400)
+
+    async def test_existing_project_db_symlink_outside_data_dir_is_rejected_without_open(self):
+        project = await self._guard_master_fixture(32)
+        external = await self._guard_external_file_fixture(self.root / "external-db", project)
+        folder = project.data_dir
+        folder.mkdir(parents=True)
+        candidate = folder / "project.db"
+        candidate.symlink_to(external)
+        self.assertTrue(candidate.is_file())
+        self.assertFalse(candidate.resolve().is_relative_to(settings.data_dir.resolve()))
+        await self._guarded_get(32, 400)
+        self.assertTrue(candidate.is_symlink())
+        self.assertEqual(candidate.resolve(), external.resolve())
+
+    async def test_dangling_project_db_is_rejected_without_initialization_or_master_fallback(self):
+        # Master id=17 has a real pending request; the dangling entry must
+        # not be treated as absent legacy storage and return that stale row.
+        folder = settings.data_dir / "videos" / "synthetic-hitl-17"
+        folder.mkdir(parents=True)
+        candidate = folder / "project.db"
+        target = settings.data_dir / "uninitialized-target" / "missing.db"
+        candidate.symlink_to(target)
+        self.assertTrue(candidate.is_symlink())
+        self.assertFalse(candidate.exists())
+        self.assertFalse(target.parent.exists())
+        await self._guarded_get(17, 503, unreadable=(candidate,))
+        self.assertTrue(candidate.is_symlink())
+        self.assertFalse(target.parent.exists(), "GET must not create a dangling link's target directory")
+        self.assertFalse(target.exists())
+
+    async def test_corrupt_existing_project_db_is_rejected_without_repair_or_master_fallback(self):
+        folder = settings.data_dir / "videos" / "synthetic-hitl-17"
+        folder.mkdir(parents=True)
+        candidate = folder / "project.db"
+        corrupt = b"explicit synthetic corrupt SQLite fixture\x00\xff\x00"
+        candidate.write_bytes(corrupt)
+        self.assertTrue(candidate.is_file())
+        await self._guarded_get(17, 503, unreadable=(candidate,), read_folder=folder)
+        self.assertEqual(candidate.read_bytes(), corrupt)
 
 
 if __name__ == '__main__':
