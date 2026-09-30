@@ -161,3 +161,16 @@ only managed artifact handling and rerun. Do not rerun exhausted/paid pilots.
 
 Current deliverable remains incomplete; this checkpoint only preserves tests
 and the exact resume boundary. No external API, credentials or customer DBs used.
+
+## Engine recovered; artifact safety RED verified
+
+At 2026-09-30T00:54:40Z Docker inspect succeeded. Previous mixed container is
+terminal (exit 255, OOMKilled=false, no engine error string); collected results
+contain preparation only, with no group result. Recovered output is empty.
+It is an interrupted/unverified run, not GREEN. Container and files preserved.
+
+`artifact-safety-red-01`: all 12 HTTP tests executed against cb66bf86; 10 pass,
+preview fails because changed PNG is served, disk recovery errors because the
+actual Artifact has no orchestrator provenance. These are intended runtime RED
+signals, not missing dependencies/setup failures. Safe to implement the scoped
+preview/recovery fix. No runner remains active at this boundary.
