@@ -445,6 +445,35 @@ class ImagePromptsContract(unittest.TestCase):
 
 
 class Artifacts(unittest.IsolatedAsyncioTestCase):
+    async def test_native_parallel_batch_parse_keeps_its_own_model_request(self):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock,patch
+        from app.services import observation
+        from app.services.node_capabilities import record_image_prompt_parse
+        ctx=SimpleNamespace(scope=SimpleNamespace(mode='observe'),last_request_id=None)
+        token=observation._attempt.set(ctx)
+        first=asyncio.Event();second=asyncio.Event();expected={}
+        @observation.observe_model
+        async def transport(*,name,**kwargs):
+            request_id=observation._request.get()
+            if name==1:
+                first.set();await second.wait();await asyncio.sleep(.02)
+            else:
+                await first.wait();second.set()
+            return SimpleNamespace(text='synthetic',raw={'status':'completed'},response_id=request_id)
+        async def batch(name):
+            result=await transport(name=name,url='http://127.0.0.1/responses',body={'input':'synthetic'})
+            expected[name]=result.response_id
+            ops=[{'frame_uuid':'af'*16,'fields':{'промт_картинки':'x'*200}}]
+            await record_image_prompt_parse(json.dumps({'ops':ops}),ops,batch_i=name,target_uuids=['af'*16])
+        try:
+            with patch.object(observation,'record_fact',new_callable=AsyncMock) as fact:
+                await asyncio.gather(batch(1),batch(2))
+                actual={c.args[1]['batch']:c.kwargs['request_id'] for c in fact.call_args_list if c.args[0]=='parse_result'}
+                self.assertEqual(actual,expected,'parallel responses must not use shared ctx.last_request_id')
+        finally:observation._attempt.reset(token)
+
     async def test_split_parse_observes_native_alias_precedence_without_false_failure(self):
         from types import SimpleNamespace
         from unittest.mock import AsyncMock,patch

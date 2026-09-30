@@ -27,6 +27,8 @@ from app.services.node_status_machine import start_node_running
 from app.services import observation
 from app.services.diagnosis import Incident, DiagnosisState
 from app.services.actions_recovery import claim, input_revision
+from app.services.managed_launch import ManagedLaunch
+from app.services.profiles_state import ProfileOverlay
 from sqlalchemy import select
 
 
@@ -89,7 +91,8 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(Base.metadata.create_all)
             await observation.migrate_observation_schema(conn)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
-        fixture_type = getattr(self, "fixture_node_type", "plan")
+        # Recovery evidence below is the structured Excel/mandatory JSON contract.
+        fixture_type = getattr(self, "fixture_node_type", "excel_gpt")
         self.nodes = [{"id":"n1","type":fixture_type,"data":{"groupId":"g1"}},
                       {"id":"n2","type":"script","data":{"groupId":"g2"}}]
         self.graph = digest({"nodes":self.nodes,"edges":[]})
@@ -214,10 +217,10 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
         await reload_permissions(self.sessions)
         self.assertEqual(get_permission(7).requests_used,1)
 
-    async def exhausted_fixture(self):
+    async def exhausted_fixture(self, *, node_keys=None):
         from app.models import ProjectStatus
         await self.supervisor.enable(project_id=7,execution_id='exec-durable',group_id='g1',
-            node_keys=['n1'],graph_version=self.graph,initiator='test',rationale='synthetic',request_limit=20)
+            node_keys=node_keys or ['n1'],graph_version=self.graph,initiator='test',rationale='synthetic',request_limit=20)
         async with self.sessions() as s:
             project = await s.get(Project,7)
             project.status=ProjectStatus.paused
@@ -437,6 +440,164 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
             n=await s.scalar(select(NodeRun).where(NodeRun.node_key=='n1'))
             self.assertEqual(n.status,NodeRunStatus.failed)
             self.assertEqual(n.attempts,9)
+
+
+class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
+    # Reuse isolated persistence fixtures without inheriting unrelated test cases.
+    asyncSetUp = DurableActions.asyncSetUp
+    asyncTearDown = DurableActions.asyncTearDown
+    exhausted_fixture = DurableActions.exhausted_fixture
+    retry = DurableActions.retry
+    assert_no_dispatch = DurableActions.assert_no_dispatch
+
+    async def mixed_recovery_fixture(self, node_type, *, marker=None, grant=None):
+        from app.services.node_capabilities import capability_for
+
+        data = {'groupId': 'g1'}
+        if marker is not None:
+            data['sd_agent'] = marker
+        self.nodes = [{'id': 'n1', 'type': node_type, 'data': data},
+                      {'id': 'n2', 'type': 'excel_gpt', 'data': {'groupId': 'g1'}}]
+        self.graph = digest({'nodes': self.nodes, 'edges': []})
+        async with self.sessions() as session:
+            (await session.get(Workflow, 9)).nodes = self.nodes
+            (await session.get(WorkflowRun, 11)).nodes_snapshot = self.nodes
+            (await session.get(ExecutionControl, 'exec-durable')).graph_version = self.graph
+            for node in (await session.scalars(select(NodeRun))).all():
+                node.node_type = node_type if node.node_key == 'n1' else 'excel_gpt'
+            await session.commit()
+        await self.exhausted_fixture(node_keys=['n1', 'n2'])
+        # A second structured node gives the mixed scope its persisted retry grant.
+        actions = list(capability_for('excel_gpt').actions) if grant is None else grant
+        async with self.sessions() as session:
+            session.add(ManagedLaunch(launch_id='mixed-launch', execution_id='exec-durable',
+                project_id=7, workflow_run_id=11, idempotency_key='mixed-launch-key',
+                request_hash=digest(self.nodes), policy={'allowed_actions': actions},
+                entry_node='n2', status='submitted', result={}))
+            await session.commit()
+
+    async def approved_profile_fixture(self):
+        from app.services.profiles_v1 import CATALOG, catalog_hash
+
+        async with self.sessions() as session:
+            project = await session.get(Project, 7)
+            revision = await input_revision(session, project, 'n1')
+            candidate = dict(CATALOG['synthetic-json-v1'])
+            session.add(ProfileOverlay(overlay_id='capability-profile', execution_id='exec-durable',
+                project_id=7, node_key='n1', source_attempt_id='source-attempt',
+                profile_id='synthetic-json-v1', base_version=revision, graph_version=self.graph,
+                catalog_hash=catalog_hash(), candidate_hash=digest(candidate), candidate=candidate,
+                source_body_hash=digest({'test': 1}), expected_body_hash=digest({'test': 2}),
+                initiator='synthetic', rationale='capability admission test', status='approved', history=[]))
+            await session.commit()
+        return 'capability-profile'
+
+    async def recovery_side_effects(self):
+        async with self.sessions() as session:
+            state = {}
+            for model in (Project, NodeRun, ActionExecutionControl, ProfileOverlay,
+                          observation.ObservationEvent):
+                rows = (await session.scalars(select(model).order_by(*model.__table__.primary_key.columns))).all()
+                state[model.__tablename__] = [
+                    {column.name: getattr(row, column.name) for column in model.__table__.columns}
+                    for row in rows]
+            return digest(state)
+
+    async def assert_retry_denied(self, node_type, *, marker=None, profile=False, grant=None,
+                                 reason='capability'):
+        from app.services.actions_recovery import restricted_node
+        from app.services.managed_launch import allowed_actions
+        from app.services.profiles_v1 import reservation
+
+        await self.mixed_recovery_fixture(node_type, marker=marker, grant=grant)
+        overlay_id = await self.approved_profile_fixture() if profile else None
+        action_type = 'retry_profile' if profile else 'retry_same'
+        if grant is None:
+            async with self.sessions() as session:
+                self.assertIn(action_type, await allowed_actions(
+                    session, 'exec-durable', {'retry_same', 'retry_profile'}))
+        before = await self.recovery_side_effects()
+        permission = get_permission(7)
+        self.assertIsNone(restricted_node(7))
+        with patch('app.services.node_status_machine.start_node_running', wraps=start_node_running) as dispatch, \
+             patch('app.services.profiles_v1.reservation', wraps=reservation) as reserve_profile, \
+             patch('app.services.gpt_client.get_gpt_client', side_effect=AssertionError('no model start')) as model:
+            with self.assertRaisesRegex(ValueError, reason):
+                await self.retry(profile_overlay_id=overlay_id)
+            dispatch.assert_not_called()
+            reserve_profile.assert_not_awaited()
+            model.assert_not_called()
+        await self.assert_no_dispatch()
+        self.assertEqual(await self.recovery_side_effects(), before)
+        self.assertEqual(get_permission(7), permission)
+        self.assertIsNone(restricted_node(7))
+
+    async def test_retry_same_denies_native_plan_with_inherited_grant(self):
+        await self.assert_retry_denied('plan')
+
+    async def test_retry_profile_denies_native_plan_with_inherited_grant(self):
+        await self.assert_retry_denied('plan', profile=True)
+
+    async def test_retry_same_denies_native_script_with_inherited_grant(self):
+        await self.assert_retry_denied('script')
+
+    async def test_retry_profile_denies_native_script_with_inherited_grant(self):
+        await self.assert_retry_denied('script', profile=True)
+
+    async def test_retry_same_denies_native_split_with_inherited_grant(self):
+        await self.assert_retry_denied('split')
+
+    async def test_retry_profile_denies_native_split_with_inherited_grant(self):
+        await self.assert_retry_denied('split', profile=True)
+
+    async def test_retry_same_denies_marked_scene_with_inherited_grant(self):
+        await self.assert_retry_denied('excel_gpt', marker='camera')
+
+    async def test_retry_profile_denies_marked_scene_with_inherited_grant(self):
+        await self.assert_retry_denied('excel_gpt', marker='camera', profile=True)
+
+    async def test_retry_same_denies_scene_assembler_with_inherited_grant(self):
+        await self.assert_retry_denied('excel_gpt', marker='assemble')
+
+    async def test_retry_profile_denies_scene_assembler_with_inherited_grant(self):
+        await self.assert_retry_denied('excel_gpt', marker='assemble', profile=True)
+
+    async def test_retry_same_denies_image_prompts_with_inherited_grant(self):
+        await self.assert_retry_denied('image_prompts')
+
+    async def test_retry_profile_denies_image_prompts_with_inherited_grant(self):
+        await self.assert_retry_denied('image_prompts', profile=True)
+
+    async def test_retry_same_denies_unsupported_node_with_inherited_grant(self):
+        await self.assert_retry_denied('future-unsupported')
+
+    async def test_retry_profile_denies_unsupported_node_with_inherited_grant(self):
+        await self.assert_retry_denied('future-unsupported', profile=True)
+
+    async def test_retry_same_still_requires_execution_grant_for_structured_excel(self):
+        await self.assert_retry_denied('excel_gpt', grant=['retry_profile'], reason='execution grant')
+
+    async def test_retry_profile_still_requires_execution_grant_for_structured_excel(self):
+        await self.assert_retry_denied('excel_gpt', profile=True, grant=['retry_same'], reason='execution grant')
+
+    async def assert_persisted_admission(self, *, profile=False):
+        from app.services.node_capabilities import capability_for
+
+        await self.mixed_recovery_fixture('excel_gpt')
+        overlay_id = await self.approved_profile_fixture() if profile else None
+        ticket = await self.retry(profile_overlay_id=overlay_id)
+        async with self.sessions() as session:
+            row = await session.get(RecoveryAction, ticket['action_id'])
+            self.assertEqual(row.preconditions['effective_node_type'], 'excel_gpt')
+            self.assertEqual(row.preconditions['capability_actions'], list(capability_for('excel_gpt').actions))
+            self.assertEqual(row.preconditions['action_type'], 'retry_profile' if profile else 'retry_same')
+            self.assertEqual(row.preconditions, ticket['preconditions'])
+
+    async def test_structured_excel_retry_same_persists_capability_admission(self):
+        await self.assert_persisted_admission()
+
+    async def test_structured_excel_retry_profile_persists_capability_admission(self):
+        await self.assert_persisted_admission(profile=True)
 
 
 if __name__ == "__main__":
