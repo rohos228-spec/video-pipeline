@@ -239,12 +239,28 @@ class DecisionSupervisor:
             from app.services.excel_gpt_node import effective_node_type
             capability=capability_for(effective_node_type(node))
             if capability.result_kind=='unsupported':
+                # Descriptions extend read context, never execution admission.
+                # Keep the unsupported capability, no output/jobs inference and
+                # no generic Excel tools while a native executor is unaccepted.
+                description=None
+                if capability.node_type=='hero':
+                    from app.services.native_entity_contracts import hero_entity_contract
+                    description=hero_entity_contract()
+                elif capability.node_type=='animation_prompts':
+                    from app.services.native_animation_contracts import animation_prompts_contract
+                    description=animation_prompts_contract()
+                elif capability.node_type in {'sd_agent','sd_assemble'}:
+                    from app.services.scene_contracts import scene_contract
+                    native=scene_contract(node)
+                    if native['supported']:description=native
+                descriptive=({'descriptive_contract':description,'descriptive_only':True,
+                    'managed_executor_accepted':False} if description is not None else {})
                 return panel_safe({**capability.contract(),'node_key':row.node_key,
                     'ui_node_type':node.get('type'),'graph_version':scope.graph_version,
                     'context_version':context['context_version'],
                     'source':'existing runtime effective_node_type + managed capability registry',
                     'verification_status':'unavailable: no accepted managed executor',
-                    'compatible_profiles':[],'cost_status':'unknown_tariff'})
+                    'compatible_profiles':[],'cost_status':'unknown_tariff',**descriptive})
             if capability.result_kind=='project_text':
                 from app.services.node_capabilities import project_text_contract,verify_project_text
                 project=await s.get(Project,row.project_id)
