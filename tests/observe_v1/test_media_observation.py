@@ -11,7 +11,7 @@ class MediaObservation(MediaJobs):
         from app.services.node_capabilities import require_managed_capability, capability_for
         require_managed_capability("images")
         require_managed_capability("excel_gpt")
-        for kind in ("videos", "publish", "audio", "assemble", "unregistered"):
+        for kind in ("plan", "videos", "publish", "audio", "assemble", "unregistered"):
             self.assertFalse(capability_for(kind).managed, "unaccepted adapters stay disabled even if tools are later installed")
             with self.assertRaisesRegex(ValueError, "adapter"):
                 require_managed_capability(kind)

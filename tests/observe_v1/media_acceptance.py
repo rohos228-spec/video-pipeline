@@ -186,7 +186,12 @@ async def run(client, fixtures, observer, root, result, prepared, handler):
     assert handler.media_counts["generation_submit"]==len(artifacts)
     assert all(a["meta"]["orchestrator"]["verification"]["status"]=="passed" for a in result["artifacts"])
     assert any(e["kind"]=="artifact_saved" for e in history)
+    assert any(e["kind"]=="media_node_verified" and e["node_key"]=="n_images" for e in history)
     assert any(e["kind"]=="node_start" and e["node_key"]=="n_images" for e in history)
+    if prepared["scenario"] == "media-mixed":
+        report = Path(fixtures.snapshot()["report_path"])
+        assert report.is_file() and report.stat().st_size > 0
+        result["html"] = {"bytes":report.stat().st_size, "sha256":hashlib.sha256(report.read_bytes()).hexdigest()}
     before = dict(handler.media_counts)
     await asyncio.sleep(12)
     assert before == dict(handler.media_counts), "no generation may escape group boundary"

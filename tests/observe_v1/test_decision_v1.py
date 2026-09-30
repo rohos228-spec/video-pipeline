@@ -58,6 +58,10 @@ class DecisionSchema(unittest.TestCase):
 
 
 class DecisionDurability(actions_tests.DurableActions):
+    # These cases exercise the Excel/JSON contract (including active_excel_gpt
+    # and mandatory apply-ops), not the separate legacy make_plan executor.
+    fixture_node_type = "excel_gpt"
+
     async def asyncSetUp(self):
         self.service=importlib.import_module('app.services.decision_v1')
         await super().asyncSetUp()

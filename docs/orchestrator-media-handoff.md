@@ -220,3 +220,13 @@ Verified export installed as v649; previous v648 export preserved separately in
 outputs/media-v1-20260930/ui-prior-v648. Browser acceptance still pending.
 Next: existing mixed group on current code, current jobs/common/runtime/diagnosis
 regressions, browser evidence and final matrix. No active runner here.
+
+`jobs-current-01`: 6/6 pass, including close refusal for unresolved jobs/requests.
+`common-current-01`: Actions 24, Profiles 17, planner 2, journal 8 pass; Decision
+runtime/Decision have 5 failures. Their shared fixture labels n1 as legacy plan
+but exhausted_fixture sets active_excel_gpt_node_key and tests require the JSON
+apply-ops contract. Capability filtering exposes that mismatch. Added a fixture
+type parameter defaulting to plan (Actions/planner unchanged), and Decision uses
+excel_gpt in both snapshot and NodeRun. Assertions preserved; legacy plan is
+explicitly included among unsupported managed adapters. Production allowlists
+not broadened. Current regression rerun required; no GREEN claim yet.

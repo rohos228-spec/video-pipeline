@@ -182,6 +182,18 @@ async def run():
                 from media_acceptance import run as run_media
                 await run_media(client, fixtures, observation.get_observer(), ROOT,
                                 result, media_prepared, handler)
+                if browser_mode:
+                    (ROOT/'browser-ready.json').write_text(json.dumps({
+                        'project_id':2, 'execution_id':result['execution_id'],
+                        'application':'live', 'mode':mode}))
+                    (ROOT/'group-result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str))
+                    before_media = dict(handler.media_counts)
+                    before_text = dict(fixtures.FixtureHandler.counts)
+                    deadline=time.monotonic()+600
+                    while not (ROOT/'browser-finish-requested').exists() and time.monotonic()<deadline:
+                        await asyncio.sleep(.2)
+                    assert (ROOT/'browser-finish-requested').exists(),'capture live media UI and finish explicitly'
+                    assert before_media == dict(handler.media_counts) and before_text == dict(fixtures.FixtureHandler.counts), 'browser must not trigger generation'
                 return
             if live_decision:
                 assert browser_mode,'live acceptance requires the browser'

@@ -89,7 +89,8 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(Base.metadata.create_all)
             await observation.migrate_observation_schema(conn)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
-        self.nodes = [{"id":"n1","type":"plan","data":{"groupId":"g1"}},
+        fixture_type = getattr(self, "fixture_node_type", "plan")
+        self.nodes = [{"id":"n1","type":fixture_type,"data":{"groupId":"g1"}},
                       {"id":"n2","type":"script","data":{"groupId":"g2"}}]
         self.graph = digest({"nodes":self.nodes,"edges":[]})
         async with self.sessions() as session:
@@ -97,7 +98,7 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
             session.add(Workflow(id=9,name="actions fixture",nodes=self.nodes,edges=[]))
             session.add(WorkflowRun(id=11,workflow_id=9,project_id=7,nodes_snapshot=self.nodes,edges_snapshot=[]))
             session.add_all([
-                NodeRun(workflow_run_id=11,node_key="n1",node_type="plan",status=NodeRunStatus.pending),
+                NodeRun(workflow_run_id=11,node_key="n1",node_type=fixture_type,status=NodeRunStatus.pending),
                 NodeRun(workflow_run_id=11,node_key="n2",node_type="script",status=NodeRunStatus.pending),
                 ExecutionControl(execution_id="exec-durable",project_id=7,workflow_run_id=11,
                     node_keys=["n1","n2"],graph_version=self.graph,mode="observe",
