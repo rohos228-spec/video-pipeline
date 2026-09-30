@@ -101,7 +101,30 @@ async def download_artifact(
     if a is None:
         raise HTTPException(status_code=404, detail="artifact not found")
     path = Path(a.path)
+    # Managed artifacts are shown only while their recorded structural proof
+    # still matches the file owned by this project. No caller-supplied path.
+    managed = "orchestrator" in (a.meta or {})
+    if managed:
+        from app.models import Project
+        from app.services.artifact_verifier import contained_path, verify_artifact
+
+        project = await session.get(Project, a.project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="artifact project not found")
+        try:
+            path = contained_path(path, project.data_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="artifact outside project") from exc
     if not path.is_file():
         raise HTTPException(status_code=410, detail="file gone from disk")
+    if managed:
+        binding = a.meta.get("orchestrator")
+        expected = binding.get("verification") if isinstance(binding, dict) else None
+        if not isinstance(expected, dict) or expected.get("status") != "passed":
+            raise HTTPException(status_code=409, detail="artifact verification unavailable")
+        actual = await verify_artifact(path, root=project.data_dir, kind=expected.get("kind"))
+        if actual["status"] != "passed" or actual.get("sha256") != expected.get("sha256"):
+            raise HTTPException(status_code=409, detail="artifact verification changed")
     mime, _ = mimetypes.guess_type(str(path))
-    return FileResponse(path, media_type=mime or "application/octet-stream")
+    return FileResponse(path, media_type=mime or "application/octet-stream",
+                        headers={"Cache-Control": "private, no-store"} if managed else None)

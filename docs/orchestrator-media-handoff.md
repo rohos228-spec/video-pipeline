@@ -174,3 +174,10 @@ preview fails because changed PNG is served, disk recovery errors because the
 actual Artifact has no orchestrator provenance. These are intended runtime RED
 signals, not missing dependencies/setup failures. Safe to implement the scoped
 preview/recovery fix. No runner remains active at this boundary.
+
+`artifact-safety-green-01`: 12/12 HTTP tests pass. Managed preview rechecks
+project containment, structural result and recorded hash, with no-store cache.
+Managed original disk recovery uses the same verified-job transactional apply,
+preserves provenance and deduplicates it. Unproven/conflicting local files fail.
+Next: real worker refusal of an unproven pre-existing file (legacy caller catches
+recovery errors), then current mixed run and pending gate/UI regression.
