@@ -1,5 +1,18 @@
 # Text + media goal: current handoff
 
+## LATEST: archive recovered; preview routing reproducer prepared; Engine500
+
+Follow [media-preview-routing-followup.md](media-preview-routing-followup.md).
+The complete retained archive is now local and hashed; recollection is not the
+next step. Four real HTTP routing cases and scoped frontend preview assertions
+are prepared but unexecuted. Production sources remain unchanged and match the
+19/19 evidence. Docker `/v1.56/version` now returns HTTP500 as well as the prior
+`_ping` failure. No runner is active; do not launch against an unavailable Engine.
+Resume the routing RED/GREEN first, then affected UI build/current regressions
+and clean mixed acceptance. Do not claim an executed RED for these new tests.
+
+The former current boundary below is retained as history.
+
 ## CURRENT: Engine _ping 500 after successful mixed worker / UI OOM
 
 Code HEAD `10ff17bc86d8e2344783822a9b7da7b820cc646c`; following checkpoint docs only.

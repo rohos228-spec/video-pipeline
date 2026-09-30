@@ -108,7 +108,7 @@ assert.match(mediaPhase('unknown'),/неизвестен/);
 assert.doesNotMatch(mediaPhase('completed'),/проверен/);
 assert.match(mediaVerification('passed'),/качество.*не оценивалось/);
 assert.match(mediaVerification(),/не подтверждена/);
-assert.equal(artifactLink('a'.repeat(32)),'/api/artifacts/'+ 'a'.repeat(32)+'/file');
+assert.equal(artifactLink('a'.repeat(32),2),'/api/artifacts/'+ 'a'.repeat(32)+'/file?project_id=2');
 for(const unsafe of ['../../secret','http://evil.test','/tmp/output.mp4'])assert.equal(artifactLink(unsafe),null);
 console.log('Media UI contracts: 10 assertions passed');
 
@@ -118,3 +118,20 @@ assert.match(publicationSummary('failed'),/не прош/);
 assert.match(publicationSummary('unknown'),/не подтвержд/);
 for(const status of ['passed','failed','unknown'])assert.match(publicationSummary(status),/Публикация выключена/);
 console.log('Publication dry-run UI contracts: 6 assertions passed');
+
+const {imagePreviewLink}=await import('data:text/javascript;base64,'+Buffer.from(mediaJS).toString('base64'));
+const verifiedImage={phase:'verified',verification:{status:'passed'},artifact_uuid:'b'.repeat(32)};
+assert.equal(imagePreviewLink('image',verifiedImage,2),'/api/artifacts/'+ 'b'.repeat(32)+'/file?project_id=2');
+for(const phase of ['reserved','running','completed','failed','unknown'])
+  assert.equal(imagePreviewLink('image',{...verifiedImage,phase},2),null);
+for(const status of ['failed','unknown',undefined])
+  assert.equal(imagePreviewLink('image',{...verifiedImage,verification:{status}},2),null);
+for(const artifact_uuid of [null,'../../secret','http://evil.test','/tmp/frame.png'])
+  assert.equal(imagePreviewLink('image',{...verifiedImage,artifact_uuid},2),null);
+for(const kind of ['video','audio','publication','unknown'])
+  assert.equal(imagePreviewLink(kind,verifiedImage,2),null);
+for(const projectId of [undefined,null,0,-1,1.5,NaN,Infinity,'2','2&project_id=1']) {
+  assert.equal(artifactLink('b'.repeat(32),projectId),null);
+  assert.equal(imagePreviewLink('image',verifiedImage,projectId),null);
+}
+console.log('Verified scoped image preview contracts: 35 assertions passed');

@@ -319,9 +319,139 @@ class MediaHTTP(MediaJobs):
                     ready_status=ProjectStatus.images_ready, running_status=ProjectStatus.generating_images)
         self.assertEqual(self.posts, 1)
 
+class ProjectArtifactHTTP(unittest.IsolatedAsyncioTestCase):
+    """Exercise real FastAPI dependencies with separate master/project databases.
+
+    Direct calls to download_artifact(session=...) do not cover DB routing.
+    No dependency_overrides: they deliberately alias project and master sessions
+    in get_project_session and would hide the regression.
+    """
+
+    async def asyncSetUp(self):
+        import tempfile
+        from pathlib import Path
+        import httpx
+        from fastapi import FastAPI
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from app import db, project_db
+        from app.models import Base, Project, Artifact, ArtifactKind
+        from app.services.artifact_verifier import verify_artifact
+        from app.settings import settings
+        from app.web import deps
+        from app.web.routers.artifacts import router
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        data_patch = patch.object(settings, "data_dir", self.root)
+        data_patch.start()
+        self.addCleanup(data_patch.stop)
+        self.engine = create_async_engine(f"sqlite+aiosqlite:///{self.root / 'state.db'}")
+        self.addAsyncCleanup(self.engine.dispose)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.master = async_sessionmaker(self.engine, expire_on_commit=False)
+        for module in (db, deps):
+            resource_patch = patch.object(module, "SessionLocal", self.master)
+            resource_patch.start()
+            self.addCleanup(resource_patch.stop)
+        self.addAsyncCleanup(project_db.close_all_project_engines)
+        self.projects = {}
+        for pid in (7, 8):
+            project = Project(id=pid, slug=f"preview-{pid}", topic="synthetic")
+            async with self.master() as session:
+                session.add(project)
+                await session.commit()
+            project_db.register_project_data_dir(pid, project.data_dir)
+            engine = await project_db.get_project_engine(project.data_dir)
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            factory = await project_db.get_project_sessionmaker(project.data_dir)
+            self.projects[pid] = factory
+            async with factory() as session:
+                session.add(Project(id=pid, slug=project.slug, topic="synthetic"))
+                await session.commit()
+        self.path = self.root / "videos/preview-7/image.png"
+        Image.new("RGB", (64, 96), "blue").save(self.path, "PNG")
+        self.original = self.path.read_bytes()
+        proof = await verify_artifact(self.path, root=self.path.parent, kind="image")
+        self.assertEqual(proof["status"], "passed")
+        self.uuid = "b" * 32
+        async with self.projects[7]() as session:
+            session.add(Artifact(project_id=7, kind=ArtifactKind.scene_image,
+                                 uuid=self.uuid, path=str(self.path),
+                                 meta={"orchestrator": {"verification": proof}}))
+            await session.commit()
+        app = FastAPI()
+        app.include_router(router, prefix="/api")
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                        base_url="http://localhost")
+        self.addAsyncCleanup(self.client.aclose)
+        self.url = f"/api/artifacts/{self.uuid}/file"
+
+    async def test_project_preview_reads_project_db_without_master_replication(self):
+        from app.models import Artifact
+        async with self.master() as session:
+            self.assertEqual(list(await session.scalars(select(Artifact))), [])
+        response = await self.client.get(self.url, params={"project_id": 7})
+        self.assertEqual(response.status_code, 200, response.text[:100])
+        self.assertEqual(response.content, self.original)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertIn("no-store", response.headers["cache-control"])
+        async with self.master() as session:
+            self.assertEqual(list(await session.scalars(select(Artifact))), [])
+        async with self.projects[7]() as session:
+            self.assertEqual(len(list(await session.scalars(select(Artifact)))), 1)
+
+    async def test_explicit_project_never_falls_back_to_master_or_other_project(self):
+        from app.models import Artifact, ArtifactKind
+        async with self.master() as session:
+            session.add(Artifact(project_id=7, kind=ArtifactKind.scene_image,
+                                 uuid=self.uuid, path=str(self.path), meta={}))
+            await session.commit()
+        # Preserve the original unscoped endpoint for legacy master artifacts.
+        self.assertEqual((await self.client.get(self.url)).status_code, 200)
+        for pid in (8, 777):
+            with self.subTest(project_id=pid):
+                response = await self.client.get(self.url, params={"project_id": pid})
+                self.assertEqual(response.status_code, 404)
+                self.assertNotEqual(response.content, self.original)
+        for pid in (0, -1, "invalid"):
+            with self.subTest(project_id=pid):
+                self.assertEqual((await self.client.get(self.url, params={"project_id": pid})).status_code, 422)
+
+    async def test_scoped_preview_rechecks_file_hash_containment_and_presence(self):
+        from app.models import Artifact
+        Image.new("RGB", (64, 96), "red").save(self.path, "PNG")
+        self.assertEqual((await self.client.get(self.url, params={"project_id": 7})).status_code, 409)
+        outside = self.root / "outside.png"
+        outside.write_bytes(self.original)
+        async with self.projects[7]() as session:
+            artifact = await session.scalar(select(Artifact).where(Artifact.uuid == self.uuid))
+            artifact.path = str(outside)
+            await session.commit()
+        self.assertEqual((await self.client.get(self.url, params={"project_id": 7})).status_code, 403)
+        async with self.projects[7]() as session:
+            artifact = await session.scalar(select(Artifact).where(Artifact.uuid == self.uuid))
+            artifact.path = str(self.path.with_name("missing.png"))
+            await session.commit()
+        self.assertEqual((await self.client.get(self.url, params={"project_id": 7})).status_code, 410)
+
+    async def test_artifact_project_must_match_explicit_scope(self):
+        from app.models import Artifact, Project
+        async with self.projects[7]() as session:
+            session.add(Project(id=8, slug="preview-8", topic="synthetic"))
+            await session.flush()
+            artifact = await session.scalar(select(Artifact).where(Artifact.uuid == self.uuid))
+            artifact.project_id = 8
+            await session.commit()
+        self.assertEqual((await self.client.get(self.url, params={"project_id": 7})).status_code, 404)
+
+
 if __name__ == "__main__":
     # Inherited state tests are run separately, once.
     suite = unittest.TestSuite(MediaHTTP(name) for name in unittest.defaultTestLoader.getTestCaseNames(MediaHTTP)
                                if name.startswith("test_http_"))
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(ProjectArtifactHTTP))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(0 if result.wasSuccessful() else 1)
