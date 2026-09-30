@@ -137,6 +137,59 @@ class DecisionDurability(actions_tests.DurableActions):
         async with self.sessions() as s:
             row=await s.get(self.service.DecisionRecord,record['decision_id']);self.assertEqual(row.action_id,'persisted-action')
 
+    async def waiting_ticket(self, *, status, verified, project_id=7):
+        from app.services.actions_recovery import RecoveryAction
+        await self.enable_decisions();record=await self.begin()
+        async with self.sessions() as s:
+            row=await s.get(self.service.DecisionRecord,record['decision_id'])
+            row.status='waiting_worker';row.action_id='terminal-ticket';row.model_steps=3
+            s.add(RecoveryAction(action_id=row.action_id,execution_id='exec-durable',project_id=project_id,
+                incident_id='source-incident',node_key='n1',source_attempt_id='source-attempt',new_attempt_id='new-attempt',
+                idempotency_key='terminal-ticket-key',preconditions={},budget_state={},result={},status=status,
+                verification_result={'verified':verified,'reason':'synthetic persisted runtime verification'}))
+            await s.commit()
+        return record['decision_id']
+
+    async def test_last_step_queued_recovery_waits_without_extra_model_or_escalation(self):
+        decision=await self.waiting_ticket(status='queued',verified=False)
+        with patch('app.services.gpt_api.chat',side_effect=AssertionError('no model while worker is active')):
+            await self.service.DecisionSupervisor(observation._observer).tick()
+        async with self.sessions() as s:
+            self.assertEqual((await s.get(self.service.DecisionRecord,decision)).status,'waiting_worker')
+            self.assertFalse((await s.get(actions_tests.ActionExecutionControl,'exec-durable')).held)
+
+    async def test_last_step_verified_recovery_finishes_deterministically_after_restart(self):
+        decision=await self.waiting_ticket(status='verified',verified=True)
+        with patch('app.services.gpt_api.chat',side_effect=AssertionError('verification must not need fourth model step')):
+            second=self.service.DecisionSupervisor(observation._observer)
+            await second.tick();await second.tick()
+        async with self.sessions() as s:
+            row=await s.get(self.service.DecisionRecord,decision)
+            self.assertEqual(row.status,'done');self.assertTrue(row.verification['verified'])
+            self.assertEqual(row.model_steps,3)
+            turns=(await s.scalars(select(self.service.DecisionTurn).where(self.service.DecisionTurn.decision_id==decision,
+                self.service.DecisionTurn.turn_key=='worker:terminal-ticket'))).all()
+            self.assertEqual(len(turns),1)
+            self.assertFalse((await s.get(actions_tests.ActionExecutionControl,'exec-durable')).held)
+
+    async def test_terminal_ticket_without_verified_result_never_becomes_success(self):
+        decision=await self.waiting_ticket(status='verified',verified=False)
+        with patch('app.services.gpt_api.chat',side_effect=AssertionError('inconsistent verification requires human')):
+            await self.loop.tick()
+        async with self.sessions() as s:
+            row=await s.get(self.service.DecisionRecord,decision)
+            self.assertEqual(row.status,'human_review');self.assertFalse(row.verification.get('verified',False))
+            self.assertIn('verification',row.policy_result['reason'])
+
+    async def test_foreign_terminal_ticket_cannot_verify_decision(self):
+        decision=await self.waiting_ticket(status='verified',verified=True,project_id=8)
+        with patch('app.services.gpt_api.chat',side_effect=AssertionError('foreign evidence requires human')):
+            await self.loop.tick()
+        async with self.sessions() as s:
+            row=await s.get(self.service.DecisionRecord,decision)
+            self.assertEqual(row.status,'human_review');self.assertFalse(row.verification.get('verified',False))
+            self.assertIn('identity',row.policy_result['reason'])
+
     async def dialogue(self,action='wait',arguments=None,evidence=None):
         await self.enable_decisions();record=await self.begin()
         async def reply(**kwargs):
