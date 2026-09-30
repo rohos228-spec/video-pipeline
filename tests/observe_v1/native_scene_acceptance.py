@@ -1,4 +1,4 @@
-"""Draft camera probe in the existing group/main/seed/loopback harness.
+"""Bounded camera acceptance in the existing group/main/seed/loopback harness.
 
 Parent integration, owned elsewhere:
 * call prepare(fixtures, ROOT, 'native-scene-camera') before app imports;
@@ -13,9 +13,11 @@ preserved. An empty seed must acquire frames through the original split API and
 worker first; this module never inserts/updates Frame or staging rows.
 
 Camera input is captured by the external HTTP fixture after native DB-v2
-backfill, before the camera reply and store_cells. Missing fanout/scene HITL
-is diagnostic, never full-factory or managed acceptance. The parent must keep
-this diagnostic result separate from its GREEN helper unit/effect test target.
+backfill, before the camera reply and store_cells. Acceptance covers this camera
+node only, with actual input/parse/output/result journal bodies for its native
+attempt. Missing fanout/scene HITL remains diagnostic; assembler, full factory
+and managed acceptance stay false. Earlier archived diagnostic captures remain
+unchanged and separate from this later worker capture and helper GREEN tests.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ CAMERA = "native-scene-camera-B"
 ASSEMBLER = "native-scene-assembler-C"
 OUTSIDE = "outside-native-scene-Z"
 PROJECT_ID = 2
+CAMERA_JOURNAL_KINDS = ("node_input", "parse_result", "node_output", "node_result_verification")
 
 
 def _write(path, value):
@@ -278,14 +281,134 @@ async def _wait_native(fixtures, key):
     return state
 
 
+def _one_camera_fact(facts, kind):
+    matching = [fact for fact in facts if fact["kind"] == kind]
+    assert len(matching) == 1, ("Exactly one camera journal fact required", kind, len(matching))
+    return matching[0]
+
+
+def _journal_body(observer, fact, evidence):
+    reference = fact["payload"].get("body")
+    assert isinstance(reference, dict) and not reference.get("gap"), (fact["kind"], reference)
+    relative = Path(reference["path"])
+    sha = reference["sha256"]
+    assert isinstance(sha, str) and len(sha) == 64
+    assert relative.parts == (fact["execution_id"], sha + ".json"), "Body must belong to this execution"
+    body_root = Path(observer.body_root).resolve()
+    folder = (body_root / fact["execution_id"]).resolve()
+    path = (body_root / relative).resolve()
+    assert folder.parent == body_root and path.is_relative_to(folder), "Body outside execution directory"
+    raw = path.read_bytes()
+    assert len(raw) == reference["bytes"], "Body size differs from journal reference"
+    assert hashlib.sha256(raw).hexdigest() == sha, "Body bytes differ from journal SHA256"
+    body = json.loads(raw)
+    assert isinstance(body, dict), "Native camera fact needs a complete object body"
+    evidence.setdefault("body_refs", {})[fact["kind"]] = dict(reference)
+    return body
+
+
+def _verify_camera_journal(observer, events, *, execution, camera_node, state,
+                           captured, reply, transport_request, evidence):
+    """Read saved native facts and rows; no reconstructed facts or status writes."""
+    from app.services.observation import digest
+    from app.services.scene_contracts import scene_input_snapshot, verify_scene_agent
+
+    facts = [event for event in events if event["node_key"] == CAMERA]
+    start = _one_camera_fact(facts, "node_start")
+    end = _one_camera_fact(facts, "node_end")
+    model_start = _one_camera_fact(facts, "model_start")
+    model_end = _one_camera_fact(facts, "model_end")
+    journal = {kind: _one_camera_fact(facts, kind) for kind in CAMERA_JOURNAL_KINDS}
+    checks = [fact for fact in facts if fact["kind"] == "runtime_check"
+              and fact["payload"].get("check") == "native_scene_camera_parse"]
+    assert len(checks) == 1, "Actual native camera parser check required once"
+    check = checks[0]
+    attempt = start["attempt_id"]
+    assert attempt and start["workflow_run_id"]
+    required = [start, end, model_start, model_end, *journal.values(), check]
+    for fact in required:
+        assert (fact["execution_id"], fact["project_id"], fact["workflow_run_id"],
+                fact["node_key"], fact["attempt_id"]) == (
+                    execution, PROJECT_ID, start["workflow_run_id"], CAMERA, attempt), "Native journal identity mismatch"
+        assert fact["db_scope"] == "master", "Diagnostic fact must identify its independent journal source"
+    assert not any(fact["kind"] in {"node_error", "model_error", "model_retrieve_start"} for fact in facts)
+    request_id = model_start["request_id"]
+    assert request_id and all(fact["request_id"] == request_id for fact in
+                              (model_end, journal["parse_result"], check)), "Actual parser must link its own completed model request"
+    assert all(journal[kind]["request_id"] is None for kind in
+               ("node_input", "node_output", "node_result_verification")), "Row evidence must not invent a model request identity"
+    assert transport_request["node_key"] == CAMERA and transport_request["attempt_id"] == attempt
+    assert model_start["payload"]["method"] == "POST"
+    assert model_start["payload"]["path"] == "/codex/v1/responses"
+    assert model_end["payload"]["complete"] is True and model_end["payload"]["response_id"]
+    assert end["payload"]["worker_returned"] is True and end["payload"]["business_commit_claim"] is False
+    ordered = [start, journal["node_input"], model_start, model_end,
+               journal["parse_result"], check, journal["node_output"],
+               journal["node_result_verification"], end]
+    assert all(left["id"] < right["id"] for left, right in zip(ordered, ordered[1:])), "Native capture boundary order required"
+
+    model_input = _journal_body(observer, model_start, evidence)
+    model_output = _journal_body(observer, model_end, evidence)
+    assert model_input == transport_request["body"]
+    assert model_start["payload"]["input_revision"] == digest(model_input)
+    assert json.loads(model_output["text"]) == reply, "Actual returned model text must match the external fixture reply"
+    bodies = {kind: _journal_body(observer, fact, evidence) for kind, fact in journal.items()}
+    input_body = bodies["node_input"]
+    assert input_body == captured["snapshot"], "Native input journal must match the independent HTTP-boundary snapshot"
+    input_payload = journal["node_input"]["payload"]
+    assert input_payload["contract"] == "native_scene_camera"
+    assert input_payload["snapshot_boundary"] == "after native DB-v2 backfill, before camera staging"
+    assert input_payload["input_sha256"] == digest(input_body)
+    assert input_payload["frame_count"] == len(input_body["frames"]) == 2
+    parsed = journal["parse_result"]["payload"]
+    parsed_body = bodies["parse_result"]
+    assert parsed["contract"] == "native_scene_camera" and parsed["agent"] == "camera"
+    assert parsed["origin"] == "model" and parsed["parser"] == "scene_design.agents.parse_agent_slice"
+    assert all(parsed[key] is True for key in ("syntax_valid", "parsed", "schema_valid", "validation_performed"))
+    assert not parsed["validation_problems"] and parsed["error_type"] is None
+    assert parsed["semantic_quality_verified"] is False
+    assert parsed_body["text"] == model_output["text"] and parsed_body["parsed"] == reply
+    assert parsed["sha256"] == digest(parsed_body["parsed"])
+    assert check["payload"]["performed"] is True and check["payload"]["status"] == "passed"
+    assert not check["payload"]["validation_problems"] and check["payload"]["error_type"] is None
+    assert check["payload"]["business_commit_claim"] is False
+
+    project, frames, cells = _objects(state)
+    committed = scene_input_snapshot(project, frames, cells=cells)
+    assert bodies["node_output"] == {
+        "project_id": PROJECT_ID, "node_type": "sd_agent", "frames": committed["frames"],
+        "cells": committed["cells"], "scene_registry": committed["scene_registry"],
+    }, "Native output journal must match all actual rows, including rejected/non-camera cells"
+    proof = verify_scene_agent(project, camera_node, cells, frames=frames,
+        snapshot=input_body, agent_slice=parsed_body["parsed"])
+    recorded = {key: value for key, value in journal["node_result_verification"]["payload"].items() if key != "body"}
+    assert proof["status"] == "passed" and proof["cell_count"] == 14 and proof["frame_count"] == 2, proof
+    assert bodies["node_result_verification"] == recorded == proof, "Typed verifier must prove the same input, accepted slice and committed rows"
+    output = journal["node_output"]["payload"]
+    assert output["contract"] == "native_scene_camera" and output["frame_count"] == 2
+    assert output["source"] == "committed original executor rows; independent read session"
+    assert output["sha256"] == proof["sha256"]
+    # Each digest is checked with its original producer's encoding. The body
+    # reference hash, observer digest and compact typed-proof hash are distinct.
+    evidence.update(status="passed", execution_id=execution, workflow_run_id=start["workflow_run_id"],
+        node_key=CAMERA, attempt_id=attempt, request_id=request_id,
+        event_ids={fact["kind"]: fact["event_id"] for fact in required},
+        journal_input_sha256=input_payload["input_sha256"], parsed_sha256=parsed["sha256"],
+        typed_input_sha256=proof["input_sha256"], output_sha256=proof["sha256"], verification=proof)
+
+
 async def run(client, fixtures, observer, root, result, prepared, *, browser=False):
-    """Drive real existing APIs and read effects; full acceptance remains false."""
+    """Accept this native camera node only after its real worker/journal checks."""
     root = Path(root)
     result.update(accepted=False, status="diagnostic", managed_execution_verified=False,
-        semantic_quality_verified=False, factory_completed=False,
+        semantic_quality_verified=False, factory_completed=False, full_scene_fanout_accepted=False,
+        managed_accepted=False, autonomous_continuation_claim=False,
+        bounded_camera_node_accepted=False, camera_journal_acceptance=False, accepted_node_keys=[],
+        acceptance_scope="single native camera node; full scene family unaccepted",
         interventions=prepared["interventions"], diagnostics=list(prepared["diagnostics"]),
-        camera_worker_effect_verified=False, assembler_execution_verified=False,
-        hitl_boundary_verified=False, operator_starts=0, expected_route=[
+        camera_worker_effect_verified=False, assembler_execution_verified=False, assembler_accepted=False,
+        hitl_boundary_verified=False, hitl_accepted=False, human_approval_verified=False,
+        business_commit_claim=False, operator_starts=0, camera_operator_starts=0, expected_route=[
             "projects.run_project_step", "project_steps.start_step marked excel_gpt -> scene_d",
             "main worker -> advance_runner.advance_project_job -> pipeline.advance_project",
             "scene_design.run -> runner.run_category_agents -> cells.store_cells"])
@@ -331,6 +454,7 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     response = await client.post(base + "/steps/excel_gpt/run",
         params={"node_key": CAMERA, "mode": "resume", "force_wipe": False})
     result["operator_starts"] += 1
+    result["camera_operator_starts"] += 1
     result["camera_api"] = {"status_code": response.status_code, "body": response.json()}
     if response.status_code != 200:
         result["diagnostics"].append("original marked camera API refused start")
@@ -395,7 +519,8 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     result.update(camera_worker_effect_verified=True,
         camera_attempt_id=starts[0]["attempt_id"],
         assembler_prerequisites={"needed": needed, "missing": missing,
-            "agents_all_done": runner.agents_all_done(project), "attempted": False},
+            "agents_all_done": runner.agents_all_done(project), "attempted": False,
+            "native_node_status": nodes[ASSEMBLER]["status"]},
         actual_project_status=after["project"]["status"], actual_camera_status=nodes[CAMERA]["status"])
     if missing:
         result["diagnostics"].append("incomplete native fanout; assembler not started: " + ", ".join(missing))
@@ -415,6 +540,43 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     final_events = await _history(client, prefix)
     assert len([e for e in final_events if e["node_key"] == CAMERA and e["kind"] == "node_start"]) == 1
     assert dict(fixtures.native_scene_handler.counts) == counts
-    assert _read_state(fixtures)["frames"] == after["frames"]
+    final_state = _read_state(fixtures)
+    final_nodes = {row["node_key"]: row for row in final_state["nodes"]}
+    assert final_nodes[CAMERA]["status"] == "done", "Native camera must remain DONE"
+    assert final_nodes[ASSEMBLER]["status"] == final_nodes[OUTSIDE]["status"] == "pending"
+    assert not any(e["kind"] == "node_start" and e["node_key"] in {ASSEMBLER, OUTSIDE} for e in final_events)
+    for table in ("frames", "cells", "texts", "scenes", "hitl"):
+        assert final_state[table] == after[table], ("Quiet window changed native rows", table)
+    assert result["camera_operator_starts"] == 1
+    actions_response = await client.get(prefix + "/actions")
+    actions_response.raise_for_status()
+    actions = actions_response.json()
+    assert not actions["enabled"] and not actions["recoveries"] and not actions["records"], actions
+    result["actions"] = actions
     _write(root / "native-scene-api-history.json", {"events": final_events})
+    _write(root / "native-scene-final-state.json", final_state)
+    camera_facts = [event for event in final_events if event["node_key"] == CAMERA]
+    journal_evidence = {"status": "unknown", "required_kinds": list(CAMERA_JOURNAL_KINDS),
+        "fact_counts": dict(Counter(fact["kind"] for fact in camera_facts)), "body_refs": {}}
+    result["camera_journal_verification"] = journal_evidence
+    _write(root / "native-scene-result.json", result)
+    try:
+        actual_requests = json.loads((root / "actual-worker-requests.json").read_text(encoding="utf-8"))
+        actual_camera_requests = [request for request in actual_requests if request["node_key"] == CAMERA]
+        assert len(actual_camera_requests) == 1, "Exactly one original transport camera POST required"
+        assert actual_camera_requests[0]["body"] == camera_requests[0]["body"]
+        _verify_camera_journal(observer, final_events, execution=execution, camera_node=camera_node,
+            state=final_state, captured=captured, reply=reply,
+            transport_request=actual_camera_requests[0], evidence=journal_evidence)
+        assert journal_evidence["attempt_id"] == result["camera_attempt_id"]
+        assert journal_evidence["workflow_run_id"] == final_nodes[CAMERA]["workflow_run_id"]
+        assert journal_evidence["verification"] == proof
+    except (AssertionError, KeyError, OSError, TypeError, ValueError) as error:
+        journal_evidence.update(status="unknown", failure_type=type(error).__name__, reason=str(error))
+        result["diagnostics"].append("bounded camera journal acceptance incomplete; actual native rows/status remain recorded")
+        _write(root / "native-scene-result.json", result)
+        raise
+    result.update(accepted=True, status="accepted", bounded_camera_node_accepted=True,
+        accepted_node_keys=[CAMERA], camera_journal_acceptance=True,
+        one_camera_api_start=True, one_camera_model_post=True, camera_frames_preserved=True)
     _write(root / "native-scene-result.json", result)
