@@ -39,7 +39,8 @@ NODE_KEY = "native-video-A"
 OUTSIDE_KEY = "outside-native-video-assemble-Z"
 ORIGIN = "http://127.0.0.1:18766"
 BUCKET = "native-video-bucket"
-MODEL = "bytedance/seedance-1.5-pro"
+MODEL = "kling-2.6/image-to-video"
+MODEL_SLUG = "kling-2-6"
 JOB_ID = "fixture-native-video-01"
 OUTPUT_URL = ORIGIN + "/artifacts/" + JOB_ID + ".mp4"
 FRAME_UUID = uuid.uuid5(uuid.NAMESPACE_URL, "synthetic/native-video/frame/1").hex
@@ -143,7 +144,7 @@ def prepare(fixtures, root, mode):
     assert video_path.stat().st_size > 1000 and not video_path.is_relative_to(project_dir)
     nodes = [
         {"id": NODE_KEY, "type": "videos", "position": {"x": 100, "y": 100},
-         "data": {"label": "Synthetic native video", "modelId": "seedance-1-5-pro", "aspectRatio": "9:16"}},
+         "data": {"label": "Synthetic native video", "modelId": MODEL_SLUG, "aspectRatio": "9:16"}},
         {"id": OUTSIDE_KEY, "type": "assemble", "position": {"x": 500, "y": 100},
          "data": {"label": "Outside video observation"}},
     ]
@@ -154,7 +155,7 @@ def prepare(fixtures, root, mode):
             meta = baseline["master" if path == paths[0] else "project"]["project"]["meta"]
             meta.setdefault("canvas_graph", {}).update(nodes=nodes, edges=edges)
             meta.update(img_streams=1, outsee_streams=1)
-            db.execute("UPDATE projects SET status='new',auto_mode=0,video_generator='seedance_1_5_pro',"
+            db.execute("UPDATE projects SET status='new',auto_mode=0,video_generator='kling_2_6',"
                        "video_resolution='720p',meta=? WHERE id=?", (json.dumps(meta), PROJECT_ID))
             db.execute("INSERT INTO frames(id,project_id,number,voiceover_text,image_prompt,animation_prompt,"
                        "status,attrs,uuid,sort_key,created_at,updated_at) "
@@ -188,6 +189,12 @@ def prepare(fixtures, root, mode):
         "YANDEX_STORAGE_ACCESS_KEY": "synthetic-video-access", "YANDEX_STORAGE_SECRET_KEY": "synthetic-video-secret"})
     fixtures.NODES = (NODE_KEY, OUTSIDE_KEY)
     prepared = {"scenario": mode, "node_key": NODE_KEY, "outside": OUTSIDE_KEY,
+        "coverage_case": "native-kling-2.6-image-to-video-baseline", "selected_model_slug": MODEL_SLUG,
+        "provider_model": MODEL,
+        "unresolved_seedance_routing": {"archived_case": "native-video-worker-02", "archived_accepted": False,
+            "selected_model_slug": "seedance-1-5-pro", "observed_provider_model": MODEL,
+            "cause": "outsee_retry primary_is_kling checks provider == kie; initial fallback phase overwrites model_slug with kling-2-6 before any primary failure",
+            "resolved_by_this_case": False},
         "scope": [NODE_KEY], "frame_id": frame_id, "frame_uuid": FRAME_UUID, "input_artifact_uuid": INPUT_UUID,
         "input_image": str(image_path), "input_sha256": _sha(image_path),
         "transport_video": str(video_path), "transport_sha256": _sha(video_path),
@@ -197,7 +204,7 @@ def prepare(fixtures, root, mode):
             "locally generated transport MP4 outside project; no existing scene_video output",
             "all NodeRuns pending, auto_mode=False; original video API starts the worker",
             "original S3 image PUT/GET and KIE submit/poll/download use configured loopback endpoints",
-            "synthetic no-CDP credential; explicit original Seedance model; native retry ladder unchanged",
+             "synthetic no-CDP credential; explicit original Kling 2.6 image-to-video route; native retry ladder unchanged",
             "one known provider job, first poll running then immutable success; reject extra submits",
             "no managed grant, profile change, HITL approval, force wipe or input edit after start"]}
     fixtures.native_video_prepared = prepared
@@ -226,8 +233,12 @@ def handler_for(fixtures, root, *, base_handler=None):
             self.wfile.write(content)
 
         def rejected(self, error):
+            trace = error.__traceback__
+            while trace and trace.tb_next:
+                trace = trace.tb_next
             type(self).video_violations.append({"method": self.command, "path": self.path,
-                                               "error_type": type(error).__name__})
+                "error_type": type(error).__name__, "failure_line": trace.tb_lineno if trace else None,
+                "counts": dict(self.video_counts)})
             _write(root / "fixture-native-video-violations.json", type(self).video_violations)
             self.send_error(422, "Synthetic native video transport contract failed")
 
@@ -254,15 +265,22 @@ def handler_for(fixtures, root, *, base_handler=None):
                     assert self.path == "/api/v1/jobs/createTask"
                     assert self.headers.get("x-diagnostic-node") == NODE_KEY, "original observed worker required"
                     body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                    request = {"method": "POST", "path": self.path,
+                        "node_key": self.headers.get("x-diagnostic-node"),
+                        "attempt_id": self.headers.get("x-diagnostic-attempt"),
+                        "execution_id": self.headers.get("x-diagnostic-execution"), "body": body}
+                    _write(root / "fixture-native-video-submit-capture.json", request)
                     assert body["model"] == MODEL and self.uploaded_path
                     inputs = body["input"]
+                    assert set(inputs) == {"prompt", "image_urls", "sound", "duration"}
                     assert inputs["image_urls"] == [ORIGIN + self.uploaded_path]
-                    assert PROMPT in inputs["prompt"] and inputs["generate_audio"] is False
-                    assert inputs["duration"] == 5 and inputs["resolution"] == "720p" and inputs["aspect_ratio"] == "9:16"
+                    assert PROMPT in inputs["prompt"] and inputs["sound"] is False
+                    assert inputs["duration"] == "5"
+                    assert request["attempt_id"] and request["execution_id"], "native request correlation headers required"
                     self.video_counts["generation_submit"] += 1
                     assert self.video_counts["generation_submit"] == 1, "known job must not cause a second submit"
-                    self.video_requests.append({"method": "POST", "path": self.path,
-                        "node_key": NODE_KEY, "provider_job_id": JOB_ID, "body": body})
+                    request["provider_job_id"] = JOB_ID
+                    self.video_requests.append(request)
                     _write(root / "fixture-native-video-requests.json", self.video_requests)
                 self.reply({"code": 200, "data": {"taskId": JOB_ID}})
             except Exception as error:
@@ -275,6 +293,8 @@ def handler_for(fixtures, root, *, base_handler=None):
                     if parsed.path == self.uploaded_path:
                         self.video_counts["image_verify"] += 1
                         reply, content_type = image, "image/png"
+                        self.video_requests.append({"method": "GET", "path": self.path,
+                            "input_sha256": prepared["input_sha256"], "frame_uuid": FRAME_UUID})
                     elif parsed.path == "/api/v1/jobs/recordInfo":
                         assert parse_qs(parsed.query) == {"taskId": [JOB_ID]}
                         assert self.video_counts["generation_submit"] == 1
@@ -424,10 +444,10 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     polls = [request for request in handler.video_requests if "state" in request]
     assert len(submits) == 1 and [request["state"] for request in polls] == ["running", "success"]
     assert {request["provider_job_id"] for request in polls} == {JOB_ID}
-    actual_requests = json.loads((root / "actual-worker-requests.json").read_text(encoding="utf-8"))
-    assert len(actual_requests) == 1
-    assert actual_requests[0]["node_key"] == NODE_KEY and actual_requests[0]["attempt_id"] == starts[0]["attempt_id"]
-    assert actual_requests[0]["body"] == submits[0]["body"]
+    actual_request = json.loads((root / "fixture-native-video-submit-capture.json").read_text(encoding="utf-8"))
+    assert actual_request["node_key"] == NODE_KEY and actual_request["attempt_id"] == starts[0]["attempt_id"]
+    assert actual_request["execution_id"] == scope["execution_id"]
+    assert {key: submits[0][key] for key in actual_request} == actual_request
     native = state["project"]
     assert native["nodes"][NODE_KEY]["attempts"] == 1, "one original native attempt"
     frame = native["frames"][0]
@@ -447,7 +467,8 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     assert verification["status"] == "passed" and verification["sha256"] == prepared["transport_sha256"], verification
     assert verification["streams"] == ["video"] and verification["semantic_quality_verified"] is False
     sidecar = json.loads(output.with_suffix(".json").read_text(encoding="utf-8"))
-    assert sidecar["raw_url"] == OUTPUT_URL and sidecar["provider"] == "kie" and sidecar["model"] == "seedance-1-5-pro"
+    assert sidecar["raw_url"] == OUTPUT_URL and sidecar["provider"] == "kie" and sidecar["model"] == MODEL_SLUG
+    assert sidecar["params"]["ladder"] == "fallback", "original KIE video route uses the Kling ladder branch"
     assert sidecar["path"] == str(output) and sidecar["bytes"] == output.stat().st_size
     assert PROMPT in sidecar["prompt"] and sidecar["params"]["project_id"] == PROJECT_ID
     assert len(native["hitl"]) == 1
@@ -470,6 +491,8 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     _write(root / "native-video-history.json", history)
     _write(root / "native-video-state.json", after)
     result.update(accepted=True, acceptance_level="synthetic original video worker observation only",
+        coverage_case=prepared["coverage_case"], selected_model_slug=MODEL_SLUG, provider_model=MODEL,
+        unresolved_seedance_routing=prepared["unresolved_seedance_routing"],
         native_video_execution_observed=True, native_video_fixture_counts=counts,
         native_video_output={"artifact": artifact, "frame_identity": {key: frame[key] for key in IDENTITY_FIELDS},
             "provider_job_id": JOB_ID, "source_image_artifact_uuid": INPUT_UUID,
