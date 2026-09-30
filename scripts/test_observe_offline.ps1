@@ -269,7 +269,8 @@ if ($PrepareOnly) {
     exit 0
 }
 if ($Browser) {
-    & $docker @connectionArgs start $name | Out-Null
+    & $docker @connectionArgs start $name
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot start offline browser acceptance' }
     @{container=$name;network='none';browser_port=18767;source_commit=(& git -c $gitSafety -C $sourceRoot rev-parse HEAD)} | ConvertTo-Json | Set-Content (Join-Path $artifactPath 'browser-config.json')
     Write-Output "Browser container running: $name; evidence: $artifactPath"
     exit 0
