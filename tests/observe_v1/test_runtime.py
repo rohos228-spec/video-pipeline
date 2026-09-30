@@ -36,6 +36,14 @@ class RuntimeAcceptance(test_journal.JournalAcceptance):
                     'kind':'approve_plan','reason':'подтверждение плана человеком','initiator':'original executor'})
             await session.commit()
         await self.observer.consume(self.scope.execution_id,'master',self.master)
+        async with self.master() as session:
+            # Context's ordinary timeline page remains bounded at 500. An
+            # older pending approval must still be read by exact scoped ID.
+            session.add_all([ObservationEvent(event_id='approval-noise-'+str(i),
+                execution_id=self.scope.execution_id,project_id=2,workflow_run_id=7,
+                node_key='report',attempt_id='noise',db_scope='master',kind='runtime_check',payload={})
+                for i in range(510)])
+            await session.commit()
         url=f'/api/projects/2/observations/{self.scope.execution_id}/context'
         context=(await self.client.get(url)).json()
         self.assertEqual(context['wait_reasons']['script']['hitl_request_id'],req_id)

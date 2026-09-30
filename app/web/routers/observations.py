@@ -595,8 +595,9 @@ async def context(project_id: int, execution_id: str):
         rows = (await session.scalars(select(ObservationEvent).where(
             ObservationEvent.execution_id == execution_id).order_by(ObservationEvent.id.desc()).limit(500))).all()
         result = scope_json(scope)
-        from app.services.observation import pending_approval_context
-        approvals = await pending_approval_context(session, scope, rows)
+        from app.services.observation import pending_approval_context, native_approval_evidence
+        approval_events = await native_approval_evidence(session, scope)
+        approvals = await pending_approval_context(session, scope, approval_events)
         from app.services.media_view import context_for_nodes
         media = await context_for_nodes(session, scope)
     gaps = list(result["gaps"] or [])
@@ -607,7 +608,7 @@ async def context(project_id: int, execution_id: str):
             factory = await get_project_sessionmaker(project.data_dir)
             async with factory() as session:
                 replica, _ = await _business_snapshot(session, scope)
-                approvals = await pending_approval_context(session, scope, rows)
+                approvals = await pending_approval_context(session, scope, approval_events)
                 async with observer.master() as master_session:
                     media = await context_for_nodes(master_session, scope, project_session=session)
         except Exception as exc:

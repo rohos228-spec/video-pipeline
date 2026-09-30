@@ -282,10 +282,8 @@ class Diagnoser:
         observer=self.observer
         async with observer.master() as s:
             master,project=await business_snapshot(s,scope)
-            approval_events=(await s.scalars(select(ObservationEvent).where(
-                ObservationEvent.execution_id==scope.execution_id,
-                ObservationEvent.kind.in_(['node_start','human_approval_pending'])))).all()
-            from app.services.observation import pending_approval_context
+            from app.services.observation import pending_approval_context,native_approval_evidence
+            approval_events=await native_approval_evidence(s,scope)
             approvals=await pending_approval_context(s,scope,approval_events)
             run=await s.get(WorkflowRun,scope.workflow_run_id)
             titles={n['id']:str((n.get('data') or {}).get('label') or (n.get('data') or {}).get('title') or n['id']) for n in (run.nodes_snapshot if run else [])}

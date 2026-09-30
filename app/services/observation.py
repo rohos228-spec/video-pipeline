@@ -857,6 +857,17 @@ async def business_snapshot(session, scope):
             "attempts": n.attempts} for n in nodes}}, project
 
 
+async def native_approval_evidence(session, scope):
+    from sqlalchemy import func
+    latest = select(func.max(ObservationEvent.id)).where(
+        ObservationEvent.execution_id == scope.execution_id,
+        ObservationEvent.project_id == scope.project_id,
+        ObservationEvent.node_key.in_(scope.node_keys),
+        ObservationEvent.kind.in_(['node_start', 'human_approval_pending']),
+    ).group_by(ObservationEvent.node_key, ObservationEvent.kind)
+    return (await session.scalars(select(ObservationEvent).where(ObservationEvent.id.in_(latest)))).all()
+
+
 async def pending_approval_context(session, scope, events):
     """Read only committed, scoped HITL creation plus the current native decision.
 
