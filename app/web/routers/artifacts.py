@@ -8,16 +8,18 @@ Artifact. Безопасно: разрешает только пути под `s
 from __future__ import annotations
 
 import mimetypes
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact
 from app.settings import settings
-from app.web.deps import get_session
+from app.web.deps import get_project_session, get_session
 from app.web.schemas import ArtifactDTO
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
@@ -91,13 +93,27 @@ async def get_artifact(
     return a
 
 
+async def get_artifact_file_session(
+    request: Request,
+    project_id: Annotated[int | None, Query(gt=0)] = None,
+) -> AsyncIterator[AsyncSession]:
+    # An explicit project never falls back to a master/other-project artifact.
+    # Retain the original master route for callers of legacy unscoped links.
+    source = get_session() if project_id is None else get_project_session(request, project_id)
+    async for session in source:
+        yield session
+
+
 @router.get("/{artifact_uuid}/file")
 async def download_artifact(
-    artifact_uuid: str, session: AsyncSession = Depends(get_session)
+    artifact_uuid: str,
+    session: AsyncSession = Depends(get_artifact_file_session),
+    project_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> FileResponse:
-    a = (
-        await session.execute(select(Artifact).where(Artifact.uuid == artifact_uuid))
-    ).scalar_one_or_none()
+    query = select(Artifact).where(Artifact.uuid == artifact_uuid)
+    if project_id is not None:
+        query = query.where(Artifact.project_id == project_id)
+    a = (await session.execute(query)).scalar_one_or_none()
     if a is None:
         raise HTTPException(status_code=404, detail="artifact not found")
     path = Path(a.path)

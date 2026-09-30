@@ -1,5 +1,14 @@
 # Text + media goal: current handoff
 
+## CURRENT: routing/UI fix GREEN, continue current regressions
+
+Engine29.8.1 restored by the already-authorized normal Desktop launch, without
+settings changes. Scoped artifact HTTP:17/17; frontend contracts/TS/build GREEN,
+v650 export installed. Follow `media-preview-routing-followup.md` CURRENT.
+Next: current decision-final/runtime/diagnose, clean mixed worker, then short live
+preview/reload. Do not rerun the resolved RED or treat earlier blocked notes below
+as the current state. Previous archives/failed results and v649 export preserved.
+
 ## LATEST: archive recovered; preview routing reproducer prepared; Engine500
 
 Follow [media-preview-routing-followup.md](media-preview-routing-followup.md).

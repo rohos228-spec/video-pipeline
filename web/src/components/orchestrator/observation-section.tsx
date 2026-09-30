@@ -9,10 +9,20 @@ import {DecisionSection} from './decision-section';
 import {ProfilesSection} from './profiles-section';
 import {eventLabel, mergeEvents, usageLabel, groupForScope, type ObservationEvent} from "@/lib/observation-view";
 import {Button} from "@/components/ui/button";
-import {mediaPhase, mediaVerification, artifactLink, publicationSummary} from "@/lib/media-view";
+import {mediaPhase, mediaVerification, artifactLink, imagePreviewLink, publicationSummary} from "@/lib/media-view";
 import type {MediaContext} from "@/lib/observations";
 
-function MediaDetails({media}:{media:MediaContext}) {
+function VerifiedImagePreview({href}:{href:string}) {
+  const [failed,setFailed]=useState(false);
+  if(failed) return <p role="status" className="text-amber-200">Превью недоступно: файл нужно проверить повторно.</p>;
+  // Original application endpoint rechecks ownership, containment and file hash.
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={href} alt="Проверенный файл изображения; качество содержания не оценивалось"
+    loading="lazy" onError={()=>setFailed(true)} className="mt-2 max-h-64 max-w-full rounded object-contain"
+    data-testid="verified-image-preview"/>;
+}
+
+function MediaDetails({media,projectId}:{media:MediaContext;projectId:number|null}) {
   return <div className="space-y-2" data-testid="media-node-details">
     <p>{media.limited_management ? "Ограниченное управление" : "Только наблюдение"} · {media.result_kind}</p>
     <p>Проверено только синтетически · рабочий профиль не настроен</p>
@@ -25,7 +35,9 @@ function MediaDetails({media}:{media:MediaContext}) {
     </div>}
     {media.jobs.length===0 && !media.publication && <p>Job ещё не зарегистрирован; результат не подтверждён.</p>}
     {media.jobs.map(job=>{
-      const href=job.artifact_uuid ? artifactLink(job.artifact_uuid) : null;
+      const href=job.phase==="verified" && job.verification.status==="passed" && job.artifact_uuid
+        ? artifactLink(job.artifact_uuid,projectId) : null;
+      const preview=imagePreviewLink(media.result_kind,job,projectId);
       return <details key={job.job_id} className="rounded border border-white/15 p-2">
         <summary className="cursor-pointer">{mediaPhase(job.phase)} · {job.model_id}</summary>
         <p>Прогресс: {job.progress==null ? "провайдер не сообщил" : `${job.progress}%`}</p>
@@ -35,6 +47,7 @@ function MediaDetails({media}:{media:MediaContext}) {
         {job.error && <p className="text-amber-200">Проблема: {job.error}</p>}
         {job.verification.reason && <p>Причина проверки: {job.verification.reason}</p>}
         {href && <a href={href} target="_blank" rel="noreferrer" className="underline">Открыть проверенный локальный файл</a>}
+        {preview && <VerifiedImagePreview key={preview} href={preview}/>}
       </details>;
     })}
     <p>Отправки генерации: {media.requests.generation_submit??0} · статусы: {media.requests.status??0} · загрузки: {media.requests.download??0}</p>
@@ -261,11 +274,12 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     <p className="text-white/45">Наблюдение читает выполнение. Эти кнопки не запускают и не останавливают задачу.</p>
     {context && <div className="space-y-2 rounded border border-sky-400/20 p-2">
       <strong>Управление · Actions-v1</strong>
-      <label className="flex items-center gap-2">Предел model POST на execution
+      <label className="flex items-center gap-2">Общий лимит запросов на execution
         <input type="number" min={1} max={100} aria-label="Лимит запросов Actions" disabled={!!actionState?.configured}
           value={actionState?.request_limit ?? actionRequestLimit} onChange={e=>setActionRequestLimit(Number(e.target.value))}
           className="w-20 rounded border border-white/15 bg-[#161616] p-1.5"/>
       </label>
+      <p className="text-white/50">Общий счётчик включает запросы Decision и worker, статусы внешних задач и загрузки файлов. Это не денежный потолок.</p>
       <p data-testid="actions-mode">{actionsModeLabel(actionState)}</p>
       <p className="text-white/50">Закрытие execution не означает done всего WorkflowRun. User_stop supervisor не снимает.</p>
       <p className="text-white/50">По умолчанию выключено. Разрешение ограничено одним execution, выбранной группой и снимком графа; общий бюджет задаётся выше до включения. Остановка наблюдения и пауза выполнения — разные действия.</p>
@@ -316,7 +330,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       <div className="overflow-x-auto"><table className="w-full text-left"><thead><tr>{["Нода","Состояние / прогресс","Попытка","Модель / usage","Проверки / ожидание"].map(x=><th key={x} className="p-1 text-white/40">{x}</th>)}</tr></thead><tbody>
         {context.node_keys.map(node=>{
           const nc=context.node_contexts[node]; const state=states[node]; const latest=models.filter(e=>e.node_key===node).at(-1);
-          return <tr key={node} className="border-t border-white/10"><td className="p-1">{node}</td><td className="p-1">{state?.status ?? "неизвестно"} · {nc?.media || state?.progress == null ? "прогресс неизвестен" : `${state.progress}%`}</td><td className="p-1">{nc?.latest_attempt_id?.slice(0,8) ?? "неизвестно"}</td><td className="p-1">{nc?.model ?? "модель неизвестна"}<br/>{usageLabel(latest?.payload.usage as Record<string,unknown> | null)}</td><td className="p-1">{nc?.media ? <MediaDetails media={nc.media}/> : <>{nc?.checks.length ? nc.checks.slice(0,4).map((check,i)=><div key={i}>{eventLabel({kind:check.kind,payload:check.result})}</div>) : "not_checked"}<br/>{context.wait_reasons?.[node]?.reason ?? "причина ожидания неизвестна"}{actionState?.enabled && state?.status==='done' && <div><Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void verifyManagedNode(node)}>Проверить результат</Button></div>}</>}</td></tr>;
+          return <tr key={node} className="border-t border-white/10"><td className="p-1">{node}</td><td className="p-1">{state?.status ?? "неизвестно"} · {nc?.media || state?.progress == null ? "прогресс неизвестен" : `${state.progress}%`}</td><td className="p-1">{nc?.latest_attempt_id?.slice(0,8) ?? "неизвестно"}</td><td className="p-1">{nc?.model ?? "модель неизвестна"}<br/>{usageLabel(latest?.payload.usage as Record<string,unknown> | null)}</td><td className="p-1">{nc?.media ? <MediaDetails media={nc.media} projectId={projectId}/> : <>{nc?.checks.length ? nc.checks.slice(0,4).map((check,i)=><div key={i}>{eventLabel({kind:check.kind,payload:check.result})}</div>) : "not_checked"}<br/>{context.wait_reasons?.[node]?.reason ?? "причина ожидания неизвестна"}{actionState?.enabled && state?.status==='done' && <div><Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void verifyManagedNode(node)}>Проверить результат</Button></div>}</>}</td></tr>;
         })}
       </tbody></table></div>
       <div><strong>Хронология · {events.length} событий</strong><ol data-testid="observation-timeline" className="mt-2 max-h-64 overflow-y-auto space-y-1">

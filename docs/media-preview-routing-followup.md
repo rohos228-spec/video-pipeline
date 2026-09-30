@@ -1,5 +1,32 @@
 # Mixed media: archive recovery and preview routing follow-up
 
+## CURRENT: scoped preview fix GREEN; broader acceptance still pending
+
+Normal Desktop startup restored Engine 29.8.1 without settings changes. The
+existing file endpoint now accepts a positive explicit project ID, uses that
+project's DB and filters artifact ownership. It retains the legacy master path
+only when no project ID was supplied; an explicit scope never falls back.
+Containment/hash/presence checks remain active.
+
+The existing panel passes the current project ID and shows an inline image only
+for verified image jobs with passed structural verification. Load failure is
+visible. The shared request-limit caption now includes Decision/worker/status/
+download and explicitly says it is not a monetary cap. No workflow/status,
+permissions, retry, provider route or budget behavior changed.
+
+- `preview-routing-green-01`: **17/17**, including the four new real HTTP cases;
+  160 app modules loaded, no source mismatches. Loaded artifact route SHA-256:
+  `8e6fc348623a6cf9f4488f611e67590b226179ce5ee1e3fbb06c43a27953bd80`.
+- `preview-ui-green-01`: all eight frontend contract groups, TypeScript and
+  production export passed using cached dependencies and `--network none`.
+  UI version **650**. The old v649 export is retained separately.
+- The two preceding RED runs remain untouched. No paid calls/keys/new deps.
+
+This does not yet accept live rendering or resolve the previous OOM. Current
+decision-final/runtime/diagnosis, clean mixed shutdown/loaded hashes and short
+live preview/reload remain outstanding. Historical notes below document the
+prepared-test and Docker500 boundaries; they are not the current code status.
+
 Date: 2026-09-30. Base checkpoint: `99381ee2e7c8230c9261ab9268517db3e66b9fe8`.
 
 ## Executed RED after normal Desktop startup

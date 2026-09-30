@@ -15,8 +15,20 @@ export function mediaVerification(status?: string): string {
     : "Проверка результата не подтверждена";
 }
 
-export function artifactLink(uuid: string): string | null {
-  return /^[a-f0-9]{32}$/.test(uuid) ? `/api/artifacts/${uuid}/file` : null;
+export function artifactLink(uuid: string, projectId: number | null | undefined): string | null {
+  return /^[a-f0-9]{32}$/.test(uuid) && typeof projectId === "number"
+    && Number.isSafeInteger(projectId) && projectId > 0
+    ? `/api/artifacts/${uuid}/file?project_id=${projectId}` : null;
+}
+
+export function imagePreviewLink(
+  kind: string,
+  job: {phase: string; verification?: {status?: string}; artifact_uuid?: string | null},
+  projectId: number | null | undefined,
+): string | null {
+  if (kind !== "image" || job.phase !== "verified" || job.verification?.status !== "passed"
+      || typeof job.artifact_uuid !== "string") return null;
+  return artifactLink(job.artifact_uuid, projectId);
 }
 
 export function publicationSummary(status?: string): string {
