@@ -10,6 +10,10 @@ Native observe mode has no durable MediaJob or artifact_verified event for
 videos. The worker's original post-step file/Artifact validation remains
 enabled; acceptance additionally calls the original structural verifier on
 the actual downloaded output, without recording a fabricated business fact.
+
+Startup may derive script_ready from the source frames without a split claim.
+Calibrate that baseline with the original status/data guards in a rolled-back
+session; the original explicit video API still owns admission and execution.
 """
 from __future__ import annotations
 
@@ -331,10 +335,15 @@ async def _history(client, prefix):
 
 
 async def run(client, fixtures, observer, root, result, prepared, *, browser=False, timeout_s=120):
+    from app.models import Project, ProjectStatus
+    from app.project_db import get_project_sessionmaker
     from app.services.artifact_verifier import verify_artifact
     from app.services.node_capabilities import capability_for
+    from app.services.project_state import compute_actual_status
     from app.services.step_cancel import is_generation_active
+    from app.services.step_data_guard import can_enter_running
     from app.settings import settings
+    from app.telegram.menu import step_by_code
 
     assert not browser and 0 < timeout_s <= 120
     assert capability_for("videos").managed is False, "no capability grant for this observation probe"
@@ -345,9 +354,39 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     initial = _state(fixtures)
     _assert_boundary(initial, prepared)
     for replica in initial.values():
-        assert replica["project"]["status"] == "new" and not replica["hitl"]
+        assert not replica["hitl"]
         assert all(node["status"] == "pending" and node["attempts"] == 0 for node in replica["nodes"].values())
         assert [row["kind"] for row in replica["artifacts"]] == ["scene_image"]
+    assert not list((fixtures.DB.parent / "videos").glob("*.mp4")), "no prior native video file"
+    assert not handler.video_counts and not handler.video_violations, "no provider call before admission"
+    step = step_by_code("video")
+    assert step is not None and step.running_status is ProjectStatus.generating_videos
+    assert step.ready_status is ProjectStatus.videos_ready and step.requires is ProjectStatus.animation_prompts_ready
+    input_factory = await get_project_sessionmaker(fixtures.DB.parent)
+    async with input_factory() as input_session:
+        native_project = await input_session.get(Project, PROJECT_ID)
+        assert native_project is not None and native_project.auto_mode is False
+        actual_status = await compute_actual_status(input_session, native_project)
+        allowed, reason, suggested_status = await can_enter_running(
+            input_session, native_project, step.running_status)
+        calibration = {
+            "original_guard": "step_data_guard.can_enter_running", "allowed": allowed, "reason": reason,
+            "suggested_status": suggested_status.value if suggested_status is not None else None,
+            "original_actual_status": actual_status.value,
+            "baseline_statuses": {name: replica["project"]["status"] for name, replica in initial.items()},
+            "original_step_code": step.code, "declared_step_requires": step.requires.value,
+            "status_or_output_writes": False, "managed_eligible": False,
+        }
+        # compute_actual_status may inspect/recover disk artifacts. Calibration
+        # must retain the persisted input fixture and all pending node states.
+        await input_session.rollback()
+    _write(root / "native-video-admission-calibration.json", calibration)
+    assert allowed, calibration
+    assert actual_status is ProjectStatus.script_ready, "source inputs carry no split-completion or video-success claim"
+    for replica in initial.values():
+        assert replica["project"]["status"] in {"new", actual_status.value}, calibration
+    assert _state(fixtures) == initial, "original admission calibration must not change either replica"
+    assert not handler.video_counts and not handler.video_violations
     base = "http://127.0.0.1:18765/api/projects/2"
     response = await client.post(base + "/observations", json={"node_keys": [NODE_KEY]})
     response.raise_for_status()
@@ -355,7 +394,8 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     assert scope["mode"] == "observe" and scope["node_keys"] == [NODE_KEY]
     prefix = base + "/observations/" + scope["execution_id"]
     result.update(execution_id=scope["execution_id"], observation_only=True, managed_ready=False,
-                  operator_starts=0, interventions=prepared["interventions"], semantic_quality_verified=False)
+                  operator_starts=0, interventions=prepared["interventions"], semantic_quality_verified=False,
+                  native_video_admission_calibration=calibration)
     response = await client.post(base + "/steps/video/run", params={"node_key": NODE_KEY, "force_wipe": "false"})
     response.raise_for_status()
     result["operator_starts"] = 1
