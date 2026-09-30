@@ -495,6 +495,45 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertNotIn('retry_profile',before['allowed_actions'])
         self.assertEqual((await self.loop.context(record['decision_id']))['context_version'],before['context_version'])
 
+    async def test_image_prompt_contract_hash_tracks_actual_output_without_claiming_quality(self):
+        from app.models import Frame
+        from app.services.plan_shot2 import SHOT2_PROMPT_ATTR
+        from app.services.node_capabilities import verify_image_prompts
+        record=await self.native_contract_fixture('image_prompts')
+        async with self.sessions() as s:
+            s.add(Frame(project_id=7,number=1,uuid='a'*32,voiceover_text='synthetic input',
+                image_prompt='synthetic initial prompt',attrs={}))
+            s.add(Frame(project_id=8,number=2,uuid='b'*32,voiceover_text='foreign scope',
+                image_prompt='foreign output',attrs={}))
+            await s.commit()
+        context=await self.loop.context(record['decision_id'])
+        first=await self.loop.read_contract(record['decision_id'])
+        self.assertEqual(first['result_kind'],'frame_prompts')
+        self.assertEqual(first['frame_count'],1)
+        self.assertEqual(first['compatible_profiles'],[])
+        self.assertFalse(first['semantic_quality_verified'])
+        self.assertTrue(first['verification_status'].startswith('not_checked'))
+        self.assertNotIn('retry_same',context['allowed_actions'])
+        self.assertNotIn('retry_profile',context['allowed_actions'])
+        self.assertNotIn('jobs',first)
+        async with self.sessions() as s:
+            frame=await s.scalar(select(Frame).where(Frame.project_id==7))
+            self.assertEqual(first['frame_set_sha256'],verify_image_prompts(
+                [frame],project_id=7,snapshot=None)['frame_set_sha256'])
+            frame.image_prompt='synthetic changed primary prompt'
+            await s.commit()
+        primary=await self.loop.read_contract(record['decision_id'])
+        self.assertNotEqual(first['frame_set_sha256'],primary['frame_set_sha256'])
+        async with self.sessions() as s:
+            frame=await s.scalar(select(Frame).where(Frame.project_id==7))
+            frame.attrs={SHOT2_PROMPT_ATTR:'synthetic changed secondary prompt'}
+            await s.commit()
+        second=await self.loop.read_contract(record['decision_id'])
+        self.assertNotEqual(primary['frame_set_sha256'],second['frame_set_sha256'])
+        self.assertEqual((await self.loop.read_contract(record['decision_id']))['frame_set_sha256'],
+            second['frame_set_sha256'])
+        self.assertTrue(second['verification_status'].startswith('not_checked'))
+
     async def test_marked_scene_node_never_inherits_structured_text_recovery(self):
         for data,typ in (({'sd_agent':'skeleton'},'sd_agent'),
                          ({'sd_agent':'assemble'},'sd_assemble'),
