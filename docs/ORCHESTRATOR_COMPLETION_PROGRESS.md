@@ -71,3 +71,16 @@ application files also match the source at the end of this regression.
 No provider calls. No new worker exhaustion/browser scenarios were needed for
 this unchanged-code regression. Stage 2 begins with unified-launch API tests;
 the following stages are still outstanding.
+
+## Stage 2 acceptance in progress
+
+Unified managed launch and the simple existing-panel UI are implemented.
+Launch safety: 26/26 GREEN, then 27/27 including a separate project/master DB
+projection case. Frontend contract/TypeScript/build GREEN (v651).
+Two original worker graphs passed: six-node text group with five synthetic model
+POST and application-generated HTML; image graph with two verified PNG and six
+accounted submit/poll/download operations. No healthy-node Decision calls.
+Live browser acceptance remains outstanding. Failed seed/projection runs and
+all underlying events are preserved. See
+`docs/ORCHESTRATOR_COMPLETION_ACCEPTANCE_20260930.md` for paths, exact boundaries,
+the terminal Decision RED currently being corrected and the remaining stages.
