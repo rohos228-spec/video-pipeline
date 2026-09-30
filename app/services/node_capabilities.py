@@ -33,6 +33,10 @@ _CAPABILITIES = {
         ('project_database','local_xlsx','hitl_request'),READ_ACTIONS,True),
     'split': NodeCapability('split','frame_set','split_frames.run → xlsx_step_runners.run_split_xlsx',
         ('running','parse','apply','commit','verify'),('project_database','local_xlsx'),READ_ACTIONS,True),
+    'image_prompts': NodeCapability('image_prompts','frame_prompts',
+        'generate_image_prompts.run → xlsx_step_runners.run_img_pr_xlsx',
+        ('running','parse','validate','apply','commit','verify'),
+        ('project_database','local_xlsx','local_checkpoint'),READ_ACTIONS,True),
     "excel_gpt": NodeCapability("excel_gpt", "structured", "enrich_xlsx.run",
         ("running", "parse", "validate", "apply", "commit"), ("project_database",),
         READ_ACTIONS + ("retry_same", "retry_profile", "finish"), True),
@@ -65,6 +69,136 @@ def require_managed_capability(node_type: str):
     if not capability.managed:
         raise ValueError("node adapter has no accepted managed executor")
     return capability
+
+
+def image_prompts_contract():
+    """Original img_pr parent/child and write rules, without recovery authority."""
+    from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
+    return {'node_type':'image_prompts','input':'original scoped Frame rows and resolved native prompt',
+        'output':'same scoped rows; primary image_prompt and native second-shot attrs',
+        'min_characters':IMG_PR_MIN_WRITE_CHARS,'primary_prompt_required':True,
+        'threshold':'either native prompt slot; short primary allowed with complete second slot',
+        'target_predicate':'vo_shot_expand.is_img_pr_vo_parent; children exempt from parent threshold',
+        'allowed_fields':['image_prompt','image_prompt_shot2','characters'],
+        'write_contract':'node_write_contract.filter_ops_for_node(node_kind=img_pr)',
+        'native_partial_extraction_preserved':True,'semantic_quality_verified':False,
+        'arbitrary_shell_code_paths':False}
+
+
+def image_prompt_input_snapshot(frames,*,project_id):
+    from app.services.vo_shot_expand import is_img_pr_vo_parent
+    return {'project_id':project_id,'frames':[
+        {'project_id':f.project_id,'uuid':f.uuid,'number':f.number,
+         'voiceover_text':f.voiceover_text,'required_prompt':is_img_pr_vo_parent(f)}
+        for f in frames]}
+
+
+def verify_image_prompts(frames,*,project_id,snapshot):
+    """Read-only native output integrity; no semantic/model quality claim."""
+    from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
+    from app.services.plan_shot2 import SHOT2_PROMPT_ATTR
+    from app.services.observation import digest
+    rows=[{'project_id':f.project_id,'uuid':f.uuid,'number':f.number,
+        'voiceover_text':f.voiceover_text,'image_prompt':f.image_prompt,
+        'second_prompt':(f.attrs or {}).get(SHOT2_PROMPT_ATTR)} for f in frames]
+    proof={'node_type':'image_prompts','frame_count':len(rows),'frame_set_sha256':digest(rows),
+        'input_sha256':digest(snapshot) if snapshot is not None else None,
+        'business_commit_claim':False,'semantic_quality_verified':False,
+        'source':'original executor Frame rows; committed outbox proves application'}
+    if (not isinstance(snapshot,dict) or not isinstance(snapshot.get('frames'),list)
+            or not snapshot['frames'] or any(not isinstance(r,dict) or
+                not {'uuid','number','voiceover_text','required_prompt'}<=r.keys() for r in snapshot['frames'])):
+        return {**proof,'status':'unknown','reason':'captured input unavailable or incomplete','errors':[],
+            'voiceover_preserved':False}
+    errors=[];before=snapshot['frames']
+    if snapshot.get('project_id')!=project_id or any(r.get('project_id')!=project_id for r in before):
+        errors.append('input_project_outside_scope')
+    before_ids=[r['uuid'] for r in before];after_ids=[r['uuid'] for r in rows]
+    if any(not uid for uid in before_ids+after_ids):errors.append('missing_uuid')
+    if len(set(before_ids))!=len(before_ids) or len(set(after_ids))!=len(after_ids):errors.append('duplicate_uuid')
+    if set(before_ids)!=set(after_ids) or len(before)!=len(rows):errors.append('frame_set_changed')
+    if any(r['project_id']!=project_id for r in rows):errors.append('output_project_outside_scope')
+    if len({r['number'] for r in rows})!=len(rows):errors.append('duplicate_number')
+    by_id={r['uuid']:r for r in rows};voiceover_preserved=True;targets=0
+    for row in before:
+        current=by_id.get(row['uuid'])
+        if current is None:
+            voiceover_preserved=False
+            continue
+        if current['voiceover_text']!=row['voiceover_text']:
+            voiceover_preserved=False;errors.append('voiceover_changed:'+str(row['uuid']))
+        if current['number']!=row['number']:errors.append('frame_number_changed:'+str(row['uuid']))
+        if row['required_prompt'] is True:
+            targets+=1
+            primary=str(current['image_prompt'] or '').strip()
+            second=str(current['second_prompt'] or '').strip()
+            if not primary or max(len(primary),len(second))<IMG_PR_MIN_WRITE_CHARS:
+                errors.append('missing_or_short_parent_prompt:'+str(row['uuid']))
+        elif row['required_prompt'] is not False:errors.append('input_target_rule_unknown')
+    if not targets:errors.append('no_required_parent_frames')
+    return {**proof,'status':'failed' if errors else 'passed',
+        'reason':errors[0] if errors else None,'errors':errors,
+        'voiceover_preserved':voiceover_preserved,'target_frame_count':targets}
+
+
+async def record_image_prompt_input(frames,project):
+    from app.services.observation import _attempt,record_fact,digest
+    ctx=_attempt.get()
+    if not ctx:return
+    snapshot=image_prompt_input_snapshot(frames,project_id=project.id)
+    ctx.image_prompt_input=snapshot
+    await record_fact('node_input',{'contract':'native_image_prompts','frame_count':len(frames),
+        'input_sha256':digest(snapshot)},body=snapshot)
+
+
+async def record_image_prompt_parse(reply,ops,*,batch_i,target_uuids):
+    import json
+    from app.services.img_pr_batches import writeable_img_pr_ops,uuid_of_op
+    from app.services.observation import _attempt,record_fact,digest,completed_model_request_id
+    ctx=_attempt.get()
+    if not ctx:return
+    try:json.loads(reply);syntax=True
+    except (ValueError,TypeError):syntax=False
+    writable=writeable_img_pr_ops(ops);ids=[uuid_of_op(op) for op in writable]
+    scoped=bool(ids) and len(set(ids))==len(ids) and set(ids)<=set(target_uuids)
+    request_id=completed_model_request_id()
+    requests=getattr(ctx,'image_prompt_batch_requests',None)
+    if requests is None:requests={};ctx.image_prompt_batch_requests=requests
+    requests[batch_i]=request_id
+    if request_id is None and ctx.scope.mode=='managed':
+        ctx.observer.mark_gap(ctx.scope.execution_id,RuntimeError('native image prompt model request identity unavailable'))
+    await record_fact('parse_result',{'contract':'native_image_prompts','batch':batch_i,
+        'syntax_valid':syntax,'parsed':bool(ops),'schema_valid':scoped,'ops_count':len(ops),
+        'batch_coverage_complete':set(ids)==set(target_uuids),
+        'writeable_ops_count':len(writable),'payload_required':False,
+        'parser':'original img_pr_batches.parse_img_pr_ops; partial extraction preserved',
+        'sha256':digest(ops)},body={'text':reply,'extracted_ops':ops},request_id=request_id)
+    await record_fact('runtime_check',{'check':'native_image_prompt_batch','batch':batch_i,
+        'status':'passed' if scoped else 'failed','performed':True,
+        'business_commit_claim':False},request_id=request_id)
+
+
+async def observe_image_prompt_result(session,project,node_type):
+    from sqlalchemy import select
+    from app.models import Frame
+    from app.services.observation import _attempt,record_fact
+    ctx=_attempt.get()
+    if not ctx or ctx.scope.mode!='managed' or node_type!='image_prompts':return
+    frames=(await session.scalars(select(Frame).where(Frame.project_id==project.id).order_by(Frame.number)
+        .execution_options(populate_existing=True))).all()
+    proof=verify_image_prompts(frames,project_id=project.id,snapshot=getattr(ctx,'image_prompt_input',None))
+    output={'project_id':project.id,'frames':[
+        {'uuid':f.uuid,'number':f.number,'voiceover_text':f.voiceover_text,
+            'image_prompt':f.image_prompt,'attrs':f.attrs} for f in frames]}
+    await record_fact('node_output',{'frame_count':len(frames),
+        'frame_set_sha256':proof['frame_set_sha256'],'source':'original executor project.db rows'},body=output)
+    await record_fact('node_result_verification',proof,body=proof)
+    if proof['status']!='passed':
+        from app.services.actions_v1 import ActionSupervisor
+        await ActionSupervisor(ctx.observer).set_held(project_id=project.id,execution_id=ctx.scope.execution_id,
+            held=True,initiator='native_image_prompt_verifier',rationale=proof['reason'],
+            idempotency_key='image-prompts-verify:'+ctx.attempt_id,operator_request=False)
+        raise RuntimeError('managed image prompt verification '+proof['status'])
 
 
 def project_text_contract(node_type):

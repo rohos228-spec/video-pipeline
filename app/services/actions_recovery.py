@@ -146,7 +146,8 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
         if node_key not in control.node_keys:
             raise ValueError("node outside recovery scope")
         from app.services.managed_launch import allowed_actions
-        if ('retry_profile' if profile_overlay_id else 'retry_same') not in await allowed_actions(
+        action_type = 'retry_profile' if profile_overlay_id else 'retry_same'
+        if action_type not in await allowed_actions(
                 master,execution_id,{'retry_same','retry_profile'}):
             raise ValueError('recovery strategy outside execution grant')
         from app.services.decision_config import DecisionRuntimeBinding,runtime_config,check_incident_scope
@@ -157,7 +158,6 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             if binding.config_hash!=digest(cfg):raise ValueError('runtime configuration revision changed')
             check_incident_scope(cfg,execution_id=execution_id,incident_id=incident_id,
                 node_key=node_key,source_attempt_id=incident.attempt_id)
-            action_type='retry_profile' if profile_overlay_id else 'retry_same'
             if action_type not in cfg['allowed_actions']:
                 raise ValueError('action outside pilot allowlist')
             consumed=await master.scalar(select(RecoveryAction.action_id).where(RecoveryAction.execution_id==execution_id))
@@ -178,6 +178,18 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
         run = await master.get(WorkflowRun, control.workflow_run_id)
         if not run or digest({"nodes": run.nodes_snapshot, "edges": run.edges_snapshot}) != control.graph_version:
             raise ValueError("graph revision changed")
+        from app.services.excel_gpt_node import effective_node_type
+        from app.services.node_capabilities import capability_for
+        # Execution grants may cover mixed families. The immutable graph retains
+        # scene markers that a runtime NodeRun projection can normalize away.
+        graph_node = next((n for n in (run.nodes_snapshot or [])
+                           if isinstance(n, dict) and str(n.get("id")) == node_key), None)
+        if graph_node is None:
+            raise ValueError("recovery node capability unavailable in workflow snapshot")
+        node_type = effective_node_type(graph_node)
+        capability = capability_for(node_type)
+        if not capability.managed or action_type not in capability.actions:
+            raise ValueError(f"recovery strategy {action_type} denied by node capability: {node_type}")
         attempts = [e for e in events if e.node_key == node_key and e.kind == "node_start"]
         source = attempts[-1] if attempts else None
         if not source or source.attempt_id != incident.attempt_id:
@@ -243,6 +255,8 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 source_attempt_id=source.attempt_id, new_attempt_id=str(uuid.uuid4()),
                 idempotency_key=idempotency_key, preconditions={"native_failures": fs["total_fails"][running],
                     "running_status": running, "input_revision": revision, "graph_version": control.graph_version,
+                    "action_type": action_type, "effective_node_type": node_type,
+                    "capability_actions": list(capability.actions),
                     "input_parts": current_parts, "graph_authority": "master revision + runtime canvas_graph",
                     "first_body_hash": starts[0].payload["input_revision"], "prior_attempt_terminal": True,
                     "node_and_project_replicas_match": True,
@@ -253,7 +267,7 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 budget_state={"request_limit": control.request_limit, "requests_used": control.requests_used,
                     "recovery_limit": 1, "recoveries_reserved": 1}, status="reserved", result={}, verification_result={})
             if profile:
-                action.preconditions = {**action.preconditions,"action_type":"retry_profile",
+                action.preconditions = {**action.preconditions,
                     "profile_overlay_id":profile.overlay_id,"candidate_hash":profile.candidate_hash,
                     "source_body_hash":profile.source_body_hash,"first_body_hash":profile.expected_body_hash}
                 profile.attempt_id=action.new_attempt_id;profile.status="reserved"

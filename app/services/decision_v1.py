@@ -260,8 +260,8 @@ class DecisionSupervisor:
                     'contract':project_text_contract(capability.node_type),
                     'current_output':verify_project_text(project,capability.node_type),
                     'compatible_profiles':[],'cost_status':'unknown_tariff'})
-            if capability.result_kind=='frame_set':
-                from app.services.node_capabilities import split_contract
+            if capability.result_kind in {'frame_set','frame_prompts'}:
+                from app.services.node_capabilities import split_contract,image_prompts_contract
                 project=await s.get(Project,row.project_id)
                 if not project:raise ValueError('project contract unavailable')
                 if project.data_dir:
@@ -272,7 +272,8 @@ class DecisionSupervisor:
                     frames=(await s.scalars(select(Frame).where(Frame.project_id==row.project_id).order_by(Frame.number))).all()
                 return panel_safe({**capability.contract(),'node_key':row.node_key,
                     'graph_version':scope.graph_version,'context_version':context['context_version'],
-                    'contract':split_contract(),'source':'native split executor; authoritative project DB',
+                    'contract':split_contract() if capability.result_kind=='frame_set' else image_prompts_contract(),
+                    'source':'native frame executor; authoritative project DB',
                     'frame_count':len(frames),'frame_set_sha256':digest([
                         {'uuid':f.uuid,'number':f.number,'voiceover_text':f.voiceover_text} for f in frames]),
                     'verification_status':'not_checked; requires captured input and committed verification evidence',

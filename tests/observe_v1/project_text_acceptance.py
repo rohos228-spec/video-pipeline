@@ -278,6 +278,8 @@ async def run_image_prompts(client,fixtures,observer,root,result,prepared,*,pref
     parsed=[e for e in facts if e['kind']=='parse_result']
     assert len(parsed)==1 and parsed[0]['payload']['syntax_valid'] is True
     assert parsed[0]['payload']['schema_valid'] is True
+    outputs=[e for e in facts if e['kind']=='node_output']
+    assert len(outputs)==1 and outputs[0]['payload']['body']['sha256']
     proofs=[e for e in facts if e['kind']=='node_result_verification']
     assert len(proofs)==1 and proofs[0]['payload']['status']=='passed'
     applied=[e for e in facts if e['kind']=='data_applied' and e.get('db_scope')=='project'

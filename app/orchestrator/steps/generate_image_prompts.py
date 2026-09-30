@@ -111,6 +111,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not frames:
         raise RuntimeError("нет кадров — нечего составлять промты")
 
+    from app.services.node_capabilities import record_image_prompt_input
+    await record_image_prompt_input(frames,project)
+
     need = _frames_needing_image_prompt(frames)
     if not need:
         # Уже всё в DB (прошлый apply успел, а шаг упал на snapshot/greenlet).

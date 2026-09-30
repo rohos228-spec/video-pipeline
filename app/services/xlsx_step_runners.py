@@ -1060,6 +1060,9 @@ async def run_img_pr_xlsx(
                 wrap_style=not plastilin,
                 style_id=style_id,
             )
+            from app.services.node_capabilities import record_image_prompt_parse
+            await record_image_prompt_parse(last_reply or '',batch_ops,batch_i=bi,
+                target_uuids=[str(fr.uuid or '') for fr in batch])
             if batch_ops:
                 break
             empty_stub = ipb.is_empty_ops_reply(last_reply or "")
@@ -1240,12 +1243,14 @@ async def run_img_pr_xlsx(
                 added = all_ops[before:]
                 if added:
                     try:
-                        await _apply_img_pr_ops_now(
-                            project,
-                            added,
-                            export_xlsx=False,
-                            label=f"batch-{bi}",
-                        )
+                        from app.services.observation import bind_image_prompt_batch_request
+                        with bind_image_prompt_batch_request(bi):
+                            await _apply_img_pr_ops_now(
+                                project,
+                                added,
+                                export_xlsx=False,
+                                label=f"batch-{bi}",
+                            )
                     except Exception as apply_err:  # noqa: BLE001
                         logger.warning(
                             "img_pr_db: batch {} apply failed (ckpt keeps ops): {}",

@@ -14,7 +14,7 @@ import os
 import re
 import time
 import uuid
-from contextlib import asynccontextmanager, ExitStack
+from contextlib import asynccontextmanager, contextmanager, ExitStack
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -118,7 +118,23 @@ class AttemptContext:
 
 _attempt = contextvars.ContextVar("observation_attempt", default=None)
 _request = contextvars.ContextVar("observation_request", default=None)
+_completed_model_request = contextvars.ContextVar("observation_completed_model_request", default=None)
 _observer = None
+
+
+def completed_model_request_id():
+    """Task-local completion identity; shared attempt.last_request_id may race."""
+    completed=_completed_model_request.get()
+    return completed[1] if completed and completed[0] is _attempt.get() else _request.get()
+
+
+@contextmanager
+def bind_image_prompt_batch_request(batch_i):
+    ctx=_attempt.get()
+    request_id=(getattr(ctx,'image_prompt_batch_requests',{}) or {}).get(batch_i) if ctx else None
+    token=_request.set(request_id)
+    try:yield
+    finally:_request.reset(token)
 
 
 class Observer:
@@ -520,6 +536,7 @@ def observe_model(function):
             if ctx.scope.mode=='managed' and (raw.get('sse_salvaged') or raw.get('status') not in {None,'completed'}):
                 await hold_uncertain_request(ctx,request_id)
                 raise RuntimeError('uncertain external result; managed execution held, no repeat POST')
+            _completed_model_request.set((ctx,request_id))
             return result
         except BaseException as exc:
             from app.services.error_catalog import describe_error
@@ -569,17 +586,18 @@ def observe_apply(function):
     async def wrapped(session, project, *args, **kwargs):
         if _attempt.get() is None:
             return await function(session, project, *args, **kwargs)
+        source_request=_request.get() or completed_model_request_id() or _attempt.get().last_request_id
         emit("apply_input", {"node_kind": kwargs.get("node_kind")}, body={"ops": args[0] if args else kwargs.get("ops"),
-            "characters": kwargs.get("characters"), "scenes": kwargs.get("scenes")})
+            "characters": kwargs.get("characters"), "scenes": kwargs.get("scenes")},request_id=source_request)
         try:
             result = await function(session, project, *args, **kwargs)
         except BaseException as exc:
             await record_fact("apply_error", {"error_type": type(exc).__name__})
             raise
-        emit("data_applied", {"result": result, "transactional": True},request_id=_attempt.get().last_request_id)
+        emit("data_applied", {"result": result, "transactional": True},request_id=source_request)
         emit("runtime_check", {"check": "apply_ops_validation", "status": "passed",
             "performed": True, "result": result, "initiator": "worker",
-            "business_commit_claim": False})
+            "business_commit_claim": False},request_id=source_request)
         return result
     return wrapped
 
@@ -666,9 +684,10 @@ async def observe_attempt(session, project):
             await record_fact("profile_effective_context", {k:overlay[k] for k in ("overlay_id","profile_id","candidate_hash","base_version","attempt_id","candidate")})
         yield
         if scope.mode == 'managed':
-            from app.services.node_capabilities import observe_project_text_result,observe_split_result
+            from app.services.node_capabilities import observe_project_text_result,observe_split_result,observe_image_prompt_result
             await observe_project_text_result(project, capability.node_type)
             await observe_split_result(session,project,capability.node_type)
+            await observe_image_prompt_result(session,project,capability.node_type)
     except BaseException as exc:
         from app.services.profiles_v1 import finish_attempt
         await finish_attempt(ctx, True)
