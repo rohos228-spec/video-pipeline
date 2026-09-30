@@ -689,6 +689,16 @@ async def observe_attempt(session, project):
             await observe_split_result(session,project,capability.node_type)
             await observe_image_prompt_result(session,project,capability.node_type)
     except BaseException as exc:
+        if (isinstance(exc,Exception) and scope.mode=='managed' and capability.node_type=='image_prompts'
+                and not getattr(ctx,'image_prompt_verification_recorded',False)):
+            try:
+                from app.services.node_capabilities import observe_image_prompt_result
+                await observe_image_prompt_result(session,project,capability.node_type)
+            except Exception as snapshot_error:
+                # A recorded rejection deliberately raises after durable hold.
+                # Saving failure must block new work; the native error is retained.
+                if not getattr(ctx,'image_prompt_hold_saved',False):
+                    observer.mark_gap(scope.execution_id,snapshot_error)
         from app.services.profiles_v1 import finish_attempt
         await finish_attempt(ctx, True)
         await record_fact("node_error", {"error_type": type(exc).__name__})

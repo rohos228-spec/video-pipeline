@@ -180,24 +180,43 @@ async def record_image_prompt_parse(reply,ops,*,batch_i,target_uuids):
 
 async def observe_image_prompt_result(session,project,node_type):
     from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
     from app.models import Frame
     from app.services.observation import _attempt,record_fact
     ctx=_attempt.get()
     if not ctx or ctx.scope.mode!='managed' or node_type!='image_prompts':return
-    frames=(await session.scalars(select(Frame).where(Frame.project_id==project.id).order_by(Frame.number)
-        .execution_options(populate_existing=True))).all()
-    proof=verify_image_prompts(frames,project_id=project.id,snapshot=getattr(ctx,'image_prompt_input',None))
-    output={'project_id':project.id,'frames':[
+    project_id=ctx.scope.project_id
+    read_error=None
+    try:
+        # Bind to the existing business DB without initialization, migration,
+        # autoflush, commit, or repair of a failed native session.
+        async with async_sessionmaker(session.bind,expire_on_commit=False,autoflush=False)() as reader:
+            frames=(await reader.scalars(select(Frame).where(Frame.project_id==project_id)
+                .order_by(Frame.number))).all()
+        proof=verify_image_prompts(frames,project_id=project_id,snapshot=getattr(ctx,'image_prompt_input',None))
+    except Exception as exc:
+        read_error=exc;frames=None
+        proof={'node_type':'image_prompts','status':'unknown','reason':'committed output unavailable',
+            'error_type':type(exc).__name__,'frame_count':None,'frame_set_sha256':None,
+            'semantic_quality_verified':False,'business_commit_claim':False}
+    output={'project_id':project_id,'frames':None if frames is None else [
         {'uuid':f.uuid,'number':f.number,'voiceover_text':f.voiceover_text,
             'image_prompt':f.image_prompt,'attrs':f.attrs} for f in frames]}
-    await record_fact('node_output',{'frame_count':len(frames),
-        'frame_set_sha256':proof['frame_set_sha256'],'source':'original executor project.db rows'},body=output)
+    await record_fact('node_output',{'frame_count':None if frames is None else len(frames),
+        'frame_set_sha256':proof['frame_set_sha256'],'source':'committed original executor rows; independent read session'},body=output)
     await record_fact('node_result_verification',proof,body=proof)
+    ctx.image_prompt_verification_recorded=True
+    if read_error:ctx.observer.mark_gap(ctx.scope.execution_id,read_error)
     if proof['status']!='passed':
         from app.services.actions_v1 import ActionSupervisor
-        await ActionSupervisor(ctx.observer).set_held(project_id=project.id,execution_id=ctx.scope.execution_id,
-            held=True,initiator='native_image_prompt_verifier',rationale=proof['reason'],
-            idempotency_key='image-prompts-verify:'+ctx.attempt_id,operator_request=False)
+        try:
+            await ActionSupervisor(ctx.observer.master).set_held(project_id=project_id,execution_id=ctx.scope.execution_id,
+                held=True,initiator='native_image_prompt_verifier',rationale=proof['reason'],
+                idempotency_key='image-prompts-verify:'+ctx.attempt_id,operator_request=False)
+        except Exception as exc:
+            ctx.observer.mark_gap(ctx.scope.execution_id,exc)
+            raise
+        ctx.image_prompt_hold_saved=True
         raise RuntimeError('managed image prompt verification '+proof['status'])
 
 

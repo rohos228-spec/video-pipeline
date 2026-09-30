@@ -571,6 +571,7 @@ class ImagePromptFailedDatabase(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(actual_project, committed_project)
                 self.assertEqual(actual_project["status"], ProjectStatus.generating_image_prompts)
 
+                await observer.catch_up()
                 async with self.sessions() as master:
                     facts = (await master.scalars(select(observation.ObservationEvent).where(
                         observation.ObservationEvent.execution_id == execution_id,

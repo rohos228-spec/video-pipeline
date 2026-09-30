@@ -266,7 +266,8 @@ async def run_image_prompts(client,fixtures,observer,root,result,prepared,*,pref
                 failed_attempt=bool(db.execute("SELECT count(*) FROM observation_events WHERE execution_id=? AND node_key=? AND kind='node_error'",
                     (result['execution_id'],key)).fetchone()[0])
         if failed_attempt:break
-        if states[key] in {'done','failed'} or actions['held']:break
+        if (not (prepared['expect_image_prompt_loss'] or prepared['expect_image_prompt_short'])
+                and (states[key] in {'done','failed'} or actions['held'])):break
         await asyncio.sleep(.25)
     result['image_prompt_state']={'nodes':states,'frame_count':len(rows),'held':actions['held']}
     await observer.catch_up();await observer.diagnoser.update(result['execution_id'])
