@@ -27,6 +27,55 @@ from app.storage import for_project as _sheet_for_project
 _MAX_ASSEMBLE_ATTEMPTS = 2
 
 
+async def _record_native_scene_input(session, project, frames, marker, *, cells=None):
+    from app.services.scene_design import runner
+
+    attempt = None
+    ctx = None
+    try:
+        attempt = await runner._scene_journal_attempt(project, marker)
+        if attempt is None:
+            return None
+        ctx, node, _ = attempt
+        if ctx.session is not session or not runner._scene_journal_open(attempt):
+            return None
+        if marker == "camera":
+            target = runner.get_only_agent(project)
+            if target and target != marker:
+                return None
+        from copy import deepcopy
+        from app.services import scene_contracts
+
+        ctx.scene_native_node = deepcopy(node)
+        if cells is None:
+            from app.services.scene_design import cells as sd_cells
+
+            # Diagnostic input read cannot flush pending native backfill writes.
+            with session.no_autoflush:
+                cells = await sd_cells.load_cells(session, project, only_ok=False)
+        if not runner._scene_journal_open(attempt):
+            return None
+        await scene_contracts.record_scene_input(project, node, frames, cells=cells)
+    except Exception as error:
+        runner._scene_journal_gap(ctx, error)
+    return attempt
+
+
+def _stash_native_scene_output(attempt, attribute, value):
+    if attempt is None or not isinstance(value, dict):
+        return
+    from app.services.scene_design import runner
+
+    ctx = attempt[0]
+    try:
+        if runner._scene_journal_open(attempt):
+            from copy import deepcopy
+
+            setattr(ctx, attribute, deepcopy(value))
+    except Exception as error:
+        runner._scene_journal_gap(ctx, error)
+
+
 async def _load_frames(session: AsyncSession, project: Project) -> list[Frame]:
     return (
         (
@@ -109,6 +158,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     if any(not fr.uuid for fr in frames):
         raise RuntimeError("scene_design: у кадров нет uuid — backfill не сработал")
 
+    scene_attempt = await _record_native_scene_input(
+        session, project, frames, "camera",
+    )
     runner.mark_running(project)
     await session.flush()
     # Отпустить SQLite write-lock на время параллельных GPT-вызовов.
@@ -130,6 +182,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         slices = await runner.run_category_agents(
             project, context, frames=frames, only_agent=only_agent
         )
+        if not only_agent or only_agent == "camera":
+            _stash_native_scene_output(scene_attempt, "scene_agent_slice", slices.get("camera"))
         # Чекпоинты агентов уже в meta — зафиксировать до записи ячеек.
         await session.commit()
 
@@ -296,14 +350,28 @@ async def run_assemble(
             assembly_input.get("camera_expand_report"),
         )
 
+        scene_attempt = await _record_native_scene_input(
+            session, project, frames, "assemble", cells=all_cells,
+        )
         payload = None
         feedback: str | None = None
         # chrono_dyn: границы уже из camera_expand; GPT-assemble только жжёт 19 чанков.
         # Локальная склейка из shot_plan/action — без повторных GPT.
         if uses_chrono_dyn(project):
             local = sd_assembler.build_local_assembler_payload(assembly_input, frames)
-            problems = sd_assembler.validate_payload(
-                project, frames, local, full_vo
+            try:
+                problems = sd_assembler.validate_payload(
+                    project, frames, local, full_vo
+                )
+            except Exception as validation_error:
+                await runner._record_scene_parse(
+                    scene_attempt, None, local, validation_performed=True,
+                    error=validation_error, origin="local", link_model_request=False,
+                )
+                raise
+            await runner._record_scene_parse(
+                scene_attempt, None, local, validation_performed=True,
+                problems=problems, origin="local", link_model_request=False,
             )
             payload = local
             if problems:
@@ -337,8 +405,19 @@ async def run_assemble(
                 candidate = sd_assembler.force_scenes_from_chrono(
                     candidate, assembly_input, frames=frames
                 )
-                problems = sd_assembler.validate_payload(
-                    project, frames, candidate, full_vo
+                try:
+                    problems = sd_assembler.validate_payload(
+                        project, frames, candidate, full_vo
+                    )
+                except Exception as validation_error:
+                    await runner._record_scene_parse(
+                        scene_attempt, None, candidate, validation_performed=True,
+                        error=validation_error, origin="model", link_model_request=False,
+                    )
+                    raise
+                await runner._record_scene_parse(
+                    scene_attempt, None, candidate, validation_performed=True,
+                    problems=problems, origin="model", link_model_request=False,
                 )
                 if not problems:
                     payload = candidate
@@ -356,6 +435,7 @@ async def run_assemble(
                 f"scene_design: сборка не прошла валидацию: {feedback}"
             )
 
+        _stash_native_scene_output(scene_attempt, "scene_assembly_payload", payload)
         applied = await sd_apply.apply_scene_design(session, project, payload)
         try:
             from app.services.scene_space.pipeline import (

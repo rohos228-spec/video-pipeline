@@ -1,7 +1,9 @@
 """Read-only contracts for native camera staging and scene assembly rows.
 
 Callers supply already loaded native rows and captured input/payload evidence.
-No session, file, checkpoint, provider, worker, FSM, or approval is changed here.
+Journal callbacks use the existing observer and an independent read session;
+they never flush, commit or repair the native business session. Checkpoints,
+providers, workers, FSM state and approvals are never changed here.
 ``passed`` describes only the stated structural checks. Transaction provenance,
 managed execution, artistic quality, Entity writes and scene-space effects are
 not proved by this helper. Missing evidence remains explicitly unknown.
@@ -13,6 +15,7 @@ import copy
 import hashlib
 import json
 from collections import Counter
+from functools import wraps
 from types import SimpleNamespace
 from typing import Any
 
@@ -356,3 +359,307 @@ def verify_scene_assembly(project: Any, frames: Any, *, snapshot: Any, payload: 
     proof["checked_fields"] = {uid: sorted(fields) for uid, fields in wanted.items()}
     return _result(proof, errors, unknown=("unsupported assembly field checks: " + ", ".join(sorted(unsupported)))
                    if unsupported else None)
+
+
+def _scene_gap(ctx, error):
+    """A diagnostic callback failure must not replace the native exception."""
+    if ctx is not None:
+        try:
+            ctx.observer.mark_gap(ctx.scope.execution_id, error)
+        except Exception:
+            pass
+
+
+def _scene_callback(function):
+    @wraps(function)
+    async def callback(*args, **kwargs):
+        ctx = None
+        try:
+            from app.services.observation import _attempt
+
+            ctx = _attempt.get()
+            return await function(*args, **kwargs)
+        except Exception as error:
+            _scene_gap(ctx, error)
+            return None
+    return callback
+
+
+def _loaded_project_id(project):
+    """Read ORM identity without refreshing expired/failed executor state."""
+    if project is None:
+        return None
+    from sqlalchemy import inspect
+
+    state = inspect(project, raiseerr=False)
+    if state is not None and getattr(state, "identity", None):
+        return state.identity[0]
+    return vars(project).get("id")
+
+
+async def _scene_context(node, *, project=None):
+    from app.models import WorkflowRun
+    from app.services.observation import ExecutionControl, _attempt, digest
+
+    ctx = _attempt.get()
+    if (ctx is None or ctx.scope.observer_state not in {"active", "degraded"}
+            or getattr(ctx, "native_attempt_closed", False)
+            or ctx.node_key not in ctx.scope.node_keys
+            or not ctx.attempt_id):
+        return None
+    if project is not None and _loaded_project_id(project) != ctx.scope.project_id:
+        return None
+    if node is not None and (not isinstance(node, dict) or node.get("id") != ctx.node_key):
+        return None
+    # Always check the original run, not a canvas guess, stale marker or Excel
+    # capability. This is a fresh read session; no executor state is refreshed.
+    async with ctx.observer.master() as reader:
+        with reader.no_autoflush:
+            control = await reader.get(ExecutionControl, ctx.scope.execution_id)
+            run = await reader.get(WorkflowRun, ctx.scope.workflow_run_id)
+    if (control is None or run is None or run.project_id != ctx.scope.project_id
+            or control.project_id != ctx.scope.project_id
+            or control.workflow_run_id != run.id
+            or control.observer_state not in {"active", "degraded"}
+            or control.mode not in {"observe", "managed"}
+            or control.mode != ctx.scope.mode
+            or ctx.node_key not in control.node_keys):
+        return None
+    revision = digest({"nodes": run.nodes_snapshot, "edges": run.edges_snapshot})
+    if revision != ctx.scope.graph_version or revision != control.graph_version:
+        _scene_gap(ctx, ValueError("native scene workflow snapshot changed"))
+        return None
+    matches = [item for item in run.nodes_snapshot or ()
+               if isinstance(item, dict) and item.get("id") == ctx.node_key]
+    if len(matches) != 1:
+        return None
+    native_node = copy.deepcopy(matches[0])
+    contract = scene_contract(native_node)
+    if not contract["supported"]:
+        return None
+    if node is not None:
+        supplied = scene_contract(node)
+        if (not supplied["supported"] or supplied["agent"] != contract["agent"]
+                or supplied["node_type"] != contract["node_type"]):
+            return None
+    key = (ctx.scope.execution_id, run.id, ctx.scope.project_id,
+           ctx.node_key, ctx.attempt_id, revision)
+    return ctx, native_node, contract, key
+
+
+def _scene_entry(ctx, key):
+    entries = getattr(ctx, "scene_journal", None)
+    if entries is None:
+        entries = {}
+        ctx.scene_journal = entries
+    return entries.setdefault(key, {})
+
+
+def _scene_contract_name(contract):
+    return "native_scene_camera" if contract["agent"] == "camera" else "native_scene_assembly"
+
+
+async def _scene_fact(ctx, kind, payload, *, body=None, request_id=None):
+    """Store through the original journal, retaining body-gap evidence."""
+    from app.services.observation import _request, record_fact
+
+    details = dict(payload)
+    reference = None
+    if body is not None:
+        try:
+            reference = ctx.observer.save_body(ctx.scope.execution_id, body)
+        except Exception as error:
+            _scene_gap(ctx, error)
+            reference = {"gap": "scene_body_unavailable", "error_type": type(error).__name__}
+        details["body"] = reference
+    if kind == "node_result_verification" and isinstance(reference, dict) and reference.get("gap"):
+        details.update(status="unknown", reason="native scene verification body unavailable", errors=[])
+    # Bind explicitly. Local assembly must not inherit another task's request.
+    token = _request.set(request_id)
+    try:
+        await record_fact(kind, details, request_id=request_id)
+    finally:
+        _request.reset(token)
+    return reference
+
+
+def _scene_input_evidence(ctx, entry):
+    """Lost, truncated or altered durable input is never reconstructed from output."""
+    from app.services.observation import redact
+
+    snapshot = entry.get("snapshot")
+    reference = entry.get("body")
+    if (not entry.get("recorded") or not _snapshot_available(snapshot)
+            or not isinstance(reference, dict) or reference.get("gap")):
+        return None
+    try:
+        root = ctx.observer.body_root.resolve()
+        path = (root / reference["path"]).resolve()
+        if not path.is_relative_to(root):
+            return None
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != reference["sha256"]:
+            return None
+        if json.loads(raw) != redact(snapshot):
+            return None
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    return copy.deepcopy(snapshot)
+
+
+@_scene_callback
+async def record_scene_input(project, node, frames, *, cells=()):
+    """Capture loaded native inputs at the caller's actual pre-write boundary.
+
+    Pass node=None to resolve only the current original WorkflowRun node.
+    Default-off/stopped/foreign contexts touch no input rows, bodies or SQL.
+    """
+    resolved = await _scene_context(node, project=project)
+    if resolved is None:
+        return
+    ctx, _, contract, key = resolved
+    if project is None or frames is None or cells is None:
+        return
+    frames, cells = list(frames), list(cells)
+    if (any(_loaded_project_id(frame) is None for frame in frames)
+            or any(getattr(frame, "project_id", None) != ctx.scope.project_id for frame in frames)
+            or any(getattr(cell, "project_id", None) != ctx.scope.project_id for cell in cells)):
+        return
+    entry = _scene_entry(ctx, key)
+    if "snapshot" in entry:
+        return  # A later output or chunk cannot overwrite input provenance.
+    snapshot = scene_input_snapshot(project, frames, cells=cells)
+    entry["snapshot"] = snapshot
+    entry["recorded"] = False
+    from app.services.observation import digest
+
+    entry["body"] = await _scene_fact(ctx, "node_input", {
+        "contract": _scene_contract_name(contract),
+        "snapshot_boundary": contract["snapshot_boundary"],
+        "frame_count": len(snapshot["frames"]), "input_sha256": digest(snapshot),
+    }, body=snapshot)
+    reference = entry["body"]
+    entry["recorded"] = bool(isinstance(reference, dict) and not reference.get("gap")
+        and ctx.scope.execution_id not in ctx.observer.failures
+        and ctx.scope.execution_id not in ctx.observer.commit_uncertainty)
+
+
+@_scene_callback
+async def record_scene_parse(reply, parsed, *, node, validation_performed,
+                             problems=(), error=None, origin="model"):
+    """Journal actual native parser/check outcomes; never parse, repair or apply.
+
+    Unvalidated adaptive chunks have schema_valid=None. A merged candidate with
+    no raw reply has unknown syntax and no single model request identity. Local
+    assembly warnings remain failed checks even when the executor applies them.
+    """
+    resolved = await _scene_context(node)
+    if resolved is None:
+        return
+    ctx, _, contract, _ = resolved
+    if origin not in {"model", "local"}:
+        return
+    from app.services.observation import completed_model_request_id, digest
+
+    raw_model_reply = origin == "model" and reply is not None
+    request_id = completed_model_request_id() if raw_model_reply else None
+    syntax_valid = None
+    if raw_model_reply:
+        try:
+            json.loads(reply)
+            syntax_valid = True
+        except (ValueError, TypeError):
+            syntax_valid = False
+    problems = copy.deepcopy(list(problems or ()))
+    extracted = isinstance(parsed, dict)
+    performed = validation_performed is True
+    schema_valid = (False if error is not None else
+                    bool(extracted and not problems) if performed else None)
+    status = "unknown" if schema_valid is None else "passed" if schema_valid else "failed"
+    name = _scene_contract_name(contract)
+    await _scene_fact(ctx, "parse_result", {
+        "contract": name, "origin": origin, "agent": contract["agent"],
+        "parser": ("scene_design.agents.parse_agent_slice" if contract["agent"] == "camera"
+                   else "scene_design.assembler local payload" if origin == "local"
+                   else "scene_design.agents.parse_assembler_payload"),
+        "syntax_valid": syntax_valid, "parsed": extracted,
+        "schema_valid": schema_valid, "validation_performed": performed,
+        "validation_problems": problems,
+        "error_type": type(error).__name__ if error is not None else None,
+        "sha256": digest(parsed), "semantic_quality_verified": False,
+    }, body={"text": reply, "parsed": copy.deepcopy(parsed)}, request_id=request_id)
+    await _scene_fact(ctx, "runtime_check", {
+        "check": name + "_parse", "status": status, "performed": performed,
+        "validation_problems": problems,
+        "error_type": type(error).__name__ if error is not None else None,
+        "initiator": "worker", "business_commit_claim": False,
+    }, request_id=request_id)
+
+
+@_scene_callback
+async def observe_scene_result(session, project, node, *, agent_slice=None, payload=None):
+    """Independently read committed native effects, including after SQL failure.
+
+    The caller's session supplies a bind only. Its transaction, pending changes,
+    failed state and expired attributes are never refreshed or repaired. A passed
+    proof describes bounded row integrity; it grants no execution authority.
+    """
+    resolved = await _scene_context(node, project=project)
+    if resolved is None or project is None:
+        return
+    ctx, native_node, contract, key = resolved
+    if session is None or session.bind is not getattr(ctx.session, "bind", None):
+        return
+    entry = _scene_entry(ctx, key)
+    if entry.get("verification_started"):
+        return
+    entry["verification_started"] = True
+    snapshot = _scene_input_evidence(ctx, entry)
+    project_id = ctx.scope.project_id
+    output = {"project_id": project_id, "node_type": contract["node_type"],
+              "frames": None, "cells": None, "scene_registry": None}
+    read_error = None
+    try:
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+        from app.models import Frame, Project, SceneDesignCell
+
+        async with async_sessionmaker(session.bind, expire_on_commit=False, autoflush=False)() as reader:
+            native_project = await reader.get(Project, project_id)
+            if native_project is None:
+                raise LookupError("native scene project unavailable")
+            frames = list((await reader.scalars(select(Frame).where(Frame.project_id == project_id)
+                          .order_by(Frame.sort_key, Frame.number))).all())
+            cells = list((await reader.scalars(select(SceneDesignCell).where(SceneDesignCell.project_id == project_id)
+                         .order_by(SceneDesignCell.id))).all())
+            output.update(frames=[_frame_state(frame) for frame in frames],
+                          cells=[_cell_state(cell) for cell in cells],
+                          scene_registry=copy.deepcopy(_meta(native_project).get("scene_registry")))
+            if contract["agent"] == "camera":
+                proof = verify_scene_agent(native_project, native_node, cells,
+                    frames=frames, snapshot=snapshot, agent_slice=copy.deepcopy(agent_slice))
+            else:
+                proof = verify_scene_assembly(native_project, frames,
+                    snapshot=snapshot, payload=copy.deepcopy(payload))
+    except Exception as error:
+        read_error = error
+        proof = _result(_proof(contract["node_type"], [], snapshot),
+                        unknown="committed native scene result unavailable")
+        proof["error_type"] = type(error).__name__
+        if contract["agent"] == "assemble":
+            proof.update(entities_verified=False, scene_space_verified=False)
+    if snapshot is None:
+        proof.update(status="unknown", reason="captured native scene input/body unavailable", errors=[])
+    output_reference = await _scene_fact(ctx, "node_output", {
+        "contract": _scene_contract_name(contract),
+        "frame_count": None if output["frames"] is None else len(output["frames"]),
+        "sha256": proof["sha256"],
+        "source": "committed original executor rows; independent read session",
+    }, body=output)
+    if (not isinstance(output_reference, dict) or output_reference.get("gap")
+            or ctx.scope.execution_id in ctx.observer.failures
+            or ctx.scope.execution_id in ctx.observer.commit_uncertainty):
+        proof.update(status="unknown", reason="native scene journal/body unavailable", errors=[])
+    await _scene_fact(ctx, "node_result_verification", proof, body=proof)
+    if read_error is not None:
+        _scene_gap(ctx, read_error)

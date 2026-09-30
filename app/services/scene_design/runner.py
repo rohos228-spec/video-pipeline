@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -351,6 +352,89 @@ def _finalize_agent_slice(
     return data
 
 
+def _scene_journal_gap(ctx, error) -> None:
+    if ctx is not None:
+        try:
+            ctx.observer.mark_gap(ctx.scope.execution_id, error)
+        except Exception:
+            pass
+
+
+def _scene_journal_open(attempt) -> bool:
+    if attempt is None:
+        return False
+    ctx, node, key = attempt
+    observation = sys.modules.get("app.services.observation")
+    return bool(
+        observation is not None and observation._attempt.get() is ctx
+        and not getattr(ctx, "native_attempt_closed", False)
+        and ctx.scope.observer_state in {"active", "degraded"}
+        and ctx.node_key in ctx.scope.node_keys
+        and node.get("id") == ctx.node_key
+        and key == (ctx.scope.execution_id, ctx.scope.workflow_run_id,
+                    ctx.scope.project_id, ctx.node_key, ctx.attempt_id,
+                    ctx.scope.graph_version)
+    )
+
+
+async def _scene_journal_attempt(project: Project, marker: str):
+    """Resolve only the original run node, before awaiting a model or input read."""
+    if marker not in {"camera", ag.ASSEMBLER}:
+        return None
+    observation = sys.modules.get("app.services.observation")
+    if observation is None:
+        return None
+    ctx = None
+    try:
+        ctx = observation._attempt.get()
+        if (ctx is None or getattr(ctx, "native_attempt_closed", False)
+                or ctx.scope.observer_state not in {"active", "degraded"}
+                or ctx.node_key not in ctx.scope.node_keys or not ctx.attempt_id):
+            return None
+        from app.services import scene_contracts
+
+        resolved = await scene_contracts._scene_context(None, project=project)
+        if (resolved is None or resolved[0] is not ctx
+                or resolved[2]["agent"] != marker):
+            return None
+        attempt = (ctx, resolved[1], resolved[3])
+        return attempt if _scene_journal_open(attempt) else None
+    except Exception as error:
+        _scene_journal_gap(ctx, error)
+        return None
+
+
+async def _record_scene_parse(attempt, reply, parsed, *, validation_performed,
+                            problems=(), error=None, origin="model",
+                            link_model_request=True) -> None:
+    """Observe the actual parser/validator outcome without changing native flow."""
+    if attempt is None:
+        return
+    ctx, node, _ = attempt
+    try:
+        if not _scene_journal_open(attempt):
+            return
+        from app.services import scene_contracts
+        from app.services.observation import _completed_model_request, _request
+
+        # A validated merge has no single raw response or model request identity.
+        completed_token = request_token = None
+        if not link_model_request:
+            completed_token = _completed_model_request.set(None)
+            request_token = _request.set(None)
+        try:
+            await scene_contracts.record_scene_parse(
+                reply, parsed, node=node, validation_performed=validation_performed,
+                problems=problems, error=error, origin=origin,
+            )
+        finally:
+            if not link_model_request:
+                _request.reset(request_token)
+                _completed_model_request.reset(completed_token)
+    except Exception as diagnostic_error:
+        _scene_journal_gap(ctx, diagnostic_error)
+
+
 async def _run_one_agent(
     project: Project,
     name: str,
@@ -363,6 +447,7 @@ async def _run_one_agent(
 ) -> dict[str, Any]:
     from app.services import gpt_client
 
+    scene_attempt = await _scene_journal_attempt(project, name)
     prompt = ag.load_prompt(name, project)
     text = f"{prompt}\n\n---\n\n{context}"
     reply = await gpt_client.gpt_ask_fresh(
@@ -372,11 +457,21 @@ async def _run_one_agent(
         max_retries=max_retries,
     )
     try:
-        data = ag.parse_agent_slice(
-            name,
-            reply,
-            validate=validate,
-            expected_frame_numbers=expected_frame_numbers,
+        try:
+            data = ag.parse_agent_slice(
+                name,
+                reply,
+                validate=validate,
+                expected_frame_numbers=expected_frame_numbers,
+            )
+        except Exception as parse_error:
+            await _record_scene_parse(
+                scene_attempt, reply, None, validation_performed=validate,
+                error=parse_error,
+            )
+            raise
+        await _record_scene_parse(
+            scene_attempt, reply, data, validation_performed=validate,
         )
         return _finalize_agent_slice(project, name, data)
     except ag.SceneDesignAgentError as e:
@@ -850,6 +945,7 @@ async def run_assembler(
     """
     from app.services import gpt_client
 
+    scene_attempt = await _scene_journal_attempt(project, ag.ASSEMBLER)
     prompt = ag.load_prompt(ag.ASSEMBLER, project)
     cells_json = json.dumps(assembly_input, ensure_ascii=False, indent=1)
     parts = [
@@ -866,7 +962,18 @@ async def run_assembler(
         project_id=project.id,
         max_retries=max_retries,
     )
-    return ag.parse_assembler_payload(reply)
+    try:
+        payload = ag.parse_assembler_payload(reply)
+    except Exception as parse_error:
+        await _record_scene_parse(
+            scene_attempt, reply, None, validation_performed=False,
+            error=parse_error,
+        )
+        raise
+    await _record_scene_parse(
+        scene_attempt, reply, payload, validation_performed=False,
+    )
+    return payload
 
 
 async def run_assembler_chunked(
