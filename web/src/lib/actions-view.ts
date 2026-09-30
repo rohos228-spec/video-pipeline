@@ -18,3 +18,19 @@ export function actionsModeLabel(state:{configured:boolean;enabled:boolean;held:
   if (state.enabled) return state.held ? 'Управление включено · execution удержан' : 'Управление включено';
   return state.configured ? 'Execution завершён · управление выключено' : 'Управление выключено';
 }
+
+export function managedLaunchError(options:{configured:boolean;request_limit_max:number;
+  nodes:{node_key:string;supported:boolean}[];strategies:string[]}|null,
+  selection:{node_keys:string[];strategies:string[];request_limit:number}):string|null {
+  if(!options?.configured) return 'Управляемый запуск выключен: разрешённый маршрут Decision не настроен.';
+  if(!selection.node_keys.length) return 'Выберите область выполнения.';
+  if(new Set(selection.node_keys).size!==selection.node_keys.length ||
+    selection.node_keys.some(key=>!options.nodes.some(node=>node.node_key===key && node.supported)))
+    return 'Область содержит неподдержанную ноду. Выберите только принятые исполнители.';
+  if(!Number.isSafeInteger(selection.request_limit) || selection.request_limit<1 || selection.request_limit>options.request_limit_max)
+    return 'Лимит запросов должен быть целым числом в разрешённых пределах.';
+  if(!selection.strategies.length || new Set(selection.strategies).size!==selection.strategies.length ||
+    selection.strategies.some(strategy=>!options.strategies.includes(strategy)))
+    return 'Выберите разрешённые стратегии.';
+  return null;
+}

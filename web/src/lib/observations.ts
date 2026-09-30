@@ -61,6 +61,21 @@ export interface MediaContext {
     verification:{status?:string;reason?:string;bytes?:number;width?:number;height?:number;duration?:number};
     artifact_uuid:string|null}[];
 }
+export interface ManagedLaunch {
+  launch_id:string;execution_id:string;workflow_run_id:number;entry_node:string;
+  status:string;idempotent_replay?:boolean;result:Record<string,unknown>;
+  policy:{node_keys:string[];request_limit:number;allowed_actions:string[]};
+}
+export interface ManagedLaunchOptions {
+  workflow_run_id:number;graph_version:string;configured:boolean;mode:string;reason:string|null;
+  online_authorized:boolean;request_limit_default:number;request_limit_max:number;strategies:string[];
+  nodes:{node_key:string;title:string;group_id:string|null;supported:boolean;status:string;reason:string|null;result_kind:string}[];
+  latest_launch:ManagedLaunch|null;
+}
+export interface ManagedLaunchRequest {
+  workflow_run_id:number;graph_version:string;node_keys:string[];strategies:string[];
+  request_limit:number;rationale:string;idempotency_key:string;
+}
 export interface ObservationContext extends ObservationScope {
   business_group_outcome: string; current_nodes: string[];
   master: {nodes: Record<string, NodeState>}; project: {nodes: Record<string, NodeState>} | null;
@@ -72,6 +87,9 @@ export interface ObservationContext extends ObservationScope {
 }
 const path = (project: number, execution?: string) => `/api/projects/${project}/observations${execution ? `/${encodeURIComponent(execution)}` : ""}`;
 export const observations = {
+  launchOptions:(project:number)=>http<ManagedLaunchOptions>(path(project)+'/launch-options'),
+  launch:(project:number,payload:ManagedLaunchRequest)=>http<ManagedLaunch>(path(project)+'/launch',
+    {method:'POST',body:JSON.stringify(payload)}),
   decisions:(project:number,execution:string)=>http<DecisionState>(path(project,execution)+'/decisions'),
   controlDecisions:(project:number,execution:string,enabled:boolean,rationale:string)=>
     http(path(project,execution)+'/decisions/control',{method:'POST',body:JSON.stringify({enabled,rationale})}),

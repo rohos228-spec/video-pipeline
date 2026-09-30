@@ -7,6 +7,7 @@ import {observations, type ObservationContext, type ObservationScope, type Diagn
 import {DiagnosisSection} from './diagnosis-section';
 import {DecisionSection} from './decision-section';
 import {ProfilesSection} from './profiles-section';
+import {ManagedLaunchSection} from './managed-launch-section';
 import {eventLabel, mergeEvents, usageLabel, groupForScope, type ObservationEvent} from "@/lib/observation-view";
 import {Button} from "@/components/ui/button";
 import {mediaPhase, mediaVerification, artifactLink, imagePreviewLink, publicationSummary} from "@/lib/media-view";
@@ -256,11 +257,25 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     finally { setBusy(false); }
   }
 
+  async function selectManagedExecution(id:string) {
+    if(projectId==null) return;
+    const epoch=generation.current;
+    try {
+      const list=await observations.list(projectId);
+      if(generation.current!==epoch) return;
+      setScopes(list);setExecution(id);
+    } catch {if(generation.current===epoch)setError('Запуск сохранён, но состояние наблюдения пока не прочитано.');}
+  }
+
   if(projectId == null) return <p className="text-xs text-white/50">Выберите проект в студии для наблюдения.</p>;
   const active=scopes.some(s=>s.observer_state!=="stopped");
   const states=context?.project?.nodes ?? context?.master.nodes ?? {};
   const models=events.filter(e=>e.kind==="model_end");
   return <section data-testid="observation-panel" className="space-y-3 text-xs text-white/80">
+    <ManagedLaunchSection projectId={projectId} context={context} actions={actionState} diagnosis={diagnosis}
+      onExecution={id=>void selectManagedExecution(id)}/>
+    <details className="space-y-3 rounded border border-white/10 p-2">
+    <summary className="cursor-pointer text-white/70">Расширенный режим · наблюдение, диагностика и управление</summary>
     <div className="flex flex-wrap items-center gap-2">
       <strong>Наблюдение · проект #{projectId}</strong>
       <select aria-label="Группа наблюдения" value={group} disabled={busy || active} onChange={e=>setGroup(e.target.value)} className="max-w-72 rounded border border-white/15 bg-[#161616] p-1.5">
@@ -339,5 +354,6 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     </>}
     {projectId!=null && execution && <ProfilesSection projectId={projectId} execution={execution} nodes={context?.node_keys??groups.find(g=>g.id===group)?.keys??[]} managed={Boolean(actionState?.enabled)}/>}
     {projectId!=null && execution && <DecisionSection projectId={projectId} execution={execution} managed={Boolean(actionState?.enabled)}/>}
+    </details>
   </section>;
 }
