@@ -224,12 +224,72 @@ class DecisionDurability(actions_tests.DurableActions):
         async with self.sessions() as s:self.assertEqual((await s.get(self.service.DecisionRecord,record['decision_id'])).status,'human_review')
 
     async def test_repeated_same_proposal_without_evidence_escalates(self):
-        record,reply=await self.dialogue()
+        record,reply=await self.dialogue('read_contract')
         with patch('app.services.gpt_api.chat',side_effect=reply):
             await self.loop.step(record['decision_id']);await self.loop.step(record['decision_id'])
         async with self.sessions() as s:
             row=await s.get(self.service.DecisionRecord,record['decision_id'])
             self.assertEqual(row.status,'human_review');self.assertIn('repeated',row.policy_result['reason'])
+
+    async def test_wait_is_persisted_and_restart_does_not_spend_another_step(self):
+        record,reply=await self.dialogue('wait')
+        with patch('app.services.gpt_api.chat',side_effect=reply) as chat:
+            await self.loop.step(record['decision_id'])
+            self.loop=self.service.DecisionSupervisor(observation._observer)
+            await self.loop.tick();await self.loop.tick()
+            self.assertEqual(chat.call_count,1)
+        async with self.sessions() as s:
+            row=await s.get(self.service.DecisionRecord,record['decision_id'])
+            self.assertEqual(row.status,'waiting_evidence')
+            self.assertEqual(row.model_steps,1)
+            self.assertIn('until',row.policy_result['wait'])
+
+    async def test_wait_expiry_holds_execution_without_new_model_request(self):
+        record,reply=await self.dialogue('wait')
+        with patch('app.services.gpt_api.chat',side_effect=reply) as chat:
+            await self.loop.step(record['decision_id'])
+            async with self.sessions() as s:
+                row=await s.get(self.service.DecisionRecord,record['decision_id'])
+                row.policy_result={**row.policy_result,'wait':{'until':(datetime.utcnow()-timedelta(seconds=1)).isoformat(),
+                    'context_version':row.context_version}}
+                await s.commit()
+            self.loop=self.service.DecisionSupervisor(observation._observer)
+            await self.loop.tick()
+            self.assertEqual(chat.call_count,1)
+        async with self.sessions() as s:
+            row=await s.get(self.service.DecisionRecord,record['decision_id'])
+            self.assertEqual(row.status,'human_review')
+            self.assertIn('wait expired',row.policy_result['reason'])
+            self.assertTrue((await s.get(actions_tests.ActionExecutionControl,'exec-durable')).held)
+
+    async def test_exhausted_domain_failure_can_be_diagnosed_without_retry_permission(self):
+        from app.services.diagnosis import Incident
+        async with self.sessions() as s:
+            incident=await s.get(Incident,'source-incident');incident.type='contract_rejected';await s.commit()
+        await self.enable_decisions()
+        from app.services.gpt_api import GptChatResult
+        async def reply(**kwargs):
+            context=json.loads(kwargs['prompt'])
+            self.assertNotIn('retry_same',context['allowed_actions'])
+            self.assertNotIn('retry_profile',context['allowed_actions'])
+            return GptChatResult(text=json.dumps({'action':'human_review','arguments':{},
+                'evidence_ids':context['evidence_ids'][:1],'context_version':context['context_version'],
+                'explanation':'Domain gate failed; changing validators is not permitted'}),model='synthetic')
+        with patch('app.services.gpt_api.chat',side_effect=reply) as chat:
+            await self.loop.tick()
+            self.assertEqual(chat.call_count,1)
+        async with self.sessions() as s:
+            row=await s.scalar(select(self.service.DecisionRecord))
+            self.assertEqual(row.status,'human_review');self.assertIsNone(row.action_id)
+
+    async def test_active_native_attempt_never_starts_decision_model(self):
+        await self.enable_decisions()
+        async with self.sessions() as s:
+            node=await s.scalar(select(actions_tests.NodeRun).where(actions_tests.NodeRun.node_key=='n1'))
+            node.status=actions_tests.NodeRunStatus.running;node.finished_at=None;await s.commit()
+        with patch('app.services.gpt_api.chat',side_effect=AssertionError('active native attempt')) as chat:
+            await self.loop.tick();self.assertEqual(chat.call_count,0)
+        async with self.sessions() as s:self.assertIsNone(await s.scalar(select(self.service.DecisionRecord)))
 
     async def test_late_model_reply_after_stop_denied(self):
         record,reply=await self.dialogue()
