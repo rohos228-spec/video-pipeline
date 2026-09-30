@@ -8,10 +8,11 @@ from app.services import observation
 
 class MediaObservation(MediaJobs):
     async def test_unintegrated_family_cannot_be_enabled_as_managed_executor(self):
-        from app.services.node_capabilities import require_managed_capability
+        from app.services.node_capabilities import require_managed_capability, capability_for
         require_managed_capability("images")
         require_managed_capability("excel_gpt")
-        for kind in ("publish", "audio", "assemble", "unregistered"):
+        for kind in ("videos", "publish", "audio", "assemble", "unregistered"):
+            self.assertFalse(capability_for(kind).managed, "unaccepted adapters stay disabled even if tools are later installed")
             with self.assertRaisesRegex(ValueError, "adapter"):
                 require_managed_capability(kind)
 
@@ -25,6 +26,50 @@ class MediaObservation(MediaJobs):
         self.assertFalse(result["image"]["production_profile_configured"])
         self.assertTrue(result["image"]["synthetic_only"])
         self.assertNotIn("retry_same", result["image"]["allowed_actions"])
+
+    async def test_publication_preview_is_read_only_and_unknown_is_not_ready(self):
+        from app.orchestrator.steps.publish import preview_publication
+        from app.models import Artifact, ArtifactKind
+        from sqlalchemy import select
+        before_status, before_meta = self.project.status, dict(self.project.meta or {})
+        missing = await preview_publication(self.session, self.project)
+        self.assertEqual(missing["validation"]["reason"], "final_artifact_missing")
+        path = self.project.data_dir / "opaque-final.mp4"
+        path.write_bytes(b"synthetic file; not a verified movie")
+        artifact = Artifact(project_id=7, kind=ArtifactKind.final_video,
+            uuid="a"*32, path=str(path), meta={})
+        self.session.add(artifact)
+        await self.session.commit()
+        first = await preview_publication(self.session, self.project)
+        self.assertTrue(first["dry_run"])
+        self.assertFalse(first["send_allowed"])
+        self.assertIn(first["validation"]["status"], {"unknown", "failed"})
+        self.assertEqual(len(first["platforms"]), 5)
+        self.assertEqual(first, await preview_publication(self.session, self.project))
+        self.assertEqual(len((await self.session.scalars(select(Artifact))).all()), 1)
+        await self.session.refresh(self.project)
+        self.assertEqual((self.project.status, self.project.meta or {}), (before_status, before_meta))
+        outside = self.root / "foreign.mp4"
+        outside.write_bytes(b"synthetic")
+        artifact.path = str(outside)
+        await self.session.commit()
+        escaped = await preview_publication(self.session, self.project)
+        self.assertEqual(escaped["validation"]["reason"], "artifact_outside_project")
+        self.assertNotIn(str(outside), str(escaped))
+
+    async def test_panel_publication_exposes_preview_without_enabling_send(self):
+        from app.models import WorkflowRun
+        from app.services.media_view import context_for_nodes
+        async with self.sessions() as s:
+            run = await s.get(WorkflowRun, 1)
+            run.nodes_snapshot = [{**node, "type":"publish"} if node["id"]=="image" else node
+                                  for node in run.nodes_snapshot]
+            await s.commit()
+            result = await context_for_nodes(s, self.scope)
+        self.assertEqual(result["image"]["result_kind"], "publication")
+        self.assertTrue(result["image"]["publication"]["dry_run"])
+        self.assertFalse(result["image"]["publication"]["send_allowed"])
+        self.assertFalse(result["image"]["limited_management"])
 
     async def test_managed_image_cannot_start_unscoped_animation_sidecar(self):
         from app.services.anim_pr_sidecar import ensure_anim_pr_sidecar, _TASKS

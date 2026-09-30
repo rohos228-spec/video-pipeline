@@ -111,3 +111,10 @@ assert.match(mediaVerification(),/не подтверждена/);
 assert.equal(artifactLink('a'.repeat(32)),'/api/artifacts/'+ 'a'.repeat(32)+'/file');
 for(const unsafe of ['../../secret','http://evil.test','/tmp/output.mp4'])assert.equal(artifactLink(unsafe),null);
 console.log('Media UI contracts: 10 assertions passed');
+
+const {publicationSummary}=await import('data:text/javascript;base64,'+Buffer.from(mediaJS).toString('base64'));
+assert.match(publicationSummary('passed'),/проверен/);
+assert.match(publicationSummary('failed'),/не прош/);
+assert.match(publicationSummary('unknown'),/не подтвержд/);
+for(const status of ['passed','failed','unknown'])assert.match(publicationSummary(status),/Публикация выключена/);
+console.log('Publication dry-run UI contracts: 6 assertions passed');

@@ -199,3 +199,11 @@ failure; original final validator rechecks applied artifacts against durable
 job identity and file hash. No ordinary-mode validation behavior was replaced.
 Next: pending media-observation/gates and publication read-only preview tests,
 then the current mixed graph and common/UI acceptance. No runner active here.
+
+`publication-gates-red-01`: 10 tests, 7 pass; intended failures are missing
+publication preview/domain projection and video advertising managed before
+worker acceptance. `publication-ui-red-01`: existing frontend contracts pass,
+new dry-run summary function is absent. Add read-only validation to the existing
+publish module and existing observation panel; never call publish_everywhere or
+set published status. Video stays disabled until its missing verifier and worker
+apply path are accepted, including on hosts where ffprobe later appears.
