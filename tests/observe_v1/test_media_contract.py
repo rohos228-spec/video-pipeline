@@ -140,6 +140,24 @@ class Capabilities(unittest.TestCase):
 
 
 class Artifacts(unittest.IsolatedAsyncioTestCase):
+    async def test_split_parse_observes_native_alias_precedence_without_false_failure(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock,patch
+        from app.services.node_capabilities import record_split_parse
+        from app.services.observation import _attempt
+        ctx=SimpleNamespace(scope=SimpleNamespace(project_id=2),last_request_id='actual-model-request',
+            split_input_voiceover='Первая строка. Вторая строка.')
+        frames=[{'закадр':None,'voiceover_text':'Первая строка.'},{'voiceover':'Вторая строка.'}]
+        token=_attempt.set(ctx)
+        try:
+            with patch('app.services.observation.record_fact',new_callable=AsyncMock) as fact:
+                await record_split_parse(json.dumps({'ops':[{'target':'replace_frames','frames':frames}]}),frames)
+                parse=fact.call_args_list[0]
+                self.assertTrue(parse.args[1]['schema_valid'])
+                self.assertEqual(parse.kwargs['request_id'],'actual-model-request')
+                self.assertEqual(fact.call_args_list[1].args[1]['status'],'passed')
+        finally:_attempt.reset(token)
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
