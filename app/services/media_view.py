@@ -42,7 +42,7 @@ async def context_for_nodes(master, scope, *, project_session=None):
             blockers.append("Недоступен ffprobe: результат нельзя подтвердить")
         if capability.result_kind=="assembly" and not shutil.which("ffmpeg"):
             blockers.append("Недоступен FFmpeg: сборка не выполняется")
-        if capability.result_kind in {"audio","assembly","publication","unsupported"}:
+        if not capability.managed:
             blockers.append("Управляемое исполнение этого типа ещё не принято")
         result[key]={"result_kind":capability.result_kind,
             "limited_management":capability.managed and not blockers,
@@ -54,4 +54,7 @@ async def context_for_nodes(master, scope, *, project_session=None):
                 "verification":j.verification,"progress":None,
                 "artifact_uuid":by_job.get(j.job_id) if j.phase=="verified" else None}
                 for j in jobs if j.node_key==key]}
+        if capability.result_kind == "publication":
+            from app.orchestrator.steps.publish import preview_publication
+            result[key]["publication"] = await preview_publication(project_session or master, project)
     return result

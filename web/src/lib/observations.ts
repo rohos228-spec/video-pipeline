@@ -52,6 +52,9 @@ export interface MediaContext {
   result_kind:string; limited_management:boolean; synthetic_only:boolean;
   production_profile_configured:boolean; blockers:string[];
   allowed_actions:string[];
+  publication?:{dry_run:boolean;send_allowed:boolean;requires_approval:boolean;
+    caption_characters:number;platforms:{platform:string;already_recorded:boolean}[];
+    validation:{status:string;reason?:string}};
   requests:Record<string,number>;
   jobs:{job_id:string;provider_job_id:string|null;phase:string;model_id:string;
     progress:number|null;error:string|null;attempt_id:string;

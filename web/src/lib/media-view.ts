@@ -18,3 +18,9 @@ export function mediaVerification(status?: string): string {
 export function artifactLink(uuid: string): string | null {
   return /^[a-f0-9]{32}$/.test(uuid) ? `/api/artifacts/${uuid}/file` : null;
 }
+
+export function publicationSummary(status?: string): string {
+  const validation = status === "passed" ? "Файл проверен"
+    : status === "failed" ? "Файл не прошёл проверку" : "Готовность файла не подтверждена";
+  return `${validation}. Публикация выключена — доступен только dry-run.`;
+}

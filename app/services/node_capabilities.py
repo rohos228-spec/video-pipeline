@@ -31,7 +31,7 @@ _CAPABILITIES = {
     "images": NodeCapability("images", "image", "generate_images.run → kie_http",
         _JOB_PHASES, ("provider_job", "local_file", "artifact_row"), READ_ACTIONS, True),
     "videos": NodeCapability("videos", "video", "generate_videos.run → kie_http",
-        _JOB_PHASES, ("provider_job", "local_file", "artifact_row"), READ_ACTIONS, True),
+        _JOB_PHASES, ("provider_job", "local_file", "artifact_row"), READ_ACTIONS, False),
     "audio": NodeCapability("audio", "audio", "generate_audio.run → elevenlabs_api",
         ("reserved", "submitted", "verifying", "verified", "alignment", "failed", "unknown"),
         ("provider_generation", "local_file", "frame_timing", "artifact_row"), READ_ACTIONS, False),
@@ -56,8 +56,4 @@ def require_managed_capability(node_type: str):
     capability = capability_for(node_type)
     if not capability.managed:
         raise ValueError("node adapter has no accepted managed executor")
-    if capability.result_kind == "video":
-        import shutil
-        if not shutil.which("ffprobe"):
-            raise ValueError("video adapter requires ffprobe before generation")
     return capability

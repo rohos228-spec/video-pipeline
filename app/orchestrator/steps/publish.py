@@ -17,7 +17,44 @@ from app.settings import settings
 _META_KEY = "published_platforms"
 
 
+async def preview_publication(session: AsyncSession, project: Project) -> dict:
+    """Read-only validation of the existing publish job. Never opens a browser."""
+    from app.bots.publishers import ALL_PUBLISHERS
+    from app.services.artifact_verifier import verify_artifact
+
+    already = (project.meta or {}).get(_META_KEY, {})
+    already = already if isinstance(already, dict) else {}
+    result = {"dry_run":True, "send_allowed":False, "requires_approval":True,
+              "project_status":project.status.value, "artifact_uuid":None,
+              "caption_characters":len((project.topic or project.slug)[:2200]),
+              "platforms":[{"platform":cls.platform, "already_recorded":cls.platform in already}
+                           for cls in ALL_PUBLISHERS]}
+    with session.no_autoflush:
+        final = await session.scalar(select(Artifact).where(
+            Artifact.project_id==project.id, Artifact.kind==ArtifactKind.final_video
+        ).order_by(Artifact.id.desc()).limit(1))
+    if final is None:
+        result["validation"] = {"status":"failed", "reason":"final_artifact_missing"}
+        return result
+    try:
+        result["validation"] = await verify_artifact(final.path, root=project.data_dir, kind="assembly")
+    except ValueError:
+        result["validation"] = {"status":"failed", "reason":"artifact_outside_project"}
+        return result
+    except OSError:
+        result["validation"] = {"status":"unknown", "reason":"artifact_unreadable"}
+        return result
+    result["artifact_uuid"] = final.uuid
+    return result
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
+    from app.services.actions_v1 import get_permission
+    from app.services.observation import _attempt
+    from app.services.media_jobs import MediaPolicyError
+    ctx = _attempt.get()
+    if get_permission(project.id) is not None or (ctx and ctx.scope.mode == "managed"):
+        raise MediaPolicyError("managed publication is disabled; use read-only preview")
     if project.status is not ProjectStatus.publishing:
         return
     if not settings.social_publish_enabled:

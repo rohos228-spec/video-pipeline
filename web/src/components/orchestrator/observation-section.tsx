@@ -9,7 +9,7 @@ import {DecisionSection} from './decision-section';
 import {ProfilesSection} from './profiles-section';
 import {eventLabel, mergeEvents, usageLabel, groupForScope, type ObservationEvent} from "@/lib/observation-view";
 import {Button} from "@/components/ui/button";
-import {mediaPhase, mediaVerification, artifactLink} from "@/lib/media-view";
+import {mediaPhase, mediaVerification, artifactLink, publicationSummary} from "@/lib/media-view";
 import type {MediaContext} from "@/lib/observations";
 
 function MediaDetails({media}:{media:MediaContext}) {
@@ -17,7 +17,13 @@ function MediaDetails({media}:{media:MediaContext}) {
     <p>{media.limited_management ? "Ограниченное управление" : "Только наблюдение"} · {media.result_kind}</p>
     <p>Проверено только синтетически · рабочий профиль не настроен</p>
     {media.blockers.length>0 && <p className="text-amber-200">{media.blockers.join("; ")}</p>}
-    {media.jobs.length===0 && <p>Job ещё не зарегистрирован; результат не подтверждён.</p>}
+    {media.publication && <div data-testid="publication-dry-run">
+      <p>{publicationSummary(media.publication.validation.status)}</p>
+      <p>Подпись: {media.publication.caption_characters} символов.</p>
+      <p>Площадки: {media.publication.platforms.map(p=>`${p.platform}${p.already_recorded ? " (есть прежняя запись)" : ""}`).join(", ")}</p>
+      <p>Отправка требует отдельного разрешения. Dry-run не меняет статус проекта.</p>
+    </div>}
+    {media.jobs.length===0 && !media.publication && <p>Job ещё не зарегистрирован; результат не подтверждён.</p>}
     {media.jobs.map(job=>{
       const href=job.artifact_uuid ? artifactLink(job.artifact_uuid) : null;
       return <details key={job.job_id} className="rounded border border-white/15 p-2">

@@ -207,3 +207,16 @@ new dry-run summary function is absent. Add read-only validation to the existing
 publish module and existing observation panel; never call publish_everywhere or
 set published status. Video stays disabled until its missing verifier and worker
 apply path are accepted, including on hosts where ffprobe later appears.
+
+`publication-gates-red-02` additionally proves legacy publish.run marks a managed
+project published when real sending is disabled. Guarded that direct entry.
+`publication-gates-green-01`: 11/11 Observe/Decision/media/preview tests pass.
+Preview reads the original final artifact and publisher catalog; missing/unknown
+file is not ready, outside-project file is rejected, no project status changes.
+Video/audio/assembly/publication managed execution remains disabled.
+
+`ui-current-01`: frontend contracts, TypeScript and full offline build pass.
+Verified export installed as v649; previous v648 export preserved separately in
+outputs/media-v1-20260930/ui-prior-v648. Browser acceptance still pending.
+Next: existing mixed group on current code, current jobs/common/runtime/diagnosis
+regressions, browser evidence and final matrix. No active runner here.
