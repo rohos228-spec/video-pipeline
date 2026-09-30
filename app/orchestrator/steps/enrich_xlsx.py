@@ -989,6 +989,9 @@ async def _maybe_auto_chain_excel_gpt(
 
     emit("planner_successor", {"from": finished_key, "to": next_key, "type": typ, "slot": next_slot})
     if not is_excel_gpt_node_type(typ):
+        from app.services.actions_v1 import continue_managed_image
+        if await continue_managed_image(session, project, finished_key, next_key, typ):
+            return
         # Стрелка ведёт не в excel_gpt — цепочку не форсим.
         # auto_mode иначе сразу стартует hero/img_pr («нода отработала →
         # персонажи → та же нода снова»).

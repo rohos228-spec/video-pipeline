@@ -113,6 +113,7 @@ class AttemptContext:
     node_key: str
     attempt_id: str
     last_request_id: str | None = None
+    runtime_config_hash: str | None = None
 
 
 _attempt = contextvars.ContextVar("observation_attempt", default=None)
@@ -639,6 +640,9 @@ async def observe_attempt(session, project):
         attempt_id = claimed_id
         revision = await input_revision(session, project, node_key, parts=revision_parts)
     ctx = AttemptContext(observer, scope, session, source, node_key, attempt_id)
+    if scope.mode == "managed":
+        from app.services.decision_config import runtime_config
+        ctx.runtime_config_hash = digest(runtime_config())
     token = _attempt.set(ctx)
     from app.services.node_capabilities import capability_for
     capability = capability_for("excel_gpt" if not native_type or native_type.startswith("enrich_") else native_type)

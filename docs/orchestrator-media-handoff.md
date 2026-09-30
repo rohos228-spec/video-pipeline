@@ -1,5 +1,22 @@
 # Text + media goal: current handoff
 
+## Resume boundary — managed continuation, 2026-09-30
+
+- Prior Docker interruption recovered as exit255, OOM=false; partial materials retained.
+- Current diagnosis 25/25 and media observation 11/11 passed. mixed-current-01
+  ended exit137/OOM=true. mixed-current-02 ran without browser/OOM: six text
+  nodes done, images pending, five text POSTs, no media submit. The original
+  runtime deliberately auto-chains only text nodes; this is the mixed-scope gap.
+- `continuation-red-01`: 15 tests, two expected failures (pending image and
+  rollback precondition). RED checkpoint `3e471220`.
+- `continuation-green-01`: 15/15 after adding a scoped transition from the
+  original selected text successor to images through original FSM. No direct
+  worker dispatch/manual-start/reset; transactionally staged event.
+- Need mandatory audit-failure/prerequisite verification, then actual mixed
+  worker and live UI. Existing text recovery seed fingerprints may differ
+  because enrich_xlsx changed; never force archived compatibility.
+- No host changes, keys, real API, remote Git or new dependencies.
+
 ## Resume boundary — 2026-09-30 04:49 MSK
 
 Code HEAD `259dc487` on the same feature/worktree. Only documentation follows.

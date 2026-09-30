@@ -178,6 +178,111 @@ async def reload_permissions(master) -> None:
     await reload_recovery_restrictions(master)
 
 
+async def continue_managed_image(session, project, source_key, target_key, node_type):
+    """Admit an original graph-selected image successor to the existing FSM.
+
+    No planner, worker dispatch, retry/reset or stop/backoff clearing. The node
+    transition and its evidence share the caller's project transaction. Pending
+    is required so replay cannot restart a scheduled or terminal node.
+    """
+    from app.models import Project, WorkflowRun, NodeRun, NodeRunStatus, Frame
+    from app.services.observation import _attempt, ExecutionControl, digest, emit
+    from app.services.decision_config import runtime_config, DecisionRuntimeBinding
+    from app.services.diagnosis import Incident
+    from app.services.step_cancel import is_stop_requested
+    from app.services.step_failure_policy import is_sleeping
+    from app.orchestrator.node_registry import spec_for_type
+
+    ctx = _attempt.get()
+    if not ctx or ctx.scope.mode != "managed" or node_type != "images":
+        return False
+
+    def denied(reason):
+        emit("managed_successor_denied", {"from": source_key, "to": target_key,
+            "reason": reason, "protective_stop": True})
+        return False
+
+    scope = ctx.scope
+    if (ctx.session is not session or scope.project_id != project.id
+            or ctx.node_key != source_key or source_key == target_key
+            or {source_key, target_key} - set(scope.node_keys)):
+        return denied("outside_execution_scope")
+    if (scope.observer_state != "active" or scope.gaps
+            or scope.execution_id in ctx.observer.failures
+            or scope.execution_id in ctx.observer.commit_uncertainty):
+        return denied("audit_unavailable")
+    gate = check_managed_start(project_id=project.id, node_key=target_key)
+    permission = get_permission(project.id)
+    if not gate or not gate.allowed or permission.execution_id != scope.execution_id:
+        return denied(gate.reason if gate else "permission_missing")
+    cfg = runtime_config()
+    if (not ctx.runtime_config_hash or ctx.runtime_config_hash != digest(cfg)
+            or cfg.get("mode") != "synthetic" or not (cfg.get("media") or {}).get("enabled")):
+        return denied("media_configuration_changed_or_disabled")
+    async with ctx.observer.master() as master:
+        control = await master.get(ActionExecutionControl, scope.execution_id)
+        durable = await master.get(ExecutionControl, scope.execution_id)
+        master_project = await master.get(Project, project.id)
+        binding = await master.get(DecisionRuntimeBinding, scope.execution_id)
+        run = await master.get(WorkflowRun, scope.workflow_run_id)
+        incidents = (await master.scalars(select(Incident).where(
+            Incident.execution_id == scope.execution_id))).all()
+    if (not control or not durable or not master_project or not run
+            or control.project_id != project.id or control.workflow_run_id != scope.workflow_run_id
+            or not control.enabled or control.held or control.requests_used >= control.request_limit
+            or target_key not in control.node_keys or source_key not in control.node_keys
+            or durable.mode != "managed" or durable.observer_state != "active" or durable.gaps):
+        return denied("durable_permission_unavailable")
+    canvas = (project.meta or {}).get("canvas_graph") or {}
+    revision = digest({"nodes": run.nodes_snapshot, "edges": run.edges_snapshot})
+    if (run.project_id != project.id or revision != scope.graph_version
+            or revision != control.graph_version or revision != durable.graph_version
+            or revision != digest({"nodes": canvas.get("nodes"), "edges": canvas.get("edges")})):
+        return denied("graph_revision_changed")
+    if binding and binding.config_hash != ctx.runtime_config_hash:
+        return denied("runtime_binding_changed")
+    if any(i.status != "resolved_confirmed" and i.details.get("currently_relevant")
+           and (i.status == "human_review" or i.type in {"uncertain_request", "journal_gap", "user_stop"})
+           for i in incidents):
+        return denied("incident_requires_human")
+    flags = ("user_stop", "mass_lane_user_stop", "auto_await_manual_start")
+    if (any((p.meta or {}).get(f) for p in (project, master_project) for f in flags)
+            or is_stop_requested(project.id) or is_sleeping(project) or is_sleeping(master_project)):
+        return denied("stop_or_backoff_active")
+    rows = (await session.scalars(select(NodeRun).where(
+        NodeRun.workflow_run_id == scope.workflow_run_id))).all()
+    source = next((n for n in rows if n.node_key == source_key), None)
+    target = next((n for n in rows if n.node_key == target_key), None)
+    if (not source or source.status != NodeRunStatus.done or not target
+            or target.node_type != node_type or target.status != NodeRunStatus.pending
+            or any(n.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_hitl} for n in rows)):
+        return denied("node_state_not_ready")
+    # Explicit graph input contract, not the legacy linear status sequence.
+    from app.services.scan_frames import frame_image_prompt_text
+    from app.services.vo_shot_expand import is_coverage_leftover
+    from app.generation_options import is_skippable_empty_prompt
+    frames = list((await session.scalars(select(Frame).where(Frame.project_id == project.id))).all())
+    required = [f for f in frames if not is_coverage_leftover(f)]
+    if not required or any(not (f.voiceover_text or "").strip()
+            or is_skippable_empty_prompt(frame_image_prompt_text(f, frames)) for f in required):
+        return denied("image_inputs_missing")
+    from app.services.run_sync import prepare_node_for_step_start
+    spec = spec_for_type(node_type)
+    await prepare_node_for_step_start(session, project, spec.step_code, node_key=target_key,
+                                     strict=True, explicit_ui_start=False)
+    project.status = spec.running_status
+    emit("managed_successor", {"from": source_key, "to": target_key,
+        "source_attempt_id": ctx.attempt_id, "graph_version": revision,
+        "runtime_config_hash": ctx.runtime_config_hash, "input_hash": digest([
+            {"frame_id": f.id, "voiceover": f.voiceover_text,
+             "prompt": frame_image_prompt_text(f, frames)} for f in required]),
+        "requests_used": control.requests_used, "request_limit": control.request_limit,
+        "planner": "original_graph", "fsm": "prepare_node_for_step_start",
+        "transactional": True, "worker_dispatched": False})
+    await session.flush()
+    return True
+
+
 class ActionSupervisor:
     """Durable operator controls for an already-observed execution."""
     def __init__(self, master):
