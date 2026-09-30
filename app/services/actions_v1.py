@@ -439,6 +439,10 @@ class ActionSupervisor:
                         "node_keys": list(control.node_keys), "action_id": existing.action_id,
                         "idempotent_replay": True}
             if not held:
+                from app.services.managed_launch import ManagedLaunch
+                launch=await session.scalar(select(ManagedLaunch).where(ManagedLaunch.execution_id==execution_id))
+                if launch and launch.status!='submitted':
+                    raise ValueError('interrupted/failed launch requires human review; generic resume cannot redispatch')
                 project = await session.get(Project, project_id)
                 if project is None or bool((project.meta or {}).get("user_stop")):
                     raise ValueError("user_stop is active; explicit user-stop gate is never cleared here")

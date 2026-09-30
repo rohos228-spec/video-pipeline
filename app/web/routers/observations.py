@@ -92,6 +92,34 @@ async def launch_managed(project_id:int,payload:ManagedLaunchRequest,operator:Au
             raise HTTPException(409,'managed launch held: '+type(exc).__name__) from exc
 
 
+@router.get('/launch-options')
+async def managed_launch_options(project_id:int,operator:AuthDep):
+    from app.services.decision_config import status
+    from app.services.node_capabilities import capability_for
+    from app.services.excel_gpt_node import effective_node_type
+    from app.services.managed_launch import ManagedLaunch,launch_json
+    async with get_observer().master() as session:
+        run=await session.scalar(select(WorkflowRun).where(WorkflowRun.project_id==project_id).order_by(WorkflowRun.id.desc()))
+        if not run:raise HTTPException(404,'existing workflow run required')
+        states={n.node_key:n for n in (await session.scalars(select(NodeRun).where(NodeRun.workflow_run_id==run.id))).all()}
+        latest=await session.scalar(select(ManagedLaunch).where(ManagedLaunch.project_id==project_id).order_by(ManagedLaunch.created_at.desc()))
+        nodes=[]
+        for node in run.nodes_snapshot or []:
+            key=str(node.get('id') or '');capability=capability_for(effective_node_type(node));state=states.get(key)
+            data=node.get('data') or {}
+            nodes.append({'node_key':key,'title':str(data.get('label') or data.get('title') or key),
+                'group_id':data.get('groupId'),'supported':capability.managed,
+                'status':state.status.value if state else 'unknown',
+                'reason':None if capability.managed else 'исполнитель и проверка ещё не приняты',
+                'result_kind':capability.result_kind})
+        runtime=status()
+        return panel_safe({'workflow_run_id':run.id,'graph_version':digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot}),
+            'nodes':nodes,'strategies':[a for a in ('wait','human_review','retry_same') if a in runtime['allowed_actions']],
+            'request_limit_default':12,'request_limit_max':100,'configured':runtime['configured'],
+            'mode':runtime['mode'],'online_authorized':False,
+            'reason':runtime['reason'],'latest_launch':launch_json(latest) if latest else None})
+
+
 class VerifyNode(BaseModel):
     node_key: str = Field(min_length=1, max_length=60)
     rationale: str = Field(min_length=3, max_length=1000)
