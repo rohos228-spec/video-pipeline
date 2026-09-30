@@ -152,6 +152,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             cancelled = True
             break
         try:
+            if attempt > 1:
+                # The previous partial result bound an XLSX snapshot and flushed
+                # its metadata in this session. Release that write transaction
+                # before checkpoint apply opens an independent project.db writer.
+                # Keep committed partial prompts; do not roll back or reset retry.
+                await session.commit()
             from app.services import xlsx_step_runners as xsr
 
             result = await xsr.run_img_pr_xlsx(
