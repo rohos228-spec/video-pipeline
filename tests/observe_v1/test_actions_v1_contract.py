@@ -143,6 +143,24 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
             await self.supervisor.set_held(project_id=7,execution_id="exec-durable",held=False,
                 initiator="test-operator",rationale="resume test",idempotency_key="resume-key-0001")
 
+    async def test_held_execution_blocks_original_job_before_business_session_even_after_restart(self):
+        from app.services.advance_runner import advance_project_job
+        await self.supervisor.enable(project_id=7,execution_id='exec-durable',group_id='g1',
+            node_keys=['n1'],graph_version=self.graph,initiator='test-operator',
+            rationale='worker admission acceptance',request_limit=8)
+        await self.supervisor.set_held(project_id=7,execution_id='exec-durable',held=True,
+            initiator='test-operator',rationale='held native verifier',idempotency_key='held-worker-test')
+        for restarted in (False,True):
+            if restarted:clear_permission(7)
+            with patch('app.services.advance_runner.project_db_session_scope',
+                       side_effect=AssertionError('held worker must not open business session')):
+                result=await advance_project_job(7,None)
+            self.assertIsNone(result.new_status)
+        async with self.sessions() as s:
+            control=await s.get(ActionExecutionControl,'exec-durable')
+            self.assertTrue(control.held)
+            self.assertEqual(control.requests_used,0)
+
     async def test_recovery_requires_actual_current_incident_before_any_dispatch(self):
         await self.supervisor.enable(project_id=7,execution_id="exec-durable",group_id="g1",
             node_keys=["n1"],graph_version=self.graph,initiator="test-operator",
