@@ -11,6 +11,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from contextlib import ExitStack
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -234,6 +235,63 @@ class RuntimeProjection(unittest.IsolatedAsyncioTestCase):
             node = await session.scalar(select(NodeRun).where(NodeRun.node_key == "native"))
             self.assertEqual(node.status, NodeRunStatus.pending,
                              "default pull imports the command, not master NodeRun projections")
+
+    async def test_completed_native_plan_accepts_newer_master_start_or_higher_attempt(self):
+        await self.finish_plan(push=False)
+        node_query = select(NodeRun.__table__).where(
+            NodeRun.workflow_run_id == self.run_id).order_by(NodeRun.node_key)
+        hitl_query = select(HITLRequest.__table__).where(
+            HITLRequest.project_id == self.project_id).order_by(HITLRequest.id)
+        business_query = select(Project.general_plan, Project.script_text, Project.topic).where(
+            Project.id == self.project_id)
+        async with self.project() as session:
+            nodes_before = [dict(row) for row in (await session.execute(node_query)).mappings()]
+            hitl_before = [dict(row) for row in (await session.execute(hitl_query)).mappings()]
+            business_before = tuple((await session.execute(business_query)).one())
+        completed = next(row for row in nodes_before if row["node_key"] == "native")
+        self.assertEqual(completed["status"], NodeRunStatus.done)
+        self.assertIsNotNone(completed["started_at"])
+        self.assertIsNotNone(completed["finished_at"])
+        self.assertEqual(business_before[0], PLAN)
+        self.assertEqual([(row["kind"], row["decision"]) for row in hitl_before],
+                         [(HITLKind.approve_plan, HITLDecision.pending)])
+        command_query = select(NodeRun).where(
+            NodeRun.workflow_run_id == self.run_id, NodeRun.node_key == "native")
+        async with self.master() as session:
+            command = await session.scalar(command_query)
+            self.assertEqual(command.status, NodeRunStatus.running)
+            old_started_at, old_attempts = command.started_at, command.attempts
+        self.assertIsNotNone(old_started_at)
+        self.assertLessEqual(old_started_at, completed["started_at"])
+        self.assertLessEqual(old_attempts, completed["attempts"])
+        commands = (
+            ("newer_started_at", completed["finished_at"] + timedelta(seconds=1), old_attempts),
+            ("higher_attempts", old_started_at, completed["attempts"] + 1),
+        )
+        for reason, started_at, attempts in commands:
+            with self.subTest(command=reason):
+                # Change only one freshness signal relative to the completed
+                # native attempt; the source remains the same running node.
+                async with self.master() as session:
+                    command = await session.scalar(command_query)
+                    command.started_at = started_at
+                    command.attempts = attempts
+                    await session.commit()
+                async with self.project() as session:
+                    project = await session.get(Project, self.project_id)
+                    self.assertEqual(project.status, ProjectStatus.plan_ready)
+                    self.assertTrue(await project_db.pull_master_runtime_into_project(session, project))
+                    self.assertEqual(project.status, ProjectStatus.planning)
+                    self.assertEqual(await session.scalar(select(Project.__table__.c.status).where(
+                        Project.id == self.project_id)), ProjectStatus.planning)
+                    self.assertEqual(tuple((await session.execute(business_query)).one()), business_before)
+                    self.assertEqual([dict(row) for row in (await session.execute(hitl_query)).mappings()],
+                                     hitl_before)
+                    self.assertEqual([dict(row) for row in (await session.execute(node_query)).mappings()],
+                                     nodes_before)
+                    # Retain the real completed fixture for the next subcase,
+                    # including its pending approval; never assign done/ready.
+                    await session.rollback()
 
     async def test_rejected_image_prompts_context_and_managed_validation_read_native_node_rows(self):
         await self.seed("image_prompts")

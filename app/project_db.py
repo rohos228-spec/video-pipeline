@@ -753,6 +753,7 @@ async def pull_master_runtime_into_project(
     живую ноду в «ошибка», пока воркер всё ещё пишет.
     """
     from app.db import session_scope
+    from app.orchestrator.node_registry import READY_TO_NODE_TYPE, RUNNING_TO_NODE_TYPE
     from app.services.project_state import is_running_status
 
     changed = False
@@ -764,6 +765,47 @@ async def pull_master_runtime_into_project(
             take_master_status = is_running_status(m.status) and not is_running_status(
                 project.status
             )
+            node_type = RUNNING_TO_NODE_TYPE.get(m.status)
+            if (
+                take_master_status
+                and node_type
+                and READY_TO_NODE_TYPE.get(project.status) == node_type
+            ):
+                # Native completion commits before its runtime push to master.
+                # A passive GET/advance must not restore that same old start.
+                # Require an unambiguous existing node and attempt evidence;
+                # explicit restarts reset started_at and remain admissible.
+                nodes = (
+                    await session.scalars(
+                        select(NodeRun).join(WorkflowRun).where(
+                            WorkflowRun.project_id == project.id,
+                            NodeRun.node_type == node_type,
+                        )
+                    )
+                ).all()
+                if len(nodes) == 1:
+                    completed = nodes[0]
+                    if (
+                        completed.status == NodeRunStatus.done
+                        and completed.started_at is not None
+                        and completed.finished_at is not None
+                    ):
+                        command = await master.scalar(
+                            select(NodeRun).join(WorkflowRun).where(
+                                WorkflowRun.project_id == project.id,
+                                NodeRun.workflow_run_id == completed.workflow_run_id,
+                                NodeRun.node_key == completed.node_key,
+                                NodeRun.node_type == node_type,
+                            )
+                        )
+                        if (
+                            command is not None
+                            and command.status == NodeRunStatus.running
+                            and command.started_at is not None
+                            and command.started_at <= completed.started_at
+                            and command.attempts <= completed.attempts
+                        ):
+                            take_master_status = False
             if not take_master_status:
                 take_master_status = master_park_overrides_running(m, project)
             if take_master_status:
