@@ -24,6 +24,34 @@ class Environment(unittest.TestCase):
 
 
 class Capabilities(unittest.TestCase):
+    def test_native_split_contract_preserves_fallback_without_generic_recovery(self):
+        from app.services.node_capabilities import capability_for, split_contract
+        cap = capability_for('split')
+        self.assertEqual(cap.result_kind, 'frame_set')
+        self.assertEqual(cap.actions, ('read_events','read_contract','wait','human_review'))
+        contract = split_contract()
+        self.assertEqual(contract['minimum_frames'], 2)
+        self.assertIn('native_local_voiceover_fallback', contract['formats'])
+        self.assertFalse(contract['semantic_quality_verified'])
+
+    def test_split_verifies_identifiers_output_and_complete_voiceover_coverage(self):
+        from types import SimpleNamespace
+        from app.services.node_capabilities import verify_split_frames
+        def frame(uid, number, vo):
+            return SimpleNamespace(project_id=2,uuid=uid,number=number,voiceover_text=vo)
+        good = [frame('id-a',1,'Первый кадр.'),frame('id-b',2,'Второй кадр.')]
+        result = verify_split_frames(good,project_id=2,voiceover='Первый кадр. Второй кадр.')
+        self.assertEqual(result['status'],'passed')
+        self.assertTrue(result['voiceover_preserved'])
+        self.assertFalse(result['semantic_quality_verified'])
+        self.assertEqual(result['frame_count'],2)
+        for frames in (good[:1],good+[frame('id-b',3,'лишний')],
+                       [frame('id-a',1,''),good[1]], [frame('id-a',1,'Первый кадр.'),frame('id-b',1,'Второй кадр.')],
+                       [frame('id-a',1,'Первый кадр.'),SimpleNamespace(project_id=1,uuid='id-b',number=2,voiceover_text='Второй кадр.')]):
+            self.assertEqual(verify_split_frames(frames,project_id=2,voiceover='Первый кадр. Второй кадр.')['status'],'failed')
+        self.assertEqual(verify_split_frames(good,project_id=2,voiceover='Другой исходный текст')['status'],'failed')
+        self.assertEqual(verify_split_frames(good,project_id=2,voiceover=None)['status'],'unknown')
+
     def test_native_parse_distinguishes_json_syntax_from_required_plan_field(self):
         from app.services.node_capabilities import project_text_parse_evidence
         missing=project_text_parse_evidence('{"ops":[]}', '', 'plan')
