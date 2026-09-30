@@ -39,7 +39,7 @@ class RuntimeAcceptance(test_journal.JournalAcceptance):
         async with self.master() as session:
             # Context's ordinary timeline page remains bounded at 500. An
             # older pending approval must still be read by exact scoped ID.
-            session.add_all([ObservationEvent(event_id='approval-noise-'+str(i),
+            session.add_all([observation.ObservationEvent(event_id='approval-noise-'+str(i),
                 execution_id=self.scope.execution_id,project_id=2,workflow_run_id=7,
                 node_key='report',attempt_id='noise',db_scope='master',kind='runtime_check',payload={})
                 for i in range(510)])
