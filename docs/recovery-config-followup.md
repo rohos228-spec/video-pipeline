@@ -43,6 +43,51 @@ ticket остаётся отсутствием доказательства; т�
 второго события. Изменённая конфигурация, старый ticket и ошибка recovery
 продолжение не разрешают. Проверяется механизм восстановления, не новая генерация.
 
-Остальная регрессия будет указана отдельно после фактического выполнения.
-UI и transport не изменены; предыдущие browser/build результаты не объявляются
-повторно выполненными. Полного нового worker exhaustion/restart пока не было.
+## Финальная регрессия
+
+Проверенный код: **`d38a9a8a4242f6d54ff865e43f29163375e890dc`**.
+Финальный checkpoint меняет только эту инструкцию и ссылку в handoff.
+
+| Существующий target | Локальная папка в `outputs/media-v1-20260930` | Результат |
+|---|---|---|
+| `media-observation` | `recovery-config-green-01` | 24/24, 187 загруженных app-модулей |
+| `decision-final` | `recovery-config-common-01` | 125/125: runtime policy41, Decision33, Actions24, Profiles17, planner2, journal8; 182 модуля |
+| `qc-noop` | `recovery-config-qc-01` | 41/41; 179 модулей |
+
+Это **190 успешных выполнений тестов**, не 190 новых/уникальных тестов:
+QC target повторно загружает часть Actions-контрактов. Новых тестов — пять.
+Все три контейнера: network none, exit0, OOMKilled=false; своих активных runner
+после приёмки нет. Failed-контейнеры и результаты сохранены без изменений,
+кроме добавления снимка их конечного состояния в отдельный файл.
+
+В каждой папке доступны `artifacts/test-output.txt`, `run-config.json`,
+`loaded-modules.json`, `container-state.json`, исходники и `source-manifest.json`.
+Общая сверка — `outputs/media-v1-20260930/recovery-config-source-proof.json`:
+все загруженные файлы и все файлы трёх manifest совпали с текущим worktree.
+SHA256 `app/services/actions_recovery.py`:
+`c28b609b5520a50472b5d60b2cd64646464826865f278a09135f13482ac8e085`.
+
+## Точная граница
+
+- Подтверждена запись исходной конфигурации при finish и её чтение после потери
+  контекста и reload Observer/permissions. Использованы настоящие отдельные БД,
+  sync, verification, original continuation, planner/FSM. Подготовленные test facts
+  не являются доказательством нового исполнения всей группы worker.
+- Source→image переход происходит один раз при неизменённой конфигурации.
+  Старый ticket без hash, изменённая конфигурация и ошибка recovery не запускают
+  images. Существующие stop/scope/uncertain/budget/revision проверки проходят.
+- Верификация завершённой текстовой попытки и разрешение следующей ноды остаются
+  разными решениями. `continuation_submitted` означает вызов исходного continuation;
+  при отказе media gate решающим доказательством остаются pending целевой ноды и
+  `managed_successor_denied`, а не это поле ticket. Его семантика не изменена.
+- UI и transport не изменены; предыдущие browser/build результаты не объявляются
+  повторно выполненными. Полный новый worker exhaustion + restart + image completion
+  этим follow-up не проверялся. Прежние mixed/worker архивы сохранены отдельно.
+- Production выключен. Реальных API, ключей, новых зависимостей, push/PR/deploy — 0.
+  Оставшиеся video/TTS/ASR/assembly зависимости и production-приёмка описаны
+  в основном handoff; поддержки этих семейств данное исправление не добавляет.
+
+Повторить можно тем же `scripts/test_observe_offline.ps1` с target из таблицы
+и новой папкой `-ResultsRoot`; последовательно, на кэшированном образе.
+Внешняя диагностическая обёртка, launcher, сетевые настройки и adapters в этой
+работе не менялись. Единственный production diff — `actions_recovery.py`.
