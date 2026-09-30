@@ -39,6 +39,162 @@ class MediaObservation(MediaJobs):
         from app.models import ProjectStatus
         await _maybe_auto_chain_excel_gpt(self.session,self.project,1,ProjectStatus.enrich_1_ready,finished_key="text")
 
+    async def finished_recovery_fixture(self, *, error=False, change_config_before_finish=False):
+        """Reconciliation integration fixture, NOT a worker/exhaustion acceptance.
+
+        Seed committed completion evidence explicitly; run the real ticket finish,
+        restart reload, DB sync, verification, planner and FSM without substitutes.
+        Only the master connection factory points to this test's isolated SQLite.
+        """
+        import json
+        import uuid
+        from datetime import datetime
+        from unittest.mock import patch
+        from sqlalchemy import select
+        from app import db, project_db
+        from app.models import Project
+        from app.services.actions_v1 import ActionRecord
+        from app.services.actions_recovery import RecoveryAction, worker_finished
+
+        await self.continuation_fixture()
+        ctx = observation._attempt.get()
+        self.captured_config_hash = ctx.runtime_config_hash
+        self.original_config = self.cfg.read_text()
+        resource = patch.object(db, "SessionLocal", self.sessions)
+        resource.start()
+        self.addCleanup(resource.stop)
+        project_db.register_project_data_dir(7, self.project.data_dir)
+        self.addAsyncCleanup(project_db.close_all_project_engines)
+        async with self.sessions() as master:
+            project = await master.get(Project, 7)
+            await project_db.migrate_single_project_data(master, project, create_backup=False)
+            self.recovery_id = str(uuid.uuid4())
+            master.add(RecoveryAction(action_id=self.recovery_id,
+                execution_id=self.scope.execution_id, project_id=7, incident_id="fixture-incident",
+                node_key="text", source_attempt_id="fixture-source", new_attempt_id=ctx.attempt_id,
+                idempotency_key="fixture-recovery", preconditions={"graph_version": self.scope.graph_version},
+                budget_state={"recovery_limit": 1}, status="claimed", result={}, verification_result={}))
+            master.add(ActionRecord(action_id=self.recovery_id, execution_id=self.scope.execution_id,
+                project_id=7, node_key="text", attempt_id=ctx.attempt_id, action_kind="node_recovery",
+                initiator="fixture", rationale="committed recovery fixture", idempotency_key="fixture-recovery",
+                status="running", preconditions={}, evidence_ids=[], verification={}))
+            # These are test input facts, not claims that a model/worker ran here.
+            for kind, payload in (
+                ("node_start", {}), ("model_start", {}), ("model_end", {"complete": True}),
+                ("parse_result", {"payload_present": True}), ("data_applied", {"transactional": True}),
+                ("node_end", {}), ("node_change", {"transactional": True,
+                    "changes": {"status": {"before": ["running"], "after": ["done"]}}}),
+            ):
+                master.add(observation.ObservationEvent(event_id=str(uuid.uuid4()),
+                    execution_id=self.scope.execution_id, project_id=7, workflow_run_id=1,
+                    node_key="text", attempt_id=ctx.attempt_id, request_id="fixture-request",
+                    db_scope="project", kind=kind, payload=payload, created_at=datetime.utcnow()))
+            await master.commit()
+        if change_config_before_finish:
+            changed = json.loads(self.original_config)
+            changed["media"]["max_bytes"] -= 1
+            self.cfg.write_text(json.dumps(changed))
+        await worker_finished(ctx, error=error)
+        await self.session.rollback()
+
+    async def reconcile_after_context_loss(self):
+        from app.services.actions_recovery import reconcile
+        # Drop live AttemptContext and replace Observer/permission cache. Only
+        # persisted ticket/config evidence can authorize the original successor.
+        token = observation._attempt.set(None)
+        try:
+            restarted = observation.Observer(self.sessions, body_root=self.root / "bodies")
+            observation._observer = restarted
+            await restarted.reload()
+            await reconcile(restarted)
+        finally:
+            observation._attempt.reset(token)
+
+    async def recovery_state(self):
+        from sqlalchemy import select
+        from app import project_db
+        from app.models import NodeRun, Project
+        from app.services.actions_recovery import RecoveryAction
+        async with self.sessions() as master:
+            ticket = await master.get(RecoveryAction, self.recovery_id)
+            master_status = (await master.get(Project, 7)).status.value
+        async with project_db.project_db_session_scope(7) as session:
+            node = await session.scalar(select(NodeRun).where(NodeRun.node_key == "image"))
+            events = list(await session.scalars(select(observation.ObservationOutbox).where(
+                observation.ObservationOutbox.kind.in_(["managed_successor", "managed_successor_denied"]))))
+            return ticket, node, events, master_status
+
+    async def test_recovery_keeps_attempt_config_and_continues_image_once_after_reload(self):
+        from app.services.actions_recovery import RecoveryAction
+        from app.models import NodeRunStatus
+        await self.finished_recovery_fixture(change_config_before_finish=True)
+        async with self.sessions() as s:
+            row = await s.get(RecoveryAction, self.recovery_id)
+            self.assertEqual(row.result.get("runtime_config_hash"), self.captured_config_hash,
+                             "persist the attempt's captured hash, never the config at finish/restart")
+        self.cfg.write_text(self.original_config)
+        await self.reconcile_after_context_loss()
+        ticket, node, events, status = await self.recovery_state()
+        self.assertTrue(ticket.verification_result["verified"])
+        self.assertEqual(node.status, NodeRunStatus.running)
+        self.assertEqual(status, "generating_images")
+        self.assertEqual([e.kind for e in events], ["managed_successor"])
+        self.assertEqual(events[0].payload["runtime_config_hash"], self.captured_config_hash)
+        await self.reconcile_after_context_loss()
+        replay, same_node, same_events, _ = await self.recovery_state()
+        self.assertEqual(replay.action_id, ticket.action_id)
+        self.assertEqual((same_node.attempts, len(same_events)), (node.attempts, 1))
+
+    async def test_recovery_cannot_rebase_config_at_reconciliation(self):
+        from app.models import NodeRunStatus
+        await self.finished_recovery_fixture(change_config_before_finish=True)
+        await self.reconcile_after_context_loss()
+        ticket, node, events, status = await self.recovery_state()
+        self.assertTrue(ticket.verification_result["verified"], "text result verified independently of next-node gate")
+        self.assertEqual(node.status, NodeRunStatus.pending)
+        self.assertEqual(status, "enrich_1_ready")
+        self.assertEqual([e.kind for e in events], ["managed_successor_denied"])
+        self.assertEqual(events[0].payload["reason"], "media_configuration_changed_or_disabled")
+
+    async def test_reconciliation_reads_persisted_hash_without_live_attempt(self):
+        from app.services.actions_recovery import RecoveryAction
+        from app.models import NodeRunStatus
+        await self.finished_recovery_fixture()
+        # Independent read-side contract: explicitly seed the future stored field
+        # so a write-side failure cannot mask failure to rehydrate it.
+        async with self.sessions() as s:
+            row = await s.get(RecoveryAction, self.recovery_id)
+            row.result = {**row.result, "runtime_config_hash": self.captured_config_hash}
+            await s.commit()
+        await self.reconcile_after_context_loss()
+        _, node, events, _ = await self.recovery_state()
+        self.assertEqual(node.status, NodeRunStatus.running)
+        self.assertEqual([e.kind for e in events], ["managed_successor"])
+
+    async def test_legacy_recovery_without_config_proof_stays_blocked(self):
+        from app.services.actions_recovery import RecoveryAction
+        from app.models import NodeRunStatus
+        await self.finished_recovery_fixture()
+        async with self.sessions() as s:
+            row = await s.get(RecoveryAction, self.recovery_id)
+            row.result = {k: v for k, v in row.result.items() if k != "runtime_config_hash"}
+            await s.commit()
+        await self.reconcile_after_context_loss()
+        _, node, events, _ = await self.recovery_state()
+        self.assertEqual(node.status, NodeRunStatus.pending)
+        self.assertEqual([e.kind for e in events], ["managed_successor_denied"])
+
+    async def test_failed_recovery_does_not_use_persisted_config_to_continue(self):
+        from app.services.actions_v1 import get_permission
+        from app.models import NodeRunStatus
+        await self.finished_recovery_fixture(error=True)
+        await self.reconcile_after_context_loss()
+        ticket, node, events, _ = await self.recovery_state()
+        self.assertEqual(ticket.status, "human_review")
+        self.assertTrue(get_permission(7).held)
+        self.assertEqual(node.status, NodeRunStatus.pending)
+        self.assertEqual(events, [])
+
     async def test_managed_text_to_image_continues_once_via_original_fsm(self):
         from app.models import ProjectStatus,NodeRunStatus
         from sqlalchemy import select
