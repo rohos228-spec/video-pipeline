@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, patch
 
 
 EXECUTION = "00000000-0000-4000-8000-000000000007"
+IMAGE_EXECUTION = "00000000-0000-4000-8000-000000000008"
 ATTEMPT = "00000000-0000-4000-8000-000000000010"
 REQUEST_A = "00000000-0000-4000-8000-000000000011"
 REQUEST_B = "00000000-0000-4000-8000-000000000022"
@@ -49,7 +50,7 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
         from test_actions_v1_contract import DurableActions
         from sqlalchemy import select
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-        from app.models import Base, Frame, NodeRun, Project, ProjectStatus
+        from app.models import Base, Frame, NodeRun, Project, ProjectStatus, WorkflowRun
         from app.services import observation
         from app.services.node_status_machine import queue_node_for_start, start_node_running
         from app.settings import settings
@@ -68,6 +69,10 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
             scope = await master.get(observation.ExecutionControl, "exec-durable")
             scope.execution_id = EXECUTION  # Original body store requires a UUID.
             scope.node_keys = ["n1"]
+            run = await master.get(WorkflowRun, scope.workflow_run_id)
+            self.native_node_type = next(item["type"] for item in run.nodes_snapshot
+                                         if item["id"] == node.node_key)
+            self.assertEqual(self.native_node_type, node.node_type)
             await master.commit()
             self.scope = scope
         self.observer.scopes[self.scope.workflow_run_id] = self.scope
@@ -139,6 +144,9 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
 
         ctx = observation.AttemptContext(self.observer, self.scope, session,
                                         "project", "n1", ATTEMPT)
+        # Direct helper cases use the same identity as the persisted native run.
+        # This supplies no managed permission or result/commit provenance.
+        ctx.native_node_type = self.native_node_type
         ctx.last_request_id = REQUEST_RACE
         attempt_token = observation._attempt.set(ctx)
         request_token = observation._request.set(None)
@@ -182,14 +190,14 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
             project = dict((await reader.execute(select(Project.__table__).where(Project.id == 7))).mappings().one())
         return {"project": project, "frames": frames}
 
-    async def facts(self):
+    async def facts(self, execution_id=EXECUTION):
         from sqlalchemy import select
         from app.services import observation
 
-        await self.observer.consume(EXECUTION, "master", self.sessions)
+        await self.observer.consume(execution_id, "master", self.sessions)
         async with self.sessions() as reader:
             return list((await reader.scalars(select(observation.ObservationEvent).where(
-                observation.ObservationEvent.execution_id == EXECUTION)
+                observation.ObservationEvent.execution_id == execution_id)
                 .order_by(observation.ObservationEvent.id))).all())
 
     def one(self, facts, kind):
@@ -575,6 +583,208 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
         self.assertIn(EXECUTION, self.observer.failures)
         self.one(await self.facts(), "node_error")
         await self.unchanged_authority()
+
+    async def test_valid_native_save_marks_parse_diagnostic_gap_and_preserves_actual_apply(self):
+        from sqlalchemy import select
+        from app.models import FrameStatus, PromptVersion
+        from app.orchestrator.steps import make_animation_prompts as step
+        from app.services import animation_prompt_gpt as native
+
+        module = import_module("app.services.native_animation_contracts")
+        self.api("record_animation_parse")
+        diagnostic_error = LookupError("native batch parse journal unavailable")
+        parse_spy = AsyncMock(side_effect=diagnostic_error)
+        apply_spy = AsyncMock(wraps=step.db_apply.apply_ops)
+        before = await self.state()
+        async with self.business_sessions() as business:
+            project, frames = await self.inputs(business)
+            reply, pairs, ops = self.parsed(project, frames)
+            expected = {op["frame_uuid"]: op["fields"]["промт_видео"] for op in ops}
+            expected_versions = {frame.id: expected[frame.uuid] for frame in frames}
+            batch = native.collect_batch_items(project, frames)
+            self.assertEqual(len(batch), 2)
+            with self.context(business, completed=REQUEST_A), \
+                    patch.object(module, "record_animation_parse", new=parse_spy), \
+                    patch.object(step.db_apply, "apply_ops", new=apply_spy):
+                try:
+                    delivered = await step._save_anim_pr_batch(
+                        business, project, frames, batch, reply, None, shot=1)
+                except Exception as exc:
+                    self.fail("diagnostic fault interrupted a valid original batch: "
+                              + type(exc).__name__ + ": " + str(exc))
+            self.assertEqual(delivered, 2)
+            self.assertTrue(business.is_active)
+            self.assertEqual(native.collect_batch_items(project, frames), [])
+        parse_spy.assert_awaited_once_with(
+            reply, pairs, ops, shot=1, target_uuids=[frame.uuid for frame in frames])
+        apply_spy.assert_awaited_once()
+        self.assertEqual(apply_spy.await_args.args[2], ops)
+        self.assertEqual(apply_spy.await_args.kwargs,
+                         {"export_xlsx": False, "node_kind": "anim_pr"})
+        self.assertEqual(self.observer.failures.get(EXECUTION), "LookupError")
+        after = await self.state()
+        self.assertEqual(len(after["frames"]), len(before["frames"]))
+        for previous, current in zip(before["frames"], after["frames"]):
+            if previous["project_id"] != 7:
+                self.assertEqual(current, previous)
+                continue
+            self.assertEqual(current["animation_prompt"], expected[current["uuid"]])
+            self.assertEqual(current["status"], FrameStatus.animation_prompt_ready)
+            for field in OUTPUT_FIELDS:
+                if field != "animation_prompt":
+                    self.assertEqual(current[field], previous[field], field)
+        self.assertEqual(after["project"]["status"], before["project"]["status"])
+        async with self.business_sessions() as reader:
+            versions = list((await reader.scalars(select(PromptVersion).where(
+                PromptVersion.project_id == 7, PromptVersion.kind == "video",
+                PromptVersion.is_active.is_(True)))).all())
+            self.assertEqual({version.frame_id: version.text for version in versions},
+                             expected_versions, "the original writer must create prompt versions")
+        await self.observer.consume(EXECUTION, "project", self.business_sessions)
+        facts = await self.facts()
+        self.one(facts, "apply_input")
+        self.one(facts, "data_applied")
+        await self.unchanged_authority()
+
+    async def test_malformed_native_save_preserves_original_error_when_parse_callback_faults(self):
+        from app.orchestrator.steps import make_animation_prompts as step
+        from app.services import animation_prompt_gpt as native
+
+        module = import_module("app.services.native_animation_contracts")
+        self.api("record_animation_parse")
+        reply = '{"ops": }'
+        diagnostic_error = LookupError("invalid-reply parse journal unavailable")
+        parse_spy = AsyncMock(side_effect=diagnostic_error)
+        apply_spy = AsyncMock(wraps=step.db_apply.apply_ops)
+        before = await self.state()
+        async with self.business_sessions() as business:
+            project, frames = await self.inputs(business)
+            batch = native.collect_batch_items(project, frames)
+            self.assertTrue(native.is_apply_ops_blob(reply))
+            self.assertEqual(native.parse_apply_ops_animation_reply(reply, frames), [])
+            # Obtain the original executor's error through its ordinary no-ctx path.
+            # Neither invocation sends a model request or reaches native apply.
+            with self.assertRaises(RuntimeError) as original:
+                await step._save_anim_pr_batch(
+                    business, project, frames, batch, reply, None, shot=1)
+            with self.context(business, completed=REQUEST_A), self.business_sql() as statements, \
+                    patch.object(module, "record_animation_parse", new=parse_spy), \
+                    patch.object(step.db_apply, "apply_ops", new=apply_spy):
+                with self.assertRaises(RuntimeError) as caught:
+                    await step._save_anim_pr_batch(
+                        business, project, frames, batch, reply, None, shot=1)
+            self.assertIs(type(caught.exception), type(original.exception))
+            self.assertEqual(str(caught.exception), str(original.exception))
+            self.assertIsNot(caught.exception, diagnostic_error)
+            self.assertTrue(business.is_active)
+            self.no_business_writes(statements)
+        parse_spy.assert_awaited_once_with(
+            reply, [], [], shot=1, target_uuids=[frame.uuid for frame in frames])
+        apply_spy.assert_not_awaited()
+        self.assertEqual(self.observer.failures.get(EXECUTION), "LookupError")
+        self.assertEqual(await self.state(), before)
+        self.assertFalse(any(fact.kind in {"apply_input", "data_applied"}
+                             for fact in await self.facts()))
+        await self.unchanged_authority()
+
+    async def test_sidecar_inherits_real_images_attempt_without_animation_node_facts(self):
+        from datetime import datetime
+        from sqlalchemy import select
+        from app.models import Frame, NodeRun, NodeRunStatus, Project, ProjectStatus, Workflow, WorkflowRun
+        from app.services import observation
+        from app.services.actions_v1 import ActionExecutionControl, ActionRecord, get_permission
+        from app.services.node_capabilities import capability_for
+        from app.services.node_status_machine import queue_node_for_start, start_node_running
+
+        record_input = self.api("record_animation_input")
+        record_parse = self.api("record_animation_parse")
+        observe_result = self.api("observe_animation_result")
+        image_nodes = [{"id": "image-node", "type": "images", "data": {"groupId": "images"}}]
+        # A separate initial native graph; the animation run's immutable snapshot
+        # and NodeRun remain untouched. No done states or managed grants are seeded.
+        async with self.sessions() as master:
+            image_node = NodeRun(workflow_run_id=21, node_key="image-node", node_type="images",
+                                 status=NodeRunStatus.pending)
+            image_scope = observation.ExecutionControl(
+                execution_id=IMAGE_EXECUTION, project_id=8, workflow_run_id=21,
+                node_keys=["image-node"], graph_version=observation.digest(
+                    {"nodes": image_nodes, "edges": []}), mode="observe",
+                observer_state="active", created_at=datetime.utcnow(), cursors={}, gaps=[])
+            master.add_all([
+                Project(id=8, slug="foreign-animation-fixture", topic="synthetic images",
+                        status=ProjectStatus.generating_images,
+                        meta={"canvas_graph": {"nodes": image_nodes, "edges": []}}),
+                Workflow(id=19, name="native images sidecar fixture", nodes=image_nodes, edges=[]),
+                WorkflowRun(id=21, workflow_id=19, project_id=8,
+                            nodes_snapshot=image_nodes, edges_snapshot=[]),
+                image_node, image_scope,
+            ])
+            self.assertTrue(queue_node_for_start(image_node, project_id=8, initiator="worker"))
+            self.assertTrue(start_node_running(image_node, project_id=8, initiator="worker"))
+            await master.commit()
+            run = await master.get(WorkflowRun, 21)
+            self.assertEqual(run.nodes_snapshot[0]["type"], image_node.node_type)
+            self.assertEqual(image_node.status, NodeRunStatus.running)
+        self.observer.scopes[21] = image_scope
+        async with self.business_sessions() as business:
+            project = await business.get(Project, 8)
+            project.status = ProjectStatus.generating_images
+            project.meta = {"canvas_graph": {"nodes": image_nodes, "edges": []}}
+            await business.commit()  # Initial unit fixture input, before observation.
+            frames = list((await business.scalars(select(Frame).where(
+                Frame.project_id == 8).order_by(Frame.number))).all())
+            reply, pairs, ops = self.parsed(project, frames)
+            self.assertTrue(pairs and ops)
+            before = await self.state()
+            bodies = sorted(self.observer.body_root.glob("**/*.json"))
+            async with observation.observe_attempt(business, project):
+                image_ctx = observation._attempt.get()
+                self.assertIsNotNone(image_ctx)
+                self.assertEqual((image_ctx.scope.workflow_run_id, image_ctx.scope.project_id,
+                                  image_ctx.node_key), (21, 8, "image-node"))
+
+                async def inherited_sidecar():
+                    self.assertIs(observation._attempt.get(), image_ctx)
+                    with self.business_sql() as statements:
+                        await record_input(project, frames, finalize_status=False)
+                        await record_parse(reply, pairs, ops, shot=1,
+                                           target_uuids=[frame.uuid for frame in frames])
+                        await observe_result(business, project)
+                    self.no_business_writes(statements)
+
+                await asyncio.create_task(inherited_sidecar())
+            self.assertIsNone(observation._attempt.get())
+            self.assertEqual(project.status, ProjectStatus.generating_images)
+        facts = await self.facts(IMAGE_EXECUTION)
+        self.assertTrue(any(fact.kind == "node_start" for fact in facts))
+        self.assertTrue(any(fact.kind == "node_end" for fact in facts))
+        animation_facts = [fact for fact in facts if (
+            fact.payload.get("contract") == "native_animation_prompts"
+            or fact.payload.get("node_type") == "animation_prompts"
+            or fact.payload.get("check") == "native_animation_prompt_batch"
+            or fact.kind in {"parse_result", "node_output", "node_result_verification"})]
+        self.assertEqual(animation_facts, [],
+                         "sidecar capture/result must not be attributed to an images NodeRun")
+        self.assertEqual(getattr(image_ctx, "native_node_type", None), "images")
+        self.assertFalse(hasattr(image_ctx, "animation_prompt_input"))
+        self.assertFalse(getattr(image_ctx, "animation_verification_recorded", False))
+        self.assertEqual(sorted(self.observer.body_root.glob("**/*.json")), bodies)
+        self.assertEqual(await self.state(), before)
+        self.assertFalse(capability_for("animation_prompts").managed)
+        self.assertIsNone(get_permission(7))
+        self.assertIsNone(get_permission(8))
+        async with self.sessions() as reader:
+            for execution_id in (EXECUTION, IMAGE_EXECUTION):
+                self.assertEqual((await reader.get(observation.ExecutionControl, execution_id)).mode,
+                                 "observe")
+                self.assertIsNone(await reader.get(ActionExecutionControl, execution_id))
+            self.assertEqual(list((await reader.scalars(select(ActionRecord))).all()), [])
+            nodes = list((await reader.scalars(select(NodeRun))).all())
+            self.assertEqual({(node.workflow_run_id, node.node_key): node.status for node in nodes},
+                             {(11, "n1"): NodeRunStatus.running, (11, "n2"): NodeRunStatus.pending,
+                              (21, "image-node"): NodeRunStatus.running})
+            self.assertEqual((await reader.get(WorkflowRun, 11)).nodes_snapshot, self.nodes)
+            self.assertEqual((await reader.get(WorkflowRun, 21)).nodes_snapshot, image_nodes)
 
 
 if __name__ == "__main__":
