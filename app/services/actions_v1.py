@@ -142,10 +142,10 @@ async def managed_project_enabled(project_id: int) -> bool:
 
 
 async def worker_entry_admission(project_id: int) -> StartDecision:
-    """Stop a new native tick before any business session/attempt when held.
+    """Stop a new native tick before business work when held or permission is cold.
 
     Existing active work is not cancelled here. Read durable control on every
-    new job: an empty volatile cache after restart must not erase a hold.
+    new job and require a matching loaded permission for managed execution.
     Stopping observation alone does not change this execution permission.
     """
     from app.services.observation import _observer
@@ -160,7 +160,16 @@ async def worker_entry_admission(project_id: int) -> StartDecision:
     if not controls:
         return StartDecision(not (cached and cached.enabled),'ordinary_mode' if not cached else 'permission_not_confirmed')
     if len(controls)!=1:return StartDecision(False,'ambiguous_managed_execution')
-    return StartDecision(not controls[0].held,'execution_held' if controls[0].held else 'execution_enabled')
+    control=controls[0]
+    if control.held:return StartDecision(False,'execution_held')
+    if cached is None or not cached.enabled:
+        return StartDecision(False,'managed_permission_unavailable')
+    if (cached.project_id!=control.project_id or cached.execution_id!=control.execution_id
+            or cached.group_id!=control.group_id or cached.graph_version!=control.graph_version
+            or set(cached.node_keys)!=set(control.node_keys or ())):
+        return StartDecision(False,'permission_not_confirmed')
+    if cached.held:return StartDecision(False,'execution_held')
+    return StartDecision(True,'execution_enabled')
 
 
 def update_permission(project_id: int, *, held: bool | None = None,
