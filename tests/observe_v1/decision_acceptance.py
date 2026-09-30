@@ -7,8 +7,8 @@ import re
 from sqlalchemy import select
 
 
-def handler_for(fixtures,root,mode):
-    class Handler(fixtures.FixtureHandler):
+def handler_for(fixtures,root,mode,*,base_handler=None):
+    class Handler(base_handler or fixtures.FixtureHandler):
         requests=[]
         def do_POST(self):
             if self.headers.get('x-diagnostic-node')!='__decision__':return super().do_POST()

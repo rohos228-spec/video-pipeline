@@ -13,6 +13,35 @@ from PIL import Image
 
 
 def prepare(fixtures, root, mode):
+    if mode=='media-decision-recovery':
+        # Read a copy of the accepted genuine QC exhaustion checkpoint. Keep
+        # every original attempt, frame, graph and allowance intact.
+        with sqlite3.connect(fixtures.DATA/'state.db') as db:
+            execution,keys,used,limit=db.execute('SELECT execution_id,node_keys,requests_used,request_limit FROM action_execution_controls').fetchone()
+            assert used==22 and limit==32
+            assert not db.execute('SELECT 1 FROM action_node_recoveries').fetchone()
+        with sqlite3.connect(fixtures.DB) as db:
+            frame_count=db.execute('SELECT count(*) FROM frames WHERE project_id=2').fetchone()[0]
+            qc=db.execute('SELECT status,attempts FROM node_runs WHERE node_key=?',(fixtures.NODES[4],)).fetchone()
+            assert qc==('failed',9)
+        cfg={'version':1,'mode':'synthetic','online_enabled':True,
+             'endpoint':'http://127.0.0.1:18766/codex/v1/responses',
+             'decision':{'catalog_id':'gpt-kie','model_id':'gpt-5-6-sol','reasoning_effort':'low','max_output_tokens':1024,'timeout_s':30},
+             'profiles':{},'allowed_actions':['read_events','read_contract','retry_same','wait','human_review','finish'],
+             'media':{'enabled':True,'provider':'kie','origin':'http://127.0.0.1:18766',
+                 'download_origins':['http://127.0.0.1:18766'],'model_ids':['z-image'],
+                 'max_bytes':1048576,'timeout_s':30,'poll_interval_s':0.1,'max_polls':4}}
+        path=root/'synthetic-media-runtime.json';path.write_text(json.dumps(cfg,indent=2))
+        os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
+        os.environ['KIE_API_BASE_URL']='http://127.0.0.1:18766'
+        evidence={'scenario':mode,'scope':json.loads(keys),'outside':'n_videos','frame_count':frame_count,
+            'execution_id':execution,'historical_requests_used':used,'historical_request_limit':limit,
+            'config_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+            'operator_interventions':['copy immutable genuine QC native exhaustion checkpoint',
+                'enable bounded loopback Decision for the existing execution; no Actions/worker start',
+                'new run_id and separate test DB instance; source execution UUID retained as lineage']}
+        (root/'media-prepared.json').write_text(json.dumps(evidence,indent=2))
+        return evidence
     mixed_input = mode in {"media-mixed", "media-recovery"}
     selected = list(fixtures.NODES) if mode == "media-mixed" else (
         list(fixtures.NODES[:-1]) if mode == "media-recovery" else [])
@@ -150,11 +179,17 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
             'request_limit':32,'rationale':'one synthetic unified image launch; original executor and verifier',
             'idempotency_key':'unified-launch-images-01'})
         result['managed_launch']=scope
+    elif prepared['scenario']=='media-decision-recovery':scope={'execution_id':prepared['execution_id']}
     else:scope = await post("/observations", {"node_keys":selected})
     execution = scope["execution_id"]
     result["execution_id"] = execution
     prefix = "/observations/"+execution
-    if not unified_launch:
+    checkpoint_decision=prepared['scenario']=='media-decision-recovery'
+    if checkpoint_decision:
+        result['operator_starts']=0
+        result['interventions']=prepared['operator_interventions']
+        await post(prefix+'/decisions/control',{'enabled':True,'rationale':'bounded synthetic Decision on immutable QC exhaustion copy'})
+    if not unified_launch and not checkpoint_decision:
         await post(prefix+"/pin", {})
         await post(prefix+"/actions/enable", {"group_id":"media-test", "node_keys":selected,
             "rationale":"synthetic existing worker media acceptance", "request_limit":32})
@@ -168,7 +203,7 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
             Image.frombytes("RGB", (256, 384), rng.randbytes(256*384*3)).save(
                 scenes / f"frame_{number:03d}_deadbeef.png", "PNG")
     first_type = "images" if selected[0]=="n_images" else "excel_gpt"
-    if not unified_launch:
+    if not unified_launch and not checkpoint_decision:
         result["managed_start"] = await post(prefix+"/actions/start", {"node_key":selected[0],
             "step_code":first_type,"rationale":"one start; following nodes belong to original planner",
             "idempotency_key":"synthetic-media-start-01"})
@@ -183,7 +218,7 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
         nodes = {n["node_key"]:n for n in state["node_runs"]}
         with sqlite3.connect(fixtures.DB) as db:
             meta=json.loads(db.execute("SELECT meta FROM projects WHERE id=2").fetchone()[0] or "{}")
-        if prepared["scenario"] == "media-recovery":
+        if prepared["scenario"] in {"media-recovery",'media-decision-recovery'}:
             with sqlite3.connect(fixtures.DATA / "state.db") as db:
                 row = db.execute("SELECT status FROM action_node_recoveries WHERE execution_id=?", (execution,)).fetchone()
             if row and row[0] == "human_review":
@@ -207,7 +242,7 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
         if not page["has_more"]:break
         after=page["next_cursor"]
     (root/"api-history.json").write_text(json.dumps({"events":history},ensure_ascii=False,indent=2))
-    if prepared["scenario"] == "media-recovery":
+    if prepared["scenario"] in {"media-recovery",'media-decision-recovery'}:
         actions = await client.get(base+prefix+"/actions")
         actions.raise_for_status()
         result["actions"] = actions.json()
@@ -240,7 +275,17 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
     assert any(e["kind"]=="artifact_saved" for e in history)
     assert any(e["kind"]=="media_node_verified" and e["node_key"]=="n_images" for e in history)
     assert any(e["kind"]=="node_start" and e["node_key"]=="n_images" for e in history)
-    if prepared["scenario"] == "media-recovery":
+    if prepared["scenario"] in {"media-recovery",'media-decision-recovery'}:
+        if checkpoint_decision:
+            deadline=time.monotonic()+30
+            while time.monotonic()<deadline:
+                decisions=(await client.get(base+prefix+'/decisions')).json()
+                if decisions['records'] and decisions['records'][0]['status'] in {'done','human_review'}:break
+                await asyncio.sleep(.25)
+            assert len(decisions['records'])==1 and decisions['records'][0]['status']=='done',decisions
+            assert decisions['records'][0]['model_steps']==2,'verified recovery needs no third model summary POST'
+            result.update(decisions=decisions,brain_posts=handler.counts['__decision__'],
+                source_requests=prepared['historical_requests_used'],worker_posts=handler.counts[fixtures.NODES[4]])
         verify_recovery(fixtures, result, history)
     if prepared["scenario"] == "media-mixed":
         report = Path(fixtures.snapshot()["report_path"])
@@ -325,9 +370,16 @@ def verify_recovery(fixtures, result, history):
     recovery=actions["recoveries"][0]
     assert recovery["status"]=="verified" and not actions["held"], recovery
     assert recovery["result"]["runtime_config_hash"]==digest(runtime_config())
-    assert fixtures.FixtureHandler.counts[fixtures.NODES[4]]==19
-    assert sum(fixtures.FixtureHandler.counts.values())==23
-    assert actions["requests_used"]==23+sum(result["media_counts"].values())==26
+    copied_decision=result.get('mode')=='media-decision-recovery'
+    if copied_decision:
+        assert fixtures.FixtureHandler.counts[fixtures.NODES[4]]==1
+        assert fixtures.FixtureHandler.counts['__decision__']==2
+        assert sum(fixtures.FixtureHandler.counts.values())==3
+        assert actions['requests_used']==result['source_requests']+3+sum(result['media_counts'].values())==28
+    else:
+        assert fixtures.FixtureHandler.counts[fixtures.NODES[4]]==19
+        assert sum(fixtures.FixtureHandler.counts.values())==23
+        assert actions["requests_used"]==23+sum(result["media_counts"].values())==26
     events=[e for e in history if e["attempt_id"]==recovery["new_attempt_id"]]
     assert sum(e["kind"]=="node_start" for e in events)==1
     assert sum(e["kind"]=="data_applied" for e in events)==1
@@ -343,4 +395,5 @@ def verify_recovery(fixtures, result, history):
         "native_model_posts":18,"recovery_model_posts":1,"preceding_text_posts":4,
         "verification_event":verify["id"],"successor_event":successors[0]["id"],
         "image_start_event":starts[0]["id"],"runtime_config_hash":recovery["result"]["runtime_config_hash"],
-        "process_restart_tested":False,"operator_recovery_api_requests":2,"distinct_recovery_actions":1}
+        "process_restart_tested":False,"operator_recovery_api_requests":0 if copied_decision else 2,
+        'decision_model_posts':2 if copied_decision else 0,"distinct_recovery_actions":1}

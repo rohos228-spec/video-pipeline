@@ -246,7 +246,7 @@ if ($Target -eq 'decision-gateway-faults') {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot stage historical ledger copy' }
 }
 if ($Target -eq 'group') {
-    if ($GroupMode.StartsWith('deny-') -or $GroupMode.StartsWith('decision-') -or $GroupMode.StartsWith('profiles-')) {
+    if ($GroupMode.StartsWith('deny-') -or $GroupMode.StartsWith('decision-') -or $GroupMode.StartsWith('profiles-') -or $GroupMode -eq 'media-decision-recovery') {
         if (-not $DenialSeed) { throw 'Explicit immutable synthetic -DenialSeed required for checkpoint scenarios' }
         if (-not (Test-Path -LiteralPath $DenialSeed)) { throw 'Existing exhausted synthetic checkpoint required' }
         if (Get-ChildItem -LiteralPath $DenialSeed -Recurse -Force -File | Where-Object { $_.Name -match '^\.env($|\.)|\.(key|pem)$' }) { throw 'Unexpected secret file in synthetic checkpoint' }

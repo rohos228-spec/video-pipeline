@@ -34,7 +34,7 @@ finish_coverage = begin(SOURCE)
 async def run():
     mode = os.environ.get("OBSERVE_GROUP_MODE", "observe")
     denial_mode = mode.startswith('deny-')
-    decision_mode = mode.startswith('decision-') or mode.startswith('profiles-')
+    decision_mode = mode.startswith('decision-') or mode.startswith('profiles-') or mode=='media-decision-recovery'
     live_decision = mode=='live-decision'
     shutil.copytree('/observe-denial-seed' if denial_mode or decision_mode else '/srv/seed', DATA)
     browser_mode = os.environ.get("OBSERVE_BROWSER", "").lower() == "true"
@@ -89,7 +89,7 @@ async def run():
     unified_launch = mode in {'launch-text','launch-images'}
     if mode=='launch-text':
         (ROOT/'launch-prepared.json').write_text(json.dumps(fixtures.prepare_launch_graph(),indent=2))
-    media_mode = mode in {"media-image", "media-mixed", "media-unverified", "media-recovery", 'launch-images'}
+    media_mode = mode in {"media-image", "media-mixed", "media-unverified", "media-recovery", 'launch-images','media-decision-recovery'}
     if media_mode:
         from media_acceptance import prepare
         media_prepared = prepare(fixtures, ROOT, mode)
@@ -127,7 +127,7 @@ async def run():
         handler = media_handler(fixtures, ROOT)
     if decision_mode or live_decision:
         from decision_acceptance import handler_for
-        handler=handler_for(fixtures,ROOT,mode)
+        handler=handler_for(fixtures,ROOT,mode,base_handler=handler)
         if mode in {'decision-bad','profiles-bad','decision-runtime-bad'} or live_decision:
             fixtures.MODE='malformed'
             original_answer=fixtures.synthetic_answer
