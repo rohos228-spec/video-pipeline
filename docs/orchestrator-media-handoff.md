@@ -181,3 +181,13 @@ Managed original disk recovery uses the same verified-job transactional apply,
 preserves provenance and deduplicates it. Unproven/conflicting local files fail.
 Next: real worker refusal of an unproven pre-existing file (legacy caller catches
 recovery errors), then current mixed run and pending gate/UI regression.
+
+Final-gate RED: `final-gate-red-01` runs 13 HTTP cases; the new test proves
+original finalize_or_retry accepts an altered applied PNG (12 other cases pass).
+Worker RED: `worker-proof-red-01` proves caught recovery error still reaches done.
+Its startup also imported the files before management was enabled; retained as
+evidence. `worker-proof-red-02` injects files only after managed enable, before
+start, and again proves the same false done with no provider POST. This isolates
+the managed-worker boundary; assertion on zero newly applied artifacts remains.
+Next fix: propagate MediaPolicyError into a durable hold and check job/artifact
+provenance again at the original final validation, before status becomes ready.

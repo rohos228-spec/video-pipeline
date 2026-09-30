@@ -54,11 +54,14 @@ def prepare(fixtures, root, mode):
     path.write_text(json.dumps(cfg, indent=2))
     os.environ["ORCHESTRATOR_RUNTIME_CONFIG"] = str(path)
     os.environ["KIE_API_BASE_URL"] = "http://127.0.0.1:18766"
-    evidence = {"scope":selected,"outside":"n_videos","frame_count":frame_count,
+    evidence = {"scope":selected,"outside":"n_videos","frame_count":frame_count,"scenario":mode,
                 "operator_interventions":["fresh synthetic copy; existing registry nodes wired into small test graph",
                     "initial image prompts supplied explicitly; script output is not an image prompt quality test",
                     "explicit loopback-only z-image profile; one image stream"],
                 "config_sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
+    if mode == "media-unverified":
+        evidence["operator_interventions"].append(
+            "inject synthetic disk files after managed enable, before worker start; no job/artifact proof or status changes")
     (root / "media-prepared.json").write_text(json.dumps(evidence, indent=2))
     return evidence
 
@@ -119,6 +122,15 @@ async def run(client, fixtures, observer, root, result, prepared, handler):
     await post(prefix+"/pin", {})
     await post(prefix+"/actions/enable", {"group_id":"media-test", "node_keys":selected,
         "rationale":"synthetic existing worker media acceptance", "request_limit":32})
+    if prepared["scenario"] == "media-unverified":
+        # After managed enable: unmanaged startup maintenance must not create
+        # baseline artifacts before this managed-worker denial test begins.
+        scenes = fixtures.DB.parent / "scenes"
+        scenes.mkdir(parents=True, exist_ok=True)
+        rng = random.Random(47)
+        for number in range(1, prepared["frame_count"] + 1):
+            Image.frombytes("RGB", (256, 384), rng.randbytes(256*384*3)).save(
+                scenes / f"frame_{number:03d}_deadbeef.png", "PNG")
     first_type = "images" if selected[0]=="n_images" else "excel_gpt"
     result["managed_start"] = await post(prefix+"/actions/start", {"node_key":selected[0],
         "step_code":first_type,"rationale":"one start; following nodes belong to original planner",
@@ -154,6 +166,20 @@ async def run(client, fixtures, observer, root, result, prepared, handler):
         artifacts = db.execute("SELECT uuid,path,meta FROM artifacts WHERE project_id=2 AND kind='scene_image'").fetchall()
     result["artifacts"] = [{"uuid":u,"bytes":Path(p).stat().st_size,
         "sha256":hashlib.sha256(Path(p).read_bytes()).hexdigest(),"meta":json.loads(m)} for u,p,m in artifacts]
+    if prepared["scenario"] == "media-unverified":
+        assert nodes["n_images"]["status"] != "done", "unproven disk files must not complete managed node"
+        assert nodes["n_videos"]["status"] == "pending"
+        assert not artifacts, "unproven files cannot become business artifacts"
+        assert not handler.media_counts, "no media HTTP operation authorized by disk recovery"
+        with sqlite3.connect(fixtures.DATA / "state.db") as db:
+            held = db.execute("SELECT held FROM action_execution_controls WHERE execution_id=?", (execution,)).fetchone()[0]
+            assert held, "missing proof must hold execution, not enter native repeat loop"
+            assert db.execute("SELECT status FROM projects WHERE id=1").fetchone()[0] == "new"
+        assert any(e["kind"] == "media_policy_denied" for e in history)
+        await asyncio.sleep(12)
+        assert not handler.media_counts
+        result.update(accepted=True, protective_stop=True, semantic_quality_verified=False)
+        return
     assert all(nodes[key]["status"]=="done" for key in selected), {k:v["status"] for k,v in nodes.items()}
     assert nodes["n_videos"]["status"]=="pending"
     assert len(artifacts)==prepared["frame_count"]

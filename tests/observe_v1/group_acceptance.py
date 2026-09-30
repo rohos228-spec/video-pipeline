@@ -86,7 +86,7 @@ async def run():
         path=ROOT/'synthetic-production-adapter.json';path.write_text(json.dumps(config,indent=2))
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
     recovery_mode = mode in {"recovery-a", "recovery-b"}
-    media_mode = mode in {"media-image", "media-mixed"}
+    media_mode = mode in {"media-image", "media-mixed", "media-unverified"}
     if media_mode:
         from media_acceptance import prepare
         media_prepared = prepare(fixtures, ROOT, mode)

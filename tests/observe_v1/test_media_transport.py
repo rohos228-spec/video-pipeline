@@ -291,6 +291,34 @@ class MediaHTTP(MediaJobs):
             await s.rollback()
             self.assertEqual(len((await s.scalars(select(Artifact))).all()), 1)
 
+    async def test_http_final_gate_rechecks_applied_image_before_ready(self):
+        import random
+        from app.models import Artifact, ArtifactKind, Frame, ProjectStatus
+        from app.services.media_jobs import persist_artifact
+        from app.services.post_step_validate import finalize_or_retry
+        self.output = self.project.data_dir / "scenes" / "frame_001_12345678.png"
+        stream = io.BytesIO()
+        Image.frombytes("RGB", (256, 384), random.Random(48).randbytes(256*384*3)).save(stream, "PNG")
+        self.image = stream.getvalue()
+        result = await self.generate()
+        async with self.sessions() as s:
+            frame = Frame(project_id=7, number=1, voiceover_text="synthetic",
+                          image_prompt="synthetic", uuid="final-gate-frame")
+            s.add(frame)
+            await s.flush()
+            await persist_artifact(s, Artifact(project_id=7, frame_id=frame.id,
+                kind=ArtifactKind.scene_image, uuid="final-gate", path=str(result.file_path), meta={}))
+            await s.commit()
+            self.assertTrue(await finalize_or_retry(s, self.project, step="images",
+                ready_status=ProjectStatus.images_ready, running_status=ProjectStatus.generating_images))
+            with Image.open(result.file_path) as picture:
+                picture.putpixel((0, 0), (0, 0, 0))
+                picture.save(result.file_path, "PNG")
+            with self.assertRaisesRegex(RuntimeError, "verification"):
+                await finalize_or_retry(s, self.project, step="images",
+                    ready_status=ProjectStatus.images_ready, running_status=ProjectStatus.generating_images)
+        self.assertEqual(self.posts, 1)
+
 if __name__ == "__main__":
     # Inherited state tests are run separately, once.
     suite = unittest.TestSuite(MediaHTTP(name) for name in unittest.defaultTestLoader.getTestCaseNames(MediaHTTP)
