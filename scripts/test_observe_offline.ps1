@@ -83,7 +83,8 @@ if ($Target -eq 'group') { $files += @('tests/observe_v1/group_runner.py','tests
 if ($Target -eq 'group') {
     $nativeModule=@{'native-animation'='native_animation_acceptance';'native-animation-corrupt'='native_animation_acceptance';
         'native-entity-observe'='native_entity_acceptance';'native-scene-camera'='native_scene_acceptance';
-        'launch-assembly'='native_assembly_acceptance';'native-sfx'='native_sfx_acceptance'}[$GroupMode]
+        'launch-assembly'='native_assembly_acceptance';'native-sfx'='native_sfx_acceptance';
+        'native-video'='native_video_acceptance'}[$GroupMode]
     if ($nativeModule) { $files += 'tests/observe_v1/' + $nativeModule + '.py' }
 }
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
@@ -94,6 +95,7 @@ foreach ($testTarget in @('native-checkpoint','runtime-projection','native-entit
     $targetFile=@{'native-checkpoint'='test_image_prompt_checkpoint.py';'runtime-projection'='test_runtime_projection.py';'native-entities'='test_native_entity_contract.py';'scene-contracts'='test_scene_contracts.py';'managed-restart'='test_managed_restart_safety.py';'native-sfx-plan'='test_native_sfx_plan_checkpoint.py';'native-animation'='test_native_animation_contract.py'}[$testTarget]
     if ($Target -eq $testTarget) { $files += 'tests/observe_v1/' + $targetFile }
 }
+if ($Target -eq 'hitl-authority') { $files += 'tests/observe_v1/test_hitl_project_authority.py' }
 if ($Target -eq 'managed-restart') { $files += 'tests/observe_v1/test_media_jobs.py' }
 if ($Target -eq 'media-jobs') { $files += 'tests/observe_v1/test_media_jobs.py' }
 if ($Target -eq 'media-observation') { $files += @('tests/observe_v1/test_media_jobs.py','tests/observe_v1/test_media_observation.py') }

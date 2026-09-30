@@ -89,7 +89,7 @@ async def run():
     native_module_name={'native-animation':'native_animation_acceptance',
         'native-animation-corrupt':'native_animation_acceptance','native-entity-observe':'native_entity_acceptance',
         'native-scene-camera':'native_scene_acceptance','launch-assembly':'native_assembly_acceptance',
-        'native-sfx':'native_sfx_acceptance'}.get(mode)
+        'native-sfx':'native_sfx_acceptance','native-video':'native_video_acceptance'}.get(mode)
     native_family_mode=native_module_name is not None
     if native_family_mode:
         import importlib
@@ -161,6 +161,12 @@ async def run():
             if media_mode and request.url.path == "/api/v1/jobs/createTask":
                 assert ctx and ctx.node_key == "n_images", "media call outside observed image worker"
                 return await original_send(client, request, **kwargs)
+            if native_family_mode and request.url.path!='/codex/v1/responses':
+                # Original media clients may submit multipart uploads or jobs.
+                # Keep their HTTP body untouched; do not label them model POST.
+                assert ctx and ctx.node_key in fixtures.NODES[:-1], 'native media outside scoped worker'
+                request.headers['x-diagnostic-node']=ctx.node_key
+                return await original_send(client,request,**kwargs)
             from app.services.decision_transport import current
             if current.get() is not None:
                 assert decision_mode or live_decision,'unexpected decision HTTP'
