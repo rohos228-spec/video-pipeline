@@ -225,6 +225,7 @@ async def run_split(client,fixtures,observer,root,result,prepared,*,prefix):
     with sqlite3.connect(fixtures.DB) as db:
         final_states=dict(db.execute('SELECT node_key,status FROM node_runs').fetchall())
     assert final_states[prepared['outside']]=='pending'
+    if bad:assert final_states[key]!='done','failed verification must not become successful business completion'
     result['split_state']['nodes']=final_states
     result.update(accepted=True,one_user_launch=True,actions=actions,verification=proof[0]['payload'],
         diagnoses=diagnoses,voiceover_preserved=preserved,business_apply_count=1,
