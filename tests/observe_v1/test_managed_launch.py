@@ -143,5 +143,42 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
         conflict=await self.client.post(self.url,json={**self.payload,'request_limit':13})
         self.assertEqual(conflict.status_code,409,conflict.text)
 
+    async def test_launch_options_publish_revision_and_supported_nodes_without_enabling(self):
+        response=await self.client.get('/api/projects/7/observations/launch-options')
+        self.assertEqual(response.status_code,200,response.text)
+        data=response.json()
+        self.assertEqual(data['workflow_run_id'],11)
+        self.assertEqual(data['graph_version'],self.graph)
+        self.assertEqual({n['node_key'] for n in data['nodes'] if n['supported']},{'draft-A','report-Z'})
+        self.assertEqual(data['request_limit_max'],100)
+        self.assertEqual(data['online_authorized'],False)
+        async with self.sessions() as s:self.assertIsNone(await s.scalar(select(ActionExecutionControl)))
+
+    async def test_interrupted_launch_is_held_on_reload_and_manual_resume_cannot_bypass(self):
+        from app.services.managed_launch import prepare,ManagedLaunch
+        async with self.sessions() as s:
+            row,_=await prepare(observation.get_observer(),s,project_id=7,request=self.payload,initiator='test')
+        clear_permission(7)
+        await observation.get_observer().reload()
+        self.assertTrue(get_permission(7).held)
+        async with self.sessions() as s:
+            self.assertEqual((await s.get(ManagedLaunch,row.launch_id)).status,'held')
+            self.assertFalse((await s.get(DecisionControl,row.execution_id)).enabled)
+        response=await self.client.post('/api/projects/7/observations/'+row.execution_id+'/actions/control',
+            json={'held':False,'rationale':'attempt unsafe resume','idempotency_key':'unsafe-resume-key'})
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertTrue(get_permission(7).held)
+
+    async def test_owner_policy_failure_creates_no_partial_permission(self):
+        with patch('app.services.decision_config.check_route',side_effect=ValueError('owner policy disabled')):
+            response=await self.client.post(self.url,json=self.payload)
+        self.assertEqual(response.status_code,409,response.text)
+        async with self.sessions() as s:
+            self.assertIsNone(await s.scalar(select(observation.ExecutionControl)))
+            self.assertIsNone(await s.scalar(select(ActionExecutionControl)))
+            self.assertIsNone(await s.scalar(select(DecisionControl)))
+            self.assertIsNone(await s.scalar(select(DecisionRuntimeBinding)))
+        self.assertIsNone(get_permission(7))
+
 
 if __name__=='__main__':unittest.main(verbosity=2)

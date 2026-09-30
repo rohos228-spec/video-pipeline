@@ -12,7 +12,9 @@ param(
     [ValidateSet('','accepted')][string]$AckFailureStage = '',
     [string]$StreamCase = 'fast',
     [switch]$StreamRed,
-    [switch]$Browser
+    [switch]$Browser,
+    [switch]$PrepareOnly,
+    [switch]$ResumePrepared
 )
 $ErrorActionPreference = 'Stop'
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -21,6 +23,43 @@ if (-not $ResultsRoot) {
     $ResultsRoot = Join-Path $sourceRoot ('../../outputs/observe-v1/' + (Get-Date -Format 'yyyyMMddTHHmmss'))
 }
 $resultsPath = [IO.Path]::GetFullPath($ResultsRoot)
+function Complete-PreparedTest([string]$containerName,[string]$root,[string]$sourceCommit) {
+    $docker='C:\Program Files\Docker\Docker\resources\bin\docker.exe'
+    $connection=@('--config',(Join-Path $root 'empty-docker-config'),'--host','npipe:////./pipe/dockerDesktopLinuxEngine')
+    $artifacts=Join-Path $root 'artifacts'
+    $waitOutput=& $docker @connection wait $containerName
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot wait for offline test container' }
+    $testExit=[int]($waitOutput | Select-Object -Last 1)
+    & $docker @connection logs $containerName *> (Join-Path $artifacts 'test-output.txt')
+    & $docker @connection cp "${containerName}:/results/." $artifacts
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot collect offline test artifacts' }
+    @{container=$containerName;image=$Image;network='none';test_exit_code=$testExit;
+      source_commit=$sourceCommit;source_root=$sourceRoot;scope='synthetic unittest databases only';paid_calls=0} |
+      ConvertTo-Json | Set-Content (Join-Path $artifacts 'run-config.json') -Encoding utf8
+    Write-Output "Test exit: $testExit; artifacts: $artifacts; container preserved: $containerName"
+    exit $testExit
+}
+if ($ResumePrepared) {
+    if ($PrepareOnly -or $Browser -or $LauncherCase) { throw 'ResumePrepared cannot combine with another launch mode' }
+    $prepared=Get-Content -LiteralPath (Join-Path $resultsPath 'prepared-test.json') -Raw | ConvertFrom-Json
+    if ($prepared.container -notmatch '^vp-observe-test-[0-9]{14}-[a-f0-9]{8}$') { throw 'Invalid prepared test identity' }
+    $manifestHash=(Get-FileHash -LiteralPath (Join-Path $resultsPath 'source/source-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($manifestHash -ne $prepared.manifest_sha256) { throw 'Prepared source manifest changed' }
+    $docker='C:\Program Files\Docker\Docker\resources\bin\docker.exe'
+    $connection=@('--config',(Join-Path $resultsPath 'empty-docker-config'),'--host','npipe:////./pipe/dockerDesktopLinuxEngine')
+    $inspection=& $docker @connection inspect $prepared.container --format '{{json .State}}|{{.HostConfig.NetworkMode}}|{{.Id}}'
+    if ($LASTEXITCODE -ne 0) { throw 'Prepared container unavailable' }
+    $parts=$inspection -split '\|'
+    if ($parts[1] -ne 'none' -or $parts[2] -ne $prepared.container_id) { throw 'Prepared isolation/identity mismatch' }
+    $state=$parts[0] | ConvertFrom-Json
+    if ($state.Status -eq 'created') {
+        & $docker @connection start $prepared.container
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot start prepared offline container' }
+    } elseif ($state.Status -notin @('running','exited')) { throw 'Unexpected prepared test state' }
+    # Running/exited tests are only collected, never restarted by a resume.
+    $Image=$prepared.image
+    Complete-PreparedTest $prepared.container $resultsPath $prepared.source_commit
+}
 if (Test-Path -LiteralPath $resultsPath) { throw 'Use a fresh results directory; existing evidence is preserved.' }
 $stagePath = Join-Path $resultsPath 'source'
 $configPath = Join-Path $resultsPath 'empty-docker-config'
@@ -220,6 +259,15 @@ if ($Target -eq 'group') {
     }
     # Prepared HTTP answers are versioned in tests/observe_v1/group_runner.py.
 }
+if ($PrepareOnly) {
+    if ($Browser -or $LauncherCase) { throw 'PrepareOnly is for sequential offline tests' }
+    @{container=$name;container_id=($containerId | Select-Object -Last 1);image=$Image;network='none';target=$Target;
+      source_commit=(& git -c $gitSafety -C $sourceRoot rev-parse HEAD);
+      manifest_sha256=(Get-FileHash -LiteralPath (Join-Path $stagePath 'source-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant()} |
+      ConvertTo-Json | Set-Content (Join-Path $resultsPath 'prepared-test.json') -Encoding utf8
+    Write-Output "Prepared only: $name; resume with the same ResultsRoot and -ResumePrepared"
+    exit 0
+}
 if ($Browser) {
     & $docker @connectionArgs start $name | Out-Null
     @{container=$name;network='none';browser_port=18767;source_commit=(& git -c $gitSafety -C $sourceRoot rev-parse HEAD)} | ConvertTo-Json | Set-Content (Join-Path $artifactPath 'browser-config.json')
@@ -259,22 +307,6 @@ if ($LauncherCase) {
     if (-not $passed) { exit 1 }
     exit 0
 }
-& $docker @connectionArgs start $name | Out-Null
+& $docker @connectionArgs start $name
 if ($LASTEXITCODE -ne 0) { throw 'Cannot start offline test container' }
-$waitOutput = & $docker @connectionArgs wait $name
-if ($LASTEXITCODE -ne 0) { throw 'Cannot wait for offline test container' }
-$testExit = [int]($waitOutput | Select-Object -Last 1)
-$savedErrorActionPreference = $ErrorActionPreference
-$ErrorActionPreference = 'Continue' # Windows PowerShell reports native stderr as non-terminating errors.
-$output = & $docker @connectionArgs logs $name 2>&1
-$ErrorActionPreference = $savedErrorActionPreference
-& $docker @connectionArgs cp "${name}:/results/." $artifactPath
-if ($LASTEXITCODE -ne 0) { throw 'Cannot collect offline test artifacts' }
-[IO.File]::WriteAllText((Join-Path $artifactPath 'test-output.txt'), ($output | Out-String), $utf8)
-[IO.File]::WriteAllText((Join-Path $artifactPath 'run-config.json'), (@{
-    container = $name; image = $Image; network = 'none'; test_exit_code = $testExit;
-    source_commit = (& git -c $gitSafety -C $sourceRoot rev-parse HEAD); source_root = $sourceRoot;
-    scope = 'synthetic unittest databases only'; paid_calls = 0;
-} | ConvertTo-Json), $utf8)
-Write-Output "Test exit: $testExit; artifacts: $artifactPath; container preserved: $name"
-exit $testExit
+Complete-PreparedTest $name $resultsPath (& git -c $gitSafety -C $sourceRoot rev-parse HEAD)
