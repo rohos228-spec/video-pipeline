@@ -7,7 +7,9 @@ import {observations,type ManagedLaunchOptions,type ManagedLaunchRequest,type Ma
   type ObservationContext,type ActionState,type Diagnosis} from '@/lib/observations';
 
 const strategyLabels:Record<string,string>={wait:'Ожидать штатное восстановление',human_review:'Обращаться к человеку',
-  retry_same:'Один повтор после исчерпания штатных попыток'};
+  retry_same:'Один повтор после исчерпания штатных попыток',retry_profile:'Выбирать разрешённый профиль восстановления'};
+const promptLabels:Record<string,string>={'original-contract-v1':'Исходный контракт',
+  'repair-json-only-v1':'Исправить только формат JSON','require-apply-ops-v1':'Обязательные операции записи'};
 
 export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExecution}:{projectId:number;
   context:ObservationContext|null;actions:ActionState|null;diagnosis:Diagnosis|null;
@@ -15,6 +17,7 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
   const [options,setOptions]=useState<ManagedLaunchOptions|null>(null);
   const [nodes,setNodes]=useState<string[]>([]);
   const [strategies,setStrategies]=useState<string[]>([]);
+  const [profiles,setProfiles]=useState<string[]>([]);
   const [limit,setLimit]=useState(12);
   const [launch,setLaunch]=useState<ManagedLaunch|null>(null);
   const [pending,setPending]=useState<ManagedLaunchRequest|null>(null);
@@ -27,11 +30,11 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
 
   useEffect(()=>{
     const epoch=++generation.current;
-    setOptions(null);setLaunch(null);setNodes([]);setStrategies([]);setPending(null);setMessage('');setBusy(false);setStorageReady(false);
+    setOptions(null);setLaunch(null);setNodes([]);setStrategies([]);setProfiles([]);setPending(null);setMessage('');setBusy(false);setStorageReady(false);
     let cancelled=false;
     void observations.launchOptions(projectId).then(value=>{
       if(cancelled || generation.current!==epoch) return;
-      setOptions(value);setLimit(value.request_limit_default);setStrategies(value.strategies);
+      setOptions(value);setLimit(value.request_limit_default);setStrategies(value.strategies.filter(s=>s!=='retry_profile'));
       // Default to a single existing group; disconnected graphs require explicit selection.
       const eligible=value.nodes.filter(node=>node.supported && node.status==='pending');
       const firstGroup=eligible.find(node=>node.group_id)?.group_id;
@@ -67,11 +70,13 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
 
   async function start() {
     if(!options || busy || launch || pending || !storageReady) return;
-    const error=managedLaunchError(options,{node_keys:nodes,strategies,request_limit:limit});
+    const error=managedLaunchError(options,{node_keys:nodes,strategies,request_limit:limit,
+      profile_ids:profiles,profile_catalog_hash:strategies.includes('retry_profile') ? options.profile_catalog_hash : undefined});
     if(error) {setMessage(error);return;}
     const epoch=generation.current;
     const request:ManagedLaunchRequest={workflow_run_id:options.workflow_run_id,graph_version:options.graph_version,
       node_keys:[...nodes],strategies:[...strategies],request_limit:limit,
+      profile_ids:[...profiles],profile_catalog_hash:strategies.includes('retry_profile') ? options.profile_catalog_hash : undefined,
       rationale:'Пользователь разрешил выбранную область, стратегии и общий лимит через единый запуск.',
       idempotency_key:crypto.randomUUID()};
     try {localStorage.setItem(storageKey,JSON.stringify(request));}
@@ -94,7 +99,8 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
   const states=current?.project?.nodes ?? current?.master.nodes ?? {};
   const selected=launch?.policy.node_keys ?? nodes;
   const done=selected.filter(key=>states[key]?.status==='done').length;
-  const failure=managedLaunchError(options,{node_keys:nodes,strategies,request_limit:limit});
+  const failure=managedLaunchError(options,{node_keys:nodes,strategies,request_limit:limit,
+    profile_ids:profiles,profile_catalog_hash:strategies.includes('retry_profile') ? options?.profile_catalog_hash : undefined});
   return <section data-testid="managed-launch-panel" className="space-y-3 rounded border border-emerald-400/25 bg-emerald-400/5 p-3">
     <strong>Автономный запуск выбранной области</strong>
     <p className="text-white/60">Выберите ноды, разрешённые стратегии и общий лимит. Система запускает цепочку и проверяет разрешения перед дальнейшими действиями.</p>
@@ -109,9 +115,21 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
           </label>)}
         </div>
         <div className="space-y-1">{options?.strategies.map(strategy=><label key={strategy} className="flex items-center gap-2">
-          <input type="checkbox" checked={strategies.includes(strategy)} onChange={event=>setStrategies(previous=>event.target.checked ? [...previous,strategy] : previous.filter(value=>value!==strategy))}/>
+          <input type="checkbox" checked={strategies.includes(strategy)} onChange={event=>{
+            setStrategies(previous=>event.target.checked ? [...previous,strategy] : previous.filter(value=>value!==strategy));
+            if(strategy==='retry_profile' && !event.target.checked)setProfiles([]);
+          }}/>
           {strategyLabels[strategy] ?? strategy}
         </label>)}</div>
+        {strategies.includes('retry_profile') && <fieldset className="space-y-1">
+          <legend>Заранее разрешённые профили</legend>
+          {options?.profiles.map(profile=><label key={profile.profile_id} className="flex items-start gap-2">
+            <input type="checkbox" aria-label={`Разрешить профиль ${profile.profile_id}`} checked={profiles.includes(profile.profile_id)}
+              onChange={event=>setProfiles(previous=>event.target.checked ? [...previous,profile.profile_id] : previous.filter(id=>id!==profile.profile_id))}/>
+            <span>{promptLabels[profile.prompt_variant ?? ''] ?? profile.profile_id} · {profile.model_id} · {profile.reasoning_effort} · до {profile.max_output_tokens} выходных токенов</span>
+          </label>)}
+          <p className="text-white/50">Система выбирает только из отмеченного списка. Повтор с другим профилем использует ту же единственную recovery-попытку.</p>
+        </fieldset>}
         <label className="flex items-center gap-2">Общий лимит запросов
           <input aria-label="Лимит единого запуска" type="number" min={1} max={options?.request_limit_max ?? 100}
             value={Number.isNaN(limit) ? '' : limit} onChange={event=>setLimit(Number(event.target.value))}
@@ -124,6 +142,7 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
     </>}
     {launch && <div data-testid="managed-launch-progress" className="space-y-1">
       <p>Разрешённая область: {launch.policy.node_keys.map(key=>options?.nodes.find(node=>node.node_key===key)?.title ?? key).join(' → ')}</p>
+      {!!launch.policy.profile_ids?.length && <p>Разрешённые профили: {launch.policy.profile_ids.join(', ')}</p>}
       <p>Запуск: {launch.status==='submitted' ? 'передан pipeline' : 'удержан · нужен человек'} · выполнено {current ? `${done}/${selected.length}` : 'не подтверждено'}</p>
       <p>Сейчас: {current?.current_nodes.map(key=>options?.nodes.find(node=>node.node_key===key)?.title ?? key).join(', ') || 'нет подтверждённой активной ноды'}</p>
       {actionState && <p>{!actionState.enabled ? 'Управление завершено' : actionState.held ? 'Управление удержано' : 'Управление включено'} · запросы {actionState.requests_used}/{actionState.request_limit}</p>}

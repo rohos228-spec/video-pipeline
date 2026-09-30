@@ -152,7 +152,7 @@ async def run():
                 request.headers['x-diagnostic-node']='__decision__'
                 return await original_send(client,request,**kwargs)
             if ctx:
-                if mode.startswith('profiles-'):
+                if mode.startswith('profiles-') or os.environ.get('OBSERVE_APPROVED_PROFILE'):
                     payload=json.loads(request.content)
                     p=ROOT/'actual-worker-requests.json'
                     bodies=json.loads(p.read_text()) if p.exists() else []

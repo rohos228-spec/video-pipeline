@@ -55,7 +55,9 @@ class ManagedLaunchRequest(BaseModel):
     workflow_run_id: int = Field(ge=1)
     graph_version: str = Field(min_length=64,max_length=64)
     node_keys: list[str] = Field(min_length=1,max_length=100)
-    strategies: list[str] = Field(min_length=1,max_length=3)
+    strategies: list[str] = Field(min_length=1,max_length=4)
+    profile_ids: list[str] = Field(default_factory=list,max_length=20)
+    profile_catalog_hash: str | None = Field(default=None,min_length=64,max_length=64)
     request_limit: int = Field(default=12,ge=1,le=100000,strict=True)
     rationale: str = Field(min_length=3,max_length=1000)
     idempotency_key: str = Field(min_length=8,max_length=120)
@@ -114,8 +116,12 @@ async def managed_launch_options(project_id:int,operator:AuthDep):
                 'result_kind':capability.result_kind})
         runtime=status()
         maximum=runtime.get('budget_policy',{'max_requests':100})['max_requests']
+        from app.services.profiles_v1 import active_catalog,catalog_hash
+        profiles=active_catalog() if runtime['configured'] and 'retry_profile' in runtime['allowed_actions'] else {}
         return panel_safe({'workflow_run_id':run.id,'graph_version':digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot}),
-            'nodes':nodes,'strategies':[a for a in ('wait','human_review','retry_same') if a in runtime['allowed_actions']],
+            'nodes':nodes,'strategies':[a for a in ('wait','human_review','retry_same','retry_profile') if a in runtime['allowed_actions']],
+            'profiles':[{'profile_id':k,**v} for k,v in profiles.items()],
+            'profile_catalog_hash':catalog_hash() if profiles else None,
             'request_limit_default':min(12,maximum),'request_limit_max':maximum,'configured':runtime['configured'],
             'mode':runtime['mode'],'online_authorized':False,
             'reason':runtime['reason'],'latest_launch':launch_json(latest) if latest else None})

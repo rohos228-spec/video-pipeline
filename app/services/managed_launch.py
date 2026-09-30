@@ -140,9 +140,24 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
                 'reason':'idle project readiness computed by original runtime'}
         cfg=runtime_config();check_route(cfg,cfg['endpoint'])
         strategies=request['strategies']
-        if not strategies or len(strategies)!=len(set(strategies)) or not set(strategies)<= {'wait','human_review','retry_same'}:
+        if not strategies or len(strategies)!=len(set(strategies)) or not set(strategies)<= {'wait','human_review','retry_same','retry_profile'}:
             raise ValueError('unsupported strategy catalog')
         if not set(strategies)<=set(cfg['allowed_actions']):raise ValueError('strategy outside configured owner policy')
+        from app.services.profiles_v1 import active_catalog,catalog_hash,validate_candidate
+        profile_ids=request.get('profile_ids',[])
+        profile_hash=request.get('profile_catalog_hash')
+        profiles={}
+        if profile_ids or 'retry_profile' in strategies:
+            if not profile_ids or 'retry_profile' not in strategies or len(profile_ids)!=len(set(profile_ids)):
+                raise ValueError('profile strategies require an explicit unique approved catalog selection')
+            if profile_hash!=catalog_hash():raise ValueError('stale profile catalog hash')
+            catalog=active_catalog()
+            for key in profile_ids:
+                if key not in catalog:raise ValueError('profile outside configured owner catalog')
+                validate_candidate(catalog[key]);profiles[key]=dict(catalog[key])
+            if not any(c['node_type']=='excel_gpt' and c['result_kind']=='structured' for c in contracts.values()):
+                raise ValueError('profile strategy requires an accepted compatible structured node')
+        elif profile_hash is not None:raise ValueError('unused profile catalog approval')
         from app.services.decision_config import owner_budget_policy
         from app.services.actions_v1 import claim_run_allowance
         owner_policy=owner_budget_policy(cfg)
@@ -152,7 +167,8 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
         policy={'graph_version':revision,'node_keys':list(request['node_keys']),
             'allowed_actions':sorted(set(strategies)|({'read_events','read_contract','finish'}&set(cfg['allowed_actions']))),
             'request_limit':request['request_limit'],'max_decision_steps':3,'node_recovery_limit':1,
-            'contracts':contracts,'runtime_config_hash':digest(cfg),'owner_budget_policy':owner_policy}
+            'contracts':contracts,'runtime_config_hash':digest(cfg),'owner_budget_policy':owner_policy,
+            'profile_ids':list(profile_ids),'profile_catalog_hash':profile_hash,'profiles':profiles}
         await claim_run_allowance(s,project_id=project_id,workflow_run_id=run.id,
             execution_id=execution,request_limit=request['request_limit'],owner_policy=owner_policy)
         if initial_status_projection:

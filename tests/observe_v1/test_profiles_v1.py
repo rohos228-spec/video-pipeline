@@ -232,10 +232,14 @@ class Profiles(DecisionDurability):
         record=await self.approved_launch_decision()
         with self.assertRaisesRegex(ValueError,'acting'):
             await self.store.select_for_decision(record['decision_id'],'synthetic-format-v1')
+        context=await self.loop.context(record['decision_id'])
         async with self.sessions() as s:
             row=await s.get(self.service.DecisionRecord,record['decision_id']);row.status='acting'
             row.lease_token='owner';row.lease_until=__import__('datetime').datetime.utcnow()+__import__('datetime').timedelta(seconds=60)
-            row.proposal={'action':'retry_profile','arguments':{'profile_id':'synthetic-format-v1'}}
+            row.context_version=context['context_version']
+            row.proposal={'action':'retry_profile','arguments':{'profile_id':'synthetic-format-v1'},
+                'context_version':context['context_version'],'evidence_ids':context['evidence_ids'][:1],
+                'explanation':'Use the execution-approved format profile'}
             await s.commit()
         with patch.object(self.profiles,'catalog_hash',return_value='changed'):
             with self.assertRaisesRegex(ValueError,'catalog'):

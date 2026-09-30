@@ -84,3 +84,27 @@ Live browser acceptance remains outstanding. Failed seed/projection runs and
 all underlying events are preserved. See
 `docs/ORCHESTRATOR_COMPLETION_ACCEPTANCE_20260930.md` for paths, exact boundaries,
 the terminal Decision RED currently being corrected and the remaining stages.
+
+## Continuation after Stage 2 (2026-09-30)
+
+Stage 2 browser acceptance subsequently passed (`launch-browser-03`): one real
+UI launch, 6/6 original nodes, application HTML, same execution after reload.
+Terminal recovery completion, bounded durable wait, owner limit and the genuine
+Decision → recovery → image worker case also passed in their exact snapshots.
+Registered catalog variants:21/21; preapproved Decision profile selection:25/25;
+launch/API approval policy:31/31. Detailed evidence and hash differences are in
+the acceptance report and `profile-progress-summary.json`.
+
+New current changes still awaiting acceptance: incomplete model terminal guard,
+updated v652 UI/build, and real synthetic worker selection of the preapproved
+format profile. Docker interrupted the frontend build/collection: named-pipe
+ping timeout and inspect HTTP500, while Desktop/backend processes remained.
+No cause is attributed to the other agent. It was notified; its containers,
+networks and processes were left alone. New test starts stopped. Own hanging
+wait CLI was closed with recorded PID/command; its build container is preserved.
+
+The existing prepared profile worker container should be resumed after Engine
+readiness is restored. Current code is a WIP checkpoint, not all-GREEN/full-contour
+acceptance. Video/assembly executable approval is pending; ASR is also absent.
+The developer extension contract is now documented. Full remaining scope,
+production acceptance and measured monetary optimization are still outstanding.

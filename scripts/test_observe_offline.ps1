@@ -3,6 +3,7 @@ param(
     [string]$Image = 'vp-offline-diagnostic:20260924',
     [string]$Target = 'journal',
     [string]$GroupMode = 'observe',
+    [ValidateSet('','synthetic-format-v1')][string]$ApprovedProfileId='',
     [string]$DenialSeed,
     [string]$ReplayResponsePath,
     [string]$ReplayArchivePath,
@@ -18,6 +19,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if ($ApprovedProfileId -and ($Target -ne 'group' -or $GroupMode -ne 'media-decision-recovery')) {
+    throw 'ApprovedProfileId only applies to the existing copied-checkpoint Decision/worker acceptance'
+}
 if ($LauncherCase -and $Target -ne 'decision-gateway-replay') { throw 'LauncherCase requires decision-gateway-replay' }
 if (-not $ResultsRoot) {
     $ResultsRoot = Join-Path $sourceRoot ('../../outputs/observe-v1/' + (Get-Date -Format 'yyyyMMddTHHmmss'))
@@ -189,6 +193,7 @@ $dockerArgs = $connectionArgs + @(
     '--workdir', '/observe-source', '--env', 'PYTHONPATH=/observe-source', '--env', 'OBSERVE_SOURCE=/observe-source',
     '--env', "OBSERVE_TEST_TARGET=$Target",
     '--env', "OBSERVE_GROUP_MODE=$GroupMode",
+    '--env', "OBSERVE_APPROVED_PROFILE=$ApprovedProfileId",
     '--env', "OBSERVE_BROWSER=$Browser",
     '--env', "OBSERVE_STREAM_CASE=$StreamCase",
     '--env', "OBSERVE_STREAM_RED=$([int]$StreamRed.IsPresent)",

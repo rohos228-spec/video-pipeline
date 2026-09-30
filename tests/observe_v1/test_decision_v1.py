@@ -300,6 +300,26 @@ class DecisionDurability(actions_tests.DurableActions):
             await self.loop.tick();self.assertEqual(chat.call_count,0)
         async with self.sessions() as s:self.assertIsNone(await s.scalar(select(self.service.DecisionRecord)))
 
+    async def test_known_http_rejection_is_settled_but_not_recovery_permission(self):
+        from app.services.diagnosis import Incident
+        await self.enable_decisions();record=await self.begin()
+        async with self.sessions() as s:
+            event=await s.scalar(select(observation.ObservationEvent).where(observation.ObservationEvent.kind=='model_end'))
+            event.kind='model_error';event.payload={'uncertain':False,'status_code':429}
+            incident=await s.get(Incident,'source-incident');incident.type='api_error';await s.commit()
+        context=await self.loop.context(record['decision_id'])
+        self.assertEqual(context['open_model_requests'],[])
+        self.assertNotIn('retry_same',context['allowed_actions'])
+        self.assertNotIn('retry_profile',context['allowed_actions'])
+
+    async def test_error_without_known_http_outcome_remains_open(self):
+        await self.enable_decisions();record=await self.begin()
+        async with self.sessions() as s:
+            event=await s.scalar(select(observation.ObservationEvent).where(observation.ObservationEvent.kind=='model_end'))
+            event.kind='model_error';event.payload={'uncertain':False,'status_code':None};await s.commit()
+        context=await self.loop.context(record['decision_id'])
+        self.assertEqual(context['open_model_requests'],['request-source'])
+
     async def test_late_model_reply_after_stop_denied(self):
         record,reply=await self.dialogue()
         async def late(**kw):

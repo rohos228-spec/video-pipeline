@@ -20,8 +20,10 @@ export function actionsModeLabel(state:{configured:boolean;enabled:boolean;held:
 }
 
 export function managedLaunchError(options:{configured:boolean;request_limit_max:number;
-  nodes:{node_key:string;supported:boolean}[];strategies:string[]}|null,
-  selection:{node_keys:string[];strategies:string[];request_limit:number}):string|null {
+  nodes:{node_key:string;supported:boolean}[];strategies:string[];
+  profiles?:{profile_id:string}[];profile_catalog_hash?:string|null}|null,
+  selection:{node_keys:string[];strategies:string[];request_limit:number;
+    profile_ids?:string[];profile_catalog_hash?:string|null}):string|null {
   if(!options?.configured) return 'Управляемый запуск выключен: разрешённый маршрут Decision не настроен.';
   if(!selection.node_keys.length) return 'Выберите область выполнения.';
   if(new Set(selection.node_keys).size!==selection.node_keys.length ||
@@ -32,5 +34,13 @@ export function managedLaunchError(options:{configured:boolean;request_limit_max
   if(!selection.strategies.length || new Set(selection.strategies).size!==selection.strategies.length ||
     selection.strategies.some(strategy=>!options.strategies.includes(strategy)))
     return 'Выберите разрешённые стратегии.';
+  const profiles=selection.profile_ids ?? [];
+  if(selection.strategies.includes('retry_profile')) {
+    if(!profiles.length || new Set(profiles).size!==profiles.length ||
+      profiles.some(id=>!options.profiles?.some(profile=>profile.profile_id===id)))
+      return 'Выберите конкретные разрешённые профили для восстановления.';
+    if(!selection.profile_catalog_hash || selection.profile_catalog_hash!==options.profile_catalog_hash)
+      return 'Каталог профилей изменился. Обновите состояние перед запуском.';
+  } else if(profiles.length) return 'Профили требуют разрешения стратегии восстановления.';
   return null;
 }

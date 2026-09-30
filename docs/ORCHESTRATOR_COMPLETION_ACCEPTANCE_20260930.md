@@ -135,3 +135,72 @@ a unit/durability proof, not a new real model or full worker recovery run.
 
 The full customer contour is still in progress. This report claims only the
 specific checks above; it does not replace previous reports or archives.
+
+## Further completed evidence and Docker interruption
+
+Artifacts below are under `outputs/orchestrator-completion-20260930/`. Previous
+reports, original events, failed runs and seed checkpoints were preserved.
+
+| Check | Actual result | Evidence |
+|---|---|---|
+| Owner allowance, parallel reservations/restart/new-execution denial | 24/24 GREEN; 1000 reservations, 1001 blocked | `owner-budget-green-02/artifacts/` |
+| Unified owner-limit launch | 29/29 GREEN | `launch-owner-green-01/artifacts/` |
+| Durable bounded wait + exhausted domain/API read diagnosis/native-active guard | 41/41 GREEN | `decision-wait-green-01/artifacts/` |
+| Registered profile variants and contract instead of fixed group name | 21/21 GREEN | `profiles-catalog-green-01/artifacts/` |
+| Preapproved profile context/selection + one recovery ticket/replay | 25/25 GREEN | `profiles-selection-green-01/artifacts/` |
+| Atomic launch catalog approval and stale/foreign/no-approval rejection | 31/31 GREEN | `launch-profiles-green-01/artifacts/` |
+| Genuine archived QC exhaustion → automatic Decision → original recovery → verify → image | accepted; 2 Decision POST, 1 worker POST, 3 media operations | `decision-worker-image-02/artifacts/` |
+
+The last worker case retained the seed execution UUID and historical 22 requests,
+with a distinct run/results/database instance. Shared counter 22 → 28. One
+QC `node_start`, one `data_applied`; confirmed verification preceded one image
+successor and actual verified PNG. Native exhaustion was not reconstructed:
+step_failure records 9 failures and source events contain 9 native attempt UUIDs;
+the archived NodeRun.attempts=0 was independently preserved. No operator node
+start/recovery POST, no third summary model POST, no execution of outside video
+or pilot project #1. This is synthetic behavior, not real-model quality evidence.
+
+`profile-progress-summary.json` records exact snapshot manifests and loaded
+module hashes. All completed snapshots have zero loaded/snapshot mismatches.
+The 31 launch tests also match all currently loaded application bytes. The 25
+profile-selection tests predate the subsequent incomplete-terminal fix in
+`decision_v1.py`; they are not a claim of complete current regression. The genuine
+worker proof predates the new catalog integration, whose worker proof is pending.
+
+Executed RED: `decision-incomplete-red-01`, 42 tests, one failure — complete=false
+`model_end` incorrectly allowed automatic Decision POST. The implementation now
+requires complete=true or explicit known HTTP rejection. Two additional tests
+cover known 429 versus error without a known HTTP outcome. GREEN on this exact
+version remains pending; no provider was called by the failed unit test.
+
+Executed UI RED: `launch-profiles-ui-red-01`, missing catalog validation. Current
+source v652 adds explicit profile checkboxes/catalog hash, no profile selected
+by default, and persisted wait deadline/review wording. The frontend build was
+started in `vp-observe-ui-build-c5b5cb8419`, but its outcome is UNKNOWN. Old v651
+export remains intact and is not acceptance for these new UI changes.
+
+At 15:32 MSK the Engine named pipe still connected, but bounded GET /_ping had
+response_timeout. A separate inspect later returned HTTP 500 on
+`/v1.56/containers/vp-observe-ui-build-c5b5cb8419/json`. Desktop/backend processes
+still existed; no cause is asserted. Evidence: `docker-readiness-1532.json` and
+`docker-interruption.json`. This is neither frontend code RED nor GREEN.
+Only verified own Docker wait CLI PID26612 was stopped; the container, other
+agent's processes/networks/volumes and application materials were preserved.
+No Docker restart, system change, install or further test start was performed.
+
+`decision-profile-worker-image-01/prepared-test.json` identifies the prepared,
+never executed copy for actual worker profile verification:
+`vp-observe-test-20260930152759-6811ffe3`. It reuses the existing scenario/runner,
+not a new stand. Synthetic control approval is documented separately from a
+native initial launch; the runner does not create an overlay or recovery ticket.
+
+Remaining next checks: collect existing frontend container outcome after Engine
+recovery, correct narrowly if needed, run current Decision/profile regression,
+execute that prepared worker case, export a successful v652 build and capture
+only the changed catalog/wait UI. Video/assembly still lack ffmpeg/ffprobe;
+installation approval is pending. ASR packages/weights remain absent. Do not
+recreate historical exhaustion or claim all families ready.
+
+Developer contract: `ORCHESTRATOR_NODE_EXTENSION_CONTRACT.md`. Owner scale test
+does not prove 1000 pipeline operations, dollar cap or cost savings. No real API,
+keys/.env, production/master/customer DB, push/PR/deploy or new dependency.

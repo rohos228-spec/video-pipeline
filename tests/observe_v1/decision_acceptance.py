@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 import re
+import os
 from sqlalchemy import select
 
 
@@ -40,6 +41,10 @@ def handler_for(fixtures,root,mode,*,base_handler=None):
             arguments={'event_ids':ctx['evidence_ids'][:1]} if action=='read_events' else {}
             if mode.startswith('profiles-') and action=='retry_same':
                 action='retry_profile';arguments={'overlay_id':ctx['approved_profiles'][0]['overlay_id']}
+            if os.environ.get('OBSERVE_APPROVED_PROFILE') and action=='retry_same':
+                profile=os.environ['OBSERVE_APPROVED_PROFILE']
+                assert profile in [p['profile_id'] for p in ctx['eligible_profiles']]
+                action='retry_profile';arguments={'profile_id':profile}
             proposal=dict(action=action,arguments=arguments,evidence_ids=ctx['evidence_ids'][:1],
                 context_version=ctx['context_version'],explanation='synthetic bounded proposal from recorded runtime facts')
             answer=json.dumps(proposal,ensure_ascii=False)

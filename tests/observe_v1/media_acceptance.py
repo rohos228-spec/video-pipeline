@@ -39,6 +39,11 @@ def prepare(fixtures, root, mode):
              'media':{'enabled':True,'provider':'kie','origin':'http://127.0.0.1:18766',
                  'download_origins':['http://127.0.0.1:18766'],'model_ids':['z-image'],
                  'max_bytes':1048576,'timeout_s':30,'poll_interval_s':0.1,'max_polls':4}}
+        profile=os.environ.get('OBSERVE_APPROVED_PROFILE','')
+        if profile:
+            from app.services.profiles_v1 import CATALOG
+            cfg['profiles']={profile:dict(CATALOG[profile])}
+            cfg['allowed_actions'].append('retry_profile')
         path=root/'synthetic-media-runtime.json';path.write_text(json.dumps(cfg,indent=2))
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
         os.environ['KIE_API_BASE_URL']='http://127.0.0.1:18766'
@@ -197,6 +202,24 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
     if checkpoint_decision:
         result['operator_starts']=0
         result['interventions']=prepared['operator_interventions']
+        if os.environ.get('OBSERVE_APPROVED_PROFILE'):
+            # Control-table approval on the copied exhausted execution. This
+            # acceptance does not claim a new user launch or modify business data.
+            from app.services.managed_launch import ManagedLaunch
+            from app.services.profiles_v1 import active_catalog,catalog_hash
+            from app.services.observation import digest
+            profile=os.environ['OBSERVE_APPROVED_PROFILE']
+            policy={'node_keys':selected,'allowed_actions':['read_events','read_contract','wait','human_review','retry_profile','finish'],
+                'profile_ids':[profile],'profile_catalog_hash':catalog_hash(),'profiles':active_catalog()}
+            async with observer.master() as s:
+                from app.services.observation import ExecutionControl
+                scope_row=await s.get(ExecutionControl,execution)
+                s.add(ManagedLaunch(launch_id='synthetic-checkpoint-profile-approval',execution_id=execution,
+                    project_id=2,workflow_run_id=scope_row.workflow_run_id,entry_node=fixtures.NODES[4],
+                    idempotency_key='synthetic-checkpoint-profile-approval',request_hash=digest(policy),
+                    status='submitted',result={'source':'synthetic control setup; not native launch'},policy=policy))
+                await s.commit()
+            result['interventions']=[*result['interventions'],'preapprove one registered profile in copied control tables; no overlay or action manufactured']
         await post(prefix+'/decisions/control',{'enabled':True,'rationale':'bounded synthetic Decision on immutable QC exhaustion copy'})
     if not unified_launch and not checkpoint_decision:
         await post(prefix+"/pin", {})
@@ -296,6 +319,21 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
             result.update(decisions=decisions,brain_posts=handler.counts['__decision__'],
                 source_requests=prepared['historical_requests_used'],worker_posts=handler.counts[fixtures.NODES[4]])
         verify_recovery(fixtures, result, history)
+        if os.environ.get('OBSERVE_APPROVED_PROFILE'):
+            requests=json.loads((root/'actual-worker-requests.json').read_text())
+            assert len(requests)==1 and requests[0]['node_key']==fixtures.NODES[4]
+            body=requests[0]['body']
+            assert body['model']=='gpt-synthetic-alt' and body['reasoning']=={'effort':'low'} and body['max_output_tokens']==1024
+            assert '[Approved profile: repair-json-only-v1]' in json.dumps(body['input'])
+            profiles=(await client.get(base+prefix+'/profiles',params={'node_key':fixtures.NODES[4]})).json()
+            assert len(profiles['overlays'])==1
+            overlay=profiles['overlays'][0]
+            assert overlay['status']=='applied' and overlay['attempt_id']==requests[0]['attempt_id']
+            assert overlay['source_attempt_id']==result['actions']['recoveries'][0]['source_attempt_id']
+            assert any(h['kind']=='decision_selected' for h in overlay['history'])
+            assert result['actions']['recoveries'][0]['preconditions']['action_type']=='retry_profile'
+            result['profile_selection_proof']={'profile_id':overlay['profile_id'],'overlay_id':overlay['overlay_id'],
+                'attempt_id':overlay['attempt_id'],'actual_worker_body_verified':True,'profile':overlay}
     if prepared["scenario"] == "media-mixed":
         report = Path(fixtures.snapshot()["report_path"])
         assert report.is_file() and report.stat().st_size > 0

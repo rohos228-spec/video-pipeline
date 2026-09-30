@@ -30,6 +30,21 @@ def active_catalog():
 
 def catalog_hash():return digest(active_catalog())
 
+async def eligible_profiles(session,row,base_version):
+    """Read-only choices from the operator's launch snapshot; no overlay writes."""
+    from app.services.managed_launch import ManagedLaunch
+    launch=await session.scalar(select(ManagedLaunch).where(ManagedLaunch.execution_id==row.execution_id,
+        ManagedLaunch.project_id==row.project_id))
+    if not launch or launch.status!='submitted' or 'retry_profile' not in launch.policy['allowed_actions']:return []
+    policy=launch.policy;ids=policy.get('profile_ids',[])
+    if not ids:return []
+    if policy.get('profile_catalog_hash')!=catalog_hash():raise ValueError('execution profile catalog changed')
+    catalog=active_catalog()
+    if any(k not in catalog or policy.get('profiles',{}).get(k)!=catalog[k] for k in ids):
+        raise ValueError('execution profile catalog snapshot mismatch')
+    return [{'profile_id':k,'candidate':dict(catalog[k]),'catalog_hash':policy['profile_catalog_hash'],
+        'base_version':base_version} for k in ids]
+
 def validate_candidate(candidate):
     if not isinstance(candidate,dict) or set(candidate)!=set(CATALOG['synthetic-json-v1']):
         raise ValueError('unknown profile parameters')
@@ -124,7 +139,32 @@ class ProfilesSupervisor:
                 'catalog':[{'profile_id':k,**v} for k,v in active_catalog().items()], 'available':available,'reason':reason,
                 'overlays':views}
 
-    async def approve(self,*,project_id,execution_id,node_key,profile_id,base_version,catalog_hash,initiator,rationale):
+    async def select_for_decision(self,decision_id,profile_id):
+        from app.services.decision_state import DecisionRecord
+        async with self.master() as s:
+            row=await s.get(DecisionRecord,decision_id)
+            if (not row or row.status!='acting' or not row.lease_token or not row.lease_until
+                    or row.lease_until<=datetime.utcnow()):raise ValueError('claimed acting decision required')
+            from app.services.decision_v1 import DecisionSupervisor,validate_proposal
+            context=await DecisionSupervisor(self.observer)._live(s,row,row.lease_token)
+            if row.proposal['action']!='retry_profile' or row.proposal['arguments']!={'profile_id':profile_id}:
+                raise ValueError('profile selection outside persisted proposal')
+            choices={p['profile_id']:p for p in context['eligible_profiles']}
+            if profile_id not in choices:raise ValueError('profile outside execution-approved catalog')
+            choice=choices[profile_id]
+            prior=await s.scalar(select(ProfileOverlay).where(ProfileOverlay.execution_id==row.execution_id,
+                ProfileOverlay.node_key==row.node_key))
+            if (prior and prior.profile_id==profile_id and prior.status=='approved' and prior.base_version==choice['base_version']
+                    and prior.catalog_hash==choice['catalog_hash'] and any(h.get('decision_id')==decision_id
+                        and h.get('proposal_hash')==digest(row.proposal) for h in prior.history)):
+                return overlay_json(prior)
+            validate_proposal(json.dumps(row.proposal),context)
+            identity=dict(project_id=row.project_id,execution_id=row.execution_id,node_key=row.node_key,
+                profile_id=profile_id,base_version=choice['base_version'],catalog_hash=choice['catalog_hash'],
+                initiator='decision_supervisor',rationale=row.proposal['explanation'],_decision_id=decision_id)
+        return await self.approve(**identity)
+
+    async def approve(self,*,project_id,execution_id,node_key,profile_id,base_version,catalog_hash,initiator,rationale,_decision_id=None):
         synthetic_transport()
         if not initiator or len(rationale.strip())<3:raise ValueError('explicit approval rationale required')
         if catalog_hash!=globals()['catalog_hash']():raise ValueError('stale catalog hash')
@@ -134,6 +174,20 @@ class ProfilesSupervisor:
         async with self.master() as s:
             revision,graph=await self._base(s,project_id,execution_id,node_key)
             if revision!=base_version:raise ValueError('stale config base version')
+            if _decision_id:
+                from app.services.decision_state import DecisionRecord
+                from app.services.decision_v1 import DecisionSupervisor,validate_proposal
+                decision=await s.get(DecisionRecord,_decision_id)
+                if (not decision or decision.status!='acting' or not decision.lease_token or not decision.lease_until
+                        or decision.lease_until<=datetime.utcnow()
+                        or (decision.project_id,decision.execution_id,decision.node_key)!=(project_id,execution_id,node_key)):
+                    raise ValueError('claimed acting decision identity required')
+                context=await DecisionSupervisor(self.observer)._live(s,decision,decision.lease_token,version=decision.context_version)
+                validate_proposal(json.dumps(decision.proposal),context)
+                if decision.proposal['action']!='retry_profile' or decision.proposal['arguments']!={'profile_id':profile_id}:
+                    raise ValueError('persisted proposal does not select this profile')
+                if profile_id not in [p['profile_id'] for p in context['eligible_profiles']]:
+                    raise ValueError('profile outside execution-approved catalog')
             prior=await s.scalar(select(ProfileOverlay).where(ProfileOverlay.execution_id==execution_id,ProfileOverlay.node_key==node_key))
             if prior:
                 if prior.profile_id==profile_id and prior.base_version==base_version and prior.status=='approved':return overlay_json(prior)
@@ -163,7 +217,9 @@ class ProfilesSupervisor:
                 node_key=node_key,source_attempt_id=source.attempt_id,profile_id=profile_id,base_version=revision,
                 graph_version=graph,catalog_hash=catalog_hash,candidate_hash=digest(candidate),candidate=dict(candidate),
                 source_body_hash=digest(body),expected_body_hash=digest(expected),initiator=initiator,rationale=rationale,
-                status='approved',history=[{'kind':'operator_approved','initiator':initiator,'at':datetime.utcnow().isoformat()}])
+                status='approved',history=[{'kind':'decision_selected' if _decision_id else 'operator_approved',
+                    'decision_id':_decision_id,'proposal_hash':digest(decision.proposal) if _decision_id else None,
+                    'initiator':initiator,'at':datetime.utcnow().isoformat()}])
             s.add(row);await s.commit();return overlay_json(row)
 
     async def recover(self,*,overlay_id,**kwargs):

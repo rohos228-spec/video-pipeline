@@ -2,7 +2,7 @@
 import {useEffect,useState} from 'react';
 import {observations,type DecisionState} from '@/lib/observations';
 import {Button} from '@/components/ui/button';
-import {decisionStatus,decisionRuntimeLabel,decisionActionLabel,decisionPolicyLabel} from '@/lib/decision-view';
+import {decisionStatus,decisionRuntimeLabel,decisionActionLabel,decisionPolicyLabel,decisionWaitLabel} from '@/lib/decision-view';
 
 export function DecisionSection({projectId,execution,managed}:{projectId:number;execution:string;managed:boolean}) {
   const [state,setState]=useState<DecisionState|null>(null);
@@ -37,6 +37,7 @@ export function DecisionSection({projectId,execution,managed}:{projectId:number;
     {error&&<p role="alert">{error}</p>}
     <ol>{state?.records.map(r=><li key={r.decision_id} data-testid="decision-record" className="border-t border-white/10 mt-2 pt-2">
       <p>{r.node_key} · {decisionStatus(r.status)} · шаги {r.model_steps}/{state.max_model_steps}</p>
+      {r.status==='waiting_evidence' && <p>{decisionWaitLabel(r.policy_result)}</p>}
       <p>Предложение: {decisionActionLabel(r.proposal.action)}</p>
       <p>Проверка разрешения: {decisionPolicyLabel(r.policy_result)}</p>
       <p>Действие: {r.action_id?'создано':'не выполнялось'} · Исправление: {r.verification.verified?'подтверждено исходным runtime':'не подтверждено'}</p>

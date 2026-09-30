@@ -44,7 +44,7 @@ export interface DecisionState {
     decision_model:{model_id:string;reasoning_effort:string;max_output_tokens:number}|null};
   records:{decision_id:string;incident_id:string;node_key:string;status:string;model_steps:number;
     action_id:string|null;context_version:string;proposal:{action?:string;explanation?:string;evidence_ids?:string[]};
-    policy_result:{allowed?:boolean;reason?:string};verification:{verified?:boolean};
+    policy_result:{allowed?:boolean;reason?:string;wait?:{until?:string}};verification:{verified?:boolean};
     turns:{id:number;role:string;payload:Record<string,unknown>}[]}[];
 }
 interface NodeState {status: string; progress: number | null; attempts: number | null; error: string | null; progress_text: string | null}
@@ -64,16 +64,18 @@ export interface MediaContext {
 export interface ManagedLaunch {
   launch_id:string;execution_id:string;workflow_run_id:number;entry_node:string;
   status:string;idempotent_replay?:boolean;result:Record<string,unknown>;
-  policy:{node_keys:string[];request_limit:number;allowed_actions:string[]};
+  policy:{node_keys:string[];request_limit:number;allowed_actions:string[];profile_ids?:string[]};
 }
 export interface ManagedLaunchOptions {
   workflow_run_id:number;graph_version:string;configured:boolean;mode:string;reason:string|null;
   online_authorized:boolean;request_limit_default:number;request_limit_max:number;strategies:string[];
+  profile_catalog_hash:string|null;profiles:ProfileState['catalog'];
   nodes:{node_key:string;title:string;group_id:string|null;supported:boolean;status:string;reason:string|null;result_kind:string}[];
   latest_launch:ManagedLaunch|null;
 }
 export interface ManagedLaunchRequest {
   workflow_run_id:number;graph_version:string;node_keys:string[];strategies:string[];
+  profile_ids?:string[];profile_catalog_hash?:string|null;
   request_limit:number;rationale:string;idempotency_key:string;
 }
 export interface ObservationContext extends ObservationScope {
