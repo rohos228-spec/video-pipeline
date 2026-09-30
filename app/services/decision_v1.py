@@ -180,7 +180,7 @@ class DecisionSupervisor:
             if not row:raise LookupError('decision not found')
             return await self._context(s,row)
 
-    async def begin(self,*,project_id,execution_id,incident_id):
+    async def begin(self,*,project_id,execution_id,incident_id,automatic=False):
         from app.services.diagnosis import Incident
         async with self.master() as s:
             control=await s.get(DecisionControl,execution_id);incident=await s.get(Incident,incident_id)
@@ -190,6 +190,8 @@ class DecisionSupervisor:
             row=DecisionRecord(decision_id=str(uuid.uuid4()),execution_id=execution_id,project_id=project_id,
                 incident_id=incident_id,node_key=incident.node_key,source_attempt_id=incident.attempt_id,context_version='pending')
             context=await self._context(s,row);row.context_version=context['context_version']
+            if automatic and (context['native_active'] or context['open_model_requests']):
+                return None  # unsettled source owns execution; no new decision/turn
             await s.execute(insert(DecisionRecord).values(**{c.name:getattr(row,c.name) for c in DecisionRecord.__table__.columns
                 if getattr(row,c.name,None) is not None}).on_conflict_do_nothing(index_elements=['execution_id','incident_id']))
             await s.commit()
@@ -422,7 +424,7 @@ class DecisionSupervisor:
                                 incident_id=incident.incident_id,node_key=incident.node_key,source_attempt_id=incident.attempt_id)):
                             pending.append((control.project_id,control.execution_id,incident.incident_id))
         for project_id,execution_id,incident_id in pending:
-            await self.begin(project_id=project_id,execution_id=execution_id,incident_id=incident_id)
+            await self.begin(project_id=project_id,execution_id=execution_id,incident_id=incident_id,automatic=True)
         async with self.master() as s:
             records=(await s.scalars(select(DecisionRecord).where(DecisionRecord.status.in_(['ready','waiting_evidence','waiting_worker','model_pending','acting'])))).all()
         for row in records:
