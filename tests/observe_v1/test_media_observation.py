@@ -162,6 +162,30 @@ class MediaObservation(MediaJobs):
             node=await s.scalar(select(NodeRun).where(NodeRun.node_key=="image"))
             self.assertEqual(node.status,NodeRunStatus.pending)
 
+    async def test_nonblocking_snapshot_warning_is_not_an_operator_hold(self):
+        from app.models import NodeRunStatus
+        from app.services.diagnosis import Incident
+        await self.continuation_fixture()
+        async with self.sessions() as s:
+            s.add(Incident(incident_id="lag-warning",execution_id=self.scope.execution_id,
+                project_id=7,node_key=None,attempt_id=None,type="db_disagreement",severity="warning",
+                status="human_review",details={"blocking":False,"currently_relevant":True}))
+            await s.commit()
+        await self.continue_native()
+        self.assertEqual(self.image_node.status,NodeRunStatus.running)
+
+    async def test_blocking_incident_prevents_media_continuation(self):
+        from app.models import NodeRunStatus
+        from app.services.diagnosis import Incident
+        await self.continuation_fixture()
+        async with self.sessions() as s:
+            s.add(Incident(incident_id="current-blocker",execution_id=self.scope.execution_id,
+                project_id=7,node_key="text",attempt_id="attempt-original",type="missing_payload",severity="error",
+                status="human_review",details={"blocking":True,"currently_relevant":True}))
+            await s.commit()
+        await self.continue_native()
+        self.assertEqual(self.image_node.status,NodeRunStatus.pending)
+
     async def test_panel_media_context_has_no_fake_progress_or_paths(self):
         from app.services.media_view import context_for_nodes
         async with self.sessions() as s:

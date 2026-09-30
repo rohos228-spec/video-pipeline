@@ -2,6 +2,14 @@
 
 ## Resume boundary — managed continuation, 2026-09-30
 
+Mixed-current-03 at `ac50123d`: actual runtime RED, six text done, images pending,
+five text POSTs, zero media jobs, exit1/OOM=false. `managed_successor_denied`
+reason `incident_requires_human`; only incident is nonblocking `db_disagreement`
+from the normal in-flight project/master projection. It is informational
+`human_review`, not an operator hold. Next fix distinguishes blocking incidents
+and real Decision review from this warning, with current replica prerequisites.
+Mandatory audit/prerequisite guards already pass 17/17 in guards-green-01.
+
 - Prior Docker interruption recovered as exit255, OOM=false; partial materials retained.
 - Current diagnosis 25/25 and media observation 11/11 passed. mixed-current-01
   ended exit137/OOM=true. mixed-current-02 ran without browser/OOM: six text
