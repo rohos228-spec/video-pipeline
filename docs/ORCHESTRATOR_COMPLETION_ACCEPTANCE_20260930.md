@@ -268,3 +268,30 @@ changed catalog browser acceptance are still pending. Full-contour completion
 is not claimed. Video/assembly lack FFmpeg/ffprobe; ASR lacks package/weights;
 other legacy text/scene/hero/items/music/SFX families still need individually
 accepted managed contracts/executors. Production remains disabled.
+
+### Current-byte acceptance completed after that checkpoint
+
+- Runtime `runtime-final-current-02`:25/25;156 loaded modules, all current hashes match.
+- Diagnosis `diagnose-final-current-02`:25/25;142 loaded modules, all current hashes match.
+- Frontend `launch-profiles-ui-green-01/artifacts/resume-01`:134 assertions,
+  TypeScript and production build exit0; same saved network-none container.
+- Live `launch-profile-browser-01`:profile strategy blocks launch without an
+  approved selection, one UI POST after selection,6/6 nodes,5 worker fixture POST,
+  nonempty application HTML, same execution/profile after reload,0 page errors.
+ 264 loaded modules match snapshot/current; frontend file/entry hashes are in
+  `artifacts/frontend-files.json` and `acceptance-summary.json`.
+- UI entry SHA256 `16540dbcda9d709b450cbd4f9bd646eb552d707fa4c9b02e67b8b6411aeef869`.
+- Screenshots `01-before-launch.png`, `01-profile-approved.png`, `02-launched.png`,
+  `03-complete.png`, `04-reconnected.png`. The badge shows v652/unknown because
+  Git metadata is intentionally absent in the build container; version proof
+  uses the captured source/loaded/export hashes, not the badge.
+- User path: choose project → allowed connected nodes → strategies and (if chosen)
+  profile checkboxes → common request limit → **Запустить выбранную область**.
+  No manual next-node launch or enabling internal subsystems is required.
+
+Total current Python regression194/194 (144+25+25); frontend134 assertions are
+separate, not added to a misleading Python count. App bytes are identical across
+these saved snapshots despite intervening runner/documentation/export commits.
+Old unexecuted preparations remain intact. Previous UI export is preserved as
+`preserved-v651-export`. Our browser/relay/application processes finished; no
+container or volume was deleted. All provider calls during this work:0.
