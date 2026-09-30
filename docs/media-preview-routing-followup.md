@@ -1,5 +1,10 @@
 # Mixed media: archive recovery and preview routing follow-up
 
+Final outcome: current regressions, clean mixed completion and live scoped
+preview/reload are accepted in the synthetic area. See
+[orchestrator-v1-handoff.md](orchestrator-v1-handoff.md) for exact source/evidence
+and production limits. The previous CURRENT sections below retain their history.
+
 ## CURRENT: scoped preview fix GREEN; broader acceptance still pending
 
 Normal Desktop startup restored Engine 29.8.1 without settings changes. The

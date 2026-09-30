@@ -1,5 +1,11 @@
 # Текст и медиа: локальная приёмка — 30.09.2026
 
+**Итоговая локальная передача:** [orchestrator-v1-handoff.md](orchestrator-v1-handoff.md).
+Код `6bba62a7`, v650: 204 Python passed / 1 dependency skip; frontend/TS/build,
+чистый mixed worker и живые preview/reload завершены. Оба текущих mixed контейнера
+exit0/OOMfalse, семь нод done, video pending. Границы поддержки и production
+перечислены в итоговой инструкции. Ниже сохранён ход работы и прежние результаты.
+
 Текущее обновление: после разрешённого обычного запуска Docker исправлен
 маршрут превью с явным project scope. HTTP **17/17**, frontend-контракты,
 TypeScript и сборка **v650** — GREEN. Старый UI-export сохранён. Живое превью,

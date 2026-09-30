@@ -1,5 +1,13 @@
 # Text + media goal: current handoff
 
+## FINAL LOCAL HANDOFF
+
+Use [orchestrator-v1-handoff.md](orchestrator-v1-handoff.md). Code6bba62a7/UI650;
+204 Python passed/1 tool-dependency skip, frontend/TS/build, clean mixed and live
+preview/reload accepted. Both mixed exits0/OOMfalse; all owned test processes
+finished. Production/media-family limitations are explicit there. Older restart
+and blocked notes below are historical, not instructions to repeat finished work.
+
 ## CURRENT: routing/UI fix GREEN, continue current regressions
 
 Engine29.8.1 restored by the already-authorized normal Desktop launch, without
