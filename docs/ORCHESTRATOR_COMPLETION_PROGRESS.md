@@ -108,3 +108,23 @@ readiness is restored. Current code is a WIP checkpoint, not all-GREEN/full-cont
 acceptance. Video/assembly executable approval is pending; ASR is also absent.
 The developer extension contract is now documented. Full remaining scope,
 production acceptance and measured monetary optimization are still outstanding.
+
+## User-restarted Engine: resumed current checks
+
+Engine readiness confirmed without system/foreign-container changes. The copied
+profile runner failed safely on an early settings import, corrected in `843919bc`.
+Current regression found one real Decision record-creation defect for incomplete
+terminal; narrow fix `f41de424` passed all 144 tests (41 runtime adapter,44 Decision,
+24 Actions,25 Profiles,2 planner,8 journal). Source/loaded/current hashes agree.
+
+Genuine exhausted checkpoint → Decision catalog selection → one original QC
+recovery → verified apply → verified image passed in `decision-profile-worker-image-04`.
+22 inherited operations remain intact; six new operations, final28, two Decision
+model steps. No outside video/pilot execution and no third summary model POST.
+
+The original interrupted frontend container resumed successfully:134 contract
+assertions, TypeScript and build GREEN. v652 export delivered; old v651 export
+preserved. Runtime/diagnosis final checks and changed-profile live browser proof
+are still in progress. This is bounded synthetic acceptance, not all-contour or
+real-provider acceptance. Other legacy families and proven cost optimization
+remain implementation work; FFmpeg/ASR prerequisites are still unavailable.

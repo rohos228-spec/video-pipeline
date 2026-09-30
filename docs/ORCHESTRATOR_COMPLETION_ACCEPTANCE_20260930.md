@@ -204,3 +204,67 @@ recreate historical exhaustion or claim all families ready.
 Developer contract: `ORCHESTRATOR_NODE_EXTENSION_CONTRACT.md`. Owner scale test
 does not prove 1000 pipeline operations, dollar cap or cost savings. No real API,
 keys/.env, production/master/customer DB, push/PR/deploy or new dependency.
+
+## Resume after operator Docker restart: current regression and profile worker
+
+The operator restarted Docker. Engine 29.8.1 answered; no daemon/system/foreign
+container changes were made by this agent. The interrupted frontend container
+was exited 255: contract checks had passed, but only a build-start marker existed.
+The interruption artifacts are preserved separately, never reported as GREEN.
+
+`decision-profile-worker-image-01` actually ran after restart and failed safely:
+Decision escalated with `input/config revision changed or not recorded: settings`.
+No recovery ticket or worker attempt was created. The fixture imported Profiles
+(then models/settings) before configuring KIE_API_BASE_URL. Commit `843919bc`
+moves fixture environment setup before application imports and preserves early
+human-review reasons. It does not change the original checkpoint or revision guard.
+The abandoned preparation `-02` (missing explicit DenialSeed) and unexecuted `-03`
+(superseded by the subsequent Decision fix) remain preserved.
+
+`decision-profile-current-regression-01` executed 144 tests: 143 passed, one
+failed. Incomplete terminal blocked model HTTP but still created an automatic
+DecisionRecord. Commit `f41de424` additionally defers automatic record creation
+until native/request state is settled. Explicit diagnostic context access keeps
+its existing semantics. The same assertion was retained, not weakened.
+
+Current `decision-profile-current-regression-02/artifacts/`:
+
+| Module | Actual result |
+|---|---:|
+| Decision runtime adapter | 41/41 |
+| Decision durability/policy | 44/44 |
+| Actions contract | 24/24 |
+| Profiles | 25/25 |
+| Planner boundary | 2/2 |
+| Journal | 8/8 |
+| Total | **144/144 GREEN** |
+
+All 183 loaded application modules match the snapshot and current working bytes.
+
+`decision-profile-worker-image-04/artifacts/`: actual Observer/DecisionSupervisor
+selected `synthetic-format-v1`; one immutable overlay reached the original worker
+body (alternate synthetic model, low, 1024 cap, registered format suffix). One QC
+recovery, one apply and confirmed verification preceded the image successor.
+Decision completed deterministically after two model steps; no third summary POST.
+The common request counter retained 22 historical operations and reached 28:
+2 Decision POST + 1 worker POST + image submit/poll/download. Recovery is verified,
+Decision is done, pilot #1 remains new and outside video pending. All 267 loaded
+application modules match snapshot/current bytes. No native exhaustion repeated.
+
+This copied-checkpoint test records preapproval in diagnostic control tables;
+it is separate from the genuine initial-launch API/UI evidence. The fixture
+does not create the overlay/action or manufacture successful business statuses.
+Source execution UUID is retained as lineage; result run_id and test DB differ.
+
+Local artifact analysis: `resume-acceptance-summary.json` and
+`measured-call-baseline.json`. Historical ordinary healthy text and managed text
+both used five provider-fixture POST. Genuine same-profile and catalog-profile
+recovery copies both used six additional accounted operations. This proves no
+extra call in these cases, not monetary savings. Real provider tokens/credits/USD
+remain unknown for synthetic calls; 1000 reservations are not 1000 pipeline runs.
+
+At this checkpoint frontend resume, current runtime/diagnosis regression and
+changed catalog browser acceptance are still pending. Full-contour completion
+is not claimed. Video/assembly lack FFmpeg/ffprobe; ASR lacks package/weights;
+other legacy text/scene/hero/items/music/SFX families still need individually
+accepted managed contracts/executors. Production remains disabled.
