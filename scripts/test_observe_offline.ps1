@@ -78,6 +78,7 @@ $files += 'tests/observe_v1/live_decision_acceptance.py'
 if ($Target -eq 'group') { $files += @('tests/observe_v1/group_runner.py','tests/observe_v1/media_acceptance.py','config/managed-text-pilot.example.json') }
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
 if ($Target -eq 'managed-launch') { $files += 'tests/observe_v1/test_managed_launch.py' }
+if ($Target -eq 'owner-budget') { $files += 'tests/observe_v1/test_owner_budget.py' }
 if ($Target -eq 'media-contract') { $files += 'tests/observe_v1/test_media_contract.py' }
 if ($Target -eq 'media-jobs') { $files += 'tests/observe_v1/test_media_jobs.py' }
 if ($Target -eq 'media-observation') { $files += @('tests/observe_v1/test_media_jobs.py','tests/observe_v1/test_media_observation.py') }
