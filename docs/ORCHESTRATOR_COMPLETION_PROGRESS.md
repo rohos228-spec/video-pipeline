@@ -179,3 +179,37 @@ summary POST. Captured/loaded/current application hashes have zero mismatches.
 Frontend v653 files are unchanged and existing140 assertions/build/browser
 evidence is retained by file hashes. All real provider calls remain0; missing
 FFmpeg/ASR prerequisites and the remaining native families are still outstanding.
+
+## Native image prompts and recovery admission
+
+Implementation `974595267f77f4eb80776569f6dfcc39392d0477` extends the original
+image-prompts executor with captured frame/voiceover inputs, scoped parser/apply
+evidence, task-local parallel request attribution and actual committed-output
+verification. Native capability remains read-only: no generic retry/profile.
+Recovery admission and queued-ticket claim recompute the current effective
+capability from the original master graph; mixed execution grants and old
+tickets cannot authorize native retries. Both legitimate old Excel formats
+still claim exactly once. Preserved legacy RED: 16 failures; final Actions63 GREEN.
+
+Final collection:305 Python executions,304 passes and one absent-FFmpeg skip.
+Framework189, runtime26, diagnosis27, launch35, media27 passes+one skip. All
+staged/loaded/current application hashes match; earlier dirty-run commit labels
+are disclosed rather than rewritten. Existing v653 frontend source194/export43
+files match exactly, retaining140 assertions/TypeScript/build/browser evidence.
+
+Four bounded original-worker cases accepted: native positive1 POST/apply/two
+frames with VO retained; short existing prompt1 POST with failed proof/durable
+hold/no successor; genuine profile-selected QC recovery→image using retained22
+operations plus6; ordinary six-node/five-POST/application HTML8113 bytes. No
+worker/Decision/provider invocation occurred on the host; external provider0.
+The real failed SQLite session unit keeps the original IntegrityError/session
+failure, reads committed rows independently, performs zero business writes and
+saves output/error/hold. It does not establish native retry recovery.
+
+Original missing-prompt checkpoint reapply is still blocked by SQLite locks;
+its150-second failed diagnostic and raw events are preserved. Lock owner/cause
+are unknown, native exhaustion was not reached, and no business repair is
+claimed. Short-prompt failure remains nonterminal in unequal DB projections;
+a hold is not rollback or done. See native image prompt acceptance and the
+remaining matrix. Entire factory/media E2E, broader semantics/recovery and
+measured monetary optimization remain outstanding.
