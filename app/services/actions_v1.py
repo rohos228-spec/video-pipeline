@@ -257,6 +257,11 @@ async def continue_managed_image(session, project, source_key, target_key, node_
             or target.node_type != node_type or target.status != NodeRunStatus.pending
             or any(n.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_hitl} for n in rows)):
         return denied("node_state_not_ready")
+    from app.orchestrator.graph.planner import WorkflowGraph
+    selected = WorkflowGraph(run.nodes_snapshot, run.edges_snapshot).next_work_node_after_ready(
+        project, project.status)
+    if not selected or selected[0] != target_key:
+        return denied("graph_prerequisites_or_gates_not_ready")
     # Explicit graph input contract, not the legacy linear status sequence.
     from app.services.scan_frames import frame_image_prompt_text
     from app.services.vo_shot_expand import is_coverage_leftover
@@ -271,14 +276,21 @@ async def continue_managed_image(session, project, source_key, target_key, node_
     await prepare_node_for_step_start(session, project, spec.step_code, node_key=target_key,
                                      strict=True, explicit_ui_start=False)
     project.status = spec.running_status
-    emit("managed_successor", {"from": source_key, "to": target_key,
+    payload = {"from": source_key, "to": target_key,
         "source_attempt_id": ctx.attempt_id, "graph_version": revision,
         "runtime_config_hash": ctx.runtime_config_hash, "input_hash": digest([
             {"frame_id": f.id, "voiceover": f.voiceover_text,
              "prompt": frame_image_prompt_text(f, frames)} for f in required]),
         "requests_used": control.requests_used, "request_limit": control.request_limit,
         "planner": "original_graph", "fsm": "prepare_node_for_step_start",
-        "transactional": True, "worker_dispatched": False})
+        "transactional": True, "worker_dispatched": False}
+    try:
+        if not ctx.observer.stage(session, scope, "managed_successor", db_scope=ctx.db_scope,
+                node_key=source_key, attempt_id=ctx.attempt_id, payload=payload):
+            raise RuntimeError("mandatory continuation audit unavailable")
+    except Exception as exc:
+        ctx.observer.mark_gap(scope.execution_id, exc)
+        raise RuntimeError("mandatory continuation audit failed; transaction must abort") from exc
     await session.flush()
     return True
 
