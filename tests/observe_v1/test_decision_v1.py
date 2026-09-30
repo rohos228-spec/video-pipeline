@@ -563,6 +563,39 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertNotIn('jobs',contract)
         self.assertNotIn('contract',contract)
 
+    async def _assert_descriptive_native_contract(self,node_type,node_data,expected):
+        record=await self.native_contract_fixture(node_type,node_data)
+        before=await self.loop.context(record['decision_id'])
+        with patch('app.services.excel_gpt_node.node_config',side_effect=AssertionError('not generic Excel')):
+            result=await self.loop.read_contract(record['decision_id'])
+        self.assertFalse(result['managed'])
+        self.assertEqual(result['result_kind'],'unsupported')
+        self.assertEqual(result['verification_status'],'unavailable: no accepted managed executor')
+        self.assertTrue(result['descriptive_only'])
+        self.assertFalse(result['managed_executor_accepted'])
+        description=result['descriptive_contract']
+        self.assertEqual(description['node_type'],expected)
+        self.assertFalse(description['semantic_quality_verified'])
+        self.assertIn('executor',description)
+        for name in ('jobs','contract','current_output'):
+            self.assertNotIn(name,result)
+        for action in ('retry_same','retry_profile','finish'):
+            self.assertNotIn(action,before['allowed_actions'])
+        self.assertEqual(before['eligible_profiles'],[])
+        self.assertEqual((await self.loop.context(record['decision_id']))['context_version'],before['context_version'])
+
+    async def test_hero_descriptive_contract_cannot_authorize_generation(self):
+        await self._assert_descriptive_native_contract('hero',None,'hero')
+
+    async def test_animation_descriptive_contract_cannot_authorize_generation(self):
+        await self._assert_descriptive_native_contract('animation_prompts',None,'animation_prompts')
+
+    async def test_camera_descriptive_contract_cannot_inherit_excel_tools(self):
+        await self._assert_descriptive_native_contract('excel_gpt',{'sd_agent':'camera'},'sd_agent')
+
+    async def test_assembler_descriptive_contract_cannot_inherit_excel_tools(self):
+        await self._assert_descriptive_native_contract('excel_gpt',{'sd_agent':'assemble'},'sd_assemble')
+
 
 def load_tests(loader,tests,pattern):
     suite=unittest.TestSuite()

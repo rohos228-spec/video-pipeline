@@ -65,6 +65,11 @@ try:
         if os.environ.get('OBSERVE_TEST_TARGET')=='decision-scene-contracts':
             sys.argv.extend(['DecisionDurability.test_marked_scene_node_never_inherits_structured_text_recovery',
                 'DecisionDurability.test_unsupported_native_contract_does_not_claim_media_verification'])
+        if os.environ.get('OBSERVE_TEST_TARGET')=='decision-family-contracts':
+            sys.argv.extend(['DecisionDurability.test_hero_descriptive_contract_cannot_authorize_generation',
+                'DecisionDurability.test_animation_descriptive_contract_cannot_authorize_generation',
+                'DecisionDurability.test_camera_descriptive_contract_cannot_inherit_excel_tools',
+                'DecisionDurability.test_assembler_descriptive_contract_cannot_inherit_excel_tools'])
     if os.environ.get("OBSERVE_TEST_TARGET")=="decision-runtime":
         sys.argv=[str(SOURCE / "tests/observe_v1/test_decision_runtime.py")]
     if os.environ.get("OBSERVE_TEST_TARGET")=="profiles":
