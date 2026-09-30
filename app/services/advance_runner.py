@@ -25,6 +25,10 @@ class AdvanceJobResult:
 
 async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
     """Один такт advance_project в своей сессии изолированной проектной БД."""
+    from app.services.actions_v1 import worker_entry_admission
+    admission=await worker_entry_admission(project_id)
+    if not admission.allowed:
+        return AdvanceJobResult(project_id,'',None)
     try:
         async with project_db_session_scope(project_id) as session:
             project = await session.get(Project, project_id)

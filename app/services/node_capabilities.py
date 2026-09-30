@@ -31,6 +31,8 @@ _CAPABILITIES = {
     'script': NodeCapability('script','project_text','make_script.run → xlsx_step_runners.run_script_xlsx',
         ('running','parse','validate','apply','commit','human_approval'),
         ('project_database','local_xlsx','hitl_request'),READ_ACTIONS,True),
+    'split': NodeCapability('split','frame_set','split_frames.run → xlsx_step_runners.run_split_xlsx',
+        ('running','parse','apply','commit','verify'),('project_database','local_xlsx'),READ_ACTIONS,True),
     "excel_gpt": NodeCapability("excel_gpt", "structured", "enrich_xlsx.run",
         ("running", "parse", "validate", "apply", "commit"), ("project_database",),
         READ_ACTIONS + ("retry_same", "retry_profile", "finish"), True),
@@ -155,3 +157,86 @@ async def observe_project_text_result(project,node_type):
     proof=verify_project_text(project,node_type)
     await record_fact('node_result_verification',proof,body={proof['field']:getattr(project,proof['field'],None)})
     if proof['status']!='passed':raise RuntimeError(proof['reason'])
+
+
+def split_contract():
+    return {'input':'original voiceover.txt snapshot','output':'project.db frames ordered by number',
+        'minimum_frames':2,'formats':['replace_frames_json','dash_separated_blocks','native_local_voiceover_fallback'],
+        'effects':['replace_all_frames','original XLSX export and snapshots','original split metadata'],
+        'managed_verification':['scoped project','unique nonempty UUID','unique sequential number',
+            'nonempty voiceover','complete ordered voiceover after whitespace normalization'],
+        'semantic_quality_verified':False,'retry_policy':'original runtime only; no supervisor recovery/profile'}
+
+
+def verify_split_frames(frames, *, project_id, voiceover):
+    """Verify actual frame rows against the captured input, without changing them."""
+    import hashlib
+    from app.services.observation import digest
+    rows=[{'project_id':fr.project_id,'uuid':fr.uuid,'number':fr.number,
+           'voiceover_text':fr.voiceover_text or ''} for fr in frames]
+    errors=[]
+    if len(rows)<2:errors.append('minimum_frames')
+    if any(r['project_id']!=project_id for r in rows):errors.append('project_scope')
+    uuids=[r['uuid'] for r in rows]
+    if any(not isinstance(u,str) or not u.strip() for u in uuids) or len(set(uuids))!=len(uuids):errors.append('frame_identity')
+    if [r['number'] for r in rows]!=list(range(1,len(rows)+1)):errors.append('frame_order')
+    if any(not isinstance(r['voiceover_text'],str) or not r['voiceover_text'].strip() for r in rows):errors.append('empty_voiceover')
+    normalize=lambda text:' '.join(text.split())
+    known=isinstance(voiceover,str) and bool(voiceover.strip())
+    output=' '.join(r['voiceover_text'] for r in rows)
+    preserved=normalize(output)==normalize(voiceover) if known else None
+    if preserved is False:errors.append('voiceover_changed_or_missing')
+    return {'status':'failed' if errors else ('passed' if known else 'unknown'),
+        'node_type':'split','frame_count':len(rows),'frame_set_sha256':digest(rows),
+        'input_sha256':hashlib.sha256(voiceover.encode()).hexdigest() if known else None,
+        'voiceover_preserved':preserved,'errors':errors,
+        'reason':'; '.join(errors) if errors else (None if known else 'captured input unavailable'),
+        'business_commit_claim':False,'semantic_quality_verified':False}
+
+
+async def record_split_input(voiceover):
+    from app.services.observation import _attempt,record_fact
+    ctx=_attempt.get()
+    if ctx is None:return
+    ctx.split_input_voiceover=voiceover
+    await record_fact('node_input',{'contract':'native_split','source':'original voiceover file snapshot'},
+        body={'voiceover':voiceover})
+
+
+async def record_split_parse(reply,frames_spec):
+    import json
+    from types import SimpleNamespace
+    from app.services.observation import _attempt,record_fact
+    ctx=_attempt.get()
+    if ctx is None:return
+    try:json.loads(reply);syntax_valid=True
+    except (ValueError,TypeError):syntax_valid=False
+    frames=[SimpleNamespace(project_id=ctx.scope.project_id,uuid='extracted-'+str(i),number=i,
+        voiceover_text=str(f.get('voiceover_text') or f.get('закадр') or f.get('voiceover') or '').strip())
+        for i,f in enumerate(frames_spec,1)]
+    proof=verify_split_frames(frames,project_id=ctx.scope.project_id,voiceover=ctx.split_input_voiceover)
+    await record_fact('parse_result',{'contract':'native_split','syntax_valid':syntax_valid,
+        'parsed':bool(frames_spec),'payload_present':bool(frames_spec),'payload_required':False,
+        'schema_valid':proof['status']=='passed','frame_count':len(frames_spec),
+        'native_fallback_allowed':True,'semantic_quality_verified':False},request_id=ctx.last_request_id,
+        body={'reply':reply,'extracted_frames':frames_spec})
+    await record_fact('runtime_check',{'check':'native_split_voiceover_coverage','performed':True,
+        **proof,'source':'actual extraction; no DB commit claim'},request_id=ctx.last_request_id)
+
+
+async def observe_split_result(session,project,node_type):
+    from sqlalchemy import select
+    from app.models import Frame
+    from app.services.observation import _attempt,record_fact
+    ctx=_attempt.get()
+    if not ctx or ctx.scope.mode!='managed' or node_type!='split':return
+    frames=(await session.scalars(select(Frame).where(Frame.project_id==project.id).order_by(Frame.number))).all()
+    proof=verify_split_frames(frames,project_id=project.id,voiceover=getattr(ctx,'split_input_voiceover',None))
+    await record_fact('node_result_verification',{**proof,'source':'original executor frame rows; commit requires outbox'},
+        body={'frames':[{'uuid':f.uuid,'number':f.number,'voiceover_text':f.voiceover_text} for f in frames]})
+    if proof['status']!='passed':
+        from app.services.actions_v1 import ActionSupervisor
+        await ActionSupervisor(ctx.observer.master).set_held(project_id=ctx.scope.project_id,
+            execution_id=ctx.scope.execution_id,held=True,initiator='native_split_verifier',
+            rationale=proof['reason'],idempotency_key='split-verify:'+ctx.attempt_id,operator_request=False)
+        raise RuntimeError('native split verification not confirmed: '+str(proof['reason']))

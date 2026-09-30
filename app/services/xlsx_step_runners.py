@@ -510,6 +510,9 @@ async def run_split_xlsx(
             "voiceover.txt не найден — сначала пройди шаг «Закадровый текст»"
         )
 
+    from app.services.node_capabilities import record_split_input,record_split_parse
+    await record_split_input(voiceover.read_text(encoding='utf-8',errors='replace'))
+
     ts = _ts()
     tmp_dir = cx.tmp_gpt_dir(project)
     prompt_file = cx.write_split_prompt_file(project, tmp_dir, ts=ts)
@@ -534,6 +537,7 @@ async def run_split_xlsx(
 
     reply = await xgf.run_under_xlsx_lock(project.id, "split", _gpt)
     frames_spec = extract_frames_spec_from_gpt_reply(reply, voiceover_path=voiceover)
+    await record_split_parse(reply,frames_spec)
     if len(frames_spec) < 2:
         raise RuntimeError(
             "GPT не вернул разбивку в apply-ops replace_frames "

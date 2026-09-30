@@ -52,6 +52,9 @@ try:
         if os.environ.get('OBSERVE_TEST_TARGET')=='decision-audit':
             sys.argv.extend(['DecisionDurability.test_missing_mandatory_body_blocks_http_before_charge',
                 'DecisionDurability.test_contract_uses_actual_target_count_not_example_batch'])
+        if os.environ.get('OBSERVE_TEST_TARGET')=='decision-native-contracts':
+            sys.argv.extend(['DecisionDurability.test_native_read_contract_preserves_hitl_without_recovery_profile_or_writes',
+                'DecisionDurability.test_split_read_contract_has_no_media_job_or_inferred_success'])
     if os.environ.get("OBSERVE_TEST_TARGET")=="decision-runtime":
         sys.argv=[str(SOURCE / "tests/observe_v1/test_decision_runtime.py")]
     if os.environ.get("OBSERVE_TEST_TARGET")=="profiles":

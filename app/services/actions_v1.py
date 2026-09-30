@@ -141,6 +141,28 @@ async def managed_project_enabled(project_id: int) -> bool:
             ActionExecutionControl.enabled.is_(True)).limit(1)) is not None
 
 
+async def worker_entry_admission(project_id: int) -> StartDecision:
+    """Stop a new native tick before any business session/attempt when held.
+
+    Existing active work is not cancelled here. Read durable control on every
+    new job: an empty volatile cache after restart must not erase a hold.
+    Stopping observation alone does not change this execution permission.
+    """
+    from app.services.observation import _observer
+    cached=get_permission(project_id)
+    if _observer is None:
+        if cached is not None and cached.enabled:
+            return StartDecision(False,'managed_storage_unavailable')
+        return StartDecision(True,'ordinary_mode')
+    async with _observer.master() as session:
+        controls=(await session.scalars(select(ActionExecutionControl).where(
+            ActionExecutionControl.project_id==project_id,ActionExecutionControl.enabled.is_(True)))).all()
+    if not controls:
+        return StartDecision(not (cached and cached.enabled),'ordinary_mode' if not cached else 'permission_not_confirmed')
+    if len(controls)!=1:return StartDecision(False,'ambiguous_managed_execution')
+    return StartDecision(not controls[0].held,'execution_held' if controls[0].held else 'execution_enabled')
+
+
 def update_permission(project_id: int, *, held: bool | None = None,
                       requests_used: int | None = None) -> ExecutionPermission | None:
     """Atomically update volatile gate state after a durable control write."""
@@ -453,11 +475,14 @@ class ActionSupervisor:
                 "requests_used": 0, "node_keys": list(node_keys), "group_id": group_id}
 
     async def set_held(self, *, project_id: int, execution_id: str, held: bool,
-                       initiator: str, rationale: str, idempotency_key: str) -> dict:
+                       initiator: str, rationale: str, idempotency_key: str,
+                       operator_request: bool = True) -> dict:
         from sqlalchemy import select
         from app.models import Project
         if not initiator or not rationale.strip() or not idempotency_key.strip():
             raise ValueError("explicit initiator, rationale and idempotency key required")
+        if not held and not operator_request:
+            raise ValueError('automatic resume is not authorized by a verifier/policy hold')
         async with self.master() as session:
             control = await session.get(ActionExecutionControl, execution_id)
             if control is None or control.project_id != project_id or not control.enabled:
@@ -483,7 +508,7 @@ class ActionSupervisor:
                 action_id=str(uuid.uuid4()), execution_id=execution_id,
                 project_id=project_id, action_kind="resume" if not held else "hold",
                 initiator=initiator, rationale=rationale.strip(), evidence_ids=[],
-                preconditions={"explicit_operator_request": True},
+                preconditions={"explicit_operator_request": operator_request},
                 idempotency_key=idempotency_key,
                 status="accepted", verification={},
             ))

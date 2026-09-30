@@ -451,21 +451,25 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertFalse(text_contract['nonempty_payload_required'])
         self.assertFalse(text_contract['empty_ops_allowed'])
 
-    async def test_native_read_contract_preserves_hitl_without_recovery_profile_or_writes(self):
+    async def native_contract_fixture(self,node_type):
         from app.models import Project,Workflow,WorkflowRun,NodeRun
         from app.services.actions_v1 import ActionExecutionControl
         async with self.sessions() as s:
-            nodes=[{**n,'type':'plan' if n['id']=='n1' else n['type']} for n in self.nodes]
+            nodes=[{**n,'type':node_type if n['id']=='n1' else n['type']} for n in self.nodes]
             (await s.get(Workflow,9)).nodes=nodes
             (await s.get(WorkflowRun,11)).nodes_snapshot=nodes
             graph=observation.digest({'nodes':nodes,'edges':[]})
             (await s.get(observation.ExecutionControl,'exec-durable')).graph_version=graph
             (await s.get(ActionExecutionControl,'exec-durable')).graph_version=graph
-            (await s.scalar(select(NodeRun).where(NodeRun.node_key=='n1'))).node_type='plan'
+            (await s.scalar(select(NodeRun).where(NodeRun.node_key=='n1'))).node_type=node_type
             project=await s.get(Project,7)
             project.general_plan='Синтетический текст плана. '*20
             await s.commit()
         await self.enable_decisions();record=await self.begin()
+        return record
+
+    async def test_native_read_contract_preserves_hitl_without_recovery_profile_or_writes(self):
+        record=await self.native_contract_fixture('plan')
         before=await self.loop.context(record['decision_id'])
         contract=await self.loop.read_contract(record['decision_id'])
         self.assertEqual(contract['result_kind'],'project_text')
@@ -473,6 +477,19 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertTrue(contract['contract']['human_approval_preserved'])
         self.assertEqual(contract['current_output']['status'],'passed')
         self.assertEqual(contract['compatible_profiles'],[])
+        self.assertNotIn('retry_same',before['allowed_actions'])
+        self.assertNotIn('retry_profile',before['allowed_actions'])
+        self.assertEqual((await self.loop.context(record['decision_id']))['context_version'],before['context_version'])
+
+    async def test_split_read_contract_has_no_media_job_or_inferred_success(self):
+        record=await self.native_contract_fixture('split')
+        before=await self.loop.context(record['decision_id'])
+        contract=await self.loop.read_contract(record['decision_id'])
+        self.assertEqual(contract['result_kind'],'frame_set')
+        self.assertEqual(contract['contract']['minimum_frames'],2)
+        self.assertNotIn('jobs',contract)
+        self.assertEqual(contract['compatible_profiles'],[])
+        self.assertTrue(contract['verification_status'].startswith('not_checked'))
         self.assertNotIn('retry_same',before['allowed_actions'])
         self.assertNotIn('retry_profile',before['allowed_actions'])
         self.assertEqual((await self.loop.context(record['decision_id']))['context_version'],before['context_version'])

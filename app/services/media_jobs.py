@@ -219,7 +219,8 @@ async def _hold(ctx, reason, identity):
                                              "job_id": identity})
     await ActionSupervisor(ctx.observer.master).set_held(
         project_id=ctx.scope.project_id, execution_id=ctx.scope.execution_id, held=True,
-        initiator="media_policy", rationale=reason, idempotency_key="media-hold:" + identity)
+        initiator="media_policy", rationale=reason, idempotency_key="media-hold:" + identity,
+        operator_request=False)
 
 
 def _resource(path, root, kind):

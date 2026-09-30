@@ -9,7 +9,7 @@ import time
 TEXT=('Синтетический текст: человек находит папку, читает записку и возвращает её на стол. '*6).strip()
 
 def prepare(fixtures,root,mode):
-    typ='plan' if mode=='launch-plan' else 'script'
+    typ='split' if mode.startswith('launch-split') else ('plan' if mode=='launch-plan' else 'script')
     key='native-'+typ+'-A';outside='outside-native-text-Z'
     nodes=[{'id':key,'type':typ,'position':{'x':100,'y':100},
             'data':{'label':'Synthetic native '+typ,'modelId':'gpt-kie'}},
@@ -22,8 +22,8 @@ def prepare(fixtures,root,mode):
             meta=json.loads(db.execute('SELECT meta FROM projects WHERE id=2').fetchone()[0])
             meta['canvas_graph'].update(nodes=nodes,edges=edges)
             meta.pop('active_excel_gpt_node_key',None);meta.pop('step_failure',None)
-            db.execute("UPDATE projects SET status='new',general_plan=?,script_text=NULL,meta=? WHERE id=2",
-                (None if typ=='plan' else TEXT,json.dumps(meta)))
+            db.execute("UPDATE projects SET status='new',general_plan=?,script_text=?,meta=? WHERE id=2",
+                (None if typ=='plan' else TEXT,TEXT if typ=='split' else None,json.dumps(meta)))
             run=db.execute('SELECT id FROM workflow_runs WHERE project_id=2 ORDER BY id DESC LIMIT 1').fetchone()[0]
             db.execute('UPDATE workflow_runs SET nodes_snapshot=?,edges_snapshot=? WHERE id=?',(json.dumps(nodes),json.dumps(edges),run))
             db.execute('DELETE FROM node_runs WHERE workflow_run_id=?',(run,))
@@ -36,12 +36,20 @@ def prepare(fixtures,root,mode):
         'profiles':{},'allowed_actions':['read_events','read_contract','wait','human_review']}
     path=root/'synthetic-project-text-runtime.json';path.write_text(json.dumps(cfg))
     os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
+    if typ=='split':
+        # The original native executor intentionally prefers an existing usable
+        # file. Initialize the copied synthetic file consistently with its DB.
+        (fixtures.DB.parent/'voiceover.txt').write_text(TEXT,encoding='utf-8')
     field='общий_план' if typ=='plan' else 'закадровый_текст'
-    answer=json.dumps({'ops':[{'target':'project','fields':{field:TEXT}}]},ensure_ascii=False)
+    words=TEXT.split();mid=len(words)//2
+    vo_parts=[' '.join(words[:mid]),' '.join(words[mid:])]
+    if mode=='launch-split-loss':vo_parts[1]='Потерянный хвост.'
+    answer=json.dumps({'ops':[{'target':'replace_frames','frames':[{'закадр':vo} for vo in vo_parts]}]}
+        if typ=='split' else {'ops':[{'target':'project','fields':{field:TEXT}}]},ensure_ascii=False)
     fixtures.NODES=(key,outside)
     fixtures.synthetic_answer=lambda node,attempt:answer
     prepared={'node_type':typ,'node_key':key,'outside':outside,
-        'output_field':'general_plan' if typ=='plan' else 'script_text',
+        'output_field':'general_plan' if typ=='plan' else 'script_text','expect_split_loss':mode=='launch-split-loss',
         'interventions':['fresh pending graph before startup; no successful status manufactured',
             'script scenario has a synthetic initial general_plan, empty script_text and no frames',
             'explicit compatible gpt-kie choice before startup; loopback transport only, native prompts unchanged',
@@ -75,6 +83,10 @@ async def run(client,fixtures,observer,root,result,prepared,*,browser=False):
     execution=launch['execution_id']
     result.update(execution_id=execution,managed_launch=launch,operator_starts=0,
         interventions=prepared['interventions'],scope_boundary='original managed gate')
+    if prepared['node_type']=='split':
+        assert not browser,'existing browser case is native plan only'
+        await run_split(client,fixtures,observer,root,result,prepared,prefix=base+'/observations/'+execution)
+        return
     deadline=time.monotonic()+120
     state={}
     while time.monotonic()<deadline:
@@ -151,3 +163,69 @@ async def run(client,fixtures,observer,root,result,prepared,*,browser=False):
         verification=proofs[0]['payload'],mandatory_human_approval=True,
         business_output_sha256=hashlib.sha256(output.encode()).hexdigest(),
         semantic_quality_verified=False)
+
+
+async def run_split(client,fixtures,observer,root,result,prepared,*,prefix):
+    key=prepared['node_key'];bad=prepared['expect_split_loss']
+    deadline=time.monotonic()+120
+    while time.monotonic()<deadline:
+        with sqlite3.connect(fixtures.DB) as db:
+            states=dict(db.execute('SELECT node_key,status FROM node_runs').fetchall())
+            rows=db.execute('SELECT uuid,number,voiceover_text FROM frames WHERE project_id=2 ORDER BY number').fetchall()
+        actions=(await client.get(prefix+'/actions')).json()
+        if (bad and actions['held']) or (not bad and states[key]=='done'):break
+        await asyncio.sleep(.25)
+    result['split_state']={'nodes':states,'frame_count':len(rows),'held':actions['held']}
+    await observer.catch_up()
+    await observer.diagnoser.update(result['execution_id'])
+    history=[];after=0
+    while True:
+        page=(await client.get(prefix+'/events',params={'after':after,'limit':500})).json()
+        history.extend(page['events'])
+        if not page['has_more']:break
+        after=page['next_cursor']
+    (root/'api-history.json').write_text(json.dumps({'events':history},ensure_ascii=False,indent=2))
+    requests=json.loads((root/'actual-worker-requests.json').read_text())
+    assert len(requests)==1 and requests[0]['node_key']==key
+    assert requests[0]['body']['model']=='gpt-5-6-sol'
+    assert len(rows)==2 and len({r[0] for r in rows})==2
+    assert [r[1] for r in rows]==[1,2]
+    preserved=' '.join(' '.join(r[2] for r in rows).split())==' '.join(TEXT.split())
+    assert preserved is (not bad)
+    assert states[prepared['outside']]=='pending'
+    facts=[e for e in history if e['node_key']==key]
+    assert len([e for e in facts if e['kind']=='node_start'])==1
+    assert len([e for e in facts if e['kind']=='node_input'])==1
+    parsed=[e for e in facts if e['kind']=='parse_result']
+    assert len(parsed)==1 and parsed[0]['payload']['syntax_valid'] is True
+    assert parsed[0]['payload']['schema_valid'] is (not bad)
+    proof=[e for e in facts if e['kind']=='node_result_verification']
+    assert len(proof)==1 and proof[0]['payload']['status']==('failed' if bad else 'passed')
+    applied=[e for e in facts if e['kind']=='data_applied' and e.get('db_scope')=='project'
+        and e['payload'].get('transactional') is True and e['payload'].get('result',{}).get('ok') is True]
+    assert len(applied)==1,'original replace_frames applied once; no rollback claim'
+    assert actions['requests_used']==1 and not actions['recoveries']
+    assert actions['held'] is bad
+    assert not (await client.get(prefix+'/decisions')).json()['records']
+    diagnoses=(await client.get(prefix+'/diagnoses')).json()
+    if bad:
+        assert any(i['type']=='contract_rejected' and i['currently_relevant'] for i in diagnoses['incidents'])
+        assert any(a['initiator']=='native_split_verifier' for a in actions['records'])
+    else:
+        assert states[key]=='done'
+        assert not any(i['blocking'] and i['currently_relevant'] for i in diagnoses['incidents'])
+    before=dict(fixtures.FixtureHandler.counts)
+    await asyncio.sleep(12)
+    assert before==dict(fixtures.FixtureHandler.counts)=={key:1}
+    await observer.catch_up()
+    with sqlite3.connect(fixtures.DATA/'state.db') as db:
+        assert db.execute('SELECT status FROM projects WHERE id=1').fetchone()[0]=='new'
+        assert db.execute("SELECT count(*) FROM observation_events WHERE execution_id=? AND node_key=? AND kind='node_start'",
+            (result['execution_id'],key)).fetchone()[0]==1,'held execution must not create another worker attempt'
+    with sqlite3.connect(fixtures.DB) as db:
+        final_states=dict(db.execute('SELECT node_key,status FROM node_runs').fetchall())
+    assert final_states[prepared['outside']]=='pending'
+    result['split_state']['nodes']=final_states
+    result.update(accepted=True,one_user_launch=True,actions=actions,verification=proof[0]['payload'],
+        diagnoses=diagnoses,voiceover_preserved=preserved,business_apply_count=1,
+        partial_apply_recorded=bad,semantic_quality_verified=False)

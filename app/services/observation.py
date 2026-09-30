@@ -666,8 +666,9 @@ async def observe_attempt(session, project):
             await record_fact("profile_effective_context", {k:overlay[k] for k in ("overlay_id","profile_id","candidate_hash","base_version","attempt_id","candidate")})
         yield
         if scope.mode == 'managed':
-            from app.services.node_capabilities import observe_project_text_result
+            from app.services.node_capabilities import observe_project_text_result,observe_split_result
             await observe_project_text_result(project, capability.node_type)
+            await observe_split_result(session,project,capability.node_type)
     except BaseException as exc:
         from app.services.profiles_v1 import finish_attempt
         await finish_attempt(ctx, True)
