@@ -683,12 +683,25 @@ async def observe_attempt(session, project):
         if overlay:
             await record_fact("profile_effective_context", {k:overlay[k] for k in ("overlay_id","profile_id","candidate_hash","base_version","attempt_id","candidate")})
         yield
+        if capability.node_type == 'animation_prompts':
+            try:
+                from app.services.native_animation_contracts import observe_animation_result
+                await observe_animation_result(session, project, capability.node_type)
+            except Exception as snapshot_error:
+                observer.mark_gap(scope.execution_id, snapshot_error)
         if scope.mode == 'managed':
             from app.services.node_capabilities import observe_project_text_result,observe_split_result,observe_image_prompt_result
             await observe_project_text_result(project, capability.node_type)
             await observe_split_result(session,project,capability.node_type)
             await observe_image_prompt_result(session,project,capability.node_type)
     except BaseException as exc:
+        if (isinstance(exc, Exception) and capability.node_type == 'animation_prompts'
+                and not getattr(ctx, 'animation_verification_recorded', False)):
+            try:
+                from app.services.native_animation_contracts import observe_animation_result
+                await observe_animation_result(session, project, capability.node_type)
+            except Exception as snapshot_error:
+                observer.mark_gap(scope.execution_id, snapshot_error)
         if (isinstance(exc,Exception) and scope.mode=='managed' and capability.node_type=='image_prompts'
                 and not getattr(ctx,'image_prompt_verification_recorded',False)):
             try:
