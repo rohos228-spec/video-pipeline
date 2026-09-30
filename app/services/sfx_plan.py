@@ -206,6 +206,10 @@ async def plan_sfx_events(
         max_attempts=max_attempts,
     )
     events = _parse_events(result.payload)
+    # text_job returns checkpoints unchecked; validate against this timeline.
+    problems = validate_events(events, total_duration=total)
+    if problems:
+        raise RuntimeError(f"sfx_plan: не прошло валидацию: {problems}")
 
     # Артефакт на диск.
     out_path = project.data_dir / "sfx_plan.json"
