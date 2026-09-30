@@ -51,6 +51,8 @@ try:
         sys.argv=[str(SOURCE/'tests/observe_v1'/extra_targets[os.environ['OBSERVE_TEST_TARGET']])]
     if os.environ.get('OBSERVE_TEST_TARGET')=='hitl-authority':
         sys.argv=[str(SOURCE/'tests/observe_v1/test_hitl_project_authority.py')]
+    if os.environ.get('OBSERVE_TEST_TARGET')=='animation-observation':
+        sys.argv=[str(SOURCE/'tests/observe_v1/test_native_animation_observation.py')]
     if os.environ.get("OBSERVE_TEST_TARGET") == "media-jobs":
         sys.argv = [str(SOURCE / "tests/observe_v1/test_media_jobs.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "media-observation":
