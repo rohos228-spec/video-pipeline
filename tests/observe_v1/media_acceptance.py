@@ -6,6 +6,7 @@ import json
 import os
 import random
 import sqlite3
+import sys
 import time
 from collections import Counter
 from pathlib import Path
@@ -13,6 +14,10 @@ from PIL import Image
 
 
 def prepare(fixtures, root, mode):
+    # Profiles imports models -> settings. Configure the transport before any
+    # application import so the immutable checkpoint revision remains valid.
+    assert 'app.settings' not in sys.modules, 'prepare media environment before loading application settings'
+    os.environ['KIE_API_BASE_URL']='http://127.0.0.1:18766'
     if mode=='media-decision-recovery':
         # Read a copy of the accepted genuine QC exhaustion checkpoint. Keep
         # every original attempt, frame, graph and allowance intact.
@@ -46,10 +51,10 @@ def prepare(fixtures, root, mode):
             cfg['allowed_actions'].append('retry_profile')
         path=root/'synthetic-media-runtime.json';path.write_text(json.dumps(cfg,indent=2))
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
-        os.environ['KIE_API_BASE_URL']='http://127.0.0.1:18766'
         evidence={'scenario':mode,'scope':json.loads(keys),'outside':'n_videos','frame_count':frame_count,
             'execution_id':execution,'historical_requests_used':used,'historical_request_limit':limit,
             'historical_node_attempts':qc[1],'native_attempt_events':9,
+            'configuration_initialized_before_app_import':True,
             'config_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
             'operator_interventions':['copy immutable genuine QC native exhaustion checkpoint',
                 'enable bounded loopback Decision for the existing execution; no Actions/worker start',
@@ -114,7 +119,6 @@ def prepare(fixtures, root, mode):
             allowed_actions=['read_events','read_contract','wait','human_review','finish'])
     path.write_text(json.dumps(cfg, indent=2))
     os.environ["ORCHESTRATOR_RUNTIME_CONFIG"] = str(path)
-    os.environ["KIE_API_BASE_URL"] = "http://127.0.0.1:18766"
     evidence = {"scope":selected,"outside":"n_videos","frame_count":frame_count,"scenario":mode,
                 "operator_interventions":["fresh synthetic copy; existing registry nodes wired into small test graph",
                     "initial image prompts supplied explicitly; script output is not an image prompt quality test",
@@ -253,6 +257,10 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
         if prepared["scenario"] in {"media-recovery",'media-decision-recovery'}:
             with sqlite3.connect(fixtures.DATA / "state.db") as db:
                 row = db.execute("SELECT status FROM action_node_recoveries WHERE execution_id=?", (execution,)).fetchone()
+                decision = db.execute("SELECT status,policy_result FROM decision_records WHERE execution_id=? ORDER BY created_at DESC LIMIT 1", (execution,)).fetchone() if checkpoint_decision else None
+            if decision and decision[0] == 'human_review':
+                result['decision_stopped'] = {'status':decision[0],'policy_result':json.loads(decision[1])}
+                break
             if row and row[0] == "human_review":
                 result["recovery_stopped"] = "human_review"
                 break
