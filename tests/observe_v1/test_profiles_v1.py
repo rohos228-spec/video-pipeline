@@ -38,6 +38,48 @@ class Profiles(DecisionDurability):
         self.assertEqual(state['overlays'],[])
         self.assertTrue(state['synthetic_only'])
 
+    async def test_profile_compatibility_uses_node_contract_not_group_name(self):
+        async with self.sessions() as s:
+            control=await s.get(ActionExecutionControl,'exec-durable');control.group_id='scope:approved-custom-graph';await s.commit()
+        state=await self.store.state(7,'exec-durable','n1')
+        self.assertTrue(state['available'],state['reason'])
+        self.assertEqual((await self.approve())['status'],'approved')
+
+    async def test_explicit_synthetic_catalog_is_not_replaced_by_legacy_defaults(self):
+        from app.services import decision_config
+        cfg=decision_config.runtime_config()
+        selected={'only-owner-approved':dict(self.profiles.CATALOG['synthetic-json-v1'])}
+        cfg={**cfg,'profiles':selected}
+        with patch.object(decision_config,'runtime_config',return_value=decision_config.validate_config(cfg)):
+            self.assertEqual(self.profiles.active_catalog(),selected)
+            with self.assertRaises(ValueError):await self.approve(profile_id='synthetic-json-v1')
+
+    async def test_multiple_registered_variants_preserve_original_contract_and_roles(self):
+        from app.services import decision_config
+        cfg=decision_config.runtime_config()
+        profiles={name:{**self.profiles.CATALOG['synthetic-json-v1'],'prompt_variant':variant,
+            'reasoning_effort':'low','max_output_tokens':1024} for name,variant in
+            [('keep-original','original-contract-v1'),('format-only','repair-json-only-v1')]}
+        with patch.object(decision_config,'runtime_config',return_value=decision_config.validate_config({**cfg,'profiles':profiles})):
+            source={**self.source_body,'input':[{'role':'system','content':'original validators'},
+                {'role':'user','content':'original source facts'}]}
+            unchanged=self.profiles.effective_body(source,profiles['keep-original'])
+            self.assertEqual(unchanged['input'],source['input'])
+            repaired=self.profiles.effective_body(source,profiles['format-only'])
+            self.assertEqual(repaired['input'][0],source['input'][0])
+            self.assertTrue(repaired['input'][1]['content'].startswith('original source facts'))
+            self.assertEqual(source['input'][1]['content'],'original source facts')
+            self.assertEqual(self.profiles.effective_body(repaired,profiles['format-only']),repaired)
+
+    async def test_synthetic_profile_parameters_are_positive_and_bounded(self):
+        from app.services import decision_config
+        cfg=decision_config.runtime_config()
+        for field,value in [('max_output_tokens',0),('max_output_tokens',True),('max_output_tokens',20000),
+                            ('reasoning_effort','unrestricted'),('synthetic_only',False),('model_id','arbitrary')]:
+            with self.subTest(field=field,value=value),self.assertRaises(ValueError):
+                decision_config.validate_config({**cfg,'profiles':{'unsafe':{
+                    **self.profiles.CATALOG['synthetic-json-v1'],field:value}}})
+
     async def test_approval_persists_version_and_does_not_change_project(self):
         overlay=await self.approve()
         other=self.profiles.ProfilesSupervisor(observation._observer)
