@@ -16,6 +16,12 @@ The new imagePreviewLink assertions have not been reached yet; do not claim thei
 execution from this first URL assertion failure. Next change: scoped route/link.
 
 The original blocked checkpoint notes below are retained as history.
+
+With the scoped-link patch still uncommitted, `preview-ui-red-02` passed the
+existing UI assertions and reached the new preview test. It failed specifically
+with `TypeError: imagePreviewLink is not a function` at line 124. That is the
+separate executed RED for the missing helper; its exact source snapshot is in
+the results directory. The backend scoped-route GREEN run is independent.
 This checkpoint contains prepared tests and documentation only. No application,
 gateway, production configuration or exported UI changes. No provider requests,
 credentials, dependency installation or Docker/host configuration changes.
