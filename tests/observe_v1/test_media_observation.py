@@ -124,6 +124,44 @@ class MediaObservation(MediaJobs):
             with self.assertRaisesRegex(ValueError, "adapter"):
                 require_managed_capability(kind)
 
+    async def test_continuation_requires_original_planner_prerequisites(self):
+        from app.models import Workflow, WorkflowRun, NodeRun, NodeRunStatus
+        from app.services.actions_v1 import ActionExecutionControl, reload_permissions
+        await self.continuation_fixture()
+        self.nodes.append({"id":"unfinished", "type":"excel_gpt", "data":{"slotIndex":0}})
+        self.edges.append({"id":"other-input", "source":"unfinished", "target":"image", "data":{"kind":"after"}})
+        version=observation.digest({"nodes":self.nodes,"edges":self.edges})
+        self.project.meta={**self.project.meta,"canvas_graph":{"nodes":self.nodes,"edges":self.edges}}
+        for cls in (Workflow,WorkflowRun):
+            row=await self.session.get(cls,1)
+            if cls is Workflow:row.nodes=self.nodes;row.edges=self.edges
+            else:row.nodes_snapshot=self.nodes;row.edges_snapshot=self.edges
+        self.session.add(NodeRun(workflow_run_id=1,node_key="unfinished",node_type="excel_gpt",status=NodeRunStatus.pending))
+        for cls in (ActionExecutionControl,observation.ExecutionControl):
+            row=await self.session.get(cls,self.scope.execution_id);row.graph_version=version
+        await self.session.commit()
+        observation._attempt.get().scope.graph_version=version
+        await reload_permissions(self.sessions)
+        await self.continue_native()
+        self.assertEqual(self.image_node.status,NodeRunStatus.pending)
+
+    async def test_continuation_audit_failure_aborts_transaction(self):
+        from unittest.mock import patch
+        from app.models import NodeRun,NodeRunStatus
+        from sqlalchemy import select
+        await self.continuation_fixture()
+        original=self.observer.stage
+        def fail_success(*args,**kwargs):
+            if args[2]=="managed_successor":return False
+            return original(*args,**kwargs)
+        with patch.object(self.observer,"stage",side_effect=fail_success):
+            with self.assertRaisesRegex(RuntimeError,"audit"):
+                await self.continue_native()
+        await self.session.rollback()
+        async with self.sessions() as s:
+            node=await s.scalar(select(NodeRun).where(NodeRun.node_key=="image"))
+            self.assertEqual(node.status,NodeRunStatus.pending)
+
     async def test_panel_media_context_has_no_fake_progress_or_paths(self):
         from app.services.media_view import context_for_nodes
         async with self.sessions() as s:
