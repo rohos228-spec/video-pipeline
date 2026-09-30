@@ -386,18 +386,31 @@ class DecisionSupervisor:
             records=(await s.scalars(select(DecisionRecord).where(DecisionRecord.status.in_(['ready','waiting_worker','model_pending','acting'])))).all()
         for row in records:
             if row.status=='waiting_worker':
+                failure=None
                 async with self.master() as s:
                     ticket=await s.get(RecoveryAction,row.action_id)
-                    if ticket and ticket.status=='verified':
-                        record=await s.get(DecisionRecord,row.decision_id);record.status='ready';record.verification=ticket.verification_result
-                        await self._turn(s,record,'worker:'+ticket.action_id,'tool',{'action':'worker_result','status':ticket.status,'verification':ticket.verification_result})
-                        await s.commit()
-                    failed=ticket and ticket.status=='human_review'
-                    if failed:
+                    if not ticket or (ticket.execution_id,ticket.project_id,ticket.incident_id,ticket.node_key,ticket.source_attempt_id)!=(
+                            row.execution_id,row.project_id,row.incident_id,row.node_key,row.source_attempt_id):
+                        failure='recovery ticket identity does not match decision'
+                    elif ticket.status=='verified':
+                        if ticket.verification_result.get('verified') is not True:
+                            failure='recovery terminal verification is missing or inconsistent'
+                        else:
+                            record=await s.get(DecisionRecord,row.decision_id)
+                            record.status='done';record.verification=ticket.verification_result
+                            record.policy_result={'allowed':True,'reason':'persisted worker verification completed decision without another model step'}
+                            record.lease_token=None;record.lease_until=None
+                            await self._turn(s,record,'worker:'+ticket.action_id,'tool',{'action':'worker_result','status':ticket.status,
+                                'verification':ticket.verification_result,'completion':'deterministic runtime proof'})
+                            await s.commit()
+                    elif ticket.status=='human_review':
                         record=await s.get(DecisionRecord,row.decision_id);record.verification=ticket.verification_result
                         await self._turn(s,record,'worker:'+ticket.action_id,'tool',{'action':'worker_result','status':ticket.status,'verification':ticket.verification_result})
                         await s.commit()
-                if failed:await self.escalate(row.decision_id,'recovery failed verification; no further attempt')
+                        failure='recovery failed verification; no further attempt'
+                    elif ticket.status not in {'reserved','queued','claimed','await_verify'}:
+                        failure='recovery state unknown; verification requires human review'
+                if failure:await self.escalate(row.decision_id,failure)
                 continue
             if row.status in {'model_pending','acting'}:
                 if row.lease_until and row.lease_until<datetime.utcnow():
