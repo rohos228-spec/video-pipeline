@@ -254,7 +254,10 @@ async def run():
                 if browser_mode:
                     (ROOT/'browser-ready.json').write_text(json.dumps({'project_id':2,'mode':mode,'state':'awaiting one UI launch'}))
                     deadline=time.monotonic()+300
-                    while not options['latest_launch'] and time.monotonic()<deadline:
+                    # Launch permissions are persisted before native dispatch.
+                    # Seeing `dispatching` is expected while the UI POST is in
+                    # flight, not a failed acceptance or a reason to cancel it.
+                    while (not options['latest_launch'] or options['latest_launch']['status']=='dispatching') and time.monotonic()<deadline:
                         await asyncio.sleep(.5)
                         response=await client.get(base+'/observations/launch-options');response.raise_for_status()
                         options=response.json()
