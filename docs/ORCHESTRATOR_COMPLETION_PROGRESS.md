@@ -149,3 +149,33 @@ host npm invocation are preserved and disclosed. Real provider calls:0.
 Remaining work:other native/scene/hero/items contracts, blocked media/ASR/local
 assembly prerequisites, broader safe strategies/semantic verification, factory
 scale E2E and measured cost optimization. No online authorization is reused.
+
+## Native frame split and held worker entry
+
+Implementation `1a48e121` adds the original split executor's bounded contract,
+voiceover input/extraction and actual frame verification, with read-only
+Decision tools. No native split recovery/profile or new executor was added.
+
+An executed worker failure exposed both an inconsistent copied synthetic
+voiceover file and missing admission enforcement for already held native ticks.
+The corrected seed copy is consistent before startup. New durable admission
+blocks held jobs before business sessions, including after cache loss; unrelated
+projects and observation-stop semantics remain. Automatic hold audit is now
+distinguished from operator requests and cannot authorize automatic resume.
+
+Final positive worker:one POST, one attempt, two unique frames, preserved full
+voiceover, source done and outside pending. Lost-tail worker:valid JSON, one
+committed replacement, failed coverage verification, execution held, source
+queued (not done), no second attempt/POST and no successor. Applied rejected
+rows remain explicit; no rollback or autonomous repair is claimed.
+
+See `ORCHESTRATOR_NATIVE_SPLIT_ACCEPTANCE_20260930.md` for final regression,
+source hashes, preserved REDs and known limits. Current framework regression
+is149/149. Final collection completed:252 test executions,251 passed and one
+absent-FFmpeg skip; launch suite35/35; all four original-worker cases accepted.
+Ordinary mode retains six nodes/five POST. Profile recovery retains22 inherited
+reservations and adds six operations, with two Decision calls and no third
+summary POST. Captured/loaded/current application hashes have zero mismatches.
+Frontend v653 files are unchanged and existing140 assertions/build/browser
+evidence is retained by file hashes. All real provider calls remain0; missing
+FFmpeg/ASR prerequisites and the remaining native families are still outstanding.
