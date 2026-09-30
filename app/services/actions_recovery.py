@@ -324,6 +324,30 @@ async def claim(observer, session, project, node_key, attempt_id, *, execution_i
         if (not run or not master_run or digest({"nodes": master_run.nodes_snapshot, "edges": master_run.edges_snapshot}) != row.preconditions["graph_version"]
                 or await input_revision(session, project, node_key) != row.preconditions["input_revision"]):
             raise RuntimeError("recovery revisions changed before claim")
+        # Historical same tickets lack action_type; profile tickets retain both
+        # their strategy and overlay marker. Capability proof is never authority.
+        action_type = row.preconditions.get("action_type")
+        has_profile_marker = "profile_overlay_id" in row.preconditions
+        if action_type is None and not has_profile_marker:
+            action_type = "retry_same"
+        if (action_type not in {"retry_same", "retry_profile"}
+                or (action_type == "retry_profile") != has_profile_marker
+                or (has_profile_marker and not row.preconditions["profile_overlay_id"])):
+            raise RuntimeError("recovery strategy/profile metadata invalid before claim")
+        from app.services.managed_launch import allowed_actions
+        if (node_key not in control.node_keys or action_type not in await allowed_actions(
+                master, row.execution_id, {"retry_same", "retry_profile"})):
+            raise RuntimeError("recovery strategy/node outside current execution grant before claim")
+        from app.services.excel_gpt_node import effective_node_type
+        from app.services.node_capabilities import capability_for
+        graph_node = next((n for n in (master_run.nodes_snapshot or [])
+                           if isinstance(n, dict) and str(n.get("id")) == node_key), None)
+        if graph_node is None:
+            raise RuntimeError("recovery node capability unavailable before claim")
+        node_type = effective_node_type(graph_node)
+        capability = capability_for(node_type)
+        if not capability.managed or action_type not in capability.actions:
+            raise RuntimeError(f"recovery strategy {action_type} denied by node capability before claim: {node_type}")
         result = await master.execute(update(RecoveryAction).where(
             RecoveryAction.action_id == row.action_id, RecoveryAction.status == "queued")
             .values(status="claimed", result={"worker_claimed": True, "claimed_at": datetime.utcnow().isoformat()}))
