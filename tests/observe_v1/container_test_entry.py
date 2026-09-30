@@ -26,6 +26,16 @@ sys.path.insert(0, str(SOURCE / "tests/observe_v1"))
 from coverage_capture import begin
 finish_coverage = begin(SOURCE)
 exit_code = 0
+tracked_unit_targets={'native-checkpoint','runtime-projection','native-entities','scene-contracts',
+    'managed-restart','native-sfx-plan','native-animation','hitl-authority','animation-observation'}
+unit_executions=[]
+if os.environ.get('OBSERVE_TEST_TARGET') in tracked_unit_targets:
+    import unittest
+    original_start_test=unittest.TestResult.startTest
+    def record_started_test(result,test):
+        unit_executions.append(test.id())
+        return original_start_test(result,test)
+    unittest.TestResult.startTest=record_started_test
 try:
     sys.path.insert(0, str(SOURCE / "tests/observe_v1"))
     sys.argv = [str(SOURCE / "tests/observe_v1/test_journal.py")]
@@ -110,6 +120,13 @@ except BaseException:
     traceback.print_exc()
     exit_code = 1
 finally:
+    if os.environ.get('OBSERVE_TEST_TARGET') in tracked_unit_targets:
+        if exit_code==0 and not unit_executions:
+            exit_code=2
+            print('Acceptance refused: no unittest cases executed',file=sys.stderr)
+        (RESULTS/'test-executions.json').write_text(json.dumps({
+            'started_test_count':len(unit_executions),'cases':unit_executions,
+            'test_exit_code':exit_code},indent=2))
     finish_coverage(RESULTS)
     loaded = []
     mismatch = []

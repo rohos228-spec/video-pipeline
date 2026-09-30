@@ -151,6 +151,7 @@ def prepare(fixtures, root, mode):
             "queue_admission": "ordinary step API uses original explicit-UI start; worker queue must admit project 2",
             "native_transport": "existing loopback JSON fixture for plan; Python WAV for generation",
             "media_tools": "parent diagnostic image; original ffprobe/RMS helpers are not patched",
+            "content_authority": "SFX flags/checkpoints in project.db; master projects runtime and NodeRuns only",
             "mix_verified": False,
             "gain_duck": "persisted native event metadata; montage application is outside this scope",
             "cached_rejection": {
@@ -186,6 +187,14 @@ def _assert_inputs_and_boundary(state, prepared):
         assert current["artifacts"] == initial["artifacts"], (name, "unexpected Artifact identities")
         assert current["run"] == initial["run"], (name, "immutable graph changed")
         assert not current["project"]["auto_mode"], "ordinary scope is not an automatic boundary"
+        if name == "master":
+            # _apply_runtime_fields copies its explicit runtime keys. Native
+            # SFX content is authoritative in project.db, not this projection.
+            current_meta = current["project"]["meta"]
+            initial_meta = initial["project"]["meta"]
+            for key in ("sfx_plan", "sfx_ready", "sfx_generated", "ai_jobs"):
+                assert (key in current_meta) == (key in initial_meta), (name, key)
+                assert current_meta.get(key) == initial_meta.get(key), (name, key)
         for key in BOUNDARY:
             node = current["nodes"][key]
             assert node["status"] == "pending" and node["attempts"] == 0, (name, key, node)
@@ -323,11 +332,6 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     assert meta["ai_jobs"]["sfx_plan"] == prepared["plan_payload"]
     records = meta["ai_jobs"]["sfx_files"]["files"]
     assert len(records) == 2 and [record["idx"] for record in records] == [0, 1]
-    for replica in state.values():
-        replica_meta = replica["project"]["meta"]
-        assert replica_meta["sfx_plan"] and replica_meta["sfx_ready"] and replica_meta["sfx_generated"]
-        assert replica_meta["ai_jobs"]["sfx_plan"] == prepared["plan_payload"]
-        assert replica_meta["ai_jobs"]["sfx_files"]["files"] == records
     frames = {frame["number"]: frame for frame in state["project"]["frames"]}
     proofs = []
     for record, event in zip(records, prepared["plan_payload"]["events"]):
@@ -363,6 +367,15 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     assert all(replica["nodes"][key]["status"] == "done"
                for replica in state.values() for key in SCOPE), state
     assert all(replica["project"]["status"] == "sfx_ready" for replica in state.values()), state
+    final_meta = state["project"]["project"]["meta"]
+    assert final_meta["sfx_plan"] and final_meta["sfx_ready"] and final_meta["sfx_generated"]
+    assert final_meta["ai_jobs"]["sfx_plan"] == prepared["plan_payload"]
+    assert final_meta["ai_jobs"]["sfx_files"]["files"] == records
+    result["db_authority"] = {
+        "content": "project.db",
+        "master_projection": "status/auto_mode/runtime meta/NodeRuns only",
+        "master_sfx_content_unchanged": True,
+    }
     result["native_sfx_state"] = state
     assert not any(event["node_key"] in BOUNDARY for event in history), history
     (root / "native-sfx-history.json").write_text(
