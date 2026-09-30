@@ -38,6 +38,7 @@ def prepare(fixtures, root, mode):
             meta.pop("active_excel_gpt_node_key", None)
             meta.update(img_streams=1, outsee_streams=1)
             db.execute("UPDATE projects SET meta=?,image_generator='z_image' WHERE id=2", (json.dumps(meta),))
+            if mode=='launch-images':db.execute("UPDATE projects SET status='new' WHERE id=2")
             if mixed_input:
                 # fw_script's real contract starts from one cell containing the
                 # complete voiceover. Two unrelated seeded cells are rebuilt by
@@ -79,6 +80,7 @@ def prepare(fixtures, root, mode):
     if mixed_input:
         evidence["operator_interventions"].append(
             "initial single cell equals full synthetic script_text, per fw_script input contract; no input edits after start")
+    if mode=='launch-images':evidence['operator_interventions'].append('initialize both fresh synthetic project replicas as new before startup')
     if mode == "media-recovery":
         evidence["operator_interventions"].extend([
             "bounded graph: five original text nodes ending in QC, then image; local HTML node omitted from this probe",

@@ -45,11 +45,12 @@ def prepare_launch_graph():
         with sqlite3.connect(path) as db:
             meta=json.loads(db.execute('SELECT meta FROM projects WHERE id=2').fetchone()[0])
             meta['canvas_graph']['nodes']=nodes;meta['canvas_graph']['edges']=edges
-            db.execute('UPDATE projects SET meta=? WHERE id=2',(json.dumps(meta),))
+            db.execute("UPDATE projects SET meta=?,status='new' WHERE id=2",(json.dumps(meta),))
             db.execute('UPDATE workflow_runs SET nodes_snapshot=?,edges_snapshot=? WHERE project_id=2',(json.dumps(nodes),json.dumps(edges)))
             db.execute('DELETE FROM node_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE project_id=2) AND node_key NOT IN ('+','.join('?' for _ in selected)+')',selected)
     return {'scope':list(NODES),'outside':'n_script','initial_state_only':True,
         'interventions':['fresh consistent synthetic graph before startup; original six node contracts unchanged',
+            'both synthetic project replicas initialized as new; no completed NodeRun manufactured',
             'no input/prompt/model/status changes after launch']}
 
 def frames() -> list[tuple[str, int, str, dict]]:
