@@ -87,6 +87,8 @@ async def run():
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
     recovery_mode = mode in {"recovery-a", "recovery-b"}
     unified_launch = mode in {'launch-text','launch-images'}
+    if mode=='launch-text':
+        (ROOT/'launch-prepared.json').write_text(json.dumps(fixtures.prepare_launch_graph(),indent=2))
     media_mode = mode in {"media-image", "media-mixed", "media-unverified", "media-recovery", 'launch-images'}
     if media_mode:
         from media_acceptance import prepare

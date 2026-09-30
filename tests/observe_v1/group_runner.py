@@ -27,6 +27,31 @@ NODES = (
 
 MODE = os.environ.get("DIAGNOSTIC_SCENARIO", "group")
 
+def prepare_launch_graph():
+    """Fresh synthetic graph only, before startup; keep original node contracts.
+
+    The historical seed has different master/canvas snapshots. A unified
+    launch correctly rejects that mismatch; this constructs a consistent
+    bounded graph instead of weakening revision checks or editing live state.
+    """
+    with sqlite3.connect(DATA/'state.db') as db:
+        original=json.loads(db.execute('SELECT nodes_snapshot FROM workflow_runs WHERE project_id=2').fetchone()[0])
+    by_id={node['id']:node for node in original}
+    selected=list(NODES)+['n_script']
+    nodes=[by_id[key] for key in selected]
+    edges=[{'id':'unified-text-edge-'+str(index),'source':a,'target':b,'data':{'kind':'after'}}
+        for index,(a,b) in enumerate(zip(selected,selected[1:]))]
+    for path in (DATA/'state.db',DB):
+        with sqlite3.connect(path) as db:
+            meta=json.loads(db.execute('SELECT meta FROM projects WHERE id=2').fetchone()[0])
+            meta['canvas_graph']['nodes']=nodes;meta['canvas_graph']['edges']=edges
+            db.execute('UPDATE projects SET meta=? WHERE id=2',(json.dumps(meta),))
+            db.execute('UPDATE workflow_runs SET nodes_snapshot=?,edges_snapshot=? WHERE project_id=2',(json.dumps(nodes),json.dumps(edges)))
+            db.execute('DELETE FROM node_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE project_id=2) AND node_key NOT IN ('+','.join('?' for _ in selected)+')',selected)
+    return {'scope':list(NODES),'outside':'n_script','initial_state_only':True,
+        'interventions':['fresh consistent synthetic graph before startup; original six node contracts unchanged',
+            'no input/prompt/model/status changes after launch']}
+
 def frames() -> list[tuple[str, int, str, dict]]:
     with sqlite3.connect(DB) as conn:
         rows = conn.execute(
