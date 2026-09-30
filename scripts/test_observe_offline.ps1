@@ -84,10 +84,11 @@ if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
 if ($Target -eq 'managed-launch') { $files += 'tests/observe_v1/test_managed_launch.py' }
 if ($Target -eq 'owner-budget') { $files += 'tests/observe_v1/test_owner_budget.py' }
 if ($Target -eq 'media-contract') { $files += 'tests/observe_v1/test_media_contract.py' }
-foreach ($testTarget in @('native-checkpoint','runtime-projection','native-entities','scene-contracts','managed-restart')) {
-    $targetFile=@{'native-checkpoint'='test_image_prompt_checkpoint.py';'runtime-projection'='test_runtime_projection.py';'native-entities'='test_native_entity_contract.py';'scene-contracts'='test_scene_contracts.py';'managed-restart'='test_managed_restart_safety.py'}[$testTarget]
+foreach ($testTarget in @('native-checkpoint','runtime-projection','native-entities','scene-contracts','managed-restart','native-sfx-plan','native-animation')) {
+    $targetFile=@{'native-checkpoint'='test_image_prompt_checkpoint.py';'runtime-projection'='test_runtime_projection.py';'native-entities'='test_native_entity_contract.py';'scene-contracts'='test_scene_contracts.py';'managed-restart'='test_managed_restart_safety.py';'native-sfx-plan'='test_native_sfx_plan_checkpoint.py';'native-animation'='test_native_animation_contract.py'}[$testTarget]
     if ($Target -eq $testTarget) { $files += 'tests/observe_v1/' + $targetFile }
 }
+if ($Target -eq 'managed-restart') { $files += 'tests/observe_v1/test_media_jobs.py' }
 if ($Target -eq 'media-jobs') { $files += 'tests/observe_v1/test_media_jobs.py' }
 if ($Target -eq 'media-observation') { $files += @('tests/observe_v1/test_media_jobs.py','tests/observe_v1/test_media_observation.py') }
 if ($Target -eq 'media-transport') { $files += @('tests/observe_v1/test_media_jobs.py','tests/observe_v1/test_media_transport.py') }

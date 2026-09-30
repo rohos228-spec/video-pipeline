@@ -35,7 +35,8 @@ try:
         sys.argv = [str(SOURCE / "tests/observe_v1/test_media_contract.py")]
     extra_targets={'native-checkpoint':'test_image_prompt_checkpoint.py',
         'runtime-projection':'test_runtime_projection.py','native-entities':'test_native_entity_contract.py',
-        'scene-contracts':'test_scene_contracts.py','managed-restart':'test_managed_restart_safety.py'}
+        'scene-contracts':'test_scene_contracts.py','managed-restart':'test_managed_restart_safety.py',
+        'native-sfx-plan':'test_native_sfx_plan_checkpoint.py','native-animation':'test_native_animation_contract.py'}
     if os.environ.get('OBSERVE_TEST_TARGET') in extra_targets:
         sys.argv=[str(SOURCE/'tests/observe_v1'/extra_targets[os.environ['OBSERVE_TEST_TARGET']])]
     if os.environ.get("OBSERVE_TEST_TARGET") == "media-jobs":
