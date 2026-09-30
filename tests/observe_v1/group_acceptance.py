@@ -228,7 +228,7 @@ async def run():
                 await run_denial(mode,client,fixtures,observation.get_observer(),ROOT,result)
                 return
             execution_id = None
-            if browser_mode and not recovery_mode:
+            if browser_mode and not recovery_mode and not unified_launch:
                 # User enables observation in the real panel. No node is started
                 # until the explicit test-runner signal is written via docker exec.
                 (ROOT / "browser-ready.json").write_text(json.dumps({"project_id":2,"nodes":list(fixtures.NODES),"state":fixtures.snapshot()}))
@@ -251,13 +251,26 @@ async def run():
                 run_snapshot=run_response.json()
                 options=await client.get(base+'/observations/launch-options');options.raise_for_status()
                 options=options.json()
-                response=await client.post(base+'/observations/launch',json={
-                    'workflow_run_id':options['workflow_run_id'],'graph_version':options['graph_version'],
-                    'node_keys':list(fixtures.NODES),'strategies':['wait','human_review','retry_same'],
-                    'request_limit':12,'rationale':'one synthetic unified launch; original worker owns all transitions',
-                    'idempotency_key':'unified-launch-text-01'})
-                assert response.is_success,response.text
-                result['managed_launch']=response.json();execution_id=response.json()['execution_id']
+                if browser_mode:
+                    (ROOT/'browser-ready.json').write_text(json.dumps({'project_id':2,'mode':mode,'state':'awaiting one UI launch'}))
+                    deadline=time.monotonic()+300
+                    while not options['latest_launch'] and time.monotonic()<deadline:
+                        await asyncio.sleep(.5)
+                        response=await client.get(base+'/observations/launch-options');response.raise_for_status()
+                        options=response.json()
+                    launch=options['latest_launch']
+                    assert launch and launch['status']=='submitted','one UI launch was not submitted'
+                    assert set(launch['policy']['node_keys'])==set(fixtures.NODES),'UI must select the full text scope'
+                    result['launch_origin']='browser UI; runner issued no launch POST'
+                else:
+                    response=await client.post(base+'/observations/launch',json={
+                        'workflow_run_id':options['workflow_run_id'],'graph_version':options['graph_version'],
+                        'node_keys':list(fixtures.NODES),'strategies':['wait','human_review','retry_same'],
+                        'request_limit':12,'rationale':'one synthetic unified launch; original worker owns all transitions',
+                        'idempotency_key':'unified-launch-text-01'})
+                    assert response.is_success,response.text
+                    launch=response.json()
+                result['managed_launch']=launch;execution_id=launch['execution_id']
             elif mode in {"actions", "qc-noop"} or recovery_mode:
                 run_response = await client.get(base + "/run")
                 run_response.raise_for_status()
