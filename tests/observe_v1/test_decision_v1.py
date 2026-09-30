@@ -291,6 +291,15 @@ class DecisionDurability(actions_tests.DurableActions):
             await self.loop.tick();self.assertEqual(chat.call_count,0)
         async with self.sessions() as s:self.assertIsNone(await s.scalar(select(self.service.DecisionRecord)))
 
+    async def test_incomplete_terminal_event_does_not_authorize_new_decision_post(self):
+        await self.enable_decisions()
+        async with self.sessions() as s:
+            event=await s.scalar(select(observation.ObservationEvent).where(observation.ObservationEvent.kind=='model_end'))
+            event.payload={**event.payload,'complete':False};await s.commit()
+        with patch('app.services.gpt_api.chat',side_effect=AssertionError('incomplete upstream')) as chat:
+            await self.loop.tick();self.assertEqual(chat.call_count,0)
+        async with self.sessions() as s:self.assertIsNone(await s.scalar(select(self.service.DecisionRecord)))
+
     async def test_late_model_reply_after_stop_denied(self):
         record,reply=await self.dialogue()
         async def late(**kw):
