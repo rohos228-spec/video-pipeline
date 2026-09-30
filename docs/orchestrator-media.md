@@ -133,3 +133,15 @@ Current media UI draft has not yet been built or browser-accepted.
 
 No final delivery/checkpoint claim while mixed acceptance, current regression,
 UI, publication dry-run and the remaining safety checks are outstanding.
+
+### Pending artifact safety checks (not accepted)
+
+`test_media_transport.py` now includes preview hash/containment and original
+disk-recovery provenance/idempotence tests. Every media unit case has its own
+temporary DATA_DIR and SQLite DB. These new cases have not run because Docker
+Engine remains unreachable. Existing preview/disk-recovery code is not claimed
+to enforce these requirements yet; do not promote the media UI draft.
+
+The mixed runner's host `docker wait` command has failed; the existing
+container's state and test outcome are still unknown. Inspect and collect it
+first when Engine returns. See the handoff for its exact identity and evidence.

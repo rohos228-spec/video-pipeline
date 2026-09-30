@@ -233,6 +233,64 @@ class MediaHTTP(MediaJobs):
                     uuid="bad-artifact", path=str(result.file_path), meta={}))
             self.assertIsNone(await s.scalar(select(Artifact)))
 
+    async def test_http_preview_rechecks_hash_and_project_containment(self):
+        from app.models import Artifact, ArtifactKind
+        from app.services.media_jobs import persist_artifact
+        from app.web.routers.artifacts import download_artifact
+        from fastapi import HTTPException
+        result = await self.generate()
+        async with self.sessions() as s:
+            art = await persist_artifact(s, Artifact(project_id=7, kind=ArtifactKind.scene_image,
+                uuid="preview", path=str(result.file_path), meta={}))
+            await s.commit()
+            response = await download_artifact(art.uuid, session=s)
+            self.assertEqual(str(response.path), str(result.file_path))
+            # Still a decodable PNG, but not the previously verified content.
+            Image.new("RGB", (64, 96), "red").save(result.file_path, "PNG")
+            with self.assertRaises(HTTPException) as changed:
+                await download_artifact(art.uuid, session=s)
+            self.assertEqual(changed.exception.status_code, 409)
+            outside = self.root / "outside.png"
+            outside.write_bytes(self.image)
+            art.path = str(outside)
+            await s.commit()
+            with self.assertRaises(HTTPException) as escaped:
+                await download_artifact(art.uuid, session=s)
+            self.assertEqual(escaped.exception.status_code, 403)
+
+    async def test_http_disk_recovery_requires_and_preserves_job_provenance(self):
+        import random
+        from app.models import Artifact, Frame
+        from app.services.artifact_recovery import recover_scene_images_from_disk
+        self.output = self.project.data_dir / "scenes" / "frame_001_12345678.png"
+        stream = io.BytesIO()
+        Image.frombytes("RGB", (256, 384), random.Random(43).randbytes(256*384*3)).save(stream, "PNG")
+        self.image = stream.getvalue()
+        result = await self.generate()
+        async with self.sessions() as s:
+            s.add(Frame(project_id=7, number=1, voiceover_text="synthetic",
+                        image_prompt="synthetic", uuid="synthetic-frame-1"))
+            await s.commit()
+            await recover_scene_images_from_disk(s, self.project)
+            await s.commit()
+            art = (await s.scalars(select(Artifact))).one()
+            self.assertEqual(art.meta["orchestrator"]["execution_id"], self.scope.execution_id)
+            self.assertEqual(art.meta["orchestrator"]["verification"]["status"], "passed")
+            await recover_scene_images_from_disk(s, self.project)
+            await s.commit()
+            self.assertEqual(len((await s.scalars(select(Artifact))).all()), 1)
+            self.assertEqual(self.posts, 1, "disk recovery must not submit another generation")
+            # A plausible local file alone does not authorize application.
+            other = result.file_path.with_name("frame_002_abcdef12.png")
+            other.write_bytes(self.image)
+            s.add(Frame(project_id=7, number=2, voiceover_text="synthetic",
+                        image_prompt="synthetic", uuid="synthetic-frame-2"))
+            await s.commit()
+            with self.assertRaisesRegex(RuntimeError, "verified job"):
+                await recover_scene_images_from_disk(s, self.project)
+            await s.rollback()
+            self.assertEqual(len((await s.scalars(select(Artifact))).all()), 1)
+
 if __name__ == "__main__":
     # Inherited state tests are run separately, once.
     suite = unittest.TestSuite(MediaHTTP(name) for name in unittest.defaultTestLoader.getTestCaseNames(MediaHTTP)

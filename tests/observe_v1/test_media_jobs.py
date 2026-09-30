@@ -29,6 +29,10 @@ class MediaJobs(unittest.IsolatedAsyncioTestCase):
         from app.services.media_jobs import MediaJob, MediaRequest
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        from app.settings import settings
+        data_dir_patch = patch.object(settings, "data_dir", self.root / "projects")
+        data_dir_patch.start()
+        self.addCleanup(data_dir_patch.stop)
         self.cfg = self.root / "policy.json"
         self.cfg.write_text(json.dumps(policy()))
         self.env = patch.dict(os.environ, {"ORCHESTRATOR_RUNTIME_CONFIG": str(self.cfg)})

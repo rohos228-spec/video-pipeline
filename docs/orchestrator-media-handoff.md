@@ -131,3 +131,33 @@ Next exact sequence:
 
 See docs/orchestrator-media.md for current matrix and adding-adapter guide.
 Goal remains ACTIVE and incomplete. No real API requests/key reads this work.
+
+## Continuation: artifact safety tests staged, Engine still unreachable
+
+The host runner session 54039 has now ended with exit 1 at
+`test_observe_offline.ps1:264`: `Cannot wait for offline test container`.
+This is a Docker wait-command failure, not a test result or proof that the
+container stopped. Container `vp-observe-test-20260930024256-8443a6a2` must still
+be inspected before any new runner/build is started. Nothing was restarted or
+deleted. The last bounded inspection at 2026-09-30T00:48:14.872Z timed out after
+15 seconds, with empty stdout/stderr and `ETIMEDOUT`; see
+`mixed-01/daemon-inspect-user-continue.json`. Root cause remains unknown.
+
+Two additional HTTP transport tests are prepared in `test_media_transport.py`:
+
+- Preview must reject a changed, still-decodable image and a path outside its
+  owning project (expected HTTP 409 / 403).
+- Original disk recovery must apply a verified job's artifact once, preserve its
+  execution/verifier proof, and reject a plausible file without a verified job.
+
+The shared test fixture now gives every case its own temporary DATA_DIR as
+well as its own SQLite DB, so recovered files cannot leak between cases.
+These tests have NOT executed: no RED/GREEN claimed. Python AST/whitespace
+checks alone do not validate the behavior. Production preview/recovery source
+is unchanged in this continuation. The TDD gate requires an observed failing
+test before those fixes. After Engine recovery, run `media-transport` (12 HTTP
+cases) in the existing offline runner, preserve the failing evidence, then fix
+only managed artifact handling and rerun. Do not rerun exhausted/paid pilots.
+
+Current deliverable remains incomplete; this checkpoint only preserves tests
+and the exact resume boundary. No external API, credentials or customer DBs used.
