@@ -61,6 +61,27 @@ likely a fixture/migration ordering issue specific to this freshly-created `.ven
 not a regression from any change made today. Flagged here rather than fixed
 silently; worth a dedicated look before it's mistaken for a real regression later.
 
+**Full-suite run** (`pytest tests/ --ignore=tests/observe_v1`, ~2600 tests,
+355s): 94 failed, 2540 passed — a much larger set than the 8 above, spanning
+completely unrelated areas (`test_studio_launcher_encoding.py`,
+`test_xlsx_studio_full_sheet.py`, `test_montage_board_frames.py`,
+`test_shot_menu.py`, `test_text_llm_provider.py`, `test_db_v2_api.py`, etc.).
+Spot-checked two of these in isolation
+(`test_studio_launcher_encoding.py`, `test_xlsx_studio_full_sheet.py`) —
+both fail on their own, independent of any change made today: they assert
+exact byte/string content against `scripts/studio.ps1` and the Next.js
+frontend source (an em-dash check, exact UI strings) that has simply drifted
+from what the tests expect. This is frontend/script content no commit today
+touched. Not individually re-verified for all 94 — the failure signatures
+(frontend string drift, xlsx/montage/scene-design content assertions,
+`test_db_v2_api.py`'s SQLAlchemy errors matching the same missing-table
+pattern above) are consistent with pre-existing environment/content drift in
+this freshly-installed `.venv`, not with the narrow diffs made in this
+session (`outsee_retry.py`, `sfx_plan.py`, `generate_sfx.py`,
+`observation.py`, `node_capabilities.py`, `node_spec.py`,
+`test_native_video_routing.py`). Worth a dedicated triage pass before relying
+on this `.venv`/checkout for CI.
+
 ## Failure-class coverage (what's automatic vs. human review)
 
 Verified directly against `app/services/diagnosis.py::derive_incidents` (not
