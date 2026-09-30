@@ -1,6 +1,6 @@
 # Orchestrator status — current, per component
 
-Snapshot at `git log --oneline -1` → `724ff660` on `feature/orchestrator-observe-v1` (2026-10-01).
+Snapshot at `git log --oneline -1` → `400933de` on `feature/orchestrator-observe-v1` (2026-10-01).
 
 This is a compact index. The authoritative, evidence-linked detail lives in
 [`ORCHESTRATOR_CURRENT_STATE.md`](ORCHESTRATOR_CURRENT_STATE.md) (dated 2026-09-30, still
@@ -60,6 +60,30 @@ dev environment's fresh SQLite setup (`no such table: action_execution_controls`
 likely a fixture/migration ordering issue specific to this freshly-created `.venv`,
 not a regression from any change made today. Flagged here rather than fixed
 silently; worth a dedicated look before it's mistaken for a real regression later.
+
+## Failure-class coverage (what's automatic vs. human review)
+
+Verified directly against `app/services/diagnosis.py::derive_incidents` (not
+inferred). Every incident type is *diagnosed* automatically — the question
+here is what happens after diagnosis, not whether the failure is noticed.
+
+| Failure class (from the brief) | Incident type(s) | What happens automatically | What requires a human |
+|---|---|---|---|
+| **Transient error** (e.g. read timeout, connect timeout, cancelled request) | `uncertain_request` (`diagnosis.py:206-217`, `:222-227`); `runtime_wait` (`:228-232`) for native queue/lock waits | `runtime_wait` self-resolves — it's marked `severity='info'`, `action='wait'`, not an error, and the native `step_failure_policy.py` retry/backoff (outside the Decision layer) already handles real transient retries at the pipeline level | `uncertain_request` is immediately set to `status='human_review'` (`:215`) — the Decision layer never auto-retries an uncertain outcome, by design (retrying after an ambiguous result risks duplicate side effects) |
+| **Bad input error** (malformed/missing required data) | `invalid_json`, `missing_payload` (raised via the `bads` branch, `:201-204`) | **The only incident classes with any automated remedy**: once native retries are exhausted, `actions_recovery.py` can issue exactly one bounded `retry_same`/`retry_profile` via `decision_v1.py`, for the **text family only** (`excel_gpt`/`script_frames_qc`) | Any other node family with these incidents, or exhaustion of the single allowed recovery attempt |
+| **API error** (non-ambiguous transport/HTTP failure) | `api_error` (`:212`, the non-`uncertain` branch) | Diagnosed with a catalog code/title (`ERROR_CATALOG`) | Immediately `status='human_review'` (`:215`) — no automated remedy exists at the Decision layer for this class today |
+| **Unknown status** (state can't be confirmed) | `journal_gap` (`:240`, `:261`), `db_disagreement` (`:257`) | Recorded as non-blocking warnings (`severity='warning'`, `blocking=False`) with an explicit `action='restore_journal'`/`'check_database'` recommendation | Always — these are deliberately never auto-resolved; the code comment is explicit that a later successful check does not retroactively clear a DB-disagreement warning |
+| **Corrupted result** (verification fails against captured input) | `contract_rejected` (`:197`, `:219`); the various `observe_*_result`/`verify_*` functions in `node_capabilities.py`/`sfx_plan.py` | The verifier calls `ActionSupervisor.set_held(..., operator_request=False)` — the execution is held immediately | Always requires `operator_request=True` to resume (`actions_v1.py::set_held`, `:486-528`) — nothing auto-clears a failed verification |
+
+**Net finding**: 4 of the 5 requested failure classes already diagnose
+correctly but have **zero automated remedy** by design — they go straight to
+human review or a non-actionable warning. Only "bad input" (JSON/payload)
+has any automation, and only for the text family. This is a deliberate,
+documented safety posture (see `ORCHESTRATOR_CURRENT_STATE.md` §2.3-2.4), not
+a gap to silently close — widening auto-remedy to more classes or families
+is exactly the kind of change `ARCHITECTURE.md`'s Gateway section and the
+standing plan flag as needing an explicit user decision, since it changes
+what the system is allowed to do without a human in the loop.
 
 ## One TODO found in the whole codebase
 
