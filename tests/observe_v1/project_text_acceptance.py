@@ -47,16 +47,30 @@ def prepare(fixtures,root,mode):
     (root/'project-text-prepared.json').write_text(json.dumps(prepared,indent=2))
     return prepared
 
-async def run(client,fixtures,observer,root,result,prepared):
+async def run(client,fixtures,observer,root,result,prepared,*,browser=False):
     base='http://127.0.0.1:18765/api/projects/2'
     options=(await client.get(base+'/observations/launch-options')).json()
-    response=await client.post(base+'/observations/launch',json={
-        'workflow_run_id':options['workflow_run_id'],'graph_version':options['graph_version'],
-        'node_keys':[prepared['node_key']],'strategies':['wait','human_review'],
-        'request_limit':8,'rationale':'native project text with original HITL; no approval/recovery',
-        'idempotency_key':'native-project-text-one-launch'})
-    assert response.status_code==201,(response.status_code,response.text)
-    launch=response.json();execution=launch['execution_id']
+    if browser:
+        (root/'browser-ready.json').write_text(json.dumps({'project_id':2,'state':'awaiting one native UI launch'}))
+        deadline=time.monotonic()+300
+        while (not options['latest_launch'] or options['latest_launch']['status']=='dispatching') and time.monotonic()<deadline:
+            await asyncio.sleep(.5)
+            response=await client.get(base+'/observations/launch-options');response.raise_for_status()
+            options=response.json()
+        launch=options['latest_launch']
+        assert launch and launch['status']=='submitted','native UI launch not submitted'
+        assert launch['policy']['node_keys']==[prepared['node_key']]
+        assert set(launch['policy']['allowed_actions'])=={'read_events','read_contract','wait','human_review'},launch['policy']
+        result['launch_origin']='browser UI; runner issued no launch POST'
+    else:
+        response=await client.post(base+'/observations/launch',json={
+            'workflow_run_id':options['workflow_run_id'],'graph_version':options['graph_version'],
+            'node_keys':[prepared['node_key']],'strategies':['wait','human_review'],
+            'request_limit':8,'rationale':'native project text with original HITL; no approval/recovery',
+            'idempotency_key':'native-project-text-one-launch'})
+        assert response.status_code==201,(response.status_code,response.text)
+        launch=response.json()
+    execution=launch['execution_id']
     result.update(execution_id=execution,managed_launch=launch,operator_starts=0,
         interventions=prepared['interventions'],scope_boundary='original managed gate')
     deadline=time.monotonic()+120

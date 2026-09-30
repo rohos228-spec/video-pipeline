@@ -194,7 +194,15 @@ async def run():
             base = "http://127.0.0.1:18765/api/projects/2"
             if project_text_mode:
                 from project_text_acceptance import run as run_project_text
-                await run_project_text(client,fixtures,observation.get_observer(),ROOT,result,project_text_prepared)
+                await run_project_text(client,fixtures,observation.get_observer(),ROOT,result,project_text_prepared,browser=browser_mode)
+                if browser_mode:
+                    (ROOT/'group-result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,default=str))
+                    before=dict(fixtures.FixtureHandler.counts)
+                    deadline=time.monotonic()+300
+                    while not (ROOT/'browser-finish-requested').exists() and time.monotonic()<deadline:
+                        await asyncio.sleep(.2)
+                    assert (ROOT/'browser-finish-requested').exists(),'native UI capture did not finish'
+                    assert before==dict(fixtures.FixtureHandler.counts),'browser must not approve HITL or generate again'
                 return
             if media_mode:
                 from media_acceptance import run as run_media
