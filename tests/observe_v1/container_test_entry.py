@@ -33,6 +33,11 @@ try:
         sys.argv = [str(SOURCE / "tests/observe_v1/test_runtime.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "media-contract":
         sys.argv = [str(SOURCE / "tests/observe_v1/test_media_contract.py")]
+    extra_targets={'native-checkpoint':'test_image_prompt_checkpoint.py',
+        'runtime-projection':'test_runtime_projection.py','native-entities':'test_native_entity_contract.py',
+        'scene-contracts':'test_scene_contracts.py','managed-restart':'test_managed_restart_safety.py'}
+    if os.environ.get('OBSERVE_TEST_TARGET') in extra_targets:
+        sys.argv=[str(SOURCE/'tests/observe_v1'/extra_targets[os.environ['OBSERVE_TEST_TARGET']])]
     if os.environ.get("OBSERVE_TEST_TARGET") == "media-jobs":
         sys.argv = [str(SOURCE / "tests/observe_v1/test_media_jobs.py")]
     if os.environ.get("OBSERVE_TEST_TARGET") == "media-observation":
