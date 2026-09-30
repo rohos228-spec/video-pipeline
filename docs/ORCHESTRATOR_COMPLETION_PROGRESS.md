@@ -128,3 +128,24 @@ preserved. Runtime/diagnosis final checks and changed-profile live browser proof
 are still in progress. This is bounded synthetic acceptance, not all-contour or
 real-provider acceptance. Other legacy families and proven cost optimization
 remain implementation work; FFmpeg/ASR prerequisites are still unavailable.
+
+## Native text boundary accepted on recovered Engine
+
+Profile/UI acceptance subsequently finished at `f5cfaeb9`:194 Python checks,
+134 frontend assertions and a genuine profile-selected QC recovery/image case.
+The next extension uses the same stand and original plan/script executors:
+native input/parse/validation/apply evidence, exact pending human approval, and
+scope-specific strategy choices. It enables no native supervisor recovery or
+automatic HITL approval.
+
+`ORCHESTRATOR_NATIVE_TEXT_ACCEPTANCE_20260930.md` records the current evidence:
+241 Python passes + one dependency skip,140 frontend assertions, current build,
+original native script worker and one-launch native plan browser/worker. Actual
+loaded hashes agree with current files. The master/project runtime-status
+disagreement remains visible and documented; matching content/NodeRuns does
+not prove an unattended native chain. All failed runs and the accidental failed
+host npm invocation are preserved and disclosed. Real provider calls:0.
+
+Remaining work:other native/scene/hero/items contracts, blocked media/ASR/local
+assembly prerequisites, broader safe strategies/semantic verification, factory
+scale E2E and measured cost optimization. No online authorization is reused.
