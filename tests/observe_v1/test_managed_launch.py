@@ -203,6 +203,33 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code,422,response.text)
         async with self.sessions() as s:self.assertIsNone(await s.scalar(select(ActionExecutionControl)))
 
+    async def test_launch_binds_preapproved_profile_catalog_before_start(self):
+        from app.services.profiles_v1 import active_catalog,catalog_hash
+        options=(await self.client.get('/api/projects/7/observations/launch-options')).json()
+        self.assertIn('retry_profile',options['strategies'])
+        self.assertEqual(options['profile_catalog_hash'],catalog_hash())
+        self.assertEqual({p['profile_id'] for p in options['profiles']},set(active_catalog()))
+        response=await self.client.post(self.url,json={**self.payload,
+            'strategies':['wait','human_review','retry_same','retry_profile'],
+            'profile_ids':['synthetic-format-v1'],'profile_catalog_hash':catalog_hash()})
+        self.assertEqual(response.status_code,201,response.text)
+        policy=response.json()['policy']
+        self.assertEqual(policy['profile_ids'],['synthetic-format-v1'])
+        self.assertEqual(policy['profile_catalog_hash'],catalog_hash())
+        self.assertEqual(policy['profiles'],{'synthetic-format-v1':active_catalog()['synthetic-format-v1']})
+
+    async def test_unapproved_unknown_or_stale_profiles_create_no_permission(self):
+        from app.services.profiles_v1 import catalog_hash
+        for changes in (
+            {'strategies':['retry_profile']},
+            {'profile_ids':['synthetic-format-v1'],'profile_catalog_hash':catalog_hash()},
+            {'strategies':['retry_profile'],'profile_ids':['foreign'],'profile_catalog_hash':catalog_hash()},
+            {'strategies':['retry_profile'],'profile_ids':['synthetic-format-v1'],'profile_catalog_hash':'0'*64},
+        ):
+            response=await self.client.post(self.url,json={**self.payload,**changes})
+            self.assertEqual(response.status_code,409,response.text)
+            async with self.sessions() as s:self.assertIsNone(await s.scalar(select(ActionExecutionControl)))
+
     async def test_idle_project_projection_refreshed_without_changing_node_attempts(self):
         from sqlalchemy.ext.asyncio import create_async_engine,async_sessionmaker
         from app.services.managed_launch import prepare
