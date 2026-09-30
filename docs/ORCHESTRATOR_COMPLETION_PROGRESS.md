@@ -42,3 +42,32 @@ The requested narrow regression remains outstanding. The next action requested f
 After Docker becomes usable, inspect the preserved container and source before resuming the existing runner workflow. Do not recreate the stand or overwrite this failed-attempt evidence. Finish runtime, then diagnosis, and record the actually loaded hashes. Only then proceed to the coordinated managed-launch implementation and subsequent stages of the accepted plan.
 
 The applied `tdd-workflow` skill requires an executed, relevant RED before production changes. A Docker launch blockage cannot satisfy that gate. No feature is claimed implemented in this checkpoint. The earlier accepted results remain historical evidence, not results of this new regression attempt.
+
+## Stage 1 completed after coordination (2026-09-30)
+
+The user authorized coordination with the other local agent. Contacted task
+`Создать LMS-платформу с нуля` (`01a0ef31-33a9-7b73-8925-94a933dcc429`).
+It reported no current Docker build/create/start, using its seven existing containers.
+Our suites ran sequentially, without host ports, pulls or builds. Docker was not
+restarted. There is no evidence that the LMS agent caused the earlier delay.
+
+| Suite | Result | Loaded application modules | Snapshot/current hash mismatches |
+|---|---|---:|---:|
+| runtime | 25/25, exit 0 | 155 | 0/0 |
+| diagnosis | 25/25, exit 0 | 142 | 0/0 |
+
+Runtime reused the preserved container. Diagnosis used the existing runner and
+`vp-observe-test-20260930132009-1fd39957`; its first start CLI also stalled before
+Python. Only that verified CLI was cancelled, then the same container started
+successfully. No test was duplicated in a second concurrent container.
+
+Evidence: `outputs/orchestrator-completion-20260930/regression-summary.json`,
+`runtime-current-01/artifacts/resume-01/` and
+`diagnose-current-01/artifacts/resume-01/` under that same output directory.
+The original blocked-attempt files remain unchanged. The runtime snapshot was
+created at `01583e55`; diagnosis at documentation-only `3124455f`. All loaded
+application files also match the source at the end of this regression.
+
+No provider calls. No new worker exhaustion/browser scenarios were needed for
+this unchanged-code regression. Stage 2 begins with unified-launch API tests;
+the following stages are still outstanding.
