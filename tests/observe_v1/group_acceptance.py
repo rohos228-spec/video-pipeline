@@ -87,7 +87,7 @@ async def run():
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
     recovery_mode = mode in {"recovery-a", "recovery-b"}
     unified_launch = mode in {'launch-text','launch-images'}
-    project_text_mode=mode in {'launch-plan','launch-script','launch-split','launch-split-loss','launch-image-prompts'}
+    project_text_mode=mode in {'launch-plan','launch-script','launch-split','launch-split-loss','launch-image-prompts','launch-image-prompts-loss'}
     if project_text_mode:
         from project_text_acceptance import prepare
         project_text_prepared=prepare(fixtures,ROOT,mode)

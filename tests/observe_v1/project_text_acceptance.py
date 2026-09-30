@@ -9,7 +9,7 @@ import time
 TEXT=('Синтетический текст: человек находит папку, читает записку и возвращает её на стол. '*6).strip()
 
 def prepare(fixtures,root,mode):
-    typ='image_prompts' if mode=='launch-image-prompts' else ('split' if mode.startswith('launch-split') else ('plan' if mode=='launch-plan' else 'script'))
+    typ='image_prompts' if mode.startswith('launch-image-prompts') else ('split' if mode.startswith('launch-split') else ('plan' if mode=='launch-plan' else 'script'))
     key='native-'+typ+'-A';outside='outside-native-text-Z'
     nodes=[{'id':key,'type':typ,'position':{'x':100,'y':100},
             'data':{'label':'Synthetic native '+typ,'modelId':'gpt-kie'}},
@@ -54,13 +54,15 @@ def prepare(fixtures,root,mode):
     if typ=='image_prompts':
         prompt=('Синтетический кадр: человек читает записку у стола. Полная сцена, освещение, план камеры и фон. '*4).strip()
         answer=json.dumps({'ops':[{'frame_uuid':code*16,'fields':{'промт_картинки':prompt}}
-            for code in ('af','bf')]},ensure_ascii=False)
+            for code in (('af',) if mode=='launch-image-prompts-loss' else ('af','bf'))]},ensure_ascii=False)
     fixtures.NODES=(key,outside)
     fixtures.synthetic_answer=lambda node,attempt:answer
     prepared={'node_type':typ,'node_key':key,'outside':outside,
         'output_field':'general_plan' if typ=='plan' else 'script_text','expect_split_loss':mode=='launch-split-loss',
+        'expect_image_prompt_loss':mode=='launch-image-prompts-loss',
         'interventions':['fresh pending graph before startup; no successful status manufactured',
-            'script scenario has a synthetic initial general_plan, empty script_text and no frames',
+            ('image_prompts starts with two synthetic frames, preserved voiceover and empty prompts'
+                if typ=='image_prompts' else 'native project text/split initial synthetic state; no successful output injected'),
             'explicit compatible gpt-kie choice before startup; loopback transport only, native prompts unchanged',
             'no HITL approval, next node start or manual recovery']}
     (root/'project-text-prepared.json').write_text(json.dumps(prepared,indent=2))
@@ -265,31 +267,45 @@ async def run_image_prompts(client,fixtures,observer,root,result,prepared,*,pref
     (root/'api-history.json').write_text(json.dumps({'events':history},ensure_ascii=False,indent=2))
     facts=[e for e in history if e['node_key']==key]
     requests=json.loads((root/'actual-worker-requests.json').read_text())
-    assert states[key]=='done',result['image_prompt_state']
+    rejected=prepared['expect_image_prompt_loss']
+    assert (states[key]!='done' if rejected else states[key]=='done'),result['image_prompt_state']
     assert states[prepared['outside']]=='pending','outside image generation must not run'
-    assert len(requests)==1 and requests[0]['node_key']==key
-    assert requests[0]['body']['model']=='gpt-5-6-sol'
+    expected_requests=2 if rejected else 1
+    assert len(requests)==expected_requests and all(r['node_key']==key for r in requests)
+    assert all(r['body']['model']=='gpt-5-6-sol' for r in requests)
     assert len(rows)==2 and [r[0] for r in rows]==['af'*16,'bf'*16]
     assert [r[1] for r in rows]==[1,2]
     assert ' '.join(' '.join(r[2] for r in rows).split())==' '.join(TEXT.split())
-    assert all(len(r[3] or '')>=200 for r in rows)
+    if rejected:
+        assert len(rows[0][3] or '')>=200 and not rows[1][3], 'actual partial native write must remain visible'
+    else:
+        assert all(len(r[3] or '')>=200 for r in rows)
     assert len([e for e in facts if e['kind']=='node_start'])==1
     assert len([e for e in facts if e['kind']=='node_input'])==1
     parsed=[e for e in facts if e['kind']=='parse_result']
-    assert len(parsed)==1 and parsed[0]['payload']['syntax_valid'] is True
+    assert len(parsed)==expected_requests and all(e['payload']['syntax_valid'] is True for e in parsed)
     assert parsed[0]['payload']['schema_valid'] is True
+    if rejected:
+        assert all(not e['payload']['batch_coverage_complete'] for e in parsed)
+        assert parsed[1]['payload']['schema_valid'] is False
     outputs=[e for e in facts if e['kind']=='node_output']
     assert len(outputs)==1 and outputs[0]['payload']['body']['sha256']
     proofs=[e for e in facts if e['kind']=='node_result_verification']
-    assert len(proofs)==1 and proofs[0]['payload']['status']=='passed'
+    assert len(proofs)==1 and proofs[0]['payload']['status']==('failed' if rejected else 'passed')
     applied=[e for e in facts if e['kind']=='data_applied' and e.get('db_scope')=='project'
         and e['payload'].get('transactional') is True and e['payload'].get('result',{}).get('ok') is True]
     assert len(applied)==1,'one committed native image prompt batch required'
-    assert actions['requests_used']==1 and not actions['held'] and not actions['recoveries']
+    assert actions['requests_used']==expected_requests and actions['held']==rejected and not actions['recoveries']
+    if rejected:
+        assert len([e for e in facts if e['kind']=='node_error'])==1
+        assert not [e for e in facts if e['kind']=='node_end']
+        assert any(a['initiator']=='native_image_prompt_verifier'
+            and a['preconditions']['operator_request'] is False for a in actions['records'])
     assert not (await client.get(prefix+'/decisions')).json()['records']
     before=dict(fixtures.FixtureHandler.counts);await asyncio.sleep(12)
-    assert dict(fixtures.FixtureHandler.counts)==before=={key:1}
+    assert dict(fixtures.FixtureHandler.counts)==before=={key:expected_requests}
     with sqlite3.connect(fixtures.DATA/'state.db') as db:
         assert db.execute('SELECT status FROM projects WHERE id=1').fetchone()[0]=='new'
     result.update(accepted=True,one_user_launch=True,actions=actions,verification=proofs[0]['payload'],
-        voiceover_preserved=True,business_apply_count=len(applied),semantic_quality_verified=False)
+        voiceover_preserved=True,business_apply_count=len(applied),semantic_quality_verified=False,
+        rejected_partial_result=rejected,applied_rejected_rows_retained=rejected)
