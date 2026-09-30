@@ -22,8 +22,16 @@ def prepare(fixtures, root, mode):
             assert not db.execute('SELECT 1 FROM action_node_recoveries').fetchone()
         with sqlite3.connect(fixtures.DB) as db:
             frame_count=db.execute('SELECT count(*) FROM frames WHERE project_id=2').fetchone()[0]
-            qc=db.execute('SELECT status,attempts FROM node_runs WHERE node_key=?',(fixtures.NODES[4],)).fetchone()
-            assert qc==('failed',9)
+            qc=db.execute('SELECT status,attempts,finished_at FROM node_runs WHERE node_key=?',(fixtures.NODES[4],)).fetchone()
+            meta=json.loads(db.execute('SELECT meta FROM projects WHERE id=2').fetchone()[0])
+            failures=meta['step_failure']
+            assert qc[0]=='failed' and qc[2] and failures.get('abandoned_at')
+            assert failures['total_fails'][failures['last_running']]==9
+            # Native soft retries use step_failure + observed attempt UUIDs.
+            # The archived NodeRun.attempts is independently preserved (0).
+        with sqlite3.connect(fixtures.DATA/'state.db') as db:
+            assert db.execute('SELECT count(*) FROM observation_events WHERE node_key=? AND kind=?',
+                (fixtures.NODES[4],'node_start')).fetchone()[0]==9
         cfg={'version':1,'mode':'synthetic','online_enabled':True,
              'endpoint':'http://127.0.0.1:18766/codex/v1/responses',
              'decision':{'catalog_id':'gpt-kie','model_id':'gpt-5-6-sol','reasoning_effort':'low','max_output_tokens':1024,'timeout_s':30},
@@ -36,6 +44,7 @@ def prepare(fixtures, root, mode):
         os.environ['KIE_API_BASE_URL']='http://127.0.0.1:18766'
         evidence={'scenario':mode,'scope':json.loads(keys),'outside':'n_videos','frame_count':frame_count,
             'execution_id':execution,'historical_requests_used':used,'historical_request_limit':limit,
+            'historical_node_attempts':qc[1],'native_attempt_events':9,
             'config_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
             'operator_interventions':['copy immutable genuine QC native exhaustion checkpoint',
                 'enable bounded loopback Decision for the existing execution; no Actions/worker start',
