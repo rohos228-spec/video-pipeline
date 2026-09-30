@@ -57,6 +57,17 @@ class MediaObservation(MediaJobs):
         self.assertEqual(escaped["validation"]["reason"], "artifact_outside_project")
         self.assertNotIn(str(outside), str(escaped))
 
+    async def test_legacy_publish_step_cannot_mark_managed_project_published(self):
+        from app.orchestrator.steps.publish import run
+        from app.settings import settings
+        from unittest.mock import patch
+        self.project.status = ProjectStatus.publishing
+        await self.session.commit()
+        with patch.object(settings, "social_publish_enabled", False):
+            with self.assertRaisesRegex(RuntimeError, "managed"):
+                await run(self.session, self.project, None)
+        self.assertEqual(self.project.status, ProjectStatus.publishing)
+
     async def test_panel_publication_exposes_preview_without_enabling_send(self):
         from app.models import WorkflowRun
         from app.services.media_view import context_for_nodes
