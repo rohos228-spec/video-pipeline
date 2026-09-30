@@ -830,12 +830,14 @@ async def migrate_observation_schema(conn):
     from app.services.profiles_state import ProfileOverlay
     from app.services.decision_config import DecisionRuntimeBinding
     from app.services.media_jobs import MediaJob, MediaRequest
+    from app.services.managed_launch import ManagedLaunch
     await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=[
         ExecutionControl.__table__, ObservationOutbox.__table__, ObservationEvent.__table__,
         Incident.__table__, DiagnosisState.__table__, ActionExecutionControl.__table__,
         ActionRecord.__table__, RecoveryAction.__table__,
         DecisionControl.__table__, DecisionRecord.__table__, DecisionTurn.__table__, ProfileOverlay.__table__, DecisionRuntimeBinding.__table__,
         MediaJob.__table__, MediaRequest.__table__,
+        ManagedLaunch.__table__,
     ]))
 
 

@@ -145,6 +145,10 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             raise ValueError("managed execution disabled or held")
         if node_key not in control.node_keys:
             raise ValueError("node outside recovery scope")
+        from app.services.managed_launch import allowed_actions
+        if ('retry_profile' if profile_overlay_id else 'retry_same') not in await allowed_actions(
+                master,execution_id,{'retry_same','retry_profile'}):
+            raise ValueError('recovery strategy outside execution grant')
         from app.services.decision_config import DecisionRuntimeBinding,runtime_config,check_incident_scope
         cfg=runtime_config()
         binding=await master.get(DecisionRuntimeBinding,execution_id)

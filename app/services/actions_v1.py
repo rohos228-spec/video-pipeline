@@ -162,6 +162,8 @@ async def reload_permissions(master) -> None:
     """Fail closed unless durable profiles can be loaded and validated."""
     with _permission_lock:
         _permissions.clear()
+    from app.services.managed_launch import hold_interrupted_launches
+    await hold_interrupted_launches(master)
     async with master() as session:
         controls = (await session.scalars(select(ActionExecutionControl).where(
             ActionExecutionControl.enabled.is_(True),

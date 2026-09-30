@@ -131,12 +131,14 @@ class DecisionSupervisor:
             'user_stop':bool((project.meta or {}).get('user_stop')) if project else True,
             'incident_status':incident.status,'event_ids':[e.event_id for e in events]})
         action=await s.get(RecoveryAction,row.action_id) if row.action_id else None
+        from app.services.managed_launch import allowed_actions
+        execution_actions=await allowed_actions(s,row.execution_id,cfg['allowed_actions'])
         return {'context_version':version,'execution_id':row.execution_id,'node_key':row.node_key,
             'attempt_id':row.source_attempt_id,'incident_id':row.incident_id,
             'incident':panel_safe(incident.details),'evidence_ids':[e.event_id for e in events],
             'facts':[panel_safe({k:getattr(e,k) for k in ('event_id','kind','attempt_id','request_id','payload')}) for e in events[:20]],
             'approved_profiles':approved,
-            'allowed_actions':[a for a in (list(ACTIONS)+(['retry_profile'] if approved else []) if not action else ['read_events','read_contract','human_review','wait','finish']) if a in cfg['allowed_actions'] and a in capability.actions],
+            'allowed_actions':[a for a in (list(ACTIONS)+(['retry_profile'] if approved else []) if not action else ['read_events','read_contract','human_review','wait','finish']) if a in execution_actions and a in capability.actions],
             'node_capability':capability.contract(),
             'decision_runtime':{'mode':cfg['mode'],'model':cfg['decision'],'config_hash':digest(cfg)},
             'incident_scope':cfg.get('incident_scope'),

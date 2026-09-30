@@ -50,6 +50,48 @@ class ManagedStart(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=120)
 
 
+class ManagedLaunchRequest(BaseModel):
+    model_config = {"extra":"forbid"}
+    workflow_run_id: int = Field(ge=1)
+    graph_version: str = Field(min_length=64,max_length=64)
+    node_keys: list[str] = Field(min_length=1,max_length=100)
+    strategies: list[str] = Field(min_length=1,max_length=3)
+    request_limit: int = Field(default=12,ge=1,le=100)
+    rationale: str = Field(min_length=3,max_length=1000)
+    idempotency_key: str = Field(min_length=8,max_length=120)
+
+
+@router.post('/launch',status_code=201)
+async def launch_managed(project_id:int,payload:ManagedLaunchRequest,operator:AuthDep,
+                         session:AsyncSession=Depends(get_project_session)):
+    from app.services import managed_launch
+    from app.services.actions_v1 import update_permission
+    observer=get_observer()
+    await observer.ensure_project_schema(project_id)
+    async with observer._enable_lock:
+        try:
+            launch,replay=await managed_launch.prepare(observer,session,project_id=project_id,
+                request=payload.model_dump(),initiator=_operator_id(operator))
+        except (ValueError,LookupError) as exc:raise HTTPException(409,str(exc)) from exc
+        if replay:return managed_launch.launch_json(launch,replay=True)
+        try:
+            async with observer.master() as master:
+                run=await master.get(WorkflowRun,launch.workflow_run_id)
+                node=next(n for n in run.nodes_snapshot if n['id']==launch.entry_node)
+            result=await start_managed_node(project_id,launch.execution_id,ManagedStart(
+                node_key=launch.entry_node,step_code=node['type'],rationale=payload.rationale,
+                idempotency_key='launch-start:'+launch.launch_id),operator,session)
+            return await managed_launch.finish(observer,launch.launch_id,result=result)
+        except BaseException as exc:
+            update_permission(project_id,held=True)
+            await session.rollback()
+            try:await managed_launch.finish(observer,launch.launch_id,error=type(exc).__name__)
+            except Exception as audit_error:observer.mark_gap(launch.execution_id,audit_error)
+            if isinstance(exc,HTTPException):raise
+            if not isinstance(exc,Exception):raise
+            raise HTTPException(409,'managed launch held: '+type(exc).__name__) from exc
+
+
 class VerifyNode(BaseModel):
     node_key: str = Field(min_length=1, max_length=60)
     rationale: str = Field(min_length=3, max_length=1000)
@@ -373,7 +415,7 @@ async def start_managed_node(project_id: int, execution_id: str, payload: Manage
         await master.commit()
     try:
         await start_step(session, project, managed_step_code(graph_node), node_key=payload.node_key,
-                         require_node_fsm=True, explicit_ui_start=False)
+                         require_node_fsm=True, explicit_ui_start=False, managed_start=True)
         await session.commit()
         await session.refresh(project)
         await sync_run_for_project(project_id, session=session)
