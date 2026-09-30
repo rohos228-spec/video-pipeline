@@ -139,6 +139,311 @@ class Capabilities(unittest.TestCase):
         self.assertIn("retry_same", capability_for("excel_gpt").actions)
 
 
+class ImagePromptsContract(unittest.TestCase):
+    """Observe native img_pr output without granting another write/retry path."""
+
+    @staticmethod
+    def _frames():
+        from types import SimpleNamespace
+
+        parent_uuid = "a1" * 12
+        return [
+            SimpleNamespace(project_id=2, uuid=parent_uuid, number=1,
+                voiceover_text="Мастер открывает ящик и достаёт инструмент.",
+                image_prompt="", attrs={"camera_subdivide": {
+                    "role": "vo_parent", "parent_uuid": parent_uuid,
+                    "shot_index": 1, "shots_in_beat": 2}}),
+            SimpleNamespace(project_id=2, uuid="c3" * 12, number=2,
+                voiceover_text="Достаёт инструмент.", image_prompt="",
+                attrs={"camera_subdivide": {
+                    "role": "shot", "parent_uuid": parent_uuid,
+                    "shot_index": 2, "shots_in_beat": 2}}),
+            # Native parents do not need explicit vo_parent metadata.
+            SimpleNamespace(project_id=2, uuid="b2" * 12, number=3,
+                voiceover_text="После работы он возвращает инструмент на место.",
+                image_prompt="", attrs={}),
+        ]
+
+    @staticmethod
+    def _prompt(length):
+        scene = ("A sunlit workshop with a wooden workbench, an open drawer, "
+                 "and a worker holding a metal tool. Soft daylight reveals "
+                 "the grain of the wood and the texture of the fabric. ")
+        return (scene * 10)[:length]
+
+    def _completed_frames(self, frames):
+        from copy import deepcopy
+        from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
+
+        result = deepcopy(frames)
+        for index in (0, 2):
+            result[index].image_prompt = self._prompt(IMG_PR_MIN_WRITE_CHARS)
+        result[1].image_prompt = "Close detail."
+        return result
+
+    def _assert_verification(self, frames, snapshot, status):
+        from copy import deepcopy
+        from app.services.node_capabilities import verify_image_prompts
+
+        before = deepcopy((frames, snapshot))
+        result = verify_image_prompts(frames, project_id=2, snapshot=snapshot)
+        self.assertEqual(result["status"], status, result)
+        self.assertFalse(result["semantic_quality_verified"])
+        self.assertEqual((frames, snapshot), before, "verification must be read-only")
+        return result
+
+    def test_native_contract_uses_existing_executor_and_read_actions_only(self):
+        from app.orchestrator.node_registry import WORK_NODES
+        from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
+        from app.services.node_capabilities import (
+            READ_ACTIONS, capability_for, image_prompts_contract,
+            require_managed_capability,
+        )
+
+        self.assertIn("image_prompts", WORK_NODES)
+        cap = capability_for("image_prompts")
+        self.assertEqual(cap.result_kind, "frame_prompts")
+        self.assertTrue(cap.managed)
+        self.assertEqual(require_managed_capability("image_prompts"), cap)
+        self.assertIn("generate_image_prompts.run", cap.executor)
+        self.assertIn("xlsx_step_runners.run_img_pr_xlsx", cap.executor)
+        self.assertEqual(cap.actions, READ_ACTIONS)
+        for action in ("retry_same", "retry_profile", "finish"):
+            self.assertNotIn(action, cap.actions)
+        contract = image_prompts_contract()
+        self.assertEqual(IMG_PR_MIN_WRITE_CHARS, 200)
+        self.assertEqual(contract["min_characters"], IMG_PR_MIN_WRITE_CHARS)
+        self.assertFalse(contract["semantic_quality_verified"])
+
+    def test_snapshot_retains_all_rows_and_captures_values_before_writes(self):
+        from copy import deepcopy
+        from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
+        from app.services.node_capabilities import image_prompt_input_snapshot
+
+        frames = self._frames()
+        frames[2].image_prompt = self._prompt(IMG_PR_MIN_WRITE_CHARS)
+        before = deepcopy(frames)
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        self.assertIsInstance(snapshot, dict)
+        self.assertEqual(snapshot["project_id"], 2)
+        self.assertIsInstance(snapshot["frames"], list)
+        self.assertEqual(len(snapshot["frames"]), 3)
+        for row, frame, required in zip(snapshot["frames"], frames, (True, False, True)):
+            self.assertEqual(row["uuid"], frame.uuid)
+            self.assertEqual(row["number"], frame.number)
+            self.assertEqual(row["voiceover_text"], frame.voiceover_text)
+            self.assertIs(row["required_prompt"], required)
+        self.assertEqual(frames, before)
+        captured = deepcopy(snapshot)
+        frames[0].voiceover_text = "Позднее изменение закадра."
+        frames[0].attrs["camera_subdivide"]["role"] = "shot"
+        frames[1].number = 99
+        frames.pop()
+        self.assertEqual(snapshot, captured)
+
+    def test_snapshot_required_prompt_matches_native_parent_rules(self):
+        from copy import deepcopy
+        from app.services.node_capabilities import image_prompt_input_snapshot
+        from app.services.vo_shot_expand import is_img_pr_vo_parent
+
+        parent, child, implicit_parent = self._frames()
+        silent = deepcopy(implicit_parent)
+        silent.uuid, silent.number, silent.voiceover_text = "d4" * 12, 4, " \t "
+        no_uuid = deepcopy(implicit_parent)
+        no_uuid.uuid, no_uuid.number = "", 5
+        # Still suppression does not change the img_pr VO-parent predicate.
+        parent.attrs["camera_subdivide"]["use_parent_still"] = False
+        frames = [parent, child, implicit_parent, silent, no_uuid]
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        self.assertEqual(len(snapshot["frames"]), len(frames))
+        for row, frame, expected in zip(snapshot["frames"], frames,
+                                        (True, False, True, False, False)):
+            self.assertIs(is_img_pr_vo_parent(frame), expected)
+            self.assertIs(row["required_prompt"], expected)
+
+    def test_complete_two_parent_output_allows_short_or_empty_actual_child_prompt(self):
+        from app.services.node_capabilities import image_prompt_input_snapshot
+
+        frames = self._frames()
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        for child_prompt in (None, "", "Close detail."):
+            with self.subTest(child_prompt=child_prompt):
+                output = self._completed_frames(frames)
+                output[1].image_prompt = child_prompt
+                self._assert_verification(output, snapshot, "passed")
+
+    def test_native_second_shot_threshold_is_accepted_with_nonempty_primary(self):
+        from app.services.db_apply import FIELD_ALIASES, normalize_fields
+        from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS, writeable_img_pr_ops
+        from app.services.node_capabilities import image_prompt_input_snapshot
+        from app.services.node_write_contract import filter_ops_for_node
+        from app.services.plan_shot2 import SHOT2_PROMPT_ATTR
+
+        frames = self._frames()
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        output = self._completed_frames(frames)
+        # Actual apply-ops aliases become the primary column and this attrs key.
+        fields = {"промт_картинки": "Primary scene.",
+                  "промт_картинки_2": self._prompt(IMG_PR_MIN_WRITE_CHARS),
+                  "voiceover_text": "Недопустимая перезапись закадра."}
+        ops = filter_ops_for_node(
+            [{"target": "frame", "frame_uuid": frames[0].uuid, "fields": fields}],
+            node_kind="img_pr",
+        )
+        self.assertEqual(len(ops), 1)
+        self.assertNotIn("voiceover_text", ops[0]["fields"])
+        self.assertEqual(len(writeable_img_pr_ops(ops)), 1)
+        native = normalize_fields(ops[0]["fields"], FIELD_ALIASES, scope="test frame")
+        output[0].image_prompt = native["image_prompt"]
+        output[0].attrs[SHOT2_PROMPT_ATTR] = native["image_prompt_shot2"]
+        self._assert_verification(output, snapshot, "passed")
+
+    def test_second_shot_alone_cannot_satisfy_native_worker_completion(self):
+        from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS, writeable_img_pr_ops
+        from app.services.node_capabilities import image_prompt_input_snapshot
+        from app.services.plan_shot2 import SHOT2_PROMPT_ATTR
+
+        frames = self._frames()
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        full = self._prompt(IMG_PR_MIN_WRITE_CHARS)
+        # Native batch acceptance alone does not prove _finish_success can finish.
+        self.assertEqual(len(writeable_img_pr_ops([
+            {"target": "frame", "frame_uuid": frames[0].uuid,
+             "fields": {"image_prompt_shot2": full}},
+        ])), 1)
+        for primary in (None, "", " \n\t "):
+            with self.subTest(primary=primary):
+                output = self._completed_frames(frames)
+                output[0].image_prompt = primary
+                output[0].attrs[SHOT2_PROMPT_ATTR] = full
+                self._assert_verification(output, snapshot, "failed")
+
+    def test_required_parent_rejects_empty_short_or_combined_short_prompts(self):
+        from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
+        from app.services.node_capabilities import image_prompt_input_snapshot
+        from app.services.plan_shot2 import SHOT2_PROMPT_ATTR
+
+        frames = self._frames()
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        short = self._prompt(IMG_PR_MIN_WRITE_CHARS - 1)
+        for primary, second in ((None, None), ("", ""), ("short", ""),
+                                (short, ""), (short, short),
+                                (" \n" + short + "\t ", "")):
+            with self.subTest(primary=primary, second=second):
+                output = self._completed_frames(frames)
+                output[0].image_prompt = primary
+                output[0].attrs[SHOT2_PROMPT_ATTR] = second
+                self._assert_verification(output, snapshot, "failed")
+        output = self._completed_frames(frames)
+        output[0].image_prompt = ""
+        output[0].attrs["camera_subdivide"]["role"] = "shot"
+        self._assert_verification(output, snapshot, "failed")
+
+    def test_unstored_prompt_aliases_do_not_count_as_db_output(self):
+        from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
+        from app.services.node_capabilities import image_prompt_input_snapshot
+
+        frames = self._frames()
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        output = self._completed_frames(frames)
+        output[0].image_prompt = "Primary scene."
+        full = self._prompt(IMG_PR_MIN_WRITE_CHARS)
+        output[0].image_prompt_shot2 = full
+        output[0].attrs["промт_картинки_2"] = full
+        self._assert_verification(output, snapshot, "failed")
+
+    def test_complete_scoped_frame_identity_and_numbers_must_be_retained(self):
+        from copy import deepcopy
+        from app.services.node_capabilities import image_prompt_input_snapshot
+
+        frames = self._frames()
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        cases = ("missing_parent", "missing_child", "empty_output", "duplicate_uuid",
+                 "duplicate_child", "foreign_uuid", "extra_uuid", "foreign_project",
+                 "foreign_child_project", "empty_uuid", "missing_uuid",
+                 "duplicate_number", "changed_number", "swapped_numbers")
+        for case in cases:
+            with self.subTest(case=case):
+                output = self._completed_frames(frames)
+                if case == "missing_parent":
+                    output.pop(0)
+                elif case == "missing_child":
+                    output.pop(1)
+                elif case == "empty_output":
+                    output.clear()
+                elif case == "duplicate_uuid":
+                    output[2].uuid = output[0].uuid
+                elif case == "duplicate_child":
+                    output.append(deepcopy(output[1]))
+                elif case == "foreign_uuid":
+                    output[0].uuid = "d4" * 12
+                elif case == "extra_uuid":
+                    extra = deepcopy(output[2])
+                    extra.uuid, extra.number = "d4" * 12, 4
+                    output.append(extra)
+                elif case == "foreign_project":
+                    output[0].project_id = 3
+                elif case == "foreign_child_project":
+                    output[1].project_id = 3
+                elif case == "empty_uuid":
+                    output[0].uuid = ""
+                elif case == "missing_uuid":
+                    output[0].uuid = None
+                elif case == "duplicate_number":
+                    output[2].number = output[0].number
+                elif case == "changed_number":
+                    output[1].number = 4
+                elif case == "swapped_numbers":
+                    output[0].number, output[2].number = output[2].number, output[0].number
+                self._assert_verification(output, snapshot, "failed")
+
+    def test_parent_and_child_voiceover_must_remain_bound_to_each_uuid(self):
+        from app.services.node_capabilities import image_prompt_input_snapshot
+
+        frames = self._frames()
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        for index in (0, 1, 2):
+            for voiceover in (None, "", "Изменённый закадровый текст."):
+                with self.subTest(index=index, voiceover=voiceover):
+                    output = self._completed_frames(frames)
+                    output[index].voiceover_text = voiceover
+                    self._assert_verification(output, snapshot, "failed")
+        output = self._completed_frames(frames)
+        output[0].voiceover_text, output[2].voiceover_text = (
+            output[2].voiceover_text, output[0].voiceover_text)
+        self._assert_verification(output, snapshot, "failed")
+
+    def test_unavailable_or_incomplete_input_never_becomes_success(self):
+        from copy import deepcopy
+        from app.services.node_capabilities import image_prompt_input_snapshot, verify_image_prompts
+
+        frames = self._frames()
+        output = self._completed_frames(frames)
+        self._assert_verification(output, None, "unknown")
+        unavailable = [{}, {"project_id": 2}, {"project_id": 2, "frames": []}]
+        complete = image_prompt_input_snapshot(frames, project_id=2)
+        for field in ("uuid", "number", "voiceover_text", "required_prompt"):
+            incomplete = deepcopy(complete)
+            incomplete["frames"][0].pop(field)
+            unavailable.append(incomplete)
+        unproven_target = deepcopy(complete)
+        unproven_target["frames"][0]["required_prompt"] = None
+        unavailable.append(unproven_target)
+        for index, snapshot in enumerate(unavailable):
+            with self.subTest(snapshot_case=index):
+                before = deepcopy((output, snapshot))
+                proof = verify_image_prompts(output, project_id=2, snapshot=snapshot)
+                self.assertIn(proof["status"], ("failed", "unknown"), proof)
+                self.assertFalse(proof["semantic_quality_verified"])
+                self.assertEqual((output, snapshot), before)
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        snapshot["frames"].pop(1)  # A targets-only snapshot cannot prove all-row integrity.
+        self._assert_verification(output, snapshot, "failed")
+        snapshot = image_prompt_input_snapshot(frames, project_id=2)
+        snapshot["project_id"] = 3
+        self._assert_verification(output, snapshot, "failed")
+
+
 class Artifacts(unittest.IsolatedAsyncioTestCase):
     async def test_split_parse_observes_native_alias_precedence_without_false_failure(self):
         from types import SimpleNamespace

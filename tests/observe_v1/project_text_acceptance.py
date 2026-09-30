@@ -9,11 +9,11 @@ import time
 TEXT=('Синтетический текст: человек находит папку, читает записку и возвращает её на стол. '*6).strip()
 
 def prepare(fixtures,root,mode):
-    typ='split' if mode.startswith('launch-split') else ('plan' if mode=='launch-plan' else 'script')
+    typ='image_prompts' if mode=='launch-image-prompts' else ('split' if mode.startswith('launch-split') else ('plan' if mode=='launch-plan' else 'script'))
     key='native-'+typ+'-A';outside='outside-native-text-Z'
     nodes=[{'id':key,'type':typ,'position':{'x':100,'y':100},
             'data':{'label':'Synthetic native '+typ,'modelId':'gpt-kie'}},
-        {'id':outside,'type':'script' if typ=='plan' else 'plan','position':{'x':500,'y':100},
+        {'id':outside,'type':'images' if typ=='image_prompts' else ('script' if typ=='plan' else 'plan'),'position':{'x':500,'y':100},
             'data':{'label':'Outside scope'}}]
     edges=[{'id':'native-text-edge','source':key,'target':outside,'data':{'kind':'after'}}]
     for path in (fixtures.DATA/'state.db',fixtures.DB):
@@ -23,7 +23,12 @@ def prepare(fixtures,root,mode):
             meta['canvas_graph'].update(nodes=nodes,edges=edges)
             meta.pop('active_excel_gpt_node_key',None);meta.pop('step_failure',None)
             db.execute("UPDATE projects SET status='new',general_plan=?,script_text=?,meta=? WHERE id=2",
-                (None if typ=='plan' else TEXT,TEXT if typ=='split' else None,json.dumps(meta)))
+                (None if typ=='plan' else TEXT,TEXT if typ in {'split','image_prompts'} else None,json.dumps(meta)))
+            if typ=='image_prompts':
+                words=TEXT.split();mid=len(words)//2
+                for number,vo in enumerate((' '.join(words[:mid]),' '.join(words[mid:])),1):
+                    db.execute("INSERT INTO frames(project_id,number,voiceover_text,status,attrs,uuid,sort_key,created_at,updated_at) VALUES(2,?,?,'planned','{}',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                        (number,vo,('af' if number==1 else 'bf')*16,number))
             run=db.execute('SELECT id FROM workflow_runs WHERE project_id=2 ORDER BY id DESC LIMIT 1').fetchone()[0]
             db.execute('UPDATE workflow_runs SET nodes_snapshot=?,edges_snapshot=? WHERE id=?',(json.dumps(nodes),json.dumps(edges),run))
             db.execute('DELETE FROM node_runs WHERE workflow_run_id=?',(run,))
@@ -46,6 +51,10 @@ def prepare(fixtures,root,mode):
     if mode=='launch-split-loss':vo_parts[1]='Потерянный хвост.'
     answer=json.dumps({'ops':[{'target':'replace_frames','frames':[{'закадр':vo} for vo in vo_parts]}]}
         if typ=='split' else {'ops':[{'target':'project','fields':{field:TEXT}}]},ensure_ascii=False)
+    if typ=='image_prompts':
+        prompt=('Синтетический кадр: человек читает записку у стола. Полная сцена, освещение, план камеры и фон. '*4).strip()
+        answer=json.dumps({'ops':[{'frame_uuid':code*16,'fields':{'промт_картинки':prompt}}
+            for code in ('af','bf')]},ensure_ascii=False)
     fixtures.NODES=(key,outside)
     fixtures.synthetic_answer=lambda node,attempt:answer
     prepared={'node_type':typ,'node_key':key,'outside':outside,
@@ -86,6 +95,10 @@ async def run(client,fixtures,observer,root,result,prepared,*,browser=False):
     if prepared['node_type']=='split':
         assert not browser,'existing browser case is native plan only'
         await run_split(client,fixtures,observer,root,result,prepared,prefix=base+'/observations/'+execution)
+        return
+    if prepared['node_type']=='image_prompts':
+        assert not browser,'existing browser scenario remains native plan'
+        await run_image_prompts(client,fixtures,observer,root,result,prepared,prefix=base+'/observations/'+execution)
         return
     deadline=time.monotonic()+120
     state={}
@@ -230,3 +243,51 @@ async def run_split(client,fixtures,observer,root,result,prepared,*,prefix):
     result.update(accepted=True,one_user_launch=True,actions=actions,verification=proof[0]['payload'],
         diagnoses=diagnoses,voiceover_preserved=preserved,business_apply_count=1,
         partial_apply_recorded=bad,semantic_quality_verified=False)
+
+
+async def run_image_prompts(client,fixtures,observer,root,result,prepared,*,prefix):
+    key=prepared['node_key'];deadline=time.monotonic()+150
+    while time.monotonic()<deadline:
+        with sqlite3.connect(fixtures.DB) as db:
+            states=dict(db.execute('SELECT node_key,status FROM node_runs').fetchall())
+            rows=db.execute('SELECT uuid,number,voiceover_text,image_prompt FROM frames WHERE project_id=2 ORDER BY number').fetchall()
+        actions=(await client.get(prefix+'/actions')).json()
+        if states[key] in {'done','failed'} or actions['held']:break
+        await asyncio.sleep(.25)
+    result['image_prompt_state']={'nodes':states,'frame_count':len(rows),'held':actions['held']}
+    await observer.catch_up();await observer.diagnoser.update(result['execution_id'])
+    history=[];after=0
+    while True:
+        page=(await client.get(prefix+'/events',params={'after':after,'limit':500})).json()
+        history.extend(page['events'])
+        if not page['has_more']:break
+        after=page['next_cursor']
+    (root/'api-history.json').write_text(json.dumps({'events':history},ensure_ascii=False,indent=2))
+    facts=[e for e in history if e['node_key']==key]
+    requests=json.loads((root/'actual-worker-requests.json').read_text())
+    assert states[key]=='done',result['image_prompt_state']
+    assert states[prepared['outside']]=='pending','outside image generation must not run'
+    assert len(requests)==1 and requests[0]['node_key']==key
+    assert requests[0]['body']['model']=='gpt-5-6-sol'
+    assert len(rows)==2 and [r[0] for r in rows]==['af'*16,'bf'*16]
+    assert [r[1] for r in rows]==[1,2]
+    assert ' '.join(' '.join(r[2] for r in rows).split())==' '.join(TEXT.split())
+    assert all(len(r[3] or '')>=200 for r in rows)
+    assert len([e for e in facts if e['kind']=='node_start'])==1
+    assert len([e for e in facts if e['kind']=='node_input'])==1
+    parsed=[e for e in facts if e['kind']=='parse_result']
+    assert len(parsed)==1 and parsed[0]['payload']['syntax_valid'] is True
+    assert parsed[0]['payload']['schema_valid'] is True
+    proofs=[e for e in facts if e['kind']=='node_result_verification']
+    assert len(proofs)==1 and proofs[0]['payload']['status']=='passed'
+    applied=[e for e in facts if e['kind']=='data_applied' and e.get('db_scope')=='project'
+        and e['payload'].get('transactional') is True and e['payload'].get('result',{}).get('ok') is True]
+    assert len(applied)==1,'one committed native image prompt batch required'
+    assert actions['requests_used']==1 and not actions['held'] and not actions['recoveries']
+    assert not (await client.get(prefix+'/decisions')).json()['records']
+    before=dict(fixtures.FixtureHandler.counts);await asyncio.sleep(12)
+    assert dict(fixtures.FixtureHandler.counts)==before=={key:1}
+    with sqlite3.connect(fixtures.DATA/'state.db') as db:
+        assert db.execute('SELECT status FROM projects WHERE id=1').fetchone()[0]=='new'
+    result.update(accepted=True,one_user_launch=True,actions=actions,verification=proofs[0]['payload'],
+        voiceover_preserved=True,business_apply_count=len(applied),semantic_quality_verified=False)
