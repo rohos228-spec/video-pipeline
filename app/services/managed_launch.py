@@ -9,7 +9,7 @@ import uuid
 from sqlalchemy import JSON, String, UniqueConstraint, select
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models import Base, NodeRun, NodeRunStatus, Project, WorkflowRun
+from app.models import Base, NodeRun, NodeRunStatus, Project, ProjectStatus, WorkflowRun
 from app.services.observation import ExecutionControl, digest
 
 
@@ -126,8 +126,17 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
         replica=await project_session.get(WorkflowRun,run.id)
         replica_rows=(await project_session.scalars(select(NodeRun).where(NodeRun.workflow_run_id==run.id))).all()
         if (not replica or digest({'nodes':replica.nodes_snapshot,'edges':replica.edges_snapshot})!=revision
-                or {r.node_key:(r.status,r.attempts) for r in rows}!={r.node_key:(r.status,r.attempts) for r in replica_rows}
-                or project.status!=primary.status):raise ValueError('master/project state disagreement')
+                or {r.node_key:(r.status,r.attempts) for r in rows}!={r.node_key:(r.status,r.attempts) for r in replica_rows}):
+            raise ValueError('master/project state disagreement')
+        initial_status_projection=None
+        if project.status!=primary.status:
+            # GET can derive an idle ready status in the authoritative project DB
+            # before its master projection catches up. Only the untouched `new`
+            # projection may be refreshed; active work/stops were rejected above,
+            # and graph, every NodeRun and attempt must still agree exactly.
+            if project.status!=ProjectStatus.new:raise ValueError('master/project status disagreement requires review')
+            initial_status_projection={'from':project.status.value,'to':primary.status.value,'source':'project_db',
+                'reason':'idle project readiness computed by original runtime'}
         cfg=runtime_config();check_route(cfg,cfg['endpoint'])
         strategies=request['strategies']
         if not strategies or len(strategies)!=len(set(strategies)) or not set(strategies)<= {'wait','human_review','retry_same'}:
@@ -139,6 +148,9 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
             'allowed_actions':sorted(set(strategies)|({'read_events','read_contract','finish'}&set(cfg['allowed_actions']))),
             'request_limit':request['request_limit'],'max_decision_steps':3,'node_recovery_limit':1,
             'contracts':contracts,'runtime_config_hash':digest(cfg)}
+        if initial_status_projection:
+            project.status=primary.status
+            policy['initial_status_projection']=initial_status_projection
         row=ManagedLaunch(launch_id=launch_id,execution_id=execution,project_id=project_id,workflow_run_id=run.id,
             idempotency_key=request['idempotency_key'],request_hash=identity,policy=policy,entry_node=entry,
             status='dispatching',result={})
