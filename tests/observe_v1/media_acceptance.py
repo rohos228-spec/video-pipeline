@@ -26,6 +26,7 @@ def prepare(fixtures, root, mode):
             node["data"].update(modelId="z-image", aspectRatio="9:16")
     edges = [{"id": "synthetic-media-edge-" + str(i), "source": a, "target": b,
               "data": {"kind": "after"}} for i, (a, b) in enumerate(zip(keys, keys[1:]))]
+    seed_voiceover = "Он вошёл в комнату и открыл папку."
     # Initial state construction on fresh synthetic copies BEFORE app starts.
     # No successful node statuses are manufactured.
     for db_path in (fixtures.DATA / "state.db", fixtures.DB):
@@ -35,12 +36,22 @@ def prepare(fixtures, root, mode):
             meta.pop("active_excel_gpt_node_key", None)
             meta.update(img_streams=1, outsee_streams=1)
             db.execute("UPDATE projects SET meta=?,image_generator='z_image' WHERE id=2", (json.dumps(meta),))
+            if mode == "media-mixed":
+                # fw_script's real contract starts from one cell containing the
+                # complete voiceover. Two unrelated seeded cells are rebuilt by
+                # ensure_single_seed_vo_cell, correctly dropping their prompts.
+                # Construct a consistent input BEFORE startup; never patch the
+                # resulting frames or bypass the missing-input gate after start.
+                assert db.execute("SELECT count(*) FROM frames WHERE project_id=2").fetchone()[0] == 0
+                db.execute("UPDATE projects SET script_text=? WHERE id=2", (seed_voiceover,))
             db.execute("UPDATE workflow_runs SET nodes_snapshot=?,edges_snapshot=? WHERE project_id=2",
                        (json.dumps(nodes), json.dumps(edges)))
             marks = ",".join("?" for _ in keys)
             db.execute("DELETE FROM node_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE project_id=2) AND node_key NOT IN ("+marks+")", keys)
             if not db.execute("SELECT 1 FROM frames WHERE project_id=2 LIMIT 1").fetchone():
-                for number, text in enumerate(("Он вошёл в комнату и открыл папку.", "Он положил лист на стол и указал на запись."), 1):
+                texts = (seed_voiceover,) if mode == "media-mixed" else (
+                    seed_voiceover, "Он положил лист на стол и указал на запись.")
+                for number, text in enumerate(texts, 1):
                     db.execute("INSERT INTO frames(project_id,number,voiceover_text,status,attrs,uuid,sort_key,created_at,updated_at) VALUES(2,?,?,'planned','{}',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
                                (number,text,"synthetic-media-frame-"+str(number),number))
             db.execute("UPDATE frames SET image_prompt='Synthetic geometric shapes on a plain background',animation_prompt=NULL WHERE project_id=2")
@@ -59,6 +70,9 @@ def prepare(fixtures, root, mode):
                     "initial image prompts supplied explicitly; script output is not an image prompt quality test",
                     "explicit loopback-only z-image profile; one image stream"],
                 "config_sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
+    if mode == "media-mixed":
+        evidence["operator_interventions"].append(
+            "initial single cell equals full synthetic script_text, per fw_script input contract; no input edits after start")
     if mode == "media-unverified":
         evidence["operator_interventions"].append(
             "inject synthetic disk files after managed enable, before worker start; no job/artifact proof or status changes")

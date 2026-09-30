@@ -2,6 +2,15 @@
 
 ## Resume boundary — managed continuation, 2026-09-30
 
+Mixed-current-04 at `0fd0b400`: six text done, images correctly denied
+`image_inputs_missing`, exit1/OOM=false. Original fw_script rebuilt two
+inconsistent initial cells as one full-VO seed (133 chars), discarding their
+image prompts; shots then expanded it into three. This is input fixture setup,
+not a reason to relax image gates or change the runtime. The next synthetic
+initial state uses one cell equal to its full short script_text, with the same
+explicit image prompt/model, before startup. No post-start data/status edits.
+Mixed-current-03/04 logs, DBs and states are retained. Warning gate: 19/19 GREEN.
+
 Mixed-current-03 at `ac50123d`: actual runtime RED, six text done, images pending,
 five text POSTs, zero media jobs, exit1/OOM=false. `managed_successor_denied`
 reason `incident_requires_human`; only incident is nonblocking `db_disagreement`
