@@ -80,6 +80,12 @@ $files += 'tests/observe_v1/recovery_denials.py'
 $files += @('tests/observe_v1/decision_acceptance.py','tests/observe_v1/profiles_acceptance.py')
 $files += 'tests/observe_v1/live_decision_acceptance.py'
 if ($Target -eq 'group') { $files += @('tests/observe_v1/group_runner.py','tests/observe_v1/media_acceptance.py','tests/observe_v1/project_text_acceptance.py','config/managed-text-pilot.example.json') }
+if ($Target -eq 'group') {
+    $nativeModule=@{'native-animation'='native_animation_acceptance';'native-animation-corrupt'='native_animation_acceptance';
+        'native-entity-observe'='native_entity_acceptance';'native-scene-camera'='native_scene_acceptance';
+        'launch-assembly'='native_assembly_acceptance';'native-sfx'='native_sfx_acceptance'}[$GroupMode]
+    if ($nativeModule) { $files += 'tests/observe_v1/' + $nativeModule + '.py' }
+}
 if ($Target -eq 'diagnose') { $files += 'tests/observe_v1/test_diagnosis.py' }
 if ($Target -eq 'managed-launch') { $files += 'tests/observe_v1/test_managed_launch.py' }
 if ($Target -eq 'owner-budget') { $files += 'tests/observe_v1/test_owner_budget.py' }

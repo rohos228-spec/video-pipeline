@@ -86,6 +86,15 @@ async def run():
         path=ROOT/'synthetic-production-adapter.json';path.write_text(json.dumps(config,indent=2))
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
     recovery_mode = mode in {"recovery-a", "recovery-b"}
+    native_module_name={'native-animation':'native_animation_acceptance',
+        'native-animation-corrupt':'native_animation_acceptance','native-entity-observe':'native_entity_acceptance',
+        'native-scene-camera':'native_scene_acceptance','launch-assembly':'native_assembly_acceptance',
+        'native-sfx':'native_sfx_acceptance'}.get(mode)
+    native_family_mode=native_module_name is not None
+    if native_family_mode:
+        import importlib
+        native_family=importlib.import_module(native_module_name)
+        native_prepared=native_family.prepare(fixtures,ROOT,mode)
     unified_launch = mode in {'launch-text','launch-images'}
     project_text_mode=mode in {'launch-plan','launch-script','launch-split','launch-split-loss','launch-image-prompts','launch-image-prompts-loss','launch-image-prompts-short'}
     if project_text_mode:
@@ -129,6 +138,8 @@ async def run():
     if media_mode:
         from media_acceptance import handler_for as media_handler
         handler = media_handler(fixtures, ROOT)
+    if native_family_mode and hasattr(native_family,'handler_for'):
+        handler=native_family.handler_for(fixtures,ROOT)
     if decision_mode or live_decision:
         from decision_acceptance import handler_for
         handler=handler_for(fixtures,ROOT,mode,base_handler=handler)
@@ -156,7 +167,7 @@ async def run():
                 request.headers['x-diagnostic-node']='__decision__'
                 return await original_send(client,request,**kwargs)
             if ctx:
-                if mode.startswith('profiles-') or os.environ.get('OBSERVE_APPROVED_PROFILE') or project_text_mode:
+                if mode.startswith('profiles-') or os.environ.get('OBSERVE_APPROVED_PROFILE') or project_text_mode or native_family_mode:
                     payload=json.loads(request.content)
                     p=ROOT/'actual-worker-requests.json'
                     bodies=json.loads(p.read_text()) if p.exists() else []
@@ -192,6 +203,13 @@ async def run():
         async with httpx.AsyncClient(timeout=30, trust_env=False,
                 limits=httpx.Limits(max_keepalive_connections=0)) as client:
             base = "http://127.0.0.1:18765/api/projects/2"
+            if native_family_mode:
+                assert not browser_mode,'new native cases do not reuse previous browser acceptance'
+                if mode=='native-entity-observe':
+                    await native_family.run(client,fixtures,observation.get_observer(),ROOT,result,native_prepared,handler)
+                else:
+                    await native_family.run(client,fixtures,observation.get_observer(),ROOT,result,native_prepared)
+                return
             if project_text_mode:
                 from project_text_acceptance import run as run_project_text
                 await run_project_text(client,fixtures,observation.get_observer(),ROOT,result,project_text_prepared,browser=browser_mode)
