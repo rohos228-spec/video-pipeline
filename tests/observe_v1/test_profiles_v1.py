@@ -246,6 +246,32 @@ class Profiles(DecisionDurability):
         with self.assertRaises(ValueError):await self.store.select_for_decision(record['decision_id'],'synthetic-format-v1')
         self.assertEqual((await self.store.state(7,'exec-durable','n1'))['overlays'],[])
 
+    async def test_recommended_profile_is_the_repair_variant_only_when_execution_approved_it(self):
+        record=await self.approved_launch_decision()
+        context=await self.loop.context(record['decision_id'])
+        self.assertEqual(context['incident_type'],'missing_payload')
+        self.assertEqual(context['recommended_profile_id'],'synthetic-format-v1')
+        chosen=next(p for p in context['eligible_profiles'] if p['profile_id']==context['recommended_profile_id'])
+        self.assertEqual(chosen['candidate']['prompt_variant'],'repair-json-only-v1')
+
+    async def test_no_recommendation_without_execution_approved_catalog(self):
+        await self.enable_decisions();record=await self.begin()
+        context=await self.loop.context(record['decision_id'])
+        self.assertIsNone(context['recommended_profile_id'])
+
+    async def test_escalation_attaches_structured_operator_summary(self):
+        await self.enable_decisions();record=await self.begin()
+        await self.loop.escalate(record['decision_id'],'model step limit exhausted')
+        async with self.sessions() as s:
+            row=await s.get(self.service.DecisionRecord,record['decision_id'])
+        self.assertEqual(row.status,'human_review')
+        summary=row.policy_result['summary']
+        self.assertEqual(summary['status_label'],'REQUIRES_HUMAN_INTERVENTION')
+        self.assertEqual(summary['node_key'],'n1')
+        self.assertEqual(summary['max_model_steps'],self.service.MAX_STEPS)
+        self.assertIn('model step limit exhausted',summary['text'])
+        self.assertEqual(row.policy_result['reason'],'model step limit exhausted')
+
     async def test_selection_requires_claimed_acting_decision_and_fresh_catalog(self):
         record=await self.approved_launch_decision()
         with self.assertRaisesRegex(ValueError,'acting'):
