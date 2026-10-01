@@ -125,8 +125,8 @@ ceiling of 5 cents and a hard cap of 4 requests. Result: **PASS**.
   step while a request outcome is uncertain and escalates to
   `REQUIRES_HUMAN_INTERVENTION` with the structured summary.
 
-Not covered by this run: the real excel_gpt executor re-running with the repair
-profile (worker success is simulated, as in the dry run), media nodes, and exact
+The real excel_gpt executor re-running with the repair profile was verified in a
+separate live run, see docs/STAGE_STATUS_REPORT.md. Not covered: media nodes and exact
 billing (Kie credits are not converted to USD in this project).
 
 The credentials were supplied via process environment only; nothing was written
