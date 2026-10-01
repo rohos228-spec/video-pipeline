@@ -30,6 +30,7 @@ import { ItemsConfigPanel } from "./items-config-panel";
 import { AssembleMontageTrigger } from "./assemble-montage-board";
 import { ShotMenuPanel, ShotMenuTrigger } from "./shot-menu-panel";
 import { GptOperatorCardPanel } from "./gpt-operator-card-panel";
+import { Nii67CardPanel } from "./nii67-card-panel";
 import { NodeModelPicker } from "./node-model-picker";
 
 import {
@@ -441,6 +442,9 @@ export function PipelineNode({ data, selected }: NodeProps) {
                 projectId={actions.projectId}
                 onOpenBoard={(cellIndex) => actions.onOpenShotMenu(cellIndex)}
               />
+            )}
+            {d.type === "plan" && actions?.projectId && (
+              <Nii67CardPanel projectId={actions.projectId} />
             )}
             {isHero && actions?.projectId && <HeroConfigPanel projectId={actions.projectId} />}
             {isItems && actions?.projectId && <ItemsConfigPanel projectId={actions.projectId} />}

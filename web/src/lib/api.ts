@@ -4,6 +4,7 @@
  * сам отдаёт фронт + API из одного origin.
  */
 
+import type { Nii67Card } from "./nii67";
 import type {
   ArtifactDTO,
   ExcelHeroCharacter,
@@ -876,6 +877,24 @@ export const api = {
       { method: "PATCH", body: JSON.stringify(body) },
       90_000,
     ),
+  getNii67: (id: number) => http<{ card: Nii67Card }>(`/api/projects/${id}/nii67`),
+  putNii67: (id: number, card: Nii67Card, mode: "draft" | "save") =>
+    http<{ card: Nii67Card }>(`/api/projects/${id}/nii67?mode=${mode}`, {
+      method: "PUT",
+      body: JSON.stringify({ card }),
+    }),
+  previewNii67: (id: number, card: Nii67Card) =>
+    http<{ text: string }>(`/api/projects/${id}/nii67/preview`, {
+      method: "POST",
+      body: JSON.stringify({ card }),
+    }),
+  generateNii67: (id: number, card: Nii67Card) =>
+    http<{ card: Nii67Card; general_plan: string }>(`/api/projects/${id}/nii67/generate`, {
+      method: "POST",
+      body: JSON.stringify({ card }),
+    }),
+  resetNii67: (id: number) =>
+    http<{ card: Nii67Card }>(`/api/projects/${id}/nii67/reset`, { method: "POST" }),
   deleteProject: (id: number) =>
     http<void>(`/api/projects/${id}`, { method: "DELETE" }),
   createChildProject: (parentId: number) =>
