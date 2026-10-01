@@ -188,7 +188,8 @@ class Harness:
         """
         await self.supervisor.enable(project_id=PROJECT_ID, execution_id=EXECUTION_ID, group_id="g1",
             node_keys=[NODE_KEY], graph_version=self.graph, initiator="e2e-script",
-            rationale="scripted agentic-loop e2e run", request_limit=20)
+            rationale="scripted agentic-loop e2e run",
+            request_limit=20 if DRY_RUN else 4)  # --live: hard cap on real paid model requests
         async with self.sessions() as s:
             project = await s.get(Project, PROJECT_ID)
             project.status = ProjectStatus.paused

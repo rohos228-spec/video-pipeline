@@ -110,3 +110,24 @@ what the system is allowed to do without a human in the loop.
 
 `app/orchestrator/auto_advance.py:1650` — unhandled branch for visual-review
 auto-advance gating (`AUTO_REVIEW_VISUAL=1` + visual case).
+
+## Live verification (2026-10-01)
+
+`scripts/e2e_test_agentic_loop.py --live` was run once against the real Kie API
+(`gpt-5-6-sol`, `https://api.kie.ai/codex/v1/responses`) with an owner-approved
+ceiling of 5 cents and a hard cap of 4 requests. Result: **PASS**.
+
+- Scenario 1 (invalid_json): exactly **1** real model call; the real model read the
+  context, followed `recommended_profile_id` and chose `retry_profile` with the
+  production `repair-json-only-v1` profile; the recovery ticket was verified and the
+  decision reached `done`.
+- Scenario 2 (timeout): **0** model calls — the decision loop refuses any new model
+  step while a request outcome is uncertain and escalates to
+  `REQUIRES_HUMAN_INTERVENTION` with the structured summary.
+
+Not covered by this run: the real excel_gpt executor re-running with the repair
+profile (worker success is simulated, as in the dry run), media nodes, and exact
+billing (Kie credits are not converted to USD in this project).
+
+The credentials were supplied via process environment only; nothing was written
+to the repository.
