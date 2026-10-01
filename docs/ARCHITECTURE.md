@@ -180,6 +180,41 @@ independently re-reads committed output, (3) a decision on whether it needs
 workflow engine — the shape already exists; it's a per-family completion
 task (tracked in `ORCHESTRATOR_STATUS_CURRENT.md`).
 
+## Self-healing fallback (same-node profile, not cross-agent routing)
+
+When the Decision layer's single bounded recovery attempt (see "The Decision
+cycle" above) is granted for an exhausted text `invalid_json`/`missing_payload`
+incident, the model can choose `retry_profile` instead of a bare `retry_same`
+— i.e. retry the *same* node with a different model/reasoning-effort/prompt
+candidate from `profiles_v1.py`'s catalog, rather than literally repeating
+the identical request. This is deliberately **same-node, same-executor**:
+there is no mechanism (and none is planned without a separate design pass)
+for substituting a different node/agent implementation for a failing one —
+`node_registry.WORK_NODES` maps one node type to exactly one
+`app/orchestrator/steps/<name>.py` executor, and there is no "equivalent
+capability" registry of alternate implementations per node type. Swapping
+which *node* runs would be a structural graph change with real implications
+for the budget ledger, audit trail and idempotency guarantees — out of scope
+here.
+
+Production `profiles` are intentionally **not** shipped pre-populated:
+`config/orchestrator-runtime.example.json` (the file `ORCHESTRATOR_RUNTIME_CONFIG`
+is meant to point at) ships fully empty/disabled by design — a committed test
+(`tests/observe_v1/test_decision_runtime.py::test_default_example_is_disabled_and_valid`)
+enforces `profiles == {}` and `allowed_actions == []` for that exact file, so
+that a copy-paste deployment starts from zero, not from an implicit decision
+already made for the operator. The *validated, ready-to-copy recipe* for the
+one supported fallback case (lower `reasoning_effort` + the already-approved
+`repair-json-only-v1` prompt variant, for `invalid_json`/`missing_payload`)
+lives in a separate, clearly-labeled file:
+`config/orchestrator-runtime.self-healing-example.json` — it does not load
+as-is (its `_comment` key makes `validate_config()` reject it on purpose;
+confirmed by test above), it's meant to be copied into an operator's own
+`config/orchestrator-runtime.json`. `online_enabled` stays `false` even in
+that recipe — turning it on additionally requires a real (non-`synthetic*`)
+`GPT_API_KEY`, which is a deployment decision, not something this repo
+should default to.
+
 ## Cost control
 
 The two mechanisms that actually bound real spend today:
