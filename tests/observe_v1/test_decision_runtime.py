@@ -259,6 +259,20 @@ class RuntimeAdapter(base_tests.DecisionDurability):
         self.assertEqual(len(calls),1)
         async with self.sessions() as s:
             self.assertEqual((await s.get(ActionExecutionControl,'exec-durable')).requests_used,1)
+    async def test_decision_model_call_is_cost_tracked_against_its_project(self):
+        from unittest.mock import patch
+        from app.services.gpt_api import GptChatResult
+        await self.enable_decisions();d=await self.begin();token=await self.loop.claim(d['decision_id']);ctx=await self.loop.context(d['decision_id'])
+        hook=self.service.HttpDecision(self.loop,d['decision_id'],token,ctx['context_version'])
+        usage={'input_tokens':11,'output_tokens':7}
+        async def send(**kw):return GptChatResult(text='{}',model='gpt-5-6-sol',usage=usage,raw={'status':'completed'})
+        kwargs={'url':configured()['endpoint'],'headers':{},'body':{'model':'gpt-5-6-sol','input':[]},'use_model':'gpt-5-6-sol'}
+        with patch.object(observation,'_track_api_cost') as track:
+            await hook.send(send,(),kwargs)
+        track.assert_called_once()
+        self.assertEqual(track.call_args.kwargs['usage'],usage)
+        self.assertIsNotNone(track.call_args.kwargs['project_id'])
+        self.assertEqual(track.call_args.kwargs.get('status_code',200),200)
     async def test_actual_client_retrieval_cannot_exceed_common_budget(self):
         from app.services import decision_transport,gpt_api
         from app.services.actions_v1 import ActionExecutionControl

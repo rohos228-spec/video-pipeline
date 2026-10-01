@@ -184,6 +184,9 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
                   completion
                   {summary.cost.total_cached_tokens > 0 ? ` / ${summary.cost.total_cached_tokens} cached` : ""}
                 </p>
+                <p className="text-white/40">
+                  Оценка по тарифной таблице проекта; скидка за кэш не учитывается, сверка с биллингом провайдера не проводилась.
+                </p>
                 <ul className="mt-1 space-y-0.5 text-white/60">
                   {Object.entries(summary.cost.by_model).map(([model, stats]) => (
                     <li key={model}>

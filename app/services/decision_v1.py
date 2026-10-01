@@ -4,6 +4,7 @@ Facts are untrusted, proposals are server-bound, actions still use Actions-v1.
 The initial model transport is deliberately restricted to synthetic loopback.
 """
 import json
+import time
 import hashlib
 import uuid
 from datetime import datetime,timedelta
@@ -643,7 +644,7 @@ class HttpDecision:
         kwargs={**kwargs,'body':{**kwargs['body'],'max_output_tokens':m['max_output_tokens'],'reasoning':{'effort':m['reasoning_effort']}}}
         async with self.supervisor.master() as s:
             row=await s.get(DecisionRecord,self.decision_id);await self.supervisor._live(s,row,self.token,version=self.version)
-            self.execution_id=row.execution_id
+            self.execution_id=row.execution_id;project_id=row.project_id
         self.request_id=str(uuid.uuid4())
         encoded=json.dumps(kwargs['body'],ensure_ascii=False,separators=(',', ':'),allow_nan=False).encode('utf-8')
         await self.fact('decision_model_start',{'method':'POST','purpose':'decision','model':m['model_id'],'max_output_tokens':m['max_output_tokens'],'reasoning_effort':m['reasoning_effort'],'route':cfg['endpoint'],'config_hash':digest(cfg),'request_body_sha256':hashlib.sha256(encoded).hexdigest()},body=kwargs.get('body'))
@@ -653,8 +654,11 @@ class HttpDecision:
             raise
         provider_complete = False
         phase = 'provider'
+        started=time.monotonic()
+        from app.services.observation import _track_api_cost
         try:
             result=await function(*args,**kwargs)
+            _track_api_cost(model=getattr(result,'model',None) or m['model_id'],usage=result.usage,duration_sec=time.monotonic()-started,project_id=project_id)
             complete=(result.raw or {}).get('status')=='completed' and not (result.raw or {}).get('sse_salvaged')
             provider_complete = complete
             await self.fact('decision_model_end',{'complete':complete,'usage':result.usage},body={'text':result.text,'response':result.raw})
@@ -665,6 +669,7 @@ class HttpDecision:
             await self.ack_gateway('received')
             return result
         except BaseException as exc:
+            if not provider_complete:_track_api_cost(model=m['model_id'],usage=None,duration_sec=time.monotonic()-started,project_id=project_id,status_code=0,error_message=f'{type(exc).__name__}: {exc}')
             await self.fact('decision_model_error',{'complete':provider_complete,'phase':phase,'error_type':type(exc).__name__})
             reason = ('completed decision HTTP response; local gateway acknowledgement failed; no repeat POST'
                       if provider_complete and phase == 'local_ack' else 'uncertain decision HTTP result; no repeat POST')
