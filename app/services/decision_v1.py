@@ -148,7 +148,7 @@ class DecisionSupervisor:
         decision_config.check_incident_scope(cfg,execution_id=row.execution_id,incident_id=row.incident_id,
             node_key=row.node_key,source_attempt_id=row.source_attempt_id)
         from app.services.profiles_v1 import eligible_profiles
-        eligible=await eligible_profiles(s,row,revision) if incident.type in RECOVERY_INCIDENTS and capability.managed and capability.result_kind=='structured' else []
+        eligible=await eligible_profiles(s,row,revision) if incident.type in RECOVERY_INCIDENTS and capability.managed and capability.profile_compatible else []
         # Deterministic hint only — never forces a choice. For a diagnosed
         # format/payload failure, the operator-approved repair-only prompt
         # variant (if present in this execution's eligible catalog) is the

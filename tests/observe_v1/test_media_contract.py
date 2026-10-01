@@ -98,8 +98,10 @@ class Capabilities(unittest.TestCase):
             cap=capability_for(typ)
             self.assertEqual(cap.result_kind,'project_text')
             self.assertTrue(cap.managed)
-            self.assertNotIn('retry_same',cap.actions)
-            self.assertNotIn('retry_profile',cap.actions)
+            # bounded recovery admitted by capability data; HITL and validators unchanged below
+            self.assertIn('retry_same',cap.actions)
+            self.assertIn('retry_profile',cap.actions)
+            self.assertEqual(cap.recovery_continuation,'none')
             contract=project_text_contract(typ)
             self.assertEqual(contract['output_field'],field)
             self.assertTrue(contract['human_approval_preserved'])

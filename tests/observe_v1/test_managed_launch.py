@@ -31,7 +31,8 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
         self.nodes = [
             {'id':'draft-A','type':'excel_gpt','data':{'slot':0}},
             {'id':'report-Z','type':'excel_gpt','data':{'slot':0}},
-            {'id':'outside','type':'script','data':{}},
+            # split stays read-only native (script/plan gained bounded recovery capabilities)
+            {'id':'outside','type':'split','data':{}},
         ]
         self.edges = [{'id':'a-z','source':'draft-A','target':'report-Z'}]
         self.graph = observation.digest({'nodes':self.nodes,'edges':self.edges})
@@ -153,7 +154,7 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data['graph_version'],self.graph)
         self.assertEqual({n['node_key'] for n in data['nodes'] if n['supported']},{'draft-A','report-Z','outside'})
         native=next(n for n in data['nodes'] if n['node_key']=='outside')
-        self.assertEqual(native['result_kind'],'project_text')
+        self.assertEqual(native['result_kind'],'frame_set')
         self.assertNotIn('retry_same',native['actions'])
         self.assertEqual(data['request_limit_max'],100)
         self.assertEqual(data['online_authorized'],False)

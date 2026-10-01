@@ -106,14 +106,13 @@ class ProfilesSupervisor:
         from app.services.node_capabilities import capability_for
         from app.services.excel_gpt_node import effective_node_type
         capability=capability_for(effective_node_type(node)) if node else None
-        # Eligibility is capability-driven, not a hardcoded node-type string: any
-        # managed, result_kind='structured' node qualifies (today that is still
-        # only excel_gpt, since it is the only node with both flags set — see
-        # docs/ARCHITECTURE.md "Registry"). effective_body() below is the real
+        # Eligibility is capability data, not a hardcoded node-type string: a managed
+        # node qualifies only if its capability declares profile_compatible (excel_gpt
+        # and the native plan/script text nodes). effective_body() below is the real
         # safety net: it raises on any request shape it does not recognize
         # (e.g. vision/multimodal input), so widening eligibility here cannot by
         # itself let an incompatible node start using a profile.
-        if not capability or not capability.managed or capability.result_kind!='structured':
+        if not capability or not capability.managed or not capability.profile_compatible:
             raise ValueError('incompatible accepted text node contract')
         project=await s.get(Project,project_id)
         if not control.enabled or control.held or scope.observer_state!='active' or scope.gaps or (project.meta or {}).get('user_stop'):

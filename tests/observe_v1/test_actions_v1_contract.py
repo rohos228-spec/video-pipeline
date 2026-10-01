@@ -532,18 +532,10 @@ class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(get_permission(7), permission)
         self.assertIsNone(restricted_node(7))
 
-    async def test_retry_same_denies_native_plan_with_inherited_grant(self):
-        await self.assert_retry_denied('plan')
-
-    async def test_retry_profile_denies_native_plan_with_inherited_grant(self):
-        await self.assert_retry_denied('plan', profile=True)
-
-    async def test_retry_same_denies_native_script_with_inherited_grant(self):
-        await self.assert_retry_denied('script')
-
-    async def test_retry_profile_denies_native_script_with_inherited_grant(self):
-        await self.assert_retry_denied('script', profile=True)
-
+    # plan/script were denied here until their native executors were shown sound for the
+    # bounded recovery. Their admission (retry_same/retry_profile, no inner json_retry, body
+    # identity modulo attachment stamps) is asserted in tests/observe_v1/test_text_nodes_recovery.py;
+    # split/image_prompts stay denied below.
     async def test_retry_same_denies_native_split_with_inherited_grant(self):
         await self.assert_retry_denied('split')
 
@@ -580,16 +572,16 @@ class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
     async def test_retry_profile_still_requires_execution_grant_for_structured_excel(self):
         await self.assert_retry_denied('excel_gpt', profile=True, grant=['retry_same'], reason='execution grant')
 
-    async def assert_persisted_admission(self, *, profile=False):
+    async def assert_persisted_admission(self, *, profile=False, node_type='excel_gpt'):
         from app.services.node_capabilities import capability_for
 
-        await self.mixed_recovery_fixture('excel_gpt')
+        await self.mixed_recovery_fixture(node_type)
         overlay_id = await self.approved_profile_fixture() if profile else None
         ticket = await self.retry(profile_overlay_id=overlay_id)
         async with self.sessions() as session:
             row = await session.get(RecoveryAction, ticket['action_id'])
-            self.assertEqual(row.preconditions['effective_node_type'], 'excel_gpt')
-            self.assertEqual(row.preconditions['capability_actions'], list(capability_for('excel_gpt').actions))
+            self.assertEqual(row.preconditions['effective_node_type'], node_type)
+            self.assertEqual(row.preconditions['capability_actions'], list(capability_for(node_type).actions))
             self.assertEqual(row.preconditions['action_type'], 'retry_profile' if profile else 'retry_same')
             self.assertEqual(row.preconditions, ticket['preconditions'])
 
@@ -727,17 +719,19 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restricted_node(7), 'n1')
         self.assertNotIn(7, _inflight_projects)
 
-    async def test_old_retry_same_plan_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('plan')
+    # plan/script now carry retry capabilities (they cannot have legacy denied tickets);
+    # a queued ticket for them follows the same single-claim rule as excel_gpt.
+    async def test_old_retry_same_plan_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(node_type='plan')
 
-    async def test_old_retry_profile_plan_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('plan', profile=True)
+    async def test_old_retry_profile_plan_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(profile=True, node_type='plan')
 
-    async def test_old_retry_same_script_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('script')
+    async def test_old_retry_same_script_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(node_type='script')
 
-    async def test_old_retry_profile_script_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('script', profile=True)
+    async def test_old_retry_profile_script_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(profile=True, node_type='script')
 
     async def test_old_retry_same_split_claim_denied_after_restart(self):
         await self.assert_legacy_claim_denied('split')
@@ -770,15 +764,15 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
         await self.assert_legacy_claim_denied('future-unsupported', profile=True)
 
     async def test_old_native_retry_same_cannot_enter_worker_body_after_restart(self):
-        await self.assert_legacy_claim_denied('plan', through_worker=True)
+        await self.assert_legacy_claim_denied('split', through_worker=True)
 
     async def test_old_native_retry_profile_cannot_activate_profile_or_enter_body_after_restart(self):
-        await self.assert_legacy_claim_denied('plan', profile=True, through_worker=True)
+        await self.assert_legacy_claim_denied('split', profile=True, through_worker=True)
 
-    async def assert_old_excel_claims_once(self, *, profile=False):
+    async def assert_old_excel_claims_once(self, *, profile=False, node_type='excel_gpt'):
         from app.services.actions_v1 import ActionRecord
 
-        await self.legacy_queued_fixture('excel_gpt', profile=profile)
+        await self.legacy_queued_fixture(node_type, profile=profile)
         before_business = await self.recovery_side_effects()
         async with self.sessions() as session:
             project = await session.get(Project, 7)

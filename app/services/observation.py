@@ -586,7 +586,7 @@ def observe_model(function):
         body = kwargs.get("body") or {}
         if ctx.scope.mode == "managed":
             from app.services.actions_recovery import check_body
-            await check_body(ctx, digest(body))
+            await check_body(ctx, digest(body), body=body)
         ctx.last_request_id = request_id
         request_token = _request.set(request_id)
         from urllib.parse import urlsplit
@@ -625,7 +625,7 @@ def observe_model(function):
                 "retrieved_by_id": bool(raw.get("retrieved_by_id")),
             }, body={"text": getattr(result, "text", ""), "response": raw})
             _track_api_cost(model=getattr(result, "model", None), usage=getattr(result, "usage", None),
-                duration_sec=time.monotonic() - start, project_id=ctx.scope.project_id)
+                duration_sec=time.monotonic() - start, project_id=getattr(ctx.scope, "project_id", None))
             cost_tracked = True
             if ctx.scope.mode=='managed' and (raw.get('sse_salvaged') or raw.get('status') not in {None,'completed'}):
                 await hold_uncertain_request(ctx,request_id)
@@ -646,7 +646,7 @@ def observe_model(function):
             # tracked success -- tracking it again would double-count spend).
             if call_attempted and not cost_tracked:
                 _track_api_cost(model=kwargs.get("use_model"), usage=None,
-                    duration_sec=time.monotonic() - start, project_id=ctx.scope.project_id,
+                    duration_sec=time.monotonic() - start, project_id=getattr(ctx.scope, "project_id", None),
                     status_code=(context.get("status_code") if isinstance(context,dict) else None) or 0,
                     error_message=f"{type(exc).__name__}: {exc}")
             if ctx.scope.mode=='managed' and (type(exc).__name__ in {'CancelledError','ReadTimeout','ConnectTimeout'} or (isinstance(context,dict) and context.get('error_kind') in {'timeout','network'})):

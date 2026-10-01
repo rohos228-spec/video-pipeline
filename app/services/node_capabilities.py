@@ -15,6 +15,22 @@ class NodeCapability:
     actions: tuple[str, ...]
     managed: bool = False
     approval: tuple[str, ...] = ("scope", "budget", "provider_profile")
+    # Recovery-readiness data. Defaults are the conservative ones; a node opts in
+    # only after its native executor/verifier path has been shown to be sound.
+    # profile_compatible: an approved provider profile (effective_body overlay on the
+    #   original single text Responses request) may be applied to this node's attempt.
+    # native_json_retry: the native executor emits a `json_retry` fact before it fails
+    #   (excel_gpt). Nodes without such an inner retry are proven exhausted by the
+    #   runtime failure counter alone (step_failure total_fails/abandoned_at).
+    # recovery_continuation: what the supervisor may do after a verified recovery.
+    #   'excel_gpt_chain' = original excel_gpt chain continuation; 'none' = nothing,
+    #   the original runtime (and any mandatory HITL) continues by itself.
+    # volatile_attachment_names: the request text embeds wall-clock-stamped attachment file
+    #   names, so the recovery's first-body identity check masks exactly those stamps.
+    profile_compatible: bool = False
+    volatile_attachment_names: bool = False
+    native_json_retry: bool = True
+    recovery_continuation: str = "excel_gpt_chain"
 
     def contract(self):
         return {**asdict(self), "semantic_quality_verified": False,
@@ -27,10 +43,12 @@ _JOB_PHASES = ("reserved", "submitted", "queued", "running", "completed",
 _CAPABILITIES = {
     'plan': NodeCapability('plan','project_text','make_plan.run → xlsx_step_runners.run_plan_xlsx',
         ('running','parse','validate','apply','commit','human_approval'),
-        ('project_database','local_xlsx','hitl_request'),READ_ACTIONS,True),
+        ('project_database','local_xlsx','hitl_request'),READ_ACTIONS+('retry_same','retry_profile','finish'),True,
+        profile_compatible=True,volatile_attachment_names=True,native_json_retry=False,recovery_continuation='none'),
     'script': NodeCapability('script','project_text','make_script.run → xlsx_step_runners.run_script_xlsx',
         ('running','parse','validate','apply','commit','human_approval'),
-        ('project_database','local_xlsx','hitl_request'),READ_ACTIONS,True),
+        ('project_database','local_xlsx','hitl_request'),READ_ACTIONS+('retry_same','retry_profile','finish'),True,
+        profile_compatible=True,volatile_attachment_names=True,native_json_retry=False,recovery_continuation='none'),
     'split': NodeCapability('split','frame_set','split_frames.run → xlsx_step_runners.run_split_xlsx',
         ('running','parse','apply','commit','verify'),('project_database','local_xlsx'),READ_ACTIONS,True),
     'image_prompts': NodeCapability('image_prompts','frame_prompts',
@@ -39,7 +57,7 @@ _CAPABILITIES = {
         ('project_database','local_xlsx','local_checkpoint'),READ_ACTIONS,True),
     "excel_gpt": NodeCapability("excel_gpt", "structured", "enrich_xlsx.run",
         ("running", "parse", "validate", "apply", "commit"), ("project_database",),
-        READ_ACTIONS + ("retry_same", "retry_profile", "finish"), True),
+        READ_ACTIONS + ("retry_same", "retry_profile", "finish"), True, profile_compatible=True),
     "images": NodeCapability("images", "image", "generate_images.run → kie_http",
         _JOB_PHASES, ("provider_job", "local_file", "artifact_row"), READ_ACTIONS, True),
     "videos": NodeCapability("videos", "video", "generate_videos.run → kie_http",
@@ -237,7 +255,9 @@ def project_text_contract(node_type):
         'formats':['apply_ops_json'] if node_type=='plan' else ['apply_ops_json','VOICEOVER_block','plain_text_native_fallback'],
         'validator':'plan_validation.is_meaningful_general_plan' if node_type=='plan' else 'make_script.run minimum voiceover length',
         'human_approval_preserved':True,'semantic_quality_verified':False,
-        'retry_policy':'original native runtime only; no supervisor recovery/profile for this family'}
+        'retry_policy':('original native runtime first; after it is exhausted with invalid_json/missing_payload '
+            'ONE bounded supervisor retry_same or approved-profile retry of the same executor. '
+            'Never approves the mandatory HITL; success is verified at the HITL boundary.')}
 
 
 def project_text_parse_evidence(reply, text, node_type):
@@ -260,7 +280,11 @@ def project_text_parse_evidence(reply, text, node_type):
         'syntax_valid': syntax_valid,
         'parsed': isinstance(parsed, dict) or (node_type == 'script' and bool(text)),
         'payload_present': bool(text),
-        'payload_required': node_type == 'plan',
+        # plan always needs the JSON field. script accepts JSON, a VOICEOVER block or plain
+        # text, so a payload is "required" in the diagnostic sense only when NOTHING usable
+        # was extracted (e.g. malformed JSON and no voiceover): that is the typed
+        # invalid_json/missing_payload failure; a valid non-JSON voiceover never is.
+        'payload_required': node_type == 'plan' or (node_type == 'script' and not text),
         'nonempty_payload_required': True,
         'schema_valid': proof['status'] == 'passed',
         'schema_note': 'Original field extraction and native validation; no semantic quality claim',

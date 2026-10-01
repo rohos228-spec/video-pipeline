@@ -158,7 +158,7 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
             for key in profile_ids:
                 if key not in catalog:raise ValueError('profile outside configured owner catalog')
                 validate_candidate(catalog[key]);profiles[key]=dict(catalog[key])
-            if not any(c['node_type']=='excel_gpt' and c['result_kind']=='structured' for c in contracts.values()):
+            if not any(c.get('profile_compatible') is True for c in contracts.values()):
                 raise ValueError('profile strategy requires an accepted compatible structured node')
         elif profile_hash is not None:raise ValueError('unused profile catalog approval')
         from app.services.decision_config import owner_budget_policy

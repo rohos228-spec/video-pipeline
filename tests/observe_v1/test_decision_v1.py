@@ -478,8 +478,11 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertTrue(contract['contract']['human_approval_preserved'])
         self.assertEqual(contract['current_output']['status'],'passed')
         self.assertEqual(contract['compatible_profiles'],[])
-        self.assertNotIn('retry_same',before['allowed_actions'])
-        self.assertNotIn('retry_profile',before['allowed_actions'])
+        # plan is now recovery-ready by capability data: one bounded retry of the same
+        # executor may be offered, never an approval; the HITL contract above is unchanged.
+        self.assertIn('retry_same',before['allowed_actions'])
+        self.assertEqual(before['node_capability']['recovery_continuation'],'none')
+        self.assertIn('Never approves the mandatory HITL',contract['contract']['retry_policy'])
         self.assertEqual((await self.loop.context(record['decision_id']))['context_version'],before['context_version'])
 
     async def test_split_read_contract_has_no_media_job_or_inferred_success(self):

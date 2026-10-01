@@ -5,6 +5,9 @@ held for a human, never replayed. Continuation uses the original graph planner.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -69,6 +72,40 @@ def ticket_json(row):
         "action_id", "execution_id", "incident_id", "node_key", "source_attempt_id",
         "new_attempt_id", "idempotency_key", "preconditions", "budget_state", "result",
         "verification_result", "status", "created_at")}
+
+
+# Native text nodes name their attached prompt files with a wall-clock stamp
+# (prompt_plan_20261001_205923.txt) that appears inside the request text. Only a node
+# whose capability declares volatile_attachment_names compares first request bodies with
+# these stamps masked; every other byte of the body (including all attached contents,
+# which are inlined) must still be identical.
+_ATTACHMENT_STAMP = re.compile(r"(?<=_)\d{8}_\d{6}(?=\.[A-Za-z0-9]{1,5})")
+STAMP_NORMALIZATION = "attachment_timestamps"
+
+
+def body_identity(body, *, normalize_names=False):
+    from app.services.observation import digest
+    if not normalize_names:
+        return digest(body)
+    text = json.dumps(body, ensure_ascii=False, sort_keys=True, default=str)
+    return digest(_ATTACHMENT_STAMP.sub("<ts>", text))
+
+
+def load_source_body(observer, event):
+    """The recorded source request body, only if its stored bytes and hashes still agree."""
+    from app.services.observation import digest
+    ref = event.payload.get("body") or {}
+    root = observer.body_root.resolve()
+    path = (observer.body_root / ref.get("path", "")).resolve()
+    if not ref.get("sha256") or not path.is_relative_to(root) or not path.is_file():
+        raise ValueError("source request body unavailable for recovery body comparison")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != ref["sha256"]:
+        raise ValueError("source request body hash mismatch")
+    body = json.loads(raw)
+    if digest(body) != event.payload.get("input_revision"):
+        raise ValueError("source request body does not match its recorded revision")
+    return body
 
 
 async def input_revision(session, project, node_key, *, parts=None):
@@ -201,7 +238,10 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 or not any(e.kind == "node_error" for e in facts)
                 or any(e.kind in {"data_applied", "apply_input", "apply_error"} for e in facts)):
             raise ValueError("uncertain request, unfinished attempt or unconfirmed partial apply")
-        if not any(e.kind == "json_retry" for e in facts):
+        # Only executors that emit an inner `json_retry` fact must show it. Native text
+        # nodes have no inner JSON retry; their exhaustion is proven by the runtime
+        # failure counter and abandonment check further below (all native retries).
+        if capability.native_json_retry and not any(e.kind == "json_retry" for e in facts):
             raise ValueError("native JSON retries not exhausted")
         if control.requests_used >= control.request_limit:
             raise ValueError("supervisor request budget exhausted")
@@ -273,6 +313,16 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 profile.attempt_id=action.new_attempt_id;profile.status="reserved"
                 profile.history=[*profile.history,{"kind":"recovery_reserved","action_id":action.action_id,
                     "attempt_id":action.new_attempt_id,"at":datetime.utcnow().isoformat()}]
+            if capability.volatile_attachment_names:
+                # Compare the first recovery request with the source request modulo the
+                # attachment file-name stamps (profile: the approved transformation of it).
+                source_body = load_source_body(observer, starts[0])
+                if profile:
+                    from app.services.profiles_v1 import effective_body
+                    source_body = effective_body(source_body, profile.candidate)
+                action.preconditions = {**action.preconditions,
+                    "first_body_hash": body_identity(source_body, normalize_names=True),
+                    "first_body_normalization": STAMP_NORMALIZATION}
             master.add(action)
             master.add(ActionRecord(action_id=action.action_id, execution_id=execution_id, project_id=project_id,
                 action_kind="node_profile_recovery" if profile else "node_recovery", node_key=node_key, attempt_id=action.new_attempt_id,
@@ -360,7 +410,7 @@ async def claim(observer, session, project, node_key, attempt_id, *, execution_i
         return row.new_attempt_id
 
 
-async def check_body(ctx, body_hash):
+async def check_body(ctx, body_hash, body=None):
     async with ctx.observer.master() as session:
         row = await session.scalar(select(RecoveryAction).where(
             RecoveryAction.execution_id == ctx.scope.execution_id,
@@ -369,8 +419,13 @@ async def check_body(ctx, body_hash):
                     or ctx.scope.execution_id in ctx.observer.failures
                     or ctx.scope.execution_id in ctx.observer.commit_uncertainty):
             raise RuntimeError("recovery audit unavailable; blocked before transport")
-        if row and ctx.last_request_id is None and body_hash != row.preconditions["first_body_hash"]:
-            raise RuntimeError("recovery HTTP input changed; blocked before transport")
+        if row and ctx.last_request_id is None:
+            if row.preconditions.get("first_body_normalization") == STAMP_NORMALIZATION:
+                observed = body_identity(body, normalize_names=True) if body is not None else None
+            else:
+                observed = body_hash
+            if observed != row.preconditions["first_body_hash"]:
+                raise RuntimeError("recovery HTTP input changed; blocked before transport")
 
 
 async def worker_finished(ctx, error=False):
@@ -458,6 +513,29 @@ async def reconcile(observer):
                     "transactional_done": any(e.kind == "node_change" and e.db_scope == "project"
                         and "done" in ((e.payload.get("changes") or {}).get("status") or {}).get("after", []) for e in facts),
                 }
+                if not verification["transactional_done"] and master_run is not None:
+                    from app.services.excel_gpt_node import effective_node_type
+                    from app.services.node_capabilities import capability_for
+                    boundary_node = next((n for n in (master_run.nodes_snapshot or [])
+                                          if isinstance(n, dict) and str(n.get("id")) == row.node_key), None)
+                    own_start = min((e.id for e in facts if e.kind == "node_start"), default=None)
+                    if (boundary_node is not None and own_start is not None
+                            and capability_for(effective_node_type(boundary_node)).recovery_continuation == "none"):
+                        # Native text nodes: the runtime commits the NodeRun done transition right
+                        # after the executor returns, outside the attempt context (no attempt id).
+                        # Accept that committed project-scope transition only when it follows THIS
+                        # attempt's start and no other attempt of the node started in between. The
+                        # mandatory HITL request stays pending; nothing here approves it.
+                        later = (await master.scalars(select(ObservationEvent).where(
+                            ObservationEvent.execution_id == row.execution_id,
+                            ObservationEvent.node_key == row.node_key, ObservationEvent.id > own_start,
+                            ObservationEvent.kind.in_(["node_change", "node_start"])).order_by(ObservationEvent.id))).all()
+                        other_start = any(e.kind == "node_start" and e.attempt_id != row.new_attempt_id for e in later)
+                        verification["transactional_done"] = bool(not other_start and any(
+                            e.kind == "node_change" and e.db_scope == "project"
+                            and "done" in ((e.payload.get("changes") or {}).get("status") or {}).get("after", [])
+                            for e in later))
+                        verification["done_proof"] = "native text node: committed NodeRun done after this attempt's start"
                 from app.services.observation import confirmed_qc_noop
                 from app.services.node_write_contract import allows_qc_noop
                 from app.services.gpt_operator import operator_config
@@ -515,9 +593,20 @@ async def reconcile(observer):
                 await master.commit()
                 if verified:
                     _active_nodes.pop(row.project_id, None)
-                    from app.services.excel_gpt_node import slot_index_from_node
+                    from app.services.excel_gpt_node import slot_index_from_node, effective_node_type
+                    from app.services.node_capabilities import capability_for
                     from app.orchestrator.steps.enrich_xlsx import _after_excel_gpt_done
                     graph_node = next(n for n in run.nodes_snapshot if str(n.get("id")) == row.node_key)
+                    if capability_for(effective_node_type(graph_node)).recovery_continuation != "excel_gpt_chain":
+                        # Native text nodes: the executor already ran its own post-step
+                        # (storage sync, mandatory HITL request). The supervisor adds no
+                        # continuation and never approves a HITL; the original runtime
+                        # proceeds only after the human decision.
+                        await push_runtime_to_master(session, project)
+                        row.result = {**row.result, "continuation_submitted": False,
+                                      "continuation": "original runtime; mandatory HITL untouched"}
+                        await master.commit()
+                        continue
                     # Reconcile can run after the worker context/process is gone.
                     # Old tickets without proof remain blocked by the media gate;
                     # never backfill a missing hash from the current configuration.
