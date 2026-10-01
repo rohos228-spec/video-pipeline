@@ -76,3 +76,26 @@ def test_track_api_cost_skips_empty_key():
          patch("app.services.api_tracker_hook.record_api_call") as mock_record:
         _track_api_cost(model="gpt-5-6-sol", usage=None, duration_sec=0.1, project_id=7)
     mock_record.assert_not_called()
+
+
+def _real_kie_usage():
+    import json
+    from pathlib import Path
+    path = Path(__file__).parent / "fixtures" / "kie_responses_usage_real.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_usage_tokens_real_kie_response_reports_input_only_under_attribution():
+    # Captured from a real paid call to https://api.kie.ai/codex/v1/responses
+    # (gpt-5-6-sol, prompt "Reply with exactly the single word: OK").
+    usage = _real_kie_usage()
+    assert usage["input_tokens"] == 0  # the top-level figure really is zero
+    prompt, completion, cached = _usage_tokens(usage)
+    assert (prompt, completion, cached) == (4394, 5, 4224)
+
+
+def test_calc_cost_matches_kie_dashed_model_names_to_the_rate_table():
+    from app.services.api_tracker_hook import _calc_cost
+    dotted = _calc_cost("gpt-5.6-sol", 4394, 5, "text", 1.0)
+    dashed = _calc_cost("gpt-5-6-sol", 4394, 5, "text", 1.0)
+    assert dashed == dotted == round(4394 / 1e6 * 1.20 + 5 / 1e6 * 4.80, 6)

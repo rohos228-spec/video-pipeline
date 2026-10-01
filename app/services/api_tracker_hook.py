@@ -64,9 +64,12 @@ def _calc_cost(
 ) -> float:
     if cost_usd is not None and cost_usd >= 0:
         return round(cost_usd, 6)
-    m = (model or "").lower().replace("_", "-").replace(" ", "-")
+    m = (model or "").lower().replace("_", "-").replace(" ", "-").replace(".", "-")
     for k, (in_r, out_r) in _RATES.items():
-        if k in m:
+        # Kie names models with dashes ("gpt-5-6-sol"), the table with dots
+        # ("gpt-5.6-sol"): compare in one form or the dashed name silently
+        # falls through to the generic default tier below.
+        if k.replace(".", "-") in m:
             return round((p_tok / 1e6) * in_r + (c_tok / 1e6) * out_r, 6)
     for k, rate in _MEDIA_RATES.items():
         if k in m:

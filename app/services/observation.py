@@ -496,6 +496,24 @@ def _usage_tokens(usage):
     details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details")
     if isinstance(details, dict):
         cached = details.get("cached_tokens", cached) or cached
+    if not prompt:
+        # Kie's /codex/v1/responses reports input_tokens=0 at the top level
+        # (observed on a real call, 2026-10-01) and puts the real per-part
+        # figures under usage.attribution.{request_fields,items}.*; summing
+        # each part's own totals (not their nested "content" breakdowns, which
+        # would double count) recovers the true input and cached counts.
+        attribution = usage.get("attribution")
+        if isinstance(attribution, dict):
+            parts = []
+            for group in ("request_fields", "items"):
+                section = attribution.get(group)
+                if isinstance(section, dict):
+                    parts.extend(v for v in section.values() if isinstance(v, dict))
+            prompt = sum(int(p.get("input_tokens") or 0) for p in parts)
+            attributed_cached = sum(int(p.get("cached_tokens") or 0) for p in parts)
+            cached = cached or attributed_cached
+            if not completion:
+                completion = sum(int(p.get("output_tokens") or 0) for p in parts)
     return int(prompt), int(completion), int(cached)
 
 
