@@ -26,6 +26,31 @@ from app.orchestrator.auto_advance import (
 )
 
 
+class _EmptyResult:
+    """Результат SELECT без строк (все способы чтения)."""
+
+    def scalar_one_or_none(self):
+        return None
+
+    def scalar_one(self):
+        return 0
+
+    def scalar(self):
+        return None
+
+    def first(self):
+        return None
+
+    def all(self):
+        return []
+
+    def scalars(self):
+        return self
+
+    def __iter__(self):
+        return iter(())
+
+
 class _StubAsyncSession:
     """Минимальный stub: `flush()` — no-op. `execute()` зовётся только
     в excel-hero ветке, которую тут не проверяем."""
@@ -33,10 +58,11 @@ class _StubAsyncSession:
     async def flush(self) -> None:
         return None
 
-    async def execute(self, *_args, **_kwargs):  # pragma: no cover
-        raise AssertionError(
-            "execute() should not be called in these test cases"
-        )
+    async def execute(self, *_args, **_kwargs):
+        # Продвижение теперь грузит граф проекта (load_graph_for_project ->
+        # WorkflowRun) и проверяет данные шага (step_data_guard): в этих кейсах
+        # БД «пуста» -> пустой результат, поведение parity-таблицы не меняется.
+        return _EmptyResult()
 
 
 def _make_project(
@@ -226,3 +252,13 @@ async def test_auto_mode_advances_without_manual_approval(monkeypatch) -> None:
 
     assert advanced is True
     apply_mock.assert_awaited_once()
+
+
+@pytest.fixture(autouse=True)
+def _no_managed_execution(monkeypatch):
+    """Observe-v1 managed-execution читает глобальную БД observer (в unit-тесте не поднята)."""
+
+    async def _off(_pid):
+        return False
+
+    monkeypatch.setattr("app.services.actions_v1.managed_project_enabled", _off)

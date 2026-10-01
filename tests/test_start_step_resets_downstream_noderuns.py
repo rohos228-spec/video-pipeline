@@ -116,6 +116,7 @@ async def test_start_plan_resets_script_split_excel_to_pending(mem_db, monkeypat
     monkeypatch.setattr(
         "app.services.project_steps.sync_project_xlsx",
         _noop_clear,
+        raising=False,  # символ убран из project_steps (xlsx sync вынесен); патч нужен только старым версиям
     )
 
     async with mem_db() as session:

@@ -304,10 +304,35 @@ def test_extract_local_frame_words_rebases_to_zero() -> None:
 
 
 def test_cut_clip_does_not_resize() -> None:
-    src = inspect.getsource(asm._cut_clip)
-    assert "-vf" not in src
-    assert "scale=" not in src
-    assert "1080:1920" not in src
+    """Без target_w/target_h нарезка не масштабирует (scale/pad только по явному запросу)."""
+    import asyncio
+    from pathlib import Path
+    from unittest.mock import patch
+
+    cmds: list[list[str]] = []
+
+    async def fake_run(cmd, **_kw):
+        cmds.append(list(cmd))
+
+    async def fake_probe(_p):
+        return 10.0
+
+    with (
+        patch.object(asm, "_run", fake_run),
+        patch.object(asm, "probe_duration", fake_probe),
+    ):
+        # отрезок >= слота: ни замедления, ни scale -> -vf отсутствует
+        asyncio.run(asm._cut_clip(Path("a.mp4"), 5.0, Path("b.mp4")))
+        # без размеров нет scale даже при замедлении (отрезок короче слота)
+        asyncio.run(asm._cut_clip(Path("a.mp4"), 30.0, Path("b.mp4")))
+        # с размерами scale/pad применяются
+        asyncio.run(
+            asm._cut_clip(Path("a.mp4"), 5.0, Path("b.mp4"), target_w=1080, target_h=1920)
+        )
+    assert "-vf" not in cmds[0]
+    flat1 = " ".join(cmds[1])
+    assert "scale=" not in flat1 and "1080:1920" not in flat1
+    assert "scale=1080:1920" in " ".join(cmds[2])
 
 
 def test_subtitles_vf_arg_is_bare_filename_without_path_separators() -> None:

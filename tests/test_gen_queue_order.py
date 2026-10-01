@@ -92,11 +92,12 @@ async def test_blocks_later_not_blocked_by_paused_earlier(
 ) -> None:
     await _add(session, 7, status=ProjectStatus.paused, until="script")
     await _add(session, 8, status=ProjectStatus.plan_ready, until="script")
-    assert await gen_queue_blocks_project(session, 8) == 7
+    # paused-слот пропускается (gen_queue_incomplete_earlier): хвост не блокируется.
+    assert await gen_queue_blocks_project(session, 8) is None
 
 
 @pytest.mark.asyncio
-async def test_user_stop_blocks_later_in_queue(
+async def test_user_stop_slot_does_not_block_later_in_queue(
     session: AsyncSession,
 ) -> None:
     await _add(session, 7, status=ProjectStatus.plan_ready, until="script")
@@ -105,7 +106,9 @@ async def test_user_stop_blocks_later_in_queue(
     p7.meta = {**(p7.meta or {}), "user_stop": True}
     await session.flush()
     await _add(session, 8, status=ProjectStatus.plan_ready, until="script")
-    assert await gen_queue_blocks_project(session, 8) == 7
+    # user_stop-слот пропускается (paused/user_stop не держат окно параллели);
+    # глобальный стоп очереди — is_gen_queue_halted, см. gen_queue_tick.
+    assert await gen_queue_blocks_project(session, 8) is None
 
 
 @pytest.mark.asyncio
@@ -137,7 +140,8 @@ async def test_reconcile_rolls_back_out_of_turn_planning(
         "app.services.gen_queue.get_gen_queue",
         lambda: [2, 3, 4],
     )
-    await _add(session, 2, status=ProjectStatus.paused, until="script")
+    # #2 runnable и в top-N окне (max_parallel=1) -> #3 вне очереди (out-of-window).
+    await _add(session, 2, status=ProjectStatus.planning, until="script")
     p3 = await _add(session, 3, status=ProjectStatus.planning, until="script")
     rolled = await gen_queue_reconcile(session)
     await session.refresh(p3)
@@ -368,7 +372,31 @@ async def test_gen_queue_tick_advances_ready_project(
     p7 = await _add(session, 7, status=ProjectStatus.plan_ready, until="script")
     p7.general_plan = "x" * 500
     await session.flush()
+
+    # Продвижение идёт через LLM verdict-review (_run_verdict_review_for_step);
+    # здесь проверяем порядок очереди, не LLM -> одобряем без сети.
+    from app.models import HITLDecision
+    from app.orchestrator.auto_advance import ReviewResult
+
+    async def _approve(*_a, **_k):
+        return ReviewResult(decision=HITLDecision.approved, confidence=1.0, raw_response="ok")
+
+    monkeypatch.setattr(
+        "app.orchestrator.auto_advance._run_verdict_review_for_step", _approve
+    )
+
+    async def _not_managed(_pid: int) -> bool:
+        # Observe-v1 managed-execution читает глобальную БД observer (в тесте не поднята).
+        return False
+
+    monkeypatch.setattr(
+        "app.services.actions_v1.managed_project_enabled", _not_managed
+    )
     started = await gen_queue_tick(session)
     assert started == 1
     await session.refresh(p7)
     assert p7.status is ProjectStatus.scripting
+
+
+# Env: нужен хотя бы фиктивный ключ провайдера (см. tests/conftest.py::fake_provider_keys).
+pytestmark = pytest.mark.usefixtures("fake_provider_keys")

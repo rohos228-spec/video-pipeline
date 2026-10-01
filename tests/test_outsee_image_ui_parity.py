@@ -24,13 +24,14 @@ def test_outsee_image_model_slugs_match_live_ui() -> None:
     """Slug'и из outsee JS (июль 2026), не «интуитивные» с дефисами."""
     expected = {
         "gpt_image_2_vip": "gpt-image-2-vip",
-        "gpt_image_1_5": "gpt-image-1.5",
+        # gpt_image_1_5 / nano_banana_pro / nano_banana / seedream_4_5 / seedream_5_0_lite
+        # удалены из IMAGE_GENERATORS (каталог сокращён); текущий набор:
         "nano_banana_2": "nano-banana-2",
-        "nano_banana_pro": "nano-banana-pro",
-        "nano_banana": "nano-banana",
-        "seedream_4_5": "seedream-4.5",
-        "seedream_5_0_lite": "seedream-5-lite",
+        "nano_banana_2_lite": "nano-banana-2-lite",
         "seedream_5_pro": "seedream-5-pro",
+        "flux_2_pro": "flux-2-pro",
+        "z_image": "z-image",
+        "qwen3_image": "qwen3-image",
     }
     for gid, slug in expected.items():
         assert IMAGE_GENERATORS_BY_ID[gid].outsee_slug == slug

@@ -42,3 +42,40 @@ def _isolate_settings_paths(tmp_path_factory, monkeypatch):
     # На случай прямой записи settings.data_dir = ... в обход monkeypatch.
     settings.data_dir = _ORIG_DATA_DIR
     settings.sqlite_path = _ORIG_SQLITE_PATH
+
+
+@pytest.fixture
+def fake_provider_keys(monkeypatch):
+    """Фиктивные (не настоящие) ключи/базы провайдеров для тестов с mock-транспортом.
+
+    Тесты ходят в мокнутые клиенты, но гейты ``require_gpt_api`` / ``_headers`` /
+    ``kie_auth_headers`` проверяют лишь НАЛИЧИЕ ключа. На dev-машине его даёт
+    локальный ``.env``; в чистом чекауте (CI, чужой пользователь, свежий клон)
+    ключей нет и тесты падают с ``no_key``. Реальные запросы с этими значениями
+    невозможны: хосты ``*.invalid`` не резолвятся.
+    Существующие значения не перетираются.
+    """
+    import os
+
+    def _fill(attr: str, value: str) -> None:
+        if not str(getattr(settings, attr, "") or "").strip():
+            monkeypatch.setattr(settings, attr, value)
+
+    _fill("gpt_api_key", "test-fake-gpt-key")
+    _fill("gpt_base_url", "https://gpt.invalid")
+    _fill("outsee_api_key", "test-fake-outsee-key")
+    if not os.environ.get("KIE_API_KEY"):
+        monkeypatch.setenv("KIE_API_KEY", "test-fake-kie-key")
+    try:
+        from app.bots import kie_kling
+
+        kie_kling.reset_working_kie_key()
+    except Exception:
+        pass
+    yield
+    try:
+        from app.bots import kie_kling
+
+        kie_kling.reset_working_kie_key()
+    except Exception:
+        pass

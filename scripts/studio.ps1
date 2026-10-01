@@ -1,4 +1,4 @@
-<#
+﻿<#
 Video Pipeline Studio Launcher
 #>
 param(
@@ -427,7 +427,7 @@ function Invoke-StudioRecoverPromptsFromAllStashes {
         $p = Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory $Root -WindowStyle Hidden -PassThru
         if ($null -eq $p) { return }
         if (-not $p.WaitForExit(8000)) {
-            Write-StudioMsg "Возврат prompts из stash пропущен (долго) — запускаю студию." "DarkGray"
+            Write-StudioMsg "Возврат prompts из stash пропущен (долго) - запускаю студию." "DarkGray"
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         }
     } catch { }

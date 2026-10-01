@@ -46,6 +46,9 @@ async def test_ensure_public_yandex_does_not_fallback() -> None:
         patch("app.bots.yandex_storage.yandex_storage_configured", return_value=True),
         patch.object(oh, "_host_via_yandex", side_effect=boom),
         patch.object(oh, "_host_via_litterbox", side_effect=AssertionError("no litter")),
+        # catbox — резервный хост при настроенном Yandex: мокаем, иначе тест
+        # делает реальную загрузку в сеть и результат зависит от доступности хоста.
+        patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
     ):
         with pytest.raises(oh.OutseeApiError, match="frame upload failed"):
             await oh.ensure_public_image_url(data)
@@ -74,8 +77,12 @@ async def test_ensure_public_requires_yandex_no_public_hosts() -> None:
         patch.object(oh, "_host_via_uguu", side_effect=AssertionError("no uguu")),
         patch.object(oh, "_host_via_catbox", side_effect=AssertionError("no catbox")),
         patch.object(oh, "_host_via_yandex", side_effect=AssertionError("no yandex")),
+        # 0x0 тоже мокаем: иначе тест ходит в реальную сеть (загрузка на 0x0.st)
+        patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
     ):
-        with pytest.raises(oh.OutseeApiError, match="только через Yandex"):
+        # Без Yandex S3 используются публичные fallback-хосты (bf1c5355); когда все
+        # они падают — ошибка про недоступность хостов, а не «только через Yandex».
+        with pytest.raises(oh.OutseeApiError, match="frame upload failed"):
             await oh.ensure_public_image_url(data)
 
 

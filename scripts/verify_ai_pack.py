@@ -214,9 +214,17 @@ def main() -> int:
             print(f"  ! {e}")
     else:
         print("ai-pack VERIFY OK")
-    head = subprocess.check_output(
-        ["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True
-    ).strip()
+    # git HEAD — только информативная строка; не валим проверку, если git недоступен
+    # или отказывает (dubious ownership у чужого Windows-пользователя, нет .git).
+    try:
+        head = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, OSError):
+        head = "unknown (git unavailable)"
     print(f"  git HEAD: {head}")
     print(f"  pack files checked: {len(COPY_MAP)} copies + START_HERE")
     return 0

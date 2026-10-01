@@ -369,7 +369,7 @@ async def _delete_scene_pngs(
                     removed += 1
                 except OSError:
                     pass
-            session.delete(art)
+            await session.delete(art)
     await session.flush()
     return removed
 
@@ -469,7 +469,7 @@ async def _delete_video_clips(
                     removed += 1
                 except OSError:
                     pass
-            session.delete(art)
+            await session.delete(art)
     await session.flush()
     return removed
 
