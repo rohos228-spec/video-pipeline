@@ -24,8 +24,16 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
     setSummary(null);
     setError("");
     if (projectId == null) return;
+    const controller = new AbortController();
     let cancelled = false;
     setBusy(true);
+
+    // Initial paint comes from the plain GET (fast first render); live
+    // updates afterward come from the SSE stream (same aggregation,
+    // app/services/telemetry.py::project_telemetry -- the stream just
+    // re-pushes it on a ~2s interval, deduplicated server-side). If the
+    // stream itself fails to connect/parses nothing, the initial GET
+    // result still stands -- this never regresses to a blank panel.
     void observations
       .telemetry(projectId, windowHours)
       .then((data) => {
@@ -40,8 +48,23 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
       .finally(() => {
         if (!cancelled) setBusy(false);
       });
+
+    void observations
+      .telemetryStream(projectId, windowHours, (data) => {
+        if (cancelled) return;
+        setSummary(data);
+        setError("");
+        setBusy(false);
+      }, controller.signal)
+      .catch(() => {
+        // Stream itself failed (not an aborted cleanup) -- the one-shot GET
+        // above already rendered something; no further action needed here,
+        // live updates just won't arrive until the next window/project change.
+      });
+
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [projectId, windowHours]);
 

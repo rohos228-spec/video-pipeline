@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 import hashlib
 import uuid
 
@@ -738,3 +739,63 @@ async def telemetry(project_id: int, since_hours: int | None = Query(default=Non
     since = datetime.utcnow() - timedelta(hours=since_hours) if since_hours else None
     async with get_observer().master() as session:
         return panel_safe(await project_telemetry(session, project_id, since=since))
+
+
+def _sse_telemetry_payload(payload: dict) -> str:
+    import json
+    return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+
+
+async def _telemetry_stream_events(project_id: int, since_hours: int | None):
+    """Polls app/services/telemetry.py::project_telemetry on an interval and
+    only pushes a new payload when it actually changed (compared via the
+    existing digest() helper) -- a ': keepalive' comment otherwise, so an
+    idle project doesn't repeatedly ship an identical multi-KB JSON blob,
+    while still preventing the connection from being closed for inactivity.
+    Same StreamingResponse + 'data: ...\\n\\n' / ': keepalive\\n\\n' shape
+    app/web/routers/fleet.py already uses for its log-tail stream -- no new
+    SSE convention introduced here.
+    """
+    from datetime import datetime, timedelta
+    from app.services.telemetry import project_telemetry
+
+    since = datetime.utcnow() - timedelta(hours=since_hours) if since_hours else None
+    last_digest: str | None = None
+    try:
+        while True:
+            try:
+                async with get_observer().master() as session:
+                    summary = await project_telemetry(session, project_id, since=since)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                yield _sse_telemetry_payload({"type": "error", "error": str(exc)})
+                await asyncio.sleep(2.0)
+                continue
+            current_digest = digest(summary)
+            if current_digest != last_digest:
+                last_digest = current_digest
+                yield _sse_telemetry_payload({"type": "telemetry", "data": summary})
+            else:
+                yield ": keepalive\n\n"
+            await asyncio.sleep(2.0)
+    except asyncio.CancelledError:
+        # Client disconnected (tab closed, navigated away, AbortController) --
+        # Starlette cancels this generator's task; nothing else to clean up,
+        # since project_telemetry only ever opens short-lived `async with`
+        # sessions that are already closed between ticks.
+        raise
+
+
+@router.get("/stream")
+async def telemetry_stream(project_id: int, since_hours: int | None = Query(default=None, ge=1, le=8760)):
+    """Server-Sent Events: pushes app/services/telemetry.py's project-wide
+    summary (same shape as GET /telemetry) every ~2s, deduplicated so an
+    idle project just sends keepalive comments. Deliberately not
+    execution-scoped, like GET /telemetry above."""
+    from starlette.responses import StreamingResponse
+    return StreamingResponse(
+        _telemetry_stream_events(project_id, since_hours),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

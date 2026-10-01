@@ -138,4 +138,46 @@ export const observations = {
     http(path(project,execution)+"/actions/retry",{method:"POST",body:JSON.stringify(payload)}),
   // Project-wide, deliberately not execution-scoped -- aggregates across every execution this project has had.
   telemetry: (project:number,since_hours?:number)=>http<TelemetrySummary>(path(project)+"/telemetry"+(since_hours?`?since_hours=${since_hours}`:"")),
+  // Server-Sent Events variant of the same endpoint: same fetch+reader
+  // pattern api.ts's gptAskStream already uses (not the EventSource API --
+  // this codebase has no existing EventSource usage, and fetch+reader
+  // gives the same AbortSignal-based cleanup every other streaming call
+  // here already relies on). Resolves once the stream ends or aborts;
+  // never throws on a clean AbortError.
+  telemetryStream: async (project:number,since_hours:number|undefined,
+      onUpdate:(data:TelemetrySummary)=>void,signal:AbortSignal)=>{
+    let res:Response;
+    try{
+      res=await fetch(path(project)+"/stream"+(since_hours?`?since_hours=${since_hours}`:""),{signal});
+    }catch(e:any){
+      if(e?.name==="AbortError"||signal.aborted)return;
+      throw e;
+    }
+    if(!res.ok||!res.body)throw new Error(`telemetry stream: HTTP ${res.status}`);
+    const reader=res.body.getReader();
+    const decoder=new TextDecoder();
+    let buffer="";
+    try{
+      while(true){
+        const {done,value}=await reader.read();
+        if(done)break;
+        buffer+=decoder.decode(value,{stream:true});
+        const lines=buffer.split("\n");
+        buffer=lines.pop()||"";
+        for(const line of lines){
+          const trimmed=line.trim();
+          if(!trimmed.startsWith("data:"))continue; // skip ": keepalive" comments and blank lines
+          try{
+            const payload=JSON.parse(trimmed.slice(5).trim());
+            if(payload.type==="telemetry")onUpdate(payload.data as TelemetrySummary);
+            // payload.type==="error" is surfaced by the next regular poll naturally timing out/erroring too;
+            // the stream keeps retrying on its own (see app/web/routers/observations.py::_telemetry_stream_events).
+          }catch{/* ignore one malformed line, next tick corrects it */}
+        }
+      }
+    }catch(e:any){
+      if(e?.name==="AbortError"||signal.aborted)return;
+      throw e;
+    }
+  },
 };
