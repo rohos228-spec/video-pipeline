@@ -35,6 +35,16 @@ _RATES: dict[str, tuple[float, float]] = {
 }
 
 
+# Calibrated against the real Kie credit balance (GET /api/v1/chat/credit, 1 credit = $0.005,
+# see scripts/calibrate_kie_cost.py and docs/KIE_COST_CALIBRATION.md, measured 2026-10-01 on 3 probe
+# shapes, reasoning tokens included in completion): cached input is effectively free, uncached
+# input ~$1.6/M, output ~$8.4/M. Max absolute error on the probes: ~$0.0003 per call.
+# (usd per M tokens: uncached input, output, cached input)
+_MEASURED_RATES: dict[str, tuple[float, float, float]] = {
+    "gpt-5.6-sol": (1.6, 8.4, 0.0),
+}
+
+
 _MEDIA_RATES: dict[str, float] = {
     "flux-2-pro": 0.05,
     "seedream-5-pro": 0.045,
@@ -61,10 +71,15 @@ def _calc_cost(
     duration: float,
     media_count: int = 1,
     cost_usd: float | None = None,
+    cached_tok: int = 0,
 ) -> float:
     if cost_usd is not None and cost_usd >= 0:
         return round(cost_usd, 6)
     m = (model or "").lower().replace("_", "-").replace(" ", "-").replace(".", "-")
+    for k, (in_r, out_r, cached_r) in _MEASURED_RATES.items():
+        if k.replace(".", "-") in m:
+            cached = min(max(cached_tok, 0), p_tok)
+            return round(((p_tok - cached) / 1e6) * in_r + (cached / 1e6) * cached_r + (c_tok / 1e6) * out_r, 6)
     for k, (in_r, out_r) in _RATES.items():
         # Kie names models with dashes ("gpt-5-6-sol"), the table with dots
         # ("gpt-5.6-sol"): compare in one form or the dashed name silently
@@ -158,6 +173,7 @@ def record_api_call(
                 duration_sec,
                 media_count=media_count or 1,
                 cost_usd=cost_usd,
+                cached_tok=cached_tokens,
             )
             total_tok = prompt_tokens + completion_tokens
             ts = timestamp or datetime.now(timezone.utc).isoformat()

@@ -1,0 +1,46 @@
+{
+ "idle_reads": [
+  82.37,
+  82.37,
+  82.37
+ ],
+ "credits_before": 82.37,
+ "credits_after": 79.96,
+ "credits_spent": 2.41,
+ "credit_usd": 0.005,
+ "calls": [
+  {
+   "probe": "tiny_cached",
+   "prompt_tokens": 4394,
+   "completion_tokens": 5,
+   "cached_tokens": 4224,
+   "reasoning_tokens": 0,
+   "estimated_usd": 0.005297,
+   "credits_spent": 0.01,
+   "billed_usd": 5e-05
+  },
+  {
+   "probe": "long_unique_input",
+   "prompt_tokens": 7027,
+   "completion_tokens": 427,
+   "cached_tokens": 4224,
+   "reasoning_tokens": 419,
+   "estimated_usd": 0.010482,
+   "credits_spent": 1.62,
+   "billed_usd": 0.0081
+  },
+  {
+   "probe": "long_output",
+   "prompt_tokens": 4400,
+   "completion_tokens": 465,
+   "cached_tokens": 4224,
+   "reasoning_tokens": 38,
+   "estimated_usd": 0.007512,
+   "credits_spent": 0.78,
+   "billed_usd": 0.0039
+  }
+ ],
+ "billed_usd": 0.01205,
+ "estimated_usd": 0.023291,
+ "ratio_billed_over_estimated": 0.517
+}

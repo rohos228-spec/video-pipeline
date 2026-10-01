@@ -96,9 +96,37 @@ def test_usage_tokens_real_kie_response_reports_input_only_under_attribution():
 
 def test_calc_cost_matches_kie_dashed_model_names_to_the_rate_table():
     from app.services.api_tracker_hook import _calc_cost
-    dotted = _calc_cost("gpt-5.6-sol", 4394, 5, "text", 1.0)
-    dashed = _calc_cost("gpt-5-6-sol", 4394, 5, "text", 1.0)
-    assert dashed == dotted == round(4394 / 1e6 * 1.20 + 5 / 1e6 * 4.80, 6)
+    dotted = _calc_cost("gpt-5.6-sol", 4394, 5, "text", 1.0, cached_tok=4224)
+    dashed = _calc_cost("gpt-5-6-sol", 4394, 5, "text", 1.0, cached_tok=4224)
+    assert dashed == dotted == round(170 / 1e6 * 1.6 + 5 / 1e6 * 8.4, 6)
+
+
+# Real probes against the Kie credit balance (scripts/calibrate_kie_cost.py, 2026-10-01,
+# 1 credit = $0.005; reasoning tokens are inside completion). billed = credits * 0.005.
+_KIE_PROBES = [
+    # (prompt, completion, cached, credits_billed)
+    (4394, 5, 4224, 0.01),
+    (4400, 465, 4224, 0.78),
+    (4400, 467, 4224, 0.78),
+    (4400, 478, 4224, 0.80),
+    (7027, 427, 4224, 1.62),
+    (7135, 323, 4224, 1.48),
+]
+
+
+def test_calibrated_cost_tracks_real_kie_billing_within_a_third_of_a_cent_per_call():
+    from app.services.api_tracker_hook import _calc_cost
+    for prompt, completion, cached, credits in _KIE_PROBES:
+        est = _calc_cost("gpt-5-6-sol", prompt, completion, "text", 1.0, cached_tok=cached)
+        assert abs(est - credits * 0.005) <= 0.0004, (prompt, completion, est, credits * 0.005)
+
+
+def test_cached_tokens_are_not_billed_like_fresh_input():
+    from app.services.api_tracker_hook import _calc_cost
+    fresh = _calc_cost("gpt-5-6-sol", 4394, 5, "text", 1.0)
+    cached = _calc_cost("gpt-5-6-sol", 4394, 5, "text", 1.0, cached_tok=4224)
+    assert cached < fresh / 5
+    assert _calc_cost("gpt-5-6-sol", 100, 0, "text", 1.0, cached_tok=999) == 0.0  # cached clamped to prompt
 
 
 # --- project_id fallback via the advance_runner contextvar -------------------
