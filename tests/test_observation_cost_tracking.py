@@ -99,3 +99,87 @@ def test_calc_cost_matches_kie_dashed_model_names_to_the_rate_table():
     dotted = _calc_cost("gpt-5.6-sol", 4394, 5, "text", 1.0)
     dashed = _calc_cost("gpt-5-6-sol", 4394, 5, "text", 1.0)
     assert dashed == dotted == round(4394 / 1e6 * 1.20 + 5 / 1e6 * 4.80, 6)
+
+
+# --- project_id fallback via the advance_runner contextvar -------------------
+
+def _project_source_for(**kw):
+    with _with_real_key(), patch("app.services.api_tracker_hook.record_api_call") as mock_record:
+        _track_api_cost(model="gpt-5-6-sol", usage=None, duration_sec=0.1, **kw)
+    return mock_record.call_args.kwargs["project_source"]
+
+
+def test_cost_project_contextvar_is_fallback():
+    from app.services.observation import _cost_project
+    token = _cost_project.set(42)
+    try:
+        assert _project_source_for(project_id=None) == "42"
+    finally:
+        _cost_project.reset(token)
+
+
+def test_cost_project_unset_stays_empty():
+    assert _project_source_for(project_id=None) == ""
+
+
+def test_cost_project_explicit_project_id_wins():
+    from app.services.observation import _cost_project
+    token = _cost_project.set(42)
+    try:
+        assert _project_source_for(project_id=7) == "7"
+    finally:
+        _cost_project.reset(token)
+
+
+def test_cost_project_fallback_keeps_real_key_gate():
+    from app.services.observation import _cost_project
+    from app.settings import settings
+    token = _cost_project.set(42)
+    try:
+        with patch.object(settings, "gpt_api_key", "synthetic-key"), \
+                patch("app.services.api_tracker_hook.record_api_call") as mock_record:
+            _track_api_cost(model="m", usage=None, duration_sec=0.1)
+        mock_record.assert_not_called()
+    finally:
+        _cost_project.reset(token)
+
+
+def test_advance_project_job_sets_and_resets_cost_project():
+    import asyncio
+    from types import SimpleNamespace
+    from app.services import advance_runner
+    from app.services.observation import _cost_project
+
+    seen = {}
+
+    async def fake_admission(project_id):
+        return SimpleNamespace(allowed=True)
+
+    class _Scope:
+        def __init__(self, pid):
+            self.pid = pid
+
+        async def __aenter__(self):
+            seen.setdefault("during", []).append((self.pid, _cost_project.get()))
+            await asyncio.sleep(0)  # let the other task interleave
+            raise RuntimeError("stop after observing the contextvar")
+
+        async def __aexit__(self, *a):
+            return False
+
+    async def run(pid):
+        try:
+            await advance_runner.advance_project_job(pid, None)
+        except RuntimeError:
+            pass
+        return _cost_project.get()
+
+    async def main():
+        with patch("app.services.actions_v1.worker_entry_admission", fake_admission), \
+                patch.object(advance_runner, "project_db_session_scope", lambda pid: _Scope(pid)), \
+                patch("app.services.actions_recovery.finish_job_tracking", lambda pid: None):
+            return await asyncio.gather(run(1), run(2)), _cost_project.get()
+
+    after, outer = asyncio.run(main())
+    assert sorted(seen["during"]) == [(1, 1), (2, 2)]  # each task saw only its own project
+    assert after == [None, None] and outer is None  # reset, no leakage

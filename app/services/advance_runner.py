@@ -29,6 +29,8 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
     admission=await worker_entry_admission(project_id)
     if not admission.allowed:
         return AdvanceJobResult(project_id,'',None)
+    from app.services.observation import _cost_project
+    cost_token = _cost_project.set(project_id)
     try:
         async with project_db_session_scope(project_id) as session:
             project = await session.get(Project, project_id)
@@ -88,6 +90,10 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
             logger.warning("advance_project_job: refresh #{} after cancel failed", project_id)
         raise
     finally:
+        try:
+            _cost_project.reset(cost_token)
+        except Exception:  # noqa: BLE001
+            pass
         # Recovery tracking spans the entire original job, including project DB
         # commit. pipeline.advance_project unregisters before that commit.
         from app.services.actions_recovery import finish_job_tracking

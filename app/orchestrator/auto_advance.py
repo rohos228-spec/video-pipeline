@@ -1241,7 +1241,12 @@ async def continue_project_pipeline(
     session: AsyncSession, project: Project, *, bot: Bot | None = None
 ) -> dict[str, object]:
     """Продолжить пайплайн: снять stop/паузу и продвинуть *_ready → running."""
-    from app.services.project_control import resume_project as resume_project_svc
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.project_control import (
+        clear_auto_await_manual_start,
+        resume_project as resume_project_svc,
+    )
     from app.services.step_cancel import clear_stop
 
     clear_stop(project.id)
@@ -1252,6 +1257,12 @@ async def continue_project_pipeline(
             cleared.append(key)
     if cleared:
         project.meta = meta
+        flag_modified(project, "meta")
+    # Flush before maybe_auto_advance(): it session.refresh()es the project, which
+    # silently discards unflushed changes (the stop flag used to survive "continue").
+    # An explicit continue is the user's manual ▶, so the manual-start gate goes too.
+    clear_auto_await_manual_start(project)
+    await session.flush()
 
     if project.status is ProjectStatus.paused:
         new_status = await resume_project_svc(session, project)

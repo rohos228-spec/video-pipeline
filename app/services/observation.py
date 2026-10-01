@@ -117,6 +117,9 @@ class AttemptContext:
 
 
 _attempt = contextvars.ContextVar("observation_attempt", default=None)
+# Project id of the native step in flight (set by advance_runner); used only as
+# the cost-tracking fallback for calls made outside an observation scope.
+_cost_project = contextvars.ContextVar("observation_cost_project", default=None)
 _request = contextvars.ContextVar("observation_request", default=None)
 _completed_model_request = contextvars.ContextVar("observation_completed_model_request", default=None)
 _observer = None
@@ -537,6 +540,8 @@ def _track_api_cost(*, model, usage, duration_sec, project_id=None,
     fake rows to that cloud project.
     """
     try:
+        if project_id is None:
+            project_id = _cost_project.get()
         from app.settings import settings
         if not str(settings.gpt_api_key or "").strip() or str(settings.gpt_api_key).startswith("synthetic"):
             return
