@@ -88,6 +88,10 @@ export interface TelemetrySummary {
     unmatched_requests:{node_key:string|null;request_id:string;started_at:string}[]};
   budgets_by_execution:Record<string,{request_limit:number|null;requests_used:number|null;
     remaining:number|null;utilization:number|null;held:boolean|null;enabled:boolean|null}>;
+  cost:{total_calls:number;failed_calls:number;total_cost_usd:number;
+    total_prompt_tokens:number;total_completion_tokens:number;total_cached_tokens:number;
+    by_model:Record<string,{calls:number;cost_usd:number;prompt_tokens:number;completion_tokens:number}>;
+    source:string};
 }
 export interface ObservationContext extends ObservationScope {
   business_group_outcome: string; current_nodes: string[];

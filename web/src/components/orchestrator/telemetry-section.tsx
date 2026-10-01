@@ -140,7 +140,40 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
                 </li>
               ))}
             </ul>
-            <p className="mt-1 text-white/40">Тариф операций неизвестен; это не денежный потолок.</p>
+            <p className="mt-1 text-white/40">
+              Лимит запросов учитывает Decision/worker/media; это не денежный потолок.
+            </p>
+          </div>
+          <div className="rounded border border-white/10 p-2">
+            <strong>Стоимость LLM-вызовов</strong>
+            {summary.cost.total_calls === 0 ? (
+              <p className="text-white/50">
+                Пока не отслежено ни одного реального вызова (нет credentials / ни один запрос ещё не ушёл).
+              </p>
+            ) : (
+              <>
+                <p>
+                  ${summary.cost.total_cost_usd.toFixed(4)} за {summary.cost.total_calls} запрос(ов)
+                  {summary.cost.failed_calls > 0 ? ` (${summary.cost.failed_calls} с ошибкой)` : ""}
+                </p>
+                <p className="text-white/60">
+                  Токены: {summary.cost.total_prompt_tokens} prompt / {summary.cost.total_completion_tokens}{" "}
+                  completion
+                  {summary.cost.total_cached_tokens > 0 ? ` / ${summary.cost.total_cached_tokens} cached` : ""}
+                </p>
+                <ul className="mt-1 space-y-0.5 text-white/60">
+                  {Object.entries(summary.cost.by_model).map(([model, stats]) => (
+                    <li key={model}>
+                      {model}: ${stats.cost_usd.toFixed(4)} ({stats.calls} запрос(ов))
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <p className="mt-1 text-white/40">
+              Цена по тарифу api-tracker на момент вызова ({summary.cost.source}); не ценовое предложение
+              провайдера.
+            </p>
           </div>
         </div>
       )}

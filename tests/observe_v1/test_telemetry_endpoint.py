@@ -26,6 +26,8 @@ class Telemetry(actions_tests.DurableActions):
             self.assertEqual(body["decisions"]["total"], 0)
             self.assertEqual(body["node_latency"]["by_node"], {})
             self.assertEqual(body["budgets_by_execution"], {})
+            self.assertEqual(body["cost"]["total_calls"], 0)
+            self.assertEqual(body["cost"]["total_cost_usd"], 0.0)
 
     async def test_reflects_seeded_incident_and_budget(self):
         await self.exhausted_fixture()

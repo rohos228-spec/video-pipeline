@@ -1,11 +1,18 @@
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from app.services.telemetry import (
     budget_summary,
+    cost_summary,
     decision_summary,
     incident_summary,
     node_request_latency,
+    project_cost_summary,
 )
 
 
@@ -121,3 +128,83 @@ def test_budget_summary_missing_control():
     summary = budget_summary(None)
     assert summary["request_limit"] is None
     assert summary["utilization"] is None
+
+
+def _row(**kw):
+    base = {"model": "gpt-5-6-sol", "cost_usd": 0.0, "prompt_tokens": 0,
+        "completion_tokens": 0, "cached_tokens": 0, "status_code": 200}
+    base.update(kw)
+    return base
+
+
+def test_cost_summary_sums_pre_priced_cost_without_recomputing():
+    rows = [
+        _row(model="gpt-5-6-sol", cost_usd=0.0012, prompt_tokens=100, completion_tokens=40),
+        _row(model="gpt-5-6-sol", cost_usd=0.0008, prompt_tokens=50, completion_tokens=20),
+        _row(model="gpt-5-6-terra", cost_usd=0.002, prompt_tokens=200, completion_tokens=80, cached_tokens=30),
+    ]
+    summary = cost_summary(rows)
+    assert summary["total_calls"] == 3
+    assert summary["failed_calls"] == 0
+    assert summary["total_cost_usd"] == pytest.approx(0.004)
+    assert summary["total_prompt_tokens"] == 350
+    assert summary["total_completion_tokens"] == 140
+    assert summary["total_cached_tokens"] == 30
+    assert summary["by_model"]["gpt-5-6-sol"]["calls"] == 2
+    assert summary["by_model"]["gpt-5-6-sol"]["cost_usd"] == pytest.approx(0.002)
+    assert summary["by_model"]["gpt-5-6-terra"]["calls"] == 1
+    assert summary["source"] == "api_tracker_hook (pre-priced at write time)"
+
+
+def test_cost_summary_counts_failed_calls():
+    rows = [_row(status_code=200), _row(status_code=429), _row(status_code=0)]
+    summary = cost_summary(rows)
+    assert summary["failed_calls"] == 2  # 429 (>=400) and 0 (request never completed)
+
+
+def test_cost_summary_empty():
+    summary = cost_summary([])
+    assert summary["total_calls"] == 0
+    assert summary["total_cost_usd"] == 0.0
+    assert summary["by_model"] == {}
+
+
+async def test_project_cost_summary_filters_by_project_and_since(tmp_path, monkeypatch):
+    db_path = tmp_path / "tracker.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("""CREATE TABLE api_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
+            provider TEXT, model TEXT, call_type TEXT,
+            prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0,
+            cached_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0,
+            duration_sec REAL DEFAULT 0.0, cost_usd REAL DEFAULT 0.0,
+            status_code INTEGER DEFAULT 200, project_source TEXT DEFAULT ''
+        )""")
+        old = (datetime.utcnow() - timedelta(days=2)).isoformat()
+        new = datetime.utcnow().isoformat()
+        conn.execute("INSERT INTO api_calls (timestamp, model, cost_usd, project_source) "
+            "VALUES (?, 'gpt-5-6-sol', 0.001, '7')", (new,))
+        conn.execute("INSERT INTO api_calls (timestamp, model, cost_usd, project_source) "
+            "VALUES (?, 'gpt-5-6-sol', 0.001, '7')", (old,))  # outside since window
+        conn.execute("INSERT INTO api_calls (timestamp, model, cost_usd, project_source) "
+            "VALUES (?, 'gpt-5-6-sol', 0.001, '8')", (new,))  # different project
+        conn.commit()
+    import app.services.api_tracker_hook as hook
+    monkeypatch.setattr(hook, "_TRACKER_DB", db_path)
+
+    unbounded = await project_cost_summary(7, since=None)
+    assert unbounded["total_calls"] == 2  # both project 7 rows, no time filter
+
+    windowed = await project_cost_summary(7, since=datetime.utcnow() - timedelta(hours=1))
+    assert windowed["total_calls"] == 1  # only the recent project-7 row
+
+    other_project = await project_cost_summary(8, since=None)
+    assert other_project["total_calls"] == 1
+
+
+async def test_project_cost_summary_missing_db_file_returns_empty(tmp_path, monkeypatch):
+    import app.services.api_tracker_hook as hook
+    monkeypatch.setattr(hook, "_TRACKER_DB", tmp_path / "does-not-exist.db")
+    summary = await project_cost_summary(1, since=None)
+    assert summary["total_calls"] == 0
+    assert summary["total_cost_usd"] == 0.0

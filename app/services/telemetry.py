@@ -84,6 +84,87 @@ def node_request_latency(events: Sequence[Any]) -> dict[str, Any]:
     return {"by_node": by_node, "unmatched_requests": unmatched_requests}
 
 
+def cost_summary(rows: Sequence[Any]) -> dict[str, Any]:
+    """rows: api-tracker `api_calls` records (sqlite3.Row or dict-like, one
+    per tracked LLM call). Costs are never recomputed here --
+    app/services/api_tracker_hook.py already priced each call at write time
+    (its own rate table owns that); this only sums what's already stored,
+    per docs/ARCHITECTURE.md's "no dollar-cost model invented here" stance
+    carried forward to the one place a real tariff *is* known.
+    """
+    total_cost = 0.0
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_cached_tokens = 0
+    failed_calls = 0
+    by_model: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        model = row["model"] or "unknown"
+        cost = float(row["cost_usd"] or 0.0)
+        prompt = int(row["prompt_tokens"] or 0)
+        completion = int(row["completion_tokens"] or 0)
+        cached = int(row["cached_tokens"] or 0)
+        total_cost += cost
+        total_prompt_tokens += prompt
+        total_completion_tokens += completion
+        total_cached_tokens += cached
+        status = row["status_code"]
+        status = int(status) if status is not None else 200
+        if status >= 400 or status == 0:
+            failed_calls += 1
+        slot = by_model.setdefault(model, {"calls": 0, "cost_usd": 0.0,
+            "prompt_tokens": 0, "completion_tokens": 0})
+        slot["calls"] += 1
+        slot["cost_usd"] += cost
+        slot["prompt_tokens"] += prompt
+        slot["completion_tokens"] += completion
+    for slot in by_model.values():
+        slot["cost_usd"] = round(slot["cost_usd"], 6)
+    return {
+        "total_calls": len(rows),
+        "failed_calls": failed_calls,
+        "total_cost_usd": round(total_cost, 6),
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+        "total_cached_tokens": total_cached_tokens,
+        "by_model": by_model,
+        "source": "api_tracker_hook (pre-priced at write time)",
+    }
+
+
+def _query_cost_rows_sync(project_id: int, since: datetime | None) -> list[dict[str, Any]]:
+    """Synchronous sqlite3 read of api-tracker's own DB -- deliberately not
+    the SQLAlchemy session the rest of this module uses, since api-tracker
+    is a separate, pre-existing local tool (app/services/api_tracker_hook.py)
+    with its own SQLite file, not part of the Observe schema. Called via
+    asyncio.to_thread so it never blocks the event loop.
+    """
+    import sqlite3
+
+    from app.services.api_tracker_hook import _TRACKER_DB
+
+    if not _TRACKER_DB.is_file():
+        return []
+    query = ("SELECT model, cost_usd, prompt_tokens, completion_tokens, cached_tokens, status_code "
+             "FROM api_calls WHERE project_source = ?")
+    params: list[Any] = [str(project_id)]
+    if since is not None:
+        query += " AND timestamp >= ?"
+        params.append(since.isoformat())
+    try:
+        with sqlite3.connect(str(_TRACKER_DB), timeout=5.0) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute(query, params).fetchall()]
+    except sqlite3.OperationalError:
+        return []  # Table not created yet (no call tracked for any project so far).
+
+
+async def project_cost_summary(project_id: int, *, since: datetime | None = None) -> dict[str, Any]:
+    import asyncio
+    rows = await asyncio.to_thread(_query_cost_rows_sync, project_id, since)
+    return cost_summary(rows)
+
+
 def budget_summary(control: Any) -> dict[str, Any]:
     if control is None:
         return {"request_limit": None, "requests_used": None, "remaining": None,
@@ -140,4 +221,5 @@ async def project_telemetry(session, project_id: int, *, since: datetime | None 
         "decisions": decision_summary(decisions),
         "node_latency": node_request_latency(events),
         "budgets_by_execution": {c.execution_id: budget_summary(c) for c in controls},
+        "cost": await project_cost_summary(project_id, since=since),
     }

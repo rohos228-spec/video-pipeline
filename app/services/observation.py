@@ -481,6 +481,60 @@ def observe_review(function):
     return wrapped
 
 
+def _usage_tokens(usage):
+    """Normalize a provider usage dict to (prompt, completion, cached) token
+    counts. Handles both Responses-API naming (input_tokens/output_tokens,
+    the shape this app's Kie endpoint actually returns -- see
+    web/src/lib/observation-view.ts) and Chat-Completions naming
+    (prompt_tokens/completion_tokens), since api_tracker_hook.record_api_call
+    was written against the latter.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+    prompt = usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0
+    completion = usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0
+    cached = usage.get("cached_tokens", 0) or 0
+    details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens", cached) or cached
+    return int(prompt), int(completion), int(cached)
+
+
+def _track_api_cost(*, model, usage, duration_sec, project_id=None,
+                     status_code=200, error_message=""):
+    """Fire-and-forget cost tracking via the existing api-tracker module --
+    never recomputes pricing here (api_tracker_hook._calc_cost owns that),
+    never blocks the caller (record_api_call spawns its own daemon thread),
+    never raises (api_tracker_hook already fails safe internally, but this
+    call site is additionally guarded since cost tracking must never be
+    able to break a real model request).
+
+    Gated on a real (non-synthetic) credential, same check used everywhere
+    else in this codebase to distinguish test/synthetic runs from real ones
+    (decision_config.py, media_jobs.assert_entry). api_tracker_hook is a
+    separate, pre-existing, cross-project tool (api-tracker/) with its own
+    Supabase cloud sync under the operator's own account -- it must never
+    record a synthetic/test call as if it were real spend, and every
+    pytest run in this repo uses a synthetic or absent key by convention.
+    Without this gate, every test run in this repo would silently push
+    fake rows to that cloud project.
+    """
+    try:
+        from app.settings import settings
+        if not str(settings.gpt_api_key or "").strip() or str(settings.gpt_api_key).startswith("synthetic"):
+            return
+        from app.services import api_tracker_hook
+        prompt_tokens, completion_tokens, cached_tokens = _usage_tokens(usage)
+        api_tracker_hook.record_api_call(
+            provider="kie", model=str(model or "unknown"), call_type="text",
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens, duration_sec=duration_sec,
+            status_code=status_code, error_message=error_message[:500],
+            project_source=str(project_id) if project_id is not None else "",
+        )
+    except Exception:
+        pass  # Cost tracking is observational only; it must never affect the real request.
+
+
 def observe_model(function):
     """One request identity for each low-level POST, including retry/split calls."""
     @functools.wraps(function)
@@ -491,7 +545,17 @@ def observe_model(function):
             hook = current.get()
             if hook is not None:
                 return await hook.send(function, args, kwargs)
-            return await function(*args, **kwargs)
+            start = time.monotonic()
+            try:
+                result = await function(*args, **kwargs)
+            except Exception as exc:
+                _track_api_cost(model=kwargs.get("model"), usage=None,
+                    duration_sec=time.monotonic() - start,
+                    status_code=0, error_message=f"{type(exc).__name__}: {exc}")
+                raise
+            _track_api_cost(model=getattr(result, "model", kwargs.get("model")),
+                usage=getattr(result, "usage", None), duration_sec=time.monotonic() - start)
+            return result
         request_id = str(uuid.uuid4())
         previous_request_id = ctx.last_request_id
         from app.services.profiles_v1 import transform_request
@@ -521,9 +585,13 @@ def observe_model(function):
             "purpose":getattr(ctx,'purpose','node'),
             "previous_request_id": previous_request_id,
             "settings_revision": digest(settings), "input_revision": digest(body)}, body=body)
+        start = time.monotonic()
+        call_attempted = False
+        cost_tracked = False
         try:
             if ctx.scope.mode=='managed' and (ctx.scope.gaps or ctx.scope.execution_id in ctx.observer.failures or ctx.scope.execution_id in ctx.observer.commit_uncertainty):
                 raise RuntimeError('managed request blocked before transport: mandatory audit unavailable')
+            call_attempted = True
             result = await function(*args, **kwargs)
             raw = getattr(result, "raw", {}) or {}
             await record_fact("model_end", {"model": getattr(result, "model", None),
@@ -533,6 +601,9 @@ def observe_model(function):
                 "complete": raw.get("status") == "completed" and not raw.get("sse_salvaged"),
                 "retrieved_by_id": bool(raw.get("retrieved_by_id")),
             }, body={"text": getattr(result, "text", ""), "response": raw})
+            _track_api_cost(model=getattr(result, "model", None), usage=getattr(result, "usage", None),
+                duration_sec=time.monotonic() - start, project_id=ctx.scope.project_id)
+            cost_tracked = True
             if ctx.scope.mode=='managed' and (raw.get('sse_salvaged') or raw.get('status') not in {None,'completed'}):
                 await hold_uncertain_request(ctx,request_id)
                 raise RuntimeError('uncertain external result; managed execution held, no repeat POST')
@@ -546,6 +617,15 @@ def observe_model(function):
                 "catalog_source":"structured_exception_context" if isinstance(context,dict) and context.get("error_kind") else "exception_type_or_text",
                 "status_code":context.get("status_code") if isinstance(context,dict) else None,
                 "uncertain":type(exc).__name__ in {"CancelledError","ReadTimeout"} or (isinstance(context,dict) and context.get("error_kind") in {"timeout","network"})})
+            # Only track a failed-call cost entry for a request that actually
+            # reached the provider and wasn't already tracked above (the
+            # "uncertain external result" re-raise follows a real, already-
+            # tracked success -- tracking it again would double-count spend).
+            if call_attempted and not cost_tracked:
+                _track_api_cost(model=kwargs.get("use_model"), usage=None,
+                    duration_sec=time.monotonic() - start, project_id=ctx.scope.project_id,
+                    status_code=(context.get("status_code") if isinstance(context,dict) else None) or 0,
+                    error_message=f"{type(exc).__name__}: {exc}")
             if ctx.scope.mode=='managed' and (type(exc).__name__ in {'CancelledError','ReadTimeout','ConnectTimeout'} or (isinstance(context,dict) and context.get('error_kind') in {'timeout','network'})):
                 await hold_uncertain_request(ctx,request_id)
             raise
