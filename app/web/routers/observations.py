@@ -724,3 +724,17 @@ async def diagnoses(project_id: int, execution_id: str):
             'evidence_complete':available and not lagging and not any(i.get('evidence_incomplete') for i in items if i.get('currently_relevant')),
             'blocking_count':sum(bool(i.get('blocking') and i.get('currently_relevant') and i['status']!='resolved_confirmed') for i in items),
             'automatic_actions':False,'semantic_quality_verified':False})
+
+
+@router.get("/telemetry")
+async def telemetry(project_id: int, since_hours: int | None = Query(default=None, ge=1, le=8760)):
+    """Project-wide aggregation across every execution this project has
+    had -- unlike every other endpoint in this router, deliberately not
+    scoped to one execution_id, since telemetry is only useful summed over
+    time. Read-only; see app/services/telemetry.py for the pure aggregation
+    logic (unit-tested in tests/test_telemetry.py without a DB)."""
+    from datetime import datetime, timedelta
+    from app.services.telemetry import project_telemetry
+    since = datetime.utcnow() - timedelta(hours=since_hours) if since_hours else None
+    async with get_observer().master() as session:
+        return panel_safe(await project_telemetry(session, project_id, since=since))
