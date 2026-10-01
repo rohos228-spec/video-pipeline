@@ -28,6 +28,12 @@ You cannot grant permission, change budgets, stop flags, data, graph or code.
 read_events arguments: {event_ids:[existing IDs]}; retry_profile arguments:
 {overlay_id: an approved_profiles ID} OR {profile_id: an eligible_profiles ID}.
 Choose only an operator-preapproved catalog entry; never invent parameters.
+If context.recommended_profile_id is set, it names the eligible_profiles entry
+matching this incident's diagnosed cause (e.g. a repair-only prompt variant for
+an invalid_json/missing_payload incident) — prefer it over an unrelated
+candidate unless the evidence clearly points elsewhere; it is a hint, not a
+command, and you may still choose retry_same, human_review or any other
+allowed action if the evidence does not support it.
 All other arguments: {}. Never grant approval or change the catalog.
 retry_same is one existing executor attempt, never a custom worker. finish is
 only a summary: it cannot declare verification or close an incident. If facts
@@ -142,6 +148,14 @@ class DecisionSupervisor:
             node_key=row.node_key,source_attempt_id=row.source_attempt_id)
         from app.services.profiles_v1 import eligible_profiles
         eligible=await eligible_profiles(s,row,revision) if incident.type in RECOVERY_INCIDENTS and capability.managed and capability.result_kind=='structured' else []
+        # Deterministic hint only — never forces a choice. For a diagnosed
+        # format/payload failure, the operator-approved repair-only prompt
+        # variant (if present in this execution's eligible catalog) is the
+        # one matching remedy; the model or operator still decides and the
+        # existing approval/verification path still runs unchanged.
+        recommended_profile_id=next((p['profile_id'] for p in eligible
+            if incident.type in {'invalid_json','missing_payload'}
+            and p['candidate'].get('prompt_variant')=='repair-json-only-v1'),None)
         version=digest({'runtime_config':digest(cfg),'approved_profiles':approved,'eligible_profiles':eligible,'graph':graph,'config':revision,'latest_attempt':latest.attempt_id if latest else None,
             'user_stop':bool((project.meta or {}).get('user_stop')) if project else True,
             'incident_status':incident.status,'event_ids':[e.event_id for e in events]})
@@ -164,6 +178,7 @@ class DecisionSupervisor:
             'facts':[panel_safe({k:getattr(e,k) for k in ('event_id','kind','attempt_id','request_id','payload')}) for e in events[:20]],
             'approved_profiles':approved,
             'eligible_profiles':eligible,
+            'recommended_profile_id':recommended_profile_id,
             'allowed_actions':[a for a in (list(ACTIONS)+(['retry_profile'] if approved or eligible else []) if not action else ['read_events','read_contract','human_review','wait','finish']) if a in execution_actions and a in capability.actions],
             'node_capability':capability.contract(),
             'decision_runtime':{'mode':cfg['mode'],'model':cfg['decision'],'config_hash':digest(cfg)},
@@ -359,10 +374,17 @@ class DecisionSupervisor:
 
     async def escalate(self,decision_id,reason):
         from app.services.actions_v1 import ActionSupervisor,ActionRecord,ActionExecutionControl
+        from app.services.diagnosis import Incident
+        from app.services.human_review_summary import build_human_review_summary
         async with self.master() as s:
             row=await s.get(DecisionRecord,decision_id)
             if not row:return
-            row.status='human_review';row.policy_result={'allowed':False,'reason':str(reason)[:1000]}
+            incident=await s.get(Incident,row.incident_id)
+            summary=build_human_review_summary(node_key=row.node_key,incident_id=row.incident_id,
+                incident_type=incident.type if incident else 'unknown',
+                incident_details=incident.details if incident else {},
+                escalation_reason=str(reason)[:1000],model_steps_used=row.model_steps,max_model_steps=MAX_STEPS)
+            row.status='human_review';row.policy_result={'allowed':False,'reason':str(reason)[:1000],'summary':summary.as_dict()}
             row.lease_token=None;row.lease_until=None
             await self._turn(s,row,'escalation','tool',{'action':'human_review','reason':str(reason)[:1000],'business_data_changed':False})
             existing=await s.scalar(select(ActionRecord).where(ActionRecord.execution_id==row.execution_id,ActionRecord.idempotency_key=='decision-review:'+decision_id))
