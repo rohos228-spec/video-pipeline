@@ -78,6 +78,17 @@ export interface ManagedLaunchRequest {
   profile_ids?:string[];profile_catalog_hash?:string|null;
   request_limit:number;rationale:string;idempotency_key:string;
 }
+export interface TelemetrySummary {
+  project_id:number; since:string|null;
+  incidents:{total:number;by_type:Record<string,number>;by_status:Record<string,number>;
+    by_severity:Record<string,number>;resolved_confirmed:number;blocking_open:number};
+  decisions:{total:number;by_status:Record<string,number>;terminal_count:number;
+    human_review_rate:number|null;avg_model_steps:number|null;max_model_steps:number|null};
+  node_latency:{by_node:Record<string,{count:number;avg_seconds:number;min_seconds:number;max_seconds:number}>;
+    unmatched_requests:{node_key:string|null;request_id:string;started_at:string}[]};
+  budgets_by_execution:Record<string,{request_limit:number|null;requests_used:number|null;
+    remaining:number|null;utilization:number|null;held:boolean|null;enabled:boolean|null}>;
+}
 export interface ObservationContext extends ObservationScope {
   business_group_outcome: string; current_nodes: string[];
   master: {nodes: Record<string, NodeState>}; project: {nodes: Record<string, NodeState>} | null;
@@ -121,4 +132,6 @@ export const observations = {
     http(path(project,execution)+"/profiles/"+encodeURIComponent(overlay)+"/cancel",{method:"POST",body:JSON.stringify({rationale})}),
   retryNode: (project:number,execution:string,payload:{incident_id:string;node_key:string;rationale:string;idempotency_key:string}) =>
     http(path(project,execution)+"/actions/retry",{method:"POST",body:JSON.stringify(payload)}),
+  // Project-wide, deliberately not execution-scoped -- aggregates across every execution this project has had.
+  telemetry: (project:number,since_hours?:number)=>http<TelemetrySummary>(path(project)+"/telemetry"+(since_hours?`?since_hours=${since_hours}`:"")),
 };
