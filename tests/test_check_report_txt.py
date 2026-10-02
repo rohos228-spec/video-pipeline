@@ -238,11 +238,15 @@ path: excel_gpt_uploads/n_check/project_fixed.xlsx
     )
     assert out.gate_status == "fail"
     assert out.analysis is not None
-    assert out.analysis.fix.rewrite_file == "excel_gpt_uploads/n_check/project_fixed.xlsx"
+    # Excel writeback отключён намеренно (bd038612 «Excel only Import/Export - DB is
+    # sole runtime SoT»; xlsx_text_writeback.writeback_project_xlsx бросает RuntimeError,
+    # см. test_xlsx_text_writeback). Устаревший XLSX_WRITEBACK из ответа модели игнорируется:
+    # отчёт проверки не падает, исходный xlsx не тронут, project_fixed.xlsx не создаётся.
+    # (rewrite_file в analysis - лишь заявление модели из отчёта; файла на диске нет.)
     fixed = tmp_path / "excel_gpt_uploads" / "n_check" / "project_fixed.xlsx"
-    assert fixed.is_file()
-    got = load_workbook(fixed)
-    assert got["Общий план"]["B1"].value == "новая тема ролика"
+    assert not fixed.exists()
+    got = load_workbook(src)
+    assert got["Общий план"]["B1"].value != "новая тема ролика"
     assert got["прочее"]["A1"].value == "keep"
 
 

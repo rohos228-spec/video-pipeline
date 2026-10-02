@@ -921,11 +921,26 @@ def _apply_check_fix_writeback(
         logger.warning("gpt_operator/api: check fix copy failed: {}", e)
         return None
 
-    updated = writeback_project_xlsx(
-        project_xlsx=fixed,
-        reply_text=wb_text,
-        downloaded_paths=downloaded,
-    )
+    try:
+        updated = writeback_project_xlsx(
+            project_xlsx=fixed,
+            reply_text=wb_text,
+            downloaded_paths=downloaded,
+        )
+    except RuntimeError as e:
+        # Excel writeback отключён намеренно (bd038612: DB - единственный SoT,
+        # xlsx только через Import/Export). Отчёт проверки не должен падать из-за
+        # устаревшего XLSX_WRITEBACK в ответе модели: правку игнорируем.
+        logger.warning(
+            "gpt_operator/api: check fix writeback отключён, игнорирую node={}: {}",
+            node_key,
+            e,
+        )
+        try:
+            fixed.unlink()
+        except OSError:
+            pass
+        return None
     if updated is None or not fixed.is_file() or fixed.stat().st_size < 64:
         logger.warning(
             "gpt_operator/api: check fix writeback не применился node={}",

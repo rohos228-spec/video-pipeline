@@ -118,7 +118,12 @@ async def test_img_allowed_from_plan_ready(session, tmp_path, monkeypatch) -> No
 async def test_start_step_img_pr_explicit_wipes_image_prompt(
     session, tmp_path, monkeypatch
 ) -> None:
-    """Явный ▶ на img_pr всегда пересобирает: wipe image_prompt, не skip."""
+    """Явный ▶ на img_pr идёт в generating_*, но wipe только при force_wipe=True.
+
+    Дизайн: 21765ef9 "Play resumes without wipe" - обычный ▶ больше не жжёт
+    готовое (project_steps.start_step: "Wipe только по явному force_wipe=True");
+    раньше (327902a7) явный ▶ всегда стирал промты. Полный wipe - force_wipe=True.
+    """
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     from app import settings as app_settings
 
@@ -138,6 +143,21 @@ async def test_start_step_img_pr_explicit_wipes_image_prompt(
 
     status = await start_step(
         session, p, "img_pr", skip_queue_guard=True, explicit_ui_start=True
+    )
+    assert status is ProjectStatus.generating_image_prompts
+    await session.refresh(fr)
+    assert fr.image_prompt == "old clay prompt that must be wiped"
+
+    # Явный полный перезапуск (force_wipe=True) по-прежнему стирает промты.
+    p.status = ProjectStatus.image_prompts_ready
+    await session.flush()
+    status = await start_step(
+        session,
+        p,
+        "img_pr",
+        skip_queue_guard=True,
+        explicit_ui_start=True,
+        force_wipe=True,
     )
     assert status is ProjectStatus.generating_image_prompts
     await session.refresh(fr)

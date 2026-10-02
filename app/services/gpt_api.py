@@ -476,8 +476,6 @@ def _hitting_vps_relay() -> bool:
     vps = _vps_relay_base()
     if not vps:
         return False
-    if settings.text_llm_is_tokenrouter:
-        return False
     if _node_kie_override():
         return True
     if _node_vibecode_override() or settings.text_llm_is_vibecode:
@@ -507,11 +505,6 @@ def _headers() -> dict[str, str]:
                 "VIBECODE_API_KEY пуст — задай ключ vibecode.moe (vk-…) в .env",
                 context={"error_kind": "no_key", "provider": "vibecode"},
             )
-        if settings.text_llm_is_tokenrouter:
-            raise GptApiError(
-                "TOKENROUTER_API_KEY пуст — задай ключ TokenRouter (Kimi K3) в .env",
-                context={"error_kind": "no_key", "provider": "tokenrouter"},
-            )
         raise GptApiError(
             "GPT_API_KEY пуст — задай ключ в .env",
             context={"error_kind": "no_key", "provider": "kie"},
@@ -537,7 +530,7 @@ def _chat_url(model: str) -> str:
         base = settings.gpt_api_effective_base_url
     if not base:
         raise GptApiError(
-            "База текстового LLM пуста — задай TOKENROUTER_BASE_URL, VIBECODE_BASE_URL или GPT_BASE_URL",
+            "База текстового LLM пуста — задай VIBECODE_BASE_URL или GPT_BASE_URL",
             context={"error_kind": "no_base"},
         )
     if not _RELAY_BASE_LOGGED:
@@ -2730,7 +2723,7 @@ async def chat(
     pack_kind: str | None = None,
     on_delta: Any | None = None,
 ) -> GptChatResult:
-    """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями.
+    """Вызвать текстовый LLM (kie GPT / vibecode) с ретраями.
 
     ``volume_complete``: True — после частичного apply-ops добрать остаток.
     По умолчанию выключено (None/False), чтобы не плодить десятки вызовов.
@@ -3058,11 +3051,6 @@ async def chat(
             return result
         except httpx.TimeoutException:
             hint = ""
-            if settings.text_llm_is_tokenrouter:
-                hint = (
-                    " — Kimi free на TokenRouter часто тормозит/висит; "
-                    "подожди или переключи бейдж модели на GPT (kie)"
-                )
             last_exc = GptApiError(
                 f"{provider_label} timeout {use_timeout:.0f}s "
                 f"(попытка {attempt}/{retries + 1}){hint}",

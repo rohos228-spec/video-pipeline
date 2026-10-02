@@ -20,7 +20,9 @@ VMENU_XLSX = (
 def test_studio_defaults_to_full_sheet_params() -> None:
     assert "xlsxStudioPreviewParams" in XLSX
     assert "XLSX_STUDIO_MAX_ROWS = 500" in XLSX
-    assert "XLSX_STUDIO_MAX_COLS = 120" in XLSX
+    # Лимит колонок поднят 120 -> 300 (87ab0bff; комментарий в xlsx-sheets.ts:
+    # кадр N -> колонка N+2, для 200+ кадров нужно >=202).
+    assert "XLSX_STUDIO_MAX_COLS = 300" in XLSX
     # Default path (no focusKeyRows) starts at row 1 with full caps
     assert "startRow: 1" in XLSX
     assert "maxRows: XLSX_STUDIO_MAX_ROWS" in XLSX
@@ -37,7 +39,10 @@ def test_studio_ui_uses_full_params_and_optional_focus_toggle() -> None:
     assert "xlsxFocusKeyRows" in STUDIO
     assert "Только ключевые строки" in STUDIO
     # excel_gpt can open Excel tab (no longer redirected to settings-only)
-    assert 'if (slot.kind === "excel") setTab("excel")' in STUDIO
+    # Вкладка Excel открывается: из слота-подсказки кнопкой «Открыть Excel»
+    # и по promptFocus.kind === "excel" (прямой `if (slot.kind...) setTab` убран).
+    assert 'onClick={() => setTab("excel")}' in STUDIO
+    assert 'promptFocus.kind === "excel" ? "excel" : "prompts"' in STUDIO
     assert "isExcelGptNode(nodeType)" in STUDIO.split("const showExcel")[1][:400]
 
 

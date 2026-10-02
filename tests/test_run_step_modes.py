@@ -194,4 +194,6 @@ async def test_start_step_ui_play_without_force_wipe_keeps_images(session, tmp_p
     ).scalars().all()
     assert len(remaining_arts) == 1
     assert img_file.exists()
-    assert p.auto_mode is True
+    # ▶ больше не включает auto_mode: fcd5f50a "no auto-jump on play" убрал
+    # включение из 21765ef9 (project_steps.start_step: "▶ не включает auto_mode").
+    assert p.auto_mode is False

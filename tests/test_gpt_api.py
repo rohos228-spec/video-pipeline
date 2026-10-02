@@ -32,9 +32,8 @@ from app.services.gpt_api import (
 def _enable(monkeypatch) -> None:
     from app.settings import settings
 
-    # Явно kie: иначе .env с TEXT_LLM_PROVIDER=tokenrouter перехватит путь/модель.
+    # Явно kie: иначе .env с TEXT_LLM_PROVIDER=vibecode перехватит путь/модель.
     monkeypatch.setattr(settings, "text_llm_provider", "kie")
-    monkeypatch.setattr(settings, "tokenrouter_api_key", "")
     monkeypatch.setattr(settings, "gpt_api_key", "test-key")
     monkeypatch.setattr(settings, "gpt_base_url", "https://gw.test")
     monkeypatch.setattr(settings, "gpt_chat_path", "/v1/chat/completions")
@@ -1261,7 +1260,6 @@ def test_headers_include_relay_token(monkeypatch) -> None:
     from app.settings import settings
 
     monkeypatch.setattr(settings, "text_llm_provider", "kie")
-    monkeypatch.setattr(settings, "tokenrouter_api_key", "")
     monkeypatch.setattr(settings, "gpt_api_key", "test-key")
     monkeypatch.setattr(settings, "gpt_relay_token", "relay-secret")
     monkeypatch.setattr(settings, "gpt_base_url", "https://relay.example.com")
