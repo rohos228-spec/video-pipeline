@@ -80,6 +80,59 @@ _CAPABILITIES = {
 }
 
 
+# Recovery decisions for media/paid-or-external node types. Pure declarative data kept OUTSIDE
+# NodeCapability on purpose: contract() is built with asdict() and is persisted/sent to the
+# decision layer, so a new dataclass field would change those payloads. Nothing reads this
+# table at runtime; docs/MEDIA_NODES_READINESS.md and tests/test_media_nodes_recovery_decision.py
+# are its only consumers. Every entry is human-only: no supervisor retry for any media node.
+# Facts are code-grounded (file:line in the doc); "reason" is the honest short justification.
+_MEDIA_HUMAN_ONLY = "human_only"
+MEDIA_RECOVERY_DECISIONS = {
+    "hero": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
+        "provider": "outsee/kie via generate_image_with_retries",
+        "reason": "No capability and no managed lifecycle; native ladder already spends up to 6 paid "
+                  "submits per image with no durable job id, so a supervisor retry could double-pay."},
+    "items": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
+        "provider": "outsee/kie via generate_image_with_retries",
+        "reason": "No capability and no managed lifecycle; same up-to-6-submit native ladder as hero, "
+                  "no durable provider job id (a retry could double-pay); step rolls back to hero_ready for the operator."},
+    "images": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
+        "provider": "kie (managed, synthetic loopback only) / outsee (native)",
+        "reason": "Managed route is synthetic-loopback only (no authorized production network profile); "
+                  "a failed or unknown job is terminal and never resubmitted; uncertain submit may "
+                  "already be charged."},
+    "videos": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_clip_highest",
+        "provider": "outsee/kie (Seedance, Kling, Veo ladder)",
+        "reason": "managed=False; native ladder is up to 4 primary + 3 fallback paid submits per clip "
+                  "with no durable job id; highest per-attempt cost, a blind retry can double-pay."},
+    "audio": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_character",
+        "provider": "elevenlabs_api (direct HTTP)",
+        "reason": "managed=False; request has no idempotency key and the native client already retries "
+                  "3 times on timeout/429/5xx, so a timeout after acceptance may be charged twice."},
+    "music": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_generation",
+        "provider": "kie suno (direct) or browser outsee",
+        "reason": "No capability; Suno family has no approved managed route and the executor writes "
+                  "an Artifact only after the paid generation, so a retry re-submits and re-pays."},
+    "sfx_gen": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_event_small_or_free_local",
+        "provider": "elevenlabs sound-effects (or local_synth when no key)",
+        "reason": "managed=False; per-event paid call without idempotency key, on error it silently "
+                  "falls back to local synthesis, so provider outcome of the failed call is unknown."},
+    "assemble": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "no_provider_spend_local_cpu",
+        "provider": "local ffmpeg (+ local ASR timing)",
+        "reason": "No provider spend, but the output is a final deliverable behind approve_final; "
+                  "no recovery verifier exists, so it stays human-only until one is accepted."},
+    "publish": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "external_side_effect_not_money",
+        "provider": "social publishers (external accounts)",
+        "reason": "Posting to external accounts is irreversible; managed publication is hard-disabled "
+                  "and a retry could publish twice."},
+}
+
+
+def media_recovery_decision(node_type: str):
+    """Declarative human-only decision for a media node, or None for any other type."""
+    return MEDIA_RECOVERY_DECISIONS.get(node_type)
+
+
 def capability_for(node_type: str) -> NodeCapability:
     from app.orchestrator.node_registry import is_work_node_type
     if node_type in _CAPABILITIES and is_work_node_type(node_type):

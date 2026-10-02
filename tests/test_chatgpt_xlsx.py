@@ -39,9 +39,10 @@ def test_plan_prompt_file_contains_master_not_in_chat(project: Project) -> None:
     assert "Тема теста" in content
     assert master not in chat
     assert "unique-token-xyz" not in chat
-    assert "Общий план" in content
+    # footer = DB/текст SoT (docs/PROMPT_CONTRACT.md): текст плана, без xlsx/TSV
+    assert "общий план" in content
     assert "ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ВЫВОДА" in content
-    assert "Лист «план» на этом шаге НЕ трогай" in content
+    assert "Не прикладывай xlsx" in content
     assert "Общий план" in chat
     assert "не лист «план»" in chat
 

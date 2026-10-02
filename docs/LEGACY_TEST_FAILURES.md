@@ -18,7 +18,9 @@ GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
 | baseline `12d61fad` (прежний полный прогон) | ~94 | - |
 | HEAD до правок (прежний полный прогон, `_cmp/h_full.txt`) | 69 | - |
 | HEAD до правок, повтор только падавших файлов (`_cmp/h_before_utf.txt`) | 61 | 406 |
-| HEAD после правок, полный прогон (`_cmp/h_final.txt`) | **40** | **2662** |
+| HEAD после первого раунда правок (`_cmp/h_final.txt`) | 40 | 2662 |
+| после второго раунда, полный прогон (`$CLAUDE_JOB_DIR/tmp/final_legacy.txt`) | 22 | 2693 |
+| после второго раунда + правка `test_video_regen_delete` (файл прогнан отдельно, полный прогон не повторялся) | **21** | - |
 
 Полный прогон «после» выполнен дважды подряд с одинаковым списком из 40 падений
 (кроме одного сетевого флейка `test_ensure_public_yandex_does_not_fallback`, он исправлен, см. ниже).
@@ -47,41 +49,37 @@ GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
 | `test_start_step_resets_downstream_noderuns` | 1 | monkeypatch на удалённый символ `project_steps.sync_project_xlsx` | b | исправлено (`raising=False`) |
 | `test_prompt_history::test_api_modified_uses_meta_not_mtime` | 1 | `_prompt_modified` без meta-времени возвращает mtime файла, тест ждал `None` | b | исправлено |
 | `test_ai_pack::test_ai_pack_verify_ok` | 1 | `git rev-parse` в `scripts/verify_ai_pack.py` падает на dubious ownership | a | исправлено двояко: `GIT_CONFIG_*` в окружении и толерантный вызов git в скрипте (строка HEAD информативная) |
-| `test_artifact_recovery_newer_disk` | 1 | **Баг продукта:** `session.delete(a)` на `AsyncSession` не awaited (корутина создаётся и теряется) - старый Artifact не удаляется, после rebind остаются 2 записи | c | открыт (см. раздел «Баги продукта») |
-| `test_create_history_cache` | 1 | **Подозрение на баг:** первый `list_generation_files` пишет sidecar (`update_sidecar`), меняя mtime и сигнатуру кэша, поэтому второй вызов не попадает в кэш и отдаёт другой `finished_at` | c | открыт |
+| `test_artifact_recovery_newer_disk` | 1 | `session.delete(a)` без `await` в `artifact_recovery.py` | c | исправлено в продукте раньше (`await session.delete`), тест проходит |
+| `test_create_history_cache` | 1 | **Баг продукта:** `list_generation_files` кэшировал под сигнатурой, снятой ДО скана, а скан сам пишет sidecar (`update_sidecar`) и сдвигает mtime/gen - кэш не попадал на повторе | c | исправлено: сигнатура пересчитывается после скана (`generation_storage.py`) |
+| `test_scene_regen_delete`, `test_video_regen_delete` | 2 | Мок `session.delete` был `MagicMock`, а `vision_check_loop` корректно делает `await session.delete(...)` (`AsyncSession.delete` - корутина) | b | исправлено: `AsyncMock` (в старом списке не значились - вскрылись после await-фикса продукта) |
+| `test_hero_outbound_attachments::test_run_excel_missing_ref_file_exits_without_loop` | 1 | **Баг продукта:** после волны `_run_excel` безусловно ставил `generating_hero` поверх `frames_ready`, выставленного дочерней сессией (нет файлов рефов) - выход по статусу не срабатывал, цикл волн вечный. Тест ещё и не знал про отдельную `SessionLocal` | c + b | исправлено: `generate_hero.py` выходит, если после refresh статус `frames_ready`; тест подставляет заглушку `app.db.SessionLocal` |
+| `test_split_xlsx_keep_existing` (2), `test_script_voiceover_attach` (1) | 3 | Раннеры split/script перешли на DB-SoT: `telegram_style_ask_with_files`, ответ - apply-ops/текст, `project.xlsx` не скачивается и (для script) не прикладывается (`xlsx_step_runners.py`) | b | исправлено: тесты переписаны под текущий поток |
+| `test_text_llm_provider` (3) + `test_db_v2_api::test_orchestrator_chat_settings_actions` | 4 | tokenrouter/Kimi удалён из каталога (`_PROVIDERS={"kie","vibecode"}`), остались мёртвые ветки | b + c-минор | исправлено: убраны ветки tokenrouter в `text_llm_catalog.py` и текст ошибки в `gpt_client.py`; тесты проверяют, что tokenrouter отклоняется и не выбирается из env; db_v2-тест использует `vibecode`. Остатки tokenrouter в `settings.py`/`gpt_api.py`/`error_catalog.py` теперь недостижимы, не удалялись |
+| Промпты: `test_plan_validation`, `test_chatgpt_xlsx` | 2 | Контракт `PROMPT_CONTRACT.md` запрещает «заполни лист план/приложи xlsx»; footer в коде уже DB/текстовый | c (промпты) + b | исправлено: `prompts/blocks/plan_output_contract/xlsx_plan_timing.md` и `prompts/steps/01_plan/template.md` указывают «Общий план», без xlsx; ассерты `test_chatgpt_xlsx` приведены к текущему footer. Меняет текст промтов - стоит просмотреть владельцу |
+| `test_prompt_composer::test_compose_step_no_dangling_placeholders_with_defaults` | 1 | `{{VAR:EXCEL_GPT_SHEET}}`/`EXCEL_GPT_TASK` не имели значений по умолчанию | c | исправлено: дефолты в `DEFAULT_VARS` (`"план"` / `""`, как `ENRICH_n_*`); код нигде не задаёт эти переменные, откуда их должен брать excel_gpt - вопрос владельцу |
+| Зависели от порядка: `test_scene_design_agent_chunks` (2), `test_scene_space_migrate`, `test_step_cancel::test_stop_flag_visible_across_fresh_import`, `test_xlsx_preview_used_range`, `test_shot_menu_xlsx_fallback` | 6 | Утечка: `tests/test_project_root.py::test_settings_db_not_under_web` делал `importlib.reload(app.settings)` и подменял глобальный `app.settings.settings` без восстановления | b (изоляция) | исправлено: тест создаёт `Settings()` без reload. Подтверждено: со старой версией файла 4 из 5 проверенных падают в сочетании с `test_project_root`, с новой - проходят; в полном прогоне все 6 зелёные |
 | `test_auto_advance_parity` (3 оставшихся: `enrich_cap_2`, `enrich_cap_5`, `auto_mode_advances...`) | 3 | `_next_running_with_enrich_cap` (auto_advance.py:416) больше нигде не вызывается - продвижение идёт через граф, с пустым графом `next` = None; `maybe_auto_advance` в тесте возвращает False | b/c неясно | открыт (нужно решение владельца: cap enrich-слотов теперь только через граф?) |
-| `test_text_llm_provider` (3) + `test_db_v2_api::test_orchestrator_chat_settings_actions` | 4 | `_PROVIDERS = {"kie","vibecode"}` (`text_llm_catalog.py:~106`): провайдер `tokenrouter`/Kimi удалён из каталога, но остаточные ветки и текст ошибки в `gpt_client.py:31` остались | b (мёртвый код = c-минор) | открыт |
-| Промпты: `test_plan_validation`, `test_chatgpt_xlsx` | 2 | `prompts/blocks/plan_output_contract/xlsx_plan_timing.md` снова велит «Заполняй лист «план»» и не упоминает лист «Общий план» - ровно то, что тест запрещает | c (контент промптов) | открыт |
 | Промпты проверки: `test_check_analysis` (2) | 2 | Нет `prompts/check_operator/scene_design/default.md` и в промте `videos` нет check-id `clips_present` | c (контент промптов) | открыт |
-| `test_prompt_composer::test_compose_step_no_dangling_placeholders_with_defaults` | 1 | В шаблоне `05_excel_gpt` остаётся `{{VAR:EXCEL_GPT_SHEET}}` без значения по умолчанию | c (данные промптов) | открыт |
 | Web-grep: `test_canvas_node_merge`, `test_xlsx_studio_full_sheet` (2) | 3 | Ассерты по подстрокам исходников `web/src` (`fitView=...`, `XLSX_STUDIO_MAX_COLS = 120`, `setTab("excel")`) - UI переписан | b | открыт (`web/` не трогался по условию задачи) |
 | `test_check_report_txt::test_check_fix_writeback_applies_tsv` | 1 | Excel writeback намеренно отключён (`xlsx_text_writeback.py:560`), тест на старый путь | b | открыт |
-| `test_split_xlsx_keep_existing` (2), `test_script_voiceover_attach` (1) | 3 | Тесты патчат `telegram_style_ask_and_download`, а раннеры теперь зовут `telegram_style_ask_with_files` (без xlsx-download) и реальный LLM-клиент | b | открыт (нужна переработка под новый поток; ключи тут не помогают) |
-| `test_hero_outbound_attachments` | 1 | `_run_excel` теперь создаёт отдельную `SessionLocal` на персонажа и перечитывает Project из БД; тест передаёт несохранённый объект - `NoResultFound` | b | открыт |
 | `test_excel_gpt_upload_preview::test_resolve_operator_upload_replaces_edge_xlsx` | 1 | `resolve_operator` не возвращает загруженный `new.xlsx` в `files` (ветка DB-SoT `project_file`) | b/c неясно | открыт |
 | `test_montage_board_frames` (3), `test_montage_scene_anchors` (1) | 4 | Разделение сцены создаёт 3 кадра вместо ожидаемых 1/32/2 и 2 якоря вместо 1 - дизайн split изменился (`montage_board_frames.py`) | b/c неясно | открыт |
 | `test_shot_menu` (4), `test_scene_design_cells` (1), `test_scene_grammar_batches` (1) | 6 | Логика VO-ячеек/хронометража/диагностики усечённого JSON изменилась (`—` вместо текста, 1.5 вместо 3.0, `ok` вместо `json_truncated`) | b/c неясно | открыт |
 | `test_pipeline_step_order::...img_pr_explicit_wipes_image_prompt`, `test_run_step_modes::...keeps_images` | 2 | `start_step(img_pr, explicit_ui_start=True)` вызывает очистку с `force_wipe=False` и не стирает `image_prompt`; `auto_mode` после ▶ остаётся False | b/c неясно | открыт |
-| Зависят от порядка (проходят по отдельности, падают в полном прогоне): `test_scene_design_agent_chunks` (2), `test_scene_space_migrate`, `test_step_cancel::test_stop_flag_visible_across_fresh_import`, `test_xlsx_preview_used_range` | 5 | Утечка состояния между тестами (глобальные настройки/метаданные/модули); выделенно прогоняются успешно (53 passed) | b (изоляция) | открыт, источник утечки не найден |
-| `test_shot_menu::test_shot_menu_xlsx_fallback` | 1 | Падает только в полном прогоне (в подмножестве проходит) - тоже зависимость от порядка | b (изоляция) | открыт |
 
-## Баги продукта (класс c) - не правились
+## Баги продукта (класс c)
 
-1. `app/services/artifact_recovery.py:137,140,256,259` - `session.delete(a)` без `await` на `AsyncSession`
-   (SQLAlchemy 2: `AsyncSession.delete` - корутина; в логе `RuntimeWarning: coroutine 'AsyncSession.delete' was never awaited`).
-   Сценарий: на диске появилось более новое `clip_001_new.mp4`, чем привязанный Artifact -> recovery добавляет
-   новый Artifact, а старый не удаляется: у кадра два `scene_video` на один шот, сборка может взять устаревший клип.
-   Тот же приём: `app/services/vision_check_loop.py:372,472` (проверить, что `session` там - `AsyncSession`).
-2. `app/services/generation_storage.py:~437-455` (`_scan_generation_files` -> `update_sidecar`) - сканирование
-   само пишет sidecar и инвалидирует свой кэш (`_list_cache_signature` берёт mtime json): кэш не работает на
-   первом же повторе, первый и второй ответ различаются полем `finished_at`.
-3. `prompts/blocks/plan_output_contract/xlsx_plan_timing.md` - контракт плана опять направляет модель в лист «план»
-   вместо «Общий план» (регресс контента; тесты `test_plan_validation`, `test_chatgpt_xlsx` это и ловят).
-4. `prompts/check_operator/` - нет промта проверки для ноды `scene_design`, в промте `videos` нет `clips_present`.
-5. `app/orchestrator/auto_advance.py:416` `_next_running_with_enrich_cap` - мёртвый код: `enrich_slots_count`
-   больше не ограничивает цепочку enrich вне графа/excel_gpt-цепочки (нужно подтверждение владельца).
-6. `app/services/text_llm_catalog.py` / `gpt_client.py:31` - остатки tokenrouter/Kimi при удалённом провайдере:
-   `write_choice(provider="tokenrouter")` падает `ValueError`, а текст ошибки отправляет настраивать `TOKENROUTER_API_KEY`.
+Исправлены: `artifact_recovery.py` / `vision_check_loop.py` (`await session.delete`, было сделано до этого раунда; в предыдущей версии
+документа значились как открытые - устарело), `generation_storage.py` (кэш списка), `generate_hero.py` (вечный цикл волн),
+tokenrouter-остатки в `text_llm_catalog.py`/`gpt_client.py`, `prompt_composer.DEFAULT_VARS`, контракт плана в `prompts/`.
+
+Открыты:
+
+1. `prompts/check_operator/` - нет промта проверки для ноды `scene_design`, в промте `videos` нет check-id `clips_present`
+   (`test_check_analysis`, 2). Нужен авторский контент проверок, не угадывался.
+2. `app/orchestrator/auto_advance.py:416` `_next_running_with_enrich_cap` - мёртвый код: `enrich_slots_count`
+   больше не ограничивает цепочку enrich вне графа/excel_gpt-цепочки (`test_auto_advance_parity`, 3). Нужно решение владельца; не менялось.
+3. Недостижимые остатки tokenrouter в `app/settings.py`, `app/services/gpt_api.py`, `app/services/error_catalog.py` - можно удалить отдельным шагом.
 
 ## Что изменено (только тесты/харнесс/скрипты)
 
@@ -93,4 +91,9 @@ GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
   `test_outsee_veo_settings`, `test_check_forward_files`, `test_start_step_resets_downstream_noderuns`,
   `test_prompt_history`.
 - `scripts/studio.ps1` - BOM + ASCII-дефис; `scripts/verify_ai_pack.py` - толерантный `git rev-parse`.
-- Не затронуты: `tests/observe_v1`, `app/` целиком, `web/`.
+- Второй раунд: продукт - `app/services/generation_storage.py`, `app/orchestrator/steps/generate_hero.py`,
+  `app/services/text_llm_catalog.py`, `app/services/gpt_client.py`, `app/services/prompt_composer.py`;
+  промпты - `prompts/blocks/plan_output_contract/xlsx_plan_timing.md`, `prompts/steps/01_plan/template.md`;
+  тесты - `test_project_root` (изоляция), `test_scene_regen_delete`, `test_video_regen_delete`, `test_hero_outbound_attachments`,
+  `test_split_xlsx_keep_existing`, `test_script_voiceover_attach`, `test_text_llm_provider`, `test_db_v2_api`, `test_chatgpt_xlsx`.
+- Не затронуты: `tests/observe_v1`, `web/`.

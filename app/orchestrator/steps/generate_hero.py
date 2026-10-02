@@ -1149,6 +1149,10 @@ async def _run_excel(
             )
 
         await session.refresh(project)
+        if project.status is ProjectStatus.frames_ready:
+            # Дочерняя сессия откатила статус (нет файлов рефов и т.п.) -
+            # не перезаписываем его и не крутим цикл волн вечно.
+            return
         project.status = ProjectStatus.generating_hero
 
         if regen_ids and ok_ids:

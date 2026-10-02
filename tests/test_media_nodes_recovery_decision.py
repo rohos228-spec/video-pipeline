@@ -1,0 +1,66 @@
+"""Media nodes stay human-only: declarative decision data, coverage guard, no network/DB."""
+import pytest
+
+from app.orchestrator.node_registry import WORK_NODES
+from app.services.node_capabilities import (
+    MEDIA_RECOVERY_DECISIONS, READ_ACTIONS, capability_for, media_recovery_decision)
+
+RECOVERY_ACTIONS = {"retry_same", "retry_profile", "finish"}
+
+# Registered work nodes that are NOT media/paid-or-external. A new registry node must land in
+# exactly one of these two groups (media decision table or this text/structure set), otherwise
+# test_every_registry_node_has_a_media_decision_or_is_known_non_media fails.
+KNOWN_NON_MEDIA = {
+    "plan", "script", "split", "scene_design", "sd_agent", "sd_assemble",
+    "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",
+    "image_prompts", "animation_prompts", "sfx_plan",
+}
+MEDIA = set(MEDIA_RECOVERY_DECISIONS)
+
+
+def test_every_registry_node_has_a_media_decision_or_is_known_non_media():
+    unclassified = set(WORK_NODES) - MEDIA - KNOWN_NON_MEDIA
+    assert not unclassified, f"new node type needs a capability/media decision: {sorted(unclassified)}"
+    assert MEDIA <= set(WORK_NODES), "decision table names a node not in the registry"
+    assert not MEDIA & KNOWN_NON_MEDIA
+
+
+def test_generating_status_nodes_are_never_silently_non_media():
+    # Heuristic guard: any node whose running status is a 'generating_*' one that is not a known
+    # text step must carry a media decision (image_prompts / animation_prompts are text).
+    for node_type, spec in WORK_NODES.items():
+        if spec.running_status.name.startswith("generating_") and node_type not in KNOWN_NON_MEDIA:
+            assert node_type in MEDIA, node_type
+
+
+@pytest.mark.parametrize("node_type", sorted(MEDIA))
+def test_media_node_is_human_only_with_honest_reason(node_type):
+    cap = capability_for(node_type)
+    assert not RECOVERY_ACTIONS & set(cap.actions)
+    assert set(cap.actions) <= set(READ_ACTIONS) | {"read_events", "read_contract", "human_review"}
+    assert cap.profile_compatible is False
+    decision = media_recovery_decision(node_type)
+    assert decision["decision"] == "human_only"
+    assert len(decision["reason"].split()) >= 8, "reason must be a real sentence, not a stub"
+    for key in ("cost_class", "provider"):
+        assert decision[key].strip()
+    assert set(decision) == {"decision", "cost_class", "provider", "reason"}
+
+
+def test_paid_media_reasons_state_the_double_pay_risk_or_missing_route():
+    risk_words = ("double", "charged", "re-pay", "re-submit", "never resubmitted", "twice",
+                  "irreversible", "no recovery verifier", "unknown")
+    for node_type in MEDIA:
+        reason = MEDIA_RECOVERY_DECISIONS[node_type]["reason"].lower()
+        assert any(w in reason for w in risk_words), node_type
+
+
+def test_capability_contract_shape_is_unchanged_by_decision_data():
+    keys = set(capability_for("images").contract())
+    assert "reason" not in keys and "decision" not in keys
+    assert "decision" not in {f for f in capability_for("videos").__dataclass_fields__}
+
+
+def test_unregistered_type_has_no_media_decision():
+    assert media_recovery_decision("future-unsupported") is None
+    assert media_recovery_decision("plan") is None

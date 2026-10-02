@@ -161,6 +161,9 @@ DEFAULT_VARS: dict[str, str | int] = {
     "ENRICH_3_SHEET": "план",
     "ENRICH_4_SHEET": "план",
     "ENRICH_5_SHEET": "план",
+    # Шаблон 05_excel_gpt (доп. работа с Excel): как ENRICH_n - по умолчанию пусто/«план».
+    "EXCEL_GPT_SHEET": "план",
+    "EXCEL_GPT_TASK": "",
 }
 
 # Метки приоритета для веса блока (0..1). weight >= 1.0 → без метки.
