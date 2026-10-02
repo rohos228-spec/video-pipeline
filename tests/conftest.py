@@ -79,3 +79,17 @@ def fake_provider_keys(monkeypatch):
         kie_kling.reset_working_kie_key()
     except Exception:
         pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_base_schema():
+    import asyncio
+
+    from app.db import engine
+    from app.main import _init_db
+
+    async def _run() -> None:
+        await _init_db()
+        await engine.dispose()
+
+    asyncio.run(_run())
