@@ -1,4 +1,4 @@
-<#
+﻿<#
 Video Pipeline Studio Launcher
 #>
 param(

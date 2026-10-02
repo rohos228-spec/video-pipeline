@@ -30,6 +30,7 @@ from loguru import logger
 
 TRACE_DIRNAME = "node_trace"
 KEEP_RUNS_PER_NODE = 10
+_run_seq = 0
 _VALUE_MAX = 400
 _SHOT_LIST_KEYS = ("кадры", "shots")
 
@@ -249,7 +250,9 @@ class NodeRunRecorder:
         rec = cls(Path(data_dir), node_key, kind)
         rec.started = datetime.now().isoformat(timespec="seconds")
         try:
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            global _run_seq
+            _run_seq += 1
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f") + f"-{_run_seq}"
             run_dir = trace_root(data_dir) / _safe_name(node_key) / stamp
             run_dir.mkdir(parents=True, exist_ok=True)
             with gzip.open(run_dir / "all_frames.json.gz", "wt", encoding="utf-8") as fh:
@@ -325,9 +328,25 @@ class NodeRunRecorder:
 
 
 def _prune(node_dir: Path, *, keep: int) -> None:
-    runs = sorted(p for p in node_dir.iterdir() if p.is_dir())
+    runs = sorted(p for p in node_dir.iterdir() if p.is_dir() and not p.name.endswith(".del"))
     for old in runs[:-keep] if len(runs) > keep else []:
-        shutil.rmtree(old, ignore_errors=True)
+        _rmtree_one(old)
+
+
+def _rmtree_one(path: Path) -> None:
+    """Сначала убрать каталог из списка прогонов, потом удалить.
+
+    Повторный rmtree по тому же пути на Windows попадает в ещё не отпущенный
+    каталог и сносит соседние прогоны.
+    """
+    trash = path.with_name(path.name + ".del")
+    try:
+        if trash.exists():
+            shutil.rmtree(trash, ignore_errors=True)
+        path.rename(trash)
+    except OSError:
+        trash = path
+    shutil.rmtree(trash, ignore_errors=True)
 
 
 def read_run(run_dir: Path) -> dict[str, Any]:
@@ -348,7 +367,11 @@ def list_runs(data_dir: Path | str) -> list[dict[str, Any]]:
     runs: list[tuple[str, Path]] = []
     for node_dir in root.iterdir():
         if node_dir.is_dir():
-            runs.extend((p.name, p) for p in node_dir.iterdir() if p.is_dir())
+            runs.extend(
+                (p.name, p)
+                for p in node_dir.iterdir()
+                if p.is_dir() and not p.name.endswith(".del")
+            )
     return [read_run(p) for _stamp, p in sorted(runs)]
 
 

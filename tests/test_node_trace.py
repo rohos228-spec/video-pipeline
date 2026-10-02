@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.apply_ops_batches import run_apply_ops_batched, run_code_passes
+from app.services.apply_ops_batches import coalesce_cell_shot_ops, run_apply_ops_batched, run_code_passes
 from app.services.node_replay import replay_run, resolve_run_dir
 from app.services.node_trace import (
     NodeRunRecorder,
@@ -251,6 +251,7 @@ def test_report_shows_diary_runs_check_and_rules() -> None:
          "kind": "warn", "note": "чужой uuid", "node_key": NODE},
     ]
     runs = [
+        {"node_key": "n_excel_gpt_fw_script", "status": "failed", "calls": 0, "counts": {}},
         {"node_key": "n_excel_gpt_fw_script", "status": "ok", "calls": 1, "counts": {}},
         {"node_key": "n_excel_gpt_fw_script", "status": "ok", "calls": 1, "counts": {"warn": 2}},
         {"node_key": NODE, "status": "ok", "calls": 1, "counts": {"fix": 2}, "dir": "/x"},
@@ -271,8 +272,9 @@ def test_report_shows_diary_runs_check_and_rules() -> None:
     assert "Правки программы без кадра в отчёте (1)" in html_text
     assert "Дневник группы нод" in html_text
     assert "Не ок — вернула на сценарий" in html_text and "нет объекта" in html_text
-    assert "Сценарий писался 2 раз(а)" in html_text
-    assert "возвращала его на доработку 1 раз(а)" in html_text
+    assert "удачных прогонов 2" in html_text
+    assert "сбоев до ответа GPT 1" in html_text
+    assert "возвращала его на доработку" not in html_text
     assert "заметила 2" in html_text
     assert "починила 2" in html_text
     assert "Все правила программы" in html_text and "R-AXIS-180" in html_text
@@ -306,3 +308,29 @@ def test_write_report_loads_trace_and_check(tmp_path, monkeypatch) -> None:
     assert "Ок — пропустила дальше" in html_text
     assert "ОБЩИЙ" in html_text and "R-PLAN-STEP" in html_text
     assert "n_excel_gpt_2" not in html_text
+
+
+def test_same_cell_shot_ops_keep_every_scene() -> None:
+    ops = [
+        {"frame_uuid": UID, "fields": {"кадры": [{"id": "1-S1-K1", "действие": "а", "закадр": "раз"}]}},
+        {"frame_uuid": UID, "fields": {"кадры": [{"id": "1-S2-K1", "действие": "б", "закадр": "два"}]}},
+    ]
+    res = run_code_passes(ops, _chunk(), kind="shots", all_frames=_chunk())
+    assert len(res.ops) == 1
+    ids = [s.get("id") for s in res.ops[0]["fields"]["кадры"]]
+    assert "1-S1-K1" in ids and "1-S2-K1" in ids
+
+
+def test_qc_patches_shot_by_id_and_keeps_the_rest() -> None:
+    chunk = _chunk()
+    chunk[0]["кадры"] = [
+        {"id": "1-S1-K1", "действие": "старое", "закадр": "раз"},
+        {"id": "1-S2-K1", "действие": "оставить", "закадр": "два"},
+    ]
+    ops = [{"frame_uuid": UID, "fields": {"кадры": [
+        {"id": "1-S1-K1", "действие": "новое", "закадр": "раз"},
+        {"id": "9-S9-K9", "действие": "чужой кадр", "закадр": "нет"},
+    ]}}]
+    merged = coalesce_cell_shot_ops(ops, chunk, patch=True)
+    by_id = {s["id"]: s["действие"] for s in merged[0]["fields"]["кадры"]}
+    assert by_id == {"1-S1-K1": "новое", "1-S2-K1": "оставить"}

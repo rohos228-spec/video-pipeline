@@ -31,6 +31,8 @@ import { AssembleMontageTrigger } from "./assemble-montage-board";
 import { ShotMenuPanel, ShotMenuTrigger } from "./shot-menu-panel";
 import { GptOperatorCardPanel } from "./gpt-operator-card-panel";
 import { NodeModelPicker } from "./node-model-picker";
+import { Nii67CardPanel } from "./nii67-card-panel";
+import { projectUsesNii67Script } from "@/lib/nii67";
 
 import {
   excelGptAttachmentChipTitle,
@@ -216,8 +218,11 @@ export function PipelineNode({ data, selected }: NodeProps) {
   const isGptWork = isExcelGpt || isSdAgent;
   const isAssemble = d.type === "assemble";
   const anchorRef = useRef<HTMLDivElement>(null);
+  const showNii67 = d.type === "script" && projectUsesNii67Script(actions?.project ?? null);
 
-  const title = (d.label && d.label.trim()) || spec.label || formatNodeTypeLabel(d.type);
+  const title = showNii67
+    ? "НИИ 67 · двери"
+    : (d.label && d.label.trim()) || spec.label || formatNodeTypeLabel(d.type);
 
   return (
     <>
@@ -253,7 +258,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
             ref={anchorRef}
             className={cn(
               "group relative overflow-visible rounded-3xl border border-zinc-700/70 bg-zinc-900/95 shadow-xl shadow-black/60 backdrop-blur-md transition-all duration-200",
-              isGptWork || isStorage || isShotMenu ? "w-[320px]" : "w-[280px]",
+              isGptWork || isStorage || isShotMenu || showNii67 ? "w-[320px]" : "w-[280px]",
               "hover:-translate-y-0.5 hover:border-zinc-500",
               running && "glow-running border-amber-400/80 shadow-[0_0_28px_rgba(245,158,11,0.3)] ring-1 ring-amber-400/50",
               d.status === "done" && "border-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.16)] hover:border-emerald-400/70",
@@ -443,6 +448,7 @@ export function PipelineNode({ data, selected }: NodeProps) {
               />
             )}
             {isHero && actions?.projectId && <HeroConfigPanel projectId={actions.projectId} />}
+            {showNii67 && actions?.projectId && <Nii67CardPanel projectId={actions.projectId} />}
             {isItems && actions?.projectId && <ItemsConfigPanel projectId={actions.projectId} />}
             {isExcelGpt && !isShotsReportNode(d.nodeKey) && actions?.projectId && (
               <GptOperatorCardPanel

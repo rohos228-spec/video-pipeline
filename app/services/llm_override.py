@@ -74,22 +74,33 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
             node_key = sd_runner.resolve_sd_node_key(project, "assemble")
 
     from app.services.node_groups import is_script_frames_qc_gpt_node
+    from app.services.text_llm_catalog import (
+        catalog_api_model,
+        catalog_item,
+        resolve_active_model_id,
+    )
     from app.settings import settings
 
     ov: NodeLlmOverride | None = None
     if is_script_frames_qc_gpt_node(meta, node_key=node_key):
-        raw_model = (getattr(settings, "gpt_model", None) or "").strip()
-        if raw_model in {"", "gpt-5.6-sol", "gpt-5.6-sol-vibecode", "gpt-5-6-sol-vibecode"}:
-            kie_model = "gpt-5-6-sol"
-        else:
-            kie_model = raw_model
+        # script_frames_qc must use Vibecode only (Kie 402 / no credits).
+        active_id = resolve_active_model_id(settings)
+        item = catalog_item(active_id) or {}
+        if str(item.get("provider") or "").strip().lower() != "vibecode":
+            active_id = "gpt-5.6-sol-vibecode"
+            item = catalog_item(active_id) or {
+                "id": active_id,
+                "label": "GPT 5.6 Sol",
+                "provider": "vibecode",
+            }
+        api_model = catalog_api_model(active_id, default="gpt-5.6-sol")
         ov = NodeLlmOverride(
-            model_id=kie_model,
+            model_id=api_model,
             channel="stable",
             kind="text",
-            provider="kie",
-            label="GPT 5.6 Sol (kie · high)",
-            reasoning_effort="high",
+            provider="vibecode",
+            label=f"{(item.get('label') or 'GPT 5.6 Sol')} (vibecode)",
+            reasoning_effort=None,
         )
         logger.info(
             "node_llm: #{} {} → {} ({})",

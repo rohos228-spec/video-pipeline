@@ -920,7 +920,25 @@ def get_project_prompt(project, step_code: str) -> str:
     )
 
     # enrich_* всегда из выбранного .md в Studio — не из blocks/steps template.
+    # Пресет с compose=file (НИИ 67) тоже читается файлом: шаблон blocks
+    # запрещает выдумывать факты, а этот агент как раз достраивает пустые поля.
+    full_file = False
     if step_code not in ENRICH_STEP_CODES and project_uses_blocks_v2(overrides):
+        meta = getattr(project, "meta", None) or {}
+        variant_name, _variant_source = resolve_project_prompt_with_source(
+            overrides,
+            step_code,
+            meta=meta if isinstance(meta, dict) else None,
+        )
+        from app.services.prompt_step_presets import resolve_prompt_preset
+
+        preset = resolve_prompt_preset(step_code, variant_name)
+        full_file = isinstance(preset, dict) and preset.get("compose") == "file"
+    if (
+        step_code not in ENRICH_STEP_CODES
+        and project_uses_blocks_v2(overrides)
+        and not full_file
+    ):
         step_id = STEP_CODE_TO_COMPOSE.get(step_code)
         if step_id:
             blocks, vars_ = merge_project_prompt_config(

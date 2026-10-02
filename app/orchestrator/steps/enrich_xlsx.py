@@ -670,8 +670,9 @@ async def _ensure_four_node_scene_shots(
                 "В кадре по площадке: зона, камера, люди, меняет. "
                 "Поле объект: место|тело|двое|предмет|лицо|взгляд. "
                 "Камеру можно не писать — код подставит из таблицы. "
-                "Закадр кадра 13–80 символов, цель ~45. "
-                "Склейка закадр = весь voiceover_text. Без повтора действия. "
+                "Закадр: обычный 26–80 симв.; "
+                "перебивка 10–30 или эмо/пустой. Не вали весь VO в один кадр. "
+                "Склейка непустых закадр = весь voiceover_text. Без повтора действия. "
                 "Не пиши закадр ячейки, биты, главное_действие."
                 f"{extra}"
             ),
@@ -2103,8 +2104,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "В кадре по площадке: зона, камера, люди, меняет. "
                         "Поле объект: место|тело|двое|предмет|лицо|взгляд. "
                         "Камеру можно не писать — код подставит из таблицы. "
-                        "Закадр кадра 13–80 символов, цель ~45. "
-                        "Склейка закадр = весь voiceover_text. Без повтора действия. "
+                        "Закадр: обычный 26–80 симв.; "
+                        "перебивка 10–30 или эмо/пустой. Не вали весь VO в один кадр. "
+                        "Склейка непустых закадр = весь voiceover_text. Без повтора действия. "
                         "Не пиши закадр ячейки, биты, главное_действие."
                     ).strip()
                     if neighbors:
@@ -2114,7 +2116,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"{accompanying}\n\n"
                         "# DB SoT\n"
                         "Файл db_frames.json — VO-ячейки с fields.кадры. "
-                        "Чини только нарушителей: склейка закадра, 13–80, "
+                        "Чини только нарушителей: склейка непустых закадров, "
+                        "длина куска по шагу (не поровну), "
                         "уникальность действия, объект enum, parent_id, "
                         "площадка (зоны, ось двоих, направление бега). "
                         "Не пиши промт_картинки и промт_видео. "
@@ -2798,11 +2801,43 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     "запись через Excel/TSV больше не поддерживается."
                 )
         nk_now = str(node_key or "")
-        if nk_now.endswith(("_fw_shots", "_fw_frames", "_fw_qc")) and _canvas_has_fw_shots(
+        # QC already patched fields.кадры (план/раскладка). Full coverage rebuild
+        # after QC was dropping those fields back to pre-QC camera_subdivide.
+        if nk_now.endswith("_fw_qc") and _canvas_has_fw_shots(project):
+            from sqlalchemy import select as _sel_qc_sync
+
+            from app.services.vo_shot_expand import sync_qc_kadry_onto_coverage_frames
+
+            # expire_all сбрасывает project — сначала снимем id, потом refresh
+            _pid = int(project.id)
+            session.expire_all()
+            project = await session.get(type(project), _pid) or project
+            qc_frames = list(
+                (
+                    await session.execute(
+                        _sel_qc_sync(Frame)
+                        .where(Frame.project_id == _pid)
+                        .order_by(Frame.sort_key, Frame.number)
+                    )
+                ).scalars().all()
+            )
+            n_sync = sync_qc_kadry_onto_coverage_frames(qc_frames)
+            await session.flush()
+            logger.info(
+                "[#{}] {} QC sync кадры→coverage frames={}",
+                project.id,
+                nk_now,
+                n_sync,
+            )
+        elif nk_now.endswith(("_fw_shots", "_fw_frames")) and _canvas_has_fw_shots(
             project
         ):
             from app.services.vo_shot_expand import apply_shot_coverage_to_vo_cells
 
+            # expire_all + async ORM: без refresh project.id → MissingGreenlet
+            _pid = int(project.id)
+            session.expire_all()
+            project = await session.get(type(project), _pid) or project
             rebuilt = await apply_shot_coverage_to_vo_cells(session, project)
             await session.flush()
             logger.info(

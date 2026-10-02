@@ -824,18 +824,14 @@ def _apply_shot_meta(frame: Any, shot: dict[str, Any] | None) -> None:
         attrs["place"] = place
     if action:
         attrs["shot01_action"] = action
-        existing = str(
-            attrs.get("main_action") or attrs.get("главное_действие") or ""
-        ).strip()
-        # Expand не затирает цепь сцен (и любой уже записанный main_action).
-        if not existing:
-            attrs["main_action"] = action
+        # НИКОГДА не пишем действие шота в main_action: иначе stub первого
+        # шага затирает/маскирует полное главное_действие и shots видит steps=0.
     for key in ("раскладка", "зона"):
         val = str(shot.get(key) or "").strip()
         if val:
             attrs[key] = val
-        else:
-            attrs.pop(key, None)
+        # не стираем уже записанную раскладку/зону пустым shot-полем
+        # (QC sync / partial ops иначе затирали layout)
     frame.attrs = attrs
     _flag_attrs(frame)
     extra: dict[str, Any] = {}
@@ -949,6 +945,10 @@ def repair_split_vo_on_parents(frames: list[Any]) -> int:
         if len(unique) == 1:
             joined = next(iter(unique))
         else:
+            parent_vo = (getattr(parent, "voiceover_text", None) or "").strip()
+            # Порог уже разрезал закадр по запятой — не склеивать обратно.
+            if parent_vo.endswith((",", ";", ":", "—")):
+                continue
             joined = " ".join(p for p in parts if p)
         if joined:
             parent.voiceover_text = joined
@@ -2479,20 +2479,86 @@ async def adopt_full_kadry_ladder(
     return len(drop_ids)
 
 
+
+def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
+    """После QC: перенести план/раскладка/ракурс из attrs.кадры на ячейки покрытия.
+
+    Не делает adopt/expand/rebuild — только обновляет meta уже существующих
+    vo_parent + shot кадров, чтобы shots_report видел то, что написал QC.
+    """
+    updated = 0
+    work = [f for f in frames if _is_pipeline_frame(f)]
+    for members in _group_by_parent(work).values():
+        if not members:
+            continue
+        parent = next(
+            (m for m in members if _cs(m).get("role") == "vo_parent"),
+            members[0],
+        )
+        planned = planned_for_parent_expand(
+            parent, planned_shots_from_attrs(parent)
+        )
+        if not planned:
+            continue
+        ordered = list(members)
+        ordered.sort(
+            key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0)
+        )
+        # Ensure parent carries full ladder (QC SoT).
+        pattrs = dict(getattr(parent, "attrs", None) or {})
+        if planned_shots_from_attrs(parent) != planned:
+            # keep existing if already same length ids; otherwise write planned
+            pattrs["кадры"] = [dict(s) for s in planned if isinstance(s, dict)]
+            parent.attrs = pattrs
+            _flag_attrs(parent)
+            updated += 1
+        for i, fr in enumerate(ordered):
+            shot = planned[i] if i < len(planned) else None
+            if not isinstance(shot, dict):
+                continue
+            before_plan = str(_cs(fr).get("план") or "")
+            before_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
+            _apply_shot_meta(fr, shot)
+            # Children keep single-shot кадры mirror for report overlays.
+            if fr is not parent and is_shot_child(fr):
+                cattrs = dict(getattr(fr, "attrs", None) or {})
+                cattrs["кадры"] = [dict(shot)]
+                # раскладка already set by _apply_shot_meta on attrs
+                fr.attrs = cattrs
+                _flag_attrs(fr)
+            after_plan = str(_cs(fr).get("план") or "")
+            after_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
+            if before_plan != after_plan or before_lay != after_lay:
+                updated += 1
+    return updated
+
+
 async def apply_shot_coverage_to_vo_cells(
     session: AsyncSession,
     project: Project,
 ) -> dict[str, Any]:
     """Хвост группы script_frames_qc: кадры[] → ячейки закадра 1:1 + R49."""
+    from sqlalchemy import inspect as sa_inspect
     from sqlalchemy import select as sel
 
     from app.models import Frame
+
+    # После session.expire_all() sync доступ к project.* → MissingGreenlet.
+    insp = sa_inspect(project)
+    if insp.expired:
+        pid = int(insp.identity[0]) if insp.identity else None
+        if pid is None:
+            raise RuntimeError("apply_shot_coverage: project expired without identity")
+        project = await session.get(type(project), pid)
+        if project is None:
+            raise RuntimeError(f"apply_shot_coverage: project {pid} not found")
+    pid = int(project.id)
 
     frames = list(
         (
             await session.execute(
                 sel(Frame)
-                .where(Frame.project_id == project.id)
+                .where(Frame.project_id == pid)
                 .order_by(Frame.sort_key, Frame.number)
             )
         )
@@ -2505,7 +2571,7 @@ async def apply_shot_coverage_to_vo_cells(
             (
                 await session.execute(
                     sel(Frame)
-                    .where(Frame.project_id == project.id)
+                    .where(Frame.project_id == pid)
                     .order_by(Frame.sort_key, Frame.number)
                 )
             )

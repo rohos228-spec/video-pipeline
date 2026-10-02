@@ -158,12 +158,13 @@ def _get_master_or_fallback(project: Project, step_code: str, fallback: str) -> 
 PLAN_XLSX_OUTPUT_FOOTER = (
     "\n\n---\n"
     "ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ВЫВОДА (план проекта):\n"
-    "1. Верни развёрнутый общий план ролика текстом "
+    "1. Верни развёрнутый Общий план ролика текстом "
     "(не короче ~200 символов).\n"
     '2. Можно обернуть в JSON {"general_plan":"…"} '
     "или просто связный текст плана.\n"
     "3. Не прикладывай xlsx и не используй блоки TSV «# Лист:…» — "
     "данные пишутся в DB проекта, Excel только экспорт.\n"
+    "Лист «план» на этом шаге НЕ трогай.\n"
 )
 
 
@@ -212,30 +213,47 @@ def write_script_prompt_file(
         "script",
         "Мастер-промт для шага «Закадровый текст» ещё не настроен.",
     )
-    hero_hint = {
-        "hero": (
-            "РЕЖИМ: A (герой). В плане hero_needed=true. "
-            "Найди главного персонажа по теме и плану, "
-            "пиши персонажный сценарий — см. раздел «РЕЖИМ A» в инструкции."
-        ),
-        "no_hero": (
-            "РЕЖИМ: B (тема). hero_needed=false. "
-            "Без биографического героя — подробно раскрой тему, "
-            "см. раздел «РЕЖИМ B» в инструкции."
-        ),
-        "auto": (
-            "РЕЖИМ: определи сам по листу «Общий план» в xlsx "
-            "(hero_needed и содержание плана) — A или B."
-        ),
-    }.get(project.hero_mode or "auto", "")
+    from app.services.prompt_library import resolve_project_prompt_with_source
+
+    meta = getattr(project, "meta", None)
+    script_variant, _script_src = resolve_project_prompt_with_source(
+        getattr(project, "prompt_overrides", None) or {},
+        "script",
+        meta=meta if isinstance(meta, dict) else None,
+    )
+    if script_variant == "nii67":
+        hero_hint = (
+            "РЕЖИМ: карточка НИИ 67. Режимы A/B не выбирай. "
+            "Приложенный общий план — карточка испытания. "
+            "Название проекта и тема проекта в сценарий и закадр не входят. "
+            "Первая фраза закадра: «Эксперимент номер» и номер словами."
+        )
+    else:
+        hero_hint = {
+            "hero": (
+                "РЕЖИМ: A (герой). В плане hero_needed=true. "
+                "Найди главного персонажа по теме и плану, "
+                "пиши персонажный сценарий — см. раздел «РЕЖИМ A» в инструкции."
+            ),
+            "no_hero": (
+                "РЕЖИМ: B (тема). hero_needed=false. "
+                "Без биографического героя — подробно раскрой тему, "
+                "см. раздел «РЕЖИМ B» в инструкции."
+            ),
+            "auto": (
+                "РЕЖИМ: определи сам по листу «Общий план» в xlsx "
+                "(hero_needed и содержание плана) — A или B."
+            ),
+        }.get(project.hero_mode or "auto", "")
     from app.services.gpt_text_builder import inject_topic_placeholders
 
-    prompt_text = inject_topic_placeholders(prompt_text, topic)
+    prompt_text = inject_topic_placeholders(prompt_text, topic if script_variant != "nii67" else "")
     extra = f"\n\n---\n\nУКАЗАНИЕ ПРОЕКТА:\n{hero_hint}\n" if hero_hint else ""
     prompt_file = tmp_dir / f"prompt_script_{ts or _timestamp()}.txt"
+    topic_line = "" if script_variant == "nii67" else f"# Тема ролика: «{topic}»\n\n"
     prompt_file.write_text(
         f"# Инструкция для GPT (шаг 2 «Закадровый текст»)\n"
-        f"# Тема ролика: «{topic}»\n\n"
+        f"{topic_line}"
         f"{prompt_text}{extra}\n",
         encoding="utf-8",
     )

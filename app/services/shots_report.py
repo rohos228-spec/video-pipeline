@@ -238,11 +238,17 @@ def _scene_meta(frames: list[Any]) -> dict[int, dict[str, Any]]:
             continue
         attrs = _attrs(fr)
         text = _get(attrs, "главное_действие", "main_action")
+        from app.services.scene_shot_grammar import scene_script_text
+
         parsed = parse_scene_chain(text)
         if parsed:
             for scene in parsed:
                 n = int(scene["n"])
                 scene["chain"] = _scene_chain_line(scene)
+                scene["script"] = scene_script_text(
+                    str(scene.get("place") or ""),
+                    str(scene.get("action") or ""),
+                )
                 prev = by_n.get(n)
                 if prev is None or len(scene.get("blob") or "") > len(prev.get("blob") or ""):
                     by_n[n] = scene
@@ -260,6 +266,7 @@ def _scene_meta(frames: list[Any]) -> dict[int, dict[str, Any]]:
                 "place": place,
                 "action": text.strip(),
                 "chain": text.strip(),
+                "script": scene_script_text(place, text.strip()),
                 "vo": "",
                 "blob": text,
             }
@@ -409,14 +416,19 @@ def _attach_diary(
         sc.setdefault("diary", [])
         for sh in sc.get("shots") or []:
             scene_of_cell.setdefault(_int(sh.get("cell"), 0), sc)
+    rows_by_id = {
+        str(row.get("id") or ""): row
+        for row in rows
+        if str(row.get("id") or "")
+    }
     orphans: list[dict[str, Any]] = []
     for item in diary:
         cell = number_of.get(str(item.get("frame_uuid") or ""), 0)
         cell_rows = rows_by_cell.get(cell) or []
         shot = item.get("shot")
         sid = str(item.get("shot_id") or "")
-        target = None
-        if shot:
+        target = rows_by_id.get(sid) if sid else None
+        if target is None and shot:
             by_id = [r for r in cell_rows if sid and r.get("id") == sid]
             by_pos = [r for r in cell_rows if _int(r.get("pos"), 0) == _int(shot, 0)]
             hit = by_id or by_pos
@@ -471,6 +483,7 @@ def build_shots_report_model(
                 "action": action,
                 "chain": chain,
                 "vo": vo,
+                "script": str(meta.get("script") or ""),
                 "shots": shots,
             }
         )
@@ -554,12 +567,16 @@ def _counts_line(counts: dict[str, Any]) -> str:
 
 def _runs_block(runs: list[dict[str, Any]], check: dict[str, Any]) -> str:
     latest: dict[str, dict[str, Any]] = {}
-    script_runs = 0
+    script_ok = 0
+    script_fail = 0
     for run in runs:
         nk = str(run.get("node_key") or "")
         latest[nk] = run
         if node_local_key(nk) == "script":
-            script_runs += 1
+            if str(run.get("status") or "") == "ok":
+                script_ok += 1
+            else:
+                script_fail += 1
     order = {f.key: i for i, f in enumerate(NODE_FLOW)}
     rows = "".join(
         "<tr>"
@@ -593,11 +610,10 @@ def _runs_block(runs: list[dict[str, Any]], check: dict[str, Any]) -> str:
             f" {_esc(check.get('summary') or '')}</p>"
             + (f"<ul>{bad}</ul>" if bad else "")
         )
-    if script_runs:
-        back = max(script_runs - 1, 0)
+    if script_ok or script_fail:
+        extra = f", сбоев до ответа GPT {script_fail}" if script_fail else ""
         check_html += (
-            f"<p><b>Сценарий писался {script_runs} раз(а)</b> из сохранённых прогонов"
-            f" → проверка возвращала его на доработку {back} раз(а).</p>"
+            f"<p><b>Сценарий:</b> удачных прогонов {script_ok}{extra}.</p>"
         )
     return (
         "<section class=runs-box><h2>Дневник группы нод</h2>"
@@ -713,6 +729,10 @@ def render_shots_report_html(
                 str(sh.get("action") or "").strip() for sh in beats if str(sh.get("action") or "").strip()
             )
         chain = str(sc.get("chain") or "").strip() or action
+        script = str(sc.get("script") or "").strip()
+        if not script:
+            from app.services.scene_shot_grammar import scene_script_text
+            script = scene_script_text(str(place or ""), action)
         vo = str(sc.get("vo") or "").strip()
         chain_note = ""
         if chain and chain != action and not chain.endswith(action):
@@ -725,7 +745,9 @@ def render_shots_report_html(
             f'<article class=scene id="scene-{_esc(n)}">'
             f"<h2>{title}</h2>"
             f'<div class=scene-action>'
-            f'<div class=scene-action-label>Действие</div>'
+            f'<div class=scene-action-label>Сценарий сцены</div>'
+            f"<p>{_esc(script or '—')}</p>"
+            f'<div class=scene-action-label>Шаги в кадрах</div>'
             f"<p>{_esc(action or chain or '—')}</p>"
             f"{chain_note}"
             f"</div>"

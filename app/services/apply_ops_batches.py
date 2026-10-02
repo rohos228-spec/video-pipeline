@@ -31,11 +31,15 @@ from app.services.node_trace import (
 )
 from app.services.scene_design.camera_expand import vo_chunk_is_dangling
 from app.services.scene_shot_grammar import (
+    SHOT_VO_CUTAWAY_MAX,
+    SHOT_VO_CUTAWAY_MIN,
     SHOT_VO_MAX,
     SHOT_VO_MIN,
     apply_grammar_to_ops,
     fill_bit_spans,
+    is_cutaway_shot,
     merge_same_place_scenes,
+    repair_shot_vo_lengths,
     shots_grammar_reason,
 )
 from app.services.shot_templates import fill_kadry_from_catalog
@@ -64,6 +68,10 @@ FW_FRAMES_PARALLEL_BATCHES = 10
 VO_STAGGER_SEC = 0.5
 SHOT_VO_MIN_CHARS = SHOT_VO_MIN
 SHOT_VO_MAX_CHARS = SHOT_VO_MAX
+# Жирная ячейка кадров: длинная цепь действия → соло-пачка (не схлопывать в 1–5).
+HEAVY_ACTION_STEPS = 12
+HEAVY_ACTION_CHARS = 1200
+HEAVY_VO_CHARS = 5000
 _SHOTS_FOOTER_KINDS = frozenset(
     {"shots_coverage", "shots", "shots_qc", "qc_shots"}
 )
@@ -159,27 +167,88 @@ def split_frames(frames: list[Any], size: int) -> list[list[Any]]:
         size = 1
     if not frames:
         return []
-    # Соло только если закадр первого кадра > 5000. attrs/кадры/площадка
-    # в len(str(frame)) не считаем — иначе любая жирная карточка становится
-    # 1-cell GPT-пачкой и модель сваливает весь фильм на один uuid.
-    first_fr = frames[0]
-    first_heavy = False
-    if isinstance(first_fr, dict):
-        first_len = _frame_vo_chars(first_fr)
-        if first_len >= 5000:
-            first_heavy = True
-    if first_heavy:
-        rest = frames[1:]
-        packs = [[first_fr]]
-        if rest:
-            packs.extend([rest[i : i + size] for i in range(0, len(rest), size)])
-        return packs
-    return [frames[i : i + size] for i in range(0, len(frames), size)]
+    # Соло: VO>=5000 ИЛИ длинная цепь действия. attrs/кадры/площадка
+    # в len(str(frame)) не считаем. Жирные — любая позиция, не только первая.
+    heavy: list[Any] = []
+    light: list[Any] = []
+    for fr in frames:
+        if isinstance(fr, dict) and _frame_is_heavy_shots_cell(fr):
+            heavy.append(fr)
+        else:
+            light.append(fr)
+    packs: list[list[Any]] = [[fr] for fr in heavy]
+    packs.extend([light[i : i + size] for i in range(0, len(light), size)])
+    return packs
 
 
 def _frame_vo_chars(frame: dict[str, Any]) -> int:
     """Длина закадра, без attrs/кадры/площадка."""
     return len(str(frame.get("voiceover_text") or frame.get("закадр") or ""))
+
+
+def _frame_main_action(frame: dict[str, Any]) -> str:
+    """главное_действие ячейки (top-level или attrs)."""
+    if not isinstance(frame, dict):
+        return ""
+    action = str(
+        frame.get("главное_действие")
+        or frame.get("main_action")
+        or frame.get("shot01_action")
+        or ""
+    ).strip()
+    if action:
+        return action
+    attrs = frame.get("attrs") if isinstance(frame.get("attrs"), dict) else {}
+    return str(
+        attrs.get("главное_действие")
+        or attrs.get("main_action")
+        or attrs.get("shot01_action")
+        or ""
+    ).strip()
+
+
+def _frame_action_steps(frame: dict[str, Any]) -> int:
+    """Сколько видимых шагов действия (0 если пусто/не разобрали)."""
+    action = _frame_main_action(frame)
+    if not action:
+        return 0
+    try:
+        from app.services.scene_shot_grammar import count_action_steps
+
+        return int(count_action_steps(action) or 0)
+    except Exception:
+        return 0
+
+
+def _frame_expected_shots(frame: dict[str, Any]) -> int:
+    """Ожидаемое N кадров: min(шаги, VO-cap). Для footer и heavy."""
+    action = _frame_main_action(frame)
+    vo = str(frame.get("voiceover_text") or frame.get("закадр") or "")
+    try:
+        from app.services.scene_shot_grammar import expected_shots_for_cell
+
+        return int(expected_shots_for_cell(action, vo) or 0)
+    except Exception:
+        return _frame_action_steps(frame)
+
+
+def _frame_is_heavy_shots_cell(frame: dict[str, Any]) -> bool:
+    """Длинная цепь / большой VO-cap → соло-пачка (GPT схлопывает)."""
+    if not isinstance(frame, dict):
+        return False
+    if _frame_vo_chars(frame) >= HEAVY_VO_CHARS:
+        return True
+    action = _frame_main_action(frame)
+    if len(action) >= HEAVY_ACTION_CHARS:
+        return True
+    if _frame_action_steps(frame) >= HEAVY_ACTION_STEPS:
+        return True
+    # VO-capacity expected N тоже жирный: GPT иначе отдаёт 1–5 вместо ~N
+    return _frame_expected_shots(frame) >= HEAVY_ACTION_STEPS
+
+
+def _unit_is_heavy(unit: list[dict[str, Any]]) -> bool:
+    return any(_frame_is_heavy_shots_cell(f) for f in unit if isinstance(f, dict))
 
 
 def _vo_unit_key(frame: dict[str, Any]) -> str:
@@ -220,16 +289,17 @@ def split_vo_units(
     if not units:
         return [list(frames)]
     packs: list[list[dict[str, Any]]] = []
-    # Соло только по сумме закадра юнита, не по len(str(frame)).
-    start_idx = 0
-    first_unit = units[0]
-    first_len = sum(_frame_vo_chars(f) for f in first_unit)
-    if first_len >= 5000:
-        packs.append(first_unit)
-        start_idx = 1
-    for i in range(start_idx, len(units), unit_size):
+    light_units: list[list[dict[str, Any]]] = []
+    # Соло: VO>=5000 или длинная цепь действия — любая позиция в списке.
+    for unit in units:
+        vo_len = sum(_frame_vo_chars(f) for f in unit)
+        if vo_len >= HEAVY_VO_CHARS or _unit_is_heavy(unit):
+            packs.append(unit)
+        else:
+            light_units.append(unit)
+    for i in range(0, len(light_units), unit_size):
         pack: list[dict[str, Any]] = []
-        for unit in units[i : i + unit_size]:
+        for unit in light_units[i : i + unit_size]:
             pack.extend(unit)
         if pack:
             packs.append(pack)
@@ -613,20 +683,13 @@ def _shot_vo_len_reason(
     cell_vo: str,
     uid: str,
 ) -> str | None:
-    for shot in shots:
-        chunk = _shot_vo_chunk(shot)
-        sid = str(shot.get("id") or "")
-        if not chunk:
-            return (
-                f"uuid {uid[:8]}: кадр {sid or '?'} пустой закадр "
-                "— у каждого кадра свой кусок"
-            )
     cell_n = _vo_visible_len(cell_vo)
-    # Если исходный закадр короткий — длина шотов не может быть больше исходного текста
-    if cell_n <= SHOT_VO_MIN_CHARS:
+    if cell_n <= SHOT_VO_MIN_CHARS and len(shots) <= 1:
         return None
     for shot in shots:
         chunk = _shot_vo_chunk(shot)
+        if not chunk:
+            continue  # пустая перебивка — норма
         sid = str(shot.get("id") or "")
         plan = str(shot.get("план") or "")
         if vo_chunk_is_dangling(chunk):
@@ -635,23 +698,35 @@ def _shot_vo_len_reason(
                 f"({chunk[-24:]!r})"
             )
         words = re.findall(r"[^\W\d_]+", chunk, flags=re.UNICODE)
-        if 1 <= len(words) <= 2 and not _is_special_short_vo(chunk, plan):
+        covers_cell = " ".join(chunk.split()) == " ".join((cell_vo or "").split())
+        if (
+            1 <= len(words) <= 2
+            and not _is_special_short_vo(chunk, plan)
+            and not covers_cell
+            and not is_cutaway_shot(shot)
+        ):
             n = _vo_visible_len(chunk)
             return (
                 f"uuid {uid[:8]}: кадр {sid or '?'} закадр {n} симв. "
-                "(1–2 слова — только титр/имя/ударная деталь)"
+                "(1–2 слова — только титр/имя/ударная деталь/перебивка)"
             )
         n = _vo_visible_len(chunk)
-        if n < SHOT_VO_MIN_CHARS:
-            if len(shots) == 1 and cell_n <= SHOT_VO_MAX_CHARS:
-                continue
-            if _is_special_short_vo(chunk, plan):
-                continue
-            if n >= 15:
-                continue
+        cutaway = is_cutaway_shot(shot)
+        if n > SHOT_VO_MAX_CHARS:
             return (
                 f"uuid {uid[:8]}: кадр {sid or '?'} закадр {n} симв. "
-                "(1–2 слова — только титр/имя/ударная деталь)"
+                f"(разрежь, норма {SHOT_VO_MIN_CHARS}–{SHOT_VO_MAX_CHARS})"
+            )
+        if n < SHOT_VO_CUTAWAY_MIN and not cutaway:
+            return (
+                f"uuid {uid[:8]}: кадр {sid or '?'} закадр {n} симв. "
+                f"(<{SHOT_VO_CUTAWAY_MIN} только у перебивки)"
+            )
+        if n < SHOT_VO_MIN_CHARS and not cutaway:
+            return (
+                f"uuid {uid[:8]}: кадр {sid or '?'} закадр {n} симв. "
+                f"(норма {SHOT_VO_MIN_CHARS}–{SHOT_VO_MAX_CHARS}; "
+                f"перебивка {SHOT_VO_CUTAWAY_MIN}–{SHOT_VO_CUTAWAY_MAX})"
             )
     return None
 
@@ -708,6 +783,56 @@ def _snap_anchor_to_vo(anchor: str, vo: str) -> str:
     return clauses[0] if clauses else vo[:80]
 
 
+
+def infer_bit_verb(bit: dict[str, Any], vo: str = "") -> str:
+    """Real verb from bit sense; not default говорит."""
+    change = str(bit.get("изменение") or "").strip()
+    anchor = str(bit.get("якорь") or "").strip()
+    blob = f"{change} {anchor} {vo}".casefold()
+    patterns = (
+        (r"родил", "родился"),
+        (r"умер|смерт", "умер"),
+        (r"женил|вышел замуж", "женился"),
+        (r"арестова|задержа", "арестовали"),
+        (r"убий|убил", "убил"),
+        (r"искал|розыск|ищут", "ищут"),
+        (r"нашли|найден", "нашли"),
+        (r"бежал|бежит", "бежал"),
+        (r"вош[её]л|вход", "вошёл"),
+        (r"выш[её]л", "вышел"),
+        (r"открыл|открыва", "открыл"),
+        (r"закрыл", "закрыл"),
+        (r"положил|клад", "положил"),
+        (r"достал|вынул", "достал"),
+        (r"сказал|говор|произн", "говорит"),
+        (r"спросил|спрашив", "спрашивает"),
+        (r"ответил|отвеча", "отвечает"),
+        (r"смотр|гляд", "смотрит"),
+        (r"писал|пишет", "пишет"),
+        (r"читал|читает", "читает"),
+        (r"жил|живут", "жил"),
+        (r"работал", "работал"),
+        (r"вернул", "вернулся"),
+        (r"направил", "направили"),
+        (r"изменил|меняет|стало", "меняется"),
+    )
+    for rx, verb in patterns:
+        if re.search(rx, blob, re.IGNORECASE):
+            return verb
+    m = re.search(r"[→\-]\s*([^\s,;:]+)", change)
+    if m:
+        token = m.group(1).strip(" «»\"'")
+        if token and not token.isdigit():
+            return token[:40]
+    words = re.findall(r"[^\W\d_]+", change, flags=re.UNICODE)
+    for w in words:
+        low = w.casefold()
+        if len(w) >= 4 and low not in {"пусто", "затем", "после", "когда", "этот", "этой"}:
+            if re.search(r"(л|ла|ли|ет|ит|ал|ил|ут|ют|ся)$", low):
+                return w
+    return "происходит"
+
+
 def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
     """Починить биты на месте: слоган → объект, якорь → кусок закадра."""
     by_uid = _frames_by_uuid(frames)
@@ -725,7 +850,7 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
             raw = [
                 {
                     "порядок": 1,
-                    "глагол": "говорит",
+                    "глагол": infer_bit_verb({"изменение": "смысл из закадра", "якорь": str(raw)}, vo),
                     "изменение": "смысл из закадра",
                     "якорь": _snap_anchor_to_vo(raw, vo),
                 }
@@ -738,14 +863,14 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
             if not isinstance(bit, dict):
                 raw[i] = {
                     "порядок": i + 1,
-                    "глагол": "говорит",
+                    "глагол": infer_bit_verb({"изменение": "смысл из закадра", "якорь": str(bit)}, vo),
                     "изменение": "смысл из закадра",
                     "якорь": _snap_anchor_to_vo(str(bit), vo),
                 }
                 fixed += 1
                 continue
             if not str(bit.get("глагол") or "").strip():
-                bit["глагол"] = "говорит"
+                bit["глагол"] = infer_bit_verb(bit, vo)
                 fixed += 1
             if not str(bit.get("изменение") or "").strip():
                 bit["изменение"] = "смысл из закадра"
@@ -790,7 +915,9 @@ def repair_action_ops(ops: list[Any]) -> int:
 
 
 def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
-    """Пустой закадр кадра — дописать остаток ячейки. Не валить ноду."""
+    """Пустой закадр перебивки — норма. Хвост ячейки кладём на покрывающий кадр."""
+    from app.services.scene_shot_grammar import _assign_vo_by_steps
+
     by_uid = _frames_by_uuid(frames)
     fixed = 0
     for op in ops or []:
@@ -804,25 +931,20 @@ def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
             continue
         uid = str(op.get("frame_uuid") or "").strip()
         cell_vo = _frame_vo(by_uid.get(uid))
-        taken = " ".join(
-            _shot_vo_chunk(s) for s in shots if isinstance(s, dict) and _shot_vo_chunk(s)
+        dict_shots = [s for s in shots if isinstance(s, dict)]
+        glued = " ".join(_shot_vo_chunk(s) for s in dict_shots if _shot_vo_chunk(s))
+        cell = " ".join((cell_vo or "").split())
+        if not cell:
+            continue
+        if glued and " ".join(glued.split()) == cell:
+            continue
+        pieces = _assign_vo_by_steps(
+            cell_vo, [str(s.get("действие") or "") for s in dict_shots]
         )
-        leftover = cell_vo
-        if taken and cell_vo:
-            idx = cell_vo.find(taken[:24]) if taken else -1
-            if idx >= 0:
-                leftover = cell_vo[idx + len(taken) :].strip() or cell_vo
-            else:
-                leftover = cell_vo
-        if not leftover:
-            leftover = taken or cell_vo or "…"
-        for shot in shots:
-            if not isinstance(shot, dict):
-                continue
-            if _shot_vo_chunk(shot):
-                continue
-            shot["закадр"] = leftover
-            fixed += 1
+        for shot, piece in zip(dict_shots, pieces, strict=False):
+            if _shot_vo_chunk(shot) != (piece or "").strip():
+                shot["закадр"] = piece
+                fixed += 1
         if "кадры" in fields:
             fields["кадры"] = shots
         elif "shots" in fields:
@@ -868,25 +990,22 @@ def bits_ops_reason(
                 return f"uuid {uid[:8]}: бит {i} без глагола"
             if not str(bit.get("изменение") or "").strip():
                 return f"uuid {uid[:8]}: бит {i} без изменения"
+            # глагол рядом с якорем; якорь — дословный кусок VO, глагол в якорь не подставлять
+            if not str(bit.get("глагол") or "").strip():
+                bit["глагол"] = infer_bit_verb(bit, vo)
             anchor = str(bit.get("якорь") or "").strip()
             if not anchor:
-                # Автоисправление: подставить ключевое слово из глагола или закадра
-                verb = str(bit.get("глагол") or "").strip()
-                if verb and verb.casefold() in vo_cf:
-                    bit["якорь"] = verb
+                snapped = _snap_anchor_to_vo("", vo)
+                if snapped:
+                    bit["якорь"] = snapped
+                    anchor = snapped
                 else:
-                    words = [w for w in re.findall(r"[^\W\d_]+", vo, flags=re.UNICODE) if len(w) >= 3]
-                    bit["якорь"] = words[0] if words else vo[:15].strip()
+                    return f"uuid {uid[:8]}: бит {i} без якоря из закадра"
             anchor_cf = str(bit.get("якорь") or "").strip().casefold()
             if anchor_cf and anchor_cf not in vo_cf:
-                # Проверим отдельные слова из якоря
                 anchor_words = [w for w in re.findall(r"[^\W\d_]+", anchor_cf, flags=re.UNICODE) if len(w) >= 3]
                 if not any(w in vo_cf for w in anchor_words):
-                    first_word = next((w for w in re.findall(r"[^\W\d_]+", vo_cf, flags=re.UNICODE) if len(w) >= 3), None)
-                    if first_word:
-                        bit["якорь"] = first_word
-                    else:
-                        return f"uuid {uid[:8]}: якорь бита {i} не из закадра"
+                    return f"uuid {uid[:8]}: якорь бита {i} не из закадра"
         filled = fill_bit_spans(vo, raw)
         if "биты" in fields:
             fields["биты"] = filled
@@ -1193,8 +1312,28 @@ def shots_coverage_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Кадры = шаги, что иллюстрируют смысл закадра; доп. 13–80; без повторов."""
+    """Кадры = шаги, что иллюстрируют смысл закадра; без равномерной нарезки."""
     apply_grammar_to_ops(ops, frames)
+    repair_shot_vo_ops(ops, frames)
+    by_uid_pre = _frames_by_uuid(frames)
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields") or {}
+        shots = fields.get("кадры") or fields.get("shots")
+        if not isinstance(shots, list):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        vo = _frame_vo(by_uid_pre.get(uid) or {})
+        notes = repair_shot_vo_lengths(
+            [s for s in shots if isinstance(s, dict)], vo
+        )
+        if notes:
+            logger.info(
+                "repair_shot_vo_lengths uuid={}: {}",
+                uid[:8],
+                "; ".join(notes[:6]),
+            )
     by_uid = _frames_by_uuid(frames)
     for op in ops or []:
         if not isinstance(op, dict):
@@ -1211,6 +1350,11 @@ def shots_coverage_ops_reason(
         )
         if bad:
             return bad
+        bad_len = _shot_vo_len_reason(
+            [s for s in shots if isinstance(s, dict)], vo, uid
+        )
+        if bad_len:
+            return bad_len
     return None
 
 
@@ -1245,6 +1389,7 @@ def _batch_footer(
     footer_kind: str | None = None,
     used_senses: list[str] | None = None,
     used_places: list[str] | None = None,
+    frames: list[dict[str, Any]] | None = None,
 ) -> str:
     kind = (footer_kind or "").strip().lower()
     if kind in {"vo", "voiceover"}:
@@ -1282,19 +1427,52 @@ def _batch_footer(
             "Не пиши закадр и биты. JSON apply-ops, без прозы.\n"
         )
     if kind in {"shots_coverage", "shots"}:
+        expect_lines: list[str] = []
+        for fr in frames or []:
+            if not isinstance(fr, dict):
+                continue
+            uid = str(fr.get("uuid") or "").strip()
+            expected = _frame_expected_shots(fr)
+            steps = _frame_action_steps(fr)
+            vo_n = _frame_vo_chars(fr)
+            if uid and expected > 0:
+                expect_lines.append(
+                    f"- uuid {uid[:8]}: СДЕЛАЙ ≈{expected} кадров "
+                    f"(VO-capacity; steps={steps}, VO≈{vo_n} симв.) — "
+                    f"не 1–5 обобщений; каждый закадр 26–80"
+                )
+        expect_block = ""
+        if expect_lines:
+            expect_block = (
+                "Ожидаемое число кадров по uuid (VO-capacity expected N):\n"
+                + "\n".join(expect_lines[:12])
+                + "\n"
+            )
+        solo_note = ""
+        if n == 1:
+            solo_note = (
+                "СОЛО-ЯЧЕЙКА: это единственный uuid в пачке — не схлопывай в 1–5. "
+                "Верни ≈N кадров по VO-capacity выше.\n"
+            )
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
             f"(кадры-шаги, пачка {batch_i}, "
             f"{SCRIPT_FRAMES_QC_PARALLEL_BATCHES} параллельно)\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
-            "Верни ops ровно по каждому uuid: fields.кадры. "
-            "Один кадр = картина к смыслу своего куска закадра. "
+            "Верни ops ровно по каждому uuid: fields.кадры.\n"
+            "ГЛАВНОЕ: число кадров ≈ VO-capacity expected N "
+            "(= min(шаги главное_действие, floor(len(VO)/26))). "
+            "Длинный VO → много кадров. Схлопывать в 1–5 = брак.\n"
+            "Лимиты 26–80 — длина закадра ОДНОГО кадра, а не повод сделать меньше "
+            "кадров. Перебивка: 10–30 или короткий эмо/реакция (можно пустой).\n"
+            f"{solo_note}"
+            f"{expect_block}"
+            "Один кадр = один видимый шаг действия + кусок закадра. "
             "Поле объект: место|тело|двое|предмет|лицо|взгляд. "
             "Камеру (план, линза_мм, ракурс, движение) можно не писать — "
-            "код подставит из таблицы. Сначала режь закадр по смыслу "
-            "(мысль/клауза); дополнительно 13–80 символов, цель ~45: "
-            "короче — склей с соседней мыслью, длиннее — разрежь по смыслу, "
-            "не посреди фразы. Склейка закадр = весь voiceover_text. "
+            "код подставит из таблицы. "
+            "Не вали весь VO в один кадр; не дроби ниже 10. "
+            "Склейка непустых закадр = весь voiceover_text. "
             "СТАРТ/КОНЕЦ только если точность жеста обязательна "
             "(открыл/положил/достал улику); иначе одно действие-процесс. "
             "По площадке ячейки: зона, камера {где, смотрит}, люди "
@@ -1308,8 +1486,8 @@ def _batch_footer(
             f"(QC полей кадров, пачка {batch_i})\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Чини только нарушителей: fields.кадры. "
-            "Проверь: картина кадра = смысл его закадра; склейка = весь текст; "
-            "доп. 13–80 на кусок (режь по клаузе, не по счётчику); "
+            "Проверь: картина кадра = смысл его закадра; склейка непустых = весь текст; "
+            "число кадров ≈ шагам действие; норма закадра 26–80 на кадр (не меньше кадров); перебивка 10–30 или короткий эмо/реакция (можно пустой); "
             "нет микрожестов без закадра; СТАРТ/КОНЕЦ только у точных жестов; "
             "объект enum, parent_id на одном месте, зоны из площадки, "
             "одну сторону оси у двоих, направление бега по экрану. "
@@ -1393,6 +1571,106 @@ class PassStopError(RuntimeError):
         super().__init__(message)
         self.rule = rule
         self.diary = diary
+
+
+def _shot_rows(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = fields.get("кадры")
+    if not isinstance(raw, list):
+        raw = fields.get("shots")
+    if not isinstance(raw, list):
+        return []
+    return [dict(s) if isinstance(s, dict) else {"значение": s} for s in raw]
+
+
+def _frame_shot_rows(frame: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = frame.get("кадры")
+    if not isinstance(raw, list):
+        attrs = frame.get("attrs")
+        raw = attrs.get("кадры") if isinstance(attrs, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return [dict(s) if isinstance(s, dict) else {"значение": s} for s in raw]
+
+
+def coalesce_cell_shot_ops(
+    ops: list[Any],
+    frames: list[dict[str, Any]] | None = None,
+    *,
+    patch: bool,
+) -> list[dict[str, Any]]:
+    """Несколько ops на один uuid не затирают кадры[].
+
+    Обычная нода кадров склеивает списки подряд. QC (``patch``) правит
+    кадр по id поверх списка, который уже есть у ячейки.
+    """
+    existing = {
+        str(fr.get("uuid") or "").strip(): _frame_shot_rows(fr)
+        for fr in frames or []
+        if str(fr.get("uuid") or "").strip()
+    }
+    order: list[str] = []
+    merged: dict[str, dict[str, Any]] = {}
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        if not uid:
+            continue
+        fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
+        incoming = _shot_rows(fields)
+        if uid not in merged:
+            order.append(uid)
+            merged[uid] = {
+                "fields": {},
+                "shots": [dict(s) for s in existing.get(uid, [])] if patch else [],
+            }
+        slot = merged[uid]
+        for key, val in fields.items():
+            if key in {"кадры", "shots"}:
+                continue
+            slot["fields"][key] = val
+        if patch:
+            index = {
+                str(s.get("id") or ""): i
+                for i, s in enumerate(slot["shots"])
+                if str(s.get("id") or "")
+            }
+            for shot in incoming:
+                sid = str(shot.get("id") or "")
+                if sid and sid in index:
+                    slot["shots"][index[sid]] = shot
+            # QC вернул меньше хороших: не держим пустые оболочки от старого списка.
+            if incoming:
+                from app.services.scene_shot_grammar import is_cutaway_shot
+
+                existing_empty = sum(
+                    1
+                    for s in slot["shots"]
+                    if isinstance(s, dict)
+                    and not str(s.get("закадр") or "").strip()
+                    and not is_cutaway_shot(s)
+                )
+                if existing_empty and len(incoming) < len(slot["shots"]):
+                    # REPLACE: QC-список — источник истины
+                    slot["shots"] = [dict(s) for s in incoming]
+                else:
+                    slot["shots"] = [
+                        s
+                        for s in slot["shots"]
+                        if not isinstance(s, dict)
+                        or str(s.get("закадр") or "").strip()
+                        or is_cutaway_shot(s)
+                    ]
+        else:
+            slot["shots"].extend(incoming)
+    out: list[dict[str, Any]] = []
+    for uid in order:
+        slot = merged[uid]
+        fields = dict(slot["fields"])
+        if slot["shots"]:
+            fields["кадры"] = slot["shots"]
+        out.append({"frame_uuid": uid, "fields": fields})
+    return out
 
 
 def run_code_passes(
@@ -1575,6 +1853,22 @@ def run_code_passes(
                 bad_action,
             )
     if kind in _SHOTS_FOOTER_KINDS:
+        before_ops = len(ops)
+        ops = coalesce_cell_shot_ops(
+            ops,
+            chunk,
+            patch=kind in {"shots_qc", "qc_shots"},
+        )
+        if len(ops) != before_ops:
+            logger.info(
+                "[#{}] apply_ops batched node={!r}: call {} склеил "
+                "ops одной ячейки {} → {} (кадры не затирают друг друга)",
+                project_id,
+                node_key,
+                my_i,
+                before_ops,
+                len(ops),
+            )
         repaired_parents = _traced("shot_parent", lambda: repair_same_place_shot_parents(ops))
         if repaired_parents:
             logger.info(
@@ -1645,9 +1939,110 @@ def run_code_passes(
                 my_i,
                 repaired_vo,
             )
+        # Soft underproduction WARN (GPT≥1 < expected): не stop — уже оставили кадры.
+        if kind not in {"shots_qc", "qc_shots"}:
+            for op in ops:
+                if not isinstance(op, dict):
+                    continue
+                fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
+                warn = str(
+                    op.pop("_shots_under_warn", None)
+                    or fields.pop("_shots_under_warn", None)
+                    or ""
+                ).strip()
+                if warn:
+                    _warn("shots_check", warn)
+                    logger.warning(
+                        "[#{}] apply_ops batched node={!r}: call {} L{} {}",
+                        project_id,
+                        node_key,
+                        my_i,
+                        level,
+                        warn,
+                    )
+        # Неполный GPT → без молчаливого fill. Одна ячейка / все плохие → stop.
+        # Несколько ячеек и часть ок → оставляем хорошие, плохие уйдут в missing/retry.
+        if kind not in {"shots_qc", "qc_shots"}:
+            incomplete_notes: list[str] = []
+            incomplete_uids: list[str] = []
+            for op in ops:
+                if not isinstance(op, dict):
+                    continue
+                fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
+                note = str(fields.pop("_shots_incomplete", None) or "").strip()
+                if note:
+                    uid = str(op.get("frame_uuid") or "").strip()
+                    incomplete_notes.append(note)
+                    if uid:
+                        incomplete_uids.append(uid)
+            if incomplete_notes:
+                bad = set(incomplete_uids)
+                good_ops = [
+                    op
+                    for op in ops
+                    if isinstance(op, dict)
+                    and str(op.get("frame_uuid") or "").strip() not in bad
+                ]
+                if good_ops and len(chunk) > 1 and bad:
+                    ops = good_ops
+                    for note in incomplete_notes:
+                        _warn(
+                            "shots_check",
+                            f"isolate incomplete (retry отдельно): {note}",
+                        )
+                    logger.warning(
+                        "[#{}] apply_ops batched node={!r}: call {} L{} "
+                        "неполные uuid {} — пишем остальные, добор отдельно",
+                        project_id,
+                        node_key,
+                        my_i,
+                        level,
+                        ",".join(u[:8] for u in incomplete_uids[:8]),
+                    )
+                else:
+                    raise _stop("shots_check", incomplete_notes[0])
+        else:
+            for op in ops:
+                if isinstance(op, dict):
+                    op.pop("_shots_under_warn", None)
+                    if isinstance(op.get("fields"), dict):
+                        op["fields"].pop("_shots_incomplete", None)
+                        op["fields"].pop("_shots_under_warn", None)
         # shots_coverage_ops_reason сам ещё раз гоняет грамматику — это тоже правка.
         bad_shots = _traced("shots_check", lambda: shots_coverage_ops_reason(ops, chunk))
+        # shots_coverage снова зовёт apply_grammar — снимаем internal markers,
+        # иначе db_apply падает на неизвестном поле _shots_under_warn.
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            # soft WARNs, которые grammar повесил повторно на op (до strip)
+            warn2 = str(op.pop("_shots_under_warn", None) or "").strip()
+            fields = op.get("fields") if isinstance(op.get("fields"), dict) else None
+            if isinstance(fields, dict):
+                if not warn2:
+                    warn2 = str(fields.pop("_shots_under_warn", None) or "").strip()
+                else:
+                    fields.pop("_shots_under_warn", None)
+                # incomplete уже обработан выше; не тащим в DB
+                fields.pop("_shots_incomplete", None)
+            if warn2:
+                _warn("shots_check", warn2)
+                logger.warning(
+                    "[#{}] apply_ops batched node={!r}: call {} L{} {}",
+                    project_id,
+                    node_key,
+                    my_i,
+                    level,
+                    warn2,
+                )
         if bad_shots:
+            # Soft: action-step undercount WARN уже не в bad_shots как hard;
+            # hard stop только zero/empty catastrophic.
+            if ("нужен добор" in bad_shots or "не вернул кадры" in bad_shots) and (
+                "WARN underproduction" not in bad_shots
+            ):
+                # если в тексте всё же soft — не stop
+                raise _stop("shots_check", bad_shots)
             _warn("shots_check", bad_shots)
             logger.warning(
                 "[#{}] apply_ops batched node={!r}: call {} L{} "
@@ -1657,6 +2052,47 @@ def run_code_passes(
                 my_i,
                 level,
                 bad_shots,
+            )
+        # coverage/VO-repair может добавить оболочки без раскладки —
+        # R-LAYOUT ещё раз после coverage (идемпотентно).
+        plan_before2 = snapshot(ops)
+        plan_issues2: list[dict[str, Any]] = []
+        plan_decisions2: list[dict[str, Any]] = []
+        plan_fixed2, plan_hard2 = apply_scene_plan_ops(
+            ops,
+            all_frames or chunk,
+            issues_out=plan_issues2,
+            decisions_out=plan_decisions2,
+        )
+        entries.extend(
+            _scene_plan_entries(
+                diff_ops(plan_before2, ops),
+                plan_issues2,
+                plan_decisions2,
+                pass_rule=PASS_RULES["scene_plan"],
+                field_rules=PLAN_FIELD_RULES,
+                issue_rules=PLAN_ISSUE_RULES,
+            )
+        )
+        if plan_fixed2:
+            logger.info(
+                "[#{}] apply_ops batched node={!r}: call {} "
+                "R-LAYOUT после coverage ×{}: {}",
+                project_id,
+                node_key,
+                my_i,
+                len(plan_fixed2),
+                "; ".join(plan_fixed2[:6]),
+            )
+        if plan_hard2:
+            logger.warning(
+                "[#{}] apply_ops batched node={!r}: call {} L{} "
+                "площадка после coverage: {}",
+                project_id,
+                node_key,
+                my_i,
+                level,
+                "; ".join(plan_hard2[:6]),
             )
     if kind in {"prompts", "img"}:
         bad_prompts = prompts_ops_reason(ops, chunk)
@@ -1884,6 +2320,7 @@ async def run_apply_ops_batched(
             level,
             len(chunk),
             footer_kind=footer_kind,
+            frames=chunk,
             used_senses=used_senses,
             used_places=used_places,
         )
@@ -2013,7 +2450,7 @@ async def run_apply_ops_batched(
         return missing
 
     async def _run_adaptive(
-        chunk: list[dict[str, Any]], level: int, can_retry: bool = True
+        chunk: list[dict[str, Any]], level: int, under_retries: int = 2
     ) -> None:
         try:
             missing = await _one_chunk(chunk, level)
@@ -2030,6 +2467,29 @@ async def run_apply_ops_batched(
                 return
             nxt = next_split_level(level)
             if nxt is None or len(chunk) <= 1:
+                # Retry up to under_retries on severe undercount/PassStop.
+                msg = str(exc)
+                under = (
+                    "GPT кадров" in msg
+                    or "underproduction" in msg
+                    or "ожидаемых" in msg
+                    or "нужен добор" in msg
+                    or "не покрыл шаги" in msg
+                )
+                if under_retries > 0 and under:
+                    left = under_retries - 1
+                    logger.warning(
+                        "[#{}] apply_ops node={!r}: L{} undercount PassStop → "
+                        "retry (left={}) ({})",
+                        project_id,
+                        node_key,
+                        level,
+                        left,
+                        msg[:160],
+                    )
+                    await asyncio.sleep(1.0)
+                    await _run_adaptive(chunk, level, under_retries=left)
+                    return
                 raise
             parts = split_in_half(chunk)
             logger.warning(
@@ -2043,7 +2503,7 @@ async def run_apply_ops_batched(
                 len(parts),
             )
             for part in parts:
-                await _run_adaptive(part, nxt, can_retry=True)
+                await _run_adaptive(part, nxt, under_retries=2)
             return
         if not missing:
             return
@@ -2065,12 +2525,12 @@ async def run_apply_ops_batched(
                 len(chunk),
                 uid,
             )
-            await _run_adaptive(missing, next_split_level(level) or level, can_retry=False)
+            await _run_adaptive(missing, next_split_level(level) or level, under_retries=0)
             return
 
         # Если не хватает нескольких кадров (обрыв сокета / неполный стрим) —
         # сначала пробуем 1 раз дозапросить недостающие кадры без дробления!
-        if can_retry and len(missing) > 1:
+        if under_retries > 0 and len(missing) > 1:
             logger.warning(
                 "[#{}] apply_ops node={!r}: L{} incomplete {}/{} (сокет обрыв/salvage) "
                 "→ retry missing ({} кадров) без дробления",
@@ -2082,7 +2542,7 @@ async def run_apply_ops_batched(
                 len(missing),
             )
             await asyncio.sleep(1.0)
-            await _run_adaptive(missing, level, can_retry=False)
+            await _run_adaptive(missing, level, under_retries=0)
             return
 
         nxt = next_split_level(level)
@@ -2102,7 +2562,7 @@ async def run_apply_ops_batched(
             nxt,
         )
         for part in split_in_half(missing):
-            await _run_adaptive(part, nxt, can_retry=True)
+            await _run_adaptive(part, nxt, under_retries=2)
 
     async def _run_pack(delay: float, pack: list[dict[str, Any]]) -> None:
         if delay > 0:

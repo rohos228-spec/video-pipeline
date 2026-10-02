@@ -130,6 +130,21 @@
         "VOICEOVER_MAX_CHARS": 900
       }
     },
+    "nii67": {
+      "label": "НИИ 67 · двери",
+      "aliases": [
+        "nii67",
+        "nii_67"
+      ],
+      "description": "Карточка испытания: пустые поля придумываются, зёрна разворачиваются, готовый текст сохраняется. Файл prompts/02_script/nii67.md, не сборка blocks.",
+      "compose": "file",
+      "blocks": {},
+      "vars": {
+        "VIDEO_DURATION_SEC": 60,
+        "VOICEOVER_MIN_CHARS": 850,
+        "VOICEOVER_MAX_CHARS": 1000
+      }
+    },
     "king": {
       "label": "Stephen King placeholder",
       "aliases": [
@@ -159,6 +174,7 @@
   "preset_order": [
     "default",
     "scenario",
+    "nii67",
     "long",
     "editor",
     "zinser",

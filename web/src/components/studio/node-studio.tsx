@@ -46,6 +46,7 @@ import {
 import { ExcelGptSettingsPanel } from "@/components/studio/excel-gpt-settings-panel";
 import { ItemsConfigPanel } from "@/components/canvas/items-config-panel";
 import { HeroConfigPanel } from "@/components/canvas/hero-config-panel";
+import { Nii67CardPanel } from "@/components/canvas/nii67-card-panel";
 import { CheckNodePromptPanel } from "@/components/studio/check-node-prompt-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -926,6 +927,9 @@ export function NodeStudio({
                     <div className="rounded-xl border border-amber-400/20 bg-amber-500/[0.05] p-3">
                       <HeroConfigPanel projectId={projectId} />
                     </div>
+                  ) : null}
+                  {nodeType === "script" && projectId ? (
+                    <Nii67CardPanel projectId={projectId} />
                   ) : null}
                   {nodeDisabled && (
                     <p className="text-amber-400">Нода отключена в графе — шаг не запустится.</p>

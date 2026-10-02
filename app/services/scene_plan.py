@@ -526,6 +526,21 @@ def _cut_is_soft(shot: dict[str, Any]) -> bool:
     return any(s in cut for s in _SOFT_CUTS)
 
 
+def _scene_n(shot: dict[str, Any]) -> int:
+    try:
+        return int(shot.get("сцена") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _scene_jump(prev: dict[str, Any] | None, shot: dict[str, Any]) -> bool:
+    """Склейка двух карточек сцены — не непрерывный проход через дверь."""
+    if prev is None:
+        return False
+    a, b = _scene_n(prev), _scene_n(shot)
+    return a > 0 and b > 0 and a != b
+
+
 def _issue(shot: dict[str, Any], kind: str, text: str, *, fixed: bool) -> dict[str, Any]:
     return {"_shot": shot, "вид": kind, "текст": text, "исправлено": fixed}
 
@@ -603,37 +618,55 @@ def _is_close(shot: dict[str, Any]) -> bool:
     return size.startswith(("круп", "детал", "cu", "ecu"))
 
 
+# Канон R-PLAN-STEP: docs/plan_rules_script_frames_qc.md
 _PLAN_RUNG = (
     ("дальний", 0, "ДАЛЬНИЙ"),
     ("общий", 1, "ОБЩИЙ"),
+    ("средне-крупн", 3, "СРЕДНЕ-КРУПНЫЙ"),
+    ("среднекрупн", 3, "СРЕДНЕ-КРУПНЫЙ"),
     ("средн", 2, "СРЕДНИЙ"),
-    ("круп", 3, "КРУПНЫЙ"),
-    ("детал", 4, "ДЕТАЛЬ"),
+    ("круп", 4, "КРУПНЫЙ"),
+    ("детал", 5, "ДЕТАЛЬ"),
 )
+_PLAN_NAMES = ("ДАЛЬНИЙ", "ОБЩИЙ", "СРЕДНИЙ", "СРЕДНЕ-КРУПНЫЙ", "КРУПНЫЙ", "ДЕТАЛЬ")
+# Запрет соседних склеек (быт 2↔3 и 3↔4)
+_FORBIDDEN_ADJACENT = frozenset({(1, 2), (2, 1), (2, 3), (3, 2)})
 
 
 def _plan_rung(raw: Any) -> int | None:
-    k = _key(raw)
+    k = _key(raw).replace("ё", "е")
+    # длинные префиксы раньше коротких («средне-крупн» до «средн»)
     for prefix, n, _name in _PLAN_RUNG:
-        if k.startswith(prefix):
+        if k.startswith(prefix) or prefix in k:
             return n
     return None
 
 
 def _plan_name(rung: int) -> str:
-    names = ("ДАЛЬНИЙ", "ОБЩИЙ", "СРЕДНИЙ", "КРУПНЫЙ", "ДЕТАЛЬ")
-    return names[max(0, min(4, int(rung)))]
+    return _PLAN_NAMES[max(0, min(len(_PLAN_NAMES) - 1, int(rung)))]
 
 
 def _step_away_plan(plan: str, obj: str) -> str:
     idx = _plan_rung(plan)
     if idx is None:
         idx = 2
-    want = {"лицо": 3, "предмет": 4, "взгляд": 3, "место": 1}.get(_key(obj))
+    want = {
+        "лицо": 4,
+        "предмет": 5,
+        "взгляд": 3,
+        "место": 1,
+        "двое": 2,
+        "тело": 2,
+    }.get(_key(obj))
     if want is not None and want != idx:
-        return _plan_name(want)
-    nxt = idx + 1 if idx < 4 else idx - 1
-    return _plan_name(nxt)
+        # не прыгать в запрещённую соседнюю пару с текущим
+        if (idx, want) not in _FORBIDDEN_ADJACENT:
+            return _plan_name(want)
+    for delta in (2, -2, 1, -1, 3, -3):
+        nxt = idx + delta
+        if 0 <= nxt < len(_PLAN_NAMES) and (idx, nxt) not in _FORBIDDEN_ADJACENT:
+            return _plan_name(nxt)
+    return _plan_name(idx)
 
 
 # Соседние имена ≥45° номинал — запас к правилу 30°. «с плеча» рядом с 3/4 не ставим.
@@ -711,10 +744,25 @@ def _freeze_copies_action(text: str, act: str) -> bool:
     return _key(act) in _key(text)
 
 
+# Глагольный список — запасной сигнал; главный критерий — смена состояния / необратимость.
 _PRECISE_VERB_RE = re.compile(
     r"открыл|открыва|закрыл|закрыва|положил|клад[её]т|достал|вынул|"
     r"взял|бер[её]т|вставл|сунул|сорвал|разорв|подписал|поставил печат|"
     r"раскрыл|раскрыва",
+    re.IGNORECASE,
+)
+_IRREVERSIBLE_RE = re.compile(
+    r"слом|разбил|разорв|сжёг|сжег|убил|выпил|выбросил|порвал|"
+    r"подписал|поставил печат|запечата|разрезал|отрезал",
+    re.IGNORECASE,
+)
+_PROCESS_RE = re.compile(
+    r"ид[её]т|бежит|ехал|говорит|слуша|смотр|ждёт|ждет|сидит|стоит|"
+    r"читает|пишет|думает|молчит|плыв|летит",
+    re.IGNORECASE,
+)
+_STATE_CHANGE_RE = re.compile(
+    r"двер|замок|окно|папк|конверт|чемодан|сейф|зажигал|переключатель|кнопк",
     re.IGNORECASE,
 )
 _CONTENT_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -776,7 +824,15 @@ def needs_freeze(shot: dict[str, Any]) -> bool:
 
 
 def freeze_decision(shot: dict[str, Any]) -> tuple[bool, str]:
-    """``needs_freeze`` + причина простыми словами (для дневника кадра)."""
+    """СТАРТ/КОНЕЦ vs процесс: смена состояния / необратимость важнее списка глаголов.
+
+    Эвристика (R-FREEZE-PRECISE):
+    - меняется предмет/дверь (поле ``меняет``) → старт+конец;
+    - необратимое действие (сломал, подписал, сжёг…) → старт+конец;
+    - непрерывный процесс (идёт, говорит, смотрит…) → одна картинка;
+    - GPT ``точность`` / явные разные старт·конец — как указано;
+    - глагольный список — только запасной сигнал, если нет процесса.
+    """
     flag = _precision_flag(shot.get("точность"))
     if flag is False:
         return False, "GPT пометил «точность: нет» — это процесс, одна картинка"
@@ -799,10 +855,16 @@ def freeze_decision(shot: dict[str, Any]) -> tuple[bool, str]:
     act = _core_action(shot)
     if start and end and not _freeze_broken(start, end, act):
         return True, "GPT дал разные старт и конец"
+    if _IRREVERSIBLE_RE.search(act):
+        return True, "необратимое действие — нужны старт и конец"
+    if _STATE_CHANGE_RE.search(act) and _PRECISE_VERB_RE.search(act):
+        return True, "смена состояния двери/предмета — старт и конец"
+    if _PROCESS_RE.search(act) and not _PRECISE_VERB_RE.search(act):
+        return False, "непрерывный процесс — одна картинка"
     verb = _PRECISE_VERB_RE.search(act)
     if verb:
         return True, f"в действии точный жест «{verb.group(0)}»"
-    return False, "нет смены предмета и точного жеста — процесс, одна картинка"
+    return False, "нет смены состояния / необратимости — процесс, одна картинка"
 
 
 def _freeze_broken(start: str, end: str, act: str) -> bool:
@@ -997,11 +1059,18 @@ class _Sim:
             a, b = prev["_zk"], cur["_zk"]
             if a == b or self.plan.passage(a, b):
                 continue
-            if _cut_is_soft(cur):
+            if _cut_is_soft(cur) or _scene_jump(prev, cur):
                 continue
-            text = f"{_shot_text(prev)} {_shot_text(cur)}"
-            if not _ENTER_RE.search(text) and not _DOOR_RE.search(text):
-                continue
+            # дверь в прошлом кадре не делает проход в другую зону, если
+            # прибытие про дверь/вход не говорит (склейка сцен ≠ ходьба).
+            text_cur = _shot_text(cur)
+            text_prev = _shot_text(prev)
+            if not _ENTER_RE.search(text_cur) and not _DOOR_RE.search(text_cur):
+                if not (
+                    _DOOR_RE.search(text_prev) and _ALREADY_IN_RE.search(text_cur)
+                ):
+                    continue
+            text = f"{text_prev} {text_cur}"
             door = ""
             for zk in (a, b):
                 for pk, prop in self.plan.props(zk).items():
@@ -1027,6 +1096,8 @@ class _Sim:
         if not p:
             return None
         door = p["через"]
+        if door and door not in self.plan.props(b):
+            return None
         return door, self.plan.door_side(b, door)
 
     def exit_door(self, i: int) -> tuple[str, str] | None:
@@ -1208,6 +1279,26 @@ class _Sim:
             self._apply_changes(states, shot)
             i += 1
 
+    def open_jumped_scene_wide(self) -> None:
+        """Отключено для script_frames_qc: без авто-вставки «общий вид {место}»."""
+        return
+
+    def resplit_threshold_vo(self) -> None:
+        """QC мог вернуть весь закадр родителю — снова отдать половину кадру на пороге."""
+        for i, shot in enumerate(self.shots):
+            if shot.get("вставлен") != "порог" or i == 0:
+                continue
+            if not self.owned(shot) or not self.owned(self.shots[i - 1]):
+                continue
+            if str(shot.get("закадр") or "").strip():
+                continue
+            prev = self.shots[i - 1]
+            halves = _split_vo(str(prev.get("закадр") or ""))
+            if halves is None:
+                continue
+            prev["закадр"] = halves[0]
+            shot["закадр"] = halves[1]
+
     def check_entry_shown(self) -> None:
         """Первый кадр новой зоны не «уже внутри»: вход виден (match on action)."""
         for i, shot in enumerate(self.shots):
@@ -1324,7 +1415,7 @@ class _Sim:
         return True
 
     def vary_shot_sizes(self) -> None:
-        """Одинаковый план подряд или прыжок ОБЩИЙ↔ДЕТАЛЬ — сдвинуть крупность."""
+        """Одинаковый план подряд, запрет ОБЩИЙ↔СРЕДНИЙ / СРЕДНИЙ↔СРЕДНЕ-КРУПНЫЙ, прыжок 3+."""
         prev: dict[str, Any] | None = None
         for shot in self.shots:
             if not self.owned(shot) or prev is None or prev.get("_zk") != shot.get("_zk"):
@@ -1336,28 +1427,48 @@ class _Sim:
                 prev = shot
                 continue
             delta = abs(cur_r - prev_r)
-            if delta == 0:
-                nxt = _step_away_plan(
-                    str(shot.get("план") or ""), str(shot.get("объект") or "")
-                )
-                if nxt != shot.get("план"):
+            forbidden = (prev_r, cur_r) in _FORBIDDEN_ADJACENT
+            if delta == 0 or forbidden or delta >= 3:
+                nxt = None
+                # После КРУПНЫЙ/ДАЛЬНИЙ предпочитаем легальный СРЕДНИЙ (тело/двое),
+                # иначе лестница залипает на ОБЩИЙ↔СРЕДНЕ-КРУПНЫЙ без СРЕДНИЙ.
+                prefer_sredniy = []
+                obj_k = str(shot.get("объект") or "").strip().casefold()
+                if prev_r in (0, 4) and obj_k in ("тело", "двое", ""):
+                    prefer_sredniy = [_plan_name(2)]  # СРЕДНИЙ
+                for cand in (
+                    *prefer_sredniy,
+                    _step_away_plan(str(shot.get("план") or ""), str(shot.get("объект") or "")),
+                    _plan_name(prev_r + 2),
+                    _plan_name(prev_r - 2),
+                    _plan_name(prev_r + 1),
+                    _plan_name(prev_r - 1),
+                ):
+                    cr = _plan_rung(cand)
+                    if cr is None or cr == prev_r:
+                        continue
+                    if (prev_r, cr) in _FORBIDDEN_ADJACENT:
+                        continue
+                    if abs(cr - prev_r) >= 3:
+                        continue
+                    nxt = cand
+                    break
+                if nxt and nxt != shot.get("план"):
+                    why = (
+                        "тот же план, что у прошлого кадра"
+                        if delta == 0
+                        else (
+                            f"запрет склейки {prev.get('план')} ↔ {_plan_name(cur_r)}"
+                            if forbidden
+                            else f"прыжок крупности {prev.get('план')} → {_plan_name(cur_r)}"
+                        )
+                    )
                     shot["план"] = nxt
                     self.issues.append(_issue(
                         shot, "план",
-                        f"тот же план, что у прошлого кадра — {nxt}",
+                        f"{why} — {nxt}",
                         fixed=True,
                     ))
-            elif delta >= 3:
-                mid = (prev_r + cur_r) // 2
-                if mid == prev_r:
-                    mid += 1 if cur_r > prev_r else -1
-                nxt = _plan_name(mid)
-                shot["план"] = nxt
-                self.issues.append(_issue(
-                    shot, "план",
-                    f"прыжок крупности {prev.get('план')} → {_plan_name(cur_r)} — {nxt}",
-                    fixed=True,
-                ))
             prev = shot
 
     def vary_repeated_camera(self) -> None:
@@ -1800,11 +1911,13 @@ def apply_scene_plan_cells(
     if flat:
         sim = _Sim(plan, flat)
         sim.assign_zones()
+        sim.open_jumped_scene_wide()
         sim.derive_passages()
         sim.assign_cameras()
         sim.assign_people()
         sim.infer_changes()
         sim.check_doors()
+        sim.resplit_threshold_vo()
         sim.check_entry_shown()
         sim.check_path()
         sim.check_axis()

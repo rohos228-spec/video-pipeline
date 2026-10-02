@@ -583,6 +583,20 @@ async def patch_project(
         sync_global_active_from_overrides(
             p.prompt_overrides if isinstance(p.prompt_overrides, dict) else {}
         )
+    if "general_plan" in payload:
+        ov = p.prompt_overrides if isinstance(p.prompt_overrides, dict) else {}
+        slots = (p.meta or {}).get("prompt_slot_variants") if isinstance(p.meta, dict) else None
+        slot_script = None
+        if isinstance(slots, dict):
+            node = slots.get("n_script")
+            if isinstance(node, dict):
+                slot_script = node.get("main")
+        if ov.get("script") == "nii67" or slot_script == "nii67":
+            card = p.data_dir / "nii67-card.md"
+            try:
+                card.write_text(p.general_plan or "", encoding="utf-8")
+            except OSError as exc:
+                logger.warning("nii67-card write #{}: {}", project_id, exc)
     p.updated_at = datetime.utcnow()
     await commit_with_retry(session)
     await session.refresh(p)

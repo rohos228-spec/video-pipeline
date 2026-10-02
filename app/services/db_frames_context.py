@@ -48,6 +48,33 @@ _IMG_PR_ATTR_KEYS: tuple[str, ...] = (
 )
 
 
+
+
+def _action_chain_score(text: str) -> tuple[int, int, int, int, int]:
+    """Полная цепь ОДНОЙ сцены (→), не stub и не dump всех сцен в main_action."""
+    s = (text or "").strip()
+    if not s:
+        return (0, 0, 0, 0, 0)
+    arrows = s.count("→") + s.count("->")
+    scenes = len(re.findall(r"(?m)^\s*\d+\.\s", s))
+    numbered = 1 if re.match(r"^\s*\d+\.", s) else 0
+    multi_pen = scenes if scenes > 1 else 0
+    return (1 if arrows else 0, -multi_pen, arrows, numbered, len(s))
+
+
+def _prefer_full_action(*candidates: str) -> str:
+    best = ""
+    best_score = (0, -999, 0, 0, 0)
+    for raw in candidates:
+        s = (raw or "").strip()
+        if not s:
+            continue
+        sc = _action_chain_score(s)
+        if sc > best_score:
+            best, best_score = s, sc
+    return best
+
+
 def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
     src = attrs if isinstance(attrs, dict) else {}
     out: dict[str, Any] = {}
@@ -71,12 +98,17 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
                 out[key] = parsed
                 continue
         out[key] = text
-    if "main_action" not in out:
-        raw = src.get("главное_действие")
-        if raw is not None and str(raw).strip():
-            out["main_action"] = str(raw).strip()
-    if "main_action" in out and "главное_действие" not in out:
-        out["главное_действие"] = out["main_action"]
+    # Prefer полную цепь сцен (главное_действие с →) над stub main_action
+    # (часто первый шаг после expand) — иначе steps=0 и VO-cap схлопывает фильм.
+    best = _prefer_full_action(
+        str(out.get("main_action") or ""),
+        str(src.get("main_action") or ""),
+        str(src.get("главное_действие") or ""),
+        str(out.get("главное_действие") or ""),
+    )
+    if best:
+        out["main_action"] = best
+        out["главное_действие"] = best
     # Русский алиас для персонажей кадра (агенты часто ждут «персонажи»).
     if "characters" in out and "персонажи" not in out:
         out["персонажи"] = out["characters"]
@@ -104,7 +136,15 @@ _EXCEL_GPT_VO_MAX = 400
 _ATTR_MAX = 500
 _PARENT_PROMPT_HEAD = 800
 _NO_CLIP_ATTRS = frozenset(
-    {"биты", "кадры", "площадка", "раскладка", "main_action", "промты_детей"}
+    {
+        "биты",
+        "кадры",
+        "площадка",
+        "раскладка",
+        "main_action",
+        "главное_действие",
+        "промты_детей",
+    }
 )
 _PARENT_SNAP_KEYS = (
     "place",

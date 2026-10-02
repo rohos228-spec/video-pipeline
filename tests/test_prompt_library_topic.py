@@ -43,3 +43,16 @@ def test_get_project_prompt_blocks_v2_no_nameerror() -> None:
         out = get_project_prompt(project, "script")
     assert "Дота" in out
     assert "[ВСТАВЬ ТЕМУ]" not in out
+
+
+def test_nii67_prompt_is_the_file_even_with_blocks_v2() -> None:
+    """Шаблон blocks запрещает выдумку. НИИ 67 читается своим файлом."""
+    project = Project(
+        slug="nii",
+        topic="НИИ 67",
+        hero_mode="auto",
+        prompt_overrides={"use_blocks_v2": True, "script": "nii67"},
+    )
+    out = get_project_prompt(project, "script")
+    assert "Агент сценария НИИ 67" in out
+    assert "внешние знания не использую" not in out

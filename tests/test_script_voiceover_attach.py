@@ -96,10 +96,9 @@ async def test_run_script_xlsx_attaches_source_voiceover(tmp_path, monkeypatch) 
     p = _project(tmp_path, script_text="исходный закадровый")
     captured: list[list[Path]] = []
 
-    async def fake_ask(chat_msg: str, files: list[Path], downloaded: Path, **kwargs: object) -> str:
+    async def fake_ask(chat_msg: str, files: list[Path], **kwargs: object) -> str:
         captured.append(list(files))
-        downloaded.write_text("x" * 200, encoding="utf-8")
-        return "ok"
+        return "<<<VOICEOVER>>>\n" + ("x" * 220) + "\n<<<END>>>\n"
 
     prompt_path = p.data_dir / "tmp_gpt" / "prompt_script.txt"
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,7 +108,7 @@ async def test_run_script_xlsx_attaches_source_voiceover(tmp_path, monkeypatch) 
         return await fn()
 
     with (
-        patch.object(xsr.xgf, "telegram_style_ask_and_download", side_effect=fake_ask),
+        patch.object(xsr.xgf, "telegram_style_ask_with_files", side_effect=fake_ask),
         patch.object(xsr.xgf, "run_under_xlsx_lock", side_effect=fake_lock),
         patch.object(xsr.cx, "write_script_prompt_file", return_value=prompt_path),
         patch.object(xsr.cx, "chat_message", return_value="go"),
@@ -118,7 +117,6 @@ async def test_run_script_xlsx_attaches_source_voiceover(tmp_path, monkeypatch) 
 
     assert len(captured) == 1
     names = [f.name for f in captured[0]]
-    assert "project.xlsx" in names
     assert "voiceover.txt" in names
 
 

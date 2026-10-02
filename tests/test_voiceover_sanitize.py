@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.services.voiceover_sanitize import (
     ensure_voiceover_format_instruction,
+    extract_scenario_block,
     extract_voiceover_block,
     sanitize_voiceover_text,
 )
@@ -102,3 +103,56 @@ def test_looks_like_xlsx_tsv_writeback() -> None:
     assert not looks_like_xlsx_tsv_writeback(
         "Третьего января 1889 года Ницше пережил психический коллапс."
     )
+
+
+def test_extract_scenario_leaves_voiceover() -> None:
+    raw = (
+        "<<<SCENARIO>>>\n"
+        "Испытание: соляная тишь.\n"
+        "<<<END_SCENARIO>>>\n"
+        "<<<VOICEOVER>>>\n"
+        "Испытание. Соляная тишь. За первой дверью можно дышать.\n"
+        "<<<END>>>\n"
+    )
+    assert extract_scenario_block(raw) == "Испытание: соляная тишь."
+    assert extract_voiceover_block(raw) == (
+        "Испытание. Соляная тишь. За первой дверью можно дышать."
+    )
+
+
+def test_extract_scenario_unclosed_stops_before_voiceover() -> None:
+    raw = (
+        "<<<SCENARIO>>>\n"
+        "Дверь первая. Соль.\n"
+        "<<<VOICEOVER>>>\n"
+        "Испытание. Соль держит тело, пока не сделаешь шаг в сторону.\n"
+        "<<<END>>>\n"
+    )
+    assert extract_scenario_block(raw) == "Дверь первая. Соль."
+    assert "VOICEOVER" not in (extract_scenario_block(raw) or "")
+
+
+def test_extract_scenario_or_preamble() -> None:
+    from app.services.voiceover_sanitize import extract_scenario_or_preamble
+
+    raw = (
+        "<<<SCENARIO>>>\n"
+        "Кадр 0–7. Две двери. Камера в коридоре.\n"
+        "<<<END_SCENARIO>>>\n"
+        "<<<VOICEOVER>>>\n"
+        + ("А" * 220)
+        + "\n<<<END>>>\n"
+    )
+    assert "Две двери" in extract_scenario_or_preamble(raw)
+
+
+def test_extract_scenario_closed_with_generic_end() -> None:
+    raw = (
+        "<<<SCENARIO>>>\n"
+        "Две ветки. Первая дверь жуткая. Вторая тихая.\n"
+        "<<<END>>>\n"
+        "<<<VOICEOVER>>>\n"
+        + ("Б" * 80)
+        + "\n<<<END>>>\n"
+    )
+    assert "Две ветки" in (extract_scenario_block(raw) or "")

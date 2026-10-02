@@ -94,6 +94,83 @@ def looks_like_xlsx_tsv_writeback(text: str) -> bool:
     return False
 
 
+_SCENARIO_BLOCK_RE = re.compile(
+    r"<<<\s*SCENARIO\s*>>>\s*(.*?)\s*<<<\s*END_SCENARIO\s*>>>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def extract_scenario_block(text: str) -> str | None:
+    """Текст между <<<SCENARIO>>> и <<<END_SCENARIO>>>, иначе None."""
+    raw = text or ""
+    m = _SCENARIO_BLOCK_RE.search(raw)
+    if m:
+        body = (m.group(1) or "").strip()
+        return body or None
+    opened = re.search(r"<<<\s*(?:SCENARIO|СЦЕНАРИЙ)\s*>>>", raw, re.IGNORECASE)
+    if not opened:
+        alt = re.search(
+            r"<<<\s*(?:SCENARIO|СЦЕНАРИЙ)\s*>>>\s*(.*?)\s*<<<\s*END\s*>>>",
+            raw,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if alt:
+            body = (alt.group(1) or "").strip()
+            if body and not re.match(r"<<<\s*VOICEOVER", body, re.I):
+                return body
+        return None
+    tail = raw[opened.end() :]
+    cut = re.search(
+        r"<<<\s*(?:END_SCENARIO|VOICEOVER|END)\s*>>>",
+        tail,
+        re.IGNORECASE,
+    )
+    body = (tail[: cut.start()] if cut else tail).strip()
+    if cut and re.match(r"<<<\s*END\s*>>>", cut.group(0), re.I):
+        rest = tail[cut.end() :]
+        if re.search(r"<<<\s*VOICEOVER\s*>>>", rest, re.I) or len(body) >= 40:
+            return body or None
+    return body or None
+
+
+def _scenario_from_apply_ops(text: str) -> str:
+    try:
+        from app.services import db_apply
+    except Exception:
+        return ""
+    data = db_apply.extract_apply_ops_json(text or "")
+    if not isinstance(data, dict):
+        return ""
+    for op in data.get("ops") or []:
+        if not isinstance(op, dict):
+            continue
+        fields = op.get("fields") or {}
+        if not isinstance(fields, dict):
+            continue
+        for key in ("сценарий", "scenario"):
+            val = fields.get(key)
+            if isinstance(val, str) and len(val.strip()) >= 40:
+                return val.strip()
+    return ""
+
+
+def extract_scenario_or_preamble(text: str) -> str:
+    """Сценарий из маркеров; иначе текст до <<<VOICEOVER>>>; иначе apply-ops."""
+    marked = extract_scenario_block(text)
+    if marked:
+        return marked
+    from_ops = _scenario_from_apply_ops(text)
+    if from_ops:
+        return from_ops
+    raw = text or ""
+    cut = re.search(r"<<<\s*VOICEOVER\s*>>>", raw, re.IGNORECASE)
+    if not cut:
+        return ""
+    head = raw[: cut.start()].strip()
+    head = re.sub(r"<<<\s*END_SCENARIO\s*>>>", "", head, flags=re.I).strip()
+    return head if len(head) >= 40 else ""
+
+
 def extract_voiceover_block(text: str) -> str | None:
     """Достать текст между <<<VOICEOVER>>> и <<<END>>>, иначе None."""
     m = _VOICEOVER_BLOCK_RE.search(text or "")
