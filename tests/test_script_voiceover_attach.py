@@ -97,9 +97,8 @@ async def test_run_script_xlsx_attaches_source_voiceover(tmp_path, monkeypatch) 
     captured: list[list[Path]] = []
 
     async def fake_ask(chat_msg: str, files: list[Path], **kwargs: object) -> str:
-        # DB-SoT: без xlsx-download, ответ - текст закадра (>=200 символов)
         captured.append(list(files))
-        return "закадр " * 40
+        return "<<<VOICEOVER>>>\n" + ("x" * 220) + "\n<<<END>>>\n"
 
     prompt_path = p.data_dir / "tmp_gpt" / "prompt_script.txt"
     prompt_path.parent.mkdir(parents=True, exist_ok=True)

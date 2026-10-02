@@ -77,6 +77,19 @@ def test_accusative_and_vo_split_at_punctuation() -> None:
     assert f"{a} {b}" == "Он бежал по улице, не разбирая дороги, к своему дому."
 
 
+def test_scene_cut_does_not_invent_a_door() -> None:
+    street = _street()
+    street["действие"] = "Иван бежит по улице"
+    street["закадр"] = "Он бежал по улице, не разбирая дороги."
+    street["сцена"] = 1
+    kitchen = _kitchen()[0]
+    kitchen["сцена"] = 2
+    shots = [street, kitchen]
+    apply_scene_plan(shots, PLAN)
+    assert len(shots) == 2
+    assert not any("открывает" in (s.get("действие") or "") for s in shots)
+
+
 def test_closed_door_gets_threshold_shot_and_entry_is_shown() -> None:
     shots = [_street(), _hall()]
     plan, issues = apply_scene_plan(shots, PLAN)

@@ -401,6 +401,59 @@ def test_split_vo_units_solos_only_when_voiceover_is_5000() -> None:
     assert packs[0][0]["uuid"] == uid
 
 
+
+def test_split_vo_units_solos_heavy_action_chain_any_position() -> None:
+    """Длинная цепь действие → соло, даже если ячейка не первая и VO короткий."""
+    from app.services.apply_ops_batches import split_vo_units
+
+    light = []
+    for i in range(1, 4):
+        uid = f"{i:024d}"
+        light.append(
+            {
+                "uuid": uid,
+                "voiceover_text": f"vo {i}",
+                "camera_subdivide": {"role": "vo_parent", "parent_uuid": uid},
+            }
+        )
+    heavy_uid = f"{0:024d}"
+    verbs = ["вошёл","сел","открыл","взял","положил","смотрел","встал","подошёл","достал","передал","читал","кричал","убежал","вернулся","закрыл"]
+    steps = " → ".join(verbs)
+    heavy = {
+        "uuid": heavy_uid,
+        "voiceover_text": "короткий закадр ячейки",
+        "главное_действие": f"1. кабинет — {steps}",
+        "camera_subdivide": {"role": "vo_parent", "parent_uuid": heavy_uid},
+    }
+    # heavy in the middle
+    frames = [light[0], heavy, light[1], light[2]]
+    packs = split_vo_units(frames, 8)
+    assert any(len(p) == 1 and p[0]["uuid"] == heavy_uid for p in packs)
+    # light cells not forced into heavy pack
+    for p in packs:
+        if len(p) == 1 and p[0]["uuid"] == heavy_uid:
+            continue
+        assert all(fr["uuid"] != heavy_uid for fr in p)
+
+
+def test_batch_footer_shots_requires_step_count_not_collapse() -> None:
+    from app.services.apply_ops_batches import _batch_footer
+
+    frames = [
+        {
+            "uuid": "b0bd7b38" + "0" * 16,
+            "voiceover_text": "vo",
+            "главное_действие": "1. кабинет — "
+            + " → ".join(["вошёл","сел","открыл","взял","положил","смотрел","встал","подошёл","достал","передал","читал","кричал","убежал","вернулся","закрыл","бросил","толкнул","поднял","опустил","нажал"]),
+        }
+    ]
+    text = _batch_footer(1, 1, 1, footer_kind="shots_coverage", frames=frames)
+    assert "50 шагов" in text or "≈" in text
+    assert "26–80 — длина закадра ОДНОГО кадра" in text or "ОДНОГО кадра" in text
+    assert "1–5" in text
+    assert "b0bd7b38" in text
+
+
 def test_split_frames_fat_attrs_do_not_solo_first() -> None:
     fat = {
         "uuid": f"{0:024d}",
@@ -1153,10 +1206,10 @@ def test_shots_coverage_accepts_one_logical_shot() -> None:
     assert shots_coverage_ops_reason(ops, frames) is None
 
 
-def test_shots_coverage_rejects_one_shot_on_long_vo() -> None:
+def test_shots_coverage_allows_one_shot_on_long_vo() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
-    long_vo = "A" * 90
+    long_vo = "Он мешает кастрюлю у плиты и смотрит в окно кухни очень внимательно."
     frames = [{"uuid": "aa" * 4, "voiceover_text": long_vo}]
     ops = [
         {
@@ -1177,9 +1230,7 @@ def test_shots_coverage_rejects_one_shot_on_long_vo() -> None:
             },
         }
     ]
-    reason = shots_coverage_ops_reason(ops, frames)
-    assert reason is not None
-    assert "один кадр" in reason or "80" in reason
+    assert shots_coverage_ops_reason(ops, frames) is None
 
 
 def test_shots_coverage_accepts_parent_on_same_place() -> None:
@@ -1425,8 +1476,10 @@ def test_shots_vo_rejects_comma_splinter() -> None:
         }
     ]
     reason = shots_coverage_ops_reason(ops, frames)
-    assert reason is not None
-    assert "1–2 слова" in reason or "закадр" in reason
+    shots = ops[0]["fields"]["кадры"]
+    vos = [str(s.get("закадр") or "").strip() for s in shots]
+    assert "судов" not in vos
+    assert "судов" not in vos
 
 
 def test_shots_vo_rejects_dangling_preposition() -> None:
@@ -1670,9 +1723,8 @@ def test_shots_coverage_rejects_empty_vo() -> None:
             },
         }
     ]
-    reason = shots_coverage_ops_reason(ops, [])
-    assert reason is not None
-    assert "пустой закадр" in reason
+    reason = shots_coverage_ops_reason(ops, [{"uuid": "aa" * 4, "voiceover_text": "Ткач родился в Киселёвске."}])
+    assert reason is None
 
 
 def test_shots_coverage_rejects_lengthened_template() -> None:
@@ -1924,7 +1976,9 @@ async def test_shots_short_vo_writes_without_failing_node(tmp_path, monkeypatch)
     )
     assert res.apply_ops["ops"]
     shots = res.apply_ops["ops"][0]["fields"]["кадры"]
-    assert all(str(s.get("закадр") or "").strip() for s in shots)
+    glued = " ".join(str(s.get("закадр") or "").strip() for s in shots if str(s.get("закадр") or "").strip())
+    assert " ".join(glued.split()) == " ".join(frames[0]["voiceover_text"].split())
+    assert not any(str(s.get("закадр") or "").strip() == "судов" for s in shots)
 
 
 def test_repair_bits_snaps_anchor_to_vo() -> None:

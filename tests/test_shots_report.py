@@ -305,7 +305,7 @@ def test_report_shows_scene_card_with_action_and_vo() -> None:
     )
     html = render_shots_report_html(build_shots_report_model([fr]), slug="x")
     assert "Сцена 1 · архив" in html
-    assert "Действие" in html
+    assert "Сценарий сцены" in html
     assert "раскрывает папки" in html
     assert "Закадр." in html
     assert "Самые странные преступления в истории" in html
@@ -412,6 +412,44 @@ def test_existing_report_is_left_as_fw_report_wrote_it(tmp_path, monkeypatch) ->
     got = sr.existing_shots_report_path(proj)
     assert got == html
     assert html.read_text(encoding="utf-8") == "SENTINEL-FROM-FW-REPORT"
+
+
+def test_diary_follows_shot_id_across_cells() -> None:
+    """После expand uuid дневника — родитель, а кадр живёт в другой ячейке."""
+    parent = _frame(
+        number=1,
+        vo="начало",
+        uuid="parent-uuid",
+        kadry=[{"id": "1-S1-K1", "сцена": 1, "действие": "первый", "закадр": "начало"}],
+        shot_id="1-S1-K1",
+    )
+    other = _frame(
+        number=55,
+        vo="конец",
+        uuid="other-uuid",
+        scene=15,
+        kadry=[{"id": "1-S15-K1", "сцена": 15, "действие": "подпись", "закадр": "конец"}],
+        shot_id="1-S15-K1",
+    )
+    diary = [{
+        "frame_uuid": "parent-uuid",
+        "shot": 55,
+        "shot_id": "1-S15-K1",
+        "field": "раскладка",
+        "before": None,
+        "after": "План СРЕДНИЙ",
+        "rule": "R-LAYOUT",
+        "pass": "scene_plan",
+        "kind": "fix",
+        "note": "",
+        "node_key": "n_excel_gpt_fw_shots",
+    }]
+    model = build_shots_report_model([parent, other], diary=diary)
+    by_id = {sh["id"]: sh for sh in model["shots"]}
+    assert by_id["1-S15-K1"]["diary"]
+    assert not by_id["1-S1-K1"]["diary"]
+    html = render_shots_report_html(model, slug="t")
+    assert html.count("Дневник кадра") == 1
 
 
 def test_plan_uses_overlay_camera_when_kadry_empty() -> None:

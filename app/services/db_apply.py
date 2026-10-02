@@ -347,6 +347,10 @@ def normalize_fields(raw: dict, aliases: dict[str, str], *, scope: str) -> dict:
     out: dict = {}
     unknown: list[str] = []
     for k, v in (raw or {}).items():
+        # внутренние маркеры pipeline (не в схеме кадра) — молча отбрасываем
+        ks = str(k)
+        if ks.startswith("_shots_") or ks in {"_shots_under_warn", "_shots_incomplete"}:
+            continue
         canon = _canon_key(k, aliases)
         if canon is None:
             unknown.append(str(k))
