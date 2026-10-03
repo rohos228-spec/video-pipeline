@@ -132,7 +132,10 @@ async def input_revision(session, project, node_key, *, parts=None):
     # The runtime reads canvas_graph. WorkflowRun in project.db is a projection
     # that _prepare_node_run_for_status normalizes during the failed attempt.
     # Master graph is checked independently against the enabled revision.
-    state["settings"] = settings.model_dump()
+    # Watchdog / kill-switch knobs are supervisor policy, not node input; excluded so
+    # adding or tuning them never invalidates a reserved recovery ticket.
+    state["settings"] = settings.model_dump(exclude={k for k in type(settings).model_fields
+        if k.startswith(("watchdog_", "decision_task_"))})
     prompts = Path(__file__).resolve().parents[2] / "prompts"
     state["prompts"] = {str(p.relative_to(prompts)): digest(p.read_bytes().hex())
                         for p in sorted(prompts.rglob("*.md"))}
@@ -168,6 +171,9 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             ActionRecord.execution_id == execution_id, ActionRecord.idempotency_key == idempotency_key))
         if prior_decision:
             raise ValueError("idempotency key has a prior decision; no redispatch")
+        from app.services import kill_switch
+        if await kill_switch.is_active(master):
+            raise ValueError("kill switch active: operator emergency stop; no recovery reserved or dispatched")
         from app.services.decision_state import authorize_recovery
         await authorize_recovery(master, execution_id, incident_id, decision_id)
         incident = await master.get(Incident, incident_id)
@@ -204,7 +210,7 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 or get_diagnoser(observer).failures):
             raise ValueError("audit/diagnosis unavailable")
         blockers = (await master.scalars(select(Incident).where(Incident.execution_id == execution_id,
-            Incident.type.in_(["user_stop", "uncertain_request", "journal_gap"])))).all()
+            Incident.type.in_(["user_stop", "uncertain_request", "journal_gap", "stalled"])))).all()
         if any(i.status != "resolved_confirmed" and i.details.get("currently_relevant") for i in blockers):
             raise ValueError("uncertain request, user_stop or audit/state blocker")
         state = await master.get(DiagnosisState, execution_id)

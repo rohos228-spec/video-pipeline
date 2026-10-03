@@ -165,6 +165,39 @@ async def decision_mode(project_id:int,execution_id:str,payload:DecisionMode,ope
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
 
 
+class KillSwitchChange(BaseModel):
+    model_config = {"extra": "forbid"}
+    active: bool
+    rationale: str = Field(min_length=3, max_length=1000)
+
+
+def _watchdog_info():
+    from app.settings import settings
+    return {"enabled": settings.watchdog_enabled, "interval_s": settings.watchdog_interval_s,
+            "model_request_timeout_s": settings.watchdog_model_request_timeout_s,
+            "execution_idle_s": settings.watchdog_execution_idle_s,
+            "kill_switch_on_stall": settings.watchdog_kill_switch_on_stall}
+
+
+@router.get('/kill-switch')
+async def kill_switch_state(project_id: int):
+    """Global operator emergency stop (not project-scoped; project_id only routes the panel)."""
+    from app.services import kill_switch
+    return panel_safe({**await kill_switch.status(get_observer().master), "watchdog": _watchdog_info()})
+
+
+@router.post('/kill-switch')
+async def kill_switch_change(project_id: int, payload: KillSwitchChange, operator: AuthDep):
+    """Set the global emergency stop with explicit operator identity and rationale (audited)."""
+    from app.services import kill_switch
+    try:
+        result = await kill_switch.set_state(get_observer().master, active=payload.active,
+            actor=_operator_id(operator), rationale=payload.rationale)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return panel_safe({**result, "watchdog": _watchdog_info()})
+
+
 @router.get('/{execution_id}/decisions')
 async def decisions(project_id:int,execution_id:str):
     from app.services.decision_state import DecisionControl,DecisionRecord,DecisionTurn
@@ -697,6 +730,22 @@ async def pin_observation(project_id: int, execution_id: str):
         await _scope(session, project_id, execution_id)
     observer.pin(execution_id)
     return {"pinned": True}
+
+
+class ClearCommitUncertainty(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@router.post("/{execution_id}/commit-uncertainty/clear")
+async def clear_commit_uncertainty(project_id: int, execution_id: str, payload: ClearCommitUncertainty,
+                                   operator: AuthDep):
+    """A person confirms the business commit state; the marker stays in history."""
+    observer = get_observer()
+    async with observer.master() as session:
+        await _scope(session, project_id, execution_id)
+    cleared = await observer.clear_commit_uncertainty(execution_id, initiator=_operator_id(operator),
+                                                      reason=payload.reason)
+    return {"cleared": cleared, "business_action": None}
 
 
 @router.get("/{execution_id}/diagnoses")

@@ -271,6 +271,18 @@ class Settings(BaseSettings):
     # Пусто = main. На каждом ПК своё значение в локальном .env.
     orchestrator_git_branch: str = Field("main", alias="ORCHESTRATOR_GIT_BRANCH")
 
+    # Сторож оркестратора (A4): только помечает зависшую работу, ничего не повторяет.
+    watchdog_enabled: bool = Field(True, alias="WATCHDOG_ENABLED")
+    watchdog_interval_s: float = Field(30.0, alias="WATCHDOG_INTERVAL_S")
+    # Запрос модели начался (model_start), а model_end/model_error нет дольше этого времени.
+    watchdog_model_request_timeout_s: float = Field(900.0, alias="WATCHDOG_MODEL_REQUEST_TIMEOUT_S")
+    # Нода running, а в журнале выполнения нет событий дольше этого времени.
+    watchdog_execution_idle_s: float = Field(1800.0, alias="WATCHDOG_EXECUTION_IDLE_S")
+    # По умолчанию выключено: сторож включает аварийный стоп только если оператор разрешил.
+    watchdog_kill_switch_on_stall: bool = Field(False, alias="WATCHDOG_KILL_SWITCH_ON_STALL")
+    # Запас сверх таймаута модели решений до отмены шага в отдельной задаче.
+    decision_task_timeout_margin_s: float = Field(30.0, alias="DECISION_TASK_TIMEOUT_MARGIN_S")
+
     # Fleet — сеть рабочих станций (hub = этот ПК, agent = удалённый)
     fleet_enabled: bool = Field(True, alias="FLEET_ENABLED")
     fleet_role: str = Field("hub", alias="FLEET_ROLE")
@@ -354,6 +366,11 @@ class Settings(BaseSettings):
     web_enabled: bool = Field(True, alias="WEB_ENABLED")
     web_host: str = Field("127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(8765, alias="WEB_PORT")
+
+    # Журнал наблюдателя: квота тел запросов/ответов на ПРОЕКТ и срок хранения
+    # тел закрытых выполнений (живые и связанные с открытым инцидентом не трогаются).
+    observer_body_quota_bytes: int = Field(32 * 1024 * 1024, ge=0, alias="OBSERVER_BODY_QUOTA_BYTES")
+    observer_body_retention_seconds: int = Field(7 * 24 * 3600, ge=0, alias="OBSERVER_BODY_RETENTION_SECONDS")
 
     @model_validator(mode="after")
     def _resolve_paths_from_repo_root(self) -> "Settings":

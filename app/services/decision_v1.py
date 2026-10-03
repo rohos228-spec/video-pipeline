@@ -3,6 +3,7 @@
 Facts are untrusted, proposals are server-bound, actions still use Actions-v1.
 Approved model routes: Kie Responses and Vibecode chat/completions (decision_config).
 """
+import asyncio
 import json
 import time
 import hashlib
@@ -17,6 +18,8 @@ from app.models import Project,WorkflowRun
 from app.services.decision_state import DecisionControl,DecisionRecord,DecisionTurn
 from app.services.observation import ExecutionControl,ObservationEvent,digest,redact,panel_safe
 from app.services.llm_completion import response_complete,response_truncated
+from app.services import kill_switch
+from loguru import logger
 
 ACTIONS=('read_events','read_contract','retry_same','human_review','wait','finish')
 MAX_STEPS=3
@@ -114,7 +117,48 @@ def record_json(r):
 
 
 class DecisionSupervisor:
-    def __init__(self,observer):self.observer=observer;self.master=observer.master
+    """background=True (production, via get_decider): each model step runs as its own
+    task per execution with a hard timeout, so a slow decision call cannot freeze the
+    shared observer loop (delivery, diagnosis, reconcile of other executions).
+    background=False (default for direct construction, tests): steps run inline."""
+    def __init__(self,observer,*,background=False):
+        self.observer=observer;self.master=observer.master
+        self.background=background;self._step_tasks={}
+
+    def _step_timeout(self):
+        from app.settings import settings
+        try:base=float(decision_config.runtime_config()['decision']['timeout_s'])
+        except Exception:base=90.0
+        return base+float(settings.decision_task_timeout_margin_s)
+
+    async def _isolated_step(self,decision_id,execution_id):
+        timeout=self._step_timeout()
+        try:await asyncio.wait_for(self.step(decision_id),timeout)
+        except asyncio.TimeoutError:
+            # The call was cancelled mid-flight: its outcome is uncertain, never re-POSTed.
+            async with self.master() as s:
+                row=await s.get(DecisionRecord,decision_id)
+                open_=bool(row) and row.status in {'ready','model_pending','acting'}
+            if open_:await self.escalate(decision_id,f'decision step exceeded {timeout:.0f}s; outcome uncertain; no repeat POST')
+        except asyncio.CancelledError:raise
+        except Exception as exc:
+            logger.warning('decision step task failed: execution={} error_type={}',execution_id,type(exc).__name__)
+            try:await self.escalate(decision_id,'decision step task failed: '+type(exc).__name__)
+            except Exception:pass
+
+    async def drain(self):
+        """Await in-flight background steps (shutdown, tests, acceptance harnesses)."""
+        tasks=[t for t in self._step_tasks.values() if not t.done()]
+        if tasks:await asyncio.gather(*tasks,return_exceptions=True)
+
+    async def _dispatch_step(self,row):
+        if not self.background:
+            await self.step(row.decision_id);return
+        live=self._step_tasks.get(row.execution_id)
+        if live is not None and not live.done():return
+        task=asyncio.create_task(self._isolated_step(row.decision_id,row.execution_id),name='decision-step:'+row.execution_id)
+        self._step_tasks[row.execution_id]=task
+        task.add_done_callback(lambda t,e=row.execution_id:self._step_tasks.pop(e,None) if self._step_tasks.get(e) is t else None)
 
     async def configure(self,*,project_id,execution_id,enabled,initiator,rationale):
         from app.services.actions_v1 import ActionExecutionControl,ActionRecord
@@ -410,7 +454,7 @@ class DecisionSupervisor:
             raise ValueError('native attempt or model request is still active; no concurrent decision model')
         from app.services.diagnosis import Incident
         blockers=(await s.scalars(select(Incident).where(Incident.execution_id==row.execution_id,
-            Incident.type.in_(['user_stop','uncertain_request','journal_gap'])))).all()
+            Incident.type.in_(['user_stop','uncertain_request','journal_gap','stalled'])))).all()
         if any(i.status!='resolved_confirmed' and i.details.get('currently_relevant') for i in blockers):raise ValueError('uncertain or audit policy blocker')
         return ctx
 
@@ -443,6 +487,8 @@ class DecisionSupervisor:
 
     async def step(self,decision_id):
         from app.services import gpt_api,decision_transport
+        async with self.master() as s:
+            if await kill_switch.is_active(s):return  # emergency stop: no claim, no model request, no state change
         token=await self.claim(decision_id)
         if not token:return
         try:
@@ -536,6 +582,13 @@ class DecisionSupervisor:
         from app.services.diagnosis import Incident
         from app.services.step_failure_policy import MAX_TOTAL_FAILS
         from app.models import NodeRun,NodeRunStatus
+        if self.background:
+            # Stuck-work detection keeps running under the emergency stop. Mark-only.
+            from app.services.watchdog import get_watchdog
+            try:await get_watchdog(self.observer).tick()
+            except Exception as exc:logger.warning('watchdog unavailable: {}',type(exc).__name__)
+        async with self.master() as s:
+            if await kill_switch.is_active(s):return  # emergency stop: no new decision, no model step
         pending=[]
         async with self.master() as s:
             controls=(await s.scalars(select(DecisionControl).where(DecisionControl.enabled.is_(True)))).all()
@@ -630,7 +683,7 @@ class DecisionSupervisor:
                     if not ticket:await self.escalate(row.decision_id,'interrupted decision turn is uncertain; no repeat POST')
                 continue
             if row.model_steps>=MAX_STEPS:await self.escalate(row.decision_id,'model step limit exhausted')
-            else:await self.step(row.decision_id)
+            else:await self._dispatch_step(row)
 
 
 class HttpDecision:
@@ -739,5 +792,5 @@ class HttpDecision:
 
 
 def get_decider(observer):
-    if not hasattr(observer,'decision_supervisor'):observer.decision_supervisor=DecisionSupervisor(observer)
+    if not hasattr(observer,'decision_supervisor'):observer.decision_supervisor=DecisionSupervisor(observer,background=True)
     return observer.decision_supervisor

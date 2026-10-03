@@ -15,6 +15,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models import Base
 from app.services.decision_state import DecisionControl, DecisionRecord, DecisionTurn
 from app.services.profiles_state import ProfileOverlay
+from app.services import kill_switch  # registers the durable emergency-stop tables
 
 
 class ActionExecutionControl(Base):
@@ -157,8 +158,10 @@ async def worker_entry_admission(project_id: int) -> StartDecision:
     async with _observer.master() as session:
         controls=(await session.scalars(select(ActionExecutionControl).where(
             ActionExecutionControl.project_id==project_id,ActionExecutionControl.enabled.is_(True)))).all()
+        stopped=await kill_switch.is_active(session)
     if not controls:
         return StartDecision(not (cached and cached.enabled),'ordinary_mode' if not cached else 'permission_not_confirmed')
+    if stopped:return StartDecision(False,kill_switch.REASON)  # operator emergency stop: managed work only
     if len(controls)!=1:return StartDecision(False,'ambiguous_managed_execution')
     control=controls[0]
     if control.held:return StartDecision(False,'execution_held')
@@ -237,6 +240,7 @@ async def reload_permissions(master) -> None:
             )
     from app.services.actions_recovery import reload_recovery_restrictions
     await reload_recovery_restrictions(master)
+    await kill_switch.load(master)  # durable emergency stop survives restart
 
 
 async def continue_managed_image(session, project, source_key, target_key, node_type):
@@ -530,6 +534,7 @@ class ActionSupervisor:
     async def charge_request(self, execution_id: str, *, media_reservation=None) -> int:
         """Durably charge a model attempt before the provider transport starts."""
         async with self.master() as session:
+            await kill_switch.guard(session)  # before any reservation, charge or network call
             from app.services.observation import ExecutionControl,get_observer,digest
             from app.models import Project,WorkflowRun
             control=await session.get(ActionExecutionControl,execution_id)
@@ -640,6 +645,8 @@ def evaluate_start(permission: ExecutionPermission | None, *, project_id: int,
         return StartDecision(False, "execution_not_explicitly_enabled")
     if permission.held:
         return StartDecision(False, "execution_held")
+    if kill_switch.cached_active():
+        return StartDecision(False, kill_switch.REASON)
     if permission.project_id != project_id or node_key not in permission.node_keys:
         return StartDecision(False, "outside_execution_scope")
     if permission.graph_version != graph_version:

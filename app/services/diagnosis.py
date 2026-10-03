@@ -58,6 +58,7 @@ TITLES = {
     'user_stop':'Остановка пользователем',
     'db_disagreement':'Состояния master и project расходятся',
     'journal_gap':'Доказательства неполны: пробел журнала',
+    'stalled':'Запрос или выполнение зависли: нет завершения в заданное время',
 }
 RECOMMENDATIONS = {
     'wait':'Ожидать', 'check_contract':'Проверить входные данные и контракт',
@@ -315,6 +316,10 @@ class Diagnoser:
 
     async def update(self,execution_id,*,snapshot=None):
         async with self.lock:
+            # Persisted unconfirmed commits must be loaded before gaps are derived,
+            # otherwise a restart would close the journal_gap as condition_not_observed.
+            ensure=getattr(self.observer,'ensure_commit_uncertainty_restored',None)
+            if ensure is not None: await ensure()
             async with self.observer.master() as s:
                 scope=await s.get(ExecutionControl,execution_id)
                 if scope is None: return

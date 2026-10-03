@@ -12,6 +12,7 @@ import functools
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager, ExitStack
@@ -20,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
-from sqlalchemy import JSON, String, UniqueConstraint, event, inspect, select
+from sqlalchemy import JSON, Boolean, String, UniqueConstraint, event, inspect, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.models import Base, NodeRun, Project, WorkflowRun
@@ -73,6 +74,39 @@ class ObservationEvent(Base):
     kind: Mapped[str] = mapped_column(String(64))
     payload: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column()
+
+
+class ObservationDegradation(Base):
+    """History of observer degradations. Rows are closed, never deleted.
+
+    execution_id is "" for a loop stage failure that concerns no single execution.
+    """
+    __tablename__ = "observation_degradations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    gap_id: Mapped[str] = mapped_column(String(36), unique=True)
+    execution_id: Mapped[str] = mapped_column(String(36), index=True)
+    project_id: Mapped[int | None] = mapped_column(default=None)
+    stage: Mapped[str] = mapped_column(String(40))
+    error_type: Mapped[str] = mapped_column(String(120))
+    recoverable: Mapped[bool] = mapped_column(Boolean, default=True)
+    attempts: Mapped[int] = mapped_column(default=1)
+    recorded_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    last_error_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    cleared_at: Mapped[datetime | None] = mapped_column(default=None)
+    cleared_reason: Mapped[str | None] = mapped_column(String(200), default=None)
+
+
+class CommitUncertaintyMarker(Base):
+    """Business commit not confirmed. Open until a person clears it; survives restart."""
+    __tablename__ = "observation_commit_uncertainty"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_id: Mapped[str] = mapped_column(String(36), index=True)
+    project_id: Mapped[int | None] = mapped_column(default=None)
+    reason: Mapped[str] = mapped_column(String(64))
+    recorded_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    cleared_at: Mapped[datetime | None] = mapped_column(default=None)
+    cleared_by: Mapped[str | None] = mapped_column(String(120), default=None)
+    clear_reason: Mapped[str | None] = mapped_column(String(500), default=None)
 
 
 _CREDENTIAL_FIELDS = {"authorization", "proxy_authorization", "cookie", "set_cookie",
@@ -143,18 +177,52 @@ def bind_image_prompt_batch_request(batch_i):
 
 class Observer:
     MAX_BODY = 1024 * 1024
-    MAX_TOTAL = 32 * 1024 * 1024
-    RETENTION_SECONDS = 7 * 24 * 3600
+    MAX_TOTAL = 32 * 1024 * 1024  # per project (settings: observer_body_quota_bytes)
+    RETENTION_SECONDS = 7 * 24 * 3600  # closed executions only (settings: observer_body_retention_seconds)
+    LOOP_INTERVAL = 1
+    CLEANUP_INTERVAL = 300
+    QUOTA_EVENT_INTERVAL = 60
+    # A recoverable gap is closed only after the consumer has been clean this long.
+    RECOVERY_CLEAN_PASSES = 5
+    RECOVERY_MIN_SECONDS = 15
+    MAX_BACKOFF = 30
 
-    def __init__(self, master_factory, *, body_root: Path):
+    def __init__(self, master_factory, *, body_root: Path, max_total=None, retention_seconds=None):
         self.master = master_factory
         self.body_root = Path(body_root)
+        if max_total is not None:
+            self.MAX_TOTAL = int(max_total)
+        if retention_seconds is not None:
+            self.RETENTION_SECONDS = int(retention_seconds)
         self.scopes: dict[int, ExecutionControl] = {}
         self._delivery_lock = asyncio.Lock()
         self._enable_lock = asyncio.Lock()
         self.failures: dict[str, str] = {}
         self.commit_uncertainty: dict[str, str] = {}
         self.last_project_facts: dict[tuple, str] = {}
+        self._clock = time.monotonic
+        # Failure state per execution: a failure of one never touches another.
+        self._permanent: set[str] = set()  # pending failure that lost data: never auto-cleared
+        self._retry: dict[str, tuple[int, float]] = {}
+        self._clean: dict[str, tuple[int, float]] = {}
+        self._stages: dict[str, dict] = {}
+        self._execution_project: dict[str, int] = {}
+        # Body store index: one scan per process, then maintained on write/purge.
+        self._body_lock = threading.Lock()
+        self._body_index: dict[str, dict] | None = None
+        self._cleanup_requested = False
+        self._cleanup_last = None
+        self._quota_notified: dict[str, tuple[float, int]] = {}
+        self._pending_events: list[tuple[str, str, dict]] = []
+        self._events_lock = asyncio.Lock()
+        self._uncertainty_unsaved: dict[str, str] = {}
+        self._uncertainty_restored = False
+        self._uncertainty_lock = asyncio.Lock()
+        self._tasks: set = set()
+
+    @property
+    def stage_errors(self):
+        return {name: state["error_type"] for name, state in self._stages.items()}
 
     async def enable(self, *, project_id, workflow_run_id, node_keys, graph_version, initiator=None):
         if not node_keys or len(set(node_keys)) != len(node_keys):
@@ -178,6 +246,7 @@ class Observer:
                         payload={"action":"enabled", "initiator":initiator, "actor":"observer_api", "human_identity":None, "business_action":None})
                 await session.commit()
             self.scopes[workflow_run_id] = scope
+            self._execution_project[scope.execution_id] = project_id
             return scope
 
     async def ensure_project_schema(self, project_id):
@@ -193,6 +262,8 @@ class Observer:
                 await migrate_observation_schema(conn)
 
     async def reload(self):
+        # Before any scope or diagnosis: an unconfirmed commit must outlive a restart.
+        await self.restore_commit_uncertainty()
         async with self.master() as session:
             scopes = (await session.scalars(select(ExecutionControl).where(
                 ExecutionControl.observer_state.in_(["active", "degraded"])
@@ -200,6 +271,9 @@ class Observer:
         for scope in scopes:
             await self.ensure_project_schema(scope.project_id)
         self.scopes = {s.workflow_run_id: s for s in scopes}
+        for scope in scopes:
+            self._execution_project[scope.execution_id] = scope.project_id
+        await asyncio.to_thread(self._warm_body_index)
         from app.services.actions_v1 import reload_permissions
         await reload_permissions(self.master)
 
@@ -253,23 +327,200 @@ class Observer:
         folder = self.body_root / execution_id
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         secure_directory(folder)
-        total = 0
-        # No automatic deletion: diagnostic evidence, pinned and active scopes
-        # survive age and restart. Exhaustion is an explicit body_total_limit gap.
-        for item in self.body_root.glob("*/*.json"):
-            stat = item.stat()
-            total += stat.st_size
         sha = hashlib.sha256(raw).hexdigest()
         path = folder / (sha + ".json")
-        if not path.exists():
-            if total + len(raw) > self.MAX_TOTAL:
-                return {"gap": "body_total_limit", "bytes": len(raw)}
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(raw)
-                stream.flush()
-                os.fsync(stream.fileno())
+        # Quota is per project and read from the in-memory index, not the disk.
+        # Bodies are removed only by cleanup_bodies (closed, expired, unreferenced).
+        blocked = None
+        with self._body_lock:
+            index = self._ensure_body_index()
+            if not path.exists():
+                project = self._project_of(execution_id)
+                used = self._project_bytes(project)
+                if used + len(raw) > self.MAX_TOTAL:
+                    blocked = {"project_id": project, "bytes": len(raw), "project_bytes": used,
+                               "limit": self.MAX_TOTAL}
+                else:
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(raw)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    entry = index.setdefault(execution_id, {"bytes": 0, "files": 0, "latest": 0.0, "purged": False})
+                    entry["bytes"] += len(raw)
+                    entry["files"] += 1
+                    entry["latest"] = time.time()
+        if blocked:
+            self._body_quota_blocked(execution_id, blocked)
+            return {"gap": "body_total_limit", "bytes": len(raw)}
         return {"path": path.relative_to(self.body_root).as_posix(), "sha256": sha, "bytes": len(raw)}
+
+    def _warm_body_index(self):
+        with self._body_lock:
+            self._ensure_body_index()
+
+    def _ensure_body_index(self):
+        # Caller holds _body_lock.
+        if self._body_index is None:
+            index = {}
+            if self.body_root.is_dir():
+                for folder in os.scandir(self.body_root):
+                    if not folder.is_dir():
+                        continue
+                    entry = index[folder.name] = {"bytes": 0, "files": 0, "latest": 0.0, "purged": False}
+                    for item in os.scandir(folder.path):
+                        if item.name == ".purged":
+                            entry["purged"] = True
+                        elif item.name.endswith(".json") and item.is_file():
+                            stat = item.stat()
+                            entry["bytes"] += stat.st_size
+                            entry["files"] += 1
+                            entry["latest"] = max(entry["latest"], stat.st_mtime)
+            self._body_index = index
+        return self._body_index
+
+    def _project_of(self, execution_id):
+        project = self._execution_project.get(execution_id)
+        if project is None:
+            project = next((s.project_id for s in self.scopes.values() if s.execution_id == execution_id), None)
+            if project is not None:
+                self._execution_project[execution_id] = project
+        return project
+
+    def _project_bytes(self, project):
+        return sum(info["bytes"] for eid, info in self._body_index.items() if self._project_of(eid) == project)
+
+    def body_usage(self):
+        """Bytes of stored bodies per project (None = execution not known to this process)."""
+        with self._body_lock:
+            index = self._ensure_body_index()
+            usage = {}
+            for eid, info in index.items():
+                key = self._project_of(eid)
+                usage[key] = usage.get(key, 0) + info["bytes"]
+            return usage
+
+    def _body_quota_blocked(self, execution_id, details):
+        self._cleanup_requested = True
+        logger.warning("observer body quota blocked: execution={} project={} used={} limit={}",
+                       execution_id, details["project_id"], details["project_bytes"], details["limit"])
+        scope = next((s for s in self.scopes.values() if s.execution_id == execution_id), None)
+        if scope is not None and scope.mode == "managed":
+            # Mandatory audit body is missing: fail closed, never silently.
+            self.mark_gap(execution_id, RuntimeError("body_total_limit"))
+        last, suppressed = self._quota_notified.get(execution_id, (None, 0))
+        now = self._clock()
+        if last is not None and now - last < self.QUOTA_EVENT_INTERVAL:
+            self._quota_notified[execution_id] = (last, suppressed + 1)
+            return
+        self._quota_notified[execution_id] = (now, 0)
+        self._queue_event(execution_id, "body_quota_blocked", {**details, "suppressed_since_last": suppressed,
+            "cleanup_scheduled": True, "business_action": None})
+
+    def _queue_event(self, execution_id, kind, payload):
+        self._pending_events.append((execution_id, kind, payload))
+
+    async def flush_events(self):
+        """Durable, visible journal events raised from synchronous code paths."""
+        async with self._events_lock:
+            batch = list(self._pending_events)
+            if not batch:
+                return 0
+            async with self.master() as session:
+                for execution_id, kind, payload in batch:
+                    scope = await session.get(ExecutionControl, execution_id)
+                    if scope is not None:
+                        self._journal_event(session, scope, kind, payload)
+                await session.commit()
+            del self._pending_events[:len(batch)]
+            return len(batch)
+
+    @staticmethod
+    def _journal_event(session, scope, kind, payload):
+        """Observer-originated fact written straight to the master journal."""
+        session.add(ObservationEvent(event_id=str(uuid.uuid4()), execution_id=scope.execution_id,
+            project_id=scope.project_id, workflow_run_id=scope.workflow_run_id, node_key=None,
+            attempt_id=None, request_id=None, db_scope="master", kind=kind,
+            payload=redact(payload), created_at=datetime.utcnow()))
+
+    async def cleanup_bodies(self, *, force=False):
+        """Tombstone bodies of old, closed, unreferenced executions; report each as an event.
+
+        Files stay (tiny tombstones with the original sha/size) so journal references
+        do not turn into new body_not_available gaps. Live, pinned and referenced
+        executions are never touched.
+        """
+        now = self._clock()
+        due = self._cleanup_last is None or now - self._cleanup_last >= self.CLEANUP_INTERVAL
+        if not (force or self._cleanup_requested or due):
+            return []
+        self._cleanup_last, self._cleanup_requested = now, False
+        cutoff = time.time() - self.RETENTION_SECONDS
+        with self._body_lock:
+            index = self._ensure_body_index()
+            candidates = [eid for eid, info in index.items()
+                          if info["files"] and not info["purged"] and info["latest"] <= cutoff]
+        candidates = [eid for eid in candidates if not self._is_pinned_safe(eid)]
+        if not candidates:
+            return []
+        done = []
+        async with self.master() as session:
+            for eid in candidates:
+                scope = await session.get(ExecutionControl, eid)
+                if (scope is None or scope.observer_state != "stopped" or eid in self.commit_uncertainty
+                        or await self._has_open_references(session, eid)):
+                    continue
+                before, after, files = self._purge_execution(eid)
+                done.append(eid)
+                self._queue_event(eid, "body_cleanup", {"reason": "retention", "retention_seconds": self.RETENTION_SECONDS,
+                    "files": files, "bytes_before": before, "bytes_after": after, "business_action": None})
+        if done:
+            logger.info("observer body cleanup: {} closed executions", len(done))
+            await self.flush_events()
+        return done
+
+    def _is_pinned_safe(self, execution_id):
+        try:
+            return self.is_pinned(execution_id)
+        except ValueError:
+            return True  # not an execution folder: leave it alone
+
+    @staticmethod
+    async def _has_open_references(session, execution_id):
+        from app.services.actions_recovery import RecoveryAction
+        from app.services.decision_state import DecisionRecord
+        from app.services.diagnosis import Incident
+        checks = (
+            select(Incident.incident_id).where(Incident.execution_id == execution_id,
+                Incident.status != "resolved_confirmed"),
+            select(DecisionRecord.decision_id).where(DecisionRecord.execution_id == execution_id,
+                DecisionRecord.status.in_(["ready", "waiting_evidence", "waiting_worker", "model_pending",
+                                           "acting", "human_review"])),
+            select(RecoveryAction.action_id).where(RecoveryAction.execution_id == execution_id,
+                RecoveryAction.status.in_(["reserved", "queued", "claimed", "await_verify", "human_review"])),
+        )
+        for query in checks:
+            if (await session.scalars(query.limit(1))).first() is not None:
+                return True
+        return False
+
+    def _purge_execution(self, execution_id):
+        folder = self.body_root / execution_id
+        before = after = files = 0
+        stamp = datetime.utcnow().isoformat()
+        with self._body_lock:
+            for item in sorted(folder.glob("*.json")):
+                size = item.stat().st_size
+                tomb = json.dumps({"purged": True, "sha256": item.stem, "bytes": size, "purged_at": stamp}).encode()
+                temp = item.with_suffix(".tmp")
+                temp.write_bytes(tomb)
+                os.replace(temp, item)
+                before, after, files = before + size, after + len(tomb), files + 1
+            (folder / ".purged").touch(mode=0o600, exist_ok=True)
+            entry = self._ensure_body_index().setdefault(execution_id,
+                {"bytes": 0, "files": 0, "latest": 0.0, "purged": False})
+            entry.update(bytes=after, files=files, purged=True, latest=time.time())
+        return before, after, files
 
     async def consume(self, execution_id, db_scope, source_factory):
         """Cursor and journal entries commit together. Serialized in this one-process runtime."""
@@ -307,12 +558,30 @@ class Observer:
             })
             return delivered
 
-    def mark_gap(self, execution_id, error):
+    def mark_gap(self, execution_id, error, *, recoverable=False):
+        """Fail closed for this execution only.
+
+        recoverable=True is for consumer-side unavailability (nothing was lost: the
+        outbox is durable and replayed). Any other gap means evidence may be missing
+        and is never cleared automatically.
+        """
         self.failures[execution_id] = type(error).__name__
+        if not recoverable:
+            self._permanent.add(execution_id)
         cached = next((s for s in self.scopes.values() if s.execution_id == execution_id), None)
         if cached:
             cached.observer_state = "degraded"
-        logger.warning("observer degraded: execution={} error_type={}", execution_id, type(error).__name__)
+        logger.warning("observer degraded: execution={} error_type={} recoverable={}",
+                       execution_id, type(error).__name__, recoverable)
+
+    def _backoff(self, attempts):
+        return 0.0 if attempts <= 1 else min(2.0 ** (attempts - 2), self.MAX_BACKOFF)
+
+    def _consumer_failed(self, execution_id, error):
+        self.mark_gap(execution_id, error, recoverable=True)
+        attempts = self._retry.get(execution_id, (0, 0.0))[0] + 1
+        self._retry[execution_id] = (attempts, self._clock() + self._backoff(attempts))
+        self._clean.pop(execution_id, None)
 
     async def catch_up(self):
         from app.project_db import get_project_sessionmaker
@@ -321,6 +590,10 @@ class Observer:
         async with self.master() as session:
             deliveries = (await session.scalars(select(ExecutionControl))).all()
         for scope in deliveries:
+            self._execution_project[scope.execution_id] = scope.project_id
+            retry = self._retry.get(scope.execution_id)
+            if retry and self._clock() < retry[1]:
+                continue
             try:
                 for _ in range(20):
                     if not await self.consume(scope.execution_id, "master", self.master):
@@ -333,37 +606,231 @@ class Observer:
                     for _ in range(20):
                         if not await self.consume(scope.execution_id, "project", factory):
                             break
-                if scope.execution_id in self.failures:
-                    async with self.master() as session:
-                        stored = await session.get(ExecutionControl, scope.execution_id)
-                        if stored.observer_state != "stopped":
-                            stored.observer_state = "degraded"
-                        stored.gaps = list(stored.gaps or []) + [{"error_type": self.failures[scope.execution_id],
-                            "at": datetime.utcnow().isoformat(), "detail": "Observer data may be incomplete"}]
-                        await session.commit()
-                    self.failures.pop(scope.execution_id, None)
+                await self._settle(scope)
             except Exception as exc:
-                self.mark_gap(scope.execution_id, exc)
+                self._consumer_failed(scope.execution_id, exc)
+
+    async def _settle(self, scope):
+        """After a fully successful pass: make a pending failure durable, or count towards recovery."""
+        execution_id = scope.execution_id
+        self._retry.pop(execution_id, None)
+        if execution_id in self.failures:
+            await self._record_gap(execution_id)
+            return
+        diagnoser = getattr(self, "diagnoser", None)
+        if (scope.observer_state == "stopped" or not any(g.get("recoverable") for g in scope.gaps or [])
+                or execution_id in (getattr(diagnoser, "failures", None) or {})):
+            self._clean.pop(execution_id, None)
+            return
+        passes, since = self._clean.get(execution_id, (0, self._clock()))
+        self._clean[execution_id] = (passes + 1, since)
+        if passes + 1 >= self.RECOVERY_CLEAN_PASSES and self._clock() - since >= self.RECOVERY_MIN_SECONDS:
+            await self._recover(execution_id)
+
+    async def _record_gap(self, execution_id):
+        error_type = self.failures[execution_id]
+        permanent = execution_id in self._permanent
+        now = datetime.utcnow()
+        async with self.master() as session:
+            stored = await session.get(ExecutionControl, execution_id)
+            if stored.observer_state != "stopped":
+                stored.observer_state = "degraded"
+            gaps = list(stored.gaps or [])
+            recoverable = not permanent and stored.observer_state != "stopped"
+            open_gap = next((g for g in gaps if g.get("recoverable") and g.get("error_type") == error_type), None)
+            if recoverable and open_gap:
+                row = (await session.scalars(select(ObservationDegradation).where(
+                    ObservationDegradation.gap_id == open_gap["gap_id"]))).first()
+                if row is not None:
+                    row.attempts += 1
+                    row.last_error_at = now
+            else:
+                entry = {"error_type": error_type, "at": now.isoformat(), "detail": "Observer data may be incomplete"}
+                if recoverable:
+                    entry.update(gap_id=str(uuid.uuid4()), recoverable=True, stage="consumer")
+                    session.add(ObservationDegradation(gap_id=entry["gap_id"], execution_id=execution_id,
+                        project_id=stored.project_id, stage="consumer", error_type=error_type, recoverable=True,
+                        attempts=1, recorded_at=now, last_error_at=now))
+                    self._journal_event(session, stored, "observer_degraded", {"gap_id": entry["gap_id"],
+                        "stage": "consumer", "error_type": error_type, "recoverable": True, "business_action": None})
+                gaps.append(entry)
+                stored.gaps = gaps
+            await session.commit()
+        self.failures.pop(execution_id, None)
+        self._permanent.discard(execution_id)
+        self._clean.pop(execution_id, None)
+
+    async def _recover(self, execution_id):
+        """Close recoverable gaps after the cause stayed gone. The fact stays in history."""
+        now = datetime.utcnow()
+        async with self.master() as session:
+            stored = await session.get(ExecutionControl, execution_id)
+            gaps = list(stored.gaps or [])
+            closing = [g for g in gaps if g.get("recoverable")]
+            if not closing or stored.observer_state == "stopped":
+                return
+            rest = [g for g in gaps if not g.get("recoverable")]
+            reason = f"consumer_clean_{self.RECOVERY_CLEAN_PASSES}_passes"
+            for gap in closing:
+                row = (await session.scalars(select(ObservationDegradation).where(
+                    ObservationDegradation.gap_id == gap["gap_id"]))).first()
+                if row is not None:
+                    row.cleared_at, row.cleared_reason = now, reason
+            stored.gaps = rest
+            if not rest and stored.observer_state == "degraded":
+                stored.observer_state = "active"
+            self._journal_event(session, stored, "observer_recovered", {
+                "gap_ids": [g["gap_id"] for g in closing], "reason": reason,
+                "remaining_gaps": len(rest), "business_action": None})
+            state = stored.observer_state
+            await session.commit()
+        self._clean.pop(execution_id, None)
+        cached = next((s for s in self.scopes.values() if s.execution_id == execution_id), None)
+        if cached is not None:
+            cached.gaps = rest
+            if not rest and cached.observer_state == "degraded":
+                cached.observer_state = state
+        logger.info("observer recovered: execution={} remaining_gaps={}", execution_id, len(rest))
+
+    async def _run_stage(self, name, call):
+        """One loop stage. A failure here concerns no single execution, so it marks none."""
+        state = self._stages.get(name)
+        if state and self._clock() < state["next_at"]:
+            return
+        try:
+            await call()
+        except Exception as exc:
+            attempts = (state["attempts"] if state else 0) + 1
+            new = {"error_type": type(exc).__name__, "attempts": attempts,
+                   "next_at": self._clock() + min(2.0 ** (attempts - 1), self.MAX_BACKOFF),
+                   "gap_id": state["gap_id"] if state else str(uuid.uuid4())}
+            self._stages[name] = new
+            if attempts == 1 or attempts % 10 == 0:
+                logger.warning("observer stage unavailable: stage={} error_type={} attempts={}",
+                               name, type(exc).__name__, attempts)
+            await self._stage_history(name, new, opened=state is None)
+        else:
+            if state:
+                del self._stages[name]
+                await self._stage_history(name, state, cleared=True)
+
+    async def _stage_history(self, name, state, *, opened=False, cleared=False):
+        try:
+            async with self.master() as session:
+                row = (await session.scalars(select(ObservationDegradation).where(
+                    ObservationDegradation.gap_id == state["gap_id"]))).first()
+                now = datetime.utcnow()
+                if row is None and opened:
+                    session.add(ObservationDegradation(gap_id=state["gap_id"], execution_id="", stage=name,
+                        error_type=state["error_type"], recoverable=True, attempts=1,
+                        recorded_at=now, last_error_at=now))
+                elif row is not None and cleared:
+                    row.cleared_at, row.cleared_reason = now, "stage_succeeded"
+                elif row is not None:
+                    row.attempts, row.last_error_at = state["attempts"], now
+                await session.commit()
+        except Exception:
+            pass  # history is best effort; the stage state itself is kept in memory
 
     async def loop(self):
         loaded = False
         while True:
-            try:
-                if not loaded:
-                    await self.reload()
-                    loaded = True
-                await self.catch_up()
-                from app.services.diagnosis import get_diagnoser
-                await get_diagnoser(self).catch_up()
-                from app.services.actions_recovery import reconcile
-                await reconcile(self)
-                from app.services.decision_v1 import get_decider
-                await get_decider(self).tick()
-            except Exception as exc:
-                for scope in self.scopes.values():
-                    self.mark_gap(scope.execution_id, exc)
-                logger.warning("observer consumer unavailable: {}", type(exc).__name__)
-            await asyncio.sleep(1)
+            if not loaded:
+                await self._run_stage("reload", self.reload)
+                loaded = "reload" not in self._stages
+            if loaded:
+                await self._run_stage("consumer", self.catch_up)
+                await self._run_stage("diagnosis", self._diagnose)
+                await self._run_stage("reconcile", self._reconcile)
+                await self._run_stage("decision", self._decide)
+                await self._run_stage("watchdog", self._watchdog)
+                await self._run_stage("maintenance", self.maintain)
+            await asyncio.sleep(self.LOOP_INTERVAL)
+
+    async def _diagnose(self):
+        from app.services.diagnosis import get_diagnoser
+        await get_diagnoser(self).catch_up()
+
+    async def _reconcile(self):
+        from app.services.actions_recovery import reconcile
+        await reconcile(self)
+
+    async def _watchdog(self):
+        from app.services.watchdog import get_watchdog
+        await get_watchdog(self).tick()
+
+    async def _decide(self):
+        from app.services.decision_v1 import get_decider
+        await get_decider(self).tick()
+
+    async def maintain(self):
+        await self.persist_uncertainty()
+        await self.flush_events()
+        await self.cleanup_bodies()
+
+    def note_commit_uncertainty(self, execution_id, reason="business_commit_unconfirmed"):
+        """Block now (memory), persist as soon as the event loop allows (database)."""
+        self.commit_uncertainty[execution_id] = reason
+        self._uncertainty_unsaved[execution_id] = reason
+        try:
+            task = asyncio.get_running_loop().create_task(self.persist_uncertainty())
+        except RuntimeError:
+            return  # no loop yet; maintain() retries
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def persist_uncertainty(self):
+        async with self._uncertainty_lock:
+            for execution_id, reason in list(self._uncertainty_unsaved.items()):
+                try:
+                    async with self.master() as session:
+                        open_row = (await session.scalars(select(CommitUncertaintyMarker).where(
+                            CommitUncertaintyMarker.execution_id == execution_id,
+                            CommitUncertaintyMarker.cleared_at.is_(None)))).first()
+                        if open_row is None:
+                            scope = await session.get(ExecutionControl, execution_id)
+                            session.add(CommitUncertaintyMarker(execution_id=execution_id, reason=reason,
+                                project_id=scope.project_id if scope else None))
+                            await session.commit()
+                    self._uncertainty_unsaved.pop(execution_id, None)
+                except Exception as exc:
+                    logger.warning("commit uncertainty not yet persisted: execution={} error_type={}",
+                                   execution_id, type(exc).__name__)
+
+    async def restore_commit_uncertainty(self):
+        """Unconfirmed commits survive a restart; they are closed only by a person."""
+        async with self.master() as session:
+            rows = (await session.scalars(select(CommitUncertaintyMarker).where(
+                CommitUncertaintyMarker.cleared_at.is_(None)))).all()
+        for row in rows:
+            self.commit_uncertainty.setdefault(row.execution_id, row.reason)
+        self._uncertainty_restored = True
+        return len(rows)
+
+    async def ensure_commit_uncertainty_restored(self):
+        if not self._uncertainty_restored:
+            await self.restore_commit_uncertainty()
+
+    async def clear_commit_uncertainty(self, execution_id, *, initiator, reason):
+        """Explicit, audited release. Returns False when nothing was open."""
+        now = datetime.utcnow()
+        async with self.master() as session:
+            rows = (await session.scalars(select(CommitUncertaintyMarker).where(
+                CommitUncertaintyMarker.execution_id == execution_id,
+                CommitUncertaintyMarker.cleared_at.is_(None)))).all()
+            scope = await session.get(ExecutionControl, execution_id)
+            if not rows and execution_id not in self.commit_uncertainty:
+                return False
+            for row in rows:
+                row.cleared_at, row.cleared_by, row.clear_reason = now, str(initiator)[:120], str(reason)[:500]
+            if scope is not None:
+                self._journal_event(session, scope, "observer_control", {"action": "commit_uncertainty_cleared",
+                    "initiator": initiator, "actor": "observer_api", "reason": str(reason)[:500],
+                    "human_identity": None, "business_action": None})
+            await session.commit()
+        self.commit_uncertainty.pop(execution_id, None)
+        self._uncertainty_unsaved.pop(execution_id, None)
+        return True
 
 
 def get_observer():
@@ -371,7 +838,9 @@ def get_observer():
     if _observer is None:
         from app.db import SessionLocal
         from app.settings import settings
-        _observer = Observer(SessionLocal, body_root=Path(settings.data_dir) / "observations" / "bodies")
+        _observer = Observer(SessionLocal, body_root=Path(settings.data_dir) / "observations" / "bodies",
+            max_total=settings.observer_body_quota_bytes,
+            retention_seconds=settings.observer_body_retention_seconds)
     return _observer
 
 
@@ -980,7 +1449,7 @@ def _shared_commit_failure(session, previous_transaction):
     error = getattr(session.get_transaction(), "_rollback_exception", None)
     statement = str(getattr(error, "statement", ""))
     for execution_id in pending:
-        _observer.commit_uncertainty[execution_id] = "business_commit_unconfirmed"
+        _observer.note_commit_uncertainty(execution_id, "business_commit_unconfirmed")
         if "observation_outbox" in statement:
             _observer.mark_gap(execution_id, error or RuntimeError())
 
@@ -1062,6 +1531,7 @@ async def migrate_observation_schema(conn):
     from app.services.decision_config import DecisionRuntimeBinding
     from app.services.media_jobs import MediaJob, MediaRequest
     from app.services.managed_launch import ManagedLaunch
+    from app.services.kill_switch import KillSwitchHistory, KillSwitchState
     await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=[
         ExecutionControl.__table__, ObservationOutbox.__table__, ObservationEvent.__table__,
         Incident.__table__, DiagnosisState.__table__, ActionExecutionControl.__table__,
@@ -1069,6 +1539,8 @@ async def migrate_observation_schema(conn):
         DecisionControl.__table__, DecisionRecord.__table__, DecisionTurn.__table__, ProfileOverlay.__table__, DecisionRuntimeBinding.__table__,
         MediaJob.__table__, MediaRequest.__table__,
         ManagedLaunch.__table__, ManagedRunAllowance.__table__,
+        ObservationDegradation.__table__, CommitUncertaintyMarker.__table__,
+        KillSwitchState.__table__, KillSwitchHistory.__table__,
     ]))
 
 
