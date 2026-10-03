@@ -1573,6 +1573,22 @@ class PassStopError(RuntimeError):
         self.diary = diary
 
 
+def pass_stop_rule(exc: BaseException | None) -> str | None:
+    """Rule id (``R-...``) of an exhausted PassStop, looking through wrappers.
+
+    The journal's ``node_error`` fact carries it as the optional string key
+    ``rule``; ``None`` when the failure is not a PassStop.
+    """
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        rule = getattr(exc, "rule", None)
+        if isinstance(exc, PassStopError) and isinstance(rule, str) and rule:
+            return rule
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
 def _shot_rows(fields: dict[str, Any]) -> list[dict[str, Any]]:
     raw = fields.get("кадры")
     if not isinstance(raw, list):
@@ -2415,7 +2431,8 @@ async def run_apply_ops_batched(
                 await record_fact('runtime_check', {'check': 'qc_noop', 'performed': True,
                     'status': 'passed', 'empty_ops_allowed': True, 'response_complete': True,
                     'required_checks': ['strict_json_ops_array', 'completed_response', 'trusted_empty_ops_policy'],
-                    'semantic_quality_verified': False}, request_id=ctx.last_request_id if ctx else None)
+                    'semantic_quality_verified': False},
+                    request_id=(getattr(res, 'request_id', None) or (ctx.last_request_id if ctx else None)))
                 if ctx and ctx.scope.mode == 'managed' and (ctx.scope.gaps or
                         ctx.scope.execution_id in ctx.observer.failures or
                         ctx.scope.execution_id in ctx.observer.commit_uncertainty):

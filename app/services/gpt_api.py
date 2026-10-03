@@ -456,6 +456,20 @@ def _node_kie_override() -> bool:
     return bool(ov and ov.kind == "text" and ov.provider == "kie")
 
 
+def _llm_provider_name() -> str:
+    """'vibecode' | 'kie': who takes the text request (node override first, then the header)."""
+    if _node_vibecode_override():
+        return "vibecode"
+    if _node_kie_override():
+        return "kie"
+    return "vibecode" if settings.text_llm_is_vibecode else "kie"
+
+
+def _credits_hint() -> str:
+    name = "Vibecode" if _llm_provider_name() == "vibecode" else "Kie"
+    return f" — на счёте {name} кончились кредиты, пополни баланс у провайдера"
+
+
 def _override_vibecode_base_url() -> str:
     """Нода/шапка vibecode: VPS /v1/* если relay задан, иначе vibecode.moe."""
     vps = _vps_relay_base()
@@ -1334,18 +1348,21 @@ def _check_provider_envelope(payload: dict[str, Any]) -> None:
             code = payload.get("code")
         retryable = _openai_error_retryable(msg, code)
         hint = ""
+        credits = False
         low = msg.lower()
         code_s = str(code or "").lower()
         if "credit" in low or "balance" in low or code_s in {"402", "insufficient_quota"}:
-            hint = " — на счёте GPT кончились кредиты, пополни баланс у провайдера"
+            hint = _credits_hint()
             retryable = False
+            credits = True
         elif "not authorized" in low or "apikey" in low or "invalid api" in low:
             hint = " — ключ не авторизован на эту модель"
             retryable = False
-        raise GptApiError(
-            f"GPT провайдер error: {msg}{hint}",
-            context={"provider_code": code, "retryable": retryable, "error_kind": "provider_envelope"},
-        )
+        ctx = {"provider_code": code, "retryable": retryable, "error_kind": "provider_envelope"}
+        if credits:
+            # status_code closes the request for diagnosis; the flag selects the credits error code.
+            ctx.update(status_code=402, credits_exhausted=True, llm_provider=_llm_provider_name())
+        raise GptApiError(f"GPT провайдер error: {msg}{hint}", context=ctx)
     code = payload.get("code")
     if code is None:
         return
@@ -1358,6 +1375,7 @@ def _check_provider_envelope(payload: dict[str, Any]) -> None:
     msg = str(payload.get("msg") or payload.get("message") or "ошибка провайдера")
     retryable = code_int in _RETRY_STATUS or code_int >= 500
     hint = ""
+    credits = False
     low = msg.lower()
     if (
         code_int == 402
@@ -1366,14 +1384,15 @@ def _check_provider_envelope(payload: dict[str, Any]) -> None:
         or "balance isn't enough" in low
         or "balance isn" in low
     ):
-        hint = " — на счёте GPT кончились кредиты, пополни баланс у провайдера"
+        hint = _credits_hint()
         retryable = False
+        credits = True
     elif "not authorized" in low or "apikey" in low or code_int in (401, 403):
         hint = " — ключ не авторизован на эту модель (проверь GPT_API_KEY/модель у провайдера)"
-    raise GptApiError(
-        f"GPT провайдер code={code_int}: {msg}{hint}",
-        context={"provider_code": code_int, "retryable": retryable},
-    )
+    ctx = {"provider_code": code_int, "retryable": retryable}
+    if credits:
+        ctx.update(status_code=402, credits_exhausted=True, llm_provider=_llm_provider_name())
+    raise GptApiError(f"GPT провайдер code={code_int}: {msg}{hint}", context=ctx)
 
 
 def _parse_responses(payload: dict[str, Any]) -> tuple[str, str]:
@@ -1461,25 +1480,28 @@ def _raise_http_status(
         low = body_text.lower()
         hint = ""
         if "apikey error" in low:
-            hint = (
-                f" — ключ не авторизован на модель {use_model!r} "
-                "(добавь модель в whitelist ключа grsai)"
-            )
+            hint = f" — ключ не авторизован на модель {use_model!r}"
+            if _llm_provider_name() == "kie":
+                hint += " (добавь модель в whitelist ключа grsai)"
         elif "model not register" in low or "not register" in low:
             hint = f" — модель {use_model!r} не существует у провайдера (проверь GPT_MODEL)"
         raise GptApiError(
             f"GPT HTTP {status}: {body_text[:400]}{hint}",
-            context={"status_code": status, "retryable": False, "model": use_model},
+            context={"status_code": status, "retryable": False, "model": use_model,
+                     "llm_provider": _llm_provider_name()},
         )
     if status in _RETRY_STATUS or status >= 500:
         raise GptApiError(
             f"GPT HTTP {status}: {body_text[:300]}",
-            context={"status_code": status, "retryable": True, "model": use_model},
+            context={"status_code": status, "retryable": True, "model": use_model,
+                     "llm_provider": _llm_provider_name()},
         )
     if status >= 400:
+        # 402 = payment required: never retryable (retrying would not fix an empty balance).
         raise GptApiError(
             f"GPT HTTP {status}: {body_text[:400]}",
-            context={"status_code": status, "retryable": False, "model": use_model},
+            context={"status_code": status, "retryable": False, "model": use_model,
+                     "llm_provider": _llm_provider_name()},
         )
 
 
@@ -2210,6 +2232,23 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
     return text, finish or "stop", last
 
 
+def _chat_sse_finish_seen(lines: list[str]) -> str:
+    """Real finish_reason from the stream ("" if none was sent).
+
+    parse_chat_completions_sse_lines defaults to "stop"; the journal must not
+    treat that default as a confirmed completion.
+    """
+    finish = ""
+    for raw in lines:
+        obj = _chat_sse_obj(raw)
+        choices = obj.get("choices") if obj else None
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            fr = choices[0].get("finish_reason")
+            if isinstance(fr, str) and fr:
+                finish = fr
+    return finish
+
+
 @observe_model
 async def _chat_completions_nostream(
     *,
@@ -2339,6 +2378,7 @@ async def _chat_completions_stream(
             except GptApiError:
                 raise e
         raise
+    seen_finish = _chat_sse_finish_seen(lines)
     if not (text or "").strip():
         blob = "\n".join(lines).strip()
         if blob.startswith("{"):
@@ -2350,6 +2390,7 @@ async def _chat_completions_stream(
                 _check_provider_envelope(payload)
                 try:
                     text, finish = _parse_choice(payload)
+                    seen_finish = finish
                     last = payload
                 except GptApiError:
                     text = ""
@@ -2384,6 +2425,7 @@ async def _chat_completions_stream(
                         "retryable": True,
                         "error_kind": "empty_stream",
                         "sse_lines": len(lines),
+                        "stream_error": type(stream_err).__name__,
                     },
                 ) from stream_err
             raise GptApiError(
@@ -2392,13 +2434,17 @@ async def _chat_completions_stream(
             )
     usage = last.get("usage") if isinstance(last.get("usage"), dict) else {}
     raw = dict(last) if last else {"stream_lines": len(lines)}
+    if seen_finish:
+        # The last chunk is often usage-only; keep the real finish on raw so the
+        # journal can judge completeness (llm_completion.response_complete).
+        raw["finish_reason"] = seen_finish
     if stream_err is not None:
         raw["sse_salvaged"] = True
         raw["sse_interrupt"] = type(stream_err).__name__
     return GptChatResult(
         text=text,
         model=use_model,
-        finish_reason=finish,
+        finish_reason=seen_finish,
         usage=usage,
         raw=raw,
         response_id=str(last.get("id") or ""),

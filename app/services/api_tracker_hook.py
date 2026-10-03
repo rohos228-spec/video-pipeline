@@ -45,6 +45,63 @@ _MEASURED_RATES: dict[str, tuple[float, float, float]] = {
 }
 
 
+# Where Vibecode text prices come from, and how far they can be trusted.
+# NOT calibrated: unlike _MEASURED_RATES (Kie), nobody compared these figures with the
+# vibecode.moe balance. The snapshot pricing is the raw per-model list price; the app's own
+# catalog/UI shows it multiplied by vibecode_catalog.PRICE_MARKUP (x3). Which of the two
+# vibecode.moe really charges the key is UNKNOWN, so the raw snapshot price is the base
+# (cheaper, i.e. possibly an UNDER-estimate by up to the markup) and every row says so.
+# The snapshot file has no date, so its freshness is unknown too.
+VIBECODE_PRICE_SOURCE = "vibecode_models_snapshot.json raw list price per 1M tokens; not calibrated"
+VIBECODE_PRICING_BASIS = "vibecode_snapshot_list_price"
+
+
+def _is_vibecode(provider: str | None) -> bool:
+    return str(provider or "").strip().lower() == "vibecode"
+
+
+def _vibecode_pricing(model: str | None) -> dict[str, Any] | None:
+    """Raw snapshot pricing of a Vibecode model id (exact id match, dots as in the catalog)."""
+    try:
+        from app.services.vibecode_catalog import load_snapshot
+        wanted = str(model or "").strip().lower()
+        for entry in load_snapshot():
+            if str(entry.get("id") or "").lower() == wanted and isinstance(entry.get("pricing"), dict):
+                return entry["pricing"]
+    except Exception:
+        pass
+    return None
+
+
+def vibecode_cost(model: str | None, p_tok: int, c_tok: int, cached_tok: int = 0) -> float | None:
+    """Estimated USD from the snapshot list price; None when the model has no known price."""
+    pricing = _vibecode_pricing(model)
+    if not pricing or pricing.get("input_usd_per_m") is None or pricing.get("output_usd_per_m") is None:
+        return None
+    in_r = float(pricing["input_usd_per_m"])
+    out_r = float(pricing["output_usd_per_m"])
+    cache_r = float(pricing.get("cache_read_usd_per_m") if pricing.get("cache_read_usd_per_m") is not None else in_r)
+    cached = min(max(cached_tok, 0), p_tok)
+    return round(((p_tok - cached) / 1e6) * in_r + (cached / 1e6) * cache_r + (c_tok / 1e6) * out_r, 6)
+
+
+def vibecode_cost_metadata(model: str | None, *, usage_known: bool) -> dict[str, Any]:
+    """Row metadata for a Vibecode call: states the basis and that it is not calibrated."""
+    meta: dict[str, Any] = {"provider": "vibecode", "pricing_basis": VIBECODE_PRICING_BASIS,
+        "calibrated": False, "price_source": VIBECODE_PRICE_SOURCE}
+    try:
+        from app.services.vibecode_catalog import PRICE_MARKUP
+        meta["ui_markup"] = PRICE_MARKUP
+    except Exception:
+        pass
+    if _vibecode_pricing(model) is None:
+        meta.update(cost_basis="unknown", price_known=False)
+    if not usage_known:
+        # cost_usd is stored as 0.0 (NOT NULL-ish column); this flag says it is not a real zero.
+        meta.update(cost_basis="unknown", usage_known=False)
+    return meta
+
+
 _MEDIA_RATES: dict[str, float] = {
     "flux-2-pro": 0.05,
     "seedream-5-pro": 0.045,
@@ -72,9 +129,14 @@ def _calc_cost(
     media_count: int = 1,
     cost_usd: float | None = None,
     cached_tok: int = 0,
+    provider: str | None = None,
 ) -> float:
     if cost_usd is not None and cost_usd >= 0:
         return round(cost_usd, 6)
+    if _is_vibecode(provider):
+        # Never fall through to Kie's calibrated/generic tables: they are another channel's prices.
+        est = vibecode_cost(model, p_tok, c_tok, cached_tok)
+        return est if est is not None else 0.0
     m = (model or "").lower().replace("_", "-").replace(" ", "-").replace(".", "-")
     for k, (in_r, out_r, cached_r) in _MEASURED_RATES.items():
         if k.replace(".", "-") in m:
@@ -174,6 +236,7 @@ def record_api_call(
                 media_count=media_count or 1,
                 cost_usd=cost_usd,
                 cached_tok=cached_tokens,
+                provider=provider,
             )
             total_tok = prompt_tokens + completion_tokens
             ts = timestamp or datetime.now(timezone.utc).isoformat()
@@ -184,6 +247,8 @@ def record_api_call(
             p_lower = clean_prov.lower()
             if p_lower == "kie":
                 clean_prov = "Kie.ai"
+            elif p_lower == "vibecode":
+                clean_prov = "vibecode"
             elif p_lower == "outsee":
                 clean_prov = "Outsee"
             elif p_lower == "google":

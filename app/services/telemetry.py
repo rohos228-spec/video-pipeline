@@ -12,6 +12,7 @@ uses.
 """
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -84,6 +85,38 @@ def node_request_latency(events: Sequence[Any]) -> dict[str, Any]:
     return {"by_node": by_node, "unmatched_requests": unmatched_requests}
 
 
+# How each provider's figures were obtained; shown next to the totals so a Vibecode
+# estimate is never read as calibrated like Kie's.
+COST_SOURCES = {
+    "kie": "rates calibrated against Kie credit balance (2026-10-01)",
+    "vibecode": "catalog list price from vibecode_models_snapshot.json (snapshot date unknown); "
+                "NOT calibrated against the vibecode.moe balance",
+}
+
+
+def _field(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _provider_key(row: Any) -> str:
+    raw = str(_field(row, "provider") or "").strip().lower()
+    return "kie" if raw in {"kie", "kie.ai"} else (raw or "unknown")
+
+
+def _cost_unknown(row: Any) -> bool:
+    """A successful call whose cost the tracker flagged as unknown (e.g. no usage returned)."""
+    meta = _field(row, "metadata_json")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            return False
+    return isinstance(meta, dict) and meta.get("cost_basis") == "unknown"
+
+
 def cost_summary(rows: Sequence[Any]) -> dict[str, Any]:
     """rows: api-tracker `api_calls` records (sqlite3.Row or dict-like, one
     per tracked LLM call). Costs are never recomputed here --
@@ -98,6 +131,8 @@ def cost_summary(rows: Sequence[Any]) -> dict[str, Any]:
     total_cached_tokens = 0
     failed_calls = 0
     by_model: dict[str, dict[str, Any]] = {}
+    by_provider: dict[str, dict[str, Any]] = {}
+    unknown_cost_calls = 0
     for row in rows:
         model = row["model"] or "unknown"
         cost = float(row["cost_usd"] or 0.0)
@@ -110,15 +145,23 @@ def cost_summary(rows: Sequence[Any]) -> dict[str, Any]:
         total_cached_tokens += cached
         status = row["status_code"]
         status = int(status) if status is not None else 200
-        if status >= 400 or status == 0:
+        failed = status >= 400 or status == 0
+        if failed:
             failed_calls += 1
+        provider = by_provider.setdefault(_provider_key(row),
+            {"calls": 0, "cost_usd": 0.0, "unknown_cost_calls": 0})
+        provider["calls"] += 1
+        provider["cost_usd"] += cost
+        if not failed and _cost_unknown(row):
+            provider["unknown_cost_calls"] += 1
+            unknown_cost_calls += 1
         slot = by_model.setdefault(model, {"calls": 0, "cost_usd": 0.0,
             "prompt_tokens": 0, "completion_tokens": 0})
         slot["calls"] += 1
         slot["cost_usd"] += cost
         slot["prompt_tokens"] += prompt
         slot["completion_tokens"] += completion
-    for slot in by_model.values():
+    for slot in (*by_model.values(), *by_provider.values()):
         slot["cost_usd"] = round(slot["cost_usd"], 6)
     return {
         "total_calls": len(rows),
@@ -128,6 +171,9 @@ def cost_summary(rows: Sequence[Any]) -> dict[str, Any]:
         "total_completion_tokens": total_completion_tokens,
         "total_cached_tokens": total_cached_tokens,
         "by_model": by_model,
+        "by_provider": by_provider,
+        "unknown_cost_calls": unknown_cost_calls,
+        "sources": {k: v for k, v in COST_SOURCES.items() if k in by_provider},
         "source": "api_tracker_hook (pre-priced at write time)",
     }
 
@@ -145,18 +191,21 @@ def _query_cost_rows_sync(project_id: int, since: datetime | None) -> list[dict[
 
     if not _TRACKER_DB.is_file():
         return []
-    query = ("SELECT model, cost_usd, prompt_tokens, completion_tokens, cached_tokens, status_code "
-             "FROM api_calls WHERE project_source = ?")
+    tail = " FROM api_calls WHERE project_source = ?"
     params: list[Any] = [str(project_id)]
     if since is not None:
-        query += " AND timestamp >= ?"
+        tail += " AND timestamp >= ?"
         params.append(since.isoformat())
-    try:
-        with sqlite3.connect(str(_TRACKER_DB), timeout=5.0) as conn:
-            conn.row_factory = sqlite3.Row
-            return [dict(row) for row in conn.execute(query, params).fetchall()]
-    except sqlite3.OperationalError:
-        return []  # Table not created yet (no call tracked for any project so far).
+    base = "SELECT model, cost_usd, prompt_tokens, completion_tokens, cached_tokens, status_code"
+    # provider / metadata_json first; an older tracker DB without those columns still reads.
+    for columns in (", provider, metadata_json", ""):
+        try:
+            with sqlite3.connect(str(_TRACKER_DB), timeout=5.0) as conn:
+                conn.row_factory = sqlite3.Row
+                return [dict(row) for row in conn.execute(base + columns + tail, params).fetchall()]
+        except sqlite3.OperationalError:
+            continue
+    return []  # Table not created yet (no call tracked for any project so far).
 
 
 async def project_cost_summary(project_id: int, *, since: datetime | None = None) -> dict[str, Any]:

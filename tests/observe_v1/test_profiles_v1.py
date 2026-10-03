@@ -316,6 +316,102 @@ class Profiles(DecisionDurability):
         self.assertEqual(len(state['overlays']),1)
         self.assertEqual(state['overlays'][0]['profile_id'],'synthetic-format-v1')
 
+    # ---- provider of the profile must equal the provider of the failed attempt ----------------
+    VIBECODE_PROFILE={'model_id':'gpt-synthetic-alt','provider':'vibecode','kind':'text','channel':'stable',
+        'reasoning_effort':None,'max_output_tokens':None,'prompt_variant':'repair-json-only-v1','synthetic_only':True}
+
+    async def set_source_start(self,body=None,**payload):
+        """Rewrite the first recorded request: only the given fields stay besides body references."""
+        async with self.sessions() as s:
+            event=await s.scalar(select(observation.ObservationEvent).where(observation.ObservationEvent.kind=='model_start'))
+            kept={k:v for k,v in event.payload.items() if k not in {'provider','path','host'}}
+            if body is not None:
+                kept.update(input_revision=observation.digest(body),body=observation._observer.save_body('exec-durable',body))
+            event.payload={**kept,**payload}
+            await s.commit()
+
+    def two_provider_catalog(self):
+        return {**self.profiles.CATALOG,'vibecode-synthetic-v1':dict(self.VIBECODE_PROFILE)}
+
+    async def test_profile_provider_must_match_failed_attempt_provider(self):
+        await self.set_source_start(provider='vibecode')
+        with self.assertRaisesRegex(ValueError,'provider differs'):await self.approve()
+        self.assertEqual((await self.store.state(7,'exec-durable','n1'))['overlays'],[])
+
+    async def test_legacy_request_without_provider_or_known_path_fails_closed(self):
+        await self.set_source_start()
+        with self.assertRaisesRegex(ValueError,'provider differs'):await self.approve()
+
+    async def test_legacy_responses_path_identifies_kie_source(self):
+        await self.set_source_start(host='127.0.0.1',path='/codex/v1/responses')
+        self.assertEqual((await self.approve())['status'],'approved')
+
+    async def test_state_reports_source_provider_and_which_profiles_match(self):
+        state=await self.store.state(7,'exec-durable','n1')
+        self.assertEqual(state['source_provider'],'kie')
+        self.assertTrue(all(c['matches_source_provider'] for c in state['catalog']))
+        with patch.object(self.profiles,'active_catalog',return_value=self.two_provider_catalog()):
+            state=await self.store.state(7,'exec-durable','n1')
+            self.assertEqual({c['profile_id']:c['matches_source_provider'] for c in state['catalog']}['vibecode-synthetic-v1'],False)
+            await self.set_source_start(provider='vibecode')
+            state=await self.store.state(7,'exec-durable','n1')
+            self.assertEqual(state['source_provider'],'vibecode')
+            self.assertEqual([c['profile_id'] for c in state['catalog'] if c['matches_source_provider']],['vibecode-synthetic-v1'])
+
+    async def test_vibecode_profile_is_approved_for_vibecode_source_with_chat_messages(self):
+        body={'model':'gpt-5.6-sol','stream':True,'messages':[{'role':'system','content':'contract'},
+            {'role':'user','content':'source facts'}]}
+        await self.set_source_start(body,provider='vibecode')
+        with patch.object(self.profiles,'active_catalog',return_value=self.two_provider_catalog()):
+            state=await self.store.state(7,'exec-durable','n1')
+            overlay=await self.approve(profile_id='vibecode-synthetic-v1',base_version=state['base_version'],
+                catalog_hash=state['catalog_hash'])
+            expected=self.profiles.effective_body(body,overlay['candidate'])
+        self.assertEqual(overlay['expected_body_hash'],observation.digest(expected))
+        self.assertEqual(expected['messages'][0],body['messages'][0])
+        self.assertTrue(expected['messages'][1]['content'].startswith('source facts'))
+        self.assertNotEqual(expected['messages'][1]['content'],'source facts')
+        self.assertNotIn('reasoning',expected);self.assertNotIn('max_output_tokens',expected);self.assertNotIn('input',expected)
+
+    async def test_vibecode_profile_is_rejected_for_kie_source(self):
+        with patch.object(self.profiles,'active_catalog',return_value=self.two_provider_catalog()):
+            state=await self.store.state(7,'exec-durable','n1')
+            with self.assertRaisesRegex(ValueError,'provider differs'):
+                await self.approve(profile_id='vibecode-synthetic-v1',base_version=state['base_version'],catalog_hash=state['catalog_hash'])
+
+    async def test_reservation_rechecks_source_provider(self):
+        overlay=await self.approve()
+        args=dict(execution_id='exec-durable',project_id=7,node_key='n1',source_attempt_id=overlay['source_attempt_id'],
+            revision=overlay['base_version'],graph=overlay['graph_version'],body_hash=overlay['source_body_hash'])
+        async with self.sessions() as s:
+            for wrong in ('vibecode','unknown',None):
+                with self.assertRaisesRegex(ValueError,'provider differs'):
+                    await self.profiles.reservation(s,overlay['overlay_id'],source_provider=wrong,**args)
+            row=await self.profiles.reservation(s,overlay['overlay_id'],source_provider='kie',**args)
+            self.assertEqual(row.status,'approved')
+
+    async def test_eligible_profiles_offer_only_the_failed_attempt_provider(self):
+        await self.enable_decisions();record=await self.begin()
+        catalog={'synthetic-format-v1':self.profiles.CATALOG['synthetic-format-v1'],
+            'vibecode-synthetic-v1':dict(self.VIBECODE_PROFILE)}
+        with patch.object(self.profiles,'active_catalog',return_value=catalog):
+            async with self.sessions() as s:
+                s.add(ManagedLaunch(launch_id='launch-two',execution_id='exec-durable',project_id=7,
+                    workflow_run_id=11,idempotency_key='launch-two-test',request_hash='test',entry_node='n1',
+                    status='submitted',result={},policy={'allowed_actions':['read_events','read_contract','wait',
+                        'human_review','retry_same','retry_profile','finish'],'profile_ids':list(catalog),
+                        'profile_catalog_hash':self.profiles.catalog_hash(),'profiles':catalog}))
+                await s.commit()
+            context=await self.loop.context(record['decision_id'])
+            self.assertEqual([p['profile_id'] for p in context['eligible_profiles']],['synthetic-format-v1'])
+            self.assertEqual(context['recommended_profile_id'],'synthetic-format-v1')
+            await self.set_source_start(provider='vibecode')
+            context=await self.loop.context(record['decision_id'])
+            self.assertEqual([p['profile_id'] for p in context['eligible_profiles']],['vibecode-synthetic-v1'])
+            self.assertEqual(context['recommended_profile_id'],'vibecode-synthetic-v1')
+            await self.set_source_start()
+            self.assertEqual((await self.loop.context(record['decision_id']))['eligible_profiles'],[])
+
 def load_tests(loader,tests,pattern):
     return unittest.TestSuite(Profiles(name) for name in Profiles.__dict__ if name.startswith('test_'))
 

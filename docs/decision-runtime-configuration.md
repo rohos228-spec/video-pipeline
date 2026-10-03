@@ -1,6 +1,7 @@
 # Подключение модели решений к текущему runtime
 
-Используется существующий `gpt_api.chat`, Kie Responses, текущие Decision tools,
+Используется существующий `gpt_api.chat` (Kie Responses) либо один non-stream
+POST к Vibecode chat/completions (см. раздел ниже), текущие Decision tools,
 Actions supervisor, worker и verification. Второго executor нет. Параметры
 модели решений отделены от профиля исполняемой ноды. Каталог подтверждает
 совместимость, а разрешение даёт только локальная конфигурация оператора.
@@ -11,12 +12,14 @@ Actions supervisor, worker и verification. Второго executor нет. Па
    Исходный пример выключен: модель/маршрут не заданы, allowlist пуст.
 2. Указать путь в `ORCHESTRATOR_RUNTIME_CONFIG`. Это JSON политики, без ключей.
    Ключи использует штатный клиент; новые секреты в репозиторий не добавлять.
-3. После отдельного согласования задать точный HTTPS endpoint существующего
-   Kie Responses маршрута, включая `/codex/v1/responses`. Relay/VPS маршрут
-   должен совпадать с фактическим `_chat_url`; скрытое переключение запрещено.
+3. После отдельного согласования задать точный HTTPS endpoint одобренного
+   маршрута: Kie Responses (`/codex/v1/responses`) или Vibecode chat/completions
+   (`/v1/chat/completions`). Relay/VPS маршрут должен совпадать с фактическим
+   `_chat_url`; скрытое переключение запрещено.
 4. Задать `decision`: `catalog_id`, `model_id`, `reasoning_effort`,
-   `max_output_tokens`, `timeout_s`. Сейчас поддерживается `catalog_id=gpt-kie`;
-   совместимость text model проверяется по существующему локальному каталогу.
+   `max_output_tokens`, `timeout_s`. Поддерживаются ровно два `catalog_id`:
+   `gpt-kie` и `gpt-5.6-sol-vibecode` (без алиасов); провайдер выводится из него.
+   Совместимость text model проверяется по существующему локальному каталогу.
    В offline-приёмке: `gpt-5-6-sol`, low, 1024, 30 секунд. Это НЕ подтверждение
    наличия/цены/качества модели в реальном аккаунте.
 5. Разрешить конкретные `allowed_actions`: `read_events`, `read_contract`,
@@ -68,3 +71,29 @@ POST блокируется. До online требуются подтверждё
 
 Проверенная область: text `script_frames_qc` и ошибки обязательного JSON/payload.
 Другие провайдеры, arbitrary code/prompt edits и media-агенты не добавлены.
+
+## Vibecode chat/completions (опционально, выключено по умолчанию)
+
+Пример: `config/orchestrator-runtime.vibecode.example.json` (`online_enabled=false`).
+Секретов в конфигурации нет: ключ берётся только из `VIBECODE_API_KEY` в
+настройках приложения (при relay дополнительно `X-VP-Relay-Token`), не читается из
+конфига и не пишется в факты/логи. Пустой ключ отклоняется до резервирования запроса.
+
+- `catalog_id=gpt-5.6-sol-vibecode`, `model_id=gpt-5.6-sol` (ровно `api_model`
+  каталога), `reasoning_effort=null` (параметр reasoning Vibecode не отправляется),
+  `max_output_tokens` 1..16384 (рекомендуется 2048-4096: токены рассуждений входят в лимит).
+- Только `mode=production`, `model_transport=real`, `external_calls_enabled=true`,
+  `continuation_allowed=false`, `retrieval_allowed=false`, без `gateway_ack`,
+  `profiles={}` и без `retry_profile` в `allowed_actions` (профили только Kie).
+- Хост endpoint: `vibecode.moe`, хост VPS-relay из настроек (если задан) или
+  loopback (тесты); HTTPS, без userinfo/query/fragment, путь `/v1/chat/completions`.
+  Фактический URL строит `_chat_url`; он обязан совпасть с `endpoint` до отправки.
+  При relay контекст решений идёт через сторонний VPS.
+- Один non-stream POST на ход: без ретраев, продолжений и повторного POST.
+  Лимит выводится параметром `max_completion_tokens`; `response_format` и
+  `temperature` не отправляются. Схема и `allowed_actions` проверяются на сервере как и раньше.
+- Ответ с `finish_reason=length` (или `completion_tokens >= лимита`) даёт отдельную
+  ошибку `DecisionTruncated` и эскалацию `human_review` без повторного POST.
+- Не проверено у Vibecode (нужна одна согласованная проба до включения):
+  `max_completion_tokens` против `max_tokens`, поведение non-stream через relay на
+  ответах до 60-90 секунд, реальная цена. Бюджет считает запросы, не деньги.

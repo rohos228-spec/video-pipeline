@@ -10,6 +10,41 @@ const WINDOWS: {label: string; hours: number | undefined}[] = [
   {label: "всё время", hours: undefined},
 ];
 
+// Newer servers add a per-provider split; older ones omit it (everything was Kie).
+type CostExtra = {
+  by_provider?: Record<string, {calls: number; cost_usd: number; unknown_cost_calls: number}>;
+  unknown_cost_calls?: number;
+};
+
+// What the cost figure is based on, per provider: Kie rates are calibrated, Vibecode's are not.
+function CostNotes({cost}: {cost: TelemetrySummary["cost"] & CostExtra}) {
+  const providers = Object.keys(cost.by_provider ?? {});
+  const onlyVibecode = providers.length > 0 && providers.every((p) => p === "vibecode");
+  const vibecode = cost.by_provider?.vibecode;
+  return (
+    <>
+      {!onlyVibecode && (
+        <p className="text-white/40">
+          Оценка по тарифам, откалиброванным по списанию кредитов Kie (кэш учтён); возможны отклонения для других форм запросов.
+        </p>
+      )}
+      {vibecode && (
+        <p className="text-white/40">
+          Vibecode: ${vibecode.cost_usd.toFixed(4)} ({vibecode.calls} запрос(ов)) — оценка по прайсу из снимка каталога
+          (vibecode_models_snapshot.json, дата снимка неизвестна), не откалибрована по списанию. Фактический баланс
+          vibecode.moe может отличаться.
+        </p>
+      )}
+      {(cost.unknown_cost_calls ?? 0) > 0 && (
+        <p className="text-white/40">
+          У {cost.unknown_cost_calls} запрос(ов) стоимость неизвестна: провайдер не вернул usage или модели нет в прайсе
+          (в сумму они входят как $0).
+        </p>
+      )}
+    </>
+  );
+}
+
 function pct(x: number | null): string {
   return x == null ? "неизвестно" : `${Math.round(x * 100)}%`;
 }
@@ -184,9 +219,7 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
                   completion
                   {summary.cost.total_cached_tokens > 0 ? ` / ${summary.cost.total_cached_tokens} cached` : ""}
                 </p>
-                <p className="text-white/40">
-                  Оценка по тарифам, откалиброванным по списанию кредитов Kie (кэш учтён); возможны отклонения для других форм запросов.
-                </p>
+                <CostNotes cost={summary.cost} />
                 <ul className="mt-1 space-y-0.5 text-white/60">
                   {Object.entries(summary.cost.by_model).map(([model, stats]) => (
                     <li key={model}>

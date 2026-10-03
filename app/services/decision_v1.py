@@ -1,7 +1,7 @@
 """Opt-in observe/diagnose/actions dialogue. No shell, SQL or file tools.
 
 Facts are untrusted, proposals are server-bound, actions still use Actions-v1.
-The initial model transport is deliberately restricted to synthetic loopback.
+Approved model routes: Kie Responses and Vibecode chat/completions (decision_config).
 """
 import json
 import time
@@ -16,9 +16,11 @@ from sqlalchemy.dialects.sqlite import insert
 from app.models import Project,WorkflowRun
 from app.services.decision_state import DecisionControl,DecisionRecord,DecisionTurn
 from app.services.observation import ExecutionControl,ObservationEvent,digest,redact,panel_safe
+from app.services.llm_completion import response_complete,response_truncated
 
 ACTIONS=('read_events','read_contract','retry_same','human_review','wait','finish')
 MAX_STEPS=3
+CHAT_TOKEN_PARAM='max_completion_tokens'  # UNVERIFIED against Vibecode: max_tokens vs max_completion_tokens
 WAIT_SECONDS=30
 RECOVERY_INCIDENTS={'invalid_json','missing_payload'}
 DIAGNOSTIC_INCIDENTS=RECOVERY_INCIDENTS|{'contract_rejected','api_error'}
@@ -65,6 +67,45 @@ def validate_proposal(text,context):
             raise ValueError('profile arguments not approved in context')
     elif args:raise ValueError('arguments not permitted for this action')
     return p
+
+
+class DecisionTruncated(ValueError):
+    """Model output hit the token cap. The call was paid for; it is never re-POSTed."""
+
+
+def completion_state(kind,result,cap):
+    """(complete, truncated) of a finished decision HTTP response."""
+    raw=result.raw or {}
+    finish=result.finish_reason or None
+    truncated=response_truncated(raw,finish)
+    complete=response_complete(raw,finish)
+    if kind=='kie_responses':complete=complete and raw.get('status') is not None
+    elif complete and not truncated:
+        # Some proxies report finish_reason=stop at the cap; completion tokens include reasoning.
+        used=(result.usage or {}).get('completion_tokens')
+        if type(used)==int and used>=cap:truncated=True
+    return complete and not truncated,truncated
+
+
+async def vibecode_post(*,url,headers,body,timeout,use_model):
+    """One non-stream chat/completions POST. No retry, no continuation, no redirects."""
+    from app.services import gpt_api
+    async with gpt_api._async_client(timeout=gpt_api._http_timeout(timeout)) as client:
+        resp=await client.post(url,headers=headers,json=body)
+    if resp.status_code>=400:gpt_api._raise_http_status(resp.status_code,resp.text,use_model=use_model)
+    try:payload=resp.json()
+    except ValueError as exc:raise ValueError('decision response is not JSON') from exc
+    if not isinstance(payload,dict):raise ValueError('decision response is not a JSON object')
+    gpt_api._check_provider_envelope(payload)
+    try:text,finish=gpt_api._parse_choice(payload)
+    except gpt_api.GptApiError as exc:
+        # Empty content with finish_reason=length: reasoning ate the cap; keep it as a truncated result.
+        finish=str((exc.context or {}).get('finish_reason') or '')
+        if not response_truncated(None,finish):raise
+        text=''
+    usage=payload.get('usage') if isinstance(payload.get('usage'),dict) else {}
+    return gpt_api.GptChatResult(text=text,model=use_model,finish_reason=finish,usage=usage,raw=payload,
+        response_id=str(payload.get('id') or ''))
 
 
 def record_json(r):
@@ -417,9 +458,18 @@ class DecisionSupervisor:
                 cfg=decision_config.runtime_config()
                 from app.services.llm_override import NodeLlmOverride,use_override
                 m=cfg['decision']
-                with use_override(NodeLlmOverride(m['model_id'],'stable','text','kie',m['model_id'],m['reasoning_effort'])):
-                    response=await gpt_api.chat(model=m['model_id'],prompt=json.dumps(context,ensure_ascii=False,default=str),system=SYSTEM,
-                    history=history,auto_pack=False,volume_complete=False,max_retries=0,timeout=m['timeout_s'])
+                prompt=json.dumps(context,ensure_ascii=False,default=str)
+                if decision_config.provider(cfg)=='vibecode':
+                    with use_override(NodeLlmOverride(m['model_id'],'stable','text','vibecode',m['model_id'],None)):
+                        url=gpt_api._chat_url(m['model_id']);headers=gpt_api._headers()  # key comes from settings only
+                    body={'model':m['model_id'],'stream':False,
+                        'messages':gpt_api.build_messages(prompt=prompt,system=SYSTEM,history=history)}
+                    response=await hook.send(vibecode_post,(),{'url':url,'headers':headers,'body':body,
+                        'timeout':m['timeout_s'],'use_model':m['model_id']})
+                else:
+                    with use_override(NodeLlmOverride(m['model_id'],'stable','text','kie',m['model_id'],m['reasoning_effort'])):
+                        response=await gpt_api.chat(model=m['model_id'],prompt=prompt,system=SYSTEM,
+                        history=history,auto_pack=False,volume_complete=False,max_retries=0,timeout=m['timeout_s'])
             finally:decision_transport.current.reset(ct)
             try:proposal=validate_proposal(response.text,context)
             except ValueError as exc:
@@ -639,40 +689,51 @@ class HttpDecision:
         if self.request_id is not None and cfg.get('continuation_allowed') is False:
             await self.fact('decision_continuation_denied',{'method':'POST','sent':False,'reason':'execution_policy'})
             raise ValueError('decision continuation disabled for execution')
-        m=cfg['decision']
+        m=cfg['decision'];route=decision_config.route_info(cfg)
         if (kwargs.get('body') or {}).get('model')!=m['model_id']:raise ValueError('decision model differs from approved profile')
-        kwargs={**kwargs,'body':{**kwargs['body'],'max_output_tokens':m['max_output_tokens'],'reasoning':{'effort':m['reasoning_effort']}}}
+        vibecode=route['provider']=='vibecode'
+        if vibecode:kwargs={**kwargs,'body':{**kwargs['body'],CHAT_TOKEN_PARAM:m['max_output_tokens']}}
+        else:kwargs={**kwargs,'body':{**kwargs['body'],'max_output_tokens':m['max_output_tokens'],'reasoning':{'effort':m['reasoning_effort']}}}
+        cost_extra={'provider':'vibecode'} if vibecode else {}
         async with self.supervisor.master() as s:
             row=await s.get(DecisionRecord,self.decision_id);await self.supervisor._live(s,row,self.token,version=self.version)
             self.execution_id=row.execution_id;project_id=row.project_id
         self.request_id=str(uuid.uuid4())
         encoded=json.dumps(kwargs['body'],ensure_ascii=False,separators=(',', ':'),allow_nan=False).encode('utf-8')
-        await self.fact('decision_model_start',{'method':'POST','purpose':'decision','model':m['model_id'],'max_output_tokens':m['max_output_tokens'],'reasoning_effort':m['reasoning_effort'],'route':cfg['endpoint'],'config_hash':digest(cfg),'request_body_sha256':hashlib.sha256(encoded).hexdigest()},body=kwargs.get('body'))
+        await self.fact('decision_model_start',{'method':'POST','purpose':'decision','model':m['model_id'],'max_output_tokens':m['max_output_tokens'],'reasoning_effort':m['reasoning_effort'],'route':cfg['endpoint'],'provider':route['provider'],'route_kind':route['route_kind'],'config_hash':digest(cfg),'request_body_sha256':hashlib.sha256(encoded).hexdigest()},body=kwargs.get('body'))
         try:await ActionSupervisor(self.supervisor.master).charge_request(self.execution_id)
         except Exception as exc:
             await self.fact('decision_request_blocked',{'sent':False,'guard':type(exc).__name__})
             raise
         provider_complete = False
+        tracked = False
         phase = 'provider'
         started=time.monotonic()
         from app.services.observation import _track_api_cost
         try:
             result=await function(*args,**kwargs)
-            _track_api_cost(model=getattr(result,'model',None) or m['model_id'],usage=result.usage,duration_sec=time.monotonic()-started,project_id=project_id)
-            complete=(result.raw or {}).get('status')=='completed' and not (result.raw or {}).get('sse_salvaged')
-            provider_complete = complete
-            await self.fact('decision_model_end',{'complete':complete,'usage':result.usage},body={'text':result.text,'response':result.raw})
-            if (result.raw or {}).get('status')!='completed' or (result.raw or {}).get('sse_salvaged'):
+            _track_api_cost(model=getattr(result,'model',None) or m['model_id'],usage=result.usage,duration_sec=time.monotonic()-started,project_id=project_id,**cost_extra)
+            tracked=True
+            complete,truncated=completion_state(route['route_kind'],result,m['max_output_tokens'])
+            provider_complete = complete or truncated  # the HTTP call finished and was billed
+            end={'complete':complete,'usage':result.usage}
+            if vibecode or truncated:end.update(finish_reason=result.finish_reason or None,problem='truncated' if truncated else None)
+            await self.fact('decision_model_end',end,body={'text':result.text,'response':result.raw})
+            if truncated:
+                phase = 'truncated'
+                raise DecisionTruncated(f'decision output truncated (finish_reason={result.finish_reason or "unknown"})')
+            if not complete:
                 raise ValueError('uncertain decision model response')
             self.response_id=result.response_id or (result.raw or {}).get('id')
             phase = 'local_ack'
             await self.ack_gateway('received')
             return result
         except BaseException as exc:
-            if not provider_complete:_track_api_cost(model=m['model_id'],usage=None,duration_sec=time.monotonic()-started,project_id=project_id,status_code=0,error_message=f'{type(exc).__name__}: {exc}')
+            if not provider_complete and not tracked:_track_api_cost(model=m['model_id'],usage=None,duration_sec=time.monotonic()-started,project_id=project_id,status_code=0,error_message=f'{type(exc).__name__}: {exc}',**cost_extra)
             await self.fact('decision_model_error',{'complete':provider_complete,'phase':phase,'error_type':type(exc).__name__})
-            reason = ('completed decision HTTP response; local gateway acknowledgement failed; no repeat POST'
-                      if provider_complete and phase == 'local_ack' else 'uncertain decision HTTP result; no repeat POST')
+            if phase == 'truncated':reason = 'decision output truncated (finish_reason=length); no repeat POST'
+            elif provider_complete and phase == 'local_ack':reason = 'completed decision HTTP response; local gateway acknowledgement failed; no repeat POST'
+            else:reason = 'uncertain decision HTTP result; no repeat POST'
             await self.supervisor.escalate(self.decision_id,reason)
             raise
 

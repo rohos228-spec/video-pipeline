@@ -198,6 +198,14 @@ def derive_incidents(scope, events, snapshot):
             if kind in {'apply_error','node_error','model_error'}:
                 if kind == 'node_error' and any(r['kind']=='media_failure' for r in related):
                     continue  # the typed media evidence already owns this failure
+                rule=p.get('rule') if kind=='node_error' else None
+                if isinstance(rule,str) and rule.strip() and p.get('uncertain') is not True:
+                    # An enforced business rule (e.g. PassStop) rejected the result: not a format/API failure.
+                    rule=' '.join(rule.split())[:120]
+                    item=issue('contract_rejected',(node,attempt,'rule',e['event_id']),[e],
+                        fact=f'Правило {rule} отклонило результат.',action='human_review')
+                    item['rule']=rule; item['status']='human_review'
+                    continue
                 if kind=='node_error' and bads:
                     for item in issues.values():
                         if item['node_key']==node and item['attempt_id']==attempt and item['type'] in {'invalid_json','missing_payload'}:

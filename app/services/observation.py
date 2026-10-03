@@ -24,6 +24,7 @@ from sqlalchemy import JSON, String, UniqueConstraint, event, inspect, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.models import Base, NodeRun, Project, WorkflowRun
+from app.services.llm_completion import response_complete, response_truncated
 from app.services.observation_files import secure_directory
 
 
@@ -80,7 +81,7 @@ _CREDENTIAL_FIELDS = {"authorization", "proxy_authorization", "cookie", "set_coo
 _CREDENTIAL_TEXT = re.compile(
     r"(?i)(\bBearer\s+)[^\s\"'<>]+|"
     r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|cookie)[\"']?\s*[:=]\s*[\"']?)[^\s\"'<>;,}\]]+|"
-    r"\bsk-[A-Za-z0-9_-]{8,}"
+    r"\b(?:sk|vk)-[A-Za-z0-9_-]{8,}"
 )
 
 
@@ -520,8 +521,27 @@ def _usage_tokens(usage):
     return int(prompt), int(completion), int(cached)
 
 
+# Errors after which the provider may already have accepted (and billed) the request.
+_UNCERTAIN_ERROR_TYPES = frozenset({"CancelledError", "ReadTimeout", "WriteTimeout", "ReadError",
+                                    "RemoteProtocolError", "TimeoutError"})
+
+
+def effective_text_provider() -> str:
+    """Provider the current text request really goes to: node override first, then the
+    header setting. Mirrors gpt_api.is_responses_mode; a profile never changes it."""
+    try:
+        from app.services.llm_override import current_override
+        ov = current_override()
+        if ov is not None and ov.kind == "text" and ov.provider in {"kie", "vibecode"}:
+            return ov.provider
+        from app.settings import settings
+        return "vibecode" if settings.text_llm_is_vibecode else "kie"
+    except Exception:
+        return "unknown"
+
+
 def _track_api_cost(*, model, usage, duration_sec, project_id=None,
-                     status_code=200, error_message=""):
+                     status_code=200, error_message="", provider: str = "kie"):
     """Fire-and-forget cost tracking via the existing api-tracker module --
     never recomputes pricing here (api_tracker_hook._calc_cost owns that),
     never blocks the caller (record_api_call spawns its own daemon thread),
@@ -538,21 +558,37 @@ def _track_api_cost(*, model, usage, duration_sec, project_id=None,
     pytest run in this repo uses a synthetic or absent key by convention.
     Without this gate, every test run in this repo would silently push
     fake rows to that cloud project.
+
+    The gate is the key of the provider that took the request (Kie: GPT_API_KEY,
+    Vibecode: VIBECODE_API_KEY); one provider's key never enables the other's row.
+    Vibecode rows are priced from the catalog snapshot, not Kie's calibrated rates
+    (see api_tracker_hook.VIBECODE_PRICE_SOURCE).
     """
     try:
         if project_id is None:
             project_id = _cost_project.get()
         from app.settings import settings
-        if not str(settings.gpt_api_key or "").strip() or str(settings.gpt_api_key).startswith("synthetic"):
+        provider = str(provider or "kie").lower()
+        if provider == "kie":
+            key = str(settings.gpt_api_key or "").strip()
+        elif provider == "vibecode":
+            key = str(settings.vibecode_api_key or "").strip()
+        else:
+            return
+        if not key or key.startswith("synthetic"):
             return
         from app.services import api_tracker_hook
         prompt_tokens, completion_tokens, cached_tokens = _usage_tokens(usage)
+        extra = {}
+        if provider == "vibecode":
+            extra["metadata"] = api_tracker_hook.vibecode_cost_metadata(
+                model, usage_known=bool(prompt_tokens or completion_tokens))
         api_tracker_hook.record_api_call(
-            provider="kie", model=str(model or "unknown"), call_type="text",
+            provider=provider, model=str(model or "unknown"), call_type="text",
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
             cached_tokens=cached_tokens, duration_sec=duration_sec,
             status_code=status_code, error_message=error_message[:500],
-            project_source=str(project_id) if project_id is not None else "",
+            project_source=str(project_id) if project_id is not None else "", **extra,
         )
     except Exception:
         pass  # Cost tracking is observational only; it must never affect the real request.
@@ -569,21 +605,24 @@ def observe_model(function):
             if hook is not None:
                 return await hook.send(function, args, kwargs)
             start = time.monotonic()
+            provider = effective_text_provider()
             try:
                 result = await function(*args, **kwargs)
             except Exception as exc:
                 _track_api_cost(model=kwargs.get("model"), usage=None,
-                    duration_sec=time.monotonic() - start,
+                    duration_sec=time.monotonic() - start, provider=provider,
                     status_code=0, error_message=f"{type(exc).__name__}: {exc}")
                 raise
             _track_api_cost(model=getattr(result, "model", kwargs.get("model")),
-                usage=getattr(result, "usage", None), duration_sec=time.monotonic() - start)
+                usage=getattr(result, "usage", None), duration_sec=time.monotonic() - start,
+                provider=provider)
             return result
         request_id = str(uuid.uuid4())
         previous_request_id = ctx.last_request_id
         from app.services.profiles_v1 import transform_request
         kwargs = await transform_request(ctx, kwargs)
         body = kwargs.get("body") or {}
+        provider = effective_text_provider()
         if ctx.scope.mode == "managed":
             from app.services.actions_recovery import check_body
             await check_body(ctx, digest(body), body=body)
@@ -604,7 +643,7 @@ def observe_model(function):
                 _request.reset(request_token)
                 raise
         await record_fact("model_start", {"method": "POST", "host": endpoint.hostname,
-            "path": endpoint.path, "model": kwargs.get("use_model"),
+            "path": endpoint.path, "model": kwargs.get("use_model"), "provider": provider,
             "purpose":getattr(ctx,'purpose','node'),
             "previous_request_id": previous_request_id,
             "settings_revision": digest(settings), "input_revision": digest(body)}, body=body)
@@ -617,17 +656,21 @@ def observe_model(function):
             call_attempted = True
             result = await function(*args, **kwargs)
             raw = getattr(result, "raw", {}) or {}
-            await record_fact("model_end", {"model": getattr(result, "model", None),
+            finish_reason = getattr(result, "finish_reason", None)
+            await record_fact("model_end", {"model": getattr(result, "model", None), "provider": provider,
                 "response_id": getattr(result, "response_id", None),
-                "finish_reason": getattr(result, "finish_reason", None),
+                "finish_reason": finish_reason,
                 "usage": getattr(result, "usage", None),
-                "complete": raw.get("status") == "completed" and not raw.get("sse_salvaged"),
+                "complete": response_complete(raw, finish_reason),
                 "retrieved_by_id": bool(raw.get("retrieved_by_id")),
             }, body={"text": getattr(result, "text", ""), "response": raw})
             _track_api_cost(model=getattr(result, "model", None), usage=getattr(result, "usage", None),
-                duration_sec=time.monotonic() - start, project_id=getattr(ctx.scope, "project_id", None))
+                duration_sec=time.monotonic() - start, project_id=getattr(ctx.scope, "project_id", None),
+                provider=provider)
             cost_tracked = True
-            if ctx.scope.mode=='managed' and (raw.get('sse_salvaged') or raw.get('status') not in {None,'completed'}):
+            # Responses: a status other than completed; chat/completions (no status): a cut-off finish_reason.
+            if ctx.scope.mode=='managed' and (raw.get('sse_salvaged') or raw.get('status') not in {None,'completed'}
+                    or response_truncated(raw, finish_reason)):
                 await hold_uncertain_request(ctx,request_id)
                 raise RuntimeError('uncertain external result; managed execution held, no repeat POST')
             _completed_model_request.set((ctx,request_id))
@@ -636,20 +679,23 @@ def observe_model(function):
             from app.services.error_catalog import describe_error
             context = getattr(exc,"context",None) or {}
             await record_fact("model_error", {"error_type": type(exc).__name__, "complete": False,
+                "provider": provider, "model": kwargs.get("use_model"),
                 "error_code":describe_error(exc)[0],"error_kind":context.get("error_kind") if isinstance(context,dict) else None,
                 "catalog_source":"structured_exception_context" if isinstance(context,dict) and context.get("error_kind") else "exception_type_or_text",
                 "status_code":context.get("status_code") if isinstance(context,dict) else None,
-                "uncertain":type(exc).__name__ in {"CancelledError","ReadTimeout"} or (isinstance(context,dict) and context.get("error_kind") in {"timeout","network"})})
+                "uncertain":type(exc).__name__ in _UNCERTAIN_ERROR_TYPES or (isinstance(context,dict) and (
+                    context.get("error_kind") in {"timeout","network"} or context.get("stream_error") in _UNCERTAIN_ERROR_TYPES))})
             # Only track a failed-call cost entry for a request that actually
             # reached the provider and wasn't already tracked above (the
             # "uncertain external result" re-raise follows a real, already-
             # tracked success -- tracking it again would double-count spend).
             if call_attempted and not cost_tracked:
-                _track_api_cost(model=kwargs.get("use_model"), usage=None,
+                _track_api_cost(model=kwargs.get("use_model"), usage=None, provider=provider,
                     duration_sec=time.monotonic() - start, project_id=getattr(ctx.scope, "project_id", None),
                     status_code=(context.get("status_code") if isinstance(context,dict) else None) or 0,
                     error_message=f"{type(exc).__name__}: {exc}")
-            if ctx.scope.mode=='managed' and (type(exc).__name__ in {'CancelledError','ReadTimeout','ConnectTimeout'} or (isinstance(context,dict) and context.get('error_kind') in {'timeout','network'})):
+            if ctx.scope.mode=='managed' and (type(exc).__name__ in _UNCERTAIN_ERROR_TYPES|{'ConnectTimeout'} or (isinstance(context,dict) and (
+                    context.get('error_kind') in {'timeout','network'} or context.get('stream_error') in _UNCERTAIN_ERROR_TYPES))):
                 await hold_uncertain_request(ctx,request_id)
             raise
         finally:
@@ -850,7 +896,9 @@ async def observe_attempt(session, project):
                     observer.mark_gap(scope.execution_id,snapshot_error)
         from app.services.profiles_v1 import finish_attempt
         await finish_attempt(ctx, True)
-        await record_fact("node_error", {"error_type": type(exc).__name__})
+        from app.services.apply_ops_batches import pass_stop_rule
+        rule = pass_stop_rule(exc)
+        await record_fact("node_error", {"error_type": type(exc).__name__, **({"rule": rule} if rule else {})})
         if session.info.get("recovery_attempt_id") == attempt_id:
             from app.services.actions_recovery import worker_finished
             await worker_finished(ctx, error=True)

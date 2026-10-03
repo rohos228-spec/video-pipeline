@@ -77,7 +77,7 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as s:
             # The recorded source request body (what recover_node compares the recovery request to).
             source = await s.scalar(select(ObservationEvent).where(ObservationEvent.kind == 'model_start'))
-            source.payload = {'input_revision': digest(self.SOURCE_BODY),
+            source.payload = {'input_revision': digest(self.SOURCE_BODY), 'provider': 'kie',
                               'body': observation._observer.save_body(self.EXECUTION_UUID, self.SOURCE_BODY)}
             if not inner_json_retry:
                 for event in (await s.scalars(select(ObservationEvent).where(ObservationEvent.kind == 'json_retry'))).all():
@@ -431,6 +431,39 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(row.verification_result['verified'])
             self.assertTrue((await s.get(ActionExecutionControl, 'exec-durable')).held)
         self.assertTrue(get_permission(7).held)
+
+
+    # ---- Vibecode (chat/completions) source requests --------------------------------------
+    async def mark_source_provider(self, provider, *, complete=True):
+        async with self.sessions() as s:
+            start = await s.scalar(select(ObservationEvent).where(ObservationEvent.kind == 'model_start'))
+            start.payload = {**start.payload, 'provider': provider}
+            end = await s.scalar(select(ObservationEvent).where(ObservationEvent.kind == 'model_end'))
+            end.payload = {**end.payload, 'provider': provider, 'complete': complete}
+            await s.commit()
+
+    async def test_vibecode_source_with_complete_chat_answer_is_admitted_for_retry_same(self):
+        # G3/G9 read model_end.complete; observe_model now sets it for a normal chat/completions answer.
+        await self.text_fixture('excel_gpt', inner_json_retry=True)
+        await self.mark_source_provider('vibecode')
+        ticket = await self.retry()
+        self.assertEqual(ticket['status'], 'queued')
+        self.assertEqual(ticket['preconditions']['action_type'], 'retry_same')
+
+    async def test_vibecode_source_with_unconfirmed_chat_answer_is_refused(self):
+        await self.text_fixture('excel_gpt', inner_json_retry=True)
+        await self.mark_source_provider('vibecode', complete=False)
+        with self.assertRaisesRegex(ValueError, 'uncertain request'):
+            await self.retry()
+        await self.assert_no_dispatch()
+
+    async def test_kie_profile_is_refused_at_reservation_for_a_vibecode_source(self):
+        await self.text_fixture('plan')
+        await self.mark_source_provider('vibecode')
+        overlay_id = await self.approved_profile_fixture()
+        with self.assertRaisesRegex(ValueError, 'provider differs'):
+            await self.retry(profile_overlay_id=overlay_id)
+        await self.assert_no_dispatch()
 
 
 if __name__ == '__main__':

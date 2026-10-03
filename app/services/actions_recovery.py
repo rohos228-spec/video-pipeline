@@ -286,10 +286,11 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 raise ValueError("input/config revision changed or not recorded: " + ",".join(changed))
             profile = None
             if profile_overlay_id:
-                from app.services.profiles_v1 import reservation
+                from app.services.profiles_v1 import reservation, source_provider
                 profile = await reservation(master, profile_overlay_id, execution_id=execution_id,
                     project_id=project_id,node_key=node_key,source_attempt_id=source.attempt_id,
-                    revision=revision,graph=control.graph_version,body_hash=starts[0].payload["input_revision"])
+                    revision=revision,graph=control.graph_version,body_hash=starts[0].payload["input_revision"],
+                    source_provider=source_provider(starts[0].payload))
             action = RecoveryAction(action_id=str(uuid.uuid4()), execution_id=execution_id,
                 project_id=project_id, incident_id=incident_id, node_key=node_key,
                 source_attempt_id=source.attempt_id, new_attempt_id=str(uuid.uuid4()),

@@ -38,11 +38,70 @@ class OperatorApiResult:
     apply_ops: dict | None = None
     applied_in_runner: bool = False
     empty_ops_accepted: bool = False
+    # Request id of this call's last model answer (task-local; None outside an
+    # observed attempt). Lets callers link facts to the right pack request.
+    request_id: str | None = None
+
+
+def _qc_response_complete(result) -> bool:
+    """Strict completeness of one model answer, for every transport.
+
+    Kie Responses carry ``raw.status``; Vibecode chat/completions have no
+    ``status`` and finish with ``finish_reason`` (``stop``). A truncated
+    (``length``), SSE-salvaged or CF-continued answer is never complete.
+    """
+    from app.services.llm_completion import response_complete, response_truncated
+
+    raw = getattr(result, 'raw', None) or {}
+    finish = getattr(result, 'finish_reason', None) or None
+    return response_complete(raw, finish) and not response_truncated(raw, finish)
+
+
+def _task_request_id() -> str | None:
+    """Request id of the model call completed by *this* task.
+
+    ``ctx.last_request_id`` is shared by all parallel packs of an attempt and
+    may already point at another pack's request; the completion identity is
+    task-local. Falls back to the shared value when there is none.
+    """
+    from app.services.observation import _attempt, completed_model_request_id
+
+    ctx = _attempt.get()
+    if ctx is None:
+        return None
+    return completed_model_request_id() or ctx.last_request_id
+
+
+async def _record_parse_for_task_request(*args, **kwargs) -> None:
+    """``record_parse`` bound to this task's request instead of the shared one."""
+    import copy
+    import inspect
+
+    from app.services import observation
+
+    request_id = _task_request_id()
+    ctx = observation._attempt.get()
+    if request_id is None or ctx is None or request_id == ctx.last_request_id:
+        await observation.record_parse(*args, **kwargs)
+        return
+    if 'request_id' in inspect.signature(observation.record_parse).parameters:
+        await observation.record_parse(*args, request_id=request_id, **kwargs)
+        return
+    # record_parse reads ``ctx.last_request_id``: give it a task-local copy of the
+    # attempt context. The shared context (and other packs) are never mutated.
+    local = copy.copy(ctx)
+    local.last_request_id = request_id
+    token = observation._attempt.set(local)
+    completed_token = observation._completed_model_request.set((local, request_id))
+    try:
+        await observation.record_parse(*args, **kwargs)
+    finally:
+        observation._completed_model_request.reset(completed_token)
+        observation._attempt.reset(token)
 
 
 async def _require_completed_qc_response(result) -> None:
-    raw = getattr(result, 'raw', None) or {}
-    if raw.get('status') == 'completed' and not raw.get('sse_salvaged'):
+    if _qc_response_complete(result):
         return
     from app.services.observation import _attempt, hold_uncertain_request
     ctx = _attempt.get()
@@ -79,8 +138,7 @@ def _accepted_empty_ops(result, data, *, allowed=False) -> bool:
     """Explicit old no-change contract only; no salvage/refusal/unknown response."""
     if not allowed or data != {'ops': []}:
         return False
-    raw = getattr(result, 'raw', None) or {}
-    if raw.get('status') != 'completed' or raw.get('sse_salvaged'):
+    if not _qc_response_complete(result):
         return False
     try:
         return json.loads(result.text) == {'ops': []}
@@ -428,12 +486,10 @@ async def _run_operator_api_real(
         from app.services.db_apply import extract_apply_ops_json
 
         apply_ops = extract_apply_ops_json(reply_text or "")
-        from app.services.observation import record_parse
-
         if allow_empty_ops and not _qc_json_valid(reply_text):
             apply_ops = None
         empty_accepted = _accepted_empty_ops(result, apply_ops, allowed=allow_empty_ops and not is_check)
-        await record_parse(reply_text or "", apply_ops, payload_required=not is_check,
+        await _record_parse_for_task_request(reply_text or "", apply_ops, payload_required=not is_check,
                            empty_ops_allowed=allow_empty_ops, empty_ops_accepted=empty_accepted)
         if apply_ops is not None and not _apply_ops_has_payload(apply_ops) and not empty_accepted:
             if not (check_mode and not check_fix):
@@ -554,10 +610,9 @@ async def _run_operator_api_real(
     # project_file (не check): только apply-ops. Без TSV-fallback — иначе
     # модель пишет Excel-диалект, а enrich_xlsx его отвергает.
     if effective_output == "project_file" and not is_check and apply_ops is None:
-        from app.services.observation import record_fact, record_parse
+        from app.services.observation import record_fact
 
-        from app.services.observation import _attempt
-        retry_source = _attempt.get().last_request_id if _attempt.get() else None
+        retry_source = _task_request_id()
         await record_fact("json_retry", {"reason": "missing_write_payload", "strategy": "fixed_contract_prompt", "initiator": "runtime_json_retry", "source_request_id":retry_source},request_id=retry_source)
         from dataclasses import replace
 
@@ -629,7 +684,7 @@ async def _run_operator_api_real(
         if allow_empty_ops and not _qc_json_valid(reply_text):
             apply_ops = None
         empty_accepted = _accepted_empty_ops(retry, apply_ops, allowed=allow_empty_ops)
-        await record_parse(reply_text or "", apply_ops, empty_ops_allowed=allow_empty_ops,
+        await _record_parse_for_task_request(reply_text or "", apply_ops, empty_ops_allowed=allow_empty_ops,
                            empty_ops_accepted=empty_accepted)
         if apply_ops is not None and not _apply_ops_has_payload(apply_ops) and not empty_accepted:
             apply_ops = None
@@ -688,6 +743,7 @@ async def _run_operator_api_real(
         analysis=analysis,
         apply_ops=apply_ops,
         empty_ops_accepted=_accepted_empty_ops(result, apply_ops, allowed=allow_empty_ops and not is_check),
+        request_id=_task_request_id(),
     )
 
 

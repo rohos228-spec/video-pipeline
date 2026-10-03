@@ -161,7 +161,8 @@ _SFQC_GRAPH = {
 }
 
 
-def test_bind_script_frames_qc_forces_kie_high() -> None:
+def test_bind_script_frames_qc_forces_vibecode() -> None:
+    # llm_override.py: "script_frames_qc must use Vibecode only (Kie 402 / no credits)".
     from app.services.llm_override import current_override
 
     meta = {
@@ -171,10 +172,10 @@ def test_bind_script_frames_qc_forces_kie_high() -> None:
     with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
         ov = current_override()
         assert ov is not None
-        assert ov.provider == "kie"
-        assert ov.model_id == "gpt-5-6-sol"
-        assert ov.reasoning_effort == "high"
-        assert current_text_model_id() == "gpt-5-6-sol"
+        assert ov.provider == "vibecode"
+        assert ov.model_id == "gpt-5.6-sol"
+        assert ov.reasoning_effort is None
+        assert current_text_model_id() == "gpt-5.6-sol"
 
 
 def test_bind_script_frames_qc_report_stays_off_kie() -> None:
@@ -204,15 +205,13 @@ def test_bind_plain_excel_gpt_stays_vibecode() -> None:
         assert ov.model_id == "gpt-5.6-sol"
 
 
-def test_script_frames_qc_routes_chat_to_kie_high_while_header_is_vibecode(
-    monkeypatch, tmp_path
-) -> None:
+def _route_script_frames_qc(monkeypatch, tmp_path, header: str) -> None:
     import app.services.gpt_api as gpt_api
     import app.settings as settings_mod
     from app.services.llm_override import bind_project_llm, current_override
     from app.settings import Settings
 
-    monkeypatch.setenv("TEXT_LLM_PROVIDER", "vibecode")
+    monkeypatch.setenv("TEXT_LLM_PROVIDER", header)
     monkeypatch.setenv("GPT_API_KEY", "kie-key")
     monkeypatch.setenv("GPT_BASE_URL", "https://api.kie.ai")
     monkeypatch.setenv("GPT_CHAT_PATH", "/codex/v1/responses")
@@ -229,22 +228,29 @@ def test_script_frames_qc_routes_chat_to_kie_high_while_header_is_vibecode(
         **_SFQC_GRAPH,
         "active_excel_gpt_node_key": "n_excel_gpt_fw_script",
     }
-    assert gpt_api.is_responses_mode() is False
-    assert gpt_api._chat_url("gpt-5.6-sol") == (
-        "https://vibecode.moe/v1/chat/completions"
-    )
     with bind_project_llm(_P(meta), ProjectStatus.enriching_1):
         ov = current_override()
         assert ov is not None
-        assert ov.provider == "kie"
-        assert ov.reasoning_effort == "high"
-        assert gpt_api.is_responses_mode() is True
-        assert gpt_api._chat_url("gpt-5-6-sol") == (
-            "https://api.kie.ai/codex/v1/responses"
+        assert ov.provider == "vibecode"
+        assert ov.reasoning_effort is None
+        assert gpt_api.is_responses_mode() is False
+        assert gpt_api._chat_url("gpt-5.6-sol") == (
+            "https://vibecode.moe/v1/chat/completions"
         )
         headers = gpt_api._headers()
-        assert headers["Authorization"] == "Bearer kie-key"
+        assert headers["Authorization"] == "Bearer vk-test"
         assert "X-VP-Relay-Token" not in headers
-        assert gpt_api._responses_reasoning_block() == {"effort": "high"}
-    assert gpt_api.is_responses_mode() is False
-    assert gpt_api._responses_reasoning_block() == {"effort": "low"}
+    # Outside the group the header setting applies again.
+    assert gpt_api.is_responses_mode() is (header == "kie")
+
+
+def test_script_frames_qc_routes_chat_to_vibecode_while_header_is_kie(
+    monkeypatch, tmp_path
+) -> None:
+    _route_script_frames_qc(monkeypatch, tmp_path, "kie")
+
+
+def test_script_frames_qc_routes_chat_to_vibecode_while_header_is_vibecode(
+    monkeypatch, tmp_path
+) -> None:
+    _route_script_frames_qc(monkeypatch, tmp_path, "vibecode")

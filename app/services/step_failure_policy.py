@@ -316,7 +316,16 @@ async def record_step_failure(
         from app.services.scene_design.agent_chunks import is_credits_failure
     except Exception:  # noqa: BLE001
         is_credits_failure = lambda _e: False  # noqa: E731
-    if is_credits_failure(error) or "credits insufficient" in (err_msg_early or "").lower():
+
+    def _credits_exhausted() -> bool:
+        if err_code_early == "gpt_credits":  # Vibecode/Kie text 402, see error_catalog
+            return True
+        try:
+            return is_credits_failure(error) or "credits insufficient" in (err_msg_early or "").lower()
+        except Exception:  # noqa: BLE001  e.g. a non-numeric provider_code
+            return False
+
+    if _credits_exhausted():
         from app.services.project_control import pause_project as pause_project_svc
         from app.services.run_sync import mark_running_node_failed
 
@@ -324,7 +333,9 @@ async def record_step_failure(
         step = step_by_running_status(running)
         fs = _failure_state(project)
         fs["last_error"] = err_msg_early
-        fs["last_error_code"] = err_code_early or "gpt_credits"
+        # describe_error never returns an empty code; keep a credits-specific one in the state.
+        credits_code = err_code_early if err_code_early in {"gpt_credits", "media_credits"} else "gpt_credits"
+        fs["last_error_code"] = credits_code
         fs["last_running"] = running.value
         fs.pop("sleep_until", None)
         _save_failure_state(project, fs)
@@ -333,7 +344,7 @@ async def record_step_failure(
             project,
             error,
             initiator="worker",
-            error_code=err_code_early or "gpt_credits",
+            error_code=credits_code,
         )
         try:
             from app.services.scene_design import runner as sd_runner

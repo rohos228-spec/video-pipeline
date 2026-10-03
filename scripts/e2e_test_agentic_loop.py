@@ -214,7 +214,7 @@ class Harness:
             body_ref = observation._observer.save_body(EXECUTION_ID, source_body)
             facts = [
                 ("node_start", {"recovery_input_revision": revision}, None),
-                ("model_start", {"input_revision": digest(source_body), "body": body_ref}, "request-source"),
+                ("model_start", {"input_revision": digest(source_body), "body": body_ref, "provider": "kie"}, "request-source"),
                 ("model_end", {"complete": not is_timeout}, "request-source"),
                 *([] if is_timeout else [("json_retry", {}, None)]),
                 ("parse_result", {"payload_required": True, "payload_present": False,

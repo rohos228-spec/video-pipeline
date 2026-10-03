@@ -230,7 +230,7 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
             node.status=NodeRunStatus.failed;node.finished_at=datetime.utcnow();node.attempts=9
             revision=await input_revision(s,project,'n1')
             facts=[('node_start',{'recovery_input_revision':revision},None),
-                ('model_start',{'input_revision':digest({'test':1})},'request-source'),
+                ('model_start',{'input_revision':digest({'test':1}),'provider':'kie'},'request-source'),
                 ('model_end',{'complete':True},'request-source'),('json_retry',{},None),
                 ('parse_result',{'payload_required':True,'payload_present':False},'request-source'),
                 ('node_error',{},None)]

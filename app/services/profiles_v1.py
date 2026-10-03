@@ -21,7 +21,37 @@ CATALOG.update({name:{**CATALOG['synthetic-json-v1'],'reasoning_effort':'low','m
     'prompt_variant':variant} for name,variant in (
         ('synthetic-original-v1','original-contract-v1'),('synthetic-format-v1','repair-json-only-v1'))})
 PRODUCTION_CATALOG={}
+PROVIDERS=('kie','vibecode')
+# Reference Vibecode repair profile (chat/completions). reasoning_effort / max_output_tokens stay None:
+# whether Vibecode honours them for this model is unverified, so the body never carries them.
+VIBECODE_REPAIR_PROFILE_ID='vibecode-json-repair-v1'
+VIBECODE_REPAIR_PROFILE={'model_id':'gpt-5.6-sol','provider':'vibecode','kind':'text','channel':'stable',
+    'reasoning_effort':None,'max_output_tokens':None,'prompt_variant':'repair-json-only-v1','synthetic_only':False}
 _current=ContextVar('attempt_profile_overlay',default=None)
+
+def source_provider(payload):
+    """Provider of a recorded model_start: the recorded field, else a legacy path/host fingerprint, else 'unknown'.
+
+    A profile is only allowed for a known provider that equals its own (fail closed)."""
+    payload=payload or {}
+    if payload.get('provider') in PROVIDERS:return payload['provider']
+    path=str(payload.get('path') or '')
+    if path.endswith('/codex/v1/responses'):return 'kie'
+    if payload.get('host')=='vibecode.moe' and path.endswith('/chat/completions'):return 'vibecode'
+    return 'unknown'
+
+def _provider_mismatch(candidate,source):
+    return source not in PROVIDERS or candidate.get('provider')!=source
+
+async def _source_events(s,execution_id,project_id,node_key):
+    """Latest node_start of the node and the first model_start of that attempt (as recorded in the journal)."""
+    source=await s.scalar(select(ObservationEvent).where(ObservationEvent.execution_id==execution_id,
+        ObservationEvent.project_id==project_id,ObservationEvent.node_key==node_key,
+        ObservationEvent.kind=='node_start').order_by(ObservationEvent.id.desc()).limit(1))
+    event=await s.scalar(select(ObservationEvent).where(ObservationEvent.execution_id==execution_id,
+        ObservationEvent.node_key==node_key,ObservationEvent.attempt_id==source.attempt_id,
+        ObservationEvent.kind=='model_start').order_by(ObservationEvent.id).limit(1)) if source else None
+    return source,event
 
 def active_catalog():
     from app.services.decision_config import runtime_config
@@ -42,6 +72,11 @@ async def eligible_profiles(session,row,base_version):
     catalog=active_catalog()
     if any(k not in catalog or policy.get('profiles',{}).get(k)!=catalog[k] for k in ids):
         raise ValueError('execution profile catalog snapshot mismatch')
+    event=await session.scalar(select(ObservationEvent).where(ObservationEvent.execution_id==row.execution_id,
+        ObservationEvent.node_key==row.node_key,ObservationEvent.attempt_id==row.source_attempt_id,
+        ObservationEvent.kind=='model_start').order_by(ObservationEvent.id).limit(1))
+    src=source_provider(event.payload) if event else 'unknown'
+    ids=[k for k in ids if not _provider_mismatch(catalog[k],src)]
     return [{'profile_id':k,'candidate':dict(catalog[k]),'catalog_hash':policy['profile_catalog_hash'],
         'base_version':base_version} for k in ids]
 
@@ -50,12 +85,48 @@ def validate_candidate(candidate):
         raise ValueError('unknown profile parameters')
     if candidate not in active_catalog().values():raise ValueError('incompatible profile or forbidden provider')
     from app.services.decision_config import validate_profile,runtime_config
+    if candidate.get('provider')=='vibecode':return validate_vibecode_profile(candidate,runtime_config()['mode'])
     validate_profile(candidate,runtime_config()['mode'])
 
-def synthetic_transport(url=None,key=None):
+def validate_vibecode_profile(candidate,mode):
+    """Vibecode chat/completions profile. decision_config.validate_profile is Kie-only, so this lives here."""
+    from app.services.prompt_library import APPROVED_PROFILE_PROMPTS
+    c=candidate
+    if (not isinstance(c,dict) or set(c)!=set(CATALOG['synthetic-json-v1']) or c['provider']!='vibecode'
+            or c['kind']!='text' or c['channel']!='stable' or c['prompt_variant'] not in APPROVED_PROFILE_PROMPTS
+            or type(c['synthetic_only'])!=bool or c['reasoning_effort'] is not None or c['max_output_tokens'] is not None
+            or not isinstance(c['model_id'],str)):
+        raise ValueError('incompatible registered profile')
+    if mode=='synthetic':
+        if c['synthetic_only'] is not True or c['model_id']!='gpt-synthetic-alt':raise ValueError('invalid bounded synthetic profile')
+        return
+    if c['synthetic_only'] or 'synthetic' in c['model_id']:raise ValueError('synthetic profile not production')
+    from app.services.vibecode_catalog import find_model
+    known=find_model(c['model_id'])
+    if not known or known.get('kind')!='text' or known.get('provider')!='vibecode':raise ValueError('unknown production text model')
+
+def _check_vibecode_route(cfg,url):
+    """Route of a Vibecode profile request: an approved Vibecode host (direct or the owner's relay),
+    HTTPS (loopback excepted) and the chat/completions path. The Kie-only decision endpoint is not used."""
+    from app.services import decision_config as dc
+    if not cfg['online_enabled'] or cfg['decision'] is None:raise ValueError('decision provider disabled / not configured')
+    if url is None:
+        from app.services.gpt_api import _chat_url
+        from app.services.llm_override import NodeLlmOverride,use_override
+        m=cfg['decision']
+        with use_override(NodeLlmOverride(m['model_id'],'stable','text','vibecode',m['model_id'],None)):url=_chat_url(m['model_id'])
+    u=urlsplit(str(url))
+    loopback={'127.0.0.1','localhost','::1'}
+    hosts=dc.approved_vibecode_hosts() if hasattr(dc,'approved_vibecode_hosts') else {'vibecode.moe'}|loopback
+    if (u.username or u.password or u.query or u.fragment or u.hostname not in hosts
+            or (u.scheme!='https' and u.hostname not in loopback) or not u.path.endswith('/chat/completions')):
+        raise ValueError('route differs from approved configuration')
+
+def synthetic_transport(url=None,key=None,provider='kie'):
     from app.settings import settings
     from app.services.decision_config import runtime_config,check_route
     cfg=runtime_config()
+    if cfg['mode']=='production' and provider=='vibecode':return _check_vibecode_route(cfg,url)
     if cfg['mode']=='production':
         from app.services.gpt_api import _chat_url
         from app.services.llm_override import NodeLlmOverride,use_override
@@ -69,8 +140,23 @@ def synthetic_transport(url=None,key=None):
     if host not in {'localhost','127.0.0.1','::1'} or not credential.startswith('synthetic'):
         raise ValueError('Profiles-v1 synthetic loopback only; no production approval')
 
+def _effective_chat_body(body,candidate):
+    """Vibecode chat/completions: only text `messages`; no Responses `input`, no reasoning/token knobs."""
+    from app.services.prompt_library import apply_approved_profile_prompt
+    result=dict(body);messages=result.get('messages')
+    if 'input' in result or not (isinstance(messages,list) and messages and all(isinstance(m,dict)
+            and set(m)=={'role','content'} and isinstance(m['content'],str) for m in messages)):
+        raise ValueError('profile requires compatible chat/completions text contract')
+    messages=copy.deepcopy(messages)
+    target=next((m for m in reversed(messages) if m['role']=='user'),None)
+    if target is None:raise ValueError('profile requires user text input')
+    target['content']=apply_approved_profile_prompt(target['content'],candidate['prompt_variant'])
+    result.update(model=candidate['model_id'],messages=messages)
+    return result
+
 def effective_body(body,candidate):
     validate_candidate(candidate)
+    if candidate['provider']=='vibecode':return _effective_chat_body(body,candidate)
     from app.services.prompt_library import apply_approved_profile_prompt
     result=dict(body)
     if 'messages' in result:raise ValueError('profile requires compatible Responses text contract')
@@ -142,8 +228,11 @@ class ProfilesSupervisor:
             for row in rows:
                 ticket=await s.scalar(select(RecoveryAction).where(RecoveryAction.execution_id==execution_id,RecoveryAction.new_attempt_id==row.attempt_id)) if row.attempt_id else None
                 views.append({**overlay_json(row),'recovery':{'status':ticket.status,'verification':ticket.verification_result} if ticket else None})
+            _,start=await _source_events(s,project_id=project_id,execution_id=execution_id,node_key=node_key)
+            src=source_provider(start.payload) if start else 'unknown'
             return {'base_version':version,'catalog_hash':catalog_hash(),'synthetic_only':__import__('app.services.decision_config',fromlist=['runtime_config']).runtime_config()['mode']=='synthetic',
-                'catalog':[{'profile_id':k,**v} for k,v in active_catalog().items()], 'available':available,'reason':reason,
+                'catalog':[{'profile_id':k,**v,'matches_source_provider':not _provider_mismatch(v,src)} for k,v in active_catalog().items()],
+                'source_provider':src,'available':available,'reason':reason,
                 'overlays':views}
 
     async def select_for_decision(self,decision_id,profile_id):
@@ -172,7 +261,7 @@ class ProfilesSupervisor:
         return await self.approve(**identity)
 
     async def approve(self,*,project_id,execution_id,node_key,profile_id,base_version,catalog_hash,initiator,rationale,_decision_id=None):
-        synthetic_transport()
+        synthetic_transport(provider=(active_catalog().get(profile_id) or {}).get('provider','kie'))
         if not initiator or len(rationale.strip())<3:raise ValueError('explicit approval rationale required')
         if catalog_hash!=globals()['catalog_hash']():raise ValueError('stale catalog hash')
         candidate=active_catalog().get(profile_id)
@@ -199,13 +288,11 @@ class ProfilesSupervisor:
             if prior:
                 if prior.profile_id==profile_id and prior.base_version==base_version and prior.status=='approved':return overlay_json(prior)
                 raise ValueError('one immutable profile version per node/execution; no replacement or extra recovery')
-            source=await s.scalar(select(ObservationEvent).where(ObservationEvent.execution_id==execution_id,
-                ObservationEvent.project_id==project_id,ObservationEvent.node_key==node_key,
-                ObservationEvent.kind=='node_start').order_by(ObservationEvent.id.desc()).limit(1))
-            event=await s.scalar(select(ObservationEvent).where(ObservationEvent.execution_id==execution_id,
-                ObservationEvent.node_key==node_key,ObservationEvent.attempt_id==source.attempt_id,
-                ObservationEvent.kind=='model_start').order_by(ObservationEvent.id).limit(1)) if source else None
+            source,event=await _source_events(s,execution_id,project_id,node_key)
             if not event:raise ValueError('recorded source request required')
+            # A profile only changes the request body; the node (not the profile) decides the provider.
+            if _provider_mismatch(candidate,source_provider(event.payload)):
+                raise ValueError('profile provider differs from failed attempt provider')
             if candidate['prompt_variant']!='original-contract-v1':
                 parsed=await s.scalar(select(ObservationEvent).where(ObservationEvent.execution_id==execution_id,
                     ObservationEvent.project_id==project_id,ObservationEvent.node_key==node_key,
@@ -253,12 +340,13 @@ class ProfilesSupervisor:
                     'rationale':rationale,'at':datetime.utcnow().isoformat(),'data_rollback':False}]
             await s.commit();return {**overlay_json(row),'data_rollback':False,'budget_reset':False}
 
-async def reservation(s,overlay_id,*,execution_id,project_id,node_key,source_attempt_id,revision,graph,body_hash):
-    synthetic_transport()
+async def reservation(s,overlay_id,*,execution_id,project_id,node_key,source_attempt_id,revision,graph,body_hash,source_provider=None):
     row=await s.get(ProfileOverlay,overlay_id)
+    synthetic_transport(provider=((row.candidate if row else None) or {}).get('provider','kie'))
     if not row or (row.execution_id,row.project_id,row.node_key,row.source_attempt_id)!=(execution_id,project_id,node_key,source_attempt_id):
         raise ValueError('profile outside execution/node/attempt scope')
     validate_candidate(row.candidate)
+    if _provider_mismatch(row.candidate,source_provider):raise ValueError('profile provider differs from failed attempt provider')
     if row.status!='approved' or row.attempt_id or row.base_version!=revision or row.graph_version!=graph or row.catalog_hash!=catalog_hash() or row.candidate_hash!=digest(row.candidate) or row.source_body_hash!=body_hash:
         raise ValueError('stale or consumed approved profile/config version')
     return row
@@ -270,7 +358,7 @@ async def load_attempt(ctx):
             ProfileOverlay.attempt_id==ctx.attempt_id))
         if not row:return None
         if row.status not in {'reserved','active'}:raise RuntimeError('profile is not active for this attempt')
-        validate_candidate(row.candidate);synthetic_transport()
+        validate_candidate(row.candidate);synthetic_transport(provider=row.candidate['provider'])
         if row.candidate_hash!=digest(row.candidate) or row.catalog_hash!=catalog_hash():raise RuntimeError('profile catalog changed')
         row.status='active';row.history=[*row.history,{'kind':'attempt_activated','attempt_id':ctx.attempt_id,'at':datetime.utcnow().isoformat()}]
         await s.commit();return overlay_json(row)
@@ -288,7 +376,10 @@ async def transform_request(ctx,kwargs):
     overlay=_current.get()
     if not overlay:return kwargs
     if overlay['attempt_id']!=ctx.attempt_id:raise RuntimeError('profile attempt context mismatch')
-    synthetic_transport(kwargs.get('url'),(kwargs.get('headers') or {}).get('Authorization','').removeprefix('Bearer '))
+    from app.services.observation import effective_text_provider
+    if overlay['candidate']['provider']!=effective_text_provider():
+        raise RuntimeError('profile provider differs from node provider; blocked before transport')
+    synthetic_transport(kwargs.get('url'),(kwargs.get('headers') or {}).get('Authorization','').removeprefix('Bearer '),overlay['candidate']['provider'])
     async with ctx.observer.master() as s:
         row=await s.get(ProfileOverlay,overlay['overlay_id'])
         if not row or row.status!='active' or row.candidate_hash!=digest(row.candidate) or row.catalog_hash!=catalog_hash():raise RuntimeError('profile permission/config changed before send')

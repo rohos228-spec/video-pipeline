@@ -1,4 +1,4 @@
-"""Explicit local policy for the existing text client. No secrets or new provider."""
+"""Explicit local policy for the existing text client. No secrets; approved routes are Kie Responses and Vibecode chat/completions."""
 import json,os
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -13,6 +13,14 @@ class DecisionRuntimeBinding(Base):
     config_hash: Mapped[str]=mapped_column(String(64))
     config: Mapped[dict]=mapped_column(JSON)
     created_at: Mapped[datetime]=mapped_column(default=datetime.utcnow)
+
+VIBECODE_HOST='vibecode.moe'
+LOOPBACK={'127.0.0.1','localhost','::1'}
+# Exact catalog ids only (no aliases): each maps to one provider and one endpoint path.
+APPROVED_DECISION_ROUTES={
+    'gpt-kie':{'provider':'kie','route_kind':'kie_responses','path':'/codex/v1/responses'},
+    'gpt-5.6-sol-vibecode':{'provider':'vibecode','route_kind':'vibecode_chat_completions','path':'/v1/chat/completions'},
+}
 
 READ_ACTIONS={'read_events','read_contract','human_review','wait','finish'}
 ALL_ACTIONS=READ_ACTIONS|{'retry_same','retry_profile'}
@@ -39,23 +47,58 @@ def check_incident_scope(config, **identity):
         raise ValueError('incident scope does not authorize this execution/node/attempt')
 
 
+def route_info(config):
+    """Approved route of a validated config (None when no decision model is configured)."""
+    model=(config or {}).get('decision')
+    return APPROVED_DECISION_ROUTES.get(model.get('catalog_id')) if model else None
+
+def route_kind(config):
+    info=route_info(config)
+    return info['route_kind'] if info else None
+
+def provider(config):
+    info=route_info(config)
+    return info['provider'] if info else None
+
+def approved_vibecode_hosts():
+    """Constant direct host, the operator's VPS relay host (if configured) and loopback for tests."""
+    from app.settings import settings
+    hosts={VIBECODE_HOST}|LOOPBACK
+    relay=urlsplit(settings.vps_relay_base_url or '').hostname
+    if relay:hosts.add(relay)
+    return hosts
+
+
 def validate_model(model):
-    from app.services.text_llm_catalog import CATALOG
+    from app.services.text_llm_catalog import CATALOG,catalog_api_model
     from app.services.vibecode_catalog import find_model
-    if model.get('catalog_id')!='gpt-kie' or not any(m['id']=='gpt-kie' for m in CATALOG):
-        raise ValueError('unapproved provider/catalog; this adapter supports existing Kie Responses only')
+    cid=model.get('catalog_id')
+    route=APPROVED_DECISION_ROUTES.get(cid) if isinstance(cid,str) else None
+    if route is None or not any(m['id']==cid for m in CATALOG):
+        raise ValueError('unapproved provider/catalog; approved: Kie Responses, Vibecode chat/completions')
     mid=model.get('model_id','')
-    # Existing model catalog supplies compatibility, never operator permission.
-    alias=mid.replace('gpt-5-6-','gpt-5.6-')
-    known=find_model(alias) or find_model(mid)
+    if not isinstance(mid,str):raise ValueError('unknown production text model')
+    if route['provider']=='vibecode':
+        # Vibecode model id is exactly the catalog api_model (no Kie-style aliasing).
+        known=mid==catalog_api_model(cid,default='') and find_model(mid)
+    else:
+        # Existing model catalog supplies compatibility, never operator permission.
+        alias=mid.replace('gpt-5-6-','gpt-5.6-')
+        known=find_model(alias) or find_model(mid)
     if not known or known.get('kind')!='text' or 'synthetic' in mid:
         raise ValueError('unknown production text model')
-    if model.get('reasoning_effort') not in {'low','medium','high','xhigh'}:raise ValueError('unsupported reasoning effort')
+    if route['provider']=='vibecode':
+        # Vibecode chat/completions gets no reasoning parameter, so config must not promise one.
+        if model.get('reasoning_effort') is not None:raise ValueError('vibecode decision requires reasoning_effort null')
+    elif model.get('reasoning_effort') not in {'low','medium','high','xhigh'}:raise ValueError('unsupported reasoning effort')
     n=model.get('max_output_tokens')
     if type(n)!=int or not 1<=n<=16384:raise ValueError('invalid output token cap')
 
 
 def validate_profile(candidate,mode):
+    if isinstance(candidate,dict) and candidate.get('provider')=='vibecode':
+        from app.services.profiles_v1 import validate_vibecode_profile
+        return validate_vibecode_profile(candidate,mode)
     from app.services.prompt_library import APPROVED_PROFILE_PROMPTS
     fields={'model_id','provider','kind','channel','reasoning_effort','max_output_tokens','prompt_variant','synthetic_only'}
     if not isinstance(candidate,dict) or set(candidate)!=fields:raise ValueError('unknown profile parameters')
@@ -71,6 +114,20 @@ def validate_profile(candidate,mode):
     else:
         if c['synthetic_only']:raise ValueError('synthetic profile not production')
         validate_model({'catalog_id':'gpt-kie',**c})
+
+
+def validate_vibecode_policy(raw,endpoint):
+    """Fail-closed extras for the paid Vibecode route: explicit opt-in, one POST, no Kie-only features."""
+    if raw['mode']!='production' or raw.get('model_transport')!='real' or raw.get('external_calls_enabled') is not True:
+        raise ValueError('vibecode decision requires production mode with explicit real external authorization')
+    if raw.get('continuation_allowed') is not False or raw.get('retrieval_allowed') is not False or raw.get('gateway_ack',False):
+        raise ValueError('vibecode decision requires continuation_allowed=false, retrieval_allowed=false and no gateway_ack')
+    if any(not isinstance(item,dict) or item.get('provider')!='vibecode' for item in raw['profiles'].values()):
+        raise ValueError('vibecode decision profiles must be vibecode profiles')
+    if 'retry_profile' in raw['allowed_actions'] and not raw['profiles']:
+        raise ValueError('retry_profile requires at least one approved vibecode profile')
+    if endpoint.scheme not in {'https','http'} or endpoint.hostname not in approved_vibecode_hosts():
+        raise ValueError('vibecode endpoint host is not approved')
 
 
 def validate_config(raw):
@@ -112,10 +169,12 @@ def validate_config(raw):
     else:
         if model['model_id']!='gpt-5-6-sol' or model['catalog_id']!='gpt-kie':raise ValueError('synthetic acceptance uses compatible original text model')
         validate_model(model)
+    route=route_info(raw)
     endpoint=urlsplit(raw['endpoint'] or '')
-    if endpoint.username or endpoint.password or endpoint.query or endpoint.fragment or endpoint.path!='/codex/v1/responses':raise ValueError('invalid approved route')
-    if endpoint.hostname not in {'127.0.0.1','localhost','::1'} and endpoint.scheme!='https':raise ValueError('external route requires HTTPS')
-    if raw['mode']=='synthetic' and endpoint.hostname not in {'127.0.0.1','localhost','::1'}:raise ValueError('synthetic configuration loopback only')
+    if endpoint.username or endpoint.password or endpoint.query or endpoint.fragment or endpoint.path!=route['path']:raise ValueError('invalid approved route')
+    if endpoint.hostname not in LOOPBACK and endpoint.scheme!='https':raise ValueError('external route requires HTTPS')
+    if raw['mode']=='synthetic' and endpoint.hostname not in LOOPBACK:raise ValueError('synthetic configuration loopback only')
+    if route['provider']=='vibecode':validate_vibecode_policy(raw,endpoint)
     for key,c in raw['profiles'].items():
         if not key or not isinstance(key,str):raise ValueError('unknown profile parameters')
         validate_profile(c,raw['mode'])
@@ -144,6 +203,10 @@ def check_route(config,url):
     if config['mode']=='synthetic':
         from app.settings import settings
         if not str(settings.gpt_api_key).startswith('synthetic'):raise ValueError('synthetic credential required')
+    if provider(config)=='vibecode':
+        from app.settings import settings
+        # Presence only: the key itself is read by the transport from settings, never logged.
+        if not (settings.vibecode_api_key or '').strip():raise ValueError('vibecode credential missing')
 
 
 def status():
@@ -153,6 +216,6 @@ def status():
         return {'mode':cfg['mode'],'configured':available,'decision_model':cfg['decision'],
             'budget_policy':owner_budget_policy(cfg),
             'allowed_actions':cfg['allowed_actions'],'profile_count':len(cfg['profiles']),
-            'route':cfg['endpoint'],'reason':None if available else 'Модель принятия решений не настроена или выключена'}
+            'route':cfg['endpoint'],'provider':provider(cfg),'route_kind':route_kind(cfg),'reason':None if available else 'Модель принятия решений не настроена или выключена'}
     except (ValueError,OSError,TypeError):return {'mode':'production','configured':False,'decision_model':None,'allowed_actions':[],
-        'profile_count':0,'route':None,'reason':'Конфигурация модели недоступна или отклонена'}
+        'profile_count':0,'route':None,'provider':None,'route_kind':None,'reason':'Конфигурация модели недоступна или отклонена'}
