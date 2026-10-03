@@ -20,7 +20,7 @@ from app.services.llm_completion import response_complete,response_truncated
 
 ACTIONS=('read_events','read_contract','retry_same','human_review','wait','finish')
 MAX_STEPS=3
-CHAT_TOKEN_PARAM='max_completion_tokens'  # UNVERIFIED against Vibecode: max_tokens vs max_completion_tokens
+CHAT_TOKEN_PARAM='max_completion_tokens'  # live probe 2026-10-03: accepted, but vibecode.moe does not enforce the limit
 WAIT_SECONDS=30
 RECOVERY_INCIDENTS={'invalid_json','missing_payload'}
 DIAGNOSTIC_INCIDENTS=RECOVERY_INCIDENTS|{'contract_rejected','api_error'}
@@ -692,7 +692,7 @@ class HttpDecision:
         m=cfg['decision'];route=decision_config.route_info(cfg)
         if (kwargs.get('body') or {}).get('model')!=m['model_id']:raise ValueError('decision model differs from approved profile')
         vibecode=route['provider']=='vibecode'
-        if vibecode:kwargs={**kwargs,'body':{**kwargs['body'],CHAT_TOKEN_PARAM:m['max_output_tokens']}}
+        if vibecode:kwargs={**kwargs,'body':{**kwargs['body'],CHAT_TOKEN_PARAM:m['max_output_tokens'],'response_format':{'type':'json_object'}}}
         else:kwargs={**kwargs,'body':{**kwargs['body'],'max_output_tokens':m['max_output_tokens'],'reasoning':{'effort':m['reasoning_effort']}}}
         cost_extra={'provider':'vibecode'} if vibecode else {}
         async with self.supervisor.master() as s:

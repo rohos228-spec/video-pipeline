@@ -87,7 +87,8 @@ class VibecodeAdapter(base_tests.DecisionDurability):
         req=self.requests[0];sent=json.loads(req.content)
         self.assertEqual(str(req.url),ENDPOINT);self.assertEqual(req.headers['authorization'],'Bearer '+KEY)
         self.assertEqual(sent['model'],'gpt-5.6-sol');self.assertIs(sent['stream'],False);self.assertEqual(sent['max_completion_tokens'],CAP)
-        for absent in ('reasoning','reasoning_effort','max_output_tokens','max_tokens','response_format','temperature','stream_options'):
+        self.assertEqual(sent['response_format'],{'type':'json_object'})
+        for absent in ('reasoning','reasoning_effort','max_output_tokens','max_tokens','temperature','stream_options'):
             self.assertNotIn(absent,sent)
         self.assertEqual([m['role'] for m in sent['messages']][0],'system');self.assertEqual(sent['messages'][-1]['role'],'user')
         self.assertEqual(await self.used(),1)
@@ -178,7 +179,8 @@ class VibecodeAdapter(base_tests.DecisionDurability):
         await hook.send(send,(),self.kwargs())
         body=seen[0]['body']
         self.assertEqual(body['max_completion_tokens'],CAP);self.assertEqual(body['model'],'gpt-5.6-sol')
-        for absent in ('reasoning','max_output_tokens','response_format','temperature'):self.assertNotIn(absent,body)
+        self.assertEqual(body['response_format'],{'type':'json_object'})
+        for absent in ('reasoning','max_output_tokens','temperature'):self.assertNotIn(absent,body)
 
     async def test_send_stop_without_status_is_complete(self):
         d,hook=await self.hook()
