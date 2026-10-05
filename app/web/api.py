@@ -136,6 +136,9 @@ async def _lifespan(app: FastAPI):
             from app.services.observation import migrate_observation_schema
 
             await migrate_observation_schema(conn)
+            from app.services.action_layer.store import ensure_action_layer_schema
+
+            await ensure_action_layer_schema(conn)
     except Exception:  # noqa: BLE001
         logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:
@@ -283,6 +286,9 @@ def create_app() -> FastAPI:
     from app.web.routers import observations
 
     app.include_router(observations.router, prefix=API_PREFIX)
+    from app.services.action_layer.router import router as action_layer_router
+
+    app.include_router(action_layer_router, prefix=API_PREFIX)
     app.include_router(prompts_router.router, prefix=API_PREFIX)
     app.include_router(prompt_studio_router.router, prefix=API_PREFIX)
     app.include_router(prompt_files_router.router, prefix=API_PREFIX)

@@ -47,6 +47,9 @@ async def _init_db() -> None:
         from app.services.observation import migrate_observation_schema
 
         await migrate_observation_schema(conn)
+        from app.services.action_layer.store import ensure_action_layer_schema
+
+        await ensure_action_layer_schema(conn)
 
         # Лёгкая миграция: добавляем новые колонки в projects, если их ещё
         # нет (create_all не умеет ALTER). SQLite поддерживает IF NOT EXISTS

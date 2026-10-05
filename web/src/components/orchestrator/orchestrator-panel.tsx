@@ -25,6 +25,7 @@ import { usePersistedState } from "@/hooks/use-persisted-state";
 import { cn } from "@/lib/utils";
 import { ObservationSection } from "./observation-section";
 import { KillSwitchSection } from "./kill-switch-section";
+import { ActionLayerSection } from "../action-layer/action-layer-section";
 
 interface Props {
   projectId: number | null;
@@ -569,6 +570,7 @@ export function OrchestratorPanel({ projectId }: Props) {
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
             <ObservationSection projectId={projectId} />
             <KillSwitchSection projectId={projectId} />
+            <ActionLayerSection projectId={projectId} />
             <div className="my-3 border-t border-white/10" />
             {fixBugsMode ? (
               <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100/90">

@@ -372,6 +372,19 @@ class Settings(BaseSettings):
     observer_body_quota_bytes: int = Field(32 * 1024 * 1024, ge=0, alias="OBSERVER_BODY_QUOTA_BYTES")
     observer_body_retention_seconds: int = Field(7 * 24 * 3600, ge=0, alias="OBSERVER_BODY_RETENTION_SECONDS")
 
+    # Слой действий: потолок трат на один план (кредиты), срок жизни одноразового
+    # подтверждения, лимит шагов в плане, таймаут одного шага.
+    action_layer_session_cap_credits: float = Field(
+        200.0, ge=0, alias="ACTION_LAYER_SESSION_CAP_CREDITS"
+    )
+    action_layer_approval_ttl_s: int = Field(600, ge=1, alias="ACTION_LAYER_APPROVAL_TTL_S")
+    action_layer_max_steps: int = Field(20, ge=1, le=100, alias="ACTION_LAYER_MAX_STEPS")
+    action_layer_step_timeout_s: float = Field(900.0, gt=0, alias="ACTION_LAYER_STEP_TIMEOUT_S")
+    # Лимит обращений планировщика к модели на оператора в час (каждый POST считается).
+    action_layer_planner_calls_per_hour: int = Field(
+        30, ge=1, le=10000, alias="ACTION_LAYER_PLANNER_CALLS_PER_HOUR"
+    )
+
     @model_validator(mode="after")
     def _resolve_paths_from_repo_root(self) -> "Settings":
         object.__setattr__(self, "sqlite_path", resolve_project_path(self.sqlite_path))
