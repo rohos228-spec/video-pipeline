@@ -153,3 +153,33 @@ def test_fw_shots_runner_reads_group_not_main_agents(
     assert "GROUP V13" in text
     assert "MAIN V6" not in text
     assert "node_groups/script_frames_qc" in str(path).replace("\\", "/")
+
+
+def test_skeleton_and_place_prompts_live_in_scene_design(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompts_root: Path
+) -> None:
+    """Каркас / площадка группы читают prompts/scene_design/, не копию в группе."""
+    sd = tmp_path / "prompts" / "scene_design"
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / "scene_skeleton_agent.md").write_text("SKELETON\n", encoding="utf-8")
+    (sd / "action.md").write_text("PLACE\n", encoding="utf-8")
+    group = tmp_path / "templates" / "node_groups" / "script_frames_qc"
+    group.mkdir(parents=True)
+    (group / "scenes_to_frames_ru.md").write_text("SHOTS\n", encoding="utf-8")
+    monkeypatch.setattr("app.project_root.find_project_root", lambda: tmp_path)
+
+    skel = pl.resolve_excel_gpt_prompt_path(
+        "scene_skeleton_agent", node_key="n_excel_gpt_fw_script"
+    )
+    assert skel == sd / "scene_skeleton_agent.md"
+    place = pl.resolve_excel_gpt_prompt_path("action", node_key="n_excel_gpt_fw_action")
+    assert place == sd / "action.md"
+    assert pl.script_frames_qc_prompt_relpath("action") == "prompts/scene_design/action.md"
+    assert pl.script_frames_qc_prompt_relpath("scenes_to_frames_ru") == (
+        "templates/node_groups/script_frames_qc/scenes_to_frames_ru.md"
+    )
+    assert set(pl.list_group_owned_prompts("script_frames_qc") or []) == {
+        "scene_skeleton_agent",
+        "action",
+        "scenes_to_frames_ru",
+    }

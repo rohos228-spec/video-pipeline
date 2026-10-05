@@ -14,6 +14,7 @@ from app.services.node_rules import (
     PASS_RULES,
     PLAN_FIELD_RULES,
     PLAN_ISSUE_RULES,
+    PROMPT_DIR,
     RULES,
     RULES_BY_ID,
     flow_mermaid,
@@ -71,11 +72,21 @@ def test_every_code_pass_has_rule() -> None:
 
 def test_flow_loop_and_labels() -> None:
     keys = [f.key for f in NODE_FLOW]
-    assert keys == ["script", "check_script", "action", "shots", "qc", "report"]
-    assert next(f for f in NODE_FLOW if f.key == "check_script").on_fail == "script"
-    assert "check_script -.->|Не ок| script" in flow_mermaid()
+    assert keys == ["script", "action", "shots", "qc", "report"]
+    assert "script --> action" in flow_mermaid()
     assert node_local_key("n_excel_gpt_fw_shots") == "shots"
-    assert node_label("n_excel_gpt_fw_check_script") == "Проверка: сценарий"
+    assert node_label("n_excel_gpt_fw_script") == "Каркас"
+    assert node_label("n_excel_gpt_fw_action") == "Площадка"
+    assert node_label("n_excel_gpt_fw_shots") == "Шоты"
+    by_key = {f.key: f for f in NODE_FLOW}
+    assert by_key["script"].prompt == "prompts/scene_design/scene_skeleton_agent.md"
+    assert by_key["action"].prompt == "prompts/scene_design/action.md"
+    assert by_key["shots"].prompt == "scenes_to_frames_ru.md"
+    for flow in NODE_FLOW:
+        if not flow.prompt:
+            continue
+        rel = flow.prompt if "/" in flow.prompt else f"{PROMPT_DIR}/{flow.prompt}"
+        assert (ROOT / rel).is_file(), rel
 
 
 def test_rules_doc_is_up_to_date() -> None:

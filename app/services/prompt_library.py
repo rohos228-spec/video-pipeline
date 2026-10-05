@@ -129,6 +129,14 @@ def excel_gpt_template_dir() -> Path:
 
 # Промты группы — только templates/node_groups/script_frames_qc/,
 # и только когда группа применена (group_id / нода группы).
+# Промты агентов scene_design, на которые смотрят ноды группы:
+# каркас (fw_script) и площадка (fw_action). Файл один — в prompts/scene_design/,
+# копию в папку группы не кладём (правка в Studio пишет туда же).
+SCRIPT_FRAMES_QC_SHARED_PROMPTS: dict[str, str] = {
+    "scene_skeleton_agent": "prompts/scene_design/scene_skeleton_agent.md",
+    "action": "prompts/scene_design/action.md",
+}
+
 SCRIPT_FRAMES_QC_PROMPT_NAMES: frozenset[str] = frozenset(
     {
         "script_writer_ru",
@@ -137,6 +145,7 @@ SCRIPT_FRAMES_QC_PROMPT_NAMES: frozenset[str] = frozenset(
         "shots_qc_ru",
         "frame_prompts_continuity_ru",
         "prompts_qc_continuity_ru",
+        *SCRIPT_FRAMES_QC_SHARED_PROMPTS,
     }
 )
 
@@ -223,24 +232,45 @@ def list_group_owned_prompts(group_id: str | None) -> list[str] | None:
     """Промты группы. None — общий список «Работа с GPT»."""
     if script_frames_qc_group_id(group_id) is None:
         return None
-    d = node_group_prompts_dir("script_frames_qc")
     return sorted(
-        n for n in SCRIPT_FRAMES_QC_PROMPT_NAMES if (d / f"{n}.md").is_file()
+        n
+        for n in SCRIPT_FRAMES_QC_PROMPT_NAMES
+        if resolve_script_frames_qc_prompt_path(n).is_file()
     )
 
 
-def resolve_script_frames_qc_prompt_path(name: str) -> Path:
-    """Промт группы — только templates/node_groups/script_frames_qc/."""
+def script_frames_qc_prompt_relpath(name: str) -> str:
+    """Путь промта группы от корня репо (для UI / библиотеки)."""
     clean = (name or "").strip()
     if clean.lower().endswith(".md"):
         clean = clean[:-3].rstrip()
+    shared = SCRIPT_FRAMES_QC_SHARED_PROMPTS.get(clean)
+    if shared:
+        return shared
+    return f"templates/node_groups/script_frames_qc/{clean}.md"
+
+
+def resolve_script_frames_qc_prompt_path(name: str) -> Path:
+    """Промт группы: templates/node_groups/script_frames_qc/.
+
+    Каркас и площадка — общие промты scene_design
+    (``SCRIPT_FRAMES_QC_SHARED_PROMPTS``).
+    """
+    from app.project_root import find_project_root
+
+    clean = (name or "").strip()
+    if clean.lower().endswith(".md"):
+        clean = clean[:-3].rstrip()
+    shared = SCRIPT_FRAMES_QC_SHARED_PROMPTS.get(clean)
+    if shared:
+        return find_project_root() / shared
     return node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
 
 
 def _group_prompt_path(name: str) -> Path | None:
     clean = name.strip()
     if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
-        p = node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
+        p = resolve_script_frames_qc_prompt_path(clean)
         if p.is_file():
             return p
     return None

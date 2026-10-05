@@ -378,49 +378,62 @@ def _work_spec(
     )
 
 
-def _script_frames_qc_group() -> NodeGroupDef:
-    """Биты → проверка → действие сцены → кадры-шаги → QC полей → отчёт.
+# Цепочка группы script_frames_qc: каркас → площадка → шоты → QC → отчёт.
+# id нод (``n_excel_gpt_fw_*``) не меняем — на суффиксы завязан раннер
+# (enrich_xlsx / db_frames_context / apply_ops_batches). Меняются подписи
+# и промты. Каркас и площадка берут промты агентов scene_design
+# (prompts/scene_design/), см. ``prompt_library.SCRIPT_FRAMES_QC_SHARED_PROMPTS``.
+SCRIPT_FRAMES_QC_CHAIN_PROMPTS: dict[str, str] = {
+    "script": "scene_skeleton_agent",
+    "action": "action",
+    "shots": "scenes_to_frames_ru",
+    "qc": "shots_qc_ru",
+}
+# Старые промты по умолчанию этих нод — их можно заменить на новые без спроса.
+_SCRIPT_FRAMES_QC_LEGACY_PROMPTS: dict[str, frozenset[str]] = {
+    "script": frozenset({"script_writer_ru"}),
+    "action": frozenset({"main_action_from_bits_ru"}),
+}
 
-    Откат к рабочей цепочке 9cc7ab20 (до срезания нод 16.09).
+
+def _script_frames_qc_group() -> NodeGroupDef:
+    """Каркас → площадка → шоты → QC кадров → отчёт.
+
+    Каркас — ``prompts/scene_design/scene_skeleton_agent.md``;
+    площадка — ``prompts/scene_design/action.md`` (только площадка + меняет,
+    без главного_действия и кадров); шоты —
+    ``templates/node_groups/script_frames_qc/scenes_to_frames_ru.md``.
     """
     script = _work_spec(
         "script",
-        "GPT: сценарий · биты",
-        "Готовый закадр → биты (изменение + якорь); код режет spans",
+        "Каркас",
+        "Закадр целиком → сцены (закадр, место, персонажи, предметы, речь, сцена) "
+        "+ база персонажей и предметов",
         _STEP_X,
-        "script_writer_ru",
-    )
-    check_script = GroupNodeSpec(
-        local_key="check_script",
-        node_type="excel_gpt",
-        label="Проверка: сценарий",
-        description="Проверка битов по промту сценариста (Ок/Не ок)",
-        preferred_id="n_excel_gpt_fw_check_script",
-        dx=_STEP_X * 2,
-        dy=0.0,
-        slot_overflow=True,
-        operator_config=dict(_CHECK_OPERATOR_CONFIG),
+        SCRIPT_FRAMES_QC_CHAIN_PROMPTS["script"],
     )
     action = _work_spec(
         "action",
-        "GPT: действие сцены",
-        "Биты + закадр → карточка сцены «место — шаг → шаг»; текст НЕ пишет",
-        _STEP_X * 3,
-        "main_action_from_bits_ru",
+        "Площадка",
+        "Закадр сцен → стартовая площадка (зоны, предметы, проходы, люди) + меняет; "
+        "без главного действия, кадров и камеры",
+        _STEP_X * 2,
+        SCRIPT_FRAMES_QC_CHAIN_PROMPTS["action"],
     )
     shots = _work_spec(
         "shots",
-        "GPT: сцены → кадры",
-        "Шаги → кадры по смыслу закадра; длину куска даёт шаг, не счётчик; камеру дописывает код",
-        _STEP_X * 4,
-        "scenes_to_frames_ru",
+        "Шоты",
+        "Действие + площадка → кадры: план, ракурс, высота, старт/конец, "
+        "промт / промт_старт / промт_конец по заготовкам родителя, конца и ребёнка",
+        _STEP_X * 3,
+        SCRIPT_FRAMES_QC_CHAIN_PROMPTS["shots"],
     )
     qc = _work_spec(
         "qc",
         "GPT: QC кадров",
         "Проверка кадров (смысл закадра, длина куска по шагу, точный жест vs процесс)",
-        _STEP_X * 5,
-        "shots_qc_ru",
+        _STEP_X * 4,
+        SCRIPT_FRAMES_QC_CHAIN_PROMPTS["qc"],
     )
     report = GroupNodeSpec(
         local_key="report",
@@ -431,7 +444,7 @@ def _script_frames_qc_group() -> NodeGroupDef:
             "Промты картинок — шаг img_pr, не эта группа."
         ),
         preferred_id="n_excel_gpt_fw_report",
-        dx=_STEP_X * 6,
+        dx=_STEP_X * 5,
         dy=0.0,
         slot_overflow=True,
         operator_config={
@@ -441,19 +454,18 @@ def _script_frames_qc_group() -> NodeGroupDef:
     )
     return NodeGroupDef(
         group_id="script_frames_qc",
-        title="Сценарий → кадры + QC",
+        title="Каркас → площадка → шоты + QC",
         description=(
-            "Биты → действие всей сцены → кадры как шаги действия → "
-            "QC полей кадров → HTML-отчёт. Промты картинок — img_pr. "
-            "Промты группы только в templates/node_groups/script_frames_qc/."
+            "Каркас сцен → площадка → шоты → QC полей кадров → HTML-отчёт. "
+            "Каркас и площадка — промты prompts/scene_design/ "
+            "(scene_skeleton_agent.md, action.md), шоты и QC — "
+            "templates/node_groups/script_frames_qc/."
         ),
         category="planning",
         default_after_type="plan",
-        nodes=(script, check_script, action, shots, qc, report),
+        nodes=(script, action, shots, qc, report),
         internal_edges=(
-            ("script", "check_script", "after"),
-            ("check_script", "action", "pass"),
-            ("check_script", "script", "fail"),
+            ("script", "action", "after"),
             ("action", "shots", "after"),
             ("shots", "qc", "after"),
             ("qc", "report", "after"),
@@ -1319,7 +1331,12 @@ def _fw_pipeline_edge(src: str, tgt: str, kind: str = "after") -> dict[str, Any]
 
 
 def restore_script_frames_qc_check_and_action_graph(meta: dict[str, Any]) -> bool:
-    """Вернуть fw_check_script + fw_action на 4-нодовый канвас вчерашнего среза."""
+    """Вернуть площадку (fw_action) между каркасом (fw_script) и шотами.
+
+    Имя историческое. Проверку (fw_check_script) больше не добавляем:
+    цепочка группы — каркас → площадка → шоты. Если проверка уже стоит
+    на старом канвасе, её рёбра сохраняем (проверка «Ок» → площадка).
+    """
     graph = canvas_graph_from_meta(meta)
     if graph is None or not canvas_has_script_frames_qc(meta):
         return False
@@ -1336,19 +1353,19 @@ def restore_script_frames_qc_check_and_action_graph(meta: dict[str, Any]) -> boo
     shots = by_id[shots_id]
     sx = float((script.get("position") or {}).get("x") or 0)
     sy = float((script.get("position") or {}).get("y") or 0)
-    tx = float((shots.get("position") or {}).get("x") or (sx + _STEP_X * 3))
+    tx = float((shots.get("position") or {}).get("x") or (sx + _STEP_X * 2))
     gid = str((script.get("data") or {}).get("groupId") or "script_frames_qc")
     gtitle = str((script.get("data") or {}).get("groupTitle") or group.title)
+    has_check = check_id in by_id
     changed = False
 
-    def _add_spec(local_key: str, nid: str, x: float) -> None:
-        nonlocal changed
-        spec = next(s for s in group.nodes if s.local_key == local_key)
+    if action_id not in by_id:
+        spec = next(s for s in group.nodes if s.local_key == "action")
         nodes.append(
             {
-                "id": nid,
+                "id": action_id,
                 "type": spec.node_type,
-                "position": {"x": x, "y": sy},
+                "position": {"x": sx + (tx - sx) / 2, "y": sy},
                 "data": {
                     "label": spec.label,
                     "description": spec.description,
@@ -1360,29 +1377,29 @@ def restore_script_frames_qc_check_and_action_graph(meta: dict[str, Any]) -> boo
         )
         changed = True
 
-    if check_id not in by_id:
-        _add_spec("check_script", check_id, sx + (tx - sx) / 3)
-    if action_id not in by_id:
-        _add_spec("action", action_id, sx + 2 * (tx - sx) / 3)
-
     edges = [dict(e) for e in graph["edges"]]
     before_n = len(edges)
+    direct = {(script_id, shots_id), (check_id, shots_id)}
     edges = [
         e
         for e in edges
-        if not (
-            str(e.get("source")) == script_id and str(e.get("target")) == shots_id
-        )
+        if (str(e.get("source")), str(e.get("target"))) not in direct
     ]
     if len(edges) != before_n:
         changed = True
     have = {(str(e.get("source")), str(e.get("target"))) for e in edges}
-    needed = (
-        (script_id, check_id, "after"),
-        (check_id, action_id, "pass"),
-        (check_id, script_id, "fail"),
-        (action_id, shots_id, "after"),
-    )
+    if has_check:
+        needed: tuple[tuple[str, str, str], ...] = (
+            (script_id, check_id, "after"),
+            (check_id, action_id, "pass"),
+            (check_id, script_id, "fail"),
+            (action_id, shots_id, "after"),
+        )
+    else:
+        needed = (
+            (script_id, action_id, "after"),
+            (action_id, shots_id, "after"),
+        )
     for src, tgt, kind in needed:
         if (src, tgt) in have:
             continue
@@ -1392,16 +1409,14 @@ def restore_script_frames_qc_check_and_action_graph(meta: dict[str, Any]) -> boo
 
     variants = dict(meta.get("prompt_slot_variants") or {})
     egn = dict(meta.get("excel_gpt_nodes") or {})
-    for spec in group.nodes:
-        if spec.local_key not in {"check_script", "action"}:
-            continue
-        nid = spec.preferred_id
-        if spec.prompt_variant and nid not in variants:
-            variants[nid] = {"main": spec.prompt_variant}
-            changed = True
-        if spec.operator_config and nid not in egn:
-            egn[nid] = dict(spec.operator_config)
-            changed = True
+    spec = next(s for s in group.nodes if s.local_key == "action")
+    nid = spec.preferred_id
+    if spec.prompt_variant and nid not in variants:
+        variants[nid] = {"main": spec.prompt_variant}
+        changed = True
+    if spec.operator_config and nid not in egn:
+        egn[nid] = dict(spec.operator_config)
+        changed = True
     if not changed:
         return False
     meta["prompt_slot_variants"] = variants
@@ -1414,8 +1429,69 @@ def restore_script_frames_qc_check_and_action_graph(meta: dict[str, Any]) -> boo
     return True
 
 
+# Подписи нод до переименования в Каркас / Площадка / Шоты.
+_SCRIPT_FRAMES_QC_LEGACY_LABELS: dict[str, frozenset[str]] = {
+    "script": frozenset({"GPT: сценарий · биты"}),
+    "action": frozenset({"GPT: действие сцены"}),
+    "shots": frozenset({"GPT: сцены → кадры"}),
+}
+
+
+def relabel_script_frames_qc_chain(meta: dict[str, Any]) -> bool:
+    """Каркас / Площадка / Шоты на старом канвасе: подпись и промт ноды.
+
+    Подпись меняем, только если стоит старая по умолчанию (или пусто);
+    промт — только если стоит старый по умолчанию (script_writer_ru,
+    main_action_from_bits_ru) или пусто. Свой выбор пользователя не трогаем.
+    """
+    graph = canvas_graph_from_meta(meta)
+    if graph is None or not canvas_has_script_frames_qc(meta):
+        return False
+    group = _script_frames_qc_group()
+    specs = {
+        s.preferred_id: s
+        for s in group.nodes
+        if s.local_key in _SCRIPT_FRAMES_QC_LEGACY_LABELS
+    }
+    nodes = [dict(n) for n in graph["nodes"]]
+    variants = dict(meta.get("prompt_slot_variants") or {})
+    changed = False
+    for node in nodes:
+        spec = specs.get(str(node.get("id") or ""))
+        if spec is None:
+            continue
+        data = dict(node.get("data") or {})
+        label = str(data.get("label") or "").strip()
+        old_labels = _SCRIPT_FRAMES_QC_LEGACY_LABELS[spec.local_key]
+        if label != spec.label and (not label or label in old_labels):
+            data["label"] = spec.label
+            data["description"] = spec.description
+            node["data"] = data
+            changed = True
+        if not spec.prompt_variant:
+            continue
+        cur = variants.get(spec.preferred_id)
+        main = str(cur.get("main") or "") if isinstance(cur, dict) else ""
+        legacy = _SCRIPT_FRAMES_QC_LEGACY_PROMPTS.get(spec.local_key, frozenset())
+        if main == spec.prompt_variant or (main and main not in legacy):
+            continue
+        upd = dict(cur) if isinstance(cur, dict) else {}
+        upd["main"] = spec.prompt_variant
+        variants[spec.preferred_id] = upd
+        changed = True
+    if not changed:
+        return False
+    meta["prompt_slot_variants"] = variants
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=[dict(e) for e in graph["edges"]],
+    )
+    return True
+
+
 def script_frames_qc_needs_upgrade(meta: dict[str, Any] | None) -> bool:
-    """True если нет check/action или нет shots→qc / report."""
+    """True если нет площадки (fw_action) или нет shots→qc / report."""
     if not isinstance(meta, dict) or not canvas_has_script_frames_qc(meta):
         return False
     graph = canvas_graph_from_meta(meta)
@@ -1423,7 +1499,7 @@ def script_frames_qc_needs_upgrade(meta: dict[str, Any] | None) -> bool:
         return False
     ids = {str(n.get("id")) for n in (graph.get("nodes") or []) if isinstance(n, dict)}
     if "n_excel_gpt_fw_script" in ids and "n_excel_gpt_fw_shots" in ids:
-        if "n_excel_gpt_fw_check_script" not in ids or "n_excel_gpt_fw_action" not in ids:
+        if "n_excel_gpt_fw_action" not in ids:
             return True
     pairs = {
         (str(e.get("source") or ""), str(e.get("target") or ""))
@@ -1659,6 +1735,8 @@ async def upgrade_script_frames_qc_on_project(
         changed = True
     if upgrade_script_frames_qc_report_graph(meta):
         changed = True
+    if relabel_script_frames_qc_chain(meta):
+        changed = True
     if not changed:
         return False
     from sqlalchemy.orm.attributes import flag_modified
@@ -1667,7 +1745,9 @@ async def upgrade_script_frames_qc_on_project(
     flag_modified(project, "meta")
     await session.flush()
     await sync_run_snapshot_from_canvas_graph(session, project, force=True)
-    logger.info("[#{}] upgrade script_frames_qc: check + action + shots/qc/report", project.id)
+    logger.info(
+        "[#{}] upgrade script_frames_qc: каркас → площадка → шоты → qc/report", project.id
+    )
     return True
 
 
