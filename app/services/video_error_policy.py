@@ -38,6 +38,7 @@ class VideoErrorAction(str, Enum):
     STOP_CANCEL = "stop_cancel"
     DOWNLOAD_RETRY = "download_retry"
     EXHAUSTED = "exhausted"  # вся лестница кончилась
+    HOLD_UNKNOWN = "hold_unknown"  # задача могла быть оплачена: новый submit запрещён, решает человек / возобновление
 
 
 class VideoLadderExhaustedError(RuntimeError):
@@ -56,6 +57,17 @@ class ClassifiedVideoError:
     detail: str = ""
 
 
+_NO_RESUBMIT_NAMES = ("KieSubmitUnknownError", "KieTaskPending")
+
+
+def is_no_resubmit(exc: BaseException) -> bool:
+    """Исход неизвестен или платная задача жива: ни retry, ни rewrite, ни новый createTask."""
+    ctx = getattr(exc, "context", None)
+    if isinstance(ctx, dict) and ctx.get("no_resubmit"):
+        return True
+    return any(c.__name__ in _NO_RESUBMIT_NAMES for c in type(exc).__mro__)
+
+
 def classify_video_error(exc: BaseException) -> ClassifiedVideoError:  # noqa: C901
     """Единый классификатор для Outsee/Grsai/Kie ошибок видео."""
     name = type(exc).__name__
@@ -69,6 +81,9 @@ def classify_video_error(exc: BaseException) -> ClassifiedVideoError:  # noqa: C
 
     if ctx_d.get("video_ladder_exhausted") or name == "VideoLadderExhaustedError":
         return ClassifiedVideoError("media_ladder_exhausted", VideoErrorAction.EXHAUSTED, msg)
+
+    if is_no_resubmit(exc):
+        return ClassifiedVideoError("media_no_resubmit", VideoErrorAction.HOLD_UNKNOWN, msg)
 
     provider_code = ctx_d.get("provider_code") or ctx_d.get("code")
     try:

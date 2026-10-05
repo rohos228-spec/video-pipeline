@@ -11,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base, NodeRun, NodeRunStatus, Project, ProjectStatus, WorkflowRun
 from app.services.observation import ExecutionControl, digest
+from app.services import revisions
 
 
 class ManagedLaunch(Base):
@@ -49,6 +50,13 @@ def require_idle_project(project):
         raise ValueError('native backoff/exhaustion requires the existing recovery flow')
     if is_generation_active(project.id) or is_running_status(project.status):
         raise ValueError('project already has active work')
+
+
+def _node_config_revisions(run, project, node_keys):
+    """Per-node configuration revision recorded with the launch (audit; permissions follow structure)."""
+    meta=project.meta if isinstance(project.meta,dict) else {}
+    nodes={str(n.get('id')):n for n in (run.nodes_snapshot or []) if isinstance(n,dict)}
+    return {k:revisions.node_config_revision(nodes[k],meta) for k in node_keys if k in nodes}
 
 
 def validate_scope(run, project, rows, selected):
@@ -116,17 +124,17 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
         primary=await project_session.get(Project,project_id)
         require_idle_project(project);require_idle_project(primary)
         if not run or run.project_id!=project_id:raise ValueError('workflow/project mismatch')
-        revision=digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot})
+        revision=revisions.graph_version(run.nodes_snapshot,run.edges_snapshot)
         if revision!=request['graph_version']:raise ValueError('graph revision changed')
         from app.services.canvas_graph import canvas_graph_from_meta
         canvas=canvas_graph_from_meta(primary.meta)
-        if canvas and digest({k:canvas[k] for k in ('nodes','edges')})!=revision:
+        if canvas and revisions.graph_version(canvas['nodes'],canvas['edges'])!=revision:
             raise ValueError('runtime canvas and selected graph disagree')
         rows=(await s.scalars(select(NodeRun).where(NodeRun.workflow_run_id==run.id))).all()
         entry,contracts=validate_scope(run,project,rows,request['node_keys'])
         replica=await project_session.get(WorkflowRun,run.id)
         replica_rows=(await project_session.scalars(select(NodeRun).where(NodeRun.workflow_run_id==run.id))).all()
-        if (not replica or digest({'nodes':replica.nodes_snapshot,'edges':replica.edges_snapshot})!=revision
+        if (not replica or revisions.graph_version(replica.nodes_snapshot,replica.edges_snapshot)!=revision
                 or {r.node_key:(r.status,r.attempts) for r in rows}!={r.node_key:(r.status,r.attempts) for r in replica_rows}):
             raise ValueError('master/project state disagreement')
         initial_status_projection=None
@@ -171,7 +179,9 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
             'allowed_actions':sorted(set(strategies)|({'read_events','read_contract','finish'}&set(cfg['allowed_actions']))),
             'request_limit':request['request_limit'],'max_decision_steps':3,'node_recovery_limit':1,
             'contracts':contracts,'runtime_config_hash':digest(cfg),'owner_budget_policy':owner_policy,
-            'profile_ids':list(profile_ids),'profile_catalog_hash':profile_hash,'profiles':profiles}
+            'profile_ids':list(profile_ids),'profile_catalog_hash':profile_hash,'profiles':profiles,
+            'revision_scheme':revisions.REVISION_SCHEME,
+            'node_config_revisions':_node_config_revisions(run,primary,request['node_keys'])}
         await claim_run_allowance(s,project_id=project_id,workflow_run_id=run.id,
             execution_id=execution,request_limit=request['request_limit'],owner_policy=owner_policy)
         if initial_status_projection:
@@ -251,7 +261,7 @@ async def native_entry(session,project,step_code,node_key):
     require_managed_capability(effective_node_type(node))
     permission=get_permission(project.id)
     if not permission or not evaluate_start(permission,project_id=project.id,node_key=node_key,
-            graph_version=digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot})).allowed:
+            graph_version=revisions.graph_version(run.nodes_snapshot,run.edges_snapshot)).allowed:
         raise ValueError('managed start denied')
     spec=spec_for_node(node)
     if not spec or spec.step_code!=step_code:raise ValueError('native step contract mismatch')

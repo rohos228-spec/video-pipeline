@@ -2,6 +2,7 @@
 import unittest
 
 from test_media_jobs import MediaJobs
+from app.services import revisions
 from app.models import ProjectStatus
 from app.services import observation
 
@@ -14,7 +15,7 @@ class MediaObservation(MediaJobs):
         from sqlalchemy import select
         self.nodes.insert(0, {"id":"text", "type":"excel_gpt", "data":{"groupId":"media", "slotIndex":0}})
         self.edges=[{"id":"text-image", "source":"text", "target":"image", "data":{"kind":"after"}}]
-        version=observation.digest({"nodes":self.nodes, "edges":self.edges})
+        version=revisions.graph_version(self.nodes, self.edges)
         async with self.sessions() as s:
             p=await s.get(Project,7);p.status=ProjectStatus.enrich_1_ready;p.auto_mode=False
             p.meta={"canvas_graph":{"nodes":self.nodes,"edges":self.edges},
@@ -288,7 +289,7 @@ class MediaObservation(MediaJobs):
         await self.continuation_fixture()
         self.nodes.append({"id":"unfinished", "type":"excel_gpt", "data":{"slotIndex":0}})
         self.edges.append({"id":"other-input", "source":"unfinished", "target":"image", "data":{"kind":"after"}})
-        version=observation.digest({"nodes":self.nodes,"edges":self.edges})
+        version=revisions.graph_version(self.nodes, self.edges)
         self.project.meta={**self.project.meta,"canvas_graph":{"nodes":self.nodes,"edges":self.edges}}
         for cls in (Workflow,WorkflowRun):
             row=await self.session.get(cls,1)

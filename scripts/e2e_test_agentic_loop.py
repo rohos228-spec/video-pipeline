@@ -143,7 +143,8 @@ class Harness:
             await observation.migrate_observation_schema(conn)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         nodes = [{"id": NODE_KEY, "type": "excel_gpt", "data": {"groupId": "g1"}}]
-        self.graph = digest({"nodes": nodes, "edges": []})
+        from app.services import revisions as _revisions
+        self.graph = _revisions.graph_version(nodes, [])
         async with self.sessions() as s:
             s.add(Project(id=PROJECT_ID, slug="e2e-agentic-loop", topic="synthetic", meta={}))
             s.add(Workflow(id=70101, name="e2e fixture", nodes=nodes, edges=[]))
@@ -199,7 +200,8 @@ class Harness:
             node.status = NodeRunStatus.failed
             node.finished_at = datetime.utcnow()
             node.attempts = 9
-            revision = await input_revision(s, project, NODE_KEY)
+            revision_parts: dict = {}
+            revision = await input_revision(s, project, NODE_KEY, parts=revision_parts)
             is_timeout = incident_type == "uncertain_request"
             # ProfilesSupervisor.approve() independently re-reads the exact
             # request body that produced this incident (never trusts a
@@ -213,7 +215,7 @@ class Harness:
                 "stream": True, "reasoning": {"effort": "high"}}
             body_ref = observation._observer.save_body(EXECUTION_ID, source_body)
             facts = [
-                ("node_start", {"recovery_input_revision": revision}, None),
+                ("node_start", {"recovery_input_revision": revision, "recovery_revision_parts": revision_parts}, None),
                 ("model_start", {"input_revision": digest(source_body), "body": body_ref, "provider": "kie"}, "request-source"),
                 ("model_end", {"complete": not is_timeout}, "request-source"),
                 *([] if is_timeout else [("json_retry", {}, None)]),

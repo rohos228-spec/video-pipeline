@@ -7,6 +7,7 @@ the parent's original executor tests. No successful NodeRun is manufactured.
 WorkflowRun.status remains the original run_sync aggregate, not a copied field.
 """
 from __future__ import annotations
+from app.services import revisions
 
 import tempfile
 import unittest
@@ -120,7 +121,7 @@ class RuntimeProjection(unittest.IsolatedAsyncioTestCase):
 
         self.addCleanup(restore_own_directory)
         self.scope = await self.observer.enable(project_id=self.project_id, workflow_run_id=self.run_id,
-            node_keys=["native"], graph_version=observation.digest({"nodes": self.nodes, "edges": self.edges}))
+            node_keys=["native"], graph_version=revisions.graph_version(self.nodes, self.edges))
         self.base = f"/api/projects/{self.project_id}"
         self.context_url = f"{self.base}/observations/{self.scope.execution_id}/context"
 

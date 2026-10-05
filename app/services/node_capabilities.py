@@ -233,8 +233,8 @@ def verify_image_prompts(frames,*,project_id,snapshot):
             or not snapshot['frames'] or any(not isinstance(r,dict) or
                 not {'uuid','number','voiceover_text','required_prompt'}<=r.keys() for r in snapshot['frames'])):
         return {**proof,'status':'unknown','reason':'captured input unavailable or incomplete','errors':[],
-            'voiceover_preserved':False}
-    errors=[];before=snapshot['frames']
+            'failures':[],'failures_total':0,'voiceover_preserved':False}
+    errors=[];failures=[];before=snapshot['frames']
     if snapshot.get('project_id')!=project_id or any(r.get('project_id')!=project_id for r in before):
         errors.append('input_project_outside_scope')
     before_ids=[r['uuid'] for r in before];after_ids=[r['uuid'] for r in rows]
@@ -251,18 +251,94 @@ def verify_image_prompts(frames,*,project_id,snapshot):
             continue
         if current['voiceover_text']!=row['voiceover_text']:
             voiceover_preserved=False;errors.append('voiceover_changed:'+str(row['uuid']))
-        if current['number']!=row['number']:errors.append('frame_number_changed:'+str(row['uuid']))
+            failures.append({'criterion':'voiceover_changed','frame_uuid':row['uuid'],'number':row['number']})
+        if current['number']!=row['number']:
+            errors.append('frame_number_changed:'+str(row['uuid']))
+            failures.append({'criterion':'frame_number_changed','frame_uuid':row['uuid'],'number':row['number']})
         if row['required_prompt'] is True:
             targets+=1
             primary=str(current['image_prompt'] or '').strip()
             second=str(current['second_prompt'] or '').strip()
             if not primary or max(len(primary),len(second))<IMG_PR_MIN_WRITE_CHARS:
                 errors.append('missing_or_short_parent_prompt:'+str(row['uuid']))
+                failures.append({'criterion':'missing_or_short_parent_prompt','frame_uuid':row['uuid'],
+                    'number':row['number'],'primary_len':len(primary),'second_len':len(second),
+                    'required_min':IMG_PR_MIN_WRITE_CHARS})
         elif row['required_prompt'] is not False:errors.append('input_target_rule_unknown')
     if not targets:errors.append('no_required_parent_frames')
     return {**proof,'status':'failed' if errors else 'passed',
         'reason':errors[0] if errors else None,'errors':errors,
+        'failures':failures[:IMAGE_PROMPT_FAILURES_LIMIT],'failures_total':len(failures),
         'voiceover_preserved':voiceover_preserved,'target_frame_count':targets}
+
+
+IMAGE_PROMPT_FAILURES_LIMIT=20
+_IMAGE_PROMPT_CRITERIA={
+    'input_project_outside_scope':'вход относится к другому проекту',
+    'output_project_outside_scope':'кадры результата относятся к другому проекту',
+    'missing_uuid':'у кадра нет uuid',
+    'duplicate_uuid':'повторяющийся uuid кадра',
+    'frame_set_changed':'набор кадров изменился с момента старта ноды',
+    'duplicate_number':'повторяющийся номер кадра',
+    'no_required_parent_frames':'в проекте нет ни одного кадра, которому нужен основной промпт',
+    'input_target_rule_unknown':'неизвестно, нужен ли кадру промпт (вход неполон)',
+}
+
+
+def explain_image_prompt_verification(proof):
+    """Human-readable reason a native verifier put the run on hold. Pure; reads only
+    the recorded proof. Releasing the hold stays a human action."""
+    from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
+    if not isinstance(proof,dict):return None
+    status=proof.get('status')
+    if status=='passed':return None
+    errors=[str(e) for e in (proof.get('errors') or [])]
+    failures=[f for f in (proof.get('failures') or []) if isinstance(f,dict)]
+    lines=[];criteria=[]
+    if status=='unknown':
+        criteria.append('input_or_output_unavailable')
+        why=proof.get('reason') or 'captured input unavailable'
+        lines.append('Проверка не смогла сравнить результат со входом ('+str(why)+'); '
+            'по правилу безопасности запуск удержан, пока человек не посмотрит данные.')
+    short=[f for f in failures if f.get('criterion')=='missing_or_short_parent_prompt']
+    if short:
+        criteria.append('missing_or_short_parent_prompt')
+        nums=', '.join(str(f.get('number')) for f in short[:10])
+        best=max(max(int(f.get('primary_len') or 0),int(f.get('second_len') or 0)) for f in short)
+        lines.append(f'У {proof.get("failures_total") or len(short)} кадров(а) промпт пустой или короче '
+            f'{IMG_PR_MIN_WRITE_CHARS} символов (кадры: {nums}; максимум среди слотов: {best}). '
+            'Нода не перезапрашивает уже непустой промпт, поэтому повтор не поможет: нужна правка человека или запуск с очисткой.')
+    for key in ('voiceover_changed','frame_number_changed'):
+        hit=[f for f in failures if f.get('criterion')==key]
+        if hit:
+            criteria.append(key)
+            nums=', '.join(str(f.get('number')) for f in hit[:10])
+            lines.append(('Закадр изменился' if key=='voiceover_changed' else 'Номер кадра изменился')+f' у кадров: {nums}.')
+    for err in errors:
+        code=err.split(':',1)[0]
+        if code in _IMAGE_PROMPT_CRITERIA and code not in criteria:
+            text=_IMAGE_PROMPT_CRITERIA[code]
+            criteria.append(code);lines.append(text[0].upper()+text[1:]+'.')
+    if not lines:lines.append('Нативная проверка не подтвердила результат: '+str(proof.get('reason') or status)+'.')
+    summary=' '.join(lines)+' Снять удержание может только человек.'
+    return {'summary':summary,'criteria':criteria,'failing_frames':[
+        {k:f.get(k) for k in ('criterion','frame_uuid','number','primary_len','second_len','required_min')}
+        for f in failures[:IMAGE_PROMPT_FAILURES_LIMIT]],
+        'failures_total':proof.get('failures_total',len(failures)),
+        'hold_release':'human_only','automatic_action':False,'semantic_quality_verified':False}
+
+
+async def recompute_image_prompt_verification(bind,*,project_id,snapshot):
+    """Read-only recomputation of the native verifier from the committed rows
+    (independent session, no flush, no write, no hold change)."""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from app.models import Frame
+    async with async_sessionmaker(bind,expire_on_commit=False,autoflush=False)() as reader:
+        frames=(await reader.scalars(select(Frame).where(Frame.project_id==project_id)
+            .order_by(Frame.number))).all()
+    proof=verify_image_prompts(frames,project_id=project_id,snapshot=snapshot)
+    return {'proof':proof,'explanation':explain_image_prompt_verification(proof)}
 
 
 async def record_image_prompt_input(frames,project):
@@ -486,7 +562,7 @@ async def record_split_input(voiceover):
         body={'voiceover':voiceover})
 
 
-async def record_split_parse(reply,frames_spec):
+async def record_split_parse(reply,frames_spec,*,frames_source=None,dash_rejected=False):
     import json
     from types import SimpleNamespace
     from app.services.observation import _attempt,record_fact
@@ -501,7 +577,10 @@ async def record_split_parse(reply,frames_spec):
     await record_fact('parse_result',{'contract':'native_split','syntax_valid':syntax_valid,
         'parsed':bool(frames_spec),'payload_present':bool(frames_spec),'payload_required':False,
         'schema_valid':proof['status']=='passed','frame_count':len(frames_spec),
-        'native_fallback_allowed':True,'semantic_quality_verified':False},request_id=ctx.last_request_id,
+        'native_fallback_allowed':True,'frames_source':frames_source,
+        'fallback_used':frames_source=='local_voiceover_fallback',
+        'model_payload_usable':frames_source in {'json_replace_frames','dash_blocks'},
+        'dash_rejected':bool(dash_rejected),'semantic_quality_verified':False},request_id=ctx.last_request_id,
         body={'reply':reply,'extracted_frames':frames_spec})
     await record_fact('runtime_check',{'check':'native_split_voiceover_coverage','performed':True,
         **proof,'source':'actual extraction; no DB commit claim'},request_id=ctx.last_request_id)

@@ -68,8 +68,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     meta = dict(project.meta or {})
     meta["sfx_ready"] = True
     meta["sfx_generated"] = True
+    meta["sfx_provider_fallbacks"] = sum(1 for f in files if f.get("provider_fallback"))
     project.meta = meta
     project.status = ProjectStatus.sfx_ready
     await session.flush()
     await session.commit()
-    logger.info("[#{}] sfx_gen done: {} файлов", project.id, len(files))
+    logger.info("[#{}] sfx_gen done: {} файлов, откатов провайдера {}",
+                project.id, len(files), meta["sfx_provider_fallbacks"])

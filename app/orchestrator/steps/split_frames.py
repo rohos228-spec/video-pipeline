@@ -36,6 +36,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         return
 
     result = await xsr.run_split_xlsx(project)
+    # Never hand an unverified answer to replace_all_frames (it is irreversible:
+    # frames, prompt versions and artifact links are recreated under new UUIDs).
+    if getattr(result, "split_verified", None) is False:
+        raise RuntimeError(
+            "split_frames: ответ разбивки не прошёл предпроверку "
+            f"(источник={getattr(result, 'split_source', None)}); кадры не записаны"
+        )
     ops = list(result.apply_ops or [])
     if not ops and result.frames_spec:
         ops = [{"target": "replace_frames", "frames": result.frames_spec}]

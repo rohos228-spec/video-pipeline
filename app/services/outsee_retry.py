@@ -92,6 +92,7 @@ from app.services.video_error_policy import (
     VideoErrorAction,
     VideoLadderExhaustedError,
     classify_video_error,
+    is_no_resubmit,
     ladder_summary,
     should_rewrite_after_primary_burn,
 )
@@ -1185,6 +1186,8 @@ async def generate_image_with_retries(
                 # Карточка уже на outsee: повторный Generate только orphan'ит результат.
                 raise last_err or e
             except OutseeImageError as e:
+                if is_no_resubmit(e):
+                    raise  # платная задача жива или исход submit неизвестен: ни retry, ни rewrite
                 last_err = e
                 if _is_concurrency_limit_error(e):
                     concurrency_waits += 1
@@ -1696,6 +1699,8 @@ async def generate_video_with_retries(
             classified.detail[:180],
         )
 
+        if action == VideoErrorAction.HOLD_UNKNOWN:
+            raise last_err or OutseeImageError(classified.detail)
         if action == VideoErrorAction.STOP_CANCEL:
             raise last_err or StepCancelledError("video cancelled")
         if action == VideoErrorAction.STOP_AUTH:

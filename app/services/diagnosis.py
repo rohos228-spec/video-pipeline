@@ -17,7 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 # Timeouts and wrapped timeouts after submit: the provider may have accepted the request.
 UNCERTAIN_ERROR_TYPES = frozenset({'CancelledError', 'ReadTimeout', 'ConnectTimeout',
-    'ElevenLabsUncertainError', 'KieUncertainError'})
+    'ElevenLabsUncertainError', 'KieUncertainError', 'KieSubmitUnknownError', 'KieTaskPending'})
 
 from app.models import Base, WorkflowRun
 from app.services.error_catalog import ERROR_CATALOG
@@ -63,6 +63,8 @@ TITLES = {
     'db_disagreement':'Состояния master и project расходятся',
     'journal_gap':'Доказательства неполны: пробел журнала',
     'stalled':'Запрос или выполнение зависли: нет завершения в заданное время',
+    'split_degraded':'Разбивка получена локальным запасным путём: ответ модели непригоден',
+    'verification_hold':'Нативная проверка не подтвердила результат; запуск удержан',
 }
 RECOMMENDATIONS = {
     'wait':'Ожидать', 'check_contract':'Проверить входные данные и контракт',
@@ -70,6 +72,38 @@ RECOMMENDATIONS = {
     'review_provider_response':'Сверить сохранённый ответ провайдера',
     'restore_journal':'Восстановить доступность журнала', 'human_review':'Передать человеку',
 }
+
+
+RULE_DIARY_RULES_SHOWN = 8
+
+
+def rule_diary_summary(diaries):
+    """Merge bounded `rule_diary` facts of one attempt: counts per kind, top rules,
+    last stop rule. None when there is nothing usable."""
+    counts = {}; rules = {}; stop_rule = None; calls = 0
+    for e in diaries:
+        p = e.get('payload') or {}
+        calls += 1
+        for k, v in (p.get('counts') if isinstance(p.get('counts'), dict) else {}).items():
+            if isinstance(v, int): counts[k] = counts.get(k, 0) + v
+        for k, v in (p.get('rules') if isinstance(p.get('rules'), dict) else {}).items():
+            if isinstance(v, int): rules[str(k)[:40]] = rules.get(str(k)[:40], 0) + v
+        sr = p.get('stop_rule')
+        if isinstance(sr, str) and sr.strip(): stop_rule = ' '.join(sr.split())[:120]
+    if not calls: return None
+    top = dict(sorted(rules.items(), key=lambda kv: (-kv[1], kv[0]))[:RULE_DIARY_RULES_SHOWN])
+    return {'calls': calls, 'counts': counts, 'rules': top, 'stop_rule': stop_rule}
+
+
+def _rule_text(rule, diary):
+    from app.services.node_rules import RULES_BY_ID, rule_title
+    title = rule_title(rule)
+    text = f'Правило {rule}' + (f' «{title}»' if title and title != rule else '') + ' отклонило результат.'
+    meta = RULES_BY_ID.get(rule)
+    if meta is not None: text += f' Действие правила: {meta.action}.'
+    if diary and diary.get('rules'):
+        text += ' Код правил в этой попытке: ' + ', '.join(f'{k}×{v}' for k, v in diary['rules'].items()) + '.'
+    return text
 
 
 def derive_incidents(scope, events, snapshot):
@@ -178,8 +212,24 @@ def derive_incidents(scope, events, snapshot):
                     reason='Штатный повтор принят; результат (применение или разрешённый no-op) и done подтверждены в этой попытке. Семантическое качество не проверено.')
             elif any(e['kind']=='node_error' for e in related): item['status']='human_review'
 
+        diary=rule_diary_summary([r for r in related if r['kind']=='rule_diary'])
         for e in related:
             p=e['payload']; kind=e['kind']
+            if kind=='parse_result' and p.get('contract')=='native_split' and p.get('fallback_used') is True \
+                    and any(r['kind']=='model_end' and r['payload'].get('complete') is True
+                            and (e.get('request_id') is None or r.get('request_id')==e.get('request_id')) for r in related):
+                item=issue('split_degraded',(node,attempt,'frames_source'),[e],blocking=False,severity='warning',
+                    action='human_review',fact='Модель ответила, но пригодной разбивки в ответе нет '+
+                    ('(ответ с тире не покрывает закадр)' if p.get('dash_rejected') else '(нет JSON и блоков)')+
+                    '; кадры получены локальной разбивкой закадра по предложениям. Автоповтор не выполняется.')
+                item['frames_source']=p.get('frames_source'); item['status']='human_review'
+                item['semantic_quality_verified']=False
+            if kind=='node_result_verification' and p.get('node_type')=='image_prompts' and p.get('status') in {'failed','unknown'}:
+                from app.services.node_capabilities import explain_image_prompt_verification
+                exp=explain_image_prompt_verification(p) or {}
+                item=issue('verification_hold',(node,attempt,'verify',e['event_id']),[e],
+                    fact=exp.get('summary') or TITLES['verification_hold'],action='human_review')
+                item['hold_explanation']=exp; item['status']='human_review'
             if kind == 'media_failure':
                 uncertain = p.get('uncertain') is True or p.get('phase') == 'unknown'
                 item = issue('uncertain_request' if uncertain else 'media_failure',
@@ -204,12 +254,15 @@ def derive_incidents(scope, events, snapshot):
                 if kind == 'node_error' and any(r['kind']=='media_failure' for r in related):
                     continue  # the typed media evidence already owns this failure
                 rule=p.get('rule') if kind=='node_error' else None
+                if kind=='node_error' and not (isinstance(rule,str) and rule.strip()) and diary and diary.get('stop_rule'):
+                    rule=diary['stop_rule']  # rule failure that is not a PassStop: taken from the rule_diary fact
                 if isinstance(rule,str) and rule.strip() and p.get('uncertain') is not True:
                     # An enforced business rule (e.g. PassStop) rejected the result: not a format/API failure.
                     rule=' '.join(rule.split())[:120]
                     item=issue('contract_rejected',(node,attempt,'rule',e['event_id']),[e],
-                        fact=f'Правило {rule} отклонило результат.',action='human_review')
+                        fact=_rule_text(rule,diary),action='human_review')
                     item['rule']=rule; item['status']='human_review'
+                    if diary: item['rule_diary']=diary
                     continue
                 if kind=='node_error' and bads:
                     for item in issues.values():

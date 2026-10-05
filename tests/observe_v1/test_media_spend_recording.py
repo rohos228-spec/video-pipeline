@@ -222,9 +222,9 @@ class ElevenLabsRecording(MediaSpendBase):
             with self.assertRaises(elevenlabs_api.ElevenLabsApiError) as cm:
                 await self.synth()
         self.assertIsInstance(cm.exception, elevenlabs_api.ElevenLabsUncertainError)  # still an ElevenLabsApiError
-        self.assertEqual(len(calls), 3)  # native retry count unchanged
+        self.assertEqual(len(calls), 1)  # no re-POST after a post-send timeout
         rows = [r for r in await self.rows() if r.kind == "actual"]
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 1)
         self.assertTrue(all("uncertain" in r.note for r in rows))
 
     async def test_connect_error_not_uncertain(self):

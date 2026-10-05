@@ -1589,6 +1589,67 @@ def pass_stop_rule(exc: BaseException | None) -> str | None:
     return None
 
 
+_RULE_DIARY_RULES_MAX = 12
+_RULE_DIARY_NOTE_MAX = 200
+
+
+def rule_diary_payload(
+    entries: list[dict[str, Any]] | None,
+    *,
+    call: int,
+    level: int,
+    stop_exc: BaseException | None = None,
+) -> dict[str, Any]:
+    """Bounded journal payload of one call's rule diary: counts per kind, top rules,
+    the stop rule (also for exceptions that are not a PassStop) and a short note.
+    The full diary stays on disk (node_trace)."""
+    import re as _re
+
+    counts: dict[str, int] = {}
+    rules: dict[str, int] = {}
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        kind = str(e.get("kind") or "info")[:16]
+        counts[kind] = counts.get(kind, 0) + 1
+        rule = str(e.get("rule") or "")[:40]
+        if rule:
+            rules[rule] = rules.get(rule, 0) + 1
+    top = dict(sorted(rules.items(), key=lambda kv: (-kv[1], kv[0]))[:_RULE_DIARY_RULES_MAX])
+    stop_rule = pass_stop_rule(stop_exc)
+    if stop_rule is None and stop_exc is not None:
+        raw = getattr(stop_exc, "rule", None)
+        if isinstance(raw, str) and _re.fullmatch(r"R-[A-Z0-9-]{1,40}", raw):
+            stop_rule = raw
+    payload: dict[str, Any] = {
+        "call": int(call), "level": int(level), "counts": counts, "rules": top,
+        "stop_rule": stop_rule,
+    }
+    if stop_exc is not None:
+        payload["note"] = " ".join(str(stop_exc).split())[:_RULE_DIARY_NOTE_MAX]
+    return payload
+
+
+async def _emit_rule_diary(
+    entries: list[dict[str, Any]] | None,
+    *,
+    call: int,
+    level: int,
+    stop_exc: BaseException | None = None,
+) -> None:
+    """Best-effort `rule_diary` journal fact; never raises into the node.
+    An empty diary on a clean call is not journaled."""
+    if not entries and stop_exc is None:
+        return
+    try:
+        from app.services.observation import record_fact
+
+        await record_fact("rule_diary", rule_diary_payload(
+            entries, call=call, level=level, stop_exc=stop_exc))
+    except Exception:  # noqa: BLE001
+        logger.debug("rule_diary fact skipped", exc_info=True)
+
+
 def _shot_rows(fields: dict[str, Any]) -> list[dict[str, Any]]:
     raw = fields.get("кадры")
     if not isinstance(raw, list):
@@ -2389,8 +2450,11 @@ async def run_apply_ops_batched(
                          kind="stop", note=str(exc)[:500])],
                 error=str(exc),
             )
+            await _emit_rule_diary(
+                list(getattr(exc, "diary", []) or []), call=my_i, level=level, stop_exc=exc)
             raise
         ops = passes.ops
+        await _emit_rule_diary(passes.entries, call=my_i, level=level)
         recorder.record_call(
             call=my_i,
             level=level,

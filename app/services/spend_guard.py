@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -291,6 +292,59 @@ async def list_provider_tasks(session, project_id: int, limit: int = 200) -> lis
         t["events"] += 1
         t["status"], t["updated_at"], t["note"] = r.status, r.created_at.isoformat(), r.note
     return list(out.values())[-max(1, limit):]
+
+
+INTENT_PREFIX = "intent:"
+OPEN_TASK_STATUSES = frozenset({"submitted", "pending", "waiting", "queuing", "generating", "unknown", "succeeded"})
+_PH_RE = re.compile(r"\bph=([0-9a-f]{6,32})\b")
+
+
+def intent_task_id(intent_id: str) -> str:
+    return f"{INTENT_PREFIX}{intent_id}"
+
+
+async def find_task_states(session, *, project_id: int | None, key: str, model: str | None,
+                           since: datetime) -> list[dict]:
+    """Tasks and submit intents of one frame key submitted at or after ``since``.
+
+    Each entry: task_id, status (newest row), intent (bool), ph (prompt hash from a note), api,
+    first_at. A task's newest row may come from another writer, so states are read by task id.
+    """
+    await ensure_task_schema(session)
+    q = select(ProviderTaskLedger.task_id).where(
+        ProviderTaskLedger.project_id == project_id, ProviderTaskLedger.key == key[:120],
+        ProviderTaskLedger.created_at >= since)
+    if model is not None:
+        q = q.where(ProviderTaskLedger.model == model[:64])
+    recent = (await session.scalars(q.distinct())).all()
+    if not recent:
+        return []
+    rows = (await session.scalars(select(ProviderTaskLedger).where(
+        ProviderTaskLedger.task_id.in_(list(recent))).order_by(ProviderTaskLedger.id))).all()
+    out: dict[str, dict] = {}
+    for r in rows:
+        t = out.setdefault(r.task_id, {"task_id": r.task_id, "intent": r.task_id.startswith(INTENT_PREFIX),
+                                       "ph": "", "api": r.api, "model": r.model, "first_at": r.created_at, "status": ""})
+        m = _PH_RE.search(r.note or "")
+        if m and not t["ph"]:
+            t["ph"] = m.group(1)
+        t["status"] = r.status
+    return [t for t in out.values() if t["first_at"] >= since]
+
+
+async def append_intent(session, *, project_id: int | None, key: str, model: str, api: str,
+                        intent_id: str, ph: str) -> None:
+    """Row written BEFORE a createTask POST: the outcome is unknown until it is resolved."""
+    await append_task_event(session, project_id=project_id, key=key, task_id=intent_task_id(intent_id),
+                            provider="kie", api=api, model=model, event="intent", status="submit_unknown",
+                            note=f"ph={ph}")
+
+
+async def resolve_intent(session, *, project_id: int | None, key: str, model: str, api: str,
+                         intent_id: str, status: str, note: str = "") -> None:
+    """``bound`` (task id received) or ``rejected`` (provider did not accept / request never sent)."""
+    await append_task_event(session, project_id=project_id, key=key, task_id=intent_task_id(intent_id),
+                            provider="kie", api=api, model=model, event="intent_done", status=status, note=note)
 
 
 _tasks: set = set()

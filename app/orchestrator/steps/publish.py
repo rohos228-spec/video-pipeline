@@ -15,6 +15,7 @@ from app.models import Artifact, ArtifactKind, Project, ProjectStatus
 from app.settings import settings
 
 _META_KEY = "published_platforms"
+_UNCONFIRMED_KEY = "publish_unconfirmed"
 
 
 async def preview_publication(session: AsyncSession, project: Project) -> dict:
@@ -78,18 +79,29 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     # Уже опубликованные платформы пропускаем, чтобы при повторе не было дубликатов.
     meta = project.meta or {}
     already: dict[str, str] = meta.get(_META_KEY, {})
-    skip_platforms = set(already.keys())
+    # Неподтверждённые платформы человек проверяет вручную: автоповтор мог бы задвоить пост.
+    unconfirmed: dict[str, str] = dict(meta.get(_UNCONFIRMED_KEY) or {})
+    skip_platforms = set(already.keys()) | set(unconfirmed.keys())
     logger.info(
         "[#{}] publishing {} (skip={})", project.id, final.path, sorted(skip_platforms) or "—"
     )
 
+    from app.bots.publishers import ALL_PUBLISHERS
+    if all(cls.platform in skip_platforms for cls in ALL_PUBLISHERS):
+        logger.warning("[#{}] publish: нечего публиковать, неподтверждённые платформы {} ждут человека",
+                       project.id, sorted(unconfirmed))
+        return
+
     results = await publish_everywhere(Path(final.path), caption, skip_platforms=skip_platforms)
 
-    # Запомним, что успели выложить, чтобы ретрай не дублировал.
+    # Успехом записываем только подтверждённое; неподтверждённое помечаем отдельно.
     for r in results:
         if r.ok:
             already[r.platform] = r.url or ""
+        elif r.status == "unconfirmed":
+            unconfirmed[r.platform] = r.url or ""
     meta[_META_KEY] = already
+    meta[_UNCONFIRMED_KEY] = unconfirmed
     project.meta = meta
     flag_modified(project, "meta")
 
@@ -99,6 +111,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     for r in results:
         if r.ok:
             lines.append(f"- {r.platform}: OK {r.url or ''}")
+        elif r.status == "unconfirmed":
+            lines.append(f"- {r.platform}: НЕ ПОДТВЕРЖДЕНО — проверьте вручную {r.url or ''}")
         else:
             lines.append(f"- {r.platform}: FAIL — {r.error or ''}")
     if skip_platforms:

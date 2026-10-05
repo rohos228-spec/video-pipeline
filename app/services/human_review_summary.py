@@ -29,6 +29,12 @@ class HumanReviewSummary:
     provider_error_title: str | None
     recommended_next_step: str | None
     text: str
+    # Optional detail (defaults keep older callers unchanged).
+    rule: str | None = None
+    rule_diary: dict[str, Any] | None = None
+    hold_reason: str | None = None
+    hold_failing_frames: tuple[dict[str, Any], ...] = ()
+    frames_source: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +51,11 @@ class HumanReviewSummary:
             "provider_error_title": self.provider_error_title,
             "recommended_next_step": self.recommended_next_step,
             "text": self.text,
+            "rule": self.rule,
+            "rule_diary": self.rule_diary,
+            "hold_reason": self.hold_reason,
+            "hold_failing_frames": list(self.hold_failing_frames),
+            "frames_source": self.frames_source,
         }
 
 
@@ -69,6 +80,12 @@ def build_human_review_summary(
     recommendation = incident_details.get("recommendation") or {}
     recommended_next_step = recommendation.get("title") or recommendation.get("reason")
     circuit_breaker_tripped = model_steps_used >= max_model_steps
+    rule = incident_details.get("rule") if isinstance(incident_details.get("rule"), str) else None
+    rule_diary = incident_details.get("rule_diary") if isinstance(incident_details.get("rule_diary"), dict) else None
+    hold = incident_details.get("hold_explanation") if isinstance(incident_details.get("hold_explanation"), dict) else None
+    hold_reason = hold.get("summary") if hold else None
+    hold_frames = tuple(f for f in (hold.get("failing_frames") or []) if isinstance(f, dict))[:20] if hold else ()
+    frames_source = incident_details.get("frames_source") if isinstance(incident_details.get("frames_source"), str) else None
 
     parts = [
         f"Node '{node_key}' requires human intervention.",
@@ -81,6 +98,17 @@ def build_human_review_summary(
             f"Circuit breaker tripped: {model_steps_used}/{max_model_steps} decision "
             "steps used without a verified resolution."
         )
+    if rule:
+        from app.services.node_rules import rule_title
+        rule_line = f"Rule that stopped the result: {rule} ({rule_title(rule)})."
+        if rule_diary and rule_diary.get("rules"):
+            fired = ", ".join(f"{k} x{v}" for k, v in rule_diary["rules"].items())
+            rule_line += f" Rules fired by code in this attempt: {fired}."
+        parts.append(rule_line)
+    if hold_reason:
+        parts.append(f"Why the native verifier put the run on hold: {hold_reason}")
+    if frames_source:
+        parts.append(f"Frames were produced by: {frames_source}.")
     parts.append(f"Escalation reason: {escalation_reason}")
     parts.append(f"Evidence available: {evidence_event_count} recorded event(s).")
     if recommended_next_step:
@@ -104,4 +132,9 @@ def build_human_review_summary(
         provider_error_title=provider_error_title,
         recommended_next_step=recommended_next_step,
         text=" ".join(parts),
+        rule=rule,
+        rule_diary=rule_diary,
+        hold_reason=hold_reason,
+        hold_failing_frames=hold_frames,
+        frames_source=frames_source,
     )

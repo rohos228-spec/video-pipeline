@@ -24,6 +24,7 @@ from app.services.observation import business_snapshot as _business_snapshot
 from app.services.actions_v1 import ActionExecutionControl, ActionRecord, ActionSupervisor
 from app.web.auth_sessions import AuthDep, require_web_user
 from app.services.access_guard import LocalOnlyDep
+from app.services import revisions
 
 router = APIRouter(prefix="/projects/{project_id}/observations", tags=["observations"])
 
@@ -120,7 +121,7 @@ async def managed_launch_options(project_id:int,operator:AuthDep):
         maximum=runtime.get('budget_policy',{'max_requests':100})['max_requests']
         from app.services.profiles_v1 import active_catalog,catalog_hash
         profiles=active_catalog() if runtime['configured'] and 'retry_profile' in runtime['allowed_actions'] else {}
-        return panel_safe({'workflow_run_id':run.id,'graph_version':digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot}),
+        return panel_safe({'workflow_run_id':run.id,'graph_version':revisions.graph_version(run.nodes_snapshot,run.edges_snapshot),
             'nodes':nodes,'strategies':[a for a in ('wait','human_review','retry_same','retry_profile') if a in runtime['allowed_actions']],
             'profiles':[{'profile_id':k,**v} for k,v in profiles.items()],
             'profile_catalog_hash':catalog_hash() if profiles else None,
@@ -295,7 +296,7 @@ async def enable_observation(project_id: int, payload: EnableObservation):
         valid = {str(n.get("id")) for n in run.nodes_snapshot or []}
         if not set(payload.node_keys).issubset(valid):
             raise HTTPException(422, "Node scope does not match workflow graph")
-        graph_version = digest({"nodes": run.nodes_snapshot, "edges": run.edges_snapshot})
+        graph_version = revisions.graph_version(run.nodes_snapshot, run.edges_snapshot)
         run_id = run.id
     try:
         scope = await observer.enable(project_id=project_id, workflow_run_id=run_id,
@@ -470,7 +471,7 @@ async def start_managed_node(project_id: int, execution_id: str, payload: Manage
         run = await master.get(WorkflowRun, control.workflow_run_id) if control else None
     if control is None or run is None or run.project_id != project_id:
         raise HTTPException(404, "managed workflow run not found")
-    graph_version = digest({"nodes": run.nodes_snapshot, "edges": run.edges_snapshot})
+    graph_version = revisions.graph_version(run.nodes_snapshot, run.edges_snapshot)
     decision = evaluate_start(permission, project_id=project_id,
         node_key=payload.node_key, graph_version=graph_version)
     if not decision.allowed:
@@ -549,8 +550,8 @@ async def verify_managed_node(project_id: int, execution_id: str, payload: Verif
             raise HTTPException(409, "node is outside the managed permission")
         workflow_run_id = control.workflow_run_id
         workflow = await master.get(WorkflowRun, workflow_run_id)
-        graph_matches = bool(workflow and digest({"nodes": workflow.nodes_snapshot,
-            "edges": workflow.edges_snapshot}) == control.graph_version == scope.graph_version)
+        graph_matches = bool(workflow and revisions.graph_version(workflow.nodes_snapshot,
+            workflow.edges_snapshot) == control.graph_version == scope.graph_version)
         prior = (await master.scalars(select(ActionRecord).where(
             ActionRecord.execution_id == execution_id,
             ActionRecord.idempotency_key == payload.idempotency_key,

@@ -226,6 +226,10 @@ class XlsxRoundtripResult:
     apply_ops: list[dict] | None = None
     # True = ops уже записаны в DB по батчам внутри runner (не apply повторно).
     ops_applied_inline: bool = False
+    # split: каким путём получены кадры (json_replace_frames / dash_blocks /
+    # local_voiceover_fallback) и прошёл ли ответ предпроверку до записи в БД.
+    split_source: str | None = None
+    split_verified: bool | None = None
 
 
 def _ts() -> str:
@@ -1703,10 +1707,45 @@ _SPLIT_DB_HINT = (
 )
 
 
-def extract_frames_spec_from_gpt_reply(reply: str, *, voiceover_path: Path | None) -> list[dict]:
-    """Достать кадры из replace_frames JSON или --- блоков / локальной разбивки."""
+_SPLIT_WORD = re.compile(r"\w+", re.UNICODE)
+# Доля слов закадра, которую должен покрывать ответ-блоки, и доля слов ответа,
+# которая должна принадлежать закадру. Ниже порога ответ похож на отказ/пояснение.
+SPLIT_COVERAGE_TOLERANCE = 0.85
+
+
+def split_answer_covers_voiceover(
+    blocks: list[str], voiceover_text: str, *, tolerance: float = SPLIT_COVERAGE_TOLERANCE
+) -> bool:
+    """Покрывают ли блоки ответа закадр (по мультимножеству слов, с допуском).
+
+    Без закадра сравнивать не с чем: возвращает True (прежнее поведение).
+    """
+    from collections import Counter
+
+    words = lambda t: [w.casefold() for w in _SPLIT_WORD.findall(t or "")]  # noqa: E731
+    vo = Counter(words(voiceover_text))
+    total_vo = sum(vo.values())
+    if not total_vo:
+        return True
+    ans = Counter(words(" ".join(blocks)))
+    total_ans = sum(ans.values())
+    if not total_ans:
+        return False
+    common = sum((vo & ans).values())
+    return common / total_vo >= tolerance and common / total_ans >= tolerance
+
+
+def extract_frames_spec_with_source(
+    reply: str, *, voiceover_path: Path | None
+) -> tuple[list[dict], str, dict]:
+    """Кадры + источник: json_replace_frames | dash_blocks | local_voiceover_fallback | none.
+
+    Третий элемент: {"dash_rejected": bool} — блоки с тире были, но не покрывают закадр
+    (отказ/пояснение модели), поэтому приняты не были.
+    """
     from app.services import db_apply
 
+    info = {"dash_rejected": False}
     data = db_apply.extract_apply_ops_json(reply or "")
     if isinstance(data, dict):
         for op in data.get("ops") or []:
@@ -1723,15 +1762,28 @@ def extract_frames_spec_from_gpt_reply(reply: str, *, voiceover_path: Path | Non
                     elif isinstance(item, dict):
                         out.append(item)
                 if len(out) >= 2:
-                    return out
+                    return out, "json_replace_frames", info
+    voiceover_text: str | None = None
+    if voiceover_path is not None and voiceover_path.exists():
+        voiceover_text = voiceover_path.read_text(encoding="utf-8", errors="replace")
     blocks = parse_dash_separated_blocks(reply or "")
-    if len(blocks) < 2 and voiceover_path is not None and voiceover_path.exists():
-        blocks = split_voiceover_locally(
-            voiceover_path.read_text(encoding="utf-8", errors="replace")
-        )
+    source = "dash_blocks"
+    if len(blocks) >= 2 and voiceover_text is not None and not split_answer_covers_voiceover(
+        blocks, voiceover_text
+    ):
+        info["dash_rejected"] = True
+        blocks = []
+    if len(blocks) < 2 and voiceover_text is not None:
+        blocks = split_voiceover_locally(voiceover_text)
+        source = "local_voiceover_fallback"
     if len(blocks) >= 2:
-        return [{"закадр": b.strip()} for b in blocks if b.strip()]
-    return []
+        return [{"закадр": b.strip()} for b in blocks if b.strip()], source, info
+    return [], "none", info
+
+
+def extract_frames_spec_from_gpt_reply(reply: str, *, voiceover_path: Path | None) -> list[dict]:
+    """Достать кадры из replace_frames JSON или --- блоков / локальной разбивки."""
+    return extract_frames_spec_with_source(reply, voiceover_path=voiceover_path)[0]
 
 
 async def run_split_xlsx(
@@ -1773,8 +1825,13 @@ async def run_split_xlsx(
         )
 
     reply = await xgf.run_under_xlsx_lock(project.id, "split", _gpt)
-    frames_spec = extract_frames_spec_from_gpt_reply(reply, voiceover_path=voiceover)
-    await record_split_parse(reply,frames_spec)
+    frames_spec, split_source, split_info = extract_frames_spec_with_source(
+        reply, voiceover_path=voiceover
+    )
+    await record_split_parse(
+        reply, frames_spec, frames_source=split_source,
+        dash_rejected=split_info["dash_rejected"],
+    )
     if len(frames_spec) < 2:
         raise RuntimeError(
             "GPT не вернул разбивку в apply-ops replace_frames "
@@ -1791,6 +1848,8 @@ async def run_split_xlsx(
         backup_path=None,
         frames_spec=frames_spec,
         apply_ops=[{"target": "replace_frames", "frames": frames_spec}],
+        split_source=split_source,
+        split_verified=True,
     )
 
 

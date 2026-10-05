@@ -476,6 +476,33 @@ def flow_mermaid() -> str:
     return "\n".join(lines)
 
 
+# Раздел о связи дневника правил с журналом оркестратора (попадает в docs/NODE_GROUP_RULES.md).
+_PHASE_E_SECTION: tuple[str, ...] = (
+    "## Дневник правил и журнал оркестратора",
+    "",
+    "Оркестратор не копирует правила: он читает уже записанные факты журнала.",
+    "",
+    "- `node_error` несёт необязательное поле `rule` (id вида `R-*`), если пачку остановило "
+    "правило (`PassStopError`).",
+    "- Факт `rule_diary` пишет `run_apply_ops_batched` после каждого вызова, где код что-то "
+    "поправил или остановил пачку: `call`, `level`, `counts` (fix/warn/stop/info), `rules` "
+    "(не более 12 правил с числом срабатываний), `stop_rule` и короткая `note` (до 200 символов). "
+    "Полный дневник остаётся на диске в `node_trace`; запись факта best-effort и не мешает ноде.",
+    "- Если `node_error` пришёл без `rule`, диагностика берёт `stop_rule` из `rule_diary` "
+    "той же попытки: так видны остановки правилом не только через `PassStopError`.",
+    "- Инцидент `contract_rejected` с полем `rule` показывает заголовок правила, его действие "
+    "(чинит / предупреждает / останавливает / решает) и правила, сработавшие в попытке "
+    "(`rule_diary`); тот же текст попадает в сводку для человека.",
+    "- `R-CHECK-SCRIPT` — штатный возврат «Не ок → каркас», а не ошибка контракта; "
+    "диагностика пока не отделяет его от `domain_check` с вердиктом fail.",
+    "",
+    "Нативные `split` и `image_prompts` в реестр правил не входят: для них причину даёт "
+    "`node_result_verification` (инцидент `verification_hold`) и метка источника кадров "
+    "`frames_source` у `split` (инцидент `split_degraded`).",
+    "",
+)
+
+
 def rules_markdown() -> str:
     """``docs/NODE_GROUP_RULES.md`` — генерится ``scripts/node_rules_doc.py``."""
     out = [
@@ -540,5 +567,6 @@ def rules_markdown() -> str:
         "по каждому кадру. Повтор без GPT: "
         "`python3 scripts/replay_node.py <папка прогона>`.",
         "",
+        *_PHASE_E_SECTION,
     ]
     return "\n".join(out)

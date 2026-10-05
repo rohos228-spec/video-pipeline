@@ -964,6 +964,13 @@ async def main() -> None:
     from app.db import session_scope
     from app.services.startup_guard import block_pipeline_autorun_on_startup
 
+    try:  # media resume: reattach live Kie tasks of generating_* projects before the guard rolls them back
+        from app.services.media_resume import reconcile_on_startup as _media_reconcile
+
+        await _media_reconcile()
+    except Exception:  # noqa: BLE001
+        logger.exception("media resume reconcile failed (non-fatal)")
+
     async with session_scope() as s:
         guard_stats = await block_pipeline_autorun_on_startup(s)
         logger.warning("startup autorun guard: {}", guard_stats)

@@ -12,6 +12,7 @@ from datetime import datetime,timedelta
 from urllib.parse import urlsplit
 from app.services.decision_config import DecisionRuntimeBinding
 from app.services import decision_config
+from app.services import revisions
 from sqlalchemy import select,update,func
 from sqlalchemy.dialects.sqlite import insert
 from app.models import Project,WorkflowRun
@@ -348,7 +349,7 @@ class DecisionSupervisor:
         from app.services.excel_gpt_node import effective_node_type
         node=next((n for n in run.nodes_snapshot if str(n.get('id'))==row.node_key),{}) if run else {}
         capability=capability_for(effective_node_type(node))
-        graph=digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot}) if run else None
+        graph=revisions.graph_version(run.nodes_snapshot,run.edges_snapshot) if run else None
         events=[];cursor=0
         while True:
             page=(await s.scalars(select(ObservationEvent).where(ObservationEvent.execution_id==row.execution_id,

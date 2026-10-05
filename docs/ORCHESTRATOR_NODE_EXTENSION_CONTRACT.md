@@ -137,3 +137,92 @@ application transaction and checkpoint. The model cannot issue SQL to repair it.
 All acceptance currently uses separate SQLite/DATA_DIR and network none, with
 only external provider transport synthetic. Real provider verification and
 production readiness remain separate acceptance levels.
+
+## Ревизии: структура графа и конфигурация ноды (схема 2)
+
+Раньше `graph_version` был хешем всего снимка графа (включая подписи, позиции и
+настройки нод), а `input_revision` включал все `prompts/**/*.md`, весь объект
+настроек и шесть файлов кода. Любая правка любого промпта, настройки `watchdog_*`
+или подписи ноды аннулировала разрешения и билеты восстановления. Теперь это
+разделено в модуле `app/services/revisions.py`.
+
+### Что чем решается
+
+| Значение | Что входит | Что не входит |
+|---|---|---|
+| `structure_hash(nodes, edges)` = `graph_version` | id и типы нод, рёбра (источник, цель, вид), `groupId`, `slotIndex`, `slotOverflow`, маркер scene-агента, флаг `disabled` | подписи, описания, позиции, id и ручки рёбер, любая конфигурация ноды |
+| `node_config_revision(node, meta)` | `data` самой ноды без косметики и структуры, прочие поля ноды, `meta.excel_gpt_nodes[node]`, `meta.prompt_slot_variants[node]` | другие ноды, ключи `label`/`description`/`title`/`color` и подобные |
+| `input_revision` для восстановления | данные, которые читает нода (поля проекта и таблицы как раньше); структура канваса и `disabled_nodes`; конфигурация ноды; содержимое выбранного промпт-файла этой ноды и scoped-переопределения (`prompt_overrides`, `gpt_text_overrides`, `node_step_params` только по её шагу); данные способности (`capability` и `CapabilitySpec`); настройки маршрута модели; ограниченный список модулей кода | остальные файлы `prompts/`, остальные настройки, посторонний код |
+
+Разрешение (`ExecutionPermission`, `ActionExecutionControl.graph_version`) теперь
+привязано к структуре. Билет восстановления привязан к структуре и к
+`input_revision`, в котором уже учтена конфигурация именно этой ноды; её
+ревизия отдельно записана в билете (`preconditions.node_config_revision`) и в
+политике запуска (`policy.node_config_revisions`).
+
+### Список кода, который аннулирует билет
+
+Файлы берутся из данных способности, а не из общего списка: модули из строки
+`executor` (например `make_plan`, `xlsx_step_runners`), модуль верификатора
+(`verifier`), общие модули применения (`db_apply.py`, `node_write_contract.py`)
+и, по типу результата, модули запроса к модели (`gpt_client.py`,
+`gpt_text_builder.py`) либо медиа (`media_jobs.py`, `artifact_verifier.py`).
+Нода без принятой способности (`managed=False`) в этом списке не участвует:
+восстановление для неё запрещено самой способностью.
+
+### Промпты
+
+Учитывается файл, который реально выберет `resolve_project_prompt_with_source`
+для шага этой ноды (для `excel_gpt` с `node_key` и слотом `main`, включая
+шаблоны группы). Если проект собирает промпт из блоков (`use_blocks_v2` или
+`blocks`), состав не перечислим, и входом считаются каталоги `blocks`, `steps`,
+`styles`, `step-presets` целиком, но только в этом режиме. Для проверочной ноды
+(`checkMode`/роль review, gate, compare) входом являются промпты исходных нод по
+входящим стрелкам; при `checkPromptSource=agent` добавляются каталоги промптов и
+шаблонов целиком и загруженный файл агента.
+
+### Fail-closed
+
+Любая часть, которую не удалось определить (нет ноды, не читается файл,
+исключение при разборе промпта или настроек), заменяется структурой со случайным
+`nonce`. Две подряд вычисленные ревизии тогда никогда не совпадают, билет не
+может быть принят или подтверждён. Отсутствующий файл промпта это отдельное
+устойчивое состояние (`missing`), а не ошибка.
+
+### Версия схемы и старые записи
+
+В записанные части ревизии добавлены `revision_scheme` (сейчас 2) и
+`node_config_revision`. Хеш графа схемы 1 распознаётся через
+`legacy_graph_version` и отклоняется с причиной.
+
+Поведение для уже существующих записей:
+
+- `ActionExecutionControl.graph_version` и `ExecutionControl.graph_version`
+  схемы 1: запуск, восстановление и `charge_request` отклоняются с причиной
+  `graph revision recorded under legacy scheme 1`; нужен новый запуск (старый
+  execution не мигрируется молча, бюджет и разрешение не пересоздаются).
+- Билет, у которого `preconditions.input_parts` без `revision_scheme`:
+  `claim` отклоняет его до потребления (`recovery ticket rejected before claim:
+  ... legacy scheme 1`), статус билета не меняется.
+- `node_start` исходной попытки с `recovery_revision_parts` без
+  `revision_scheme`: `recover_node` отклоняет восстановление с той же причиной,
+  ничего не резервируется.
+- Записи без частей (только значение): значение схемы 1 никогда не совпадёт с
+  значением схемы 2 (схема входит в хеш), сообщение указывает на возможную
+  старую схему.
+- Профили (`ProfileOverlay.base_version`, `graph_version`) схемы 1 отклоняются
+  штатными проверками `stale config base version` / `stale graph revision`.
+
+Хеш плана слоя действий (`plan_hash` в `action_layer/plan.py`) не зависит от
+этих ревизий и не изменился.
+
+### Остаточные риски
+
+- Список конфигурационных ключей ноды в `meta` задан явно
+  (`PER_NODE_META_KEYS`). Новый per-node ключ, хранящийся вне `data` и этих
+  двух корзин, в ревизию не попадёт, пока его не добавят в список.
+- Косметические ключи заданы запретным списком (`COSMETIC_*`): новый ключ в
+  `data` по умолчанию считается конфигурацией и аннулирует билет (безопасная
+  сторона).
+- Изменение файлов, загруженных пользователем как вход (`inputSource=upload`),
+  по-прежнему ловится только сравнением тела первого запроса.

@@ -19,6 +19,7 @@ never creates input provenance from output or repairs a failed native session.
 All app/SQLAlchemy imports are deferred until the parent executes this suite.
 """
 from __future__ import annotations
+from app.services import revisions
 
 import asyncio
 from base64 import b64decode
@@ -707,8 +708,7 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
                                  status=NodeRunStatus.pending)
             image_scope = observation.ExecutionControl(
                 execution_id=IMAGE_EXECUTION, project_id=8, workflow_run_id=21,
-                node_keys=["image-node"], graph_version=observation.digest(
-                    {"nodes": image_nodes, "edges": []}), mode="observe",
+                node_keys=["image-node"], graph_version=revisions.graph_version(image_nodes, []), mode="observe",
                 observer_state="active", created_at=datetime.utcnow(), cursors={}, gaps=[])
             master.add_all([
                 Project(id=8, slug="foreign-animation-fixture", topic="synthetic images",

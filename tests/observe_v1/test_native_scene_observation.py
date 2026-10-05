@@ -26,6 +26,7 @@ managed eligibility, full fanout, transaction provenance or artistic quality.
 """
 
 from __future__ import annotations
+from app.services import revisions
 
 import asyncio
 from contextlib import contextmanager
@@ -116,7 +117,7 @@ class NativeSceneObservation(unittest.IsolatedAsyncioTestCase):
             self.scope = observation.ExecutionControl(
                 execution_id=EXECUTION, project_id=7, workflow_run_id=11,
                 node_keys=[CAMERA["id"], ASSEMBLER["id"]],
-                graph_version=observation.digest({"nodes": self.nodes, "edges": []}),
+                graph_version=revisions.graph_version(self.nodes, []),
                 mode="observe", observer_state="active", cursors={}, gaps=[])
             seed.add(self.scope)
             await seed.commit()

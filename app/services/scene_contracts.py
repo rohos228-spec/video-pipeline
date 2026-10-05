@@ -400,6 +400,7 @@ def _loaded_project_id(project):
 async def _scene_context(node, *, project=None):
     from app.models import WorkflowRun
     from app.services.observation import ExecutionControl, _attempt, digest
+    from app.services import revisions
 
     ctx = _attempt.get()
     if (ctx is None or ctx.scope.observer_state not in {"active", "degraded"}
@@ -425,7 +426,7 @@ async def _scene_context(node, *, project=None):
             or control.mode != ctx.scope.mode
             or ctx.node_key not in control.node_keys):
         return None
-    revision = digest({"nodes": run.nodes_snapshot, "edges": run.edges_snapshot})
+    revision = revisions.graph_version(run.nodes_snapshot, run.edges_snapshot)
     if revision != ctx.scope.graph_version or revision != control.graph_version:
         _scene_gap(ctx, ValueError("native scene workflow snapshot changed"))
         return None

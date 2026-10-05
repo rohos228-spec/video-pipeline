@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import tempfile
 import uuid
@@ -17,7 +18,9 @@ from app.models import (
     Artifact,
     ArtifactKind,
     Frame,
+    HITLDecision,
     HITLKind,
+    HITLRequest,
     Project,
     ProjectStatus,
 )
@@ -364,11 +367,12 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
         raise
 
 
-async def _assemble_body(
+async def _assemble_core(
     session: AsyncSession,
     project: Project,
     bot: Bot,
     *,
+    out_path: Path,
     frames: list[Frame],
     frames_all: list[Frame],
     skipped_no_video: list[int],
@@ -436,8 +440,6 @@ async def _assemble_body(
         fr.end_ts = ac.end_ts
         fr.duration_seconds = ac.duration
 
-    out_dir = project.data_dir / "final"
-    out_path = out_dir / f"{project.slug}.mp4"
     bgm = resolve_bgm(project)
 
     subs_path: Path | None = None
@@ -573,13 +575,82 @@ async def _assemble_body(
         timeline_mode,
     )
     await session.flush()
+    return audio_duration, skip_intro
 
-    session.add(Artifact(
-        project_id=project.id, kind=ArtifactKind.final_video,
-        uuid=uuid.uuid4().hex, path=str(out_path),
-    ))
+
+async def _approve_final_exists(session: AsyncSession, project: Project, sha256: str) -> bool:
+    """Запрос approve_final для этого проекта и этого файла (по sha256) уже создан."""
+    rows = (await session.execute(
+        select(HITLRequest).where(
+            HITLRequest.project_id == project.id,
+            HITLRequest.kind == HITLKind.approve_final,
+        )
+    )).scalars().all()
+    return any(
+        (r.payload or {}).get("sha256") == sha256
+        and r.decision in (HITLDecision.pending, HITLDecision.approved)
+        for r in rows
+    )
+
+
+async def _assemble_body(
+    session: AsyncSession,
+    project: Project,
+    bot: Bot,
+    **kw,
+) -> None:
+    from app.services.artifact_verifier import verify_artifact
+
+    out_dir = project.data_dir / "final"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    final_path = out_dir / f"{project.slug}.mp4"
+    # Остатки упавшей сборки: финальный файл они не затрагивают.
+    for stale in out_dir.glob(f".{project.slug}.*.part.mp4"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    work_path = out_dir / f".{project.slug}.{uuid.uuid4().hex[:8]}.part.mp4"
+    try:
+        audio_duration, skip_intro = await _assemble_core(
+            session, project, bot, out_path=work_path, **kw
+        )
+        expected = {"min_duration": max(0.5, 0.9 * (audio_duration - skip_intro))}
+        verification = await verify_artifact(
+            work_path, root=project.data_dir, kind="assembly", expected=expected
+        )
+        if verification.get("status") != "passed":
+            raise RuntimeError(
+                "assemble: проверка итогового видео не пройдена "
+                f"({verification.get('status')}: {verification.get('reason', '')}); "
+                "финальный файл не изменён, подтверждение не создаётся"
+            )
+        os.replace(work_path, final_path)
+    finally:
+        try:
+            work_path.unlink()
+        except OSError:
+            pass
+
+    sha256 = verification["sha256"]
+    last = (await session.execute(
+        select(Artifact).where(
+            Artifact.project_id == project.id, Artifact.kind == ArtifactKind.final_video
+        ).order_by(Artifact.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    if last is None or (last.meta or {}).get("sha256") != sha256 or last.path != str(final_path):
+        session.add(Artifact(
+            project_id=project.id, kind=ArtifactKind.final_video,
+            uuid=uuid.uuid4().hex, path=str(final_path),
+            meta={"sha256": sha256, "verification": verification},
+        ))
     project.status = ProjectStatus.assembled
     await session.flush()
+
+    if await _approve_final_exists(session, project, sha256):
+        logger.info("[#{}] assemble: approve_final для sha256 {} уже есть, не дублируем",
+                    project.id, sha256[:12])
+        return
 
     from app.services.mass_factory import on_child_montage_complete
 
@@ -588,7 +659,7 @@ async def _assemble_body(
     await send_hitl_video(
         bot, session, project,
         kind=HITLKind.approve_final,
-        video_path=str(out_path),
+        video_path=str(final_path),
         caption=f"Финальный ролик #{project.id} готов. Одобрить и публиковать?",
-        payload={"step": "final"},
+        payload={"step": "final", "sha256": sha256},
     )

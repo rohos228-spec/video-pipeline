@@ -1,4 +1,5 @@
 """Same native auto-advance graph with management OFF/ON, synthetic data only."""
+from app.services import revisions
 import json,unittest
 from pathlib import Path
 from unittest.mock import AsyncMock,patch
@@ -14,7 +15,7 @@ class Boundary(fixtures.DurableActions):
     async def check_boundary(self,managed):
         from app.orchestrator.auto_advance import maybe_auto_advance
         edges=[{'id':'after-plan','source':'n1','target':'n2'}]
-        graph=digest({'nodes':self.nodes,'edges':edges})
+        graph=revisions.graph_version(self.nodes, edges)
         async with self.sessions() as s:
             p=await s.get(Project,7);p.auto_mode=True;p.status=ProjectStatus.plan_ready
             p.general_plan='Synthetic offline plan: character enters room, sees object, walks to table. '*5

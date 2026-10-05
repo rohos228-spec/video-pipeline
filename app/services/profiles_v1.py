@@ -10,6 +10,7 @@ from contextvars import ContextVar
 from datetime import datetime
 from urllib.parse import urlsplit
 from sqlalchemy import select
+from app.services import revisions
 from app.models import Project,WorkflowRun
 from app.services.profiles_state import ProfileOverlay
 from app.services.observation import ExecutionControl,ObservationEvent,digest,panel_safe
@@ -203,7 +204,7 @@ class ProfilesSupervisor:
         project=await s.get(Project,project_id)
         if not control.enabled or control.held or scope.observer_state!='active' or scope.gaps or (project.meta or {}).get('user_stop'):
             raise ValueError('stop, permission or audit blocker')
-        graph=digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot})
+        graph=revisions.graph_version(run.nodes_snapshot,run.edges_snapshot)
         if graph!=control.graph_version or graph!=scope.graph_version:raise ValueError('stale graph revision')
         if project.data_dir:
             from app.project_db import project_db_session_scope

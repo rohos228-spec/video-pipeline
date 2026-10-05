@@ -1,4 +1,5 @@
 """Profiles must be immutable, scoped and consume the existing recovery ticket."""
+from app.services import revisions
 import importlib,json,unittest
 from unittest.mock import patch
 from sqlalchemy import select
@@ -16,7 +17,7 @@ class Profiles(DecisionDurability):
             from app.models import WorkflowRun
             run=await s.get(WorkflowRun,11)
             run.nodes_snapshot=[{**n,'type':'excel_gpt'} if n['id']=='n1' else n for n in run.nodes_snapshot]
-            self.graph=observation.digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot})
+            self.graph=revisions.graph_version(run.nodes_snapshot, run.edges_snapshot)
             scope=await s.get(observation.ExecutionControl,'exec-durable');scope.graph_version=self.graph
             control=await s.get(ActionExecutionControl,'exec-durable');control.group_id='script_frames_qc';control.graph_version=self.graph
             event=await s.scalar(select(observation.ObservationEvent).where(observation.ObservationEvent.kind=='model_start'))
@@ -54,7 +55,7 @@ class Profiles(DecisionDurability):
                     run=await s.get(WorkflowRun,11)
                     run.nodes_snapshot=[{**n,'data':{**n.get('data',{}),'sd_agent':marker}}
                         if n['id']=='n1' else n for n in run.nodes_snapshot]
-                    graph=observation.digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot})
+                    graph=revisions.graph_version(run.nodes_snapshot, run.edges_snapshot)
                     (await s.get(observation.ExecutionControl,'exec-durable')).graph_version=graph
                     (await s.get(ActionExecutionControl,'exec-durable')).graph_version=graph
                     await s.commit()

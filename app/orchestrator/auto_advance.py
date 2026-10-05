@@ -819,6 +819,28 @@ async def _commit_running_after_prepare(
     return True
 
 
+async def _final_verified(session: AsyncSession, project: Project) -> bool:
+    """Автоодобрение финала только после живой структурной проверки последнего final_video."""
+    from app.models import Artifact, ArtifactKind
+    from app.services.artifact_verifier import verify_artifact
+
+    art = (await session.execute(
+        select(Artifact).where(
+            Artifact.project_id == project.id, Artifact.kind == ArtifactKind.final_video
+        ).order_by(Artifact.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    if art is None or not art.path:
+        return False
+    try:
+        res = await verify_artifact(art.path, root=project.data_dir, kind="assembly")
+    except Exception:  # noqa: BLE001
+        return False
+    if res.get("status") != "passed":
+        return False
+    recorded = (art.meta or {}).get("sha256")
+    return recorded is None or recorded == res.get("sha256")
+
+
 async def _apply_approve(
     session: AsyncSession,
     project: Project,
@@ -856,6 +878,17 @@ async def _apply_approve(
             "auto_advance: #{} blocked _apply_approve (gen_queue target hold, status={})",
             project.id,
             project.status.value,
+        )
+        return
+
+    if (
+        transition.kind is HITLKind.approve_final
+        and (hitl is None or hitl.decision is HITLDecision.pending)
+        and not await _final_verified(session, project)
+    ):
+        logger.warning(
+            "auto_advance: #{} auto-approve final blocked (verification not passed)",
+            project.id,
         )
         return
 

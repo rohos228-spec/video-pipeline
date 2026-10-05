@@ -1,4 +1,5 @@
 """Original batch/operator/model parser; only external HTTP answers are fixtures."""
+from app.services import revisions
 import json
 import tempfile
 import unittest
@@ -249,7 +250,7 @@ class NoopRecoveryVerify(unittest.IsolatedAsyncioTestCase):
             project.meta={'canvas_graph':{'nodes':graph},'prompt_slot_variants':{
                 'n1':{'main':'default' if wrong_contract else 'shots_qc_ru'}}}
             run=await s.get(WorkflowRun,11);run.nodes_snapshot=graph
-            control=await s.get(ActionExecutionControl,'exec-durable');control.graph_version=digest({'nodes':graph,'edges':[]})
+            control=await s.get(ActionExecutionControl,'exec-durable');control.graph_version=revisions.graph_version(graph, [])
             facts=[dict(kind='node_start',payload={},request_id=None)]+noop_facts()
             for e in facts:
                 if missing_check and e['kind']=='runtime_check':continue

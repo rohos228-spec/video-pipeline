@@ -266,6 +266,8 @@ class Settings(BaseSettings):
     audio_use_elevenlabs_fallback: bool = Field(
         False, alias="AUDIO_USE_ELEVENLABS_FALLBACK"
     )
+    # Потолок платных TTS POST за один запуск ноды audio (0 = без потолка).
+    audio_max_tts_posts_per_run: int = Field(60, alias="AUDIO_MAX_TTS_POSTS_PER_RUN")
 
     # Ветка для commit/push оркестратора с этого ПК (housepc|tompc|strangepc|workpc).
     # Пусто = main. На каждом ПК своё значение в локальном .env.
@@ -392,6 +394,8 @@ class Settings(BaseSettings):
     spend_run_cap_usd: float = Field(5.0, ge=0, alias="SPEND_RUN_CAP_USD")
     # HTTP 402 / нет кредитов у провайдера: включить аварийный стоп надзорного слоя.
     spend_auto_kill_on_402: bool = Field(True, alias="SPEND_AUTO_KILL_ON_402")
+    # Окно (сек): живая или не скачанная задача Kie возобновляется вместо нового createTask; 0 = выкл.
+    media_resume_window_s: int = Field(3600, ge=0, alias="MEDIA_RESUME_WINDOW_S")
     action_layer_approval_ttl_s: int = Field(600, ge=1, alias="ACTION_LAYER_APPROVAL_TTL_S")
     action_layer_max_steps: int = Field(20, ge=1, le=100, alias="ACTION_LAYER_MAX_STEPS")
     action_layer_step_timeout_s: float = Field(900.0, gt=0, alias="ACTION_LAYER_STEP_TIMEOUT_S")

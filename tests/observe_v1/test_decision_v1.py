@@ -7,6 +7,7 @@ from datetime import datetime,timedelta
 from unittest.mock import patch
 from sqlalchemy import select
 import test_actions_v1_contract as actions_tests
+from app.services import revisions
 from app.services import observation
 
 
@@ -459,7 +460,7 @@ class DecisionDurability(actions_tests.DurableActions):
                 if n['id']=='n1' else n for n in self.nodes]
             (await s.get(Workflow,9)).nodes=nodes
             (await s.get(WorkflowRun,11)).nodes_snapshot=nodes
-            graph=observation.digest({'nodes':nodes,'edges':[]})
+            graph=revisions.graph_version(nodes, [])
             (await s.get(observation.ExecutionControl,'exec-durable')).graph_version=graph
             (await s.get(ActionExecutionControl,'exec-durable')).graph_version=graph
             (await s.scalar(select(NodeRun).where(NodeRun.node_key=='n1'))).node_type=node_type

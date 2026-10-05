@@ -13,6 +13,7 @@ import httpx
 from fastapi import FastAPI
 from sqlalchemy import delete, select
 
+from app.services import revisions
 from app.models import NodeRun, NodeRunStatus, Project, ProjectStatus, Workflow, WorkflowRun
 from app.services import observation
 from app.services.actions_v1 import ActionExecutionControl, clear_permission, get_permission
@@ -35,7 +36,7 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
             {'id':'outside','type':'split','data':{}},
         ]
         self.edges = [{'id':'a-z','source':'draft-A','target':'report-Z'}]
-        self.graph = observation.digest({'nodes':self.nodes,'edges':self.edges})
+        self.graph = revisions.graph_version(self.nodes, self.edges)
         async with self.sessions() as s:
             await s.execute(delete(observation.ExecutionControl))
             await s.execute(delete(NodeRun))

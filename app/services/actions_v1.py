@@ -16,6 +16,7 @@ from app.models import Base
 from app.services.decision_state import DecisionControl, DecisionRecord, DecisionTurn
 from app.services.profiles_state import ProfileOverlay
 from app.services import kill_switch  # registers the durable emergency-stop tables
+from app.services import revisions
 
 
 class ActionExecutionControl(Base):
@@ -304,10 +305,10 @@ async def continue_managed_image(session, project, source_key, target_key, node_
             or durable.mode != "managed" or durable.observer_state != "active" or durable.gaps):
         return denied("durable_permission_unavailable")
     canvas = (project.meta or {}).get("canvas_graph") or {}
-    revision = digest({"nodes": run.nodes_snapshot, "edges": run.edges_snapshot})
+    revision = revisions.graph_version(run.nodes_snapshot, run.edges_snapshot)
     if (run.project_id != project.id or revision != scope.graph_version
             or revision != control.graph_version or revision != durable.graph_version
-            or revision != digest({"nodes": canvas.get("nodes"), "edges": canvas.get("edges")})):
+            or revision != revisions.graph_version(canvas.get("nodes"), canvas.get("edges"))):
         return denied("graph_revision_changed")
     if binding and binding.config_hash != ctx.runtime_config_hash:
         return denied("runtime_binding_changed")
@@ -405,7 +406,7 @@ class ActionSupervisor:
             run = await session.get(WorkflowRun, scope.workflow_run_id)
             if run is None or run.project_id != project_id:
                 raise ValueError("workflow run/project mismatch")
-            live_version = digest({"nodes": run.nodes_snapshot, "edges": run.edges_snapshot})
+            live_version = revisions.graph_version(run.nodes_snapshot, run.edges_snapshot)
             if live_version != graph_version or live_version != scope.graph_version:
                 raise ValueError("workflow graph changed; re-observe before enabling actions")
             if scope.observer_state != "active" or scope.mode != "observe":
@@ -545,8 +546,11 @@ class ActionSupervisor:
             if (not scope or scope.observer_state!='active' or scope.gaps or not project
                     or (project.meta or {}).get('user_stop') or execution_id in observer.failures
                     or execution_id in observer.commit_uncertainty or not run
-                    or digest({'nodes':run.nodes_snapshot,'edges':run.edges_snapshot})!=control.graph_version):
-                raise RuntimeError('managed request blocked: stop, audit, scope or graph revision')
+                    or revisions.graph_version(run.nodes_snapshot,run.edges_snapshot)!=control.graph_version):
+                legacy=bool(run and control and revisions.graph_version_status(
+                    run.nodes_snapshot,run.edges_snapshot,control.graph_version)=='legacy_scheme')
+                raise RuntimeError('managed request blocked: execution graph revision recorded under legacy scheme 1; relaunch required'
+                                   if legacy else 'managed request blocked: stop, audit, scope or graph revision')
             from app.services.decision_config import DecisionRuntimeBinding,runtime_config
             from app.services.decision_config import owner_budget_policy
             allowance=await session.get(ManagedRunAllowance,(control.project_id,control.workflow_run_id))

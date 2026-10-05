@@ -186,6 +186,30 @@ async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
     return out_path
 
 
+def _record_provider_fallback(project: Project, idx: int, kind: str, exc: BaseException) -> dict[str, Any]:
+    """Видимая запись отката платного провайдера на локальный синтез (сам откат не меняется)."""
+    import httpx
+
+    # Ответ провайдера (RuntimeError со статусом) и отказ соединения: списания нет;
+    # таймаут или обрыв после отправки: запрос мог быть принят и оплачен.
+    answered = isinstance(exc, RuntimeError) or isinstance(exc, httpx.ConnectError)
+    info = {
+        "idx": idx,
+        "kind": kind,
+        "provider": "elevenlabs",
+        "error_class": type(exc).__name__,
+        "may_have_charged": "no" if answered else "uncertain",
+    }
+    logger.warning("[#{}] sfx_gen provider_fallback: {}", project.id, info)
+    try:
+        from app.services.observation import emit
+
+        emit("provider_fallback", info)
+    except Exception:  # noqa: BLE001
+        pass
+    return info
+
+
 # ── Генерация плана событий ───────────────────────────────────────────────
 
 
@@ -215,6 +239,7 @@ async def generate_sfx_files(
     use_api = bool(settings.elevenlabs_api_key)
     files: list[dict[str, Any]] = []
     problems: list[str] = []
+    fallbacks: list[dict[str, Any]] = []
 
     for idx, ev in enumerate(events):
         if not force and idx in done_by_idx:
@@ -239,6 +264,9 @@ async def generate_sfx_files(
                 ev.kind,
                 e,
             )
+            if use_api:
+                fallback = _record_provider_fallback(project, idx, ev.kind, e)
+                fallbacks.append(fallback)
             out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
             samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
             _write_wav(out_path, samples)
@@ -260,20 +288,23 @@ async def generate_sfx_files(
                 "gain": ev.gain,
                 "duck": ev.duck,
                 "provider": actual_provider,
+                **({"provider_fallback": fallbacks[-1]} if actual_provider == "local_synth" and use_api else {}),
             }
         )
 
     if not files:
         raise RuntimeError(f"sfx_gen: ни один файл не прошёл верификацию: {problems}")
 
-    save_ai_job_checkpoint(project, "sfx_files", {"files": files})
+    save_ai_job_checkpoint(
+        project, "sfx_files", {"files": files, "provider_fallbacks": len(fallbacks)})
     await session.flush()
     logger.info(
-        "[#{}] sfx_gen: {} файлов ({}), проблем {}",
+        "[#{}] sfx_gen: {} файлов ({}), проблем {}, откатов провайдера {}",
         project.id,
         len(files),
         "elevenlabs" if use_api else "local_synth",
         len(problems),
+        len(fallbacks),
     )
     return files
 

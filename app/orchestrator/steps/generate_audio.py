@@ -312,13 +312,16 @@ async def run(
             "11Labs отключён: AUDIO_USE_ELEVENLABS_FALLBACK=0"
         )
 
-    clips, full_audio_path, words = await synthesize_per_frame_audio(
-        project=project,
-        frames=timeline_frames,
-        cells=cells,
-        audio_dir=audio_dir,
-        whisper_model=settings.whisper_model,
-    )
+    from app.services.elevenlabs_api import tts_run_budget
+
+    with tts_run_budget():
+        clips, full_audio_path, words = await synthesize_per_frame_audio(
+            project=project,
+            frames=timeline_frames,
+            cells=cells,
+            audio_dir=audio_dir,
+            whisper_model=settings.whisper_model,
+        )
 
     await _persist_audio_results(
         session,

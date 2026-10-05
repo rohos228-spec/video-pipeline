@@ -27,6 +27,9 @@ class PublishResult:
     ok: bool
     url: str | None = None
     error: str | None = None
+    # confirmed: признак успеха найден; unconfirmed: кнопка нажата, итог не подтверждён;
+    # failed: ошибка до или во время публикации.
+    status: str = ""
 
 
 class Publisher:
@@ -35,6 +38,11 @@ class Publisher:
     file_input_selectors: list[str] = ["input[type='file']"]
     caption_selectors: list[str] = ["textarea", "div[contenteditable='true']"]
     publish_button_selectors: list[str] = ["button:has-text('Post')", "button:has-text('Publish')"]
+    # Признаки успешной публикации (селекторы тоста/страницы, фрагменты URL).
+    # Пока не откалиброваны на живом UI: пустые списки дают только `unconfirmed`.
+    success_selectors: list[str] = []
+    success_url_markers: list[str] = []
+    confirm_timeout_s: float = 8.0
 
     def __init__(self, browser: Browser) -> None:
         self.browser = browser
@@ -94,12 +102,35 @@ class Publisher:
                 raise RuntimeError(f"{self.platform}: кнопка Publish не найдена")
             await page.locator(pub_sel).first.click()
 
-            # Ждём какое-то время — UI обычно делает редирект или показывает тост «опубликовано»
-            await asyncio.sleep(8)
-            return PublishResult(platform=self.platform, ok=True, url=page.url)
+            if await self._confirm(page):
+                return PublishResult(platform=self.platform, ok=True, url=page.url, status="confirmed")
+            logger.warning("{}: публикация не подтверждена признаком успеха", self.platform)
+            return PublishResult(
+                platform=self.platform, ok=False, url=page.url, status="unconfirmed",
+                error="unconfirmed: кнопка нажата, признак успешной публикации не найден",
+            )
         except Exception as e:  # noqa: BLE001
             logger.exception("{}: publish failed", self.platform)
-            return PublishResult(platform=self.platform, ok=False, error=str(e))
+            return PublishResult(platform=self.platform, ok=False, error=str(e), status="failed")
+
+    async def _confirm(self, page: Page) -> bool:
+        """Ждём признак успеха; без признаков (или без совпадения) исход считается неподтверждённым."""
+        if not self.success_selectors and not self.success_url_markers:
+            await asyncio.sleep(self.confirm_timeout_s)
+            return False
+        deadline = asyncio.get_event_loop().time() + self.confirm_timeout_s
+        while True:
+            try:
+                if any(m in (page.url or "") for m in self.success_url_markers):
+                    return True
+                for sel in self.success_selectors:
+                    if await page.locator(sel).count() > 0:
+                        return True
+            except Exception:  # noqa: BLE001
+                pass
+            if asyncio.get_event_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(0.5)
 
 
 class TikTokPublisher(Publisher):

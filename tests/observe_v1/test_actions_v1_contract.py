@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.services import revisions
 from app.services.actions_v1 import (
     ActionSupervisor,
     ActionExecutionControl,
@@ -95,7 +96,7 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
         fixture_type = getattr(self, "fixture_node_type", "excel_gpt")
         self.nodes = [{"id":"n1","type":fixture_type,"data":{"groupId":"g1"}},
                       {"id":"n2","type":"script","data":{"groupId":"g2"}}]
-        self.graph = digest({"nodes":self.nodes,"edges":[]})
+        self.graph = revisions.graph_version(self.nodes, [])
         async with self.sessions() as session:
             session.add(Project(id=7,slug="actions-fixture",topic="synthetic",meta={}))
             session.add(Workflow(id=9,name="actions fixture",nodes=self.nodes,edges=[]))
@@ -458,7 +459,7 @@ class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
             data['sd_agent'] = marker
         self.nodes = [{'id': 'n1', 'type': node_type, 'data': data},
                       {'id': 'n2', 'type': 'excel_gpt', 'data': {'groupId': 'g1'}}]
-        self.graph = digest({'nodes': self.nodes, 'edges': []})
+        self.graph = revisions.graph_version(self.nodes, [])
         async with self.sessions() as session:
             (await session.get(Workflow, 9)).nodes = self.nodes
             (await session.get(WorkflowRun, 11)).nodes_snapshot = self.nodes
@@ -666,8 +667,7 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
             run = await session.get(WorkflowRun, 11)
             ticket = await session.get(RecoveryAction, 'legacy-recovery')
             project = await session.get(Project, 7)
-            self.assertEqual(ticket.preconditions['graph_version'], digest({
-                'nodes': run.nodes_snapshot, 'edges': run.edges_snapshot}))
+            self.assertEqual(ticket.preconditions['graph_version'], revisions.graph_version(run.nodes_snapshot, run.edges_snapshot))
             self.assertEqual(ticket.preconditions['graph_version'], control.graph_version)
             self.assertEqual(ticket.preconditions['input_revision'],
                              await input_revision(session, project, 'n1'))

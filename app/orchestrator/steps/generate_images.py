@@ -81,6 +81,7 @@ from app.services.img_streams import (
     get_img_streams,
 )
 from app.services.outsee_retry import generate_image_with_retries
+from app.services.video_error_policy import is_no_resubmit
 from app.services.step_cancel import (
     StepCancelledError,
     consume_stop,
@@ -1957,6 +1958,11 @@ async def _generate_and_send(
                     f"outsee отклонил промт (модерация). "
                     f"6 попыток + GPT-rewrite не помогли.\n\n"
                 )
+            elif is_no_resubmit(e):
+                head = (
+                    f"Кадр #{frame.number} проекта #{project.id}: задача Kie не завершена "
+                    f"или исход отправки неизвестен. Новый платный запрос не отправляю.\n\n"
+                )
             else:
                 head = (
                     f"⚠️ Кадр #{frame.number} проекта #{project.id}: "
@@ -1982,6 +1988,7 @@ async def _generate_and_send(
             "gen_id": gen_id,
             "raw_url": result.raw_url or "",
             "shot": shot,
+            **({"provider_task_id": result.gen_id} if result.gen_id and result.gen_id != gen_id else {}),
         },
     )
     from app.services.media_jobs import persist_artifact

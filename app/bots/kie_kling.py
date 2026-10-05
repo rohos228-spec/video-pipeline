@@ -319,15 +319,31 @@ async def _create_task(body: dict[str, Any]) -> str:
     if not task_id:
         raise KieKlingError(
             "kie Kling: createTask без taskId",
-            context={"provider_code": 500, "raw": str(payload)[:200]},
+            context={"provider_code": 500, "raw": str(payload)[:200], "no_task_id": True},
         )
     return task_id
+
+
+def _pending(task_id: str, kind: str, detail: str):
+    from app.bots.kie_http import KieTaskPending
+    return KieTaskPending(f"kie Kling: task {task_id} ещё не готов ({detail}); новый submit не делаю",
+                          task_id=task_id, kind=kind)
 
 
 async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:
     url = f"{kie_api_base_url()}{_DETAIL_PATH}"
     deadline = asyncio.get_running_loop().time() + max(30.0, timeout_s)
     net_fail_streak = 0
+
+    async def _wait_transient(kind: str, detail: str) -> None:
+        # задача оплачена и жива: тот же task id до конца бюджета, затем KieTaskPending (не burn)
+        nonlocal net_fail_streak
+        net_fail_streak += 1
+        logger.warning("kie_kling: poll transient {} streak={} taskId={}", detail, net_fail_streak, task_id)
+        if asyncio.get_running_loop().time() >= deadline:
+            raise _pending(task_id, kind, detail)
+        await asyncio.sleep(min(_POLL_INTERVAL_S * (2 ** min(net_fail_streak - 1, 3)), 30.0))
+
     async with httpx.AsyncClient(timeout=60.0) as client:
         while True:
             try:
@@ -336,58 +352,27 @@ async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:
                     headers=_auth_headers(),
                     params={"taskId": task_id},
                 )
-                net_fail_streak = 0
             except (httpx.TransportError, httpx.TimeoutException) as e:
-                net_fail_streak += 1
-                logger.warning(
-                    "kie_kling: poll net error {}/8 taskId={} ({})",
-                    net_fail_streak,
-                    task_id,
-                    type(e).__name__,
-                )
-                if net_fail_streak >= 8:
-                    raise KieKlingError(
-                        f"kie Kling: сеть при poll task {task_id}: {type(e).__name__}",
-                        context={
-                            "provider_code": 503,
-                            "task_id": task_id,
-                            "kind": "network",
-                        },
-                    ) from e
-                if asyncio.get_running_loop().time() >= deadline:
-                    raise KieKlingError(
-                        f"kie Kling: таймаут ожидания task {task_id}",
-                        context={
-                            "provider_code": 504,
-                            "task_id": task_id,
-                            "kind": "timeout",
-                        },
-                    ) from e
-                await asyncio.sleep(_POLL_INTERVAL_S)
+                await _wait_transient("network", type(e).__name__)
                 continue
             if r.status_code in {500, 502, 503, 504}:
-                net_fail_streak += 1
-                logger.warning(
-                    "kie_kling: poll transient HTTP {} {}/8 taskId={}",
-                    r.status_code,
-                    net_fail_streak,
-                    task_id,
-                )
-                if net_fail_streak < 8:
-                    if asyncio.get_running_loop().time() >= deadline:
-                        raise KieKlingError(
-                            f"kie Kling: таймаут ожидания task {task_id}",
-                            context={"provider_code": 504, "task_id": task_id, "kind": "timeout"},
-                        )
-                    await asyncio.sleep(_POLL_INTERVAL_S * 1.5)
-                    continue
+                await _wait_transient("timeout", f"HTTP {r.status_code}")
+                continue
+            net_fail_streak = 0
             try:
                 payload = r.json()
             except Exception:  # noqa: BLE001
                 payload = {"msg": (r.text or "")[:300], "code": r.status_code}
-            if r.status_code >= 400:
+            try:
+                if r.status_code >= 400:
+                    _raise_from_kie_payload(payload, http_status=r.status_code, where="recordInfo")
                 _raise_from_kie_payload(payload, http_status=r.status_code, where="recordInfo")
-            _raise_from_kie_payload(payload, http_status=r.status_code, where="recordInfo")
+            except KieKlingError as e:
+                code = (e.context or {}).get("provider_code")
+                if isinstance(code, int) and (code >= 500 or code in (429, 433, 455)):
+                    await _wait_transient("timeout", f"code {code}")
+                    continue
+                raise
             data = (payload or {}).get("data") if isinstance(payload, dict) else None
             if not isinstance(data, dict):
                 raise KieKlingError(
@@ -414,10 +399,7 @@ async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:
                     },
                 )
             if asyncio.get_running_loop().time() >= deadline:
-                raise KieKlingError(
-                    f"kie Kling: таймаут ожидания task {task_id}",
-                    context={"provider_code": 504, "task_id": task_id, "kind": "timeout"},
-                )
+                raise _pending(task_id, "timeout", "timeout")
             await asyncio.sleep(_POLL_INTERVAL_S)
 
 
@@ -461,6 +443,24 @@ async def _download(url: str, out_path: Path) -> Path:
             )
         out_path.write_bytes(r.content)
     return out_path
+
+
+async def _download_keep_task(url: str, out_path: Path, task_id: str) -> Path:
+    """Paid result exists: a failed download must never lead to a new createTask."""
+    last: BaseException | None = None
+    for i in range(3):
+        try:
+            return await _download(url, out_path)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if i < 2:
+                await asyncio.sleep(2.0 * (i + 1))
+    from app.bots.kie_http import KieTaskPending
+    raise KieTaskPending(
+        f"kie Kling task {task_id}: результат готов, скачать не удалось ({type(last).__name__})",
+        task_id=task_id, kind="download", context={"raw_url": url}) from last
 
 
 async def _frame_to_public_url(start_frame: Path | str | None) -> str | None:
@@ -553,10 +553,23 @@ async def generate_video(
         len(body_prompt),
         project_id,
     )
-    task_id = await _create_task(body)
+    from app.services import media_resume
+    rctx = media_resume.make_ctx(project_id, out_path, model, "jobs", body)
+    task_id = await media_resume.begin(rctx)
+    if task_id:
+        logger.info("kie_kling: возобновляю taskId={} без нового submit", task_id)
+    else:
+        task_id = await media_resume.submit(rctx, lambda: _create_task(body))
     logger.info("kie_kling: taskId={} gen_id={}", task_id, gid)
-    data = await _poll_task(task_id, timeout_s=float(timeout or _POLL_MAX_S))
+    try:
+        data = await _poll_task(task_id, timeout_s=float(timeout or _POLL_MAX_S))
+    except KieKlingError as e:
+        if (e.context or {}).get("kind") == "generation":
+            await media_resume.mark(rctx, task_id, "failed", "poll fail")
+        raise
+    await media_resume.mark(rctx, task_id, "succeeded", "poll success")
     raw_url = _result_url_from_task(data)
-    path = await _download(raw_url, out_path)
+    path = await _download_keep_task(raw_url, out_path, task_id)
+    await media_resume.mark_downloaded(rctx, task_id)
     logger.info("kie_kling: ok {} → {} ({} bytes)", task_id, path.name, path.stat().st_size)
     return GenerationResult(file_path=path, gen_id=gid, raw_url=raw_url)

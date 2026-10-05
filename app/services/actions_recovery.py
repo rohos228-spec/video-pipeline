@@ -17,6 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base, NodeRun, NodeRunStatus, Project, ProjectStatus, WorkflowRun
 from app.services.actions_v1 import ActionExecutionControl, ActionRecord, update_permission
+from app.services import revisions
 
 _active_nodes: dict[int, str] = {}
 _inflight_projects: set[int] = set()
@@ -111,42 +112,14 @@ def load_source_body(observer, event):
 async def input_revision(session, project, node_key, *, parts=None):
     """Only hashes leave the process. Runtime bookkeeping is not node input.
 
-    In addition, the first recovery HTTP body must equal the source body hash.
-    This catches file-derived inputs not represented in domain tables.
+    Scoped to the node: its data inputs, resolved prompt files, capability data,
+    model-request settings, own configuration and a bounded list of code
+    modules (see app.services.revisions). Unrelated prompts, settings and code
+    do not enter it. In addition, the first recovery HTTP body must equal the
+    source body hash, which catches file-derived inputs not represented here.
     """
-    from app.models import Frame, Scene, FrameText, SceneDesignCell
-    from app.services.observation import digest
-    from app.settings import settings
-    columns = ("topic", "general_plan", "hero_description", "script_text", "hero_mode",
-               "hero_descriptions", "item_descriptions", "prompt_overrides", "gpt_text_overrides")
-    state = {k: getattr(project, k) for k in columns}
-    for model in (Frame, Scene, FrameText, SceneDesignCell):
-        rows = (await session.scalars(select(model).where(model.project_id == project.id)
-                                      .order_by(model.id))).all()
-        state[model.__tablename__] = [
-            {c.name: getattr(row, c.name) for c in model.__table__.columns
-             if c.name not in {"created_at", "updated_at"}} for row in rows]
-    meta = project.meta or {}
-    # The canvas includes per-node model, prompt, source and write contracts.
-    state["canvas"] = {k: v for k, v in meta.items() if "canvas" in k or k == "workflow_graph"}
-    # The runtime reads canvas_graph. WorkflowRun in project.db is a projection
-    # that _prepare_node_run_for_status normalizes during the failed attempt.
-    # Master graph is checked independently against the enabled revision.
-    # Watchdog / kill-switch knobs are supervisor policy, not node input; excluded so
-    # adding or tuning them never invalidates a reserved recovery ticket.
-    state["settings"] = settings.model_dump(exclude={k for k in type(settings).model_fields
-        if k.startswith(("watchdog_", "decision_task_"))})
-    prompts = Path(__file__).resolve().parents[2] / "prompts"
-    state["prompts"] = {str(p.relative_to(prompts)): digest(p.read_bytes().hex())
-                        for p in sorted(prompts.rglob("*.md"))}
-    source_root = Path(__file__).resolve().parents[2]
-    node_code = ('app/orchestrator/steps/enrich_xlsx.py','app/orchestrator/pipeline.py',
-        'app/services/gpt_client.py','app/services/db_apply.py','app/services/node_write_contract.py',
-        'app/services/gpt_text_builder.py')
-    state["node_code"] = {name:digest((source_root/name).read_bytes().hex()) for name in node_code}
-    if parts is not None:
-        parts.update({k:digest(v) for k,v in state.items()})
-    return digest(state)
+    from app.services.revisions import compute_input_revision
+    return await compute_input_revision(session, project, node_key, parts=parts)
 
 
 async def recover_node(supervisor, *, project_id, execution_id, incident_id, node_key,
@@ -219,8 +192,12 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
         if not state or not events or state.cursor < events[-1].id:
             raise ValueError("diagnosis is stale")
         run = await master.get(WorkflowRun, control.workflow_run_id)
-        if not run or digest({"nodes": run.nodes_snapshot, "edges": run.edges_snapshot}) != control.graph_version:
+        if not run:
             raise ValueError("graph revision changed")
+        graph_problem = revisions.graph_mismatch_reason(
+            run.nodes_snapshot, run.edges_snapshot, control.graph_version)
+        if graph_problem:
+            raise ValueError(graph_problem)
         from app.services.excel_gpt_node import effective_node_type
         from app.services.node_capabilities import capability_for
         # Execution grants may cover mixed families. The immutable graph retains
@@ -286,10 +263,15 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             current_parts = {}
             revision = await input_revision(session, project, node_key, parts=current_parts)
             previous_parts = source.payload.get("recovery_revision_parts") or {}
+            scheme_problem = revisions.stored_revision_problem(previous_parts) if previous_parts else None
+            if scheme_problem:
+                raise ValueError(scheme_problem)
             parts_match = bool(previous_parts) and all(previous_parts.get(k) == v for k,v in current_parts.items())
             if not parts_match and source.payload.get("recovery_input_revision") != revision:
                 changed = [k for k,v in current_parts.items() if previous_parts.get(k) != v]
-                raise ValueError("input/config revision changed or not recorded: " + ",".join(changed))
+                raise ValueError("input/config revision changed or not recorded"
+                                 + ("" if previous_parts else " (no parts recorded: legacy scheme 1 or missing)")
+                                 + ": " + ",".join(changed))
             profile = None
             if profile_overlay_id:
                 from app.services.profiles_v1 import reservation, source_provider
@@ -304,7 +286,9 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                     "running_status": running, "input_revision": revision, "graph_version": control.graph_version,
                     "action_type": action_type, "effective_node_type": node_type,
                     "capability_actions": list(capability.actions),
-                    "input_parts": current_parts, "graph_authority": "master revision + runtime canvas_graph",
+                    "input_parts": current_parts, "revision_scheme": revisions.REVISION_SCHEME,
+                    "node_config_revision": current_parts.get("node_config_revision"),
+                    "graph_authority": "master revision + runtime canvas_graph",
                     "first_body_hash": starts[0].payload["input_revision"], "prior_attempt_terminal": True,
                     "node_and_project_replicas_match": True,
                     "workflow_aggregate_status": {"master": primary_snapshot["workflow_status"],
@@ -378,7 +362,17 @@ async def claim(observer, session, project, node_key, attempt_id, *, execution_i
             raise RuntimeError("recovery permission revoked or held")
         run = await session.get(WorkflowRun, control.workflow_run_id)
         master_run = await master.get(WorkflowRun, control.workflow_run_id)
-        if (not run or not master_run or digest({"nodes": master_run.nodes_snapshot, "edges": master_run.edges_snapshot}) != row.preconditions["graph_version"]
+        stored_parts = row.preconditions.get("input_parts")
+        scheme_problem = revisions.stored_revision_problem(stored_parts) if stored_parts else None
+        if scheme_problem:
+            raise RuntimeError("recovery ticket rejected before claim: " + scheme_problem)
+        if run and master_run:
+            graph_problem = revisions.graph_mismatch_reason(
+                master_run.nodes_snapshot, master_run.edges_snapshot, row.preconditions["graph_version"])
+            if graph_problem and "legacy scheme" in graph_problem:
+                raise RuntimeError("recovery ticket rejected before claim: " + graph_problem)
+        if (not run or not master_run
+                or revisions.graph_version(master_run.nodes_snapshot, master_run.edges_snapshot) != row.preconditions["graph_version"]
                 or await input_revision(session, project, node_key) != row.preconditions["input_revision"]):
             raise RuntimeError("recovery revisions changed before claim")
         # Historical same tickets lack action_type; profile tickets retain both
@@ -508,8 +502,8 @@ async def reconcile(observer):
                     "node_end": any(e.kind == "node_end" for e in facts),
                     "data_applied": any(e.kind == "data_applied" for e in facts),
                     "accepted_payload": any(e.kind == "parse_result" and e.payload.get("payload_present") for e in facts),
-                    "graph_matches": bool(run and master_run and digest({"nodes": master_run.nodes_snapshot,
-                        "edges": master_run.edges_snapshot}) == control.graph_version),
+                    "graph_matches": bool(run and master_run and revisions.graph_version(
+                        master_run.nodes_snapshot, master_run.edges_snapshot) == control.graph_version),
                     "audit_available": not bool(scope.gaps or row.execution_id in observer.failures
                                                 or row.execution_id in observer.commit_uncertainty),
                     "no_user_stop": bool(project and not (project.meta or {}).get("user_stop")

@@ -59,6 +59,22 @@ class KieUncertainError(KieHttpError):
     """Таймаут или обрыв сети уже после отправки: задача могла быть принята и оплачена."""
 
 
+class KieSubmitUnknownError(KieUncertainError):
+    """createTask ушёл, ответа с task id нет: задача могла быть принята и оплачена. Повторный submit запрещён."""
+
+    def __init__(self, message: str, *, context: dict[str, Any] | None = None):
+        super().__init__(message, context={**(context or {}), "uncertain": True, "no_resubmit": True,
+                                           "submit_unknown": True})
+
+
+class KieTaskPending(KieUncertainError):
+    """Известная задача ещё не отдала результат (или результат не скачан): опрос продолжится по тому же task id."""
+
+    def __init__(self, message: str, *, task_id: str, kind: str = "timeout", context: dict[str, Any] | None = None):
+        super().__init__(message, context={"provider_code": 504, **(context or {}), "task_id": task_id,
+                                           "kind": kind, "no_resubmit": True, "pending": True})
+
+
 def kie_configured() -> bool:
     return bool(kie_api_key())
 
@@ -168,7 +184,7 @@ async def create_task(api: str, endpoint: str | None, body: dict[str, Any]) -> s
     if not task_id:
         raise KieHttpError(
             f"kie create {path}: ответ без taskId",
-            context={"provider_code": 500, "raw": str(payload)[:200]},
+            context={"provider_code": 500, "raw": str(payload)[:200], "no_task_id": True},
         )
     return task_id
 
@@ -286,6 +302,24 @@ def _fail_message(data: dict[str, Any]) -> str:
     return "generation failed"
 
 
+def _poll_backoff(fails: int) -> float:
+    return min(_POLL_INTERVAL_S * (2 ** min(max(fails, 1) - 1, 3)), 30.0)
+
+
+async def task_status(api: str, task_id: str) -> tuple[str, dict[str, Any]]:
+    """One status request (no waiting): (pending | success | fail, task data). Not for managed jobs."""
+    path = _POLL_PATHS.get(api, _POLL_PATHS["jobs"])
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(f"{kie_api_base_url()}{path}", headers=_headers(), params={"taskId": task_id})
+    try:
+        payload = r.json()
+    except Exception:  # noqa: BLE001
+        payload = {"msg": (r.text or "")[:300], "code": r.status_code}
+    data = _check(payload, http_status=r.status_code, where=f"poll {path}")
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return _task_state(api, inner), inner
+
+
 @media_spend.tracked_kie_poll
 async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -> dict[str, Any]:
     path = _POLL_PATHS.get(api, _POLL_PATHS["jobs"])
@@ -315,18 +349,31 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
                 if job:
                     raise  # known job survives; never enter native resubmit/retry ladder
                 net_fails += 1
-                if net_fails >= 8 or asyncio.get_event_loop().time() >= deadline:
-                    raise KieUncertainError(
+                if asyncio.get_event_loop().time() >= deadline:
+                    raise KieTaskPending(
                         f"kie poll {task_id}: сеть/таймаут ({type(e).__name__})",
-                        context={"provider_code": 504, "task_id": task_id},
+                        task_id=task_id, kind="network",
                     ) from e
-                await asyncio.sleep(_POLL_INTERVAL_S)
+                await asyncio.sleep(_poll_backoff(net_fails))
                 continue
             try:
                 payload = r.json()
             except Exception:  # noqa: BLE001
                 payload = {"msg": (r.text or "")[:300], "code": r.status_code}
-            data = _check(payload, http_status=r.status_code, where=f"poll {path}")
+            try:
+                data = _check(payload, http_status=r.status_code, where=f"poll {path}")
+            except KieHttpError as e:
+                code = (e.context or {}).get("provider_code")
+                if job or not (isinstance(code, int) and (code >= 500 or code in (429, 433, 455))):
+                    raise
+                # 5xx на опросе: задача жива и оплачена, ждём тем же task id до конца бюджета
+                net_fails += 1
+                if asyncio.get_event_loop().time() >= deadline:
+                    raise KieTaskPending(f"kie poll {task_id}: HTTP {code} до конца ожидания",
+                                         task_id=task_id, kind="timeout") from e
+                await asyncio.sleep(_poll_backoff(net_fails))
+                continue
+            net_fails = 0
             inner = data.get("data") if isinstance(data.get("data"), dict) else {}
             state = _task_state(api, inner)
             if job:
@@ -357,10 +404,7 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
                     },
                 )
             if asyncio.get_event_loop().time() >= deadline:
-                raise KieUncertainError(
-                    f"kie: таймаут ожидания task {task_id}",
-                    context={"provider_code": 504, "task_id": task_id, "kind": "timeout"},
-                )
+                raise KieTaskPending(f"kie: таймаут ожидания task {task_id}", task_id=task_id, kind="timeout")
             await asyncio.sleep(interval)
 
 
@@ -376,8 +420,28 @@ async def download(url: str, out_path: Path) -> Path:
                 f"kie download HTTP {r.status_code} size={len(r.content or b'')}",
                 context={"provider_code": r.status_code, "kind": "download"},
             )
-        out_path.write_bytes(r.content)
+        tmp = out_path.with_name(out_path.name + ".part")
+        tmp.write_bytes(r.content)
+        tmp.replace(out_path)
     return out_path
+
+
+async def _download_keep_task(url: str, out_path: Path, task_id: str) -> Path:
+    """Paid result exists: a failed download must never lead to a new createTask."""
+    last: BaseException | None = None
+    for i in range(3):
+        try:
+            return await download(url, out_path)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if i < 2:
+                await asyncio.sleep(2.0 * (i + 1))
+    raise KieTaskPending(
+        f"kie task {task_id}: результат готов, скачать не удалось ({type(last).__name__}); повторю скачивание без нового submit",
+        task_id=task_id, kind="download", context={"raw_url": url},
+    ) from last
 
 
 async def run_generation(
@@ -386,15 +450,23 @@ async def run_generation(
     out_path: Path,
     *,
     timeout_s: float = _POLL_MAX_S,
+    project_id: int | None = None,
 ) -> GenerationResult:
     """create → poll → download. spec.api выбирает семейство эндпоинтов."""
     from app.services.media_jobs import assert_entry
     if await assert_entry(provider="kie") is not None:
         return await _managed_generation(spec, payload, out_path, timeout_s=timeout_s)
+    from app.services import media_resume
     api = str(spec.get("api") or "jobs")
+    rctx = media_resume.make_ctx(project_id, out_path, str(spec.get("id") or ""), api, payload)
     with media_spend.kie_scope(spec, payload, out_path):
-        task_id = await create_task(api, spec.get("endpoint"), payload)
-        logger.info("kie_http: task {} создана (model={})", task_id, spec.get("id"))
+        resumed = await media_resume.begin(rctx)
+        if resumed is not None:
+            task_id = resumed
+            logger.info("kie_http: возобновляю task {} без нового submit (model={})", task_id, spec.get("id"))
+        else:
+            task_id = await media_resume.submit(rctx, lambda: create_task(api, spec.get("endpoint"), payload))
+            logger.info("kie_http: task {} создана (model={})", task_id, spec.get("id"))
         data = await poll_task(api, task_id, timeout_s=timeout_s)
     urls = _result_media_urls(data)
     if not urls:
@@ -402,7 +474,8 @@ async def run_generation(
             "kie: success без ссылок на результат",
             context={"provider_code": 500, "task_id": task_id},
         )
-    path = await download(urls[0], out_path)
+    path = await _download_keep_task(urls[0], out_path, task_id)
+    await media_resume.mark_downloaded(rctx, task_id)
     logger.info("kie_http: ok {} → {} ({} bytes)", task_id, path.name, path.stat().st_size)
     return GenerationResult(file_path=path, gen_id=task_id, raw_url=urls[0])
 
@@ -584,7 +657,7 @@ async def generate_kie_video(
         bool(image_url),
         project_id,
     )
-    return await run_generation(spec, payload, out_path, timeout_s=timeout)
+    return await run_generation(spec, payload, out_path, timeout_s=timeout, project_id=project_id)
 
 
 async def generate_kie_image(
@@ -653,5 +726,5 @@ async def generate_kie_image(
         len(ref_urls),
         project_id,
     )
-    return await run_generation(spec, payload, out_path, timeout_s=timeout)
+    return await run_generation(spec, payload, out_path, timeout_s=timeout, project_id=project_id)
 

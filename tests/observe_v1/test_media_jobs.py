@@ -9,6 +9,7 @@ from unittest.mock import patch
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.services import revisions
 from app.models import Base, Project, Workflow, WorkflowRun, NodeRun, NodeRunStatus
 from app.services import observation
 from app.services.observation import ExecutionControl, digest, AttemptContext
@@ -47,7 +48,7 @@ class MediaJobs(unittest.IsolatedAsyncioTestCase):
         observation._observer = self.observer
         self.nodes = [{"id": "image", "type": "images", "data": {"groupId": "media"}},
                       {"id": "foreign", "type": "videos", "data": {"groupId": "other"}}]
-        graph = digest({"nodes": self.nodes, "edges": []})
+        graph = revisions.graph_version(self.nodes, [])
         async with self.sessions() as s:
             s.add(Project(id=7, slug="synthetic-media", topic="synthetic", meta={}))
             s.add(Workflow(id=1, name="media", nodes=self.nodes, edges=[]))
