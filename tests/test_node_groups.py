@@ -255,13 +255,13 @@ async def test_insert_fanout_after_split(mem_db) -> None:
 
 
 async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
-    """Группа «Сценарий → кадры + QC»: вставка после plan, без ноды промтов."""
+    """Группа «Каркас → площадка → шоты + QC»: вставка после plan, без ноды промтов."""
     async with mem_db() as session:
         project = await _mk_project(session)
         res = await insert_node_group(session, project, "script_frames_qc")
 
     assert res["after"] == "n_plan"
-    assert len(res["nodes"]) == 6
+    assert len(res["nodes"]) == 5
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     plan_x = by_id["n_plan"]["position"]["x"]
@@ -270,24 +270,24 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert script["type"] == "excel_gpt"
     assert script["position"]["x"] == plan_x + 290.0
     assert script["data"]["groupId"] == "script_frames_qc"
+    assert script["data"]["label"] == "Каркас"
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_script"] == {
-        "main": "script_writer_ru"
+        "main": "scene_skeleton_agent"
     }
     # рабочие ноды пишут в DB через apply-ops
     cfg = project.meta["excel_gpt_nodes"]["n_excel_gpt_fw_script"]
     assert cfg["outputMode"] == "project_file"
     assert cfg["transport"] == "api"
 
-    chk = by_id["n_excel_gpt_fw_check_script"]
-    assert chk["data"]["slotOverflow"] is True
-    ccfg = project.meta["excel_gpt_nodes"]["n_excel_gpt_fw_check_script"]
-    assert ccfg["checkMode"] is True
-    assert ccfg["checkPromptSource"] == "upstream"
-    assert "n_excel_gpt_fw_check_script" not in project.meta["prompt_slot_variants"]
+    # проверки каркаса в группе больше нет: каркас → площадка → шоты
+    assert "n_excel_gpt_fw_check_script" not in by_id
+    assert "n_excel_gpt_fw_check_script" not in project.meta["excel_gpt_nodes"]
 
+    assert by_id["n_excel_gpt_fw_action"]["data"]["label"] == "Площадка"
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_action"] == {
-        "main": "main_action_from_bits_ru"
+        "main": "action"
     }
+    assert by_id["n_excel_gpt_fw_shots"]["data"]["label"] == "Шоты"
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_shots"] == {
         "main": "scenes_to_frames_ru"
     }
@@ -299,13 +299,7 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     pairs = {(e["source"], e["target"]) for e in cg["edges"]}
     assert ("n_plan", "n_script") not in pairs  # нет такого ребра
     assert ("n_plan", "n_excel_gpt_fw_script") in pairs
-    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_check_script") in pairs
-    kinds = {
-        (e["source"], e["target"]): (e.get("data") or {}).get("kind")
-        for e in cg["edges"]
-    }
-    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_action")] == "pass"
-    assert kinds[("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_script")] == "fail"
+    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_action") in pairs
     assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") in pairs
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc") in pairs
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames") not in pairs
@@ -879,7 +873,7 @@ def test_drop_script_frames_qc_check_graph() -> None:
 
 
 def test_restore_script_frames_qc_puts_whole_group_back() -> None:
-    """Срез до 4 нод → снова вся группа: script, check, action, shots, qc, report."""
+    """Срез до 4 нод → снова цепочка: каркас → площадка → шоты → qc → report."""
     gid = {"groupId": "script_frames_qc"}
     meta = {
         "canvas_graph": {
@@ -904,20 +898,74 @@ def test_restore_script_frames_qc_puts_whole_group_back() -> None:
     ids = {n["id"] for n in meta["canvas_graph"]["nodes"]}
     assert {
         "n_excel_gpt_fw_script",
-        "n_excel_gpt_fw_check_script",
         "n_excel_gpt_fw_action",
         "n_excel_gpt_fw_shots",
         "n_excel_gpt_fw_qc",
         "n_excel_gpt_fw_report",
     } <= ids
+    assert "n_excel_gpt_fw_check_script" not in ids
     pairs = {(e["source"], e["target"]) for e in meta["canvas_graph"]["edges"]}
     assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_shots") not in pairs
-    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_check_script") in pairs
-    assert ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_action") in pairs
+    assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_action") in pairs
     assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") in pairs
     assert "n_excel_gpt_fw_action" in meta["excel_gpt_nodes"]
-    assert meta["prompt_slot_variants"]["n_excel_gpt_fw_action"]["main"] == "main_action_from_bits_ru"
+    assert meta["prompt_slot_variants"]["n_excel_gpt_fw_action"]["main"] == "action"
     assert ng.script_frames_qc_needs_upgrade(meta) is False
+
+
+def test_restore_keeps_existing_check_edges() -> None:
+    """Старый канвас с проверкой: проверка «Ок» → площадка, не прямо в шоты."""
+    gid = {"groupId": "script_frames_qc"}
+    meta = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {"id": "n_excel_gpt_fw_script", "type": "excel_gpt", "position": {"x": 0, "y": 0}, "data": gid},
+                {"id": "n_excel_gpt_fw_check_script", "type": "excel_gpt", "position": {"x": 100, "y": 0}, "data": gid},
+                {"id": "n_excel_gpt_fw_shots", "type": "excel_gpt", "position": {"x": 300, "y": 0}, "data": gid},
+            ],
+            "edges": [
+                {"source": "n_excel_gpt_fw_script", "target": "n_excel_gpt_fw_check_script", "data": {"kind": "after"}},
+                {"source": "n_excel_gpt_fw_check_script", "target": "n_excel_gpt_fw_shots", "data": {"kind": "pass"}},
+            ],
+        },
+    }
+    assert ng.restore_script_frames_qc_check_and_action_graph(meta) is True
+    pairs = {(e["source"], e["target"]) for e in meta["canvas_graph"]["edges"]}
+    assert ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_shots") not in pairs
+    assert ("n_excel_gpt_fw_check_script", "n_excel_gpt_fw_action") in pairs
+    assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") in pairs
+
+
+def test_relabel_script_frames_qc_chain() -> None:
+    """Старые подписи/промты по умолчанию → Каркас / Площадка / Шоты; свои не трогаем."""
+    gid = {"groupId": "script_frames_qc"}
+    meta = {
+        "canvas_graph": {
+            "workflow_id": 1,
+            "nodes": [
+                {"id": "n_excel_gpt_fw_script", "type": "excel_gpt", "position": {}, "data": {**gid, "label": "GPT: сценарий · биты"}},
+                {"id": "n_excel_gpt_fw_action", "type": "excel_gpt", "position": {}, "data": {**gid, "label": "Моя площадка"}},
+                {"id": "n_excel_gpt_fw_shots", "type": "excel_gpt", "position": {}, "data": {**gid, "label": "GPT: сцены → кадры"}},
+            ],
+            "edges": [],
+        },
+        "prompt_slot_variants": {
+            "n_excel_gpt_fw_script": {"main": "script_writer_ru"},
+            "n_excel_gpt_fw_action": {"main": "my_custom_place"},
+            "n_excel_gpt_fw_shots": {"main": "scenes_to_frames_ru"},
+        },
+    }
+    assert ng.relabel_script_frames_qc_chain(meta) is True
+    by_id = {n["id"]: n for n in meta["canvas_graph"]["nodes"]}
+    assert by_id["n_excel_gpt_fw_script"]["data"]["label"] == "Каркас"
+    assert by_id["n_excel_gpt_fw_action"]["data"]["label"] == "Моя площадка"
+    assert by_id["n_excel_gpt_fw_shots"]["data"]["label"] == "Шоты"
+    v = meta["prompt_slot_variants"]
+    assert v["n_excel_gpt_fw_script"]["main"] == "scene_skeleton_agent"
+    assert v["n_excel_gpt_fw_action"]["main"] == "my_custom_place"
+    assert v["n_excel_gpt_fw_shots"]["main"] == "scenes_to_frames_ru"
+    assert ng.relabel_script_frames_qc_chain(meta) is False
 
 
 def test_script_frames_qc_needs_upgrade_when_group_truncated() -> None:

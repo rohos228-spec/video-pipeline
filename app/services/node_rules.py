@@ -1,4 +1,4 @@
-"""Реестр правил группы нод «Сценарий → кадры + QC» и карта полей.
+"""Реестр правил группы нод «Каркас → площадка → шоты + QC» и карта полей.
 
 Одно место, где у каждого правила есть ID, название, объяснение простыми
 словами, что оно делает и где живёт (промт или функция кода). Дневник
@@ -64,8 +64,9 @@ RULES: tuple[Rule, ...] = (
     Rule(
         "R-CHECK-SCRIPT",
         "Проверка сценария",
-        "GPT проверяет биты. «Не ок» — нода сценария запускается заново, "
-        "«Ок» — группа идёт к действию сцены.",
+        "Только старые канвасы, где осталась нода проверки после каркаса. "
+        "«Не ок» — каркас запускается заново, «Ок» — дальше к площадке. "
+        "В новую группу проверка не входит.",
         "останавливает",
         ("check_script",),
         ("app.services.node_groups:_script_frames_qc_group",),
@@ -347,34 +348,25 @@ class NodeFlow:
 NODE_FLOW: tuple[NodeFlow, ...] = (
     NodeFlow(
         "script",
-        "GPT: сценарий · биты",
-        "script_writer_ru.md",
-        ("закадр", "тема проекта"),
-        ("биты",),
+        "Каркас",
+        "prompts/scene_design/scene_skeleton_agent.md",
+        ("закадр",),
+        ("сцены: закадр, место, персонажи, предметы, речь, сцена", "база_персонажей", "предметы"),
         ("R-UUID", "R-BITS-REPAIR", "R-BITS-SHAPE"),
         ("биты",),
     ),
     NodeFlow(
-        "check_script",
-        "Проверка: сценарий",
-        "",
-        ("биты", "закадр"),
-        ("вердикт Ок / Не ок",),
-        ("R-CHECK-SCRIPT",),
-        on_fail="script",
-    ),
-    NodeFlow(
         "action",
-        "GPT: действие сцены",
-        "main_action_from_bits_ru.md",
-        ("биты", "закадр"),
-        ("главное_действие", "площадка"),
+        "Площадка",
+        "prompts/scene_design/action.md",
+        ("закадр",),
+        ("площадка: зоны, предметы, проходы, люди", "меняет"),
         ("R-UUID", "R-ACTION-FORMAT", "R-ACTION-PLAN", "R-ACTION-CHAIN"),
         ("главное_действие", "площадка"),
     ),
     NodeFlow(
         "shots",
-        "GPT: сцены → кадры",
+        "Шоты",
         "scenes_to_frames_ru.md",
         ("главное_действие", "площадка", "закадр"),
         ("кадры: действие, объект, закадр, меняет, люди, камера, точность",),
@@ -420,7 +412,7 @@ NODE_FLOW: tuple[NodeFlow, ...] = (
             "R-SHOT-COVERAGE",
         ),
         (
-            "кадры: те же поля, что после «сцены → кадры»",
+            "кадры: те же поля, что после «Шоты»",
         ),
     ),
     NodeFlow(
@@ -436,15 +428,15 @@ NODE_FLOW: tuple[NodeFlow, ...] = (
 
 # Кто по очереди пишет одно поле кадра. Последний — побеждает.
 FIELD_WRITERS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("ракурс", ("GPT «сцены → кадры»", "R-SHOT-GRAMMAR", "R-30DEG", "GPT «QC»", "R-SHOT-GRAMMAR", "R-30DEG")),
-    ("план", ("GPT «сцены → кадры»", "R-SHOT-GRAMMAR", "R-PLAN-STEP", "GPT «QC»", "R-SHOT-GRAMMAR", "R-PLAN-STEP")),
-    ("закадр кадра", ("GPT «сцены → кадры»", "R-SHOT-GRAMMAR", "R-SHOT-VO-FILL", "GPT «QC»", "R-SHOT-GRAMMAR")),
-    ("parent_id", ("GPT «сцены → кадры»", "R-SHOT-PARENT", "GPT «QC»", "R-SHOT-PARENT")),
-    ("точность / старт / конец", ("GPT «сцены → кадры»", "R-FREEZE-PRECISE", "GPT «QC»", "R-FREEZE-PRECISE")),
+    ("ракурс", ("GPT «Шоты»", "R-SHOT-GRAMMAR", "R-30DEG", "GPT «QC»", "R-SHOT-GRAMMAR", "R-30DEG")),
+    ("план", ("GPT «Шоты»", "R-SHOT-GRAMMAR", "R-PLAN-STEP", "GPT «QC»", "R-SHOT-GRAMMAR", "R-PLAN-STEP")),
+    ("закадр кадра", ("GPT «Шоты»", "R-SHOT-GRAMMAR", "R-SHOT-VO-FILL", "GPT «QC»", "R-SHOT-GRAMMAR")),
+    ("parent_id", ("GPT «Шоты»", "R-SHOT-PARENT", "GPT «QC»", "R-SHOT-PARENT")),
+    ("точность / старт / конец", ("GPT «Шоты»", "R-FREEZE-PRECISE", "GPT «QC»", "R-FREEZE-PRECISE")),
     ("раскладка", ("R-LAYOUT (после каждой GPT-ноды кадров)",)),
-    ("кадры (сколько)", ("GPT «сцены → кадры»", "R-SHOT-GRAMMAR", "R-DOOR-THRESHOLD", "GPT «QC»")),
-    ("главное_действие", ("GPT «действие сцены»", "R-ACTION-FORMAT")),
-    ("площадка", ("GPT «действие сцены»", "R-ACTION-PLAN", "R-SCENE-PLAN")),
+    ("кадры (сколько)", ("GPT «Шоты»", "R-SHOT-GRAMMAR", "R-DOOR-THRESHOLD", "GPT «QC»")),
+    ("главное_действие", ("main_action_from_bits_ru (вне цепочки)", "R-ACTION-FORMAT")),
+    ("площадка", ("GPT «Площадка»", "R-ACTION-PLAN", "R-SCENE-PLAN")),
 )
 
 
@@ -487,7 +479,7 @@ def flow_mermaid() -> str:
 def rules_markdown() -> str:
     """``docs/NODE_GROUP_RULES.md`` — генерится ``scripts/node_rules_doc.py``."""
     out = [
-        "# Правила группы нод «Сценарий → кадры + QC»",
+        "# Правила группы нод «Каркас → площадка → шоты + QC»",
         "",
         "Файл собран из `app/services/node_rules.py` командой "
         "`python3 scripts/node_rules_doc.py`. Руками не править.",

@@ -797,9 +797,9 @@ def _precision_flag(raw: Any) -> bool | None:
     if raw is False:
         return False
     s = str(raw or "").strip().casefold()
-    if s in {"да", "1", "true", "точность"}:
+    if s in {"да", "1", "true", "точность", "старт/конец"}:
         return True
-    if s in {"нет", "0", "false", "процесс"}:
+    if s in {"нет", "0", "false", "процесс", "одна картинка"}:
         return False
     return None
 

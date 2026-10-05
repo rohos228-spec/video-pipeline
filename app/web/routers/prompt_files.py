@@ -40,6 +40,7 @@ from app.services.prompt_library import (
     read_prompt,
     resolve_excel_gpt_prompt_path,
     resolve_project_prompt_with_source,
+    script_frames_qc_prompt_relpath,
     step_dir,
 )
 from app.web.deps import get_session
@@ -129,7 +130,7 @@ def _disk_prompt_path(
 
 def _library_prompt_path(step_code: str, name: str) -> str:
     if is_script_frames_qc_prompt(name):
-        return f"templates/node_groups/script_frames_qc/{name}.md"
+        return script_frames_qc_prompt_relpath(name)
     return (Path("prompts") / STEP_FOLDERS[step_code] / f"{name}.md").as_posix()
 
 

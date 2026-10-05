@@ -1,4 +1,4 @@
-# Правила группы нод «Сценарий → кадры + QC»
+# Правила группы нод «Каркас → площадка → шоты + QC»
 
 Файл собран из `app/services/node_rules.py` командой `python3 scripts/node_rules_doc.py`. Руками не править.
 
@@ -6,29 +6,25 @@
 
 ```mermaid
 flowchart LR
-    script["GPT: сценарий · биты"]
-    check_script["Проверка: сценарий"]
-    action["GPT: действие сцены"]
-    shots["GPT: сцены → кадры"]
+    script["Каркас"]
+    action["Площадка"]
+    shots["Шоты"]
     qc["GPT: QC кадров"]
     report["Отчёт: кадры"]
-    script --> check_script
-    check_script -->|Ок| action
+    script --> action
     action --> shots
     shots --> qc
     qc --> report
-    check_script -.->|Не ок| script
 ```
 
 ## Что читает и пишет каждая нода
 
 | Нода | Читает | Пишет GPT | Потом программа (правила) | Пишет программа |
 |---|---|---|---|---|
-| GPT: сценарий · биты<br>промт `script_writer_ru.md` | закадр, тема проекта | биты | R-UUID, R-BITS-REPAIR, R-BITS-SHAPE | биты |
-| Проверка: сценарий<br>«Не ок» → GPT: сценарий · биты | биты, закадр | вердикт Ок / Не ок | R-CHECK-SCRIPT | — |
-| GPT: действие сцены<br>промт `main_action_from_bits_ru.md` | биты, закадр | главное_действие; площадка | R-UUID, R-ACTION-FORMAT, R-ACTION-PLAN, R-ACTION-CHAIN | главное_действие; площадка |
-| GPT: сцены → кадры<br>промт `scenes_to_frames_ru.md` | главное_действие, площадка, закадр | кадры: действие, объект, закадр, меняет, люди, камера, точность | R-UUID, R-SHOT-PARENT, R-SHOT-GRAMMAR, R-SHOT-VO-FILL, R-SCENE-PLAN, R-DOOR-STATE, R-DOOR-THRESHOLD, R-ALREADY-INSIDE, R-WALK-PROGRESS, R-PLAN-STEP, R-30DEG, R-SCREEN-DIRECTION, R-AXIS-180, R-FREEZE-PRECISE, R-LAYOUT, R-SHOT-COVERAGE | кадры: parent_id, закадр, план, линза_мм, ракурс, движение; кадры: раскладка, точность, старт, конец; площадка: выведено_кодом, исправлено_кодом |
-| GPT: QC кадров<br>промт `shots_qc_ru.md` | кадры, площадка, закадр | кадры (только нарушители) | R-UUID, R-SHOT-PARENT, R-SHOT-GRAMMAR, R-SHOT-VO-FILL, R-SCENE-PLAN, R-30DEG, R-FREEZE-PRECISE, R-LAYOUT, R-SHOT-COVERAGE | кадры: те же поля, что после «сцены → кадры» |
+| Каркас<br>промт `prompts/scene_design/scene_skeleton_agent.md` | закадр | сцены: закадр, место, персонажи, предметы, речь, сцена; база_персонажей; предметы | R-UUID, R-BITS-REPAIR, R-BITS-SHAPE | биты |
+| Площадка<br>промт `prompts/scene_design/action.md` | закадр | площадка: зоны, предметы, проходы, люди; меняет | R-UUID, R-ACTION-FORMAT, R-ACTION-PLAN, R-ACTION-CHAIN | главное_действие; площадка |
+| Шоты<br>промт `scenes_to_frames_ru.md` | главное_действие, площадка, закадр | кадры: действие, объект, закадр, меняет, люди, камера, точность | R-UUID, R-SHOT-PARENT, R-SHOT-GRAMMAR, R-SHOT-VO-FILL, R-SCENE-PLAN, R-DOOR-STATE, R-DOOR-THRESHOLD, R-ALREADY-INSIDE, R-WALK-PROGRESS, R-PLAN-STEP, R-30DEG, R-SCREEN-DIRECTION, R-AXIS-180, R-FREEZE-PRECISE, R-LAYOUT, R-SHOT-COVERAGE | кадры: parent_id, закадр, план, линза_мм, ракурс, движение; кадры: раскладка, точность, старт, конец; площадка: выведено_кодом, исправлено_кодом |
+| GPT: QC кадров<br>промт `shots_qc_ru.md` | кадры, площадка, закадр | кадры (только нарушители) | R-UUID, R-SHOT-PARENT, R-SHOT-GRAMMAR, R-SHOT-VO-FILL, R-SCENE-PLAN, R-30DEG, R-FREEZE-PRECISE, R-LAYOUT, R-SHOT-COVERAGE | кадры: те же поля, что после «Шоты» |
 | Отчёт: кадры | всё выше, дневник кадров | — | — | shots-report.html |
 
 ## Кто по очереди пишет одно поле
@@ -37,15 +33,15 @@ flowchart LR
 
 | Поле | Кто пишет по порядку |
 |---|---|
-| ракурс | GPT «сцены → кадры» → R-SHOT-GRAMMAR → R-30DEG → GPT «QC» → R-SHOT-GRAMMAR → R-30DEG |
-| план | GPT «сцены → кадры» → R-SHOT-GRAMMAR → R-PLAN-STEP → GPT «QC» → R-SHOT-GRAMMAR → R-PLAN-STEP |
-| закадр кадра | GPT «сцены → кадры» → R-SHOT-GRAMMAR → R-SHOT-VO-FILL → GPT «QC» → R-SHOT-GRAMMAR |
-| parent_id | GPT «сцены → кадры» → R-SHOT-PARENT → GPT «QC» → R-SHOT-PARENT |
-| точность / старт / конец | GPT «сцены → кадры» → R-FREEZE-PRECISE → GPT «QC» → R-FREEZE-PRECISE |
+| ракурс | GPT «Шоты» → R-SHOT-GRAMMAR → R-30DEG → GPT «QC» → R-SHOT-GRAMMAR → R-30DEG |
+| план | GPT «Шоты» → R-SHOT-GRAMMAR → R-PLAN-STEP → GPT «QC» → R-SHOT-GRAMMAR → R-PLAN-STEP |
+| закадр кадра | GPT «Шоты» → R-SHOT-GRAMMAR → R-SHOT-VO-FILL → GPT «QC» → R-SHOT-GRAMMAR |
+| parent_id | GPT «Шоты» → R-SHOT-PARENT → GPT «QC» → R-SHOT-PARENT |
+| точность / старт / конец | GPT «Шоты» → R-FREEZE-PRECISE → GPT «QC» → R-FREEZE-PRECISE |
 | раскладка | R-LAYOUT (после каждой GPT-ноды кадров) |
-| кадры (сколько) | GPT «сцены → кадры» → R-SHOT-GRAMMAR → R-DOOR-THRESHOLD → GPT «QC» |
-| главное_действие | GPT «действие сцены» → R-ACTION-FORMAT |
-| площадка | GPT «действие сцены» → R-ACTION-PLAN → R-SCENE-PLAN |
+| кадры (сколько) | GPT «Шоты» → R-SHOT-GRAMMAR → R-DOOR-THRESHOLD → GPT «QC» |
+| главное_действие | main_action_from_bits_ru (вне цепочки) → R-ACTION-FORMAT |
+| площадка | GPT «Площадка» → R-ACTION-PLAN → R-SCENE-PLAN |
 
 ## Правила
 
@@ -54,12 +50,12 @@ flowchart LR
 | R-UUID | Номер кадра вместо uuid | GPT иногда пишет номер кадра или uuid с опечаткой. Программа подставляет правильный uuid; ops с чужими uuid выбрасывает. | чинит | script, action, shots, qc | `app.services.db_apply:remap_frame_number_uuids`<br>`app.services.db_apply:repair_near_miss_frame_uuids` |
 | R-BITS-REPAIR | Биты: объект и якорь | Если в бите слоган вместо объекта или якорь не из закадра — программа берёт объект и кусок закадра сама. | чинит | script | `app.services.apply_ops_batches:repair_bits_ops` |
 | R-BITS-SHAPE | Биты — список изменений | Биты должны быть списком по числу изменений в закадре, не одной строкой. Если нет — предупреждение, данные пишутся как есть. | предупреждает | script | `app.services.apply_ops_batches:bits_ops_reason`<br>`prompt:templates/node_groups/script_frames_qc/script_writer_ru.md` |
-| R-CHECK-SCRIPT | Проверка сценария | GPT проверяет биты. «Не ок» — нода сценария запускается заново, «Ок» — группа идёт к действию сцены. | останавливает | check_script | `app.services.node_groups:_script_frames_qc_group` |
+| R-CHECK-SCRIPT | Проверка сценария | Только старые канвасы, где осталась нода проверки после каркаса. «Не ок» — каркас запускается заново, «Ок» — дальше к площадке. В новую группу проверка не входит. | останавливает | check_script | `app.services.node_groups:_script_frames_qc_group` |
 | R-ACTION-FORMAT | Формат действия сцены | Главное действие пишется как «1. место — шаг → шаг». Если GPT забыл номер или скобки — программа дописывает. | чинит | action | `app.services.apply_ops_batches:auto_repair_action_chain_ops`<br>`app.services.apply_ops_batches:repair_action_ops` |
 | R-ACTION-PLAN | Площадка ячейки | Площадку (зоны, двери, проходы, люди по сторонам света) программа приводит к одному виду; чего нет — выведет позже на кадрах. | чинит | action | `app.services.apply_ops_batches:normalize_action_plan_ops` |
 | R-ACTION-CHAIN | Действие — цепочка, не слоган | Главное действие — нумерованная цепочка шагов. Слоган вместо цепочки — предупреждение, пишется как есть. | предупреждает | action | `app.services.apply_ops_batches:action_chain_ops_reason`<br>`prompt:templates/node_groups/script_frames_qc/main_action_from_bits_ru.md` |
 | R-SHOT-PARENT | Главный кадр места | В одном месте первый кадр главный, остальные ссылаются на него (parent_id). GPT часто оставляет пусто — программа ставит. | чинит | shots, qc | `app.services.apply_ops_batches:repair_same_place_shot_parents` |
-| R-SHOT-GRAMMAR | Грамматика кадров | Закадр к шагу по смыслу: длинное действие — длинный кусок, перебивка — короткий или пустой. Не резать поровну 13–80. План, линза, ракурс, движение — из таблицы; недостающие шаги и вход в новое место дописываются из главного действия. | чинит | shots, qc | `app.services.scene_shot_grammar:apply_grammar_to_ops`<br>`prompt:templates/node_groups/script_frames_qc/scenes_to_frames_ru.md` |
+| R-SHOT-GRAMMAR | Грамматика кадров | Закадр: обычный кадр 26–80 симв.; перебивка 10–30 или короткий эмо/реакция (можно пустой). Не вали весь VO в один кадр. План, линза, ракурс, движение — из таблицы; недостающие шаги и вход в новое место дописываются из главного действия. | чинит | shots, qc | `app.services.scene_shot_grammar:apply_grammar_to_ops`<br>`prompt:templates/node_groups/script_frames_qc/scenes_to_frames_ru.md` |
 | R-SHOT-VO-FILL | Пустой закадр кадра | Перебивка может быть без закадра. Хвост текста ячейки код кладёт на покрывающий кадр (не копирует во все пустые). | чинит | shots, qc | `app.services.apply_ops_batches:repair_shot_vo_ops` |
 | R-SHOT-COVERAGE | Кадры иллюстрируют закадр | Кадр — картина к смыслу своего куска закадра, без повторов. Нарушение — предупреждение, пишется как есть. | предупреждает | shots, qc | `app.services.apply_ops_batches:shots_coverage_ops_reason`<br>`prompt:templates/node_groups/script_frames_qc/shots_qc_ru.md` |
 | R-SCENE-PLAN | Площадка на кадрах | По плану площадки программа расставляет зоны, камеру и людей в каждом кадре и записывает, что вывела сама. | чинит | shots, qc | `app.services.apply_ops_batches:apply_scene_plan_ops` |
