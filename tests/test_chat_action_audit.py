@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.services.action_layer.store import ActionHistory
-from app.settings import settings
+from app.settings import Settings, settings
 from tests.action_layer_support import env  # noqa: F401
 
 SECRET = "sk-ABCDEFGH1234567890zz"
@@ -40,6 +40,7 @@ async def _chat(env, monkeypatch, pid: int):
 
 async def test_executed_action_is_audited_without_secrets(env, monkeypatch) -> None:
     pid = await env.add_project()
+    monkeypatch.setattr(settings, "chat_code_actions_enabled", True)
     monkeypatch.setattr("app.services.code_autofix.apply_edits",
                         lambda edits: {"count": 1, "changed": ["app/x.py"]})
     r = await _chat(env, monkeypatch, pid)
@@ -51,6 +52,28 @@ async def test_executed_action_is_audited_without_secrets(env, monkeypatch) -> N
     assert row.actor.startswith("local_web_operator")
     assert row.params["project_id"] == pid and len(row.params["params_digest"]) == 64
     assert SECRET not in json.dumps(row.params) + row.error
+
+
+def test_code_actions_are_off_by_default(monkeypatch) -> None:
+    from app.settings import Settings
+
+    monkeypatch.delenv("CHAT_CODE_ACTIONS_ENABLED", raising=False)
+    assert Settings(_env_file=None).chat_code_actions_enabled is False
+    monkeypatch.setenv("CHAT_CODE_ACTIONS_ENABLED", "true")
+    assert Settings(_env_file=None).chat_code_actions_enabled is True
+
+
+async def test_code_actions_default_refuses_without_explicit_opt_in(env, monkeypatch) -> None:
+    pid = await env.add_project()
+    called: list = []
+    monkeypatch.setattr("app.services.code_autofix.apply_edits",
+                        lambda edits: called.append(edits) or {"count": 1, "changed": []})
+    monkeypatch.setattr(settings, "chat_code_actions_enabled", Settings(_env_file=None).chat_code_actions_enabled)
+    r = await _chat(env, monkeypatch, pid)
+    assert r.status_code == 200, r.text
+    assert called == []
+    assert "CHAT_CODE_ACTIONS_ENABLED=true" in (r.json()["error"] or "")
+    assert [x.outcome for x in await _rows(env)] == ["refused"]
 
 
 async def test_code_actions_flag_off_refuses_and_audits(env, monkeypatch) -> None:
@@ -78,6 +101,7 @@ async def test_confirm_git_push_refused_when_flag_off(env, monkeypatch) -> None:
 
 async def test_chat_audit_history_is_append_only(env, monkeypatch) -> None:
     pid = await env.add_project()
+    monkeypatch.setattr(settings, "chat_code_actions_enabled", True)
     monkeypatch.setattr("app.services.code_autofix.apply_edits",
                         lambda edits: {"count": 1, "changed": ["a"]})
     await _chat(env, monkeypatch, pid)

@@ -21,9 +21,9 @@ def test_summary_includes_provider_error_and_recommendation():
     assert summary.provider_error_code == "gpt_rate_limit"
     assert summary.provider_error_title == "GPT: лимит запросов (429)"
     assert summary.recommended_next_step == "Передать человеку"
-    assert "Circuit breaker tripped: 3/3" in summary.text
+    assert "использовано 3 из 3" in summary.text
     assert "gpt_rate_limit" in summary.text
-    assert "no further automated action" in summary.text.lower()
+    assert "автоматических действий" in summary.text.lower()
 
 
 def test_summary_without_circuit_breaker_or_catalog_code():
@@ -36,7 +36,7 @@ def test_summary_without_circuit_breaker_or_catalog_code():
         model_steps_used=1,
         max_model_steps=3,
     )
-    assert "Circuit breaker" not in summary.text
+    assert "Лимит шагов модели исчерпан" not in summary.text
     assert summary.provider_error_code is None
     assert summary.provider_error_title is None
     assert summary.evidence_event_count == 0

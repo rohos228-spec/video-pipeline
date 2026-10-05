@@ -40,15 +40,15 @@ export function DecisionSection({projectId,execution,managed}:{projectId:number;
       {r.status==='waiting_evidence' && <p>{decisionWaitLabel(r.policy_result)}</p>}
       <p>Предложение: {decisionActionLabel(r.proposal.action)}</p>
       <p>Проверка разрешения: {decisionPolicyLabel(r.policy_result)}</p>
-      <p>Действие: {r.action_id?'создано':'не выполнялось'} · Исправление: {r.verification.verified?'подтверждено исходным runtime':'не подтверждено'}</p>
+      <p>Действие: {r.action_id?'создано':'не выполнялось'} · Исправление: {r.verification.verified?'подтверждено исходной системой':'не подтверждено'}</p>
       <details><summary>Технические подробности и история решений</summary>
-        <p>Action: {r.action_id} · Incident: {r.incident_id} · Context: {r.context_version}</p>
+        <p>Действие: {r.action_id} · Инцидент: {r.incident_id} · Версия контекста: {r.context_version}</p>
         <p>Обоснование модели (не подтверждение оператора): {r.proposal.explanation}</p>
         <pre>{JSON.stringify(r.policy_result,null,2)}</pre>
         <p>Доказательства: {r.proposal.evidence_ids?.map(id=><a key={id} href={`#observation-event-${id}`} className="mr-2 underline">{id.slice(0,8)}</a>)??'нет'}</p>
         <ol>{r.turns.map(t=><li key={t.id}><strong>{t.role}</strong><pre className="whitespace-pre-wrap break-all">{JSON.stringify(t.payload,null,2)}</pre></li>)}</ol>
       </details>
-      {r.status==='human_review'&&<p className="text-amber-200">Нужен человек. Execution удержан; новые автоматические действия запрещены.</p>}
+      {r.status==='human_review'&&<p className="text-amber-200">Нужен человек. Запуск удержан; новые автоматические действия запрещены.</p>}
     </li>)}</ol>
   </section>;
 }

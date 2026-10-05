@@ -139,15 +139,9 @@ async def _lifespan(app: FastAPI):
 
             await migrate_db_v2_schema(conn)
             await migrate_scene_space_schema(conn)
-            from app.services.observation import migrate_observation_schema
+            from app.services.schema_migrations import migrate_orchestrator_schema
 
-            await migrate_observation_schema(conn)
-            from app.services.action_layer.store import ensure_action_layer_schema
-
-            await ensure_action_layer_schema(conn)
-            from app.services.change_control.store import ensure_change_control_schema
-
-            await ensure_change_control_schema(conn)
+            await migrate_orchestrator_schema(conn)
     except Exception:  # noqa: BLE001
         logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:

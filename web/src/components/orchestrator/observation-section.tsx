@@ -35,7 +35,7 @@ function MediaDetails({media,projectId}:{media:MediaContext;projectId:number|nul
       <p>Площадки: {media.publication.platforms.map(p=>`${p.platform}${p.already_recorded ? " (есть прежняя запись)" : ""}`).join(", ")}</p>
       <p>Отправка требует отдельного разрешения. Dry-run не меняет статус проекта.</p>
     </div>}
-    {media.jobs.length===0 && !media.publication && <p>Job ещё не зарегистрирован; результат не подтверждён.</p>}
+    {media.jobs.length===0 && !media.publication && <p>Задача ещё не зарегистрирована; результат не подтверждён.</p>}
     {media.jobs.map(job=>{
       const href=job.phase==="verified" && job.verification.status==="passed" && job.artifact_uuid
         ? artifactLink(job.artifact_uuid,projectId) : null;
@@ -155,7 +155,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       const scope=await observations.enable(projectId,selected.keys);
       if(generation.current!==epoch) return;
       setScopes(old=>[scope,...old]); setExecution(scope.execution_id); setError("");
-    } catch { if(generation.current===epoch) setError("Не удалось включить наблюдение. Проверьте существующий активный scope; запуск задачи не выполнялся."); }
+    } catch { if(generation.current===epoch) setError("Не удалось включить наблюдение. Проверьте существующую активную область наблюдения; запуск задачи не выполнялся."); }
     finally {setBusy(false);}
   }
   async function stop() {
@@ -176,7 +176,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     const selected=groups.find(g=>g.id===group);
     const scope=scopes.find(s=>s.execution_id===execution);
     if(!selected || !scope || selected.keys.some(k=>!scope.node_keys.includes(k)) || actionRationale.trim().length<3) {
-      setActionError('Нужны активное наблюдение с совпадающим scope и явное обоснование.'); return;
+      setActionError('Нужны активное наблюдение с совпадающей областью и явное обоснование.'); return;
     }
     setBusy(true); setActionError('');
     try {
@@ -290,30 +290,30 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     </div>
     <p className="text-white/45">Наблюдение читает выполнение. Эти кнопки не запускают и не останавливают задачу.</p>
     {context && <div className="space-y-2 rounded border border-sky-400/20 p-2">
-      <strong>Управление · Actions-v1</strong>
-      <label className="flex items-center gap-2">Общий лимит запросов на execution
+      <strong>Управление запуском</strong>
+      <label className="flex items-center gap-2">Общий лимит запросов на запуск
         <input type="number" min={1} max={100} aria-label="Лимит запросов Actions" disabled={!!actionState?.configured}
           value={actionState?.request_limit ?? actionRequestLimit} onChange={e=>setActionRequestLimit(Number(e.target.value))}
           className="w-20 rounded border border-white/15 bg-[#161616] p-1.5"/>
       </label>
-      <p className="text-white/50">Общий счётчик включает запросы Decision и worker, статусы внешних задач и загрузки файлов. Это не денежный потолок.</p>
+      <p className="text-white/50">Общий счётчик включает запросы цикла решений и исполнителя, статусы внешних задач и загрузки файлов. Это не денежный потолок.</p>
       <p data-testid="actions-mode">{actionsModeLabel(actionState)}</p>
-      <p className="text-white/50">Закрытие execution не означает done всего WorkflowRun. User_stop supervisor не снимает.</p>
+      <p className="text-white/50">Закрытие запуска не означает, что весь прогон проекта завершён. Остановку пользователем оркестратор не снимает.</p>
       <p className="text-white/50">По умолчанию выключено. Разрешение ограничено одним execution, выбранной группой и снимком графа; общий бюджет задаётся выше до включения. Остановка наблюдения и пауза выполнения — разные действия.</p>
       <label className="block">Обоснование оператора
         <input value={actionRationale} onChange={e=>setActionRationale(e.target.value)} maxLength={1000} className="ml-2 w-72 rounded border border-white/15 bg-[#161616] p-1.5" placeholder="Почему разрешается это выполнение"/>
       </label>
-      {!actionState?.configured ? <Button size="sm" variant="outline" disabled={busy || !actionState || !execution || !group || context.observer_state==='stopped' || actionRationale.trim().length<3} onClick={()=>void enableActions()}>Разрешить выполнение выбранной группы</Button> : !actionState.enabled ? <p className="text-white/50">Managed execution закрыт. Для нового разрешения создайте новое наблюдение.</p> : <>
+      {!actionState?.configured ? <Button size="sm" variant="outline" disabled={busy || !actionState || !execution || !group || context.observer_state==='stopped' || actionRationale.trim().length<3} onClick={()=>void enableActions()}>Разрешить выполнение выбранной группы</Button> : !actionState.enabled ? <p className="text-white/50">Управляемый запуск закрыт. Для нового разрешения создайте новое наблюдение.</p> : <>
         <span>Статус: {actionState.held ? '⏸ на паузе' : '🟢 разрешено'} · запросы: {actionState.requests_used}/{actionState.request_limit}</span>
         <Button size="sm" variant="outline" disabled={busy || actionRationale.trim().length<3} onClick={()=>void setActionsHeld(!actionState.held)}>{actionState.held ? 'Возобновить управление' : 'Приостановить управление'}</Button>
-        <p className="text-white/50">Пауза управления запрещает новые управляемые запуски и запросы, но не отменяет уже отправленный запрос. Чтобы остановить задачу, используйте «Остановить» над графом: это user_stop проекта, который supervisor не снимает.</p>
+        <p className="text-white/50">Пауза управления запрещает новые управляемые запуски и запросы, но не отменяет уже отправленный запрос. Чтобы остановить задачу, используйте «Остановить» над графом: это остановка проекта пользователем, которую оркестратор не снимает.</p>
         <Button size="sm" variant="outline" disabled={busy || actionState.held || !actionRationale.trim()} onClick={()=>void runManagedGroup()}>Запустить следующую ноду группы</Button>
-        <Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void closeActions()}>Закрыть execution</Button>
+        <Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void closeActions()}>Закрыть запуск</Button>
         <p className="text-white/50">Разрешённые ноды: {actionState.node_keys.join(', ')} · graph: {actionState.graph_version?.slice(0,12)}</p>
         {diagnosis?.incidents.filter(i=>i.currently_relevant && ['invalid_json','missing_payload'].includes(i.type)).map(i=><div key={i.incident_id} className="space-y-1">
           <p>Текущий incident: {i.node_title} · {i.fact}</p>
-          <p>Действие предложено: один безопасный повтор ноды после всех штатных retry. Backend проверит условия до запуска.</p>
-          <Button size="sm" variant="outline" disabled={busy || actionState.held || !actionRationale.trim() || actionState.recoveries?.some(r=>r.node_key===i.node_key)} onClick={()=>void retryIncident(i)}>Разрешить один recovery</Button>
+          <p>Действие предложено: один безопасный повтор ноды после всех штатных повторов. Сервер проверит условия до запуска.</p>
+          <Button size="sm" variant="outline" disabled={busy || actionState.held || !actionRationale.trim() || actionState.recoveries?.some(r=>r.node_key===i.node_key)} onClick={()=>void retryIncident(i)}>Разрешить одно восстановление</Button>
         </div>)}
         <ol data-testid="actions-history" className="space-y-1">{actionState.records.slice(0,10).map(a=><li key={a.action_id}>
           {actionStatus(a.status)} · {a.node_key ?? 'execution'} · {a.created_at?.slice(0,19)} · {a.initiator} · {a.rationale}
@@ -335,23 +335,23 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
     {error && <p role="alert" className="rounded border border-amber-500/30 p-2 text-amber-200">{error}</p>}
     {context && <>
       <div data-testid="observation-context" className="rounded border border-white/10 p-2 space-y-1">
-        <p>Execution: <span data-testid="observation-execution">{execution}</span> · observer: {context.observer_state} · группа: {context.business_group_outcome}</p>
-        <p>Scope: {context.node_keys.join(" → ")}</p>
+        <p>Запуск: <span data-testid="observation-execution">{execution}</span> · наблюдатель: {context.observer_state} · группа: {context.business_group_outcome}</p>
+        <p>Область: {context.node_keys.join(" → ")}</p>
         <p>Текущая нода: {context.current_nodes.join(", ") || "нет активной по снимку БД"}</p>
-        {context.disagreement && <p className="text-amber-200">Расхождение master/project: состояния отличаются; показана проектная БД.</p>}
+        {context.disagreement && <p className="text-amber-200">Расхождение основной и проектной БД: состояния отличаются; показана проектная БД.</p>}
         {context.commit_confirmation && <p className="text-red-300">{context.commit_confirmation}: бизнес-результат не подтверждён.</p>}
-        <p>Неполнота журнала: {context.data_gaps.length ? context.data_gaps.map(g=>g.kind ?? g.error_type ?? "неизвестно").join(", ") : "зафиксированных gaps нет; это не гарантия полноты"}</p>
-        {context.history_window_limited && <p className="text-amber-200">Контекст ограничен последними 500 событиями; история ниже загружается с курсором.</p>}
+        <p>Неполнота журнала: {context.data_gaps.length ? context.data_gaps.map(g=>g.kind ?? g.error_type ?? "неизвестно").join(", ") : "зафиксированных пробелов нет; это не гарантия полноты"}</p>
+        {context.history_window_limited && <p className="text-amber-200">Контекст ограничен последними 500 событиями; остальная история подгружается ниже.</p>}
       </div>
       <DiagnosisSection diagnosis={diagnosis} error={diagnosisError} onReview={actionState?.enabled ? markIncidentForReview : undefined}/>
-      <div className="overflow-x-auto"><table className="w-full text-left"><thead><tr>{["Нода","Состояние / прогресс","Попытка","Модель / usage","Проверки / ожидание"].map(x=><th key={x} className="p-1 text-white/40">{x}</th>)}</tr></thead><tbody>
+      <div className="overflow-x-auto"><table className="w-full text-left"><thead><tr>{["Нода","Состояние / прогресс","Попытка","Модель / токены","Проверки / ожидание"].map(x=><th key={x} className="p-1 text-white/40">{x}</th>)}</tr></thead><tbody>
         {context.node_keys.map(node=>{
           const nc=context.node_contexts[node]; const state=states[node]; const latest=models.filter(e=>e.node_key===node).at(-1);
           return <tr key={node} className="border-t border-white/10"><td className="p-1">{node}</td><td className="p-1">{state?.status ?? "неизвестно"} · {nc?.media || state?.progress == null ? "прогресс неизвестен" : `${state.progress}%`}</td><td className="p-1">{nc?.latest_attempt_id?.slice(0,8) ?? "неизвестно"}</td><td className="p-1">{nc?.model ?? "модель неизвестна"}<br/>{usageLabel(latest?.payload.usage as Record<string,unknown> | null)}</td><td className="p-1">{nc?.media ? <MediaDetails media={nc.media} projectId={projectId}/> : <>{nc?.checks.length ? nc.checks.slice(0,4).map((check,i)=><div key={i}>{eventLabel({kind:check.kind,payload:check.result})}</div>) : "not_checked"}<br/>{context.wait_reasons?.[node]?.reason ?? "причина ожидания неизвестна"}{actionState?.enabled && state?.status==='done' && <div><Button size="sm" variant="outline" disabled={busy || !actionRationale.trim()} onClick={()=>void verifyManagedNode(node)}>Проверить результат</Button></div>}</>}</td></tr>;
         })}
       </tbody></table></div>
       <div><strong>Хронология · {events.length} событий</strong><ol data-testid="observation-timeline" className="mt-2 max-h-64 overflow-y-auto space-y-1">
-        {events.map(e=><li key={e.event_id} id={`observation-event-${e.event_id}`} data-event-id={e.event_id} className="border-l border-white/15 pl-2 text-white/60">{e.created_at?.slice(11,19)} · {e.node_key ?? "scope"} · {eventLabel(e)} · {e.db_scope ?? "источник неизвестен"}</li>)}
+        {events.map(e=><li key={e.event_id} id={`observation-event-${e.event_id}`} data-event-id={e.event_id} className="border-l border-white/15 pl-2 text-white/60">{e.created_at?.slice(11,19)} · {e.node_key ?? "весь запуск"} · {eventLabel(e)} · {e.db_scope ?? "источник неизвестен"}</li>)}
       </ol></div>
     </>}
     {projectId!=null && execution && <ProfilesSection projectId={projectId} execution={execution} nodes={context?.node_keys??groups.find(g=>g.id===group)?.keys??[]} managed={Boolean(actionState?.enabled)}/>}

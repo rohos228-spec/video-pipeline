@@ -348,7 +348,15 @@ def outsee_tracked(fn, media: str):
     async def wrapper(*args, **kwargs):
         model = str(kwargs.get("model_slug") or "")
         try:
-            result = await fn(*args, **kwargs)
+            from app.services import outsee_guard
+            guard = outsee_guard.make_ctx(args, kwargs, media)
+        except Exception:  # noqa: BLE001 - the guard is an addition, never a reason to fail the call
+            guard = None
+        try:
+            if guard is not None and guard.usable:
+                result = await outsee_guard.run(guard, lambda: fn(*args, **kwargs))
+            else:
+                result = await fn(*args, **kwargs)
         except BaseException as exc:
             record("outsee", usd=0.0, unknown=True, exc=exc,
                    note=f"{media} {model} failed {type(exc).__name__}")

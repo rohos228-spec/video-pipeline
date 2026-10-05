@@ -107,3 +107,30 @@ class ActionLayerBudget(actions_tests.DurableActions):
                 self.assertEqual(cm.exception.code, "spend_cap_run")
                 await s.rollback()
                 self.assertEqual(await budget.spent(s, "plan:p1"), 200.0)  # credit row of the refused step rolled back
+
+
+class SpendEndpointRuns(actions_tests.DurableActions):
+    async def test_spend_lists_runs_and_selects_by_id(self):
+        from app.web.routers import observations as router
+        await self.supervisor.enable(project_id=7, execution_id="exec-durable", group_id="g1", node_keys=["n1"],
+            graph_version=self.graph, initiator="test-operator", rationale="spend fixture", request_limit=8)
+        async with self.sessions() as s:
+            await spend_guard.reserve(s, project_id=7, run_id="exec-durable", estimate_usd=0.4, source="test", track=False)
+            await spend_guard.reserve(s, project_id=7, run_id="other-run", estimate_usd=0.9, source="test", track=False)
+            await s.commit()
+        a, b, c = caps(daily=100, project=100, run=100)
+        with a, b, c:
+            default = await router.spend_state(7)
+            self.assertEqual(default["run_id"], "exec-durable")
+            self.assertAlmostEqual(default["run_spent"], 0.4)
+            self.assertEqual([r["run_id"] for r in default["runs"]], ["exec-durable"])
+            self.assertAlmostEqual(default["runs"][0]["run_spent"], 0.4)
+            self.assertTrue(default["runs"][0]["enabled"])
+            # an id that is not a run of this project is ignored, never trusted
+            foreign = await router.spend_state(7, run_id="other-run")
+            self.assertEqual(foreign["run_id"], "exec-durable")
+            self.assertAlmostEqual(foreign["run_spent"], 0.4)
+            empty = await router.spend_state(8)
+            self.assertIsNone(empty["run_id"])
+            self.assertEqual(empty["runs"], [])
+            self.assertIsNone(empty["run_spent"])

@@ -259,7 +259,8 @@ class Observer:
             from app.project_db import get_project_engine
             engine = await get_project_engine(directory)
             async with engine.begin() as conn:
-                await migrate_observation_schema(conn)
+                from app.services.schema_migrations import SCOPE_PROJECT, migrate_orchestrator_schema
+                await migrate_orchestrator_schema(conn, scope=SCOPE_PROJECT)
 
     async def reload(self):
         # Before any scope or diagnosis: an unconfirmed commit must outlive a restart.
@@ -1507,8 +1508,8 @@ def panel_safe(value):
     return value
 
 
-async def migrate_observation_schema(conn):
-    """Additive migration used by the same startup path as existing schema migrations."""
+def observation_tables():
+    """Orchestrator-owned tables created by the observation migration (also its schema fingerprint)."""
     from app.services.diagnosis import Incident, DiagnosisState
     from app.services.actions_v1 import ActionExecutionControl, ActionRecord, ManagedRunAllowance
     from app.services.actions_recovery import RecoveryAction
@@ -1518,7 +1519,7 @@ async def migrate_observation_schema(conn):
     from app.services.media_jobs import MediaJob, MediaRequest
     from app.services.managed_launch import ManagedLaunch
     from app.services.kill_switch import KillSwitchHistory, KillSwitchState
-    await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=[
+    return [
         ExecutionControl.__table__, ObservationOutbox.__table__, ObservationEvent.__table__,
         Incident.__table__, DiagnosisState.__table__, ActionExecutionControl.__table__,
         ActionRecord.__table__, RecoveryAction.__table__,
@@ -1527,7 +1528,13 @@ async def migrate_observation_schema(conn):
         ManagedLaunch.__table__, ManagedRunAllowance.__table__,
         ObservationDegradation.__table__, CommitUncertaintyMarker.__table__,
         KillSwitchState.__table__, KillSwitchHistory.__table__,
-    ]))
+    ]
+
+
+async def migrate_observation_schema(conn):
+    """Additive migration used by the same startup path as existing schema migrations."""
+    tables = observation_tables()
+    await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=tables))
 
 
 async def business_snapshot(session, scope):

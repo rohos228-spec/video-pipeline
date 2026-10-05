@@ -2,6 +2,7 @@
 import {useEffect, useState} from "react";
 import {Button} from "@/components/ui/button";
 import {observations, type TelemetrySummary} from "@/lib/observations";
+import {INCIDENT_TYPE_RU} from "@/lib/diagnosis-view";
 
 const WINDOWS: {label: string; hours: number | undefined}[] = [
   {label: "1 ч", hours: 1},
@@ -31,8 +32,8 @@ function CostNotes({cost}: {cost: TelemetrySummary["cost"] & CostExtra}) {
       {vibecode && (
         <p className="text-white/40">
           Vibecode: ${vibecode.cost_usd.toFixed(4)} ({vibecode.calls} запрос(ов)) — оценка по прайсу из снимка каталога
-          (vibecode_models_snapshot.json, дата снимка неизвестна), не откалибрована по списанию. Фактический баланс
-          vibecode.moe может отличаться.
+          (файл-снимок каталога, дата снимка неизвестна), не откалибрована по списанию. Фактический баланс
+          в Vibecode может отличаться.
         </p>
       )}
       {(cost.unknown_cost_calls ?? 0) > 0 && (
@@ -126,8 +127,8 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
         {busy && <span className="text-white/40">обновление…</span>}
       </div>
       <p className="text-white/40">
-        Агрегация по уже записанному журналу (Observe/Diagnose/Decision/Actions) за весь проект,
-        а не одно наблюдение. Ничего не изменяет и не запускает.
+        Сводка по уже записанному журналу (наблюдение, диагностика, цикл решений, действия) за весь проект,
+        а не по одному наблюдению. Ничего не изменяет и не запускает.
       </p>
       {error && (
         <p role="alert" className="text-amber-200">
@@ -148,27 +149,27 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
                   .sort((a, b) => b[1] - a[1])
                   .map(([type, count]) => (
                     <li key={type}>
-                      {type}: {count}
+                      {INCIDENT_TYPE_RU[type] ?? type}: {count}
                     </li>
                   ))}
               </ul>
             )}
           </div>
           <div className="rounded border border-white/10 p-2">
-            <strong>Decision Engine</strong>
+            <strong>Цикл решений</strong>
             <p>
               Завершённых циклов: {summary.decisions.terminal_count} / {summary.decisions.total} ·
-              доля REQUIRES_HUMAN_INTERVENTION: {pct(summary.decisions.human_review_rate)}
+              доля случаев, переданных человеку: {pct(summary.decisions.human_review_rate)}
             </p>
             <p>
               Среднее число шагов модели: {summary.decisions.avg_model_steps?.toFixed(2) ?? "неизвестно"} из
-              максимум {summary.decisions.max_model_steps ?? "неизвестно"} (circuit breaker)
+              максимум {summary.decisions.max_model_steps ?? "неизвестно"} (предохранитель от зацикливания)
             </p>
           </div>
           <div className="rounded border border-white/10 p-2">
             <strong>Задержка запросов к модели</strong>
             {Object.keys(summary.node_latency.by_node).length === 0 && (
-              <p className="text-white/50">Завершённых пар model_start/model_end не записано.</p>
+              <p className="text-white/50">Завершённых запросов к модели (начало и конец) не записано.</p>
             )}
             <ul className="space-y-0.5 text-white/60">
               {Object.entries(summary.node_latency.by_node).map(([node, stats]) => (
@@ -186,9 +187,9 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
             )}
           </div>
           <div className="rounded border border-white/10 p-2">
-            <strong>Бюджет по execution</strong>
+            <strong>Лимит запросов по запускам</strong>
             {Object.keys(summary.budgets_by_execution).length === 0 && (
-              <p className="text-white/50">Managed execution для этого проекта ещё не включались.</p>
+              <p className="text-white/50">Управляемые запуски для этого проекта ещё не включались.</p>
             )}
             <ul className="space-y-0.5 text-white/60">
               {Object.entries(summary.budgets_by_execution).map(([execId, budget]) => (
@@ -199,14 +200,14 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
               ))}
             </ul>
             <p className="mt-1 text-white/40">
-              Лимит запросов учитывает Decision/worker/media; это не денежный потолок.
+              Лимит запросов учитывает цикл решений, исполнителей и медиа; это не денежный потолок.
             </p>
           </div>
           <div className="rounded border border-white/10 p-2">
-            <strong>Стоимость LLM-вызовов</strong>
+            <strong>Стоимость запросов к языковым моделям</strong>
             {summary.cost.total_calls === 0 ? (
               <p className="text-white/50">
-                Пока не отслежено ни одного реального вызова (нет credentials / ни один запрос ещё не ушёл).
+                Пока не отслежено ни одного реального вызова (нет ключей доступа или ни один запрос ещё не ушёл).
               </p>
             ) : (
               <>
@@ -215,9 +216,9 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
                   {summary.cost.failed_calls > 0 ? ` (${summary.cost.failed_calls} с ошибкой)` : ""}
                 </p>
                 <p className="text-white/60">
-                  Токены: {summary.cost.total_prompt_tokens} prompt / {summary.cost.total_completion_tokens}{" "}
-                  completion
-                  {summary.cost.total_cached_tokens > 0 ? ` / ${summary.cost.total_cached_tokens} cached` : ""}
+                  Токены: {summary.cost.total_prompt_tokens} на входе / {summary.cost.total_completion_tokens}{" "}
+                  на выходе
+                  {summary.cost.total_cached_tokens > 0 ? ` / ${summary.cost.total_cached_tokens} из кэша` : ""}
                 </p>
                 <CostNotes cost={summary.cost} />
                 <ul className="mt-1 space-y-0.5 text-white/60">
@@ -230,7 +231,7 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
               </>
             )}
             <p className="mt-1 text-white/40">
-              Цена по тарифу api-tracker на момент вызова ({summary.cost.source}); не ценовое предложение
+              Цена записана счётчиком расходов по тарифу на момент вызова; это не ценовое предложение
               провайдера.
             </p>
           </div>

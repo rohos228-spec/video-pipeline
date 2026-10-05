@@ -481,7 +481,9 @@ async def maybe_start_vision_check_loop_after_check(
 ) -> bool:
     """После checkMode: pass→clear; fail→patch+regen loop.
 
-    Returns True если цикл стартовал (caller не auto-chain дальше).
+    Returns True если цикл стартовал (caller не auto-chain дальше). Также True, когда
+    цикл остановлен лимитом перегенераций (regen_budget): проект на паузе с причиной,
+    результат не утверждён и дальше по цепочке не идёт.
     """
     key = (node_key or "").strip()
     if not key:
@@ -526,6 +528,9 @@ async def maybe_start_vision_check_loop_after_check(
     mark_ok_tokens_from_reply(project, reply)
 
     if gate == "pass":
+        from app.services import regen_budget
+
+        regen_budget.clear(project, "vision")
         if vision_check_loop_active(project):
             clear_vision_check_meta(project)
             logger.info(
@@ -612,16 +617,30 @@ async def maybe_start_vision_check_loop_after_check(
 
     meta = dict(project.meta or {})
     round_n = int(meta.get(META_ROUND) or meta.get(META_HERO_ROUND) or 0) + 1
-    if round_n > MAX_VISION_CHECK_ROUNDS:
+    from app.services import regen_budget
+
+    if kind == "hero":
+        budget_items: list[Any] = list(hero_ids)
+    else:
+        budget_items = [_token_frame(int(t["number"]), int(t.get("shot") or 1)) for t in frame_tgts]
+    verdict = regen_budget.charge(project, f"vision:{kind}", budget_items)
+    over_rounds = round_n > MAX_VISION_CHECK_ROUNDS
+    if over_rounds or not verdict.ok:
+        if over_rounds and verdict.ok:
+            verdict.run_exhausted = True
+            verdict.rounds = round_n - 1
+            verdict.per_run = MAX_VISION_CHECK_ROUNDS
         logger.warning(
-            "[#{}] vision_check_loop: лимит {} раундов на {} — сдаёмся "
-            "(всё ещё не утверждено)",
+            "[#{}] vision_check_loop: лимит перегенераций на {} (раунд {}) — стоп, "
+            "результат НЕ утверждён: {}",
             project.id,
-            MAX_VISION_CHECK_ROUNDS,
             key,
+            round_n,
+            verdict.summary(),
         )
         clear_vision_check_meta(project)
-        return False
+        await regen_budget.stop(session, project, verdict)
+        return True
 
     await _apply_db_patch(session, project, patch)
 

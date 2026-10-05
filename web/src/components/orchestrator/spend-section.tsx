@@ -7,11 +7,17 @@ import {cn} from "@/lib/utils";
 interface SpendState {
   caps: {daily: number; project: number; run: number};
   daily_spent: number; project_spent: number | null; run_spent: number | null; run_id: string | null;
+  runs?: SpendRun[];
 }
+interface SpendRun {run_id: string; group_id: string; enabled: boolean; held: boolean; created_at: string | null; run_spent: number | null}
 interface ProviderTask {
   task_id: string; key: string; provider: string; api: string; model: string; status?: string;
   submitted_at: string; updated_at?: string; est_credits: number | null; est_usd: number | null; events: number; note?: string;
 }
+
+const runLabel = (r: SpendRun) =>
+  `${(r.created_at ?? "").slice(0, 16).replace("T", " ") || "время неизвестно"} · ${r.run_id.slice(0, 8)} · ${r.group_id} · ${
+    r.enabled ? (r.held ? "на паузе" : "идёт") : "закрыт"} · ${usd(r.run_spent)}`;
 
 const usd = (v: number | null) => (v === null ? "—" : `$${v.toFixed(2)}`);
 const cap = (v: number) => (v > 0 ? `$${v.toFixed(2)}` : "без лимита");
@@ -57,13 +63,16 @@ export function SpendSection({projectId}: {projectId: number | null}) {
   const [state, setState] = useState<SpendState | null>(null);
   const [tasks, setTasks] = useState<ProviderTask[] | null>(null);
   const [error, setError] = useState(false);
+  const [pickedRun, setPickedRun] = useState("");
+
+  useEffect(() => { setPickedRun(""); }, [project]);
 
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const next = await http<SpendState>(`/api/projects/${project}/observations/spend`);
+        const next = await http<SpendState>(`/api/projects/${project}/observations/spend${pickedRun ? `?run_id=${encodeURIComponent(pickedRun)}` : ""}`);
         if (!cancelled) { setState(next); setError(false); }
       } catch {
         if (!cancelled) setError(true);
@@ -78,7 +87,7 @@ export function SpendSection({projectId}: {projectId: number | null}) {
     };
     void poll();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [project]);
+  }, [project, pickedRun]);
 
   return (
     <section data-testid="spend-panel" className="mt-3 rounded border border-white/10 p-2 space-y-1.5 text-xs text-white/80">
@@ -91,7 +100,16 @@ export function SpendSection({projectId}: {projectId: number | null}) {
           <Row label={state.run_id ? `Запуск ${state.run_id.slice(0, 8)}` : "Запуск"} spent={state.run_spent} limit={state.caps.run}/>
         </ul>
       )}
-      {state && !state.run_id && <p className="text-white/45">Нет активного управляемого запуска: расход запуска не считается.</p>}
+      {state?.runs && state.runs.length > 0 && (
+        <label className="flex flex-wrap items-center gap-2 text-white/60">Запуск
+          <select aria-label="Запуск для расчёта расхода" value={state.run_id ?? ""} onChange={(e) => setPickedRun(e.target.value)}
+            className="max-w-full rounded border border-white/15 bg-[#161616] p-1">
+            {!state.run_id && <option value="">не выбран</option>}
+            {state.runs.map((r) => <option key={r.run_id} value={r.run_id}>{runLabel(r)}</option>)}
+          </select>
+        </label>
+      )}
+      {state && !state.run_id && <p className="text-white/45">Нет активного управляемого запуска: расход запуска не считается.{state.runs?.length ? " Выберите прошлый запуск, чтобы увидеть его расход." : ""}</p>}
       {state && <p className="text-white/40">Лимит 0 означает «без лимита». Превышение лимита блокирует новые платные запросы до отправки.</p>}
       {tasks && (
         <details data-testid="provider-tasks">

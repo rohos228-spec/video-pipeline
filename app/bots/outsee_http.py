@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import json
 import re
 import sys
@@ -60,6 +61,30 @@ class NanoBananaProOutseeBannedError(OutseeApiError):
 # Обратная совместимость с cookie-era hooks в OutseeBot
 OutseeHttpError = OutseeApiError
 OutseeHttpAuthError = OutseeApiError
+
+
+class OutseeSubmitUnknownError(OutseeApiError):
+    """Submit ушёл, исход неизвестен: задача могла быть принята и оплачена. Повторный submit запрещён."""
+
+    def __init__(self, reason: str, *, context: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            reason,
+            context={**(context or {}), "uncertain": True, "no_resubmit": True, "submit_unknown": True},
+        )
+
+
+# Заполняется outsee_guard на время одного вызова generate_*: что именно успело уйти к провайдеру.
+submit_probe: contextvars.ContextVar[dict | None] = contextvars.ContextVar("outsee_submit_probe", default=None)
+# Запрос уже был на проводе, ответ потерян: провайдер мог принять и списать.
+_SENT_ERRORS = (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError)
+# curl: 18 partial, 28 timeout, 52 empty reply, 55 send, 56 recv — тело могло дойти до сервера.
+_CURL_SENT_CODES = frozenset({18, 28, 52, 55, 56})
+
+
+def _probe_mark(**fields: Any) -> None:
+    probe = submit_probe.get()
+    if probe is not None:
+        probe.update(fields)
 
 
 def outsee_api_key() -> str:
@@ -323,12 +348,24 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
                 proc.returncode,
                 (stderr or b"")[:200],
             )
+            if proc.returncode in _CURL_SENT_CODES:
+                _probe_mark(maybe_sent=True)
+                raise OutseeSubmitUnknownError(
+                    f"Outsee API {path}: curl оборвался после отправки (код {proc.returncode}); "
+                    "задача могла быть принята и оплачена, повторный submit не делаю",
+                    context={"path": path, "network": True, "curl_code": proc.returncode},
+                )
             return None
         try:
             data = json.loads((stdout or b"").decode("utf-8", errors="replace"))
         except json.JSONDecodeError:
             logger.warning("outsee_api.generate curl: ответ не JSON")
-            return None
+            _probe_mark(maybe_sent=True)
+            raise OutseeSubmitUnknownError(
+                f"Outsee API {path}: ответ на submit не разобран; задача могла быть принята и оплачена, "
+                "повторный submit не делаю",
+                context={"path": path},
+            )
         if not isinstance(data, dict):
             return None
         err = data.get("error")
@@ -338,7 +375,12 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
                 context={"path": path, "code": str(err.get("code") or "")},
             )
         if data.get("id") is None:
-            return None
+            _probe_mark(maybe_sent=True)
+            raise OutseeSubmitUnknownError(
+                f"Outsee API {path}: ответ без id; задача могла быть принята и оплачена, "
+                "повторный submit не делаю",
+                context={"path": path, "body": data},
+            )
         logger.info(
             "outsee_api.submitted via curl path={} id={} status={}",
             path,
@@ -369,8 +411,10 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
                     _raise_api(r, where=path)
                 data = r.json()
                 if not isinstance(data, dict) or data.get("id") is None:
-                    raise OutseeApiError(
-                        "Outsee generate: нет id",
+                    _probe_mark(maybe_sent=True)
+                    raise OutseeSubmitUnknownError(
+                        "Outsee generate: ответ на submit без id; задача могла быть принята и оплачена, "
+                        "повторный submit не делаю",
                         context={"path": path, "body": data},
                     )
                 logger.info(
@@ -379,6 +423,7 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
                     data.get("id"),
                     data.get("status"),
                 )
+                _probe_mark(task_id=str(data["id"]))
                 return data
         except OutseeApiError as e:
             if not _is_concurrency_api_error(e):
@@ -399,6 +444,14 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
             continue
         except (httpx.HTTPError, OSError) as e:
             detail = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
+            if isinstance(e, _SENT_ERRORS):
+                # Запрос ушёл, ответ потерян: второй POST (в том числе через curl) оплатил бы вторую задачу.
+                _probe_mark(maybe_sent=True)
+                raise OutseeSubmitUnknownError(
+                    f"Outsee API {path}: ответа нет после отправки ({type(e).__name__}); "
+                    "задача могла быть принята и оплачена, повторный submit не делаю",
+                    context={"path": path, "network": True, "exc_type": type(e).__name__},
+                ) from e
             if isinstance(e, (httpx.ConnectTimeout, httpx.ConnectError, httpx.TimeoutException)):
                 try:
                     via_curl = await _post_generate_via_curl(path, body)
@@ -1300,6 +1353,7 @@ async def generate_image(
         raise last_submit_err or OutseeApiError("image generate: no submit")
     task_id = submitted["id"]
     done = await _poll_generation(task_id, timeout=timeout)
+    _probe_mark(done=True)
     url = _pick_result_url(done)
     suf = Path(url.split("?")[0]).suffix.lower()
     if suf in {".png", ".jpg", ".jpeg", ".webp"} and out_path.suffix.lower() != suf:
@@ -1543,6 +1597,7 @@ async def generate_video(
         raise last_submit_err or OutseeApiError("video generate: no submit")
     task_id = submitted["id"]
     done = await _poll_generation(task_id, timeout=timeout)
+    _probe_mark(done=True)
     url = _pick_result_url(done)
     suf = Path(url.split("?")[0]).suffix.lower()
     if suf in {".mp4", ".webm"} and out_path.suffix.lower() != suf:

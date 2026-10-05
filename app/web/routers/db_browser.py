@@ -2389,6 +2389,10 @@ class OrchestratorChatBody(BaseModel):
 
 
 _CHAT_CODE_ACTIONS = ("edit_files", "git_commit_push")
+_CHAT_CODE_OFF_MESSAGE = (
+    "Правка кода и git push из чата отключены (CHAT_CODE_ACTIONS_ENABLED=false, это значение "
+    "по умолчанию). Чтобы включить, задайте CHAT_CODE_ACTIONS_ENABLED=true и перезапустите сервер."
+)
 _CHAT_AUDIT_SKIP = ("read_file",)
 
 
@@ -2466,9 +2470,12 @@ async def orchestrator_chat(
     diagnose_only = _is_diagnose_only_question(
         body.message, fix_bugs=fix_bugs
     )
+    from app.settings import settings as _chat_cfg
+
+    code_actions_on = bool(_chat_cfg.chat_code_actions_enabled)
     code_lines = (
         []
-        if diagnose_only
+        if diagnose_only or not code_actions_on
         else await asyncio.to_thread(_code_workspace_context)
     )
     topic_snip = (project.topic or "").strip().replace("\n", " ")[:160]
@@ -2500,8 +2507,14 @@ async def orchestrator_chat(
             else (
                 "\n\nРЕЖИМ ФИКС БАГОВ: пользователь нажал кнопку «Фикс багов». "
                 "Не ограничивайся объяснением. Найди причину по ДИАГНОСТИКА "
-                "и СРАЗУ чини: actions (run_step/run_harness/…) и при необходимости "
-                "edit_files + run_tests. Краткий отчёт по-русски что сломано и что сделал."
+                "и СРАЗУ чини: actions (run_step/run_harness/…)"
+                + (
+                    " и при необходимости edit_files + run_tests."
+                    if code_actions_on
+                    else ". Правка кода и git push из чата отключены: НЕ предлагай edit_files "
+                    "и git_commit_push, если причина в коде программы — объясни её словами."
+                )
+                + " Краткий отчёт по-русски что сломано и что сделал."
                 if fix_bugs
                 else ""
             )
@@ -2582,8 +2595,7 @@ async def orchestrator_chat(
             _n_pending = len(pending_confirm)
             if (not _chat_settings.chat_code_actions_enabled
                     and any(k in act for k in _CHAT_CODE_ACTIONS)):
-                error = ("Правка кода и git push из чата отключены "
-                         "(CHAT_CODE_ACTIONS_ENABLED=false).")
+                error = _CHAT_CODE_OFF_MESSAGE
                 await _audit_chat_action(project_id, _chat_actor, act, "refused", error)
                 continue
             try:
@@ -3029,8 +3041,7 @@ async def orchestrator_confirm_git_push(
     _act = {"confirm_git_push": {"message": body.message[:200], "files": list(body.files or [])}}
     if not _chat_settings.chat_code_actions_enabled:
         await _audit_chat_action(project_id, _actor, _act, "refused", "CHAT_CODE_ACTIONS_ENABLED=false")
-        raise HTTPException(403, "Правка кода и git push из чата отключены "
-                                 "(CHAT_CODE_ACTIONS_ENABLED=false).")
+        raise HTTPException(403, _CHAT_CODE_OFF_MESSAGE)
     try:
         pushed = await asyncio.to_thread(
             commit_and_push, list(body.files or []), body.message.strip()

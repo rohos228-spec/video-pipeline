@@ -197,14 +197,24 @@ async def provider_tasks(project_id: int):
 
 
 @router.get('/spend', dependencies=[Depends(require_web_user)])
-async def spend_state(project_id: int):
-    """Read-only: today's / project / run spend versus the local caps (docs/SPEND_LIMITS.md)."""
+async def spend_state(project_id: int, run_id: str | None = Query(None, max_length=64)):
+    """Read-only: today's / project / run spend versus the local caps (docs/SPEND_LIMITS.md).
+
+    `runs` lists the latest managed runs of the project with their recorded spend; `run_id` picks one
+    of them (default: the first enabled run, as before). Unknown ids are ignored, never trusted."""
     from app.services import spend_guard
     async with get_observer().master() as session:
-        run = (await session.scalars(select(ActionExecutionControl.execution_id).where(
-            ActionExecutionControl.project_id == project_id,
-            ActionExecutionControl.enabled.is_(True)))).first()
-        return panel_safe({**await spend_guard.totals(session, project_id, run or ""), "run_id": run})
+        rows = (await session.scalars(select(ActionExecutionControl).where(
+            ActionExecutionControl.project_id == project_id).order_by(
+            ActionExecutionControl.created_at.desc()).limit(10))).all()
+        known = {r.execution_id for r in rows}
+        default = next((r.execution_id for r in rows if r.enabled), None)
+        run = run_id if run_id in known else default
+        runs = [{"run_id": r.execution_id, "group_id": r.group_id, "enabled": bool(r.enabled), "held": bool(r.held),
+                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                 "run_spent": (await spend_guard.totals(session, project_id, r.execution_id))["run_spent"]}
+                for r in rows]
+        return panel_safe({**await spend_guard.totals(session, project_id, run or ""), "run_id": run, "runs": runs})
 
 
 @router.post('/kill-switch', dependencies=[LocalOnlyDep])

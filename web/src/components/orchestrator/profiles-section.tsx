@@ -32,7 +32,7 @@ export function ProfilesSection({projectId,execution,nodes,managed}:{projectId:n
       else await observations.approveProfile(projectId,execution,{node_key:selected,profile_id:chosen!.profile_id,
         base_version:state!.base_version!,catalog_hash:state!.catalog_hash,rationale});
       setState(await observations.profiles(projectId,execution,selected));setError('');
-    }catch{setError('Сервер отклонил изменение: проверьте scope, версию и разрешение.');}
+    }catch{setError('Сервер отклонил изменение: проверьте область запуска, версию и разрешение.');}
     finally{setBusy(false);}
   }
   return <section data-testid="profiles-panel" className="rounded border border-white/10 p-2 space-y-2">
@@ -49,10 +49,10 @@ export function ProfilesSection({projectId,execution,nodes,managed}:{projectId:n
     {state?.overlays.map(o=><div key={o.overlay_id} data-testid="profile-record" className="border-t border-white/10 pt-2">
       <p>{profileStatus(o.status)} · {o.profile_id} · {o.candidate.model_id}</p>
       <p>Одобрение: {o.initiator} · {o.rationale}</p>
-      <p>Фактический результат: {o.recovery?.status??'не выполнялся'} · verify {o.recovery?.verification?.verified?'подтверждён runtime':'не подтверждён'}</p>
+      <p>Фактический результат: {o.recovery?.status??'не выполнялся'} · проверка {o.recovery?.verification?.verified?'подтверждена исходной системой':'не подтверждена'}</p>
       <Button size="sm" variant="outline" disabled={busy||o.status==='cancelled'||['claimed','await_verify'].includes(o.recovery?.status??'')||rationale.trim().length<3} onClick={()=>void change(o.overlay_id)}>Вернуть конфигурацию</Button>
       <p>Возврат конфигурации не откатывает данные или расход.</p>
-      <details><summary>Технические подробности и история профиля</summary><p>Base {o.base_version} → candidate {o.candidate_hash} · attempt {o.attempt_id??'не начата'}</p><pre className="whitespace-pre-wrap">{JSON.stringify(o.history,null,2)}</pre></details>
+      <details><summary>Технические подробности и история профиля</summary><p>Базовая версия {o.base_version} → кандидат {o.candidate_hash} · попытка {o.attempt_id??'не начата'}</p><pre className="whitespace-pre-wrap">{JSON.stringify(o.history,null,2)}</pre></details>
     </div>)}
   </section>;
 }

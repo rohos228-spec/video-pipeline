@@ -1,22 +1,22 @@
 export function actionStatus(status:string):string {
   return ({proposed:'Действие предложено',accepted:'Действие разрешено',rejected:'Действие отклонено',
-    reserved:'Recovery разрешён: билет сохранён',queued:'Recovery разрешён: ожидает worker',
-    running:'Recovery выполняется',claimed:'Recovery выполняется',submitted:'Запуск передан runtime',
-    await_verify:'Worker завершил попытку: ожидается verification',verified:'Verification прошёл',
+    reserved:'Восстановление разрешено: билет сохранён',queued:'Восстановление разрешено: ожидает исполнителя',
+    running:'Восстановление выполняется',claimed:'Восстановление выполняется',submitted:'Запуск передан исполнителю',
+    await_verify:'Исполнитель завершил попытку: ожидается проверка',verified:'Проверка пройдена',
     human_review:'Нужен человек',
-    revoked:'Execution завершён: разрешение отозвано'} as Record<string,string>)[status] ?? status;
+    revoked:'Запуск завершён: разрешение отозвано'} as Record<string,string>)[status] ?? status;
 }
 
 export function actionReviewMessage(kind:string):string {
   return kind==='node_recovery' || kind==='node_profile_recovery'
-    ? 'Результат recovery не подтверждён. Повторный recovery запрещён; требуется разбор человеком.'
-    : 'Execution удержан. Причина передачи человеку указана в записи; это не подтверждает запуск recovery или провал verification.';
+    ? 'Результат восстановления не подтверждён. Повторное восстановление запрещено; требуется разбор человеком.'
+    : 'Запуск удержан. Причина передачи человеку указана в записи; это не подтверждает ни запуск восстановления, ни провал проверки.';
 }
 
 export function actionsModeLabel(state:{configured:boolean;enabled:boolean;held:boolean}|null):string {
   if (!state) return 'Состояние управления не подтверждено';
-  if (state.enabled) return state.held ? 'Управление включено · execution удержан' : 'Управление включено';
-  return state.configured ? 'Execution завершён · управление выключено' : 'Управление выключено';
+  if (state.enabled) return state.held ? 'Управление включено · запуск удержан' : 'Управление включено';
+  return state.configured ? 'Запуск завершён · управление выключено' : 'Управление выключено';
 }
 
 export function scopedLaunchStrategies(options:{nodes:{node_key:string;supported:boolean;actions?:string[]}[];

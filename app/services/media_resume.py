@@ -11,7 +11,8 @@ for the same (project, frame key, model, prompt hash) inside ``MEDIA_RESUME_WIND
 
 Kie has no list endpoint, so an unresolved intent cannot be proven either way by the provider.
 Recording is awaited (crash safety) but a database error never blocks the provider call.
-Outsee exposes no task id to the client, so it cannot be resumed.
+Outsee exposes no task id to the client, so it cannot be resumed; its unknown submits are held by
+``outsee_guard`` (same ledger, intent rows only, api ``outsee``).
 """
 from __future__ import annotations
 

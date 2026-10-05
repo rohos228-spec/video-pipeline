@@ -375,8 +375,9 @@ class Settings(BaseSettings):
         False, alias="ORCHESTRATOR_ALLOW_REMOTE_WITHOUT_AUTH")
     # False — строки вызовов API не отправляются в облачный трекер (локальная запись остаётся).
     api_tracker_cloud_enabled: bool = Field(True, alias="API_TRACKER_CLOUD_ENABLED")
-    # False — чат-оркестратор отказывает в edit_files / git_commit_push.
-    chat_code_actions_enabled: bool = Field(True, alias="CHAT_CODE_ACTIONS_ENABLED")
+    # По умолчанию false: чат-оркестратор отказывает в edit_files / git_commit_push
+    # (и в confirm-git-push). true включает правку кода и push из чата явно.
+    chat_code_actions_enabled: bool = Field(False, alias="CHAT_CODE_ACTIONS_ENABLED")
 
     # Журнал наблюдателя: квота тел запросов/ответов на ПРОЕКТ и срок хранения
     # тел закрытых выполнений (живые и связанные с открытым инцидентом не трогаются).
@@ -396,6 +397,10 @@ class Settings(BaseSettings):
     spend_auto_kill_on_402: bool = Field(True, alias="SPEND_AUTO_KILL_ON_402")
     # Окно (сек): живая или не скачанная задача Kie возобновляется вместо нового createTask; 0 = выкл.
     media_resume_window_s: int = Field(3600, ge=0, alias="MEDIA_RESUME_WINDOW_S")
+    # Потолок перегенераций: на один кадр/героя и на один прогон шага (проверка → переделка → проверка).
+    # После потолка проект встаёт на паузу с причиной; 0 = без ограничения.
+    regen_max_per_frame: int = Field(3, ge=0, alias="REGEN_MAX_PER_FRAME")
+    regen_max_per_run: int = Field(12, ge=0, alias="REGEN_MAX_PER_RUN")
     action_layer_approval_ttl_s: int = Field(600, ge=1, alias="ACTION_LAYER_APPROVAL_TTL_S")
     action_layer_max_steps: int = Field(20, ge=1, le=100, alias="ACTION_LAYER_MAX_STEPS")
     action_layer_step_timeout_s: float = Field(900.0, gt=0, alias="ACTION_LAYER_STEP_TIMEOUT_S")

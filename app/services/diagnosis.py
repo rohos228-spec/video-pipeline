@@ -17,7 +17,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 # Timeouts and wrapped timeouts after submit: the provider may have accepted the request.
 UNCERTAIN_ERROR_TYPES = frozenset({'CancelledError', 'ReadTimeout', 'ConnectTimeout',
-    'ElevenLabsUncertainError', 'KieUncertainError', 'KieSubmitUnknownError', 'KieTaskPending'})
+    'ElevenLabsUncertainError', 'KieUncertainError', 'KieSubmitUnknownError', 'KieTaskPending',
+    'OutseeSubmitUnknownError'})
 
 from app.models import Base, WorkflowRun
 from app.services.error_catalog import ERROR_CATALOG
@@ -248,7 +249,11 @@ def derive_incidents(scope, events, snapshot):
             if kind=='domain_check' and p.get('verdict') in {'fail','reject'}:
                 issue('contract_rejected',(node,attempt,'verdict',e.get('request_id') or e['event_id']),[e],
                     fact='Исходная предметная проверка вернула verdict fail/reject. Проверка качества относится только к этому контракту.')
-            if kind=='runtime_check' and p.get('performed') is True and p.get('status') in {'failed','rejected'}:
+            if kind=='runtime_check' and p.get('check')=='regen_budget' and p.get('performed') is True and p.get('status')=='rejected':
+                item=issue('contract_rejected',(node,attempt,'regen_budget',e.get('request_id') or e['event_id']),[e],
+                    fact=str(p.get('summary') or 'Лимит перегенераций исчерпан; проект остановлен.')[:300],action='human_review')
+                item['status']='human_review'
+            elif kind=='runtime_check' and p.get('performed') is True and p.get('status') in {'failed','rejected'}:
                 issue('contract_rejected',(node,attempt,p.get('check'),e.get('request_id') or e['event_id']),[e],fact=f"Проверка {p.get('check','unknown')} отклонила результат.")
             if kind in {'apply_error','node_error','model_error'}:
                 if kind == 'node_error' and any(r['kind']=='media_failure' for r in related):

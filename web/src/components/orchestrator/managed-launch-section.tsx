@@ -96,7 +96,7 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
       const result=await observations.launch(projectId,request);
       if(generation.current!==epoch) return;
       setLaunch(result);onExecutionRef.current(result.execution_id);
-      setMessage(result.status==='submitted' ? 'Запуск принят. Следующие переходы выполняет pipeline.' : 'Запуск удержан; требуется проверить причину.');
+      setMessage(result.status==='submitted' ? 'Запуск принят. Следующие переходы выполняет конвейер.' : 'Запуск удержан; требуется проверить причину.');
     } catch {
       if(generation.current===epoch)setMessage('Ответ запуска не подтверждён. Проверьте сохранённое состояние; повторный запуск заблокирован.');
     } finally {if(generation.current===epoch)setBusy(false);}
@@ -146,14 +146,14 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
             className="w-20 rounded border border-white/15 bg-[#161616] p-1.5"/>
         </label>
       </fieldset>
-      <p className="text-white/50">В лимит входят Decision, worker и операции media. Цена неизвестна; лимит запросов не гарантирует денежный потолок.</p>
+      <p className="text-white/50">В лимит входят цикл решений, исполнитель и медиа-операции. Цена неизвестна; лимит запросов не гарантирует денежный потолок.</p>
       {failure && <p className="text-amber-200">{failure}</p>}
       <Button size="sm" disabled={busy || !!pending || !!failure || !storageReady} onClick={()=>void start()}>Запустить выбранную область</Button>
     </>}
     {launch && <div data-testid="managed-launch-progress" className="space-y-1">
       <p>Разрешённая область: {launch.policy.node_keys.map(key=>options?.nodes.find(node=>node.node_key===key)?.title ?? key).join(' → ')}</p>
       {!!launch.policy.profile_ids?.length && <p>Разрешённые профили: {launch.policy.profile_ids.join(', ')}</p>}
-      <p>Запуск: {launch.status==='submitted' ? 'передан pipeline' : 'удержан · нужен человек'} · выполнено {current ? `${done}/${selected.length}` : 'не подтверждено'}</p>
+      <p>Запуск: {launch.status==='submitted' ? 'передан конвейеру' : 'удержан · нужен человек'} · выполнено {current ? `${done}/${selected.length}` : 'не подтверждено'}</p>
       <p>Сейчас: {current?.current_nodes.map(key=>options?.nodes.find(node=>node.node_key===key)?.title ?? key).join(', ') || 'нет подтверждённой активной ноды'}</p>
       {actionState && <p>{!actionState.enabled ? 'Управление завершено' : actionState.held ? 'Управление удержано' : 'Управление включено'} · запросы {actionState.requests_used}/{actionState.request_limit}</p>}
       {current?.wait_reasons && Object.entries(current.wait_reasons).map(([node,wait])=><p key={node}>Ожидание: {wait.reason}</p>)}

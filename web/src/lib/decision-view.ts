@@ -1,6 +1,6 @@
 export function decisionStatus(status:string):string {
   const labels:Record<string,string>={ready:'Ожидает решения',model_pending:'Модель получает контекст',
-    acting:'Policy разрешила действие',waiting_evidence:'Ожидает новых событий',waiting_worker:'Ожидает worker и verify',done:'Цикл завершён',human_review:'Нужен человек'};
+    acting:'Сервер разрешил действие',waiting_evidence:'Ожидает новых событий',waiting_worker:'Ожидает исполнителя и проверки',done:'Цикл завершён',human_review:'Нужен человек'};
   return labels[status]??`Неизвестное состояние: ${status}`;
 }
 

@@ -88,34 +88,34 @@ def build_human_review_summary(
     frames_source = incident_details.get("frames_source") if isinstance(incident_details.get("frames_source"), str) else None
 
     parts = [
-        f"Node '{node_key}' requires human intervention.",
-        f"Incident: {incident_title} ({incident_type}, id={incident_id}).",
+        f"Нода '{node_key}' требует решения человека.",
+        f"Инцидент: {incident_title} ({incident_type}, id={incident_id}).",
     ]
     if provider_error_title:
-        parts.append(f"Provider-reported cause: {provider_error_title} ({catalog_code}).")
+        parts.append(f"Причина по данным провайдера: {provider_error_title} ({catalog_code}).")
     if circuit_breaker_tripped:
         parts.append(
-            f"Circuit breaker tripped: {model_steps_used}/{max_model_steps} decision "
-            "steps used without a verified resolution."
+            f"Лимит шагов модели исчерпан: использовано {model_steps_used} из {max_model_steps} "
+            "без подтверждённого решения."
         )
     if rule:
         from app.services.node_rules import rule_title
-        rule_line = f"Rule that stopped the result: {rule} ({rule_title(rule)})."
+        rule_line = f"Правило, остановившее результат: {rule} ({rule_title(rule)})."
         if rule_diary and rule_diary.get("rules"):
             fired = ", ".join(f"{k} x{v}" for k, v in rule_diary["rules"].items())
-            rule_line += f" Rules fired by code in this attempt: {fired}."
+            rule_line += f" Правила, сработавшие в коде за эту попытку: {fired}."
         parts.append(rule_line)
     if hold_reason:
-        parts.append(f"Why the native verifier put the run on hold: {hold_reason}")
+        parts.append(f"Почему встроенная проверка поставила запуск на паузу: {hold_reason}")
     if frames_source:
-        parts.append(f"Frames were produced by: {frames_source}.")
-    parts.append(f"Escalation reason: {escalation_reason}")
-    parts.append(f"Evidence available: {evidence_event_count} recorded event(s).")
+        parts.append(f"Кадры получены из: {frames_source}.")
+    parts.append(f"Причина эскалации: {escalation_reason}")
+    parts.append(f"Доказательства: записано событий - {evidence_event_count}.")
     if recommended_next_step:
-        parts.append(f"Suggested next step: {recommended_next_step}")
+        parts.append(f"Рекомендуемый следующий шаг: {recommended_next_step}")
     parts.append(
-        "No further automated action will be taken on this node until an "
-        "operator reviews and explicitly resumes it."
+        "Автоматических действий по этой ноде больше не будет, пока оператор "
+        "не изучит случай и явно не продолжит выполнение."
     )
 
     return HumanReviewSummary(
