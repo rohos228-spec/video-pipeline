@@ -145,6 +145,9 @@ async def _lifespan(app: FastAPI):
             from app.services.action_layer.store import ensure_action_layer_schema
 
             await ensure_action_layer_schema(conn)
+            from app.services.change_control.store import ensure_change_control_schema
+
+            await ensure_change_control_schema(conn)
     except Exception:  # noqa: BLE001
         logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:
@@ -295,6 +298,9 @@ def create_app() -> FastAPI:
     from app.services.action_layer.router import router as action_layer_router
 
     app.include_router(action_layer_router, prefix=API_PREFIX)
+    from app.services.change_control.router import router as change_control_router
+
+    app.include_router(change_control_router, prefix=API_PREFIX)
     app.include_router(prompts_router.router, prefix=API_PREFIX)
     app.include_router(prompt_studio_router.router, prefix=API_PREFIX)
     app.include_router(prompt_files_router.router, prefix=API_PREFIX)

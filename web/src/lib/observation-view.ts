@@ -31,7 +31,19 @@ export function eventLabel(event: Pick<ObservationEvent, "kind" | "payload">): s
   const p = event.payload;
   if (event.kind === "observer_control") return `Наблюдение: ${p.action ?? "неизвестно"} (${p.initiator ?? "инициатор неизвестен"})`;
   if (event.kind === "runtime_check") return `${p.check ?? "проверка"}: ${p.status ?? "неизвестно"}`;
+  if (event.kind === "parse_result" && p.contract === "native_split" && p.fallback_used === true)
+    return `Разбивка: ответ модели непригоден${p.dash_rejected === true ? " (тире не покрывает закадр)" : ""}; кадры получены локальной разбивкой закадра`;
   if (event.kind === "parse_result") return `Разбор: ${p.parsed === true ? "извлечён" : p.parsed === false ? "не извлечён" : "неизвестно"}; schema ${p.schema_valid == null ? "not_checked" : String(p.schema_valid)}`;
+  if (event.kind === "rule_diary") {
+    const stop = typeof p.stop_rule === "string" && p.stop_rule ? `; остановило правило ${p.stop_rule}` : "";
+    const rules = p.rules && typeof p.rules === "object" ? Object.keys(p.rules as Record<string, unknown>).length : 0;
+    return `Дневник правил кода: правил сработало ${rules}${stop}`;
+  }
+  if (event.kind === "node_result_verification") {
+    const st = p.status === "passed" ? "подтвердила результат" : p.status === "failed" ? "не подтвердила результат; запуск удержан" : p.status === "unknown" ? "не смогла сравнить результат со входом; запуск удержан" : `статус ${p.status ?? "неизвестен"}`;
+    return `Нативная проверка ${st}`;
+  }
+  if (event.kind === "node_error" && typeof p.rule === "string" && p.rule) return `Ошибка worker: результат остановило правило ${p.rule}`;
   if (event.kind === "json_retry") return "Штатный JSON retry";
   if (event.kind === "domain_check") return `Вердикт: ${p.verdict ?? "неизвестно"}; качество модели не проверено`;
   if (event.kind === "node_change") {

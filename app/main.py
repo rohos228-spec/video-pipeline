@@ -50,6 +50,9 @@ async def _init_db() -> None:
         from app.services.action_layer.store import ensure_action_layer_schema
 
         await ensure_action_layer_schema(conn)
+        from app.services.change_control.store import ensure_change_control_schema
+
+        await ensure_change_control_schema(conn)
 
         # Лёгкая миграция: добавляем новые колонки в projects, если их ещё
         # нет (create_all не умеет ALTER). SQLite поддерживает IF NOT EXISTS

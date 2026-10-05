@@ -70,7 +70,7 @@ async def _status(env, pid, status, **meta):
 # --- каталог ------------------------------------------------------------------------------------
 
 def test_new_actions_registered_with_expected_tier_and_money_flags() -> None:
-    assert len(registry) == 74
+    assert len(registry) == 79  # 74 + 5 change.*
     for aid, (tier, spends) in NEW_IDS.items():
         spec = registry.get(aid)
         assert (spec.risk, spec.spends_money) == (tier, spends), aid

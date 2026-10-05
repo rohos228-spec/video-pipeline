@@ -1094,6 +1094,104 @@
    "also_offered": []
   },
   {
+   "id": "chg_prompt",
+   "text": "предложи изменение промпта для шага shots, без применения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.propose",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_rollback",
+   "text": "откати последнее изменение промпта",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.rollback",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_apply",
+   "text": "примени предложение изменения номер 3",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.apply",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_list",
+   "text": "покажи список предложений изменений",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.list",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_versions",
+   "text": "покажи историю версий промпта",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.get",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_node",
+   "text": "предложи правку параметров ноды n_excel_gpt_fw_qc",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.propose",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_back",
+   "text": "верни прежнюю версию промпта",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.rollback",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
    "id": "amb1",
    "text": "поправь кадр",
    "workflow": "ambiguous",
@@ -1236,6 +1334,24 @@
   {
    "id": "ref10",
    "text": "обнови пароль",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref11",
+   "text": "перепиши код оркестратора",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref12",
+   "text": "поменяй исходники приложения и перезапусти сервер",
    "workflow": "out_of_catalog",
    "context": {},
    "outcome": "refuse",

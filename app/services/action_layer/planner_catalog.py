@@ -34,6 +34,11 @@ _W_SYN, _W_TITLE, _W_TAG, _W_DESC = 2.0, 1.5, 1.2, 0.6
 
 # Синонимы и разговорные формы: начала слов (сравнение по началу слова запроса).
 SYNONYMS: dict[str, str] = {
+    "change.apply": "предложен изменен промпт",
+    "change.get": "предложен изменен верс истор промпт покаж парамет нод",
+    "change.list": "список предложен изменен",
+    "change.propose": "измен промпт предлож предложен парамет нод верс",
+    "change.rollback": "откат откач верн назад изменен верс промпт",
     "group.delete": "удал убер сотр групп пользовательск",
     "group.get": "состав групп внутр нод",
     "group.insert": "встав вставь добав групп канвас",
@@ -54,7 +59,7 @@ SYNONYMS: dict[str, str] = {
     "montage.generate_scene": "сгенер сцен пересобер куск придум заказ промт",
     "montage.generate_scene_images": "сгенер картинк изображен сцен нарису",
     "montage.get_board": "доск монтаж покаж прочит состоян посмотр",
-    "montage.get_cost_basis": "стоимост цен сколько стоит бюджет оплат дорог",
+    "montage.get_cost_basis": "стоимост цен сколько стоит бюджет оплат дорог очеред примен",
     "montage.improve_scene": "улучш сцен лучше",
     "montage.insert_frame": "добав встав нов кадр сцен",
     "montage.link_ref": "приложи реф референс привяж прикреп",
@@ -189,9 +194,15 @@ def _matches(token: str, keys: set[str]) -> bool:
     return any(token.startswith(k) for k in keys)
 
 
-def _score_docs(tokens: list[str], docs: dict[str, list[tuple[float, set[str]]]]) -> dict[str, float]:
-    """Сумма вес_поля * idf(слово) по уникальным словам запроса; редкие слова весят больше."""
-    n = max(1, len(docs))
+_BASE_ACTIONS = 56  # опорный размер каталога для idf: рост реестра не сдвигает веса прежних действий
+
+
+def _score_docs(tokens: list[str], docs: dict[str, list[tuple[float, set[str]]]],
+                base_n: int | None = None) -> dict[str, float]:
+    """Сумма вес_поля * idf(слово) по уникальным словам запроса; редкие слова весят больше.
+
+    idf считается от фиксированного опорного числа документов ``base_n``, а не от размера реестра."""
+    n = max(1, base_n if base_n is not None else len(docs))
     per_token: list[dict[str, float]] = []
     for tok in tokens:
         hit = {}
@@ -258,7 +269,7 @@ def select_catalog(text: str, facts: dict | None, registry: ActionRegistry, max_
     rest, cut = strip_out_of_scope(text)
     tokens = list(dict.fromkeys(_words(rest) + _context_tokens(facts, rest)))
     docs = _action_docs(registry)
-    scores = _score_docs(tokens, docs)
+    scores = _score_docs(tokens, docs, _BASE_ACTIONS)
     for aid, b in _macro_bonus(tokens, registry, macros).items():
         scores[aid] = scores.get(aid, 0.0) + b
     essentials = [a for a in ESSENTIAL_IDS if a in docs]

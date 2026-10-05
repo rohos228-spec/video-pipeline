@@ -2,6 +2,7 @@
 import {useEffect, useState} from "react";
 import {http} from "@/lib/api";
 import {Button} from "@/components/ui/button";
+import {cn} from "@/lib/utils";
 
 // Global operator emergency stop for the supervisory layer (server: app/services/kill_switch.py).
 // Not execution-scoped: the project id only routes the request through the observations router.
@@ -55,22 +56,23 @@ export function KillSwitchSection({projectId}: {projectId: number | null}) {
   const active = Boolean(state?.active);
   const last = state?.history?.[0];
   return (
-    <section data-testid="kill-switch-panel" className="mt-3 rounded border border-white/10 p-2 space-y-2 text-xs text-white/80">
-      <h4>Аварийный стоп оркестратора · {state ? (active ? "ВКЛЮЧЁН" : "выключен") : "состояние неизвестно"}</h4>
+    <section data-testid="kill-switch-panel" className={cn("mt-3 rounded border p-2 space-y-2 text-xs text-white/80", active ? "border-red-400/50 bg-red-500/10" : "border-white/10")}>
+      <h4>Аварийный стоп оркестратора · <span className={active ? "font-semibold text-red-300" : undefined}>{state ? (active ? "ВКЛЮЧЁН" : "выключен") : "состояние неизвестно"}</span></h4>
       <p className="text-white/60">
         Включённый стоп запрещает любой новый запрос супервизора, шаг модели решений, восстановление и новый тик управляемого
         проекта до отправки и списания. Уже отправленный запрос не отменяется. Чтение, журнал и диагностика работают. Обычные
         (неуправляемые) проекты не затрагиваются. Выключение возобновляет работу без других действий.
       </p>
       {active && (
-        <p role="status" className="text-amber-200">
-          Включил: {state?.changed_by ?? "неизвестно"}{state?.source === "watchdog" ? " (сторож)" : ""} · основание: {state?.rationale ?? "—"}
+        <p role="status" className="text-red-200">
+          Новые запросы супервизора заблокированы. Включил: {state?.changed_by ?? "неизвестно"}{state?.source === "watchdog" ? " (сторож)" : ""} · основание: {state?.rationale ?? "—"}
         </p>
       )}
       <label className="block">
         Основание оператора
         <input aria-label="Основание аварийного стопа" value={rationale} onChange={(e) => setRationale(e.target.value)}
-          className="ml-2 bg-transparent border rounded"/>
+          placeholder="не короче 3 символов" maxLength={1000}
+          className="ml-2 w-72 max-w-full rounded border border-white/20 bg-transparent px-1.5 py-1 placeholder:text-white/30"/>
       </label>
       {active ? (
         <Button size="sm" variant="outline" disabled={busy || !state || rationale.trim().length < 3} onClick={() => void change(false)}>
@@ -96,7 +98,7 @@ export function KillSwitchSection({projectId}: {projectId: number | null}) {
         </p>
       )}
       {last && <p className="text-white/40">Последнее изменение: {last.active ? "включён" : "снят"} · {last.actor} · {last.rationale}</p>}
-      {error && <p role="alert">{error}</p>}
+      {error && <p role="alert" className="text-amber-200">{error}</p>}
     </section>
   );
 }
