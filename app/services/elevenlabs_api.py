@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from app.services import media_spend
 from app.services.elevenlabs_voices import DEFAULT_ELEVENLABS_VOICE_ID
 from app.settings import settings
 
@@ -22,6 +23,13 @@ ELEVENLABS_API_BASE_URL = "https://api.elevenlabs.io/v1"
 
 class ElevenLabsApiError(RuntimeError):
     """Ошибка вызова ElevenLabs API."""
+
+
+class ElevenLabsUncertainError(ElevenLabsApiError):
+    """Таймаут или обрыв после отправки: запрос мог быть принят и оплачен."""
+
+
+_UNCERTAIN_CAUSES = (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError)
 
 
 def elevenlabs_api_configured() -> bool:
@@ -184,7 +192,9 @@ async def synthesize_speech(
         if active_proxy:
             client_kwargs["proxy"] = active_proxy
         async with httpx.AsyncClient(**client_kwargs) as client:
-            return await client.post(url, headers=headers, json=payload)
+            return await media_spend.track_eleven_post(
+                client.post(url, headers=headers, json=payload),
+                chars=len(clean_text), model=effective_model)
 
     import asyncio
 
@@ -207,14 +217,16 @@ async def synthesize_speech(
                     if attempt < max_retries:
                         await asyncio.sleep(2.0 * attempt)
                         continue
-                    raise ElevenLabsApiError(
+                    raise (ElevenLabsUncertainError if isinstance(direct_exc, _UNCERTAIN_CAUSES)
+                           else ElevenLabsApiError)(
                         f"11Labs API: ошибка сетевого соединения: {direct_exc}"
                     ) from direct_exc
             else:
                 if attempt < max_retries:
                     await asyncio.sleep(2.0 * attempt)
                     continue
-                raise ElevenLabsApiError(
+                raise (ElevenLabsUncertainError if isinstance(exc, _UNCERTAIN_CAUSES)
+                       else ElevenLabsApiError)(
                     f"11Labs API: ошибка сетевого соединения: {exc}"
                 ) from exc
 

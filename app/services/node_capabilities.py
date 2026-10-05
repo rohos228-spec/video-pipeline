@@ -40,44 +40,89 @@ class NodeCapability:
 
 _JOB_PHASES = ("reserved", "submitted", "queued", "running", "completed",
                "downloading", "verifying", "verified", "failed", "cancelled", "unknown")
-_CAPABILITIES = {
-    'plan': NodeCapability('plan','project_text','make_plan.run → xlsx_step_runners.run_plan_xlsx',
-        ('running','parse','validate','apply','commit','human_approval'),
-        ('project_database','local_xlsx','hitl_request'),READ_ACTIONS+('retry_same','retry_profile','finish'),True,
-        profile_compatible=True,volatile_attachment_names=True,native_json_retry=False,recovery_continuation='none'),
-    'script': NodeCapability('script','project_text','make_script.run → xlsx_step_runners.run_script_xlsx',
-        ('running','parse','validate','apply','commit','human_approval'),
-        ('project_database','local_xlsx','hitl_request'),READ_ACTIONS+('retry_same','retry_profile','finish'),True,
-        profile_compatible=True,volatile_attachment_names=True,native_json_retry=False,recovery_continuation='none'),
-    'split': NodeCapability('split','frame_set','split_frames.run → xlsx_step_runners.run_split_xlsx',
-        ('running','parse','apply','commit','verify'),('project_database','local_xlsx'),READ_ACTIONS,True),
-    'image_prompts': NodeCapability('image_prompts','frame_prompts',
-        'generate_image_prompts.run → xlsx_step_runners.run_img_pr_xlsx',
-        ('running','parse','validate','apply','commit','verify'),
-        ('project_database','local_xlsx','local_checkpoint'),READ_ACTIONS,True),
-    "excel_gpt": NodeCapability("excel_gpt", "structured", "enrich_xlsx.run",
-        ("running", "parse", "validate", "apply", "commit"), ("project_database",),
-        READ_ACTIONS + ("retry_same", "retry_profile", "finish"), True, profile_compatible=True),
-    "images": NodeCapability("images", "image", "generate_images.run → kie_http",
-        _JOB_PHASES, ("provider_job", "local_file", "artifact_row"), READ_ACTIONS, True),
-    "videos": NodeCapability("videos", "video", "generate_videos.run → kie_http",
-        _JOB_PHASES, ("provider_job", "local_file", "artifact_row"), READ_ACTIONS, False),
-    "audio": NodeCapability("audio", "audio", "generate_audio.run → elevenlabs_api",
-        ("reserved", "submitted", "verifying", "verified", "alignment", "failed", "unknown"),
-        ("provider_generation", "local_file", "frame_timing", "artifact_row"), READ_ACTIONS, False),
-    "assemble": NodeCapability("assemble", "assembly", "assemble.run → assembly.assemble",
-        ("inputs", "processing", "subtitles", "verifying", "verified", "failed", "unknown"),
-        ("local_file", "artifact_row"), READ_ACTIONS, False),
-    "sfx_plan": NodeCapability("sfx_plan", "structured", "sfx_plan.plan_sfx_events → text_job",
-        ("running", "parse", "validate", "apply", "commit"),
-        ("project_database", "local_file", "local_checkpoint"), READ_ACTIONS, False),
-    "sfx_gen": NodeCapability("sfx_gen", "audio", "generate_sfx.run → sfx_gen.generate_sfx_files → elevenlabs_api/local_synth",
-        ("running", "generating", "writing", "verifying", "verified", "failed", "unknown"),
-        ("local_file", "project_database"), READ_ACTIONS, False),
-    "publish": NodeCapability("publish", "publication", "publish.run",
-        ("input_validation", "dry_run", "blocked"), ("external_accounts",),
-        ("read_events", "read_contract", "human_review"), False),
-}
+# Declarative capability data, one CapabilitySpec per node type (see
+# app/orchestrator/node_spec.py). NodeCapability payloads (asdict/contract) are
+# unchanged: acceptance/verifier/contract/successor live only in the spec.
+# `acceptance` names the accepted-evidence scenario; managed is forced False
+# without it. `verifier` / `contract` are NAMES in the registries populated
+# below / in decision_v1.py.
+_CAPABILITIES: dict[str, NodeCapability] = {}
+
+
+def register_capability_spec(spec, *, replace: bool = False) -> None:
+    """Add one node's capability data to the registry (and the derived
+    NodeCapability view used by capability_for)."""
+    from app.orchestrator import node_spec
+    if spec.node_type in node_spec._CAPABILITY_SPECS and not replace:
+        raise ValueError(f"capability already registered: {spec.node_type!r}")
+    node_spec._CAPABILITY_SPECS[spec.node_type] = spec
+    _CAPABILITIES[spec.node_type] = spec.to_capability()
+
+
+def unregister_capability_spec(node_type: str) -> None:
+    from app.orchestrator import node_spec
+    node_spec._CAPABILITY_SPECS.pop(node_type, None)
+    _CAPABILITIES.pop(node_type, None)
+
+
+def _register_builtin_capabilities() -> None:
+    from app.orchestrator.node_spec import CapabilitySpec as C
+    text_phases = ('running', 'parse', 'validate', 'apply', 'commit', 'human_approval')
+    for spec in (
+        C('plan', 'project_text', 'make_plan.run → xlsx_step_runners.run_plan_xlsx',
+            text_phases, ('project_database', 'local_xlsx', 'hitl_request'),
+            READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True,
+            profile_compatible=True, volatile_attachment_names=True, native_json_retry=False,
+            recovery_continuation='none', acceptance='native_project_text',
+            verifier='project_text_result', contract='project_text'),
+        C('script', 'project_text', 'make_script.run → xlsx_step_runners.run_script_xlsx',
+            text_phases, ('project_database', 'local_xlsx', 'hitl_request'),
+            READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True,
+            profile_compatible=True, volatile_attachment_names=True, native_json_retry=False,
+            recovery_continuation='none', acceptance='native_project_text',
+            verifier='project_text_result', contract='project_text'),
+        C('split', 'frame_set', 'split_frames.run → xlsx_step_runners.run_split_xlsx',
+            ('running', 'parse', 'apply', 'commit', 'verify'), ('project_database', 'local_xlsx'),
+            READ_ACTIONS, True, acceptance='native_split',
+            verifier='split_result', contract='frame_rows'),
+        C('image_prompts', 'frame_prompts',
+            'generate_image_prompts.run → xlsx_step_runners.run_img_pr_xlsx',
+            ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
+            ('project_database', 'local_xlsx', 'local_checkpoint'), READ_ACTIONS, True,
+            acceptance='native_image_prompts', verifier='image_prompts_result',
+            contract='frame_rows'),
+        C('excel_gpt', 'structured', 'enrich_xlsx.run',
+            ('running', 'parse', 'validate', 'apply', 'commit'), ('project_database',),
+            READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True, profile_compatible=True,
+            acceptance='excel_gpt_group', contract='structured'),
+        C('images', 'image', 'generate_images.run → kie_http',
+            _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'), READ_ACTIONS, True,
+            acceptance='synthetic_image_scenario', contract='media_jobs',
+            successor='continue_managed_image'),
+        C('videos', 'video', 'generate_videos.run → kie_http',
+            _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'), READ_ACTIONS, False,
+            contract='media_jobs'),
+        C('audio', 'audio', 'generate_audio.run → elevenlabs_api',
+            ('reserved', 'submitted', 'verifying', 'verified', 'alignment', 'failed', 'unknown'),
+            ('provider_generation', 'local_file', 'frame_timing', 'artifact_row'), READ_ACTIONS, False,
+            contract='media_jobs'),
+        C('assemble', 'assembly', 'assemble.run → assembly.assemble',
+            ('inputs', 'processing', 'subtitles', 'verifying', 'verified', 'failed', 'unknown'),
+            ('local_file', 'artifact_row'), READ_ACTIONS, False, contract='media_jobs'),
+        C('sfx_plan', 'structured', 'sfx_plan.plan_sfx_events → text_job',
+            ('running', 'parse', 'validate', 'apply', 'commit'),
+            ('project_database', 'local_file', 'local_checkpoint'), READ_ACTIONS, False,
+            verifier='sfx_result', contract='structured'),
+        C('sfx_gen', 'audio',
+            'generate_sfx.run → sfx_gen.generate_sfx_files → elevenlabs_api/local_synth',
+            ('running', 'generating', 'writing', 'verifying', 'verified', 'failed', 'unknown'),
+            ('local_file', 'project_database'), READ_ACTIONS, False,
+            verifier='sfx_result', contract='media_jobs'),
+        C('publish', 'publication', 'publish.run',
+            ('input_validation', 'dry_run', 'blocked'), ('external_accounts',),
+            ('read_events', 'read_contract', 'human_review'), False, contract='media_jobs'),
+    ):
+        register_capability_spec(spec)
 
 
 # Recovery decisions for media/paid-or-external node types. Pure declarative data kept OUTSIDE
@@ -135,7 +180,9 @@ def media_recovery_decision(node_type: str):
 
 def capability_for(node_type: str) -> NodeCapability:
     from app.orchestrator.node_registry import is_work_node_type
-    if node_type in _CAPABILITIES and is_work_node_type(node_type):
+    from app.orchestrator.node_spec import capability_spec_for
+    spec = capability_spec_for(node_type)
+    if spec is not None and is_work_node_type(node_type):
         return _CAPABILITIES[node_type]
     return NodeCapability(node_type, "unsupported", "", ("unknown",), (),
                           ("read_events", "read_contract", "human_review"))
@@ -476,3 +523,36 @@ async def observe_split_result(session,project,node_type):
             execution_id=ctx.scope.execution_id,held=True,initiator='native_split_verifier',
             rationale=proof['reason'],idempotency_key='split-verify:'+ctx.attempt_id,operator_request=False)
         raise RuntimeError('native split verification not confirmed: '+str(proof['reason']))
+
+
+async def _observe_project_text(session, project, node_type):
+    # Adapter to the common verifier signature; resolves the module global at
+    # call time so the original function stays the single implementation.
+    await observe_project_text_result(project, node_type)
+
+
+def _register_builtin_verifiers() -> None:
+    """Name the existing result-observation hooks (observation.observe_attempt
+    looks them up by node type instead of an if-chain)."""
+    from app.orchestrator.node_spec import VerifierSpec, bind_verifier, register_verifier
+    me = 'app.services.node_capabilities:'
+    register_verifier(VerifierSpec('project_text_result', me + '_observe_project_text',
+        managed_only=True, success_errors='raise'))
+    register_verifier(VerifierSpec('split_result', me + 'observe_split_result',
+        managed_only=True, success_errors='raise'))
+    register_verifier(VerifierSpec('image_prompts_result', me + 'observe_image_prompt_result',
+        managed_only=True, success_errors='raise', on_error=True,
+        error_done_flag='image_prompt_verification_recorded',
+        error_gap_exempt_flag='image_prompt_hold_saved'))
+    register_verifier(VerifierSpec('sfx_result', 'app.services.sfx_plan:observe_sfx_result',
+        success_errors='gap', success_flag='sfx_result_observed', on_error=True,
+        error_done_flag='sfx_result_observed'))
+    register_verifier(VerifierSpec('animation_result',
+        'app.services.native_animation_contracts:observe_animation_result',
+        success_errors='gap', on_error=True, error_done_flag='animation_verification_recorded'))
+    # animation_prompts has no capability (unsupported, observed only).
+    bind_verifier('animation_prompts', 'animation_result')
+
+
+_register_builtin_capabilities()
+_register_builtin_verifiers()

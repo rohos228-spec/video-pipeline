@@ -17,6 +17,36 @@ characters/items and sidecar paths require their own executor acceptance.
 Publication stays preparation/dry-run until separate authorization. Production
 configuration and real media transport remain disabled.
 
+## Declarative node data (onboarding without if-chains)
+
+`app/orchestrator/node_spec.py` is built. A node's orchestrator knowledge is
+data plus named callables, resolved by lookup:
+
+| Item | Where | Notes |
+|---|---|---|
+| Capability | `CapabilitySpec` (or `NodeSpec` via `register_node`) | `result_kind`, executor text, phases, effects, actions, `managed`, `profile_compatible`, `native_json_retry`, `recovery_continuation`, `volatile_attachment_names`; `capability_for()` reads the registry |
+| Acceptance | `CapabilitySpec.acceptance` | name of the accepted-evidence scenario; `managed` is forced false without it |
+| Verifier | `verifier` name in the verifier registry | `VerifierSpec(observe='module:function' or callable, managed_only, success_errors, on_error, flags)`; run by `observe_attempt` |
+| Contract | `contract` name in the contract registry | builder `async (ctx) -> dict`; default derived from `result_kind`; unknown name fails closed |
+| Successor | `successor` name | data only today; the managed continuation check in `actions_v1` still names `images` |
+| Package manifest | `capability_from_manifest(dict)` | validates `nodeapi: 1` + `orchestrator:` block; unknown keys/actions rejected |
+
+Adding a node by data: register a `CapabilitySpec` (or `NodeSpec`), optionally
+a verifier and a contract builder, and nothing in `observation.py`,
+`decision_v1.py` or `node_capabilities.capability_for` changes. The read-only
+`Decision` allow-list is `capability.actions` intersected with the execution's
+allowed actions, so a new node is reflected without edits.
+`tests/observe_v1/test_node_conformance.py` runs consistency rules over every
+registered spec (managed needs acceptance; retry actions need
+`profile_compatible`; media nodes never expose retry; verifier and contract
+names must resolve) and a synthetic text node onboarded by data.
+`tests/fixtures/node_capabilities_snapshot.json` is the pre-refactor
+`asdict()` of every existing node and must stay equal.
+
+Still outside this layer: the `ProjectStatus` pair, the step executor, the
+`pipeline.py::advance()` branch, `input_revision`/`graph_version` composition,
+and per-family recorders (`record_*_input/parse`) that executors call.
+
 ## Developer integration points
 
 | Responsibility | Existing integration | Required evidence before managed=True |

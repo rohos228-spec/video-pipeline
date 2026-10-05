@@ -212,12 +212,85 @@ async def settle(session, *, project_id: int | None, run_id: str, reserved_usd: 
 
 
 async def record_actual(session, *, project_id: int | None, usd: float, provider: str,
-                        source: str = "native_call", run_id: str = "", note: str = "") -> None:
+                        source: str = "native_call", run_id: str = "", note: str = "",
+                        credits: float = 0.0) -> None:
     """Record a call that was never reserved (native pipeline). Never refuses."""
     usd = _valid(usd)
     await ensure_schema(session)
     session.add(SpendLedger(day=_today(), kind="actual", provider=provider[:32], project_id=project_id,
-                            run_id=run_id[:80], source=source[:32], usd=usd, note=note[:200]))
+                            run_id=run_id[:80], source=source[:32], usd=usd, credits=float(credits), note=note[:200]))
+
+
+async def record_event(session, *, project_id: int | None, provider: str, source: str, note: str = "") -> None:
+    """Zero-USD audit row (kind event)."""
+    await ensure_schema(session)
+    session.add(SpendLedger(day=_today(), kind="event", provider=provider[:32], project_id=project_id,
+                            source=source[:32], note=note[:200]))
+
+
+class ProviderTaskLedger(Base):
+    """Append-only event log of provider task ids. The state of a task is its newest row."""
+    __tablename__ = "provider_task_ledger"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    key: Mapped[str] = mapped_column(String(120), default="")
+    task_id: Mapped[str] = mapped_column(String(100), index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="")
+    api: Mapped[str] = mapped_column(String(16), default="")
+    model: Mapped[str] = mapped_column(String(64), default="")
+    event: Mapped[str] = mapped_column(String(16), default="")
+    status: Mapped[str] = mapped_column(String(16), default="")
+    est_credits: Mapped[float | None] = mapped_column(Float, nullable=True)
+    est_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    note: Mapped[str] = mapped_column(String(200), default="")
+
+
+_TASK_TRIGGERS = (
+    "CREATE TRIGGER IF NOT EXISTS provider_task_ledger_no_update BEFORE UPDATE ON "
+    "provider_task_ledger BEGIN SELECT RAISE(ABORT, 'provider task ledger is append-only'); END",
+    "CREATE TRIGGER IF NOT EXISTS provider_task_ledger_no_delete BEFORE DELETE ON "
+    "provider_task_ledger BEGIN SELECT RAISE(ABORT, 'provider task ledger is append-only'); END",
+)
+_task_ensured: set[str] = set()
+
+
+async def ensure_task_schema(session) -> None:
+    bind = session.get_bind()
+    key = str(getattr(bind, "url", id(bind)))
+    if key in _task_ensured:
+        return
+    await session.run_sync(lambda s: ProviderTaskLedger.__table__.create(s.connection(), checkfirst=True))
+    if session.get_bind().dialect.name == "sqlite":
+        for ddl in _TASK_TRIGGERS:
+            await session.execute(text(ddl))
+    _task_ensured.add(key)
+
+
+async def append_task_event(session, *, project_id: int | None, key: str, task_id: str, provider: str,
+                            api: str, model: str, event: str, status: str,
+                            est_credits: float | None = None, est_usd: float | None = None,
+                            note: str = "") -> None:
+    """Append one event; the caller commits. Never updates an existing row."""
+    await ensure_task_schema(session)
+    session.add(ProviderTaskLedger(project_id=project_id, key=key[:120], task_id=str(task_id)[:100],
+                                   provider=provider[:32], api=api[:16], model=model[:64], event=event[:16],
+                                   status=status[:16], est_credits=est_credits, est_usd=est_usd, note=note[:200]))
+
+
+async def list_provider_tasks(session, project_id: int, limit: int = 200) -> list[dict]:
+    """One row per task: first-seen time and estimate, newest status, event count."""
+    await ensure_task_schema(session)
+    rows = (await session.scalars(select(ProviderTaskLedger).where(
+        ProviderTaskLedger.project_id == project_id).order_by(ProviderTaskLedger.id))).all()
+    out: dict[str, dict] = {}
+    for r in rows:
+        t = out.setdefault(r.task_id, {"task_id": r.task_id, "key": r.key, "provider": r.provider,
+                                       "api": r.api, "model": r.model, "submitted_at": r.created_at.isoformat(),
+                                       "est_credits": r.est_credits, "est_usd": r.est_usd, "events": 0})
+        t["events"] += 1
+        t["status"], t["updated_at"], t["note"] = r.status, r.created_at.isoformat(), r.note
+    return list(out.values())[-max(1, limit):]
 
 
 _tasks: set = set()

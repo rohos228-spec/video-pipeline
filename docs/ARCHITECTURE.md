@@ -111,13 +111,18 @@ side effect of adding a feature.
 ## Registry (current state — see `ADDING_NEW_AGENT.md` for the how-to)
 
 There is no plugin/dynamic-discovery registry. A node type is defined by
-three to four hand-kept places that must stay in sync:
+three to four places that must stay in sync. The orchestrator's per-node
+knowledge (capability, result verifier, contract) is declarative data, see
+the last bullets of this list and "Declarative node knowledge" below:
 
 - `app/orchestrator/node_registry.py` — `WORK_NODES: dict[str, WorkNodeSpec]`
   (step code, running status, ready status).
-- `app/services/node_capabilities.py` — `_CAPABILITIES: dict` (result kind,
-  executor description, phases, effects, allowed actions, `managed: bool`).
-  `capability_for()` fails safe: an unregistered node type gets an inert
+- `app/services/node_capabilities.py` — one `CapabilitySpec` data entry per
+  node type (result kind, executor description, phases, effects, allowed
+  actions, `managed`, recovery flags, plus `acceptance`, `verifier`,
+  `contract`, `successor` names), registered into the registry in
+  `app/orchestrator/node_spec.py`; `_CAPABILITIES` is the derived
+  `NodeCapability` view. `capability_for()` fails safe: an unregistered node type gets an inert
   `"unsupported"` capability rather than erroring.
 - `app/models.py` — the `ProjectStatus` enum needs the node's running/ready
   states.
@@ -128,10 +133,35 @@ three to four hand-kept places that must stay in sync:
   not `auto_advance.py`, is where a new node's `run()` gets wired in.
 
 This is intentionally **not** being replaced with a new engine (out of scope
-per the brief). The standing plan's next step (M3) is a thin `NodeSpec`
-dataclass that wraps these same dicts behind one `register_node()` call, so
-adding a node type is one call instead of four manual edits — without
-changing runtime behavior.
+per the brief). `NodeSpec` / `register_node()` (built, `app/orchestrator/
+node_spec.py`) wrap the same dicts behind one call; it fills `WORK_NODES`
+and the capability registry together.
+
+### Declarative node knowledge
+
+`app/orchestrator/node_spec.py` holds the data model and three registries:
+
+- `CapabilitySpec` — the capability fields of a node type as data. The 12
+  built-in entries live in `node_capabilities._register_builtin_capabilities`.
+  `NodeCapability` (and its `asdict()`/`contract()` payload) is unchanged;
+  `tests/fixtures/node_capabilities_snapshot.json` pins it byte for byte.
+- Verifier registry (`VerifierSpec`, `verifier_spec_for`) — the result
+  observation hooks that `observation.observe_attempt` runs after the native
+  executor (`run_verifier_after_success` / `run_verifier_after_error`). The
+  per-type `if capability.node_type ...` chain is gone.
+- Contract registry (`register_contract_builder`, `contract_builder_for`) —
+  what `DecisionSupervisor.read_contract` returns per node, picked by the
+  spec's `contract` name or, when absent, by `result_kind`; unaccepted node
+  types may add a read-only description via `register_descriptive_contract`.
+- `capability_from_manifest(dict)` validates a node package's `orchestrator:`
+  block into a `CapabilitySpec` (see `PROPOSAL_NODE_PACKAGES.md`).
+
+`managed` takes effect only with a non-empty `acceptance` name. Still
+hard-wired, not yet data: the `pipeline.py::advance()` dispatch, the
+`ProjectStatus` enum, `input_revision`/`graph_version` composition and the
+`continue_managed_image` successor check (`successor` is recorded as data
+only). `tests/observe_v1/test_node_conformance.py` checks every registered
+spec and onboards a synthetic node by data.
 
 ## Model / Agent / Node Strategy / Prompt Version
 

@@ -32,6 +32,7 @@ from app.bots.kie_kling import (
     kie_uses_vps_relay,
 )
 from app.bots.outsee import GenerationResult
+from app.services import media_spend
 from app.settings import settings
 
 _POLL_INTERVAL_S = 4.0
@@ -52,6 +53,10 @@ _POLL_PATHS = {
 
 class KieHttpError(KieKlingError):
     """Ошибка kie Market/Create — совместима с outsee_retry."""
+
+
+class KieUncertainError(KieHttpError):
+    """Таймаут или обрыв сети уже после отправки: задача могла быть принята и оплачена."""
 
 
 def kie_configured() -> bool:
@@ -133,6 +138,7 @@ async def upload_file(
     return dl
 
 
+@media_spend.tracked_kie_create
 async def create_task(api: str, endpoint: str | None, body: dict[str, Any]) -> str:
     """Создать задачу; возвращает taskId."""
     if api == "jobs":
@@ -280,6 +286,7 @@ def _fail_message(data: dict[str, Any]) -> str:
     return "generation failed"
 
 
+@media_spend.tracked_kie_poll
 async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -> dict[str, Any]:
     path = _POLL_PATHS.get(api, _POLL_PATHS["jobs"])
     url = f"{kie_api_base_url()}{path}"
@@ -303,12 +310,13 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
                 else:
                     r = await client.get(url, headers=_headers(), params={"taskId": task_id})
                 net_fails = 0
+                media_spend.count_poll()
             except (httpx.TransportError, httpx.TimeoutException) as e:
                 if job:
                     raise  # known job survives; never enter native resubmit/retry ladder
                 net_fails += 1
                 if net_fails >= 8 or asyncio.get_event_loop().time() >= deadline:
-                    raise KieHttpError(
+                    raise KieUncertainError(
                         f"kie poll {task_id}: сеть/таймаут ({type(e).__name__})",
                         context={"provider_code": 504, "task_id": task_id},
                     ) from e
@@ -349,7 +357,7 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
                     },
                 )
             if asyncio.get_event_loop().time() >= deadline:
-                raise KieHttpError(
+                raise KieUncertainError(
                     f"kie: таймаут ожидания task {task_id}",
                     context={"provider_code": 504, "task_id": task_id, "kind": "timeout"},
                 )
@@ -384,9 +392,10 @@ async def run_generation(
     if await assert_entry(provider="kie") is not None:
         return await _managed_generation(spec, payload, out_path, timeout_s=timeout_s)
     api = str(spec.get("api") or "jobs")
-    task_id = await create_task(api, spec.get("endpoint"), payload)
-    logger.info("kie_http: task {} создана (model={})", task_id, spec.get("id"))
-    data = await poll_task(api, task_id, timeout_s=timeout_s)
+    with media_spend.kie_scope(spec, payload, out_path):
+        task_id = await create_task(api, spec.get("endpoint"), payload)
+        logger.info("kie_http: task {} создана (model={})", task_id, spec.get("id"))
+        data = await poll_task(api, task_id, timeout_s=timeout_s)
     urls = _result_media_urls(data)
     if not urls:
         raise KieHttpError(
@@ -524,16 +533,19 @@ async def generate_kie_video(
             raise MediaPolicyError("managed video requires an explicit catalog model; no fallback")
         from app.bots.kie_kling import generate_video as kie_kling_generate_video
 
-        return await kie_kling_generate_video(
-            prompt,
-            out_path,
-            start_frame=start_frame,
-            aspect_ratio=aspect_ratio,
-            duration=duration,
-            generate_audio=generate_audio,
-            timeout=timeout,
-            project_id=project_id,
-            gen_id=gen_id,
+        return await media_spend.track_kling(
+            kie_kling_generate_video(
+                prompt,
+                out_path,
+                start_frame=start_frame,
+                aspect_ratio=aspect_ratio,
+                duration=duration,
+                generate_audio=generate_audio,
+                timeout=timeout,
+                project_id=project_id,
+                gen_id=gen_id,
+            ),
+            kie_id=kie_id, duration=duration, has_frame=start_frame is not None,
         )
 
     field_names = {f["name"] for f in spec.get("fields") or []}

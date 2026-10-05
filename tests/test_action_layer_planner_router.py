@@ -36,6 +36,7 @@ async def ctx(env, monkeypatch):  # noqa: F811
         registry.register(s)
     monkeypatch.setattr(settings, "vibecode_api_key", "vk-test-key")
     monkeypatch.setattr(settings, "vibecode_base_url", "https://vibecode.moe/v1")
+    monkeypatch.setattr(settings, "action_layer_planner_max_catalog", 500)  # без предфильтра
     env.ran = ran
     yield env
     planner.set_transport(None)

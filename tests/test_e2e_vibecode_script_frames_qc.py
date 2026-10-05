@@ -17,12 +17,17 @@ FRAME = {"uuid": "a" * 24, "number": 1, "voiceover_text": script.FULL_VO, "attrs
 
 # ---------- safety: dry only, loopback only ----------
 
-def test_default_mode_is_dry_and_there_is_no_live_flag():
+def test_default_mode_is_offline_and_live_is_opt_in():
     args = script._args(["--work-dir", "w"])
-    assert args.dry is True and args.break_node == "script" and args.break_mode == "malformed"
-    assert not hasattr(args, "live")
-    with pytest.raises(SystemExit):
-        script._args(["--work-dir", "w", "--live"])
+    assert args.live is False and args.dry is False and args.break_node == "script" and args.break_mode == "malformed"
+    assert (args.max_real_posts, args.max_usd) == (6, 0.10)
+    assert script._args(["--work-dir", "w", "--live", "--env-file", "e"]).live is True
+
+
+def test_live_needs_env_file_and_excludes_dry_and_validates_caps():
+    for bad in (["--live"], ["--live", "--dry", "--env-file", "e"], ["--max-real-posts", "0"], ["--max-usd", "0"]):
+        with pytest.raises(SystemExit):
+            script._args(["--work-dir", "w", *bad])
 
 
 def test_undercount_only_for_shots():
@@ -374,3 +379,135 @@ def test_action_answer_carries_the_legacy_main_action_only_on_request():
     legacy = json.loads(script.valid_answer("action", [FRAME], with_action=True))["ops"][0]["fields"]
     assert plain == {"площадка": script.PLAN}
     assert legacy == {"главное_действие": script.ACTION, "площадка": script.PLAN}
+
+
+# ---------- live mode: whitelist loader, host allow-list, caps, spend ----------
+
+def test_env_loader_keeps_only_the_whitelisted_names(tmp_path):
+    f = tmp_path / "e.env"
+    f.write_text("﻿# c\nVIBECODE_API_KEY=\"k1\"\nGPT_API_KEY=kie\nOPENAI_API_KEY=x\nGPT_BASE_URL='https://r.example/v1'\n"
+                 "GPT_RELAY_TOKEN = tok\nnoise\nVIBECODE_BASE_URL=\n", encoding="utf-8")
+    env = script.load_env_whitelist(str(f))
+    assert env == {"VIBECODE_API_KEY": "k1", "GPT_BASE_URL": "https://r.example/v1", "GPT_RELAY_TOKEN": "tok",
+                   "VIBECODE_BASE_URL": ""}
+    assert set(script.LIVE_ENV_NAMES) == {"VIBECODE_API_KEY", "VIBECODE_BASE_URL", "GPT_RELAY_TOKEN", "GPT_PROXY_URL", "GPT_BASE_URL"}
+
+
+def test_endpoint_and_allowed_hosts_direct_and_relay():
+    assert script.live_endpoint({}) == "https://vibecode.moe/v1/chat/completions"
+    assert script.allowed_hosts({}) == {"vibecode.moe"}
+    relay = {"GPT_RELAY_TOKEN": "t", "GPT_BASE_URL": "https://vp.example.net"}
+    assert script.live_endpoint(relay) == "https://vp.example.net/v1/chat/completions"
+    assert script.allowed_hosts(relay) == {"vibecode.moe", "vp.example.net"}
+    # a Kie/vibecode GPT_BASE_URL is not a relay; a token without a base is not either
+    for env in ({"GPT_RELAY_TOKEN": "t", "GPT_BASE_URL": "https://api.kie.ai"}, {"GPT_RELAY_TOKEN": "t"},
+                {"GPT_BASE_URL": "https://vp.example.net"}):
+        assert script.relay_base(env) is None and script.allowed_hosts(env) == {"vibecode.moe"}
+
+
+def test_a_foreign_vibecode_base_url_does_not_become_an_allowed_host():
+    assert script.allowed_hosts({"VIBECODE_BASE_URL": "https://evil.example/v1"}) == {"vibecode.moe"}
+
+
+def _refuse(host, **kw):
+    base = dict(allowed=frozenset({"vibecode.moe"}), real_posts=0, max_posts=6, spent_usd=0.0, max_usd=0.10)
+    return script.real_post_refusal(host, **{**base, **kw})
+
+
+def test_only_allowed_hosts_may_receive_real_requests():
+    assert _refuse("vibecode.moe") is None and _refuse("VIBECODE.MOE") is None
+    for host in ("api.kie.ai", "example.com", "vibecode.moe.evil.com", "127.0.0.1", "", None):
+        assert _refuse(host).startswith("host:")
+
+
+def test_real_post_and_cost_caps_refuse_further_posts():
+    assert _refuse("vibecode.moe", real_posts=5) is None
+    assert _refuse("vibecode.moe", real_posts=6).startswith("cap:")
+    assert _refuse("vibecode.moe", spent_usd=0.0999) is None
+    assert _refuse("vibecode.moe", spent_usd=0.10).startswith("cap:")
+    assert _refuse("example.com", real_posts=99).startswith("host:")  # host rule wins
+
+
+def test_spend_estimate_is_catalog_price_times_three_with_recorded_cost_fallback():
+    def cost(model, p, c, cached):
+        return 0.01 * (p + c) / 1000 if model == "known" else None
+
+    rows = [{"model": "known", "prompt_tokens": 500, "completion_tokens": 500, "cached_tokens": 0, "cost_usd": 9},
+            {"model": "other", "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "cost_usd": 0.02},
+            {"model": "other", "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "cost_usd": 0}]
+    usd, zero = script.estimate_usd(rows, cost)
+    assert usd == round((0.01 + 0.02) * 3, 6) and zero == 1
+    assert script.estimate_usd([], cost) == (0.0, 0)
+
+
+def test_estimate_uses_the_real_catalog_price_for_the_default_model():
+    import app.services.api_tracker_hook as tracker
+    one = tracker.vibecode_cost("gpt-5.6-sol", 1000, 1000, 0)
+    assert one is not None and one > 0
+    usd, _zero = script.estimate_usd([{"model": "gpt-5.6-sol", "prompt_tokens": 1000, "completion_tokens": 1000,
+                                       "cached_tokens": 0, "cost_usd": 0}], tracker.vibecode_cost)
+    assert usd == round(one * 3, 6)
+
+
+def test_live_environment_drops_loopback_and_takes_values_only_from_the_env_file(tmp_path):
+    base = script.env_overrides(tmp_path, 18766)
+    out, drop = script.live_env_overrides(base, {})
+    assert "VIBECODE_BASE_URL" not in out and "GPT_BASE_URL" not in out
+    assert out["VIBECODE_API_KEY"].startswith("synthetic")
+    assert set(drop) == {"VIBECODE_BASE_URL", "GPT_BASE_URL", "GPT_RELAY_TOKEN", "GPT_PROXY_URL"}
+    out, drop = script.live_env_overrides(base, {"VIBECODE_API_KEY": "real", "GPT_PROXY_URL": "http://p:1"})
+    assert out["VIBECODE_API_KEY"] == "real" and out["GPT_PROXY_URL"] == "http://p:1" and "GPT_PROXY_URL" not in drop
+    assert "GPT_RELAY_TOKEN" not in out
+
+
+def test_live_runtime_config_uses_the_real_route_and_is_valid(tmp_path, monkeypatch):
+    from app.services import decision_config
+    cfg = script.runtime_config(18766, 60, "retry_same", endpoint=script.live_endpoint({}))
+    assert cfg["endpoint"] == "https://vibecode.moe/v1/chat/completions" and "retry_same" in cfg["allowed_actions"]
+    prof = script.runtime_config(18766, 60, "retry_profile", endpoint=script.live_endpoint({}))
+    assert "retry_profile" in prof["allowed_actions"] and "retry_same" not in prof["allowed_actions"]
+    assert "retry_same" in script.runtime_config(18766, 60, "retry_profile")["allowed_actions"]  # offline unchanged
+    path = tmp_path / "rt.json"
+    path.write_text(json.dumps(prof), encoding="utf-8")
+    monkeypatch.setenv("ORCHESTRATOR_RUNTIME_CONFIG", str(path))
+    assert decision_config.runtime_config()["endpoint"] == prof["endpoint"]
+
+
+def _live_snapshot(**counters):
+    snap = _happy_snapshot()
+    snap["refused_hosts"] = []
+    snap["counters"] = {**snap["counters"], "injected": 3, "real_total": 3, "real_decision": 2,
+                        "real_worker_recovery": 1, **counters}
+    snap["spend"] = {"estimated_usd": 0.03, "rows": 3}
+    return snap
+
+
+def _live_eval(snap):
+    return script.evaluate_live(snap, break_node="script", break_mode="malformed", qc_answer="noop",
+                                recovery="retry_same", hosts=frozenset({"vibecode.moe"}), max_real_posts=6, max_usd=0.10)
+
+
+def test_live_evaluation_passes_on_a_complete_happy_snapshot():
+    ok, failed = script.verdict(_live_eval(_live_snapshot()))
+    assert ok, failed
+
+
+@pytest.mark.parametrize("mutate,name", [
+    (lambda s: s["counters"].update(real_total=7), "caps_not_exceeded"),
+    (lambda s: s["spend"].update(estimated_usd=0.11), "caps_not_exceeded"),
+    (lambda s: s["counters"].update(injected=0), "broken_answers_injected_locally"),
+    (lambda s: s["counters"].update(real_decision=0), "real_decision_request_sent"),
+    (lambda s: s["counters"].update(real_worker_recovery=0), "real_recovery_request_sent"),
+    (lambda s: s["refused_hosts"].append("example.com"), "no_provider_host_attempt"),
+    (lambda s: s["spend"].update(rows=0), "usage_recorded_for_real_posts"),
+])
+def test_live_evaluation_fails_each_live_only_requirement(mutate, name):
+    snap = _live_snapshot()
+    mutate(snap)
+    assert name in script.verdict(_live_eval(snap))[1]
+
+
+def test_slim_record_keeps_scalars_only():
+    assert script.slim_record({"status": "done", "model_steps": 2, "ctx": {"a": 1}, "ids": [1], "x": None}) == {
+        "status": "done", "model_steps": 2, "x": None}
+    assert script.slim_record(None) == {}

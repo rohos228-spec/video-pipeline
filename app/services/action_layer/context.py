@@ -9,7 +9,12 @@
 """
 from __future__ import annotations
 
+import base64
+import binascii
+import codecs
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -31,6 +36,224 @@ class WriteNotAllowed(RuntimeError):
     """Попытка записи из контекста только для чтения (preview / precondition)."""
 
 
+# --- загрузка файлов (multipart) ---------------------------------------------
+#
+# Файл попадает в запрос только как FileUpload. Источник байтов: путь на сервере строго
+# внутри DATA_DIR или base64 из параметров (малый размер). Произвольные пути и
+# сырые bytes/tuple в ctx.call(files=...) не принимаются.
+
+MIB = 1024 * 1024
+MAX_BASE64_BYTES = 512 * 1024        # декодированный размер файла из параметров плана
+MAX_TOTAL_UPLOAD_BYTES = 512 * MIB   # потолок на один запрос
+
+
+@dataclass(frozen=True)
+class UploadPolicy:
+    kind: str
+    extensions: frozenset
+    max_bytes: int
+    content_types: dict
+
+
+_AUDIO_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+                ".ogg": "audio/ogg", ".flac": "audio/flac", ".aac": "audio/aac"}
+_IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp"}
+_NODE_TYPES = {**_IMAGE_TYPES, ".xlsx": "application/vnd.openxmlformats-officedocument."
+               "spreadsheetml.sheet", ".txt": "text/plain", ".md": "text/markdown",
+               ".json": "application/json", ".csv": "text/csv"}
+
+UPLOAD_POLICIES: dict[str, UploadPolicy] = {
+    "voice": UploadPolicy("voice", frozenset(_AUDIO_TYPES), 100 * MIB, _AUDIO_TYPES),
+    "music": UploadPolicy("music", frozenset(set(_AUDIO_TYPES) - {".aac"}), 100 * MIB,
+                          {k: v for k, v in _AUDIO_TYPES.items() if k != ".aac"}),
+    # Слот сцены ищет и архивирует только frame_NNN_*.png: другой формат оставил бы старый файл.
+    "scene_image": UploadPolicy("scene_image", frozenset({".png"}), 30 * MIB,
+                                {".png": "image/png"}),
+    "scene_video": UploadPolicy("scene_video", frozenset({".mp4"}), 300 * MIB,
+                                {".mp4": "video/mp4"}),
+    "ref_image": UploadPolicy("ref_image", frozenset(_IMAGE_TYPES), 30 * MIB, _IMAGE_TYPES),
+    "node_file": UploadPolicy("node_file", frozenset(_NODE_TYPES), 25 * MIB, _NODE_TYPES),
+    "check_agent": UploadPolicy("check_agent", frozenset({".txt", ".md"}), 1 * MIB,
+                                {".txt": "text/plain", ".md": "text/markdown"}),
+}
+
+_TEXT_EXT = frozenset({".txt", ".md", ".json", ".csv"})
+_SAFE_NAME = re.compile(r"[^0-9A-Za-zА-Яа-яЁё._ -]")
+
+
+class UploadRejected(ValueError):
+    """Файл не прошёл проверку размера, типа или пути."""
+
+
+def _magic_ok(ext: str, head: bytes, content: bytes) -> bool:
+    if ext == ".png":
+        return head.startswith(b"\x89PNG\r\n\x1a\n")
+    if ext in (".jpg", ".jpeg"):
+        return head.startswith(b"\xff\xd8\xff")
+    if ext == ".webp":
+        return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+    if ext == ".wav":
+        return head[:4] == b"RIFF" and head[8:12] == b"WAVE"
+    if ext == ".mp3":
+        return head.startswith(b"ID3") or (len(head) > 1 and head[0] == 0xFF
+                                           and head[1] & 0xE0 == 0xE0)
+    if ext == ".ogg":
+        return head.startswith(b"OggS")
+    if ext == ".flac":
+        return head.startswith(b"fLaC")
+    if ext == ".aac":
+        return len(head) > 1 and head[0] == 0xFF and head[1] & 0xF0 == 0xF0
+    if ext in (".m4a", ".mp4"):
+        return head[4:8] == b"ftyp"
+    if ext == ".xlsx":
+        return head.startswith(b"PK\x03\x04")
+    if ext in (".txt", ".md", ".json", ".csv"):
+        if b"\x00" in content[:4096]:
+            return False
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return True
+    return False
+
+
+@dataclass(frozen=True)
+class FileUpload:
+    """Проверенный файл для multipart. Создавать через from_data_path / from_base64."""
+    form_field: str
+    filename: str
+    content: bytes = field(repr=False)
+    content_type: str
+    policy: str
+
+    @staticmethod
+    def _policy(kind: str) -> UploadPolicy:
+        try:
+            return UPLOAD_POLICIES[kind]
+        except KeyError:
+            raise UploadRejected(f"неизвестная политика загрузки {kind!r}") from None
+
+    @classmethod
+    def build(cls, kind: str, filename: str, content: bytes, *,
+              field_name: str = "file") -> "FileUpload":
+        policy = cls._policy(kind)
+        base = Path(str(filename or "").replace("\\", "/")).name
+        base = _SAFE_NAME.sub("_", base).strip(" .")[:100]
+        ext = Path(base).suffix.lower()
+        if not base or ext not in policy.extensions:
+            raise UploadRejected(
+                f"тип файла {ext or '(нет)'} не разрешён для {kind}: "
+                f"{sorted(policy.extensions)}")
+        if not isinstance(content, (bytes, bytearray)) or not content:
+            raise UploadRejected("пустой файл")
+        if len(content) > policy.max_bytes:
+            raise UploadRejected(f"файл {len(content)} байт больше лимита {policy.max_bytes}")
+        if not _magic_ok(ext, bytes(content[:16]), bytes(content)):
+            raise UploadRejected(f"содержимое не похоже на {ext}")
+        return cls(field_name, base, bytes(content), policy.content_types[ext], kind)
+
+    @classmethod
+    def from_base64(cls, kind: str, filename: str, data_b64: str) -> "FileUpload":
+        if not isinstance(data_b64, str) or len(data_b64) > MAX_BASE64_BYTES * 4 // 3 + 8:
+            raise UploadRejected(f"base64 больше {MAX_BASE64_BYTES} байт после декодирования")
+        try:
+            raw = base64.b64decode(data_b64, validate=True)
+        except (binascii.Error, ValueError):
+            raise UploadRejected("некорректный base64") from None
+        if len(raw) > MAX_BASE64_BYTES:
+            raise UploadRejected(f"base64 больше {MAX_BASE64_BYTES} байт после декодирования")
+        return cls.build(kind, filename, raw)
+
+    @classmethod
+    def _resolve_data_path(cls, kind: str, path: str) -> tuple["UploadPolicy", Path, int]:
+        from app.settings import settings
+
+        policy = cls._policy(kind)
+        raw = str(path or "").strip()
+        if not raw or "\x00" in raw:
+            raise UploadRejected("пустой путь")
+        root = Path(settings.data_dir).resolve()
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        if ".." in candidate.parts:
+            raise UploadRejected("в пути нельзя использовать ..")
+        try:
+            real = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise UploadRejected("файл не найден") from None
+        if root != real and root not in real.parents:
+            raise UploadRejected("путь вне DATA_DIR")
+        if not real.is_file():
+            raise UploadRejected("это не файл")
+        if any(part.startswith(".") for part in real.relative_to(root).parts):
+            raise UploadRejected("скрытые файлы и папки не загружаются")
+        if real.suffix.lower() not in policy.extensions:
+            raise UploadRejected(f"тип файла {real.suffix.lower() or '(нет)'} не разрешён "
+                                 f"для {kind}: {sorted(policy.extensions)}")
+        size = real.stat().st_size
+        if size > policy.max_bytes:
+            raise UploadRejected(f"файл {size} байт больше лимита {policy.max_bytes}")
+        return policy, real, size
+
+    @classmethod
+    def from_data_path(cls, kind: str, path: str) -> "FileUpload":
+        """Файл на сервере: только внутри DATA_DIR, без скрытых имён, с проверкой типа."""
+        policy, real, _size = cls._resolve_data_path(kind, path)
+        with real.open("rb") as fh:
+            content = fh.read(policy.max_bytes + 1)
+        return cls.build(kind, real.name, content)
+
+    @classmethod
+    def check_data_path(cls, kind: str, path: str) -> int:
+        """Те же проверки без чтения всего файла (для preview). Возвращает размер."""
+        policy, real, size = cls._resolve_data_path(kind, path)
+        ext = real.suffix.lower()
+        with real.open("rb") as fh:
+            head = fh.read(65536)
+        if size == 0:
+            raise UploadRejected("пустой файл")
+        if ext in _TEXT_EXT:
+            text = codecs.getincrementaldecoder("utf-8")()
+            try:
+                text.decode(head, final=size <= len(head))
+            except UnicodeDecodeError:
+                raise UploadRejected(f"содержимое не похоже на {ext}") from None
+            ok = b"\x00" not in head
+        else:
+            ok = _magic_ok(ext, head[:16], head)
+        if not ok:
+            raise UploadRejected(f"содержимое не похоже на {ext}")
+        return size
+
+
+def source_to_upload(kind: str, params: dict) -> FileUpload:
+    """Файл из параметров действия: ровно один источник, source_path или data_base64."""
+    path, b64 = params.get("source_path"), params.get("data_base64")
+    if bool(path) == bool(b64):
+        raise UploadRejected("укажите ровно один источник: source_path или data_base64")
+    if path:
+        return FileUpload.from_data_path(kind, path)
+    return FileUpload.from_base64(kind, params.get("filename") or "", b64)
+
+
+def validate_source_params(params: dict, kind: str) -> str | None:
+    """Проверка источника для precondition (файл целиком не читается): причина или None."""
+    path, b64 = params.get("source_path"), params.get("data_base64")
+    if bool(path) == bool(b64):
+        return "укажите ровно один источник: source_path или data_base64"
+    try:
+        if path:
+            FileUpload.check_data_path(kind, path)
+        else:
+            FileUpload.from_base64(kind, params.get("filename") or "", b64)
+    except UploadRejected as exc:
+        return str(exc)
+    return None
+
+
 ProgressSink = Callable[[float | None, str], Awaitable[None]]
 
 
@@ -46,11 +269,28 @@ class ActionContext:
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
 
     async def call(self, method: str, path: str, *, params: dict | None = None,
-                   json: Any = None, timeout: float = 120.0) -> Any:
-        """Вызов эндпоинта приложения (path без /api). Возвращает JSON."""
+                   json: Any = None, files: dict | None = None,
+                   timeout: float = 120.0) -> Any:
+        """Вызов эндпоинта приложения (path без /api). Возвращает JSON.
+
+        ``files``: {поле: FileUpload}; только POST/PUT/PATCH и без json.
+        """
         method = method.upper()
         if self.read_only and method != "GET":
             raise WriteNotAllowed(f"{method} {path} is not allowed in read-only context")
+        multipart = None
+        if files is not None:
+            if method not in ("POST", "PUT", "PATCH") or json is not None:
+                raise UploadRejected("files допустимы только для POST/PUT/PATCH без json")
+            if not files or not all(isinstance(f, FileUpload) for f in files.values()):
+                raise UploadRejected("files принимает только FileUpload")
+            # Повторная проверка: объект могли собрать мимо build().
+            checked = [FileUpload.build(f.policy, f.filename, f.content, field_name=f.form_field)
+                       for f in files.values()]
+            if sum(len(f.content) for f in checked) > MAX_TOTAL_UPLOAD_BYTES:
+                raise UploadRejected("суммарный размер файлов больше лимита")
+            multipart = {name: (f.filename, f.content, f.content_type)
+                         for name, f in zip(files.keys(), checked)}
         headers = {"X-Action-Layer-Operator": self.operator}
         if self.idempotency_key:
             headers["Idempotency-Key"] = self.idempotency_key
@@ -58,7 +298,7 @@ class ActionContext:
         async with httpx.AsyncClient(transport=transport, base_url=_BASE_URL,
                                      timeout=timeout) as client:
             resp = await client.request(method, API_PREFIX + path, params=params,
-                                        json=json, headers=headers)
+                                        json=json, files=multipart, headers=headers)
         try:
             body = resp.json()
         except ValueError:

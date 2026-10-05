@@ -1,16 +1,24 @@
-"""script_frames_qc on Vibecode chat/completions: real app, local Vibecode stub, incident -> Decision -> recovery.
+"""script_frames_qc on Vibecode chat/completions: real app, incident -> Decision -> recovery.
 
-OFFLINE ONLY. There is deliberately no --live mode. Every HTTP request whose host is not
-loopback is refused inside the httpx send hook (RuntimeError), so nothing can leave the
-machine and nothing is paid for. Credentials are synthetic and set in this process only;
-no .env file is read by this script.
+Three modes. DEFAULT (offline): every HTTP request whose host is not loopback is refused inside the httpx
+send hook (RuntimeError), so nothing can leave the machine and nothing is paid for; credentials are synthetic
+and no .env file is read.
+--dry: the live-shaped flow (see below) with every provider-bound request refused and counted; proves the
+injection plumbing and the caps without sending anything. --env-file is optional (only to check the relay route).
+--live (paid, capped): the broken node's worker requests get a locally injected malformed answer (reality cannot be
+made to return broken JSON on demand; free), the other nodes' worker requests get the local valid stub answer
+(free, counted `stubbed_other`), and ONLY the Decision request(s) and the RECOVERY worker request go to the real
+Vibecode /v1/chat/completions. Hard caps: --max-real-posts (default 6), --max-usd (default 0.10, estimated from the
+recorded usage with api_tracker_hook.vibecode_cost x3), only vibecode.moe (or the configured relay host) may
+receive a request, everything else is refused and counted. Keys are read from --env-file ONLY by the names in
+LIVE_ENV_NAMES and are never printed or written.
 
 What is real: the whole application in-process (FastAPI, worker, observer, diagnosis,
 Decision supervisor, recovery verifier), the real group `script_frames_qc`
 (its nodes are read from the group definition; today skeleton, site, shots, QC, report) on the real executors,
 prompts, code passes, gpt_api Vibecode transport (URL, headers, SSE parser, observe_model).
 
-What is NOT real (the only fixtures):
+What is NOT real (the only fixtures; in live only the injected answers and `stubbed_other` remain):
   * the Vibecode model: a local stub answers POST .../v1/chat/completions (SSE when the
     request has stream=true, JSON otherwise) with the valid answers of
     scripts/run_script_frames_qc_space_test.py (SCENES, BITS, ACTION, PLAN, _kadry);
@@ -35,6 +43,8 @@ reported separately so a red run points at the missing piece.
 
 Usage (repository root, project venv):
     python scripts/e2e_vibecode_script_frames_qc.py --work-dir <empty dir>
+    python scripts/e2e_vibecode_script_frames_qc.py --work-dir <dir> --dry
+    python scripts/e2e_vibecode_script_frames_qc.py --work-dir <dir> --live --env-file <env file>
     python scripts/e2e_vibecode_script_frames_qc.py --work-dir <dir> --break-node shots --break-mode undercount
 """
 from __future__ import annotations
@@ -119,6 +129,9 @@ PROFILE = {"model_id": "gpt-5.6-sol", "provider": "vibecode", "kind": "text", "c
            "reasoning_effort": None, "max_output_tokens": None, "prompt_variant": "repair-json-only-v1",
            "synthetic_only": False}
 RECOVERIES = ("retry_same", "retry_profile")
+LIVE_ENV_NAMES = ("VIBECODE_API_KEY", "VIBECODE_BASE_URL", "GPT_RELAY_TOKEN", "GPT_PROXY_URL", "GPT_BASE_URL")
+DIRECT_HOST = "vibecode.moe"
+COST_MARKUP = 3.0  # pessimistic multiplier over the catalog list price
 FORBIDDEN_PROFILE_KEYS = ("input", "reasoning", "max_output_tokens", "max_tokens", "max_completion_tokens",
                           "reasoning_effort")
 
@@ -133,6 +146,88 @@ def refusal_reason(method: str, host: str | None) -> str | None:
     if not is_loopback(host):
         return f"dry-run: non-loopback request refused ({method} {host})"
     return None
+
+
+# ───────────────────────────── live-mode helpers (pure, unit-tested) ─────────────────────────────
+
+def load_env_whitelist(path: str) -> dict[str, str]:
+    """Only the names in LIVE_ENV_NAMES from an env file; nothing else is kept, nothing is printed."""
+    out: dict[str, str] = {}
+    for line in Path(path).read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            if key.strip() in LIVE_ENV_NAMES:
+                out[key.strip()] = value.strip().strip('"').strip("'")
+    return out
+
+
+def relay_base(env: dict) -> str | None:
+    """VPS relay base, same rule as settings.vps_relay_base_url (token + a base that is not kie/vibecode)."""
+    token, base = (env.get("GPT_RELAY_TOKEN") or "").strip(), (env.get("GPT_BASE_URL") or "").strip().rstrip("/")
+    if not token or not base or any(h in base.lower() for h in ("kie.ai", "vibecode.moe")):
+        return None
+    return base
+
+
+def live_endpoint(env: dict) -> str:
+    """The Vibecode chat/completions URL the app will build (gpt_api._chat_url) for these env values."""
+    base = relay_base(env) or (env.get("VIBECODE_BASE_URL") or "https://vibecode.moe/v1").strip().rstrip("/")
+    return base + ("/chat/completions" if base.lower().endswith("/v1") else "/v1/chat/completions")
+
+
+def allowed_hosts(env: dict) -> frozenset[str]:
+    """The only non-loopback hosts that may receive a real request: vibecode.moe or the configured relay."""
+    from urllib.parse import urlsplit
+    hosts = {DIRECT_HOST}
+    relay = relay_base(env)
+    if relay:
+        hosts.add((urlsplit(relay).hostname or "").lower())
+    hosts.discard("")
+    return frozenset(hosts)
+
+
+def real_post_refusal(host: str | None, *, allowed: frozenset[str], real_posts: int, max_posts: int,
+                      spent_usd: float, max_usd: float) -> str | None:
+    """Why a provider-bound request must be refused ("host:" or "cap:" prefix), None = may be sent."""
+    if (host or "").strip("[]").lower() not in allowed:
+        return f"host: {host!r} is not an allowed provider host"
+    if real_posts >= max_posts:
+        return f"cap: real post cap reached ({max_posts})"
+    if spent_usd >= max_usd:
+        return f"cap: cost cap reached (${spent_usd:.4f} >= ${max_usd})"
+    return None
+
+
+def estimate_usd(rows: list[dict], cost_fn, markup: float = COST_MARKUP) -> tuple[float, int]:
+    """(pessimistic USD, rows with zero usage) from tracker rows; catalog price x markup, else recorded cost x markup."""
+    total, zero = 0.0, 0
+    for row in rows:
+        prompt, completion, cached = (int(row.get(k) or 0) for k in ("prompt_tokens", "completion_tokens", "cached_tokens"))
+        cost = cost_fn(row.get("model"), prompt, completion, cached)
+        if cost is None:
+            cost = float(row.get("cost_usd") or 0.0)
+        if not (prompt or completion or cost):
+            zero += 1
+        total += cost * markup
+    return round(total, 6), zero
+
+
+def live_env_overrides(base: dict[str, str], env: dict) -> tuple[dict[str, str], list[str]]:
+    """(environment to set, names to remove) for live/dry: loopback bases dropped, real values only from `env`."""
+    out = {k: v for k, v in base.items() if k not in ("VIBECODE_BASE_URL", "GPT_BASE_URL", "VIBECODE_API_KEY")}
+    out["VIBECODE_API_KEY"] = env.get("VIBECODE_API_KEY") or SYNTHETIC_KEY
+    drop = ["VIBECODE_BASE_URL", "GPT_BASE_URL", "GPT_RELAY_TOKEN", "GPT_PROXY_URL"]
+    for name in tuple(drop):
+        if env.get(name):
+            out[name] = env[name]
+            drop.remove(name)
+    return out, drop
+
+
+def slim_record(record: dict | None) -> dict:
+    """Scalar fields of a Decision/recovery record (no nested prompts or contexts)."""
+    return {k: v for k, v in (record or {}).items() if isinstance(v, (str, int, float, bool)) or v is None}
 
 
 def is_chat_completions(path: str) -> bool:
@@ -300,11 +395,12 @@ def broken_answer(mode: str, suffix: str, frames: list[dict]) -> str:
     return MALFORMED
 
 
-def runtime_config(port: int, max_requests: int = 60, recovery: str = "retry_same") -> dict:
-    """Production-mode Vibecode Decision config, loopback only (the send hook enforces it)."""
+def runtime_config(port: int, max_requests: int = 60, recovery: str = "retry_same", *,
+                   endpoint: str | None = None) -> dict:
+    """Production-mode Vibecode Decision config; loopback unless `endpoint` (live/dry) is given."""
     cfg = {
         "version": 1, "mode": "production", "online_enabled": True,
-        "endpoint": f"http://127.0.0.1:{port}/v1/chat/completions",
+        "endpoint": endpoint or f"http://127.0.0.1:{port}/v1/chat/completions",
         "model_transport": "real", "external_calls_enabled": True,
         "retrieval_allowed": False, "continuation_allowed": False,
         "decision": {"catalog_id": "gpt-5.6-sol-vibecode", "model_id": "gpt-5.6-sol",
@@ -316,6 +412,8 @@ def runtime_config(port: int, max_requests: int = 60, recovery: str = "retry_sam
     if recovery == "retry_profile":
         cfg["profiles"] = {PROFILE_ID: dict(PROFILE)}
         cfg["allowed_actions"] = [*cfg["allowed_actions"], "retry_profile"]
+        if endpoint:  # live: the real Decision must pick the profile, not the plain retry
+            cfg["allowed_actions"].remove("retry_same")
     return cfg
 
 
@@ -346,7 +444,7 @@ def verdict(checks: list[dict]) -> tuple[bool, list[str]]:
 
 
 def evaluate(snapshot: dict, *, break_node: str, break_mode: str, qc_answer: str = "noop",
-             recovery: str = "retry_same") -> list[dict]:
+             recovery: str = "retry_same", live_hosts: frozenset[str] | None = None) -> list[dict]:
     """Design assertions over a collected run snapshot (pure; the run's snapshot is built in main/_poll)."""
     target = target_key(break_node)
     counters = snapshot.get("counters", {})
@@ -356,8 +454,9 @@ def evaluate(snapshot: dict, *, break_node: str, break_mode: str, qc_answer: str
     nodes = snapshot.get("node_status") or {}
     events = snapshot.get("events") or []
     out = [
-        check("no_provider_host_attempt", not [h for h in snapshot.get("refused_hosts", [])
-              if any(h.endswith(p) for p in PROVIDER_HOSTS)], snapshot.get("refused_hosts")),
+        check("no_provider_host_attempt", not snapshot.get("refused_hosts", []) if live_hosts is not None
+              else not [h for h in snapshot.get("refused_hosts", []) if any(h.endswith(p) for p in PROVIDER_HOSTS)],
+              snapshot.get("refused_hosts")),
         check("only_vibecode_chat_completions", counters.get("kie_responses", 0) == 0
               and counters.get("worker_total", 0) > 0, {"kie_responses": counters.get("kie_responses"),
                                                          "worker_total": counters.get("worker_total")}),
@@ -401,7 +500,8 @@ def evaluate(snapshot: dict, *, break_node: str, break_mode: str, qc_answer: str
                "complete": [e["payload"].get("complete") for e in ended][:6]},
               needs="observation.py / gpt_api.py: model_end.complete for chat/completions (llm_completion.response_complete)"),
         check("decision_done_with_retry_same", bool(records) and records[0].get("status") == "done"
-              and 2 <= int(records[0].get("model_steps") or 0) <= 3,
+              and (int(records[0].get("model_steps") or 0) >= 1 if live_hosts is not None
+                   else 2 <= int(records[0].get("model_steps") or 0) <= 3),
               [(r.get("status"), r.get("model_steps")) for r in records],
               needs="decision_v1.py Vibecode route (HttpDecision) and decision_config production Vibecode"),
         check("recovery_verified", bool(recoveries) and recoveries[0].get("status") == "verified"
@@ -427,7 +527,7 @@ def evaluate(snapshot: dict, *, break_node: str, break_mode: str, qc_answer: str
                  and (e["payload"].get("candidate") or {}).get("provider") == "vibecode") for e in ctx_events),
                 [(e["payload"].get("profile_id"), (e["payload"].get("candidate") or {}).get("provider")) for e in ctx_events]),
             check("profile_request_is_vibecode_chat_body", bool(rq) and all(
-                r["host"] in LOOPBACK_HOSTS and is_chat_completions(r["path"]) and r["has_messages"]
+                (r["host"] in LOOPBACK_HOSTS or r["host"] in (live_hosts or ())) and is_chat_completions(r["path"]) and r["has_messages"]
                 and not r["forbidden_keys"] for r in rq), rq[:3]),
             check("profile_repair_suffix_on_last_user_message", bool(rq) and all(r["suffix_on_last_user"] for r in rq),
                   [r["suffix_on_last_user"] for r in rq]),
@@ -449,12 +549,42 @@ def evaluate(snapshot: dict, *, break_node: str, break_mode: str, qc_answer: str
     return out
 
 
+def evaluate_live(snapshot: dict, *, break_node: str, break_mode: str, qc_answer: str, recovery: str,
+                  hosts: frozenset[str], max_real_posts: int, max_usd: float) -> list[dict]:
+    """The design checks over the live run plus what only the live run can show (caps, real posts)."""
+    counters, spend = snapshot.get("counters", {}), snapshot.get("spend") or {}
+    out = evaluate(snapshot, break_node=break_node, break_mode=break_mode, qc_answer=qc_answer,
+                   recovery=recovery, live_hosts=hosts)
+    out += [
+        check("caps_not_exceeded", counters.get("real_total", 0) <= max_real_posts
+              and float(spend.get("estimated_usd") or 0) <= max_usd,
+              {"real_total": counters.get("real_total"), "max_real_posts": max_real_posts,
+               "estimated_usd": spend.get("estimated_usd"), "max_usd": max_usd}),
+        check("broken_answers_injected_locally", counters.get("injected", 0) >= 1, counters.get("injected")),
+        check("usage_recorded_for_real_posts", counters.get("real_total", 0) == 0 or int(spend.get("rows") or 0) >= 1,
+              {"real_total": counters.get("real_total"), "tracker_rows": spend.get("rows")},
+              needs="api_tracker_hook: a row with usage per real Vibecode request (the spend estimate reads it)"),
+    ]
+    if break_mode == "malformed":
+        out += [
+            check("real_decision_request_sent", counters.get("real_decision", 0) >= 1, counters.get("real_decision")),
+            check("real_recovery_request_sent", counters.get("real_worker_recovery", 0) >= 1,
+                  counters.get("real_worker_recovery")),
+        ]
+    return out
+
+
 # ───────────────────────────── runtime (needs the app) ─────────────────────────────
 
 def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--dry", action="store_true", default=True,
-                   help="default and only mode: every non-loopback request is refused (there is no --live)")
+    p.add_argument("--dry", action="store_true",
+                   help="live-shaped flow, every provider-bound request refused and counted (nothing is sent)")
+    p.add_argument("--live", action="store_true",
+                   help="PAID, capped: Decision + recovery requests go to the real Vibecode route (needs --env-file)")
+    p.add_argument("--env-file", help="env file; only " + ", ".join(LIVE_ENV_NAMES) + " are read from it")
+    p.add_argument("--max-real-posts", type=int, default=6, help="hard cap of real provider requests (live)")
+    p.add_argument("--max-usd", type=float, default=0.10, help="hard cap of the estimated spend, catalog price x3 (live)")
     p.add_argument("--work-dir", required=True, help="scratch dir for data/, runtime.json, result.json (recreated)")
     p.add_argument("--break-node", choices=model_suffixes(), default=model_suffixes()[0])
     p.add_argument("--break-mode", choices=BREAK_MODES, default="malformed")
@@ -472,6 +602,12 @@ def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--timeout-s", type=int, default=600)
     p.add_argument("--sleep-minutes", type=float, default=0.03, help="native step-failure sleep (patched for speed)")
     args = p.parse_args(argv)
+    if args.live and args.dry:
+        p.error("--live and --dry are mutually exclusive")
+    if args.live and not args.env_file:
+        p.error("--live needs --env-file")
+    if args.max_real_posts < 1 or args.max_usd <= 0:
+        p.error("--max-real-posts must be >= 1 and --max-usd > 0")
     if args.recovery == "retry_profile" and args.break_mode != "malformed":
         p.error("--recovery retry_profile applies to the malformed-JSON scenario")
     if args.break_mode == "undercount" and args.break_node != "shots":
@@ -565,6 +701,18 @@ def _node_status(project_db: Path) -> dict[str, str]:
         return {k: s for k, s in db.execute("SELECT node_key,status FROM node_runs")}
 
 
+def _tracker_rows(db_path: Path) -> list[dict]:
+    if not db_path.exists():
+        return []
+    try:
+        with sqlite3.connect(db_path) as db:
+            db.row_factory = sqlite3.Row
+            return [dict(r) for r in db.execute(
+                "SELECT model,prompt_tokens,completion_tokens,cached_tokens,cost_usd FROM api_calls ORDER BY id")]
+    except sqlite3.Error:
+        return []
+
+
 def _hitl_pending(project_db: Path) -> list:
     if not project_db.exists():
         return []
@@ -603,9 +751,21 @@ async def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--port", type=int, default=PORT)
     pre.add_argument("--request-limit", type=int, default=60)
     pre.add_argument("--recovery", default="retry_same")
+    pre.add_argument("--live", action="store_true")
+    pre.add_argument("--dry", action="store_true")
+    pre.add_argument("--env-file")
     early, _rest = pre.parse_known_args(argv)
-    if not early.work_dir:
-        return _args(argv) and 2  # argparse prints the usage error and exits
+    if not early.work_dir or (early.live and (early.dry or not early.env_file)):
+        print("--work-dir is required; --live needs --env-file and excludes --dry")
+        return 2
+    mode = "live" if early.live else "dry" if early.dry else "offline"
+    live_env: dict[str, str] = {}
+    if mode != "offline" and early.env_file:
+        live_env = load_env_whitelist(early.env_file)  # values stay in this dict and the process environment
+    if mode == "live" and (not live_env.get("VIBECODE_API_KEY") or live_env["VIBECODE_API_KEY"].startswith("synthetic")):
+        print("env file has no VIBECODE_API_KEY; nothing sent")
+        return 3
+    hosts = allowed_hosts(live_env)
     work = Path(early.work_dir).resolve()
     data = work / "data"
     if data.exists():
@@ -613,20 +773,34 @@ async def main(argv: list[str] | None = None) -> int:
     work.mkdir(parents=True, exist_ok=True)
     data.mkdir(parents=True)
     runtime_path = work / "runtime.json"
-    runtime_path.write_text(json.dumps(runtime_config(early.port, early.request_limit, early.recovery), indent=2),
-                            encoding="utf-8")
+    endpoint = live_endpoint(live_env) if mode != "offline" else None
+    runtime_path.write_text(json.dumps(runtime_config(early.port, early.request_limit, early.recovery, endpoint=endpoint),
+                                       indent=2), encoding="utf-8")
     os.chdir(ROOT)
-    os.environ.update(env_overrides(data, early.port))
+    if mode == "offline":
+        os.environ.update(env_overrides(data, early.port))
+    else:
+        overrides, drop = live_env_overrides(env_overrides(data, early.port), live_env)
+        for name in drop:
+            os.environ.pop(name, None)
+        os.environ.update(overrides)
     os.environ["ORCHESTRATOR_RUNTIME_CONFIG"] = str(runtime_path)
     args = _args(argv)
 
     import httpx
     from app.settings import settings
-    # Belt and braces over environment precedence: nothing may route through a relay/proxy.
-    settings.gpt_relay_token = ""
-    settings.gpt_proxy_url = None
+    # Belt and braces over environment precedence: offline nothing may route through a relay/proxy; live/dry
+    # use exactly the whitelisted env-file values (a stray repository .env cannot add a route).
+    settings.gpt_relay_token = live_env.get("GPT_RELAY_TOKEN", "") if mode != "offline" else ""
+    settings.gpt_proxy_url = (live_env.get("GPT_PROXY_URL") or None) if mode != "offline" else None
+    if mode != "offline":
+        settings.vibecode_api_key = live_env.get("VIBECODE_API_KEY") or SYNTHETIC_KEY
+        settings.vibecode_base_url = live_env.get("VIBECODE_BASE_URL", "")
+        settings.gpt_base_url = live_env.get("GPT_BASE_URL", "")
     import app.services.api_tracker_hook as tracker
     tracker._TRACKER_DB = work / "tracker.db"
+    if tracker._TRACKER_DB.exists():
+        tracker._TRACKER_DB.unlink()
     from app.services import observation, step_failure_policy
     from app.services.decision_transport import current as decision_hook
     step_failure_policy.SLEEP_MINUTES = args.sleep_minutes
@@ -643,6 +817,10 @@ async def main(argv: list[str] | None = None) -> int:
 
     counters = {"worker_total": 0, "worker_broken": 0, "worker_recovery": 0, "decision": 0,
                 "kie_responses": 0, "refused": 0, "by_node": {}}
+    if mode != "offline":
+        counters.update(injected=0, stubbed_other=0, real_decision=0, real_worker_recovery=0, real_total=0,
+                        refused_cap=0, refused_dry=0)
+    aborted: list[str] = []
     refused_hosts: list[str] = []
     request_log: list[dict] = []
     recovery_requests: list[dict] = []
@@ -650,38 +828,15 @@ async def main(argv: list[str] | None = None) -> int:
     repair_suffix = APPROVED_PROFILE_PROMPTS[PROFILE["prompt_variant"]]
     original_send = httpx.AsyncClient.send
 
-    async def send(client, request, **kwargs):
-        host, path = request.url.host, request.url.path
-        reason = refusal_reason(request.method, host)
-        if reason:
-            counters["refused"] += 1
-            refused_hosts.append(str(host))
-            raise RuntimeError(reason)
-        if request.method != "POST" or not (is_chat_completions(path) or is_kie_responses(path)):
-            return await original_send(client, request, **kwargs)
-        if is_kie_responses(path):
-            counters["kie_responses"] += 1
-            request_log.append({"route": "kie_responses", "path": path})
-            raise RuntimeError("Kie Responses route used; this group must run on Vibecode chat/completions")
-        body = json.loads(request.content.decode("utf-8") or "{}")
+    def spend_now() -> tuple[float, int, int]:
+        rows = _tracker_rows(work / "tracker.db")
+        usd, zero = estimate_usd(rows, tracker.vibecode_cost)
+        return usd, zero, len(rows)
+
+    def local_worker(request, body, text, key, suffix, recovery):
+        """Answer a worker request locally: injected broken answer for the target, valid stub for the rest."""
         stream = bool(body.get("stream"))
-        text = request_text(body)
         rid = f"chatcmpl-{_uuid.uuid4().hex[:12]}"
-        if decision_hook.get() is not None:
-            counters["decision"] += 1
-            ctx = decision_context(text)
-            if ctx is None:
-                raise RuntimeError("decision stub: no context in the request")
-            answer = json.dumps(decision_proposal(counters["decision"], ctx, args.recovery), ensure_ascii=False)
-            request_log.append({"route": "decision", "turn": counters["decision"], "stream": stream})
-            return httpx.Response(200, headers={"content-type": "application/json"},
-                                  content=chat_json_body(answer, rid), request=request)
-        attempt = observation._attempt.get()
-        key = getattr(attempt, "node_key", None)
-        suffix = node_suffix(key)
-        if suffix is None:
-            raise RuntimeError(f"worker stub: request outside the group (node_key={key!r})")
-        recovery = bool(attempt and attempt.session.info.get("recovery_attempt_id") == attempt.attempt_id)
         counters["worker_total"] += 1
         counters["worker_recovery"] += 1 if recovery else 0
         counters["by_node"][key] = counters["by_node"].get(key, 0) + 1
@@ -699,11 +854,13 @@ async def main(argv: list[str] | None = None) -> int:
             finish = "length" if args.break_mode == "truncated" else "stop"
         else:
             answer = valid_answer(suffix, pack, qc_answer=args.qc_answer, with_action=args.break_mode == "undercount")
+        if mode != "offline":
+            counters["injected" if broken else "stubbed_other"] += 1
         if recovery:
-            recovery_requests.append({"node": key, "path": path, "host": host,
+            recovery_requests.append({"node": key, "path": request.url.path, "host": request.url.host,
                                       **profile_request_facts(body, repair_suffix)})
-        request_log.append({"route": "worker", "node": key, "recovery": recovery, "broken": broken,
-                            "stream": stream, "path": path, "pack_numbers": [f.get("number") for f in pack],
+        request_log.append({"route": "worker", "node": key, "recovery": recovery, "broken": broken, "real": False,
+                            "stream": stream, "path": request.url.path, "pack_numbers": [f.get("number") for f in pack],
                             "matched": any(str(f["uuid"]).lower() in text.lower() for f in frames)})
         if stream:
             content = sse_chat_body(answer, rid, style=args.sse_style, status_completed=args.status_completed, finish=finish)
@@ -711,9 +868,100 @@ async def main(argv: list[str] | None = None) -> int:
         return httpx.Response(200, headers={"content-type": "application/json"},
                               content=chat_json_body(answer, rid, finish=finish), request=request)
 
+    def refuse(request, kind: str, why: str, *, host_rule: bool):
+        counters["refused"] += 1
+        if host_rule:
+            refused_hosts.append(str(request.url.host))
+        elif kind == "dry":
+            counters["refused_dry"] += 1
+        else:
+            counters["refused_cap"] += 1
+        request_log.append({"route": "refused", "kind": kind, "host_rule": host_rule})
+        raise RuntimeError(why)
+
+    async def send_live(client, request, **kwargs):
+        host, path = request.url.host, request.url.path
+        if is_loopback(host):
+            if request.method == "POST" and (is_chat_completions(path) or is_kie_responses(path)):
+                refuse(request, "loopback_model_route", "no local model route in live/dry mode", host_rule=True)
+            return await original_send(client, request, **kwargs)
+        if request.method != "POST" or not is_chat_completions(path) or str(host).lower() not in hosts:
+            refuse(request, "foreign", f"refused: {request.method} {host}{path} is not an allowed provider request",
+                   host_rule=True)
+        body = json.loads(request.content.decode("utf-8") or "{}")
+        text = request_text(body)
+        is_decision = decision_hook.get() is not None
+        attempt = observation._attempt.get()
+        key = getattr(attempt, "node_key", None)
+        recovery = bool(attempt and attempt.session.info.get("recovery_attempt_id") == attempt.attempt_id)
+        suffix = node_suffix(key)
+        if not is_decision:
+            if suffix is None:
+                refuse(request, "outside_group", f"worker request outside the group (node_key={key!r})", host_rule=True)
+            if not recovery:
+                return local_worker(request, body, text, key, suffix, False)
+        kind = "decision" if is_decision else "worker_recovery"
+        if mode == "dry":
+            refuse(request, "dry", f"dry: provider request refused ({kind})", host_rule=False)
+        usd, _zero, _rows = spend_now()
+        if usd >= args.max_usd and not aborted:
+            aborted.append("cost")
+        reason = (aborted and f"cap: aborted, estimate ${usd:.4f} passed ${args.max_usd}") or real_post_refusal(
+            host, allowed=hosts, real_posts=counters["real_total"], max_posts=args.max_real_posts,
+            spent_usd=usd, max_usd=args.max_usd)
+        if reason:
+            refuse(request, kind, reason, host_rule=reason.startswith("host:"))
+        counters["real_total"] += 1
+        counters["real_decision" if is_decision else "real_worker_recovery"] += 1
+        if is_decision:
+            counters["decision"] += 1
+        else:
+            counters["worker_total"] += 1
+            counters["worker_recovery"] += 1
+            counters["by_node"][key] = counters["by_node"].get(key, 0) + 1
+            recovery_requests.append({"node": key, "path": path, "host": host, **profile_request_facts(body, repair_suffix)})
+        response = await original_send(client, request, **kwargs)
+        request_log.append({"route": kind, "node": key, "real": True, "status": response.status_code, "path": path,
+                            "stream": bool(body.get("stream"))})
+        return response
+
+    async def send(client, request, **kwargs):
+        if mode != "offline":
+            return await send_live(client, request, **kwargs)
+        host, path = request.url.host, request.url.path
+        reason = refusal_reason(request.method, host)
+        if reason:
+            counters["refused"] += 1
+            refused_hosts.append(str(host))
+            raise RuntimeError(reason)
+        if request.method != "POST" or not (is_chat_completions(path) or is_kie_responses(path)):
+            return await original_send(client, request, **kwargs)
+        if is_kie_responses(path):
+            counters["kie_responses"] += 1
+            request_log.append({"route": "kie_responses", "path": path})
+            raise RuntimeError("Kie Responses route used; this group must run on Vibecode chat/completions")
+        body = json.loads(request.content.decode("utf-8") or "{}")
+        text = request_text(body)
+        if decision_hook.get() is not None:
+            counters["decision"] += 1
+            ctx = decision_context(text)
+            if ctx is None:
+                raise RuntimeError("decision stub: no context in the request")
+            answer = json.dumps(decision_proposal(counters["decision"], ctx, args.recovery), ensure_ascii=False)
+            request_log.append({"route": "decision", "turn": counters["decision"], "stream": bool(body.get("stream"))})
+            return httpx.Response(200, headers={"content-type": "application/json"},
+                                  content=chat_json_body(answer, f"chatcmpl-{_uuid.uuid4().hex[:12]}"), request=request)
+        attempt = observation._attempt.get()
+        key = getattr(attempt, "node_key", None)
+        suffix = node_suffix(key)
+        if suffix is None:
+            raise RuntimeError(f"worker stub: request outside the group (node_key={key!r})")
+        recovery = bool(attempt and attempt.session.info.get("recovery_attempt_id") == attempt.attempt_id)
+        return local_worker(request, body, text, key, suffix, recovery)
+
     httpx.AsyncClient.send = send
     task = asyncio.create_task(app_main.main())
-    result: dict[str, Any] = {"mode": "dry", "target": target, "break_mode": args.break_mode, "project_id": pid,
+    result: dict[str, Any] = {"mode": mode, "target": target, "break_mode": args.break_mode, "project_id": pid,
                               "slug": slug, "args": vars(args)}
     execution = None
     try:
@@ -730,6 +978,8 @@ async def main(argv: list[str] | None = None) -> int:
             if unsupported:
                 raise RuntimeError(f"nodes not supported by the managed launch gate: {unsupported}")
             strategies = ["wait", "human_review", "retry_same"]
+            if mode != "offline" and args.recovery == "retry_profile":
+                strategies.remove("retry_same")
             profile_ids: list[str] = []
             profile_hash: dict = {}
             if args.recovery == "retry_profile":
@@ -742,7 +992,7 @@ async def main(argv: list[str] | None = None) -> int:
                 "workflow_run_id": options["workflow_run_id"], "graph_version": options["graph_version"],
                 "node_keys": list(node_keys()), "strategies": strategies,
                 "profile_ids": profile_ids, **profile_hash, "request_limit": args.request_limit,
-                "rationale": "offline vibecode script_frames_qc recovery verification",
+                "rationale": f"{mode} vibecode script_frames_qc recovery verification",
                 "idempotency_key": f"vibecode-qc-e2e-{_uuid.uuid4().hex[:8]}"})
             print("launch:", response.status_code, (response.text[:400] if response.status_code >= 300 else "ok"))
             if response.status_code >= 300:
@@ -752,7 +1002,7 @@ async def main(argv: list[str] | None = None) -> int:
             result["execution_id"] = execution
             if args.break_node:
                 response = await client.post(base + f"/observations/{execution}/decisions/control", json={
-                    "enabled": True, "rationale": "offline decision loop on the Vibecode loopback stub"})
+                    "enabled": True, "rationale": f"{mode} decision loop for the script_frames_qc recovery verification"})
                 print("decisions/control:", response.status_code)
                 response.raise_for_status()
             await _poll(client, base, execution, args, project_db, counters, result)
@@ -771,14 +1021,39 @@ async def main(argv: list[str] | None = None) -> int:
                   node_status=_node_status(project_db), hitl_pending=_hitl_pending(project_db),
                   step_failure={k: v for k, v in _step_failure(project_db).items() if k in {"total_fails", "abandoned_at", "last_error"}},
                   events=_events(data / "state.db", execution))
-    checks = evaluate(result, break_node=args.break_node, break_mode=args.break_mode, qc_answer=args.qc_answer,
-                      recovery=args.recovery)
+    if mode == "offline":
+        checks = evaluate(result, break_node=args.break_node, break_mode=args.break_mode, qc_answer=args.qc_answer,
+                          recovery=args.recovery)
+    else:
+        usd, zero_rows, rows = spend_now()
+        result["spend"] = {"estimated_usd": usd, "rows": rows, "zero_usage_rows": zero_rows, "markup": COST_MARKUP,
+                           "aborted_on_cost": bool(aborted)}
+        checks = evaluate_live(result, break_node=args.break_node, break_mode=args.break_mode, qc_answer=args.qc_answer,
+                               recovery=args.recovery, hosts=hosts, max_real_posts=args.max_real_posts,
+                               max_usd=args.max_usd)
     ok, failed = verdict(checks)
     result["warnings"] = sorted({i["type"] for i in (result.get("diagnoses") or {}).get("incidents", [])
                                  if i.get("node_key") != target and i["type"] not in {"runtime_wait"}})
     result["checks"], result["ok"], result["failed"] = checks, ok, failed
     slim = {k: v for k, v in result.items() if k != "events"}
     slim["event_kinds"] = sorted({e["kind"] for e in result["events"]})
+    dry_ok = mode == "dry" and counters["real_total"] == 0 and counters["injected"] >= 1 and counters["refused_dry"] >= 1
+    if mode != "offline":
+        recs = (result.get("decisions") or {}).get("records") or []
+        recoveries = (result.get("actions") or {}).get("recoveries") or []
+        slim["summary"] = {
+            "mode": mode, "route": "relay" if relay_base(live_env) else "direct",
+            "posts": {k: counters[k] for k in ("injected", "real_total", "real_decision", "real_worker_recovery",
+                                               "refused", "refused_cap", "refused_dry", "stubbed_other")},
+            "caps": {"max_real_posts": args.max_real_posts, "max_usd": args.max_usd},
+            "estimated_spend_usd": result["spend"]["estimated_usd"],
+            "decision_record": slim_record(recs[0]) if recs else None,
+            "recovery_record": slim_record(recoveries[0]) if recoveries else None,
+            "verification": recoveries[0].get("verification_result") if recoveries else None,
+            "per_node_done": {k: result["node_status"].get(k) == "done" for k in node_keys()},
+            "verdict": "PASS" if ok and mode == "live" else "NOT PASSED",
+            "dry_check_ok": dry_ok if mode == "dry" else None,
+            "failed_checks": failed}
     (work / "result.json").write_text(json.dumps(slim, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print("\n=== RESULT ===")
     print("target:", target, "| mode:", args.break_mode, "| nodes:", result["node_status"])
@@ -789,7 +1064,16 @@ async def main(argv: list[str] | None = None) -> int:
             print("     detail:", json.dumps(c["detail"], ensure_ascii=False, default=str)[:300])
     if result["warnings"]:
         print("other incident types seen (informational):", result["warnings"])
-    print("OK" if ok else "NOT OK: " + ", ".join(failed))
+    if mode == "offline":
+        print("OK" if ok else "NOT OK: " + ", ".join(failed))
+        return 0 if ok else 1
+    summary = slim["summary"]
+    print("posts:", summary["posts"], "| est. spend $%.4f" % summary["estimated_spend_usd"],
+          "| caps:", summary["caps"], "| per node:", summary["per_node_done"])
+    print("PASS" if summary["verdict"] == "PASS" else "NOT PASSED" + (": " + ", ".join(failed) if failed else ""))
+    if mode == "dry":
+        print("DRY CHECK OK (nothing sent)" if dry_ok else "DRY CHECK FAILED")
+        return 0 if dry_ok else 1
     return 0 if ok else 1
 
 

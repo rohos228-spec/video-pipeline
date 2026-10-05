@@ -49,7 +49,8 @@ def test_all_actions_registered_with_expected_flags() -> None:
         got = (spec.risk, spec.spends_money, spec.destructive, spec.reversible,
                spec.idempotent, spec.is_job)
         assert got == flags, action_id
-    assert len(registry.list(prefix="montage.")) == 8 + len(EXPECTED)
+    # + 6 montage.* волны 3 (builtin_wave3): 5 загрузок и set_send_to_main_pc
+    assert len(registry.list(prefix="montage.")) == 8 + len(EXPECTED) + 6
 
 
 def test_paid_have_estimators_and_destructive_have_effects_text() -> None:

@@ -1324,13 +1324,10 @@ async def observe_attempt(session, project):
         if overlay:
             await record_fact("profile_effective_context", {k:overlay[k] for k in ("overlay_id","profile_id","candidate_hash","base_version","attempt_id","candidate")})
         yield
-        if capability.node_type in {'sfx_plan', 'sfx_gen'}:
-            try:
-                from app.services.sfx_plan import observe_sfx_result
-                await observe_sfx_result(session, project, capability.node_type)
-                ctx.sfx_result_observed = True
-            except Exception as snapshot_error:
-                observer.mark_gap(scope.execution_id, snapshot_error)
+        # Node-type result hooks come from the named verifier registry
+        # (node_spec.verifier_spec_for), not per-type branches.
+        from app.orchestrator.node_spec import run_verifier_after_success
+        await run_verifier_after_success(ctx, session, project, capability.node_type)
         if getattr(ctx, 'scene_native_node', None) is not None:
             try:
                 from app.services.scene_contracts import observe_scene_result
@@ -1340,25 +1337,9 @@ async def observe_attempt(session, project):
                 ctx.scene_result_observed = True
             except Exception as snapshot_error:
                 observer.mark_gap(scope.execution_id, snapshot_error)
-        if capability.node_type == 'animation_prompts':
-            try:
-                from app.services.native_animation_contracts import observe_animation_result
-                await observe_animation_result(session, project, capability.node_type)
-            except Exception as snapshot_error:
-                observer.mark_gap(scope.execution_id, snapshot_error)
-        if scope.mode == 'managed':
-            from app.services.node_capabilities import observe_project_text_result,observe_split_result,observe_image_prompt_result
-            await observe_project_text_result(project, capability.node_type)
-            await observe_split_result(session,project,capability.node_type)
-            await observe_image_prompt_result(session,project,capability.node_type)
     except BaseException as exc:
-        if (isinstance(exc, Exception) and capability.node_type in {'sfx_plan', 'sfx_gen'}
-                and not getattr(ctx, 'sfx_result_observed', False)):
-            try:
-                from app.services.sfx_plan import observe_sfx_result
-                await observe_sfx_result(session, project, capability.node_type)
-            except Exception as snapshot_error:
-                observer.mark_gap(scope.execution_id, snapshot_error)
+        from app.orchestrator.node_spec import run_verifier_after_error
+        await run_verifier_after_error(ctx, session, project, capability.node_type, exc)
         if (isinstance(exc, Exception) and getattr(ctx, 'scene_native_node', None) is not None
                 and not getattr(ctx, 'scene_result_observed', False)):
             try:
@@ -1368,23 +1349,6 @@ async def observe_attempt(session, project):
                     payload=getattr(ctx, 'scene_assembly_payload', None))
             except Exception as snapshot_error:
                 observer.mark_gap(scope.execution_id, snapshot_error)
-        if (isinstance(exc, Exception) and capability.node_type == 'animation_prompts'
-                and not getattr(ctx, 'animation_verification_recorded', False)):
-            try:
-                from app.services.native_animation_contracts import observe_animation_result
-                await observe_animation_result(session, project, capability.node_type)
-            except Exception as snapshot_error:
-                observer.mark_gap(scope.execution_id, snapshot_error)
-        if (isinstance(exc,Exception) and scope.mode=='managed' and capability.node_type=='image_prompts'
-                and not getattr(ctx,'image_prompt_verification_recorded',False)):
-            try:
-                from app.services.node_capabilities import observe_image_prompt_result
-                await observe_image_prompt_result(session,project,capability.node_type)
-            except Exception as snapshot_error:
-                # A recorded rejection deliberately raises after durable hold.
-                # Saving failure must block new work; the native error is retained.
-                if not getattr(ctx,'image_prompt_hold_saved',False):
-                    observer.mark_gap(scope.execution_id,snapshot_error)
         from app.services.profiles_v1 import finish_attempt
         await finish_attempt(ctx, True)
         from app.services.apply_ops_batches import pass_stop_rule

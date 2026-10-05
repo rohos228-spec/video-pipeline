@@ -318,12 +318,24 @@ BUILTIN_MACROS: tuple[MacroSpec, ...] = (
         _params({"project_id": _PID}, ["project_id"]), builtin=True),
     MacroSpec(
         "smart.run_node_step", "Запустить ноду (шаг группы)",
-        "Читает настройки ноды и запускает её шаг. У node.run_step стоимость пока НЕИЗВЕСТНА, "
-        "поэтому такой план можно посмотреть в preview, но нельзя подтвердить и запустить, "
-        "пока для действия не появится оценка.",
+        "Читает настройки ноды, считает верхнюю оценку прогона (node.get_run_cost_basis) и "
+        "запускает шаг. Для Каркас/Площадка/Шоты/QC передайте заявку стоимости из результата "
+        "node.get_run_cost_basis (поле declare): без неё стоимость НЕИЗВЕСТНА, план можно "
+        "посмотреть в preview, но нельзя подтвердить и запустить. Оценка верхняя и не "
+        "откалибрована, план нужно подтвердить оператором.",
         _chain(("node.get_config", {**_P, "node_key": "{{node_key}}"}),
-               ("node.run_step", {**_P, "node_key": "{{node_key}}"})),
-        _params({"project_id": _PID, "node_key": _STR}, ["project_id", "node_key"]),
+               ("node.get_run_cost_basis", {**_P, "node_key": "{{node_key}}"}),
+               ("node.run_step", {**_P, "node_key": "{{node_key}}",
+                                  "min_llm_requests": "{{min_llm_requests}}",
+                                  "max_llm_requests": "{{max_llm_requests}}",
+                                  "max_input_tokens": "{{max_input_tokens}}",
+                                  "max_output_tokens": "{{max_output_tokens}}"})),
+        _params({"project_id": _PID, "node_key": _STR,
+                 "min_llm_requests": {"type": "integer", "minimum": 1, "maximum": 100000},
+                 "max_llm_requests": {"type": "integer", "minimum": 1, "maximum": 100000},
+                 "max_input_tokens": {"type": "integer", "minimum": 1, "maximum": 2000000},
+                 "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 2000000}},
+                ["project_id", "node_key"]),
         builtin=True),
 )
 _BUILTIN_BY_ID = {m.id: m for m in BUILTIN_MACROS}

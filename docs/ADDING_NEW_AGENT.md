@@ -2,8 +2,10 @@
 
 This walks through the exact files touched to add a new node type today. It
 is not a new plugin API — see [`ARCHITECTURE.md`](ARCHITECTURE.md#registry-current-state--see-adding_new_agentmd-for-the-how-to)
-for why, and for the planned thin `NodeSpec` wrapper (not built yet) that
-will reduce this to one `register_node()` call.
+for why, and for the `NodeSpec` wrapper (`app/orchestrator/node_spec.py`)
+that reduces the registry and capability edits to one `register_node()`
+call. Capability, verifier and contract are data/named entries there; the
+executor and the `pipeline.py` dispatch branch are still manual.
 
 There is no dynamic discovery. A node type is compile-time wiring across
 four places. Miss one and the node either won't run, won't be observable, or
@@ -146,12 +148,12 @@ Follow `app/services/sfx_plan.py::observe_sfx_result` — the pattern is:
    decoded properties — not just "a file exists").
 4. Record `node_output` and `node_result_verification` facts via
    `record_fact`/`_sfx_fact`-style helpers in `observation.py`.
-5. Wire the call into `observation.py::observe_attempt` (the `try`/`except`
-   block around line 684-721) — this is the one place that currently needs a
-   per-family `if capability.node_type in {...}` branch, because there is no
-   generic verifier dispatch table yet. (That generic dispatch table is
-   exactly what the planned `NodeSpec.verifier` field in `ARCHITECTURE.md`
-   would remove — it's on the standing plan's M3, not built yet.)
+5. Register the result hook by name: `node_spec.register_verifier(
+   VerifierSpec(name, 'module:function', ...))` and set `verifier=name` on the
+   node's `CapabilitySpec` (or `verifier_name` on `NodeSpec`).
+   `observation.observe_attempt` runs it through the verifier registry; no
+   per-family branch is edited. Likewise a custom `read_contract` text is a
+   named builder (`register_contract_builder`) referenced by `contract=`.
 
 ## Checklist
 

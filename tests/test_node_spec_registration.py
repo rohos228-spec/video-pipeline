@@ -38,6 +38,7 @@ def _cleanup_registration():
         node_registry.LINEAR_RUNNING_PIPELINE[:] = [
             row for row in node_registry.LINEAR_RUNNING_PIPELINE if row[1] != TEST_NODE_ID
         ]
+    node_capabilities.unregister_capability_spec(TEST_NODE_ID)
     node_capabilities._CAPABILITIES.pop(TEST_NODE_ID, None)
     node_spec_module_verifiers = __import__(
         "app.orchestrator.node_spec", fromlist=["_VERIFIERS"]

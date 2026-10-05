@@ -187,6 +187,14 @@ async def kill_switch_state(project_id: int):
     return panel_safe({**await kill_switch.status(get_observer().master), "watchdog": _watchdog_info()})
 
 
+@router.get('/provider-tasks', dependencies=[Depends(require_web_user)])
+async def provider_tasks(project_id: int):
+    """Read-only: provider task ids submitted by native media calls (newest status per task)."""
+    from app.services import spend_guard
+    async with get_observer().master() as session:
+        return panel_safe({"tasks": await spend_guard.list_provider_tasks(session, project_id)})
+
+
 @router.get('/spend', dependencies=[Depends(require_web_user)])
 async def spend_state(project_id: int):
     """Read-only: today's / project / run spend versus the local caps (docs/SPEND_LIMITS.md)."""

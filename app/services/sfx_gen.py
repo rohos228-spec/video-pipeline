@@ -23,6 +23,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project
+from app.services import media_spend
 from app.services.ai_result_io import (
     ai_job_checkpoint,
     save_ai_job_checkpoint,
@@ -159,6 +160,7 @@ def _synth(kind: str, duration: float, *, seed: int = 42) -> list[float]:
 # ── ElevenLabs SFX API (опционально) ──────────────────────────────────────
 
 
+@media_spend.track_eleven_sfx
 async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
     import httpx
 

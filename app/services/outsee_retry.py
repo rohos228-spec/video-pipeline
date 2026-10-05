@@ -964,10 +964,12 @@ async def generate_image_with_retries(
     формат `[ID: P12-F3-a7f2b01c]`, где `a7f2b01c` = gen_id этой генерации.
     """
     from app.bots.outsee_http import (
-        generate_image as outsee_api_generate_image,
+        generate_image as _outsee_api_generate_image,
         outsee_api_configured,
         studio_id_to_outsee_image_slug,
     )
+    from app.services import media_spend
+    outsee_api_generate_image = media_spend.outsee_tracked(_outsee_api_generate_image, "image")
     from app.services.media_route import image_provider_for
     from app.settings import settings as _settings
 
@@ -1373,10 +1375,12 @@ async def generate_video_with_retries(
         truncate_kling_prompt,
     )
     from app.bots.outsee_http import (
-        generate_video as outsee_api_generate_video,
+        generate_video as _outsee_api_generate_video,
         outsee_api_configured,
         studio_id_to_outsee_video_slug,
     )
+    from app.services import media_spend
+    outsee_api_generate_video = media_spend.outsee_tracked(_outsee_api_generate_video, "video")
     from app.services.media_route import video_provider_for
     from app.settings import settings as _settings
 

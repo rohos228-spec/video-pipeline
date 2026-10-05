@@ -115,7 +115,8 @@ SAMPLE = {
     "project_id": 7, "frame_id": 3, "frame_number": 2, "text": "реплика", "prompt": "ночь",
     "instruction": "добавь дождь", "max_image_ops": 4, "max_video_ops": 2,
     "image_generator": "gen_a", "image_resolution": "2k", "video_generator": "vid_a",
-    "video_resolution": "1080p", "node_key": "n1"}
+    "video_resolution": "1080p", "node_key": "n1", "min_llm_requests": 3,
+    "max_llm_requests": 44, "max_input_tokens": 30000, "max_output_tokens": 20000}
 
 
 def test_every_builtin_macro_validates_against_real_registry() -> None:

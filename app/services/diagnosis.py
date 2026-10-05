@@ -15,6 +15,10 @@ from pathlib import Path
 from sqlalchemy import JSON, String, select, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+# Timeouts and wrapped timeouts after submit: the provider may have accepted the request.
+UNCERTAIN_ERROR_TYPES = frozenset({'CancelledError', 'ReadTimeout', 'ConnectTimeout',
+    'ElevenLabsUncertainError', 'KieUncertainError'})
+
 from app.models import Base, WorkflowRun
 from app.services.error_catalog import ERROR_CATALOG
 from app.services.observation import ExecutionControl, ObservationEvent, digest, panel_safe, business_snapshot, confirmed_qc_noop, accepted_qc_noop_parse
@@ -212,7 +216,7 @@ def derive_incidents(scope, events, snapshot):
                         if item['node_key']==node and item['attempt_id']==attempt and item['type'] in {'invalid_json','missing_payload'}:
                             issue(item['type'],(node,attempt,root(bads[0].get('request_id')) or bads[0]['event_id']),[e])
                     continue
-                uncertain=p.get('uncertain') is True or p.get('error_type') in {'CancelledError','ReadTimeout','ConnectTimeout'}
+                uncertain=p.get('uncertain') is True or p.get('error_type') in UNCERTAIN_ERROR_TYPES or p.get('cause_type') in UNCERTAIN_ERROR_TYPES
                 if kind=='model_error' or uncertain:
                     request=e.get('request_id')
                     pending=[r for r in starts if not any(t.get('request_id')==r and t['kind'] in {'model_end','model_error'} for t in related)]

@@ -116,6 +116,155 @@ def record_json(r):
         'context_version','status','model_steps','action_id','proposal','policy_result','verification','created_at')}
 
 
+async def _describe_hero(node):
+    from app.services.native_entity_contracts import hero_entity_contract
+    return hero_entity_contract()
+
+
+async def _describe_animation(node):
+    from app.services.native_animation_contracts import animation_prompts_contract
+    return animation_prompts_contract()
+
+
+async def _describe_scene(node):
+    from app.services.scene_contracts import scene_contract
+    native=scene_contract(node)
+    return native if native['supported'] else None
+
+
+async def _contract_unsupported(c):
+    from app.models import Frame
+    s,row,scope,node,context,capability=c.s,c.row,c.scope,c.node,c.context,c.capability
+    # Descriptions extend read context, never execution admission.
+    # Keep the unsupported capability, no output/jobs inference and
+    # no generic Excel tools while a native executor is unaccepted.
+    from app.orchestrator.node_spec import descriptive_contract_for
+    description=None
+    describe=descriptive_contract_for(capability.node_type)
+    if describe is not None:description=await describe(node)
+    descriptive=({'descriptive_contract':description,'descriptive_only':True,
+        'managed_executor_accepted':False} if description is not None else {})
+    return panel_safe({**capability.contract(),'node_key':row.node_key,
+        'ui_node_type':node.get('type'),'graph_version':scope.graph_version,
+        'context_version':context['context_version'],
+        'source':'existing runtime effective_node_type + managed capability registry',
+        'verification_status':'unavailable: no accepted managed executor',
+        'compatible_profiles':[],'cost_status':'unknown_tariff',**descriptive})
+
+
+async def _contract_project_text(c):
+    from app.models import Frame
+    s,row,scope,node,context,capability=c.s,c.row,c.scope,c.node,c.context,c.capability
+    from app.services.node_capabilities import project_text_contract,verify_project_text
+    project=await s.get(Project,row.project_id)
+    if not project:raise ValueError('project contract unavailable')
+    if project.data_dir:
+        from app.project_db import project_db_session_scope
+        async with project_db_session_scope(row.project_id) as ps:
+            project=await ps.get(Project,row.project_id)
+            if not project:raise ValueError('project contract unavailable')
+    return panel_safe({**capability.contract(),'node_key':row.node_key,
+        'graph_version':scope.graph_version,'context_version':context['context_version'],
+        'source':'native project text executor/validator; authoritative project DB',
+        'contract':project_text_contract(capability.node_type),
+        'current_output':verify_project_text(project,capability.node_type),
+        'compatible_profiles':[],'cost_status':'unknown_tariff'})
+
+
+async def _contract_frame_rows(c):
+    from app.models import Frame
+    s,row,scope,node,context,capability=c.s,c.row,c.scope,c.node,c.context,c.capability
+    from app.services.node_capabilities import split_contract,image_prompts_contract,verify_image_prompts
+    project=await s.get(Project,row.project_id)
+    if not project:raise ValueError('project contract unavailable')
+    if project.data_dir:
+        from app.project_db import project_db_session_scope
+        async with project_db_session_scope(row.project_id) as ps:
+            frames=(await ps.scalars(select(Frame).where(Frame.project_id==row.project_id).order_by(Frame.number))).all()
+    else:
+        frames=(await s.scalars(select(Frame).where(Frame.project_id==row.project_id).order_by(Frame.number))).all()
+    output_hash=(verify_image_prompts(frames,project_id=row.project_id,snapshot=None)['frame_set_sha256']
+        if capability.result_kind=='frame_prompts' else digest([
+            {'uuid':f.uuid,'number':f.number,'voiceover_text':f.voiceover_text} for f in frames]))
+    return panel_safe({**capability.contract(),'node_key':row.node_key,
+        'graph_version':scope.graph_version,'context_version':context['context_version'],
+        'contract':split_contract() if capability.result_kind=='frame_set' else image_prompts_contract(),
+        'source':'native frame executor; authoritative project DB',
+        'frame_count':len(frames),'frame_set_sha256':output_hash,
+        'verification_status':'not_checked; requires captured input and committed verification evidence',
+        'compatible_profiles':[],'cost_status':'unknown_tariff'})
+
+
+async def _contract_media_jobs(c):
+    from app.models import Frame
+    s,row,scope,node,context,capability=c.s,c.row,c.scope,c.node,c.context,c.capability
+    from app.services.media_jobs import MediaJob
+    jobs=(await s.scalars(select(MediaJob).where(MediaJob.execution_id==row.execution_id,
+        MediaJob.project_id==row.project_id,MediaJob.node_key==row.node_key))).all()
+    return panel_safe({**capability.contract(),'node_key':row.node_key,
+        'graph_version':scope.graph_version,'context_version':context['context_version'],
+        'source':'existing node registry + persisted media jobs',
+        'jobs':[{'job_id':j.job_id,'provider_job_id':j.provider_job_id,
+            'phase':j.phase,'attempt_id':j.attempt_id,'verification':j.verification,
+            'error':j.error} for j in jobs],
+        'retry_policy':'never resubmit unknown job; known job status uses original provider client',
+        'cost_status':'unknown_tariff','production_profile_configured':False})
+
+
+async def _contract_structured(c):
+    from app.services.excel_gpt_node import node_config
+    from app.orchestrator.steps.enrich_xlsx import _script_frames_qc_footer_kind
+    from app.services.apply_ops_batches import _batch_footer
+    from app.models import Frame
+    s,row,scope,node,context,capability=c.s,c.row,c.scope,c.node,c.context,c.capability
+    project=await s.get(Project,row.project_id)
+    contract_project=project
+    cfg=node_config(project,row.node_key)
+    count=await s.scalar(select(func.count()).select_from(Frame).where(Frame.project_id==row.project_id))
+    if project.data_dir:
+        from app.project_db import project_db_session_scope
+        async with project_db_session_scope(row.project_id) as ps:
+            pp=await ps.get(Project,row.project_id)
+            if not pp:raise ValueError('project contract unavailable')
+            contract_project=pp
+            cfg=node_config(pp,row.node_key)
+            count=await ps.scalar(select(func.count()).select_from(Frame).where(Frame.project_id==row.project_id))
+    from app.services.node_write_contract import allows_qc_noop
+    from app.services.gpt_operator import operator_config
+    effective=operator_config(contract_project,row.node_key)
+    variant=(((contract_project.meta or {}).get('prompt_slot_variants') or {}).get(row.node_key) or {}).get('main')
+    noop_allowed=allows_qc_noop(contract_project,row.node_key,variant=variant,
+        output_mode=effective.get('outputMode'),check_mode=effective.get('checkMode'))
+    kind=_script_frames_qc_footer_kind(None,None,row.node_key)
+    return panel_safe({'node_key':row.node_key,'node_type':node.get('type'),
+        'graph_version':scope.graph_version,'context_version':context['context_version'],
+        'node_config':{k:cfg[k] for k in ('inputSource','outputMode','workMode') if k in cfg},
+        'contract_kind':kind,'target_frame_count':count,
+        'empty_ops_allowed':noop_allowed,
+        'nonempty_payload_required':(effective.get('outputMode')=='project_file'
+            and not effective.get('checkMode') and effective.get('role') not in {'review','gate','compare'}
+            and not noop_allowed),
+        'semantic_quality_verified':False,
+        'contract':_batch_footer(1,0,max(1,count),footer_kind=kind),
+        'source':'original apply_ops_batches._batch_footer + workflow snapshot + node_config',
+        'write_authority':'original runtime only; no direct writes'})
+
+
+
+def _register_contracts():
+    from app.orchestrator import node_spec
+    for name,fn in (('unsupported',_contract_unsupported),('project_text',_contract_project_text),
+            ('frame_rows',_contract_frame_rows),('media_jobs',_contract_media_jobs),
+            ('structured',_contract_structured)):
+        node_spec.register_contract_builder(name,fn,replace=True)
+    for node_type,fn in (('hero',_describe_hero),('animation_prompts',_describe_animation),
+            ('sd_agent',_describe_scene),('sd_assemble',_describe_scene)):
+        node_spec.register_descriptive_contract(node_type,fn,replace=True)
+
+
+_register_contracts()
+
+
 class DecisionSupervisor:
     """background=True (production, via get_decider): each model step runs as its own
     task per execution with a hard timeout, so a slow decision call cannot freeze the
@@ -324,10 +473,10 @@ class DecisionSupervisor:
             return [panel_safe({k:getattr(e,k) for k in ('event_id','kind','request_id','payload')}) for e in events]
 
     async def read_contract(self,decision_id):
-        from app.models import Frame
-        from app.services.excel_gpt_node import node_config
-        from app.orchestrator.steps.enrich_xlsx import _script_frames_qc_footer_kind
-        from app.services.apply_ops_batches import _batch_footer
+        # Contract text per node comes from the named contract registry
+        # (node_spec.contract_builder_for), not per-type branches.
+        from types import SimpleNamespace
+        from app.orchestrator.node_spec import contract_builder_for
         async with self.master() as s:
             row=await s.get(DecisionRecord,decision_id)
             if not row:raise LookupError('decision not found')
@@ -339,107 +488,8 @@ class DecisionSupervisor:
             from app.services.node_capabilities import capability_for
             from app.services.excel_gpt_node import effective_node_type
             capability=capability_for(effective_node_type(node))
-            if capability.result_kind=='unsupported':
-                # Descriptions extend read context, never execution admission.
-                # Keep the unsupported capability, no output/jobs inference and
-                # no generic Excel tools while a native executor is unaccepted.
-                description=None
-                if capability.node_type=='hero':
-                    from app.services.native_entity_contracts import hero_entity_contract
-                    description=hero_entity_contract()
-                elif capability.node_type=='animation_prompts':
-                    from app.services.native_animation_contracts import animation_prompts_contract
-                    description=animation_prompts_contract()
-                elif capability.node_type in {'sd_agent','sd_assemble'}:
-                    from app.services.scene_contracts import scene_contract
-                    native=scene_contract(node)
-                    if native['supported']:description=native
-                descriptive=({'descriptive_contract':description,'descriptive_only':True,
-                    'managed_executor_accepted':False} if description is not None else {})
-                return panel_safe({**capability.contract(),'node_key':row.node_key,
-                    'ui_node_type':node.get('type'),'graph_version':scope.graph_version,
-                    'context_version':context['context_version'],
-                    'source':'existing runtime effective_node_type + managed capability registry',
-                    'verification_status':'unavailable: no accepted managed executor',
-                    'compatible_profiles':[],'cost_status':'unknown_tariff',**descriptive})
-            if capability.result_kind=='project_text':
-                from app.services.node_capabilities import project_text_contract,verify_project_text
-                project=await s.get(Project,row.project_id)
-                if not project:raise ValueError('project contract unavailable')
-                if project.data_dir:
-                    from app.project_db import project_db_session_scope
-                    async with project_db_session_scope(row.project_id) as ps:
-                        project=await ps.get(Project,row.project_id)
-                        if not project:raise ValueError('project contract unavailable')
-                return panel_safe({**capability.contract(),'node_key':row.node_key,
-                    'graph_version':scope.graph_version,'context_version':context['context_version'],
-                    'source':'native project text executor/validator; authoritative project DB',
-                    'contract':project_text_contract(capability.node_type),
-                    'current_output':verify_project_text(project,capability.node_type),
-                    'compatible_profiles':[],'cost_status':'unknown_tariff'})
-            if capability.result_kind in {'frame_set','frame_prompts'}:
-                from app.services.node_capabilities import split_contract,image_prompts_contract,verify_image_prompts
-                project=await s.get(Project,row.project_id)
-                if not project:raise ValueError('project contract unavailable')
-                if project.data_dir:
-                    from app.project_db import project_db_session_scope
-                    async with project_db_session_scope(row.project_id) as ps:
-                        frames=(await ps.scalars(select(Frame).where(Frame.project_id==row.project_id).order_by(Frame.number))).all()
-                else:
-                    frames=(await s.scalars(select(Frame).where(Frame.project_id==row.project_id).order_by(Frame.number))).all()
-                output_hash=(verify_image_prompts(frames,project_id=row.project_id,snapshot=None)['frame_set_sha256']
-                    if capability.result_kind=='frame_prompts' else digest([
-                        {'uuid':f.uuid,'number':f.number,'voiceover_text':f.voiceover_text} for f in frames]))
-                return panel_safe({**capability.contract(),'node_key':row.node_key,
-                    'graph_version':scope.graph_version,'context_version':context['context_version'],
-                    'contract':split_contract() if capability.result_kind=='frame_set' else image_prompts_contract(),
-                    'source':'native frame executor; authoritative project DB',
-                    'frame_count':len(frames),'frame_set_sha256':output_hash,
-                    'verification_status':'not_checked; requires captured input and committed verification evidence',
-                    'compatible_profiles':[],'cost_status':'unknown_tariff'})
-            if capability.result_kind!='structured':
-                from app.services.media_jobs import MediaJob
-                jobs=(await s.scalars(select(MediaJob).where(MediaJob.execution_id==row.execution_id,
-                    MediaJob.project_id==row.project_id,MediaJob.node_key==row.node_key))).all()
-                return panel_safe({**capability.contract(),'node_key':row.node_key,
-                    'graph_version':scope.graph_version,'context_version':context['context_version'],
-                    'source':'existing node registry + persisted media jobs',
-                    'jobs':[{'job_id':j.job_id,'provider_job_id':j.provider_job_id,
-                        'phase':j.phase,'attempt_id':j.attempt_id,'verification':j.verification,
-                        'error':j.error} for j in jobs],
-                    'retry_policy':'never resubmit unknown job; known job status uses original provider client',
-                    'cost_status':'unknown_tariff','production_profile_configured':False})
-            project=await s.get(Project,row.project_id)
-            contract_project=project
-            cfg=node_config(project,row.node_key)
-            count=await s.scalar(select(func.count()).select_from(Frame).where(Frame.project_id==row.project_id))
-            if project.data_dir:
-                from app.project_db import project_db_session_scope
-                async with project_db_session_scope(row.project_id) as ps:
-                    pp=await ps.get(Project,row.project_id)
-                    if not pp:raise ValueError('project contract unavailable')
-                    contract_project=pp
-                    cfg=node_config(pp,row.node_key)
-                    count=await ps.scalar(select(func.count()).select_from(Frame).where(Frame.project_id==row.project_id))
-            from app.services.node_write_contract import allows_qc_noop
-            from app.services.gpt_operator import operator_config
-            effective=operator_config(contract_project,row.node_key)
-            variant=(((contract_project.meta or {}).get('prompt_slot_variants') or {}).get(row.node_key) or {}).get('main')
-            noop_allowed=allows_qc_noop(contract_project,row.node_key,variant=variant,
-                output_mode=effective.get('outputMode'),check_mode=effective.get('checkMode'))
-            kind=_script_frames_qc_footer_kind(None,None,row.node_key)
-            return panel_safe({'node_key':row.node_key,'node_type':node.get('type'),
-                'graph_version':scope.graph_version,'context_version':context['context_version'],
-                'node_config':{k:cfg[k] for k in ('inputSource','outputMode','workMode') if k in cfg},
-                'contract_kind':kind,'target_frame_count':count,
-                'empty_ops_allowed':noop_allowed,
-                'nonempty_payload_required':(effective.get('outputMode')=='project_file'
-                    and not effective.get('checkMode') and effective.get('role') not in {'review','gate','compare'}
-                    and not noop_allowed),
-                'semantic_quality_verified':False,
-                'contract':_batch_footer(1,0,max(1,count),footer_kind=kind),
-                'source':'original apply_ops_batches._batch_footer + workflow snapshot + node_config',
-                'write_authority':'original runtime only; no direct writes'})
+            return await contract_builder_for(capability)(SimpleNamespace(s=s,row=row,scope=scope,
+                node=node,context=context,capability=capability))
 
     async def _live(self,s,row,token,*,version=None):
         control=await s.get(DecisionControl,row.execution_id)

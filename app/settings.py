@@ -402,6 +402,10 @@ class Settings(BaseSettings):
     action_layer_planner_calls_per_hour: int = Field(
         30, ge=1, le=10000, alias="ACTION_LAYER_PLANNER_CALLS_PER_HOUR"
     )
+    # Сколько действий каталога видит модель-планировщик в одном запросе (предфильтр по запросу).
+    action_layer_planner_max_catalog: int = Field(
+        24, ge=1, le=500, alias="ACTION_LAYER_PLANNER_MAX_CATALOG"
+    )
 
     @model_validator(mode="after")
     def _resolve_paths_from_repo_root(self) -> "Settings":

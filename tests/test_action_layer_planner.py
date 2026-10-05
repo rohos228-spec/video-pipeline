@@ -65,6 +65,8 @@ async def stubs(env, monkeypatch):  # noqa: F811
         registry.register(s)
     monkeypatch.setattr(settings, "vibecode_api_key", "vk-test-key")
     monkeypatch.setattr(settings, "vibecode_base_url", "https://vibecode.moe/v1")
+    # Эти тесты проверяют транспорт и строгую проверку: предфильтр каталога отключён (лимит >= реестра).
+    monkeypatch.setattr(settings, "action_layer_planner_max_catalog", 500)
     yield env
     planner.set_transport(None)
     for s in specs:
