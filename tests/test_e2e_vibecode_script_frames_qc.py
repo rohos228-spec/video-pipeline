@@ -54,14 +54,14 @@ def test_route_predicates():
     assert script.is_kie_responses("/codex/v1/responses") and not script.is_kie_responses("/v1/chat/completions")
 
 
-def test_node_suffix_maps_the_six_group_nodes():
-    assert [script.node_suffix(k) for k in script.NODE_KEYS] == list(script.NODE_SUFFIXES)
+def test_node_suffix_maps_the_group_nodes():
+    assert [script.node_suffix(k) for k in script.node_keys()] == list(script.node_suffixes())
     assert script.node_suffix("n_script") is None and script.node_suffix(None) is None
 
 
-def test_linear_edges_chain_the_six_nodes():
+def test_linear_edges_chain_the_group_nodes():
     edges = script._linear_edges()
-    assert [(e["source"], e["target"]) for e in edges] == list(zip(script.NODE_KEYS, script.NODE_KEYS[1:]))
+    assert [(e["source"], e["target"]) for e in edges] == list(zip(script.node_keys(), script.node_keys()[1:]))
 
 
 # ---------- the Vibecode wire format is what the real parser reads ----------
@@ -143,11 +143,10 @@ def test_valid_answers_follow_the_space_scenario():
     bits = json.loads(script.valid_answer("script", [FRAME]))["ops"][0]["fields"]["биты"]
     assert bits == script.BITS
     action = json.loads(script.valid_answer("action", [FRAME]))["ops"][0]["fields"]
-    assert action["главное_действие"] == script.ACTION and action["площадка"] == script.PLAN
+    assert action == {"площадка": script.PLAN}  # the site node writes only the site (no main action)
     shots = json.loads(script.valid_answer("shots", [FRAME]))["ops"][0]["fields"]["кадры"]
     assert len(shots) == sum(len(s["shots"]) for s in script.SCENES)
     assert json.loads(script.valid_answer("qc", [FRAME])) == {"ops": []}
-    assert "verdict: pass" in script.valid_answer("check_script", [FRAME])
 
 
 def test_qc_edit_answer_changes_only_the_street_scene():
@@ -167,10 +166,10 @@ def test_broken_answers_are_unusable_for_the_real_parser():
     assert looks_truncated_llm_text(cut) and not looks_truncated_llm_text(script.MALFORMED)
 
 
-def test_undercount_is_valid_json_with_fewer_shots_than_expected():
+def test_undercount_is_valid_json_with_no_shots():
     data = json.loads(script.broken_answer("undercount", "shots", [FRAME]))
     full = json.loads(script.valid_answer("shots", [FRAME]))
-    assert len(data["ops"][0]["fields"]["кадры"]) < len(full["ops"][0]["fields"]["кадры"])
+    assert data["ops"][0]["fields"]["кадры"] == [] and full["ops"][0]["fields"]["кадры"]
 
 
 # ---------- assertions ----------
@@ -185,7 +184,7 @@ def _happy_snapshot():
         "incident_seen": {"i1": {"type": "invalid_json", "node_key": target, "evidence_incomplete": False}},
         "decisions": {"records": [{"status": "done", "model_steps": 2}]},
         "actions": {"recoveries": [{"status": "verified", "verification_result": {"verified": True}}]},
-        "node_status": {k: "done" for k in script.NODE_KEYS},
+        "node_status": {k: "done" for k in script.node_keys()},
         "events": [{"kind": "model_start", "node_key": target, "request_id": "r1", "payload": {}},
                    {"kind": "model_end", "node_key": target, "request_id": "r1", "payload": {"complete": True}},
                    {"kind": "parse_result", "node_key": target, "request_id": "r1", "payload": {}},
@@ -209,7 +208,7 @@ def test_each_design_requirement_has_a_failing_case():
         "decision_done_with_retry_same": lambda s: s["decisions"].update(records=[{"status": "human_review", "model_steps": 2}]),
         "recovery_verified": lambda s: s["actions"].update(recoveries=[{"status": "human_review"}]),
         "target_node_done": lambda s: s["node_status"].update(n_excel_gpt_fw_script="failed"),
-        "chain_continued_all_six_done": lambda s: s["node_status"].update(n_excel_gpt_fw_report="pending"),
+        "chain_continued_all_nodes_done": lambda s: s["node_status"].update(n_excel_gpt_fw_report="pending"),
         "hitl_none_pending": lambda s: s.update(hitl_pending=[("script", None)]),
         "no_provider_host_attempt": lambda s: s.update(refused_hosts=["vibecode.moe"]),
         "only_vibecode_chat_completions": lambda s: s["counters"].update(kie_responses=1),
@@ -345,3 +344,33 @@ def test_profile_snapshot_passes_and_each_profile_requirement_can_fail():
     snap = _profile_snapshot()
     snap["recovery_requests"][0]["host"] = "api.kie.ai"
     assert "profile_request_is_vibecode_chat_body" in run(snap)[1]
+
+
+# ---------- composition is read from the group definition ----------
+
+def test_composition_comes_from_the_group_definition():
+    from app.services.node_groups import get_node_group
+    group = get_node_group(script.GROUP_ID)
+    assert script.node_suffixes() == tuple(n.local_key for n in group.nodes)
+    assert script.node_keys() == tuple(n.preferred_id for n in group.nodes)
+    assert all(k.startswith("n_excel_gpt_fw_") for k in script.node_keys())
+    # the code-only report node never calls the model, so it cannot be broken
+    assert "report" in script.node_suffixes() and "report" not in script.model_suffixes()
+    assert set(script.model_suffixes()) <= set(script.node_suffixes())
+    assert script.target_key("shots") == "n_excel_gpt_fw_shots"
+
+
+def test_break_node_choices_follow_the_group_and_reject_unknown_nodes():
+    for suffix in script.model_suffixes():
+        assert script._args(["--work-dir", "w", "--break-node", suffix]).break_node == suffix
+    for gone in ("check_script", "report", "nonexistent"):
+        if gone not in script.model_suffixes():
+            with pytest.raises(SystemExit):
+                script._args(["--work-dir", "w", "--break-node", gone])
+
+
+def test_action_answer_carries_the_legacy_main_action_only_on_request():
+    plain = json.loads(script.valid_answer("action", [FRAME]))["ops"][0]["fields"]
+    legacy = json.loads(script.valid_answer("action", [FRAME], with_action=True))["ops"][0]["fields"]
+    assert plain == {"площадка": script.PLAN}
+    assert legacy == {"главное_действие": script.ACTION, "площадка": script.PLAN}

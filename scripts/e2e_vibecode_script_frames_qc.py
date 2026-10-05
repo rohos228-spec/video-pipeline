@@ -6,8 +6,8 @@ machine and nothing is paid for. Credentials are synthetic and set in this proce
 no .env file is read by this script.
 
 What is real: the whole application in-process (FastAPI, worker, observer, diagnosis,
-Decision supervisor, recovery verifier), the real six-node group `script_frames_qc`
-(`n_excel_gpt_fw_script/check_script/action/shots/qc/report`) on the real executors,
+Decision supervisor, recovery verifier), the real group `script_frames_qc`
+(its nodes are read from the group definition; today skeleton, site, shots, QC, report) on the real executors,
 prompts, code passes, gpt_api Vibecode transport (URL, headers, SSE parser, observe_model).
 
 What is NOT real (the only fixtures):
@@ -22,7 +22,7 @@ What is NOT real (the only fixtures):
 
 The project is seeded programmatically (no --seed-dir): Workflow/Project/WorkflowRun +
 insert_node_group(script_frames_qc); the fw_script node creates its own seed VO cell from
-project.script_text. The launch graph keeps the six group nodes in a linear `after` chain
+project.script_text. The launch graph keeps the group nodes in a linear `after` chain
 (unless --native-graph), like tests/observe_v1/group_runner.prepare_launch_graph.
 
 Limits: the seed has ONE voiceover cell, so every node (qc included) runs as a single pack; multi-pack /
@@ -72,9 +72,39 @@ SCENES, FULL_VO, BITS, ACTION, PLAN, _kadry = space.SCENES, space.FULL_VO, space
 
 PORT = 18766
 GROUP_ID = "script_frames_qc"
-NODE_SUFFIXES = ("script", "check_script", "action", "shots", "qc", "report")
-NODE_KEYS = tuple(f"n_excel_gpt_fw_{s}" for s in NODE_SUFFIXES)
-BREAKABLE = ("script", "action", "shots", "qc")
+_GROUP_CACHE: dict[str, tuple] = {}
+
+
+def _group_nodes() -> tuple:
+    """(local_key, node id, has_model) of every node of the group, from the group definition.
+
+    Lazy on purpose: importing app.* loads app.settings, which must happen after main() set the environment.
+    The group is reworked by the customer now and then; nothing here hard-codes its composition.
+    """
+    if "nodes" not in _GROUP_CACHE:
+        from app.services.node_groups import get_node_group
+        group = get_node_group(GROUP_ID)
+        _GROUP_CACHE["nodes"] = tuple(
+            (n.local_key, n.preferred_id, (n.operator_config or {}).get("transport") != "code") for n in group.nodes)
+        _GROUP_CACHE["edges"] = tuple(tuple(e) for e in group.internal_edges)
+    return _GROUP_CACHE["nodes"]
+
+
+def node_suffixes() -> tuple[str, ...]:
+    return tuple(k for k, _id, _m in _group_nodes())
+
+
+def node_keys() -> tuple[str, ...]:
+    return tuple(i for _k, i, _m in _group_nodes())
+
+
+def model_suffixes() -> tuple[str, ...]:
+    """Nodes that call the model (the final code-only report node does not)."""
+    return tuple(k for k, _i, m in _group_nodes() if m)
+
+
+def target_key(suffix: str) -> str:
+    return dict((k, i) for k, i, _m in _group_nodes())[suffix]
 BREAK_MODES = ("malformed", "truncated", "undercount")
 CONTINUE_MARKER = "Предыдущий ответ оборван сетью"
 MALFORMED = '{"ops": }'
@@ -91,9 +121,6 @@ PROFILE = {"model_id": "gpt-5.6-sol", "provider": "vibecode", "kind": "text", "c
 RECOVERIES = ("retry_same", "retry_profile")
 FORBIDDEN_PROFILE_KEYS = ("input", "reasoning", "max_output_tokens", "max_tokens", "max_completion_tokens",
                           "reasoning_effort")
-CHECK_REPORT = ("# ОТЧЁТ ПРОВЕРКИ\nverdict: pass\nmode: fix\nsource_prompts: n_excel_gpt_fw_script\n\n"
-                "## summary\nСинтетическая проверка формата битов: pass.\n")
-
 
 # ───────────────────────────── pure helpers (unit-tested) ─────────────────────────────
 
@@ -118,8 +145,8 @@ def is_kie_responses(path: str) -> bool:
 
 def node_suffix(node_key: str | None) -> str | None:
     key = node_key or ""
-    for suffix in sorted(NODE_SUFFIXES, key=len, reverse=True):
-        if key.endswith("_fw_" + suffix):
+    for suffix in sorted(node_suffixes(), key=len, reverse=True):
+        if key == target_key(suffix):
             return suffix
     return None
 
@@ -236,17 +263,19 @@ def frame_vo(frame: dict) -> str:
     return " ".join(str(frame.get("voiceover_text") or "").split())
 
 
-def valid_answer(suffix: str, frames: list[dict], *, qc_answer: str = "noop") -> str:
-    """Valid model answer for one pack of `frames` ({uuid, number, voiceover_text, attrs})."""
-    if suffix == "check_script":
-        return CHECK_REPORT
+def valid_answer(suffix: str, frames: list[dict], *, qc_answer: str = "noop", with_action: bool = False) -> str:
+    """Valid model answer for one pack of `frames` ({uuid, number, voiceover_text, attrs}).
+
+    `with_action` also writes the legacy `главное_действие` from the site node. The reworked group no longer
+    has an action node, and without that field the shots pass cannot hard-stop (see --break-mode undercount).
+    """
     ops: list[dict] = []
     for frame in frames:
         uid, number, vo = str(frame["uuid"]), int(frame.get("number") or 1), frame_vo(frame)
         if suffix == "script":
             ops.append({"frame_uuid": uid, "fields": {"биты": BITS}})
         elif suffix == "action" and vo == FULL_VO:
-            ops.append({"frame_uuid": uid, "fields": {"главное_действие": ACTION, "площадка": PLAN}})
+            ops.append({"frame_uuid": uid, "fields": ({"главное_действие": ACTION, "площадка": PLAN} if with_action else {"площадка": PLAN})})
         elif suffix == "shots" and vo == FULL_VO:
             ops.append({"frame_uuid": uid, "fields": {"кадры": _kadry(number)}})
         elif suffix == "qc" and qc_answer == "edit" and vo.startswith("Он бежал"):
@@ -263,7 +292,9 @@ def broken_answer(mode: str, suffix: str, frames: list[dict]) -> str:
     if mode == "truncated":
         return TRUNCATED
     if mode == "undercount" and suffix == "shots":
-        ops = [{"frame_uuid": str(f["uuid"]), "fields": {"кадры": _kadry(int(f.get("number") or 1))[:2]}}
+        # Valid JSON, zero shots. The shots pass hard-stops on this ("GPT не вернул кадры") only when the frame has
+        # `главное_действие`, hence with_action in the undercount scenario; a partial undercount is a soft WARN.
+        ops = [{"frame_uuid": str(f["uuid"]), "fields": {"кадры": []}}
                for f in frames if frame_vo(f) == FULL_VO]
         return json.dumps({"ops": ops}, ensure_ascii=False)
     return MALFORMED
@@ -317,7 +348,7 @@ def verdict(checks: list[dict]) -> tuple[bool, list[str]]:
 def evaluate(snapshot: dict, *, break_node: str, break_mode: str, qc_answer: str = "noop",
              recovery: str = "retry_same") -> list[dict]:
     """Design assertions over a collected run snapshot (pure; the run's snapshot is built in main/_poll)."""
-    target = f"n_excel_gpt_fw_{break_node}"
+    target = target_key(break_node)
     counters = snapshot.get("counters", {})
     incidents = [i for i in (snapshot.get("diagnoses") or {}).get("incidents", []) if i.get("node_key") == target]
     records = (snapshot.get("decisions") or {}).get("records") or []
@@ -380,7 +411,7 @@ def evaluate(snapshot: dict, *, break_node: str, break_mode: str, qc_answer: str
         check("recovery_request_on_vibecode_profile", counters.get("worker_recovery", 0) >= 1,
               {"worker_recovery": counters.get("worker_recovery"), "kie_responses": counters.get("kie_responses")}),
         check("target_node_done", nodes.get(target) == "done", nodes.get(target)),
-        check("chain_continued_all_six_done", all(nodes.get(k) == "done" for k in NODE_KEYS), nodes),
+        check("chain_continued_all_nodes_done", all(nodes.get(k) == "done" for k in node_keys()), nodes),
         check("hitl_none_pending", not snapshot.get("hitl_pending") and not any(
             v == "waiting_hitl" for v in nodes.values()), {"hitl": snapshot.get("hitl_pending")}),
     ]
@@ -410,9 +441,9 @@ def evaluate(snapshot: dict, *, break_node: str, break_mode: str, qc_answer: str
     out.append(check("parse_result_linked_to_own_model_request", bool(parses) and all(
         (e.get("node_key"), e.get("request_id")) in starts for e in parses),
         [(e.get("node_key"), bool(e.get("request_id"))) for e in parses if (e.get("node_key"), e.get("request_id")) not in starts][:5]))
-    if qc_answer == "noop":
+    if qc_answer == "noop" and "qc" in node_suffixes():
         out.append(check("qc_noop_accepted_without_status", any(
-            e["kind"] == "runtime_check" and e.get("node_key") == "n_excel_gpt_fw_qc"
+            e["kind"] == "runtime_check" and e.get("node_key") == target_key("qc")
             and e["payload"].get("check") == "qc_noop" and e["payload"].get("status") == "passed" for e in events),
             [e["payload"].get("check") for e in events if e["kind"] == "runtime_check"][:8]))
     return out
@@ -425,7 +456,7 @@ def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dry", action="store_true", default=True,
                    help="default and only mode: every non-loopback request is refused (there is no --live)")
     p.add_argument("--work-dir", required=True, help="scratch dir for data/, runtime.json, result.json (recreated)")
-    p.add_argument("--break-node", choices=BREAKABLE, default="script")
+    p.add_argument("--break-node", choices=model_suffixes(), default=model_suffixes()[0])
     p.add_argument("--break-mode", choices=BREAK_MODES, default="malformed")
     p.add_argument("--recovery", choices=RECOVERIES, default="retry_same",
                    help="what the Decision stub proposes: retry_same, or retry_profile with the Vibecode profile "
@@ -458,7 +489,7 @@ def _frames(project_db: Path) -> list[dict]:
 
 
 async def _seed(*, native_graph: bool = False) -> tuple[int, str]:
-    """Workflow + Project + WorkflowRun + group, six nodes only (programmatic, no seed dir)."""
+    """Workflow + Project + WorkflowRun + group, its nodes only (programmatic, no seed dir)."""
     from app.db import session_scope
     from app.models import Project, ProjectStatus, Workflow, WorkflowRun, WorkflowRunStatus, NodeRun
     from app.services.node_groups import insert_node_group
@@ -486,8 +517,8 @@ async def _seed(*, native_graph: bool = False) -> tuple[int, str]:
         run = (await session.scalars(select(WorkflowRun).where(WorkflowRun.project_id == project.id)
                                      .order_by(WorkflowRun.id.desc()))).first()
         by_id = {n["id"]: n for n in run.nodes_snapshot}
-        group_nodes = [by_id[k] for k in NODE_KEYS]
-        native = [dict(e) for e in run.edges_snapshot if e.get("source") in NODE_KEYS and e.get("target") in NODE_KEYS]
+        group_nodes = [by_id[k] for k in node_keys()]
+        native = [dict(e) for e in run.edges_snapshot if e.get("source") in node_keys() and e.get("target") in node_keys()]
         group_edges = native if native_graph and native else _linear_edges()
         run.nodes_snapshot = group_nodes
         run.edges_snapshot = group_edges
@@ -496,7 +527,7 @@ async def _seed(*, native_graph: bool = False) -> tuple[int, str]:
         graph["nodes"], graph["edges"] = group_nodes, group_edges
         meta["canvas_graph"] = graph
         project.meta = meta
-        await session.execute(delete(NodeRun).where(NodeRun.workflow_run_id == run.id, NodeRun.node_key.notin_(NODE_KEYS)))
+        await session.execute(delete(NodeRun).where(NodeRun.workflow_run_id == run.id, NodeRun.node_key.notin_(node_keys())))
         pid = int(project.id)
         data_dir = project.data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -506,7 +537,7 @@ async def _seed(*, native_graph: bool = False) -> tuple[int, str]:
 
 def _linear_edges() -> list[dict]:
     return [{"id": f"vibecode-qc-edge-{i}", "source": a, "target": b, "data": {"kind": "after"}}
-            for i, (a, b) in enumerate(zip(NODE_KEYS, NODE_KEYS[1:], strict=False))]
+            for i, (a, b) in enumerate(zip(node_keys(), node_keys()[1:], strict=False))]
 
 
 def _events(state_db: Path, execution: str | None) -> list[dict]:
@@ -566,18 +597,28 @@ async def _wait_api(base: str) -> None:
 
 
 async def main(argv: list[str] | None = None) -> int:
-    args = _args(argv)
-    work = Path(args.work_dir).resolve()
+    # The environment must be set before anything imports app.settings (_args reads the group definition).
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--work-dir")
+    pre.add_argument("--port", type=int, default=PORT)
+    pre.add_argument("--request-limit", type=int, default=60)
+    pre.add_argument("--recovery", default="retry_same")
+    early, _rest = pre.parse_known_args(argv)
+    if not early.work_dir:
+        return _args(argv) and 2  # argparse prints the usage error and exits
+    work = Path(early.work_dir).resolve()
     data = work / "data"
     if data.exists():
         shutil.rmtree(data)
     work.mkdir(parents=True, exist_ok=True)
     data.mkdir(parents=True)
     runtime_path = work / "runtime.json"
-    runtime_path.write_text(json.dumps(runtime_config(args.port, args.request_limit, args.recovery), indent=2), encoding="utf-8")
+    runtime_path.write_text(json.dumps(runtime_config(early.port, early.request_limit, early.recovery), indent=2),
+                            encoding="utf-8")
     os.chdir(ROOT)
-    os.environ.update(env_overrides(data, args.port))
+    os.environ.update(env_overrides(data, early.port))
     os.environ["ORCHESTRATOR_RUNTIME_CONFIG"] = str(runtime_path)
+    args = _args(argv)
 
     import httpx
     from app.settings import settings
@@ -598,7 +639,7 @@ async def main(argv: list[str] | None = None) -> int:
     pid, slug = await _seed(native_graph=args.native_graph)
     project_db = data / "videos" / slug / "project.db"
     base = f"http://127.0.0.1:{args.port}/api/projects/{pid}"
-    target = f"n_excel_gpt_fw_{args.break_node}"
+    target = target_key(args.break_node)
 
     counters = {"worker_total": 0, "worker_broken": 0, "worker_recovery": 0, "decision": 0,
                 "kie_responses": 0, "refused": 0, "by_node": {}}
@@ -657,7 +698,7 @@ async def main(argv: list[str] | None = None) -> int:
             answer = broken_answer(args.break_mode, suffix, pack)
             finish = "length" if args.break_mode == "truncated" else "stop"
         else:
-            answer = valid_answer(suffix, pack, qc_answer=args.qc_answer)
+            answer = valid_answer(suffix, pack, qc_answer=args.qc_answer, with_action=args.break_mode == "undercount")
         if recovery:
             recovery_requests.append({"node": key, "path": path, "host": host,
                                       **profile_request_facts(body, repair_suffix)})
@@ -685,7 +726,7 @@ async def main(argv: list[str] | None = None) -> int:
             result["launch_options"] = {k: options[k] for k in ("configured", "mode", "strategies", "reason")}
             if not options["configured"]:
                 raise RuntimeError("Decision runtime not configured: " + str(options.get("reason")))
-            unsupported = [n["node_key"] for n in options["nodes"] if n["node_key"] in NODE_KEYS and not n["supported"]]
+            unsupported = [n["node_key"] for n in options["nodes"] if n["node_key"] in node_keys() and not n["supported"]]
             if unsupported:
                 raise RuntimeError(f"nodes not supported by the managed launch gate: {unsupported}")
             strategies = ["wait", "human_review", "retry_same"]
@@ -699,7 +740,7 @@ async def main(argv: list[str] | None = None) -> int:
                 profile_hash = {"profile_catalog_hash": options["profile_catalog_hash"]}
             response = await client.post(base + "/observations/launch", json={
                 "workflow_run_id": options["workflow_run_id"], "graph_version": options["graph_version"],
-                "node_keys": list(NODE_KEYS), "strategies": strategies,
+                "node_keys": list(node_keys()), "strategies": strategies,
                 "profile_ids": profile_ids, **profile_hash, "request_limit": args.request_limit,
                 "rationale": "offline vibecode script_frames_qc recovery verification",
                 "idempotency_key": f"vibecode-qc-e2e-{_uuid.uuid4().hex[:8]}"})
@@ -755,7 +796,7 @@ async def main(argv: list[str] | None = None) -> int:
 async def _poll(client, base, execution, args, project_db, counters, result) -> None:
     deadline = time.monotonic() + args.timeout_s
     prefix = base + f"/observations/{execution}"
-    target = f"n_excel_gpt_fw_{args.break_node}"
+    target = target_key(args.break_node)
     last = None
     last_progress = None
     idle_since = time.monotonic()
@@ -777,7 +818,7 @@ async def _poll(client, base, execution, args, project_db, counters, result) -> 
         if state != last:
             print(time.strftime("%H:%M:%S"), state, flush=True)
             last = state
-        chain_done = all(nodes.get(k) == "done" for k in NODE_KEYS)
+        chain_done = all(nodes.get(k) == "done" for k in node_keys())
         decision_done = bool(recs) and recs[0]["status"] in TERMINAL_DECISION
         progress = (state, tuple(sorted(nodes.items())))
         if progress != last_progress:
