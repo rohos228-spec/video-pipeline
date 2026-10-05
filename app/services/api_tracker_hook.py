@@ -183,6 +183,24 @@ def _get_identity() -> tuple[str, str]:
     return u, h
 
 
+def _redact_value(value: Any) -> Any:
+    """Маскирует секреты тем же `redact`, что и журнал наблюдателя (fail-closed для текста)."""
+    try:
+        from app.services.observation import redact
+        return redact(value)
+    except Exception:
+        return "[redacted]" if isinstance(value, str) and value else value
+
+
+def _cloud_enabled() -> bool:
+    """API_TRACKER_CLOUD_ENABLED=false отключает отправку строк вызовов в облако."""
+    try:
+        from app.settings import settings
+        return bool(settings.api_tracker_cloud_enabled)
+    except Exception:
+        return True
+
+
 def _push_to_supabase(payload: dict[str, Any]) -> bool:
     """Асинхронная отправка записи в Supabase."""
     import os
@@ -224,6 +242,10 @@ def record_api_call(
     timestamp: str | None = None,
 ) -> None:
     """Асинхронная запись вызова API в базу трекера и облако Supabase."""
+    error_message = str(_redact_value(str(error_message or "")))
+    project_source = str(_redact_value(str(project_source or "")))
+    metadata = _redact_value(metadata) if metadata else metadata
+
     def _write():
         try:
             _TRACKER_DB.parent.mkdir(parents=True, exist_ok=True)
@@ -281,7 +303,7 @@ def record_api_call(
                 "project_source": project_source,
                 "metadata_json": meta_dict,
             }
-            is_synced = _push_to_supabase(cloud_payload)
+            is_synced = _push_to_supabase(cloud_payload) if _cloud_enabled() else True  # True: нечего досылать
 
             # 2. Локальная запись в SQLite
             with sqlite3.connect(str(_TRACKER_DB), timeout=5.0) as conn:

@@ -121,6 +121,12 @@ async def _lifespan(app: FastAPI):
     этот lifespan единственный гарантирует наличие новых таблиц.
     """
     try:
+        from app.services.access_guard import warn_if_exposed_without_auth
+
+        warn_if_exposed_without_auth()
+    except Exception:  # noqa: BLE001 - предупреждение не должно мешать старту
+        pass
+    try:
         from app.db import engine
         from app.models import Base
 

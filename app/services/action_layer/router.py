@@ -12,6 +12,7 @@ from app.services.action_layer import approval, executor, macros, planner, servi
 from app.services.action_layer.plan import PlanFormatError
 from app.services.action_layer.spec import ensure_builtin_actions
 from app.services.action_layer.spec import registry as default_registry
+from app.services.access_guard import LocalOnlyDep
 from app.web.auth_sessions import AuthDep
 
 router = APIRouter(prefix="/action-layer", tags=["action-layer"])
@@ -78,7 +79,7 @@ async def catalog(operator: AuthDep, risk: str | None = Query(None),
     return {"count": len(items), "actions": [s.to_json() for s in items]}
 
 
-@router.post("/plans/preview")
+@router.post("/plans/preview", dependencies=[LocalOnlyDep])
 async def preview_plan(request: Request, body: PlanIn, operator: AuthDep) -> dict:
     who = _operator(operator)
     try:
@@ -92,7 +93,7 @@ async def preview_plan(request: Request, body: PlanIn, operator: AuthDep) -> dic
     return {"plan_id": plan_id, "preview": preview}
 
 
-@router.post("/plans/from-text")
+@router.post("/plans/from-text", dependencies=[LocalOnlyDep])
 async def plan_from_text(request: Request, body: FromTextIn, operator: AuthDep) -> dict:
     """Запрос -> планировщик -> только preview (proposed). Не подтверждает и не запускает."""
     who = _operator(operator)
@@ -137,7 +138,7 @@ async def list_macros(operator: AuthDep) -> dict:
             "macros": [m.to_json(default_registry, who.id) for m in items]}
 
 
-@router.post("/macros")
+@router.post("/macros", dependencies=[LocalOnlyDep])
 async def save_macro(body: MacroIn, operator: AuthDep) -> dict:
     who = _operator(operator)
     try:
@@ -152,7 +153,7 @@ async def save_macro(body: MacroIn, operator: AuthDep) -> dict:
     return macro.to_json(default_registry, who.id)
 
 
-@router.delete("/macros/{macro_id}")
+@router.delete("/macros/{macro_id}", dependencies=[LocalOnlyDep])
 async def delete_macro(macro_id: str, operator: AuthDep) -> dict:
     who = _operator(operator)
     try:
@@ -164,7 +165,7 @@ async def delete_macro(macro_id: str, operator: AuthDep) -> dict:
     return {"deleted": macro_id}
 
 
-@router.post("/plans/from-macro")
+@router.post("/plans/from-macro", dependencies=[LocalOnlyDep])
 async def plan_from_macro(request: Request, body: FromMacroIn, operator: AuthDep) -> dict:
     """Макрос -> шаги -> тот же preview, что у /plans/preview. Ничего не запускает."""
     who = _operator(operator)
@@ -200,7 +201,7 @@ async def plan_from_macro(request: Request, body: FromMacroIn, operator: AuthDep
             "context_version": ctx["version"]}
 
 
-@router.post("/plans/{plan_id}/approve")
+@router.post("/plans/{plan_id}/approve", dependencies=[LocalOnlyDep])
 async def approve(request: Request, plan_id: str, operator: AuthDep,
                   body: EmptyBody | None = None) -> dict:
     who = _operator(operator)
@@ -214,7 +215,7 @@ async def approve(request: Request, plan_id: str, operator: AuthDep,
         raise HTTPException(409, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
-@router.post("/plans/{plan_id}/run")
+@router.post("/plans/{plan_id}/run", dependencies=[LocalOnlyDep])
 async def run(request: Request, plan_id: str, operator: AuthDep,
               body: EmptyBody | None = None) -> dict:
     who = _operator(operator)
@@ -232,6 +233,13 @@ async def run(request: Request, plan_id: str, operator: AuthDep,
     return {"plan_id": plan_id, "status": "running"}
 
 
+@router.get("/plans")
+async def list_plans(operator: AuthDep, status: str | None = Query(None, max_length=20),
+                     project_id: int | None = Query(None, ge=1),
+                     limit: int = Query(20, ge=1, le=100)) -> dict:
+    return await service.list_plans(status=status, project_id=project_id, limit=limit)
+
+
 @router.get("/plans/{plan_id}")
 async def get_plan(plan_id: str, operator: AuthDep) -> dict:
     try:
@@ -240,7 +248,7 @@ async def get_plan(plan_id: str, operator: AuthDep) -> dict:
         raise HTTPException(404, detail="plan not found") from exc
 
 
-@router.post("/plans/{plan_id}/stop")
+@router.post("/plans/{plan_id}/stop", dependencies=[LocalOnlyDep])
 async def stop(plan_id: str, operator: AuthDep, body: EmptyBody | None = None) -> dict:
     who = _operator(operator)
     try:

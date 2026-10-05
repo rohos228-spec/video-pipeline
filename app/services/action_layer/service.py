@@ -140,9 +140,22 @@ async def prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
         interrupted = row.status == store.PLAN_RUNNING
         if row.needs_approval:
             if interrupted:
-                # Подтверждение уже израсходовано этим запуском: продолжаем без нового.
+                # Подтверждение уже израсходовано этим запуском: продолжаем без нового,
+                # но только в пределах окна возобновления.
                 if not row.approval_id:
                     raise approval.ApprovalError("approval_required", "run was never approved")
+                if _resume_expired(row, steps):
+                    # Закрываем как остановленный: тогда его можно подтвердить заново.
+                    row.status = store.PLAN_STOPPED
+                    row.stop_reason = "resume_window_expired"
+                    row.updated_at = row.finished_at = datetime.utcnow()
+                    store.append_history(s, event="resume_refused", plan_id=plan_id,
+                                         actor=operator.id, outcome="expired",
+                                         error="resume window expired")
+                    await s.commit()
+                    raise approval.ApprovalError(
+                        "approval_required",
+                        "Окно возобновления истекло: нужно новое подтверждение оператора")
             else:
                 appr = await approval.consume_approval(s, row)
                 row.approval_id = appr.id
@@ -163,6 +176,26 @@ async def prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
         return row
 
 
+def _resume_window_s() -> int:
+    from app.settings import settings
+    return int(settings.action_layer_resume_window_s)
+
+
+def _last_activity(row, steps) -> datetime | None:
+    stamps = [row.updated_at, row.created_at]
+    for st in steps:
+        stamps += [st.started_at, st.finished_at]
+    stamps = [t for t in stamps if t is not None]
+    return max(stamps) if stamps else None
+
+
+def _resume_expired(row, steps, now: datetime | None = None) -> bool:
+    last = _last_activity(row, steps)
+    if last is None:
+        return True
+    return ((now or datetime.utcnow()) - last).total_seconds() > _resume_window_s()
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() + "Z" if value else None
 
@@ -175,6 +208,7 @@ async def plan_view(plan_id: str) -> dict:
             store.ActionApproval.created_at.desc()))).all()
         spent = await budget.spent(s, budget.session_key(plan_id))
     now = datetime.utcnow()
+    actuals = [st.cost_actual for st in steps if st.cost_actual is not None]
     live = executor.is_live(plan_id)
     return {
         "id": row.id, "status": row.status, "project_id": row.project_id,
@@ -184,6 +218,12 @@ async def plan_view(plan_id: str) -> dict:
         "cost_estimate": {"low": row.cost_low, "high": row.cost_high,
                           "unknown_steps": row.cost_unknown_steps},
         "spent_credits": spent, "budget_cap_credits": budget.session_cap(),
+        # spent_credits = резерв/факт по журналу расходов (верхняя граница); actual - только
+        # то, что действия сами сообщили как credits_spent (None, если ничего не сообщено).
+        "reserved_credits": spent, "actual_credits": sum(actuals) if actuals else None,
+        "resume_window_s": _resume_window_s(),
+        "resume_expired": (row.status == store.PLAN_RUNNING and not live
+                           and _resume_expired(row, steps, now)),
         "stop_requested": row.stop_requested, "stop_reason": row.stop_reason,
         "error": row.error, "live": live,
         "interrupted": row.status == store.PLAN_RUNNING and not live,
@@ -201,6 +241,24 @@ async def plan_view(plan_id: str) -> dict:
                    "started_at": _iso(st.started_at), "finished_at": _iso(st.finished_at)}
                   for st in steps],
     }
+
+
+async def list_plans(*, status: str | None = None, project_id: int | None = None,
+                     limit: int = 20) -> dict:
+    """Короткий список планов (для восстановления экрана выполнения после перезагрузки)."""
+    limit = max(1, min(int(limit), 100))
+    async with store.sessions()() as s:
+        q = select(store.ActionPlan).order_by(store.ActionPlan.created_at.desc()).limit(limit)
+        if status:
+            q = q.where(store.ActionPlan.status == status)
+        if project_id is not None:
+            q = q.where(store.ActionPlan.project_id == project_id)
+        rows = (await s.scalars(q)).all()
+    return {"items": [{
+        "id": r.id, "status": r.status, "project_id": r.project_id,
+        "request_text": r.request_text, "live": executor.is_live(r.id),
+        "interrupted": r.status == store.PLAN_RUNNING and not executor.is_live(r.id),
+        "created_at": _iso(r.created_at), "updated_at": _iso(r.updated_at)} for r in rows]}
 
 
 async def history(*, plan_id: str | None = None, limit: int = 100,

@@ -22,7 +22,8 @@ from fastapi import Depends
 from app.services.observation import ExecutionControl, ObservationEvent, digest, get_observer, redact, panel_safe
 from app.services.observation import business_snapshot as _business_snapshot
 from app.services.actions_v1 import ActionExecutionControl, ActionRecord, ActionSupervisor
-from app.web.auth_sessions import AuthDep
+from app.web.auth_sessions import AuthDep, require_web_user
+from app.services.access_guard import LocalOnlyDep
 
 router = APIRouter(prefix="/projects/{project_id}/observations", tags=["observations"])
 
@@ -64,7 +65,7 @@ class ManagedLaunchRequest(BaseModel):
     idempotency_key: str = Field(min_length=8,max_length=120)
 
 
-@router.post('/launch',status_code=201)
+@router.post('/launch',status_code=201, dependencies=[LocalOnlyDep])
 async def launch_managed(project_id:int,payload:ManagedLaunchRequest,operator:AuthDep,
                          session:AsyncSession=Depends(get_project_session)):
     from app.services import managed_launch
@@ -95,7 +96,7 @@ async def launch_managed(project_id:int,payload:ManagedLaunchRequest,operator:Au
             raise HTTPException(409,'managed launch held: '+type(exc).__name__) from exc
 
 
-@router.get('/launch-options')
+@router.get('/launch-options', dependencies=[Depends(require_web_user)])
 async def managed_launch_options(project_id:int,operator:AuthDep):
     from app.services.decision_config import status
     from app.services.node_capabilities import capability_for
@@ -154,7 +155,7 @@ class DecisionMode(BaseModel):
     rationale: str = Field(min_length=3,max_length=1000)
 
 
-@router.post('/{execution_id}/decisions/control')
+@router.post('/{execution_id}/decisions/control', dependencies=[LocalOnlyDep])
 async def decision_mode(project_id:int,execution_id:str,payload:DecisionMode,operator:AuthDep):
     from app.services.decision_v1 import get_decider
     observer=get_observer()
@@ -179,14 +180,25 @@ def _watchdog_info():
             "kill_switch_on_stall": settings.watchdog_kill_switch_on_stall}
 
 
-@router.get('/kill-switch')
+@router.get('/kill-switch', dependencies=[Depends(require_web_user)])
 async def kill_switch_state(project_id: int):
     """Global operator emergency stop (not project-scoped; project_id only routes the panel)."""
     from app.services import kill_switch
     return panel_safe({**await kill_switch.status(get_observer().master), "watchdog": _watchdog_info()})
 
 
-@router.post('/kill-switch')
+@router.get('/spend', dependencies=[Depends(require_web_user)])
+async def spend_state(project_id: int):
+    """Read-only: today's / project / run spend versus the local caps (docs/SPEND_LIMITS.md)."""
+    from app.services import spend_guard
+    async with get_observer().master() as session:
+        run = (await session.scalars(select(ActionExecutionControl.execution_id).where(
+            ActionExecutionControl.project_id == project_id,
+            ActionExecutionControl.enabled.is_(True)))).first()
+        return panel_safe({**await spend_guard.totals(session, project_id, run or ""), "run_id": run})
+
+
+@router.post('/kill-switch', dependencies=[LocalOnlyDep])
 async def kill_switch_change(project_id: int, payload: KillSwitchChange, operator: AuthDep):
     """Set the global emergency stop with explicit operator identity and rationale (audited)."""
     from app.services import kill_switch
@@ -198,7 +210,7 @@ async def kill_switch_change(project_id: int, payload: KillSwitchChange, operato
     return panel_safe({**result, "watchdog": _watchdog_info()})
 
 
-@router.get('/{execution_id}/decisions')
+@router.get('/{execution_id}/decisions', dependencies=[Depends(require_web_user)])
 async def decisions(project_id:int,execution_id:str):
     from app.services.decision_state import DecisionControl,DecisionRecord,DecisionTurn
     from app.services.decision_v1 import record_json,MAX_STEPS
@@ -231,20 +243,20 @@ class CancelProfile(BaseModel):
     model_config = {"extra":"forbid"}
     rationale: str = Field(min_length=3,max_length=1000)
 
-@router.get('/{execution_id}/profiles')
+@router.get('/{execution_id}/profiles', dependencies=[Depends(require_web_user)])
 async def profiles(project_id:int,execution_id:str,node_key:str):
     from app.services.profiles_v1 import ProfilesSupervisor
     try:return await ProfilesSupervisor(get_observer()).state(project_id,execution_id,node_key)
     except ValueError as exc:raise HTTPException(404,str(exc)) from exc
 
-@router.post('/{execution_id}/profiles/approve')
+@router.post('/{execution_id}/profiles/approve', dependencies=[LocalOnlyDep])
 async def approve_profile(project_id:int,execution_id:str,payload:ApproveProfile,operator:AuthDep):
     from app.services.profiles_v1 import ProfilesSupervisor
     try:return await ProfilesSupervisor(get_observer()).approve(project_id=project_id,execution_id=execution_id,
         initiator=_operator_id(operator),**payload.model_dump())
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
 
-@router.post('/{execution_id}/profiles/{overlay_id}/cancel')
+@router.post('/{execution_id}/profiles/{overlay_id}/cancel', dependencies=[LocalOnlyDep])
 async def cancel_profile(project_id:int,execution_id:str,overlay_id:str,payload:CancelProfile,operator:AuthDep):
     from app.services.profiles_v1 import ProfilesSupervisor
     try:return await ProfilesSupervisor(get_observer()).cancel(project_id=project_id,execution_id=execution_id,
@@ -265,7 +277,7 @@ async def _scope(session, project_id, execution_id):
     return scope
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[LocalOnlyDep])
 async def enable_observation(project_id: int, payload: EnableObservation):
     observer = get_observer()
     async with observer.master() as session:
@@ -285,7 +297,7 @@ async def enable_observation(project_id: int, payload: EnableObservation):
     return scope_json(scope)
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_web_user)])
 async def list_observations(project_id: int):
     async with get_observer().master() as session:
         scopes = (await session.scalars(select(ExecutionControl).where(
@@ -293,7 +305,7 @@ async def list_observations(project_id: int):
         return [scope_json(scope) for scope in scopes]
 
 
-@router.post("/{execution_id}/stop")
+@router.post("/{execution_id}/stop", dependencies=[LocalOnlyDep])
 async def stop_observation(project_id: int, execution_id: str):
     observer = get_observer()
     async with observer.master() as session:
@@ -308,7 +320,7 @@ def _operator_id(token: str | None) -> str:
     return "web_operator:" + hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
-@router.get("/{execution_id}/actions")
+@router.get("/{execution_id}/actions", dependencies=[Depends(require_web_user)])
 async def action_state(project_id: int, execution_id: str):
     async with get_observer().master() as session:
         await _scope(session, project_id, execution_id)
@@ -336,7 +348,7 @@ async def action_state(project_id: int, execution_id: str):
                 for r in records]}
 
 
-@router.post("/{execution_id}/actions/retry")
+@router.post("/{execution_id}/actions/retry", dependencies=[LocalOnlyDep])
 async def retry_node(project_id: int, execution_id: str, payload: RetryNode,
                      operator: AuthDep):
     observer = get_observer()
@@ -354,13 +366,13 @@ async def retry_node(project_id: int, execution_id: str, payload: RetryNode,
                     project_id=project_id, action_kind="recovery_denied", node_key=payload.node_key,
                     initiator=_operator_id(operator), rationale=payload.rationale,
                     idempotency_key=payload.idempotency_key, status="rejected",
-                    preconditions={"reason": str(exc), "incident_id": payload.incident_id},
+                    preconditions={"reason": redact(str(exc)), "incident_id": payload.incident_id},
                     evidence_ids=[], verification={"dispatched": False}))
                 await session.commit()
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.post("/{execution_id}/actions/enable")
+@router.post("/{execution_id}/actions/enable", dependencies=[LocalOnlyDep])
 async def enable_actions(project_id: int, execution_id: str, payload: EnableActions,
                          operator: AuthDep):
     observer = get_observer()
@@ -379,7 +391,7 @@ async def enable_actions(project_id: int, execution_id: str, payload: EnableActi
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.post("/{execution_id}/actions/control")
+@router.post("/{execution_id}/actions/control", dependencies=[LocalOnlyDep])
 async def control_actions(project_id: int, execution_id: str, payload: ActionsControl,
                           operator: AuthDep):
     try:
@@ -393,7 +405,7 @@ async def control_actions(project_id: int, execution_id: str, payload: ActionsCo
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.post("/{execution_id}/actions/close")
+@router.post("/{execution_id}/actions/close", dependencies=[LocalOnlyDep])
 async def close_actions(project_id: int, execution_id: str, payload: CloseAction,
                         operator: AuthDep):
     try:
@@ -415,7 +427,7 @@ def managed_step_code(node):
     return spec.step_code
 
 
-@router.post("/{execution_id}/actions/start")
+@router.post("/{execution_id}/actions/start", dependencies=[LocalOnlyDep])
 async def start_managed_node(project_id: int, execution_id: str, payload: ManagedStart,
                              operator: AuthDep,
                              session: AsyncSession = Depends(get_project_session)):
@@ -513,7 +525,7 @@ async def start_managed_node(project_id: int, execution_id: str, payload: Manage
     return {"action_id": action_id, "status": "submitted", "idempotent_replay": False}
 
 
-@router.post("/{execution_id}/actions/verify")
+@router.post("/{execution_id}/actions/verify", dependencies=[LocalOnlyDep])
 async def verify_managed_node(project_id: int, execution_id: str, payload: VerifyNode,
                               operator: AuthDep,
                               session: AsyncSession = Depends(get_project_session)):
@@ -574,7 +586,7 @@ async def verify_managed_node(project_id: int, execution_id: str, payload: Verif
             "verification": verification, "idempotent_replay": False}
 
 
-@router.post("/{execution_id}/actions/review")
+@router.post("/{execution_id}/actions/review", dependencies=[LocalOnlyDep])
 async def mark_human_review(project_id: int, execution_id: str, payload: ReviewIncident,
                             operator: AuthDep):
     from sqlalchemy import select
@@ -605,7 +617,7 @@ async def mark_human_review(project_id: int, execution_id: str, payload: ReviewI
             "idempotent_replay": False}
 
 
-@router.get("/{execution_id}/events")
+@router.get("/{execution_id}/events", dependencies=[Depends(require_web_user)])
 async def history(project_id: int, execution_id: str, after: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=500)):
     observer = get_observer()
     async with observer.master() as session:
@@ -620,7 +632,7 @@ async def history(project_id: int, execution_id: str, after: int = Query(0, ge=0
             "next_cursor": rows[min(len(rows), limit)-1].id if rows else after})
 
 
-@router.get("/{execution_id}/context")
+@router.get("/{execution_id}/context", dependencies=[Depends(require_web_user)])
 async def context(project_id: int, execution_id: str):
     observer = get_observer()
     async with observer.master() as session:
@@ -723,7 +735,7 @@ async def context(project_id: int, execution_id: str):
     return panel_safe(result)
 
 
-@router.post("/{execution_id}/pin")
+@router.post("/{execution_id}/pin", dependencies=[LocalOnlyDep])
 async def pin_observation(project_id: int, execution_id: str):
     observer = get_observer()
     async with observer.master() as session:
@@ -736,7 +748,7 @@ class ClearCommitUncertainty(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
-@router.post("/{execution_id}/commit-uncertainty/clear")
+@router.post("/{execution_id}/commit-uncertainty/clear", dependencies=[LocalOnlyDep])
 async def clear_commit_uncertainty(project_id: int, execution_id: str, payload: ClearCommitUncertainty,
                                    operator: AuthDep):
     """A person confirms the business commit state; the marker stays in history."""
@@ -748,7 +760,7 @@ async def clear_commit_uncertainty(project_id: int, execution_id: str, payload: 
     return {"cleared": cleared, "business_action": None}
 
 
-@router.get("/{execution_id}/diagnoses")
+@router.get("/{execution_id}/diagnoses", dependencies=[Depends(require_web_user)])
 async def diagnoses(project_id: int, execution_id: str):
     """Read-only persisted projection; no provider, worker or diagnostic writes."""
     from datetime import datetime
@@ -776,7 +788,7 @@ async def diagnoses(project_id: int, execution_id: str):
             'automatic_actions':False,'semantic_quality_verified':False})
 
 
-@router.get("/telemetry")
+@router.get("/telemetry", dependencies=[Depends(require_web_user)])
 async def telemetry(project_id: int, since_hours: int | None = Query(default=None, ge=1, le=8760)):
     """Project-wide aggregation across every execution this project has
     had -- unlike every other endpoint in this router, deliberately not
@@ -818,7 +830,7 @@ async def _telemetry_stream_events(project_id: int, since_hours: int | None):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                yield _sse_telemetry_payload({"type": "error", "error": str(exc)})
+                yield _sse_telemetry_payload({"type": "error", "error": redact(str(exc))})
                 await asyncio.sleep(2.0)
                 continue
             current_digest = digest(summary)
@@ -836,7 +848,7 @@ async def _telemetry_stream_events(project_id: int, since_hours: int | None):
         raise
 
 
-@router.get("/stream")
+@router.get("/stream", dependencies=[Depends(require_web_user)])
 async def telemetry_stream(project_id: int, since_hours: int | None = Query(default=None, ge=1, le=8760)):
     """Server-Sent Events: pushes app/services/telemetry.py's project-wide
     summary (same shape as GET /telemetry) every ~2s, deduplicated so an

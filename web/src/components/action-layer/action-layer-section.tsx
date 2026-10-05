@@ -1,10 +1,10 @@
 "use client";
-import {useState} from "react";
+import {useEffect, useState} from "react";
 import {CommandBar} from "./command-bar";
 import {PlanCard} from "./plan-card";
 import {RunProgress} from "./run-progress";
 import {HistoryList} from "./history-list";
-import type {PlanPreviewResponse} from "@/lib/action-layer";
+import {getPlan, listPlans, type PlanPreviewResponse} from "@/lib/action-layer";
 
 // Слой действий: команда -> предпросмотр плана -> (подтверждение оператора) -> выполнение -> журнал.
 // Аварийный стоп оркестратора показывает соседняя KillSwitchSection (её состояние наружу не отдаётся,
@@ -14,6 +14,24 @@ export function ActionLayerSection({projectId, sceneId, frameId}: {projectId: nu
   const [runId, setRunId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [refresh, setRefresh] = useState(0);
+
+  // После перезагрузки страницы возвращаем экран выполнения (с «Остановить»/«Продолжить»)
+  // для идущего или прерванного плана этого проекта (или без проекта).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const {items} = await listPlans("running");
+        const mine = items.find((p) => p.project_id == null || p.project_id === projectId);
+        if (!mine || cancelled) return;
+        const v = await getPlan(mine.id);
+        if (cancelled || v.status !== "running") return;
+        setRunId((cur) => cur ?? v.id);
+        setRunning(true);
+      } catch { /* список недоступен: экран выполнения просто не восстанавливается */ }
+    })();
+    return () => { cancelled = true; };
+  }, [projectId]);
 
   return (
     <section data-testid="action-layer-panel" aria-label="Слой действий" className="mt-3 space-y-2 rounded border border-white/10 p-2 text-xs text-white/80">

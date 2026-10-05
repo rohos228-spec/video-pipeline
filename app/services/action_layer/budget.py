@@ -72,7 +72,25 @@ async def reserve(session, *, key: str, plan_id: str, step_index: int,
         left = await remaining(session, key, cap)
         raise BudgetError("budget_exceeded",
                           f"estimate {amount:g} exceeds remaining cap {left:g} credits")
+    await _spend_reserve(session, plan_id, amount)
     return amount
+
+
+async def _plan_project(session, plan_id: str):
+    row = await session.get(store.ActionPlanContext, plan_id)
+    return row.project_id if row is not None else None
+
+
+async def _spend_reserve(session, plan_id: str, credits: float) -> None:
+    """Local USD caps (daily/project/run) in addition to the per-plan credit cap."""
+    from app.services import spend_guard
+    from app.services.kie_catalog import CREDIT_USD
+    try:
+        await spend_guard.reserve(session, project_id=await _plan_project(session, plan_id),
+                                  run_id=f"plan:{plan_id}", estimate_usd=credits * CREDIT_USD,
+                                  source="action_layer", credits=credits, track=False)
+    except spend_guard.SpendCapExceeded as exc:
+        raise BudgetError(exc.code, str(exc)) from exc
 
 
 async def settle(session, *, key: str, plan_id: str, step_index: int,
@@ -82,6 +100,12 @@ async def settle(session, *, key: str, plan_id: str, step_index: int,
         return
     delta = float(actual) - float(reserved)
     if delta:
+        from app.services import spend_guard
+        from app.services.kie_catalog import CREDIT_USD
+        await spend_guard.settle(session, project_id=await _plan_project(session, plan_id),
+                                 run_id=f"plan:{plan_id}", reserved_usd=float(reserved) * CREDIT_USD,
+                                 actual_usd=float(actual) * CREDIT_USD, source="action_layer",
+                                 credits_delta=delta)
         session.add(store.ActionSpend(session_key=key, plan_id=plan_id, step_index=step_index,
                                       kind="settle", credits=delta))
 

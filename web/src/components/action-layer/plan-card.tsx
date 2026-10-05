@@ -3,7 +3,7 @@ import {useState} from "react";
 import {Button} from "@/components/ui/button";
 import {
   approvePlan, canApprove, canRunWithoutApproval, describeError, describeParams, formatStepCost, formatTotalCost,
-  runPlan, RISK_LABEL_RU, type PlanPreview, type PlanPreviewResponse, type RiskTier,
+  runPlan, RISK_LABEL_RU, serverTextRu, useActionTitles, type PlanPreview, type PlanPreviewResponse, type RiskTier,
 } from "@/lib/action-layer";
 import {cn} from "@/lib/utils";
 
@@ -41,6 +41,7 @@ export function PlanCard(props: Props) {
 }
 
 function PlanCardInner({plan, preview, busyElsewhere, onStarted, onDismiss}: Props & {preview: PlanPreview}) {
+  const titles = useActionTitles();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -81,14 +82,15 @@ function PlanCardInner({plan, preview, busyElsewhere, onStarted, onDismiss}: Pro
               <li key={s.index} className="rounded border border-white/[0.06] p-1.5">
                 <div className="flex items-center gap-2">
                   <span className="text-white/40">{s.index + 1}.</span>
-                  <span className="flex-1 text-white/85">{s.title_ru ?? s.action_id}</span>
+                  <span className="flex-1 text-white/85">{s.title_ru ?? titles[s.action_id] ?? s.action_id}
+                    <span className="ml-1.5 text-[10px] text-white/35">{s.action_id}</span></span>
                   <RiskBadge risk={s.risk} />
                   <span className="text-white/60">{formatStepCost(s)}</span>
                 </div>
                 <p className="text-white/45">{describeParams(params)}</p>
                 {s.cost?.basis && s.spends_money && <p className="text-white/35">Основание оценки: {s.cost.basis}</p>}
-                {s.errors.map((er, i) => <p key={`e${i}`} className="text-red-300">Ошибка: {er}</p>)}
-                {s.precondition_failures.map((f) => <p key={f.id} className="text-red-300">Не выполнено условие: {f.reason}</p>)}
+                {s.errors.map((er, i) => <p key={`e${i}`} className="text-red-300">Ошибка: {serverTextRu(er)}</p>)}
+                {s.precondition_failures.map((f) => <p key={f.id} className="text-red-300">Не выполнено условие: {serverTextRu(f.reason)}</p>)}
               </li>
             );
           })}
@@ -111,7 +113,7 @@ function PlanCardInner({plan, preview, busyElsewhere, onStarted, onDismiss}: Pro
         </div>
       )}
       {preview.errors.filter((er) => !/^step \d+:/.test(er)).length > 0 && (
-        <ul role="alert" className="list-disc pl-4 text-red-300">{preview.errors.filter((er) => !/^step \d+:/.test(er)).map((er, i) => <li key={i}>{er}</li>)}</ul>
+        <ul role="alert" className="list-disc pl-4 text-red-300">{preview.errors.filter((er) => !/^step \d+:/.test(er)).map((er, i) => <li key={i}>{serverTextRu(er)}</li>)}</ul>
       )}
 
       {confirming && (

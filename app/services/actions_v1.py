@@ -568,6 +568,13 @@ class ActionSupervisor:
                     raise RuntimeError("managed execution is absent, disabled, or held")
                 raise RuntimeError("managed execution request budget exhausted")
             used, project_id = reserved
+            from app.services import spend_guard  # local money caps, same transaction as the reservation
+            media_paid = media_reservation is not None and getattr(media_reservation, "category", "") == "generation_submit"
+            if media_reservation is None or media_paid:
+                await spend_guard.reserve(
+                    session, project_id=project_id, run_id=execution_id,
+                    estimate_usd=spend_guard.MEDIA_SUBMIT_ESTIMATE_USD if media_paid else spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
+                    source="media_submit" if media_paid else "supervisor_request", track=not media_paid)
             if media_reservation is not None:
                 from app.services.media_jobs import stage_reservation
                 await stage_reservation(session, media_reservation)

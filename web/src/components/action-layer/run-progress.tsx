@@ -2,7 +2,7 @@
 import {useCallback, useEffect, useState} from "react";
 import {Button} from "@/components/ui/button";
 import {
-  describeError, formatCredits, getPlan, isTerminal, PLAN_STATUS_RU, STEP_STATUS_RU, stopPlan, type PlanView,
+  describeError, formatCredits, getPlan, isTerminal, runPlan, PLAN_STATUS_RU, serverTextRu, STEP_STATUS_RU, stopPlan, stopReasonRu, useActionTitles, type PlanView,
 } from "@/lib/action-layer";
 import {cn} from "@/lib/utils";
 
@@ -12,6 +12,7 @@ interface Props {
 }
 
 export function RunProgress({planId, onFinished}: Props) {
+  const titles = useActionTitles();
   const [view, setView] = useState<PlanView | null>(null);
   const [error, setError] = useState("");
   const [stopping, setStopping] = useState(false);
@@ -38,6 +39,11 @@ export function RunProgress({planId, onFinished}: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planId]);
 
+  const resume = useCallback(async () => {
+    setStopping(true);
+    try { await runPlan(planId); setError(""); } catch (e) { setError(describeError(e)); } finally { setStopping(false); }
+  }, [planId]);
+
   const stop = useCallback(async () => {
     setStopping(true);
     try { await stopPlan(planId); } catch (e) { setError(describeError(e)); } finally { setStopping(false); }
@@ -52,6 +58,11 @@ export function RunProgress({planId, onFinished}: Props) {
           Выполнение: {PLAN_STATUS_RU[view.status]}
           {view.interrupted && " (прервано перезапуском)"}
         </h5>
+        {active && view.interrupted && (
+          <Button size="sm" variant="outline" className="h-7 text-xs" disabled={stopping} onClick={() => void resume()}>
+            Продолжить
+          </Button>
+        )}
         {active && (
           <Button size="sm" variant="destructive" className="h-7 text-xs" disabled={stopping || view.stop_requested} onClick={() => void stop()}>
             {view.stop_requested ? "Останавливаю…" : "Остановить"}
@@ -63,7 +74,8 @@ export function RunProgress({planId, onFinished}: Props) {
           <li key={s.index} className="rounded border border-white/[0.06] p-1.5">
             <div className="flex items-center gap-2">
               <span className="text-white/40">{s.index + 1}.</span>
-              <span className="flex-1 text-white/85">{s.action_id}</span>
+              <span className="flex-1 text-white/85">{titles[s.action_id] ?? s.action_id}
+                <span className="ml-1.5 text-[10px] text-white/35">{s.action_id}</span></span>
               <span className={cn(
                 s.status === "failed" || s.status === "unknown" ? "text-red-300"
                   : s.status === "succeeded" ? "text-emerald-300"
@@ -87,20 +99,29 @@ export function RunProgress({planId, onFinished}: Props) {
                 {s.cost.actual != null ? ` · фактически ${formatCredits(s.cost.actual, s.cost.actual)}` : " · факт пока неизвестен"}
               </p>
             )}
-            {s.error && <p role="alert" className="text-red-300">Ошибка: {s.error}</p>}
+            {s.error && (s.status === "cancelled"
+              ? <p className="text-white/50">Остановлено: {serverTextRu(s.error)}</p>
+              : <p role="alert" className="text-red-300">Ошибка: {serverTextRu(s.error)}</p>)}
             {s.status === "unknown" && <p className="text-red-300">Состояние шага неизвестно: проверьте результат вручную, автоповтора нет.</p>}
           </li>
         ))}
       </ol>
       <p className="text-white/60">
-        Потрачено: {formatCredits(view.spent_credits, view.spent_credits)} из потолка {view.budget_cap_credits} кр.
+        {view.status === "succeeded" ? "Потрачено по журналу" : "Зарезервировано (макс.)"}: {formatCredits(view.spent_credits, view.spent_credits)} из потолка {view.budget_cap_credits} кр.
+        {view.actual_credits != null && <> · Потрачено (факт): {formatCredits(view.actual_credits, view.actual_credits)}</>}
       </p>
-      {view.stop_reason && (
-        <p role="status" className="text-amber-200">
-          Причина остановки: {view.stop_reason === "kill_switch_active" ? "включён аварийный стоп оркестратора (kill_switch_active)" : view.stop_reason}
+      {view.interrupted && (
+        <p className="text-amber-200">
+          План прерван перезапуском. «Продолжить» не повторяет шаг с неизвестным исходом.
+          {view.resume_expired ? " Окно возобновления истекло: сервер потребует новое подтверждение." : ""}
         </p>
       )}
-      {view.error && <p role="alert" className="text-red-300">Ошибка плана: {view.error}</p>}
+      {view.stop_reason && (
+        <p role="status" className="text-amber-200">
+          Причина остановки: {stopReasonRu(view.stop_reason)}
+        </p>
+      )}
+      {view.error && <p role="alert" className="text-red-300">Ошибка плана: {serverTextRu(view.error)}</p>}
       {error && <p role="alert" className="text-red-300">{error}</p>}
     </section>
   );

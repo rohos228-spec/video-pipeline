@@ -459,6 +459,7 @@ class DecisionSupervisor:
         return ctx
 
     async def escalate(self,decision_id,reason):
+        reason=redact(str(reason))
         from app.services.actions_v1 import ActionSupervisor,ActionRecord,ActionExecutionControl
         from app.services.diagnosis import Incident
         from app.services.human_review_summary import build_human_review_summary

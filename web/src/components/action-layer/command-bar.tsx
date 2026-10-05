@@ -3,7 +3,7 @@ import {useEffect, useId, useState} from "react";
 import {Button} from "@/components/ui/button";
 import {
   getCatalog, listMacros, macroTitle, planFromMacro, planFromText, previewFromError, previewPlan, describeError,
-  buildMacroParams, macroInitialValues, type ActionSpecJson, type MacroJson, type PlanPreviewResponse, type SceneContext,
+  buildMacroParams, macroInitialValues, paramHint, paramLabel, type ActionSpecJson, type MacroJson, type PlanPreviewResponse, type SceneContext,
 } from "@/lib/action-layer";
 
 interface Props {
@@ -133,12 +133,14 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan}: Prop
           {openMacro.description_ru && <p className="text-white/50">{openMacro.description_ru}</p>}
           {Object.entries(openMacro.params_schema?.properties ?? {}).filter(([k]) => k !== "project_id").map(([k, sch]) => {
             const required = (openMacro.params_schema?.required ?? []).includes(k);
-            const label = sch.title ?? sch.description ?? k;
+            const label = sch.title ?? paramLabel(k);
+            const hint = paramHint(k);
             const val = macroValues[k];
             const set = (v: string | boolean) => setMacroValues((p) => ({...p, [k]: v}));
             return (
               <label key={k} className="block">
                 <span className="text-white/60">{label}{required ? " *" : ""}</span>
+                {hint && <span className="ml-1 text-white/35">({hint})</span>}
                 {sch.type === "boolean" ? (
                   <input type="checkbox" className="ml-2" checked={Boolean(val)} onChange={(e) => set(e.target.checked)} />
                 ) : sch.enum ? (
@@ -180,10 +182,21 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan}: Prop
               }}
               className="ml-2 h-7 max-w-full rounded border border-white/10 bg-black/40 text-xs">
               <option value="">— выберите —</option>
-              {catalog.map((a) => <option key={a.id} value={a.id}>{a.title_ru} ({a.id})</option>)}
+              {catalog.map((a) => <option key={a.id} value={a.id}>{a.title_ru}</option>)}
             </select>
           </label>
           {selected && <p className="text-white/45">{selected.description_ru}</p>}
+          {selected && Object.keys(selected.params_schema.properties ?? {}).length > 0 && (
+            <ul className="space-y-0.5 text-white/45" aria-label="Поля параметров">
+              {Object.keys(selected.params_schema.properties ?? {}).map((k) => (
+                <li key={k}>
+                  <span className="text-white/65">{paramLabel(k)}</span>
+                  {(selected.params_schema.required ?? []).includes(k) ? " *" : ""}
+                  {paramHint(k) ? ` (${paramHint(k)})` : ""}{paramLabel(k) !== k && <>: <code className="text-white/40">{k}</code></>}
+                </li>
+              ))}
+            </ul>
+          )}
           <label className="block">
             <span className="text-white/50">Параметры (JSON)</span>
             <textarea value={paramsText} onChange={(e) => setParamsText(e.target.value)} rows={2}

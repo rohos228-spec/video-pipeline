@@ -366,6 +366,15 @@ class Settings(BaseSettings):
     web_enabled: bool = Field(True, alias="WEB_ENABLED")
     web_host: str = Field("127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(8765, alias="WEB_PORT")
+    # Безопасные умолчания (docs/SECURITY_DEFAULTS.md)
+    # Без веб-авторизации изменяющие ручки управления принимаются только с loopback;
+    # true снимает это ограничение.
+    orchestrator_allow_remote_without_auth: bool = Field(
+        False, alias="ORCHESTRATOR_ALLOW_REMOTE_WITHOUT_AUTH")
+    # False — строки вызовов API не отправляются в облачный трекер (локальная запись остаётся).
+    api_tracker_cloud_enabled: bool = Field(True, alias="API_TRACKER_CLOUD_ENABLED")
+    # False — чат-оркестратор отказывает в edit_files / git_commit_push.
+    chat_code_actions_enabled: bool = Field(True, alias="CHAT_CODE_ACTIONS_ENABLED")
 
     # Журнал наблюдателя: квота тел запросов/ответов на ПРОЕКТ и срок хранения
     # тел закрытых выполнений (живые и связанные с открытым инцидентом не трогаются).
@@ -377,9 +386,18 @@ class Settings(BaseSettings):
     action_layer_session_cap_credits: float = Field(
         200.0, ge=0, alias="ACTION_LAYER_SESSION_CAP_CREDITS"
     )
+    # Локальные денежные потолки надзорного слоя (USD, 0 = без ограничения); docs/SPEND_LIMITS.md.
+    spend_daily_cap_usd: float = Field(25.0, ge=0, alias="SPEND_DAILY_CAP_USD")
+    spend_project_cap_usd: float = Field(10.0, ge=0, alias="SPEND_PROJECT_CAP_USD")
+    spend_run_cap_usd: float = Field(5.0, ge=0, alias="SPEND_RUN_CAP_USD")
+    # HTTP 402 / нет кредитов у провайдера: включить аварийный стоп надзорного слоя.
+    spend_auto_kill_on_402: bool = Field(True, alias="SPEND_AUTO_KILL_ON_402")
     action_layer_approval_ttl_s: int = Field(600, ge=1, alias="ACTION_LAYER_APPROVAL_TTL_S")
     action_layer_max_steps: int = Field(20, ge=1, le=100, alias="ACTION_LAYER_MAX_STEPS")
     action_layer_step_timeout_s: float = Field(900.0, gt=0, alias="ACTION_LAYER_STEP_TIMEOUT_S")
+    # Окно, в течение которого прерванный план можно продолжить по уже израсходованному
+    # подтверждению; позже нужно новое подтверждение оператора.
+    action_layer_resume_window_s: int = Field(3600, ge=1, alias="ACTION_LAYER_RESUME_WINDOW_S")
     # Лимит обращений планировщика к модели на оператора в час (каждый POST считается).
     action_layer_planner_calls_per_hour: int = Field(
         30, ge=1, le=10000, alias="ACTION_LAYER_PLANNER_CALLS_PER_HOUR"

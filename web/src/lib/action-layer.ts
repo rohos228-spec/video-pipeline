@@ -3,6 +3,7 @@
  * Только типы, вызовы REST и чистые функции форматирования. Подтверждение создаётся
  * только явным вызовом approvePlan из обработчика клика оператора.
  */
+import { useEffect, useState } from "react";
 import { ApiError, http } from "./api";
 
 const BASE = "/api/action-layer";
@@ -115,6 +116,12 @@ export interface PlanView {
   error: string | null;
   live: boolean;
   interrupted: boolean;
+  /** Резерв по журналу расходов (верхняя граница), а не факт. */
+  reserved_credits?: number;
+  /** Сумма credits_spent, которую сообщили сами действия; null, если факт не сообщён. */
+  actual_credits?: number | null;
+  resume_window_s?: number;
+  resume_expired?: boolean;
   created_at: string | null;
   updated_at: string | null;
   finished_at: string | null;
@@ -209,6 +216,15 @@ export const approvePlan = (planId: string) =>
 
 export const runPlan = (planId: string) =>
   http<{ plan_id: string; status: string }>(`${BASE}/plans/${encodeURIComponent(planId)}/run`, { method: "POST", body: "{}" });
+
+export interface PlanListItem {
+  id: string; status: PlanStatus; project_id: number | null; request_text: string;
+  live: boolean; interrupted: boolean; created_at: string | null; updated_at: string | null;
+}
+
+/** Планы по статусу (для восстановления экрана выполнения после перезагрузки страницы). */
+export const listPlans = (status: string, limit = 10) =>
+  http<{ items: PlanListItem[] }>(`${BASE}/plans?status=${encodeURIComponent(status)}&limit=${limit}`);
 
 export const getPlan = (planId: string) =>
   http<PlanView>(`${BASE}/plans/${encodeURIComponent(planId)}`);
@@ -375,12 +391,97 @@ export function formatTotalCost(preview: PlanPreview): string {
   return base;
 }
 
-const PARAM_LABEL_RU: Record<string, string> = {
-  project_id: "проект", frame_id: "кадр", scene_id: "сцена", shot_id: "план",
-  voiceover: "озвучка", coverage: "покрытие", ops: "операции", status: "статус",
+export interface ParamInfo { label: string; hint?: string }
+
+/** Русские подписи параметров действий и умных кнопок. Неизвестные имена показываются как есть. */
+export const PARAM_RU: Record<string, ParamInfo> = {
+  project_id: { label: "Проект" },
+  frame_id: { label: "Номер кадра", hint: "номер кадра на доске монтажа" },
+  frame_number: { label: "Номер кадра", hint: "порядковый номер кадра в сцене" },
+  frame_ids: { label: "Кадры", hint: "список номеров кадров" },
+  frame_numbers: { label: "Номера кадров", hint: "список номеров; пусто означает все кадры" },
+  frame_uuid: { label: "Идентификатор кадра" },
+  after_frame_id: { label: "После кадра", hint: "номер кадра, после которого вставить" },
+  left_frame_id: { label: "Левый кадр" },
+  right_frame_id: { label: "Правый кадр" },
+  a_frame: { label: "Первый кадр" },
+  b_frame: { label: "Второй кадр" },
+  from_frame: { label: "Из кадра" },
+  to_frame: { label: "В кадр" },
+  a_shot: { label: "План первого кадра", hint: "1 или 2" },
+  b_shot: { label: "План второго кадра", hint: "1 или 2" },
+  from_shot: { label: "Из плана", hint: "1 или 2" },
+  to_shot: { label: "В план", hint: "1 или 2" },
+  from_slot: { label: "Из ячейки" },
+  to_slot: { label: "В ячейку" },
+  shot: { label: "План", hint: "1 или 2" },
+  shot_id: { label: "План" },
+  slot: { label: "Ячейка" },
+  slot_id: { label: "Ячейка" },
+  scene_id: { label: "Сцена" },
+  scene_number: { label: "Номер сцены" },
+  scene_prompt: { label: "Описание сцены" },
+  parent_number: { label: "Номер родительского кадра" },
+  parent_uuid: { label: "Идентификатор родительского кадра" },
+  before_index: { label: "Вставить перед позицией" },
+  text: { label: "Текст", hint: "новый текст закадра" },
+  prompt: { label: "Описание сцены", hint: "что должно быть в сцене" },
+  instruction: { label: "Что изменить", hint: "правка простыми словами" },
+  voiceover: { label: "Закадровый текст" },
+  value: { label: "Значение" },
+  field: { label: "Поле" },
+  kind: { label: "Тип" },
+  type: { label: "Тип операции" },
+  role: { label: "Роль" },
+  variant: { label: "Вариант" },
+  desc: { label: "Описание" },
+  title: { label: "Название" },
+  description: { label: "Описание" },
+  name: { label: "Название" },
+  file: { label: "Файл" },
+  category: { label: "Категория" },
+  status: { label: "Статус" },
+  coverage: { label: "Покрытие" },
+  count: { label: "Количество вариантов" },
+  max_image_ops: { label: "Макс. операций с картинками", hint: "лимит платных операций с картинками" },
+  max_video_ops: { label: "Макс. операций с видео", hint: "лимит платных операций с видео" },
+  image_generator: { label: "Генератор картинок", hint: "идентификатор модели" },
+  image_resolution: { label: "Разрешение картинок" },
+  video_generator: { label: "Генератор видео", hint: "идентификатор модели" },
+  video_resolution: { label: "Разрешение видео" },
+  node_key: { label: "Ключ ноды", hint: "идентификатор ноды группы" },
+  node_ids: { label: "Ноды" },
+  group_id: { label: "Группа" },
+  ref_id: { label: "Референс" },
+  step_code: { label: "Код шага" },
+  ops: { label: "Операции" },
+  action: { label: "Действие" },
+  after: { label: "После" },
+  anchors: { label: "Опорные точки" },
+  anchor: { label: "Опорная точка" },
+  change: { label: "Изменение" },
+  main: { label: "Основная" },
+  correction: { label: "Поправка" },
+  replace_ns: { label: "Заменить номера" },
+  clear: { label: "Сбросить" },
+  clear_all: { label: "Очистить всё" },
+  start: { label: "Начало" },
+  end: { label: "Конец" },
+  full: { label: "Весь отрезок" },
+  method: { label: "Метод" },
+  force_asr: { label: "Принудительно распознать речь" },
+  bgm_level: { label: "Громкость фоновой музыки" },
+  skip_intro_enabled: { label: "Пропускать заставку" },
+  skip_intro_seconds: { label: "Длина заставки, сек." },
+  subtitles_enabled: { label: "Субтитры" },
+  post_voiceover_tail_seconds: { label: "Пауза после закадра, сек." },
+  disabled: { label: "Отключено" },
 };
 
-/** Параметры шага простым языком: «проект: 12; кадр: 3». */
+export const paramLabel = (name: string): string => PARAM_RU[name]?.label ?? name;
+export const paramHint = (name: string): string | undefined => PARAM_RU[name]?.hint;
+
+/** Параметры шага простым языком: «Проект: 12; Номер кадра: 3». */
 export function describeParams(params: Record<string, unknown> | undefined | null): string {
   const entries = Object.entries(params ?? {});
   if (entries.length === 0) return "без параметров";
@@ -388,9 +489,80 @@ export function describeParams(params: Record<string, unknown> | undefined | nul
     .map(([k, v]) => {
       const val = typeof v === "string" ? v : typeof v === "boolean" ? (v ? "да" : "нет") : JSON.stringify(v);
       const short = val.length > 80 ? `${val.slice(0, 80)}…` : val;
-      return `${PARAM_LABEL_RU[k] ?? k}: ${short}`;
+      return `${paramLabel(k)}: ${short}`;
     })
     .join("; ");
+}
+
+/** Итоги и причины, которые сервер пишет в журнал и в план. */
+export const OUTCOME_RU: Record<string, string> = {
+  proposed: "предложен",
+  approved: "подтверждён",
+  consumed: "использовано",
+  start: "запущен",
+  resume: "продолжен после перезапуска",
+  requested: "запрошено",
+  running: "выполняется",
+  succeeded: "готово",
+  failed: "ошибка",
+  stopped: "остановлен",
+  blocked: "заблокировано",
+  unknown: "неизвестно",
+  skipped: "пропущен",
+  cancelled: "отменён",
+  interrupted: "прервано перезапуском",
+  pending: "ожидает",
+};
+export const outcomeRu = (o: string | null | undefined): string => (o ? (OUTCOME_RU[o] ?? o) : "");
+
+export const STOP_REASON_RU: Record<string, string> = {
+  operator_stop: "остановлено оператором",
+  kill_switch_active: "включён аварийный стоп оркестратора",
+  resume_window_expired: "прошло слишком много времени после прерывания: нужно новое подтверждение",
+};
+export const stopReasonRu = (r: string): string => STOP_REASON_RU[r] ?? r;
+
+/** Переводит известные английские тексты ошибок сервера; неизвестные оставляет как есть. */
+export function serverTextRu(t: string | null | undefined): string {
+  if (!t) return "";
+  let m: RegExpMatchArray | null;
+  if ((m = t.match(/^step (\d+): ([\s\S]*)$/))) return `шаг ${Number(m[1]) + 1}: ${serverTextRu(m[2])}`;
+  if (/^outcome unknown after interruption/.test(t)) return "результат неизвестен после прерывания, нужен ручной разбор";
+  if (/^timeout \(outcome unknown\)/.test(t)) return "время вышло, результат неизвестен";
+  if ((m = t.match(/^check failed: ActionCallError: HTTP (\d+): ([\s\S]*)$/))) return `проверка не пройдена (HTTP ${m[1]}): ${m[2]}`;
+  if ((m = t.match(/^check failed: ([\s\S]*)$/))) return `проверка не пройдена: ${m[1]}`;
+  if (t === "blocked") return "заблокировано";
+  if (t === "invalid params") return "неверные параметры";
+  if (t === "step was claimed elsewhere") return "шаг уже взят в работу в другом месте";
+  if ((m = t.match(/^dependency (\d+) not satisfied/))) return `не выполнен шаг ${Number(m[1]) + 1}, от которого зависит этот`;
+  if ((m = t.match(/^precondition (\S+) failed/))) return `не выполнено условие (${m[1]})`;
+  if ((m = t.match(/^budget: (\S+)/))) return `ограничение бюджета (${m[1]})`;
+  if (t === "kill_switch_active") return "включён аварийный стоп оркестратора";
+  if (t === "operator_stop") return "остановлено оператором";
+  if (t === "stopped by operator") return "остановлено оператором";
+  if (t === "stopped by kill switch") return "остановлено аварийным стопом";
+  return t;
+}
+
+let titlesPromise: Promise<Record<string, string>> | null = null;
+/** Словарь «id действия -> русское название» из каталога (кэшируется на время сессии страницы). */
+export function loadActionTitles(): Promise<Record<string, string>> {
+  if (!titlesPromise) {
+    titlesPromise = getCatalog()
+      .then((c) => Object.fromEntries(c.actions.map((a) => [a.id, a.title_ru])))
+      .catch(() => { titlesPromise = null; return {} as Record<string, string>; });
+  }
+  return titlesPromise;
+}
+
+export function useActionTitles(): Record<string, string> {
+  const [t, setT] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let off = false;
+    void loadActionTitles().then((r) => { if (!off) setT(r); });
+    return () => { off = true; };
+  }, []);
+  return t;
 }
 
 /** «Выполнить» без подтверждения допустимо только если сервер не требует approval и план валиден. */
@@ -428,7 +600,7 @@ export function buildMacroParams(m: MacroJson, values: Record<string, string | b
   const req = new Set(m.params_schema?.required ?? []);
   for (const [k, sch] of Object.entries(m.params_schema?.properties ?? {})) {
     const raw = values[k];
-    const label = sch.title ?? sch.description ?? k;
+    const label = sch.title ?? paramLabel(k);
     if (sch.type === "boolean") { params[k] = Boolean(raw); continue; }
     const str = typeof raw === "string" ? raw.trim() : "";
     if (str === "") { if (req.has(k)) errors.push(`Заполните поле: ${label}`); continue; }

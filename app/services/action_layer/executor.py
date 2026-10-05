@@ -32,6 +32,10 @@ class _Stopped(Exception):
     pass
 
 
+class _KillSwitchStopped(Exception):
+    """Глобальный аварийный стоп включили во время выполнения фонового шага."""
+
+
 def is_live(plan_id: str) -> bool:
     task = _TASKS.get(plan_id)
     return task is not None and not task.done()
@@ -274,6 +278,10 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
         await _close_step(plan_id, step, store.STEP_CANCELLED, "stopped by operator",
                           "step_cancelled", operator, est_pair)
         return "stopped"
+    except _KillSwitchStopped:
+        await _close_step(plan_id, step, store.STEP_CANCELLED,
+                          "stopped by kill switch", "step_cancelled", operator, est_pair)
+        return "blocked"
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -331,6 +339,16 @@ async def _execute(plan_id: str, spec: ActionSpec, ctx: ActionContext, params: d
             raise RuntimeError(state.error or "job failed")
         if await _stop_requested(plan_id):
             await _call_stop(plan_id, cur)
+        if await _kill_switch_on():
+            # Аварийный стоп действует и на уже идущую задачу: останавливаем её и закрываем шаг.
+            await _call_stop(plan_id, cur)
+            async with store.sessions()() as s:
+                store.append_history(s, event="kill_switch_block", plan_id=plan_id,
+                                     step_index=ctx.step_index, actor=ctx.operator,
+                                     action_id=spec.id, outcome="blocked",
+                                     error=budget.KILL_SWITCH_REASON)
+                await s.commit()
+            raise _KillSwitchStopped()
         await asyncio.sleep(spec.poll_interval_s)
 
 

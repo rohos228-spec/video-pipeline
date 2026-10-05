@@ -1052,15 +1052,34 @@ def _track_api_cost(*, model, usage, duration_sec, project_id=None,
         if provider == "vibecode":
             extra["metadata"] = api_tracker_hook.vibecode_cost_metadata(
                 model, usage_known=bool(prompt_tokens or completion_tokens))
+        if status_code == 200:  # local spend ledger: settle the reservation / record a native call
+            from app.services import spend_guard
+            spend_guard.schedule_actual(project_id=project_id, provider=provider, usd=api_tracker_hook._calc_cost(
+                str(model or "unknown"), prompt_tokens, completion_tokens, "text", duration_sec,
+                cached_tok=cached_tokens, provider=provider))
         api_tracker_hook.record_api_call(
             provider=provider, model=str(model or "unknown"), call_type="text",
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
             cached_tokens=cached_tokens, duration_sec=duration_sec,
-            status_code=status_code, error_message=error_message[:500],
+            status_code=status_code, error_message=str(redact(str(error_message or "")))[:500],
             project_source=str(project_id) if project_id is not None else "", **extra,
         )
     except Exception:
         pass  # Cost tracking is observational only; it must never affect the real request.
+
+
+async def _credit_guard(exc, provider, master=None):
+    """HTTP 402 / credits exhausted -> engage the supervisory kill switch (spend_guard)."""
+    try:
+        if master is None:  # unmanaged call: only with a real credential, never from synthetic/test runs
+            from app.settings import settings
+            key = str(settings.vibecode_api_key if provider == "vibecode" else settings.gpt_api_key or "").strip()
+            if not key or key.startswith("synthetic"):
+                return
+        from app.services import spend_guard
+        await spend_guard.engage_on_credit_error(exc, master=master, provider=provider)
+    except Exception:
+        pass
 
 
 def observe_model(function):
@@ -1081,6 +1100,7 @@ def observe_model(function):
                 _track_api_cost(model=kwargs.get("model"), usage=None,
                     duration_sec=time.monotonic() - start, provider=provider,
                     status_code=0, error_message=f"{type(exc).__name__}: {exc}")
+                await _credit_guard(exc, provider)
                 raise
             _track_api_cost(model=getattr(result, "model", kwargs.get("model")),
                 usage=getattr(result, "usage", None), duration_sec=time.monotonic() - start,
@@ -1158,6 +1178,8 @@ def observe_model(function):
             # reached the provider and wasn't already tracked above (the
             # "uncertain external result" re-raise follows a real, already-
             # tracked success -- tracking it again would double-count spend).
+            if call_attempted and isinstance(exc, Exception):
+                await _credit_guard(exc, provider, ctx.observer.master)
             if call_attempted and not cost_tracked:
                 _track_api_cost(model=kwargs.get("use_model"), usage=None, provider=provider,
                     duration_sec=time.monotonic() - start, project_id=getattr(ctx.scope, "project_id", None),

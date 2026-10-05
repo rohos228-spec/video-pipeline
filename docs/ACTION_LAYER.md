@@ -92,7 +92,10 @@ minLength, maxLength, pattern, items, minItems, maxItems` (jsonschema в про�
 5. План только из `read`/`local_safe` подтверждения не требует. План, не прошедший проверку на approve
    (содержимое или определения действий изменились, превышение потолка), не подтверждается.
 6. Остановленный (`stopped`) платный план можно продолжить только с новым подтверждением;
-   прерванный рестартом (`running` без живой задачи) продолжается по уже израсходованному подтверждению.
+   прерванный рестартом (`running` без живой задачи) продолжается по уже израсходованному подтверждению
+   только в окне `ACTION_LAYER_RESUME_WINDOW_S` (по умолчанию 3600 с) от последней активности плана;
+   позже `run` закрывает план как `stopped` (`stop_reason="resume_window_expired"`) и отвечает 403
+   `approval_required`: нужно новое подтверждение (`approve`, затем `run`).
 
 ## Бюджет и стоп
 
@@ -101,6 +104,13 @@ minLength, maxLength, pattern, items, minItems, maxItems` (jsonschema в про�
   Не помещается или оценка неизвестна -> шаг не стартует, план `failed`.
 - Перед каждым шагом (и перед запуском) проверяется `kill_switch`: включён -> шаги не идут,
   план `stopped` с `stop_reason="kill_switch_active"`.
+  Kill switch действует и на уже идущий фоновый шаг: на каждом опросе (`poll_interval_s`) он проверяется,
+  при включении вызывается `stop` действия, шаг закрывается как `cancelled` ("stopped by kill switch"),
+  план `stopped` с `kill_switch_active`. Резерв стоимости остаётся (факт неизвестен).
+- Резерв при остановке сохраняется (консервативно). Повторное подтверждение остановленного плана
+  резервирует стоимость заново, поэтому повторные остановки одного плана расходуют потолок.
+  `spent_credits`/`reserved_credits` в `GET /plans/{id}` - резерв/факт по журналу (верхняя граница);
+  `actual_credits` - только то, что действия сами сообщили как `credits_spent` (`null`, если ничего).
 - Один живой план на проект. Таймаут шага `ACTION_LAYER_STEP_TIMEOUT_S`; максимум шагов `ACTION_LAYER_MAX_STEPS`.
 - `stop`: флаг в БД, остановка между шагами и вызов `stop` текущего фонового действия, если оно есть.
 
@@ -118,7 +128,8 @@ append-only (триггеры SQLite блокируют UPDATE/DELETE). Созд
 | POST | `/plans/preview` | тело `{steps:[{action_id, params, depends_on}], request_text}` -> `{plan_id, preview}`; невалидный план -> 422 `{detail:{code:"plan_invalid", preview}}` |
 | POST | `/plans/{id}/approve` | `{approval_id, plan_id, plan_hash, operator, expires_at}`; 409 `{code}`: `plan_changed`, `plan_invalid`, `over_budget`, `plan_not_approvable`, `approval_not_needed`, `operator_required` |
 | POST | `/plans/{id}/run` | `{plan_id, status:"running"}`; 403 `approval_required`; 409: `already_running`, `plan_finished`, `plan_changed`, `kill_switch_active`, `project_busy` |
-| GET | `/plans/{id}` | статус плана, шаги (status, progress, result, error, cost), подтверждения, `spent_credits`, `live`, `interrupted` |
+| GET | `/plans?status=&project_id=&limit=` | `{items:[{id, status, project_id, request_text, live, interrupted, created_at, updated_at}]}`, новые первыми (восстановление экрана выполнения после перезагрузки) |
+| GET | `/plans/{id}` | статус плана, шаги (status, progress, result, error, cost), подтверждения, `spent_credits`, `reserved_credits`, `actual_credits`, `live`, `interrupted`, `resume_expired` |
 | POST | `/plans/{id}/stop` | `{status, stop_requested}` |
 | GET | `/history?plan_id=&limit=&before_id=` | `{total, items:[{id, created_at, plan_id, step_index, event, actor, request_text, action_id, params, outcome, error, cost_estimate, cost_recorded}]}` |
 

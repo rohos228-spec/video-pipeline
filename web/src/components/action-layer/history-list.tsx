@@ -1,7 +1,7 @@
 "use client";
 import {useEffect, useState} from "react";
 import {Button} from "@/components/ui/button";
-import {describeError, EVENT_RU, formatCredits, getHistory, type HistoryItem} from "@/lib/action-layer";
+import {describeError, EVENT_RU, formatCredits, getHistory, outcomeRu, serverTextRu, useActionTitles, type HistoryItem} from "@/lib/action-layer";
 
 const LIMIT = 15;
 
@@ -12,6 +12,7 @@ function when(iso: string | null): string {
 }
 
 export function HistoryList({refreshKey}: {refreshKey: number}) {
+  const titles = useActionTitles();
   const [items, setItems] = useState<HistoryItem[] | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
@@ -37,10 +38,11 @@ export function HistoryList({refreshKey}: {refreshKey: number}) {
         {items?.map((h) => (
           <div key={h.id} className="rounded border border-white/[0.06] p-1.5">
             <p className="text-white/80">
-              {EVENT_RU[h.event] ?? h.event}{h.action_id ? ` · ${h.action_id}` : ""}
+              {EVENT_RU[h.event] ?? h.event}{h.action_id ? ` · ${titles[h.action_id] ?? h.action_id}` : ""}
+              {h.action_id && titles[h.action_id] && <span className="ml-1 text-[10px] text-white/35">{h.action_id}</span>}
               {h.step_index != null ? ` (шаг ${h.step_index + 1})` : ""}
             </p>
-            <p className="text-white/45">{when(h.created_at)} · {h.actor}{h.outcome ? ` · итог: ${h.outcome}` : ""}</p>
+            <p className="text-white/45">{when(h.created_at)} · {h.actor}{h.outcome ? ` · итог: ${outcomeRu(h.outcome)}` : ""}</p>
             {h.request_text && <p className="text-white/45">Запрос: {h.request_text}</p>}
             {(h.cost_estimate.high != null || h.cost_recorded != null) && (
               <p className="text-white/45">
@@ -48,7 +50,7 @@ export function HistoryList({refreshKey}: {refreshKey: number}) {
                 {" · "}факт {h.cost_recorded != null ? formatCredits(h.cost_recorded, h.cost_recorded) : "неизвестно"}
               </p>
             )}
-            {h.error && <p className="text-red-300">Ошибка: {h.error}</p>}
+            {h.error && <p className="text-red-300">Ошибка: {serverTextRu(h.error)}</p>}
           </div>
         ))}
       </div>

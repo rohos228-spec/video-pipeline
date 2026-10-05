@@ -388,6 +388,18 @@ async def _record(operator: str, text: str, *, model: str, attempt: int, outcome
         logger.warning("planner history write failed: {}", type(exc).__name__)
 
 
+async def _spend_gate(project_id: int | None) -> None:
+    """Local money caps before the planner POST (reserve is atomic with the cap check)."""
+    from app.services import spend_guard
+    try:
+        async with store.sessions()() as s:
+            await spend_guard.reserve(s, project_id=project_id, run_id="", source="planner",
+                                      estimate_usd=spend_guard.PLANNER_ESTIMATE_USD, provider="vibecode")
+            await s.commit()
+    except spend_guard.SpendCapExceeded as exc:
+        raise PlannerRefused(exc.code, str(exc)) from exc
+
+
 async def plan_from_text(text: str, *, operator: str, project_id: int | None = None,
                          selected_scene: int | None = None, selected_frame: int | None = None,
                          registry: ActionRegistry | None = None) -> PlannerOutcome:
@@ -416,6 +428,7 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
                 decision_v1.CHAT_TOKEN_PARAM: _OUTPUT_TOKENS,
                 "response_format": {"type": "json_object"}}
         await _check_rate(operator)
+        await _spend_gate(project_id)
         started = time.monotonic()
         _pending[operator] = _pending.get(operator, 0) + 1
         try:
