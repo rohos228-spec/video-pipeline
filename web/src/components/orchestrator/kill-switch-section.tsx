@@ -55,7 +55,7 @@ export function KillSwitchSection({projectId}: {projectId: number | null}) {
   const active = Boolean(state?.active);
   const last = state?.history?.[0];
   return (
-    <section data-testid="kill-switch-panel" className="mt-3 rounded border border-white/10 p-2 space-y-2">
+    <section data-testid="kill-switch-panel" className="mt-3 rounded border border-white/10 p-2 space-y-2 text-xs text-white/80">
       <h4>Аварийный стоп оркестратора · {state ? (active ? "ВКЛЮЧЁН" : "выключен") : "состояние неизвестно"}</h4>
       <p className="text-white/60">
         Включённый стоп запрещает любой новый запрос супервизора, шаг модели решений, восстановление и новый тик управляемого

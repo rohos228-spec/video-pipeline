@@ -16,7 +16,7 @@ export function ActionLayerSection({projectId, sceneId, frameId}: {projectId: nu
   const [refresh, setRefresh] = useState(0);
 
   return (
-    <section data-testid="action-layer-panel" aria-label="Слой действий" className="mt-3 space-y-2 rounded border border-white/10 p-2">
+    <section data-testid="action-layer-panel" aria-label="Слой действий" className="mt-3 space-y-2 rounded border border-white/10 p-2 text-xs text-white/80">
       <h4>Действия по плану</h4>
       <p className="text-white/60">
         Опишите, что сделать: сначала вы увидите план, риск и стоимость. Платное и стирающее данные выполняется только после вашего подтверждения.

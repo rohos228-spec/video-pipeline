@@ -3,7 +3,7 @@ import {useEffect, useId, useState} from "react";
 import {Button} from "@/components/ui/button";
 import {
   getCatalog, listMacros, macroTitle, planFromMacro, planFromText, previewFromError, previewPlan, describeError,
-  type ActionSpecJson, type MacroJson, type PlanPreviewResponse, type SceneContext,
+  buildMacroParams, macroInitialValues, type ActionSpecJson, type MacroJson, type PlanPreviewResponse, type SceneContext,
 } from "@/lib/action-layer";
 
 interface Props {
@@ -24,6 +24,8 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan}: Prop
   const [actionId, setActionId] = useState("");
   const [paramsText, setParamsText] = useState("{}");
   const [textAvailable, setTextAvailable] = useState(true);
+  const [openMacro, setOpenMacro] = useState<MacroJson | null>(null);
+  const [macroValues, setMacroValues] = useState<Record<string, string | boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -33,15 +35,17 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan}: Prop
   }, []);
 
   const ctx = (): SceneContext | null =>
-    projectId == null ? null : {project_id: projectId, scene_id: sceneId ?? null, frame_id: frameId ?? null};
+    projectId == null ? null : {project_id: projectId, selected_scene: sceneId ?? null, selected_frame: frameId ?? null};
 
   async function guarded(fn: () => Promise<PlanPreviewResponse>, requestText: string, textRoute = false) {
     setBusy(true); setError("");
     try {
-      onPlan(await fn(), requestText);
+      const r = await fn();
+      setOpenMacro(null);
+      onPlan(r, requestText);
     } catch (e) {
       const pv = previewFromError(e);
-      if (pv) onPlan({plan_id: "", preview: pv}, requestText);
+      if (pv) onPlan({plan_id: null, preview: pv}, requestText);
       else {
         setError(describeError(e));
         if (textRoute && typeof e === "object" && e !== null && (e as {status?: number}).status === 404) setTextAvailable(false);
@@ -94,24 +98,86 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan}: Prop
 
       {macros && macros.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Умные кнопки">
-          <span className="text-[11px] text-white/45">Умные кнопки:</span>
-          {macros.map((m) => (
-            <Button key={String(m.id)} type="button" size="sm" variant="outline" className="h-7 text-[11px]"
-              title={m.description_ru ?? m.description} disabled={off}
-              onClick={() => c && void guarded(() => planFromMacro(m.id, c), macroTitle(m))}>
-              {macroTitle(m)}
-            </Button>
+          <span className="text-white/45">Умные кнопки:</span>
+          {macros.map((m) => {
+            const unavailable = m.available === false;
+            return (
+              <Button key={m.id} type="button" size="sm" variant="outline" className="h-7 text-[11px]"
+                aria-pressed={openMacro?.id === m.id}
+                title={unavailable ? `Недоступно: нет действий ${(m.missing_action_ids ?? []).join(", ")}` : m.description_ru}
+                disabled={off || unavailable}
+                onClick={() => {
+                  if (openMacro?.id === m.id) { setOpenMacro(null); return; }
+                  setOpenMacro(m); setError("");
+                  setMacroValues(macroInitialValues(m, projectId ?? 0));
+                }}>
+                {macroTitle(m)}
+              </Button>
+            );
+          })}
+          {macros.filter((m) => m.available === false).map((m) => (
+            <span key={`u${m.id}`} className="text-white/40">«{macroTitle(m)}» недоступна: нет {(m.missing_action_ids ?? []).join(", ")}</span>
           ))}
         </div>
       )}
-      {macros === null && <p className="text-[11px] text-white/35">Умные кнопки недоступны на этом сервере.</p>}
+      {openMacro && c && (
+        <form className="space-y-1.5 rounded border border-white/10 p-2" aria-label={`Параметры: ${macroTitle(openMacro)}`} data-testid="macro-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const {params, errors} = buildMacroParams(openMacro, macroValues);
+            if (errors.length) { setError(errors.join("; ")); return; }
+            const m = openMacro;
+            void guarded(() => planFromMacro(m.id, params, c, `[умная кнопка] ${macroTitle(m)}`), macroTitle(m));
+          }}>
+          <p className="font-semibold text-white/85">{macroTitle(openMacro)}</p>
+          {openMacro.description_ru && <p className="text-white/50">{openMacro.description_ru}</p>}
+          {Object.entries(openMacro.params_schema?.properties ?? {}).filter(([k]) => k !== "project_id").map(([k, sch]) => {
+            const required = (openMacro.params_schema?.required ?? []).includes(k);
+            const label = sch.title ?? sch.description ?? k;
+            const val = macroValues[k];
+            const set = (v: string | boolean) => setMacroValues((p) => ({...p, [k]: v}));
+            return (
+              <label key={k} className="block">
+                <span className="text-white/60">{label}{required ? " *" : ""}</span>
+                {sch.type === "boolean" ? (
+                  <input type="checkbox" className="ml-2" checked={Boolean(val)} onChange={(e) => set(e.target.checked)} />
+                ) : sch.enum ? (
+                  <select value={String(val ?? "")} onChange={(e) => set(e.target.value)} className="ml-2 h-7 rounded border border-white/10 bg-black/40">
+                    {!required && <option value="">—</option>}
+                    {sch.enum.map((o) => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
+                  </select>
+                ) : (sch.maxLength ?? 0) > 200 || k === "text" || k === "prompt" || k === "instruction" ? (
+                  <textarea rows={2} value={String(val ?? "")} onChange={(e) => set(e.target.value)} required={required}
+                    className="mt-0.5 w-full rounded border border-white/10 bg-black/40 p-1" />
+                ) : (
+                  <input type={sch.type === "integer" || sch.type === "number" ? "number" : "text"} value={String(val ?? "")}
+                    min={sch.minimum} max={sch.maximum} required={required} onChange={(e) => set(e.target.value)}
+                    className="ml-2 h-7 w-40 rounded border border-white/10 bg-black/40 px-1" />
+                )}
+              </label>
+            );
+          })}
+          <p className="text-white/40">Проект: #{projectId}. Будет показан план, ничего не запустится.</p>
+          <div className="flex gap-2">
+            <Button type="submit" size="sm" variant="outline" className="h-7 text-xs" disabled={off}>Показать план</Button>
+            <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setOpenMacro(null)}>Закрыть</Button>
+          </div>
+        </form>
+      )}
+      {macros === null && <p className="text-white/35">Умные кнопки недоступны на этом сервере.</p>}
 
-      <details className="text-[11px] text-white/70">
+      <details className="text-white/70">
         <summary className="cursor-pointer text-white/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary">Выбрать действие вручную</summary>
         <div className="mt-1.5 space-y-1.5">
           <label className="block">
             <span className="text-white/50">Действие</span>
-            <select value={actionId} onChange={(e) => setActionId(e.target.value)}
+            <select value={actionId} onChange={(e) => {
+                const id = e.target.value;
+                setActionId(id);
+                const a = catalog.find((x) => x.id === id);
+                const props = a?.params_schema.properties ?? {};
+                setParamsText("project_id" in props && projectId != null ? JSON.stringify({project_id: projectId}) : "{}");
+              }}
               className="ml-2 h-7 max-w-full rounded border border-white/10 bg-black/40 text-xs">
               <option value="">— выберите —</option>
               {catalog.map((a) => <option key={a.id} value={a.id}>{a.title_ru} ({a.id})</option>)}
@@ -128,7 +194,7 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan}: Prop
           </Button>
         </div>
       </details>
-      {error && <p role="alert" className="text-[11px] text-red-300">{error}</p>}
+      {error && <p role="alert" className="text-red-300">{error}</p>}
     </div>
   );
 }

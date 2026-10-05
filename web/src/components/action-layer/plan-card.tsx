@@ -3,7 +3,7 @@ import {useState} from "react";
 import {Button} from "@/components/ui/button";
 import {
   approvePlan, canApprove, canRunWithoutApproval, describeError, describeParams, formatStepCost, formatTotalCost,
-  runPlan, RISK_LABEL_RU, type PlanPreviewResponse, type RiskTier,
+  runPlan, RISK_LABEL_RU, type PlanPreview, type PlanPreviewResponse, type RiskTier,
 } from "@/lib/action-layer";
 import {cn} from "@/lib/utils";
 
@@ -26,19 +26,33 @@ interface Props {
   onDismiss: () => void;
 }
 
-export function PlanCard({plan, busyElsewhere, onStarted, onDismiss}: Props) {
-  const {preview} = plan;
+export function PlanCard(props: Props) {
+  const {plan, onDismiss} = props;
+  if (!plan.preview) {
+    return (
+      <section aria-label="Уточнение" data-testid="action-plan-card" className="space-y-2 rounded border border-amber-400/30 bg-amber-500/10 p-2 text-xs">
+        <p className="font-semibold text-amber-100">Планировщик просит уточнить запрос. План не создан, ничего не запущено.</p>
+        {plan.explanation_ru && <p className="text-amber-50/90">{plan.explanation_ru}</p>}
+        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onDismiss}>Закрыть</Button>
+      </section>
+    );
+  }
+  return <PlanCardInner {...props} preview={plan.preview} />;
+}
+
+function PlanCardInner({plan, preview, busyElsewhere, onStarted, onDismiss}: Props & {preview: PlanPreview}) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const hasId = Boolean(plan.plan_id);
+  const planId = plan.plan_id;
+  const hasId = Boolean(planId);
 
   async function go(withApproval: boolean) {
     setBusy(true); setError("");
     try {
-      if (withApproval) await approvePlan(plan.plan_id); // только из клика оператора
-      await runPlan(plan.plan_id);
-      onStarted(plan.plan_id);
+      if (withApproval) await approvePlan(planId as string); // только из клика оператора
+      await runPlan(planId as string);
+      onStarted(planId as string);
     } catch (e) {
       setError(describeError(e));
     } finally {
@@ -51,17 +65,12 @@ export function PlanCard({plan, busyElsewhere, onStarted, onDismiss}: Props) {
   const unknownCost = preview.cost.unknown_steps > 0;
 
   return (
-    <section aria-label="Предпросмотр плана" data-testid="action-plan-card" className="space-y-2 rounded border border-white/10 p-2">
+    <section aria-label="Предпросмотр плана" data-testid="action-plan-card" className="space-y-2 rounded border border-white/10 p-2 text-xs">
       <div className="flex items-center justify-between gap-2">
         <h5 className="font-semibold text-white/85">План до выполнения · ничего ещё не запущено</h5>
         <RiskBadge risk={preview.risk_max} />
       </div>
-      {plan.explanation && <p className="text-white/70">{plan.explanation}</p>}
-      {plan.clarification && (
-        <p role="status" className="rounded border border-amber-400/30 bg-amber-500/10 p-1.5 text-amber-100">
-          Нужно уточнение: {plan.clarification}
-        </p>
-      )}
+      {plan.explanation_ru && <p className="text-white/70">{plan.explanation_ru}</p>}
       {preview.steps.length === 0 ? (
         <p className="text-white/50">Модель не предложила ни одного шага.</p>
       ) : (
@@ -90,7 +99,7 @@ export function PlanCard({plan, busyElsewhere, onStarted, onDismiss}: Props) {
         Стоимость всего плана: <strong>{total}</strong>
         {preview.budget && <span className="text-white/45"> · потолок {preview.budget.cap_credits} кр., осталось {preview.budget.remaining_credits} кр.</span>}
       </p>
-      {preview.budget && !preview.budget.fits && <p role="alert" className="text-red-300">План не помещается в потолок расходов (код: over_budget).</p>}
+      {preview.budget && !preview.budget.fits && !unknownCost && <p role="alert" className="text-red-300">План не помещается в потолок расходов (код: over_budget).</p>}
       {unknownCost && <p className="text-amber-200">Цена части платных шагов неизвестна: сервер не запустит такой план.</p>}
 
       {preview.destructive_effects.length > 0 && (
@@ -101,18 +110,18 @@ export function PlanCard({plan, busyElsewhere, onStarted, onDismiss}: Props) {
           </ul>
         </div>
       )}
-      {preview.errors.length > 0 && (
-        <ul role="alert" className="list-disc pl-4 text-red-300">{preview.errors.map((er, i) => <li key={i}>{er}</li>)}</ul>
+      {preview.errors.filter((er) => !/^step \d+:/.test(er)).length > 0 && (
+        <ul role="alert" className="list-disc pl-4 text-red-300">{preview.errors.filter((er) => !/^step \d+:/.test(er)).map((er, i) => <li key={i}>{er}</li>)}</ul>
       )}
 
       {confirming && (
         <div role="alertdialog" aria-label="Подтверждение выполнения" className="space-y-1 rounded border border-amber-400/40 bg-amber-500/10 p-2 text-amber-50">
           <p>
             Вы подтверждаете выполнение шагов: {preview.steps.length}.
-            {spends ? ` Будет потрачено: ${total}.` : ""}
+            {` Стоимость: ${total.replace(/\.$/, "")}${spends ? " (будет потрачено)" : ""}.`}
           </p>
           {preview.destructive_effects.length > 0 && (
-            <p>Будет стёрто: {preview.destructive_effects.map((d) => d.text).join("; ")}.</p>
+            <p>Будет стёрто: {preview.destructive_effects.map((d) => d.text.replace(/\.$/, "")).join("; ")}.</p>
           )}
           <div className="flex gap-2">
             <Button size="sm" variant="destructive" className="h-7 text-xs" disabled={busy || busyElsewhere} onClick={() => void go(true)}>

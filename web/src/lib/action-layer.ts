@@ -68,10 +68,13 @@ export interface PlanPreview {
 
 /** Ответ preview / from-text / from-macro. Поля модели необязательны (зависят от маршрута). */
 export interface PlanPreviewResponse {
-  plan_id: string;
-  preview: PlanPreview;
-  explanation?: string | null;
-  clarification?: string | null;
+  /** null, если планировщик просит уточнение или план не прошёл проверку. */
+  plan_id: string | null;
+  preview: PlanPreview | null;
+  explanation_ru?: string | null;
+  needs_clarification?: boolean;
+  context_version?: string | number | null;
+  macro_id?: string | null;
   steps?: { action_id: string; params: Record<string, unknown>; depends_on?: number[] }[];
 }
 
@@ -137,13 +140,25 @@ export interface HistoryItem {
 export interface HistoryResponse { total: number; items: HistoryItem[] }
 
 /** Умная кнопка (макрос). Форма ответа допускает несколько вариантов имён полей. */
-export interface MacroJson {
-  id: string | number;
-  title_ru?: string;
-  title?: string;
-  name?: string;
-  description_ru?: string;
+export interface MacroParamSchema {
+  type?: string;
+  enum?: unknown[];
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  default?: unknown;
   description?: string;
+  title?: string;
+}
+export interface MacroJson {
+  id: string;
+  title_ru?: string;
+  description_ru?: string;
+  params_schema?: { required?: string[]; properties?: Record<string, MacroParamSchema> };
+  builtin?: boolean;
+  available?: boolean;
+  missing_action_ids?: string[];
 }
 
 export interface PlanStepInput { action_id: string; params: Record<string, unknown>; depends_on?: number[] }
@@ -158,18 +173,23 @@ export const previewPlan = (steps: PlanStepInput[], requestText = "") =>
     body: JSON.stringify({ steps: steps.map((s) => ({ depends_on: [], ...s })), request_text: requestText }),
   });
 
-export interface SceneContext { project_id: number; scene_id?: number | null; frame_id?: number | null }
+export interface SceneContext { project_id: number; selected_scene?: number | null; selected_frame?: number | null }
+
+const sel = (ctx: SceneContext) => ({
+  ...(ctx.selected_scene ? { selected_scene: ctx.selected_scene } : {}),
+  ...(ctx.selected_frame ? { selected_frame: ctx.selected_frame } : {}),
+});
 
 export const planFromText = (text: string, ctx: SceneContext) =>
   http<PlanPreviewResponse>(`${BASE}/plans/from-text`, {
     method: "POST",
-    body: JSON.stringify({ text, ...ctx }),
+    body: JSON.stringify({ text, project_id: ctx.project_id, ...sel(ctx) }),
   }, 90_000);
 
-export const planFromMacro = (macroId: string | number, ctx: SceneContext) =>
+export const planFromMacro = (macroId: string, params: Record<string, unknown>, ctx: SceneContext, requestText = "") =>
   http<PlanPreviewResponse>(`${BASE}/plans/from-macro`, {
     method: "POST",
-    body: JSON.stringify({ macro_id: macroId, ...ctx }),
+    body: JSON.stringify({ macro_id: macroId, params, request_text: requestText, ...sel(ctx) }),
   });
 
 /** Возвращает null, если маршрут отсутствует (404/405): функция недоступна, не ошибка. */
@@ -203,7 +223,9 @@ export const getHistory = (limit = 20) =>
 
 export const ERROR_TEXT_RU: Record<string, string> = {
   plan_invalid: "План не прошёл проверку: исправьте шаги и составьте план заново.",
+  bad_plan: "План составлен неверно.",
   plan_changed: "План изменился после предпросмотра. Составьте план заново.",
+  stale_context: "Данные проекта изменились после предпросмотра. Составьте план заново.",
   over_budget: "План не помещается в потолок расходов.",
   plan_not_approvable: "Этот план нельзя подтвердить в текущем состоянии.",
   approval_not_needed: "Этому плану подтверждение не требуется.",
@@ -211,9 +233,24 @@ export const ERROR_TEXT_RU: Record<string, string> = {
   approval_required: "Нужно подтверждение оператора перед запуском.",
   already_running: "План уже выполняется.",
   plan_finished: "План уже завершён.",
-  kill_switch_active: "Включён аварийный стоп оркестратора: шаги не выполняются.",
+  kill_switch_active: "Включён аварийный стоп оркестратора: планы не составляются и не выполняются.",
   project_busy: "В этом проекте уже идёт другой план.",
+  macro_unavailable: "Умная кнопка недоступна: не хватает действий на сервере.",
+  macro_params_invalid: "Параметры умной кнопки заданы неверно.",
+  planner_rejected: "Планировщик отклонил запрос.",
+  project_not_found: "Проект не найден.",
 };
+
+function stringifyItem(x: unknown): string {
+  if (typeof x === "string") return x;
+  if (x && typeof x === "object") {
+    const o = x as { msg?: unknown; loc?: unknown; message?: unknown };
+    const where = Array.isArray(o.loc) ? o.loc.filter((p) => p !== "body").join(".") : "";
+    const text = typeof o.msg === "string" ? o.msg : typeof o.message === "string" ? o.message : JSON.stringify(x);
+    return where ? `${where}: ${text}` : text;
+  }
+  return String(x);
+}
 
 /** Достаёт стабильный код ошибки из ответа API (detail.code или detail строкой). */
 export function errorCode(e: unknown): string | null {
@@ -230,11 +267,34 @@ export function errorCode(e: unknown): string | null {
   return null;
 }
 
+/** Читаемое русское сообщение: строка, {detail:{code,message}}, массив ошибок валидации или текст. */
 export function describeError(e: unknown): string {
+  if (!(e instanceof ApiError)) return e instanceof Error ? e.message : "Неизвестная ошибка.";
+  const root = e.detail as unknown;
+  const inner: unknown = root && typeof root === "object" && "detail" in (root as object) ? (root as { detail: unknown }).detail : root;
   const code = errorCode(e);
-  if (code) return `${ERROR_TEXT_RU[code] ?? "Сервер отклонил запрос."} (код: ${code})`;
-  if (e instanceof ApiError && e.status === 404) return "Функция недоступна на сервере (404).";
-  return e instanceof Error ? e.message : "Неизвестная ошибка.";
+  const head = code ? (ERROR_TEXT_RU[code] ?? "Сервер отклонил запрос.") : null;
+  let more = "";
+  if (Array.isArray(inner)) {
+    more = inner.map(stringifyItem).join("; ");
+  } else if (inner && typeof inner === "object") {
+    const o = inner as { message?: unknown; reason?: unknown; errors?: unknown; missing_action_ids?: unknown };
+    const parts: string[] = [];
+    if (typeof o.message === "string") parts.push(o.message);
+    if (typeof o.reason === "string") parts.push(`причина: ${o.reason}`);
+    if (Array.isArray(o.errors)) parts.push(o.errors.map(stringifyItem).join("; "));
+    if (Array.isArray(o.missing_action_ids) && o.missing_action_ids.length) parts.push(`нет действий: ${o.missing_action_ids.join(", ")}`);
+    more = parts.join(" · ");
+  } else if (typeof inner === "string" && inner.trim()) {
+    more = inner.trim();
+  }
+  if (e.status === 404 && !code) return `Не найдено или недоступно на сервере (404)${more ? `: ${more}` : ""}.`;
+  if (e.status === 401 || e.status === 403) {
+    if (!code) return `Нет доступа (${e.status})${more ? `: ${more}` : ""}.`;
+  }
+  if (head) return `${head}${more && more !== head ? ` ${more}` : ""} (код: ${code})`;
+  if (more) return `Сервер отклонил запрос (${e.status}): ${more}`;
+  return `Ошибка сервера (${e.status}): ${e.message}`;
 }
 
 /** Недопустимый план при preview: 422 {detail:{code:"plan_invalid", preview}}. */
@@ -345,5 +405,42 @@ export function canApprove(p: PlanPreview): boolean {
 export const isTerminal = (s: PlanStatus) => s === "succeeded" || s === "failed" || s === "stopped";
 
 export function macroTitle(m: MacroJson): string {
-  return m.title_ru ?? m.title ?? m.name ?? String(m.id);
+  return m.title_ru ?? String(m.id);
+}
+
+/** Начальные значения формы макроса: default, первый enum, пусто; project_id подставляется отдельно. */
+export function macroInitialValues(m: MacroJson, projectId: number): Record<string, string | boolean> {
+  const out: Record<string, string | boolean> = {};
+  for (const [k, sch] of Object.entries(m.params_schema?.properties ?? {})) {
+    if (k === "project_id") out[k] = String(projectId);
+    else if (sch.default !== undefined) out[k] = sch.type === "boolean" ? Boolean(sch.default) : String(sch.default);
+    else if (sch.type === "boolean") out[k] = false;
+    else if (sch.enum && sch.enum.length) out[k] = String(sch.enum[0]);
+    else out[k] = "";
+  }
+  return out;
+}
+
+/** Собирает типизированные params из значений формы. Пустые необязательные поля опускаются. */
+export function buildMacroParams(m: MacroJson, values: Record<string, string | boolean>): { params: Record<string, unknown>; errors: string[] } {
+  const params: Record<string, unknown> = {};
+  const errors: string[] = [];
+  const req = new Set(m.params_schema?.required ?? []);
+  for (const [k, sch] of Object.entries(m.params_schema?.properties ?? {})) {
+    const raw = values[k];
+    const label = sch.title ?? sch.description ?? k;
+    if (sch.type === "boolean") { params[k] = Boolean(raw); continue; }
+    const str = typeof raw === "string" ? raw.trim() : "";
+    if (str === "") { if (req.has(k)) errors.push(`Заполните поле: ${label}`); continue; }
+    if (sch.type === "integer" || sch.type === "number") {
+      const n = Number(str);
+      if (!Number.isFinite(n) || (sch.type === "integer" && !Number.isInteger(n))) { errors.push(`${label}: нужно число`); continue; }
+      if (sch.minimum != null && n < sch.minimum) errors.push(`${label}: не меньше ${sch.minimum}`);
+      if (sch.maximum != null && n > sch.maximum) errors.push(`${label}: не больше ${sch.maximum}`);
+      params[k] = n;
+    } else {
+      params[k] = str;
+    }
+  }
+  return { params, errors };
 }
