@@ -574,7 +574,7 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
     url, headers, model = preflight()  # до любых запросов
     from app.services.action_layer import executor
     if await executor._kill_switch_on():
-        raise PlannerRefused("kill_switch_active", "operator emergency stop is ON")
+        raise PlannerRefused("kill_switch_active", "аварийная остановка включена оператором (emergency stop is ON)")
     ctx = await load_context(project_id, selected_scene, selected_frame)
     messages, info = build_prompt(text, ctx, registry, max_steps, attachments=attachments)
     offered = frozenset(info["offered"])

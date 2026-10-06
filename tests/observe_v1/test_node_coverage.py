@@ -303,3 +303,36 @@ def test_animation_prompts_names_its_degradation_fact_and_it_is_not_a_recovery_i
     assert any("animation_degraded" in line for line in SPECS["animation_prompts"].limits)
     assert "animation_degraded" in TITLES and "animation_degraded" not in RECOVERY_INCIDENTS
     assert animation_prompts_contract()["degradation_facts"]["fact_kind"] == "animation_degraded"
+
+
+# ---- local media nodes (assemble, audio, sfx_gen): decided by a dry run, kept observed ----------
+
+LOCAL_MEDIA = {"assemble": "media_recovery_not_admitted", "audio": "paid_no_idempotency",
+               "sfx_gen": "paid_no_idempotency"}
+
+
+@pytest.mark.parametrize("node_type", sorted(LOCAL_MEDIA))
+def test_local_media_nodes_stay_observed_with_an_honest_code_and_no_recovery_action(node_type):
+    spec = SPECS[node_type]
+    assert coverage_level(spec) == "observed" and spec.forbidden_code == LOCAL_MEDIA[node_type]
+    assert not spec.recovery_actions and not spec.recovery_only and node_type not in RECOVERING
+    assert not capability_for(node_type).managed
+    assert MEDIA_RECOVERY_DECISIONS[node_type]["decision"] == "human_only"
+
+
+def test_assemble_reason_names_what_the_dry_run_proved_and_what_is_missing():
+    from pathlib import Path
+    spec = SPECS["assemble"]
+    reason = spec.forbidden_reason
+    for proven in ("сухим прогоном", "атомарная запись", "один повтор", "недостижимость платного"):
+        assert proven in reason.lower(), proven
+    for missing in ("проверка", "модельного запроса", "медиа-инцидент", "ревизии входа"):
+        assert missing in reason.lower(), missing
+    assert any("test_media_dry_run_local_nodes.py" in line for line in spec.limits)
+    assert (Path(__file__).parent / "test_media_dry_run_local_nodes.py").is_file()
+    assert "unknown" in MEDIA_RECOVERY_DECISIONS["assemble"]["reason"]
+
+
+def test_audio_and_sfx_gen_say_that_a_finished_file_is_not_resumed_by_the_supervisor():
+    assert any("resume_local" in line and "надзор" in line for line in SPECS["audio"].limits)
+    assert any("resume_local" in line for line in SPECS["sfx_gen"].limits)

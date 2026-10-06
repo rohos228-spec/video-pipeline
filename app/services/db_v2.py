@@ -37,25 +37,23 @@ from app.models import (
 
 _SORT_STEP = 10.0
 
-_FRAME_V2_COLS: list[tuple[str, str]] = [
-    ("uuid", "VARCHAR(64)"),
-    ("sort_key", "FLOAT"),
-    ("scene_id", "INTEGER"),
-]
+def _frame_v2_cols() -> list[tuple[str, str]]:
+    from app.services.schema_migrations import FRAMES_V2_COLUMNS
+
+    return list(FRAMES_V2_COLUMNS)
+
+
+_FRAME_V2_COLS: list[tuple[str, str]] = _frame_v2_cols()
 
 
 async def migrate_db_v2_schema(conn: Any) -> None:
-    """Добавить v2-колонки в frames (create_all не умеет ALTER)."""
-    rows = (await conn.exec_driver_sql("PRAGMA table_info(frames)")).fetchall()
-    existing = {r[1] for r in rows}
-    for col, ctype in _FRAME_V2_COLS:
-        if col in existing:
-            continue
-        try:
-            await conn.exec_driver_sql(f"ALTER TABLE frames ADD COLUMN {col} {ctype}")
-            logger.info("db_v2 migrate: frames.{} added", col)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("db_v2 migrate: add frames.{} failed: {}", col, e)
+    """Добавить v2-колонки в frames: версионная миграция 0007 (create_all не умеет ALTER).
+
+    Тонкая обёртка для старых вызовов; сам ALTER живёт в ``schema_migrations``.
+    """
+    from app.services.schema_migrations import run_migration_ids
+
+    await run_migration_ids(conn, ("0007_frames_v2_columns",))
 
 
 def new_frame_uuid() -> str:

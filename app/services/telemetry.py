@@ -94,6 +94,37 @@ COST_SOURCES = {
 }
 
 
+# Raw English source codes -> what the operator reads. The API keeps the raw string next to the label
+# (``source_raw`` / ``sources_raw``) so older readers keep working.
+COST_SOURCE_PRICED_AT_WRITE = "api_tracker_hook (pre-priced at write time)"
+COST_SOURCE_LABELS_RU = {
+    COST_SOURCE_PRICED_AT_WRITE: "сумма из журнала запросов: цена посчитана при записи каждого вызова",
+    COST_SOURCES["kie"]: "тарифы откалиброваны по списанию кредитов Kie (2026-10-01)",
+    COST_SOURCES["vibecode"]: ("цена из снимка каталога vibecode_models_snapshot.json (дата снимка неизвестна); "
+                               "не откалибрована по балансу vibecode.moe"),
+}
+# Where a spend-ledger row / refusal came from (spend_guard ``source``).
+SPEND_SOURCE_LABELS_RU = {
+    "planner": "планировщик команд",
+    "action_layer": "слой действий",
+    "media_native": "платный вызов медиа-провайдера",
+    "media_402": "провайдер ответил «нет средств» (402)",
+    "credit_error": "ошибка кредитов провайдера",
+    "spend_guard": "защита от перерасхода",
+}
+
+
+def cost_source_label_ru(raw: str | None) -> str:
+    """Russian label of a cost source code; an unknown code is returned unchanged (never hidden)."""
+    text = str(raw or "")
+    return COST_SOURCE_LABELS_RU.get(text, text)
+
+
+def spend_source_label_ru(raw: str | None) -> str:
+    text = str(raw or "")
+    return SPEND_SOURCE_LABELS_RU.get(text, text)
+
+
 def _field(row: Any, key: str) -> Any:
     try:
         return row[key]
@@ -173,8 +204,10 @@ def cost_summary(rows: Sequence[Any]) -> dict[str, Any]:
         "by_model": by_model,
         "by_provider": by_provider,
         "unknown_cost_calls": unknown_cost_calls,
-        "sources": {k: v for k, v in COST_SOURCES.items() if k in by_provider},
-        "source": "api_tracker_hook (pre-priced at write time)",
+        "sources": {k: cost_source_label_ru(v) for k, v in COST_SOURCES.items() if k in by_provider},
+        "sources_raw": {k: v for k, v in COST_SOURCES.items() if k in by_provider},
+        "source": cost_source_label_ru(COST_SOURCE_PRICED_AT_WRITE),
+        "source_raw": COST_SOURCE_PRICED_AT_WRITE,
     }
 
 

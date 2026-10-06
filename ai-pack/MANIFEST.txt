@@ -1,6 +1,6 @@
 ai-pack build
-git_head: e8d440eb
-built_at: 2026-10-06 13:57 UTC
+git_head: fdbc1676
+built_at: 2026-10-06 15:45 UTC
 repo: C:\video-pipeline\video-pipeline-observe-v1
 
 copied:

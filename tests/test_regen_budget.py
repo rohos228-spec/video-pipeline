@@ -19,6 +19,9 @@ from app.services.excel_gpt_node import upload_dir
 def _caps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app_settings.settings, "regen_max_per_frame", 3)
     monkeypatch.setattr(app_settings.settings, "regen_max_per_run", 12)
+    # the money cap has its own tests below; the attempt-cap tests run with it off
+    monkeypatch.setattr(app_settings.settings, "regen_max_usd_per_run", 0.0)
+    monkeypatch.setattr(app_settings.settings, "regen_estimate_usd_per_item", 0.0)
 
 
 def _project(slug: str = "rb", status: ProjectStatus = ProjectStatus.generating_videos) -> Project:
@@ -245,3 +248,121 @@ def test_diagnosis_shows_the_stop_as_a_human_review_incident() -> None:
     assert item["type"] == "contract_rejected" and item["status"] == "human_review"
     assert "автоповтор остановлен" in item["fact"]
     assert item["recommendation"]["action"] == "human_review"
+
+
+# -- money cap -----------------------------------------------------------------
+
+def _money(monkeypatch: pytest.MonkeyPatch, cap: float, unit: float = 0.5) -> None:
+    monkeypatch.setattr(app_settings.settings, "regen_max_usd_per_run", cap)
+    monkeypatch.setattr(app_settings.settings, "regen_estimate_usd_per_item", unit)
+
+
+def test_money_cap_stops_a_loop_that_attempt_counters_would_still_allow(monkeypatch: pytest.MonkeyPatch) -> None:
+    _money(monkeypatch, cap=3.0, unit=0.5)
+    p = _project()
+    frames = [1, 2, 3, 4]  # $2 a round: well inside 3 attempts per frame and 12 per run
+    assert regen_budget.charge(p, "video", frames).ok
+    v = regen_budget.charge(p, "video", frames)
+    assert v.usd_exhausted and not v.ok and not v.run_exhausted
+    assert v.usd_spent == 2.0 and v.usd_round == 2.0 and v.usd_cap == 3.0 and v.blocked == ["1", "2", "3", "4"]
+    # a refused round changes nothing
+    assert p.meta["regen_budget"]["video"]["usd"] == 2.0 and p.meta["regen_budget"]["video"]["rounds"] == 1
+    assert "денежный лимит" in v.summary() and "$3.00" in v.summary()
+
+
+def test_money_is_summed_over_rounds_and_a_cheaper_round_may_still_fit(monkeypatch: pytest.MonkeyPatch) -> None:
+    _money(monkeypatch, cap=3.0, unit=0.5)
+    p = _project()
+    assert regen_budget.charge(p, "video", [1, 2, 3, 4]).ok  # 2.0
+    assert regen_budget.charge(p, "video", [5, 6]).ok        # 3.0, exactly at the cap is allowed
+    assert not regen_budget.charge(p, "video", [7]).ok       # 3.5 > 3.0
+    assert p.meta["regen_budget"]["video"]["usd"] == 3.0
+
+
+def test_first_round_is_never_refused_by_money(monkeypatch: pytest.MonkeyPatch) -> None:
+    _money(monkeypatch, cap=1.0, unit=0.5)
+    p = _project()
+    big = regen_budget.charge(p, "images", list(range(1, 11)))  # $5 > $1, but nothing was spent yet
+    assert big.ok and p.meta["regen_budget"]["images"]["usd"] == 5.0
+    assert regen_budget.charge(p, "images", [1]).usd_exhausted
+
+
+def test_zero_disables_the_money_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    _money(monkeypatch, cap=0.0, unit=100.0)
+    p = _project()
+    monkeypatch.setattr(app_settings.settings, "regen_max_per_frame", 0)
+    monkeypatch.setattr(app_settings.settings, "regen_max_per_run", 0)
+    for _ in range(20):
+        assert regen_budget.charge(p, "video", [1, 2]).ok
+
+
+def test_unit_defaults_to_the_spend_guard_media_estimate(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import spend_guard
+
+    _money(monkeypatch, cap=100.0, unit=0.0)
+    assert regen_budget.estimate_round_usd("video", 2) == round(2 * spend_guard.MEDIA_SUBMIT_ESTIMATE_USD, 4)
+    assert regen_budget.estimate_round_usd("music", 0) == spend_guard.MEDIA_SUBMIT_ESTIMATE_USD
+    assert regen_budget.estimate_round_usd("vision:scenes", 1) == round(
+        spend_guard.MEDIA_SUBMIT_ESTIMATE_USD + spend_guard.DEFAULT_REQUEST_ESTIMATE_USD, 4)
+
+
+def test_money_buckets_are_per_step_clear_and_reset_forget_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    _money(monkeypatch, cap=1.0, unit=0.5)
+    p = _project()
+    regen_budget.charge(p, "video", [1, 2])
+    assert not regen_budget.charge(p, "video", [1]).ok
+    assert regen_budget.charge(p, "images", [1]).ok  # another step has its own budget
+    assert regen_budget.clear(p, "video")
+    assert regen_budget.charge(p, "video", [1]).ok
+
+
+def test_money_stop_parks_the_project_and_writes_the_fact(monkeypatch: pytest.MonkeyPatch) -> None:
+    _money(monkeypatch, cap=1.0, unit=0.5)
+    facts: list[tuple[str, dict]] = []
+
+    async def fake_record(kind, payload, *a, **k):
+        facts.append((kind, payload))
+
+    monkeypatch.setattr("app.services.observation.record_fact", fake_record)
+    p = _project()
+    regen_budget.charge(p, "video", [1, 2])
+    v = regen_budget.charge(p, "video", [3])
+    asyncio.run(regen_budget.stop(_Sess(), p, v))
+    assert p.status is ProjectStatus.paused
+    assert "денежный лимит" in p.meta["auto_paused_reason"]
+    stop = p.meta["regen_budget_stop"]
+    assert stop["usd_exhausted"] is True and stop["usd_spent"] == 1.0 and stop["usd_cap"] == 1.0
+    [(kind, payload)] = facts
+    assert kind == "runtime_check" and payload["check"] == "regen_budget" and payload["status"] == "rejected"
+    assert payload["usd_exhausted"] is True and payload["usd_cap"] == 1.0
+    assert regen_budget.reset(p) is True
+    assert "auto_paused_reason" not in p.meta and regen_budget.charge(p, "video", [3]).ok
+
+
+def test_finalize_or_retry_stops_on_money_before_the_attempt_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    _money(monkeypatch, cap=0.7, unit=0.5)
+    p = _project()
+    queued = _stub_validation(monkeypatch, [])
+
+    async def run() -> list[bool]:
+        return [await psv.finalize_or_retry(
+            _Sess(), p, step="video", ready_status=ProjectStatus.videos_ready,
+            running_status=ProjectStatus.generating_videos) for _ in range(3)]
+
+    assert asyncio.run(run()) == [False, False, False]
+    assert queued == [[2]]  # one regeneration, the second would be $1.00 > $0.70
+    assert p.status is ProjectStatus.paused and "денежный лимит" in p.meta["auto_paused_reason"]
+
+
+def test_diagnosis_shows_the_money_stop() -> None:
+    from app.services.diagnosis import derive_incidents
+
+    v = regen_budget.Verdict(kind="video", usd_exhausted=True, usd_spent=2.0, usd_round=1.0, usd_cap=2.5)
+    scope = SimpleNamespace(execution_id="execution", project_id=2, node_keys=["img"], observer_state="active", gaps=[])
+    row = dict(id=1, event_id="e1", execution_id="execution", project_id=2, node_key="img", attempt_id="a1",
+               request_id=None, kind="runtime_check", db_scope="project", created_at="2026-10-06 12:00:00",
+               payload={"check": "regen_budget", "performed": True, "status": "rejected", "usd_exhausted": True,
+                        "summary": v.summary()})
+    [item] = derive_incidents(scope, [row], {})
+    assert item["type"] == "contract_rejected" and item["status"] == "human_review"
+    assert "денежный лимит" in item["fact"] and "$2.50" in item["fact"]

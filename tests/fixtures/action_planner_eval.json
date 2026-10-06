@@ -4215,6 +4215,96 @@
    "clarify_contains": [
     "видео"
    ]
+  },
+  {
+   "id": "mu_a",
+   "text": "покажи, какие ключи заблокированы из-за неизвестного исхода отправки",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.list_unknown_outcomes",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mu_b",
+   "text": "что заблокировано в Outsee после потерянного ответа, покажи список блокировок",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.list_unknown_outcomes",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mu_c",
+   "text": "я сверил кабинет Outsee, по кадру 12 списания не было, сними блокировку повторной отправки frame_012",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.release_unknown",
+     "params": {
+      "key": "frame_012",
+      "provider": "outsee"
+     }
+    }
+   ],
+   "also_offered": [
+    "media.list_unknown_outcomes"
+   ]
+  },
+  {
+   "id": "mu_d",
+   "text": "по клипу clip_005 в Kie я проверил задачи и баланс, ничего не списано: сними блокировку неизвестного исхода",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.release_unknown",
+     "params": {
+      "key": "clip_005",
+      "provider": "kie"
+     }
+    }
+   ],
+   "also_offered": [
+    "media.list_unknown_outcomes"
+   ]
+  },
+  {
+   "id": "mu_e",
+   "text": "сними блокировку неизвестного исхода",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "причин"
+   ]
+  },
+  {
+   "id": "mu_f",
+   "text": "сними блокировку клипа 5, наверное, ничего не списалось",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "провайдер"
+   ]
   }
  ]
 }

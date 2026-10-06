@@ -129,7 +129,7 @@ async def prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
         if plan_hash(_plan_from_rows(row, steps), registry) != row.plan_hash:
             raise RunRefused("plan_changed", "plan or action definitions changed")
         if await executor._kill_switch_on():
-            raise RunRefused("kill_switch_active", "operator emergency stop is ON")
+            raise RunRefused("kill_switch_active", "аварийная остановка включена оператором (emergency stop is ON)")
         if row.project_id is not None:
             others = (await s.scalars(select(store.ActionPlan.id).where(
                 store.ActionPlan.project_id == row.project_id,

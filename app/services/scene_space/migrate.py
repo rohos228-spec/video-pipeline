@@ -43,18 +43,14 @@ CREATE INDEX IF NOT EXISTS idx_frames_space_scene
 ON frames_space (scene_id, shot_order)
 """
 
-_SQL_MANUAL = (
-    "ALTER TABLE frames_space ADD COLUMN manual "
-    "INTEGER NOT NULL DEFAULT 0 CHECK (manual IN (0,1))"
-)
-
 
 async def migrate_scene_space_schema(conn: Any) -> None:
     await conn.exec_driver_sql(_SQL_SCENES)
     await conn.exec_driver_sql(_SQL_FRAMES)
-    cols = await _column_names(conn, "frames_space")
-    if "manual" not in cols:
-        await conn.exec_driver_sql(_SQL_MANUAL)
+    # Колонка manual для старых таблиц: версионная миграция 0008 (schema_migrations).
+    from app.services.schema_migrations import run_migration_ids
+
+    await run_migration_ids(conn, ("0008_frames_space_manual",))
     await conn.exec_driver_sql(_SQL_INDEX)
 
 

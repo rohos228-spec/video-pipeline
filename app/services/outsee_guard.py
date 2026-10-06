@@ -15,6 +15,14 @@ same (project, frame key) inside ``MEDIA_RESUME_WINDOW_S`` then raises ``OutseeS
 (``no_resubmit``: the retry ladder, rewrite and step retries all stop) until a human releases it with
 ``release_unknown`` after checking the Outsee history and balance.
 
+The browser UI path (``OutseeBot`` clicking Generate / «Повторить») is guarded the same way (``run_browser``):
+the bot marks ``maybe_sent`` right before the click that creates a paid generation, ``done`` once the result
+URL is known and ``rejected`` when the page itself reports a failed generation (moderation, length, error
+banner). Anything between the click and one of those two verdicts (timeout, crash, cancel, "Generate did not
+start") stays an unresolved intent and blocks a second click for ``MEDIA_RESUME_WINDOW_S``; a failure before
+the click is not an unknown submit. The browser guard needs no API key (cookie/CDP-only setups are exactly
+where it matters), only a project id and a resumable frame key.
+
 Only intent rows are written, never task rows: the Kie reconciler reads task rows and must not see
 Outsee ids. Recording is awaited (crash safety) but a database error never blocks the provider call.
 """
@@ -22,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -41,14 +50,28 @@ class Ctx:
     model: str
     media: str
     ph: str
+    browser: bool = False
 
     @property
     def usable(self) -> bool:
-        return (isinstance(self.project_id, int) and bool(self.key) and media_resume.window_s() > 0
-                and not media_spend._managed() and media_spend._enabled("outsee"))
+        base = (isinstance(self.project_id, int) and bool(self.key) and media_resume.window_s() > 0
+                and not media_spend._managed())
+        if not base:
+            return False
+        if self.browser:
+            return browser_enabled()
+        return media_spend._enabled("outsee")
 
 
-def make_ctx(args: tuple, kwargs: dict, media: str) -> Ctx:
+def browser_enabled() -> bool:
+    """The browser path is guarded whenever work is real: no API key needed, but not under pytest (no dev DB writes)
+    unless a test turns recording on (``media_spend.TEST_FORCE``)."""
+    return bool(media_spend.TEST_FORCE or "PYTEST_CURRENT_TEST" not in os.environ)
+
+
+def make_ctx(args: tuple, kwargs: dict, media: str, *, browser: bool = False) -> Ctx:
+    """``args`` are the positional arguments of ``generate_*(prompt, out_path, ...)``; for the browser path of a
+    method without a prompt (``regenerate_image(out_path, ...)``) pass ``out_path`` first, see ``make_browser_ctx``."""
     out_path = args[1] if len(args) > 1 else kwargs.get("out_path")
     key = media_spend._task_key(out_path) if out_path is not None else ""
     if not media_resume._RESUMABLE_KEY.match(key):
@@ -57,7 +80,15 @@ def make_ctx(args: tuple, kwargs: dict, media: str) -> Ctx:
     model = str(kwargs.get("model_slug") or "")
     ph = hashlib.sha1(f"{model}|{prompt}".encode("utf-8", "replace")).hexdigest()[:16]
     pid = kwargs.get("project_id")
-    return Ctx(pid if isinstance(pid, int) else None, key, model, media, ph)
+    return Ctx(pid if isinstance(pid, int) else None, key, model, media, ph, browser)
+
+
+def make_browser_ctx(args: tuple, kwargs: dict, media: str, *, prompt_first: bool = True) -> Ctx:
+    """Ctx for an ``OutseeBot`` method (``self`` already removed from ``args``)."""
+    if prompt_first:
+        return make_ctx(args, kwargs, media, browser=True)
+    out_path = args[0] if args else kwargs.get("out_path")
+    return make_ctx(("", out_path), {**kwargs, "prompt": ""}, media, browser=True)
 
 
 async def _append(fn, **kw) -> bool:
@@ -113,6 +144,8 @@ def classify_failure(exc: BaseException, probe: dict) -> str:
     ctx = ctx if isinstance(ctx, dict) else {}
     if probe.get("done") or isinstance(exc, OutseeDownloadError):
         return "done"
+    if probe.get("rejected"):
+        return "rejected"  # the page/provider itself declared this generation failed
     if ctx.get("submit_unknown"):
         return "unknown"
     if probe.get("task_id") is None:
@@ -180,3 +213,24 @@ async def release_unknown(project_id: int, key: str) -> int:
                 event="intent_done", status="rejected", note="released")
         await s.commit()
     return len(todo)
+
+
+async def run_browser(media: str, call: Callable[[], Awaitable[Any]], args: tuple, kwargs: dict, *,
+                      prompt_first: bool = True) -> Any:
+    """Guard one ``OutseeBot`` browser/UI generate call (see module docstring). ``args`` exclude ``self``."""
+    media_spend.assert_submit_allowed("outsee", f"browser {media}")  # resume-only scope: nothing new may be clicked
+    try:
+        ctx = make_browser_ctx(args, kwargs, media, prompt_first=prompt_first)
+    except Exception:  # noqa: BLE001 - the guard is an addition, never a reason to fail the call
+        return await call()
+    if not ctx.usable:
+        return await call()
+    model = ctx.model
+    try:
+        result = await run(ctx, call)
+    except BaseException as exc:
+        media_spend.record("outsee", usd=0.0, unknown=True, exc=exc,
+                           note=f"browser {media} {model} failed {type(exc).__name__}")
+        raise
+    media_spend.record("outsee", usd=0.0, unknown=True, note=f"browser {media} {model} ok")
+    return result

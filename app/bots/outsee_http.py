@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import contextvars
 import json
 import re
@@ -85,6 +86,44 @@ def _probe_mark(**fields: Any) -> None:
     probe = submit_probe.get()
     if probe is not None:
         probe.update(fields)
+
+
+@contextlib.contextmanager
+def ensure_probe():
+    """The current submit probe, or a private one for the duration when no guard installed one."""
+    probe = submit_probe.get()
+    if probe is not None:
+        yield probe
+        return
+    probe = {"maybe_sent": False, "task_id": None, "done": False}
+    token = submit_probe.set(probe)
+    try:
+        yield probe
+    finally:
+        submit_probe.reset(token)
+
+
+def reset_probe(probe: dict) -> None:
+    """Forget what an API attempt marked once it is known to have cost nothing (the next path marks its own)."""
+    probe.update(maybe_sent=False, task_id=None, done=False)
+    probe.pop("rejected", None)
+
+
+def api_failure_needs_hold(probe: dict, exc: BaseException) -> str | None:
+    """None when an API failure left nothing in flight (a fallback to the browser UI cannot double-charge).
+
+    ``"unknown"`` - a paid task may exist (request on the wire, or id known without a verdict): never fall back.
+    ``"done"``    - the generation finished and only a later step failed: no new Generate either.
+    A provider-declared failure (``status`` dict in the error context) is a known outcome and may fall back.
+    """
+    ctx = getattr(exc, "context", None)
+    if isinstance(ctx, dict) and isinstance(ctx.get("status"), dict):
+        return None
+    if probe.get("done"):
+        return "done"
+    if probe.get("maybe_sent") or probe.get("task_id") is not None:
+        return "unknown"
+    return None
 
 
 def outsee_api_key() -> str:

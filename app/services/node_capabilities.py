@@ -189,6 +189,8 @@ def _register_builtin_capabilities() -> None:
                       'Маркер .tts_uncertain_* (таймаут или обрыв после отправки) выводится как неизвестный исход'),
             limits=('Повторный POST после таймаута запрещён, пока человек не снимет маркер или не положит файл',
                     'Готовый файл озвучки на диске переиспользуется без POST',
+                    'Вердикт resume_local (готовый файл) надзором не исполняется: результатом ноды файл делает только '
+                    'её собственный запуск, а повтор рабочим процессом не допущен (нет проверки для такого повтора)',
                     'Один платный POST на сегмент без ключа идемпотентности: исход таймаута не доказать'),
             forbidden_code='paid_no_idempotency',
             forbidden_reason='Запрос озвучки без ключа идемпотентности: после таймаута неизвестно, '
@@ -203,12 +205,16 @@ def _register_builtin_capabilities() -> None:
                       'Сбой сборки или проверки: ровно одна повторная попытка внутри ноды'),
             limits=('Подтверждение approve_final нельзя снять повтором: запрос один на пару проект и sha256',
                     'Автоодобрение финала требует живой успешной проверки; ручное одобрение не затронуто',
-                    'Повтор надзором не допущен (нет возобновляемой задачи): одна попытка внутри ноды уже есть'),
+                    'Платный запрос недостижим (сухой прогон test_media_dry_run_local_nodes.py: охрана и разбор импортов)',
+                    'Повтор надзором не допущен: одна попытка внутри ноды уже есть, а своей проверки результата для '
+                    'повтора рабочим процессом у не-модельной ноды нет (см. причину запрета)'),
             forbidden_code='media_recovery_not_admitted',
-            forbidden_reason='Атомарная запись, проверка итога и один повтор внутри ноды готовы, но у сборки нет '
-                             'платной задачи для возобновления, а повтор ноды требует перезапуска рабочего '
-                             'процесса, проверка которого для не-модельных нод не доказана: запуск, повтор и '
-                             'подтверждение финала остаются за человеком.'),
+            forbidden_reason='Атомарная запись, проверка итога, один повтор внутри ноды и недостижимость платного '
+                             'запроса доказаны сухим прогоном, но повтор сборки надзором не допущен: повтор идёт '
+                             'только рабочим процессом, а его проверка в надзоре построена на фактах модельного '
+                             'запроса (применённые данные и разобранный ответ), которых у сборки нет; сбой при '
+                             'наличии прежнего итога не помечается как медиа-инцидент, а основа ревизии входа для '
+                             'сборки не записывается. Запуск, повтор и подтверждение финала остаются за человеком.'),
         C('sfx_plan', 'structured',
             'plan_sfx.run → sfx_plan.plan_sfx_events → ai_result_io.text_job',
             ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
@@ -237,6 +243,8 @@ def _register_builtin_capabilities() -> None:
                       'provider_degraded и поле provider_fallback у события'),
             limits=('Повтор по событию не больше одного и только после ответа провайдера (списания не было)',
                     'Откат после таймаута или обрыва (мог быть списан платёж) не повторяется никогда',
+                    'Готовые файлы событий переиспользует сама нода по чекпоинту; вердикта resume_local у sfx_gen нет, '
+                    'надзор повтор не делает',
                     'Платный вызов на событие остаётся без ключа идемпотентности'),
             forbidden_code='paid_no_idempotency',
             forbidden_reason='Платный вызов на каждое событие без ключа идемпотентности: исход таймаута '
@@ -368,8 +376,10 @@ MEDIA_RECOVERY_DECISIONS = {
                   "synthesis (now recorded as provider_fallback), a timeout outcome stays unknown and may be charged."},
     "assemble": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "no_provider_spend_local_cpu",
         "provider": "local ffmpeg (+ local ASR timing)",
-        "reason": "No provider spend; atomic write, verify_artifact and one in-node retry exist, but the output is a "
-                  "final deliverable behind approve_final and supervisor recovery is not admitted for media (unknown)."},
+        "reason": "No provider spend (proven by a dry run: guard and import scan); atomic write, verify_artifact and one "
+                  "in-node retry exist, but supervisor recovery is not admitted: a retry must run the worker, and the "
+                  "supervisor has no recovery verifier for a node without model facts (unknown result evidence), a "
+                  "failure with an earlier final is not typed as a media incident and the input baseline is not recorded."},
     "publish": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "external_side_effect_not_money",
         "provider": "social publishers (external accounts)",
         "reason": "Posting to external accounts is irreversible; managed publication is hard-disabled "

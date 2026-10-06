@@ -32,8 +32,6 @@ if (settings.asr_backend or "").strip().lower() == "nvidia":
 
 
 async def _init_db() -> None:
-    from sqlalchemy import text
-
     async with engine.begin() as conn:
         from app.services.scene_space import models as _scene_space_models  # noqa: F401
 
@@ -48,53 +46,8 @@ async def _init_db() -> None:
 
         await migrate_orchestrator_schema(conn)
 
-        # Лёгкая миграция: добавляем новые колонки в projects, если их ещё
-        # нет (create_all не умеет ALTER). SQLite поддерживает IF NOT EXISTS
-        # через PRAGMA table_info, но проще — try/except на ADD COLUMN.
-        _new_cols = [
-            ("image_generator", "VARCHAR(40)"),
-            ("aspect_ratio", "VARCHAR(10)"),
-            ("image_resolution", "VARCHAR(10)"),
-            ("image_quality", "VARCHAR(10)"),
-            ("image_relax", "BOOLEAN DEFAULT 0"),
-            ("video_generator", "VARCHAR(40)"),
-            ("video_resolution", "VARCHAR(10)"),
-            ("video_relax", "BOOLEAN DEFAULT 0"),
-            ("hero_count", "INTEGER"),
-            ("hero_descriptions", "JSON"),
-            ("hero_variations", "JSON"),
-            ("hero_variation_modifiers", "JSON"),
-            ("prompt_overrides", "JSON"),
-            ("gpt_text_overrides", "JSON"),
-            # Pipeline-redesign: «Объекты» (Персонажи+Предметы) и слоты
-            # «Доп работа с EXCEL».
-            ("enrich_slots_count", "INTEGER DEFAULT 3"),
-            ("item_descriptions", "JSON"),
-            ("item_variations", "JSON"),
-            # Массовое создание: каждая запись projects может принадлежать
-            # массовому проекту (BatchProject). batch_slug дублирован для
-            # быстрого построения data_dir без join к batch_projects.
-            ("batch_id", "INTEGER"),
-            ("batch_position", "INTEGER"),
-            ("batch_slug", "VARCHAR(120)"),
-            ("auto_mode", "BOOLEAN DEFAULT 0"),
-            ("title", "VARCHAR(240)"),
-        ]
-        cols_rows = (
-            await conn.exec_driver_sql("PRAGMA table_info(projects)")
-        ).fetchall()
-        existing = {row[1] for row in cols_rows}
-        for col, ctype in _new_cols:
-            if col in existing:
-                continue
-            try:
-                await conn.exec_driver_sql(
-                    f"ALTER TABLE projects ADD COLUMN {col} {ctype}"
-                )
-                logger.info("migrate: projects.{} added", col)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("migrate: add column {} failed: {}", col, e)
-        _ = text  # keep import usage neutral
+        # Колонки projects, добавленные после первого релиза, добавляет версионная
+        # миграция 0009_projects_columns (schema_migrations), она уже выполнена выше.
 
         # Миграция со статуса `failed` (его больше не используем): просто
         # сбрасываем в `new`, дальше recompute_all поднимет до правильного

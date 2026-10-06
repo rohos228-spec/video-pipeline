@@ -6,7 +6,9 @@ no row, stops the run and is reported (``MigrationFailed``). Migrations are idem
 before the runner existed (tables already there) is simply recorded; nothing is altered or dropped. The
 checksum is a fingerprint of the tables/triggers the migration owns; a recorded checksum that no longer
 matches is reported as drift (the model changed without a new migration) and never rewritten.
-Legacy and non-orchestrator tables are not touched here.
+Migrations 0007+ move the ad-hoc startup ``ALTER TABLE ... ADD COLUMN`` of older tables (projects, frames,
+frames_space) here, unchanged in result: the same columns, the same DDL, only recorded, checksummed and rolled
+back as a unit. Other legacy tables are not touched here.
 """
 from __future__ import annotations
 
@@ -136,6 +138,91 @@ def _action_attachments_fp() -> str:
     return tables_fingerprint(attachments._TABLES)
 
 
+# --- 0007+: columns added by ALTER to tables that create_all already knows (exact legacy DDL) ---------------
+
+FRAMES_V2_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("uuid", "VARCHAR(64)"),
+    ("sort_key", "FLOAT"),
+    ("scene_id", "INTEGER"),
+)
+
+FRAMES_SPACE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("manual", "INTEGER NOT NULL DEFAULT 0 CHECK (manual IN (0,1))"),
+)
+
+PROJECTS_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("image_generator", "VARCHAR(40)"),
+    ("aspect_ratio", "VARCHAR(10)"),
+    ("image_resolution", "VARCHAR(10)"),
+    ("image_quality", "VARCHAR(10)"),
+    ("image_relax", "BOOLEAN DEFAULT 0"),
+    ("video_generator", "VARCHAR(40)"),
+    ("video_resolution", "VARCHAR(10)"),
+    ("video_relax", "BOOLEAN DEFAULT 0"),
+    ("hero_count", "INTEGER"),
+    ("hero_descriptions", "JSON"),
+    ("hero_variations", "JSON"),
+    ("hero_variation_modifiers", "JSON"),
+    ("prompt_overrides", "JSON"),
+    ("gpt_text_overrides", "JSON"),
+    ("enrich_slots_count", "INTEGER DEFAULT 3"),
+    ("item_descriptions", "JSON"),
+    ("item_variations", "JSON"),
+    ("batch_id", "INTEGER"),
+    ("batch_position", "INTEGER"),
+    ("batch_slug", "VARCHAR(120)"),
+    ("auto_mode", "BOOLEAN DEFAULT 0"),
+    ("title", "VARCHAR(240)"),
+)
+
+
+async def add_missing_columns(conn, table: str, columns) -> list[str]:
+    """Idempotent ``ALTER TABLE ADD COLUMN`` of the columns the table lacks; returns the added names.
+
+    A table that does not exist yet is left alone: whoever creates it (create_all / raw DDL) creates it with
+    every column already. Any error propagates so the surrounding migration rolls back as a unit.
+    """
+    have = {r[1] for r in (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()}
+    if not have:
+        return []
+    added: list[str] = []
+    for name, ddl in columns:
+        if name in have:
+            continue
+        await conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        added.append(name)
+        logger.info("schema migration: {}.{} added", table, name)
+    return added
+
+
+def _columns_fp(table: str, columns) -> str:
+    return _digest({"table": table, "added_columns": [list(c) for c in columns]})
+
+
+async def _frames_v2_columns(conn) -> None:
+    await add_missing_columns(conn, "frames", FRAMES_V2_COLUMNS)
+
+
+def _frames_v2_columns_fp() -> str:
+    return _columns_fp("frames", FRAMES_V2_COLUMNS)
+
+
+async def _frames_space_manual(conn) -> None:
+    await add_missing_columns(conn, "frames_space", FRAMES_SPACE_COLUMNS)
+
+
+def _frames_space_manual_fp() -> str:
+    return _columns_fp("frames_space", FRAMES_SPACE_COLUMNS)
+
+
+async def _projects_columns(conn) -> None:
+    await add_missing_columns(conn, "projects", PROJECTS_COLUMNS)
+
+
+def _projects_columns_fp() -> str:
+    return _columns_fp("projects", PROJECTS_COLUMNS)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_observation_core", "observation, diagnosis, actions, decision, profiles, media, "
               "managed launch, kill switch tables", _observation, _observation_fp,
@@ -149,6 +236,12 @@ MIGRATIONS: tuple[Migration, ...] = (
               _change_control_fp),
     Migration("0006_action_attachments", "files attached to the action layer command line",
               _action_attachments, _action_attachments_fp),
+    Migration("0007_frames_v2_columns", "frames.uuid / sort_key / scene_id (db v2 cards)",
+              _frames_v2_columns, _frames_v2_columns_fp, (SCOPE_MASTER, SCOPE_PROJECT)),
+    Migration("0008_frames_space_manual", "frames_space.manual flag (scene space)",
+              _frames_space_manual, _frames_space_manual_fp, (SCOPE_MASTER, SCOPE_PROJECT)),
+    Migration("0009_projects_columns", "projects settings columns added after the first release",
+              _projects_columns, _projects_columns_fp),
 )
 
 
@@ -223,3 +316,9 @@ async def run_migrations(conn, *, scope: str = SCOPE_MASTER,
 async def migrate_orchestrator_schema(conn, *, scope: str = SCOPE_MASTER) -> MigrationReport:
     """Startup entry point replacing the separate ensure/create_all calls for orchestrator tables."""
     return await run_migrations(conn, scope=scope)
+
+
+async def run_migration_ids(conn, ids, *, scope: str = SCOPE_PROJECT) -> MigrationReport:
+    """Run only the named registered migrations (for narrow legacy entry points); same bookkeeping."""
+    wanted = tuple(m for m in MIGRATIONS if m.id in set(ids))
+    return await run_migrations(conn, scope=scope, migrations=wanted)

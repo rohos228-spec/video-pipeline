@@ -436,6 +436,11 @@ export const EVENT_RU: Record<string, string> = {
   kill_switch_block: "заблокировано аварийным стопом",
   stop_requested: "запрошена остановка",
   plan_finished: "план завершён",
+  planner_call: "запрос к планировщику",
+  planner_plan_linked: "план составлен по тексту",
+  resume_refused: "возобновление отклонено",
+  invalid_format: "ответ модели в неверном формате",
+  transport_error: "сбой связи с моделью",
 };
 
 const fmtNum = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, ""));

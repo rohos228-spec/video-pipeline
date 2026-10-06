@@ -92,7 +92,9 @@ export interface TelemetrySummary {
   cost:{total_calls:number;failed_calls:number;total_cost_usd:number;
     total_prompt_tokens:number;total_completion_tokens:number;total_cached_tokens:number;
     by_model:Record<string,{calls:number;cost_usd:number;prompt_tokens:number;completion_tokens:number}>;
-    source:string};
+    source:string;      // русская подпись источника цены
+    source_raw?:string; // исходный английский код (для совместимости)
+    sources?:Record<string,string>; sources_raw?:Record<string,string>};
 }
 export interface ObservationContext extends ObservationScope {
   business_group_outcome: string; current_nodes: string[];

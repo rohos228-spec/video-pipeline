@@ -8,6 +8,7 @@ import pytest
 
 from app.services.telemetry import (
     budget_summary,
+    cost_source_label_ru,
     cost_summary,
     decision_summary,
     incident_summary,
@@ -153,7 +154,31 @@ def test_cost_summary_sums_pre_priced_cost_without_recomputing():
     assert summary["by_model"]["gpt-5-6-sol"]["calls"] == 2
     assert summary["by_model"]["gpt-5-6-sol"]["cost_usd"] == pytest.approx(0.002)
     assert summary["by_model"]["gpt-5-6-terra"]["calls"] == 1
-    assert summary["source"] == "api_tracker_hook (pre-priced at write time)"
+    assert summary["source_raw"] == "api_tracker_hook (pre-priced at write time)"
+    assert summary["source"] == cost_source_label_ru(summary["source_raw"]) != summary["source_raw"]
+    assert "цена посчитана при записи" in summary["source"]
+
+
+def test_cost_source_labels_are_russian_and_the_raw_code_is_kept():
+    from app.services.telemetry import COST_SOURCES, spend_source_label_ru
+
+    for raw in (*COST_SOURCES.values(), "api_tracker_hook (pre-priced at write time)"):
+        assert any("а" <= ch.lower() <= "я" for ch in cost_source_label_ru(raw)), raw
+    assert cost_source_label_ru("something new") == "something new"  # unknown codes are never hidden
+    assert cost_source_label_ru(None) == ""
+    assert spend_source_label_ru("media_native") == "платный вызов медиа-провайдера"
+    assert spend_source_label_ru("odd") == "odd"
+    summary = cost_summary([_row(model="m", provider="kie")])
+    assert summary["sources_raw"] == {"kie": COST_SOURCES["kie"]}
+    assert summary["sources"]["kie"] == cost_source_label_ru(COST_SOURCES["kie"])
+    assert "Kie" in summary["sources"]["kie"] and summary["sources"]["kie"] != summary["sources_raw"]["kie"]
+
+
+def test_spend_refusal_dict_carries_a_russian_source_next_to_the_code():
+    from app.services.spend_guard import SpendCapExceeded
+
+    d = SpendCapExceeded("spend_cap_daily", 1.0, 2.0, 0.5, "planner").as_dict()
+    assert d["source"] == "planner" and d["source_ru"] == "планировщик команд"
 
 
 def test_cost_summary_counts_failed_calls():

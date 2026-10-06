@@ -237,6 +237,8 @@ async def assess(project, node_type: str) -> dict[str, Any]:
     elif node_type == "sfx_gen":
         out = assess_sfx(project)
     elif node_type == "assemble":
+        # A static statement about the node (no provider spend), NOT evidence about an incident: admission of a
+        # supervised assemble retry is refused elsewhere (tests/observe_v1/test_media_dry_run_local_nodes.py).
         item = {"key": "final", **_verdict("retry_same", "local_only_no_provider_spend")}
         out = {"keys": [item], "verdict": aggregate([item]), "ledger": "n/a"}
     else:

@@ -75,7 +75,8 @@ async def test_legacy_tables_are_not_touched(engine):
 
 async def test_project_scope_creates_only_observation_tables(engine):
     report = await _run(engine, scope=sm.SCOPE_PROJECT)
-    assert report.applied == ["0001_observation_core"]
+    # 0007/0008 (frames columns) also run per project database; on a bare DB they are no-ops
+    assert report.applied == ["0001_observation_core", "0007_frames_v2_columns", "0008_frames_space_manual"]
     tables = await _tables(engine)
     assert "observation_events" in tables and "spend_ledger" not in tables
     assert "change_proposals" not in tables and "action_layer_plans" not in tables

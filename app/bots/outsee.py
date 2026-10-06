@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import re
 import sys
 from dataclasses import dataclass
@@ -872,6 +873,36 @@ async def _check_outsee_session(page: Page) -> None:
         raise OutseeImageError(msg, context={"kind": "session_lost"})
 
 
+def _browser_guarded(media: str, *, prompt_first: bool = True):
+    """Run an ``OutseeBot`` generate method under the outsee_guard intent row (unknown-outcome protection)."""
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrapper(self, *args: Any, **kwargs: Any):
+            from app.services import outsee_guard
+
+            return await outsee_guard.run_browser(
+                media, lambda: fn(self, *args, **kwargs), args, kwargs, prompt_first=prompt_first)
+
+        return wrapper
+
+    return deco
+
+
+def _mark_submit(**fields: Any) -> None:
+    """Tell the submit probe (outsee_guard) what reached the provider through the browser UI.
+
+    ``maybe_sent`` just before a click that creates a paid generation, ``done`` once the result URL is known,
+    ``rejected`` when the page itself reports the generation as failed (moderation, length, error banner).
+    No probe installed (guard off) -> no-op; never raises.
+    """
+    try:
+        from app.bots.outsee_http import _probe_mark
+
+        _probe_mark(**fields)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class OutseeContentRejectedError(OutseeImageError):
     """Outsee показал плашку «Контент отклонён» (модерация запрещённых
     слов в промте). Отдельный класс, чтобы caller мог решить — ретраить
@@ -1246,6 +1277,7 @@ def _raise_outsee_failure(
 ) -> None:
     from app.generation_options import OUTSEE_PROMPT_MAX_CHARS
 
+    _mark_submit(rejected=True)  # the page declares this generation failed: a known outcome, not an unknown submit
     ui_kind = _outsee_failure_kind(text)
     kind = ui_kind
     ctx: dict[str, object] = {
@@ -1906,6 +1938,26 @@ class OutseeBot:
     def __init__(self, session: BrowserSession) -> None:
         self.session = session
 
+    @staticmethod
+    def _api_fallback_or_hold(exc: BaseException, probe: dict, *, what: str) -> None:
+        """Called when the Developer API failed and the browser UI would be the fallback.
+
+        The UI fallback is a second paid submit, so it is only allowed when the API attempt provably left nothing
+        in flight; otherwise the outcome is held as an unknown submit (no automatic resubmit).
+        """
+        from app.bots import outsee_http as oh
+
+        hold = oh.api_failure_needs_hold(probe, exc)
+        if hold == "done":
+            raise exc
+        if hold == "unknown":
+            raise oh.OutseeSubmitUnknownError(
+                f"outsee {what}: запрос через API ушёл, результата нет ({type(exc).__name__}); "
+                "задача могла быть принята и оплачена, запасной путь через браузер не запускаю",
+                context={"exc_type": type(exc).__name__, "task_id": probe.get("task_id")},
+            ) from exc
+        oh.reset_probe(probe)
+
     async def _try_http_image(self, **kwargs: Any) -> GenerationResult | None:
         """Outsee Developer API (Bearer OUTSEE_API_KEY). None = fallback CDP UI."""
         from app.bots import outsee_http as oh
@@ -1913,20 +1965,25 @@ class OutseeBot:
 
         if not oh.outsee_http_enabled():
             return None
-        try:
-            return await oh.generate_image(**kwargs)
-        except oh.NanoBananaProOutseeBannedError:
-            raise
-        except oh.OutseeHttpAuthError as e:
-            if not getattr(st, "outsee_http_fallback_cdp", True):
+        with oh.ensure_probe() as probe:
+            try:
+                return await oh.generate_image(**kwargs)
+            except oh.NanoBananaProOutseeBannedError:
                 raise
-            logger.warning("outsee API auth → CDP UI: {}", e.reason)
-            return None
-        except oh.OutseeHttpError as e:
-            if not getattr(st, "outsee_http_fallback_cdp", True):
-                raise
-            logger.warning("outsee API fail → CDP UI: {}", e.reason)
-            return None
+            except oh.OutseeSubmitUnknownError:
+                raise  # the submit may be paid: the browser UI must not submit a second time
+            except oh.OutseeHttpAuthError as e:
+                if not getattr(st, "outsee_http_fallback_cdp", True):
+                    raise
+                self._api_fallback_or_hold(e, probe, what="image")
+                logger.warning("outsee API auth → CDP UI: {}", e.reason)
+                return None
+            except oh.OutseeHttpError as e:
+                if not getattr(st, "outsee_http_fallback_cdp", True):
+                    raise
+                self._api_fallback_or_hold(e, probe, what="image")
+                logger.warning("outsee API fail → CDP UI: {}", e.reason)
+                return None
 
     async def _try_http_video(self, **kwargs: Any) -> GenerationResult | None:
         from app.bots import outsee_http as oh
@@ -1934,18 +1991,23 @@ class OutseeBot:
 
         if not oh.outsee_http_enabled():
             return None
-        try:
-            return await oh.generate_video(**kwargs)
-        except oh.OutseeHttpAuthError as e:
-            if not getattr(st, "outsee_http_fallback_cdp", True):
-                raise
-            logger.warning("outsee API video auth → CDP UI: {}", e.reason)
-            return None
-        except oh.OutseeHttpError as e:
-            if not getattr(st, "outsee_http_fallback_cdp", True):
-                raise
-            logger.warning("outsee API video fail → CDP UI: {}", e.reason)
-            return None
+        with oh.ensure_probe() as probe:
+            try:
+                return await oh.generate_video(**kwargs)
+            except oh.OutseeSubmitUnknownError:
+                raise  # the submit may be paid: the browser UI must not submit a second time
+            except oh.OutseeHttpAuthError as e:
+                if not getattr(st, "outsee_http_fallback_cdp", True):
+                    raise
+                self._api_fallback_or_hold(e, probe, what="video")
+                logger.warning("outsee API video auth → CDP UI: {}", e.reason)
+                return None
+            except oh.OutseeHttpError as e:
+                if not getattr(st, "outsee_http_fallback_cdp", True):
+                    raise
+                self._api_fallback_or_hold(e, probe, what="video")
+                logger.warning("outsee API video fail → CDP UI: {}", e.reason)
+                return None
 
     async def generate_music(
         self,
@@ -1972,6 +2034,7 @@ class OutseeBot:
 
     # ----- IMAGE (nano-banana-2) -----
 
+    @_browser_guarded("image")
     async def generate_image(
         self,
         prompt: str,
@@ -2413,6 +2476,7 @@ class OutseeBot:
 
             click_ts = _time.monotonic()
             net_events.clear()
+            _mark_submit(maybe_sent=True)  # from this click on a paid generation may exist
             await await_with_cancel(page.locator(gen_sel).first.click(), project_id)
             logger.info(
                 "outsee.generate_image: Generate кликнут, жду картинку (gen_id={})",
@@ -2449,6 +2513,7 @@ class OutseeBot:
                     queue_mode=queue_mode,
                     prompt_len=len(prompt),
                 )
+                _mark_submit(done=True)  # the generation finished; only download/validation may still fail
             except (OutseeContentRejectedError, OutseePromptTooLongError) as e:
                 # Модерация — дамп НЕ снимаем (caller всё равно его не
                 # покажет, см. требование «не слать дампы при ошибках
@@ -2518,6 +2583,7 @@ class OutseeBot:
             dumps=dumps or None,
         )
 
+    @_browser_guarded("image", prompt_first=False)
     async def regenerate_image(
         self,
         out_path: Path,
@@ -2622,6 +2688,7 @@ class OutseeBot:
                     )
                     click_ts = _time.monotonic()
                     net_events.clear()
+                    _mark_submit(maybe_sent=True)  # «Повторить» creates a new paid generation
                     await await_with_cancel(
                         page.locator(retry_sel).first.click(), project_id
                     )
@@ -2645,6 +2712,7 @@ class OutseeBot:
                         project_id=project_id,
                         queue_mode=queue_mode,
                     )
+                    _mark_submit(done=True)
                 finally:
                     try:
                         page.remove_listener("response", _on_response)
@@ -2929,6 +2997,7 @@ class OutseeBot:
 
         for attempt in range(1, 4):
             abort_if_cancelled(project_id)
+            _mark_submit(maybe_sent=True)
             use_physical = physical_only or attempt > 1
             if use_physical:
                 if attempt > 1 or physical_only:
@@ -3165,6 +3234,9 @@ class OutseeBot:
 
         abort_if_cancelled(project_id)
         strategies_tried: list[str] = []
+        # Every mechanic below clicks something: from here on a paid generation may exist even if the
+        # page never confirms it (the UI is only a signal, not an acknowledgement).
+        _mark_submit(maybe_sent=True)
 
         async def _started() -> bool:
             await sleep_cancellable(0.8, project_id)
@@ -4902,6 +4974,7 @@ class OutseeBot:
 
     # ----- VIDEO (veo-3-fast Relax) -----
 
+    @_browser_guarded("video")
     async def generate_video(
         self,
         prompt: str,
@@ -5347,6 +5420,7 @@ class OutseeBot:
                     e.dumps = list(dumps)
                     raise
 
+                _mark_submit(done=True)  # the clip exists on outsee; only download/duplicate checks may still fail
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 last_dl_err: OutseeImageError | None = None
                 for dl_attempt in range(1, _VIDEO_DOWNLOAD_ATTEMPTS + 1):

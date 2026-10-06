@@ -305,6 +305,9 @@ ACTION_NOTES: dict[str, str] = {
     "group.insert": "after не нужен (группа в конец канваса).",
     "node.run_step": "Лимиты опусти: сервер подставит из расчёта по проекту.",
     "node.reset_from_step": "step_code: названный шаг; «текущий» = defaults.step_code.",
+    "media.release_unknown": "key (clip_005, frame_012, predmet3, music) и provider (kie|outsee) назови из запроса; "
+                             "reason = слова человека о сверке кабинета провайдера, не выдумывай; нет причины, "
+                             "провайдера или ключа - вопрос.",
     "change.apply": "«предложение N» = proposals n=N: его id и digest.",
     "change.rollback": "target и v из versions (свежая цель нужного вида); нет данных - вопрос.",
     "change.get": "target из versions (свежая цель нужного вида) или proposal_id.",
@@ -379,6 +382,9 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "media.resume_poll": ("докач", "возобнов", "дожд", "скач", "подтян", "доведи", "забер", "достан"),
     "media.get_recovery_assessment": ("провер", "задач", "kie", "киэ", "кие", "состоян", "статус", "восстанов",
                                       "зависл", "завис", "докач", "возобнов", "узна", "посмотр", "покаж"),
+    # Снятие блокировки открывает платную повторную отправку: только если запрос говорит именно об этом.
+    "media.release_unknown": ("блок", "разблок", "неизвестн", "исход", "release", "unknown"),
+    "media.list_unknown_outcomes": ("блок", "заблок", "неизвестн", "исход", "потерян", "застр", "unknown"),
     "change.apply": ("примен", "apply", "внес", "внеси", "примени"),
     "change.rollback": ("откат", "откач", "верни", "вернуть", "назад", "отмен", "прежн"),
     "montage.set_anchors": ("якор", "anchor"),

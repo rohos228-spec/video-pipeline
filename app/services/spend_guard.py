@@ -37,6 +37,14 @@ CREDITS_REASON = "credits_exhausted"
 REFUSAL_CODES = ("spend_cap_run", "spend_cap_project", "spend_cap_daily")
 
 
+def _source_ru(source: str) -> str:
+    try:
+        from app.services.telemetry import spend_source_label_ru
+        return spend_source_label_ru(source)
+    except Exception:  # noqa: BLE001
+        return source
+
+
 class SpendCapExceeded(RuntimeError):
     """Structured refusal raised before any charge or network call."""
 
@@ -46,7 +54,8 @@ class SpendCapExceeded(RuntimeError):
 
     def as_dict(self) -> dict:
         return {"allowed": False, "code": self.code, "spent": round(self.spent, 6),
-                "cap": self.cap, "estimate": self.estimate, "source": self.source}
+                "cap": self.cap, "estimate": self.estimate, "source": self.source,
+                "source_ru": _source_ru(self.source)}
 
 
 class SpendLedger(Base):
