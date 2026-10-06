@@ -21,10 +21,13 @@ class CoverageOnlyRecoveryDenials(unittest.IsolatedAsyncioTestCase):
     recovery_side_effects = base_tests.RecoveryCapabilityAdmission.recovery_side_effects
     assert_retry_denied = base_tests.RecoveryCapabilityAdmission.assert_retry_denied
 
-    NODE_TYPES = ("scene_design", "sd_agent", "sd_assemble", "hero", "enrich_1",
-                  "sfx_gen", "audio", "assemble")
+    # scene_design (legacy node) is refused even earlier: it never enters a managed scope (node admission);
+    # sd_agent is managed per type and admitted per agent: test_scene_agents_retry_dry_run.py
+    NODE_TYPES = ("sd_assemble", "hero", "enrich_1", "sfx_gen", "audio")
     # managed for supervised RECOVERY only: a media resume, never a text-style restart
     MEDIA_RESUME_TYPES = ("videos", "items", "music")
+    # managed for a supervised LOCAL re-run only (media incident + worker ticket): the same text-style refusal
+    LOCAL_RERUN_TYPES = ("assemble",)
 
     async def test_retry_same_is_refused_for_every_node_without_recovery(self):
         for node_type in self.NODE_TYPES:
@@ -36,11 +39,15 @@ class CoverageOnlyRecoveryDenials(unittest.IsolatedAsyncioTestCase):
                 await self.assert_retry_denied(node_type)
 
     async def test_retry_profile_is_refused_for_every_node_without_recovery(self):
-        for node_type in ("sd_agent", "hero", "audio"):
+        for node_type in ("sd_assemble", "hero", "audio"):
             with self.subTest(node_type=node_type):
                 await self.asyncTearDown()
                 await self.asyncSetUp()
                 await self.assert_retry_denied(node_type, profile=True)
+
+    async def test_the_legacy_scene_node_never_enters_a_managed_scope(self):
+        with self.assertRaisesRegex(ValueError, "scene agent 'legacy' is not admitted"):
+            await self.mixed_recovery_fixture("scene_design")
 
     async def test_a_text_style_retry_is_refused_for_the_media_resume_nodes(self):
         """videos/items/music recover only by resuming a provider task after a media incident: an
@@ -50,6 +57,17 @@ class CoverageOnlyRecoveryDenials(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(node_type=node_type, profile=profile):
                     spec = capability_spec_for(node_type)
                     self.assertTrue(spec.recovery_only and spec.forbidden_code is None)
+                    await self.asyncTearDown()
+                    await self.asyncSetUp()
+                    await self.assert_retry_denied(node_type, profile=profile,
+                                                   reason="admitted for media incidents only")
+
+    async def test_a_text_style_retry_is_refused_for_the_local_rerun_node(self):
+        for node_type in self.LOCAL_RERUN_TYPES:
+            for profile in (False, True):
+                with self.subTest(node_type=node_type, profile=profile):
+                    spec = capability_spec_for(node_type)
+                    self.assertTrue(spec.local_recovery and spec.forbidden_code is None)
                     await self.asyncTearDown()
                     await self.asyncSetUp()
                     await self.assert_retry_denied(node_type, profile=profile,

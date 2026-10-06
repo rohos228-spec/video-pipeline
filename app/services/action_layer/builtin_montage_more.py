@@ -1071,7 +1071,11 @@ def _specs() -> list[ActionSpec]:
                          "TTS не вызывается (без готовой озвучки задача завершается ошибкой)."
                          + stop_note,
           params_schema=_obj({}, []), executor=_run_montage, poll=_poll_montage, stop=_stop_project,
-          poll_interval_s=3.0, risk=RISK_LOCAL_SAFE, idempotent=True,
+          poll_interval_s=3.0, risk=RISK_DESTRUCTIVE, destructive=True, reversible=False,
+          idempotent=True,
+          destructive_effects=lambda p: (
+              "Будет удалён прежний final.mp4 и ASR-артефакты озвучки, затем ролик соберётся заново; "
+              "сборка займёт время; платных вызовов нет."),
           preconditions=(_PRE_PROJECT, _PRE_NO_APPLY, _PRE_NO_MONTAGE, _PRE_NO_ALIGN),
           tags=("montage", "assemble")),
         S(id="montage.align_audio", title_ru="Разбор аудио (таймкоды кадров)",

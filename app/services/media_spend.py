@@ -56,13 +56,20 @@ class ResumeOnlyBlocked(RuntimeError):
                         "request_sent": False}
 
 
+_resume_hits: contextvars.ContextVar[list | None] = contextvars.ContextVar("media_resume_only_hits", default=None)
+
+
 @contextmanager
-def resume_only():
-    """Refuse every new paid provider request (Kie createTask, Kling, Outsee, ElevenLabs) inside."""
+def resume_only(hits: list | None = None):
+    """Refuse every new paid provider request (Kie createTask, Kling, Outsee, ElevenLabs) inside.
+
+    ``hits`` (optional) collects one entry per refused request: the proof that a local re-run reached no paid seam."""
     token = _resume_only.set(True)
+    hits_token = _resume_hits.set(hits)
     try:
         yield
     finally:
+        _resume_hits.reset(hits_token)
         _resume_only.reset(token)
 
 
@@ -72,6 +79,9 @@ def in_resume_only() -> bool:
 
 def assert_submit_allowed(provider: str, what: str = "submit") -> None:
     if _resume_only.get():
+        hits = _resume_hits.get()
+        if hits is not None:
+            hits.append({"provider": provider, "what": what})
         raise ResumeOnlyBlocked(provider, what)
 
 

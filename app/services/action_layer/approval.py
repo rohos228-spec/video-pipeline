@@ -39,9 +39,9 @@ class OperatorIdentity:
 
 def _check_operator(operator: OperatorIdentity) -> None:
     if not isinstance(operator, OperatorIdentity) or not operator.id.strip():
-        raise ApprovalError("operator_required", "approval needs an operator identity")
+        raise ApprovalError("operator_required", "Для подтверждения нужна личность оператора.")
     if operator.id.lower().startswith(_FORBIDDEN_PREFIXES):
-        raise ApprovalError("operator_required", "only a human operator can approve")
+        raise ApprovalError("operator_required", "Подтвердить может только оператор-человек.")
 
 
 def default_ttl_s() -> int:
@@ -55,9 +55,9 @@ async def create_approval(session, plan: "store.ActionPlan", operator: OperatorI
     _check_operator(operator)
     now = now or datetime.utcnow()
     if plan.status not in (store.PLAN_PROPOSED, store.PLAN_STOPPED):
-        raise ApprovalError("plan_not_approvable", f"plan is {plan.status}")
+        raise ApprovalError("plan_not_approvable", f"План сейчас в состоянии «{plan.status}»: подтвердить его нельзя.")
     if not plan.needs_approval:
-        raise ApprovalError("approval_not_needed", "plan has only read/local_safe steps")
+        raise ApprovalError("approval_not_needed", "В плане только чтение и безопасные локальные шаги: подтверждение не нужно.")
     # Новое подтверждение отменяет прежние неиспользованные.
     await session.execute(update(store.ActionApproval).where(
         store.ActionApproval.plan_id == plan.id,
@@ -85,14 +85,14 @@ async def consume_approval(session, plan: "store.ActionPlan", *,
     ).order_by(store.ActionApproval.created_at.desc()))
     if candidate is None:
         raise ApprovalError("approval_required",
-                            "no valid approval for this plan (missing, expired or used)")
+                            "Нет действующего подтверждения этого плана (не выдано, истекло или уже использовано).")
     result = await session.execute(update(store.ActionApproval).where(
         store.ActionApproval.id == candidate.id,
         store.ActionApproval.used_at.is_(None),
         store.ActionApproval.expires_at > now,
         store.ActionApproval.plan_hash == plan.plan_hash).values(used_at=now))
     if result.rowcount != 1:
-        raise ApprovalError("approval_required", "approval was consumed concurrently")
+        raise ApprovalError("approval_required", "Подтверждение только что использовано другим запуском.")
     candidate.used_at = now
     store.append_history(session, event="approval_consumed", plan_id=plan.id,
                          actor=candidate.operator, outcome="consumed")

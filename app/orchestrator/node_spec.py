@@ -128,14 +128,12 @@ KNOWN_SUCCESSORS = frozenset({"continue_managed_image"})
 # A code is data, not a branch: the supervisor never switches on it. It exists so the coverage
 # panel, the tests and a human reviewer can tell WHY, and so a new reason must be added here.
 KNOWN_FORBIDDEN_CODES = {
-    "media_recovery_not_admitted": "надзор допущен к медиа только как возобновление по task id без нового платного запроса (videos, items, music); запуск и повтор этой ноды делает нативный слой или человек",
-    "nondeterministic_paid_request": "платный запрос строится заново при каждом запуске: тот же запрос после рестарта не восстановить, возобновление по идентификатору задачи не сработает",
+    "no_resumable_task": "в рабочем маршруте ноды у платной задачи нет идентификатора провайдера (Outsee) или он недостижим: возобновлять нечего, а повторная отправка может заплатить заново",
     "paid_no_idempotency": "платный запрос без ключа идемпотентности: после таймаута неизвестно, списаны ли деньги",
     "paid_uncertain_submit": "исход отправки может быть неизвестен, а деньги уже списаны; управляемый путь только синтетический",
     "external_irreversible": "действие во внешнем аккаунте необратимо: повтор может опубликовать дважды",
     "destructive_rewrite": "нода целиком заменяет данные проекта: повтор стирает прежний результат",
     "native_skips_filled_rows": "нативный запуск не перезапрашивает уже заполненные строки: повтор не изменит результат",
-    "partial_commit": "нода коммитит результат по частям и держит чекпоинты на диске: повтор после сбоя небезопасен",
     "pre_request_commit": "до запроса к модели нода уже записала новые строки: ввод для повтора изменён",
     "legacy_node_type": "устаревший тип ноды: управляемый путь только после миграции графа",
 }
@@ -143,7 +141,7 @@ COVERAGE_LEVELS = ("managed", "observed", "human_only")
 # Fields of CapabilitySpec that describe coverage only; they must not enter the recovery
 # input revision (editing a note must not invalidate recovery tickets).
 COVERAGE_FIELDS = frozenset({"verifies", "limits", "observation_hook", "forbidden_code",
-                             "forbidden_reason", "recovery_cap", "recovery_only"})
+                             "forbidden_reason", "recovery_cap", "recovery_only", "local_recovery"})
 
 
 @dataclass(frozen=True)
@@ -200,6 +198,12 @@ class CapabilitySpec:
     #                       supervisor never starts or restarts it: a managed launch or a managed worker
     #                       attempt of such a node is refused (require_managed_capability).
     recovery_only: bool = False
+    #   local_recovery    - a node without a model request and without a provider job (local ffmpeg work) that the
+    #                       supervisor may RE-RUN ONCE through the original worker under a recovery ticket. The
+    #                       attempt runs inside the resume-only scope (no paid seam can be reached), and the ticket
+    #                       is verified from independent facts (app/services/local_node_recovery.py), never from
+    #                       model facts. A fresh managed start of such a node is refused like a recovery_only node.
+    local_recovery: bool = False
 
     @property
     def effective_managed(self) -> bool:
@@ -352,6 +356,30 @@ def register_descriptive_contract(node_type: str, builder: Callable[..., Any], *
 
 def descriptive_contract_for(node_type: str) -> Callable[..., Any] | None:
     return _DESCRIPTIVE_CONTRACTS.get(node_type)
+
+
+# Per-NODE admission to a managed execution, for a node type whose capability is shared by nodes that
+# differ in what a failed attempt leaves behind (sd_agent: five agents). check(node) -> None when the node
+# may be put into a managed scope, else the exact reason. The capability stays per type; this only narrows
+# which nodes of that type may enter a managed scope (enable / launch / native entry), so a node that is
+# refused here is never in a scope and never reaches a supervised retry. It grants nothing by itself.
+_NODE_ADMISSIONS: dict[str, Callable[[dict], str | None]] = {}
+
+
+def register_node_admission(node_type: str, check: Callable[[dict], str | None], *, replace: bool = False) -> None:
+    if node_type in _NODE_ADMISSIONS and not replace:
+        raise ValueError(f"node admission already registered: {node_type!r}")
+    _NODE_ADMISSIONS[node_type] = check
+
+
+def node_admission_problem(node: Any) -> str | None:
+    """The reason a graph node may not enter a managed scope, or None (no per-node rule, or admitted)."""
+    from app.services.excel_gpt_node import effective_node_type
+
+    if not isinstance(node, dict):
+        return None
+    check = _NODE_ADMISSIONS.get(effective_node_type(node))
+    return check(node) if check is not None else None
 
 
 def registered_contract_builders() -> dict[str, Callable[..., Any]]:

@@ -106,7 +106,8 @@ async def resume_poll(project_id: int, node_type: str, session: AsyncSession = D
     """Опросить известную задачу Kie и скачать готовое. Новых платных запросов нет (проверяется по журналу)."""
     project = await _project(session, project_id)
     node_type = _node(node_type)
-    if not media_admission.admitted(node_type):
+    if not media_admission.resumable(node_type):
+        # a local node (assemble) is re-run by the original worker under a supervisor ticket, never from here
         raise HTTPException(status_code=409, detail={"code": "node_not_admitted", "node_type": node_type})
     if await kill_switch.is_active(session):
         raise HTTPException(status_code=409, detail={"code": "kill_switch_active"})

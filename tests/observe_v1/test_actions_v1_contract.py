@@ -543,11 +543,16 @@ class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
     async def test_retry_profile_denies_native_split_with_inherited_grant(self):
         await self.assert_retry_denied('split', profile=True)
 
+    # sd_agent is managed per type and admitted per agent: a refused agent (camera) never enters a managed
+    # scope at all, so it has no inherited grant to retry with (the refusal is the denial).
     async def test_retry_same_denies_marked_scene_with_inherited_grant(self):
-        await self.assert_retry_denied('excel_gpt', marker='camera')
+        with self.assertRaisesRegex(ValueError, "scene agent 'camera' is not admitted"):
+            await self.mixed_recovery_fixture('excel_gpt', marker='camera')
 
     async def test_retry_profile_denies_marked_scene_with_inherited_grant(self):
-        await self.assert_retry_denied('excel_gpt', marker='camera', profile=True)
+        with self.assertRaisesRegex(ValueError, "scene agent 'camera' is not admitted"):
+            await self.mixed_recovery_fixture('excel_gpt', marker='camera')
+        await self.assert_retry_denied('excel_gpt', marker='assemble', profile=True)
 
     async def test_retry_same_denies_scene_assembler_with_inherited_grant(self):
         await self.assert_retry_denied('excel_gpt', marker='assemble')
@@ -746,10 +751,10 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
         await self.assert_legacy_claim_denied('image_prompts', profile=True)
 
     async def test_old_retry_same_marked_scene_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('excel_gpt', marker='camera')
+        await self.assert_legacy_claim_denied('excel_gpt', marker='assemble')
 
     async def test_old_retry_profile_marked_scene_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('excel_gpt', marker='camera', profile=True)
+        await self.assert_legacy_claim_denied('excel_gpt', marker='assemble', profile=True)
 
     async def test_old_retry_same_scene_assembler_claim_denied_after_restart(self):
         await self.assert_legacy_claim_denied('excel_gpt', marker='assemble')

@@ -190,31 +190,34 @@ def _register_builtin_capabilities() -> None:
             limits=('Повторный POST после таймаута запрещён, пока человек не снимет маркер или не положит файл',
                     'Готовый файл озвучки на диске переиспользуется без POST',
                     'Вердикт resume_local (готовый файл) надзором не исполняется: результатом ноды файл делает только '
-                    'её собственный запуск, а повтор рабочим процессом не допущен (нет проверки для такого повтора)',
+                    'её собственный запуск целиком (повторный ASR, тайминги кадров, проверка с удалением артефактов), '
+                    'а независимой проверки и сухого прогона для такого повтора нет',
                     'Один платный POST на сегмент без ключа идемпотентности: исход таймаута не доказать'),
             forbidden_code='paid_no_idempotency',
             forbidden_reason='Запрос озвучки без ключа идемпотентности: после таймаута неизвестно, '
                              'списаны ли деньги, поэтому повтор делает только человек.'),
         C('assemble', 'assembly', 'assemble.run → assembly.assemble',
             ('inputs', 'processing', 'subtitles', 'verifying', 'verified', 'failed', 'unknown'),
-            ('local_file', 'artifact_row'), READ_ACTIONS, False, verifier='media_result',
-            contract='media_jobs',
+            ('local_file', 'artifact_row'), READ_ACTIONS + ('retry_same', 'finish'), True,
+            native_json_retry=False, recovery_continuation='none',
+            acceptance='local_assemble_dry_run', local_recovery=True,
+            verifier='media_result', contract='media_jobs',
             verifies=('Итоговый файл собран во временный файл и подменяет прежний только после verify_artifact '
                       '(видео и звук, длительность)',
                       'Заново читаются файл, его sha256 и запрос approve_final для этого файла',
-                      'Сбой сборки или проверки: ровно одна повторная попытка внутри ноды'),
-            limits=('Подтверждение approve_final нельзя снять повтором: запрос один на пару проект и sha256',
-                    'Автоодобрение финала требует живой успешной проверки; ручное одобрение не затронуто',
-                    'Платный запрос недостижим (сухой прогон test_media_dry_run_local_nodes.py: охрана и разбор импортов)',
-                    'Повтор надзором не допущен: одна попытка внутри ноды уже есть, а своей проверки результата для '
-                    'повтора рабочим процессом у не-модельной ноды нет (см. причину запрета)'),
-            forbidden_code='media_recovery_not_admitted',
-            forbidden_reason='Атомарная запись, проверка итога, один повтор внутри ноды и недостижимость платного '
-                             'запроса доказаны сухим прогоном, но повтор сборки надзором не допущен: повтор идёт '
-                             'только рабочим процессом, а его проверка в надзоре построена на фактах модельного '
-                             'запроса (применённые данные и разобранный ответ), которых у сборки нет; сбой при '
-                             'наличии прежнего итога не помечается как медиа-инцидент, а основа ревизии входа для '
-                             'сборки не записывается. Запуск, повтор и подтверждение финала остаются за человеком.'),
+                      'Сбой сборки типизируется по исходу самой попытки (медиа-сбой), а не по прежнему файлу на диске',
+                      'Повтор надзора проверяется независимо от ноды: итог создан после запуска повтора, verify_artifact '
+                      'пройден заново, sha256 совпадает с артефактом, запрос approve_final на этот файл ждёт человека, '
+                      'журнал платных задач не вырос, ни один платный шов не задет'),
+            limits=('Один билет на ноду за запуск; повтор идёт только рабочим процессом внутри режима «только '
+                    'возобновление»: платный запрос недостижим',
+                    'Повтор допускается только после сбоя, который нода сама считает повторяемым (ffmpeg, проверка '
+                    'итога, ошибка файла); ошибки входа (нет клипов, нет озвучки) решает человек',
+                    'Подтверждение approve_final нельзя снять повтором: запрос один на пару проект и sha256, надзор '
+                    'его не одобряет',
+                    'Свежий запуск сборки надзором не допущен: только повтор по билету после сбоя',
+                    'Платный запрос недостижим (сухой прогон test_media_dry_run_local_nodes.py: охрана и разбор импортов)'),
+            recovery_cap=1),
         C('sfx_plan', 'structured',
             'plan_sfx.run → sfx_plan.plan_sfx_events → ai_result_io.text_job',
             ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
@@ -273,6 +276,32 @@ def _register_builtin_capabilities() -> None:
                     'и инцидентом animation_degraded; сам по себе он повтор не открывает',
                     'Не запускает videos (платная нода с утверждением человеком)'),
             recovery_cap=1),
+        C('sd_agent', 'structured',
+            'scene_design.run → scene_contracts.verify_scene_agent',
+            ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
+            ('project_database', 'local_checkpoint', 'local_file'),
+            READ_ACTIONS + ('retry_same', 'finish'), True, native_json_retry=False,
+            recovery_continuation='none', acceptance='native_scene_agent',
+            verifier='scene_agent_result', contract='scene_agent',
+            observation_hook='app.services.scene_contracts:observe_scene_result',
+            verifies=('Агент (characters, world): срез по контракту (обязательный список, id по шаблону, поля) и '
+                      'сохранённые ячейки равны тому, что выводит нативный конвертер; кадры и ячейки других '
+                      'агентов не тронуты',
+                      'Результат читается независимой сессией после шага; без пройденной проверки управляемый '
+                      'запуск удерживается, а попытка считается проваленной',
+                      'Применение ячеек одной транзакцией с транзакционным фактом data_applied',
+                      'Сбой ответа типизируется: invalid_json (нет JSON), missing_payload (нет списка), '
+                      'contract_rejected (срез или ячейки нарушают контракт)'),
+            limits=('Допущены к управляемому запуску и повтору только агенты characters и world: один запрос '
+                    'к модели и запись ячеек одной транзакцией',
+                    'skeleton (черновик и редактор с состоянием между запросами, ячейки по частям), camera и '
+                    'action (параллельные куски запроса, чекпоинты кусков сбрасываются при сбое, ячейки по '
+                    'частям) и устаревший scene_design в управляемый запуск не допускаются: решает человек',
+                    'Один повтор на ноду за запуск, только по инциденту invalid_json или missing_payload',
+                    'После факта data_applied (ячейки записаны) повтор запрещён как частичное применение; '
+                    'проваленный по контракту срез повтором не лечится',
+                    'Смена профиля запрещена; не запускает остальных агентов и сборку sd_assemble'),
+            recovery_cap=1),
         *_coverage_only_specs(),
     ):
         register_capability_spec(spec)
@@ -291,8 +320,9 @@ def _watch(node_type, code, reason, *, verifies=(), hook=None):
 
 def _coverage_only_specs():
     scene_hook = 'app.services.scene_contracts:observe_scene_result'
-    legacy = ('Устаревший тип enrich_N: управляемый путь и повтор есть только у excel_gpt; '
-              'граф нужно перенести на excel_gpt (миграция C5).')
+    legacy = ('Устаревший тип enrich_N: управляемый путь и повтор есть только у excel_gpt; граф переносится '
+              'миграцией (app/services/graph_migrations.py, scripts/migrate_enrich_graphs.py: сухой проход, '
+              'применение, откат), после неё узла этого типа в графе нет.')
     return (
         _watch('scene_design', 'legacy_node_type',
                'Устаревший тип одной ноды на всю фазу не отличить от агента, который в ней идёт: результат '
@@ -302,25 +332,21 @@ def _coverage_only_specs():
                          'Для сборки: итоговый payload по нативной проверке и сверка с Frame.attrs',
                          'Сбой ответа типизируется как invalid_json, missing_payload или contract_rejected'),
                hook=scene_hook),
-        _watch('sd_agent', 'partial_commit',
-               'Веер агентов идёт одним шагом: чекпоинты лежат на диске, ячейки коммитятся частями, а сам шаг '
-               'не пишет транзакционного факта применения, поэтому повтор нечем проверить и он небезопасен.',
-               verifies=('Агенты skeleton, characters, world, camera, action: срез по контракту агента '
-                         '(обязательный список, id по шаблону, поля) и сохранённые ячейки равны тому, что '
-                         'выводит нативный конвертер; кадры и ячейки других агентов не тронуты',
-                         'Сбой ответа типизируется: invalid_json (нет JSON), missing_payload (нет списка), '
-                         'contract_rejected (срез или ячейки нарушают контракт)'),
-               hook=scene_hook),
         _watch('sd_assemble', 'pre_request_commit',
-               'До запроса к модели нода уже записала дочерние кадры, поэтому вход повтора изменён '
-               '(в режиме chrono_dyn запроса к модели нет вовсе): повтор небезопасен.',
+               'До запроса к модели нода уже записала дочерние кадры (камера дробит закадр), а обработчик сбоя их '
+               'коммитит: сухой прогон test_scene_assemble_dry_run.py показал 2 кадра до сбоя и 4 после. Поэтому '
+               'записанная ревизия входа не совпадает с входом повтора и recover_node отказывает (изменились кадры); '
+               'в режиме chrono_dyn запроса к модели нет вовсе. Чтобы допустить повтор, ревизия должна исключать '
+               'кадры, порождённые самим шагом (revisions.py), и повтор надо доказать сухим прогоном.',
                verifies=('Разбор и проверка итогового payload, сверка его полей с реальными Frame.attrs',
                          'Сбой типизируется: invalid_json (нет JSON), missing_payload (нет scenes или ops), '
                          'contract_rejected (правила сборки отклонили)'),
                hook=scene_hook),
-        _watch('hero', 'nondeterministic_paid_request',
-               'Промт героя v1 каждый раз заново строит GPT, поэтому после рестарта тот же платный запрос '
-               'не воспроизвести и открытую задачу по task id не найти: повтор мог бы заплатить заново.',
+        _watch('hero', 'no_resumable_task',
+               'Промт героя v1 теперь сохраняется до платного вызова и после рестарта берётся тот же (GPT заново '
+               'не спрашивается), но возобновлять нечего: герой по умолчанию идёт через Outsee (GPT Image 2 VIP) '
+               'без идентификатора задачи, а слаг модели Kie в рабочем маршруте generate_image_with_retries уходит '
+               'к Outsee, не к Kie. Неизвестный исход отправки блокирует повтор по ключу героя, решает человек.',
                verifies=('У героя есть файл картинки: существует, не пустой, декодируется, лежит в папке проекта',
                          'Журнал платных задач: task id Kie или отсутствие id у Outsee')),
         *(_watch(f'enrich_{n}', 'legacy_node_type', legacy,
@@ -335,16 +361,20 @@ def _coverage_only_specs():
 # decision layer, so a new dataclass field would change those payloads. Nothing reads this
 # table at runtime; docs/MEDIA_NODES_READINESS.md and tests/test_media_nodes_recovery_decision.py
 # are its only consumers. Every entry is human-only (no supervisor retry) except the resume-only ones
-# (videos, items, music): the supervisor may only resume a known provider task, never submit a new one.
+# (videos, items, music): the supervisor may only resume a known provider task, never submit a new one, and
+# the local-retry one (assemble): a single re-run of a node without any provider call through the original worker.
 # Facts are code-grounded (file:line in the doc); "reason" is the honest short justification.
 _MEDIA_HUMAN_ONLY = "human_only"
 _MEDIA_RESUME_ONLY = "resume_only"
+_MEDIA_LOCAL_RETRY = "local_retry"
 MEDIA_RECOVERY_DECISIONS = {
     "hero": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
         "provider": "outsee/kie via generate_image_with_retries",
-        "reason": "No managed lifecycle; the prompt of hero v1 is rebuilt by GPT on every run, so after a restart "
-                  "the same paid request cannot be reproduced and an open Kie task is not found: a supervisor "
-                  "retry could double-pay (observation: media_result verifier, ledger trail)."},
+        "reason": "No managed lifecycle. The v1 prompt is now saved before the paid call and reused after a restart "
+                  "while a paid generation is unfinished (test_hero_dry_run.py), but there is nothing to resume: the "
+                  "default generator is Outsee (no task id) and a Kie slug is routed to the Outsee seam in the native "
+                  "route; an unknown submit is blocked by the Outsee guard keyed by the hero key, a human decides "
+                  "(observation: media_result verifier, ledger trail)."},
     "items": {"decision": _MEDIA_RESUME_ONLY, "cost_class": "paid_per_image",
         "provider": "outsee/kie via generate_image_with_retries",
         "reason": "Supervisor admission is a resume of a known Kie task id only (poll and download inside the "
@@ -374,12 +404,14 @@ MEDIA_RECOVERY_DECISIONS = {
         "provider": "elevenlabs sound-effects (or local_synth when no key)",
         "reason": "managed=False; per-event paid call without idempotency key; on error it falls back to local "
                   "synthesis (now recorded as provider_fallback), a timeout outcome stays unknown and may be charged."},
-    "assemble": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "no_provider_spend_local_cpu",
+    "assemble": {"decision": _MEDIA_LOCAL_RETRY, "cost_class": "no_provider_spend_local_cpu",
         "provider": "local ffmpeg (+ local ASR timing)",
-        "reason": "No provider spend (proven by a dry run: guard and import scan); atomic write, verify_artifact and one "
-                  "in-node retry exist, but supervisor recovery is not admitted: a retry must run the worker, and the "
-                  "supervisor has no recovery verifier for a node without model facts (unknown result evidence), a "
-                  "failure with an earlier final is not typed as a media incident and the input baseline is not recorded."},
+        "reason": "No provider spend (dry run: guard and import scan). The supervisor re-runs the node ONCE through the "
+                  "original worker under a recovery ticket, inside the resume-only scope; the result is verified from "
+                  "independent facts (new file after the claim, verify_artifact, sha256 against the artifact, a pending "
+                  "approve_final for that file, an unchanged provider ledger, no paid seam hit). The human barrier "
+                  "approve_final is never touched; a fresh start and every failure the node does not retry itself stay "
+                  "with a human."},
     "publish": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "external_side_effect_not_money",
         "provider": "social publishers (external accounts)",
         "reason": "Posting to external accounts is irreversible; managed publication is hard-disabled "
@@ -402,7 +434,10 @@ def capability_for(node_type: str) -> NodeCapability:
                           ("read_events", "read_contract", "human_review"))
 
 
-def require_managed_capability(node_type: str):
+def require_managed_capability(node_type: str, *, recovery_claim: bool = False):
+    """The managed capability of a node a supervisor may START. ``recovery_claim=True`` is passed only by a worker
+    attempt that has just claimed a recovery ticket: a local_recovery node (assemble) is admitted for it and for
+    nothing else, so a fresh managed start of such a node stays refused."""
     capability = capability_for(node_type)
     if not capability.managed:
         raise ValueError("node adapter has no accepted managed executor")
@@ -410,6 +445,21 @@ def require_managed_capability(node_type: str):
     spec = capability_spec_for(node_type)
     if spec is not None and spec.recovery_only:
         raise ValueError("node is managed for supervised recovery only: the supervisor never starts or restarts it")
+    if spec is not None and spec.local_recovery and not recovery_claim:
+        raise ValueError("node is managed for supervised recovery only: the supervisor never starts it fresh, "
+                         "it re-runs it once under a recovery ticket")
+    return capability
+
+
+def require_managed_node(node):
+    """require_managed_capability for a GRAPH NODE: the capability of its effective type plus the per-node
+    admission rule of that type (an sd_agent node of a refused agent may not enter a managed scope)."""
+    from app.orchestrator.node_spec import node_admission_problem
+    from app.services.excel_gpt_node import effective_node_type
+    capability = require_managed_capability(effective_node_type(node))
+    problem = node_admission_problem(node)
+    if problem:
+        raise ValueError(problem)
     return capability
 
 
@@ -862,5 +912,18 @@ def _register_builtin_verifiers() -> None:
         success_errors='gap', on_error=True, error_done_flag='animation_verification_recorded'))
 
 
+def _register_scene_agent_admission() -> None:
+    """sd_agent is managed per TYPE but admitted per AGENT (scene_contracts.RETRY_ADMITTED_AGENTS)."""
+    from app.orchestrator import node_spec
+    from app.orchestrator.node_spec import VerifierSpec, register_verifier
+    from app.services import scene_contracts
+    register_verifier(VerifierSpec('scene_agent_result', 'app.services.scene_contracts:observe_scene_agent_gate',
+        managed_only=True, success_errors='raise'))
+    node_spec.register_contract_builder('scene_agent', scene_contracts.scene_agent_contract, replace=True)
+    node_spec.register_node_admission('sd_agent', scene_contracts.scene_retry_admission_problem, replace=True)
+    node_spec.register_node_admission('scene_design', scene_contracts.scene_retry_admission_problem, replace=True)
+
+
 _register_builtin_capabilities()
 _register_builtin_verifiers()
+_register_scene_agent_admission()

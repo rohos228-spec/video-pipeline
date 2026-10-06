@@ -539,9 +539,7 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertTrue(second['verification_status'].startswith('not_checked'))
 
     async def test_marked_scene_node_never_inherits_structured_text_recovery(self):
-        for data,typ in (({'sd_agent':'skeleton'},'sd_agent'),
-                         ({'sd_agent':'assemble'},'sd_assemble'),
-                         ({'agent':'camera'},'sd_agent')):
+        for data,typ in (({'sd_agent':'assemble'},'sd_assemble'),):
             with self.subTest(data=data):
                 record=await self.native_contract_fixture('excel_gpt',data)
                 context=await self.loop.context(record['decision_id'])
@@ -609,18 +607,22 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertIsNone(before['media_recovery'])  # not a media incident: no resume is offered
         self.assertEqual(before['eligible_profiles'],[])
 
-    async def test_every_scene_agent_marker_is_described_with_its_slice_contract_and_no_retry(self):
+    async def test_every_scene_agent_marker_is_described_with_its_slice_contract(self):
+        """sd_agent is managed per TYPE and admitted per AGENT: characters and world may retry once; skeleton,
+        camera and action are refused at enable/launch (node admission), so they never sit in a managed scope."""
+        from app.orchestrator.node_spec import node_admission_problem
         for agent,list_key in (('skeleton','scenes'),('characters','characters'),('world','locations'),
                                ('camera','shot_plan'),('action','scenes')):
             with self.subTest(agent=agent):
                 record=await self.native_contract_fixture('sd_agent',{'sd_agent':agent})
                 result=await self.loop.read_contract(record['decision_id'])
-                self.assertTrue(result['descriptive_only'])
-                self.assertFalse(result['managed_executor_accepted'])
-                description=result['descriptive_contract']
-                self.assertEqual((description['agent'],description['slice_contract']['list_key']),(agent,list_key))
-                before=await self.loop.context(record['decision_id'])
-                self.assertFalse({'retry_same','retry_profile','finish'}&set(before['allowed_actions']))
+                self.assertNotIn('descriptive_only',result)
+                self.assertEqual(result['contract']['agent'],agent)
+                self.assertEqual(result['contract']['slice_contract']['list_key'],list_key)
+                self.assertNotIn('nonempty_payload_required',result)
+                admitted=agent in ('characters','world')
+                node={'id':'n1','type':'sd_agent','data':{'sd_agent':agent}}
+                self.assertEqual(node_admission_problem(node) is None,admitted)
 
     async def test_animation_contract_is_native_and_allows_retry_same_only(self):
         record=await self.native_contract_fixture('animation_prompts')
@@ -633,8 +635,15 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertNotIn('retry_profile',before['allowed_actions'])
         self.assertEqual(before['eligible_profiles'],[])
 
-    async def test_camera_descriptive_contract_cannot_inherit_excel_tools(self):
-        await self._assert_descriptive_native_contract('excel_gpt',{'sd_agent':'camera'},'sd_agent')
+    async def test_camera_contract_cannot_inherit_excel_tools_and_camera_is_not_admitted(self):
+        from app.orchestrator.node_spec import node_admission_problem
+        record=await self.native_contract_fixture('excel_gpt',{'sd_agent':'camera'})
+        with patch('app.services.excel_gpt_node.node_config',side_effect=AssertionError('not generic Excel')):
+            result=await self.loop.read_contract(record['decision_id'])
+        self.assertEqual(result['node_type'],'sd_agent')
+        self.assertEqual(result['contract']['agent'],'camera')
+        self.assertNotIn('nonempty_payload_required',result)
+        self.assertIn('chunked_requests',node_admission_problem({'id':'n1','type':'excel_gpt','data':{'sd_agent':'camera'}}))
 
     async def test_assembler_descriptive_contract_cannot_inherit_excel_tools(self):
         await self._assert_descriptive_native_contract('excel_gpt',{'sd_agent':'assemble'},'sd_assemble')

@@ -443,7 +443,7 @@ class DecisionSupervisor:
         from app.services.profiles_v1 import eligible_profiles
         from app.services import media_admission
         media_ok=media_admission.is_media_incident(incident) and media_admission.admitted(capability.node_type)
-        media_info=await self._media_info(project,capability.node_type) if media_ok and project else None
+        media_info=await self._media_info(project,capability.node_type,events) if media_ok and project else None
         eligible=await eligible_profiles(s,row,revision) if incident.type in RECOVERY_INCIDENTS and capability.managed and capability.profile_compatible else []
         # Deterministic hint only — never forces a choice. For a diagnosed
         # format/payload failure, the operator-approved repair-only prompt
@@ -491,11 +491,13 @@ class DecisionSupervisor:
             'permission_active':permission.enabled and not permission.held,
             'worker_result':{'status':action.status,'verification':action.verification_result} if action else None}
 
-    async def _media_info(self,project,node_type):
-        """What a media retry_same would do: a resume of a known provider task, or a typed denial. Read-only."""
+    async def _media_info(self,project,node_type,events=None):
+        """What a media retry_same would do: a resume of a known provider task, one re-run of a local node by the
+        original worker, or a typed denial. Read-only. A local node is judged from the failed attempt's own facts."""
         from app.services import media_admission
         try:
-            adm=await media_admission.admit(project,node_type)
+            adm=await media_admission.admit(project,node_type,
+                source_facts=(list(events or []) if media_admission.local_worker(node_type) else None))
         except media_admission.MediaAdmissionDenied as exc:
             return {'operation':None,'denied':exc.code,'submits_new_paid_request':False}
         except Exception as exc:

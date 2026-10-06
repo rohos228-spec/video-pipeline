@@ -2,7 +2,7 @@
 import {useEffect, useId, useState} from "react";
 import {Button} from "@/components/ui/button";
 import {
-  getCatalog, listMacros, macroTitle, planFromMacro, planFromText, previewFromError, previewPlan, describeError,
+  getCatalog, listMacros, macroTitle, planFromMacro, planFromText, previewFromError, previewPlan, describeError, isRetryable,
   buildMacroParams, macroInitialValues, paramHint, paramLabel, type ActionSpecJson, type MacroJson, type PlanPreviewResponse, type SceneContext,
 } from "@/lib/action-layer";
 import {isUploading, readyIds, type AttachmentItem} from "@/lib/attachment-view";
@@ -24,6 +24,8 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan, attac
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Повтор последнего запроса после временного сбоя планировщика (сервер пометил ошибку retryable).
+  const [retry, setRetry] = useState<(() => void) | null>(null);
   const [macros, setMacros] = useState<MacroJson[] | null | undefined>(undefined);
   const [catalog, setCatalog] = useState<ActionSpecJson[]>([]);
   const [actionId, setActionId] = useState("");
@@ -43,7 +45,7 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan, attac
     projectId == null ? null : {project_id: projectId, selected_scene: sceneId ?? null, selected_frame: frameId ?? null};
 
   async function guarded(fn: () => Promise<PlanPreviewResponse>, requestText: string, textRoute = false) {
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setRetry(null);
     try {
       const r = await fn();
       setOpenMacro(null);
@@ -53,6 +55,7 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan, attac
       if (pv) onPlan({plan_id: null, preview: pv}, requestText);
       else {
         setError(describeError(e));
+        if (isRetryable(e)) setRetry(() => () => void guarded(fn, requestText, textRoute));
         if (textRoute && typeof e === "object" && e !== null && (e as {status?: number}).status === 404) setTextAvailable(false);
       }
     } finally {
@@ -215,7 +218,17 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan, attac
           </Button>
         </div>
       </details>
-      {error && <p role="alert" className="text-red-300">{error}</p>}
+      {error && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p role="alert" className="text-red-300">{error}</p>
+          {retry && (
+            <Button type="button" size="sm" variant="outline" className="h-7 text-xs" data-testid="planner-retry"
+              disabled={off} title="Временный сбой планировщика: отправить тот же запрос ещё раз" onClick={retry}>
+              Повторить
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

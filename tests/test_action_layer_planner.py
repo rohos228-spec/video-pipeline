@@ -294,12 +294,13 @@ async def test_empty_plan_without_question_is_rejected(stubs) -> None:
     assert err.value.code == "empty_plan"
 
 
-async def test_transport_error_is_not_repeated(stubs) -> None:
-    fake = use(TimeoutError("slow"), res(reply([step()])))
-    with pytest.raises(planner.PlannerFailed):
+async def test_transport_error_is_repeated_exactly_once(stubs, monkeypatch) -> None:
+    monkeypatch.setattr(planner, "RETRY_DELAY_S", 0)
+    fake = use(TimeoutError("slow"), TimeoutError("slow"), res(reply([step()])))
+    with pytest.raises(planner.PlannerFailed) as err:
         await planner.plan_from_text("x", operator=OP)
-    assert len(fake.calls) == 1
-    assert [r.outcome for r in await history_rows(stubs, "planner_call")] == ["transport_error"]
+    assert len(fake.calls) == 2 and err.value.retryable
+    assert [r.outcome for r in await history_rows(stubs, "planner_call")] == ["transport_error"] * 2
 
 
 async def test_kill_switch_blocks_model_call(stubs) -> None:

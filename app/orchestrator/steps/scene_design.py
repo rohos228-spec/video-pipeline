@@ -208,9 +208,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         )
         for agent_name, slice_data in to_store.items():
             converted = sd_cells.slice_to_cells(project, agent_name, slice_data, full_vo)
-            cell_stats[agent_name] = await sd_cells.store_cells(
-                session, project, agent_name, converted
-            )
+            from app.services import scene_contracts
+
+            if agent_name in scene_contracts.RETRY_ADMITTED_AGENTS:
+                # One transaction: old cells deleted, new ones inserted and the `data_applied`
+                # fact staged, committed together (recover_node reads that fact).
+                cell_stats[agent_name] = await sd_cells.store_cells(
+                    session, project, agent_name, converted, transactional=True
+                )
+                scene_contracts.record_scene_applied(session, agent_name, cell_stats[agent_name])
+                await session.commit()
+            else:
+                cell_stats[agent_name] = await sd_cells.store_cells(
+                    session, project, agent_name, converted
+                )
             # Ответ агента на диск ноды — материал для её ноды проверки.
             _write_sd_reply_file(project, agent_name, slice_data)
         logger.info("[#{}] scene_design cells: {}", project.id, cell_stats)

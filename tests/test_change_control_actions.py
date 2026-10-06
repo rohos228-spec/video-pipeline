@@ -102,9 +102,9 @@ async def test_the_planner_cannot_smuggle_identity_or_approval_fields(ccenv) -> 
     for extra in ({"approved_by": "x"}, {"proposer": "human"}, {"approval_id": "x"}):
         step = _apply_step(view)
         step["params"].update(extra)
-        assert "unknown field" in await _invalid(ccenv, [step])
+        assert "лишнее поле" in await _invalid(ccenv, [step])
     body = _split_body(ccenv.pid)
-    assert "unknown field" in await _invalid(ccenv, [{
+    assert "лишнее поле" in await _invalid(ccenv, [{
         "action_id": "change.propose", "params": {**body, "proposer": "human"}}])
 
 

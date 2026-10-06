@@ -74,7 +74,18 @@ MEDIA_ROUTE_SETTINGS = (
 # Nodes whose supervised recovery is a resume of a provider task (media_admission). Their input revision
 # covers the paid request inputs only (see compute_input_revision).
 MEDIA_RESUME_NODES = frozenset({"videos", "items", "music"})
+# Nodes without a model request or a provider job that the supervisor re-runs once through the original worker
+# (app/services/local_node_recovery.py). Their input revision covers the TRUE inputs of the local work only.
+LOCAL_RECOVERY_NODES = frozenset({"assemble"})
+# Everything that records a request-input baseline at attempt start (observation.observe_attempt).
+BASELINE_NODES = MEDIA_RESUME_NODES | LOCAL_RECOVERY_NODES
 MEDIA_FRAME_COLUMNS = ("id", "number", "uuid", "animation_prompt")
+# assemble: the frame columns that are INPUT. start_ts / end_ts / duration_seconds are written by the assembly
+# itself (progress of the attempt) and never enter the revision.
+ASSEMBLE_FRAME_COLUMNS = ("id", "number", "uuid", "voiceover_text")
+# Settings that shape the assembled file (subtitles, background music, ASR for subtitle timing).
+ASSEMBLE_SETTINGS = ("subtitle_max_words", "subtitle_lead_seconds", "subtitle_chars_per_second",
+                     "subtitle_rewhisper_on_assemble", "bgm_default_level", "bgm_path", "whisper_model", "asr_backend")
 DATA_COLUMNS = ("topic", "general_plan", "hero_description", "script_text", "hero_mode",
                 "hero_descriptions", "item_descriptions")
 
@@ -362,6 +373,51 @@ def capability_data(node_type: str, capability) -> dict:
 # Input revision
 # ---------------------------------------------------------------------------
 
+def _stat_row(path: Path) -> dict:
+    try:
+        st = path.stat()
+        return {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    except OSError:
+        return {"missing": True}
+
+
+def _files_under(root: Path, suffixes: tuple[str, ...], *, prefix: str | None = None) -> dict:
+    """Relative path -> size and mtime of the input files of one folder. Absent folder = empty listing."""
+    out: dict[str, dict] = {}
+    if not root.is_dir():
+        return out
+    for path in sorted(root.rglob("*")):
+        if path.is_file() and path.suffix.lower() in suffixes and (prefix is None or path.name.startswith(prefix)):
+            out[path.relative_to(root).as_posix()] = _stat_row(path)
+    return out
+
+
+def assemble_inputs(project) -> dict:
+    """True inputs of the local assembly that are not database rows: media files and assembly parameters.
+
+    Fail-closed through _safe at the call site. Stat only (size, mtime): no file is read."""
+    from app.settings import settings
+    root = Path(project.data_dir)
+    meta = project.meta if isinstance(getattr(project, "meta", None), dict) else {}
+    steps = meta.get("node_step_params")
+    board = meta.get("montage_board")
+    board = board if isinstance(board, dict) else {}
+    return {
+        "videos": _files_under(root / "videos", (".mp4", ".mov", ".webm", ".mkv")),
+        "scenes": _files_under(root / "scenes", (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov")),
+        # the voice FILES (voice*.mp3/wav): words_*.json and sidecars are written by the attempt itself
+        "voice": _files_under(root / "audio", (".mp3", ".wav", ".m4a"), prefix="voice"),
+        "music": _files_under(root / "music", (".mp3", ".wav", ".m4a")),
+        "sfx": _files_under(root / "sfx", (".wav", ".mp3")),
+        "params": {
+            "assemble": (steps.get("assemble") if isinstance(steps, dict) else None),
+            "video_trims": board.get("video_trims"), "stale_videos": board.get("stale_videos"),
+            "bgm": {k: v for k, v in sorted(meta.items()) if str(k).startswith(("bgm", "mass_bgm"))},
+            "settings": {name: str(getattr(settings, name, None)) for name in ASSEMBLE_SETTINGS},
+        },
+    }
+
+
 async def _find_node(session, project, node_key: str) -> dict | None:
     from sqlalchemy import select
     from app.models import WorkflowRun
@@ -400,6 +456,14 @@ async def compute_input_revision(session, project, node_key, *, parts=None) -> s
         rows = (await session.scalars(select(Frame).where(Frame.project_id == project.id)
                                       .order_by(Frame.id))).all()
         state[Frame.__tablename__] = [{c: getattr(row, c, None) for c in MEDIA_FRAME_COLUMNS} for row in rows]
+    elif node_type in LOCAL_RECOVERY_NODES:
+        # A supervised local re-run depends on what the local work READS: the voiceover text, the set of frames,
+        # the clip / image / voice / music / sound-effect files and the assembly parameters. Everything the
+        # attempt itself writes (frame timings, subtitle and ASR artifacts, the final file, counters) is progress.
+        rows = (await session.scalars(select(Frame).where(Frame.project_id == project.id)
+                                      .order_by(Frame.id))).all()
+        state[Frame.__tablename__] = [{c: getattr(row, c, None) for c in ASSEMBLE_FRAME_COLUMNS} for row in rows]
+        state["assemble_inputs"] = _safe("assemble_inputs", lambda: assemble_inputs(project))
     else:
         for model in (Frame, Scene, FrameText, SceneDesignCell):
             rows = (await session.scalars(select(model).where(model.project_id == project.id)

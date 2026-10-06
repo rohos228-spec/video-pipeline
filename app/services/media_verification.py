@@ -327,6 +327,37 @@ def _family_match(node_type: str, key: str) -> bool:
     return bool(family and family.match(key or ""))
 
 
+# Local nodes (no provider job) whose failure is typed by the attempt's OWN outcome, not by the files on disk.
+LOCAL_ATTEMPT_NODES = ("assemble",)
+
+
+def _retryable_by_node(node_type: str, exc: BaseException) -> bool:
+    """Does the node itself treat this failure as repeatable (the same rule as its in-node retry)? Fail-closed."""
+    try:
+        if node_type == "assemble":
+            from app.orchestrator.steps.assemble import _assemble_retryable
+            return bool(_assemble_retryable(exc))
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+def typed_attempt_failure(proof: dict[str, Any], exc: BaseException, node_type: str) -> dict[str, Any]:
+    """The failed attempt produced NO new verified artifact. A file an earlier run left behind (a final.mp4 that
+    passes verify_artifact) is not its result: the proof says ``failed`` with the attempt's own error type, and
+    the files read back are marked as stale. Without this the proof would pass on the old file and the failure
+    would reach diagnosis as a plain contract_rejected instead of a typed media failure."""
+    label = NODE_LABEL.get(node_type, node_type)
+    error_type = type(exc).__name__
+    items = [{**i, "stale_earlier_result": True} for i in proof.get("items", [])]
+    return {**proof, "status": "failed", "reason": f"attempt_failed:{error_type}", "items": items,
+            "items_passed": 0,
+            "attempt_failure": {"error_type": error_type, "retryable_by_node": _retryable_by_node(node_type, exc),
+                                "new_verified_artifact": False},
+            "summary": (f"{label}: попытка завершилась ошибкой ({error_type}); нового проверенного результата нет, "
+                        "файл на диске относится к прежней сборке.")}
+
+
 async def observe_media_result(session, project, node_type):
     """Verifier hook (named registry): journals the proof; never raises, never holds the run."""
     from app.services.observation import _attempt, record_fact
@@ -346,12 +377,23 @@ async def observe_media_result(session, project, node_type):
     try:
         from sqlalchemy.ext.asyncio import async_sessionmaker
         from app.models import Project as ProjectModel
-        async with async_sessionmaker(session.bind, expire_on_commit=False, autoflush=False)() as reader:
-            native = await reader.get(ProjectModel, ctx.scope.project_id)
-            if native is None:
-                raise LookupError("native media project unavailable")
-            proof = await build_proof(reader, native, node_type)
-            full["items"] = proof["items"]
+        failure = getattr(ctx, "attempt_exception", None)
+        if node_type in LOCAL_ATTEMPT_NODES and failure is None:
+            # A local node writes its result rows (final artifact, approve_final request) in the worker's own
+            # transaction, which commits only after this hook returns: an independent connection would still see
+            # the EARLIER rows and call a successful assembly failed. Read the flushed rows of this attempt through
+            # its own session, without flushing anything (the files are probed from disk either way).
+            with session.no_autoflush:
+                proof = await build_proof(session, project, node_type)
+        else:
+            async with async_sessionmaker(session.bind, expire_on_commit=False, autoflush=False)() as reader:
+                native = await reader.get(ProjectModel, ctx.scope.project_id)
+                if native is None:
+                    raise LookupError("native media project unavailable")
+                proof = await build_proof(reader, native, node_type)
+            if failure is not None and node_type in LOCAL_ATTEMPT_NODES:
+                proof = typed_attempt_failure(proof, failure, node_type)
+        full["items"] = proof["items"]
     except Exception as exc:  # noqa: BLE001
         proof.update(reason=f"{type(exc).__name__}", error_type=type(exc).__name__)
     await record_fact("node_output", {"contract": "native_media", "node_type": node_type,

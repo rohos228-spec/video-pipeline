@@ -78,7 +78,9 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -90,8 +92,8 @@
     "artifact_row"
    ],
    "executor": "assemble.run → assembly.assemble",
-   "managed": false,
-   "native_json_retry": true,
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "assemble",
    "phases": [
     "inputs",
@@ -103,7 +105,7 @@
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "recovery_continuation": "none",
    "result_kind": "assembly",
    "volatile_attachment_names": false
   },
@@ -112,7 +114,9 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -125,8 +129,8 @@
     "artifact_row"
    ],
    "executor": "assemble.run → assembly.assemble",
-   "managed": false,
-   "native_json_retry": true,
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "assemble",
    "phases": [
     "inputs",
@@ -138,7 +142,7 @@
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "recovery_continuation": "none",
    "result_kind": "assembly",
    "semantic_quality_verified": false,
    "volatile_attachment_names": false,
@@ -1273,31 +1277,46 @@
    "actions": [
     "read_events",
     "read_contract",
-    "human_review"
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
     "budget",
     "provider_profile"
    ],
-   "effects": [],
-   "executor": "",
-   "managed": false,
-   "native_json_retry": true,
+   "effects": [
+    "project_database",
+    "local_checkpoint",
+    "local_file"
+   ],
+   "executor": "scene_design.run → scene_contracts.verify_scene_agent",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "sd_agent",
    "phases": [
-    "unknown"
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "unsupported",
+   "recovery_continuation": "none",
+   "result_kind": "structured",
    "volatile_attachment_names": false
   },
   "contract": {
    "actions": [
     "read_events",
     "read_contract",
-    "human_review"
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -1305,17 +1324,26 @@
     "provider_profile"
    ],
    "arbitrary_shell_code_paths": false,
-   "effects": [],
-   "executor": "",
-   "managed": false,
-   "native_json_retry": true,
+   "effects": [
+    "project_database",
+    "local_checkpoint",
+    "local_file"
+   ],
+   "executor": "scene_design.run → scene_contracts.verify_scene_agent",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "sd_agent",
    "phases": [
-    "unknown"
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "unsupported",
+   "recovery_continuation": "none",
+   "result_kind": "structured",
    "semantic_quality_verified": false,
    "volatile_attachment_names": false,
    "write_authority": "existing worker only"

@@ -257,3 +257,59 @@ assert.match(orchPanel,/BUG_MODE_LABEL = "Диагностика багов"/);a
 assert.match(orchPanel,/\{BUG_MODE_LABEL\}\s*<\/Button>/);
 assert.doesNotMatch(orchPanel,/Режим фикса|нажмите «Фикс багов»|чинить \(шаги\/код\)/);
 console.log('Bug-mode honesty UI contracts: passed');
+
+// «Восстановление медиа» panel: read-only view + plans through the action layer (never the write endpoints)
+const mrSource=fs.readFileSync('/observe-source/web/src/lib/media-recovery-view.ts','utf8');
+const mrJS=ts.transpileModule(mrSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const M=await import('data:text/javascript;base64,'+Buffer.from(mrJS).toString('base64'));
+for(const mode of ['resume_poll','resume_local','retry_same','denied','nothing_to_do']){
+  assert.ok(M.modeLabel(mode).length>3);assert.ok(M.modeExplain(mode).length>20);assert.match(M.modeClass(mode),/border-/);
+}
+assert.equal(new Set(['resume_poll','resume_local','retry_same','denied','nothing_to_do'].map(M.modeLabel)).size,5);
+assert.match(M.modeExplain('retry_same','local_only_no_provider_spend'),/Локальная сборка/);assert.match(M.modeExplain('retry_same','provably_failed'),/точно отклонил/);
+assert.equal(M.modeLabel('bogus'),'Неизвестно');assert.match(M.modeExplain('bogus'),/не распознано/);
+assert.match(M.codeText('unknown_outcome_outsee'),/Outsee/);assert.equal(M.codeText('weird_code'),'weird_code');assert.equal(M.codeText(null),'');
+assert.match(M.ledgerText('disabled'),/выключен/);assert.match(M.ledgerText(undefined),/нет данных/);
+const keys=[{key:'clip_001',mode:'resume_poll',code:'open_task',task_id:'t1'},{key:'clip_002',mode:'resume_poll',code:'open_task',task_id:'t1'},
+  {key:'clip_003',mode:'denied',code:'unknown_outcome_kie'}];
+assert.equal(M.ledgerCounts(keys),'открытых 2, ждут человека 1');assert.equal(M.ledgerCounts([]),'задач в журнале нет');
+const asm=(node,op,extra={})=>({project_id:1,node_type:node,verdict:{mode:op?'resume_poll':'denied',code:'x'},keys,
+  supervisor_admission:{admitted_node:true,operation:op,denied:op?null:'verdict_denied',...extra}});
+assert.equal(M.hasTaskId(asm('videos','resume_poll')),true);assert.deepEqual(M.taskIds(asm('videos','resume_poll')),['t1']);
+assert.equal(M.hasTaskId({keys:[{key:'a',mode:'denied',code:'x'}]}),false);
+assert.equal(M.canResume(asm('videos','resume_poll')),true);assert.equal(M.resumeBlockedReason(asm('videos','resume_poll')),null);
+assert.equal(M.canResume(asm('videos',null)),false);assert.match(M.resumeBlockedReason(asm('videos',null)),/неизвестен|решает человек/);
+assert.equal(M.canResume(asm('hero','resume_poll')),false); // resume is only for videos/items/music, whatever the server says
+assert.match(M.resumeBlockedReason(asm('hero','resume_poll')),/нет задачи провайдера/);
+assert.equal(M.canResume(null),false);assert.match(M.resumeBlockedReason(null),/не прочитано/);
+assert.match(M.resumeBlockedReason(asm('music',null,{denied:null,admitted_node:false})),/не допускается/);
+assert.equal(M.formatAge(30),'30 с');assert.equal(M.formatAge(40*60),'40 мин');assert.equal(M.formatAge(2*3600+300),'2 ч 5 мин');assert.equal(M.formatAge(null),'неизвестно');
+assert.equal(M.formatBlockedUntil('2026-10-06T14:35:09'),'до 06.10 14:35 (UTC)');assert.equal(M.formatBlockedUntil(''),'неизвестно');
+assert.equal(M.reasonOk('коротко'),false);assert.equal(M.reasonOk('         123456789      '),false);assert.equal(M.reasonOk('Сверил кабинет Kie: списания нет'),true);
+assert.equal(M.reasonOk('x'.repeat(501)),false);assert.equal(M.cleanReason('  a   b \n c '),'a b c');
+assert.deepEqual(M.resumeParams(7,'videos'),{project_id:7,node_type:'videos'});
+assert.deepEqual(M.releaseParams(7,{key:'clip_005',provider:'kie'},'  Сверил   кабинет, списания нет '),
+  {project_id:7,key:'clip_005',provider:'kie',reason:'Сверил кабинет, списания нет'});
+assert.equal(M.RESUME_ACTION,'media.resume_poll');assert.equal(M.RELEASE_ACTION,'media.release_unknown');
+assert.match(M.SECOND_CHARGE_WARNING,/ВТОРОЕ СПИСАНИЕ/);assert.match(M.SECOND_CHARGE_WARNING,/кабинет/);
+assert.deepEqual(M.MEDIA_NODES.map(n=>n.node_type).sort(),['assemble','audio','hero','images','items','music','sfx_gen','videos']);
+const mrPanel=fs.readFileSync('/observe-source/web/src/components/orchestrator/media-recovery-section.tsx','utf8');
+assert.match(mrPanel,/previewPlan\(\[\{action_id: RESUME_ACTION/);assert.match(mrPanel,/previewPlan\(\[\{action_id: RELEASE_ACTION/);
+assert.match(mrPanel,/<PlanCard/);assert.match(mrPanel,/<RunProgress/);assert.match(mrPanel,/Докачать/);assert.match(mrPanel,/Снять блокировку…/);
+assert.match(mrPanel,/Загрузка/);assert.match(mrPanel,/role="alert"/);assert.match(mrPanel,/Блокировок неизвестного исхода нет/);
+assert.match(mrPanel,/observations\.nodeCoverage\(project\)/); // the same API as the «Покрытие нод» panel: counts are never hardcoded
+assert.match(mrPanel,/coverageSummaryLine\(coverage\.summary\)/);assert.match(mrPanel,/forbiddenText\(cov\)/);
+assert.match(mrPanel,/disabled=\{!reasonOk\(reason\)/);assert.match(mrPanel,/SECOND_CHARGE_WARNING/);
+assert.doesNotMatch(mrPanel,/resume-poll|release-unknown|method:\s*"POST"|approvePlan|runPlan|\.env/); // no direct write call, no approval from here
+const mrApi=fs.readFileSync('/observe-source/web/src/lib/media-recovery.ts','utf8');
+assert.match(mrApi,/media-recovery/);assert.doesNotMatch(mrApi,/POST|method:|resume-poll|release-unknown/);
+assert.doesNotMatch(mrSource,/\b(managed|observed|human_only)\s*[:=]\s*\d/); // coverage counts come from the API
+assert.match(fs.readFileSync('/observe-source/web/src/components/orchestrator/observation-section.tsx','utf8'),/<MediaRecoverySection projectId=\{projectId\}\/>/);
+assert.match(planCard,/ВТОРОЕ СПИСАНИЕ|destructive_effects/); // the destructive card text comes from the server preview
+console.log('Media recovery UI contracts: passed');
+
+// planner retry hint: `retryable: true` from the planner -> «Повторить» in the command line card
+assert.match(alLib,/retryable\?: boolean/);assert.match(alLib,/export function isRetryable/);
+assert.match(cmdBar,/isRetryable\(e\)/);assert.match(cmdBar,/planner-retry/);assert.match(cmdBar,/Повторить/);
+assert.match(planCard,/plan\.retryable && onRetry/);assert.match(alSection,/onRetry=/);
+console.log('Planner retry UI contracts: passed');

@@ -106,7 +106,7 @@ class Capabilities(unittest.TestCase):
             self.assertEqual(contract['output_field'],field)
             self.assertTrue(contract['human_approval_preserved'])
             self.assertFalse(contract['semantic_quality_verified'])
-        self.assertFalse(capability_for('sd_agent').managed)
+        self.assertNotEqual(capability_for('sd_agent').result_kind,'project_text')
 
     def test_project_text_verification_never_accepts_unknown_or_short_output(self):
         from types import SimpleNamespace
@@ -131,7 +131,8 @@ class Capabilities(unittest.TestCase):
             self.assertIn(typ, WORK_NODES)
             self.assertEqual(cap.result_kind, kind)
             # videos is managed for supervised RECOVERY only (resume of a known provider task)
-            self.assertEqual("retry_same" in cap.actions, typ == "videos")
+            # assemble is managed for ONE supervised local re-run through the original worker (no provider job)
+            self.assertEqual("retry_same" in cap.actions, typ in {"videos", "assemble"})
             self.assertIn("human_review", cap.actions)
         self.assertFalse(capability_for("imaginary").managed)
         self.assertEqual(capability_for("publish").actions, ("read_events", "read_contract", "human_review"))

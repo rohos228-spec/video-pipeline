@@ -112,10 +112,12 @@ async def managed_launch_options(project_id:int,operator:AuthDep):
         for node in run.nodes_snapshot or []:
             key=str(node.get('id') or '');capability=capability_for(effective_node_type(node));state=states.get(key)
             data=node.get('data') or {}
+            from app.orchestrator.node_spec import node_admission_problem
+            refused=node_admission_problem(node) if capability.managed else None
             nodes.append({'node_key':key,'title':str(data.get('label') or data.get('title') or key),
-                'group_id':data.get('groupId'),'supported':capability.managed,
+                'group_id':data.get('groupId'),'supported':capability.managed and not refused,
                 'status':state.status.value if state else 'unknown',
-                'reason':None if capability.managed else 'исполнитель и проверка ещё не приняты',
+                'reason':refused or (None if capability.managed else 'исполнитель и проверка ещё не приняты'),
                 'result_kind':capability.result_kind,'actions':list(capability.actions)})
         runtime=status()
         maximum=runtime.get('budget_policy',{'max_requests':100})['max_requests']
@@ -492,9 +494,9 @@ async def start_managed_node(project_id: int, execution_id: str, payload: Manage
                        if str(n.get("id")) == payload.node_key), None)
     if graph_node is None or str(graph_node.get("type") or "") != payload.step_code:
         raise HTTPException(409, "node type does not match immutable workflow snapshot")
-    from app.services.node_capabilities import require_managed_capability
+    from app.services.node_capabilities import require_managed_node
     try:
-        require_managed_capability(str(graph_node.get("type") or ""))
+        require_managed_node(graph_node)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     node_run = await session.scalar(select(NodeRun).where(

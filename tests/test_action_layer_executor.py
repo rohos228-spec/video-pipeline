@@ -366,7 +366,7 @@ async def test_inflight_non_idempotent_step_is_never_rerun(env) -> None:
     view = await service.plan_view(pid)
     assert ran == [] and view["status"] == "failed"
     assert _statuses(view) == ["unknown", "skipped"]
-    assert "needs review" in view["steps"][0]["error"]
+    assert "ручной разбор" in view["steps"][0]["error"]
 
 
 async def test_resume_of_paid_plan_needs_prior_approval_record(env) -> None:

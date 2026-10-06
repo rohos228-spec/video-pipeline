@@ -10,6 +10,7 @@ import {ProfilesSection} from './profiles-section';
 import {ManagedLaunchSection} from './managed-launch-section';
 import {TelemetrySection} from './telemetry-section';
 import {NodeCoverageSection} from './node-coverage-section';
+import {MediaRecoverySection} from './media-recovery-section';
 import {eventLabel, mergeEvents, usageLabel, groupForScope, type ObservationEvent} from "@/lib/observation-view";
 import {Button} from "@/components/ui/button";
 import {mediaPhase, mediaVerification, artifactLink, imagePreviewLink, publicationSummary} from "@/lib/media-view";
@@ -278,6 +279,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       onExecution={id=>void selectManagedExecution(id)}/>
     <TelemetrySection projectId={projectId}/>
     <NodeCoverageSection projectId={projectId}/>
+    <MediaRecoverySection projectId={projectId}/>
     <details className="space-y-3 rounded border border-white/10 p-2">
     <summary className="cursor-pointer text-white/70">Расширенный режим · наблюдение, диагностика и управление</summary>
     <div className="flex flex-wrap items-center gap-2">

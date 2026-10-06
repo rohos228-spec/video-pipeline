@@ -637,7 +637,8 @@ class MediaDryRun(base_tests.DurableActions):
         await self.killed_then_native_poll_timeout()
         incident = await self.media_incident()
         await self.enable()
-        for node_type in ("hero", "audio", "sfx_gen", "assemble", "images", "publish"):
+        # assemble is not here any more: it is admitted as a LOCAL worker node (test_media_dry_run_local_nodes.py)
+        for node_type in ("hero", "audio", "sfx_gen", "images", "publish"):
             with self.assertRaises(media_admission.MediaAdmissionDenied) as caught:
                 await media_admission.admit(SimpleNamespace(id=PID, data_dir=self.data), node_type)
             self.assertEqual(caught.exception.code, "node_not_admitted", node_type)

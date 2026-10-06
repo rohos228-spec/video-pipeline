@@ -1244,8 +1244,9 @@ def observe_apply(function):
 
 
 def _media_resume_nodes():
-    from app.services.revisions import MEDIA_RESUME_NODES
-    return MEDIA_RESUME_NODES
+    """Nodes whose attempt records a request-input baseline (paid media resumes and local supervised re-runs)."""
+    from app.services.revisions import BASELINE_NODES
+    return BASELINE_NODES
 
 
 @asynccontextmanager
@@ -1296,16 +1297,19 @@ async def observe_attempt(session, project):
     attempt_id = str(uuid.uuid4())
     revision = None
     revision_parts = {}
+    recovery_claimed = False
     if scope.mode == "managed":
         from app.services.actions_recovery import claim, input_revision
         claimed_id = await claim(observer, session, project, node_key, attempt_id, execution_id=scope.execution_id)
         if claimed_id != attempt_id:
             session.info["recovery_attempt_id"] = claimed_id
+            recovery_claimed = True
         attempt_id = claimed_id
         revision = await input_revision(session, project, node_key, parts=revision_parts)
     elif native_type in _media_resume_nodes() and node_key:
-        # Media nodes are observed without a managed scope; the supervised resume (media_admission) is
-        # admitted later, so the request-input baseline of THIS attempt is recorded now. Never fatal.
+        # Media nodes and the local assemble are observed without a managed scope; the supervised recovery
+        # (media_admission / local_node_recovery) is admitted later, so the input baseline of THIS attempt
+        # (the request inputs of a paid task, or the true inputs of the local work) is recorded now. Never fatal.
         try:
             from app.services.actions_recovery import input_revision
             revision = await input_revision(session, project, node_key, parts=revision_parts)
@@ -1319,6 +1323,18 @@ async def observe_attempt(session, project):
     from app.services.node_capabilities import capability_for
     capability = capability_for("excel_gpt" if not native_type or native_type.startswith("enrich_") else native_type)
     ctx.native_node_type = capability.node_type
+    # A local node (assemble) claimed by a recovery ticket runs inside the resume-only scope: any paid seam refuses
+    # before a byte leaves and is counted (local_recovery_guard fact, read back by the ticket's verification).
+    from app.orchestrator.node_spec import capability_spec_for
+    node_spec_data = capability_spec_for(capability.node_type)
+    local_recovery = bool(recovery_claimed and node_spec_data is not None and node_spec_data.local_recovery)
+    guard_hits: list = []
+
+    async def record_guard():
+        if local_recovery:
+            await record_fact("local_recovery_guard", {"resume_only": True, "paid_seam_hits": len(guard_hits),
+                                                       "hits": guard_hits[:5], "node_type": capability.node_type})
+
     await record_fact("node_start", {"project_status": project.status.value, "node_contract": node_key,
                                   "result_kind": capability.result_kind,
                                   "recovery_input_revision": revision, "recovery_revision_parts": revision_parts})
@@ -1327,11 +1343,14 @@ async def observe_attempt(session, project):
         if scope.mode == "managed":
             from app.services.node_capabilities import require_managed_capability
             try:
-                require_managed_capability(capability.node_type)
+                require_managed_capability(capability.node_type, recovery_claim=local_recovery)
             except ValueError as exc:
                 from app.services.media_jobs import _hold
                 await _hold(ctx, str(exc), "native-capability:"+node_key)
                 raise
+        if local_recovery:
+            from app.services import media_spend
+            profile_stack.enter_context(media_spend.resume_only(guard_hits))
         from app.services.profiles_v1 import load_attempt, bind_attempt
         overlay = await load_attempt(ctx)
         profile_stack.enter_context(bind_attempt(overlay))
@@ -1342,6 +1361,7 @@ async def observe_attempt(session, project):
         # (node_spec.verifier_spec_for), not per-type branches.
         from app.orchestrator.node_spec import run_verifier_after_success
         await run_verifier_after_success(ctx, session, project, capability.node_type)
+        await record_guard()
         if getattr(ctx, 'scene_native_node', None) is not None:
             try:
                 from app.services.scene_contracts import observe_scene_result
@@ -1353,7 +1373,17 @@ async def observe_attempt(session, project):
                 observer.mark_gap(scope.execution_id, snapshot_error)
     except BaseException as exc:
         from app.orchestrator.node_spec import run_verifier_after_error
+        from app.services.step_cancel import StepCancelledError
+        if isinstance(exc, Exception) and not isinstance(exc, StepCancelledError):
+            # The failed attempt's OWN outcome, for the result hook: a file an earlier run left behind is not
+            # the result of this attempt (media_verification types the failure by this, not by that file).
+            ctx.attempt_exception = exc
         await run_verifier_after_error(ctx, session, project, capability.node_type, exc)
+        if isinstance(exc, Exception):
+            try:
+                await record_guard()
+            except Exception:  # noqa: BLE001 - the original failure is what propagates
+                pass
         if (isinstance(exc, Exception) and getattr(ctx, 'scene_native_node', None) is not None
                 and not getattr(ctx, 'scene_result_observed', False)):
             try:

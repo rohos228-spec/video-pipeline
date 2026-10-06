@@ -74,8 +74,10 @@ def test_spec_conformance(node_type):
     # retry requires a managed, text-like node; a profile retry additionally needs profile rules.
     if actions & RETRY:
         assert spec.effective_managed
-        # a media node may carry the retry slot ONLY as a supervised resume of a known provider task
-        assert spec.result_kind not in MEDIA_KINDS or (spec.recovery_only and "retry_profile" not in actions)
+        # a media node may carry the retry slot ONLY as a supervised resume of a known provider task, or (a local
+        # node without any provider job) as one supervised re-run through the original worker
+        assert spec.result_kind not in MEDIA_KINDS or (
+            (spec.recovery_only or spec.local_recovery) and "retry_profile" not in actions)
         assert spec.recovery_continuation in node_spec._KNOWN_RECOVERY_CONTINUATIONS
     if "retry_profile" in actions:
         assert spec.profile_compatible, "profile retry without profile_compatible"
@@ -83,10 +85,14 @@ def test_spec_conformance(node_type):
         assert "retry_profile" in actions
     # media nodes expose retry only as a resume-only recovery (media_admission) and are never profile compatible.
     if spec.result_kind in MEDIA_KINDS:
-        assert not actions & RETRY or spec.recovery_only
+        assert not actions & RETRY or spec.recovery_only or spec.local_recovery
         assert not spec.profile_compatible
     if spec.recovery_only:
         assert spec.result_kind in MEDIA_KINDS and spec.effective_managed and spec.recovery_cap == 1
+    if spec.local_recovery:
+        # never both: a provider resume and a worker re-run are different, separately proven mechanisms
+        assert not spec.recovery_only and spec.result_kind in MEDIA_KINDS and spec.effective_managed
+        assert spec.recovery_cap == 1 and spec.forbidden_code is None
     # names resolve.
     if spec.verifier is not None:
         assert spec.verifier in node_spec.registered_verifiers(), spec.verifier

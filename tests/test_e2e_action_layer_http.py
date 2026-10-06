@@ -330,6 +330,29 @@ async def test_destructive_needs_approval_and_the_same_approval_cannot_be_replay
     assert events(rows).count("approval_consumed") == 1
 
 
+async def test_run_montage_deletes_the_old_final_so_it_needs_approval(live) -> None:
+    use(st("montage.run_montage"), expl="Запускаю монтаж.")
+    r = await ask(live, "запусти монтаж")
+    assert r.status_code == 200, r.text
+    pv = r.json()["preview"]
+    assert pv["ok"] and pv["needs_approval"] and pv["risk_max"] == "destructive"
+    assert pv["cost"]["high"] == 0 and pv["steps"][0]["spends_money"] is False
+    effect = pv["destructive_effects"][0]["text"]
+    assert "final.mp4" in effect and "сборка займёт время" in effect and "платных вызовов нет" in effect
+    assert (await run(live, r.json()["plan_id"])).status_code == 403   # без подтверждения не запускается
+
+
+async def test_assemble_macro_shows_one_plan_with_one_approval(live) -> None:
+    r = await live.client.post(f"{BASE}/plans/from-macro", json={
+        "macro_id": "smart.assemble_video", "params": {"project_id": PID}})
+    assert r.status_code == 200, r.text
+    pv = r.json()["preview"]
+    assert [s["action_id"] for s in pv["steps"]] == ["montage.align_audio", "montage.run_montage"]
+    assert pv["needs_approval"] and pv["risk_max"] == "destructive" and pv["cost"]["high"] == 0
+    assert [e["action_id"] for e in pv["destructive_effects"]] == ["montage.run_montage"]
+    assert (await run(live, r.json()["plan_id"])).status_code == 403
+
+
 async def test_plan_changed_after_approval_is_refused(live, fake) -> None:
     use(fake_st("test.fake_destructive", label="before"), expl="Стираю.")
     pid = (await ask(live, "тест стирающее действие")).json()["plan_id"]

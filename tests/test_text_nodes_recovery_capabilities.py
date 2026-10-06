@@ -55,10 +55,28 @@ def test_profile_eligibility_is_capability_data_not_result_kind():
 
 
 def test_no_other_node_gained_recovery_actions():
-    for node_type in ("images", "audio", "assemble", "sfx_gen", "publish", "hero",
-                      "scene_design", "sd_agent", "sd_assemble", "enrich_1",
+    for node_type in ("images", "audio", "sfx_gen", "publish", "hero",
+                      "scene_design", "sd_assemble", "enrich_1",
                       "split", "image_prompts", "future-unsupported"):
         assert not RECOVERY_ACTIONS & set(capability_for(node_type).actions), node_type
+
+
+def test_sd_agent_gets_retry_same_only_per_type_with_agent_admission():
+    from app.orchestrator.node_spec import capability_spec_for
+    cap = capability_for("sd_agent")
+    spec = capability_spec_for("sd_agent")
+    assert cap.managed and "retry_same" in cap.actions and "retry_profile" not in cap.actions
+    assert cap.profile_compatible is False and cap.recovery_continuation == "none"
+    assert not spec.recovery_only and not spec.local_recovery and spec.recovery_cap == 1
+
+
+def test_assemble_gets_retry_same_only_as_a_local_rerun():
+    from app.orchestrator.node_spec import capability_spec_for
+    cap = capability_for("assemble")
+    spec = capability_spec_for("assemble")
+    assert cap.managed and spec.local_recovery and not spec.recovery_only
+    assert "retry_same" in cap.actions and "retry_profile" not in cap.actions
+    assert cap.profile_compatible is False and cap.recovery_continuation == "none"
 
 
 def test_media_nodes_are_recovery_only():

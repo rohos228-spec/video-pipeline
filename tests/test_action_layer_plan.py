@@ -85,7 +85,7 @@ async def test_invalid_params_unknown_action_and_bad_dependency() -> None:
         {"action_id": "t.a", "depends_on": [5]}), reg, _ctx())
     assert not preview["ok"]
     joined = " ".join(preview["errors"])
-    assert "below 0" in joined and "unknown action" in joined
+    assert "меньше допустимого (0)" in joined and "неизвестное действие" in joined
     assert preview["needs_approval"] is True  # неизвестное = fail-closed
 
 
@@ -111,5 +111,5 @@ def test_plan_json_is_strict() -> None:
                 [{"action_id": "a.b", "params": []}], [{"action_id": "a.b", "depends_on": ["0"]}]):
         with pytest.raises(PlanFormatError):
             Plan.from_json(bad, max_steps=5)
-    with pytest.raises(PlanFormatError, match="too many"):
+    with pytest.raises(PlanFormatError, match="Слишком много"):
         Plan.from_json([{"action_id": "a.b"}] * 3, max_steps=2)

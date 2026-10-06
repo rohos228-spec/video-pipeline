@@ -125,7 +125,8 @@ async def plan_from_text(request: Request, body: FromTextIn, operator: AuthDep) 
         raise HTTPException(status, detail={
             "code": "planner_rejected", "reason": exc.code, "message": str(exc)}) from exc
     except planner.PlannerFailed as exc:
-        raise HTTPException(502, detail={"code": exc.code, "message": str(exc)}) from exc
+        raise HTTPException(502, detail={"code": exc.code, "message": str(exc),
+                                         "retryable": exc.retryable}) from exc
     reply = outcome.reply
     notes = await planner_autofill.fill_node_run_limits(request.app, who.id, reply.steps)
     extra = {"explanation_ru": planner_rules.with_defaults_note(reply.explanation_ru, notes),
@@ -186,7 +187,7 @@ async def delete_macro(macro_id: str, operator: AuthDep) -> dict:
     try:
         await macros.delete_macro(macro_id, who.id)
     except LookupError as exc:
-        raise HTTPException(404, detail="macro not found") from exc
+        raise HTTPException(404, detail="Макрос не найден.") from exc
     except macros.MacroForbidden as exc:
         raise HTTPException(403, detail={"code": "macro_forbidden", "message": str(exc)}) from exc
     return {"deleted": macro_id}
@@ -201,7 +202,7 @@ async def plan_from_macro(request: Request, body: FromMacroIn, operator: AuthDep
         macro = await macros.get_macro(body.macro_id, who.id)
         steps = macros.expand(macro, body.params, default_registry)
     except LookupError as exc:
-        raise HTTPException(404, detail="macro not found") from exc
+        raise HTTPException(404, detail="Макрос не найден.") from exc
     except macros.MacroUnavailable as exc:
         raise HTTPException(409, detail={
             "code": "macro_unavailable", "missing_action_ids": exc.missing,
@@ -237,7 +238,7 @@ async def approve(request: Request, plan_id: str, operator: AuthDep,
     except planner.StalePlan as exc:
         raise _stale(exc) from exc
     except LookupError as exc:
-        raise HTTPException(404, detail="plan not found") from exc
+        raise HTTPException(404, detail="План не найден.") from exc
     except approval.ApprovalError as exc:
         raise HTTPException(409, detail={"code": exc.code, "message": str(exc)}) from exc
 
@@ -251,7 +252,7 @@ async def run(request: Request, plan_id: str, operator: AuthDep,
     except planner.StalePlan as exc:
         raise _stale(exc) from exc
     except LookupError as exc:
-        raise HTTPException(404, detail="plan not found") from exc
+        raise HTTPException(404, detail="План не найден.") from exc
     except approval.ApprovalError as exc:
         raise HTTPException(403, detail={"code": exc.code, "message": str(exc)}) from exc
     except service.RunRefused as exc:
@@ -272,7 +273,7 @@ async def get_plan(plan_id: str, operator: AuthDep) -> dict:
     try:
         return await service.plan_view(plan_id)
     except LookupError as exc:
-        raise HTTPException(404, detail="plan not found") from exc
+        raise HTTPException(404, detail="План не найден.") from exc
 
 
 @router.post("/plans/{plan_id}/stop", dependencies=[LocalOnlyDep])
@@ -281,7 +282,7 @@ async def stop(plan_id: str, operator: AuthDep, body: EmptyBody | None = None) -
     try:
         return await executor.request_stop(plan_id, who.id)
     except LookupError as exc:
-        raise HTTPException(404, detail="plan not found") from exc
+        raise HTTPException(404, detail="План не найден.") from exc
 
 
 @router.get("/history")

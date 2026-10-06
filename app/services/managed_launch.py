@@ -62,7 +62,7 @@ def _node_config_revisions(run, project, node_keys):
 def validate_scope(run, project, rows, selected):
     from app.orchestrator.graph.planner import WorkflowGraph
     from app.services.excel_gpt_node import effective_node_type
-    from app.services.node_capabilities import require_managed_capability
+    from app.services.node_capabilities import require_managed_node
     if not selected or len(selected)!=len(set(selected)):raise ValueError('explicit unique node scope required')
     graph=WorkflowGraph(run.nodes_snapshot,run.edges_snapshot)
     states={n.node_key:n for n in rows}
@@ -74,7 +74,7 @@ def validate_scope(run, project, rows, selected):
         if not node or key not in states:raise ValueError('node outside immutable workflow snapshot')
         if states[key].status!=NodeRunStatus.pending or states[key].attempts:
             raise ValueError('launch requires fresh pending nodes; retry uses recovery')
-        contracts[key]=require_managed_capability(effective_node_type(node)).contract()
+        contracts[key]=require_managed_node(node).contract()
     skipped=graph.skipped_keys(project)
     if set(selected)&skipped:raise ValueError('selected node is disabled')
     roots=[]
@@ -250,7 +250,7 @@ async def native_entry(session,project,step_code,node_key):
     """Initial launch only: original queue and FSM, no manual reset/backoff clearing."""
     from app.services.actions_v1 import get_permission,evaluate_start
     from app.services.gen_queue import assert_can_start_in_queue
-    from app.services.node_capabilities import require_managed_capability
+    from app.services.node_capabilities import require_managed_node
     from app.services.excel_gpt_node import effective_node_type,ensure_enrich_auto_chain_to,slot_index_from_node
     from app.orchestrator.node_registry import spec_for_node
     from app.services.run_sync import prepare_node_for_step_start
@@ -258,7 +258,7 @@ async def native_entry(session,project,step_code,node_key):
     run=await session.scalar(select(WorkflowRun).where(WorkflowRun.project_id==project.id))
     node=next((n for n in run.nodes_snapshot if n.get('id')==node_key),None) if run else None
     if not node:raise ValueError('managed entry node not found')
-    require_managed_capability(effective_node_type(node))
+    require_managed_node(node)
     permission=get_permission(project.id)
     if not permission or not evaluate_start(permission,project_id=project.id,node_key=node_key,
             graph_version=revisions.graph_version(run.nodes_snapshot,run.edges_snapshot)).allowed:

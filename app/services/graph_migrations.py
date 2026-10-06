@@ -1,0 +1,247 @@
+"""Versioned graph migrations (C5/C6): legacy ``enrich_N`` nodes -> ``excel_gpt``.
+
+Why: a graph node of the legacy type ``enrich_1``..``enrich_5`` is read by the orchestrator as an
+unsupported type (no managed executor, no recovery). The live node is ``excel_gpt``; the enrich slot
+lives in ``data.slotIndex``. This module moves old graphs onto ``excel_gpt`` without changing which
+slot a node answers to.
+
+Rules (pure, no database):
+  * the node ``id``, position and every ``data`` key are kept; only ``type`` changes and, if the node
+    carries no explicit slot, ``data.slotIndex`` = N of the legacy type;
+  * the slot a node resolves to (``slot_index_from_node``) is the same before and after, always: a
+    node whose result would differ is left untouched and reported (``skipped``);
+  * an empty label gets the default label, a user label is never rewritten;
+  * edges are not changed (they refer to node ids);
+  * idempotent: a graph without ``enrich_N`` nodes yields no changes and no rollback record.
+
+Where graphs live (all three are handled by ``migrate_stores``): ``Workflow.nodes`` (template),
+``WorkflowRun.nodes_snapshot`` plus ``NodeRun.node_type`` (run snapshot), ``Project.meta.canvas_graph``
+(canvas of one project). ``dry_run=True`` (the default) reports what would change and writes nothing.
+Every applied change stores a rollback record (the full original node dicts) next to the data in
+``meta["graph_migrations"]``; ``rollback_stores`` restores them.
+"""
+from __future__ import annotations
+
+import copy
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.excel_gpt_node import (
+    EXCEL_GPT_NODE_TYPE,
+    MAX_EXCEL_GPT_SLOTS,
+    default_excel_gpt_label,
+    legacy_enrich_slot_from_type,
+    sd_agent_marker,
+    slot_index_from_node,
+)
+
+ENRICH_TO_EXCEL_GPT_ID = "graph_0001_enrich_to_excel_gpt"
+GRAPH_MIGRATIONS_META_KEY = "graph_migrations"
+# Rollback records are bounded: a store keeps at most this many (oldest dropped).
+_MAX_RECORDS = 5
+
+
+def is_legacy_enrich_node(node: dict[str, Any]) -> bool:
+    return isinstance(node, dict) and legacy_enrich_slot_from_type(str(node.get("type") or "")) is not None
+
+
+@dataclass
+class NodeChange:
+    node_id: str
+    from_type: str
+    to_type: str
+    slot_before: int
+    slot_after: int
+    slot_index_added: bool
+    label_changed: bool = False
+
+
+@dataclass
+class GraphMigrationResult:
+    nodes: list[dict[str, Any]]
+    changes: list[NodeChange] = field(default_factory=list)
+    skipped: list[dict[str, str]] = field(default_factory=list)
+    rollback: list[dict[str, Any]] = field(default_factory=list)  # full original node dicts
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.changes)
+
+    def report(self) -> dict[str, Any]:
+        return {"migration": ENRICH_TO_EXCEL_GPT_ID, "changed": self.changed,
+                "changes": [asdict(c) for c in self.changes], "skipped": list(self.skipped)}
+
+
+def migrate_enrich_graph(nodes: list[dict[str, Any]] | None) -> GraphMigrationResult:
+    """Pure: return the migrated node list (new objects) plus a change report and rollback data."""
+    out: list[dict[str, Any]] = []
+    result = GraphMigrationResult(nodes=out)
+    for node in nodes or []:
+        if not is_legacy_enrich_node(node):
+            out.append(node)
+            continue
+        nid = str(node.get("id") or "")
+        old_type = str(node.get("type") or "")
+        legacy_slot = legacy_enrich_slot_from_type(old_type)
+        data = copy.deepcopy(node.get("data")) if isinstance(node.get("data"), dict) else {}
+        explicit = data.get("slotIndex")
+        has_explicit_slot = isinstance(explicit, int) and not isinstance(explicit, bool) \
+            and 1 <= explicit <= MAX_EXCEL_GPT_SLOTS
+        added = False
+        if not has_explicit_slot and not data.get("slotOverflow") and not sd_agent_marker(node):
+            data["slotIndex"] = legacy_slot  # old and new resolution: explicit data wins, else the type's N
+            added = True
+        label = str(data.get("label") or "").strip()
+        label_changed = False
+        if not label:
+            data["label"] = default_excel_gpt_label(legacy_slot or 1)
+            label_changed = True
+        new_node = {**copy.deepcopy(node), "type": EXCEL_GPT_NODE_TYPE, "data": data}
+        before, after = slot_index_from_node(node), slot_index_from_node(new_node)
+        if before != after:
+            result.skipped.append({"node_id": nid, "reason": f"slot would change {before} -> {after}"})
+            out.append(node)
+            continue
+        out.append(new_node)
+        result.rollback.append(copy.deepcopy(node))
+        result.changes.append(NodeChange(nid, old_type, EXCEL_GPT_NODE_TYPE, before, after, added, label_changed))
+    return result
+
+
+def rollback_enrich_graph(nodes: list[dict[str, Any]] | None, rollback: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Pure: put the original node dicts back (by id). A node the user has since removed or retyped is skipped."""
+    originals = {str(n.get("id")): n for n in rollback or [] if isinstance(n, dict) and n.get("id")}
+    restored: list[str] = []
+    out: list[dict[str, Any]] = []
+    for node in nodes or []:
+        nid = str((node or {}).get("id") or "")
+        if nid in originals and str(node.get("type") or "") == EXCEL_GPT_NODE_TYPE:
+            out.append(copy.deepcopy(originals[nid]))
+            restored.append(nid)
+        else:
+            out.append(node)
+    return out, restored
+
+
+def _record(result: GraphMigrationResult, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    rec = {"id": ENRICH_TO_EXCEL_GPT_ID, "applied_at": datetime.now(timezone.utc).isoformat(),
+           "node_ids": [c.node_id for c in result.changes], "before": result.rollback}
+    if extra:
+        rec.update(extra)
+    return rec
+
+
+def _with_record(meta: Any, record: dict[str, Any]) -> dict[str, Any]:
+    meta = dict(meta) if isinstance(meta, dict) else {}
+    records = [r for r in meta.get(GRAPH_MIGRATIONS_META_KEY) or [] if isinstance(r, dict)]
+    meta[GRAPH_MIGRATIONS_META_KEY] = (records + [record])[-_MAX_RECORDS:]
+    return meta
+
+
+def _pop_record(meta: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    meta = dict(meta) if isinstance(meta, dict) else {}
+    records = [r for r in meta.get(GRAPH_MIGRATIONS_META_KEY) or [] if isinstance(r, dict)]
+    mine = [r for r in records if r.get("id") == ENRICH_TO_EXCEL_GPT_ID]
+    if not mine:
+        return meta, None
+    rest = [r for r in records if r is not mine[-1]]
+    if rest:
+        meta[GRAPH_MIGRATIONS_META_KEY] = rest
+    else:
+        meta.pop(GRAPH_MIGRATIONS_META_KEY, None)
+    return meta, mine[-1]
+
+
+def _store_report(kind: str, ident: Any, result: GraphMigrationResult, **extra: Any) -> dict[str, Any]:
+    return {"store": kind, "id": ident, **result.report(), **extra}
+
+
+async def migrate_stores(session: AsyncSession, *, dry_run: bool = True) -> dict[str, Any]:
+    """Migrate every stored graph. ``dry_run`` (default) only reports. The caller commits."""
+    from app.models import NodeRun, Project, Workflow, WorkflowRun
+
+    items: list[dict[str, Any]] = []
+    for wf in (await session.execute(select(Workflow))).scalars().all():
+        res = migrate_enrich_graph(list(wf.nodes or []))
+        if not (res.changed or res.skipped):
+            continue
+        items.append(_store_report("workflow", wf.id, res))
+        if res.changed and not dry_run:
+            wf.nodes = res.nodes
+            wf.version = (wf.version or 1) + 1
+            wf.meta = _with_record(wf.meta, _record(res))
+    for run in (await session.execute(select(WorkflowRun))).scalars().all():
+        res = migrate_enrich_graph(list(run.nodes_snapshot or []))
+        if not (res.changed or res.skipped):
+            continue
+        changed_ids = {c.node_id for c in res.changes}
+        node_runs = (await session.execute(select(NodeRun).where(
+            NodeRun.workflow_run_id == run.id, NodeRun.node_key.in_(changed_ids)))).scalars().all() \
+            if changed_ids else []
+        old_types = {nr.node_key: nr.node_type for nr in node_runs}
+        items.append(_store_report("workflow_run", run.id, res, node_runs=sorted(old_types)))
+        if res.changed and not dry_run:
+            run.nodes_snapshot = res.nodes
+            run.meta = _with_record(run.meta, _record(res, {"node_run_types": old_types}))
+            for nr in node_runs:
+                nr.node_type = EXCEL_GPT_NODE_TYPE
+    for project in (await session.execute(select(Project))).scalars().all():
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        graph = meta.get("canvas_graph")
+        if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list):
+            continue
+        res = migrate_enrich_graph(graph["nodes"])
+        if not (res.changed or res.skipped):
+            continue
+        items.append(_store_report("project_canvas", project.id, res))
+        if res.changed and not dry_run:
+            new_meta = _with_record(meta, _record(res))
+            new_meta["canvas_graph"] = {**graph, "nodes": res.nodes}
+            project.meta = new_meta
+    if not dry_run:
+        await session.flush()
+    return {"migration": ENRICH_TO_EXCEL_GPT_ID, "dry_run": dry_run,
+            "stores_changed": sum(1 for i in items if i["changed"]),
+            "nodes_changed": sum(len(i["changes"]) for i in items), "items": items}
+
+
+async def rollback_stores(session: AsyncSession) -> dict[str, Any]:
+    """Restore the original ``enrich_N`` nodes from the rollback records. The caller commits."""
+    from app.models import NodeRun, Project, Workflow, WorkflowRun
+
+    restored: list[dict[str, Any]] = []
+    for wf in (await session.execute(select(Workflow))).scalars().all():
+        meta, rec = _pop_record(wf.meta)
+        if rec is None:
+            continue
+        nodes, ids = rollback_enrich_graph(list(wf.nodes or []), rec.get("before") or [])
+        wf.nodes, wf.meta, wf.version = nodes, meta, (wf.version or 1) + 1
+        restored.append({"store": "workflow", "id": wf.id, "restored": ids})
+    for run in (await session.execute(select(WorkflowRun))).scalars().all():
+        meta, rec = _pop_record(run.meta)
+        if rec is None:
+            continue
+        nodes, ids = rollback_enrich_graph(list(run.nodes_snapshot or []), rec.get("before") or [])
+        run.nodes_snapshot, run.meta = nodes, meta
+        old_types = rec.get("node_run_types") or {}
+        if old_types:
+            for nr in (await session.execute(select(NodeRun).where(
+                    NodeRun.workflow_run_id == run.id, NodeRun.node_key.in_(list(old_types))))).scalars().all():
+                nr.node_type = old_types[nr.node_key]
+        restored.append({"store": "workflow_run", "id": run.id, "restored": ids})
+    for project in (await session.execute(select(Project))).scalars().all():
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        graph = meta.get("canvas_graph")
+        new_meta, rec = _pop_record(meta)
+        if rec is None or not isinstance(graph, dict):
+            continue
+        nodes, ids = rollback_enrich_graph(list(graph.get("nodes") or []), rec.get("before") or [])
+        new_meta["canvas_graph"] = {**graph, "nodes": nodes}
+        project.meta = new_meta
+        restored.append({"store": "project_canvas", "id": project.id, "restored": ids})
+    await session.flush()
+    return {"migration": ENRICH_TO_EXCEL_GPT_ID, "restored": restored}

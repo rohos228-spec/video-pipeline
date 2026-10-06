@@ -78,7 +78,7 @@ async def create_plan(app: Any, steps_json: Any, *, operator: approval.OperatorI
 async def _load(s, plan_id: str) -> tuple["store.ActionPlan", list["store.ActionPlanStep"]]:
     row = await s.get(store.ActionPlan, plan_id)
     if row is None:
-        raise LookupError("plan not found")
+        raise LookupError("План не найден.")
     steps = (await s.scalars(select(store.ActionPlanStep).where(
         store.ActionPlanStep.plan_id == plan_id).order_by(store.ActionPlanStep.idx))).all()
     return row, list(steps)
@@ -96,17 +96,17 @@ async def approve_plan(app: Any, plan_id: str, operator: approval.OperatorIdenti
         row, steps = await _load(s, plan_id)
         plan = _plan_from_rows(row, steps)
         if plan_hash(plan, registry) != row.plan_hash:
-            raise approval.ApprovalError("plan_changed", "plan or action definitions changed")
+            raise approval.ApprovalError("plan_changed", "План или определения действий изменились после предпросмотра. Составьте план заново.")
         preview = await build_preview(
             plan, registry, ActionContext(app=app, operator=operator.id, read_only=True))
         if not preview["ok"]:
-            raise approval.ApprovalError("plan_invalid", "; ".join(preview["errors"][:5]))
+            raise approval.ApprovalError("plan_invalid", "План не прошёл проверку: " + "; ".join(preview["errors"][:5]))
         if row.needs_approval:
             spent = await budget.spent(s, budget.session_key(plan_id))
             fit = budget.preview_budget(preview["cost"], already_spent=spent)
             if not fit["fits"]:
                 raise approval.ApprovalError(
-                    "over_budget", "cost estimate is unknown or exceeds the session cap")
+                    "over_budget", "Стоимость неизвестна или не помещается в потолок расходов сессии.")
         appr = await approval.create_approval(s, row, operator, ttl_s=ttl_s)
         await s.commit()
         return {"approval_id": appr.id, "plan_id": plan_id, "plan_hash": appr.plan_hash,
@@ -123,27 +123,27 @@ async def prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
     async with store.sessions()() as s:
         row, steps = await _load(s, plan_id)
         if executor.is_live(plan_id):
-            raise RunRefused("already_running", "plan is already running")
+            raise RunRefused("already_running", "План уже выполняется.")
         if row.status in (store.PLAN_SUCCEEDED, store.PLAN_FAILED):
-            raise RunRefused("plan_finished", f"plan is {row.status}; create a new plan")
+            raise RunRefused("plan_finished", f"План уже завершён (состояние «{row.status}»): составьте новый.")
         if plan_hash(_plan_from_rows(row, steps), registry) != row.plan_hash:
-            raise RunRefused("plan_changed", "plan or action definitions changed")
+            raise RunRefused("plan_changed", "План или определения действий изменились после предпросмотра. Составьте план заново.")
         if await executor._kill_switch_on():
-            raise RunRefused("kill_switch_active", "аварийная остановка включена оператором (emergency stop is ON)")
+            raise RunRefused("kill_switch_active", "Аварийная остановка включена оператором: планы не запускаются.")
         if row.project_id is not None:
             others = (await s.scalars(select(store.ActionPlan.id).where(
                 store.ActionPlan.project_id == row.project_id,
                 store.ActionPlan.status == store.PLAN_RUNNING,
                 store.ActionPlan.id != plan_id))).all()
             if any(executor.is_live(pid) for pid in others):
-                raise RunRefused("project_busy", "another plan is running for this project")
+                raise RunRefused("project_busy", "В этом проекте уже выполняется другой план.")
         interrupted = row.status == store.PLAN_RUNNING
         if row.needs_approval:
             if interrupted:
                 # Подтверждение уже израсходовано этим запуском: продолжаем без нового,
                 # но только в пределах окна возобновления.
                 if not row.approval_id:
-                    raise approval.ApprovalError("approval_required", "run was never approved")
+                    raise approval.ApprovalError("approval_required", "Запуск не был подтверждён оператором.")
                 if _resume_expired(row, steps):
                     # Закрываем как остановленный: тогда его можно подтвердить заново.
                     row.status = store.PLAN_STOPPED
@@ -151,7 +151,7 @@ async def prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
                     row.updated_at = row.finished_at = datetime.utcnow()
                     store.append_history(s, event="resume_refused", plan_id=plan_id,
                                          actor=operator.id, outcome="expired",
-                                         error="resume window expired")
+                                         error="окно возобновления истекло")
                     await s.commit()
                     raise approval.ApprovalError(
                         "approval_required",

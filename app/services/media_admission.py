@@ -6,7 +6,7 @@ attempt of a media node runs through a different transport (media_jobs, syntheti
 media admission is narrower on purpose:
 
 * the incident is ``media_failure`` or a media ``uncertain_request`` of an admitted node
-  (``revisions.MEDIA_RESUME_NODES``: videos, items, music);
+  (``revisions.MEDIA_RESUME_NODES``: videos, items, music; plus the local node assemble, see below);
 * ``media_recovery.assess`` decides. Only ``resume_poll`` (poll a known provider task, download a finished
   result) and ``resume_local`` (a finished file already lies on disk) are executed;
 * the operation runs IN the supervisor process inside ``media_spend.resume_only()``: every seam that would
@@ -17,6 +17,10 @@ media admission is narrower on purpose:
 * the result is verified independently: files re-read and probed, and the provider-task ledger must not
   hold a single new task id or submit intent compared with before the operation;
 * the supervisor never starts or restarts the node. After a verified resume the human continues it.
+
+A LOCAL node (``revisions.LOCAL_RECOVERY_NODES``: assemble) has no provider task. It is the one exception to
+"never starts the node": the supervisor re-runs it ONCE through the original worker under a recovery ticket, inside
+the resume-only scope, and the ticket is verified from independent facts (``local_node_recovery``).
 
 Everything unknown (unknown outcome, retry cap, ledger disabled or unreadable, a node outside the admitted
 set, nothing to do) is a typed refusal and ends with the human.
@@ -33,7 +37,9 @@ from loguru import logger
 
 from app.services import media_recovery, media_resume, media_spend, revisions
 
-ADMITTED_NODES = revisions.MEDIA_RESUME_NODES
+RESUME_NODES = revisions.MEDIA_RESUME_NODES          # provider task resume, in the supervisor process
+LOCAL_NODES = revisions.LOCAL_RECOVERY_NODES         # one re-run through the original worker (local_node_recovery)
+ADMITTED_NODES = RESUME_NODES | LOCAL_NODES
 MEDIA_INCIDENT_TYPES = frozenset({"media_failure", "uncertain_request"})
 OPERATIONS = ("resume_poll", "resume_local")
 RESUME_BUDGET_S = 100.0  # one decision step owns a 120 s lease; partial progress is written to the ledger
@@ -46,6 +52,12 @@ DENIAL_TEXT = {
                                 "не допускает: её делает нативный слой или человек."),
     "nothing_to_do": "Возобновлять нечего: открытых задач и готовых файлов для возобновления нет.",
     "verdict_denied": "Исход прошлой платной отправки неизвестен или повтор исчерпан: решает человек.",
+    "source_proof_missing": ("Нет записи проверки упавшей попытки, которая называла бы её собственный сбой: "
+                             "повторять локальную ноду без неё нельзя."),
+    "failure_not_retryable": ("Нода сама не считает этот сбой повторяемым (ошибка входа: нет клипов, озвучки): "
+                              "повтор ничего не изменит, решает человек."),
+    "ledger_unavailable": ("Журнал платных задач выключен или не читается: неизменность журнала после повтора "
+                           "не доказать, поэтому повтор не допускается."),
 }
 
 
@@ -63,12 +75,29 @@ def is_media_incident(incident) -> bool:
     return incident.type == "media_failure" or (incident.type == "uncertain_request" and details.get("media") is True)
 
 
+def resumable(node_type: str | None) -> bool:
+    """A paid media node whose recovery is a resume of a known provider task (runs in the supervisor process)."""
+    return node_type in RESUME_NODES
+
+
+def local_worker(node_type: str | None) -> bool:
+    """A local node re-run once through the original worker (a ticket that is verified from independent facts)."""
+    from app.services import local_node_recovery
+    return node_type in LOCAL_NODES and local_node_recovery.spec_ok(node_type)
+
+
 def admitted(node_type: str | None) -> bool:
-    return node_type in ADMITTED_NODES
+    return resumable(node_type) or local_worker(node_type)
 
 
-async def admit(project, node_type: str) -> dict[str, Any]:
-    """Read-only. The admitted operation and the full assessment, or a typed refusal. Never submits."""
+async def admit(project, node_type: str, *, source_facts=None) -> dict[str, Any]:
+    """Read-only. The admitted operation and the full assessment, or a typed refusal. Never submits.
+
+    A local node needs ``source_facts`` (the events of the failed attempt): without them there is nothing that
+    types its own failure, and no operation is offered."""
+    if local_worker(node_type):
+        from app.services import local_node_recovery
+        return await local_node_recovery.admit(project, node_type, source_facts=source_facts)
     if not admitted(node_type):
         raise MediaAdmissionDenied("node_not_admitted", str(node_type))
     report = await media_recovery.assess(project, node_type)
@@ -143,6 +172,8 @@ async def _run_operation(project, node_type: str, operation: str) -> tuple[dict[
 
 async def run_and_verify(project, node_type: str, admission: dict[str, Any]) -> dict[str, Any]:
     """Execute the admitted operation and verify it from facts outside the executor. Never submits."""
+    if node_type in LOCAL_NODES:
+        raise ValueError("a local node is re-run by the original worker under a recovery ticket, never here")
     operation = admission["operation"]
     before = await task_fingerprint(project.id)
     report, error = await _run_operation(project, node_type, operation)

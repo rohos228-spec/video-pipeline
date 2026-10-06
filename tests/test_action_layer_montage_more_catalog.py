@@ -36,7 +36,7 @@ EXPECTED = {
     "montage.unlink_ref": ("local_safe", False, False, False, True, False),
     "montage.delete_manual_ref": ("destructive", False, True, False, True, False),
     "montage.recover_outsee": ("destructive", False, True, False, False, True),
-    "montage.run_montage": ("local_safe", False, False, False, True, True),
+    "montage.run_montage": ("destructive", False, True, False, True, True),
     "montage.align_audio": ("local_safe", False, False, False, True, True),
     "montage.set_assemble_params": ("local_safe", False, False, False, True, False),
     "montage.get_cost_basis": ("read", False, False, False, True, False),

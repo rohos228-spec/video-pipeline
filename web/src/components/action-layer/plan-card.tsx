@@ -33,6 +33,8 @@ interface Props {
   hasFiles?: boolean;
   /** Повторить исходный запрос с прикреплёнными файлами (без текста уточнения). */
   onResend?: () => void;
+  /** Планировщик ответил временным сбоем (retryable): повторить исходный запрос как есть. */
+  onRetry?: () => void;
 }
 
 export function PlanCard(props: Props) {
@@ -41,7 +43,7 @@ export function PlanCard(props: Props) {
   return <PlanCardInner {...props} preview={plan.preview} />;
 }
 
-function ClarificationCard({plan, onDismiss, onClarify, clarifying, clarifyError, hasFiles, onResend}: Props) {
+function ClarificationCard({plan, onDismiss, onClarify, clarifying, clarifyError, hasFiles, onResend, onRetry}: Props) {
   const titles = useActionTitles();
   const question = clarificationQuestion(plan);
   const options = clarificationOptions(plan);
@@ -69,6 +71,12 @@ function ClarificationCard({plan, onDismiss, onClarify, clarifying, clarifyError
         <Button type="button" size="sm" variant="outline" className="h-7 border-amber-400/50 text-xs text-amber-50"
           data-testid="resend-with-files" disabled={clarifying || !hasFiles} onClick={onResend}>
           {RESEND_WITH_FILES}
+        </Button>
+      )}
+      {plan.retryable && onRetry && (
+        <Button type="button" size="sm" variant="outline" className="h-7 border-amber-400/50 text-xs text-amber-50"
+          data-testid="planner-retry" disabled={clarifying} onClick={onRetry}>
+          Повторить
         </Button>
       )}
       {clarifying && <p className="text-white/60" data-testid="clarification-busy">Составляю план с уточнением…</p>}

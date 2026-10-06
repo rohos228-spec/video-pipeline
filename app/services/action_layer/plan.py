@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.action_layer.messages_ru import validation_list_ru
 from app.services.action_layer.spec import ActionRegistry, CostEstimate, max_risk
 
 PLAN_HASH_VERSION = 1
@@ -36,26 +37,26 @@ class Plan:
     def from_json(cls, data: Any, *, max_steps: int, request_text: str = "") -> "Plan":
         """Строгий разбор: лишние поля, нет шагов или их слишком много = ошибка."""
         if not isinstance(data, list) or not data:
-            raise PlanFormatError("steps must be a non-empty list")
+            raise PlanFormatError("Список шагов должен быть непустым.")
         if len(data) > max_steps:
-            raise PlanFormatError(f"too many steps (max {max_steps})")
+            raise PlanFormatError(f"Слишком много шагов (не больше {max_steps}).")
         steps: list[PlanStep] = []
         for i, raw in enumerate(data):
             if not isinstance(raw, dict):
-                raise PlanFormatError(f"step {i}: must be an object")
+                raise PlanFormatError(f"Шаг {i + 1}: должен быть объектом.")
             extra = set(raw) - {"action_id", "params", "depends_on"}
             if extra:
-                raise PlanFormatError(f"step {i}: unknown fields {sorted(extra)}")
+                raise PlanFormatError(f"Шаг {i + 1}: лишние поля {sorted(extra)}.")
             action_id = raw.get("action_id")
             params = raw.get("params", {})
             deps = raw.get("depends_on", [])
             if not isinstance(action_id, str) or not action_id:
-                raise PlanFormatError(f"step {i}: action_id required")
+                raise PlanFormatError(f"Шаг {i + 1}: не указан action_id.")
             if not isinstance(params, dict):
-                raise PlanFormatError(f"step {i}: params must be an object")
+                raise PlanFormatError(f"Шаг {i + 1}: params должен быть объектом.")
             if (not isinstance(deps, list)
                     or any(not isinstance(d, int) or isinstance(d, bool) for d in deps)):
-                raise PlanFormatError(f"step {i}: depends_on must be a list of integers")
+                raise PlanFormatError(f"Шаг {i + 1}: depends_on должен быть списком целых чисел.")
             steps.append(PlanStep(i, action_id, params, sorted(set(deps))))
         return cls(steps, request_text)
 
@@ -110,24 +111,24 @@ async def build_preview(plan: Plan, registry: ActionRegistry, ctx) -> dict:
                       "valid": True, "errors": [], "precondition_failures": []}
         for dep in step.depends_on:
             if dep >= step.index or dep < 0:
-                item["errors"].append(f"depends_on {dep} must reference an earlier step")
+                item["errors"].append(f"зависимость от шага {dep + 1} должна указывать на более ранний шаг")
         if spec is None:
-            item["errors"].append(f"unknown action {step.action_id!r}")
+            item["errors"].append(f"неизвестное действие {step.action_id!r}")
             item["valid"] = False
             steps_out.append(item)
-            errors.append(f"step {step.index}: unknown action {step.action_id!r}")
+            errors.append(f"шаг {step.index + 1}: неизвестное действие {step.action_id!r}")
             continue
         item.update({"title_ru": spec.title_ru, "risk": spec.risk,
                      "spends_money": spec.spends_money, "destructive": spec.destructive,
                      "reversible": spec.reversible})
         risks.append(spec.risk)
-        item["errors"].extend(registry.validate_params(spec.id, step.params))
+        item["errors"].extend(validation_list_ru(registry.validate_params(spec.id, step.params)))
         if not item["errors"]:
             for pre in spec.preconditions:
                 try:
                     reason = await pre.check(ro_ctx, step.params)
                 except Exception as exc:  # noqa: BLE001 - неизвестное = не выполнено
-                    reason = f"check failed: {type(exc).__name__}: {exc}"
+                    reason = f"проверка не выполнена: {type(exc).__name__}: {exc}"
                 if reason:
                     item["precondition_failures"].append(
                         {"id": pre.id, "reason": str(reason)})
@@ -147,9 +148,9 @@ async def build_preview(plan: Plan, registry: ActionRegistry, ctx) -> dict:
         if item["errors"] or item["precondition_failures"]:
             item["valid"] = False
             for e in item["errors"]:
-                errors.append(f"step {step.index}: {e}")
+                errors.append(f"шаг {step.index + 1}: {e}")
             for f in item["precondition_failures"]:
-                errors.append(f"step {step.index}: precondition {f['id']}: {f['reason']}")
+                errors.append(f"шаг {step.index + 1}: условие {f['id']}: {f['reason']}")
         steps_out.append(item)
     needs_approval = any(
         registry.find(s.action_id) is None or registry.find(s.action_id).needs_approval

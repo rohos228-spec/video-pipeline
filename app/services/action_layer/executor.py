@@ -20,6 +20,7 @@ from sqlalchemy import select, update
 from app.services import kill_switch
 from app.services.action_layer import budget, store
 from app.services.action_layer.context import ActionContext
+from app.services.action_layer.messages_ru import validation_list_ru
 from app.services.action_layer.spec import ActionRegistry, ActionSpec, registry as default_registry
 
 _TASKS: dict[str, asyncio.Task] = {}
@@ -130,11 +131,11 @@ async def _run_plan(app: Any, plan_id: str, operator: str, registry: ActionRegis
                 continue
             if outcome == "blocked":
                 await _finish(plan_id, store.PLAN_STOPPED, reason=budget.KILL_SWITCH_REASON,
-                              error="kill switch active")
+                              error="аварийный стоп включён оператором")
             elif outcome == "stopped":
                 await _finish(plan_id, store.PLAN_STOPPED, reason="operator_stop")
             else:
-                await _finish(plan_id, store.PLAN_FAILED, error=f"step {step.idx}: {outcome}")
+                await _finish(plan_id, store.PLAN_FAILED, error=f"шаг {step.idx + 1}: {outcome}")
             return
         await _finish(plan_id, store.PLAN_SUCCEEDED)
     except asyncio.CancelledError:
@@ -142,7 +143,7 @@ async def _run_plan(app: Any, plan_id: str, operator: str, registry: ActionRegis
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("action layer plan {} crashed", plan_id)
-        await _finish(plan_id, store.PLAN_FAILED, error=f"internal: {type(exc).__name__}: {exc}")
+        await _finish(plan_id, store.PLAN_FAILED, error=f"внутренняя ошибка: {type(exc).__name__}: {exc}")
     finally:
         _TASKS.pop(plan_id, None)
         _CURRENT.pop(plan_id, None)
@@ -181,9 +182,9 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
         return "ok"
     spec = registry.find(step.action_id)
     if spec is None:
-        await _close_step(plan_id, step, store.STEP_FAILED, "unknown action",
+        await _close_step(plan_id, step, store.STEP_FAILED, "неизвестное действие",
                           "step_failed", operator)
-        return "unknown action"
+        return "неизвестное действие"
 
     # Шаг, начатый до рестарта: исход неизвестен.
     if step.status == store.STEP_RUNNING:
@@ -191,9 +192,9 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
             await _step_update(step.id, status=store.STEP_PENDING)
         else:
             await _close_step(plan_id, step, store.STEP_UNKNOWN,
-                              "outcome unknown after interruption; needs review",
+                              "результат неизвестен после прерывания, нужен ручной разбор",
                               "step_unknown", operator)
-            return "outcome unknown after interruption (needs review)"
+            return "результат неизвестен после прерывания, нужен ручной разбор"
 
     if await _kill_switch_on():
         async with store.sessions()() as s:
@@ -206,8 +207,8 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
     for dep in step.depends_on or []:
         if statuses.get(dep) != store.STEP_SUCCEEDED:
             await _close_step(plan_id, step, store.STEP_SKIPPED,
-                              f"dependency {dep} did not succeed", "step_skipped", operator)
-            return f"dependency {dep} not satisfied"
+                              f"шаг {dep + 1}, от которого зависит этот, не выполнен", "step_skipped", operator)
+            return f"не выполнен шаг {dep + 1}, от которого зависит этот"
 
     errors = registry.validate_params(spec.id, step.params)
     est = spec.estimate(step.params)
@@ -215,19 +216,19 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
     ctx = ActionContext(app=app, operator=operator, plan_id=plan_id, step_index=step.idx,
                         idempotency_key=step.idempotency_key)
     if errors:
-        await _close_step(plan_id, step, store.STEP_FAILED, "; ".join(errors),
+        await _close_step(plan_id, step, store.STEP_FAILED, "; ".join(validation_list_ru(errors)),
                           "step_failed", operator, est_pair)
-        return "invalid params"
+        return "неверные параметры"
     for pre in spec.preconditions:
         try:
             reason = await pre.check(ctx.readonly_copy(), step.params)
         except Exception as exc:  # noqa: BLE001 - неизвестное = не выполнено
-            reason = f"check failed: {type(exc).__name__}: {exc}"
+            reason = f"проверка не выполнена: {type(exc).__name__}: {exc}"
         if reason:
             await _close_step(plan_id, step, store.STEP_FAILED,
-                              f"precondition {pre.id}: {reason}", "step_failed", operator,
+                              f"условие {pre.id}: {reason}", "step_failed", operator,
                               est_pair)
-            return f"precondition {pre.id} failed"
+            return f"не выполнено условие ({pre.id})"
 
     reserved = 0.0
     key = budget.session_key(plan_id)
@@ -245,7 +246,7 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
                 store.ActionPlanStep.id == step.id).values(
                 status=store.STEP_FAILED, error=str(exc)[:2000], finished_at=_now()))
             await s.commit()
-            return f"budget: {exc.code}"
+            return f"ограничение бюджета ({exc.code})"
         claimed = await s.execute(update(store.ActionPlanStep).where(
             store.ActionPlanStep.id == step.id,
             store.ActionPlanStep.status == store.STEP_PENDING).values(
@@ -253,7 +254,7 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
             started_at=_now(), cost_low=est.low, cost_high=est.high))
         if claimed.rowcount != 1:
             await s.rollback()
-            return "step was claimed elsewhere"
+            return "шаг уже взят в работу в другом месте"
         store.append_history(s, event="step_started", plan_id=plan_id, step_index=step.idx,
                              actor=operator, request_text=request_text, action_id=step.action_id,
                              params=step.params, outcome="running", cost_estimate=est_pair)
@@ -271,16 +272,16 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
             _execute(plan_id, spec, ctx, step.params, cur),
             timeout=float(settings.action_layer_step_timeout_s))
     except asyncio.TimeoutError:
-        await _close_step(plan_id, step, store.STEP_UNKNOWN, "step timed out",
+        await _close_step(plan_id, step, store.STEP_UNKNOWN, "шаг не уложился во время, результат неизвестен",
                           "step_unknown", operator, est_pair)
-        return "timeout (outcome unknown)"
+        return "время вышло, результат неизвестен"
     except _Stopped:
-        await _close_step(plan_id, step, store.STEP_CANCELLED, "stopped by operator",
+        await _close_step(plan_id, step, store.STEP_CANCELLED, "остановлено оператором",
                           "step_cancelled", operator, est_pair)
         return "stopped"
     except _KillSwitchStopped:
         await _close_step(plan_id, step, store.STEP_CANCELLED,
-                          "stopped by kill switch", "step_cancelled", operator, est_pair)
+                          "остановлено аварийным стопом", "step_cancelled", operator, est_pair)
         return "blocked"
     except asyncio.CancelledError:
         raise
@@ -336,7 +337,7 @@ async def _execute(plan_id: str, spec: ActionSpec, ctx: ActionContext, params: d
                 return {**start, **(state.result or {})}, _credits(state.credits_spent)
             if await _stop_requested(plan_id):
                 raise _Stopped()
-            raise RuntimeError(state.error or "job failed")
+            raise RuntimeError(state.error or "фоновая задача завершилась ошибкой")
         if await _stop_requested(plan_id):
             await _call_stop(plan_id, cur)
         if await _kill_switch_on():
@@ -357,7 +358,7 @@ async def request_stop(plan_id: str, operator: str) -> dict:
     async with store.sessions()() as s:
         plan = await s.get(store.ActionPlan, plan_id)
         if plan is None:
-            raise LookupError("plan not found")
+            raise LookupError("План не найден.")
         if plan.status in (store.PLAN_SUCCEEDED, store.PLAN_FAILED, store.PLAN_STOPPED):
             return {"status": plan.status, "stop_requested": plan.stop_requested}
         plan.stop_requested = True

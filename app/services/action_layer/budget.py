@@ -14,6 +14,7 @@ from sqlalchemy import func, select, text
 
 from app.services import kill_switch
 from app.services.action_layer import store
+from app.services.action_layer.messages_ru import spend_cap_ru
 from app.services.action_layer.spec import CostEstimate
 
 KILL_SWITCH_REASON = kill_switch.REASON
@@ -57,10 +58,10 @@ async def reserve(session, *, key: str, plan_id: str, step_index: int,
                   estimate: CostEstimate, cap: float | None = None) -> float:
     """Резервирует верхнюю оценку или бросает BudgetError. Возвращает резерв."""
     if not estimate.known:
-        raise BudgetError("estimate_unknown", "cost estimate unknown for a paid step")
+        raise BudgetError("estimate_unknown", "У платного шага нет оценки стоимости: запуск без неё запрещён.")
     amount = float(estimate.high)
     if amount < 0 or math.isnan(amount) or math.isinf(amount):
-        raise BudgetError("estimate_invalid", "invalid cost estimate")
+        raise BudgetError("estimate_invalid", "Оценка стоимости некорректна.")
     cap = session_cap() if cap is None else cap
     result = await session.execute(text(
         "INSERT INTO action_layer_spend (session_key, plan_id, step_index, kind, credits, created_at) "
@@ -71,7 +72,7 @@ async def reserve(session, *, key: str, plan_id: str, step_index: int,
     if result.rowcount != 1:
         left = await remaining(session, key, cap)
         raise BudgetError("budget_exceeded",
-                          f"estimate {amount:g} exceeds remaining cap {left:g} credits")
+                          f"Оценка {amount:g} кр. больше остатка потолка расходов ({left:g} кр.).")
     await _spend_reserve(session, plan_id, amount)
     return amount
 
@@ -90,7 +91,7 @@ async def _spend_reserve(session, plan_id: str, credits: float) -> None:
                                   run_id=f"plan:{plan_id}", estimate_usd=credits * CREDIT_USD,
                                   source="action_layer", credits=credits, track=False)
     except spend_guard.SpendCapExceeded as exc:
-        raise BudgetError(exc.code, str(exc)) from exc
+        raise BudgetError(exc.code, spend_cap_ru(exc)) from exc
 
 
 async def settle(session, *, key: str, plan_id: str, step_index: int,

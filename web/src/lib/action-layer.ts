@@ -84,6 +84,8 @@ export interface PlanPreviewResponse {
   context_version?: string | number | null;
   macro_id?: string | null;
   steps?: { action_id: string; params: Record<string, unknown>; depends_on?: number[] }[];
+  /** Планировщик не смог ответить из-за временного сбоя: тот же запрос можно отправить ещё раз. */
+  retryable?: boolean;
 }
 
 export interface ApprovalResponse {
@@ -354,6 +356,16 @@ export function errorCode(e: unknown): string | null {
   return null;
 }
 
+/** Временный сбой планировщика: сервер пометил ошибку `retryable: true` (в detail или в detail.detail). */
+export function isRetryable(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return false;
+  const d = e.detail as unknown;
+  if (!d || typeof d !== "object") return false;
+  const o = d as { retryable?: unknown; detail?: unknown };
+  if (o.retryable === true) return true;
+  return Boolean(o.detail && typeof o.detail === "object" && (o.detail as { retryable?: unknown }).retryable === true);
+}
+
 /** Читаемое русское сообщение: строка, {detail:{code,message}}, массив ошибок валидации или текст. */
 export function describeError(e: unknown): string {
   if (!(e instanceof ApiError)) return e instanceof Error ? e.message : "Неизвестная ошибка.";
@@ -472,6 +484,10 @@ export interface ParamInfo { label: string; hint?: string }
 /** Русские подписи параметров действий и умных кнопок. Неизвестные имена показываются как есть. */
 export const PARAM_RU: Record<string, ParamInfo> = {
   project_id: { label: "Проект" },
+  node_type: { label: "Медиа-нода", hint: "videos, items, music и т.д." },
+  key: { label: "Ключ задачи", hint: "например clip_005" },
+  provider: { label: "Провайдер", hint: "kie или outsee" },
+  reason: { label: "Причина", hint: "что проверено в кабинете провайдера" },
   frame_id: { label: "Номер кадра", hint: "номер кадра на доске монтажа" },
   frame_number: { label: "Номер кадра", hint: "порядковый номер кадра в сцене" },
   frame_ids: { label: "Кадры", hint: "список номеров кадров" },

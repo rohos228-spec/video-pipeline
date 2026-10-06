@@ -319,7 +319,7 @@ async def test_restart_inflight_nonidempotent_step_is_not_rerun(env, fake) -> No
     executor.launch(env.app, pid, OP.id, registry=fake.reg)
     view = await _wait_status(pid, {"failed", "stopped"})
     assert [s["status"] for s in view["steps"]] == ["unknown", "skipped"]
-    assert "needs review" in view["error"]
+    assert "ручной разбор" in view["error"]
     assert fake.events() == [] and not fake.JOBS  # ни задача, ни следующий шаг не запускались
     items = (await service.history(plan_id=pid))["items"]
     assert "step_unknown" in [h["event"] for h in items]
@@ -349,7 +349,7 @@ async def test_kill_switch_during_running_job_stops_the_job(env, fake) -> None:
     view = await _wait_status(pid, {"stopped"})
     assert view["stop_reason"] == kill_switch.REASON
     assert [s["status"] for s in view["steps"]] == ["cancelled", "skipped"]
-    assert "kill switch" in view["steps"][0]["error"]
+    assert "аварийным стопом" in view["steps"][0]["error"]
     # Фейковая задача реально получила stop и не дошла до конца.
     job = next(iter(fake.JOBS.values()))
     assert job["stopped"] is True and not job["finished"]

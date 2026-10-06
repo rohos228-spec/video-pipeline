@@ -219,6 +219,9 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             raise media_admission.MediaAdmissionDenied("node_not_admitted", node_type)
         if not media and node_type in media_admission.ADMITTED_NODES:
             raise ValueError(f"recovery of {node_type} is admitted for media incidents only")
+        # A local node (assemble) has no provider task to resume: its ticket re-dispatches the original worker once
+        # (below), inside the resume-only scope, and is verified from independent facts (local_node_recovery).
+        local = bool(media and media_admission.local_worker(node_type))
         if not capability.managed or action_type not in capability.actions:
             raise ValueError(f"recovery strategy {action_type} denied by node capability: {node_type}")
         attempts = [e for e in events if e.node_key == node_key and e.kind == "node_start"]
@@ -291,7 +294,8 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             admission = None
             if media:
                 # Read-only ledger/file assessment BEFORE any ticket exists: a refusal leaves no trace to consume.
-                admission = await media_admission.admit(project, node_type)
+                admission = await media_admission.admit(project, node_type,
+                                                        source_facts=facts if local else None)
             profile = None
             if profile_overlay_id:
                 from app.services.profiles_v1 import reservation, source_provider
@@ -318,7 +322,11 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                     "no_partial_apply": True, "user_stop": False, "node_scope_authorized": True,
                     **({"media": True, "media_operation": admission["operation"],
                         "media_verdict": {k: admission["verdict"].get(k) for k in ("mode", "code", "reasons")},
-                        "submits_new_paid_request": False} if media else {})},
+                        "submits_new_paid_request": False,
+                        **({"local_worker": True, "ledger_before": admission["ledger_before"],
+                            "source_proof": admission["source_proof"], "resume_only_scope": True,
+                            "verification": "independent facts (local_node_recovery)"} if local else {})}
+                       if media else {})},
                 budget_state={"request_limit": control.request_limit, "requests_used": control.requests_used,
                     "recovery_limit": 1, "recoveries_reserved": 1}, status="reserved", result={}, verification_result={})
             if profile:
@@ -347,7 +355,7 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             await master.commit()  # Durable before dispatch; UNIQUE prevents races.
             _active_nodes[project_id] = node_key
             record = await master.get(ActionRecord, action.action_id)
-            if media:
+            if media and not local:
                 # Never a worker dispatch: the resume runs here, inside resume_only, and the ticket is final.
                 return await _execute_media(master, scope, control, action, record, project, node_type,
                                             admission, project_id)
@@ -463,6 +471,18 @@ async def claim(observer, session, project, node_key, attempt_id, *, execution_i
         capability = capability_for(node_type)
         if not capability.managed or action_type not in capability.actions:
             raise RuntimeError(f"recovery strategy {action_type} denied by node capability before claim: {node_type}")
+        if row.preconditions.get("local_worker"):
+            # A local re-run (assemble): the node must still be a declared local_recovery node and the provider
+            # ledger must be exactly as it was when the ticket was reserved. Fail-closed on any doubt.
+            from app.services import local_node_recovery, media_admission
+            if not media_admission.local_worker(node_type):
+                raise RuntimeError("local recovery ticket for a node outside the local recovery set before claim")
+            try:
+                ledger_now = await local_node_recovery.ledger_summary(project.id)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError("provider ledger unreadable before claim: " + type(exc).__name__) from exc
+            if ledger_now != row.preconditions.get("ledger_before"):
+                raise RuntimeError("recovery ticket rejected before claim: provider ledger changed since reservation")
         result = await master.execute(update(RecoveryAction).where(
             RecoveryAction.action_id == row.action_id, RecoveryAction.status == "queued")
             .values(status="claimed", result={"worker_claimed": True, "claimed_at": datetime.utcnow().isoformat()}))
@@ -540,7 +560,7 @@ async def reconcile(observer):
         rows = (await master.scalars(select(RecoveryAction).where(
             RecoveryAction.status.in_(["reserved", "queued", "claimed", "await_verify"])))).all()
         for row in rows:
-            if (row.preconditions or {}).get("media"):
+            if (row.preconditions or {}).get("media") and not (row.preconditions or {}).get("local_worker"):
                 from app.services import media_admission
                 control = await master.get(ActionExecutionControl, row.execution_id)
                 if await media_admission.settle_interrupted(master, row, control, observer, update_permission):
@@ -625,8 +645,19 @@ async def reconcile(observer):
                         and e.payload.get('transactional') is True
                         and 'done' in ((e.payload.get('changes') or {}).get('status') or {}).get('after', []) for e in facts)
                     and any(confirmed_qc_noop(events, e.request_id) for e in facts if e.kind == 'parse_result'))
-                verification['result_confirmed'] = ((verification['data_applied'] and verification['accepted_payload'])
-                                                   or verification['accepted_noop'])
+                if (row.preconditions or {}).get("local_worker"):
+                    # No model request and no applied data exist for a local node: the result is confirmed by
+                    # facts the supervisor re-reads itself (file, verify_artifact, approval barrier, ledger, guard).
+                    from app.services import local_node_recovery
+                    try:
+                        local_checks = await local_node_recovery.verify(session, project, row, facts)
+                    except Exception as exc:  # noqa: BLE001 - any doubt is "not confirmed"
+                        local_checks = {"result_confirmed": False, "local_verify_error": type(exc).__name__}
+                    verification.update(local_checks)
+                    verification['result_confirmed'] = bool(local_checks.get('result_confirmed'))
+                else:
+                    verification['result_confirmed'] = ((verification['data_applied'] and verification['accepted_payload'])
+                                                       or verification['accepted_noop'])
                 required_checks = ('node_done','node_end','result_confirmed','graph_matches','audit_available',
                                    'no_user_stop','permission_active','requests_complete','transactional_done')
                 verified = row.status == "await_verify" and all(verification[k] for k in required_checks)

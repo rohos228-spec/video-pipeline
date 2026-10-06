@@ -7,9 +7,10 @@ Diagnoser and ActionSupervisor.recover_node. What is SCRIPTED: the model boundar
 low-level POST returns canned replies). What is SEEDED by hand: the master/project runtime copy
 (the application's own copy functions on the test databases).
 
-Why there is no retry here: sd_agent keeps `forbidden_code=partial_commit`. These tests show the
-two facts behind it that a unit test cannot: an unmanaged node type cannot even start inside a
-managed execution (fail-closed hold), and an observed execution has no recovery grant at all.
+This file is the OBSERVATION side (typed failures, the result check, an observed execution has no
+recovery grant at all). The supervised retry of the admitted agents (characters, world) and the exact
+refusals of the others (skeleton, camera, action, the legacy node) are in
+test_scene_agents_retry_dry_run.py.
 """
 import json
 import unittest
@@ -284,7 +285,7 @@ class SceneAgentDryRun(SceneAgentFixture):
         self.assertEqual(await self.incidents(), [])
 
     # ======================================================================================
-    # why no retry: two facts a unit test cannot show
+    # an observed (not managed) execution never has a recovery grant
     # ======================================================================================
     async def test_an_observed_execution_has_no_recovery_grant_at_all(self):
         await self.failed_attempt(["I cannot produce JSON for this."])
@@ -293,20 +294,6 @@ class SceneAgentDryRun(SceneAgentFixture):
             await self.supervisor.recover_node(project_id=7, execution_id=EXECUTION,
                 incident_id=incident.incident_id, node_key="n1", idempotency_key="sd-retry-0001",
                 initiator="dry-run", rationale="no recovery grant exists for an observed scene node")
-
-    async def test_a_managed_execution_cannot_start_an_unmanaged_scene_node(self):
-        await self.supervisor.enable(project_id=7, execution_id=EXECUTION, group_id="g1", node_keys=["n1"],
-            graph_version=self.graph, initiator="dry-run", rationale="sd_agent must not start managed",
-            request_limit=10)
-        await self.observer.reload()
-        with self.assertRaisesRegex(Exception, "no accepted managed executor"):
-            await self.worker(["never requested"])
-        self.assertEqual(SCRIPT["bodies"], [], "the hold is before any model request")
-        async with self.business() as session:
-            self.assertEqual(await session.scalar(select(SceneDesignCell.id)), None)
-        async with self.sessions() as session:
-            control = await session.get(base_tests.ActionExecutionControl, EXECUTION)
-            self.assertTrue(control.held)
 
 
 class WorldAgentDryRun(SceneAgentFixture):

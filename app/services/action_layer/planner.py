@@ -6,10 +6,16 @@
 
 Транспорт: один непотоковый POST на утверждённый маршрут Vibecode
 (``decision_v1.vibecode_post``), JSON-режим. Ключ берётся только из настроек.
-Повтор POST - не более одного: при ошибке формата ответа (обрезан, не JSON, неверный каркас)
-и при неверных параметрах шага (bad_params, bad_step, bad_depends_on): ошибка проверки
-возвращается модели один раз. Неизвестное/непоказанное действие, чужой проект и запрещённые
-поля повтором не лечатся.
+Повторы POST ограничены тремя независимыми правами, каждое используется не более одного раза:
+1. ошибка формата ответа (обрезан, не JSON, неверный каркас) или неверные параметры шага
+   (bad_params, bad_step, bad_depends_on): ошибка проверки возвращается модели один раз;
+2. сбой транспорта или таймаут: один автоматический повтор (запись attempt=2 в журнале; запрос
+   планировщика ничего не меняет и не платит за ассеты, поэтому повтор безопасен). Отказ провайдера
+   без шанса на успех (401/402/400) и любые отказы проверки/безопасности не повторяются;
+3. вопрос модели о параметре, значение которого сервер уже знает (умолчание проекта или выбор в
+   интерфейсе): один повтор с подставленным значением. Никогда для удалений, причин, подтверждений,
+   сумм и лимитов (``planner_rules.resolve_clarification``).
+Неизвестное/непоказанное действие, чужой проект и запрещённые поля повтором не лечатся.
 """
 from __future__ import annotations
 
@@ -26,11 +32,16 @@ from sqlalchemy import func, select
 
 from app.services.action_layer import (
     planner_catalog, planner_context, planner_rules, planner_uploads, store)
+from app.services.action_layer.messages_ru import spend_cap_ru, validation_list_ru
 from app.services.action_layer.spec import ActionRegistry, ensure_builtin_actions
 from app.services.action_layer.spec import registry as default_registry
 
 PLANNER_CATALOG_ID = "gpt-5.6-sol-vibecode"
-MAX_ATTEMPTS = 2  # первый POST + не более одного повтора
+MAX_ATTEMPTS = 2  # первый POST + не более одного повтора формата/параметров
+MAX_TRANSPORT_RETRIES = 1
+MAX_CLARIFY_REPAIRS = 1
+RETRY_DELAY_S = 0.5  # короткая пауза перед повтором после сбоя сети
+NETWORK_RETRY_MESSAGE = "сеть/модель недоступны, повторите"
 MAX_TEXT_LEN = 2000
 TIMEOUT_S = 60
 _OUTPUT_TOKENS = 4096  # параметр принимается, но провайдер лимит не применяет
@@ -70,7 +81,11 @@ class PlannerRateLimited(PlannerRefused):
 
 
 class PlannerFailed(PlannerError):
-    """Транспортная ошибка: исход POST неизвестен, повтор не делается."""
+    """Транспортная ошибка и после автоматического повтора. ``retryable``: человеку имеет смысл повторить."""
+
+    def __init__(self, code: str, message: str = "", *, retryable: bool = False):
+        super().__init__(code, message)
+        self.retryable = retryable
 
 
 class _FormatError(Exception):
@@ -115,12 +130,12 @@ def check_url(url: str) -> None:
     host = parts.hostname
     if (parts.username or parts.password or parts.query or parts.fragment
             or parts.path != route["path"]):
-        raise PlannerRefused("route_not_approved", "planner route path is not approved")
+        raise PlannerRefused("route_not_approved", "Маршрут планировщика не утверждён (путь).")
     if host not in decision_config.approved_vibecode_hosts():
-        raise PlannerRefused("route_not_approved", "planner host is not approved")
+        raise PlannerRefused("route_not_approved", "Маршрут планировщика не утверждён (хост).")
     if parts.scheme != "https" and not (parts.scheme == "http"
                                         and host in decision_config.LOOPBACK):
-        raise PlannerRefused("route_not_approved", "planner route requires HTTPS")
+        raise PlannerRefused("route_not_approved", "Маршрут планировщика требует HTTPS.")
 
 
 def _model_id() -> str:
@@ -129,7 +144,7 @@ def _model_id() -> str:
     mid = catalog_api_model(PLANNER_CATALOG_ID, default="")
     known = find_model(mid) if mid else None
     if not known or known.get("kind") != "text":
-        raise PlannerRefused("model_unknown", "planner model is not in the catalog")
+        raise PlannerRefused("model_unknown", "Модель планировщика не найдена в каталоге.")
     return mid
 
 
@@ -139,14 +154,14 @@ def preflight() -> tuple[str, dict, str]:
     from app.services.llm_override import NodeLlmOverride, use_override
     from app.settings import settings
     if not (settings.vibecode_api_key or "").strip():
-        raise PlannerRefused("key_missing", "vibecode credential missing")
+        raise PlannerRefused("key_missing", "Не задан ключ Vibecode для планировщика.")
     model = _model_id()
     try:
         with use_override(NodeLlmOverride(model, "stable", "text", "vibecode", model, None)):
             url = gpt_api._chat_url(model)
             headers = gpt_api._headers()  # ключ только из настроек
     except Exception as exc:  # noqa: BLE001
-        raise PlannerRefused("route_unavailable", f"{type(exc).__name__}") from exc
+        raise PlannerRefused("route_unavailable", f"Маршрут планировщика недоступен ({type(exc).__name__}).") from exc
     check_url(url)
     return url, headers, model
 
@@ -168,7 +183,7 @@ async def _check_rate(operator: str) -> None:
             store.ActionHistory.created_at >= since))
     if int(used or 0) + _pending.get(operator, 0) >= limit:
         raise PlannerRateLimited(
-            "rate_limited", f"planner call limit reached ({limit} per hour per operator)")
+            "rate_limited", f"Лимит обращений к планировщику исчерпан ({limit} в час на оператора). Подождите немного.")
 
 
 # --- контекст проекта -------------------------------------------------------
@@ -199,7 +214,7 @@ async def load_context(project_id: int | None, selected_scene: int | None = None
         async with store.sessions()() as s:
             project = await s.get(Project, project_id)
             if project is None:
-                raise PlannerRejected("project_not_found", f"project {project_id} not found")
+                raise PlannerRejected("project_not_found", f"Проект {project_id} не найден.")
             facts.update(await planner_context.build_facts(s, project, project_id, selected_frame))
     return {"facts": facts, "version": _version(facts)}
 
@@ -224,9 +239,9 @@ async def check_plan_fresh(plan_id: str) -> None:
     try:
         now = await load_context(row.project_id, row.selected_scene, row.selected_frame)
     except PlannerRejected as exc:
-        raise StalePlan("project state is no longer available") from exc
+        raise StalePlan("Состояние проекта больше недоступно: составьте план заново.") from exc
     if now["version"] != row.context_version:
-        raise StalePlan("project state changed after the plan was built; build it again")
+        raise StalePlan("Проект изменился после составления плана: составьте план заново.")
 
 
 # --- промпт -----------------------------------------------------------------
@@ -316,7 +331,7 @@ def _scan_forbidden(node: Any, path: str = "$") -> None:
         for key, value in node.items():
             if str(key).lower() in FORBIDDEN_KEYS:
                 raise PlannerRejected(
-                    "forbidden_field", f"{path}.{key}: field is not allowed in a plan")
+                    "forbidden_field", f"{path}.{key}: такое поле в плане недопустимо")
             _scan_forbidden(value, f"{path}.{key}")
     elif isinstance(node, list):
         for i, item in enumerate(node):
@@ -333,6 +348,7 @@ class PlannerReply:
     applied_defaults: list[str] = field(default_factory=list)
     dropped_steps: list[str] = field(default_factory=list)
     attachments_used: list[str] = field(default_factory=list)  # id вложений, подставленных в шаги
+    model_question: bool = False  # вопрос задала модель (а не правило сервера): его можно снять повтором
 
 
 def _upload_with_attachments(act: str, expl: str, *, text: str, registry: ActionRegistry,
@@ -372,7 +388,7 @@ def _clarification(question: str, expl: str, options: list[str], *, text: str,
         up = planner_rules.upload_clarification(
             act, planner_rules.upload_params_from_text(act, text), spec.title_ru)
         return PlannerReply([], up["question"], expl.strip()[:1000], up["options"], up["attachment"])
-    return PlannerReply([], question.strip()[:500], expl.strip()[:1000], options)
+    return PlannerReply([], question.strip()[:500], expl.strip()[:1000], options, model_question=True)
 
 
 def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
@@ -410,26 +426,26 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
         return _clarification(clar, expl, options, text=request_text, registry=registry,
                               offered=offered, attachments=attachments, facts=facts)
     if not steps:
-        raise PlannerRejected("empty_plan", "no steps and no clarification question")
+        raise PlannerRejected("empty_plan", "Модель не вернула ни шагов, ни вопроса. Переформулируйте просьбу.")
     if len(steps) > max_steps:
-        raise PlannerRejected("too_many_steps", f"{len(steps)} steps, max {max_steps}")
+        raise PlannerRejected("too_many_steps", f"Модель предложила {len(steps)} шагов, допустимо не больше {max_steps}. Разбейте просьбу на части.")
     clean: list[dict] = []
     notes: list[str] = []
     for i, raw in enumerate(steps):
         if not isinstance(raw, dict):
-            raise PlannerRejected("bad_step", f"step {i}: must be an object")
+            raise PlannerRejected("bad_step", f"шаг {i + 1}: должен быть объектом")
         extra = set(raw) - _STEP_KEYS
         if extra:
-            raise PlannerRejected("bad_step", f"step {i}: unknown fields {sorted(extra)}")
+            raise PlannerRejected("bad_step", f"шаг {i + 1}: лишние поля {sorted(extra)}")
         action_id, params = raw.get("action_id"), raw.get("params", {})
         deps = raw.get("depends_on", [])
         if not isinstance(action_id, str) or registry.find(action_id) is None:
-            raise PlannerRejected("unknown_action", f"step {i}: unknown action {action_id!r}")
+            raise PlannerRejected("unknown_action", f"шаг {i + 1}: действия {action_id!r} нет в каталоге")
         if offered is not None and action_id not in offered:
             raise PlannerRejected(
-                "action_not_offered", f"step {i}: action {action_id!r} was not offered in the prompt")
+                "action_not_offered", f"шаг {i + 1}: действие {action_id!r} не предлагалось модели для этого запроса")
         if not isinstance(params, dict):
-            raise PlannerRejected("bad_params", f"step {i}: params must be an object")
+            raise PlannerRejected("bad_params", f"шаг {i + 1}: params должен быть объектом")
         if facts is not None:
             filled = planner_rules.fill_defaults(
                 action_id, params, facts, registry.get(action_id).params_schema)
@@ -447,13 +463,13 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
                                     planner_uploads.request_for(action_id, params))
         errors = registry.validate_params(action_id, params)
         if errors:
-            raise PlannerRejected("bad_params", f"step {i} ({action_id}): " + "; ".join(errors[:5]))
+            raise PlannerRejected("bad_params", f"шаг {i + 1} ({action_id}): " + "; ".join(validation_list_ru(errors[:5])))
         if project_id is not None and "project_id" in params and params["project_id"] != project_id:
-            raise PlannerRejected("foreign_project", f"step {i}: project_id differs from context")
+            raise PlannerRejected("foreign_project", f"шаг {i + 1}: project_id отличается от открытого проекта")
         if (not isinstance(deps, list)
                 or any(not isinstance(d, int) or isinstance(d, bool) or not 0 <= d < i
                        for d in deps)):
-            raise PlannerRejected("bad_depends_on", f"step {i}: depends_on must point to earlier steps")
+            raise PlannerRejected("bad_depends_on", f"шаг {i + 1}: depends_on должен указывать на более ранние шаги")
         if facts is not None:
             notes += planner_rules.defaults_used(action_id, params, facts, request_text)
         clean.append({"action_id": action_id, "params": params, "depends_on": sorted(set(deps))})
@@ -463,7 +479,7 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
         clean, dropped = planner_rules.drop_unrequested(clean, request_text, registry)
         if not clean:
             raise PlannerRejected(
-                "unrequested_action", "every planned step is outside what the request asks for")
+                "unrequested_action", "Все шаги плана выходят за рамки вашей просьбы.")
         if dropped:
             expl = (expl + " Убрано как не запрошенное: " + ", ".join(dropped) + ".").strip()
     uploads = [st for st in clean if st["action_id"] in planner_rules.UPLOAD_ACTIONS]
@@ -481,7 +497,7 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
         for i, st in enumerate(clean):
             errors = registry.validate_params(st["action_id"], st["params"])
             if errors:
-                raise PlannerRejected("bad_params", f"step {i} ({st['action_id']}): " + "; ".join(errors[:5]))
+                raise PlannerRejected("bad_params", f"шаг {i + 1} ({st['action_id']}): " + "; ".join(validation_list_ru(errors[:5])))
     elif uploads:
         first = uploads[0]
         up = planner_rules.upload_clarification(
@@ -552,7 +568,7 @@ async def _spend_gate(project_id: int | None) -> None:
                                       estimate_usd=spend_guard.PLANNER_ESTIMATE_USD, provider="vibecode")
             await s.commit()
     except spend_guard.SpendCapExceeded as exc:
-        raise PlannerRefused(exc.code, str(exc)) from exc
+        raise PlannerRefused(exc.code, spend_cap_ru(exc)) from exc
 
 
 async def plan_from_text(text: str, *, operator: str, project_id: int | None = None,
@@ -569,12 +585,12 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
     ensure_builtin_actions()
     text = (text or "").strip()
     if not text or len(text) > MAX_TEXT_LEN:
-        raise PlannerRejected("bad_request", f"request must be 1..{MAX_TEXT_LEN} characters")
+        raise PlannerRejected("bad_request", f"Запрос должен быть от 1 до {MAX_TEXT_LEN} символов.")
     max_steps = int(settings.action_layer_max_steps)
     url, headers, model = preflight()  # до любых запросов
     from app.services.action_layer import executor
     if await executor._kill_switch_on():
-        raise PlannerRefused("kill_switch_active", "аварийная остановка включена оператором (emergency stop is ON)")
+        raise PlannerRefused("kill_switch_active", "Аварийная остановка включена оператором: планы не составляются.")
     ctx = await load_context(project_id, selected_scene, selected_frame)
     messages, info = build_prompt(text, ctx, registry, max_steps, attachments=attachments)
     offered = frozenset(info["offered"])
@@ -583,7 +599,8 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
     totals = [0, 0, 0]
     total_cost: float | None = 0.0
     last_error = ""
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    repairs = transport_retries = clarify_repairs = 0
+    for attempt in range(1, MAX_ATTEMPTS + MAX_TRANSPORT_RETRIES + MAX_CLARIFY_REPAIRS + 1):
         body = {"model": model, "stream": False, "messages": messages,
                 decision_v1.CHAT_TOKEN_PARAM: _OUTPUT_TOKENS,
                 "response_format": {"type": "json_object"}}
@@ -598,13 +615,22 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
                     TIMEOUT_S + 15)
             finally:
                 _pending[operator] = max(0, _pending.get(operator, 1) - 1)
-        except Exception as exc:  # noqa: BLE001 - исход неизвестен, не повторяем
+        except Exception as exc:  # noqa: BLE001 - исход неизвестен
             if real:
                 _track(model, None, started, exc)
             await _record(operator, text, model=model, attempt=attempt, outcome="transport_error",
                           usage=(0, 0, 0), cost=None, error=f"{type(exc).__name__}",
                           finish_reason="", context_version=ctx["version"], info=info)
-            raise PlannerFailed("transport_error", f"{type(exc).__name__}") from exc
+            transient = _is_transient(exc)
+            if transient and transport_retries < MAX_TRANSPORT_RETRIES:
+                transport_retries += 1
+                await asyncio.sleep(RETRY_DELAY_S)
+                continue
+            raise PlannerFailed(
+                "transport_error",
+                NETWORK_RETRY_MESSAGE if transient else
+                "модель отклонила запрос, повтор не поможет: проверьте ключ и настройки провайдера",
+                retryable=transient) from exc
         if real:
             _track(model, getattr(result, "usage", None), started, None)
         usage = _usage(result)
@@ -628,21 +654,23 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
             await _record(operator, text, model=model, attempt=attempt, outcome="invalid_format",
                           usage=usage, cost=cost, error=last_error, finish_reason=finish,
                           context_version=ctx["version"], info=info)
-            if attempt < MAX_ATTEMPTS:
+            if repairs < MAX_ATTEMPTS - 1:
+                repairs += 1
                 messages = messages + [{"role": "user", "content": json.dumps(
                     {"validation_error": last_error,
                      "instruction": "Return the corrected JSON object only."},
                     ensure_ascii=False)}]
                 continue
-            raise PlannerRejected("planner_bad_output", last_error) from exc
+            raise PlannerRejected("planner_bad_output", "Модель ответила в неверном формате. Повторите запрос. (" + last_error + ")") from exc
         except PlannerRejected as exc:
-            repair = exc.code in REPAIRABLE_CODES and attempt < MAX_ATTEMPTS
+            repair = exc.code in REPAIRABLE_CODES and repairs < MAX_ATTEMPTS - 1
             await _record(operator, text, model=model, attempt=attempt,
                           outcome="invalid_params" if repair else "rejected",
                           usage=usage, cost=cost, error=f"{exc.code}: {exc}"[:500],
                           finish_reason=finish, context_version=ctx["version"], info=info)
             if not repair:
                 raise
+            repairs += 1
             last_error = f"{exc.code}: {exc}"[:500]
             messages = messages + [
                 {"role": "assistant", "content": str(getattr(result, "text", ""))[:4000]},
@@ -651,6 +679,23 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
                      "instruction": "Fix the params using only the catalog schema and "
                                     "project_context; return the corrected JSON object only."},
                     ensure_ascii=False)}]
+            continue
+        resolved = (planner_rules.resolve_clarification(reply.needs_clarification, text, ctx["facts"])
+                    if reply.needs_clarification and reply.model_question
+                    and clarify_repairs < MAX_CLARIFY_REPAIRS else [])
+        if resolved:
+            await _record(operator, text, model=model, attempt=attempt, outcome="clarify_autorepair",
+                          usage=usage, cost=cost,
+                          error=("known: " + ", ".join(r["param"] for r in resolved))[:500],
+                          finish_reason=finish, context_version=ctx["version"], info=info)
+            clarify_repairs += 1
+            messages = messages + [
+                {"role": "assistant", "content": str(getattr(result, "text", ""))[:4000]},
+                {"role": "user", "content": json.dumps(
+                    {"clarification_resolved": resolved,
+                     "instruction": "These values are already known to the server; do not ask about "
+                                    "them. Return the plan JSON object now, or ask only about something "
+                                    "else that is still missing."}, ensure_ascii=False)}]
             continue
         await _record(operator, text, model=model, attempt=attempt,
                       outcome="clarify" if reply.needs_clarification else "ok", usage=usage,
@@ -661,9 +706,21 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
                 "catalog_offered": len(info["offered"]), "catalog_total": info["total"],
                 "applied_defaults": list(reply.applied_defaults),
                 "dropped_steps": list(reply.dropped_steps),
-                "attachments_used": list(reply.attachments_used)}
+                "attachments_used": list(reply.attachments_used),
+                "transport_retries": transport_retries, "clarify_repairs": clarify_repairs}
         return PlannerOutcome(reply, ctx, meta)
     raise PlannerRejected("planner_bad_output", last_error)  # недостижимо
+
+
+_PROGRAMMING_ERRORS = (TypeError, AttributeError, KeyError, AssertionError, NameError)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Сбой сети/таймаут/5xx/429 - имеет смысл повторить; 400/401/402/403 и ошибки кода - нет."""
+    from app.services.gpt_api import GptApiError
+    if isinstance(exc, GptApiError):
+        return exc.retryable
+    return not isinstance(exc, _PROGRAMMING_ERRORS)
 
 
 def _track(model: str, usage: Any, started: float, exc: Exception | None) -> None:

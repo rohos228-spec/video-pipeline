@@ -109,7 +109,7 @@ def _substitute(node: Any, values: dict) -> Any:
     if isinstance(node, list):
         res_list = [_substitute(i, values) for i in node]
         if any(r is _OMIT for r in res_list):
-            raise MacroError("optional parameter cannot be used as a list element")
+            raise MacroError("Необязательный параметр нельзя использовать как элемент списка.")
         return res_list
     return copy.deepcopy(node)
 
@@ -194,7 +194,7 @@ def expand(macro: MacroSpec, params: Any, registry: ActionRegistry) -> list[dict
     if missing:
         raise MacroUnavailable(macro.id, missing)
     if not isinstance(params, dict):
-        raise MacroError("params must be an object")
+        raise MacroError("Параметры умной кнопки должны быть объектом.")
     errors = schema_mod.validate(macro.params_schema, params)
     if errors:
         raise MacroError(errors)
@@ -308,7 +308,8 @@ BUILTIN_MACROS: tuple[MacroSpec, ...] = (
         _params({"project_id": _PID}, ["project_id"]), builtin=True),
     MacroSpec(
         "smart.assemble_video", "Разобрать аудио и пересобрать видео",
-        "Выравнивает озвучку по таймкодам и запускает монтаж. Платных вызовов нет.",
+        "Выравнивает озвучку по таймкодам и запускает монтаж. Платных вызовов нет, но прежний final.mp4 "
+        "удаляется, поэтому план нужно подтвердить.",
         _chain(("montage.align_audio", dict(_P)), ("montage.run_montage", dict(_P))),
         _params({"project_id": _PID}, ["project_id"]), builtin=True),
     MacroSpec(
@@ -373,7 +374,7 @@ async def get_macro(macro_id: str, operator: str) -> MacroSpec:
     async with store.sessions()() as s:
         row = await s.get(store.ActionMacro, macro_id)
     if row is None or not _visible(_from_row(row), operator):
-        raise LookupError("macro not found")
+        raise LookupError("Макрос не найден.")
     return _from_row(row)
 
 
@@ -383,7 +384,7 @@ async def save_macro(operator: str, *, title_ru: str, description_ru: str, steps
     registry = registry or default_registry
     ensure_builtin_actions()
     if not operator:
-        raise MacroForbidden("operator required")
+        raise MacroForbidden("Нужна личность оператора.")
     errors = validate_macro(title_ru, steps, params_schema, registry, require_registered=True,
                             description_ru=description_ru)
     if macro_id is not None and not _USER_ID.match(macro_id):
@@ -394,12 +395,12 @@ async def save_macro(operator: str, *, title_ru: str, description_ru: str, steps
     async with store.sessions()() as s:
         row = await s.get(store.ActionMacro, macro_id) if macro_id else None
         if row is not None and row.owner != operator:
-            raise MacroForbidden("macro belongs to another operator")
+            raise MacroForbidden("Макрос принадлежит другому оператору.")
         if row is None:
             count = len((await s.scalars(select(store.ActionMacro.id).where(
                 store.ActionMacro.owner == operator))).all())
             if count >= MAX_USER_MACROS:
-                raise MacroError(f"macro limit reached ({MAX_USER_MACROS})")
+                raise MacroError(f"Достигнут предел личных макросов ({MAX_USER_MACROS}).")
             row = store.ActionMacro(id=macro_id or "user." + uuid.uuid4().hex[:10],
                                     owner=operator, created_at=datetime.utcnow())
             s.add(row)
@@ -412,12 +413,12 @@ async def save_macro(operator: str, *, title_ru: str, description_ru: str, steps
 
 async def delete_macro(macro_id: str, operator: str) -> None:
     if macro_id in _BUILTIN_BY_ID:
-        raise MacroForbidden("built-in macros cannot be deleted")
+        raise MacroForbidden("Встроенные макросы удалять нельзя.")
     async with store.sessions()() as s:
         row = await s.get(store.ActionMacro, macro_id)
         if row is None or not _visible(_from_row(row), operator):
-            raise LookupError("macro not found")
+            raise LookupError("Макрос не найден.")
         if row.owner != operator:
-            raise MacroForbidden("only the owner can delete a macro")
+            raise MacroForbidden("Удалить макрос может только его владелец.")
         await s.delete(row)
         await s.commit()

@@ -92,7 +92,7 @@ SYNONYMS: dict[str, str] = {
     "node.reset_from_step": "сброс сброс шаг",
     "node.run_step": "запуст шаг нод",
     "node.set_config": "измен пульт нод настройк роль режим",
-    "node.set_disabled": "отключ включ нод выключ",
+    "node.set_disabled": "отключ включ нод выключ выруб верни работ обратн",
     "node.set_prompt_variant": "вариант промт слот мастер нод",
     "node.clear_check_agent": "сброс агент проверк убер загруж нод",
     "node.get_run_cost_basis": "стоимост цен сколько стоит прогон оценк нод запуск шаг",

@@ -125,10 +125,13 @@ async def test_refused_without_key_is_503_and_no_request(ctx, monkeypatch) -> No
     assert fake.calls == []
 
 
-async def test_transport_failure_is_502(ctx) -> None:
-    use(OSError("down"))
+async def test_transport_failure_is_502(ctx, monkeypatch) -> None:
+    monkeypatch.setattr(planner, "RETRY_DELAY_S", 0)
+    use(OSError("down"), OSError("down"))
     r = await post(ctx)
     assert r.status_code == 502 and r.json()["detail"]["code"] == "transport_error"
+    assert r.json()["detail"]["retryable"] is True
+    assert r.json()["detail"]["message"] == "сеть/модель недоступны, повторите"
 
 
 async def test_request_cannot_carry_approval_fields(ctx) -> None:

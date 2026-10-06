@@ -1,6 +1,7 @@
 """Media nodes: declarative decision data, coverage guard, no network/DB.
 
-Human-only (no supervisor retry at all): hero, images, audio, sfx_gen, assemble, publish.
+Human-only (no supervisor retry at all): hero, images, audio, sfx_gen, publish.
+Local retry (assemble): one re-run through the original worker, no provider call at all.
 Resume-only (videos, items, music): the supervisor may resume a KNOWN provider task and never submit."""
 import pytest
 
@@ -20,7 +21,8 @@ KNOWN_NON_MEDIA = {
 }
 MEDIA = set(MEDIA_RECOVERY_DECISIONS)
 RESUME_ONLY = {"videos", "items", "music"}
-HUMAN_ONLY = MEDIA - RESUME_ONLY
+LOCAL_RETRY = {"assemble"}
+HUMAN_ONLY = MEDIA - RESUME_ONLY - LOCAL_RETRY
 
 
 def test_every_registry_node_has_a_media_decision_or_is_known_non_media():
@@ -64,10 +66,21 @@ def test_resume_only_media_node_offers_one_retry_slot_and_no_profile_change(node
     assert set(decision) == {"decision", "cost_class", "provider", "reason"}
 
 
+@pytest.mark.parametrize("node_type", sorted(LOCAL_RETRY))
+def test_local_retry_node_offers_one_retry_slot_and_no_provider_call(node_type):
+    cap = capability_for(node_type)
+    assert cap.managed and "retry_same" in cap.actions and "retry_profile" not in cap.actions
+    assert cap.profile_compatible is False and cap.recovery_continuation == "none"
+    decision = media_recovery_decision(node_type)
+    assert decision["decision"] == "local_retry" and decision["cost_class"].startswith("no_provider_spend")
+    assert "resume-only scope" in decision["reason"] and "approve_final" in decision["reason"]
+    assert set(decision) == {"decision", "cost_class", "provider", "reason"}
+
+
 def test_paid_media_reasons_state_the_double_pay_risk_or_missing_route():
     risk_words = ("double", "charged", "re-pay", "re-submit", "never resubmitted", "twice",
                   "irreversible", "no recovery verifier", "unknown")
-    for node_type in MEDIA:
+    for node_type in MEDIA - LOCAL_RETRY:
         reason = MEDIA_RECOVERY_DECISIONS[node_type]["reason"].lower()
         assert any(w in reason for w in risk_words), node_type
 

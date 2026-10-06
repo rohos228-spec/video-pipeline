@@ -69,6 +69,58 @@ SLICE_SHAPES = {
 }
 
 
+# Supervised retry (recover_node) is admitted per AGENT, not per node type: the node type sd_agent is one
+# capability, the agents differ in how much of the step a failed attempt leaves behind.
+#   characters, world: ONE model request (runner._run_one_agent, not splittable), the slice is converted and
+#     stored in ONE transaction (cells.store_cells(transactional=True)) together with the staged `data_applied`
+#     fact, so a failed attempt either applied nothing (retry is safe, the first request is identical) or left
+#     a `data_applied` fact (the generic partial-apply refusal of recover_node forbids the retry).
+#   the others stay human-only, each for its own exact reason.
+RETRY_ADMITTED_AGENTS = ("characters", "world")
+RETRY_REFUSED_AGENTS = {
+    "skeleton": ("two_stage_state",
+                 "skeleton is a draft request plus up to EDITOR_MAX_ROUNDS editor requests with the draft carried "
+                 "between them, and its cells (one per scene field) are committed in chunks: a failed editor round "
+                 "leaves a draft a repeat would not reproduce, and a failure after some chunks is a partial commit"),
+    "camera": ("chunked_requests",
+               "camera is split into parallel chunk requests (agent_chunks) whose chunk checkpoints are dropped on "
+               "failure (invalidate_agent), it depends on the action slice, and its cells are committed in chunks: "
+               "the first request of a repeat is not the first request of the failed attempt"),
+    "action": ("chunked_requests",
+               "action is split into parallel chunk requests (agent_chunks) with chunk checkpoints that are dropped "
+               "on failure (invalidate_agent), its skeleton-coverage check can reject an already merged slice, and "
+               "its cells are committed in chunks: a repeat is not the failed attempt's request and a partial "
+               "commit is possible"),
+    "legacy": ("legacy_union",
+               "the legacy scene_design node stands for every agent of the phase at once: which agents ran and "
+               "what each committed cannot be told per node"),
+}
+
+
+def scene_retry_admission_problem(node: Any) -> str | None:
+    """Why the node may NOT enter a managed execution (and so never reaches a supervised retry), or None.
+
+    Only sd_agent nodes of an admitted agent pass; everything else that runs in the agents' step (the other
+    agents, the legacy scene_design node) gets the exact reason of its agent. Needed for the legacy node
+    too: observe_attempt resolves the capability from the project STATUS (scene_designing -> sd_agent), so a
+    legacy node in a managed scope would otherwise borrow the managed capability of sd_agent."""
+    from app.services.excel_gpt_node import effective_node_type, sd_agent_marker
+
+    if not isinstance(node, dict):
+        return "scene node unavailable"
+    node_type = effective_node_type(node)
+    if node_type == "scene_design":
+        agent = LEGACY_AGENT  # the legacy node runs in the same step (status scene_designing) as the agents
+    elif node_type == "sd_agent":
+        agent = sd_agent_marker(node)
+    else:
+        return None  # not a scene agent: judged by its own capability
+    if agent in RETRY_ADMITTED_AGENTS:
+        return None
+    code, reason = RETRY_REFUSED_AGENTS.get(agent, ("unknown_agent", "the agent of this node is unknown"))
+    return f"scene agent {agent!r} is not admitted to a managed execution ({code}): {reason}"
+
+
 def slice_contract(agent: str) -> dict | None:
     """Plain description of the shape a verified agent slice must have (read-only)."""
     shape = SLICE_SHAPES.get(agent)
@@ -941,6 +993,77 @@ async def observe_scene_result(session, project, node, *, agent_slice=None, payl
             or ctx.scope.execution_id in ctx.observer.commit_uncertainty):
         proof.update(status="unknown", reason="native scene journal/body unavailable", errors=[],
                      failure_class=None)
+    ctx.scene_result_proof = copy.deepcopy(proof)  # read by the managed gate (observe_scene_agent_gate)
     await _scene_fact(ctx, "node_result_verification", proof, body=proof)
     if read_error is not None:
         _scene_gap(ctx, read_error)
+
+
+def record_scene_applied(session: Any, agent: str, stats: dict) -> bool:
+    """Stage the honest application fact of ONE agent's cells (characters, world).
+
+    scene_design.run calls this right before the commit that also carries the cell rows
+    (cells.store_cells(transactional=True) only flushes): the fact is staged on the business session, so it
+    becomes visible only together with the cells (a rollback drops both). It makes the step recoverable: a
+    failed attempt WITH this fact applied something (recover_node refuses the retry), one WITHOUT it applied
+    nothing. Returns True when a fact was staged."""
+    from app.services.observation import _attempt, emit
+
+    ctx = _attempt.get()
+    if (ctx is None or ctx.session is not session or getattr(ctx, "native_attempt_closed", False)
+            or ctx.scope.observer_state not in {"active", "degraded"} or ctx.node_key not in ctx.scope.node_keys
+            or not ctx.attempt_id or agent not in RETRY_ADMITTED_AGENTS):
+        return False
+    stored, rejected = int(stats.get("stored") or 0), int(stats.get("rejected") or 0)
+    emit("data_applied", {"result": {"ok": rejected == 0, "node_kind": "sd_agent", "agent": agent,
+                                     "cells_stored": stored, "cells_rejected": rejected,
+                                     "table": "scene_design_cells"},
+                          "transactional": True}, request_id=getattr(ctx, "last_request_id", None))
+    return True
+
+
+async def observe_scene_agent_gate(session, project, node_type="sd_agent"):
+    """Managed scope only, after a SUCCESSFUL step (verifier registry, success_errors='raise').
+
+    Runs the independent result check itself (the generic call later is then a no-op) and refuses to let the
+    execution go on without a passed proof: the execution is held and the attempt fails, like split and
+    sfx_plan. A failed ATTEMPT never reaches here, so the typed incident of a failed agent stays recoverable."""
+    from app.services.observation import _attempt
+
+    ctx = _attempt.get()
+    if ctx is None:
+        return
+    node = getattr(ctx, "scene_native_node", None)
+    proof = None
+    if node is not None:
+        await observe_scene_result(session, project, node, agent_slice=getattr(ctx, "scene_agent_slice", None),
+                                   payload=getattr(ctx, "scene_assembly_payload", None))
+        ctx.scene_result_observed = True
+        proof = getattr(ctx, "scene_result_proof", None)
+    if isinstance(proof, dict) and proof.get("status") == "passed":
+        return
+    reason = ("no captured scene input (pass-through or journal unavailable)" if node is None
+              else str((proof or {}).get("reason") or (proof or {}).get("status") or "no result proof"))
+    from app.services.actions_v1 import ActionSupervisor
+
+    await ActionSupervisor(ctx.observer.master).set_held(
+        project_id=ctx.scope.project_id, execution_id=ctx.scope.execution_id, held=True,
+        initiator="native_scene_agent_verifier", rationale=reason,
+        idempotency_key="scene-agent-verify:" + ctx.attempt_id, operator_request=False)
+    raise RuntimeError("native scene agent verification not confirmed: " + reason)
+
+
+async def scene_agent_contract(c) -> dict:
+    """Contract builder 'scene_agent' for a managed sd_agent node (DecisionSupervisor.read_contract)."""
+    from app.services.observation import panel_safe
+
+    native = scene_contract(c.node)
+    capability, scope, context, row = c.capability, c.scope, c.context, c.row
+    return panel_safe({**capability.contract(), "node_key": row.node_key, "graph_version": scope.graph_version,
+        "context_version": context["context_version"],
+        "source": "native scene agent executor/converter; authoritative project DB",
+        "contract": {**native, "retry_admitted_agents": list(RETRY_ADMITTED_AGENTS),
+                     "refused_agents": {name: item[0] for name, item in RETRY_REFUSED_AGENTS.items()},
+                     "apply_fact": "data_applied (transactional) staged with the cell commit"},
+        "verification_status": "not_checked; requires captured input and committed verification evidence",
+        "compatible_profiles": [], "cost_status": "unknown_tariff"})

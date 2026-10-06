@@ -278,12 +278,13 @@ class MediaObservation(MediaJobs):
         require_managed_capability("excel_gpt")
         require_managed_capability("plan")
         require_managed_capability("script")
-        for kind in ("publish", "audio", "assemble", "unregistered"):
+        for kind in ("publish", "audio", "unregistered"):
             self.assertFalse(capability_for(kind).managed, "unaccepted adapters stay disabled even if tools are later installed")
             with self.assertRaisesRegex(ValueError, "adapter"):
                 require_managed_capability(kind)
         # videos/items/music are managed for supervised RECOVERY only: never startable by the supervisor
-        for kind in ("videos", "items", "music"):
+        # assemble likewise: managed only for ONE local re-run under a claimed ticket, never a fresh managed start
+        for kind in ("videos", "items", "music", "assemble"):
             self.assertTrue(capability_for(kind).managed)
             with self.assertRaisesRegex(ValueError, "recovery only"):
                 require_managed_capability(kind)

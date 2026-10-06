@@ -74,6 +74,7 @@ export function ActionLayerSection({projectId, sceneId, frameId}: {projectId: nu
         <PlanCard plan={plan} busyElsewhere={running}
           onClarify={projectId == null ? undefined : (o) => void clarify(o)} clarifying={clarifying} clarifyError={clarifyError}
           hasFiles={readyIds(files).length > 0} onResend={projectId == null ? undefined : () => void resend(requestText)}
+          onRetry={projectId == null ? undefined : () => void resend(requestText)}
           onStarted={(id) => { setRunId(id); setRunning(true); setPlan(null); setRefresh((n) => n + 1); }}
           onDismiss={() => { setPlan(null); setClarifyError(""); }} />
       )}

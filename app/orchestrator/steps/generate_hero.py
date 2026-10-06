@@ -472,6 +472,28 @@ async def _load_excel_hero_from_xlsx(
 _bootstrap_excel_hero_from_xlsx = _load_excel_hero_from_xlsx
 
 
+def _saved_hero_prompt_path(project: Project, hero_idx: int, v_idx: int) -> Path:
+    """Where the hero prompt is kept BEFORE the paid call (like music/.suno_prompt.txt)."""
+    return project.data_dir / "characters" / f".hero_prompt_{hero_idx}_v{v_idx}.txt"
+
+
+def _read_saved_hero_prompt(path: Path) -> str:
+    try:
+        saved = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return saved if len(saved) >= 100 else ""
+
+
+def _save_hero_prompt(path: Path, prompt: str) -> None:
+    """Best effort: a failed write only means a later repeat builds a new prompt, as it always did."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(prompt, encoding="utf-8")
+    except OSError:
+        logger.warning("hero: prompt cache not written: {}", path)
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_hero:
         return
@@ -636,6 +658,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         #     переписать промт без триггеров модерации).
         gpt = get_gpt_client()
 
+        # 0) Прерванная платная генерация (открытая задача Kie или submit без известного исхода) повторяется
+        #    только с тем же запросом: берём промт, сохранённый ДО платного вызова, GPT заново не спрашиваем
+        #    (он написал бы другой промт, и тот же запрос уже не воспроизвести). Как music/.suno_prompt.txt.
+        prompt_cache = _saved_hero_prompt_path(project, hero_idx, v_idx)
+        if not hero_prompt and v_idx == 1:
+            from app.services import media_resume
+
+            if await media_resume.pending_for_key(project.id, f"hero_{hero_idx}_v{v_idx}"):
+                hero_prompt = _read_saved_hero_prompt(prompt_cache)
+                if hero_prompt:
+                    logger.info(
+                        "[#{}] hero pair=({}, v{}): есть незавершённая платная задача — беру сохранённый промт "
+                        "({} симв), GPT не вызываю",
+                        project.id, hero_idx, v_idx, len(hero_prompt),
+                    )
+
         # 1) ChatGPT — нужен только для v=1 (или если кеш не нашёлся).
         if not hero_prompt:
             # Текст «сопр. сообщения» берём из gpt_text_builder — там же
@@ -701,6 +739,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     "отправляю как есть, outsee может не принять",
                     project.id, len(hero_prompt), OUTSEE_PROMPT_MAX_CHARS,
                 )
+            if v_idx == 1:
+                # Сохраняем ДО платного вызова: после рестарта тот же запрос воспроизводим.
+                _save_hero_prompt(prompt_cache, hero_prompt)
 
         # 2) Сборка финального prompt_text.
         # v=1: полный hero_prompt от ChatGPT (без референса).

@@ -4305,6 +4305,894 @@
    "clarify_contains": [
     "провайдер"
    ]
+  },
+  {
+   "id": "nsc_a",
+   "text": "включи checkFix на ноде n_excel_gpt_fw_qc пожалуйста",
+   "workflow": "node config",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "checkFix": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nsc_b",
+   "text": "переведи ноду n_excel_gpt_fw_qc в режим проверки",
+   "workflow": "node config",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "checkMode": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nsc_c",
+   "text": "у ноды n_excel_gpt_fw_shots отключи брать со стрелок",
+   "workflow": "node config",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots",
+      "takeFromEdges": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nsc_d",
+   "text": "поставь ноде n_excel_gpt_fw_report роль review",
+   "workflow": "node config",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_report",
+      "role": "review"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nsc_e",
+   "text": "включи checkFix",
+   "workflow": "node config",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "нод"
+   ]
+  },
+  {
+   "id": "nvar_a",
+   "text": "для ноды n_excel_gpt_fw_shots возьми вариант промта draft",
+   "workflow": "node prompt variant",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_prompt_variant",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots",
+      "variant": "draft"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nvar_b",
+   "text": "переключи промт ноды n_excel_gpt_fw_script на вариант main",
+   "workflow": "node prompt variant",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_prompt_variant",
+     "params": {
+      "node_key": "n_excel_gpt_fw_script",
+      "variant": "main"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nvar_c",
+   "text": "у ноды n_excel_gpt_fw_qc поставь вариант промпта draft в слоте main",
+   "workflow": "node prompt variant",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_prompt_variant",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "variant": "draft",
+      "slot_id": "main"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nca_a",
+   "text": "сбрось агента проверки у ноды n_excel_gpt_fw_qc",
+   "workflow": "check agent",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.clear_check_agent",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nca_b",
+   "text": "убери агента проверки с ноды n_excel_gpt_fw_qc",
+   "workflow": "check agent",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.clear_check_agent",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nca_c",
+   "text": "очисти check agent на ноде n_excel_gpt_fw_qc",
+   "workflow": "check agent",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.clear_check_agent",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nca_d",
+   "text": "сбрось агента проверки",
+   "workflow": "check agent",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "нод"
+   ]
+  },
+  {
+   "id": "ndis_a",
+   "text": "вырубай ноду n_excel_gpt_fw_report",
+   "workflow": "node disable",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_disabled",
+     "params": {
+      "node_key": "n_excel_gpt_fw_report",
+      "disabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ndis_b",
+   "text": "верни в работу ноду n_excel_gpt_fw_shots",
+   "workflow": "node disable",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_disabled",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots",
+      "disabled": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nroute_d",
+   "text": "какая LLM у ноды n_excel_gpt_fw_action",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_llm_route",
+     "params": {
+      "node_key": "n_excel_gpt_fw_action"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ncost_d",
+   "text": "скока стоит прогнать n_excel_gpt_fw_qc",
+   "workflow": "node cost",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_run_cost_basis",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ncfg_d",
+   "text": "покажи конфиг ноды n_excel_gpt_fw_report",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_report"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gget_a",
+   "text": "покажи состав группы script_frames_qc",
+   "workflow": "group get",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.get",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gget_b",
+   "text": "что внутри группы script_frames_qc?",
+   "workflow": "group get",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.get",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gget_c",
+   "text": "открой описание группы script_frames_qc",
+   "workflow": "group get",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.get",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gins_c",
+   "text": "вставь груупу script_frames_qc на канвас",
+   "workflow": "group insert",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.insert",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gupd_a",
+   "text": "переименуй группу my_group в «Мои кадры»",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.update",
+     "params": {
+      "group_id": "my_group",
+      "title": "Мои кадры"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gupd_b",
+   "text": "поменяй описание группы my_group на «для проверки кадров»",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.update",
+     "params": {
+      "group_id": "my_group",
+      "description": "для проверки кадров"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gdel_a",
+   "text": "удали группу my_group",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.delete",
+     "params": {
+      "group_id": "my_group"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gdel_b",
+   "text": "убери пользовательскую группу old_checks из библиотеки",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.delete",
+     "params": {
+      "group_id": "old_checks"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gsave_a",
+   "text": "сохрани выделенные ноды как группу",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "rep_3",
+   "text": "дай отчёт по qc кадров, пожалуйста",
+   "workflow": "report",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.shots_report",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rep_4",
+   "text": "покажи ошибки проверки шотов",
+   "workflow": "report",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.shots_report",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shadd_a",
+   "text": "добавь пустую ячейку в меню съёмки",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.add_cell",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shadd_b",
+   "text": "в меню съёмки добавь ячейку в конец",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.add_cell",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shadd_c",
+   "text": "добавь в меню съёмки ячейку с закадром «Финал»",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.add_cell",
+     "params": {
+      "voiceover": "Финал"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shef_a",
+   "text": "в меню съёмки у кадра 5 поставь крупность «крупный план»",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.edit_field",
+     "params": {
+      "frame_uuid": "$uuid.5",
+      "field": "size",
+      "value": "крупный план"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shef_b",
+   "text": "в меню съёмки смени площадку кадра 9 на «кухня»",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.edit_field",
+     "params": {
+      "frame_uuid": "$uuid.9",
+      "field": "set",
+      "value": "кухня"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shef_c",
+   "text": "в меню съёмки у этого кадра поставь движение «наезд»",
+   "workflow": "shot menu",
+   "context": {
+    "selected_frame": 12
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.edit_field",
+     "params": {
+      "frame_uuid": "$uuid.12",
+      "field": "move",
+      "value": "наезд"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shec_c",
+   "text": "в меню съёмки закадр ячейки этого кадра: «Дальше»",
+   "workflow": "shot menu",
+   "context": {
+    "selected_frame": 7
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.edit_cell_voiceover",
+     "params": {
+      "parent_uuid": "$uuid.7",
+      "voiceover": "Дальше"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rel_next_vo",
+   "text": "поменяй закадр следующего кадра на «Дальше»",
+   "workflow": "relative frame",
+   "context": {
+    "selected_frame": 7
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.8",
+      "text": "Дальше"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rel_last_del",
+   "text": "удали последний кадр",
+   "workflow": "relative frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_frame",
+     "params": {
+      "frame_id": "$frame.30"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rel_swap_next",
+   "text": "поменяй местами картинки этого и следующего кадра",
+   "workflow": "relative frame",
+   "context": {
+    "selected_frame": 5
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "image",
+      "a_frame": 5,
+      "a_shot": 1,
+      "b_frame": 6,
+      "b_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rel_prev_cov",
+   "text": "предыдущему кадру поставь крупный план",
+   "workflow": "relative frame",
+   "context": {
+    "selected_frame": 9
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_coverage",
+     "params": {
+      "frame_number": 8,
+      "type": "coverage_plan"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gen_a",
+   "text": "в двенадцатом кадре поменяй закадр на «Конец»",
+   "workflow": "frame number forms",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.12",
+      "text": "Конец"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gen_b",
+   "text": "озвучка кадра №14: «Привет»",
+   "workflow": "frame number forms",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.14",
+      "text": "Привет"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gen_c",
+   "text": "кадру номер 9 поставь ракурс сверху",
+   "workflow": "frame number forms",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_coverage",
+     "params": {
+      "frame_number": 9,
+      "type": "coverage_angle"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gen_d",
+   "text": "удали видео 7-го кадра",
+   "workflow": "frame number forms",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_video",
+     "params": {
+      "frame_number": 7
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chl_a",
+   "text": "покажи применённые предложения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.list",
+     "params": {
+      "status": "applied"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chl_b",
+   "text": "какие предложения ещё ждут применения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.list",
+     "params": {
+      "status": "proposed"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chl_c",
+   "text": "список предложений уровня T1",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.list",
+     "params": {
+      "tier": "T1"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cha_c",
+   "text": "прмени предложение 5, пожалуйста",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.apply",
+     "params": {
+      "proposal_id": "$proposal.5.id",
+      "expected_digest": "$proposal.5.digest"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chget_c",
+   "text": "покажи версии опций ноды n_excel_gpt_fw_qc",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.get",
+     "params": {
+      "target": "$target.qc_options"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chr_c",
+   "text": "верни промпт шотов к прошлой версии пожалуйста",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.rollback",
+     "params": {
+      "target": "$target.shots_prompt",
+      "expected_version": 3
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chp_c",
+   "text": "предложи совет: добавить паузу между сценами, без применения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.propose",
+     "params": {
+      "tier": "T0",
+      "kind": "suggestion"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "pg_c",
+   "text": "покжи мастер промпт main шага excel_gpt",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.get_master",
+     "params": {
+      "step_code": "excel_gpt",
+      "name": "main"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ps_c",
+   "text": "поменяй текст мастер-промта draft шага script на «Пиши ярко»",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.save_master",
+     "params": {
+      "step_code": "script",
+      "name": "draft",
+      "content": "Пиши ярко"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "pc_c",
+   "text": "создай мастер-промт rough2 для шага script с текстом «Тест»",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.create_master",
+     "params": {
+      "step_code": "script",
+      "name": "rough2",
+      "content": "Тест"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "pd_c",
+   "text": "снеси вариант draft мастер-промта шага script",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.delete_master",
+     "params": {
+      "step_code": "script",
+      "name": "draft"
+     }
+    }
+   ],
+   "also_offered": []
   }
  ]
 }

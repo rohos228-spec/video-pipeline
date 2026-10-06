@@ -420,6 +420,14 @@ class ActionSupervisor:
             }
             if not graph_group_keys or graph_group_keys != set(node_keys):
                 raise ValueError("action scope must equal the complete selected graph group")
+            # A node type shared by nodes with different recovery safety (sd_agent: five agents) is admitted
+            # per node: a refused node never enters a managed scope, so it never reaches a supervised retry.
+            from app.orchestrator.node_spec import node_admission_problem
+            for node in run.nodes_snapshot or []:
+                if isinstance(node, dict) and str(node.get("id")) in node_keys:
+                    problem = node_admission_problem(node)
+                    if problem:
+                        raise ValueError(problem)
             project = await session.get(Project, project_id)
             if project is None or bool((project.meta or {}).get("user_stop")):
                 raise ValueError("missing project or user_stop is active")

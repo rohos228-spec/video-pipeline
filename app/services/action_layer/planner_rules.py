@@ -378,14 +378,14 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "project.resume": ("возобнов", "продолж", "сними", "снять", "resume", "разблок"),
     "project.reload_xlsx": ("xlsx", "эксел", "excel", "таблиц", "перечит", "перезагруз", "обнов"),
     "prompt.save_master": ("сохран", "перепиш", "измен", "правк", "обнов", "замен", "запиш",
-                           "поправ", "исправ", "отредакт"),
+                           "поправ", "исправ", "отредакт", "помен", "смен", "переде", "напиш"),
     "media.resume_poll": ("докач", "возобнов", "дожд", "скач", "подтян", "доведи", "забер", "достан"),
     "media.get_recovery_assessment": ("провер", "задач", "kie", "киэ", "кие", "состоян", "статус", "восстанов",
                                       "зависл", "завис", "докач", "возобнов", "узна", "посмотр", "покаж"),
     # Снятие блокировки открывает платную повторную отправку: только если запрос говорит именно об этом.
     "media.release_unknown": ("блок", "разблок", "неизвестн", "исход", "release", "unknown"),
     "media.list_unknown_outcomes": ("блок", "заблок", "неизвестн", "исход", "потерян", "застр", "unknown"),
-    "change.apply": ("примен", "apply", "внес", "внеси", "примени"),
+    "change.apply": ("примен", "apply", "внес", "внеси", "примени", "прмен", "накат", "активир"),
     "change.rollback": ("откат", "откач", "верни", "вернуть", "назад", "отмен", "прежн"),
     "montage.set_anchors": ("якор", "anchor"),
     "montage.set_scene_chain": ("цепоч", "последовательн", "разбер", "действи"),
@@ -522,3 +522,50 @@ def clean_options(raw: Any) -> list[str]:
         if len(out) >= MAX_OPTIONS:
             break
     return out
+
+
+# --- вопрос о параметре с умолчанием: один автоматический повтор ----------------------------
+
+# Вопрос или запрос с такими словами никогда не снимается автоматически: цели удаления, причины,
+# подтверждения, суммы и лимиты решает человек.
+_SAFETY_STEMS = ("удал", "убер", "убра", "сотр", "снес", "снос", "выкин", "очист", "сброс", "сбрас",
+                 "обнул", "перезапис", "причин", "подтверд", "согласи", "увер", "точно", "сумм",
+                 "сколько", "кредит", "бюджет", "лимит", "стоим", "цен", "оплат", "плат", "баланс",
+                 "потрат", "блокир", "разблок", "откат", "откач", "delete", "remove", "reason",
+                 "approve", "confirm", "destroy", "budget", "cost")
+_DEICTIC = ("этот", "эт", "текущ", "выбран", "выделен", "данн", "нынешн")
+
+
+def resolve_clarification(question: str, request_text: str, facts: dict | None) -> list[dict]:
+    """Какие значения сервер уже знает для параметров, о которых спросила модель.
+
+    [{param, value, source}] с source default (настройки проекта) или context (выбор в интерфейсе).
+    Пусто, если вопрос не о таком параметре или затрагивает безопасность."""
+    if not facts or facts.get("project_id") is None:
+        return []
+    qw, rw = _words(question), _words(request_text)
+    if _has_stem(qw, _SAFETY_STEMS) or _has_stem(rw, _SAFETY_STEMS):
+        return []
+    defaults = facts.get("defaults") or {}
+    found: list[dict] = []
+
+    def kinds() -> list[str]:
+        vid = _has_stem(qw, ("видео", "клип", "video"))
+        img = _has_stem(qw, ("картин", "изображ", "фото", "image", "кадр"))
+        return ["video"] if vid and not img else ["image"] if img and not vid else ["image", "video"]
+
+    for key, stems in (("generator", ("генератор", "модел", "generator")),
+                       ("resolution", ("разрешен", "качеств", "resolution"))):
+        if _has_stem(qw, stems):
+            for kind in kinds():
+                name = f"{kind}_{key}"
+                if defaults.get(name):
+                    found.append({"param": name, "value": defaults[name], "source": "default"})
+    if _has_stem(qw, ("проект", "project")) and _has_stem(qw, ("как", "котор", "which", "what")):
+        found.append({"param": "project_id", "value": facts["project_id"], "source": "context"})
+    if (_has_stem(qw, ("метод", "method")) and _has_stem(qw, ("аудио", "разбор", "выравн", "таймкод"))):
+        found.append({"param": "method", "value": "nemo_auto", "source": "default"})
+    selected = facts.get("selected") or {}
+    if selected and _has_stem(rw, _DEICTIC) and _has_stem(qw, ("кадр", "сцен", "frame", "scene")):
+        found.append({"param": "selected", "value": selected, "source": "context"})
+    return found
