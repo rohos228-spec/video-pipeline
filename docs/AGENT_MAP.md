@@ -81,7 +81,7 @@ docs/                     # human/agent docs
 | images | img | генерация PNG |
 | animation_prompts | anim_pr | промты анимации → **R48/R64** |
 | videos | video | клипы |
-| audio | audio | TTS |
+| audio | audio | TTS: ElevenLabs или WaveSpeed Eleven V4 ([`TTS_PROVIDERS.md`](TTS_PROVIDERS.md)) |
 | music | music | музыка |
 | assemble | assemble | монтаж |
 | publish | publish | выгрузка |

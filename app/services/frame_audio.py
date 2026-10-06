@@ -11,13 +11,11 @@ from typing import Any
 from loguru import logger
 
 from app.models import Frame, Project
-
-from app.services.elevenlabs_api import synthesize_speech, elevenlabs_api_configured
-from app.services.elevenlabs_voices import resolve_elevenlabs_voice_id
+from app.services.asr import active_asr_backend, transcribe_words, transcribe_words_many
 from app.services.mapper import map_frames
 from app.services.media_probe import probe_duration
+from app.services.tts_provider import synthesize_project_audio
 from app.services.voiceover_split_local import split_voiceover_locally
-from app.services.asr import active_asr_backend, transcribe_words, transcribe_words_many
 from app.services.whisper import WordTS
 
 FRAME_AUDIO_PREFIX = "frame_"
@@ -484,7 +482,7 @@ async def synthesize_per_frame_audio(
     whisper_model: str = "large-v3",
     language: str = "ru",
 ) -> tuple[list[FrameAudioClip], Path, list[WordTS]]:
-    """Озвучка: весь voiceover одним запросом в 11Labs через прямой API, тайминги — Whisper."""
+    """Озвучка: весь voiceover одним запросом выбранного TTS-провайдера, тайминги — Whisper."""
     audio_dir.mkdir(parents=True, exist_ok=True)
     # Только frame_NNN.mp3 от прошлого 11Labs — не трогаем voice_full/voice*.wav
     delete_frame_audio_files(audio_dir)
@@ -509,24 +507,14 @@ async def synthesize_per_frame_audio(
         len(full_text),
         full_path.name,
     )
-    voice_id = resolve_elevenlabs_voice_id(project)
-    logger.info("[#{}] frame_audio: 11Labs voice_id={}", project.id, voice_id)
-
-    if elevenlabs_api_configured() or el is None:
-        await synthesize_speech(
-            full_text,
-            full_path,
-            voice_id=voice_id,
-            timeout=tts_timeout,
-        )
-    else:
-        await el.tts(
-            full_text,
-            full_path,
-            timeout=tts_timeout,
-            voice_id=voice_id,
-            project_id=project.id,
-        )
+    provider_id = await synthesize_project_audio(
+        full_text,
+        full_path,
+        project=project,
+        timeout=tts_timeout,
+        el=el,
+    )
+    logger.info("[#{}] frame_audio: TTS provider={}", project.id, provider_id)
 
     master = await probe_duration(full_path)
     words = transcribe_words(

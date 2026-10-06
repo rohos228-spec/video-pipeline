@@ -262,6 +262,14 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = Field("", alias="ELEVENLABS_API_KEY")
     elevenlabs_proxy_url: str | None = Field(None, alias="ELEVENLABS_PROXY_URL")
     elevenlabs_model_id: str = Field("eleven_multilingual_v2", alias="ELEVENLABS_MODEL_ID")
+    # Озвучка: elevenlabs (прямой API, дефолт) | wavespeed_eleven_v4.
+    # Пусто и отсутствие meta.tts_provider = elevenlabs, старый путь не меняется.
+    audio_tts_provider: str = Field("elevenlabs", alias="AUDIO_TTS_PROVIDER")
+    # Ключ WaveSpeed только на сервере. Не отдавать в web/.
+    wavespeed_api_key: str = Field("", alias="WAVESPEED_API_KEY")
+    wavespeed_eleven_v4_voice_id: str = Field("Alicia", alias="WAVESPEED_ELEVEN_V4_VOICE_ID")
+    wavespeed_eleven_v4_stability: float = Field(0.5, alias="WAVESPEED_ELEVEN_V4_STABILITY")
+    wavespeed_eleven_v4_similarity: float = Field(0.75, alias="WAVESPEED_ELEVEN_V4_SIMILARITY")
     # Звуки сопровождения в пайплайне (sfx_plan → sfx_gen → микс в сборке).
     sfx_enabled: bool = Field(True, alias="SFX_ENABLED")
 

@@ -1,7 +1,8 @@
 """Шаг 10: озвучка — VO из БД (Frame.voiceover_text).
 
-Готовый mp3 на диске → только Whisper (без 11Labs).
-Иначе: TTS по ячейкам → voice_full → Whisper внутри synthesize_per_frame_audio.
+Готовый mp3 на диске → только Whisper (без TTS).
+Иначе: выбранный провайдер (ElevenLabs или WaveSpeed Eleven V4) → voice_full →
+Whisper внутри synthesize_per_frame_audio.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from app.services.artifact_recovery import (
     recover_scene_videos_from_disk,
     recover_whisper_from_disk,
 )
+from app.services.asr import active_asr_backend
 from app.services.frame_audio import (
     FrameAudioClip,
     align_existing_voice_full,
@@ -35,7 +37,12 @@ from app.services.frame_audio import (
 )
 from app.services.mapper import extract_local_frame_words
 from app.services.media_probe import probe_duration
-from app.services.asr import active_asr_backend
+from app.services.tts_provider import (
+    PROVIDER_WAVESPEED_ELEVEN_V4,
+    elevenlabs_tts_enabled,
+    resolve_tts_provider,
+)
+from app.services.wavespeed_eleven_v4 import wavespeed_api_configured
 from app.services.whisper import WordTS, dump_words_json
 from app.settings import settings
 
@@ -232,11 +239,12 @@ async def run(
             voice_path,
         )
     else:
+        tts_provider = resolve_tts_provider(project)
         logger.warning(
-            "[#{}] generate_audio: файла озвучки нет в {} — {}",
+            "[#{}] generate_audio: файла озвучки нет в {} — TTS provider={}",
             project.id,
             project.data_dir / "audio",
-            "11Labs" if settings.audio_use_elevenlabs_fallback else "ошибка (11Labs выкл.)",
+            tts_provider,
         )
 
     from app.services.frame_timeline_sync import timeline_frames_and_cells
@@ -298,13 +306,14 @@ async def run(
             "положите готовый mp3/wav в audio/ или заполните текст"
         )
 
-    import os
-    use_11labs = (
-        getattr(settings, "audio_use_elevenlabs_fallback", False)
-        or os.environ.get("AUDIO_USE_ELEVENLABS_FALLBACK", "").strip() in ("1", "true", "True")
-        or bool(getattr(settings, "elevenlabs_api_key", None))
-    )
-    if not use_11labs:
+    tts_provider = resolve_tts_provider(project)
+    if tts_provider == PROVIDER_WAVESPEED_ELEVEN_V4:
+        if not wavespeed_api_configured():
+            raise RuntimeError(
+                f"[#{project.id}] провайдер озвучки WaveSpeed Eleven V4, но не задан "
+                "WAVESPEED_API_KEY в .env. Укажите ключ на сервере или выберите elevenlabs."
+            )
+    elif not elevenlabs_tts_enabled():
         audio_hint = project.data_dir / "audio"
         raise RuntimeError(
             f"[#{project.id}] нет озвучки в {audio_hint} — положите voice.mp3 или "
@@ -328,7 +337,7 @@ async def run(
         full_audio_path,
         words,
         audio_dir,
-        source="elevenlabs",
+        source=tts_provider,
         cells=cells,
     )
     await _finalize_audio_ready(session, project)

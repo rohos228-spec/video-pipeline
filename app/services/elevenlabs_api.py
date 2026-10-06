@@ -3,6 +3,9 @@
 Заменяет устаревший Playwright/Chrome-кликер. Вызывает официальный
 эндпоинт POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}
 с авторизацией через заголовок xi-api-key и сохраняет MP3 напрямую.
+
+Пайплайн озвучки выбирает провайдера в app.services.tts_provider:
+этот модуль — путь elevenlabs (дефолт). WaveSpeed Eleven V4 — отдельный клиент.
 """
 
 from __future__ import annotations

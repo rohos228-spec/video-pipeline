@@ -15,6 +15,12 @@ import {
   findElevenLabsVoice,
 } from "@/lib/elevenlabs-voices";
 import {
+  DEFAULT_WAVESPEED_VOICE_ID,
+  WAVESPEED_ELEVEN_V4_VOICES,
+  isWaveSpeedPreset,
+  waveSpeedVoiceLabel,
+} from "@/lib/wavespeed-voices";
+import {
   charCountFromDuration,
   effectiveDurationSeconds,
   readNodeStepParams,
@@ -137,48 +143,112 @@ function AudioFields({
   onSave: (patch: AudioStepParams) => void;
   saving: boolean;
 }) {
+  const savedProvider = params.audio?.tts_provider ?? "";
   const savedId = params.audio?.elevenlabs_voice_id ?? DEFAULT_ELEVENLABS_VOICE_ID;
+  const savedWave = (params.audio?.wavespeed_voice_id || "").trim();
+  const [providerDraft, setProviderDraft] = useState(savedProvider);
   const [voiceDraft, setVoiceDraft] = useState(savedId);
+  const [wavePreset, setWavePreset] = useState(
+    isWaveSpeedPreset(savedWave) ? savedWave : DEFAULT_WAVESPEED_VOICE_ID,
+  );
+  const [waveCustom, setWaveCustom] = useState(isWaveSpeedPreset(savedWave) ? "" : savedWave);
 
   useEffect(() => {
+    setProviderDraft(savedProvider);
     setVoiceDraft(savedId);
-  }, [savedId]);
+    if (savedWave && !isWaveSpeedPreset(savedWave)) {
+      setWavePreset(DEFAULT_WAVESPEED_VOICE_ID);
+      setWaveCustom(savedWave);
+    } else {
+      setWavePreset(savedWave || DEFAULT_WAVESPEED_VOICE_ID);
+      setWaveCustom("");
+    }
+  }, [savedProvider, savedId, savedWave]);
 
   const selected = findElevenLabsVoice(voiceDraft);
+  const waveMode = providerDraft === "wavespeed_eleven_v4";
 
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/[0.02] p-4">
       <div>
-        <h3 className="text-sm font-semibold text-foreground">11Labs — голос</h3>
+        <h3 className="text-sm font-semibold text-foreground">Озвучка</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          Бот откроет Text to Speech, выберет модель Eleven v3, вставит ID голоса в поиск
-          голоса, выберет карточку и сгенерирует полный закадровый текст.
+          ElevenLabs — прямой API (eleven_multilingual_v2). WaveSpeed Eleven V4 — отдельный
+          провайдер. Ключи только в .env на сервере, в браузер не попадают.
         </p>
       </div>
       <label className="flex flex-col gap-1.5">
-        <span className="text-sm font-medium text-foreground">Голос</span>
+        <span className="text-sm font-medium text-foreground">Провайдер</span>
         <select
           className="h-9 w-full max-w-md rounded-md border border-input bg-background px-2 text-sm"
-          value={voiceDraft}
-          onChange={(e) => setVoiceDraft(e.target.value)}
+          value={providerDraft}
+          onChange={(e) => setProviderDraft(e.target.value)}
         >
-          {ELEVENLABS_VOICES.map((v) => (
-            <option key={v.id} value={v.id}>
-              {elevenLabsVoiceLabel(v)}
-            </option>
-          ))}
+          <option value="">Как в .env (иначе ElevenLabs)</option>
+          <option value="elevenlabs">ElevenLabs — прямой API</option>
+          <option value="wavespeed_eleven_v4">WaveSpeed Eleven V4</option>
         </select>
-        {selected ? (
-          <span className="font-mono text-[11px] text-muted-foreground">ID: {selected.id}</span>
-        ) : null}
       </label>
+      {waveMode ? (
+        <>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-foreground">Голос WaveSpeed</span>
+            <select
+              className="h-9 w-full max-w-md rounded-md border border-input bg-background px-2 text-sm"
+              value={wavePreset}
+              onChange={(e) => setWavePreset(e.target.value)}
+            >
+              {WAVESPEED_ELEVEN_V4_VOICES.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {waveSpeedVoiceLabel(v)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-foreground">Свой voice_id</span>
+            <Input
+              value={waveCustom}
+              onChange={(e) => setWaveCustom(e.target.value)}
+              placeholder="Пусто — берётся пресет выше. Иначе имя или ID ElevenLabs"
+              className="h-9 max-w-md"
+            />
+            <span className="text-[11px] text-muted-foreground">
+              Нужен WAVESPEED_API_KEY. Дефолт пресета — Alicia. stability / similarity задаются в .env.
+            </span>
+          </label>
+        </>
+      ) : (
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-foreground">Голос ElevenLabs</span>
+          <select
+            className="h-9 w-full max-w-md rounded-md border border-input bg-background px-2 text-sm"
+            value={voiceDraft}
+            onChange={(e) => setVoiceDraft(e.target.value)}
+          >
+            {ELEVENLABS_VOICES.map((v) => (
+              <option key={v.id} value={v.id}>
+                {elevenLabsVoiceLabel(v)}
+              </option>
+            ))}
+          </select>
+          {selected ? (
+            <span className="font-mono text-[11px] text-muted-foreground">ID: {selected.id}</span>
+          ) : null}
+        </label>
+      )}
       <Button
         size="sm"
         className="w-fit self-start h-8 px-5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-500 border border-cyan-400/50 shadow-md shadow-cyan-500/20 rounded-xl transition-all disabled:opacity-50"
         disabled={saving}
         onClick={() =>
           onSave({
+            tts_provider:
+              providerDraft === "elevenlabs" || providerDraft === "wavespeed_eleven_v4"
+                ? providerDraft
+                : null,
             elevenlabs_voice_id: voiceDraft || DEFAULT_ELEVENLABS_VOICE_ID,
+            wavespeed_voice_id: waveCustom.trim() || wavePreset || DEFAULT_WAVESPEED_VOICE_ID,
           })
         }
       >
