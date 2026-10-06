@@ -124,18 +124,44 @@ async def test_unknown_action_id_rejects_whole_plan_without_retry(stubs) -> None
     assert [r.outcome for r in rows] == ["rejected"]
 
 
-async def test_extra_or_invalid_params_reject_without_retry(stubs) -> None:
-    fake = use(res(reply([step(params={"project_id": 1, "evil": True})])))
+async def test_extra_or_invalid_params_get_one_repair_then_reject(stubs) -> None:
+    bad = res(reply([step(params={"project_id": 1, "evil": True})]))
+    fake = use(bad, res(reply([step(params={"project_id": 1, "evil": True})])), bad)
     with pytest.raises(planner.PlannerRejected) as err:
         await planner.plan_from_text("сделай", operator=OP)
-    assert err.value.code == "bad_params" and len(fake.calls) == 1
-    fake = use(res(reply([step(params={"project_id": 0})])))
+    assert err.value.code == "bad_params" and len(fake.calls) == 2  # один повтор, третий не запрошен
+    assert "validation_error" in fake.calls[1]["body"]["messages"][-1]["content"]
+    assert "evil" in fake.calls[1]["body"]["messages"][-1]["content"]
+    fake = use(res(reply([step(params={"project_id": 0})])), res(reply([step(params={"project_id": 0})])))
     with pytest.raises(planner.PlannerRejected):
         await planner.plan_from_text("сделай", operator=OP)
-    fake = use(res(reply([{"action_id": "zz.read", "params": {"project_id": 1}, "why": "x"}])))
+    odd = {"action_id": "zz.read", "params": {"project_id": 1}, "why": "x"}
+    fake = use(res(reply([odd])), res(reply([odd])))
     with pytest.raises(planner.PlannerRejected) as err:
         await planner.plan_from_text("сделай", operator=OP)
-    assert err.value.code == "bad_step"
+    assert err.value.code == "bad_step" and len(fake.calls) == 2
+
+
+async def test_bad_params_are_repaired_by_the_second_reply(stubs) -> None:
+    fake = use(res(reply([step(params={"project_id": 1, "evil": True})])), res(reply([step()])))
+    out = await planner.plan_from_text("сделай", operator=OP)
+    assert [s["action_id"] for s in out.reply.steps] == ["zz.read"] and out.meta["attempts"] == 2
+    assert out.meta["prompt_tokens"] == 2000
+    msgs = fake.calls[1]["body"]["messages"]
+    assert msgs[-2]["role"] == "assistant" and "evil" in msgs[-2]["content"]
+    outcomes = sorted(r.outcome for r in await history_rows(stubs, "planner_call"))
+    assert outcomes == ["invalid_params", "ok"]
+
+
+async def test_unsafe_rejections_are_never_repaired(stubs) -> None:
+    pid = await stubs.add_project()
+    for bad in (reply([step("shell.exec", {"cmd": "id"})]),
+                {**reply([step()]), "approved": True},
+                reply([step(params={"project_id": 777})])):
+        fake = use(res(bad), res(reply([step()])))
+        with pytest.raises(planner.PlannerRejected):
+            await planner.plan_from_text("x", operator=OP, project_id=pid)
+        assert len(fake.calls) == 1
 
 
 async def test_truncated_reply_gets_exactly_one_retry_with_error(stubs) -> None:
@@ -245,7 +271,7 @@ async def test_step_limit_and_depends_on(stubs, monkeypatch) -> None:
     with pytest.raises(planner.PlannerRejected) as err:
         await planner.plan_from_text("x", operator=OP)
     assert err.value.code == "too_many_steps"
-    use(res(reply([step(deps=[0])])))
+    use(res(reply([step(deps=[0])])), res(reply([step(deps=[0])])))
     with pytest.raises(planner.PlannerRejected) as err:
         await planner.plan_from_text("x", operator=OP)
     assert err.value.code == "bad_depends_on"

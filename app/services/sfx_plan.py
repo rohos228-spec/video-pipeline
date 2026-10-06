@@ -23,7 +23,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
-from app.services.ai_result_io import parse_json_object, text_job
+from app.services.ai_result_io import TextJobFailed, parse_json_object, text_job
 
 # Каталог видов звуков сопровождения (понятен и GPT, и локальному синтезу).
 SFX_KINDS: tuple[str, ...] = (
@@ -204,22 +204,68 @@ async def plan_sfx_events(
         project, frames, timeline=timeline, total_duration=total,
         scenes=scenes, prompt=prompt,
     )
-    result = await text_job(
-        project,
-        name="sfx_plan",
-        prompt=prompt,
-        parse=parse_json_object,
-        validate=lambda p: validate_events(
-            _parse_events(p), total_duration=total
-        ),
-        max_attempts=max_attempts,
-    )
+    await _reset_invalid_checkpoint_for_recovery(project, total_duration=total)
+
+    # The closures only watch what text_job already sees (last reply, last parsed payload);
+    # they change neither parsing nor validation nor the retry loop.
+    seen: dict[str, Any] = {"reply": None, "payload": None, "parse_failed": False, "shape_error": None}
+
+    def _parse(reply: str) -> dict[str, Any]:
+        seen["reply"] = reply
+        try:
+            payload = parse_json_object(reply)
+        except ValueError:
+            seen["payload"], seen["parse_failed"] = None, True
+            raise
+        seen["parse_failed"] = False
+        return payload
+
+    def _validate(payload: dict[str, Any]) -> list[str]:
+        seen["payload"] = payload
+        try:
+            return validate_events(_parse_events(payload), total_duration=total)
+        except ValueError as error:
+            seen["shape_error"] = error
+            raise
+
+    try:
+        result = await text_job(
+            project,
+            name="sfx_plan",
+            prompt=prompt,
+            parse=_parse,
+            validate=_validate,
+            max_attempts=max_attempts,
+        )
+    except TextJobFailed as error:
+        # The model answered, but never with a usable plan. Typed evidence for diagnosis:
+        # a reply that is not a JSON object is invalid_json, a parsed plan that broke the
+        # timeline rules is a rejected contract (no automatic retry for that one).
+        events: list[SfxEvent] = []
+        if seen["payload"] is not None:
+            try:
+                events = _parse_events(seen["payload"])
+            except ValueError:
+                events = []
+        await record_sfx_parse(
+            seen["payload"], events, [str(error)], source="model", reply=seen["reply"],
+            parse_error=error, parsed=not seen["parse_failed"] and bool(events),
+        )
+        raise
+    except ValueError as error:
+        if error is seen["shape_error"]:
+            await record_sfx_parse(
+                seen["payload"], [], [str(error)], source="model", reply=seen["reply"],
+                parse_error=error,
+            )
+        raise
     source = "checkpoint" if result.attempts == 0 else "model"
+    reply = seen["reply"] if source == "model" else None
     try:
         events = _parse_events(result.payload)
     except ValueError as error:
         await record_sfx_parse(
-            result.payload, [], [], source=source, parse_error=error,
+            result.payload, [], [], source=source, parse_error=error, reply=reply,
         )
         raise
     # text_job returns checkpoints unchecked; validate against this timeline.
@@ -228,9 +274,10 @@ async def plan_sfx_events(
         error = RuntimeError(f"sfx_plan: не прошло валидацию: {problems}")
         await record_sfx_parse(
             result.payload, events, problems, source=source, parse_error=error,
+            reply=reply,
         )
         raise error
-    await record_sfx_parse(result.payload, events, problems, source=source)
+    await record_sfx_parse(result.payload, events, problems, source=source, reply=reply)
 
     # Артефакт на диск.
     out_path = project.data_dir / "sfx_plan.json"
@@ -388,7 +435,15 @@ async def record_sfx_generation_input(project, frames, *, source, payload, event
     entry.update(input=deepcopy(snapshot), input_sha256=digest(snapshot), input_body=ref)
 
 
-async def record_sfx_parse(payload, events, problems, *, source, reply=None, parse_error=None, request_id=None):
+async def record_sfx_parse(payload, events, problems, *, source, reply=None, parse_error=None,
+                           request_id=None, parsed=None):
+    """Journal the native parse/validation outcome of one sfx_plan result.
+
+    payload_required / payload_present follow the same contract as the text nodes: a model
+    reply without a usable plan is a typed invalid_json / missing_payload incident for
+    diagnosis, while a parsed plan that broke the timeline rules stays a rejected contract.
+    `parsed` overrides the legacy rule (parsed = events present or a validation RuntimeError)
+    for the one case the legacy rule gets wrong: a reply that was not a JSON object at all."""
     ctx = _sfx_context()
     if ctx is None or getattr(ctx, "native_node_type", None) != "sfx_plan":
         return
@@ -405,15 +460,75 @@ async def record_sfx_parse(payload, events, problems, *, source, reply=None, par
     performed = parse_error is None
     schema_valid = False if parse_error is not None else bool(normalized and not problems)
     bound_request = request_id or (completed_model_request_id() if raw_reply else None)
+    if parsed is None:
+        parsed = bool(normalized) or isinstance(parse_error, RuntimeError)
+    payload_present = bool(normalized) or (
+        isinstance(payload, dict) and isinstance(payload.get("events"), list) and bool(payload["events"]))
     detail = {"contract": "native_sfx_plan", "source": source,
-              "syntax_valid": syntax_valid, "parsed": bool(normalized) or isinstance(parse_error, RuntimeError),
+              "syntax_valid": syntax_valid, "parsed": parsed,
               "schema_valid": schema_valid, "error_type": type(parse_error).__name__ if parse_error else None,
+              # A payload is "required" only of a model reply; a replayed checkpoint is not a
+              # model answer, so its failure stays a rejected contract, never invalid_json.
+              "payload_required": source == "model", "payload_present": payload_present,
+              "nonempty_payload_required": source == "model",
               "problems": deepcopy(list(problems or ())), "sha256": digest(normalized)}
+    _sfx_entry(ctx)["parse_request_id"] = bound_request
     await _sfx_fact(ctx, "parse_result", detail,
                     body={"payload": deepcopy(payload), "events": normalized}, request_id=bound_request)
     await _sfx_fact(ctx, "runtime_check", {"check": "native_sfx_events_validation", "performed": performed,
                     "status": "passed" if schema_valid else "failed", "business_commit_claim": False},
                     request_id=bound_request)
+
+
+async def _reset_invalid_checkpoint_for_recovery(project, *, total_duration):
+    """A supervisor retry must reach the model: drop a persisted checkpoint that fails the
+    current timeline rules (text_job would otherwise replay it with zero requests and fail
+    the same way). Only inside a recovery attempt; an ordinary run keeps the native behaviour
+    (an invalid cache is rejected without a model call). Returns True when it dropped one."""
+    ctx = _sfx_context(project, node_type="sfx_plan")
+    if ctx is None or ctx.session.info.get("recovery_attempt_id") != ctx.attempt_id:
+        return False
+    from app.services.ai_result_io import ai_job_checkpoint, drop_ai_job_checkpoint
+    cached = ai_job_checkpoint(project, "sfx_plan")
+    if cached is None:
+        return False
+    try:
+        problems = validate_events(_parse_events(cached), total_duration=total_duration)
+    except ValueError as error:
+        problems = [str(error)]
+    if not problems:
+        return False
+    drop_ai_job_checkpoint(project, "sfx_plan")
+    await _sfx_fact(ctx, "runtime_check", {
+        "check": "sfx_plan_checkpoint_reset", "performed": True, "status": "passed",
+        "reason": "persisted checkpoint failed validation and was dropped before the supervisor retry",
+        "problems": problems[:5], "business_commit_claim": False})
+    return True
+
+
+def record_sfx_plan_applied(project, events):
+    """Stage the honest application fact of a finished plan.
+
+    plan_sfx.run calls this right before its own commit: the checkpoint, sfx_plan.json and
+    meta.sfx_plan are the application of this node. The fact is staged on the business
+    session, so it becomes visible only together with that commit (a rollback drops it).
+    Recovery verification needs it (data_applied + an accepted payload)."""
+    ctx = _sfx_context(project, node_type="sfx_plan")
+    if ctx is None:
+        return
+    from app.services.observation import emit
+    entry = _sfx_entry(ctx)
+    entry["step_finished"] = True
+    emit("data_applied", {"result": {"ok": True, "node_kind": "sfx_plan", "events": len(events or ()),
+                                     "file": "sfx_plan.json", "checkpoint": "meta.ai_jobs.sfx_plan"},
+                          "transactional": True}, request_id=entry.get("parse_request_id"))
+
+
+def record_sfx_plan_pass_through(project):
+    """SFX_ENABLED=false: the step reached sfx_plan_ready without planning anything."""
+    ctx = _sfx_context(project, node_type="sfx_plan")
+    if ctx is not None:
+        _sfx_entry(ctx)["step_finished"] = True
 
 
 def _sfx_wav_record(record, by_number):
@@ -496,3 +611,84 @@ async def observe_sfx_result(session, project, node_type="sfx_plan"):
                     "sha256": hashlib.sha256(json.dumps(output, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest(),
                     "source": "committed original executor rows; independent read session"}, body=output)
     await _sfx_fact(ctx, "node_result_verification", proof, body=proof)
+    return proof
+
+
+async def observe_sfx_plan_result(session, project, node_type="sfx_plan"):
+    """observe_sfx_result plus the managed-mode gate for sfx_plan only.
+
+    In an observation scope this is exactly observe_sfx_result (journal only, never raises).
+    In a managed scope, when the native step FINISHED (it staged its application fact or
+    passed through) but the independent re-read does not confirm the plan, the execution is
+    held and the attempt fails, as for split: a pass-through with SFX_ENABLED=false or an
+    unreadable plan never counts as a verified result. A native failure is left alone."""
+    ctx = _sfx_context(project, node_type=node_type)
+    try:
+        proof = await observe_sfx_result(session, project, node_type)
+    except Exception as error:
+        if ctx is not None:
+            ctx.observer.mark_gap(ctx.scope.execution_id, error)
+        if ctx is not None and ctx.scope.mode == "managed":
+            raise
+        return
+    if (proof is None or ctx is None or ctx.scope.mode != "managed"
+            or not _sfx_entry(ctx).get("step_finished") or proof["status"] == "passed"):
+        return
+    from app.services.actions_v1 import ActionSupervisor
+    await ActionSupervisor(ctx.observer.master).set_held(
+        project_id=ctx.scope.project_id, execution_id=ctx.scope.execution_id, held=True,
+        initiator="native_sfx_plan_verifier", rationale=str(proof.get("reason") or proof["status"]),
+        idempotency_key="sfx-plan-verify:" + ctx.attempt_id, operator_request=False)
+    raise RuntimeError("native sfx plan verification not confirmed: " + str(proof.get("reason")))
+
+
+def sfx_plan_contract():
+    """What the shipped sfx_plan executor requires and what a supervisor retry may and may not do."""
+    return {
+        "node_type": "sfx_plan",
+        "executor": "plan_sfx.run -> sfx_plan.plan_sfx_events -> ai_result_io.text_job",
+        "input": "Frame rows ordered by sort_key/number (duration_seconds, scene attrs) and the "
+                 "_PLAN_PROMPT constant of app/services/sfx_plan.py; no attachments, no images",
+        "output": {"checkpoint": "Project.meta.ai_jobs.sfx_plan", "file": "sfx_plan.json",
+                   "flag": "Project.meta.sfx_plan", "frames_written": False},
+        "format": '{"events": [{"frame_number", "t_start", "duration", "kind", "prompt", "gain", "duck"}]}',
+        "kinds": list(SFX_KINDS),
+        "rules": {"max_events_per_frame": MAX_EVENTS_PER_FRAME, "min_gap_s": MIN_GAP_S,
+                  "duration_s": [MIN_DUR_S, MAX_DUR_S], "gain": [0.05, 1.0],
+                  "t_start": "inside the frame timeline", "prompt": "non-empty"},
+        "payload_required": True,
+        "payload_required_note": "of a model reply only; a replayed checkpoint is not a model answer",
+        "data_applied": "staged by plan_sfx.run in the same transaction as the plan commit "
+                        "(record_sfx_plan_applied); absent for a pass-through",
+        "checkpoint_reset": "inside a supervisor recovery attempt a persisted checkpoint that fails "
+                            "the current timeline rules is dropped before the model call",
+        "native_attempts_per_run": 2,
+        "native_json_retry_fact": False,
+        "verification": "node_result_verification: independent re-read of the plan checkpoint "
+                        "and sfx_plan.json; managed scope holds the execution when it is not 'passed'",
+        "retry_policy": "ONE supervisor retry_same per node and execution, only for invalid_json / "
+                        "missing_payload of a model reply with no data applied; never starts sfx_gen "
+                        "and never changes frames",
+        "human_approval_preserved": True,
+        "semantic_quality_verified": False,
+        "arbitrary_shell_code_paths": False,
+        "write_authority": "existing worker only",
+    }
+
+
+def sfx_plan_current_output(project, frames):
+    """Read-only description of the plan the project holds now (no write, no model call)."""
+    from app.services.ai_result_io import ai_job_checkpoint
+    meta = project.meta if isinstance(getattr(project, "meta", None), dict) else {}
+    cached = ai_job_checkpoint(project, "sfx_plan")
+    out = {"checkpoint_present": cached is not None, "plan_flag": bool(meta.get("sfx_plan")),
+           "frame_count": len(frames), "events": None, "problems": []}
+    if cached is None:
+        return out
+    try:
+        events = _parse_events(cached)
+        out["events"] = len(events)
+        out["problems"] = validate_events(events, total_duration=frame_timeline(frames)[-1]["end"])             if frames else ["нет кадров"]
+    except ValueError as error:
+        out["problems"] = [str(error)]
+    return out

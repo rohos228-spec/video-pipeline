@@ -67,6 +67,14 @@ def drop_ai_job_checkpoint(project: Any, name: str) -> None:
 # ── Текстовая ИИ-задача (GPT → JSON → валидация → retry) ──────────────────
 
 
+class TextJobFailed(RuntimeError):
+    """text_job used all its attempts without a reply that parsed and validated.
+
+    A RuntimeError subclass with the original message: existing handlers and the step
+    failure policy see no difference. Transport errors are NOT this type, so a caller
+    can tell "the model answered badly" from "the model could not be reached"."""
+
+
 @dataclass
 class TextJobResult:
     payload: Any
@@ -139,7 +147,7 @@ async def text_job(
             max_attempts,
             problems,
         )
-    raise RuntimeError(f"ai_job {name}: не прошло валидацию: {problems_log[-1]}")
+    raise TextJobFailed(f"ai_job {name}: не прошло валидацию: {problems_log[-1]}")
 
 
 # ── Приём аудио-результата (верификация файла) ────────────────────────────

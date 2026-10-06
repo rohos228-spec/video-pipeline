@@ -578,6 +578,20 @@ async def _assemble_core(
     return audio_duration, skip_intro
 
 
+ASSEMBLE_MAX_ATTEMPTS = 2  # первая попытка + ровно один повтор
+
+
+class AssembleVerificationError(RuntimeError):
+    """Собранный файл не прошёл verify_artifact (статус failed или unknown)."""
+
+
+def _assemble_retryable(exc: BaseException) -> bool:
+    """Повторяем только сбой самой сборки или проверки итога; ошибки входа (нет клипов, озвучки) не лечатся."""
+    if isinstance(exc, (AssembleVerificationError, OSError)):
+        return True
+    return isinstance(exc, RuntimeError) and "ffmpeg" in str(exc).lower()
+
+
 async def _approve_final_exists(session: AsyncSession, project: Project, sha256: str) -> bool:
     """Запрос approve_final для этого проекта и этого файла (по sha256) уже создан."""
     rows = (await session.execute(
@@ -610,27 +624,50 @@ async def _assemble_body(
             stale.unlink()
         except OSError:
             pass
-    work_path = out_dir / f".{project.slug}.{uuid.uuid4().hex[:8]}.part.mp4"
-    try:
-        audio_duration, skip_intro = await _assemble_core(
-            session, project, bot, out_path=work_path, **kw
-        )
-        expected = {"min_duration": max(0.5, 0.9 * (audio_duration - skip_intro))}
-        verification = await verify_artifact(
-            work_path, root=project.data_dir, kind="assembly", expected=expected
-        )
-        if verification.get("status") != "passed":
-            raise RuntimeError(
-                "assemble: проверка итогового видео не пройдена "
-                f"({verification.get('status')}: {verification.get('reason', '')}); "
-                "финальный файл не изменён, подтверждение не создаётся"
-            )
-        os.replace(work_path, final_path)
-    finally:
+    from app.services.step_cancel import StepCancelledError
+
+    verification: dict = {}
+    # Сборка локальная (ffmpeg, без платных вызовов): один повтор при сбое сборки или проверки итога.
+    # Прежний final не затрагивается, пока новый файл не прошёл verify_artifact.
+    for attempt in range(1, ASSEMBLE_MAX_ATTEMPTS + 1):
+        work_path = out_dir / f".{project.slug}.{uuid.uuid4().hex[:8]}.part.mp4"
         try:
-            work_path.unlink()
-        except OSError:
-            pass
+            audio_duration, skip_intro = await _assemble_core(
+                session, project, bot, out_path=work_path, **kw
+            )
+            expected = {"min_duration": max(0.5, 0.9 * (audio_duration - skip_intro))}
+            verification = await verify_artifact(
+                work_path, root=project.data_dir, kind="assembly", expected=expected
+            )
+            if verification.get("status") != "passed":
+                raise AssembleVerificationError(
+                    "assemble: проверка итогового видео не пройдена "
+                    f"({verification.get('status')}: {verification.get('reason', '')}); "
+                    "финальный файл не изменён, подтверждение не создаётся"
+                )
+            os.replace(work_path, final_path)
+            break
+        except (StepCancelledError, asyncio.CancelledError):
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if attempt >= ASSEMBLE_MAX_ATTEMPTS or not _assemble_retryable(exc):
+                raise
+            logger.warning(
+                "[#{}] assemble: попытка {} не удалась ({}: {}); один повтор",
+                project.id, attempt, type(exc).__name__, str(exc)[:200],
+            )
+            try:
+                from app.services.observation import emit
+
+                emit("assemble_retry", {"attempt": attempt, "error_type": type(exc).__name__,
+                                        "retry_cap": ASSEMBLE_MAX_ATTEMPTS - 1})
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            try:
+                work_path.unlink()
+            except OSError:
+                pass
 
     sha256 = verification["sha256"]
     last = (await session.execute(

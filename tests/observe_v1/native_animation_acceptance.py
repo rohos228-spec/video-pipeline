@@ -321,7 +321,7 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     from app.telegram.menu import step_by_code
 
     assert not browser, "initial native animation acceptance uses original HTTP step API"
-    assert not capability_for("animation_prompts").managed, "managed animation guards require separate acceptance"
+    assert "retry_profile" not in capability_for("animation_prompts").actions, "no profile retry for animation"
     state_before = _state(fixtures)
     assert state_before["frames"] == prepared["initial_state"]["frames"], "source Frame inputs changed after preparation"
     assert state_before["scenes"] == prepared["initial_state"]["scenes"]

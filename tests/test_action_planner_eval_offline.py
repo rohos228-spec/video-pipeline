@@ -37,7 +37,7 @@ def expected_ids(case: dict) -> set[str]:
 
 
 def test_fixture_is_large_and_covers_workflows() -> None:
-    assert len(CASES) >= 40
+    assert len(CASES) >= 200
     kinds = {c["outcome"] for c in CASES}
     assert kinds == {"plan", "clarify", "refuse"}
     wfs = {c["workflow"] for c in CASES}
@@ -134,7 +134,8 @@ def test_live_script_offline_helpers() -> None:
     assert pick == mod.sample_cases(cases, 10)
     plan = next(c for c in cases if c["id"] == "swap_slots")
     good = [{"action_id": "montage.swap_slots",
-             "params": {"project_id": 2, "kind": "image", "a_frame": 2, "b_frame": 3, "a_shot": 1}}]
+             "params": {"project_id": 2, "kind": "image", "a_frame": 2, "b_frame": 3, "a_shot": 1,
+                        "b_shot": 1}}]
     assert mod.score_case(plan, good, None, None)["ok"]
     bad = [{"action_id": "montage.swap_slots", "params": {"project_id": 2, "kind": "video"}}]
     r = mod.score_case(plan, bad, None, None)

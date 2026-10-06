@@ -43,19 +43,32 @@ def test_excel_gpt_behaviour_is_unchanged():
 
 
 def test_profile_eligibility_is_capability_data_not_result_kind():
-    # sfx_plan is result_kind 'structured' but unmanaged: the old gate would have been
-    # satisfied by kind alone; eligibility now needs an explicit profile_compatible flag.
+    # sfx_plan is result_kind 'structured' and now managed with retry_same, but the old gate
+    # (kind alone) would have made it profile-eligible; eligibility needs an explicit
+    # profile_compatible flag, which sfx_plan and animation_prompts do not have.
     sfx = capability_for("sfx_plan")
-    assert sfx.result_kind == "structured" and not sfx.managed and not sfx.profile_compatible
+    assert sfx.result_kind == "structured" and sfx.managed and not sfx.profile_compatible
+    assert "retry_profile" not in sfx.actions
     compatible = {t for t in ("plan", "script", "split", "image_prompts", "excel_gpt", "images", "audio",
                               "videos", "assemble", "sfx_plan", "sfx_gen", "publish") if capability_for(t).profile_compatible}
     assert compatible == {"plan", "script", "excel_gpt"}
 
 
 def test_no_other_node_gained_recovery_actions():
-    for node_type in ("images", "videos", "audio", "assemble", "sfx_plan", "sfx_gen", "publish", "hero",
+    for node_type in ("images", "videos", "audio", "assemble", "sfx_gen", "publish", "hero", "items",
+                      "music", "scene_design", "sd_agent", "sd_assemble", "enrich_1",
                       "split", "image_prompts", "future-unsupported"):
         assert not RECOVERY_ACTIONS & set(capability_for(node_type).actions), node_type
+
+
+@pytest.mark.parametrize("node_type", ["sfx_plan", "animation_prompts"])
+def test_sfx_plan_and_animation_prompts_get_retry_same_only(node_type):
+    cap = capability_for(node_type)
+    assert cap.managed
+    assert set(cap.actions) == set(READ_ACTIONS) | {"retry_same", "finish"}
+    assert cap.profile_compatible is False and cap.native_json_retry is False
+    assert cap.recovery_continuation == "none"
+    assert cap.volatile_attachment_names is (node_type == "animation_prompts")
 
 
 @pytest.mark.parametrize("node_type", ["plan", "script"])

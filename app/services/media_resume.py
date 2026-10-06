@@ -32,7 +32,9 @@ from loguru import logger
 
 from app.services import media_spend, spend_guard
 
-_RESUMABLE_KEY = re.compile(r"^(frame|clip|hero|predmet)_")
+# Frame images, clips, heroes, items (``predmet1``) and the single project track (``music``).
+# Characters named ``<id>.png`` have no stable key and stay outside the ledger guard.
+_RESUMABLE_KEY = re.compile(r"^(?:(?:frame|clip|hero)_|predmet\d|music$)")
 _NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, ConnectionRefusedError, socket.gaierror)
 
 
@@ -152,6 +154,7 @@ def classify_submit_error(exc: BaseException) -> str:
 async def submit(ctx: Ctx, create: Callable[[], Awaitable[str]]) -> str:
     """Run ``create`` (the createTask POST) under an intent row. Post-send failures become KieSubmitUnknownError."""
     from app.bots.kie_http import KieSubmitUnknownError
+    media_spend.assert_submit_allowed("kie", "createTask")  # resume-only scope: nothing sent, no intent row
     usable = ctx.usable
     intent = uuid.uuid4().hex[:16]
     if usable:
@@ -209,6 +212,41 @@ async def release_unknown(project_id: int, key: str) -> int:
     return len(todo)
 
 
+def result_dir(data_dir: Path, key: str) -> Path:
+    """Where a native step writes the result file of this ledger key."""
+    if key.startswith("frame_"):
+        return data_dir / "scenes"
+    if key.startswith("hero_"):
+        return data_dir / "characters"
+    if key.startswith("predmet"):
+        return data_dir / "items"
+    if key == "music":
+        return data_dir / "music"
+    return data_dir / "videos"
+
+
+def _default_ext(key: str) -> str:
+    if key == "music":
+        return ".mp3"
+    return ".mp4" if key.startswith("clip_") else ".png"
+
+
+async def pending_for_key(project_id: int | None, key: str) -> bool:
+    """True when the ledger holds an open Kie task or an unresolved submit intent of this key inside
+    the resume window (any model, any prompt hash). Read-only; False when the ledger is unavailable."""
+    if project_id is None or not key or window_s() <= 0 or media_spend._managed():
+        return False
+    try:
+        from app.db import SessionLocal
+        since = datetime.utcnow() - timedelta(seconds=window_s())
+        async with SessionLocal() as s:
+            found = await spend_guard.find_task_states(s, project_id=project_id, key=key, model=None, since=since)
+    except Exception:  # noqa: BLE001
+        return False
+    return any((not t["intent"] and t["status"] in spend_guard.OPEN_TASK_STATUSES)
+               or (t["intent"] and t["status"] == "submit_unknown") for t in found)
+
+
 def _have_result_file(directory: Path, key: str) -> bool:
     from app.services.scan_frames import is_valid_scene_image
     pat = re.compile(rf"^{re.escape(key)}_[0-9a-f]{{8}}\.\w+$")
@@ -225,7 +263,10 @@ def _have_result_file(directory: Path, key: str) -> bool:
     return False
 
 
-async def _reattach_one(project, t: dict, key: str, stats: dict) -> None:
+async def _reattach_one(project, t: dict, key: str, stats: dict) -> str:
+    """One status request for a known task, download when it finished. Never submits.
+
+    Returns the outcome: pending | failed | file_present | no_result_urls | invalid_file | downloaded."""
     from app.bots import kie_http
     api, task_id = t["api"] or "jobs", t["task_id"]
     ctx = Ctx(project.id, key, t["model"], api, t["ph"])
@@ -233,28 +274,32 @@ async def _reattach_one(project, t: dict, key: str, stats: dict) -> None:
     state, inner = await asyncio.wait_for(kie_http.task_status(api, task_id), 30)
     if state == "pending":
         stats["pending"] += 1  # the step resumes polling this task id through begin()
-        return
+        return "pending"
     if state == "fail":
         await mark(ctx, task_id, "failed", "reconcile: provider fail")
         stats["failed"] += 1
-        return
-    directory = project.data_dir / ("scenes" if key.startswith("frame_") else "videos")
+        return "failed"
+    directory = result_dir(project.data_dir, key)
     if _have_result_file(directory, key):
         await mark(ctx, task_id, "downloaded", "reconcile: file present")
-        return
+        return "file_present"
     urls = kie_http._result_media_urls(inner)
     if not urls:
-        return
-    ext = kie_http._url_ext(urls[0]) or (".png" if key.startswith("frame_") else ".mp4")
+        return "no_result_urls"
+    ext = kie_http._url_ext(urls[0]) or _default_ext(key)
     out = directory / f"{key}_{uuid.uuid4().hex[:8]}{ext}"
     await kie_http.download(urls[0], out)
     if key.startswith("frame_"):
         from app.services.scan_frames import is_valid_scene_image
         if not is_valid_scene_image(out):
             out.unlink(missing_ok=True)
-            return  # stays succeeded: the step retries the download
+            return "invalid_file"  # stays succeeded: the step retries the download
+    elif out.stat().st_size < 1024:  # same threshold as _have_result_file: a stub is not a result
+        out.unlink(missing_ok=True)
+        return "invalid_file"
     await mark(ctx, task_id, "downloaded", "reconcile: downloaded")
     stats["downloaded"] += 1
+    return "downloaded"
 
 
 async def reconcile_on_startup(budget_s: float = 90.0) -> dict:
@@ -271,7 +316,8 @@ async def reconcile_on_startup(budget_s: float = 90.0) -> dict:
         since = datetime.utcnow() - timedelta(seconds=window_s())
         async with SessionLocal() as s:
             projects = (await s.scalars(select(Project).where(Project.status.in_(
-                [ProjectStatus.generating_images, ProjectStatus.generating_videos])))).all()
+                [ProjectStatus.generating_images, ProjectStatus.generating_videos, ProjectStatus.generating_hero,
+                 ProjectStatus.generating_items, ProjectStatus.generating_music])))).all()
             work: list[tuple[Any, dict, str]] = []
             for pr in projects:
                 await spend_guard.ensure_task_schema(s)

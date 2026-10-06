@@ -1116,9 +1116,11 @@ async def generate_image_with_retries(
                         except Exception:  # noqa: BLE001
                             logger.debug("outsee sidecar write skipped", exc_info=True)
                         return result
+                    media_spend.assert_submit_allowed("outsee", "browser image")
                     return await outsee.generate_image(
                         send_prompt, out_path, **attempt_kwargs
                     )
+                media_spend.assert_submit_allowed("outsee", "browser image")
                 return await outsee.generate_image(
                     send_prompt, out_path, **attempt_kwargs
                 )
@@ -1554,6 +1556,7 @@ async def generate_video_with_retries(
             for k, v in attempt_kwargs.items()
             if k not in {"last_frame_image", "end_frame", "generate_audio"}
         }
+        media_spend.assert_submit_allowed("outsee", "browser video")
         return await outsee.generate_video(
             send_prompt, out_path, project_id=project_id, **cdp_kwargs
         )

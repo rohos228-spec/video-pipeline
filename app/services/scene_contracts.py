@@ -71,6 +71,22 @@ def _cell_state(cell: Any) -> dict:
     return {key: copy.deepcopy(getattr(cell, key, None)) for key in _CELL_FIELDS}
 
 
+def legacy_scene_design_contract() -> dict:
+    """Read-only description of the legacy single-node scene_design type; grants nothing.
+
+    Old canvases kept one node for the whole phase. It shares the step with the sd_agent
+    fan-out and the assembler, so no per-agent contract can be stated for it."""
+    return {
+        "node_type": "scene_design", "legacy": True, "supported": False,
+        "executor": "app.orchestrator.steps.scene_design.run",
+        "shares_step": "scene_d / scene_asm with sd_agent and sd_assemble",
+        "actions": list(_ACTIONS), "managed": False, "managed_executor_accepted": False,
+        "reason": "legacy node type; the supported route is the sd_agent fan-out and sd_assemble",
+        "human_approval_preserved": True, "semantic_quality_verified": False,
+        "business_commit_claim": False, "write_authority": "existing worker only",
+    }
+
+
 def scene_contract(node: dict) -> dict:
     """Describe only actual registered camera/assembler routes; grant no actions."""
     from app.orchestrator.node_registry import SD_AGENT_STEP_CODES, spec_for_node

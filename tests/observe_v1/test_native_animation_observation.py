@@ -226,7 +226,8 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
         from app.services.node_capabilities import capability_for
         from app.services.observation import ExecutionControl
 
-        self.assertFalse(capability_for("animation_prompts").managed)
+        # The capability allows a bounded retry_same, but observing grants no authority.
+        self.assertNotIn("retry_profile", capability_for("animation_prompts").actions)
         self.assertIsNone(get_permission(7))
         async with self.sessions() as reader:
             self.assertEqual((await reader.get(ExecutionControl, EXECUTION)).mode, "observe")
@@ -429,6 +430,16 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
             for key in ("parsed", "schema_valid", "batch_coverage_complete"):
                 self.assertIs(fact.payload[key], False)
             self.assertEqual(self.body(fact)["extracted_ops"], [])
+            # Typed for diagnosis: a batch needs usable pairs; none came back.
+            self.assertIs(fact.payload["payload_required"], True)
+            self.assertIs(fact.payload["payload_present"], False)
+        from types import SimpleNamespace
+        from app.services.diagnosis import derive_incidents
+        scope = SimpleNamespace(project_id=7, execution_id=EXECUTION, node_keys=["n1"],
+                                observer_state="active", gaps=[])
+        rows = [{key: getattr(fact, key) for key in ("id", "event_id", "execution_id", "project_id", "node_key",
+                 "attempt_id", "request_id", "kind", "db_scope", "payload", "created_at")} for fact in facts]
+        self.assertIn("invalid_json", {item["type"] for item in derive_incidents(scope, rows, {"nodes": {}})})
         self.assertFalse(any(fact.kind in {"apply_input", "data_applied"} for fact in facts))
         checks = [fact for fact in facts if fact.kind == "runtime_check"]
         self.assertTrue(checks)
@@ -770,7 +781,7 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(getattr(image_ctx, "animation_verification_recorded", False))
         self.assertEqual(sorted(self.observer.body_root.glob("**/*.json")), bodies)
         self.assertEqual(await self.state(), before)
-        self.assertFalse(capability_for("animation_prompts").managed)
+        self.assertNotIn("retry_profile", capability_for("animation_prompts").actions)
         self.assertIsNone(get_permission(7))
         self.assertIsNone(get_permission(8))
         async with self.sessions() as reader:

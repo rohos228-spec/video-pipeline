@@ -43,8 +43,13 @@ def test_capabilities_equal_pre_refactor_snapshot():
     assert registered <= set(expected), "a node was added without a snapshot entry"
 
 
+ORIGINAL_TWELVE = {"plan", "script", "split", "image_prompts", "excel_gpt", "images", "videos",
+                   "audio", "assemble", "sfx_plan", "sfx_gen", "publish"}
+
+
 def test_twelve_original_nodes_are_registered():
-    assert len([t for t in ALL_SPECS if t in json.loads(SNAPSHOT.read_text(encoding="utf-8"))]) == 12
+    assert ORIGINAL_TWELVE <= set(ALL_SPECS)
+    assert ORIGINAL_TWELVE <= set(json.loads(SNAPSHOT.read_text(encoding="utf-8")))
 
 
 # --- conformance over all registered specs ------------------------------
@@ -53,7 +58,11 @@ def test_twelve_original_nodes_are_registered():
 def test_spec_conformance(node_type):
     spec = registered_capability_specs()[node_type]
     assert spec.node_type == node_type
-    assert spec.executor and spec.phases and isinstance(spec.effects, tuple)
+    # A coverage-only entry (result_kind 'unsupported') deliberately carries no executor: it
+    # is the same payload as an unregistered type plus the reason in coverage data.
+    if spec.result_kind != "unsupported":
+        assert spec.executor
+    assert spec.phases and isinstance(spec.effects, tuple)
     actions = set(spec.actions)
     assert actions <= KNOWN_ACTIONS, actions - KNOWN_ACTIONS
     assert {"read_events", "read_contract", "human_review"} <= actions
@@ -62,12 +71,13 @@ def test_spec_conformance(node_type):
         assert spec.acceptance, "managed without acceptance"
     assert capability_for(node_type).managed == spec.effective_managed
     assert node_registry.is_work_node_type(node_type)  # excel_gpt is virtual, not in WORK_NODES
-    # retry requires profile rules and a managed, text-like node.
+    # retry requires a managed, text-like node; a profile retry additionally needs profile rules.
     if actions & RETRY:
-        assert spec.profile_compatible, "retry action without profile_compatible"
         assert spec.effective_managed
         assert spec.result_kind not in MEDIA_KINDS
         assert spec.recovery_continuation in node_spec._KNOWN_RECOVERY_CONTINUATIONS
+    if "retry_profile" in actions:
+        assert spec.profile_compatible, "profile retry without profile_compatible"
     if spec.profile_compatible:
         assert "retry_profile" in actions
     # media nodes never expose retry and are not profile compatible.

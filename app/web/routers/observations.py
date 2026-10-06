@@ -821,6 +821,15 @@ async def telemetry(project_id: int, since_hours: int | None = Query(default=Non
         return panel_safe(await project_telemetry(session, project_id, since=since))
 
 
+@router.get("/node-coverage", dependencies=[Depends(require_web_user)])
+async def node_coverage():
+    """Panel «Покрытие нод»: every registered node type with its level (managed / observed /
+    human_only), what is verified, what recovery exists and, when none, the coded reason.
+    Static registry data: read-only, no database, no provider call (app/services/node_coverage.py)."""
+    from app.services.node_coverage import node_coverage as coverage
+    return panel_safe(coverage())
+
+
 def _sse_telemetry_payload(payload: dict) -> str:
     import json
     return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"

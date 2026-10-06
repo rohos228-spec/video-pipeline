@@ -37,7 +37,7 @@ assert.equal(diagnosisSummary({available:true,lagging:true}).includes('отст�
 assert.equal(diagnosisSummary({available:true,lagging:false,blocking_count:0,evidence_complete:false}).includes('неполны'),true);
 assert.equal(diagnosisSummary({available:true,lagging:false,blocking_count:1,evidence_complete:true}).includes('1'),true);
 assert.equal(groupIncidents([{...open,currently_relevant:false,status:'human_review'}]).attention.length,1);
-console.log('Frontend metadata/diagnosis contracts: 17 assertions passed');
+console.log('Frontend metadata/diagnosis contracts: passed');
 const actionSource=fs.readFileSync('/observe-source/web/src/lib/actions-view.ts','utf8');
 const actionJS=ts.transpileModule(actionSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
 const {actionStatus,actionsModeLabel,actionReviewMessage}=await import('data:text/javascript;base64,'+Buffer.from(actionJS).toString('base64'));
@@ -178,3 +178,53 @@ for(const projectId of [undefined,null,0,-1,1.5,NaN,Infinity,'2','2&project_id=1
   assert.equal(imagePreviewLink('image',verifiedImage,projectId),null);
 }
 console.log('Verified scoped image preview contracts: 35 assertions passed');
+
+// Planner clarification: option buttons re-send request + answer; a file request is only explained (no attachments API).
+const clarSource=fs.readFileSync('/observe-source/web/src/lib/clarification-view.ts','utf8');
+const clarJS=ts.transpileModule(clarSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {clarificationQuestion,clarificationOptions,clarifiedRequest,attachmentInfo,ATTACH_OPTION}=await import('data:text/javascript;base64,'+Buffer.from(clarJS).toString('base64'));
+assert.equal(clarificationQuestion({needs_clarification:' Какой шот? ',explanation_ru:'x'}),'Какой шот?');
+assert.equal(clarificationQuestion({needs_clarification:true,explanation_ru:'Нужен шот'}),'Нужен шот');
+assert.equal(clarificationQuestion({}),'');
+assert.deepEqual(clarificationOptions({clarification_options:['шот 1',' шот 2 ','шот 1','','a','b','c']}),['шот 1','шот 2','a','b']);
+assert.deepEqual(clarificationOptions({}),[]);
+assert.deepEqual(clarificationOptions({clarification_options:[ATTACH_OPTION,'другое'],attachment_request:{action_id:'montage.upload_image'}}),['другое']);
+assert.deepEqual(clarificationOptions({clarification_options:[ATTACH_OPTION]}),[ATTACH_OPTION]);
+assert.equal(clarifiedRequest('удали картинку кадра 5.','шот 2'),'удали картинку кадра 5. Уточнение: шот 2');
+assert.equal(clarifiedRequest('  удали картинку кадра 5  ','оба шота'),'удали картинку кадра 5. Уточнение: оба шота');
+const info=attachmentInfo({action_id:'montage.upload_image',formats:'PNG'},'Загрузить картинку');
+assert.match(info,/нельзя приложить/);assert.match(info,/Загрузить картинку/);assert.match(info,/PNG/);assert.match(info,/раздел/);
+const planCard=fs.readFileSync('/observe-source/web/src/components/action-layer/plan-card.tsx','utf8');
+assert.match(planCard,/clarificationOptions\(plan\)/);assert.match(planCard,/onClarify\(o\)/);assert.match(planCard,/attachmentInfo/);
+assert.doesNotMatch(planCard,/type="file"/); // no upload control: the backend has no attachments field
+const alSection=fs.readFileSync('/observe-source/web/src/components/action-layer/action-layer-section.tsx','utf8');
+assert.match(alSection,/clarifiedRequest\(requestText, option\)/);assert.match(alSection,/planFromText\(text/);
+console.log('Planner clarification UI contracts: passed');
+
+// «Покрытие нод» panel
+const covSource=fs.readFileSync('/observe-source/web/src/lib/node-coverage-view.ts','utf8');
+const covJS=ts.transpileModule(covSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const {coverageLevelLabel,coverageSummaryLine,forbiddenText,verifiesText,COVERAGE_LEVEL_CLASS}=await import('data:text/javascript;base64,'+Buffer.from(covJS).toString('base64'));
+assert.equal(coverageSummaryLine({managed:8,observed:11,human_only:5,total:24}),'управляется 8 из 24, наблюдается 11, только человек 5');
+assert.match(coverageSummaryLine(null),/не прочитано/);
+assert.equal(coverageLevelLabel('managed'),'Под управлением');assert.equal(coverageLevelLabel('observed'),'Под наблюдением');
+assert.equal(coverageLevelLabel('human_only'),'Только человек');assert.equal(coverageLevelLabel('bogus'),'Неизвестно');
+assert.equal(new Set(Object.values(COVERAGE_LEVEL_CLASS)).size,3);
+assert.match(forbiddenText({recovery:{actions:['retry_same'],cap_per_node:1},forbidden:null}),/Автоповтор разрешён.*retry_same.*1/);
+assert.equal(forbiddenText({recovery:{actions:[],cap_per_node:0},forbidden:{code:'x',meaning:'смысл кода',reason:'причина запрета'}}),'причина запрета');
+assert.equal(forbiddenText({recovery:{actions:[],cap_per_node:0},forbidden:{code:'x',meaning:'смысл кода',reason:null}}),'смысл кода');
+assert.match(forbiddenText({recovery:{actions:[],cap_per_node:0},forbidden:null}),/не указана/);
+assert.match(verifiesText({verifies:[]}),/общий журнал/);assert.equal(verifiesText({verifies:['a','b']}),'a; b');
+const covPanel=fs.readFileSync('/observe-source/web/src/components/orchestrator/node-coverage-section.tsx','utf8');
+assert.match(covPanel,/nodeCoverage\(projectId\)/);assert.match(covPanel,/Загрузка/);assert.match(covPanel,/role="alert"/);
+assert.doesNotMatch(covPanel,/method:|POST|onClick|<button|edit_files|shell|\.env/i); // read-only
+assert.match(fs.readFileSync('/observe-source/web/src/components/orchestrator/observation-section.tsx','utf8'),/<NodeCoverageSection projectId=\{projectId\}\/>/);
+assert.match(fs.readFileSync('/observe-source/web/src/lib/observations.ts','utf8'),/path\(project\)\+"\/node-coverage"/);
+console.log('Node coverage UI contracts: passed');
+
+// The bug button must not promise code fixes while CHAT_CODE_ACTIONS_ENABLED defaults to false.
+const orchPanel=fs.readFileSync('/observe-source/web/src/components/orchestrator/orchestrator-panel.tsx','utf8');
+assert.match(orchPanel,/BUG_MODE_LABEL = "Диагностика багов"/);assert.match(orchPanel,/CHAT_CODE_ACTIONS_ENABLED=false/);
+assert.match(orchPanel,/\{BUG_MODE_LABEL\}\s*<\/Button>/);
+assert.doesNotMatch(orchPanel,/Режим фикса|нажмите «Фикс багов»|чинить \(шаги\/код\)/);
+console.log('Bug-mode honesty UI contracts: passed');

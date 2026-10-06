@@ -50,11 +50,15 @@ class PolicyMapping(unittest.TestCase):
         self.assertEqual(media_resume.prompt_hash("m", a), media_resume.prompt_hash("m", b))
         self.assertNotEqual(media_resume.prompt_hash("m", a), media_resume.prompt_hash("m", c))
 
-    def test_U5_only_frame_and_clip_keys_are_resumable(self):
+    def test_U5_only_known_paid_media_keys_are_resumable(self):
         ok = media_resume.make_ctx(7, "frame_001_ab12cd34.png", "m", "jobs", {})
         clip = media_resume.make_ctx(7, "clip_001_s2_ab12cd34.mp4", "m", "jobs", {})
-        music = media_resume.make_ctx(7, "music_ab12cd34.mp3", "m", "jobs", {})
-        self.assertEqual((ok.key, clip.key, music.key), ("frame_001", "clip_001_s2", ""))
+        music = media_resume.make_ctx(7, "music_ab12cd34.mp3", "m", "suno", {})
+        hero = media_resume.make_ctx(7, "hero_1_v1_ab12cd34.png", "m", "jobs", {})
+        item = media_resume.make_ctx(7, "predmet3_ab12cd34.png", "m", "jobs", {})
+        other = media_resume.make_ctx(7, "sfx_ab12cd34.mp3", "m", "jobs", {})
+        self.assertEqual((ok.key, clip.key, music.key, hero.key, item.key, other.key),
+                         ("frame_001", "clip_001_s2", "music", "hero_1_v1", "predmet3", ""))
         self.assertFalse(media_resume.make_ctx(None, "frame_001_ab12cd34.png", "m", "jobs", {}).usable)
 
 

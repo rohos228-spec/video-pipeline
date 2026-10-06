@@ -64,7 +64,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         raise RuntimeError("sfx_gen: нет плана звуков — сначала шаг «План звуков»")
 
     await _record_generation_input(session, project, plan)
-    files = await generate_sfx_files(session, project, plan)
+    files = await generate_sfx_files(session, project, plan, retry_degraded=True)
     meta = dict(project.meta or {})
     meta["sfx_ready"] = True
     meta["sfx_generated"] = True

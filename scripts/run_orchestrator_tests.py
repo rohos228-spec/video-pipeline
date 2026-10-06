@@ -26,6 +26,8 @@ FAST = [
     "tests/test_observation_cost_tracking.py",
     "tests/test_human_review_summary.py",
     "tests/test_node_spec_registration.py",
+    # Node coverage: every registered node type has a spec ("add a node" guard), levels, reasons.
+    "tests/observe_v1/test_node_coverage.py",
 ]
 
 ACCEPTANCE = [
@@ -33,12 +35,18 @@ ACCEPTANCE = [
     "tests/observe_v1/test_decision_v1.py",
     "tests/observe_v1/test_profiles_v1.py",
     "tests/observe_v1/test_decision_runtime.py",
+    # sfx_plan: observation -> diagnosis -> decision -> one verified retry, fake model boundary only
+    "tests/observe_v1/test_sfx_plan_dry_run.py",
     # Telemetry endpoint + SSE generator
     "tests/observe_v1/test_telemetry_endpoint.py",
     # Seedance vs Kling routing fix (needs ffmpeg; skips cleanly without it)
     "tests/observe_v1/test_native_video_routing.py",
     # Full scripted agentic loop (invalid_json repair + timeout escalation)
     "tests/test_e2e_agentic_loop_script.py",
+    # Media tranche: resume-only guard, videos resume dry run, result verification, audio / sfx / assemble dry runs
+    "tests/test_media_tranche_resume.py",
+    "tests/test_media_verification.py",
+    "tests/test_media_tranche_local.py",
 ]
 
 

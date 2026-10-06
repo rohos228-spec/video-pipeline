@@ -345,10 +345,13 @@ def model_route(project, node_key: str, node_type: str, capability) -> dict:
 
 
 def capability_data(node_type: str, capability) -> dict:
-    from app.orchestrator.node_spec import capability_spec_for
+    from app.orchestrator.node_spec import COVERAGE_FIELDS, capability_spec_for
     spec = capability_spec_for(node_type)
+    # Coverage notes (panel text, forbidden-reason codes) are documentation: editing one must
+    # not invalidate recovery tickets, so they stay out of the revision.
     return {"capability": capability.contract(),
-            "spec": dataclasses.asdict(spec) if spec is not None else None}
+            "spec": ({k: v for k, v in dataclasses.asdict(spec).items() if k not in COVERAGE_FIELDS}
+                     if spec is not None else None)}
 
 
 # ---------------------------------------------------------------------------

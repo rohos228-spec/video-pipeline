@@ -591,8 +591,20 @@ class DecisionDurability(actions_tests.DurableActions):
     async def test_hero_descriptive_contract_cannot_authorize_generation(self):
         await self._assert_descriptive_native_contract('hero',None,'hero')
 
-    async def test_animation_descriptive_contract_cannot_authorize_generation(self):
-        await self._assert_descriptive_native_contract('animation_prompts',None,'animation_prompts')
+    async def test_items_and_legacy_scene_design_descriptive_contracts_cannot_authorize_generation(self):
+        await self._assert_descriptive_native_contract('items',None,'items')
+        await self._assert_descriptive_native_contract('scene_design',None,'scene_design')
+
+    async def test_animation_contract_is_native_and_allows_retry_same_only(self):
+        record=await self.native_contract_fixture('animation_prompts')
+        before=await self.loop.context(record['decision_id'])
+        contract=await self.loop.read_contract(record['decision_id'])
+        self.assertTrue(contract['managed'])
+        self.assertEqual(contract['contract']['node_type'],'animation_prompts')
+        self.assertTrue(contract['contract']['payload_required'])
+        self.assertIn('retry_same',before['allowed_actions'])
+        self.assertNotIn('retry_profile',before['allowed_actions'])
+        self.assertEqual(before['eligible_profiles'],[])
 
     async def test_camera_descriptive_contract_cannot_inherit_excel_tools(self):
         await self._assert_descriptive_native_contract('excel_gpt',{'sd_agent':'camera'},'sd_agent')

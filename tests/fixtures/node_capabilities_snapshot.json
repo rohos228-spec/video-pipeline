@@ -4,31 +4,44 @@
    "actions": [
     "read_events",
     "read_contract",
-    "human_review"
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
     "budget",
     "provider_profile"
    ],
-   "effects": [],
-   "executor": "",
-   "managed": false,
-   "native_json_retry": true,
+   "effects": [
+    "project_database"
+   ],
+   "executor": "make_animation_prompts.run → animation_prompt_gpt.parse_animation_reply",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "animation_prompts",
    "phases": [
-    "unknown"
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "unsupported",
-   "volatile_attachment_names": false
+   "recovery_continuation": "none",
+   "result_kind": "frame_prompts",
+   "volatile_attachment_names": true
   },
   "contract": {
    "actions": [
     "read_events",
     "read_contract",
-    "human_review"
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -36,19 +49,26 @@
     "provider_profile"
    ],
    "arbitrary_shell_code_paths": false,
-   "effects": [],
-   "executor": "",
-   "managed": false,
-   "native_json_retry": true,
+   "effects": [
+    "project_database"
+   ],
+   "executor": "make_animation_prompts.run → animation_prompt_gpt.parse_animation_reply",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "animation_prompts",
    "phases": [
-    "unknown"
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "unsupported",
+   "recovery_continuation": "none",
+   "result_kind": "frame_prompts",
    "semantic_quality_verified": false,
-   "volatile_attachment_names": false,
+   "volatile_attachment_names": true,
    "write_authority": "existing worker only"
   }
  },
@@ -1365,7 +1385,9 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -1377,19 +1399,20 @@
     "local_file",
     "local_checkpoint"
    ],
-   "executor": "sfx_plan.plan_sfx_events → text_job",
-   "managed": false,
-   "native_json_retry": true,
+   "executor": "plan_sfx.run → sfx_plan.plan_sfx_events → ai_result_io.text_job",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "sfx_plan",
    "phases": [
     "running",
     "parse",
     "validate",
     "apply",
-    "commit"
+    "commit",
+    "verify"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "recovery_continuation": "none",
    "result_kind": "structured",
    "volatile_attachment_names": false
   },
@@ -1398,7 +1421,9 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -1411,19 +1436,20 @@
     "local_file",
     "local_checkpoint"
    ],
-   "executor": "sfx_plan.plan_sfx_events → text_job",
-   "managed": false,
-   "native_json_retry": true,
+   "executor": "plan_sfx.run → sfx_plan.plan_sfx_events → ai_result_io.text_job",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "sfx_plan",
    "phases": [
     "running",
     "parse",
     "validate",
     "apply",
-    "commit"
+    "commit",
+    "verify"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "recovery_continuation": "none",
    "result_kind": "structured",
    "semantic_quality_verified": false,
    "volatile_attachment_names": false,

@@ -4,7 +4,8 @@ import {CommandBar} from "./command-bar";
 import {PlanCard} from "./plan-card";
 import {RunProgress} from "./run-progress";
 import {HistoryList} from "./history-list";
-import {getPlan, listPlans, type PlanPreviewResponse} from "@/lib/action-layer";
+import {describeError, getPlan, listPlans, planFromText, previewFromError, type PlanPreviewResponse} from "@/lib/action-layer";
+import {clarifiedRequest} from "@/lib/clarification-view";
 
 // Слой действий: команда -> предпросмотр плана -> (подтверждение оператора) -> выполнение -> журнал.
 // Аварийный стоп оркестратора показывает соседняя KillSwitchSection (её состояние наружу не отдаётся,
@@ -14,6 +15,26 @@ export function ActionLayerSection({projectId, sceneId, frameId}: {projectId: nu
   const [runId, setRunId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  const [requestText, setRequestText] = useState("");
+  const [clarifying, setClarifying] = useState(false);
+  const [clarifyError, setClarifyError] = useState("");
+
+  // Нажатый вариант уточнения: тот же запрос и выбранный ответ снова уходят в /plans/from-text.
+  async function clarify(option: string) {
+    if (projectId == null || !requestText) return;
+    const text = clarifiedRequest(requestText, option);
+    setClarifying(true); setClarifyError("");
+    try {
+      const r = await planFromText(text, {project_id: projectId, selected_scene: sceneId ?? null, selected_frame: frameId ?? null});
+      setPlan(r); setRequestText(text);
+    } catch (e) {
+      const pv = previewFromError(e);
+      if (pv) { setPlan({plan_id: null, preview: pv}); setRequestText(text); }
+      else setClarifyError(describeError(e));
+    } finally {
+      setClarifying(false);
+    }
+  }
 
   // После перезагрузки страницы возвращаем экран выполнения (с «Остановить»/«Продолжить»)
   // для идущего или прерванного плана этого проекта (или без проекта).
@@ -40,11 +61,12 @@ export function ActionLayerSection({projectId, sceneId, frameId}: {projectId: nu
         Опишите, что сделать: сначала вы увидите план, риск и стоимость. Платное и стирающее данные выполняется только после вашего подтверждения.
       </p>
       <CommandBar projectId={projectId} sceneId={sceneId} frameId={frameId} disabled={running}
-        onPlan={(r) => { setPlan(r); setRunId(null); }} />
+        onPlan={(r, text) => { setPlan(r); setRunId(null); setRequestText(text); setClarifyError(""); }} />
       {plan && !runId && (
         <PlanCard plan={plan} busyElsewhere={running}
+          onClarify={projectId == null ? undefined : (o) => void clarify(o)} clarifying={clarifying} clarifyError={clarifyError}
           onStarted={(id) => { setRunId(id); setRunning(true); setPlan(null); setRefresh((n) => n + 1); }}
-          onDismiss={() => setPlan(null)} />
+          onDismiss={() => { setPlan(null); setClarifyError(""); }} />
       )}
       {runId && <RunProgress planId={runId} onFinished={() => { setRunning(false); setRefresh((n) => n + 1); }} />}
       <HistoryList refreshKey={refresh} />

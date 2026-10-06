@@ -66,6 +66,7 @@ TITLES = {
     'stalled':'Запрос или выполнение зависли: нет завершения в заданное время',
     'split_degraded':'Разбивка получена локальным запасным путём: ответ модели непригоден',
     'verification_hold':'Нативная проверка не подтвердила результат; запуск удержан',
+    'provider_degraded':'Платный провайдер не отдал результат: звук подменён локальным синтезом',
 }
 RECOMMENDATIONS = {
     'wait':'Ожидать', 'check_contract':'Проверить входные данные и контракт',
@@ -231,6 +232,27 @@ def derive_incidents(scope, events, snapshot):
                 item=issue('verification_hold',(node,attempt,'verify',e['event_id']),[e],
                     fact=exp.get('summary') or TITLES['verification_hold'],action='human_review')
                 item['hold_explanation']=exp; item['status']='human_review'
+            if kind=='node_result_verification' and p.get('contract')=='native_media':
+                if p.get('status') in {'failed','unknown'}:
+                    item=issue('media_failure',(node,attempt,'verify',e['event_id']),[e],
+                        blocking=p.get('status')=='failed',severity='error' if p.get('status')=='failed' else 'warning',
+                        fact=str(p.get('summary') or TITLES['media_failure'])[:400],action='human_review')
+                    item['status']='human_review'; item['semantic_quality_verified']=False
+                    item['verification_status']=p.get('status')
+                for unknown in (p.get('outcome_unknown') or [])[:20]:
+                    provider=str(unknown.get('provider') or 'unknown')
+                    item=issue('uncertain_request',(node,attempt,'media_outcome',str(unknown.get('key')),provider),[e],
+                        fact='Исход внешней медиа-задачи неизвестен ('+provider+', '+str(unknown.get('key'))+
+                             '). Новый submit запрещён.',action='review_provider_response',incomplete=True)
+                    item['status']='human_review'; item['provider']=provider
+            if kind=='provider_fallback':
+                item=issue('provider_degraded',(node,attempt,'fallback',p.get('idx')),[e],blocking=False,severity='warning',
+                    fact='Звук события '+str(p.get('idx'))+' ('+str(p.get('kind'))+') сделан локальным синтезом: '+
+                         str(p.get('provider'))+' вернул '+str(p.get('error_class'))+'; списание: '+
+                         {'no':'нет (получен ответ провайдера)','uncertain':'неизвестно (таймаут или обрыв)'}.get(
+                             str(p.get('may_have_charged')),'неизвестно')+'.',
+                    action='human_review')
+                item['status']='human_review'; item['may_have_charged']=p.get('may_have_charged')
             if kind == 'media_failure':
                 uncertain = p.get('uncertain') is True or p.get('phase') == 'unknown'
                 item = issue('uncertain_request' if uncertain else 'media_failure',

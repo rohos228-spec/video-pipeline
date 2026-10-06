@@ -35,6 +35,57 @@ _polls: contextvars.ContextVar[list | None] = contextvars.ContextVar("media_spen
 _DEFINITE_REJECT = {400, 401, 402, 403, 404, 405, 409, 413, 422, 429, 433, 451}
 
 
+# -- resume-only scope --------------------------------------------------------
+# A supervisory recovery of a paid media node may only RESUME work that a provider already has
+# (poll a known task id, download a finished file, reuse a finished local file). Inside this
+# scope every seam that would send a NEW paid request refuses before any byte leaves the process.
+
+_resume_only: contextvars.ContextVar[bool] = contextvars.ContextVar("media_resume_only", default=False)
+
+
+class ResumeOnlyBlocked(RuntimeError):
+    """A new paid submit was requested inside a resume-only scope. Nothing was sent.
+
+    ``no_resubmit`` makes the video/image ladders stop instead of burning an attempt."""
+
+    def __init__(self, provider: str, what: str = "submit"):
+        super().__init__(
+            f"{provider}: resume-only scope: a new paid request ({what}) is refused; "
+            f"only an already known task may be polled or downloaded")
+        self.context = {"no_resubmit": True, "resume_only": True, "provider": provider,
+                        "request_sent": False}
+
+
+@contextmanager
+def resume_only():
+    """Refuse every new paid provider request (Kie createTask, Kling, Outsee, ElevenLabs) inside."""
+    token = _resume_only.set(True)
+    try:
+        yield
+    finally:
+        _resume_only.reset(token)
+
+
+def in_resume_only() -> bool:
+    return _resume_only.get()
+
+
+def assert_submit_allowed(provider: str, what: str = "submit") -> None:
+    if _resume_only.get():
+        raise ResumeOnlyBlocked(provider, what)
+
+
+def _refuse_coro(coro, provider: str, what: str) -> None:
+    """Raise ResumeOnlyBlocked for an already built provider coroutine without leaving it un-awaited."""
+    try:
+        assert_submit_allowed(provider, what)
+    except ResumeOnlyBlocked:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        raise
+
+
 # -- plumbing -----------------------------------------------------------------
 
 _lock_for: tuple = (None, None)
@@ -227,6 +278,7 @@ def tracked_kie_create(fn):
     """Decorator for kie_http.create_task: record cost estimate + task id, 402 -> kill switch."""
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
+        assert_submit_allowed("kie", "createTask")
         if _managed():
             return await fn(*args, **kwargs)
         api = str(args[0] if args else kwargs.get("api", ""))
@@ -319,6 +371,7 @@ def _after_poll(api, task_id, polls, status, note, exc) -> None:
 
 async def track_kling(coro, *, kie_id: str, duration, has_frame: bool):
     """Wrap the Kling fallback client call (own create/poll client) as one request row."""
+    _refuse_coro(coro, "kie", "kling createTask")
     spec = None
     try:
         from app.services import kie_catalog
@@ -346,6 +399,7 @@ def outsee_tracked(fn, media: str):
     """Wrap outsee_http.generate_image/generate_video: one request row per call, price unknown."""
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
+        assert_submit_allowed("outsee", media)
         model = str(kwargs.get("model_slug") or "")
         try:
             from app.services import outsee_guard
@@ -370,6 +424,7 @@ def outsee_tracked(fn, media: str):
 
 async def track_eleven_post(coro, *, chars: int, model: str = ""):
     """Await one TTS POST; record each attempt (retries and the no-proxy repeat are separate POSTs)."""
+    _refuse_coro(coro, "elevenlabs", "tts post")
     est = chars * ELEVENLABS_USD_PER_CHAR
     try:
         resp = await coro
@@ -398,6 +453,7 @@ def track_eleven_sfx(fn):
     """Decorator for sfx_gen._elevenlabs_sfx: one row per call, cost = seconds x constant."""
     @functools.wraps(fn)
     async def wrapper(prompt, duration, out_path):
+        assert_submit_allowed("elevenlabs", "sfx post")
         est = min(max(float(duration), 0.5), 22.0) * ELEVENLABS_SFX_USD_PER_SEC
         try:
             result = await fn(prompt, duration, out_path)

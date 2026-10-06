@@ -124,6 +124,27 @@ _KNOWN_RECOVERY_CONTINUATIONS = ("excel_gpt_chain", "none")
 # Managed continuation rules a CapabilitySpec.successor may name (data only).
 KNOWN_SUCCESSORS = frozenset({"continue_managed_image"})
 
+# Machine-readable reasons why a node has NO automatic recovery (CapabilitySpec.forbidden_code).
+# A code is data, not a branch: the supervisor never switches on it. It exists so the coverage
+# panel, the tests and a human reviewer can tell WHY, and so a new reason must be added here.
+KNOWN_FORBIDDEN_CODES = {
+    "media_recovery_not_admitted": "восстановление надзором допущено только для сбоев ответа модели; для медиа допуска нет, возобновление и повтор делает нативный слой или человек",
+    "nondeterministic_paid_request": "платный запрос строится заново при каждом запуске: тот же запрос после рестарта не восстановить, возобновление по идентификатору задачи не сработает",
+    "paid_no_idempotency": "платный запрос без ключа идемпотентности: после таймаута неизвестно, списаны ли деньги",
+    "paid_uncertain_submit": "исход отправки может быть неизвестен, а деньги уже списаны; управляемый путь только синтетический",
+    "external_irreversible": "действие во внешнем аккаунте необратимо: повтор может опубликовать дважды",
+    "destructive_rewrite": "нода целиком заменяет данные проекта: повтор стирает прежний результат",
+    "native_skips_filled_rows": "нативный запуск не перезапрашивает уже заполненные строки: повтор не изменит результат",
+    "partial_commit": "нода коммитит результат по частям и держит чекпоинты на диске: повтор после сбоя небезопасен",
+    "pre_request_commit": "до запроса к модели нода уже записала новые строки: ввод для повтора изменён",
+    "legacy_node_type": "устаревший тип ноды: управляемый путь только после миграции графа",
+}
+COVERAGE_LEVELS = ("managed", "observed", "human_only")
+# Fields of CapabilitySpec that describe coverage only; they must not enter the recovery
+# input revision (editing a note must not invalidate recovery tickets).
+COVERAGE_FIELDS = frozenset({"verifies", "limits", "observation_hook", "forbidden_code",
+                             "forbidden_reason", "recovery_cap"})
+
 
 @dataclass(frozen=True)
 class CapabilitySpec:
@@ -157,10 +178,31 @@ class CapabilitySpec:
     verifier: str | None = None
     contract: str | None = None
     successor: str | None = None
+    # Coverage data (panel "Покрытие нод"): documentation-level, never part of the
+    # NodeCapability payload and excluded from the recovery input revision.
+    #   verifies          - what the supervisor checks about this node's result (plain Russian).
+    #   limits            - what stays forbidden even when recovery is allowed, and why.
+    #   observation_hook  - 'module:function' of a result hook that lives outside the
+    #                       verifier registry (resolved by the coverage test).
+    #   forbidden_code    - machine-readable reason why automatic recovery is forbidden
+    #                       (one of KNOWN_FORBIDDEN_CODES); None only for a recovering node.
+    #   forbidden_reason  - the same reason as plain Russian text for the panel.
+    #   recovery_cap      - supervisor recoveries per node and execution (enforced by the
+    #                       UNIQUE ticket in actions_recovery; 0 = no automatic recovery).
+    verifies: tuple[str, ...] = ()
+    limits: tuple[str, ...] = ()
+    observation_hook: str | None = None
+    forbidden_code: str | None = None
+    forbidden_reason: str | None = None
+    recovery_cap: int = 0
 
     @property
     def effective_managed(self) -> bool:
         return bool(self.managed and self.acceptance)
+
+    @property
+    def recovery_actions(self) -> tuple[str, ...]:
+        return tuple(a for a in self.actions if a in _RETRY_ACTIONS) if self.effective_managed else ()
 
     def to_capability(self):
         from app.services.node_capabilities import NodeCapability
@@ -181,6 +223,27 @@ def capability_spec_for(node_type: str) -> CapabilitySpec | None:
 
 def registered_capability_specs() -> dict[str, CapabilitySpec]:
     return dict(_CAPABILITY_SPECS)
+
+
+def coverage_evidence(spec: CapabilitySpec) -> list[str]:
+    """Names of the result checks the supervisor really has for this node (data lookup)."""
+    evidence = []
+    if verifier_spec_for(spec.node_type) is not None:
+        evidence.append("verifier:" + verifier_spec_for(spec.node_type).name)
+    if spec.observation_hook:
+        evidence.append("hook:" + spec.observation_hook)
+    if descriptive_contract_for(spec.node_type) is not None:
+        evidence.append("descriptive_contract")
+    return evidence
+
+
+def coverage_level(spec: CapabilitySpec) -> str:
+    """managed: accepted executor, the supervisor starts and verifies it.
+    observed: not managed, but a result check or a read-only description exists.
+    human_only: nothing beyond the generic journal; every action belongs to a human."""
+    if spec.effective_managed:
+        return "managed"
+    return "observed" if coverage_evidence(spec) else "human_only"
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +380,8 @@ _MANIFEST_KEYS = {
     "result_kind", "executor", "phases", "effects", "actions", "managed",
     "approval", "profile_compatible", "volatile_attachment_names",
     "native_json_retry", "recovery_continuation", "acceptance", "verifier",
-    "contract", "successor",
+    "contract", "successor", "verifies", "limits", "observation_hook",
+    "forbidden_code", "forbidden_reason", "recovery_cap",
 }
 
 
@@ -385,7 +449,17 @@ def capability_from_manifest(manifest: dict) -> CapabilitySpec:
         recovery_continuation=continuation, acceptance=acceptance,
         verifier=optional_name("verifier"), contract=optional_name("contract"),
         successor=optional_name("successor"),
+        verifies=names("verifies"), limits=names("limits"),
+        observation_hook=optional_name("observation_hook"),
+        forbidden_code=optional_name("forbidden_code"),
+        forbidden_reason=optional_name("forbidden_reason"),
     )
+    if kwargs["forbidden_code"] is not None and kwargs["forbidden_code"] not in KNOWN_FORBIDDEN_CODES:
+        raise ValueError("unknown orchestrator.forbidden_code")
+    cap = block.get("recovery_cap", 0)
+    if type(cap) is not int or not 0 <= cap <= 1:
+        raise ValueError("orchestrator.recovery_cap must be 0 or 1")
+    kwargs["recovery_cap"] = cap
     if "approval" in block:
         kwargs["approval"] = names("approval")
     return CapabilitySpec(**kwargs)

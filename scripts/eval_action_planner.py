@@ -3,7 +3,10 @@
 Sends a small sample of the Russian eval requests through the real planner (strict validation,
 catalog pre-filter, offered-only actions) and reports accuracy of action ids / params / clarification
 and the tokens used. The planner only builds plan previews: nothing is created, approved or executed.
-PAID (capped by --max-requests and --max-usd). Refuses to run without --live.
+PAID (capped by --max-requests and --max-usd, also under --concurrency). Refuses to run without --live.
+The project is a realistic seed (scripts/eval_seed.py: 30 frames, files, queue, nodes, change proposals,
+master prompt variants) unless --no-seed-realistic is given. --shard i/n runs every n-th case (1-based i),
+--concurrency N sends N requests at a time; the planner hourly call limit is raised for this process only.
 Only VIBECODE_API_KEY / VIBECODE_BASE_URL / GPT_RELAY_TOKEN / GPT_PROXY_URL / GPT_BASE_URL are read from
 --env-file; nothing secret is printed or written.
 The scoring helpers (load_cases, sample_cases, score_case) are offline and unit-tested.
@@ -66,8 +69,105 @@ def _subset(expected, actual) -> bool:
     return expected == actual
 
 
-def score_case(case: dict, steps: list[dict], clarification: str | None, error_code: str | None) -> dict:
+def parse_shard(text: str) -> tuple[int, int]:
+    """'i/n' (1-based i) -> (i, n); raises ValueError on anything else."""
+    try:
+        i, n = (int(x) for x in str(text).split("/", 1))
+    except ValueError as exc:
+        raise ValueError(f"--shard must look like 2/4, got {text!r}") from exc
+    if n < 1 or not 1 <= i <= n:
+        raise ValueError(f"--shard i/n needs 1 <= i <= n, got {text!r}")
+    return i, n
+
+
+def shard_cases(cases: list[dict], i: int, n: int) -> list[dict]:
+    """Every n-th case starting at the i-th (1-based): shards are disjoint and together cover all cases."""
+    return [c for k, c in enumerate(cases) if k % n == i - 1]
+
+
+class SpendBudget:
+    """Money cap that stays correct under concurrency: a request starts only while
+    spent + (requests in flight + 1) * estimate stays within the cap. The estimate is the most expensive
+    finished request so far, never below ``floor_usd``, so the cap is not overshot unless a request costs
+    more than anything seen before. Once the cap is hit nothing new starts (the cut is deterministic)."""
+
+    def __init__(self, max_usd: float, floor_usd: float = 0.02) -> None:
+        self.max_usd, self.floor_usd = max_usd, floor_usd
+        self.spent, self.worst, self.inflight = 0.0, 0.0, 0
+        self.stopped = False
+
+    def _estimate(self) -> float:
+        return max(self.floor_usd, self.worst)
+
+    def try_start(self) -> bool:
+        """Call without awaiting between the check and the increment (single event loop thread)."""
+        if self.stopped:
+            return False
+        if self.spent + (self.inflight + 1) * self._estimate() > self.max_usd + 1e-12:
+            self.stopped = True
+            return False
+        self.inflight += 1
+        return True
+
+    def finish(self, cost: float | None) -> None:
+        self.inflight = max(0, self.inflight - 1)
+        self.spent += float(cost or 0.0)
+        self.worst = max(self.worst, float(cost or 0.0))
+
+
+async def run_cases(cases: list[dict], run_one, *, concurrency: int, budget: SpendBudget,
+                    on_row=None) -> list[dict]:
+    """Run ``run_one(case) -> row`` with at most ``concurrency`` in flight; rows come back in case order.
+    Cases not started because the budget is exhausted are simply absent."""
+    sem = asyncio.Semaphore(max(1, int(concurrency)))
+    slots: list[dict | None] = [None] * len(cases)
+
+    async def worker(idx: int, case: dict) -> None:
+        async with sem:
+            if not budget.try_start():
+                return
+            try:
+                row = await run_one(case)
+            except BaseException:
+                budget.finish(0.0)
+                raise
+            budget.finish(row.get("est_cost_usd"))
+            slots[idx] = row
+            if on_row:
+                on_row(row)
+
+    await asyncio.gather(*(worker(i, c) for i, c in enumerate(cases)))
+    return [r for r in slots if r is not None]
+
+
+def resolve_vars(node, variables: dict):
+    """Replace whole-string placeholders like "$frame.22" (see eval_seed.expected_vars) in expectations."""
+    if isinstance(node, str) and node.startswith("$") and node[1:] in variables:
+        return variables[node[1:]]
+    if isinstance(node, dict):
+        return {k: resolve_vars(v, variables) for k, v in node.items()}
+    if isinstance(node, list):
+        return [resolve_vars(v, variables) for v in node]
+    return node
+
+
+def select_cases(all_cases: list[dict], only: str, max_requests: int) -> list[dict]:
+    """--only ID,ID: exactly those cases (fixture order, no sampling); otherwise the round-robin sample."""
+    if not only.strip():
+        return sample_cases(all_cases, max_requests)
+    want = [x.strip() for x in only.split(",") if x.strip()]
+    known = {c["id"] for c in all_cases}
+    unknown = [x for x in want if x not in known]
+    if unknown:
+        raise ValueError(f"--only: unknown case ids {unknown}")
+    return [c for c in all_cases if c["id"] in set(want)]
+
+
+def score_case(case: dict, steps: list[dict], clarification: str | None, error_code: str | None,
+               explanation: str | None = None, variables: dict | None = None,
+               options: list[str] | None = None) -> dict:
     """Compare a planner result with the expectation. Params are compared as a subset (project_id ignored)."""
+    case = {**case, "steps": resolve_vars(case.get("steps", []), variables or {})}
     kind = case["outcome"]
     got = [s.get("action_id") for s in steps]
     row = {"id": case["id"], "outcome": kind, "got_actions": got, "clarified": bool(clarification),
@@ -80,8 +180,15 @@ def score_case(case: dict, steps: list[dict], clarification: str | None, error_c
             _subset({k: v for k, v in w["params"].items() if k != "project_id"}, g.get("params") or {})
             for w, g in zip(case["steps"], steps))
         row["ok"] = row["params_ok"]
+        need = [x.lower() for x in case.get("explanation_contains", [])]
+        if need:  # e.g. the human must read which defaults were applied before approving
+            row["explained_ok"] = all(x in (explanation or "").lower() for x in need)
+            row["ok"] = bool(row["ok"] and row["explained_ok"])
     elif kind == "clarify":
-        row["ok"] = bool(clarification) and not steps
+        need = [x.lower() for x in case.get("clarify_contains", [])]
+        # the question, its option buttons and the explanation together must carry the required words
+        text = " ".join([clarification or "", *(options or []), explanation or ""]).lower()
+        row["ok"] = bool(clarification) and not steps and all(x in text for x in need)
     else:  # refuse: no steps are acceptable (clarification or a server rejection)
         row["ok"] = not steps
     return row
@@ -100,27 +207,63 @@ def summarize(rows: list[dict]) -> dict:
         "completion_tokens": sum(r.get("completion_tokens", 0) for r in rows),
         "avg_prompt_tokens": round(sum(r.get("prompt_tokens", 0) for r in rows) / max(1, len(rows))),
         "est_cost_usd": round(sum(r.get("est_cost_usd") or 0.0 for r in rows), 5),
+        "failed_ids": [r["id"] for r in rows if not r.get("ok")],
     }
+
+
+def _load_seed_module():
+    import importlib.util
+    path = Path(__file__).resolve().parent / "eval_seed.py"
+    spec = importlib.util.spec_from_file_location("eval_seed", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # dataclasses need the module registered
+    spec.loader.exec_module(mod)
+    return mod
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--env-file", required=True)
-    parser.add_argument("--seed-data", required=True, help="a data dir copy with a project to plan against")
+    parser.add_argument("--seed-data", default="", help="a data dir copy to start from (default: empty data dir)")
     parser.add_argument("--project-id", type=int, default=2)
+    parser.add_argument("--seed-realistic", action=argparse.BooleanOptionalAction, default=True,
+                        help="fill the project with frames, files, queue, nodes, proposals, prompt variants")
     parser.add_argument("--max-requests", type=int, default=10)
+    parser.add_argument("--only", default="", help="comma-separated case ids to run (cheap re-run of failures)")
     parser.add_argument("--max-usd", type=float, default=0.10)
+    parser.add_argument("--est-usd", type=float, default=0.02,
+                        help="assumed cost of one request before real costs are known (cap safety margin)")
+    parser.add_argument("--shard", default="1/1", help="i/n: run every n-th case starting at the i-th (1-based)")
+    parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--out", default="")
     args = parser.parse_args()
     if not args.live:
         print("needs --live")
         return 2
+    try:
+        shard_i, shard_n = parse_shard(args.shard)
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    try:
+        select_cases(load_cases(), args.only, args.max_requests)  # unknown ids fail before anything starts
+    except ValueError as exc:
+        print(str(exc))
+        return 2
     os.environ.update(load_env(args.env_file))
     work = Path(tempfile.mkdtemp(prefix="eval-planner-"))
-    shutil.copytree(args.seed_data, work / "data")
+    if args.seed_data:
+        shutil.copytree(args.seed_data, work / "data")
+    else:
+        (work / "data").mkdir()
     os.environ.update(SUPABASE_URL="http://127.0.0.1:9", SUPABASE_KEY="unused", TELEGRAM_ENABLED="false",
                       DATA_DIR=str(work / "data"), SQLITE_PATH=str(work / "data" / "state.db"))
+    # This process only: the default 30 calls/hour made earlier runs stop with rate_limited.
+    os.environ["ACTION_LAYER_PLANNER_CALLS_PER_HOUR"] = "10000"
+    # Every planner call reserves 0.05 USD in the local spend ledger of this throw-away DB, so ~200 calls hit
+    # the default 10 USD project cap. The real money limit of this run is --max-usd, not the app caps.
+    os.environ["SPEND_PROJECT_CAP_USD"] = os.environ["SPEND_DAILY_CAP_USD"] = "1000"
     root = Path(__file__).resolve().parent.parent
     os.chdir(root)
     sys.path.insert(0, str(root))
@@ -135,15 +278,17 @@ async def main() -> int:
 
     await _init_db()
     ensure_builtin_actions()
-    rows: list[dict] = []
-    spent = 0.0
-    for case in sample_cases(load_cases(), args.max_requests):
-        if spent >= args.max_usd:
-            print(f"stopped: estimated spend {spent:.4f} USD reached --max-usd {args.max_usd}")
-            break
+    if args.seed_realistic:
+        info = await _load_seed_module().seed_realistic(args.project_id, prompts_dir=work / "prompts")
+        print(json.dumps({"seeded_project": info.project_id, "frames": len(info.frame_ids),
+                          "proposals": len(info.proposals)}))
+
+    variables = _load_seed_module().expected_vars(args.project_id) if args.seed_realistic else {}
+
+    async def run_one(case: dict) -> dict:
         ctx = case.get("context") or {}
         started = time.monotonic()
-        steps, clar, code, meta = [], None, None, {}
+        steps, clar, code, meta, outcome = [], None, None, {}, None
         try:
             outcome = await planner.plan_from_text(
                 case["text"], operator="local_web_operator", project_id=args.project_id,
@@ -154,14 +299,27 @@ async def main() -> int:
             clar, meta = outcome.reply.needs_clarification, outcome.meta
         except Exception as exc:  # noqa: BLE001 - a planner refusal/rejection is a scored result
             code = getattr(exc, "code", type(exc).__name__)
-        row = score_case(case, steps, clar, code)
+        expl = outcome.reply.explanation_ru if outcome is not None else None
+        opts = list(outcome.reply.clarification_options) if outcome is not None else []
+        row = score_case(case, steps, clar, code, expl, variables, opts)
+        row.update(text=case["text"], clarification=clar, explanation=expl,
+                   want=[x["action_id"] for x in case.get("steps", [])], params=[x.get("params") for x in steps],
+                   want_params=[x.get("params") for x in resolve_vars(case.get("steps", []), variables)],
+                   options=list(outcome.reply.clarification_options) if outcome is not None else [])
         row.update(seconds=round(time.monotonic() - started, 1),
                    prompt_tokens=meta.get("prompt_tokens", 0), completion_tokens=meta.get("completion_tokens", 0),
-                   est_cost_usd=meta.get("est_cost_usd"), catalog_offered=meta.get("catalog_offered"))
-        spent += row["est_cost_usd"] or 0.0
-        rows.append(row)
-        print(json.dumps(row, ensure_ascii=False, default=str))
-    report = {"summary": summarize(rows), "rows": rows}
+                   est_cost_usd=meta.get("est_cost_usd"), catalog_offered=meta.get("catalog_offered"),
+                   attempts=meta.get("attempts"), applied_defaults=meta.get("applied_defaults"))
+        return row
+
+    cases = shard_cases(select_cases(load_cases(), args.only, args.max_requests), shard_i, shard_n)
+    budget = SpendBudget(args.max_usd, floor_usd=args.est_usd)
+    rows = await run_cases(cases, run_one, concurrency=args.concurrency, budget=budget,
+                           on_row=lambda r: print(json.dumps(r, ensure_ascii=False, default=str), flush=True))
+    if budget.stopped:
+        print(f"stopped: estimated spend {budget.spent:.4f} USD reached --max-usd {args.max_usd} "
+              f"({len(rows)} of {len(cases)} cases ran)")
+    report = {"summary": summarize(rows), "rows": rows, "shard": args.shard, "concurrency": args.concurrency}
     print(json.dumps(report["summary"], ensure_ascii=False))
     if args.out:
         Path(args.out).write_text(json.dumps(report, indent=1, ensure_ascii=False, default=str), encoding="utf-8")

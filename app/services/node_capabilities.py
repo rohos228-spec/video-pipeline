@@ -74,55 +74,216 @@ def _register_builtin_capabilities() -> None:
             READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True,
             profile_compatible=True, volatile_attachment_names=True, native_json_retry=False,
             recovery_continuation='none', acceptance='native_project_text',
-            verifier='project_text_result', contract='project_text'),
+            verifier='project_text_result', contract='project_text',
+            verifies=('Общий план не пустой и проходит проверку содержательности (is_meaningful_general_plan)',
+                      'Результат перечитывается из БД проекта после выполнения'),
+            limits=('Один повтор на ноду за запуск, только после исчерпания штатных повторов',
+                    'Обязательное утверждение человеком не снимается и не подменяется'),
+            recovery_cap=1),
         C('script', 'project_text', 'make_script.run → xlsx_step_runners.run_script_xlsx',
             text_phases, ('project_database', 'local_xlsx', 'hitl_request'),
             READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True,
             profile_compatible=True, volatile_attachment_names=True, native_json_retry=False,
             recovery_continuation='none', acceptance='native_project_text',
-            verifier='project_text_result', contract='project_text'),
+            verifier='project_text_result', contract='project_text',
+            verifies=('Текст закадра не короче 200 символов',
+                      'Результат перечитывается из БД проекта после выполнения'),
+            limits=('Один повтор на ноду за запуск, только после исчерпания штатных повторов',
+                    'Обязательное утверждение человеком не снимается и не подменяется'),
+            recovery_cap=1),
         C('split', 'frame_set', 'split_frames.run → xlsx_step_runners.run_split_xlsx',
             ('running', 'parse', 'apply', 'commit', 'verify'), ('project_database', 'local_xlsx'),
             READ_ACTIONS, True, acceptance='native_split',
-            verifier='split_result', contract='frame_rows'),
+            verifier='split_result', contract='frame_rows',
+            verifies=('Кадров не меньше двух, у каждого свой uuid и подряд идущий номер',
+                      'Закадровый текст сохранён целиком и по порядку',
+                      'При провале проверки запуск удерживается до решения человека'),
+            forbidden_code='destructive_rewrite',
+            forbidden_reason='Нода целиком заменяет кадры проекта: повтор стёр бы прежний результат, '
+                             'поэтому при провале проверки запуск удерживается, а решает человек.'),
         C('image_prompts', 'frame_prompts',
             'generate_image_prompts.run → xlsx_step_runners.run_img_pr_xlsx',
             ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
             ('project_database', 'local_xlsx', 'local_checkpoint'), READ_ACTIONS, True,
             acceptance='native_image_prompts', verifier='image_prompts_result',
-            contract='frame_rows'),
+            contract='frame_rows',
+            verifies=('Набор кадров, номера и закадр не изменились',
+                      'У каждого кадра-родителя основной промпт не короче порога',
+                      'Причина удержания объясняется человеку по записанной проверке'),
+            forbidden_code='native_skips_filled_rows',
+            forbidden_reason='Нативный запуск не перезапрашивает уже непустой промпт, поэтому повтор '
+                             'ничего не изменит; удержание после провала проверки снимает только человек.'),
         C('excel_gpt', 'structured', 'enrich_xlsx.run',
             ('running', 'parse', 'validate', 'apply', 'commit'), ('project_database',),
             READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True, profile_compatible=True,
-            acceptance='excel_gpt_group', contract='structured'),
+            acceptance='excel_gpt_group', contract='structured',
+            verifies=('Операции применяются только через общий контракт записи (db_apply)',
+                      'Покрытие кадров и проверки группы script_frames_qc'),
+            limits=('Один повтор на ноду за запуск',
+                    'Повтор запрещён после любого применённого пакета (частичное применение)'),
+            recovery_cap=1),
         C('images', 'image', 'generate_images.run → kie_http',
             _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'), READ_ACTIONS, True,
             acceptance='synthetic_image_scenario', contract='media_jobs',
-            successor='continue_managed_image'),
+            successor='continue_managed_image',
+            verifies=('Файл картинки существует и читается (проверка артефакта)',
+                      'Журнал платных задач: неизвестный исход заново не отправляется'),
+            forbidden_code='paid_uncertain_submit',
+            forbidden_reason='Управляемый путь пока только синтетический; платная отправка с неизвестным '
+                             'исходом могла быть списана, поэтому повторную отправку делает только человек.'),
         C('videos', 'video', 'generate_videos.run → kie_http',
             _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'), READ_ACTIONS, False,
-            contract='media_jobs'),
+            verifier='media_result', contract='media_jobs',
+            verifies=('Для каждого кадра с промтом анимации есть клип: файл существует, не пустой, читается '
+                      '(ffprobe: видеодорожка, длительность), лежит внутри папки проекта',
+                      'Журнал платных задач: у клипа Kie есть устойчивый task id; у Outsee id нет, это записывается',
+                      'Прошлый submit без известного исхода (Kie или Outsee) выводится отдельным инцидентом'),
+            limits=('Возобновление по task id (опрос и скачивание, без нового submit) есть в нативном слое и в '
+                    'media_recovery.resume_poll; как действие надзора оно не подключено',
+                    'Outsee без идентификатора задачи не возобновляется: исход неизвестен, решает человек',
+                    'Нативная лестница до семи платных отправок на клип не меняется'),
+            forbidden_code='media_recovery_not_admitted',
+            forbidden_reason='Проверка результата и возобновление по task id готовы и проверены на заглушках, но '
+                             'допуск восстановления надзором рассчитан на сбои модели, а живого прогона нет: '
+                             'платный повтор делает только человек.'),
         C('audio', 'audio', 'generate_audio.run → elevenlabs_api',
             ('reserved', 'submitted', 'verifying', 'verified', 'alignment', 'failed', 'unknown'),
             ('provider_generation', 'local_file', 'frame_timing', 'artifact_row'), READ_ACTIONS, False,
-            contract='media_jobs'),
+            verifier='media_result', contract='media_jobs',
+            verifies=('Файл озвучки существует, читается (ffprobe: звуковая дорожка, длительность)',
+                      'Число кусков озвучки сверяется с числом кадров с закадровым текстом',
+                      'Маркер .tts_uncertain_* (таймаут или обрыв после отправки) выводится как неизвестный исход'),
+            limits=('Повторный POST после таймаута запрещён, пока человек не снимет маркер или не положит файл',
+                    'Готовый файл озвучки на диске переиспользуется без POST',
+                    'Один платный POST на сегмент без ключа идемпотентности: исход таймаута не доказать'),
+            forbidden_code='paid_no_idempotency',
+            forbidden_reason='Запрос озвучки без ключа идемпотентности: после таймаута неизвестно, '
+                             'списаны ли деньги, поэтому повтор делает только человек.'),
         C('assemble', 'assembly', 'assemble.run → assembly.assemble',
             ('inputs', 'processing', 'subtitles', 'verifying', 'verified', 'failed', 'unknown'),
-            ('local_file', 'artifact_row'), READ_ACTIONS, False, contract='media_jobs'),
-        C('sfx_plan', 'structured', 'sfx_plan.plan_sfx_events → text_job',
-            ('running', 'parse', 'validate', 'apply', 'commit'),
-            ('project_database', 'local_file', 'local_checkpoint'), READ_ACTIONS, False,
-            verifier='sfx_result', contract='structured'),
+            ('local_file', 'artifact_row'), READ_ACTIONS, False, verifier='media_result',
+            contract='media_jobs',
+            verifies=('Итоговый файл собран во временный файл и подменяет прежний только после verify_artifact '
+                      '(видео и звук, длительность)',
+                      'Заново читаются файл, его sha256 и запрос approve_final для этого файла',
+                      'Сбой сборки или проверки: ровно одна повторная попытка внутри ноды'),
+            limits=('Подтверждение approve_final нельзя снять повтором: запрос один на пару проект и sha256',
+                    'Автоодобрение финала требует живой успешной проверки; ручное одобрение не затронуто',
+                    'Повтор надзором не подключён: одна попытка внутри ноды уже есть'),
+            forbidden_code='media_recovery_not_admitted',
+            forbidden_reason='Атомарная запись, проверка итога и один повтор внутри ноды готовы, но допуск '
+                             'восстановления надзором рассчитан на сбои модели: запуск и подтверждение '
+                             'финала остаются за человеком.'),
+        C('sfx_plan', 'structured',
+            'plan_sfx.run → sfx_plan.plan_sfx_events → ai_result_io.text_job',
+            ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
+            ('project_database', 'local_file', 'local_checkpoint'),
+            READ_ACTIONS + ('retry_same', 'finish'), True, native_json_retry=False,
+            recovery_continuation='none', acceptance='native_sfx_plan',
+            verifier='sfx_plan_result', contract='sfx_plan',
+            verifies=('План читается заново из чекпоинта и файла sfx_plan.json независимой сессией',
+                      'Виды звуков из каталога, границы таймлайна, длительность, громкость, плотность '
+                      'и зазор между событиями (validate_events)',
+                      'В управляемом запуске план без подтверждения удерживает запуск'),
+            limits=('Один повтор на ноду за запуск',
+                    'Только если ответ модели не разобран (invalid_json / missing_payload) и ничего не применено',
+                    'Нарушение правил таймлайна у разобранного плана повтором не лечится: решает человек',
+                    'Не запускает sfx_gen (платный ElevenLabs) и не меняет кадры',
+                    'Выключенный SFX (проход без плана) в управляемом запуске не считается проверенным'),
+            recovery_cap=1),
         C('sfx_gen', 'audio',
             'generate_sfx.run → sfx_gen.generate_sfx_files → elevenlabs_api/local_synth',
             ('running', 'generating', 'writing', 'verifying', 'verified', 'failed', 'unknown'),
             ('local_file', 'project_database'), READ_ACTIONS, False,
-            verifier='sfx_result', contract='media_jobs'),
+            verifier='sfx_result', contract='media_jobs',
+            verifies=('Каждый звуковой файл существует, читается как WAV и не пустой по уровню',
+                      'Число файлов совпадает с планом, пути лежат внутри папки sfx проекта',
+                      'Откат ElevenLabs на локальный синтез виден: факт provider_fallback, инцидент '
+                      'provider_degraded и поле provider_fallback у события'),
+            limits=('Повтор по событию не больше одного и только после ответа провайдера (списания не было)',
+                    'Откат после таймаута или обрыва (мог быть списан платёж) не повторяется никогда',
+                    'Платный вызов на событие остаётся без ключа идемпотентности'),
+            forbidden_code='paid_no_idempotency',
+            forbidden_reason='Платный вызов на каждое событие без ключа идемпотентности: исход таймаута '
+                             'не доказать, поэтому повтор по событию допускает только нативный слой '
+                             'и только после ответа провайдера.'),
         C('publish', 'publication', 'publish.run',
             ('input_validation', 'dry_run', 'blocked'), ('external_accounts',),
-            ('read_events', 'read_contract', 'human_review'), False, contract='media_jobs'),
+            ('read_events', 'read_contract', 'human_review'), False, contract='media_jobs',
+            forbidden_code='external_irreversible',
+            forbidden_reason='Публикация во внешних аккаунтах необратима, повтор мог бы опубликовать дважды; '
+                             'управляемая публикация отключена, решает только человек.'),
+        C('animation_prompts', 'frame_prompts',
+            'make_animation_prompts.run → animation_prompt_gpt.parse_animation_reply',
+            ('running', 'parse', 'validate', 'apply', 'commit', 'verify'), ('project_database',),
+            READ_ACTIONS + ('retry_same', 'finish'), True, volatile_attachment_names=True,
+            native_json_retry=False, recovery_continuation='none',
+            acceptance='native_animation_prompts', verifier='animation_result',
+            contract='animation_prompts',
+            verifies=('Первичные и вторые (shot02) промпты заполнены у кадров, бывших целью на входе',
+                      'Закадр и image_prompt не изменились, посторонние поля кадров не тронуты',
+                      'Исходная проверка harness anim_pr пройдена до статуса готовности'),
+            limits=('Один повтор на ноду за запуск',
+                    'Только пока ни одна пачка не применена: после первого применения повтор запрещён',
+                    'Смена профиля запрещена: во входе картинки, профиль не может пересобрать запрос',
+                    'Тихий локальный запасной путь при сбое провайдера пока не помечается как деградация',
+                    'Не запускает videos (платная нода с утверждением человеком)'),
+            recovery_cap=1),
+        *_coverage_only_specs(),
     ):
         register_capability_spec(spec)
+
+
+def _watch(node_type, code, reason, *, verifies=(), hook=None):
+    """Coverage-only entry: the node type is registered and visible, but the supervisor offers
+    nothing beyond reading. Same payload as an unregistered type (result_kind 'unsupported',
+    read-only actions), so behaviour is unchanged; the entry only carries WHY."""
+    from app.orchestrator.node_spec import CapabilitySpec as C
+    return C(node_type, 'unsupported', '', ('unknown',), (),
+             ('read_events', 'read_contract', 'human_review'),
+             verifies=tuple(verifies), observation_hook=hook,
+             forbidden_code=code, forbidden_reason=reason)
+
+
+def _coverage_only_specs():
+    scene_hook = 'app.services.scene_contracts:observe_scene_result'
+    legacy = ('Устаревший тип enrich_N: управляемый путь и повтор есть только у excel_gpt; '
+              'граф нужно перенести на excel_gpt (миграция C5).')
+    return (
+        _watch('scene_design', 'legacy_node_type',
+               'Устаревший тип одной ноды на всю фазу делит шаг с веером sd_agent и сборкой sd_assemble: '
+               'отдельный контракт назвать нельзя, остаётся только человек.'),
+        _watch('sd_agent', 'partial_commit',
+               'Веер из пяти агентов идёт одним шагом, нода коммитит ячейки и чекпоинты частями, а '
+               'идентичность попытки неоднозначна: повтор после сбоя небезопасен.',
+               verifies=('Агент camera: срез ячеек сверяется со входом, остальные ячейки и кадры сохранены',
+                         'Агенты skeleton, characters, world, action: только журнал запросов'),
+               hook=scene_hook),
+        _watch('sd_assemble', 'pre_request_commit',
+               'До запроса к модели нода уже записала дочерние кадры, поэтому вход повтора изменён '
+               '(в режиме chrono_dyn запроса к модели нет вовсе): повтор небезопасен.',
+               verifies=('Разбор и проверка итогового payload, сверка его полей с реальными Frame.attrs',),
+               hook=scene_hook),
+        _watch('hero', 'nondeterministic_paid_request',
+               'Промт героя v1 каждый раз заново строит GPT, поэтому после рестарта тот же платный запрос '
+               'не воспроизвести и открытую задачу по task id не найти: повтор мог бы заплатить заново.',
+               verifies=('У героя есть файл картинки: существует, не пустой, декодируется, лежит в папке проекта',
+                         'Журнал платных задач: task id Kie или отсутствие id у Outsee')),
+        _watch('items', 'media_recovery_not_admitted',
+               'Промт предмета детерминирован и открытую задачу Kie можно возобновить по task id, но допуск '
+               'восстановления надзором рассчитан на сбои модели, а живого прогона нет: решает человек.',
+               verifies=('Для каждого описания предмета есть файл картинки: существует, декодируется, внутри проекта',
+                         'Журнал платных задач: task id Kie или отсутствие id у Outsee')),
+        _watch('music', 'media_recovery_not_admitted',
+               'Задачу Suno в Kie можно возобновить по task id (сохранённый промт), но допуск восстановления '
+               'надзором рассчитан на сбои модели, а живого прогона нет: платный повтор делает человек.',
+               verifies=('Есть файл музыки: существует, не пустой, читается (ffprobe: звуковая дорожка)',
+                         'Журнал платных задач: task id Suno или его отсутствие')),
+        *(_watch(f'enrich_{n}', 'legacy_node_type', legacy,
+                 verifies=('Журнал ведётся как у excel_gpt (observe_attempt подставляет excel_gpt)',),
+                 hook='app.services.observation:observe_attempt')
+          for n in range(1, 6)),
+    )
 
 
 # Recovery decisions for media/paid-or-external node types. Pure declarative data kept OUTSIDE
@@ -135,12 +296,14 @@ _MEDIA_HUMAN_ONLY = "human_only"
 MEDIA_RECOVERY_DECISIONS = {
     "hero": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
         "provider": "outsee/kie via generate_image_with_retries",
-        "reason": "No capability and no managed lifecycle; native ladder already spends up to 6 paid "
-                  "submits per image with no durable job id, so a supervisor retry could double-pay."},
+        "reason": "No managed lifecycle; the prompt of hero v1 is rebuilt by GPT on every run, so after a restart "
+                  "the same paid request cannot be reproduced and an open Kie task is not found: a supervisor "
+                  "retry could double-pay (observation: media_result verifier, ledger trail)."},
     "items": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
         "provider": "outsee/kie via generate_image_with_retries",
-        "reason": "No capability and no managed lifecycle; same up-to-6-submit native ladder as hero, "
-                  "no durable provider job id (a retry could double-pay); step rolls back to hero_ready for the operator."},
+        "reason": "No managed lifecycle; the Kie task id is in the ledger and an open task is resumed by the native "
+                  "layer, but Outsee has no task id (unknown outcome, never resubmitted) and supervisor recovery "
+                  "is not admitted for media: a retry could double-pay; the step rolls back to hero_ready."},
     "images": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
         "provider": "kie (managed, synthetic loopback only) / outsee (native)",
         "reason": "Managed route is synthetic-loopback only (no authorized production network profile); "
@@ -148,24 +311,25 @@ MEDIA_RECOVERY_DECISIONS = {
                   "already be charged."},
     "videos": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_clip_highest",
         "provider": "outsee/kie (Seedance, Kling, Veo ladder)",
-        "reason": "managed=False; native ladder is up to 4 primary + 3 fallback paid submits per clip "
-                  "with no durable job id; highest per-attempt cost, a blind retry can double-pay."},
+        "reason": "managed=False; Kie clips resume by task id (resume-only, offline-proven) but Outsee has no id "
+                  "and the native ladder is up to 4 primary + 3 fallback paid submits per clip; supervisor "
+                  "recovery is not admitted for media and no live run exists: a blind retry can double-pay."},
     "audio": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_character",
         "provider": "elevenlabs_api (direct HTTP)",
         "reason": "managed=False; request has no idempotency key and the native client already retries "
                   "3 times on timeout/429/5xx, so a timeout after acceptance may be charged twice."},
     "music": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_generation",
         "provider": "kie suno (direct) or browser outsee",
-        "reason": "No capability; Suno family has no approved managed route and the executor writes "
-                  "an Artifact only after the paid generation, so a retry re-submits and re-pays."},
+        "reason": "Not managed; a Suno task resumes by task id from the ledger (saved prompt) but supervisor "
+                  "recovery is not admitted for media and no live run exists, so a retry could re-submit and re-pay."},
     "sfx_gen": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_event_small_or_free_local",
         "provider": "elevenlabs sound-effects (or local_synth when no key)",
-        "reason": "managed=False; per-event paid call without idempotency key, on error it silently "
-                  "falls back to local synthesis, so provider outcome of the failed call is unknown."},
+        "reason": "managed=False; per-event paid call without idempotency key; on error it falls back to local "
+                  "synthesis (now recorded as provider_fallback), a timeout outcome stays unknown and may be charged."},
     "assemble": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "no_provider_spend_local_cpu",
         "provider": "local ffmpeg (+ local ASR timing)",
-        "reason": "No provider spend, but the output is a final deliverable behind approve_final; "
-                  "no recovery verifier exists, so it stays human-only until one is accepted."},
+        "reason": "No provider spend; atomic write, verify_artifact and one in-node retry exist, but the output is a "
+                  "final deliverable behind approve_final and supervisor recovery is not admitted for media (unknown)."},
     "publish": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "external_side_effect_not_money",
         "provider": "social publishers (external accounts)",
         "reason": "Posting to external accounts is irreversible; managed publication is hard-disabled "
@@ -613,7 +777,7 @@ async def _observe_project_text(session, project, node_type):
 def _register_builtin_verifiers() -> None:
     """Name the existing result-observation hooks (observation.observe_attempt
     looks them up by node type instead of an if-chain)."""
-    from app.orchestrator.node_spec import VerifierSpec, bind_verifier, register_verifier
+    from app.orchestrator.node_spec import VerifierSpec, register_verifier
     me = 'app.services.node_capabilities:'
     register_verifier(VerifierSpec('project_text_result', me + '_observe_project_text',
         managed_only=True, success_errors='raise'))
@@ -626,11 +790,22 @@ def _register_builtin_verifiers() -> None:
     register_verifier(VerifierSpec('sfx_result', 'app.services.sfx_plan:observe_sfx_result',
         success_errors='gap', success_flag='sfx_result_observed', on_error=True,
         error_done_flag='sfx_result_observed'))
+    # sfx_plan: the same journal hook plus the managed-scope gate (observe_sfx_plan_result).
+    # It never raises in an observation scope; on a native failure it only records.
+    register_verifier(VerifierSpec('sfx_plan_result', 'app.services.sfx_plan:observe_sfx_plan_result',
+        success_errors='raise', success_flag='sfx_result_observed', on_error=True,
+        error_done_flag='sfx_result_observed'))
+    # Paid media nodes: the same read-only hook for all, bound per node type (hero, items and music are
+    # coverage-only entries without a CapabilitySpec verifier name). Observation only, never holds a run.
+    register_verifier(VerifierSpec('media_result', 'app.services.media_verification:observe_media_result',
+        success_errors='gap', success_flag='media_result_observed', on_error=True,
+        error_done_flag='media_result_observed'))
+    from app.orchestrator.node_spec import bind_verifier
+    for node_type in ('hero', 'items', 'music'):
+        bind_verifier(node_type, 'media_result')
     register_verifier(VerifierSpec('animation_result',
         'app.services.native_animation_contracts:observe_animation_result',
         success_errors='gap', on_error=True, error_done_flag='animation_verification_recorded'))
-    # animation_prompts has no capability (unsupported, observed only).
-    bind_verifier('animation_prompts', 'animation_result')
 
 
 _register_builtin_capabilities()

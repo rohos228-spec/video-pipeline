@@ -18,13 +18,16 @@ from app.models import Frame, Project, ProjectStatus
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:
     if project.status is not ProjectStatus.sfx_planning:
         return
-    from app.services.sfx_plan import plan_sfx_events
+    from app.services.sfx_plan import (
+        plan_sfx_events, record_sfx_plan_applied, record_sfx_plan_pass_through,
+    )
     from app.settings import settings
 
     logger.info("[#{}] sfx_plan starting", project.id)
 
     if not settings.sfx_enabled:
         logger.info("[#{}] sfx_plan disabled — pass-through", project.id)
+        record_sfx_plan_pass_through(project)
         project.status = ProjectStatus.sfx_plan_ready
         await session.flush()
         await session.commit()
@@ -49,6 +52,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     meta["sfx_plan"] = True
     project.meta = meta
     project.status = ProjectStatus.sfx_plan_ready
+    record_sfx_plan_applied(project, events)  # journal fact, committed with the line below
     await session.flush()
     await session.commit()
     logger.info("[#{}] sfx_plan done: {} событий", project.id, len(events))

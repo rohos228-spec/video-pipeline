@@ -816,6 +816,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=ref_path,
                     timeout=600,
+                    project_id=project.id,
                 )
             except OutseeImageError as e:
                 # Отличаем модерационный reject от прочего

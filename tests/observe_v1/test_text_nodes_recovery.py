@@ -143,6 +143,75 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
         await self.text_fixture('excel_gpt', inner_json_retry=True)
         self.assertEqual((await self.retry())['preconditions']['effective_node_type'], 'excel_gpt')
 
+    # ---- sfx_plan / animation_prompts: retry_same only, never a profile ------------------------
+    async def test_sfx_plan_and_animation_prompts_exhausted_invalid_json_is_admitted_for_retry_same(self):
+        for node_type in ('sfx_plan', 'animation_prompts'):
+            for incident_type in ('invalid_json', 'missing_payload'):
+                with self.subTest(node_type=node_type, incident=incident_type):
+                    await self.asyncTearDown()
+                    await self.asyncSetUp()
+                    await self.text_fixture(node_type, incident_type=incident_type)
+                    ticket = await self.retry()
+                    self.assertEqual(ticket['status'], 'queued')
+                    self.assertEqual(ticket['preconditions']['effective_node_type'], node_type)
+                    self.assertEqual(ticket['preconditions']['action_type'], 'retry_same')
+                    self.assertIn('retry_same', ticket['preconditions']['capability_actions'])
+                    self.assertNotIn('retry_profile', ticket['preconditions']['capability_actions'])
+                    self.assertEqual(ticket['budget_state']['recovery_limit'], 1)
+
+    async def test_sfx_plan_and_animation_prompts_profile_retry_is_denied_by_capability(self):
+        for node_type in ('sfx_plan', 'animation_prompts'):
+            with self.subTest(node_type=node_type):
+                await self.asyncTearDown()
+                await self.asyncSetUp()
+                await self.text_fixture(node_type)
+                overlay_id = await self.approved_profile_fixture()
+                with self.assertRaisesRegex(ValueError, 'denied by node capability'):
+                    await self.retry(profile_overlay_id=overlay_id)
+                await self.assert_no_dispatch()
+
+    async def test_sfx_plan_and_animation_prompts_contract_rejected_incident_is_refused(self):
+        for node_type in ('sfx_plan', 'animation_prompts'):
+            with self.subTest(node_type=node_type):
+                await self.asyncTearDown()
+                await self.asyncSetUp()
+                await self.text_fixture(node_type, incident_type='contract_rejected')
+                with self.assertRaisesRegex(ValueError, 'current mandatory JSON/payload incident required'):
+                    await self.retry()
+                await self.assert_no_dispatch()
+
+    async def test_sfx_plan_and_animation_prompts_apply_evidence_blocks_retry(self):
+        # animation applies per batch (data_applied after the first one); sfx_plan applies once at the end.
+        for node_type in ('sfx_plan', 'animation_prompts'):
+            with self.subTest(node_type=node_type):
+                await self.asyncTearDown()
+                await self.asyncSetUp()
+                await self.text_fixture(node_type)
+                async with self.sessions() as s:
+                    s.add(ObservationEvent(id=7, event_id=str(uuid.uuid4()), execution_id='exec-durable',
+                        project_id=7, workflow_run_id=11, node_key='n1', attempt_id='source-attempt',
+                        db_scope='project', kind='data_applied', payload={}, created_at=datetime.utcnow()))
+                    (await s.get(DiagnosisState, 'exec-durable')).cursor = 7
+                    await s.commit()
+                with self.assertRaisesRegex(ValueError, 'partial apply'):
+                    await self.retry()
+                await self.assert_no_dispatch()
+
+    async def test_sfx_plan_compares_the_first_body_exactly_animation_masks_attachment_stamps(self):
+        await self.text_fixture('sfx_plan')
+        sfx = await self.retry()
+        self.assertNotIn('first_body_normalization', sfx['preconditions'])
+        self.assertEqual(sfx['preconditions']['first_body_hash'], digest(self.SOURCE_BODY))
+        await self.asyncTearDown()
+        await self.asyncSetUp()
+        await self.text_fixture('animation_prompts')
+        animation = await self.retry()
+        self.assertEqual(animation['preconditions']['first_body_normalization'], 'attachment_timestamps')
+
+    async def test_sfx_plan_recovery_blocks_a_changed_first_request(self):
+        with self.assertRaisesRegex(RuntimeError, 'before transport'):
+            await self.first_request_check('sfx_plan', self.with_stamp('20261001_205929'))
+
     # ---- first-request identity: only attachment file-name stamps are masked --------------
     async def first_request_check(self, node_type, body, *, profile=False):
         from types import SimpleNamespace

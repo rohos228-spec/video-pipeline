@@ -5,6 +5,7 @@ import {
   approvePlan, canApprove, canRunWithoutApproval, describeError, describeParams, formatStepCost, formatTotalCost,
   runPlan, RISK_LABEL_RU, serverTextRu, useActionTitles, type PlanPreview, type PlanPreviewResponse, type RiskTier,
 } from "@/lib/action-layer";
+import {attachmentInfo, clarificationOptions, clarificationQuestion} from "@/lib/clarification-view";
 import {cn} from "@/lib/utils";
 
 const RISK_CLASS: Record<RiskTier, string> = {
@@ -24,20 +25,47 @@ interface Props {
   busyElsewhere?: boolean;
   onStarted: (planId: string) => void;
   onDismiss: () => void;
+  /** Нажат вариант ответа на уточнение: родитель повторно отправляет запрос + вариант. */
+  onClarify?: (option: string) => void;
+  clarifying?: boolean;
+  clarifyError?: string;
 }
 
 export function PlanCard(props: Props) {
   const {plan, onDismiss} = props;
-  if (!plan.preview) {
-    return (
-      <section aria-label="Уточнение" data-testid="action-plan-card" className="space-y-2 rounded border border-amber-400/30 bg-amber-500/10 p-2 text-xs">
-        <p className="font-semibold text-amber-100">Планировщик просит уточнить запрос. План не создан, ничего не запущено.</p>
-        {plan.explanation_ru && <p className="text-amber-50/90">{plan.explanation_ru}</p>}
-        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onDismiss}>Закрыть</Button>
-      </section>
-    );
-  }
+  if (!plan.preview) return <ClarificationCard {...props} />;
   return <PlanCardInner {...props} preview={plan.preview} />;
+}
+
+function ClarificationCard({plan, onDismiss, onClarify, clarifying, clarifyError}: Props) {
+  const titles = useActionTitles();
+  const question = clarificationQuestion(plan);
+  const options = clarificationOptions(plan);
+  const attach = plan.attachment_request;
+  return (
+    <section aria-label="Уточнение" data-testid="action-plan-card" className="space-y-2 rounded border border-amber-400/30 bg-amber-500/10 p-2 text-xs">
+      <p className="font-semibold text-amber-100">Планировщик просит уточнить запрос. План не создан, ничего не запущено.</p>
+      {question && <p className="text-amber-50/90" data-testid="clarification-question">{question}</p>}
+      {options.length > 0 && onClarify && (
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Варианты ответа" data-testid="clarification-options">
+          {options.map((o) => (
+            <Button key={o} type="button" size="sm" variant="outline" className="h-7 border-amber-400/50 text-xs text-amber-50"
+              disabled={clarifying} onClick={() => onClarify(o)}>
+              {o}
+            </Button>
+          ))}
+        </div>
+      )}
+      {attach && (
+        <p className="text-amber-50/80" data-testid="attachment-info">
+          {attachmentInfo(attach, titles[attach.action_id])}
+        </p>
+      )}
+      {clarifying && <p className="text-white/60" data-testid="clarification-busy">Составляю план с уточнением…</p>}
+      {clarifyError && <p role="alert" className="text-red-300">{clarifyError}</p>}
+      <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={clarifying} onClick={onDismiss}>Закрыть</Button>
+    </section>
+  );
 }
 
 function PlanCardInner({plan, preview, busyElsewhere, onStarted, onDismiss}: Props & {preview: PlanPreview}) {

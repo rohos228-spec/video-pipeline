@@ -8,7 +8,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.services.action_layer import approval, executor, macros, planner, service
+from app.services.action_layer import (
+    approval, executor, macros, planner, planner_autofill, planner_rules, service)
 from app.services.action_layer.plan import PlanFormatError
 from app.services.action_layer.spec import ensure_builtin_actions
 from app.services.action_layer.spec import registry as default_registry
@@ -113,8 +114,11 @@ async def plan_from_text(request: Request, body: FromTextIn, operator: AuthDep) 
     except planner.PlannerFailed as exc:
         raise HTTPException(502, detail={"code": exc.code, "message": str(exc)}) from exc
     reply = outcome.reply
-    extra = {"explanation_ru": reply.explanation_ru,
+    notes = await planner_autofill.fill_node_run_limits(request.app, who.id, reply.steps)
+    extra = {"explanation_ru": planner_rules.with_defaults_note(reply.explanation_ru, notes),
              "needs_clarification": reply.needs_clarification,
+             "clarification_options": list(reply.clarification_options),
+             "attachment_request": reply.attachment,
              "context_version": outcome.context["version"], "planner": outcome.meta}
     if reply.needs_clarification:
         return {"plan_id": None, "preview": None, **extra}

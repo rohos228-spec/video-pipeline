@@ -6,6 +6,7 @@ export type ProfileState = {base_version:string|null;catalog_hash:string;synthet
   catalog:{profile_id:string;model_id:string;reasoning_effort?:string;max_output_tokens?:number;prompt_variant?:string}[];overlays:ProfileOverlay[]};
 import { http } from "./api";
 import type { ObservationEvent } from "./observation-view";
+import type { NodeCoverage } from "./node-coverage-view";
 
 export interface DiagnosticIncident {
   incident_id:string;node_key:string|null;node_title:string;attempt_id:string|null;
@@ -137,6 +138,8 @@ export const observations = {
   retryNode: (project:number,execution:string,payload:{incident_id:string;node_key:string;rationale:string;idempotency_key:string}) =>
     http(path(project,execution)+"/actions/retry",{method:"POST",body:JSON.stringify(payload)}),
   // Project-wide, deliberately not execution-scoped -- aggregates across every execution this project has had.
+  // Read-only registry data (which node types the supervisor manages, observes or leaves to a human).
+  nodeCoverage: (project:number)=>http<NodeCoverage>(path(project)+"/node-coverage"),
   telemetry: (project:number,since_hours?:number)=>http<TelemetrySummary>(path(project)+"/telemetry"+(since_hours?`?since_hours=${since_hours}`:"")),
   // Server-Sent Events variant of the same endpoint: same fetch+reader
   // pattern api.ts's gptAskStream already uses (not the EventSource API --

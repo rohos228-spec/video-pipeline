@@ -73,7 +73,11 @@ export interface PlanPreviewResponse {
   plan_id: string | null;
   preview: PlanPreview | null;
   explanation_ru?: string | null;
-  needs_clarification?: boolean;
+  needs_clarification?: boolean | string | null;
+  /** Короткие варианты ответа на уточнение (для кнопок); пусто, если вариантов нет. */
+  clarification_options?: string[];
+  /** Планировщик ждёт файл: какое действие он применит после загрузки (кнопкой загрузки). */
+  attachment_request?: { action_id: string; params: Record<string, unknown>; formats?: string } | null;
   context_version?: string | number | null;
   macro_id?: string | null;
   steps?: { action_id: string; params: Record<string, unknown>; depends_on?: number[] }[];

@@ -28,9 +28,10 @@ _UNCLAIMED = {
 def animation_prompts_contract():
     """Describe the shipped executor, parser, writes and coverage rules."""
     from app.services import animation_prompt_gpt as native
-    from app.services.node_capabilities import READ_ACTIONS
+    from app.services.node_capabilities import capability_for
     from app.services.node_write_contract import ANIM_PROMPT_FIELDS
 
+    capability = capability_for("animation_prompts")
     return {
         "node_type": "animation_prompts",
         "executor": "app.orchestrator.steps.make_animation_prompts.run",
@@ -56,8 +57,14 @@ def animation_prompts_contract():
         "raw_apply_ops_blob_is_prompt": False,
         "write_authority": "existing worker only",
         "arbitrary_shell_code_paths": False,
-        "managed": False,
-        "actions": READ_ACTIONS,
+        "managed": capability.managed,
+        "actions": capability.actions,
+        "payload_required": True,
+        "retry_policy": "ONE supervisor retry_same per node and execution, only for invalid_json / "
+                        "missing_payload of a batch reply while NO batch has been applied "
+                        "(any apply_input/data_applied/apply_error of the failed attempt forbids it); "
+                        "no profile retry (vision input cannot be rebuilt by a profile)",
+        "degradation_not_detected": ["local fallback after provider outage", "skipped shot_02 remainder"],
         **_UNCLAIMED,
     }
 
@@ -331,6 +338,12 @@ async def record_animation_parse(reply, pairs, ops, *, shot, target_uuids):
     await record_fact("parse_result", {
         "contract": "native_animation_prompts", "shot": shot,
         "syntax_valid": syntax_valid, "parsed": bool(pairs and ops),
+        # Every batch needs usable pairs; the native executor raises right after a batch
+        # without them. A reply that is not a JSON object is normal here (the reply format
+        # is "image id / animation text" pairs), so syntax_valid=False alone says nothing.
+        "payload_required": True, "payload_present": bool(pairs),
+        "nonempty_payload_required": True,
+        "payload_format": "animation_pairs_or_apply_ops",
         "schema_valid": bool(scoped), "ops_count": len(ops),
         "batch_coverage_complete": bool(scoped and set(ids) == set(target_uuids)),
         "parser": "original animation_prompt_gpt.parse_animation_reply and filtered native ops",

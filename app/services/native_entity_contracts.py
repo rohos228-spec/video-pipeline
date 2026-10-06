@@ -50,6 +50,24 @@ def hero_entity_contract():
     }
 
 
+def items_entity_contract():
+    """Read-only description of the items executor; grants no execution path."""
+    from app.services.node_capabilities import READ_ACTIONS
+
+    return {
+        "node_type": "items", "artifact_kind": "item_reference",
+        "executor": "app.orchestrator.steps.generate_items.run",
+        "input_sources": ["Project.item_descriptions"],
+        "outbound_image_generation": True, "optional_step": True,
+        "hitl_required": False,
+        "on_failure": "status rolls back to hero_ready; the operator edits the description and reruns",
+        "actions": READ_ACTIONS, "managed": False, "managed_eligible": False,
+        "semantic_quality_verified": False, "business_commit_claim": False,
+        "retry_policy": "original executor only; a rerun submits paid image generation again",
+        "write_authority": "existing worker only", "arbitrary_shell_code_paths": False,
+    }
+
+
 def _get(row, field):
     return row.get(field) if isinstance(row, dict) else getattr(row, field, None)
 

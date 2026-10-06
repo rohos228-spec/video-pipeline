@@ -213,14 +213,26 @@ def _record_provider_fallback(project: Project, idx: int, kind: str, exc: BaseEx
 # ── Генерация плана событий ───────────────────────────────────────────────
 
 
+def _retry_eligible(rec: dict[str, Any]) -> bool:
+    """Откат на локальный синтез после ОТВЕТА провайдера (списания не было) и без прежнего повтора."""
+    fb = rec.get("provider_fallback")
+    return (rec.get("provider") == "local_synth" and isinstance(fb, dict)
+            and fb.get("may_have_charged") == "no" and not rec.get("provider_retry"))
+
+
 async def generate_sfx_files(
     session: AsyncSession,
     project: Project,
     events: list[SfxEvent],
     *,
     force: bool = False,
+    retry_degraded: bool = False,
 ) -> list[dict[str, Any]]:
-    """Сгенерировать файлы для событий плана. Возвращает sfx_files-записи."""
+    """Сгенерировать файлы для событий плана. Возвращает sfx_files-записи.
+
+    retry_degraded: событие, ушедшее на локальный синтез после ответа провайдера (may_have_charged=no),
+    получает ровно один повторный платный вызов (поле provider_retry). Откат после таймаута или обрыва
+    (uncertain) и событие с уже сделанным повтором не повторяются никогда."""
     from app.settings import settings
 
     if not events:
@@ -242,11 +254,14 @@ async def generate_sfx_files(
     fallbacks: list[dict[str, Any]] = []
 
     for idx, ev in enumerate(events):
+        retry_of: dict[str, Any] | None = None
         if not force and idx in done_by_idx:
             rec = done_by_idx[idx]
             if Path(str(rec.get("path") or "")).is_file():
-                files.append(rec)
-                continue
+                if not (retry_degraded and use_api and _retry_eligible(rec)):
+                    files.append(rec)
+                    continue
+                retry_of = rec
         ext = "mp3" if use_api else "wav"
         out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.{ext}"
         actual_provider = "elevenlabs" if use_api else "local_synth"
@@ -256,6 +271,8 @@ async def generate_sfx_files(
             else:
                 samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
                 _write_wav(out_path, samples)
+        except media_spend.ResumeOnlyBlocked:
+            raise  # режим «только возобновление»: платный запрос запрещён, молча подменять нельзя
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "[#{}] sfx_gen: событие {} ({}) упало: {} — локальный синтез",
@@ -289,6 +306,7 @@ async def generate_sfx_files(
                 "duck": ev.duck,
                 "provider": actual_provider,
                 **({"provider_fallback": fallbacks[-1]} if actual_provider == "local_synth" and use_api else {}),
+                **({"provider_retry": 1} if retry_of is not None else {}),
             }
         )
 

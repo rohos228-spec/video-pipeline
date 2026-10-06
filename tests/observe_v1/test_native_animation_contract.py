@@ -174,8 +174,10 @@ class NativeAnimationContracts(unittest.TestCase):
         self.assertEqual(contract["shot2_min_characters"], native().MIN_SHOT2_VIDEO_PROMPT_LEN)
         self.assertFalse(contract["primary_png_required"])
         self.assertFalse(contract["child_exemption"])
-        self.assertFalse(contract["managed"])
-        self.assertEqual(tuple(contract["actions"]), READ_ACTIONS)
+        # The description follows the capability: retry_same only, never a profile retry.
+        self.assertTrue(contract["managed"])
+        self.assertEqual(tuple(contract["actions"]), READ_ACTIONS + ("retry_same", "finish"))
+        self.assertTrue(contract["payload_required"])
         assert_unclaimed(self, contract)
         self.assertTrue(callable(make_animation_prompts.run))
         self.assertTrue(callable(make_animation_prompts._save_anim_pr_batch))

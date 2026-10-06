@@ -263,7 +263,9 @@ class NativeSfxObservation(unittest.IsolatedAsyncioTestCase):
         from app.services.node_capabilities import capability_for
         from app.services.observation import ExecutionControl
 
-        self.assertFalse(capability_for("sfx_plan").managed)
+        # sfx_plan allows one bounded retry_same (never a profile retry); sfx_gen stays unmanaged.
+        # Neither grants authority to an observation scope: the checks below stay in force.
+        self.assertNotIn("retry_profile", capability_for("sfx_plan").actions)
         self.assertFalse(capability_for("sfx_gen").managed)
         self.assertIsNone(get_permission(7))
         async with self.sessions() as reader:

@@ -63,6 +63,12 @@ const FIX_BUGS_PREFIX =
   "Проекты/ноды Studio — через actions (delete_projects / create_project / add_node…), " +
   "не через edit_files. Кратко по-русски: причина + что исправил.\n\nПОРУЧЕНИЕ:\n";
 
+/** Правка кода и git push из чата по умолчанию выключены (CHAT_CODE_ACTIONS_ENABLED=false); статуса настройки API не отдаёт. */
+export const BUG_MODE_LABEL = "Диагностика багов";
+export const BUG_MODE_CODE_NOTE =
+  "Правка кода и git push из чата по умолчанию выключены (CHAT_CODE_ACTIONS_ENABLED=false): " +
+  "оркестратор ищет причину и запускает шаги пайплайна, но код не меняет, пока настройку не включат на сервере.";
+
 export function OrchestratorPanel({ projectId }: Props) {
   const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
   const [expanded, setExpanded] = usePersistedState("vp-orchestrator-expanded", true);
@@ -526,12 +532,12 @@ export function OrchestratorPanel({ projectId }: Props) {
             aria-pressed={fixBugsMode}
             title={
               fixBugsMode
-                ? "Повторное нажатие — выйти из режима фикса"
-                : "Нажать — режим фикса; потом опиши баг. Ещё раз — выйти"
+                ? "Повторное нажатие — выйти из режима диагностики"
+                : `Нажать — режим диагностики; потом опиши баг. Ещё раз — выйти. ${BUG_MODE_CODE_NOTE}`
             }
           >
             <Bug className="h-3.5 w-3.5" />
-            Фикс багов
+            {BUG_MODE_LABEL}
           </Button>
         )}
 
@@ -578,13 +584,14 @@ export function OrchestratorPanel({ projectId }: Props) {
             <div className="my-3 border-t border-white/10" />
             {fixBugsMode ? (
               <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-100/90">
-                Режим фикса: оркестратор должен чинить (шаги/код), не только объяснить.
-                Напиши баг → Enter. Ещё раз «Фикс багов» — выход в обычный чат.
+                Режим диагностики: оркестратор ищет причину и запускает шаги, не только объясняет.
+                {" "}{BUG_MODE_CODE_NOTE}
+                {" "}Напиши баг → Enter. Ещё раз «{BUG_MODE_LABEL}» — выход в обычный чат.
               </div>
             ) : null}
             {chatLog.length === 0 && !fixBugsMode ? (
               <div className="text-[11px] text-white/35 leading-relaxed">
-                Задайте вопрос по проекту, попросите изменить параметры или нажмите «Фикс багов» для решения проблемы.
+                Задайте вопрос по проекту, попросите изменить параметры или нажмите «{BUG_MODE_LABEL}», чтобы найти причину проблемы.
               </div>
             ) : null}
             {chatLog.map((m, i) => (

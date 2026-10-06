@@ -122,9 +122,14 @@ async def _describe_hero(node):
     return hero_entity_contract()
 
 
-async def _describe_animation(node):
-    from app.services.native_animation_contracts import animation_prompts_contract
-    return animation_prompts_contract()
+async def _describe_items(node):
+    from app.services.native_entity_contracts import items_entity_contract
+    return items_entity_contract()
+
+
+async def _describe_legacy_scene_design(node):
+    from app.services.scene_contracts import legacy_scene_design_contract
+    return legacy_scene_design_contract()
 
 
 async def _describe_scene(node):
@@ -169,6 +174,52 @@ async def _contract_project_text(c):
         'source':'native project text executor/validator; authoritative project DB',
         'contract':project_text_contract(capability.node_type),
         'current_output':verify_project_text(project,capability.node_type),
+        'compatible_profiles':[],'cost_status':'unknown_tariff'})
+
+
+async def _read_project_and_frames(s,row):
+    """Project + Frame rows from the authoritative project DB (read-only)."""
+    from app.models import Frame
+    project=await s.get(Project,row.project_id)
+    if not project:raise ValueError('project contract unavailable')
+    if project.data_dir:
+        from app.project_db import project_db_session_scope
+        async with project_db_session_scope(row.project_id) as ps:
+            project=await ps.get(Project,row.project_id)
+            if not project:raise ValueError('project contract unavailable')
+            frames=(await ps.scalars(select(Frame).where(Frame.project_id==row.project_id)
+                .order_by(Frame.sort_key,Frame.number))).all()
+            return project,frames,{'sfx_plan_file':(project.data_dir/'sfx_plan.json').is_file()}
+    frames=(await s.scalars(select(Frame).where(Frame.project_id==row.project_id)
+        .order_by(Frame.sort_key,Frame.number))).all()
+    return project,frames,{'sfx_plan_file':False}
+
+
+async def _contract_sfx_plan(c):
+    s,row,scope,context,capability=c.s,c.row,c.scope,c.context,c.capability
+    from app.services.sfx_plan import sfx_plan_contract,sfx_plan_current_output
+    project,frames,files=await _read_project_and_frames(s,row)
+    return panel_safe({**capability.contract(),'node_key':row.node_key,
+        'graph_version':scope.graph_version,'context_version':context['context_version'],
+        'source':'native sfx_plan executor/validator; authoritative project DB',
+        'contract':sfx_plan_contract(),
+        'current_output':{**sfx_plan_current_output(project,frames),**files},
+        'compatible_profiles':[],'cost_status':'unknown_tariff'})
+
+
+async def _contract_animation_prompts(c):
+    s,row,scope,context,capability=c.s,c.row,c.scope,c.context,c.capability
+    from app.services import animation_prompt_gpt as native
+    from app.services.native_animation_contracts import animation_prompts_contract
+    project,frames,_=await _read_project_and_frames(s,row)
+    targets=[f for f in frames if native.frame_has_usable_image_prompt(f)]
+    return panel_safe({**capability.contract(),'node_key':row.node_key,
+        'graph_version':scope.graph_version,'context_version':context['context_version'],
+        'source':'native animation executor/parser; authoritative project DB',
+        'contract':animation_prompts_contract(),
+        'current_output':{'frame_count':len(frames),'target_frame_count':len(targets),
+            'primary_ready_count':sum(bool(native.has_animation_prompt_for_frame(project,f)) for f in targets)},
+        'verification_status':'not_checked; requires captured input and committed verification evidence',
         'compatible_profiles':[],'cost_status':'unknown_tariff'})
 
 
@@ -256,9 +307,11 @@ def _register_contracts():
     from app.orchestrator import node_spec
     for name,fn in (('unsupported',_contract_unsupported),('project_text',_contract_project_text),
             ('frame_rows',_contract_frame_rows),('media_jobs',_contract_media_jobs),
-            ('structured',_contract_structured)):
+            ('structured',_contract_structured),('sfx_plan',_contract_sfx_plan),
+            ('animation_prompts',_contract_animation_prompts)):
         node_spec.register_contract_builder(name,fn,replace=True)
-    for node_type,fn in (('hero',_describe_hero),('animation_prompts',_describe_animation),
+    for node_type,fn in (('hero',_describe_hero),('items',_describe_items),
+            ('scene_design',_describe_legacy_scene_design),
             ('sd_agent',_describe_scene),('sd_assemble',_describe_scene)):
         node_spec.register_descriptive_contract(node_type,fn,replace=True)
 
