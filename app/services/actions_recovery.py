@@ -122,6 +122,28 @@ async def input_revision(session, project, node_key, *, parts=None):
     return await compute_input_revision(session, project, node_key, parts=parts)
 
 
+class NodeNotAdmitted(ValueError, RuntimeError):
+    """Typed refusal: this graph node (not just its type) is outside the managed-retry set. ``code`` is machine
+    readable, the message is for people. A ValueError at ticket issue and a RuntimeError at claim, so every
+    existing handler of either stage keeps catching it."""
+    code = "node_not_admitted"
+
+    def __init__(self, problem: str, stage: str):
+        self.problem, self.stage = problem, stage
+        super().__init__(f"восстановление отклонено [{self.code}] {stage}: этот узел не допущен к управляемому "
+                         f"повтору, решает человек ({problem})")
+
+
+def _require_node_admitted(graph_node, stage: str) -> None:
+    """Per-NODE admission inside recovery: a node type's capability is shared by nodes that differ in what a failed
+    attempt leaves behind (sd_agent: five agents), so the type check alone must never issue or run a ticket for a
+    node that node_admission_problem refuses, whatever path put it in the execution grant."""
+    from app.orchestrator.node_spec import node_admission_problem
+    problem = node_admission_problem(graph_node)
+    if problem:
+        raise NodeNotAdmitted(problem, stage)
+
+
 async def recover_node(supervisor, *, project_id, execution_id, incident_id, node_key,
                        idempotency_key, initiator, rationale, decision_id=None, profile_overlay_id=None):
     from app.services.diagnosis import Incident, DiagnosisState, get_diagnoser
@@ -214,6 +236,7 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
         if graph_node is None:
             raise ValueError("recovery node capability unavailable in workflow snapshot")
         node_type = effective_node_type(graph_node)
+        _require_node_admitted(graph_node, "до выдачи билета")
         capability = capability_for(node_type)
         if media and not media_admission.admitted(node_type):
             raise media_admission.MediaAdmissionDenied("node_not_admitted", node_type)
@@ -468,6 +491,7 @@ async def claim(observer, session, project, node_key, attempt_id, *, execution_i
         if graph_node is None:
             raise RuntimeError("recovery node capability unavailable before claim")
         node_type = effective_node_type(graph_node)
+        _require_node_admitted(graph_node, "перед запуском повтора")
         capability = capability_for(node_type)
         if not capability.managed or action_type not in capability.actions:
             raise RuntimeError(f"recovery strategy {action_type} denied by node capability before claim: {node_type}")

@@ -1292,7 +1292,7 @@
     "local_checkpoint",
     "local_file"
    ],
-   "executor": "scene_design.run → scene_contracts.verify_scene_agent",
+   "executor": "scene_design.run → scene_contracts.verify_scene_agent → pkg:scene_design",
    "managed": true,
    "native_json_retry": false,
    "node_type": "sd_agent",
@@ -1329,7 +1329,7 @@
     "local_checkpoint",
     "local_file"
    ],
-   "executor": "scene_design.run → scene_contracts.verify_scene_agent",
+   "executor": "scene_design.run → scene_contracts.verify_scene_agent → pkg:scene_design",
    "managed": true,
    "native_json_retry": false,
    "node_type": "sd_agent",

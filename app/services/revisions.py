@@ -228,14 +228,39 @@ def _module_file(module: str) -> str | None:
     return None
 
 
+PACKAGE_MARK = "pkg:"
+
+
+def _package_files(name: str) -> list[str]:
+    """Every .py file of one package directory, as sorted posix paths relative to the project root.
+
+    Deterministic (sorted, no dependence on directory order), recursive, bytecode caches excluded.
+    A package that is not a directory, or holds no source file, is unresolvable (fail-closed)."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise LookupError(f"executor package {name!r} is not a plain package name")
+    for base in ("app/services", "app/orchestrator/steps", "app/bots", "app"):
+        root = PROJECT_ROOT / base / name
+        if root.is_dir():
+            rels = sorted(path.relative_to(PROJECT_ROOT).as_posix() for path in root.rglob("*.py")
+                          if path.is_file() and "__pycache__" not in path.parts)
+            if not rels:
+                raise LookupError(f"executor package {name!r} holds no source file")
+            return rels
+    raise LookupError(f"executor package {name!r} not found")
+
+
 def executor_modules(capability) -> list[str]:
     """Module files named by the capability's executor description, e.g.
-    'make_plan.run -> xlsx_step_runners.run_plan_xlsx'. Raises if one is unresolvable."""
+    'make_plan.run -> xlsx_step_runners.run_plan_xlsx'. A 'pkg:<name>' chunk names a whole package
+    directory (every .py file under it, sorted). Raises if one is unresolvable."""
     files = []
     for part in re.split(r"→|->", capability.executor or ""):
         for chunk in part.split("/"):
             chunk = chunk.strip()
             if not chunk:
+                continue
+            if chunk.startswith(PACKAGE_MARK):
+                files.extend(_package_files(chunk[len(PACKAGE_MARK):].strip()))
                 continue
             module = chunk.split(".")[0].strip()
             rel = _module_file(module)

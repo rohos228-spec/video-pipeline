@@ -294,7 +294,7 @@ ACTION_NOTES: dict[str, str] = {
     "montage.merge_scenes": "left/right = frame_id голов соседних сцен.",
     "montage.explode_scene": "frame_id головы сцены.",
     "montage.split_scene": "frame_id отделяемого кадра (не головы сцены).",
-    "montage.set_coverage": "plan ОБЩИЙ|ДАЛЬНИЙ|СРЕДНИЙ|КРУПНЫЙ|ДЕТАЛЬ; angle фронт|3/4|с плеча|сверху|снизу|макро; "
+    "montage.set_coverage": "Не для «меню съёмки» (там shot.edit_field). plan ОБЩИЙ|ДАЛЬНИЙ|СРЕДНИЙ|КРУПНЫЙ|ДЕТАЛЬ; angle фронт|3/4|с плеча|сверху|снизу|макро; "
                             "move статика|наезд|отъезд|панорама|следование|ручная; light дневной|ночной|закат|"
                             "рассвет|контровой|холодный верхний|туман. parent_number только для coverage_kind.",
     "montage.set_assemble_params": "Передай только названные настройки. bgm_level: шкала 0..100, доля 0.2 = 20.",
@@ -319,7 +319,12 @@ ACTION_NOTES: dict[str, str] = {
     "prompt.delete_master": "step_code из слов запроса или где есть вариант; выбранный в проекте и default "
                             "не удаляются.",
     "shot.edit_cell_voiceover": "parent_uuid из frame_uuids.",
-    "shot.edit_field": "frame_uuid из frame_uuids.",
+    "shot.edit_field": "frame_uuid из frame_uuids. «В меню съёмки ... движение/крупность/стык» = это действие "
+                       "(field move/size/...), не montage.set_coverage.",
+    "shot.add_cell": "Позицию не спрашивай: без before_index ячейка идёт в конец.",
+    "group.get": "«Открой описание/состав группы X» = group_id X (group.list не нужен).",
+    "group.list": "Только каталог групп без названной группы; названная группа - group.get.",
+    "node.clear_check_agent": "node_key только названная или выбранная нода; не угадывай из списка нод - вопрос, какая нода.",
 }
 for _aid in UPLOAD_ACTIONS:
     ACTION_NOTES[_aid] = _UPLOAD_NOTE

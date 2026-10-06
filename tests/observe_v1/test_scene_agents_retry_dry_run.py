@@ -360,6 +360,114 @@ class RefusedAgents(ManagedSceneFixture):
         self.assertIsNone(node_admission_problem({"id": "n", "type": "excel_gpt", "data": {}}))
 
 
+class RecoveryNodeAdmission(ManagedSceneFixture):
+    """Defence in depth: node admission is enforced INSIDE recovery too, not only at enable / launch.
+
+    The scope is enabled for an admitted agent (characters) and the node is then turned into a refused one in the
+    execution's graph (recover_node), or the admission rule is made to refuse it after the ticket was queued
+    (claim): the capability of the TYPE (sd_agent, managed, retry_same) alone must never issue or run a ticket."""
+    agent = "characters"
+    bad_reply = "I cannot produce JSON for this."
+
+    async def turn_node_into(self, agent, node_type="sd_agent"):
+        """Rewrite node n1 in the master graph and keep the scope's graph version equal to it, so that only the
+        per-node admission can stop the ticket (the graph check passes)."""
+        from app.models import Workflow, WorkflowRun
+        from app.services import revisions
+        nodes = [{"id": "n1", "type": node_type, "data": {"groupId": "g1", "sd_agent": agent}}, self.nodes[1]]
+        version = revisions.graph_version(nodes, [])
+        async with self.sessions() as master:
+            (await master.get(Workflow, 9)).nodes = nodes
+            (await master.get(WorkflowRun, 11)).nodes_snapshot = nodes
+            (await master.get(observation.ExecutionControl, EXECUTION)).graph_version = version
+            (await master.get(base_tests.ActionExecutionControl, EXECUTION)).graph_version = version
+            await master.commit()
+        await self.observer.reload()
+
+    async def refused_at_recover(self, agent, code, node_type="sd_agent"):
+        from app.services.actions_recovery import NodeNotAdmitted
+        await self.failed_native_attempts([self.bad_reply])
+        incident = await self.typed_incident()
+        await self.turn_node_into(agent, node_type)
+        with self.assertRaises(NodeNotAdmitted) as caught:
+            await self.supervisor.recover_node(project_id=7, execution_id=EXECUTION,
+                incident_id=incident.incident_id, node_key="n1", idempotency_key=f"refused-{agent}-0001",
+                initiator="dry-run", rationale="a refused agent must never get a ticket")
+        self.assertEqual(caught.exception.code, "node_not_admitted")
+        named = "legacy" if node_type == "scene_design" else agent
+        self.assertRegex(str(caught.exception), rf"scene agent '{named}' is not admitted .*\({code}\)")
+        self.assertIn("не допущен", str(caught.exception))
+        self.assertIsInstance(caught.exception, ValueError)
+        self.assertIsNone(await self.ticket(), "no recovery ticket was issued")
+
+    async def test_recover_node_refuses_skeleton(self):
+        await self.refused_at_recover("skeleton", "two_stage_state")
+
+    async def test_recover_node_refuses_camera(self):
+        await self.refused_at_recover("camera", "chunked_requests")
+
+    async def test_recover_node_refuses_action(self):
+        await self.refused_at_recover("action", "chunked_requests")
+
+    async def test_recover_node_refuses_the_legacy_scene_design_node(self):
+        await self.refused_at_recover("characters", "legacy_union", node_type="scene_design")
+
+    async def refused_at_claim(self, agent, code):
+        """A ticket queued for an admitted node; the admission rule then refuses the node: the claim must stop
+        before the retry runs, leave the ticket queued and send no request."""
+        from app.orchestrator import node_spec
+        from app.services.actions_recovery import NodeNotAdmitted
+        await self.failed_native_attempts([self.bad_reply])
+        incident = await self.typed_incident()
+        await self.decide_retry(incident)
+        ticket = await self.ticket()
+        self.assertEqual(ticket.status, "queued")
+        bodies_before = len(sd.SCRIPT["bodies"])
+        original = node_spec._NODE_ADMISSIONS["sd_agent"]
+
+        def refuse_as(node):
+            data = dict(node.get("data") or {}, sd_agent=agent)
+            return original({**node, "data": data})
+        node_spec.register_node_admission("sd_agent", refuse_as, replace=True)
+        try:
+            with self.assertRaises(NodeNotAdmitted) as caught:
+                await self.worker([self.good_reply()], start=False)
+        finally:
+            node_spec.register_node_admission("sd_agent", original, replace=True)
+        self.assertRegex(str(caught.exception), rf"scene agent '{agent}' is not admitted .*\({code}\)")
+        self.assertIsInstance(caught.exception, RuntimeError)
+        self.assertEqual((await self.ticket()).status, "queued", "the ticket was not consumed")
+        self.assertEqual(len(sd.SCRIPT["bodies"]), bodies_before, "the retry sent no request")
+        self.assertEqual(await self.facts("data_applied"), [])
+
+    def good_reply(self):
+        return json.dumps(sd.GOOD_CHARACTERS, ensure_ascii=False)
+
+    async def test_claim_refuses_skeleton(self):
+        await self.refused_at_claim("skeleton", "two_stage_state")
+
+    async def test_claim_refuses_camera(self):
+        await self.refused_at_claim("camera", "chunked_requests")
+
+    async def test_claim_refuses_action(self):
+        await self.refused_at_claim("action", "chunked_requests")
+
+    async def test_admitted_agent_still_passes_both_checks(self):
+        """Control: the same flow for an admitted agent issues the ticket and claims it (the full path is proven by
+        CharactersRetry / WorldRetry; here the two new checks are shown not to refuse it)."""
+        from app.services.actions_recovery import NodeNotAdmitted
+        await self.failed_native_attempts([self.bad_reply])
+        incident = await self.typed_incident()
+        await self.decide_retry(incident)
+        self.assertEqual((await self.ticket()).status, "queued")
+        try:
+            await self.worker([self.good_reply()], start=False)
+        except NodeNotAdmitted:
+            self.fail("an admitted agent must not be refused inside recovery")
+        finish_job_tracking(7)
+        self.assertNotEqual((await self.ticket()).status, "queued")
+
+
 class ManagedResultGate(ManagedSceneFixture):
     """In a managed scope a result that fails the independent check holds the execution."""
     agent = "characters"

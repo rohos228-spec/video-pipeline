@@ -163,6 +163,9 @@ def _register_builtin_capabilities() -> None:
                     'Один билет на ноду за запуск; решает оценка media_recovery.assess',
                     'Повторная платная отправка по провалу надзором не допущена',
                     'У Outsee нет task id: неизвестный исход блокирует повтор, решает человек',
+                    'Возобновление действует только для открытой задачи Kie в журнале: нативный шаг предметов при '
+                    'модели Kie отправляет запрос в Outsee, а не в Kie (docs/MEDIA_ROUTE_AUDIT.md), так что такую '
+                    'строку он сам не создаёт; доказано сухим прогоном через run_generation, не маршрутом шага',
                     'Надзор ноду не запускает и не перезапускает'),
             recovery_cap=1),
         C('music', 'audio', 'generate_music.run → kie_http',
@@ -277,7 +280,7 @@ def _register_builtin_capabilities() -> None:
                     'Не запускает videos (платная нода с утверждением человеком)'),
             recovery_cap=1),
         C('sd_agent', 'structured',
-            'scene_design.run → scene_contracts.verify_scene_agent',
+            'scene_design.run → scene_contracts.verify_scene_agent → pkg:scene_design',
             ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
             ('project_database', 'local_checkpoint', 'local_file'),
             READ_ACTIONS + ('retry_same', 'finish'), True, native_json_retry=False,
@@ -379,7 +382,9 @@ MEDIA_RECOVERY_DECISIONS = {
         "provider": "outsee/kie via generate_image_with_retries",
         "reason": "Supervisor admission is a resume of a known Kie task id only (poll and download inside the "
                   "resume-only scope, zero new paid requests); Outsee has no task id (unknown outcome, never "
-                  "resubmitted) and a paid re-submit stays with the native layer or a human: a retry could double-pay."},
+                  "resubmitted) and a paid re-submit stays with the native layer or a human: a retry could double-pay. "
+                  "The native items step routes a Kie slug to the Outsee seam (docs/MEDIA_ROUTE_AUDIT.md), so the Kie "
+                  "task row this resume needs is not created by the step itself."},
     "images": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
         "provider": "kie (managed, synthetic loopback only) / outsee (native)",
         "reason": "Managed route is synthetic-loopback only (no authorized production network profile); "

@@ -156,3 +156,16 @@ def test_live_script_refuses_without_live_flag_and_reads_only_whitelisted_env(tm
     p = subprocess.run([sys.executable, str(script), "--env-file", str(env_file), "--seed-data", str(tmp_path)],
                        capture_output=True, text=True, encoding="utf-8")
     assert p.returncode == 2 and "needs --live" in p.stdout
+
+
+@pytest.mark.parametrize("text,want", [
+    ("открой описание группы script_frames_qc", "group.get"),
+    ("в меню съёмки у этого кадра поставь движение «наезд»", "shot.edit_field"),
+    ("добавь пустую ячейку в меню съёмки", "shot.add_cell"),
+    ("сбрось агента проверки", "node.clear_check_agent"),
+])
+def test_eval9_phrases_offer_expected_action(text: str, want: str) -> None:
+    ensure_builtin_actions()
+    sel = planner_catalog.select_catalog(text, {"project_id": 1, "selected_frame": 12, "nodes": []},
+                                         registry, MAX_CATALOG)
+    assert want in sel.offered, sel.ids

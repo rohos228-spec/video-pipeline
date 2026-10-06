@@ -355,3 +355,14 @@ def test_clean_options_are_short_unique_and_limited() -> None:
     assert out[0] == "шот 1" and len(out) == rules.MAX_OPTIONS
     assert all(len(o) <= rules.MAX_OPTION_LEN for o in out)
     assert rules.clean_options(None) == [] and rules.clean_options("шот") == []
+
+
+def test_notes_steer_eval9_failures() -> None:
+    ensure_builtin_actions()
+    n = rules.notes_for(["group.get", "group.list", "shot.add_cell", "shot.edit_field",
+                         "montage.set_coverage", "node.clear_check_agent"])
+    assert "group.get" in n["group.list"] and "group_id" in n["group.get"]
+    assert "shot.edit_field" in n["montage.set_coverage"] or "shot.edit_field" in n["shot.edit_field"]
+    assert "set_coverage" in n["shot.edit_field"] and "конец" in n["shot.add_cell"]
+    assert "вопрос" in n["node.clear_check_agent"]
+    assert sum(len(v) for v in rules.ACTION_NOTES.values()) < 5200
