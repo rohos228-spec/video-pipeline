@@ -68,7 +68,9 @@ def node_coverage_row(spec) -> dict:
         "evidence": coverage_evidence(spec),
         "verifies": list(spec.verifies),
         "recovery": {"actions": recovery, "cap_per_node": spec.recovery_cap if recovery else 0,
-                     "profile_compatible": spec.profile_compatible if recovery else False},
+                     "profile_compatible": spec.profile_compatible if recovery else False,
+                     # True: the "recovery" is a resume of a known provider task, never a start or a paid re-submit
+                     "resume_only": bool(recovery and spec.recovery_only)},
         "limits": list(spec.limits),
         "forbidden": forbidden,
     }

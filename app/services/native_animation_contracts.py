@@ -64,7 +64,12 @@ def animation_prompts_contract():
                         "missing_payload of a batch reply while NO batch has been applied "
                         "(any apply_input/data_applied/apply_error of the failed attempt forbids it); "
                         "no profile retry (vision input cannot be rebuilt by a profile)",
-        "degradation_not_detected": ["local fallback after provider outage", "skipped shot_02 remainder"],
+        "degradation_facts": {
+            "fact_kind": "animation_degraded",
+            "reasons": ["local_fallback (provider outage: rest of shot_01 filled by the local composer, no model, no images)",
+                        "shot2_skipped (provider outage: remaining shot_02 prompts not made, step continues)"],
+            "incident": "animation_degraded (non-blocking warning, human_review, never a recovery incident)",
+            "retry": "none: a degradation is not a failure of the attempt"},
         **_UNCLAIMED,
     }
 

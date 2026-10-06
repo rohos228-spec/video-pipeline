@@ -126,6 +126,16 @@ def _change_control_fp() -> str:
     return tables_fingerprint(store._TABLES, store._TRIGGERS, store._ADDED_COLUMNS)
 
 
+async def _action_attachments(conn) -> None:
+    from app.services.action_layer.attachments import ensure_attachments_schema
+    await ensure_attachments_schema(conn)
+
+
+def _action_attachments_fp() -> str:
+    from app.services.action_layer import attachments
+    return tables_fingerprint(attachments._TABLES)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_observation_core", "observation, diagnosis, actions, decision, profiles, media, "
               "managed launch, kill switch tables", _observation, _observation_fp,
@@ -137,6 +147,8 @@ MIGRATIONS: tuple[Migration, ...] = (
               _action_layer_fp),
     Migration("0005_change_control", "change proposals, config versions and pointers", _change_control,
               _change_control_fp),
+    Migration("0006_action_attachments", "files attached to the action layer command line",
+              _action_attachments, _action_attachments_fp),
 )
 
 

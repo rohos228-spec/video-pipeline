@@ -712,16 +712,8 @@
    "text": "приложи реф cat.png кадру 3",
    "workflow": "refs",
    "context": {},
-   "outcome": "plan",
-   "steps": [
-    {
-     "action_id": "montage.link_ref",
-     "params": {
-      "frame_number": 3,
-      "file": "cat.png"
-     }
-    }
-   ],
+   "outcome": "clarify",
+   "steps": [],
    "also_offered": []
   },
   {
@@ -885,6 +877,195 @@
    "outcome": "clarify",
    "steps": [],
    "also_offered": []
+  },
+  {
+   "id": "att_voice",
+   "text": "загрузи озвучку",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "audio",
+      "name": "voice.mp3",
+      "size": 2400000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.upload_voice",
+     "params": {
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": [],
+   "explanation_contains": [
+    "voice.mp3"
+   ]
+  },
+  {
+   "id": "att_image",
+   "text": "загрузи картинку в кадр 5",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "image",
+      "name": "frame5.png",
+      "size": 350000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.upload_image",
+     "params": {
+      "frame_number": 5,
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_video",
+   "text": "загрузи видео в кадр 6",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "video",
+      "name": "clip6.mp4",
+      "size": 8000000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.upload_video",
+     "params": {
+      "frame_number": 6,
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_excel",
+   "text": "загрузи excel файл в ноду n_excel_gpt_fw_script",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "excel",
+      "name": "table.xlsx",
+      "size": 52000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.upload_file",
+     "params": {
+      "node_key": "n_excel_gpt_fw_script",
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_agent",
+   "text": "загрузи агента проверки в ноду n_excel_gpt_fw_qc",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "text",
+      "name": "agent.md",
+      "size": 4000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.upload_check_agent",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_wrong_kind",
+   "text": "загрузи озвучку",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "image",
+      "name": "cat.png",
+      "size": 120000
+     }
+    ]
+   },
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "не подходит",
+    "аудио"
+   ]
+  },
+  {
+   "id": "att_wrong_format",
+   "text": "загрузи видео в кадр 3",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "video",
+      "name": "clip.mov",
+      "size": 9000000
+     }
+    ]
+   },
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "не подходит",
+    "mp4"
+   ]
+  },
+  {
+   "id": "att_no_frame",
+   "text": "загрузи картинку",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "image",
+      "name": "pic.png",
+      "size": 90000
+     }
+    ]
+   },
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "кадр"
+   ]
   },
   {
    "id": "up_voice",
@@ -3910,6 +4091,130 @@
     }
    ],
    "also_offered": []
+  },
+  {
+   "id": "mr_a",
+   "text": "докачай видео кадра 5",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.resume_poll",
+     "params": {
+      "node_type": "videos"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_b",
+   "text": "проверь, что с задачей Kie для видео",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.get_recovery_assessment",
+     "params": {
+      "node_type": "videos"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_c",
+   "text": "докачай музыку из Kie, новую не заказывай",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.resume_poll",
+     "params": {
+      "node_type": "music"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_d",
+   "text": "что с задачей на музыку в Kie, она зависла?",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.get_recovery_assessment",
+     "params": {
+      "node_type": "music"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_e",
+   "text": "возобнови предметы по задаче Kie без новой оплаты",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.resume_poll",
+     "params": {
+      "node_type": "items"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_f",
+   "text": "покажи, можно ли докачать клипы или задача провайдера упала",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.get_recovery_assessment",
+     "params": {
+      "node_type": "videos"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_g",
+   "text": "узнай состояние задачи Kie по предметам",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.get_recovery_assessment",
+     "params": {
+      "node_type": "items"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_h",
+   "text": "докачай задачу из Kie",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "видео"
+   ]
   }
  ]
 }

@@ -54,6 +54,23 @@ async def _animation_fact(callback, *args, **kwargs):
         ctx.observer.mark_gap(ctx.scope.execution_id, exc)
 
 
+async def _record_degradation(reason: str, shot: int, frames, cause: BaseException | None) -> None:
+    """Visible fact for a silent degradation of this node (journal gap never replaces the native flow).
+
+    reason: ``local_fallback`` (provider outage, the rest of shot_01 is filled by the local
+    composer without the model or images) or ``shot2_skipped`` (provider outage, the remaining
+    shot_02 prompts are not made and the step goes on). Diagnosis types it as ``animation_degraded``.
+    """
+    from app.services.observation import record_fact
+
+    numbers = sorted(int(n) for n in frames if n is not None)
+    await _animation_fact(record_fact, "animation_degraded", {
+        "contract": "native_animation_prompts", "reason": reason, "shot": shot,
+        "frame_numbers": numbers[:200], "frame_count": len(numbers),
+        "cause_class": type(cause).__name__ if cause is not None else None,
+        "business_commit_claim": False, "semantic_quality_verified": False})
+
+
 async def _gate_then_mark_anim_ready(session: AsyncSession, project: Project) -> None:
     """Harness N/N first; animation_prompts_ready only if the gate passes."""
     from app.services.agent_harness import harness_gate_or_raise
@@ -389,6 +406,10 @@ async def fill_animation_prompts(
                     project.id,
                     e,
                 )
+                await _record_degradation(
+                    "local_fallback", 1,
+                    [it.frame.number for it in apg.collect_batch_items(project, frames)],
+                    e.__cause__ or e)
                 await _fill_remaining_local(session, project, list(frames), sheet)
                 break
             delivered = await _save_anim_pr_batch(
@@ -458,6 +479,10 @@ async def fill_animation_prompts(
                     project.id,
                     e,
                 )
+                await _record_degradation(
+                    "shot2_skipped", 2,
+                    [it.frame.number for it in apg.collect_shot2_batch_items(project, frames)],
+                    e.__cause__ or e)
                 break
             delivered2 = await _save_anim_pr_batch(
                 session,

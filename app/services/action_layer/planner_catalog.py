@@ -46,6 +46,8 @@ SYNONYMS: dict[str, str] = {
     "group.save_from_selection": "сохран выделен групп",
     "group.shots_report": "отчет кадров шот qc проверк замечан",
     "group.update": "переимен названи групп",
+    "media.get_recovery_assessment": "провер задач kie киэ состоян провайдер зависл завис восстанов",
+    "media.resume_poll": "докач возобнов дожд подтян доведи задач kie киэ провайдер",
     "montage.align_audio": "разбор аудио таймкод выровн озвучк голос синхрон asr nemo пауз",
     "montage.apply_queue": "примен правк очеред примен сгенер перегенер запуст генерац применить",
     "montage.apply_status": "статус примен правк прогресс идет генерац готов",

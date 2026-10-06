@@ -493,6 +493,29 @@ class NativeSceneObservation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.one(facts, "runtime_check", node=ASSEMBLER).payload["status"], "failed")
         self.assertEqual(await self.state(), before)
 
+    async def test_assembly_parse_failures_are_typed_like_the_diagnosis_types_incidents(self):
+        record_parse = self.api("record_scene_parse")
+        async with self.business_sessions() as business:
+            project, frames, _ = await self.inputs(business)
+            payload = assembly_payload(frames)
+            no_ops = {**payload, "ops": []}
+            cases = (("no json at all", None, ValueError("no JSON"), "invalid_json", False),
+                     (json.dumps(no_ops, ensure_ascii=False), None, ValueError("empty ops"), "missing_payload", False),
+                     (json.dumps(payload, ensure_ascii=False), payload, None, "contract_rejected", True))
+            for index, (reply, parsed, error, expected, present) in enumerate(cases):
+                problems = ["frame coverage"] if expected == "contract_rejected" else ()
+                with self.context(business, node=ASSEMBLER, completed=REQUEST_A, attempt_id=ATTEMPT[:-2] + f"7{index}"):
+                    await record_parse(reply, parsed, node=ASSEMBLER, validation_performed=True,
+                                       error=error, problems=problems)
+        facts = [f for f in await self.facts() if f.kind == "parse_result"]
+        self.assertEqual(len(facts), 3)
+        for fact, (_, _, _, expected, present) in zip(facts, cases):
+            self.assertEqual(fact.payload["contract"], "native_scene_assembly")
+            self.assertEqual((fact.payload["failure_class"], fact.payload["payload_required"],
+                              fact.payload["payload_present"]), (expected, True, present))
+        # a payload that is there but rejected must not look like a missing one to the diagnosis
+        self.assertIs(facts[2].payload["parsed"], True)
+
     async def test_local_assembly_warnings_have_no_invented_model_request(self):
         from app.services.scene_design.assembler import validate_payload
         from app.services.scene_design.context_builder import full_voiceover

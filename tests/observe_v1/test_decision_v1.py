@@ -591,9 +591,36 @@ class DecisionDurability(actions_tests.DurableActions):
     async def test_hero_descriptive_contract_cannot_authorize_generation(self):
         await self._assert_descriptive_native_contract('hero',None,'hero')
 
-    async def test_items_and_legacy_scene_design_descriptive_contracts_cannot_authorize_generation(self):
-        await self._assert_descriptive_native_contract('items',None,'items')
+    async def test_legacy_scene_design_descriptive_contract_cannot_authorize_generation(self):
         await self._assert_descriptive_native_contract('scene_design',None,'scene_design')
+
+    async def test_items_is_managed_for_recovery_only_and_a_text_style_incident_offers_no_retry(self):
+        """items is managed ONLY for a supervised resume of a known provider task (media_admission): it has
+        the media contract, and an invalid_json style incident still never offers a restart or a profile."""
+        record=await self.native_contract_fixture('items',None)
+        before=await self.loop.context(record['decision_id'])
+        result=await self.loop.read_contract(record['decision_id'])
+        self.assertTrue(result['managed'])
+        self.assertEqual(result['result_kind'],'image')
+        self.assertIn('jobs',result)
+        self.assertNotIn('descriptive_only',result)
+        for action in ('retry_same','retry_profile'):
+            self.assertNotIn(action,before['allowed_actions'])
+        self.assertIsNone(before['media_recovery'])  # not a media incident: no resume is offered
+        self.assertEqual(before['eligible_profiles'],[])
+
+    async def test_every_scene_agent_marker_is_described_with_its_slice_contract_and_no_retry(self):
+        for agent,list_key in (('skeleton','scenes'),('characters','characters'),('world','locations'),
+                               ('camera','shot_plan'),('action','scenes')):
+            with self.subTest(agent=agent):
+                record=await self.native_contract_fixture('sd_agent',{'sd_agent':agent})
+                result=await self.loop.read_contract(record['decision_id'])
+                self.assertTrue(result['descriptive_only'])
+                self.assertFalse(result['managed_executor_accepted'])
+                description=result['descriptive_contract']
+                self.assertEqual((description['agent'],description['slice_contract']['list_key']),(agent,list_key))
+                before=await self.loop.context(record['decision_id'])
+                self.assertFalse({'retry_same','retry_profile','finish'}&set(before['allowed_actions']))
 
     async def test_animation_contract_is_native_and_allows_retry_same_only(self):
         record=await self.native_contract_fixture('animation_prompts')

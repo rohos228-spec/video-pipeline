@@ -24,7 +24,8 @@ from urllib.parse import urlsplit
 from loguru import logger
 from sqlalchemy import func, select
 
-from app.services.action_layer import planner_catalog, planner_context, planner_rules, store
+from app.services.action_layer import (
+    planner_catalog, planner_context, planner_rules, planner_uploads, store)
 from app.services.action_layer.spec import ActionRegistry, ensure_builtin_actions
 from app.services.action_layer.spec import registry as default_registry
 
@@ -247,7 +248,8 @@ SYSTEM = """Ты планировщик действий видеостудии.
 9. Не спрашивай то, что есть в project_context. «Кадр N», «N-й кадр», «сцена N» = запись frames «number,frame_id,role,shots,img,vid;...» (role p сцена, c шот; img и vid: шоты с файлом, - нет); frame_id и frame_number бери оттуда. «Этот кадр/сцена» = selected. Следующая сцена = следующая строка с role p. Кадра нет в frames - вопрос.
 10. Параметры без * необязательны: НЕ спрашивай о них, опусти. Сервер сам добавит project_id, image_/video_generator и *_resolution, max_*_ops, единственный шот; их не спрашивай и не придумывай. Значения из defaults называй в explanation_ru.
 11. notes - подсказки по конкретным действиям из catalog, следуй им.
-12. К вопросу добавь до 4 коротких вариантов ответа в clarification_options."""
+12. К вопросу добавь до 4 коротких вариантов ответа в clarification_options.
+13. attachments (если есть) - файлы, которые человек прикрепил к запросу: id, name, kind, size. Для шага загрузки выбери действие по виду файла и НЕ указывай source_path, data_base64, filename и путь: сервер сам подставит файл. Другие параметры загрузки (кадр, нода) бери из запроса."""
 
 
 def _compact_schema(schema: Any) -> Any:
@@ -274,8 +276,11 @@ def catalog_for_prompt(registry: ActionRegistry, ids: list[str] | None = None) -
 
 
 def build_prompt(text: str, ctx: dict, registry: ActionRegistry, max_steps: int,
-                 max_catalog: int | None = None, macros: Any = None) -> tuple[list[dict], dict]:
-    """(messages, info): info = {offered, total, filtered, no_match, chars}."""
+                 max_catalog: int | None = None, macros: Any = None,
+                 attachments: list | None = None) -> tuple[list[dict], dict]:
+    """(messages, info): info = {offered, total, filtered, no_match, chars}.
+
+    ``attachments``: вложения запроса; модель видит только {id, name, kind, size}, путей нет."""
     if max_catalog is None:
         from app.settings import settings
         max_catalog = int(settings.action_layer_planner_max_catalog)
@@ -287,6 +292,8 @@ def build_prompt(text: str, ctx: dict, registry: ActionRegistry, max_steps: int,
     notes = planner_rules.notes_for(sel.ids)
     if notes:
         payload["notes"] = notes
+    if attachments:
+        payload["attachments"] = [a.prompt_view() for a in attachments]
     if sel.no_match or sel.out_of_scope:
         payload["hint"] = ("Подходящих действий в catalog нет или часть запроса вне каталога: "
                            "если запрос не покрыт, верни steps=[] и вопрос в needs_clarification.")
@@ -325,13 +332,41 @@ class PlannerReply:
     attachment: dict | None = None           # какое действие ждёт файл (загрузки)
     applied_defaults: list[str] = field(default_factory=list)
     dropped_steps: list[str] = field(default_factory=list)
+    attachments_used: list[str] = field(default_factory=list)  # id вложений, подставленных в шаги
+
+
+def _upload_with_attachments(act: str, expl: str, *, text: str, registry: ActionRegistry,
+                             attachments: list, facts: dict | None) -> PlannerReply:
+    """Модель задала вопрос о загрузке, а файл уже прикреплён: шаг строится из слов запроса и вложения."""
+    spec = registry.get(act)
+    params = planner_rules.upload_params_from_text(act, text)
+    filled = planner_rules.fill_defaults(act, params, facts, spec.params_schema)
+    params = filled.params
+    att, question, options = planner_uploads.pick(act, spec.title_ru, attachments, set(), text)
+    request = planner_uploads.request_for(act, params)
+    if att is None:
+        return PlannerReply([], question[:500], expl.strip()[:1000], options, request)
+    ask = planner_uploads.ask_missing(act, params, att, list(spec.params_schema.get("required") or []))
+    if ask:
+        return PlannerReply([], ask[:500], expl.strip()[:1000], [], request)
+    step = {"action_id": act, "params": {**params, "source_path": att.rel_path}, "depends_on": []}
+    if registry.validate_params(act, step["params"]):
+        up = planner_rules.upload_clarification(act, params, spec.title_ru)
+        return PlannerReply([], up["question"], expl.strip()[:1000], up["options"], up["attachment"])
+    return PlannerReply([step], None, planner_rules.with_defaults_note(expl.strip(), filled.notes)[:1000],
+                        applied_defaults=list(dict.fromkeys(filled.notes)), attachments_used=[att.id])
 
 
 def _clarification(question: str, expl: str, options: list[str], *, text: str,
-                   registry: ActionRegistry, offered: frozenset[str] | None) -> PlannerReply:
-    """Вопрос модели; для запроса на загрузку файла - стандартное уточнение «прикрепите файл»."""
+                   registry: ActionRegistry, offered: frozenset[str] | None,
+                   attachments: list | None = None, facts: dict | None = None) -> PlannerReply:
+    """Вопрос модели; для запроса на загрузку файла - стандартное уточнение «прикрепите файл»
+    (с вложением - шаг загрузки или понятный вопрос, чего не хватает)."""
     ids = offered if offered is not None else frozenset(s.id for s in registry.list())
     act = planner_rules.upload_intent_action(text, ids)
+    if act and attachments:
+        return _upload_with_attachments(act, expl, text=text, registry=registry,
+                                        attachments=attachments, facts=facts)
     if act:
         spec = registry.get(act)
         up = planner_rules.upload_clarification(
@@ -342,12 +377,15 @@ def _clarification(question: str, expl: str, options: list[str], *, text: str,
 
 def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
                    project_id: int | None, offered: frozenset[str] | None = None,
-                   facts: dict | None = None, request_text: str = "") -> PlannerReply:
+                   facts: dict | None = None, request_text: str = "",
+                   attachments: list | None = None) -> PlannerReply:
     """Строгая проверка по полному реестру. _FormatError - можно повторить, PlannerRejected - нельзя.
 
     ``offered``: id, показанные модели в промпте; любой другой id отклоняется.
     ``facts`` и ``request_text`` включают правила planner_rules: значения по умолчанию, защиту
-    от лишних шагов, загрузки файлов; без них проверка чисто структурная."""
+    от лишних шагов, загрузки файлов; без них проверка чисто структурная.
+    ``attachments``: проверенные вложения запроса; шаги загрузки получают source_path от сервера
+    (``planner_uploads``), а не от модели."""
     try:
         data = json.loads(text)
     except (TypeError, ValueError) as exc:
@@ -370,7 +408,7 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
         if steps:
             raise _FormatError("steps must be empty when needs_clarification is set")
         return _clarification(clar, expl, options, text=request_text, registry=registry,
-                              offered=offered)
+                              offered=offered, attachments=attachments, facts=facts)
     if not steps:
         raise PlannerRejected("empty_plan", "no steps and no clarification question")
     if len(steps) > max_steps:
@@ -401,6 +439,12 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
             notes += pnotes
             if ask:
                 return PlannerReply([], ask[0][:500], expl.strip()[:1000], planner_rules.clean_options(ask[1]))
+        if attachments and action_id in planner_rules.UPLOAD_ACTIONS:
+            req = list(registry.get(action_id).params_schema.get("required") or [])
+            ask = planner_uploads.ask_missing(action_id, params, attachments[0], req)
+            if ask:
+                return PlannerReply([], ask[:500], expl.strip()[:1000], [],
+                                    planner_uploads.request_for(action_id, params))
         errors = registry.validate_params(action_id, params)
         if errors:
             raise PlannerRejected("bad_params", f"step {i} ({action_id}): " + "; ".join(errors[:5]))
@@ -423,7 +467,22 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
         if dropped:
             expl = (expl + " Убрано как не запрошенное: " + ", ".join(dropped) + ".").strip()
     uploads = [st for st in clean if st["action_id"] in planner_rules.UPLOAD_ACTIONS]
-    if uploads:
+    used: list[str] = []
+    if uploads and attachments:
+        fill = planner_uploads.fill_steps(
+            clean, attachments, {st["action_id"]: registry.get(st["action_id"]).title_ru for st in uploads},
+            request_text)
+        if fill.question:
+            return PlannerReply([], fill.question[:500], expl[:1000], fill.options, fill.attachment,
+                                dropped_steps=dropped)
+        clean, used = fill.steps, fill.used
+        names = [x.name for x in attachments if x.id in used]
+        expl = (expl + " Загружается прикреплённый файл: " + ", ".join(f"«{n}»" for n in names) + ".").strip()
+        for i, st in enumerate(clean):
+            errors = registry.validate_params(st["action_id"], st["params"])
+            if errors:
+                raise PlannerRejected("bad_params", f"step {i} ({st['action_id']}): " + "; ".join(errors[:5]))
+    elif uploads:
         first = uploads[0]
         up = planner_rules.upload_clarification(
             first["action_id"], first["params"], registry.get(first["action_id"]).title_ru)
@@ -436,7 +495,8 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
         if asked:
             return PlannerReply([], asked[0], expl[:1000], asked[1], dropped_steps=dropped)
     return PlannerReply(clean, None, planner_rules.with_defaults_note(expl, notes)[:1000],
-                        applied_defaults=list(dict.fromkeys(notes)), dropped_steps=dropped)
+                        applied_defaults=list(dict.fromkeys(notes)), dropped_steps=dropped,
+                        attachments_used=used)
 
 
 # --- вызов модели -----------------------------------------------------------
@@ -497,8 +557,12 @@ async def _spend_gate(project_id: int | None) -> None:
 
 async def plan_from_text(text: str, *, operator: str, project_id: int | None = None,
                          selected_scene: int | None = None, selected_frame: int | None = None,
-                         registry: ActionRegistry | None = None) -> PlannerOutcome:
-    """Один-два POST к модели, строгая проверка. Не создаёт план и не подтверждает."""
+                         registry: ActionRegistry | None = None,
+                         attachments: list | None = None) -> PlannerOutcome:
+    """Один-два POST к модели, строгая проверка. Не создаёт план и не подтверждает.
+
+    ``attachments``: уже проверенные вложения (``attachments.resolve``); модель видит только их
+    id, имя, вид и размер, путь в шаг загрузки подставляет сервер."""
     from app.services import decision_v1
     from app.settings import settings
     registry = registry or default_registry
@@ -512,7 +576,7 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
     if await executor._kill_switch_on():
         raise PlannerRefused("kill_switch_active", "operator emergency stop is ON")
     ctx = await load_context(project_id, selected_scene, selected_frame)
-    messages, info = build_prompt(text, ctx, registry, max_steps)
+    messages, info = build_prompt(text, ctx, registry, max_steps, attachments=attachments)
     offered = frozenset(info["offered"])
     send = _resolve_transport()
     real = _transport is None
@@ -558,7 +622,7 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
                 raise _FormatError("reply is incomplete")
             reply = validate_reply(getattr(result, "text", ""), registry,
                                    max_steps=max_steps, project_id=project_id, offered=offered,
-                                   facts=ctx["facts"], request_text=text)
+                                   facts=ctx["facts"], request_text=text, attachments=attachments)
         except _FormatError as exc:
             last_error = str(exc)
             await _record(operator, text, model=model, attempt=attempt, outcome="invalid_format",
@@ -596,7 +660,8 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
                 "cost_calibrated": False, "context_version": ctx["version"],
                 "catalog_offered": len(info["offered"]), "catalog_total": info["total"],
                 "applied_defaults": list(reply.applied_defaults),
-                "dropped_steps": list(reply.dropped_steps)}
+                "dropped_steps": list(reply.dropped_steps),
+                "attachments_used": list(reply.attachments_used)}
         return PlannerOutcome(reply, ctx, meta)
     raise PlannerRejected("planner_bad_output", last_error)  # недостижимо
 

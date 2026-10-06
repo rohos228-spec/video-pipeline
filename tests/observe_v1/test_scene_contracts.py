@@ -195,12 +195,10 @@ class SceneContracts(unittest.TestCase):
     def test_unbounded_markers_and_other_excel_nodes_remain_explicit_unknown(self):
         for node in (
             {"id": "ordinary", "type": "excel_gpt", "data": {}},
-            {"id": "other-agent", "type": "excel_gpt", "data": {"sd_agent": "world"}},
             {"id": "removed", "type": "excel_gpt", "data": {"sd_agent": "style"}},
             {"id": "invented", "type": "excel_gpt", "data": {"sd_agent": "invented"}},
             {"id": "ambiguous", "type": "sd_agent", "data": {}},
             {"id": "conflicting", "type": "sd_assemble", "data": {"sd_agent": "camera"}},
-            {"id": "monolith", "type": "scene_design", "data": {}},
             {"id": "wrong-route", "type": "plan", "data": {"sd_agent": "camera"}},
         ):
             with self.subTest(node=node):
@@ -210,6 +208,30 @@ class SceneContracts(unittest.TestCase):
                 self.assertNotIn("retry_same", contract["actions"])
                 self.assertNotIn("retry_profile", contract["actions"])
                 self.assertNotIn("finish", contract["actions"])
+
+    def test_every_slice_agent_marker_has_its_own_bounded_contract(self):
+        for agent in ("skeleton", "characters", "world", "action"):
+            node = {"id": agent + "-node", "type": "excel_gpt", "data": {"sd_agent": agent}}
+            with self.subTest(agent=agent):
+                contract = helper().scene_contract(node)
+                self.assertTrue(contract["supported"])
+                self.assertEqual((contract["node_type"], contract["agent"], contract["step_code"]),
+                                 ("sd_agent", agent, "scene_d"))
+                self.assertEqual(contract["result_kind"], "scene_design_cells")
+                shape = contract["slice_contract"]
+                self.assertEqual(shape["list_key"], __import__(
+                    "app.services.scene_design.agents", fromlist=["LIST_KEY"]).LIST_KEY[agent])
+                self.assertEqual(set(shape["failure_classes"]), {"invalid_json", "missing_payload",
+                                                                  "contract_rejected"})
+                self.assertNotIn("retry_same", contract["actions"])
+
+    def test_legacy_scene_design_node_is_observed_as_the_union_and_still_read_only(self):
+        contract = helper().scene_contract({"id": "monolith", "type": "scene_design", "data": {}})
+        self.assertTrue(contract["supported"] and contract["legacy"])
+        self.assertEqual(contract["agent"], "legacy")
+        self.assertEqual(set(contract["slice_contracts"]), {"skeleton", "characters", "world", "camera", "action"})
+        self.assertNotIn("retry_same", contract["actions"])
+        self.assertFalse(contract["managed_execution_verified"])
 
     def test_valid_camera_staging_is_read_only_and_uses_native_frame_voiceover(self):
         before_slice = copy.deepcopy(self.slice)
@@ -344,6 +366,23 @@ class SceneContracts(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertEqual(self.assembly_result(payload=payload)["status"], "failed")
 
+    def test_assembler_failures_carry_a_typed_failure_class(self):
+        good = assembly_payload(self.frames)
+        partial = copy.deepcopy(good)
+        partial["ops"].pop()
+        for label, payload, expected in (("no object", "not a payload", "invalid_json"),
+                                         ("no scenes or ops", {"scenes": [], "ops": []}, "missing_payload"),
+                                         ("partial coverage", partial, "contract_rejected")):
+            with self.subTest(label=label):
+                if isinstance(payload, dict) and payload["scenes"]:
+                    result = self.assembly_result(payload=payload, frames=applied_frames(self.frames, good))
+                else:
+                    result = helper().verify_scene_assembly(self.project, self.frames,
+                        snapshot=self.snapshot(), payload=payload)
+                self.assertEqual((result["status"], result["failure_class"]), ("failed", expected))
+        passed = self.assembly_result(payload=good)
+        self.assertEqual((passed["status"], passed["failure_class"]), ("passed", None))
+
     def test_assembler_detects_valid_payload_not_applied_to_production_rows(self):
         payload = assembly_payload(self.frames)
         for field in ("shot01_id_scene", "place", "shot01_action"):
@@ -364,6 +403,123 @@ class SceneContracts(unittest.TestCase):
             setattr(frames[0], field, value)
             with self.subTest(field=field):
                 self.assertEqual(self.assembly_result(frames=frames, payload=payload)["status"], "failed")
+
+
+class SliceAgentContracts(unittest.TestCase):
+    """skeleton / characters / world / action: slice shape, stored cells, typed failure classes."""
+
+    VALID = {
+        "skeleton": {"scenes": [{"id_scene": "scene_01", "кадры": [1, 2]}],
+                     "locations_seed": [{"id": "loc01", "якорь": "Альфа открывает"}]},
+        "characters": {"characters": [{"id": "c01", "имя": "Альфа", "внешность": "высокий"}]},
+        "world": {"locations": [{"id": "loc01", "name": "зал", "описание": "читальный зал"}]},
+        "action": {"scenes": [{"id_scene": "scene_01", "start_words": "Альфа открывает",
+                               "end_words": "закрывает книгу.", "время_сек": 6,
+                               "структура_сцены": "opening", "тип_стыка": "action",
+                               "переход_в_сцену": "cut",
+                               "цепь_действия": [{"subject": "c01", "action": "открывает книгу", "beat": "setup"}]}]},
+    }
+
+    def setUp(self):
+        self.project = project_fixture()
+        self.frames = frames_fixture()
+        self.vo = context_builder.full_voiceover(self.project, self.frames)
+
+    def node(self, agent):
+        return {"id": agent + "-node", "type": "excel_gpt", "data": {"sd_agent": agent}}
+
+    def cells(self, agent, data):
+        return native_cells.slice_to_cells(self.project, agent, data, self.vo)
+
+    def verify(self, agent, data, *, cells=None, snapshot_cells=(), frames=None):
+        snapshot = helper().scene_input_snapshot(self.project, self.frames, cells=snapshot_cells)
+        return helper().verify_scene_agent(
+            self.project, self.node(agent), self.cells(agent, data) if cells is None else cells,
+            frames=frames if frames is not None else self.frames, snapshot=snapshot, agent_slice=data)
+
+    def test_a_valid_slice_with_its_native_cells_passes_for_every_agent(self):
+        for agent, data in self.VALID.items():
+            with self.subTest(agent=agent):
+                result = self.verify(agent, copy.deepcopy(data))
+                self.assertEqual(result["status"], "passed", result["errors"])
+                self.assertIsNone(result["failure_class"])
+                self.assertFalse(result["semantic_quality_verified"])
+                self.assertGreater(result["cell_count"], 0)
+
+    def test_an_empty_world_is_a_valid_slice_but_an_empty_characters_list_is_not(self):
+        self.assertEqual(self.verify("world", {"locations": []})["status"], "passed")
+        failed = self.verify("characters", {"characters": []})
+        self.assertEqual((failed["status"], failed["failure_class"]), ("failed", "missing_payload"))
+
+    def test_slice_shape_failures_are_typed_like_the_diagnosis_types_incidents(self):
+        shape = helper().slice_shape_failure
+        self.assertEqual(shape("characters", "no object")[0], "invalid_json")
+        self.assertEqual(shape("characters", {"note": 1})[0], "missing_payload")
+        self.assertEqual(shape("characters", {"characters": [], "error": "нет персонажей"})[0], "missing_payload")
+        self.assertEqual(shape("action", {"scenes": []})[0], "missing_payload")
+        self.assertEqual(shape("characters", {"characters": [{"имя": "x"}]})[0], "contract_rejected")
+        self.assertEqual(shape("characters", {"characters": [{"id": "hero"}]})[1], ["bad_id_pattern:hero"])
+        self.assertEqual(shape("world", {"locations": [{"id": "loc01"}, {"id": "loc01"}]})[1], ["duplicate_id:loc01"])
+        self.assertEqual(shape("skeleton", {"scenes": [{"id_scene": "s1"}]})[1], ["item_missing_кадры:1"])
+        self.assertEqual(shape("characters", {"characters": [{"id": "c01"}]}), (None, []))
+
+    def test_reply_failures_are_typed_invalid_json_missing_payload_or_contract_rejected(self):
+        classify = helper().classify_slice_failure
+        boom = ValueError("native parser said no")
+        self.assertIsNone(classify("characters", "anything", None))
+        self.assertEqual(classify("characters", "I cannot do that", boom), "invalid_json")
+        self.assertEqual(classify("characters", '```json\n{"note": 1}\n```', boom), "missing_payload")
+        self.assertEqual(classify("action", '{"scenes": []}', boom), "missing_payload")
+        self.assertEqual(classify("characters", '{"characters": [{"id": "c01"}]}', boom), "contract_rejected")
+        self.assertEqual(helper().classify_assembly_failure("no json", None, boom), "invalid_json")
+        self.assertEqual(helper().classify_assembly_failure('{"scenes": [], "ops": []}', None, boom), "missing_payload")
+        self.assertEqual(helper().classify_assembly_failure(None, {"scenes": [{}], "ops": [{}]}, None, ["x"]),
+                         "contract_rejected")
+        self.assertIsNone(helper().classify_assembly_failure(None, {"scenes": [{}], "ops": [{}]}))
+
+    def test_a_bad_slice_or_tampered_cells_fail_with_the_right_class(self):
+        bad_id = {"characters": [{"id": "hero", "имя": "Альфа"}]}
+        failed = self.verify("characters", bad_id)
+        self.assertEqual((failed["status"], failed["failure_class"]), ("failed", "contract_rejected"))
+        good = copy.deepcopy(self.VALID["characters"])
+        tampered = self.cells("characters", good)
+        tampered[0].value = "unauthorized mutation"
+        self.assertEqual(self.verify("characters", good, cells=tampered)["failure_class"], "contract_rejected")
+        missing = self.verify("characters", good, cells=[])
+        self.assertEqual((missing["status"], missing["failure_class"]), ("failed", "missing_payload"))
+        not_object = helper().verify_scene_agent(self.project, self.node("characters"), [], frames=self.frames,
+            snapshot=helper().scene_input_snapshot(self.project, self.frames), agent_slice=["not", "an object"])
+        self.assertEqual((not_object["status"], not_object["failure_class"]), ("failed", "invalid_json"))
+
+    def test_an_agent_cannot_change_frames_or_other_agents_cells(self):
+        world = self.cells("world", self.VALID["world"])
+        data = copy.deepcopy(self.VALID["characters"])
+        ok = self.verify("characters", data, cells=self.cells("characters", data) + world, snapshot_cells=world)
+        self.assertEqual(ok["status"], "passed", ok["errors"])
+        changed = copy.deepcopy(world)
+        changed[0].value = "rewritten by characters"
+        bad = self.verify("characters", data, cells=self.cells("characters", data) + changed, snapshot_cells=world)
+        self.assertEqual(bad["status"], "failed")
+        self.assertIn("non_characters_cells_changed", bad["errors"])
+        frames = copy.deepcopy(self.frames)
+        frames[0].voiceover_text = "changed"
+        self.assertEqual(self.verify("action", copy.deepcopy(self.VALID["action"]), frames=frames)["status"], "failed")
+
+    def test_legacy_node_verifies_every_agent_that_ran_and_names_the_failing_one(self):
+        slices = {"characters": copy.deepcopy(self.VALID["characters"]), "world": copy.deepcopy(self.VALID["world"])}
+        cells = self.cells("characters", slices["characters"]) + self.cells("world", slices["world"])
+        node = {"id": "monolith", "type": "scene_design", "data": {}}
+        snapshot = helper().scene_input_snapshot(self.project, self.frames)
+        result = helper().verify_scene_agent(self.project, node, cells, frames=self.frames, snapshot=snapshot,
+                                             agent_slice=slices)
+        self.assertEqual(result["status"], "passed", result["errors"])
+        self.assertEqual(result["agents_checked"], ["characters", "world"])
+        broken = copy.deepcopy(cells)
+        next(c for c in broken if c.agent == "world").status = "rejected"
+        failed = helper().verify_scene_agent(self.project, node, broken, frames=self.frames, snapshot=snapshot,
+                                             agent_slice=slices)
+        self.assertEqual(failed["status"], "failed")
+        self.assertTrue(any(code.startswith("world:") for code in failed["errors"]))
 
 
 class NativeSceneEffects(unittest.IsolatedAsyncioTestCase):

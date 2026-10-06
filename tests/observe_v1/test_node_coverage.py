@@ -23,12 +23,14 @@ SPECS = registered_capability_specs()
 REGISTRY_TYPES = node_coverage.registry_node_types()
 
 # Changing this set is a conscious decision: these are the only node types with automatic recovery.
-RECOVERING = {"plan", "script", "excel_gpt", "sfx_plan", "animation_prompts"}
+RECOVERING = {"plan", "script", "excel_gpt", "sfx_plan", "animation_prompts", "videos", "items", "music"}
+# Managed for supervised RECOVERY only: a resume of a known provider task, never a start or a paid re-submit.
+RECOVERY_ONLY = {"videos", "items", "music"}
 EXPECTED_LEVELS = {
     "managed": {"plan", "script", "split", "image_prompts", "excel_gpt", "images", "sfx_plan",
-                "animation_prompts"},
-    "observed": {"sfx_gen", "scene_design", "sd_agent", "sd_assemble", "hero", "items",
-                 "videos", "audio", "music", "assemble",
+                "animation_prompts", "videos", "items", "music"},
+    "observed": {"sfx_gen", "scene_design", "sd_agent", "sd_assemble", "hero",
+                 "audio", "assemble",
                  "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5"},
     "human_only": {"publish"},  # publish stays human-only forever (irreversible external effect)
 }
@@ -117,16 +119,36 @@ def test_only_the_expected_nodes_recover():
         assert SPECS[node_type].effective_managed
 
 
-def test_every_media_decision_node_has_a_coded_human_only_reason():
-    for node_type in MEDIA_RECOVERY_DECISIONS:
+def test_every_media_decision_node_is_resume_only_or_has_a_coded_human_only_reason():
+    for node_type, decision in MEDIA_RECOVERY_DECISIONS.items():
         spec = SPECS[node_type]
-        assert spec.forbidden_code, node_type
-        assert not spec.recovery_actions, node_type
+        if node_type in RECOVERY_ONLY:
+            assert decision["decision"] == "resume_only", node_type
+            assert spec.recovery_only and spec.effective_managed and spec.forbidden_code is None, node_type
+            assert spec.recovery_actions == ("retry_same",), node_type
+        else:
+            assert decision["decision"] == "human_only", node_type
+            assert spec.forbidden_code and not spec.recovery_actions and not spec.recovery_only, node_type
+
+
+def test_recovery_only_nodes_can_never_be_started_by_the_supervisor():
+    """Managed for recovery only: a managed launch or a managed worker attempt of the node is refused."""
+    for node_type in RECOVERY_ONLY:
+        with pytest.raises(ValueError, match="recovery only"):
+            node_capabilities.require_managed_capability(node_type)
+    for node_type in RECOVERING - RECOVERY_ONLY:
+        assert node_capabilities.require_managed_capability(node_type).managed
+
+
+def test_only_recovery_only_nodes_carry_the_flag():
+    assert {t for t, s in SPECS.items() if s.recovery_only} == RECOVERY_ONLY
+    assert not COVERAGE_FIELDS - {"verifies", "limits", "observation_hook", "forbidden_code",
+                                  "forbidden_reason", "recovery_cap", "recovery_only"}
 
 
 def test_coverage_only_entries_change_no_behaviour():
     """A coverage-only entry is the same capability payload as an unregistered type."""
-    for node_type in ("scene_design", "sd_agent", "sd_assemble", "hero", "items", "music", "enrich_3"):
+    for node_type in ("scene_design", "sd_agent", "sd_assemble", "hero", "enrich_3"):
         cap = capability_for(node_type)
         unknown = capability_for("future-unsupported")
         assert (cap.result_kind, cap.executor, cap.phases, cap.effects, cap.actions, cap.managed) == (
@@ -210,6 +232,11 @@ def test_panel_data_is_complete_serializable_and_honest():
             assert row["forbidden"]["code"] in KNOWN_FORBIDDEN_CODES
             assert row["forbidden"]["reason"] and row["forbidden"]["meaning"]
     assert rows["sfx_plan"]["recovery"]["actions"] == ["retry_same"]
+    for node_type in RECOVERING:
+        assert rows[node_type]["recovery"]["resume_only"] is (node_type in RECOVERY_ONLY), node_type
+    assert rows["videos"]["level"] == "managed" and rows["videos"]["recovery"]["profile_compatible"] is False
+    assert rows["hero"]["forbidden"]["code"] == "nondeterministic_paid_request"
+    assert rows["assemble"]["forbidden"]["code"] == "media_recovery_not_admitted"
     assert rows["sfx_plan"]["recovery"]["profile_compatible"] is False
     assert rows["plan"]["recovery"]["profile_compatible"] is True
     assert rows["publish"]["level"] == "human_only"
@@ -242,3 +269,37 @@ def test_new_specs_are_visible_in_capability_registry_and_verifiers_resolve():
     assert node_spec.contract_name_for(capability_for("sfx_plan")) == "sfx_plan"
     assert node_spec.contract_name_for(capability_for("animation_prompts")) == "animation_prompts"
     assert node_capabilities.capability_for("sfx_plan").actions == READ_ACTIONS + ("retry_same", "finish")
+
+
+# ---- scene nodes and animation degradation: what is checked, what stays forbidden -------------
+
+SCENE_NODES = {"scene_design": "legacy_node_type", "sd_agent": "partial_commit",
+               "sd_assemble": "pre_request_commit"}
+
+
+@pytest.mark.parametrize("node_type", sorted(SCENE_NODES))
+def test_scene_nodes_are_observed_through_the_result_hook_and_recovery_stays_forbidden(node_type):
+    spec = SPECS[node_type]
+    assert coverage_level(spec) == "observed" and "hook:" + spec.observation_hook in coverage_evidence(spec)
+    assert spec.observation_hook == "app.services.scene_contracts:observe_scene_result"
+    assert spec.forbidden_code == SCENE_NODES[node_type] and not spec.recovery_actions
+    assert any("invalid_json" in line and "contract_rejected" in line for line in spec.verifies), node_type
+
+
+def test_scene_contracts_describe_every_agent_marker_and_never_offer_a_retry():
+    from app.services.scene_contracts import SLICE_AGENTS, scene_contract
+    for agent in SLICE_AGENTS:
+        contract = scene_contract({"id": "n", "type": "sd_agent", "data": {"sd_agent": agent}})
+        assert contract["supported"] and contract["agent"] == agent, agent
+        assert set(contract["actions"]) == {"read_events", "read_contract", "wait", "human_review"}
+    legacy = scene_contract({"id": "n", "type": "scene_design", "data": {}})
+    assert legacy["supported"] and legacy["agent"] == "legacy" and "retry_same" not in legacy["actions"]
+
+
+def test_animation_prompts_names_its_degradation_fact_and_it_is_not_a_recovery_incident():
+    from app.services.decision_v1 import RECOVERY_INCIDENTS
+    from app.services.diagnosis import TITLES
+    from app.services.native_animation_contracts import animation_prompts_contract
+    assert any("animation_degraded" in line for line in SPECS["animation_prompts"].limits)
+    assert "animation_degraded" in TITLES and "animation_degraded" not in RECOVERY_INCIDENTS
+    assert animation_prompts_contract()["degradation_facts"]["fact_kind"] == "animation_degraded"

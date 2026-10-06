@@ -5,11 +5,12 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.action_layer import (
-    approval, executor, macros, planner, planner_autofill, planner_rules, service)
+    approval, attachments, executor, macros, planner, planner_autofill, planner_rules, service, store)
 from app.services.action_layer.plan import PlanFormatError
 from app.services.action_layer.spec import ensure_builtin_actions
 from app.services.action_layer.spec import registry as default_registry
@@ -42,6 +43,9 @@ class FromTextIn(BaseModel):
     project_id: int | None = Field(None, ge=1)
     selected_scene: int | None = Field(None, ge=1)
     selected_frame: int | None = Field(None, ge=1)
+    # id файлов, загруженных через POST /attachments; планировщик видит id, имя, вид и размер,
+    # путь в шаг загрузки подставляет сервер
+    attachments: list[str] = Field(default_factory=list, max_length=attachments.MAX_PER_REQUEST)
 
 
 class MacroIn(BaseModel):
@@ -65,6 +69,10 @@ class FromMacroIn(BaseModel):
 
 def _stale(exc: Exception) -> HTTPException:
     return HTTPException(409, detail={"code": "stale_context", "message": str(exc)})
+
+
+def _attachment_http(exc: "attachments.AttachmentError") -> HTTPException:
+    return HTTPException(exc.status, detail={"code": exc.code, "message": str(exc)})
 
 
 def _operator(token: str | None) -> approval.OperatorIdentity:
@@ -99,9 +107,14 @@ async def plan_from_text(request: Request, body: FromTextIn, operator: AuthDep) 
     """Запрос -> планировщик -> только preview (proposed). Не подтверждает и не запускает."""
     who = _operator(operator)
     try:
+        refs = await attachments.resolve(body.attachments, body.project_id)
+    except attachments.AttachmentError as exc:
+        raise _attachment_http(exc) from exc
+    try:
         outcome = await planner.plan_from_text(
             body.text, operator=who.id, project_id=body.project_id,
-            selected_scene=body.selected_scene, selected_frame=body.selected_frame)
+            selected_scene=body.selected_scene, selected_frame=body.selected_frame,
+            attachments=refs)
     except planner.PlannerRateLimited as exc:
         raise HTTPException(429, detail={"code": exc.code, "message": str(exc)}) from exc
     except planner.PlannerRefused as exc:
@@ -121,16 +134,26 @@ async def plan_from_text(request: Request, body: FromTextIn, operator: AuthDep) 
              "attachment_request": reply.attachment,
              "context_version": outcome.context["version"], "planner": outcome.meta}
     if reply.needs_clarification:
-        return {"plan_id": None, "preview": None, **extra}
+        return {"plan_id": None, "preview": None, "attachments_used": [], **extra}
+    used = list(reply.attachments_used)
+    try:  # файл занят этим планом до его создания: второй план с тем же файлом не получится
+        await attachments.claim(used, body.project_id)
+    except attachments.AttachmentError as exc:
+        raise _attachment_http(exc) from exc
     try:
         plan_id, preview = await service.create_plan(
             request.app, reply.steps, operator=who, request_text=body.text)
-    except PlanFormatError as exc:
-        raise HTTPException(422, detail={"code": "bad_plan", "message": str(exc)}) from exc
+    except BaseException as exc:
+        await attachments.release(used)
+        if isinstance(exc, PlanFormatError):
+            raise HTTPException(422, detail={"code": "bad_plan", "message": str(exc)}) from exc
+        raise
     if plan_id is None:
+        await attachments.release(used)
         raise HTTPException(422, detail={"code": "plan_invalid", "preview": preview, **extra})
+    await attachments.bind_plan(used, plan_id)
     await planner.link_plan(plan_id, who.id, outcome)
-    return {"plan_id": plan_id, "preview": preview, **extra}
+    return {"plan_id": plan_id, "preview": preview, "attachments_used": used, **extra}
 
 
 @router.get("/macros")
@@ -266,3 +289,69 @@ async def get_history(operator: AuthDep, plan_id: str | None = Query(None),
                       limit: int = Query(100, ge=1, le=500),
                       before_id: int | None = Query(None, ge=1)) -> dict:
     return await service.history(plan_id=plan_id, limit=limit, before_id=before_id)
+
+
+# --- вложения командной строки ---------------------------------------------------------------------
+
+class _UploadRoute(APIRoute):
+    """Размер тела проверяется по Content-Length до разбора multipart (иначе файл сначала уйдёт на диск)."""
+
+    def get_route_handler(self):
+        original = super().get_route_handler()
+
+        async def guarded(request: Request):
+            if request.method == "POST":
+                raw = request.headers.get("content-length", "")
+                if not raw.isdigit():
+                    raise HTTPException(411, detail={
+                        "code": "length_required", "message": "Нужен заголовок Content-Length."})
+                if int(raw) > attachments.max_request_bytes():
+                    raise HTTPException(413, detail={
+                        "code": "too_large", "message": "Файл больше допустимого размера."})
+            return await original(request)
+
+        return guarded
+
+
+attachments_router = APIRouter(route_class=_UploadRoute)
+
+
+@attachments_router.get("/attachments/rules")
+async def attachment_rules(operator: AuthDep) -> dict:
+    """Какие файлы принимает загрузка (расширения и потолки размера по видам)."""
+    return attachments.rules_view()
+
+
+@attachments_router.post("/attachments", dependencies=[LocalOnlyDep])
+async def upload_attachment(operator: AuthDep, file: UploadFile = File(...),
+                            project_id: int = Form(..., ge=1)) -> dict:
+    """Принимает файл для командной строки. Возвращает {attachment_id, name, size, kind, sha256}."""
+    who = _operator(operator)
+    from app.models import Project
+    async with store.sessions()() as s:
+        if await s.get(Project, project_id) is None:
+            raise HTTPException(404, detail={"code": "project_not_found", "message": "Проект не найден."})
+    try:
+        out = await attachments.save_upload(file, project_id=project_id, operator=who.id)
+    except attachments.AttachmentError as exc:
+        raise _attachment_http(exc) from exc
+    finally:
+        await file.close()
+    await attachments.cleanup_throttled()
+    return out
+
+
+@attachments_router.delete("/attachments/{attachment_id}", dependencies=[LocalOnlyDep])
+async def remove_attachment(attachment_id: str, operator: AuthDep,
+                            project_id: int | None = Query(None, ge=1)) -> dict:
+    """Убирает ещё не использованный файл (кнопка «убрать» у вложения)."""
+    try:
+        removed = await attachments.delete_unused(attachment_id, project_id)
+    except attachments.AttachmentError as exc:
+        raise _attachment_http(exc) from exc
+    if not removed:
+        raise HTTPException(404, detail={"code": "attachment_not_found", "message": "Файл не найден."})
+    return {"deleted": attachment_id}
+
+
+router.include_router(attachments_router)

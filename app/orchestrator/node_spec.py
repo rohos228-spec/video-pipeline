@@ -128,7 +128,7 @@ KNOWN_SUCCESSORS = frozenset({"continue_managed_image"})
 # A code is data, not a branch: the supervisor never switches on it. It exists so the coverage
 # panel, the tests and a human reviewer can tell WHY, and so a new reason must be added here.
 KNOWN_FORBIDDEN_CODES = {
-    "media_recovery_not_admitted": "восстановление надзором допущено только для сбоев ответа модели; для медиа допуска нет, возобновление и повтор делает нативный слой или человек",
+    "media_recovery_not_admitted": "надзор допущен к медиа только как возобновление по task id без нового платного запроса (videos, items, music); запуск и повтор этой ноды делает нативный слой или человек",
     "nondeterministic_paid_request": "платный запрос строится заново при каждом запуске: тот же запрос после рестарта не восстановить, возобновление по идентификатору задачи не сработает",
     "paid_no_idempotency": "платный запрос без ключа идемпотентности: после таймаута неизвестно, списаны ли деньги",
     "paid_uncertain_submit": "исход отправки может быть неизвестен, а деньги уже списаны; управляемый путь только синтетический",
@@ -143,7 +143,7 @@ COVERAGE_LEVELS = ("managed", "observed", "human_only")
 # Fields of CapabilitySpec that describe coverage only; they must not enter the recovery
 # input revision (editing a note must not invalidate recovery tickets).
 COVERAGE_FIELDS = frozenset({"verifies", "limits", "observation_hook", "forbidden_code",
-                             "forbidden_reason", "recovery_cap"})
+                             "forbidden_reason", "recovery_cap", "recovery_only"})
 
 
 @dataclass(frozen=True)
@@ -195,6 +195,11 @@ class CapabilitySpec:
     forbidden_code: str | None = None
     forbidden_reason: str | None = None
     recovery_cap: int = 0
+    #   recovery_only     - the node is "managed" for SUPERVISED RECOVERY only (a resume of work a provider
+    #                       already holds, executed in the supervisor process, zero new paid requests). The
+    #                       supervisor never starts or restarts it: a managed launch or a managed worker
+    #                       attempt of such a node is refused (require_managed_capability).
+    recovery_only: bool = False
 
     @property
     def effective_managed(self) -> bool:

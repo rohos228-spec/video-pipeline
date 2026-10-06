@@ -71,6 +71,10 @@ TEXT_ROUTE_SETTINGS = (
 MEDIA_ROUTE_SETTINGS = (
     "image_provider", "outsee_default_image_model", "outsee_api_base_url",
     "kie_api_base_url", "kie_upload_base_url", "outsee_http_api")
+# Nodes whose supervised recovery is a resume of a provider task (media_admission). Their input revision
+# covers the paid request inputs only (see compute_input_revision).
+MEDIA_RESUME_NODES = frozenset({"videos", "items", "music"})
+MEDIA_FRAME_COLUMNS = ("id", "number", "uuid", "animation_prompt")
 DATA_COLUMNS = ("topic", "general_plan", "hero_description", "script_text", "hero_mode",
                 "hero_descriptions", "item_descriptions")
 
@@ -207,7 +211,7 @@ def _file_hash(rel: str) -> str:
 
 def _module_file(module: str) -> str | None:
     for rel in (f"app/orchestrator/steps/{module}.py", f"app/services/{module}.py",
-                f"app/{module}.py", f"app/services/{module}/__init__.py"):
+                f"app/bots/{module}.py", f"app/{module}.py", f"app/services/{module}/__init__.py"):
         if (PROJECT_ROOT / rel).is_file():
             return rel
     return None
@@ -380,14 +384,6 @@ async def compute_input_revision(session, project, node_key, *, parts=None) -> s
     from app.services.canvas_graph import canvas_graph_from_meta
     from app.services.excel_gpt_node import effective_node_type
 
-    state: dict[str, Any] = {k: getattr(project, k, None) for k in DATA_COLUMNS}
-    for model in (Frame, Scene, FrameText, SceneDesignCell):
-        rows = (await session.scalars(select(model).where(model.project_id == project.id)
-                                      .order_by(model.id))).all()
-        state[model.__tablename__] = [
-            {c.name: getattr(row, c.name) for c in model.__table__.columns
-             if c.name not in {"created_at", "updated_at"}} for row in rows]
-
     meta = project.meta if isinstance(project.meta, dict) else {}
     canvas = canvas_graph_from_meta(meta)
     node = await _find_node(session, project, str(node_key))
@@ -396,6 +392,21 @@ async def compute_input_revision(session, project, node_key, *, parts=None) -> s
         node_type = effective_node_type(node)
         if node_type.startswith("enrich_"):
             node_type = "excel_gpt"
+
+    state: dict[str, Any] = {k: getattr(project, k, None) for k in DATA_COLUMNS}
+    if node_type in MEDIA_RESUME_NODES:
+        # A supervised media resume depends on the REQUEST inputs of the paid task (prompts), not on the
+        # progress the failed attempt itself writes (frame status, fail counters, in-flight markers).
+        rows = (await session.scalars(select(Frame).where(Frame.project_id == project.id)
+                                      .order_by(Frame.id))).all()
+        state[Frame.__tablename__] = [{c: getattr(row, c, None) for c in MEDIA_FRAME_COLUMNS} for row in rows]
+    else:
+        for model in (Frame, Scene, FrameText, SceneDesignCell):
+            rows = (await session.scalars(select(model).where(model.project_id == project.id)
+                                          .order_by(model.id))).all()
+            state[model.__tablename__] = [
+                {c.name: getattr(row, c.name) for c in model.__table__.columns
+                 if c.name not in {"created_at", "updated_at"}} for row in rows]
     # Runtime canvas structure plus project-level disable switches.
     state["structure"] = _safe("structure", lambda: {
         "canvas": structure_hash((canvas or {}).get("nodes"), (canvas or {}).get("edges")) if canvas else None,

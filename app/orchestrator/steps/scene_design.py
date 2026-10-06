@@ -39,9 +39,12 @@ async def _record_native_scene_input(session, project, frames, marker, *, cells=
         ctx, node, _ = attempt
         if ctx.session is not session or not runner._scene_journal_open(attempt):
             return None
-        if marker == "camera":
+        if marker == "agent":
+            from app.services import scene_contracts
+
+            agent = scene_contracts.scene_contract(node)["agent"]
             target = runner.get_only_agent(project)
-            if target and target != marker:
+            if agent != scene_contracts.LEGACY_AGENT and target and target != agent:
                 return None
         from copy import deepcopy
         from app.services import scene_contracts
@@ -158,8 +161,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     if any(not fr.uuid for fr in frames):
         raise RuntimeError("scene_design: у кадров нет uuid — backfill не сработал")
 
+    # The journal follows this attempt's own node: its agent (camera, skeleton, characters, world,
+    # action) or, for the legacy single node, every agent that ran.
     scene_attempt = await _record_native_scene_input(
-        session, project, frames, "camera",
+        session, project, frames, "agent",
     )
     runner.mark_running(project)
     await session.flush()
@@ -182,8 +187,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         slices = await runner.run_category_agents(
             project, context, frames=frames, only_agent=only_agent
         )
-        if not only_agent or only_agent == "camera":
-            _stash_native_scene_output(scene_attempt, "scene_agent_slice", slices.get("camera"))
+        if scene_attempt is not None:
+            from app.services import scene_contracts
+
+            own = scene_contracts.scene_contract(scene_attempt[1])["agent"]
+            _stash_native_scene_output(
+                scene_attempt, "scene_agent_slice",
+                dict(slices) if own == scene_contracts.LEGACY_AGENT else slices.get(own))
         # Чекпоинты агентов уже в meta — зафиксировать до записи ячеек.
         await session.commit()
 

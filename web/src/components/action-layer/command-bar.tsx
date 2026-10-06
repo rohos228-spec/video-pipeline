@@ -5,6 +5,8 @@ import {
   getCatalog, listMacros, macroTitle, planFromMacro, planFromText, previewFromError, previewPlan, describeError,
   buildMacroParams, macroInitialValues, paramHint, paramLabel, type ActionSpecJson, type MacroJson, type PlanPreviewResponse, type SceneContext,
 } from "@/lib/action-layer";
+import {isUploading, readyIds, type AttachmentItem} from "@/lib/attachment-view";
+import {AttachmentPicker} from "./attachment-picker";
 
 interface Props {
   projectId: number | null;
@@ -12,9 +14,12 @@ interface Props {
   frameId?: number | null;
   disabled?: boolean;
   onPlan: (r: PlanPreviewResponse, requestText: string) => void;
+  /** Прикреплённые файлы живут в родителе: их же отправляют и при повторе запроса после уточнения. */
+  attachments: AttachmentItem[];
+  onAttachments: (fn: (prev: AttachmentItem[]) => AttachmentItem[]) => void;
 }
 
-export function CommandBar({projectId, sceneId, frameId, disabled, onPlan}: Props) {
+export function CommandBar({projectId, sceneId, frameId, disabled, onPlan, attachments, onAttachments}: Props) {
   const inputId = useId();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -57,6 +62,7 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan}: Prop
 
   const c = ctx();
   const off = disabled || busy || c == null;
+  const uploading = isUploading(attachments);
   const selected = catalog.find((a) => a.id === actionId);
 
   function previewAction() {
@@ -79,7 +85,7 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan}: Prop
         className="flex items-center gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          if (c && text.trim()) void guarded(() => planFromText(text.trim(), c), text.trim(), true);
+          if (c && text.trim() && !uploading) void guarded(() => planFromText(text.trim(), c, readyIds(attachments)), text.trim(), true);
         }}
       >
         <label htmlFor={inputId} className="sr-only">Команда для плана действий</label>
@@ -91,10 +97,12 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan}: Prop
           placeholder={c == null ? "сначала открой проект" : textAvailable ? "что сделать? например: поменяй местами планы 2 и 3" : "составление плана из текста недоступно на сервере"}
           className="h-8 flex-1 rounded-md border border-white/10 bg-black/40 px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary disabled:opacity-40"
         />
-        <Button type="submit" size="sm" variant="outline" className="h-8 text-xs" disabled={off || !textAvailable || !text.trim()}>
+        <Button type="submit" size="sm" variant="outline" className="h-8 text-xs" disabled={off || !textAvailable || !text.trim() || uploading}
+          title={uploading ? "Дождитесь конца загрузки файла" : undefined}>
           {busy ? "Составляю…" : "Составить план"}
         </Button>
       </form>
+      <AttachmentPicker projectId={projectId} items={attachments} onItems={onAttachments} disabled={disabled || busy || !textAvailable} />
 
       {macros && macros.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Умные кнопки">

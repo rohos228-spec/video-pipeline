@@ -774,31 +774,51 @@
    "actions": [
     "read_events",
     "read_contract",
-    "human_review"
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
     "budget",
     "provider_profile"
    ],
-   "effects": [],
-   "executor": "",
-   "managed": false,
-   "native_json_retry": true,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_items.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "items",
    "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "unsupported",
+   "recovery_continuation": "none",
+   "result_kind": "image",
    "volatile_attachment_names": false
   },
   "contract": {
    "actions": [
     "read_events",
     "read_contract",
-    "human_review"
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -806,17 +826,31 @@
     "provider_profile"
    ],
    "arbitrary_shell_code_paths": false,
-   "effects": [],
-   "executor": "",
-   "managed": false,
-   "native_json_retry": true,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_items.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "items",
    "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "unsupported",
+   "recovery_continuation": "none",
+   "result_kind": "image",
    "semantic_quality_verified": false,
    "volatile_attachment_names": false,
    "write_authority": "existing worker only"
@@ -827,31 +861,51 @@
    "actions": [
     "read_events",
     "read_contract",
-    "human_review"
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
     "budget",
     "provider_profile"
    ],
-   "effects": [],
-   "executor": "",
-   "managed": false,
-   "native_json_retry": true,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_music.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "music",
    "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "unsupported",
+   "recovery_continuation": "none",
+   "result_kind": "audio",
    "volatile_attachment_names": false
   },
   "contract": {
    "actions": [
     "read_events",
     "read_contract",
-    "human_review"
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -859,17 +913,31 @@
     "provider_profile"
    ],
    "arbitrary_shell_code_paths": false,
-   "effects": [],
-   "executor": "",
-   "managed": false,
-   "native_json_retry": true,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_music.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "music",
    "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "unsupported",
+   "recovery_continuation": "none",
+   "result_kind": "audio",
    "semantic_quality_verified": false,
    "volatile_attachment_names": false,
    "write_authority": "existing worker only"
@@ -1531,7 +1599,9 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -1544,8 +1614,8 @@
     "artifact_row"
    ],
    "executor": "generate_videos.run → kie_http",
-   "managed": false,
-   "native_json_retry": true,
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "videos",
    "phases": [
     "reserved",
@@ -1561,7 +1631,7 @@
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "recovery_continuation": "none",
    "result_kind": "video",
    "volatile_attachment_names": false
   },
@@ -1570,7 +1640,9 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -1584,8 +1656,8 @@
     "artifact_row"
    ],
    "executor": "generate_videos.run → kie_http",
-   "managed": false,
-   "native_json_retry": true,
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "videos",
    "phases": [
     "reserved",
@@ -1601,7 +1673,7 @@
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "recovery_continuation": "none",
    "result_kind": "video",
    "semantic_quality_verified": false,
    "volatile_attachment_names": false,

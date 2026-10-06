@@ -132,20 +132,54 @@ def _register_builtin_capabilities() -> None:
             forbidden_reason='Управляемый путь пока только синтетический; платная отправка с неизвестным '
                              'исходом могла быть списана, поэтому повторную отправку делает только человек.'),
         C('videos', 'video', 'generate_videos.run → kie_http',
-            _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'), READ_ACTIONS, False,
+            _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'),
+            READ_ACTIONS + ('retry_same', 'finish'), True,
+            native_json_retry=False, recovery_continuation='none',
+            acceptance='media_resume_dry_run', recovery_only=True,
             verifier='media_result', contract='media_jobs',
             verifies=('Для каждого кадра с промтом анимации есть клип: файл существует, не пустой, читается '
                       '(ffprobe: видеодорожка, длительность), лежит внутри папки проекта',
                       'Журнал платных задач: у клипа Kie есть устойчивый task id; у Outsee id нет, это записывается',
-                      'Прошлый submit без известного исхода (Kie или Outsee) выводится отдельным инцидентом'),
-            limits=('Возобновление по task id (опрос и скачивание, без нового submit) есть в нативном слое и в '
-                    'media_recovery.resume_poll; как действие надзора оно не подключено',
-                    'Outsee без идентификатора задачи не возобновляется: исход неизвестен, решает человек',
+                      'Прошлый submit без известного исхода (Kie или Outsee) выводится отдельным инцидентом',
+                      'После возобновления файл клипа перечитывается независимо (ffprobe), число задач в журнале не выросло'),
+            limits=('«Повтор» надзора у медиа = только возобновление по task id (опрос и скачивание) внутри режима '
+                    '«только возобновление»: ни одного нового платного запроса',
+                    'Один билет на ноду за запуск; решает оценка media_recovery.assess (resume_poll или resume_local)',
+                    'Повторная платная отправка по провалу надзором не допущена: её делает нативный слой или человек',
+                    'Outsee без идентификатора задачи и submit без известного исхода не возобновляются: решает человек',
+                    'Надзор ноду не запускает и не перезапускает: после возобновления её продолжает человек обычным запуском',
                     'Нативная лестница до семи платных отправок на клип не меняется'),
-            forbidden_code='media_recovery_not_admitted',
-            forbidden_reason='Проверка результата и возобновление по task id готовы и проверены на заглушках, но '
-                             'допуск восстановления надзором рассчитан на сбои модели, а живого прогона нет: '
-                             'платный повтор делает только человек.'),
+            recovery_cap=1),
+        C('items', 'image', 'generate_items.run → kie_http',
+            _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'),
+            READ_ACTIONS + ('retry_same', 'finish'), True,
+            native_json_retry=False, recovery_continuation='none',
+            acceptance='media_resume_dry_run', recovery_only=True,
+            verifier='media_result', contract='media_jobs',
+            verifies=('Для каждого описания предмета есть файл картинки: существует, декодируется, внутри проекта',
+                      'Журнал платных задач: task id Kie или отсутствие id у Outsee',
+                      'После возобновления файл перечитывается независимо, число задач в журнале не выросло'),
+            limits=('«Повтор» надзора у предметов = только возобновление по task id: ни одного нового платного запроса',
+                    'Один билет на ноду за запуск; решает оценка media_recovery.assess',
+                    'Повторная платная отправка по провалу надзором не допущена',
+                    'У Outsee нет task id: неизвестный исход блокирует повтор, решает человек',
+                    'Надзор ноду не запускает и не перезапускает'),
+            recovery_cap=1),
+        C('music', 'audio', 'generate_music.run → kie_http',
+            _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'),
+            READ_ACTIONS + ('retry_same', 'finish'), True,
+            native_json_retry=False, recovery_continuation='none',
+            acceptance='media_resume_dry_run', recovery_only=True,
+            verifier='media_result', contract='media_jobs',
+            verifies=('Есть файл музыки: существует, не пустой, читается (ffprobe: звуковая дорожка)',
+                      'Журнал платных задач: task id Suno или его отсутствие',
+                      'После возобновления файл перечитывается независимо (ffprobe), число задач в журнале не выросло'),
+            limits=('«Повтор» надзора у музыки = только возобновление задачи Suno по task id: ни одного нового платного запроса',
+                    'Один билет на ноду за запуск; решает оценка media_recovery.assess',
+                    'Повторная платная отправка по провалу надзором не допущена',
+                    'Если Kie не настроен, генерация идёт без идентификатора задачи: возобновить нельзя',
+                    'Надзор ноду не запускает и не перезапускает'),
+            recovery_cap=1),
         C('audio', 'audio', 'generate_audio.run → elevenlabs_api',
             ('reserved', 'submitted', 'verifying', 'verified', 'alignment', 'failed', 'unknown'),
             ('provider_generation', 'local_file', 'frame_timing', 'artifact_row'), READ_ACTIONS, False,
@@ -169,11 +203,12 @@ def _register_builtin_capabilities() -> None:
                       'Сбой сборки или проверки: ровно одна повторная попытка внутри ноды'),
             limits=('Подтверждение approve_final нельзя снять повтором: запрос один на пару проект и sha256',
                     'Автоодобрение финала требует живой успешной проверки; ручное одобрение не затронуто',
-                    'Повтор надзором не подключён: одна попытка внутри ноды уже есть'),
+                    'Повтор надзором не допущен (нет возобновляемой задачи): одна попытка внутри ноды уже есть'),
             forbidden_code='media_recovery_not_admitted',
-            forbidden_reason='Атомарная запись, проверка итога и один повтор внутри ноды готовы, но допуск '
-                             'восстановления надзором рассчитан на сбои модели: запуск и подтверждение '
-                             'финала остаются за человеком.'),
+            forbidden_reason='Атомарная запись, проверка итога и один повтор внутри ноды готовы, но у сборки нет '
+                             'платной задачи для возобновления, а повтор ноды требует перезапуска рабочего '
+                             'процесса, проверка которого для не-модельных нод не доказана: запуск, повтор и '
+                             'подтверждение финала остаются за человеком.'),
         C('sfx_plan', 'structured',
             'plan_sfx.run → sfx_plan.plan_sfx_events → ai_result_io.text_job',
             ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
@@ -226,7 +261,8 @@ def _register_builtin_capabilities() -> None:
             limits=('Один повтор на ноду за запуск',
                     'Только пока ни одна пачка не применена: после первого применения повтор запрещён',
                     'Смена профиля запрещена: во входе картинки, профиль не может пересобрать запрос',
-                    'Тихий локальный запасной путь при сбое провайдера пока не помечается как деградация',
+                    'Локальный запасной путь и пропуск shot_02 при сбое провайдера видны фактом animation_degraded '
+                    'и инцидентом animation_degraded; сам по себе он повтор не открывает',
                     'Не запускает videos (платная нода с утверждением человеком)'),
             recovery_cap=1),
         *_coverage_only_specs(),
@@ -251,34 +287,34 @@ def _coverage_only_specs():
               'граф нужно перенести на excel_gpt (миграция C5).')
     return (
         _watch('scene_design', 'legacy_node_type',
-               'Устаревший тип одной ноды на всю фазу делит шаг с веером sd_agent и сборкой sd_assemble: '
-               'отдельный контракт назвать нельзя, остаётся только человек.'),
+               'Устаревший тип одной ноды на всю фазу не отличить от агента, который в ней идёт: результат '
+               'проверяется как объединение агентов и сборки, а повтор небезопасен и остаётся за человеком.',
+               verifies=('Для каждого агента веера, который отработал: срез по контракту (список, id, поля) '
+                         'и сохранённые ячейки совпадают с тем, что выводит нативный конвертер',
+                         'Для сборки: итоговый payload по нативной проверке и сверка с Frame.attrs',
+                         'Сбой ответа типизируется как invalid_json, missing_payload или contract_rejected'),
+               hook=scene_hook),
         _watch('sd_agent', 'partial_commit',
-               'Веер из пяти агентов идёт одним шагом, нода коммитит ячейки и чекпоинты частями, а '
-               'идентичность попытки неоднозначна: повтор после сбоя небезопасен.',
-               verifies=('Агент camera: срез ячеек сверяется со входом, остальные ячейки и кадры сохранены',
-                         'Агенты skeleton, characters, world, action: только журнал запросов'),
+               'Веер агентов идёт одним шагом: чекпоинты лежат на диске, ячейки коммитятся частями, а сам шаг '
+               'не пишет транзакционного факта применения, поэтому повтор нечем проверить и он небезопасен.',
+               verifies=('Агенты skeleton, characters, world, camera, action: срез по контракту агента '
+                         '(обязательный список, id по шаблону, поля) и сохранённые ячейки равны тому, что '
+                         'выводит нативный конвертер; кадры и ячейки других агентов не тронуты',
+                         'Сбой ответа типизируется: invalid_json (нет JSON), missing_payload (нет списка), '
+                         'contract_rejected (срез или ячейки нарушают контракт)'),
                hook=scene_hook),
         _watch('sd_assemble', 'pre_request_commit',
                'До запроса к модели нода уже записала дочерние кадры, поэтому вход повтора изменён '
                '(в режиме chrono_dyn запроса к модели нет вовсе): повтор небезопасен.',
-               verifies=('Разбор и проверка итогового payload, сверка его полей с реальными Frame.attrs',),
+               verifies=('Разбор и проверка итогового payload, сверка его полей с реальными Frame.attrs',
+                         'Сбой типизируется: invalid_json (нет JSON), missing_payload (нет scenes или ops), '
+                         'contract_rejected (правила сборки отклонили)'),
                hook=scene_hook),
         _watch('hero', 'nondeterministic_paid_request',
                'Промт героя v1 каждый раз заново строит GPT, поэтому после рестарта тот же платный запрос '
                'не воспроизвести и открытую задачу по task id не найти: повтор мог бы заплатить заново.',
                verifies=('У героя есть файл картинки: существует, не пустой, декодируется, лежит в папке проекта',
                          'Журнал платных задач: task id Kie или отсутствие id у Outsee')),
-        _watch('items', 'media_recovery_not_admitted',
-               'Промт предмета детерминирован и открытую задачу Kie можно возобновить по task id, но допуск '
-               'восстановления надзором рассчитан на сбои модели, а живого прогона нет: решает человек.',
-               verifies=('Для каждого описания предмета есть файл картинки: существует, декодируется, внутри проекта',
-                         'Журнал платных задач: task id Kie или отсутствие id у Outsee')),
-        _watch('music', 'media_recovery_not_admitted',
-               'Задачу Suno в Kie можно возобновить по task id (сохранённый промт), но допуск восстановления '
-               'надзором рассчитан на сбои модели, а живого прогона нет: платный повтор делает человек.',
-               verifies=('Есть файл музыки: существует, не пустой, читается (ffprobe: звуковая дорожка)',
-                         'Журнал платных задач: task id Suno или его отсутствие')),
         *(_watch(f'enrich_{n}', 'legacy_node_type', legacy,
                  verifies=('Журнал ведётся как у excel_gpt (observe_attempt подставляет excel_gpt)',),
                  hook='app.services.observation:observe_attempt')
@@ -290,38 +326,42 @@ def _coverage_only_specs():
 # NodeCapability on purpose: contract() is built with asdict() and is persisted/sent to the
 # decision layer, so a new dataclass field would change those payloads. Nothing reads this
 # table at runtime; docs/MEDIA_NODES_READINESS.md and tests/test_media_nodes_recovery_decision.py
-# are its only consumers. Every entry is human-only: no supervisor retry for any media node.
+# are its only consumers. Every entry is human-only (no supervisor retry) except the resume-only ones
+# (videos, items, music): the supervisor may only resume a known provider task, never submit a new one.
 # Facts are code-grounded (file:line in the doc); "reason" is the honest short justification.
 _MEDIA_HUMAN_ONLY = "human_only"
+_MEDIA_RESUME_ONLY = "resume_only"
 MEDIA_RECOVERY_DECISIONS = {
     "hero": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
         "provider": "outsee/kie via generate_image_with_retries",
         "reason": "No managed lifecycle; the prompt of hero v1 is rebuilt by GPT on every run, so after a restart "
                   "the same paid request cannot be reproduced and an open Kie task is not found: a supervisor "
                   "retry could double-pay (observation: media_result verifier, ledger trail)."},
-    "items": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
+    "items": {"decision": _MEDIA_RESUME_ONLY, "cost_class": "paid_per_image",
         "provider": "outsee/kie via generate_image_with_retries",
-        "reason": "No managed lifecycle; the Kie task id is in the ledger and an open task is resumed by the native "
-                  "layer, but Outsee has no task id (unknown outcome, never resubmitted) and supervisor recovery "
-                  "is not admitted for media: a retry could double-pay; the step rolls back to hero_ready."},
+        "reason": "Supervisor admission is a resume of a known Kie task id only (poll and download inside the "
+                  "resume-only scope, zero new paid requests); Outsee has no task id (unknown outcome, never "
+                  "resubmitted) and a paid re-submit stays with the native layer or a human: a retry could double-pay."},
     "images": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
         "provider": "kie (managed, synthetic loopback only) / outsee (native)",
         "reason": "Managed route is synthetic-loopback only (no authorized production network profile); "
                   "a failed or unknown job is terminal and never resubmitted; uncertain submit may "
                   "already be charged."},
-    "videos": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_clip_highest",
+    "videos": {"decision": _MEDIA_RESUME_ONLY, "cost_class": "paid_per_clip_highest",
         "provider": "outsee/kie (Seedance, Kling, Veo ladder)",
-        "reason": "managed=False; Kie clips resume by task id (resume-only, offline-proven) but Outsee has no id "
-                  "and the native ladder is up to 4 primary + 3 fallback paid submits per clip; supervisor "
-                  "recovery is not admitted for media and no live run exists: a blind retry can double-pay."},
+        "reason": "Supervisor admission is a resume of a known Kie task id only (poll and download inside the "
+                  "resume-only scope, zero new paid requests); Outsee has no id and the native ladder is up to "
+                  "4 primary + 3 fallback paid submits per clip, so a paid re-submit by the supervisor is not "
+                  "admitted: a blind retry can double-pay."},
     "audio": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_character",
         "provider": "elevenlabs_api (direct HTTP)",
         "reason": "managed=False; request has no idempotency key and the native client already retries "
                   "3 times on timeout/429/5xx, so a timeout after acceptance may be charged twice."},
-    "music": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_generation",
+    "music": {"decision": _MEDIA_RESUME_ONLY, "cost_class": "paid_per_generation",
         "provider": "kie suno (direct) or browser outsee",
-        "reason": "Not managed; a Suno task resumes by task id from the ledger (saved prompt) but supervisor "
-                  "recovery is not admitted for media and no live run exists, so a retry could re-submit and re-pay."},
+        "reason": "Supervisor admission is a resume of a known Suno task id only (poll and download inside the "
+                  "resume-only scope, saved prompt, zero new paid requests); a paid re-submit is not admitted "
+                  "because a retry could re-submit and re-pay."},
     "sfx_gen": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_event_small_or_free_local",
         "provider": "elevenlabs sound-effects (or local_synth when no key)",
         "reason": "managed=False; per-event paid call without idempotency key; on error it falls back to local "
@@ -356,6 +396,10 @@ def require_managed_capability(node_type: str):
     capability = capability_for(node_type)
     if not capability.managed:
         raise ValueError("node adapter has no accepted managed executor")
+    from app.orchestrator.node_spec import capability_spec_for
+    spec = capability_spec_for(node_type)
+    if spec is not None and spec.recovery_only:
+        raise ValueError("node is managed for supervised recovery only: the supervisor never starts or restarts it")
     return capability
 
 

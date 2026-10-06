@@ -200,6 +200,17 @@ def expected_vars(pid: int = 2) -> dict:
     return out
 
 
+def fake_attachments(project_id: int, specs: list[dict] | None) -> list:
+    """Вложения для кейсов фикстуры с ``context.attachments`` ([{kind, name, size}]): без файлов на диске.
+
+    Планировщик видит только id/имя/вид/размер, а путь для шага загрузки берёт из записи сам, поэтому
+    для оценки достаточно записи (id детерминирован: повторный запуск даёт те же значения)."""
+    from app.services.action_layer.attachments import synthetic_ref
+    return [synthetic_ref(project_id, str(sp["kind"]), str(sp["name"]), int(sp.get("size", 1024)),
+                          att_id=uuid.uuid5(uuid.NAMESPACE_DNS, f"eval-attachment-{project_id}-{i}-{sp['name']}").hex)
+            for i, sp in enumerate(specs or [])]
+
+
 async def _seed_changes(s, pid: int) -> tuple[list[dict], dict[str, int]]:
     from sqlalchemy import delete, select
     from app.services.change_control import store as cs

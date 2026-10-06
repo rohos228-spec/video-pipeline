@@ -415,6 +415,13 @@ class Settings(BaseSettings):
     action_layer_planner_max_catalog: int = Field(
         24, ge=1, le=500, alias="ACTION_LAYER_PLANNER_MAX_CATALOG"
     )
+    # Файлы, прикреплённые к командной строке слоя действий (DATA_DIR/attachments/<проект>/): общий
+    # потолок размера одного файла (МБ; у каждого вида есть и свой, меньший) и срок хранения
+    # неиспользованных файлов (дни; 0 = не удалять).
+    action_layer_attachment_max_mb: int = Field(200, ge=1, le=2048, alias="ACTION_LAYER_ATTACHMENT_MAX_MB")
+    action_layer_attachment_retention_days: int = Field(
+        7, ge=0, le=3650, alias="ACTION_LAYER_ATTACHMENT_RETENTION_DAYS"
+    )
 
     @model_validator(mode="after")
     def _resolve_paths_from_repo_root(self) -> "Settings":

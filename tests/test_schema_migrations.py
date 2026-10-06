@@ -9,7 +9,8 @@ from app.services import schema_migrations as sm
 from app.services.observation import migrate_observation_schema
 
 MASTER_TABLES = {"observation_events", "supervisor_kill_switch", "spend_ledger", "provider_task_ledger",
-                 "action_layer_history", "action_layer_plans", "change_proposals", "config_versions"}
+                 "action_layer_history", "action_layer_plans", "change_proposals", "config_versions",
+                 "action_layer_attachments"}
 ALL_IDS = [m.id for m in sm.MIGRATIONS]
 
 
@@ -147,3 +148,46 @@ async def test_append_only_triggers_survive_migration(engine):
     with pytest.raises(Exception, match="append-only"):
         async with engine.begin() as conn:
             await conn.exec_driver_sql("DELETE FROM provider_task_ledger")
+
+
+async def test_attachments_migration_0006_is_idempotent_and_keeps_rows(engine):
+    assert "0006_action_attachments" in ALL_IDS and ALL_IDS == sorted(ALL_IDS)
+    report = await _run(engine)
+    assert "0006_action_attachments" in report.applied
+    cols = await _columns(engine, "action_layer_attachments")
+    assert {"id", "project_id", "name", "kind", "size", "sha256", "rel_path", "created_at",
+            "consumed_at", "consumed_plan_id"} <= cols
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(
+            "INSERT INTO action_layer_attachments (id, project_id, operator, name, kind, ext, content_type, "
+            "size, sha256, rel_path, created_at, consumed_plan_id) VALUES ('a' || hex(zeroblob(15)), 1, 'op', "
+            "'v.mp3', 'audio', '.mp3', '', 3, 'x', 'attachments/1/a_v.mp3', CURRENT_TIMESTAMP, '')")
+    again = await _run(engine)
+    assert again.applied == [] and again.drift == [] and "0006_action_attachments" in again.skipped
+    async with engine.connect() as conn:
+        assert (await conn.exec_driver_sql("SELECT count(*) FROM action_layer_attachments")).scalar() == 1
+
+
+async def test_attachments_migration_records_a_database_that_already_has_the_table(engine):
+    from app.services.action_layer.attachments import ensure_attachments_schema
+    async with engine.begin() as conn:
+        await ensure_attachments_schema(conn)
+        await conn.exec_driver_sql(
+            "INSERT INTO action_layer_attachments (id, project_id, operator, name, kind, ext, content_type, "
+            "size, sha256, rel_path, created_at, consumed_plan_id) VALUES ('b' || hex(zeroblob(15)), 2, 'op', "
+            "'p.png', 'image', '.png', '', 3, 'x', 'attachments/2/b_p.png', CURRENT_TIMESTAMP, '')")
+    report = await _run(engine)
+    assert report.failed is None and "0006_action_attachments" in report.applied
+    async with engine.connect() as conn:
+        assert (await conn.exec_driver_sql("SELECT name FROM action_layer_attachments")).scalar() == "p.png"
+    assert (await _run(engine)).drift == []
+
+
+async def test_project_scope_does_not_create_the_attachments_table(engine):
+    await _run(engine, scope=sm.SCOPE_PROJECT)
+    assert "action_layer_attachments" not in await _tables(engine)
+
+
+async def _columns(eng, table: str) -> set[str]:
+    async with eng.connect() as conn:
+        return {c["name"] for c in await conn.run_sync(lambda c: inspect(c).get_columns(table))}

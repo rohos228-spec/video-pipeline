@@ -67,6 +67,7 @@ TITLES = {
     'split_degraded':'Разбивка получена локальным запасным путём: ответ модели непригоден',
     'verification_hold':'Нативная проверка не подтвердила результат; запуск удержан',
     'provider_degraded':'Платный провайдер не отдал результат: звук подменён локальным синтезом',
+    'animation_degraded':'Промты анимации получены запасным путём или частично: сбой провайдера, шаг продолжен без ответа модели',
 }
 RECOMMENDATIONS = {
     'wait':'Ожидать', 'check_contract':'Проверить входные данные и контракт',
@@ -238,13 +239,13 @@ def derive_incidents(scope, events, snapshot):
                         blocking=p.get('status')=='failed',severity='error' if p.get('status')=='failed' else 'warning',
                         fact=str(p.get('summary') or TITLES['media_failure'])[:400],action='human_review')
                     item['status']='human_review'; item['semantic_quality_verified']=False
-                    item['verification_status']=p.get('status')
+                    item['verification_status']=p.get('status'); item['media']=True
                 for unknown in (p.get('outcome_unknown') or [])[:20]:
                     provider=str(unknown.get('provider') or 'unknown')
                     item=issue('uncertain_request',(node,attempt,'media_outcome',str(unknown.get('key')),provider),[e],
                         fact='Исход внешней медиа-задачи неизвестен ('+provider+', '+str(unknown.get('key'))+
                              '). Новый submit запрещён.',action='review_provider_response',incomplete=True)
-                    item['status']='human_review'; item['provider']=provider
+                    item['status']='human_review'; item['provider']=provider; item['media']=True
             if kind=='provider_fallback':
                 item=issue('provider_degraded',(node,attempt,'fallback',p.get('idx')),[e],blocking=False,severity='warning',
                     fact='Звук события '+str(p.get('idx'))+' ('+str(p.get('kind'))+') сделан локальным синтезом: '+
@@ -253,6 +254,27 @@ def derive_incidents(scope, events, snapshot):
                              str(p.get('may_have_charged')),'неизвестно')+'.',
                     action='human_review')
                 item['status']='human_review'; item['may_have_charged']=p.get('may_have_charged')
+            if (kind=='node_result_verification' and str(p.get('contract') or '').startswith('native_scene_')
+                    and p.get('status')=='failed'):
+                # Scene result check (agent slice / assembly): the stored result breaks its contract.
+                klass=p.get('failure_class') or 'contract_rejected'
+                item=issue('contract_rejected',(node,attempt,'scene_verify',e['event_id']),[e],
+                    fact='Результат сцен ('+str(p.get('agent') or 'сцены')+') не прошёл проверку контракта ('+klass+'): '+
+                         str(p.get('reason') or 'причина не записана')[:200]+'. Автоповтор не выполняется.',
+                    action='human_review')
+                item['status']='human_review'; item['failure_class']=klass; item['semantic_quality_verified']=False
+            if kind=='animation_degraded':
+                nums=[n for n in (p.get('frame_numbers') or []) if isinstance(n,int)][:30]
+                where=(' для кадров '+', '.join(map(str,nums))) if nums else ''
+                if p.get('reason')=='shot2_skipped':
+                    text=('Провайдер не ответил: промты второго кадра (shot_02)'+where+' не созданы, шаг продолжен без них. '
+                          'Автоповтор не выполняется.')
+                else:
+                    text=('Провайдер не ответил: промты первого кадра'+where+' заполнены локальным шаблоном без модели и без картинок; '
+                          'качество не проверялось. Автоповтор не выполняется.')
+                item=issue('animation_degraded',(node,attempt,'degraded',p.get('reason'),p.get('shot')),[e],blocking=False,
+                    severity='warning',fact=text,action='human_review')
+                item['status']='human_review'; item['degradation']=p.get('reason'); item['semantic_quality_verified']=False
             if kind == 'media_failure':
                 uncertain = p.get('uncertain') is True or p.get('phase') == 'unknown'
                 item = issue('uncertain_request' if uncertain else 'media_failure',
@@ -262,6 +284,7 @@ def derive_incidents(scope, events, snapshot):
                     action='human_review', incomplete=uncertain)
                 item['status'] = 'human_review'
                 item['provider_job_known'] = bool(p.get('provider_job_id'))
+                item['media'] = True
                 item['semantic_quality_verified'] = False
             if kind == 'media_policy_denied' and not any(r['kind']=='media_failure' for r in related):
                 item = issue('media_policy', (node, attempt, p.get('job_id') or e['event_id']),
@@ -275,7 +298,8 @@ def derive_incidents(scope, events, snapshot):
                 item=issue('contract_rejected',(node,attempt,'regen_budget',e.get('request_id') or e['event_id']),[e],
                     fact=str(p.get('summary') or 'Лимит перегенераций исчерпан; проект остановлен.')[:300],action='human_review')
                 item['status']='human_review'
-            elif kind=='runtime_check' and p.get('performed') is True and p.get('status') in {'failed','rejected'}:
+            elif (kind=='runtime_check' and p.get('performed') is True and p.get('status') in {'failed','rejected'}
+                    and p.get('failure_class') not in {'invalid_json','missing_payload'}):
                 issue('contract_rejected',(node,attempt,p.get('check'),e.get('request_id') or e['event_id']),[e],fact=f"Проверка {p.get('check','unknown')} отклонила результат.")
             if kind in {'apply_error','node_error','model_error'}:
                 if kind == 'node_error' and any(r['kind']=='media_failure' for r in related):
@@ -306,6 +330,8 @@ def derive_incidents(scope, events, snapshot):
                         fact=title if code!='unknown' else 'Записано исключение транспорта; причина не установлена.',
                         action='review_provider_response' if uncertain else 'human_review',incomplete=uncertain)
                     item['catalog_code']=code; item['status']='human_review'
+                    if any(r['kind']=='node_result_verification' and r['payload'].get('contract')=='native_media' for r in related):
+                        item['media']=True  # the attempt of a media node: media_recovery.assess judges it from ledger facts
                     if p.get('catalog_source')=='exception_type_or_text':
                         item['fact']+=' Код каталога выведен из типа/текста исключения; этот вывод менее надёжен.'
                 else:

@@ -39,10 +39,18 @@ export function clarifiedRequest(original: string, option: string): string {
   return `${base}. Уточнение: ${option.trim()}`;
 }
 
-/** The backend has no attachments field yet, so a requested file cannot be sent along: explain where to upload it. */
-export function attachmentInfo(request: NonNullable<ClarifyReply["attachment_request"]>, actionTitle?: string): string {
+export const ATTACH_BUTTON = "Прикрепить файл";
+export const RESEND_WITH_FILES = "Составить план с файлом";
+
+/** Подсказка под уточнением, когда планировщик ждёт файл: что нужно и что нажать. */
+export function attachmentHint(request: NonNullable<ClarifyReply["attachment_request"]>, actionTitle?: string,
+                               hasFiles = false): string {
   const what = actionTitle || request.action_id;
   const formats = request.formats ? ` (формат: ${request.formats})` : "";
-  return `Файл нельзя приложить к команде из этой строки. Нужен для действия «${what}»${formats}. ` +
-    "Загрузите его кнопкой загрузки в соответствующем разделе монтажа, затем повторите команду.";
+  if (hasFiles) {
+    return `Нужен файл для действия «${what}»${formats}. Прикреплённые файлы можно отправить снова: «${RESEND_WITH_FILES}». ` +
+      `Неподходящий файл уберите и прикрепите другой кнопкой «${ATTACH_BUTTON}» в строке команды выше.`;
+  }
+  return `Нужен файл для действия «${what}»${formats}. Прикрепите его кнопкой «${ATTACH_BUTTON}» в строке команды выше, ` +
+    `затем нажмите «${RESEND_WITH_FILES}».`;
 }

@@ -238,6 +238,7 @@ def _builtin_spec_list() -> list:
     if _builtin_specs is None:
         from app.services.action_layer.builtin_change import register_change_actions
         from app.services.action_layer.builtin_group import register_group_actions
+        from app.services.action_layer.builtin_media_recovery import register_media_recovery_actions
         from app.services.action_layer.builtin_montage import register_montage_actions
         from app.services.action_layer.builtin_wave3 import register_wave3
 
@@ -246,6 +247,7 @@ def _builtin_spec_list() -> list:
         register_group_actions(staging)
         register_wave3(staging)
         register_change_actions(staging)
+        register_media_recovery_actions(staging)
         _builtin_specs = staging.list()
     return _builtin_specs
 

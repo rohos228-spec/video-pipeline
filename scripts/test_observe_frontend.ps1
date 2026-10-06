@@ -9,7 +9,7 @@ $files=& git -c $safety -c core.quotepath=false -C $repo ls-files web scripts/bu
 $files=@($files | Where-Object { $_ -notmatch '^web/out/' })
 $files+=@('tests/observe_v1/frontend_contract.mjs','web/src/lib/observation-view.ts','web/src/lib/observations.ts','web/src/components/orchestrator/observation-section.tsx')
 $files+=@('web/src/lib/actions-view.ts','web/src/lib/profiles-view.ts','web/src/components/orchestrator/profiles-section.tsx')
-$files+=@('web/src/lib/clarification-view.ts','web/src/lib/node-coverage-view.ts','web/src/components/orchestrator/node-coverage-section.tsx','web/src/components/orchestrator/orchestrator-panel.tsx','web/src/components/action-layer/plan-card.tsx','web/src/components/action-layer/action-layer-section.tsx')
+$files+=@('web/src/lib/clarification-view.ts','web/src/lib/node-coverage-view.ts','web/src/components/orchestrator/node-coverage-section.tsx','web/src/components/orchestrator/orchestrator-panel.tsx','web/src/components/action-layer/plan-card.tsx','web/src/components/action-layer/action-layer-section.tsx','web/src/components/action-layer/command-bar.tsx','web/src/components/action-layer/attachment-picker.tsx','web/src/lib/attachment-view.ts','web/src/lib/action-layer.ts')
 $manifest=@{}
 foreach($relative in ($files | Select-Object -Unique)) {
     if($relative -match '(^|/)\.env($|\.)|(^|/)node_modules/|(^|/)\.git/|\.(db|key|pem)$') { continue }

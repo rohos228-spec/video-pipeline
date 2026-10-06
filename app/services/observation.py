@@ -1243,6 +1243,11 @@ def observe_apply(function):
     return wrapped
 
 
+def _media_resume_nodes():
+    from app.services.revisions import MEDIA_RESUME_NODES
+    return MEDIA_RESUME_NODES
+
+
 @asynccontextmanager
 async def observe_attempt(session, project):
     observer = get_observer()
@@ -1298,6 +1303,14 @@ async def observe_attempt(session, project):
             session.info["recovery_attempt_id"] = claimed_id
         attempt_id = claimed_id
         revision = await input_revision(session, project, node_key, parts=revision_parts)
+    elif native_type in _media_resume_nodes() and node_key:
+        # Media nodes are observed without a managed scope; the supervised resume (media_admission) is
+        # admitted later, so the request-input baseline of THIS attempt is recorded now. Never fatal.
+        try:
+            from app.services.actions_recovery import input_revision
+            revision = await input_revision(session, project, node_key, parts=revision_parts)
+        except Exception:  # noqa: BLE001 - a missing baseline only makes the later admission refuse
+            revision, revision_parts = None, {}
     ctx = AttemptContext(observer, scope, session, source, node_key, attempt_id)
     if scope.mode == "managed":
         from app.services.decision_config import runtime_config

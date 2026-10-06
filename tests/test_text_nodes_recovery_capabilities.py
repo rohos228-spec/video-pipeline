@@ -55,10 +55,18 @@ def test_profile_eligibility_is_capability_data_not_result_kind():
 
 
 def test_no_other_node_gained_recovery_actions():
-    for node_type in ("images", "videos", "audio", "assemble", "sfx_gen", "publish", "hero", "items",
-                      "music", "scene_design", "sd_agent", "sd_assemble", "enrich_1",
+    for node_type in ("images", "audio", "assemble", "sfx_gen", "publish", "hero",
+                      "scene_design", "sd_agent", "sd_assemble", "enrich_1",
                       "split", "image_prompts", "future-unsupported"):
         assert not RECOVERY_ACTIONS & set(capability_for(node_type).actions), node_type
+
+
+def test_media_nodes_are_recovery_only():
+    for node_type in ("videos", "items", "music"):
+        from app.orchestrator.node_spec import capability_spec_for
+        cap = capability_for(node_type)
+        assert capability_spec_for(node_type).recovery_only is True, node_type
+        assert cap.profile_compatible is False and "retry_profile" not in cap.actions, node_type
 
 
 @pytest.mark.parametrize("node_type", ["sfx_plan", "animation_prompts"])

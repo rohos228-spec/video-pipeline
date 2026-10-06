@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Base, Frame, Project, ProjectStatus
 from app.services import db_v2, kill_switch
-from app.services.action_layer import executor, store
+from app.services.action_layer import attachments, executor, store
 from app.services.action_layer.spec import ActionRegistry, ActionSpec, CostEstimate
 from app.settings import settings
 from app.web.api import create_app
@@ -55,6 +55,7 @@ async def env(tmp_path, monkeypatch):
         await conn.run_sync(Base.metadata.create_all)
         await db_v2.migrate_db_v2_schema(conn)
         await store.ensure_action_layer_schema(conn)
+        await attachments.ensure_attachments_schema(conn)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     await kill_switch.ensure_table(factory)
     kill_switch.reset_cache()

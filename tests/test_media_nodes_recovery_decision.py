@@ -1,4 +1,7 @@
-"""Media nodes stay human-only: declarative decision data, coverage guard, no network/DB."""
+"""Media nodes: declarative decision data, coverage guard, no network/DB.
+
+Human-only (no supervisor retry at all): hero, images, audio, sfx_gen, assemble, publish.
+Resume-only (videos, items, music): the supervisor may resume a KNOWN provider task and never submit."""
 import pytest
 
 from app.orchestrator.node_registry import WORK_NODES
@@ -16,6 +19,8 @@ KNOWN_NON_MEDIA = {
     "image_prompts", "animation_prompts", "sfx_plan",
 }
 MEDIA = set(MEDIA_RECOVERY_DECISIONS)
+RESUME_ONLY = {"videos", "items", "music"}
+HUMAN_ONLY = MEDIA - RESUME_ONLY
 
 
 def test_every_registry_node_has_a_media_decision_or_is_known_non_media():
@@ -33,7 +38,7 @@ def test_generating_status_nodes_are_never_silently_non_media():
             assert node_type in MEDIA, node_type
 
 
-@pytest.mark.parametrize("node_type", sorted(MEDIA))
+@pytest.mark.parametrize("node_type", sorted(HUMAN_ONLY))
 def test_media_node_is_human_only_with_honest_reason(node_type):
     cap = capability_for(node_type)
     assert not RECOVERY_ACTIONS & set(cap.actions)
@@ -44,6 +49,18 @@ def test_media_node_is_human_only_with_honest_reason(node_type):
     assert len(decision["reason"].split()) >= 8, "reason must be a real sentence, not a stub"
     for key in ("cost_class", "provider"):
         assert decision[key].strip()
+    assert set(decision) == {"decision", "cost_class", "provider", "reason"}
+
+
+@pytest.mark.parametrize("node_type", sorted(RESUME_ONLY))
+def test_resume_only_media_node_offers_one_retry_slot_and_no_profile_change(node_type):
+    cap = capability_for(node_type)
+    assert cap.managed and "retry_same" in cap.actions and "retry_profile" not in cap.actions
+    assert cap.profile_compatible is False and cap.recovery_continuation == "none"
+    decision = media_recovery_decision(node_type)
+    assert decision["decision"] == "resume_only"
+    assert len(decision["reason"].split()) >= 8
+    assert "zero new paid requests" in decision["reason"]
     assert set(decision) == {"decision", "cost_class", "provider", "reason"}
 
 

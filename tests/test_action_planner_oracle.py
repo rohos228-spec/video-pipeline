@@ -123,7 +123,8 @@ async def test_every_fixture_case_is_scored_ok_for_the_expected_answer(oracle_en
         try:
             out = await planner.plan_from_text(
                 case["text"], operator=OP, project_id=PID, selected_scene=ctx.get("selected_scene"),
-                selected_frame=ctx.get("selected_frame"))
+                selected_frame=ctx.get("selected_frame"),
+                attachments=load_seed().fake_attachments(PID, ctx.get("attachments")))
             steps, clar, expl = out.reply.steps, out.reply.needs_clarification, out.reply.explanation_ru
         except (planner.PlannerRejected, planner.PlannerFailed) as exc:
             code = f"{exc.code}: {exc}"
@@ -137,7 +138,7 @@ async def test_concurrent_requests_share_the_local_database_without_errors(oracl
     """Как в `eval_action_planner.py --concurrency 4`: журнал и бюджет пишутся из нескольких запросов сразу."""
     m = script()
     variables = load_seed().expected_vars(PID)
-    plans = [c for c in CASES if c["outcome"] == "plan"][:48]
+    plans = [c for c in CASES if c["outcome"] == "plan" and not (c.get("context") or {}).get("attachments")][:48]
     replies = {c["text"]: res(oracle_reply(c, variables)) for c in plans}
 
     class ByText:  # ответ выбирается по тексту запроса, поэтому порядок завершения не важен

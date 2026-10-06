@@ -366,7 +366,17 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     from app.telegram.menu import step_by_code
 
     assert not browser and 0 < timeout_s <= 120
-    assert capability_for("videos").managed is False, "no capability grant for this observation probe"
+    # "managed" for supervised RECOVERY only (a resume of a known provider task): the probe still gets no
+    # managed start grant, a managed attempt of the node is refused.
+    from app.orchestrator.node_spec import capability_spec_for
+    from app.services.node_capabilities import require_managed_capability
+    assert capability_spec_for("videos").recovery_only, "videos is managed for recovery only"
+    try:
+        require_managed_capability("videos")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("no capability grant for this observation probe")
     assert settings.kie_api_base_url == settings.yandex_storage_endpoint == ORIGIN
     assert settings.kie_api_key == "synthetic-native-video-token"
     root = Path(root)

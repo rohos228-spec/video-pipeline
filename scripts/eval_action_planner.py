@@ -9,6 +9,8 @@ master prompt variants) unless --no-seed-realistic is given. --shard i/n runs ev
 --concurrency N sends N requests at a time; the planner hourly call limit is raised for this process only.
 Only VIBECODE_API_KEY / VIBECODE_BASE_URL / GPT_RELAY_TOKEN / GPT_PROXY_URL / GPT_BASE_URL are read from
 --env-file; nothing secret is printed or written.
+Cases with context.attachments ([{kind, name, size}]) get fake attachments (no files, no paths shown to the model):
+the server fills source_path of the upload step from the attachment id, as in the real command line.
 The scoring helpers (load_cases, sample_cases, score_case) are offline and unit-tested.
 """
 from __future__ import annotations
@@ -283,7 +285,8 @@ async def main() -> int:
         print(json.dumps({"seeded_project": info.project_id, "frames": len(info.frame_ids),
                           "proposals": len(info.proposals)}))
 
-    variables = _load_seed_module().expected_vars(args.project_id) if args.seed_realistic else {}
+    seed_mod = _load_seed_module()
+    variables = seed_mod.expected_vars(args.project_id) if args.seed_realistic else {}
 
     async def run_one(case: dict) -> dict:
         ctx = case.get("context") or {}
@@ -292,7 +295,8 @@ async def main() -> int:
         try:
             outcome = await planner.plan_from_text(
                 case["text"], operator="local_web_operator", project_id=args.project_id,
-                selected_scene=ctx.get("selected_scene"), selected_frame=ctx.get("selected_frame"))
+                selected_scene=ctx.get("selected_scene"), selected_frame=ctx.get("selected_frame"),
+                attachments=seed_mod.fake_attachments(args.project_id, ctx.get("attachments")))
             steps = [s if isinstance(s, dict) else {"action_id": getattr(s, "action_id", None),
                                                     "params": getattr(s, "params", None)}
                      for s in (outcome.reply.steps or [])]

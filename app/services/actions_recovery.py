@@ -150,10 +150,15 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
         from app.services.decision_state import authorize_recovery
         await authorize_recovery(master, execution_id, incident_id, decision_id)
         incident = await master.get(Incident, incident_id)
+        from app.services import media_admission
+        media = bool(incident is not None and media_admission.is_media_incident(incident))
+        if media and profile_overlay_id:
+            raise ValueError("media recovery has no provider-profile strategy")
         if (incident is None or incident.execution_id != execution_id or incident.project_id != project_id
-                or incident.node_key != node_key or incident.type not in {"invalid_json", "missing_payload"}
+                or incident.node_key != node_key
+                or (incident.type not in {"invalid_json", "missing_payload"} and not media)
                 or incident.status == "resolved_confirmed" or not incident.details.get("currently_relevant")
-                or incident.details.get("evidence_incomplete")):
+                or (incident.details.get("evidence_incomplete") and not media)):
             raise ValueError("current mandatory JSON/payload incident required")
         scope = await master.get(ExecutionControl, execution_id)
         control = await master.get(ActionExecutionControl, execution_id)
@@ -184,7 +189,9 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             raise ValueError("audit/diagnosis unavailable")
         blockers = (await master.scalars(select(Incident).where(Incident.execution_id == execution_id,
             Incident.type.in_(["user_stop", "uncertain_request", "journal_gap", "stalled"])))).all()
-        if any(i.status != "resolved_confirmed" and i.details.get("currently_relevant") for i in blockers):
+        # A media uncertain_request is judged by media_recovery.assess (ledger facts), not as a blanket stop.
+        if any(i.status != "resolved_confirmed" and i.details.get("currently_relevant")
+               and not (media and media_admission.is_media_incident(i)) for i in blockers):
             raise ValueError("uncertain request, user_stop or audit/state blocker")
         state = await master.get(DiagnosisState, execution_id)
         events = (await master.scalars(select(ObservationEvent).where(
@@ -208,6 +215,10 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             raise ValueError("recovery node capability unavailable in workflow snapshot")
         node_type = effective_node_type(graph_node)
         capability = capability_for(node_type)
+        if media and not media_admission.admitted(node_type):
+            raise media_admission.MediaAdmissionDenied("node_not_admitted", node_type)
+        if not media and node_type in media_admission.ADMITTED_NODES:
+            raise ValueError(f"recovery of {node_type} is admitted for media incidents only")
         if not capability.managed or action_type not in capability.actions:
             raise ValueError(f"recovery strategy {action_type} denied by node capability: {node_type}")
         attempts = [e for e in events if e.node_key == node_key and e.kind == "node_start"]
@@ -217,14 +228,19 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
         facts = [e for e in events if e.node_key == node_key and e.attempt_id == source.attempt_id]
         starts = [e for e in facts if e.kind == "model_start"]
         ends = {e.request_id for e in facts if e.kind == "model_end" and e.payload.get("complete")}
-        if (not starts or any(e.request_id not in ends for e in starts)
+        if media:
+            # No model request exists for a media node: the failed attempt itself is the evidence; the
+            # provider-side facts come from the ledger (media_recovery.assess) before the ticket is reserved.
+            if not any(e.kind == "node_error" for e in facts):
+                raise ValueError("uncertain request, unfinished attempt or unconfirmed partial apply")
+        elif (not starts or any(e.request_id not in ends for e in starts)
                 or not any(e.kind == "node_error" for e in facts)
                 or any(e.kind in {"data_applied", "apply_input", "apply_error"} for e in facts)):
             raise ValueError("uncertain request, unfinished attempt or unconfirmed partial apply")
         # Only executors that emit an inner `json_retry` fact must show it. Native text
         # nodes have no inner JSON retry; their exhaustion is proven by the runtime
         # failure counter and abandonment check further below (all native retries).
-        if capability.native_json_retry and not any(e.kind == "json_retry" for e in facts):
+        if not media and capability.native_json_retry and not any(e.kind == "json_retry" for e in facts):
             raise ValueError("native JSON retries not exhausted")
         if control.requests_used >= control.request_limit:
             raise ValueError("supervisor request budget exhausted")
@@ -272,6 +288,10 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 raise ValueError("input/config revision changed or not recorded"
                                  + ("" if previous_parts else " (no parts recorded: legacy scheme 1 or missing)")
                                  + ": " + ",".join(changed))
+            admission = None
+            if media:
+                # Read-only ledger/file assessment BEFORE any ticket exists: a refusal leaves no trace to consume.
+                admission = await media_admission.admit(project, node_type)
             profile = None
             if profile_overlay_id:
                 from app.services.profiles_v1 import reservation, source_provider
@@ -289,12 +309,16 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                     "input_parts": current_parts, "revision_scheme": revisions.REVISION_SCHEME,
                     "node_config_revision": current_parts.get("node_config_revision"),
                     "graph_authority": "master revision + runtime canvas_graph",
-                    "first_body_hash": starts[0].payload["input_revision"], "prior_attempt_terminal": True,
+                    "first_body_hash": starts[0].payload["input_revision"] if starts else None,
+                    "prior_attempt_terminal": True,
                     "node_and_project_replicas_match": True,
                     "workflow_aggregate_status": {"master": primary_snapshot["workflow_status"],
                         "project": replica_snapshot["workflow_status"],
                         "note": "run_sync derives aggregate; project_db copies NodeRuns, not WorkflowRun.status"},
-                    "no_partial_apply": True, "user_stop": False, "node_scope_authorized": True},
+                    "no_partial_apply": True, "user_stop": False, "node_scope_authorized": True,
+                    **({"media": True, "media_operation": admission["operation"],
+                        "media_verdict": {k: admission["verdict"].get(k) for k in ("mode", "code", "reasons")},
+                        "submits_new_paid_request": False} if media else {})},
                 budget_state={"request_limit": control.request_limit, "requests_used": control.requests_used,
                     "recovery_limit": 1, "recoveries_reserved": 1}, status="reserved", result={}, verification_result={})
             if profile:
@@ -316,13 +340,18 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                     "first_body_normalization": STAMP_NORMALIZATION}
             master.add(action)
             master.add(ActionRecord(action_id=action.action_id, execution_id=execution_id, project_id=project_id,
-                action_kind="node_profile_recovery" if profile else "node_recovery", node_key=node_key, attempt_id=action.new_attempt_id,
+                action_kind="node_profile_recovery" if profile else ("media_recovery" if media else "node_recovery"),
+                node_key=node_key, attempt_id=action.new_attempt_id,
                 initiator=initiator, rationale=rationale, evidence_ids=incident.details.get("event_ids", []),
                 preconditions=action.preconditions, idempotency_key=idempotency_key, status="reserved", verification={}))
             await master.commit()  # Durable before dispatch; UNIQUE prevents races.
             _active_nodes[project_id] = node_key
-            action.status = "queued"
             record = await master.get(ActionRecord, action.action_id)
+            if media:
+                # Never a worker dispatch: the resume runs here, inside resume_only, and the ticket is final.
+                return await _execute_media(master, scope, control, action, record, project, node_type,
+                                            admission, project_id)
+            action.status = "queued"
             record.status = "queued"
             await master.commit()
             # Preserve attempts, stop, sleep and native failure counters. No start_step.
@@ -340,6 +369,41 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             await session.flush()
             await push_runtime_to_master(session, project)
         return {**ticket_json(action), "idempotent_replay": False}
+
+
+async def _execute_media(master, scope, control, action, record, project, node_type, admission, project_id):
+    """Run the admitted resume operation and settle the ticket from independently re-read facts.
+
+    claimed -> verified | human_review. Not repeated on restart (reconcile holds an interrupted one)."""
+    from app.services import media_admission
+    from app.services.observation import get_observer
+    action.status = "claimed"
+    record.status = "running"
+    action.result = {"media_operation": admission["operation"], "worker_dispatched": False,
+                     "claimed_at": datetime.utcnow().isoformat()}
+    await master.commit()
+    outcome = await media_admission.run_and_verify(project, node_type, admission)
+    verified = bool(outcome["verified"])
+    action.result = {**action.result, "worker_returned": False, "new_paid_requests": outcome["new_paid_requests"],
+                     "continuation": "none; the node is continued by a human with the ordinary start"}
+    action.verification_result = {**outcome, "verified": verified}
+    action.status = "verified" if verified else "human_review"
+    record.status = action.status
+    record.verification = action.verification_result
+    if not verified:
+        control.held = True
+    try:
+        get_observer().stage(master, scope, "recovery_verification", db_scope="master", node_key=action.node_key,
+                             attempt_id=action.new_attempt_id,
+                             payload={"action_id": action.action_id, "media": True, **action.verification_result})
+    except Exception:  # noqa: BLE001 - the ticket row itself is the durable verdict
+        pass
+    await master.commit()
+    if verified:
+        _active_nodes.pop(project_id, None)
+    else:
+        update_permission(project_id, held=True)
+    return {**ticket_json(action), "idempotent_replay": False}
 
 
 async def claim(observer, session, project, node_key, attempt_id, *, execution_id):
@@ -476,6 +540,12 @@ async def reconcile(observer):
         rows = (await master.scalars(select(RecoveryAction).where(
             RecoveryAction.status.in_(["reserved", "queued", "claimed", "await_verify"])))).all()
         for row in rows:
+            if (row.preconditions or {}).get("media"):
+                from app.services import media_admission
+                control = await master.get(ActionExecutionControl, row.execution_id)
+                if await media_admission.settle_interrupted(master, row, control, observer, update_permission):
+                    await master.commit()
+                continue
             if row.status == "reserved" and (datetime.utcnow() - row.created_at).total_seconds() < 30:
                 continue
             if row.status == "claimed" and (datetime.utcnow() - row.created_at).total_seconds() < 30:

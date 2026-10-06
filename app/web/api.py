@@ -295,6 +295,9 @@ def create_app() -> FastAPI:
     from app.services.change_control.router import router as change_control_router
 
     app.include_router(change_control_router, prefix=API_PREFIX)
+    from app.web.routers import media_recovery as media_recovery_router
+
+    app.include_router(media_recovery_router.router, prefix=API_PREFIX)
     app.include_router(prompts_router.router, prefix=API_PREFIX)
     app.include_router(prompt_studio_router.router, prefix=API_PREFIX)
     app.include_router(prompt_files_router.router, prefix=API_PREFIX)

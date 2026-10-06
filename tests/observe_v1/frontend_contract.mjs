@@ -179,10 +179,10 @@ for(const projectId of [undefined,null,0,-1,1.5,NaN,Infinity,'2','2&project_id=1
 }
 console.log('Verified scoped image preview contracts: 35 assertions passed');
 
-// Planner clarification: option buttons re-send request + answer; a file request is only explained (no attachments API).
+// Planner clarification: option buttons re-send request + answer; a requested file is attached with the picker and re-sent.
 const clarSource=fs.readFileSync('/observe-source/web/src/lib/clarification-view.ts','utf8');
 const clarJS=ts.transpileModule(clarSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
-const {clarificationQuestion,clarificationOptions,clarifiedRequest,attachmentInfo,ATTACH_OPTION}=await import('data:text/javascript;base64,'+Buffer.from(clarJS).toString('base64'));
+const {clarificationQuestion,clarificationOptions,clarifiedRequest,attachmentHint,ATTACH_OPTION,ATTACH_BUTTON,RESEND_WITH_FILES}=await import('data:text/javascript;base64,'+Buffer.from(clarJS).toString('base64'));
 assert.equal(clarificationQuestion({needs_clarification:' Какой шот? ',explanation_ru:'x'}),'Какой шот?');
 assert.equal(clarificationQuestion({needs_clarification:true,explanation_ru:'Нужен шот'}),'Нужен шот');
 assert.equal(clarificationQuestion({}),'');
@@ -192,13 +192,42 @@ assert.deepEqual(clarificationOptions({clarification_options:[ATTACH_OPTION,'д�
 assert.deepEqual(clarificationOptions({clarification_options:[ATTACH_OPTION]}),[ATTACH_OPTION]);
 assert.equal(clarifiedRequest('удали картинку кадра 5.','шот 2'),'удали картинку кадра 5. Уточнение: шот 2');
 assert.equal(clarifiedRequest('  удали картинку кадра 5  ','оба шота'),'удали картинку кадра 5. Уточнение: оба шота');
-const info=attachmentInfo({action_id:'montage.upload_image',formats:'PNG'},'Загрузить картинку');
-assert.match(info,/нельзя приложить/);assert.match(info,/Загрузить картинку/);assert.match(info,/PNG/);assert.match(info,/раздел/);
+const info=attachmentHint({action_id:'montage.upload_image',formats:'PNG'},'Загрузить картинку');
+assert.doesNotMatch(info,/нельзя приложить/);assert.doesNotMatch(info,/раздел/); // the command line can attach files now
+assert.match(info,/Загрузить картинку/);assert.match(info,/PNG/);assert.match(info,new RegExp(ATTACH_BUTTON));assert.match(info,new RegExp(RESEND_WITH_FILES));
+const infoWith=attachmentHint({action_id:'montage.upload_image'},undefined,true);
+assert.match(infoWith,/Прикреплённые файлы можно отправить снова/);assert.match(infoWith,/уберите/);assert.match(infoWith,/montage\.upload_image/);
 const planCard=fs.readFileSync('/observe-source/web/src/components/action-layer/plan-card.tsx','utf8');
-assert.match(planCard,/clarificationOptions\(plan\)/);assert.match(planCard,/onClarify\(o\)/);assert.match(planCard,/attachmentInfo/);
-assert.doesNotMatch(planCard,/type="file"/); // no upload control: the backend has no attachments field
+assert.match(planCard,/clarificationOptions\(plan\)/);assert.match(planCard,/onClarify\(o\)/);assert.match(planCard,/attachmentHint/);
+assert.doesNotMatch(planCard,/attachmentInfo/);assert.match(planCard,/onResend/);assert.match(planCard,/resend-with-files/);
 const alSection=fs.readFileSync('/observe-source/web/src/components/action-layer/action-layer-section.tsx','utf8');
 assert.match(alSection,/clarifiedRequest\(requestText, option\)/);assert.match(alSection,/planFromText\(text/);
+// attachments: the same ids go with the first request and with every re-send; used files are dropped after the plan
+assert.match(alSection,/readyIds\(files\)/);assert.match(alSection,/withoutUsed\(f, r\.attachments_used\)/);
+const cmdBar=fs.readFileSync('/observe-source/web/src/components/action-layer/command-bar.tsx','utf8');
+assert.match(cmdBar,/planFromText\(text\.trim\(\), c, readyIds\(attachments\)\)/);assert.match(cmdBar,/<AttachmentPicker/);
+assert.match(cmdBar,/isUploading\(attachments\)/); // no request while a file is still uploading
+const picker=fs.readFileSync('/observe-source/web/src/components/action-layer/attachment-picker.tsx','utf8');
+assert.match(picker,/type="file"/);assert.match(picker,/accept=\{acceptAttr\(rules\)\}/);assert.match(picker,/role="progressbar"/);
+assert.match(picker,/Убрать/);assert.match(picker,/Прикрепить файл/);assert.match(picker,/checkFile\(file, rules\)/);
+const attSource=fs.readFileSync('/observe-source/web/src/lib/attachment-view.ts','utf8');
+const attJS=ts.transpileModule(attSource,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const A=await import('data:text/javascript;base64,'+Buffer.from(attJS).toString('base64'));
+assert.equal(A.formatSize(500),'500 Б');assert.equal(A.formatSize(2048),'2 КБ');assert.equal(A.formatSize(5*1024*1024+512*1024),'5,5 МБ');assert.equal(A.formatSize(-1),'');
+assert.equal(A.fileExtension('C:\\a\\b\\Voice.MP3'),'.mp3');assert.equal(A.fileExtension('noext'),'');assert.equal(A.fileExtension('.hidden'),'');
+assert.equal(A.kindOfFile('a.png'),'image');assert.equal(A.kindOfFile('a.MOV'),'video');assert.equal(A.kindOfFile('a.xls'),'excel');
+assert.equal(A.kindOfFile('a.md'),'text');assert.equal(A.kindOfFile('a.exe'),null);assert.equal(A.kindOfFile('a'),null);
+assert.match(A.acceptAttr(),/\.png/);assert.match(A.acceptAttr(),/\.json/);assert.doesNotMatch(A.acceptAttr(),/\.exe/);
+assert.equal(A.checkFile({name:'a.png',size:1000}),null);
+assert.match(A.checkFile({name:'a.exe',size:10}),/не разрешён/);assert.match(A.checkFile({name:'a.png',size:0}),/пустой/);
+assert.match(A.checkFile({name:'a.png',size:40*1024*1024}),/больше лимита/);assert.equal(A.checkFile({name:'a.mp4',size:40*1024*1024}),null);
+const items=[{key:'1',name:'a',size:1,status:'ready',progress:100,attachmentId:'id1'},{key:'2',name:'b',size:1,status:'uploading',progress:30},
+  {key:'3',name:'c',size:1,status:'error',progress:0,error:'x'},{key:'4',name:'d',size:1,status:'ready',progress:100,attachmentId:'id4'}];
+assert.deepEqual(A.readyIds(items),['id1','id4']);assert.equal(A.isUploading(items),true);assert.equal(A.isUploading([items[0]]),false);
+assert.deepEqual(A.withoutUsed(items,['id1']).map(i=>i.key),['2','3','4']);assert.equal(A.withoutUsed(items,undefined),items);assert.equal(A.withoutUsed(items,[]),items);
+assert.equal(A.itemStatusText(items[1]),'загрузка 30%');assert.equal(A.itemStatusText(items[0]),'готов');assert.equal(A.itemStatusText(items[2]),'x');
+const alLib=fs.readFileSync('/observe-source/web/src/lib/action-layer.ts','utf8');
+assert.match(alLib,/attachments: attachmentIds/);assert.match(alLib,/attachments_used\?: string\[\]/);assert.match(alLib,/XMLHttpRequest/);
 console.log('Planner clarification UI contracts: passed');
 
 // «Покрытие нод» panel

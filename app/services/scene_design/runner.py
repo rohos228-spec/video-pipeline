@@ -378,8 +378,12 @@ def _scene_journal_open(attempt) -> bool:
 
 
 async def _scene_journal_attempt(project: Project, marker: str):
-    """Resolve only the original run node, before awaiting a model or input read."""
-    if marker not in {"camera", ag.ASSEMBLER}:
+    """Resolve only the original run node, before awaiting a model or input read.
+
+    ``marker`` is an agent name (the node must be that agent's node, or the legacy scene_design
+    node that stands for every agent), ``assemble``, or ``agent`` (whichever agent this attempt's
+    own node is)."""
+    if marker not in {*ag.ALL_AGENTS, ag.ASSEMBLER, "agent"}:
         return None
     observation = sys.modules.get("app.services.observation")
     if observation is None:
@@ -394,9 +398,13 @@ async def _scene_journal_attempt(project: Project, marker: str):
         from app.services import scene_contracts
 
         resolved = await scene_contracts._scene_context(None, project=project)
-        if (resolved is None or resolved[0] is not ctx
-                or resolved[2]["agent"] != marker):
+        if resolved is None or resolved[0] is not ctx:
             return None
+        node_agent = resolved[2]["agent"]
+        if node_agent != scene_contracts.LEGACY_AGENT:
+            wanted = node_agent in scene_contracts.SLICE_AGENTS if marker == "agent" else node_agent == marker
+            if not wanted:
+                return None
         attempt = (ctx, resolved[1], resolved[3])
         return attempt if _scene_journal_open(attempt) else None
     except Exception as error:
@@ -406,7 +414,7 @@ async def _scene_journal_attempt(project: Project, marker: str):
 
 async def _record_scene_parse(attempt, reply, parsed, *, validation_performed,
                             problems=(), error=None, origin="model",
-                            link_model_request=True) -> None:
+                            link_model_request=True, agent=None) -> None:
     """Observe the actual parser/validator outcome without changing native flow."""
     if attempt is None:
         return
@@ -425,7 +433,7 @@ async def _record_scene_parse(attempt, reply, parsed, *, validation_performed,
         try:
             await scene_contracts.record_scene_parse(
                 reply, parsed, node=node, validation_performed=validation_performed,
-                problems=problems, error=error, origin=origin,
+                problems=problems, error=error, origin=origin, agent=agent,
             )
         finally:
             if not link_model_request:
@@ -467,11 +475,11 @@ async def _run_one_agent(
         except Exception as parse_error:
             await _record_scene_parse(
                 scene_attempt, reply, None, validation_performed=validate,
-                error=parse_error,
+                error=parse_error, agent=name,
             )
             raise
         await _record_scene_parse(
-            scene_attempt, reply, data, validation_performed=validate,
+            scene_attempt, reply, data, validation_performed=validate, agent=name,
         )
         return _finalize_agent_slice(project, name, data)
     except ag.SceneDesignAgentError as e:

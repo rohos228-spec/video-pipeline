@@ -5,6 +5,7 @@
  */
 import { useEffect, useState } from "react";
 import { ApiError, http } from "./api";
+import type { AttachmentRules } from "./attachment-view";
 
 const BASE = "/api/action-layer";
 
@@ -78,6 +79,8 @@ export interface PlanPreviewResponse {
   clarification_options?: string[];
   /** Планировщик ждёт файл: какое действие он применит после загрузки (кнопкой загрузки). */
   attachment_request?: { action_id: string; params: Record<string, unknown>; formats?: string } | null;
+  /** id прикреплённых файлов, которые сервер подставил в шаги плана (после создания плана они заняты). */
+  attachments_used?: string[];
   context_version?: string | number | null;
   macro_id?: string | null;
   steps?: { action_id: string; params: Record<string, unknown>; depends_on?: number[] }[];
@@ -191,11 +194,62 @@ const sel = (ctx: SceneContext) => ({
   ...(ctx.selected_frame ? { selected_frame: ctx.selected_frame } : {}),
 });
 
-export const planFromText = (text: string, ctx: SceneContext) =>
+/** attachmentIds: файлы, уже загруженные через uploadAttachment (путь подставляет сервер). */
+export const planFromText = (text: string, ctx: SceneContext, attachmentIds: string[] = []) =>
   http<PlanPreviewResponse>(`${BASE}/plans/from-text`, {
     method: "POST",
-    body: JSON.stringify({ text, project_id: ctx.project_id, ...sel(ctx) }),
+    body: JSON.stringify({
+      text, project_id: ctx.project_id, ...sel(ctx),
+      ...(attachmentIds.length > 0 ? { attachments: attachmentIds } : {}),
+    }),
   }, 90_000);
+
+// ---- файлы командной строки ----
+
+export interface AttachmentInfo { attachment_id: string; name: string; size: number; kind: string; sha256: string }
+
+/** Правила загрузки с сервера; null, если ручки нет (тогда берутся запасные правила). */
+export async function getAttachmentRules(): Promise<AttachmentRules | null> {
+  try {
+    const r = await http<AttachmentRules>(`${BASE}/attachments/rules`);
+    return r && r.kinds ? r : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Загрузка файла с прогрессом (fetch не умеет прогресс отправки, поэтому XMLHttpRequest). */
+export function uploadAttachment(
+  file: File, projectId: number, onProgress?: (percent: number) => void, signal?: AbortSignal,
+): Promise<AttachmentInfo> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${BASE}/attachments`);
+    xhr.timeout = 10 * 60_000;
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && e.total > 0) onProgress?.(Math.round((e.loaded * 100) / e.total)); };
+    xhr.onload = () => {
+      let body: string | object = xhr.responseText;
+      try { body = JSON.parse(xhr.responseText) as object; } catch { /* оставляем текст */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body as AttachmentInfo);
+      else reject(new ApiError(xhr.status, body));
+    };
+    xhr.onerror = () => reject(new ApiError(0, "Сервер не ответил: проверьте, что бэкенд запущен."));
+    xhr.ontimeout = () => reject(new ApiError(0, "Файл не успел загрузиться за 10 минут."));
+    xhr.onabort = () => reject(new ApiError(0, "Отменено"));
+    if (signal) {
+      if (signal.aborted) { xhr.abort(); return; }
+      signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
+    const form = new FormData();
+    form.append("project_id", String(projectId));
+    form.append("file", file, file.name);
+    xhr.send(form);
+  });
+}
+
+/** Убирает ещё не использованный файл на сервере (кнопка «убрать»). */
+export const deleteAttachment = (attachmentId: string, projectId: number) =>
+  http<{ deleted: string }>(`${BASE}/attachments/${encodeURIComponent(attachmentId)}?project_id=${projectId}`, { method: "DELETE" });
 
 export const planFromMacro = (macroId: string, params: Record<string, unknown>, ctx: SceneContext, requestText = "") =>
   http<PlanPreviewResponse>(`${BASE}/plans/from-macro`, {
@@ -259,6 +313,19 @@ export const ERROR_TEXT_RU: Record<string, string> = {
   macro_params_invalid: "Параметры умной кнопки заданы неверно.",
   planner_rejected: "Планировщик отклонил запрос.",
   project_not_found: "Проект не найден.",
+  type_not_allowed: "Такой тип файла прикрепить нельзя.",
+  mime_not_allowed: "Тип содержимого не подходит к расширению файла.",
+  content_mismatch: "Содержимое файла не похоже на его расширение.",
+  too_large: "Файл слишком большой.",
+  empty_file: "Файл пустой.",
+  bad_name: "Недопустимое имя файла.",
+  length_required: "Сервер не принял загрузку без размера.",
+  attachment_not_found: "Прикреплённый файл не найден.",
+  attachment_wrong_project: "Файл прикреплён к другому проекту.",
+  attachment_consumed: "Файл уже использован в другом плане.",
+  attachment_missing: "Файл удалён с диска.",
+  attachments_need_project: "Файлы прикрепляются к открытому проекту.",
+  too_many_attachments: "Прикреплено слишком много файлов.",
 };
 
 function stringifyItem(x: unknown): string {

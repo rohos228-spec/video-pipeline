@@ -74,16 +74,19 @@ def test_spec_conformance(node_type):
     # retry requires a managed, text-like node; a profile retry additionally needs profile rules.
     if actions & RETRY:
         assert spec.effective_managed
-        assert spec.result_kind not in MEDIA_KINDS
+        # a media node may carry the retry slot ONLY as a supervised resume of a known provider task
+        assert spec.result_kind not in MEDIA_KINDS or (spec.recovery_only and "retry_profile" not in actions)
         assert spec.recovery_continuation in node_spec._KNOWN_RECOVERY_CONTINUATIONS
     if "retry_profile" in actions:
         assert spec.profile_compatible, "profile retry without profile_compatible"
     if spec.profile_compatible:
         assert "retry_profile" in actions
-    # media nodes never expose retry and are not profile compatible.
+    # media nodes expose retry only as a resume-only recovery (media_admission) and are never profile compatible.
     if spec.result_kind in MEDIA_KINDS:
-        assert not actions & RETRY
+        assert not actions & RETRY or spec.recovery_only
         assert not spec.profile_compatible
+    if spec.recovery_only:
+        assert spec.result_kind in MEDIA_KINDS and spec.effective_managed and spec.recovery_cap == 1
     # names resolve.
     if spec.verifier is not None:
         assert spec.verifier in node_spec.registered_verifiers(), spec.verifier

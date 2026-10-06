@@ -1567,6 +1567,8 @@ async def run_skeleton(
     timeout = float(getattr(settings, "scene_design_agent_attempt_timeout_s", 280.0) or 280.0)
 
     draft_prompt = ag.load_prompt(ag.SKELETON, project)
+    # Observation only (a no-op outside an attempt of this agent's node); never changes the flow.
+    scene_attempt = await runner._scene_journal_attempt(project, ag.SKELETON)
     logger.info("[#{}] skeleton: draft GPT…", project.id)
     draft_raw = await _gpt(draft_prompt, context, project=project, timeout=timeout)
     try:
@@ -1574,10 +1576,14 @@ async def run_skeleton(
     except ag.SceneDesignAgentError as e:
         from app.services.scene_design.runner import _dump_agent_fail
 
+        await runner._record_scene_parse(
+            scene_attempt, draft_raw, None, validation_performed=False, error=e, agent=ag.SKELETON)
         dump = _dump_agent_fail(project, ag.SKELETON, draft_raw, e)
         raise ag.SceneDesignAgentError(
             f"{e} | dump={dump}" if dump else str(e)
         ) from e
+    await runner._record_scene_parse(
+        scene_attempt, draft_raw, draft, validation_performed=False, agent=ag.SKELETON)
     normalize_skeleton_draft(draft)
     explode_glued_vo_scenes(draft, vo_frames)
     heal_open_threads(draft)
@@ -1629,12 +1635,24 @@ async def run_skeleton(
                 len(gaps),
             )
         if gaps:
+            await runner._record_scene_parse(
+                scene_attempt, None, draft, validation_performed=True,
+                problems=[format_gaps_error(gaps)], link_model_request=False, agent=ag.SKELETON)
             raise RuntimeError(format_gaps_error(gaps))
 
     # финальная coverage на всякий случай
     expect = [int(fr.number) for fr in vo_frames if fr.number is not None]
-    validate_skeleton_coverage(draft.get("scenes") or [], expect)
-    validate_skeleton_slots(draft.get("scenes") or [])
+    try:
+        validate_skeleton_coverage(draft.get("scenes") or [], expect)
+        validate_skeleton_slots(draft.get("scenes") or [])
+    except Exception as final_error:
+        await runner._record_scene_parse(
+            scene_attempt, None, draft, validation_performed=True, error=final_error,
+            link_model_request=False, agent=ag.SKELETON)
+        raise
+    await runner._record_scene_parse(
+        scene_attempt, None, draft, validation_performed=True, link_model_request=False,
+        agent=ag.SKELETON)
 
     stats = await store_skeleton_cells(session, project, draft, full_vo)
     runner.save_checkpoint(project, ag.SKELETON, draft)

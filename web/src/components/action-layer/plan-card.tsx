@@ -5,7 +5,7 @@ import {
   approvePlan, canApprove, canRunWithoutApproval, describeError, describeParams, formatStepCost, formatTotalCost,
   runPlan, RISK_LABEL_RU, serverTextRu, useActionTitles, type PlanPreview, type PlanPreviewResponse, type RiskTier,
 } from "@/lib/action-layer";
-import {attachmentInfo, clarificationOptions, clarificationQuestion} from "@/lib/clarification-view";
+import {attachmentHint, clarificationOptions, clarificationQuestion, RESEND_WITH_FILES} from "@/lib/clarification-view";
 import {cn} from "@/lib/utils";
 
 const RISK_CLASS: Record<RiskTier, string> = {
@@ -29,6 +29,10 @@ interface Props {
   onClarify?: (option: string) => void;
   clarifying?: boolean;
   clarifyError?: string;
+  /** Есть готовые прикреплённые файлы: можно повторить исходный запрос вместе с ними. */
+  hasFiles?: boolean;
+  /** Повторить исходный запрос с прикреплёнными файлами (без текста уточнения). */
+  onResend?: () => void;
 }
 
 export function PlanCard(props: Props) {
@@ -37,7 +41,7 @@ export function PlanCard(props: Props) {
   return <PlanCardInner {...props} preview={plan.preview} />;
 }
 
-function ClarificationCard({plan, onDismiss, onClarify, clarifying, clarifyError}: Props) {
+function ClarificationCard({plan, onDismiss, onClarify, clarifying, clarifyError, hasFiles, onResend}: Props) {
   const titles = useActionTitles();
   const question = clarificationQuestion(plan);
   const options = clarificationOptions(plan);
@@ -58,8 +62,14 @@ function ClarificationCard({plan, onDismiss, onClarify, clarifying, clarifyError
       )}
       {attach && (
         <p className="text-amber-50/80" data-testid="attachment-info">
-          {attachmentInfo(attach, titles[attach.action_id])}
+          {attachmentHint(attach, titles[attach.action_id], Boolean(hasFiles))}
         </p>
+      )}
+      {attach && onResend && (
+        <Button type="button" size="sm" variant="outline" className="h-7 border-amber-400/50 text-xs text-amber-50"
+          data-testid="resend-with-files" disabled={clarifying || !hasFiles} onClick={onResend}>
+          {RESEND_WITH_FILES}
+        </Button>
       )}
       {clarifying && <p className="text-white/60" data-testid="clarification-busy">Составляю план с уточнением…</p>}
       {clarifyError && <p role="alert" className="text-red-300">{clarifyError}</p>}
