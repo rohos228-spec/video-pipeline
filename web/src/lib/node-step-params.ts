@@ -13,8 +13,14 @@ export type SplitStepParams = {
   cell_avg_max?: number | null;
 };
 
+export type AudioTtsProvider = "elevenlabs" | "wavespeed_eleven_v4";
+
 export type AudioStepParams = {
+  /** Пусто — взять AUDIO_TTS_PROVIDER из .env (дефолт elevenlabs). */
+  tts_provider?: AudioTtsProvider | null;
   elevenlabs_voice_id?: string | null;
+  /** Пресет WaveSpeed (Alicia) или произвольный ElevenLabs voice ID. */
+  wavespeed_voice_id?: string | null;
 };
 
 export type AssembleStepParams = {
