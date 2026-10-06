@@ -113,6 +113,19 @@ _SCRIPT_WRITER_PROMPT_MARKERS = (
     "script_writer",
     "сценарист закадра",
 )
+_SCENE_SKELETON_PROMPT_MARKERS = (
+    "scene_skeleton_agent",
+    "каркас сцен",
+    "агент: каркас сцены",
+    "агент: каркас сцен",
+)
+_PLACE_INVENTORY_PROMPT_MARKERS = (
+    # prompts/scene_design/action.md — площадка only, no главное_действие
+    "стартовая площадка",
+    "только стартовая площадка",
+    "без главного_действия",
+    "без главного действия",
+)
 _MAIN_ACTION_PROMPT_MARKERS = (
     "main_action_from_bits",
     "главное действие · по битам",
@@ -190,15 +203,51 @@ def _is_script_writer_prompt(variant: str | None, master: str | None) -> bool:
     return any(m in _prompt_blob(variant, master) for m in _SCRIPT_WRITER_PROMPT_MARKERS)
 
 
+def _is_scene_skeleton_prompt(variant: str | None, master: str | None) -> bool:
+    """Каркас сцен (scene_skeleton_agent) — не биты."""
+    name = str(variant or "").strip().casefold()
+    if name in {"scene_skeleton_agent", "scene_skeleton"}:
+        return True
+    return any(m in _prompt_blob(variant, master) for m in _SCENE_SKELETON_PROMPT_MARKERS)
+
+
+def _is_place_inventory_prompt(variant: str | None, master: str | None) -> bool:
+    """Площадка (action.md) — инвентарь зон/предметов, не главное_действие."""
+    name = str(variant or "").strip().casefold()
+    if name in {"action", "action_place", "place_inventory"}:
+        # legacy main_action_from_bits_ru must stay action_chain
+        if _is_main_action_prompt_only(variant, master):
+            return False
+        return True
+    blob = _prompt_blob(variant, master)
+    if any(m in blob for m in _MAIN_ACTION_PROMPT_MARKERS):
+        return False
+    return any(m in blob for m in _PLACE_INVENTORY_PROMPT_MARKERS)
+
+
+def _is_main_action_prompt_only(variant: str | None, master: str | None) -> bool:
+    return any(m in _prompt_blob(variant, master) for m in _MAIN_ACTION_PROMPT_MARKERS)
+
+
 def _is_script_writer_node(variant: str | None, master: str | None, node_key: str | None) -> bool:
+    """Биты только если промт сценариста / legacy; каркас сцен — нет."""
+    if _is_scene_skeleton_prompt(variant, master):
+        return False
     nk = str(node_key or "")
-    return _is_script_writer_prompt(variant, master) or nk.endswith("_fw_script")
+    return _is_script_writer_prompt(variant, master) or (
+        nk.endswith("_fw_script") and not _is_scene_skeleton_prompt(variant, master)
+    )
 
 
 def _is_main_action_node(variant: str | None, master: str | None, node_key: str | None) -> bool:
+    """Старое главное_действие. Площадка (action.md) — отдельный контракт."""
+    if _is_place_inventory_prompt(variant, master):
+        return False
     nk = str(node_key or "")
     blob = _prompt_blob(variant, master)
-    return any(m in blob for m in _MAIN_ACTION_PROMPT_MARKERS) or nk.endswith("_fw_action")
+    return any(m in blob for m in _MAIN_ACTION_PROMPT_MARKERS) or (
+        nk.endswith("_fw_action") and not _is_place_inventory_prompt(variant, master)
+    )
 
 
 def _is_scenes_to_frames_node(
@@ -282,8 +331,12 @@ def _script_frames_qc_footer_kind(
 ) -> str:
     nk = str(node_key or "")
     if nk.endswith("_fw_script"):
+        if _is_scene_skeleton_prompt(variant, master):
+            return "scene_skeleton"
         return "bits"
     if nk.endswith("_fw_action"):
+        if _is_place_inventory_prompt(variant, master):
+            return "place_inventory"
         return "action_chain"
     if nk.endswith("_fw_shots"):
         return "shots_coverage"
@@ -934,6 +987,22 @@ async def _after_excel_gpt_done(
             ready_status.value,
         )
 
+    # ▶ «только эта нода» (only_node=true в /steps/excel_gpt/run): без цепочки.
+    meta_stop = dict(project.meta or {})
+    stop_key = str(meta_stop.get("excel_gpt_stop_after_key") or "").strip()
+    if node_key and stop_key and stop_key == node_key:
+        meta_stop.pop("excel_gpt_stop_after_key", None)
+        meta_stop.pop("enrich_auto_chain_to", None)
+        project.meta = meta_stop
+        _hold_pipeline_after_excel_gpt(project)
+        await session.flush()
+        logger.info(
+            "[#{}] enrich_xlsx: {} — только эта нода, без auto-chain",
+            project.id,
+            node_key,
+        )
+        return
+
     await _maybe_auto_chain_excel_gpt(
         session,
         project,
@@ -1212,6 +1281,314 @@ async def _run_fw_report_node(
     )
 
 
+async def _run_fw_boundaries_node(
+    session: AsyncSession,
+    project: Project,
+    *,
+    node_key: str,
+    slot_idx: int,
+) -> None:
+    """«Границы сцен»: закадр → фрагменты [ ] (claude-opus-5) + проверка кодом.
+
+    Промт — ``prompts/scene_design/scene_boundaries_agent.md``. Выход —
+    ``scene_boundaries/fragments.json``; «Каркас» пишет по сцене на фрагмент.
+    """
+    from datetime import datetime
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services import db_v2
+    from app.services import scene_boundaries as sb
+    from app.services.gpt_operator import save_operator_result
+    from app.services.run_sync import complete_excel_gpt_node_by_key
+
+    running_status, ready_status, _code = _SLOT_MAP[slot_idx]
+    full_vo = db_v2.resolve_full_voiceover_text(project)
+    if not full_vo:
+        raise RuntimeError(
+            f"#{project.id} {node_key}: нет целого закадра (script_text / voiceover.txt)"
+        )
+    trace_dir = (
+        project.data_dir
+        / "node_trace"
+        / node_key
+        / datetime.now().strftime("%Y%m%d_%H%M%S")
+    )
+    # Отпустить SQLite write-txn на время LLM.
+    await session.commit()
+    frags, rep = await sb.run_boundaries(full_vo, trace_dir)
+    out_path = sb.save_output(
+        project, node_key=node_key, vo=full_vo, frags=frags, rep=rep
+    )
+    st = sb.fragment_stats(frags)
+    passed = bool(rep.get("check_passed"))
+    if passed:
+        # Артефакт ноды в excel_gpt_uploads — цепочка видит «Границы» отработавшими.
+        from app.services.excel_gpt_node import upload_dir as _upload_dir
+
+        _ud = _upload_dir(project, node_key)
+        _ud.mkdir(parents=True, exist_ok=True)
+        (_ud / "fragments.json").write_bytes(out_path.read_bytes())
+    await session.refresh(project)
+    save_operator_result(
+        project,
+        node_key,
+        input_paths=[],
+        output_paths=[out_path],
+        reply_text=(
+            f"границы сцен: {st['fragments']} фрагментов, "
+            f"ср. {st['avg_chars']} / макс. {st['max_chars']} симв · "
+            f"проверка {'OK' if passed else 'НЕ ПРОШЛА'}"
+        ),
+        gate_status="pass" if passed else "fail",
+    )
+    meta = dict(project.meta or {})
+    meta["scene_boundaries_path"] = str(out_path)
+    project.meta = meta
+    flag_modified(project, "meta")
+    await session.flush()
+    logger.info(
+        "[#{}] fw_boundaries: {} фрагментов avg={} max={} check={} → {}",
+        project.id,
+        st["fragments"],
+        st["avg_chars"],
+        st["max_chars"],
+        passed,
+        out_path,
+    )
+    if not passed:
+        await session.commit()
+        raise RuntimeError(
+            f"#{project.id} {node_key}: проверка границ сцен не прошла после повтора "
+            f"(склейка фрагментов ≠ закадр) — см. {out_path}"
+        )
+    meta = dict(project.meta or {})
+    completed = [
+        int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()
+    ]
+    if slot_idx not in completed:
+        completed.append(slot_idx)
+        completed.sort()
+        meta["enrich_completed_slots"] = completed
+    done_keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+    if node_key not in done_keys:
+        done_keys.append(node_key)
+        meta["excel_gpt_completed_keys"] = done_keys
+    meta.pop("active_excel_gpt_node_key", None)
+    project.meta = meta
+    flag_modified(project, "meta")
+    await session.flush()
+    try:
+        await complete_excel_gpt_node_by_key(
+            session, project, node_key, enrich_slot=slot_idx
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] fw_boundaries: complete_excel_gpt_node_by_key failed",
+            project.id,
+        )
+    if project.status is running_status:
+        _apply_enrich_ready_status(
+            project,
+            running_status=running_status,
+            ready_status=ready_status,
+        )
+        await session.flush()
+    await _after_excel_gpt_done(
+        session,
+        project,
+        node_key=node_key,
+        slot_idx=slot_idx,
+        ready_status=ready_status,
+    )
+
+
+async def _run_fw_skeleton_node(
+    session: AsyncSession,
+    project: Project,
+    *,
+    node_key: str,
+    slot_idx: int,
+    master: str,
+    frags: list[str],
+    full_vo: str,
+) -> None:
+    """«Каркас» после «Границ сцен»: сцена на фрагмент, пачки по 8.
+
+    Ответ промта каркаса — ``{"сцены": [...]}``, не apply-ops: пишем кодом.
+    Ячейка = фрагмент (закадр дословно), поля сцены → attrs кадра.
+    """
+    import json
+    from datetime import datetime
+
+    from sqlalchemy import select
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services import db_apply, db_v2
+    from app.services import scene_skeleton_batches as skb
+    from app.services.gpt_operator import save_operator_result
+    from app.services.llm_override import current_text_model_id
+    from app.services.run_sync import complete_excel_gpt_node_by_key
+
+    running_status, ready_status, _code = _SLOT_MAP[slot_idx]
+    trace_dir = (
+        project.data_dir
+        / "node_trace"
+        / node_key
+        / datetime.now().strftime("%Y%m%d_%H%M%S")
+    )
+    model = current_text_model_id() or "?"
+    logger.info(
+        "[#{}] fw_skeleton: {} фрагментов, пачки по {}, model={} → {}",
+        project.id,
+        len(frags),
+        skb.B_BATCH,
+        model,
+        trace_dir,
+    )
+    await session.commit()
+    draft, rep = await skb.run_skeleton_batches(frags, master, trace_dir)
+    scenes = draft["сцены"]
+    cov = skb.coverage(full_vo, scenes)
+    draft["_setup"] = {
+        "node_key": node_key,
+        "model": model,
+        "fragments": len(frags),
+        "batch": skb.B_BATCH,
+        "report": rep,
+        "coverage": cov,
+    }
+    out_path = skb.output_path(project)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(draft, ensure_ascii=False, indent=2), encoding="utf-8")
+    ok = (
+        cov["scenes"] == len(frags)
+        and cov["join_equal_ignoring_stress"]
+        and not cov["empty_scene_text"]
+    )
+    if not ok:
+        await session.commit()
+        raise RuntimeError(
+            f"#{project.id} {node_key}: каркас неполный — сцен {cov['scenes']}/{len(frags)}, "
+            f"склейка={cov['join_equal_ignoring_stress']}, пустые «сцена»: "
+            f"{cov['empty_scene_text'][:20]} — см. {out_path}"
+        )
+    from app.services.excel_gpt_node import upload_dir as _upload_dir
+
+    _ud = _upload_dir(project, node_key)
+    _ud.mkdir(parents=True, exist_ok=True)
+    (_ud / "skeleton.json").write_bytes(out_path.read_bytes())
+    await session.refresh(project)
+    specs = [
+        {"закадр": s["закадр"], "смысл": str(s.get("сцена") or "")[:500]}
+        for s in scenes
+    ]
+    await db_v2.replace_all_frames(session, project, specs)
+    await session.flush()
+    chars_raw = draft.get("база_персонажей") or []
+    characters = []
+    for c in chars_raw:
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("id") or "").strip()
+        if not cid:
+            continue
+        characters.append(
+            {
+                "id": cid,
+                "имя": c.get("имя") or c.get("name") or "",
+                "внешность": c.get("внешность") or "",
+                "одежда": c.get("одежда") or "",
+                "характер": c.get("характер") or "",
+                "правила": c.get("правила") or "",
+            }
+        )
+    n_chars = 0
+    if characters:
+        n_chars = await db_apply.upsert_characters(session, project, characters)
+    frames = list(
+        (
+            await session.execute(
+                select(Frame).where(Frame.project_id == project.id).order_by(Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for fr, sc in zip(frames, scenes):
+        attrs = dict(fr.attrs or {})
+        attrs.update(skb.scene_attrs(sc))
+        fr.attrs = attrs
+        flag_modified(fr, "attrs")
+    meta = dict(project.meta or {})
+    meta["scene_skeleton_items"] = draft.get("предметы") or []
+    meta["scene_skeleton_path"] = str(out_path)
+    project.meta = meta
+    flag_modified(project, "meta")
+    await session.flush()
+    save_operator_result(
+        project,
+        node_key,
+        input_paths=[],
+        output_paths=[out_path],
+        reply_text=(
+            f"каркас: {len(scenes)} сцен (по фрагменту), персонажей {len(characters)}, "
+            f"предметов {len(draft.get('предметы') or [])}, закадр переписан кодом "
+            f"{rep['zakadr_overwritten']} · model {model}"
+        ),
+        gate_status="pass",
+    )
+    logger.info(
+        "[#{}] fw_skeleton: {} сцен → {} кадров, персонажей {} (upsert {}), "
+        "не дословно {} → {}",
+        project.id,
+        len(scenes),
+        len(frames),
+        len(characters),
+        n_chars,
+        rep["zakadr_overwritten"],
+        out_path,
+    )
+    meta = dict(project.meta or {})
+    completed = [
+        int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()
+    ]
+    if slot_idx not in completed:
+        completed.append(slot_idx)
+        completed.sort()
+        meta["enrich_completed_slots"] = completed
+    done_keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+    if node_key not in done_keys:
+        done_keys.append(node_key)
+        meta["excel_gpt_completed_keys"] = done_keys
+    meta.pop("active_excel_gpt_node_key", None)
+    project.meta = meta
+    flag_modified(project, "meta")
+    await session.flush()
+    try:
+        await complete_excel_gpt_node_by_key(
+            session, project, node_key, enrich_slot=slot_idx
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] fw_skeleton: complete_excel_gpt_node_by_key failed", project.id
+        )
+    if project.status is running_status:
+        _apply_enrich_ready_status(
+            project,
+            running_status=running_status,
+            ready_status=ready_status,
+        )
+        await session.flush()
+    await _after_excel_gpt_done(
+        session,
+        project,
+        node_key=node_key,
+        slot_idx=slot_idx,
+        ready_status=ready_status,
+    )
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     slot_idx = _resolve_slot_idx(project.status)
     if slot_idx is None:
@@ -1263,6 +1640,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     if str(node_key or "").endswith("_fw_report"):
         await _run_fw_report_node(
+            session, project, node_key=str(node_key), slot_idx=slot_idx
+        )
+        return
+    if str(node_key or "").endswith("_fw_boundaries"):
+        await _run_fw_boundaries_node(
             session, project, node_key=str(node_key), slot_idx=slot_idx
         )
         return
@@ -1336,6 +1718,26 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             len(master or ""),
             (getattr(project, "prompt_overrides", None) or {}).get(prompt_step_code),
         )
+
+    if str(node_key or "").endswith("_fw_script") and _is_scene_skeleton_prompt(
+        variant, master
+    ):
+        from app.services import db_v2 as _db_v2
+        from app.services.scene_boundaries import load_fragments_for_vo
+
+        _full_vo = _db_v2.resolve_full_voiceover_text(project)
+        _frags = load_fragments_for_vo(project, _full_vo) if _full_vo else None
+        if _frags and len(_frags) >= 2:
+            await _run_fw_skeleton_node(
+                session,
+                project,
+                node_key=str(node_key),
+                slot_idx=slot_idx,
+                master=master,
+                frags=_frags,
+                full_vo=_full_vo,
+            )
+            return
 
     accompanying = _get_accompanying_text(project, legacy_step_code)
 
@@ -1658,6 +2060,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         script_writer = (not check_mode) and _is_script_writer_node(
             variant, master, node_key
         )
+        scene_skeleton = (not check_mode) and _is_scene_skeleton_prompt(variant, master)
+        skeleton_fragments: list[str] | None = None
+        place_inventory_node = (not check_mode) and _is_place_inventory_prompt(
+            variant, master
+        )
         main_action_node = (not check_mode) and _is_main_action_node(
             variant, master, node_key
         )
@@ -1749,6 +2156,44 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     seed.uuid,
                     len(full_vo),
                 )
+            elif scene_skeleton:
+                full_vo = db_v2.resolve_full_voiceover_text(project)
+                if not full_vo:
+                    raise RuntimeError(
+                        f"#{project.id} {node_key}: нет целого закадра "
+                        "(script_text / voiceover.txt) для каркаса сцен"
+                    )
+                from app.services.scene_boundaries import load_fragments_for_vo
+
+                skeleton_fragments = load_fragments_for_vo(project, full_vo)
+                if skeleton_fragments and len(skeleton_fragments) >= 2:
+                    # «Границы сцен» → ячейка на фрагмент; закадр пишет код дословно.
+                    await db_v2.replace_all_frames(
+                        session,
+                        project,
+                        [{"voiceover_text": f} for f in skeleton_fragments],
+                    )
+                    await session.flush()
+                    logger.info(
+                        "[#{}] {} skeleton: {} ячеек из «Границ сцен» "
+                        "(пачки по 8, закадр дословно)",
+                        project.id,
+                        node_key,
+                        len(skeleton_fragments),
+                    )
+                else:
+                    skeleton_fragments = None
+                    seed = await db_v2.ensure_single_seed_vo_cell(
+                        session, project, full_vo
+                    )
+                    await session.flush()
+                    logger.info(
+                        "[#{}] {} skeleton seed VO uuid={} chars={}",
+                        project.id,
+                        node_key,
+                        seed.uuid,
+                        len(full_vo),
+                    )
             frames_for_map = list(
                 (
                     await session.execute(
@@ -2080,6 +2525,40 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "его на ячейки. Твоя единственная работа — разметить в нём "
                         "биты (fields.биты). Разбивку на ячейки сделает пайплайн "
                         "позже. Excel не используется. Отвечай только JSON apply-ops."
+                    ).strip()
+                elif scene_skeleton and skeleton_fragments:
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        "# DB SoT\n"
+                        "Разбивка закадра на сцены уже сделана (нода «Границы сцен»). "
+                        "Файл db_frames.json — ячейки-фрагменты (uuid + voiceover_text): "
+                        "каждая ячейка — ровно одна сцена. На каждый uuid верни одну "
+                        "сцену в том же порядке. Закадр сцены — точная копия "
+                        "voiceover_text ячейки, символ в символ; не объединяй и не дроби "
+                        "фрагменты, не переписывай закадр. Остальные поля (место, "
+                        "персонажи, предметы, речь, сцена) — по системному промту; "
+                        "база_персонажей[] и предметы[] — карточки всех использованных id. "
+                        "Не пиши биты, главное_действие и кадры."
+                    ).strip()
+                elif scene_skeleton:
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        "# DB SoT\n"
+                        "Вход — весь закадр (voiceover.txt / script_text). "
+                        "Верни ОДИН JSON-объект формы промта: "
+                        "сцены[] (номер, закадр, место, персонажи, предметы, речь, сцена), "
+                        "база_персонажей[], предметы[]. "
+                        "Не пиши биты, главное_действие, кадры и apply-ops. "
+                        "Закадр каждой сцены — дословный непрерывный кусок источника."
+                    ).strip()
+                elif place_inventory_node:
+                    accompanying = (
+                        f"{accompanying}\n\n"
+                        "# DB SoT\n"
+                        "Файл db_frames.json — ячейки-сцены (uuid + voiceover_text + "
+                        "поле сцена/место из каркаса). Пиши только fields.площадка "
+                        "(зоны, предметы, проходы, люди с id) и fields.меняет. "
+                        "Не пиши главное_действие, кадры, камеру и биты."
                     ).strip()
                 elif main_action_node:
                     accompanying = (

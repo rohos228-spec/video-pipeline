@@ -238,6 +238,8 @@ FIELD_ALIASES: dict[str, str] = {
     "план_площадки": "площадка",
     "space_plan": "площадка",
     "scene_plan": "площадка",
+    # Площадка (fw_action): что меняется в сцене — attrs.меняет.
+    "меняет": "меняет",
     # Меню съёмки → attrs.camera_subdivide (fw_frames / добор).
     "крупность": "крупность",
     "size": "крупность",
@@ -262,12 +264,13 @@ _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
     "биты",
     "кадры",
     "площадка",
+    "меняет",
     "крупность",
     "движение",
     "набор",
     "camera_subdivide",
 }
-_STRUCTURED_ATTR_KEYS = frozenset({"биты", "кадры", "площадка"})
+_STRUCTURED_ATTR_KEYS = frozenset({"биты", "кадры", "площадка", "меняет"})
 _CAMERA_MENU_ATTR_KEYS = ("крупность", "движение", "набор")
 
 

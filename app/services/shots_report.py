@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import html
 import json
 from datetime import datetime
@@ -91,12 +93,21 @@ def _kadry_list(fr: Any) -> list[dict[str, Any]]:
 
 
 def _scene_n(shot: dict[str, Any], fr: Any) -> int:
+    # Prefer id prefix "10-S10-K1" / "10-S1-K1" so wrong сцена=1 in a batch
+    # cannot collapse scenes 9–16 into scene 1 in the HTML header.
+    sid = str(shot.get("id") or "")
+    m = re.match(r"^(\d+)-S", sid)
+    if m:
+        return int(m.group(1))
     n = _int(shot.get("сцена"), 0)
     if n:
         return n
     cs = _cs(fr)
     attrs = _attrs(fr)
-    return _int(cs.get("сцена") or attrs.get("сцена"), 0)
+    n = _int(cs.get("сцена") or attrs.get("сцена"), 0)
+    if n:
+        return n
+    return _int(getattr(fr, "number", 0) if fr is not None else 0, 0)
 
 
 def _rel_label(shot: dict[str, Any], ids: set[str]) -> str:

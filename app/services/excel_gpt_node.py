@@ -725,7 +725,7 @@ def excel_gpt_artifact_exists(project: Project, node_key: str) -> bool:
     if not key:
         return False
     folder = upload_dir(project, key)
-    for name in ("gpt_reply.txt", "shots-report.html"):
+    for name in ("gpt_reply.txt", "shots-report.html", "fragments.json", "skeleton.json"):
         path = folder / name
         try:
             if path.is_file() and path.stat().st_size > 0:

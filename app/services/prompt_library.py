@@ -133,6 +133,7 @@ def excel_gpt_template_dir() -> Path:
 # каркас (fw_script) и площадка (fw_action). Файл один — в prompts/scene_design/,
 # копию в папку группы не кладём (правка в Studio пишет туда же).
 SCRIPT_FRAMES_QC_SHARED_PROMPTS: dict[str, str] = {
+    "scene_boundaries_agent": "prompts/scene_design/scene_boundaries_agent.md",
     "scene_skeleton_agent": "prompts/scene_design/scene_skeleton_agent.md",
     "action": "prompts/scene_design/action.md",
 }

@@ -29,6 +29,19 @@ class Rule:
 
 RULES: tuple[Rule, ...] = (
     Rule(
+        "R-BOUNDARIES-JOIN",
+        "Границы сцен: склейка = закадр",
+        "Склейка фрагментов в [ ] должна совпасть с закадром (без учёта "
+        "пробелов и ударений), вне скобок — ничего, скобки не вложены. "
+        "Не совпало — один повтор GPT; снова нет — нода падает, каркас не идёт.",
+        "останавливает",
+        ("boundaries",),
+        (
+            "app.services.scene_boundaries:check_seg",
+            "app.services.scene_boundaries:run_boundaries",
+        ),
+    ),
+    Rule(
         "R-UUID",
         "Номер кадра вместо uuid",
         "GPT иногда пишет номер кадра или uuid с опечаткой. Программа "
@@ -347,10 +360,19 @@ class NodeFlow:
 
 NODE_FLOW: tuple[NodeFlow, ...] = (
     NodeFlow(
+        "boundaries",
+        "Границы сцен",
+        "prompts/scene_design/scene_boundaries_agent.md",
+        ("закадр",),
+        ("закадр дословно с [ ] вокруг фрагментов-сцен",),
+        ("R-BOUNDARIES-JOIN",),
+        ("scene_boundaries/fragments.json",),
+    ),
+    NodeFlow(
         "script",
         "Каркас",
         "prompts/scene_design/scene_skeleton_agent.md",
-        ("закадр",),
+        ("фрагменты «Границ сцен» (ячейка на фрагмент, пачки по 8)",),
         ("сцены: закадр, место, персонажи, предметы, речь, сцена", "база_персонажей", "предметы"),
         ("R-UUID", "R-BITS-REPAIR", "R-BITS-SHAPE"),
         ("биты",),

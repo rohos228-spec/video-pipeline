@@ -6,11 +6,13 @@
 
 ```mermaid
 flowchart LR
+    boundaries["Границы сцен"]
     script["Каркас"]
     action["Площадка"]
     shots["Шоты"]
     qc["GPT: QC кадров"]
     report["Отчёт: кадры"]
+    boundaries --> script
     script --> action
     action --> shots
     shots --> qc
@@ -21,7 +23,8 @@ flowchart LR
 
 | Нода | Читает | Пишет GPT | Потом программа (правила) | Пишет программа |
 |---|---|---|---|---|
-| Каркас<br>промт `prompts/scene_design/scene_skeleton_agent.md` | закадр | сцены: закадр, место, персонажи, предметы, речь, сцена; база_персонажей; предметы | R-UUID, R-BITS-REPAIR, R-BITS-SHAPE | биты |
+| Границы сцен<br>промт `prompts/scene_design/scene_boundaries_agent.md` | закадр | закадр дословно с [ ] вокруг фрагментов-сцен | R-BOUNDARIES-JOIN | scene_boundaries/fragments.json |
+| Каркас<br>промт `prompts/scene_design/scene_skeleton_agent.md` | фрагменты «Границ сцен» (ячейка на фрагмент, пачки по 8) | сцены: закадр, место, персонажи, предметы, речь, сцена; база_персонажей; предметы | R-UUID, R-BITS-REPAIR, R-BITS-SHAPE | биты |
 | Площадка<br>промт `prompts/scene_design/action.md` | закадр | площадка: зоны, предметы, проходы, люди; меняет | R-UUID, R-ACTION-FORMAT, R-ACTION-PLAN, R-ACTION-CHAIN | главное_действие; площадка |
 | Шоты<br>промт `scenes_to_frames_ru.md` | главное_действие, площадка, закадр | кадры: действие, объект, закадр, меняет, люди, камера, точность | R-UUID, R-SHOT-PARENT, R-SHOT-GRAMMAR, R-SHOT-VO-FILL, R-SCENE-PLAN, R-DOOR-STATE, R-DOOR-THRESHOLD, R-ALREADY-INSIDE, R-WALK-PROGRESS, R-PLAN-STEP, R-30DEG, R-SCREEN-DIRECTION, R-AXIS-180, R-FREEZE-PRECISE, R-LAYOUT, R-SHOT-COVERAGE | кадры: parent_id, закадр, план, линза_мм, ракурс, движение; кадры: раскладка, точность, старт, конец; площадка: выведено_кодом, исправлено_кодом |
 | GPT: QC кадров<br>промт `shots_qc_ru.md` | кадры, площадка, закадр | кадры (только нарушители) | R-UUID, R-SHOT-PARENT, R-SHOT-GRAMMAR, R-SHOT-VO-FILL, R-SCENE-PLAN, R-30DEG, R-FREEZE-PRECISE, R-LAYOUT, R-SHOT-COVERAGE | кадры: те же поля, что после «Шоты» |
@@ -47,6 +50,7 @@ flowchart LR
 
 | ID | Правило | Простыми словами | Что делает | Ноды | Где живёт |
 |---|---|---|---|---|---|
+| R-BOUNDARIES-JOIN | Границы сцен: склейка = закадр | Склейка фрагментов в [ ] должна совпасть с закадром (без учёта пробелов и ударений), вне скобок — ничего, скобки не вложены. Не совпало — один повтор GPT; снова нет — нода падает, каркас не идёт. | останавливает | boundaries | `app.services.scene_boundaries:check_seg`<br>`app.services.scene_boundaries:run_boundaries` |
 | R-UUID | Номер кадра вместо uuid | GPT иногда пишет номер кадра или uuid с опечаткой. Программа подставляет правильный uuid; ops с чужими uuid выбрасывает. | чинит | script, action, shots, qc | `app.services.db_apply:remap_frame_number_uuids`<br>`app.services.db_apply:repair_near_miss_frame_uuids` |
 | R-BITS-REPAIR | Биты: объект и якорь | Если в бите слоган вместо объекта или якорь не из закадра — программа берёт объект и кусок закадра сама. | чинит | script | `app.services.apply_ops_batches:repair_bits_ops` |
 | R-BITS-SHAPE | Биты — список изменений | Биты должны быть списком по числу изменений в закадре, не одной строкой. Если нет — предупреждение, данные пишутся как есть. | предупреждает | script | `app.services.apply_ops_batches:bits_ops_reason`<br>`prompt:templates/node_groups/script_frames_qc/script_writer_ru.md` |

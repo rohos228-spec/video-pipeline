@@ -1236,6 +1236,151 @@ def build_input(
     return items
 
 
+# ───────────── vibecode claude-*: только /v1/messages (Anthropic) ─────────────
+_ANTHROPIC_MAX_TOKENS = 64000
+
+
+def _is_anthropic_messages_model(model: str) -> bool:
+    """vibecode отдаёт claude-* только через /v1/messages, не chat/completions."""
+    if not (model or "").strip().lower().startswith("claude"):
+        return False
+    if _node_kie_override():
+        return False
+    return bool(_node_vibecode_override() or settings.text_llm_is_vibecode)
+
+
+def _anthropic_body_from_messages(
+    messages: list[dict[str, Any]], model: str
+) -> dict[str, Any]:
+    sys_parts: list[str] = []
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        role = str(m.get("role") or "user")
+        c = m.get("content")
+        if role == "system":
+            if isinstance(c, str):
+                sys_parts.append(c)
+            elif isinstance(c, list):
+                sys_parts.append(
+                    "\n".join(str(p.get("text") or "") for p in c if isinstance(p, dict))
+                )
+            continue
+        role = "assistant" if role == "assistant" else "user"
+        parts: list[dict[str, Any]] = []
+        if isinstance(c, str):
+            parts.append({"type": "text", "text": c or "(пусто)"})
+        elif isinstance(c, list):
+            for p in c:
+                if not isinstance(p, dict):
+                    continue
+                if p.get("type") in ("text", "input_text"):
+                    parts.append({"type": "text", "text": str(p.get("text") or "")})
+                elif p.get("type") == "image_url":
+                    url = str((p.get("image_url") or {}).get("url") or "")
+                    if url.startswith("data:") and ";base64," in url:
+                        mt, data = url[5:].split(";base64,", 1)
+                        parts.append(
+                            {
+                                "type": "image",
+                                "source": {"type": "base64", "media_type": mt, "data": data},
+                            }
+                        )
+        if not parts:
+            continue
+        if out and out[-1]["role"] == role:
+            out[-1]["content"].extend(parts)
+        else:
+            out.append({"role": role, "content": parts})
+    body: dict[str, Any] = {
+        "model": model,
+        "max_tokens": _ANTHROPIC_MAX_TOKENS,
+        "stream": True,
+        "messages": out,
+    }
+    if sys_parts:
+        body["system"] = "\n\n".join(x for x in sys_parts if x)
+    return body
+
+
+async def _anthropic_messages_stream(
+    *, body: dict[str, Any], use_model: str, timeout: float = 0.0
+) -> GptChatResult:
+    from app.services import scene_boundaries as _sb
+
+    key = (settings.vibecode_api_key or "").strip()
+    if not key:
+        raise GptApiError(
+            "VIBECODE_API_KEY пуст — задай ключ vibecode.moe (vk-…) в .env",
+            context={"error_kind": "no_key", "provider": "vibecode"},
+        )
+    headers = {
+        "x-api-key": key,
+        "Authorization": f"Bearer {key}",
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    if _hitting_vps_relay():
+        relay = (getattr(settings, "gpt_relay_token", None) or "").strip()
+        if relay:
+            headers["X-VP-Relay-Token"] = relay
+    url = _override_vibecode_base_url().rstrip("/") + "/messages"
+    logger.info("text_llm.chat → vibecode /messages model={} url={}", use_model, url)
+    for _round in range(2):
+        deadline = _sse_deadline_s(timeout)
+        try:
+            async with asyncio.timeout(deadline):
+                txt, meta = await _sb._stream_once(
+                    body, headers, url=url, read_timeout=240.0
+                )
+        except TimeoutError as e:
+            raise GptApiError(
+                f"vibecode /messages {use_model}: timeout {deadline:.0f}s",
+                context={
+                    "retryable": True,
+                    "model": use_model,
+                    "provider": "vibecode",
+                    "error_kind": "timeout",
+                },
+            ) from e
+        except RuntimeError as e:
+            msg = str(e)
+            if (
+                _round == 0
+                and "HTTP 400" in msg
+                and "max_tokens" in msg
+                and int(body.get("max_tokens") or 0) > 32000
+            ):
+                body["max_tokens"] = 32000
+                continue
+            retryable = not (
+                "HTTP 4" in msg and not any(x in msg for x in ("429", "408"))
+            )
+            raise GptApiError(
+                f"vibecode /messages {use_model}: {msg[:500]}",
+                context={
+                    "retryable": retryable,
+                    "model": use_model,
+                    "provider": "vibecode",
+                    "error_kind": "empty_stream" if "empty output" in msg else "http",
+                },
+            ) from e
+        if not (txt or "").strip():
+            raise GptApiError(
+                f"vibecode /messages {use_model}: пустой output",
+                context={"retryable": True, "model": use_model, "error_kind": "empty_stream"},
+            )
+        return GptChatResult(
+            text=txt,
+            model=str(meta.get("model") or use_model),
+            finish_reason=str(meta.get("finish_reason") or ""),
+            usage=dict(meta.get("usage") or {}),
+            raw={"anthropic_messages": True, "sse_lines": meta.get("sse_lines")},
+        )
+    raise GptApiError(
+        f"vibecode /messages {use_model}: max_tokens", context={"model": use_model}
+    )
+
+
 def build_messages(
     *,
     prompt: str,
@@ -2775,6 +2920,19 @@ async def chat(
         }
     if temperature is not None:
         body["temperature"] = temperature
+    anth_body: dict[str, Any] | None = None
+    if _is_anthropic_messages_model(use_model):
+        anth_body = _anthropic_body_from_messages(
+            build_messages(
+                prompt=prompt,
+                accompanying=accompanying,
+                input_paths=input_paths,
+                system=system,
+                history=history,
+                xlsx_write_contract=xlsx_write_contract,
+            ),
+            use_model,
+        )
 
     attempt = 0
     last_exc: Exception | None = None
@@ -2782,6 +2940,18 @@ async def chat(
         attempt += 1
         try:
             await _ensure_url_host_resolves(url)
+            if anth_body is not None:
+                result = await _anthropic_messages_stream(
+                    body=anth_body, use_model=use_model, timeout=use_timeout
+                )
+                _log_chat_finished(
+                    provider_label=provider_label,
+                    use_model=use_model,
+                    attempt=attempt,
+                    result=result,
+                    include_task_id=False,
+                )
+                return result
             if responses_mode:
                 result = await _chat_responses_stream(
                     url=url,

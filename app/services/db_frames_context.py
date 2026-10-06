@@ -280,6 +280,10 @@ def force_full_strip_output_keys(
         )
     if kind == "action_chain":
         return ("main_action", "главное_действие", "площадка", "кадры")
+    if kind == "place_inventory":
+        return ("площадка", "меняет", "main_action", "главное_действие", "кадры", "биты")
+    if kind == "scene_skeleton":
+        return ("биты", "кадры", "площадка", "main_action", "главное_действие")
     if kind in {"shots_coverage", "shots"}:
         return ("кадры",)
     if kind in {"shots_qc", "qc_shots"}:

@@ -659,9 +659,11 @@ async def run_project_step(
     node_key: str | None = None,
     mode: str = Query("resume", pattern="^(full|resume)$"),
     force_wipe: bool | None = None,
+    only_node: bool = False,
     session: AsyncSession = Depends(get_project_session),
 ) -> Project:
     """Запустить шаг: статус → running, воркер выполнит advance_project.
+    only_node=true (excel_gpt + node_key): после ноды цепочка по стрелкам не идёт.
     Wipe только при явном force_wipe=true. mode=full без force_wipe — как resume
     (старый UI слал full на каждый ▶ и сжигал выход).
     """
@@ -694,6 +696,13 @@ async def run_project_step(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    if only_node and node_key:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        meta = dict(p.meta or {})
+        meta["excel_gpt_stop_after_key"] = node_key
+        p.meta = meta
+        flag_modified(p, "meta")
     await session.commit()
     await session.refresh(p)
     await sync_run_for_project(project_id, session=session)

@@ -82,7 +82,35 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
     from app.settings import settings
 
     ov: NodeLlmOverride | None = None
+    node_choice: dict[str, Any] | None = None
     if is_script_frames_qc_gpt_node(meta, node_key=node_key):
+        # Явная модель на ноде (только каталог vibecode, Kie сюда не попадает).
+        from app.services.vibecode_catalog import (
+            find_canvas_node,
+            find_model,
+            read_node_model_fields,
+        )
+
+        _mid, _ch = read_node_model_fields(find_canvas_node(meta, node_key=node_key))
+        _found = find_model(_mid, channel=_ch) if _mid else None
+        if _found and _found.get("kind") == "text":
+            node_choice = {**_found, "channel": _ch}
+    if node_choice is not None:
+        ov = NodeLlmOverride(
+            model_id=str(node_choice["id"]),
+            channel=str(node_choice.get("channel") or "stable"),
+            kind="text",
+            provider="vibecode",
+            label=f"{node_choice.get('label') or node_choice['id']} (vibecode)",
+        )
+        logger.info(
+            "node_llm: #{} {} → {} ({}) [модель ноды]",
+            getattr(project, "id", "?"),
+            node_key or node_type or "?",
+            ov.label,
+            ov.model_id,
+        )
+    elif is_script_frames_qc_gpt_node(meta, node_key=node_key):
         # script_frames_qc must use Vibecode only (Kie 402 / no credits).
         active_id = resolve_active_model_id(settings)
         item = catalog_item(active_id) or {}

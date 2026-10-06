@@ -261,14 +261,21 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
         res = await insert_node_group(session, project, "script_frames_qc")
 
     assert res["after"] == "n_plan"
-    assert len(res["nodes"]) == 5
+    assert len(res["nodes"]) == 6
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     plan_x = by_id["n_plan"]["position"]["x"]
 
+    bnd = by_id["n_excel_gpt_fw_boundaries"]
+    assert bnd["position"]["x"] == plan_x + 290.0
+    assert bnd["data"]["label"] == "Границы сцен"
+    assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_boundaries"] == {
+        "main": "scene_boundaries_agent"
+    }
+
     script = by_id["n_excel_gpt_fw_script"]
     assert script["type"] == "excel_gpt"
-    assert script["position"]["x"] == plan_x + 290.0
+    assert script["position"]["x"] == plan_x + 580.0
     assert script["data"]["groupId"] == "script_frames_qc"
     assert script["data"]["label"] == "Каркас"
     assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_script"] == {
@@ -298,7 +305,8 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
 
     pairs = {(e["source"], e["target"]) for e in cg["edges"]}
     assert ("n_plan", "n_script") not in pairs  # нет такого ребра
-    assert ("n_plan", "n_excel_gpt_fw_script") in pairs
+    assert ("n_plan", "n_excel_gpt_fw_boundaries") in pairs
+    assert ("n_excel_gpt_fw_boundaries", "n_excel_gpt_fw_script") in pairs
     assert ("n_excel_gpt_fw_script", "n_excel_gpt_fw_action") in pairs
     assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") in pairs
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc") in pairs

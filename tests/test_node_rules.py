@@ -72,7 +72,7 @@ def test_every_code_pass_has_rule() -> None:
 
 def test_flow_loop_and_labels() -> None:
     keys = [f.key for f in NODE_FLOW]
-    assert keys == ["script", "action", "shots", "qc", "report"]
+    assert keys == ["boundaries", "script", "action", "shots", "qc", "report"]
     assert "script --> action" in flow_mermaid()
     assert node_local_key("n_excel_gpt_fw_shots") == "shots"
     assert node_label("n_excel_gpt_fw_script") == "Каркас"
