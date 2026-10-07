@@ -249,7 +249,8 @@ def derive_incidents(scope, events, snapshot):
             if kind=='provider_fallback':
                 item=issue('provider_degraded',(node,attempt,'fallback',p.get('idx')),[e],blocking=False,severity='warning',
                     fact='Звук события '+str(p.get('idx'))+' ('+str(p.get('kind'))+') сделан локальным синтезом: '+
-                         str(p.get('provider'))+' вернул '+str(p.get('error_class'))+'; списание: '+
+                         str(p.get('provider'))+' вернул '+str(p.get('error_class'))+
+                         (' (HTTP '+str(p.get('http_status'))+')' if p.get('http_status') else '')+'; списание: '+
                          {'no':'нет (получен ответ провайдера)','uncertain':'неизвестно (таймаут или обрыв)'}.get(
                              str(p.get('may_have_charged')),'неизвестно')+'.',
                     action='human_review')

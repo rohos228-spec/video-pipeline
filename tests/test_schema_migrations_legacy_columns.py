@@ -48,7 +48,7 @@ async def _run(eng, **kw):
 
 def test_legacy_migrations_are_registered_after_0006():
     ids = [m.id for m in sm.MIGRATIONS]
-    assert ids[-3:] == LEGACY_IDS and ids == sorted(ids)
+    assert ids[6:9] == LEGACY_IDS and ids == sorted(ids)
     by_id = {m.id: m for m in sm.MIGRATIONS}
     assert by_id["0009_projects_columns"].scopes == (sm.SCOPE_MASTER,)
     assert sm.SCOPE_PROJECT in by_id["0007_frames_v2_columns"].scopes

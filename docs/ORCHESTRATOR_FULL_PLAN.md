@@ -183,7 +183,7 @@ D1 ≈ $0.2; D3 ≈ $0.1; E ≈ $0.2; F картинки ≈ $0.5, видео �
 | Фаза | Состояние |
 |---|---|
 | Vibecode | Сделано, проверено живыми прогонами 2026-10-03 и 2026-10-05 (`docs/VIBECODE_SUPPORT.md`) |
-| A. Надёжность ядра | Сделано (обратимые сбои, квота журнала, признак неподтверждённого результата в БД, сторож, аварийный стоп). Реальные миграции схемы вместо автоматического создания таблиц не делались |
+| A. Надёжность ядра | Сделано (обратимые сбои, квота журнала, признак неподтверждённого результата в БД, сторож, аварийный стоп). Миграции схемы: основная база версионная (`app/services/schema_migrations.py`, миграции 0001-0009, `tests/test_schema_migrations*.py`); локальная база трекера `tracker.db` версионная с 2026-10-07 (`app/services/tracker_schema.py`, `tests/test_tracker_schema.py`). Остался один «ручной» ALTER: `app/services/change_control/store.py` (таблица `change_proposals`) и отдельный сервис `api-tracker/app/db.py` |
 | B. Безопасность и расходы | Сделано (`docs/SECURITY_DEFAULTS.md`, `docs/SPEND_LIMITS.md`) |
 | C. Декларативные ноды | Сделано в основном проекте (способности в данных, реестры проверщиков и контрактов, разделение ревизий). Пакеты нод проверены прототипом на копии веб-версии (`docs/PROPOSAL_NODE_PACKAGES.md`) |
 | D. Текстовые ноды | Восстановление `script_frames_qc` проверено живьём на Vibecode. `sfx_plan` (D3) и `animation_prompts` (D4): один `retry_same` на ноду, контракт и проверки в данных, сухие прогоны без сети для обоих (у `animation_prompts` с лентой картинок, деградация видна фактом `animation_degraded`); живых прогонов нет. `sd_agent` (D5): под управлением по типу, допуск по агенту: один `retry_same` для `characters` и `world` (сухой прогон `test_scene_agents_retry_dry_run.py`: сбой, решение, один билет, тот же первый запрос, `data_applied`, независимая проверка), остальные агенты и `scene_design` отклоняются при запуске с точной причиной; `sd_assemble`: только наблюдение (`pre_request_commit`, `test_scene_assemble_dry_run.py`); `hero`: только наблюдение, промт сохраняется до платного вызова (`no_resumable_task`, `test_hero_dry_run.py`); `enrich_N`: миграция графов готова (`graph_migrations.py`); таблица `docs/NODE_COVERAGE.md` |
@@ -201,4 +201,57 @@ D1 ≈ $0.2; D3 ≈ $0.1; E ≈ $0.2; F картинки ≈ $0.5, видео �
 
 - Владельцу: баланс Kie (нужен только для настоящих картинок и видео), включение входа по умолчанию, решение по правке кода из старого чата.
 - Руководителю: приоритетные кнопки и цепочки, откуда брать код монтажа для веб-версии, ветка и правила слияния, судьба `studio_agent`.
-- Не закрыто технически: Outsee (нет идентификатора задачи), циклы перегенерации (`vision_check_loop`, `mark_frames_for_video_regen`) не ограничены, признаки успеха публикации не заданы (все платформы «не подтверждено»), калибровка цен (запуск ноды, ElevenLabs, Outsee), реальные миграции схемы, качество текста после правок T2 не измеряется.
+- Не закрыто технически: Outsee (нет идентификатора задачи), циклы перегенерации (`vision_check_loop`, `mark_frames_for_video_regen`) не ограничены, признаки успеха публикации не заданы (все платформы «не подтверждено»), калибровка цен (запуск ноды, ElevenLabs, Outsee), ручной ALTER в `change_control/store.py` и в отдельном сервисе `api-tracker/app/db.py`, качество текста после правок T2 не измеряется.
+
+
+## Сверка плана с кодом (2026-10-07)
+
+Метки: сделано (есть код и тест), частично, не сделано, ждёт владельца. «Тест есть» означает, что файл теста лежит в наборе
+и в нём разбираемый случай; полный прогон набора в этой сверке не выполнялся (см. конец раздела).
+
+| Шаг | Статус | Доказательство / что осталось |
+|---|---|---|
+| 1 A1 обратимая деградация наблюдателя | сделано | `tests/observe_v1/test_observer_reliability_gaps.py`, `test_observer_reliability_bodies.py` |
+| 2 A2 квота журнала | сделано | `test_observer_reliability_bodies.py`, `test_journal.py` |
+| 3 A3 `commit_uncertainty` в БД | сделано | `test_observer_reliability_commit_uncertainty.py` |
+| 4 A4 сторож | сделано | `test_watchdog_contract.py` (зависший запрос, молчащая нода, медленный шаг решения вне общего цикла, отказ сторожа не ломает цикл) |
+| 5 A5 аварийный стоп | сделано | `test_kill_switch_contract.py` (устойчив к рестарту, отказ до резервирования, до билета, чтения работают) |
+| 6 A6 миграции схемы | сделано для основной базы и `tracker.db`; частично в целом | `schema_migrations.py` 0001-0010 (0010 переносит ручной ALTER `change_proposals`, `tests/test_schema_migrations_change_proposals.py`); `tracker_schema.py`. Не переведён только отдельный сервис `api-tracker/app/db.py` |
+| 7 B1 доступ по умолчанию | сделано | `test_access_guard.py`, `docs/SECURITY_DEFAULTS.md`; включение входа по умолчанию на машине владельца решает владелец |
+| 8 B2 редактирование в трекерах | сделано | `test_redaction_trackers.py`, `test_vibecode_redaction.py` |
+| 9 B3 правка кода из старого чата | ждёт владельца | решение не принято |
+| 10 B4 рубильник и потолки расходов | сделано | `test_spend_guard_caps.py`, `test_owner_budget.py`, `docs/SPEND_LIMITS.md` |
+| 11 B5 журнал расходов, 402 | сделано; сверка с реальным балансом Kie не выполнена (баланс отрицательный) | `test_spend_guard_ledger.py`, `test_spend_guard_402.py` |
+| 12-15 C1-C4 NodeSpec, цепочки, ревизии, conformance | частично: способности, проверщики и контракты читаются из данных (сделано); `register_node` существует, но ни одна реальная нода через него не зарегистрирована (`grep register_node app` находит только определение) | `test_node_conformance.py`, `test_revisions_*.py`, `test_node_coverage.py` |
+| 16 C5 миграция `enrich_N` | сделано в коде; применение к живой базе за человеком | `test_graph_migrations.py` |
+| 17 C6 панель «Покрытие нод» | сделано (данные и вид) | `app/services/node_coverage.py`, `test_node_coverage.py`; визуальная проверка в браузере в этой сверке не делалась |
+| 18 D1 живые `plan`/`script` | ждёт владельца (баланс Kie); `script_frames_qc` на Vibecode проверен живьём | `docs/VIBECODE_SUPPORT.md` |
+| 19 D2 усечение ответа | сделано в объёме текстовых нод | `test_text_nodes_recovery.py`, `test_llm_completion.py`; живой замер гипотезы про токены рассуждений не сделан |
+| 20 D3 `sfx_plan` | сделано сухим прогоном; живого нет | `test_sfx_plan_dry_run.py`, `test_native_sfx_plan_checkpoint.py` |
+| 21 D4 `animation_prompts` | сделано сухим прогоном; живого нет | `test_animation_prompts_dry_run.py`, `test_native_animation_observation.py` |
+| 22 D5 `sd_agent`, `sd_assemble`, `hero`, `items` | сделано сухими прогонами (повтор только `characters`, `world`) | `test_scene_agents_retry_dry_run.py`, `test_scene_assemble_dry_run.py`, `test_hero_dry_run.py` |
+| 23 E1 `split` метка источника | сделано | `test_degradation_incidents.py`, `test_phase_e_diagnosis.py` |
+| 24 E1b проверка до записи или внутренний повтор | ждёт владельца | |
+| 25 E2 `image_prompts` | сделано (чтение, объяснение hold); повтор не включён по конструкции | `test_image_prompt_checkpoint.py` |
+| 26 E3 дневник правил | сделано на стороне оркестратора; апстрим-поле `rule` проверено только по нашей копии | `test_phase_e_diagnosis.py` |
+| 27 F1 журнал платных попыток | сделано | `test_media_jobs.py`, `test_media_transport.py`, `test_managed_restart_safety.py` |
+| 28 F2 дефекты конвейера | сделано в части регенераций: `app/services/regen_budget.py` (потолок на кадр, на запуск и денежный) подключён к `vision_check_loop` (плюс жёсткий потолок 20 раундов) и к `post_step_validate` перед `mark_frames_for_video_regen` (единственный вызов); при исчерпании проект встаёт на паузу с причиной и фактом, диагностика показывает инцидент для человека. Тесты `tests/test_regen_budget.py` (проходят). Не проверено живьём. Прежняя пометка «циклы не ограничены» была устаревшей | |
+| 29 F3 скачивать сразу | частично | `media_resume.py`; срок хранения Kie не проверен |
+| 30 F4 `media_jobs` против настоящего Kie | не сделано как живая проверка; вебхука нет; Kie сейчас не используется | заглушки провайдера: `test_media_transport.py` |
+| 31 F5 `resume_poll` | сделано для `videos`, `items`, `music`; `images` через синтетический путь; `hero` и Outsee не возобновляются (нет task id) | `test_media_dry_run_{videos,items,music}.py` |
+| 32 F6 живые прогоны | ждёт владельца; дешёвые зонды ведёт руководитель через `scripts/live_media_probe.py` | |
+| 33 G1 наблюдение и расход звука | сделано | `test_media_spend_recording.py`, `test_media_spend_diagnosis.py` |
+| 34 G2 `audio`/`music` | частично: `music` возобновляется; `audio` только наблюдение, платный повтор не разрешён | `NODE_COVERAGE.md` |
+| 35 G3 `sfx_gen` | сделано по событию; допуск надзора не выдан | `test_sfx_gen_dry_run.py` (правится другим агентом), `NODE_COVERAGE.md` |
+| 36 G4 `assemble` | сделано, один повтор под билетом, `approve_final` не снимается | `test_media_dry_run_local_nodes.py`, `native_assembly_acceptance.py` |
+| 37 G5 `publish` | только человек навсегда; признаки успеха публикации не заданы | |
+| 38-39 H1-H2 правки с подтверждением | сделано в коде; применение T2/T3 качества не измеряется | `docs/CHANGE_CONTROL.md`, `app/services/change_control/` |
+| 40 I1 закрытие | частично: отчёты обновлены, полный прогон обоих наборов в этой сверке не делался | см. ниже |
+
+Дополнение 2026-10-07 (второй проход):
+- Гонка двух одновременных восстановлений одной ноды: `tests/observe_v1/test_media_dry_run_videos.py::test_two_simultaneous_recoveries_of_one_node_make_exactly_one_ticket` (`asyncio.gather`). Победил один билет, второй отказ, новых платных задач ноль. Тест нашёл недочёт: проигравший получал «сырое» `IntegrityError` базы. Теперь `actions_recovery.recover_node` превращает его в понятный `ValueError` (откат, ничего не отправлено). Гарантию давало ограничение UNIQUE в базе и раньше.
+- `test_diagnosis.py::test_saved_normal_and_malformed_full_history` читает `/observe-history/*.json` и пишет в `/results`: каталоги существовали только в контейнерном прогоне, где снимали историю. Тест теперь пропускается с указанием причины, если их нет; в списке известных падений старого набора (`_evalout/b.txt`) его нет.
+
+Результат контрольного прогона 2026-10-07: `tests/observe_v1` + тесты миграций, до первого сбоя 199 прошло, сбой один и не связан с кодом:
+`test_diagnosis.py::Rules::test_saved_normal_and_malformed_full_history` ищет файл `observe-history/normal.json` (путь собирается от корня диска), которого нет
+(отсутствует сохранённая история). Остальные тесты после него в том прогоне не запускались.

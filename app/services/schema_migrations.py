@@ -223,6 +223,18 @@ def _projects_columns_fp() -> str:
     return _columns_fp("projects", PROJECTS_COLUMNS)
 
 
+async def _change_proposals_reject_columns(conn) -> None:
+    from app.services.change_control.store import _ADDED_COLUMNS
+    # _ADDED_COLUMNS holds "name DDL" strings; split to the (name, ddl) pairs add_missing_columns takes.
+    await add_missing_columns(conn, "change_proposals",
+                              [(name, ddl[len(name):].strip()) for name, ddl in _ADDED_COLUMNS])
+
+
+def _change_proposals_reject_columns_fp() -> str:
+    from app.services.change_control.store import _ADDED_COLUMNS
+    return _columns_fp("change_proposals", _ADDED_COLUMNS)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_observation_core", "observation, diagnosis, actions, decision, profiles, media, "
               "managed launch, kill switch tables", _observation, _observation_fp,
@@ -242,6 +254,8 @@ MIGRATIONS: tuple[Migration, ...] = (
               _frames_space_manual, _frames_space_manual_fp, (SCOPE_MASTER, SCOPE_PROJECT)),
     Migration("0009_projects_columns", "projects settings columns added after the first release",
               _projects_columns, _projects_columns_fp),
+    Migration("0010_change_proposals_reject_columns", "change_proposals.rejected_by / reject_reason / rejected_at",
+              _change_proposals_reject_columns, _change_proposals_reject_columns_fp),
 )
 
 

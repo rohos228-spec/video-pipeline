@@ -251,6 +251,13 @@ def _register_builtin_capabilities() -> None:
                     'Откат после таймаута или обрыва (мог быть списан платёж) не повторяется никогда',
                     'Готовые файлы событий переиспользует сама нода по чекпоинту; вердикта resume_local у sfx_gen нет, '
                     'надзор повтор не делает',
+                    'Не допущен к надзорному повтору (сухой прогон test_sfx_gen_dry_run.py): чекпоинт sfx_files пишется '
+                    'один раз после всего цикла, поэтому упавшая попытка не оставляет готовых событий; повтор в режиме '
+                    '«только возобновление» шлёт ноль POST, но на первом же событии без чекпоинта получает '
+                    'ResumeOnlyBlocked и не может закончить; повтор события после ответа провайдера требует нового '
+                    'платного POST, а после таймаута запрещён; нет статической оценки «все события плана готовы», '
+                    'сбой попытки не типизируется (проверка sfx_result, а не media_result), независимой проверки '
+                    'повтора нет',
                     'Платный вызов на событие остаётся без ключа идемпотентности'),
             forbidden_code='paid_no_idempotency',
             forbidden_reason='Платный вызов на каждое событие без ключа идемпотентности: исход таймаута '
@@ -406,7 +413,7 @@ MEDIA_RECOVERY_DECISIONS = {
                   "resume-only scope, saved prompt, zero new paid requests); a paid re-submit is not admitted "
                   "because a retry could re-submit and re-pay."},
     "sfx_gen": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_event_small_or_free_local",
-        "provider": "elevenlabs sound-effects (or local_synth when no key)",
+        "provider": "elevenlabs sound-generation (or local_synth when no key)",
         "reason": "managed=False; per-event paid call without idempotency key; on error it falls back to local "
                   "synthesis (now recorded as provider_fallback), a timeout outcome stays unknown and may be charged."},
     "assemble": {"decision": _MEDIA_LOCAL_RETRY, "cost_class": "no_provider_spend_local_cpu",

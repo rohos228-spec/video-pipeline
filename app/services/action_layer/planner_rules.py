@@ -116,10 +116,38 @@ def fill_defaults(action_id: str, params: dict, facts: dict | None, schema: dict
         out["max_image_ops"] = n
         notes.append(f"max_image_ops={n} (по размеру сцены)")
 
+    _frame_ids_to_numbers(out, props, facts, notes)
     _fill_shots(action_id, out, facts, notes)
 
     _normalize_values(action_id, out, notes)
     return Filled(out, notes)
+
+
+_NUMBER_KEYS = ("frame_number", "a_frame", "b_frame", "from_frame", "to_frame", "parent_number")
+
+
+def _frame_ids_to_numbers(out: dict, props: dict, facts: dict, notes: list[str]) -> None:
+    """Номер кадра, который модель подменила идентификатором из БД (1205 вместо 5), возвращается к номеру.
+
+    Значение трогается, только если оно больше максимального номера кадра проекта и в точности равно
+    известному идентификатору: настоящий номер (он не больше максимального) не заменяется никогда."""
+    rows = facts.get("frames") or []
+    if not rows:
+        return
+    max_no = int(facts.get("max_frame_number") or max(r[0] for r in rows))
+    by_id = {r[1]: r[0] for r in rows}
+
+    def fix(v: Any) -> Any:
+        if isinstance(v, int) and not isinstance(v, bool) and v > max_no and v in by_id:
+            notes.append(f"номер кадра {by_id[v]} (модель назвала идентификатор {v})")
+            return by_id[v]
+        return v
+
+    for key in _NUMBER_KEYS:
+        if key in props and key in out:
+            out[key] = fix(out[key])
+    if "frame_numbers" in props and isinstance(out.get("frame_numbers"), list):
+        out["frame_numbers"] = [fix(v) for v in out["frame_numbers"]]
 
 
 def _fill_shots(action_id: str, out: dict, facts: dict, notes: list[str]) -> None:
@@ -276,6 +304,7 @@ def resolve_prompt_target(action_id: str, params: dict, facts: dict | None,
 
 _UPLOAD_NOTE = "Шаг без source_path, data_base64, filename: файл прикрепит человек, сервер спросит сам."
 ACTION_NOTES: dict[str, str] = {
+    "montage.move_image": "from_frame/to_frame - НОМЕРА кадров (кадр 5 = 5), не frame_id из карты кадров. Шот не назван: берётся единственный шот кадра; файлы в обоих шотах исходного кадра и шот не назван - вопрос (шот 1/шот 2), не угадывай.",
     "montage.swap_slots": "Шот не назван: шот 1 у обоих; у обоих по 2 шота с такими файлами - два шага (1-1, 2-2).",
     "montage.swap_shots": "kind не пиши, если не сказано (по умолчанию картинки и видео).",
     "montage.queue_ops": "Только постановка в очередь, apply не добавляй. shot не пиши, если у кадра один шот; "
@@ -297,6 +326,7 @@ ACTION_NOTES: dict[str, str] = {
     "montage.set_coverage": "Не для «меню съёмки» (там shot.edit_field). plan ОБЩИЙ|ДАЛЬНИЙ|СРЕДНИЙ|КРУПНЫЙ|ДЕТАЛЬ; angle фронт|3/4|с плеча|сверху|снизу|макро; "
                             "move статика|наезд|отъезд|панорама|следование|ручная; light дневной|ночной|закат|"
                             "рассвет|контровой|холодный верхний|туман. parent_number только для coverage_kind.",
+    "project.set_auto_mode": "enabled=true: включить автопродвижение, false: выключить. Шаг не запускает.",
     "montage.set_assemble_params": "Передай только названные настройки. bgm_level: шкала 0..100, доля 0.2 = 20.",
     "montage.insert_frame": "Без уточнения kind=parent (новая сцена после кадра), voiceover не нужен.",
     "montage.set_scene_chain": "action = цепочка действий из запроса («А → Б»).",
@@ -392,6 +422,7 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "media.list_unknown_outcomes": ("блок", "заблок", "неизвестн", "исход", "потерян", "застр", "unknown"),
     "change.apply": ("примен", "apply", "внес", "внеси", "примени", "прмен", "накат", "активир"),
     "change.rollback": ("откат", "откач", "верни", "вернуть", "назад", "отмен", "прежн"),
+    "project.set_auto_mode": ("автопродвиж", "автореж", "автомат", "auto"),
     "montage.set_anchors": ("якор", "anchor"),
     "montage.set_scene_chain": ("цепоч", "последовательн", "разбер", "действи"),
 }

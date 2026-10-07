@@ -118,13 +118,9 @@ async def ensure_change_control_schema(conn) -> None:
     """Идемпотентно создаёт таблицы контура (вызывается из стартового пути)."""
     await conn.run_sync(lambda sync_conn: Base.metadata.create_all(
         sync_conn, tables=_TABLES, checkfirst=True))
+    # Колонки, добавленные позже в уже существующую change_proposals, догоняет версионная
+    # миграция 0010 (schema_migrations.py); здесь ALTER больше нет.
     if conn.dialect.name == "sqlite":
-        # create_all не добавляет колонки в уже существующую таблицу.
-        have = {r[1] for r in (await conn.exec_driver_sql(
-            "PRAGMA table_info(change_proposals)")).fetchall()}
-        for name, ddl in _ADDED_COLUMNS:
-            if name not in have:
-                await conn.exec_driver_sql(f"ALTER TABLE change_proposals ADD COLUMN {ddl}")
         for ddl in _TRIGGERS:
             await conn.exec_driver_sql(ddl)
 

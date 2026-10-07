@@ -270,7 +270,7 @@ completion_tokens, est_cost_usd, cost_calibrated}`. Планировщик не 
   каждый POST (повтор тоже). Превышение: 429 `rate_limited`, запрос к модели не отправляется.
 - **Журнал.** Каждый вызов модели - строка `planner_call` (model, токены, оценка USD по прайсу каталога, не
   откалибрована, исход, `catalog_offered`/`catalog_total`/`catalog_no_match`, `prompt_chars`); связь с созданным планом - `planner_plan_linked`.
-- **Оценка точности.** `tests/fixtures/action_planner_eval.json` (260 запросов на русском: чтение, правки, очередь,
+- **Оценка точности.** `tests/fixtures/action_planner_eval.json` (351 случай на русском: чтение, правки, очередь,
   сцены, удаление, ноды, мастер-промты, контур изменений, загрузки, уточнения, отказы; у каждого семейства действий
   несколько формулировок: «убери», «сделай», «мне нужно», опечатки, «кадр 5», «пятый кадр», «сцена 5»; ожидаемые
   шаги записаны подмножеством параметров, значения проекта - плейсхолдерами `$frame.22`, `$proposal.3.id`,
@@ -332,7 +332,7 @@ completion_tokens, est_cost_usd, cost_calibrated}`. Планировщик не 
   действия (проверяется тестом на реестре): `smart.check_board`, `smart.cost_basis`, `smart.queue_frame_regen`,
   `smart.fix_voiceover`, `smart.scene_from_scratch` (split_scene, improve_scene, apply_queue, run_montage),
   `smart.single_frame_fix` (queue_ops, apply_queue), `smart.recover_generation`, `smart.assemble_video`,
-  `smart.shots_report`, `smart.run_node_step`.
+  `smart.shots_report`, `smart.run_node_step`, `smart.voiceover_remount`, `smart.assemble_settings_remount`, `smart.delete_frame_check`, `smart.stop_and_check`.
 - Платные макросы выносят заявленные лимиты и настройки в параметры (`max_image_ops`, `max_video_ops`,
   `image_generator`, `image_resolution`, при необходимости `video_*`); текущие значения даёт
   `montage.get_cost_basis` (макрос `smart.cost_basis`). План требует подтверждения оператора.
@@ -505,6 +505,57 @@ ElevenLabs) до отправки, а провайдеру уходит толь
 Оценка может быть в десятки раз выше типичного прогона и не поместиться в потолок `ACTION_LAYER_SESSION_CAP_CREDITS`
 (по умолчанию 200): тогда `approve` отвечает 409 `over_budget`. Это следствие худшего исхода, а не ошибка; потолок
 меняется настройкой, а калибровка по реальным повторам снизит верхнюю границу.
+
+## Покрытие кнопок интерфейса (сверка 2026-10-07)
+
+Сверялась инвентаризация контролов (74: панель монтажа M01-M54, меню съёмки S01-S04, группа script_frames_qc и меню нод G01-G16) с реестром (84 действия). Сверка по именам действий и схемам параметров; выполнение кнопки и действия на живом сервере не сравнивалось.
+
+| Контрол | Действие каталога | Примечание |
+|---|---|---|
+| M01, M02 Применить правки | `montage.apply_queue` | `frame_numbers` для чипа «#N»; video-only очередь доступна (ограничение кнопки интерфейса на слой не распространяется) |
+| M04 Отменить выбранные | `montage.cancel_queue_ops` | |
+| M05 Галерея Outsee | `montage.recover_outsee`, `montage.recover_status` | |
+| M06 Разбор аудио | `montage.align_audio` | `method`, `force_asr` |
+| M07 Монтаж | `montage.run_montage`, `montage.montage_status` | destructive: удаляет final.mp4 |
+| M08, M09 Голос и музыка с компьютера | `montage.upload_voice`, `montage.upload_music` | только с вложением |
+| M10 Настройки сборки | `montage.set_assemble_params`, `montage.set_send_to_main_pc` | хвост, громкость, субтитры, пропуск заставки; отправка на ПК отдельным действием |
+| M11 Обновить | `montage.get_board` | |
+| M14, M16 Новая сцена, шот в сцену | `montage.insert_frame` | `kind=parent` или `child` |
+| M15, M18, M19 Объединить, отделить, разделить | `montage.merge_scenes`, `montage.split_scene`, `montage.explode_scene` | destructive |
+| M17, M32, M35 Удалить кадр, дочерний | `montage.delete_frame`, `montage.delete_child_frame` | |
+| M21, M22 Сгенерировать сцены, пересобрать куски | `montage.generate_scene` | `replace_ns` для кусков |
+| M23, M24 Улучшить сцену, сгенерировать изображения | `montage.improve_scene`, `montage.generate_scene_images` | |
+| M25, M26 Разобрать на кадры | `montage.set_scene_chain` | |
+| M27 Якоря | `montage.set_anchors` | |
+| M28 подобрать | `montage.suggest_scene_variants` | единственное действие уровня `paid` |
+| M29 Закадр сцены | `montage.set_voiceover_span` | |
+| M31 Закадр кадра | `montage.set_voiceover` | |
+| M33, M34, M36 Действие, роль, покрытие | `montage.set_coverage` | авто-постановка `image_ai_change`, которую делает интерфейс, при прямом вызове не происходит: очередь строится явно (`montage.queue_ops`) |
+| M37 Референсы | `montage.list_ref_assets`, `montage.link_ref`, `montage.upload_ref`, `montage.delete_manual_ref`, `montage.unlink_ref` | |
+| M39, M48 Обмен слотов | `montage.swap_slots`, `montage.swap_shots` | |
+| M40-M43, M49-M51 Перегенерация, промт, ИИзменение | `montage.queue_ops` | в очередь; деньги при `apply_queue` |
+| M44, M52 Удалить картинку, видео | `montage.delete_image`, `montage.delete_video` | |
+| M45, M53 Загрузить картинку, видео | `montage.upload_image`, `montage.upload_video` | только с вложением |
+| M46 Перетащить картинку | `montage.move_image` | |
+| M54 Trim | `montage.set_video_trim` | |
+| S01-S03 Меню съёмки | `shot.edit_cell_voiceover`, `shot.add_cell`, `shot.edit_field`, `shot.get_menu` | |
+| G01-G04 Группы | `group.insert`, `group.save_from_selection`, `group.update`, `group.delete`, `group.list`, `group.get` | |
+| G05, G06 Запустить шаг | `node.run_step`, `node.get_run_cost_basis` | оценка есть только у Каркас/Площадка/Шоты/QC и код-ноды отчёта |
+| G07 Отчёт | `group.shots_report` | |
+| G08, G09 Пульт, загрузки | `node.get_config`, `node.set_config`, `node.upload_file`, `node.upload_check_agent`, `node.clear_check_agent` | |
+| G10 Мастер-промты | `prompt.get_master`, `prompt.save_master`, `prompt.create_master`, `prompt.delete_master`, `node.set_prompt_variant` | |
+| G13 Отключить ноду | `node.set_disabled` | |
+| G15 Модель ноды | `node.get_llm_route` (только чтение) | |
+| G16 Пауза, продолжить, стоп | `project.pause`, `project.resume`, `project.continue_pipeline`, `project.stop` | resume и continue нельзя подтвердить (цена неизвестна) |
+| G16 Автопродвижение | `project.set_auto_mode` | добавлено в этой сверке |
+| G12, G14 Открепить связи, удалить ноду | нет | см. «Не вошло в каталог» |
+| M03, M12, M13, M20, M30, M38, M47, S04, G11 | не нужны | локальные действия интерфейса (выбор, лайтбокс, сворачивание, дорожки) |
+
+`project.set_auto_mode` (`local_safe`, идемпотентно): `PATCH /projects/{id}` с `auto_mode`; результат берётся из ответа PATCH. Включение при идущем шаге отказывает (предусловие `auto_mode_enable_safe`), потому что флаг «ждать ручной ▶» (`arm_auto_await_manual_start`) ставится только вне running-статуса; выключение разрешено всегда. Под управлением Actions-v1 отказывает так же, как пауза. Само включение денег не тратит, но после ручного ▶ воркер идёт по цепочке сам, и следующие шаги могут быть платными: это написано в описании действия. Тест (`tests/test_action_layer_wave3_catalog.py`) проверяет запись в БД и отказ включения при идущем шаге; поведение воркера после ▶ тестом не проверялось.
+
+Новые умные кнопки: `smart.voiceover_remount` (закадр кадра, разбор аудио, монтаж), `smart.assemble_settings_remount` (громкость музыки, монтаж), `smart.delete_frame_check` (удалить кадр, перечитать доску), `smart.stop_and_check` (стоп, статусы). Платных шагов в них нет; монтаж и удаление требуют подтверждения (внутри разрушающие действия).
+
+Покрытие фразами (`tests/fixtures/action_planner_eval.json`, 351 случай): у каждого действия реестра, кроме трёх (`montage.link_ref`, `montage.unlink_ref`, `montage.delete_manual_ref`), есть случай, где оно ожидается в плане. Для этих трёх случаи уточняющие: id рефа модель из контекста не получает (в контексте только кадры), поэтому плана с их шагами фикстура не содержит. Синонимы русского предфильтра (`planner_catalog.SYNONYMS`) есть у всех 84 действий (проверено сравнением ключей с реестром). Живой прогон модели по новым случаям не выполнялся: офлайн проверены каталог, строгая проверка и умолчания с «идеальной» моделью-заглушкой. Подписи параметров в карточке плана (`PARAM_RU` в `web/src/lib/action-layer.ts`) теперь есть у всех имён параметров действий и макросов; тест `test_every_action_and_macro_param_has_a_russian_label_in_the_ui` не даёт добавить новое имя без подписи.
 
 ## Не вошло в каталог и почему
 

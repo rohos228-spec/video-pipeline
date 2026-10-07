@@ -366,3 +366,27 @@ def test_notes_steer_eval9_failures() -> None:
     assert "set_coverage" in n["shot.edit_field"] and "конец" in n["shot.add_cell"]
     assert "вопрос" in n["node.clear_check_agent"]
     assert sum(len(v) for v in rules.ACTION_NOTES.values()) < 5200
+
+
+def test_db_frame_id_in_a_frame_number_param_is_turned_back_into_the_number() -> None:
+    facts = {**FACTS, "max_frame_number": 6}
+    f = rules.fill_defaults("montage.move_image", {"from_frame": 1205, "to_frame": 1203},
+                            facts, schema("montage.move_image"))
+    assert (f.params["from_frame"], f.params["to_frame"]) == (5, 3)
+    assert any("1205" in n for n in f.notes)
+    g = rules.fill_defaults("montage.apply_queue", {"frame_numbers": [1203, 4]}, facts,
+                            schema("montage.apply_queue"))
+    assert g.params["frame_numbers"] == [3, 4]
+
+
+def test_legit_frame_number_is_not_mistaken_for_an_id() -> None:
+    # номера совпадают с чужими id (id 1..6 у других кадров): настоящий номер не больше максимального
+    rows = [[1, 3, "p", 1, "1", "1"], [2, 1, "c", 1, "1", "1"], [3, 2, "c", 1, "1", "1"]]
+    facts = {**FACTS, "frames": rows, "max_frame_number": 3}
+    f = rules.fill_defaults("montage.move_image", {"from_frame": 2, "to_frame": 3}, facts,
+                            schema("montage.move_image"))
+    assert (f.params["from_frame"], f.params["to_frame"]) == (2, 3)
+    # неизвестное большое число (не id) остаётся как есть и отклоняется строгой проверкой позже
+    h = rules.fill_defaults("montage.move_image", {"from_frame": 9999, "to_frame": 3}, facts,
+                            schema("montage.move_image"))
+    assert h.params["from_frame"] == 9999

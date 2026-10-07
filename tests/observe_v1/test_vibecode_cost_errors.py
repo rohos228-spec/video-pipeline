@@ -129,8 +129,9 @@ class TelemetryCost(unittest.TestCase):
         self.assertEqual(summary["by_provider"]["kie"]["calls"], 1)
         self.assertEqual(summary["unknown_cost_calls"], 1)
         self.assertEqual(summary["by_provider"]["vibecode"]["unknown_cost_calls"], 1)
-        self.assertIn("NOT calibrated", summary["sources"]["vibecode"])
-        self.assertIn("calibrated", summary["sources"]["kie"])
+        self.assertIn("не откалибрована", summary["sources"]["vibecode"])  # operator sees Russian
+        self.assertIn("NOT calibrated", summary["sources_raw"]["vibecode"])  # raw string kept for old readers
+        self.assertIn("откалиброваны", summary["sources"]["kie"])
 
     def test_sources_only_list_providers_that_are_present(self):
         from app.services.telemetry import cost_summary

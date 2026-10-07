@@ -5193,6 +5193,266 @@
     }
    ],
    "also_offered": []
+  },
+  {
+   "id": "autoprom_on",
+   "text": "включи автопродвижение",
+   "workflow": "auto mode",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.set_auto_mode",
+     "params": {
+      "enabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "autoprom_off",
+   "text": "выключи автопродвижение проекта",
+   "workflow": "auto mode",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.set_auto_mode",
+     "params": {
+      "enabled": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "autoprom_on_b",
+   "text": "хочу, чтобы проект шёл по шагам сам: включи автопродвижение",
+   "workflow": "auto mode",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.set_auto_mode",
+     "params": {
+      "enabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "autoprom_off_b",
+   "text": "отключи автопродвижение, пусть дальше ничего не идёт само",
+   "workflow": "auto mode",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.set_auto_mode",
+     "params": {
+      "enabled": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_music",
+   "text": "загрузи фоновую музыку",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "audio",
+      "name": "bgm.mp3",
+      "size": 3200000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.upload_music",
+     "params": {
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_ref",
+   "text": "загрузи реф для кадра 3, это персонаж «Маша»",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "image",
+      "name": "masha.png",
+      "size": 240000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.upload_ref",
+     "params": {
+      "frame_number": 3,
+      "name": "Маша",
+      "kind": "character",
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "move_img_a",
+   "text": "перенеси картинку из кадра 3 в кадр 5",
+   "workflow": "move image",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.move_image",
+     "params": {
+      "from_frame": 3,
+      "from_shot": 1,
+      "to_frame": 5,
+      "to_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "move_img_b",
+   "text": "перетащи картинку кадра 5 на место картинки кадра 3",
+   "workflow": "move image",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.move_image",
+     "params": {
+      "from_frame": 5,
+      "from_shot": 1,
+      "to_frame": 3,
+      "to_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "span_a",
+   "text": "закрепи за сценой кадра 5 кусок закадра «привет, друзья»",
+   "workflow": "voiceover span",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover_span",
+     "params": {
+      "frame_number": 5,
+      "text": "привет, друзья"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "span_clear",
+   "text": "сними закреплённый кусок закадра со сцены кадра 5",
+   "workflow": "voiceover span",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover_span",
+     "params": {
+      "frame_number": 5,
+      "clear": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "variants_a",
+   "text": "подбери 3 варианта действия для кадра 5",
+   "workflow": "scene variants",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.suggest_scene_variants",
+     "params": {
+      "frame_id": "$frame.5",
+      "kind": "action",
+      "count": 3
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "variants_b",
+   "text": "предложи варианты якорей для сцены кадра 7",
+   "workflow": "scene variants",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.suggest_scene_variants",
+     "params": {
+      "frame_id": "$frame.7",
+      "kind": "anchors"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gsave_b",
+   "text": "сохрани ноды n_excel_gpt_fw_script и n_excel_gpt_fw_action как группу «Каркас и площадка»",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.save_from_selection",
+     "params": {
+      "node_ids": [
+       "n_excel_gpt_fw_script",
+       "n_excel_gpt_fw_action"
+      ],
+      "title": "Каркас и площадка"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "unlink_ref_q",
+   "text": "убери персонажа Маша из рефов кадра 3",
+   "workflow": "refs",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "del_manual_ref_q",
+   "text": "удали загруженный реф кадра 3",
+   "workflow": "refs",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
   }
  ]
 }

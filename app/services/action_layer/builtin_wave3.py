@@ -179,6 +179,30 @@ async def _continue(ctx, params):
             "advanced": data.get("advanced"), "cleared": data.get("cleared")}
 
 
+async def _auto_mode_enable_safe(ctx, params):
+    """Включать автопродвижение можно только когда ничего не идёт: код PATCH ставит флаг
+    «ждать ручной ▶» (``arm_auto_await_manual_start``) лишь вне running-статуса, а при идущем
+    шаге воркер после его конца пошёл бы по цепочке сам. Выключение разрешено всегда."""
+    if not params.get("enabled"):
+        return None
+    from app.services.action_layer.builtin_group import _is_running
+    proj = await _get_project(ctx, params["project_id"])
+    if _is_running(proj.get("status")):
+        return (f"в проекте выполняется шаг (статус {proj.get('status')}): включить "
+                "автопродвижение можно только когда ничего не идёт")
+    return None
+
+
+async def _set_auto_mode(ctx, params):
+    pid, want = params["project_id"], bool(params["enabled"])
+    # Ответ PATCH - это уже записанный проект; повторный GET может прочитать устаревшую копию с master.
+    data = await ctx.call("PATCH", f"/projects/{pid}", json={"auto_mode": want})
+    got = bool((data or {}).get("auto_mode"))
+    if got != want:
+        raise ActionCallError(409, f"автопродвижение не переключилось (сейчас {got})")
+    return {"auto_mode": got}
+
+
 async def _poll_project_idle(ctx, params, started) -> JobState:
     from app.services.action_layer.builtin_group import _is_running
 
@@ -589,6 +613,18 @@ def _specs() -> list[ActionSpec]:
                                          "запускается воркером и может перезаписать результаты."),
           preconditions=(_PRE_PROJECT, _PRE_NOT_MANAGED, _PRE_IDLE, _PRE_NO_MONTAGE),
           tags=("project", "run")),
+        S(id="project.set_auto_mode", title_ru="Автопродвижение проекта: включить или выключить",
+          description_ru="Переключатель «Автопродвижение» (project.auto_mode). Сам шаг не запускает "
+                         "и денег не тратит: после включения воркер ждёт ручного запуска ▶ (код "
+                         "arm_auto_await_manual_start), а после ▶ идёт по цепочке шагов сам, и "
+                         "следующие шаги могут быть платными. Включить можно только когда ничего "
+                         "не выполняется; выключить можно всегда. Повтор безвреден.",
+          params_schema=_obj({"enabled": {"type": "boolean"}}, ["enabled"]),
+          executor=_set_auto_mode, risk=RISK_LOCAL_SAFE, idempotent=True,
+          preconditions=(_PRE_PROJECT, _PRE_NOT_MANAGED, Precondition(
+              "auto_mode_enable_safe", "Включение: в проекте ничего не выполняется",
+              _auto_mode_enable_safe)),
+          tags=("project", "auto")),
         # --- xlsx и отправка на основной ПК
         S(id="project.reload_xlsx", title_ru="Перечитать project.xlsx в базу",
           description_ru="Импортирует project.xlsx в БД: поля проекта, закадр, промты и атрибуты "

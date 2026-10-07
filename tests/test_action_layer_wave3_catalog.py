@@ -22,6 +22,7 @@ NEW_IDS = {
     "node.clear_check_agent": ("destructive", False),
     "project.pause": ("local_safe", False), "project.resume": ("destructive", True),
     "project.continue_pipeline": ("destructive", True),
+    "project.set_auto_mode": ("local_safe", False),
     "project.reload_xlsx": ("destructive", False),
     "montage.set_send_to_main_pc": ("local_safe", False),
     "prompt.get_master": ("read", False), "prompt.save_master": ("destructive", False),
@@ -70,7 +71,7 @@ async def _status(env, pid, status, **meta):
 # --- каталог ------------------------------------------------------------------------------------
 
 def test_new_actions_registered_with_expected_tier_and_money_flags() -> None:
-    assert len(registry) == 83  # 74 + 5 change.* + 4 media.* (assessment, resume_poll, list/release unknown)
+    assert len(registry) == 84  # 74 + 5 change.* + 4 media.* + project.set_auto_mode
     for aid, (tier, spends) in NEW_IDS.items():
         spec = registry.get(aid)
         assert (spec.risk, spec.spends_money) == (tier, spends), aid
@@ -339,3 +340,45 @@ async def test_missing_prompt_executor_errors_not_blind_write() -> None:
     with pytest.raises(RuntimeError, match="не найден"):
         await w3._save_master(ctx, {"step_code": "plan", "name": "x", "content": "c"})
     assert not any(c[0] in ("PUT", "DELETE") for c in ctx.calls)
+
+
+async def test_set_auto_mode_toggles_without_approval_and_refuses_enable_while_running(
+        env, not_managed) -> None:
+    pid = await env.add_project(frames=1)
+    await _status(env, pid, "frames_ready")
+    step = lambda on: [{"action_id": "project.set_auto_mode",  # noqa: E731
+                        "params": {"project_id": pid, "enabled": on}}]
+    pre = await _preview(env, step(True))
+    assert pre.status_code == 200 and pre.json()["preview"]["needs_approval"] is False
+    view = await _run(env, step(True), approve=False)
+    assert view["status"] == "succeeded", view["steps"][0].get("error")
+    assert view["steps"][0]["result"] == {"auto_mode": True}
+    async with env.factory() as s:
+        row = await s.get(Project, pid)
+        assert row.auto_mode is True and (row.meta or {}).get("auto_await_manual_start") is True
+    # повтор безвреден; выключение разрешено и при идущем шаге, включение при идущем - нет
+    assert (await _run(env, step(True), approve=False))["status"] == "succeeded"
+    await _status(env, pid, "generating_images")
+    r = await _preview(env, step(True))
+    assert r.status_code == 422 and "auto_mode_enable_safe" in str(r.json())
+    assert (await _preview(env, step(False))).status_code == 200
+    await _status(env, pid, "frames_ready")
+    off = await _run(env, step(False), approve=False)
+    assert off["status"] == "succeeded"
+    async with env.factory() as s:
+        row = await s.get(Project, pid)
+        assert row.auto_mode is False and not (row.meta or {}).get("auto_await_manual_start")
+
+
+def test_every_action_and_macro_param_has_a_russian_label_in_the_ui() -> None:
+    """Карточка плана показывает параметры по-русски: новое имя параметра без подписи - английская утечка."""
+    import re
+    from pathlib import Path
+
+    from app.services.action_layer import macros
+    src = (Path(__file__).resolve().parents[1] / "web" / "src" / "lib" / "action-layer.ts").read_text(
+        encoding="utf-8")
+    labelled = set(re.findall(r"^\s{2}([A-Za-z_0-9]+): \{ label:", src, re.M))
+    names = {k for s in registry.list() for k in s.params_schema["properties"]}
+    names |= {k for m in macros.BUILTIN_MACROS for k in m.params_schema["properties"]}
+    assert sorted(names - labelled - {"project_id"}) == []

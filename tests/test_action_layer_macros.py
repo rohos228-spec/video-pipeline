@@ -116,7 +116,8 @@ SAMPLE = {
     "instruction": "добавь дождь", "max_image_ops": 4, "max_video_ops": 2,
     "image_generator": "gen_a", "image_resolution": "2k", "video_generator": "vid_a",
     "video_resolution": "1080p", "node_key": "n1", "min_llm_requests": 3,
-    "max_llm_requests": 44, "max_input_tokens": 30000, "max_output_tokens": 20000}
+    "max_llm_requests": 44, "max_input_tokens": 30000, "max_output_tokens": 20000,
+    "bgm_level": 20, "subtitles_enabled": True}
 
 
 def test_every_builtin_macro_validates_against_real_registry() -> None:
@@ -246,3 +247,20 @@ async def test_per_owner_limit(reg, monkeypatch) -> None:
                                 params_schema=PARAMS)
     await macros.save_macro("bob", title_ru="x", description_ru="", steps=good_steps(),
                             params_schema=PARAMS)
+
+
+def test_new_multistep_macros_chain_in_order_and_need_approval_where_destructive() -> None:
+    ensure_builtin_actions()
+    want = {
+        "smart.voiceover_remount": (["montage.set_voiceover", "montage.align_audio", "montage.run_montage"], True),
+        "smart.assemble_settings_remount": (["montage.set_assemble_params", "montage.run_montage"], True),
+        "smart.delete_frame_check": (["montage.delete_frame", "montage.get_board"], True),
+        "smart.stop_and_check": (["project.stop", "montage.apply_status", "montage.montage_status"], False),
+    }
+    for mid, (ids, destructive) in want.items():
+        m = macros._BUILTIN_BY_ID[mid]
+        assert m.action_ids() == ids, mid
+        steps = macros.expand(m, {k: SAMPLE[k] for k in m.params_schema["required"]}, registry)
+        assert [s["depends_on"] for s in steps] == [[]] + [[i] for i in range(len(ids) - 1)], mid
+        assert any(registry.get(i).destructive for i in ids) is destructive, mid
+        assert not any(registry.get(i).spends_money for i in ids), mid

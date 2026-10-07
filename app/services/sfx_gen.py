@@ -171,7 +171,7 @@ async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
         raise RuntimeError("no elevenlabs key")
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
-            "https://api.elevenlabs.io/v1/sound-effects",
+            "https://api.elevenlabs.io/v1/sound-generation",
             headers={"xi-api-key": key},
             json={
                 "text": prompt[:450],
@@ -180,7 +180,9 @@ async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
             },
         )
         if resp.status_code != 200:
-            raise RuntimeError(f"11labs sfx {resp.status_code}: {resp.text[:200]}")
+            err = RuntimeError(f"11labs sfx {resp.status_code}: {resp.text[:200]}")
+            err.status_code = resp.status_code  # type: ignore[attr-defined]  # kept for provider_fallback
+            raise err
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(resp.content)
     return out_path
@@ -193,11 +195,17 @@ def _record_provider_fallback(project: Project, idx: int, kind: str, exc: BaseEx
     # Ответ провайдера (RuntimeError со статусом) и отказ соединения: списания нет;
     # таймаут или обрыв после отправки: запрос мог быть принят и оплачен.
     answered = isinstance(exc, RuntimeError) or isinstance(exc, httpx.ConnectError)
+    # The HTTP status the provider answered with (404 = wrong endpoint, 401 = key, 429 ...): a wrong URL must never
+    # again hide as a silent local synth. None when no answer was received (timeout, connection refused).
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
     info = {
         "idx": idx,
         "kind": kind,
         "provider": "elevenlabs",
         "error_class": type(exc).__name__,
+        "http_status": int(status) if isinstance(status, int) else None,
         "may_have_charged": "no" if answered else "uncertain",
     }
     logger.warning("[#{}] sfx_gen provider_fallback: {}", project.id, info)

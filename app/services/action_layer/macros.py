@@ -313,6 +313,40 @@ BUILTIN_MACROS: tuple[MacroSpec, ...] = (
         _chain(("montage.align_audio", dict(_P)), ("montage.run_montage", dict(_P))),
         _params({"project_id": _PID}, ["project_id"]), builtin=True),
     MacroSpec(
+        "smart.voiceover_remount", "Исправить закадр, разобрать аудио и пересобрать видео",
+        "Записывает новый текст закадра кадра, выравнивает озвучку по таймкодам и запускает монтаж "
+        "(правка закадра сама таймкоды не пересчитывает). Платных вызовов нет, но прежний "
+        "final.mp4 удаляется, поэтому план нужно подтвердить.",
+        _chain(("montage.set_voiceover", {**_P, "frame_id": "{{frame_id}}", "text": "{{text}}"}),
+               ("montage.align_audio", dict(_P)), ("montage.run_montage", dict(_P))),
+        _params({"project_id": _PID, "frame_id": _PID,
+                 "text": {"type": "string", "maxLength": 20000}},
+                ["project_id", "frame_id", "text"]), builtin=True),
+    MacroSpec(
+        "smart.assemble_settings_remount", "Настройки сборки и пересборка видео",
+        "Меняет громкость музыки (0..100) и сразу запускает монтаж. Платных вызовов нет, но "
+        "прежний final.mp4 удаляется, поэтому план нужно подтвердить.",
+        _chain(("montage.set_assemble_params", {**_P, "bgm_level": "{{bgm_level}}"}),
+               ("montage.run_montage", dict(_P))),
+        _params({"project_id": _PID, "bgm_level": {"type": "integer", "minimum": 0, "maximum": 100}},
+                ["project_id", "bgm_level"]), builtin=True),
+    MacroSpec(
+        "smart.delete_frame_check", "Удалить кадр и перечитать доску",
+        "Удаляет кадр (медиа уходит в карантин) и читает доску: номера кадров после удаления "
+        "сдвигаются, поэтому дальнейшие номера берите из новой доски. Разрушающее действие, "
+        "план нужно подтвердить.",
+        _chain(("montage.delete_frame", {**_P, "frame_id": "{{frame_id}}"}),
+               ("montage.get_board", dict(_P))),
+        _params({"project_id": _PID, "frame_id": _PID}, ["project_id", "frame_id"]),
+        builtin=True),
+    MacroSpec(
+        "smart.stop_and_check", "Остановить проект и показать, что осталось",
+        "Останавливает проект (частичные результаты могут остаться) и читает статусы применения "
+        "правок и монтажа.",
+        _chain(("project.stop", dict(_P)), ("montage.apply_status", dict(_P)),
+               ("montage.montage_status", dict(_P))),
+        _params({"project_id": _PID}, ["project_id"]), builtin=True),
+    MacroSpec(
         "smart.shots_report", "Отчёт по шотам и меню съёмки",
         "Читает отчёт по кадрам группы проверки и меню съёмки. Ничего не меняет.",
         _chain(("group.shots_report", dict(_P)), ("shot.get_menu", dict(_P))),

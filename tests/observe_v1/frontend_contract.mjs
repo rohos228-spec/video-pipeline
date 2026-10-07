@@ -228,6 +228,7 @@ assert.deepEqual(A.withoutUsed(items,['id1']).map(i=>i.key),['2','3','4']);asser
 assert.equal(A.itemStatusText(items[1]),'загрузка 30%');assert.equal(A.itemStatusText(items[0]),'готов');assert.equal(A.itemStatusText(items[2]),'x');
 const alLib=fs.readFileSync('/observe-source/web/src/lib/action-layer.ts','utf8');
 assert.match(alLib,/attachments: attachmentIds/);assert.match(alLib,/attachments_used\?: string\[\]/);assert.match(alLib,/XMLHttpRequest/);
+assert.match(alLib,/enabled: \{ label: "Включено"/);assert.match(fs.readFileSync('/observe-source/web/src/components/action-layer/history-list.tsx','utf8'),/history-more/);
 console.log('Planner clarification UI contracts: passed');
 
 // «Покрытие нод» panel

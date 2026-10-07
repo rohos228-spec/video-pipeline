@@ -130,6 +130,8 @@ class Rules(unittest.TestCase):
         self.assertFalse(original['blocking'])
         self.assertFalse(original['currently_relevant'])
 
+    @unittest.skipUnless(Path('/observe-history/normal.json').is_file() and Path('/results').is_dir(),
+        'environment fixture: /observe-history/{normal,malformed}.json and /results exist only in the container run that captured them')
     def test_saved_normal_and_malformed_full_history(self):
         summaries={}
         for mode in ('normal','malformed'):

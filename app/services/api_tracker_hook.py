@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.tracker_schema import ensure_tracker_schema
+
 # Путь к локальной базе API Tracker
 _TRACKER_DB = Path(__file__).resolve().parent.parent.parent / "api-tracker" / "tracker.db"
 
@@ -308,38 +310,7 @@ def record_api_call(
             # 2. Локальная запись в SQLite
             with sqlite3.connect(str(_TRACKER_DB), timeout=5.0) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS api_calls (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT NOT NULL,
-                        user_name TEXT NOT NULL DEFAULT 'unknown',
-                        device_name TEXT DEFAULT '',
-                        provider TEXT NOT NULL,
-                        key_alias TEXT DEFAULT '',
-                        model TEXT NOT NULL,
-                        call_type TEXT DEFAULT 'text',
-                        prompt_tokens INTEGER DEFAULT 0,
-                        completion_tokens INTEGER DEFAULT 0,
-                        cached_tokens INTEGER DEFAULT 0,
-                        total_tokens INTEGER DEFAULT 0,
-                        media_count INTEGER DEFAULT 0,
-                        duration_sec REAL DEFAULT 0.0,
-                        cost_usd REAL DEFAULT 0.0,
-                        status_code INTEGER DEFAULT 200,
-                        error_message TEXT DEFAULT '',
-                        project_source TEXT DEFAULT '',
-                        metadata_json TEXT DEFAULT '{}',
-                        synced INTEGER DEFAULT 1
-                    );
-                """)
-                # Автомиграция для старых баз
-                cols = [c[1] for c in conn.execute("PRAGMA table_info(api_calls);").fetchall()]
-                if "user_name" not in cols:
-                    conn.execute("ALTER TABLE api_calls ADD COLUMN user_name TEXT DEFAULT 'unknown';")
-                if "device_name" not in cols:
-                    conn.execute("ALTER TABLE api_calls ADD COLUMN device_name TEXT DEFAULT '';")
-                if "synced" not in cols:
-                    conn.execute("ALTER TABLE api_calls ADD COLUMN synced INTEGER DEFAULT 1;")
+                ensure_tracker_schema(conn, _TRACKER_DB)  # versioned migrations (tracker_schema.py)
 
                 conn.execute(
                     """

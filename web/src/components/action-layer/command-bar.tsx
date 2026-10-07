@@ -97,7 +97,7 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan, attac
           value={text}
           onChange={(e) => setText(e.target.value)}
           disabled={off || !textAvailable}
-          placeholder={c == null ? "сначала открой проект" : textAvailable ? "что сделать? например: поменяй местами планы 2 и 3" : "составление плана из текста недоступно на сервере"}
+          placeholder={c == null ? "сначала открой проект" : textAvailable ? "что сделать? например: поменяй местами картинки кадров 2 и 3" : "составление плана из текста недоступно на сервере"}
           className="h-8 flex-1 rounded-md border border-white/10 bg-black/40 px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary disabled:opacity-40"
         />
         <Button type="submit" size="sm" variant="outline" className="h-8 text-xs" disabled={off || !textAvailable || !text.trim() || uploading}

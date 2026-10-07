@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import JSON, String, UniqueConstraint, select, update
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -375,7 +376,13 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 node_key=node_key, attempt_id=action.new_attempt_id,
                 initiator=initiator, rationale=rationale, evidence_ids=incident.details.get("event_ids", []),
                 preconditions=action.preconditions, idempotency_key=idempotency_key, status="reserved", verification={}))
-            await master.commit()  # Durable before dispatch; UNIQUE prevents races.
+            try:
+                await master.commit()  # Durable before dispatch; UNIQUE prevents races.
+            except IntegrityError as exc:
+                # Lost a race: another recovery of this node/execution (or the same key) committed first.
+                await master.rollback()
+                raise ValueError("another recovery of this node already holds the ticket; "
+                                 "this one is refused (nothing dispatched)") from exc
             _active_nodes[project_id] = node_key
             record = await master.get(ActionRecord, action.action_id)
             if media and not local:

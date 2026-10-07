@@ -49,6 +49,24 @@ class VideosDryRun(base.MediaDryRun):
             frame.animation_prompt = "быстрый отъезд от папки"
             await session.commit()
 
+    async def test_two_simultaneous_recoveries_of_one_node_make_exactly_one_ticket(self):
+        await self.killed_then_native_poll_timeout()
+        incident = await self.media_incident()
+        await self.enable()
+        self.poll_script = ["success"]
+        creates_before = self.creates
+        import asyncio
+        results = await asyncio.gather(self.recover(incident, "race-0000000a"),
+                                       self.recover(incident, "race-0000000b"), return_exceptions=True)
+        won = [r for r in results if not isinstance(r, BaseException)]
+        refused = [r for r in results if isinstance(r, BaseException)]
+        self.assertEqual((len(won), len(refused)), (1, 1), results)
+        self.assertIsInstance(refused[0], ValueError, refused[0])
+        tickets = await self.tickets()
+        self.assertEqual(len(tickets), 1)
+        self.assertEqual(self.creates, creates_before, "a race must never create a second paid task")
+        self.assertEqual(len(list(self.result_files())), 1)
+
     async def test_the_failed_attempt_may_edit_frame_progress_without_invalidating_the_baseline(self):
         """The real videos step writes per-frame bookkeeping (fail counter, in-flight marker) while it
         fails. That is not a change of the REQUEST inputs and must not block the resume."""

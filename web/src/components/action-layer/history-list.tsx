@@ -17,14 +17,15 @@ export function HistoryList({refreshKey}: {refreshKey: number}) {
   const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
+  const [limit, setLimit] = useState(LIMIT);
 
   useEffect(() => {
     let cancelled = false;
-    getHistory(LIMIT)
+    getHistory(limit)
       .then((r) => { if (!cancelled) { setItems(r.items); setTotal(r.total); setError(""); } })
       .catch((e) => { if (!cancelled) setError(describeError(e)); });
     return () => { cancelled = true; };
-  }, [refreshKey, tick]);
+  }, [refreshKey, tick, limit]);
 
   return (
     <details className="text-[11px]" data-testid="action-history">
@@ -35,6 +36,10 @@ export function HistoryList({refreshKey}: {refreshKey: number}) {
         <Button size="sm" variant="ghost" className="h-6 text-[11px]" onClick={() => setTick((t) => t + 1)}>Обновить</Button>
         {error && <p role="alert" className="text-red-300">{error}</p>}
         {items && items.length === 0 && <p className="text-white/40">Записей пока нет.</p>}
+        {items && items.length < total && limit < 500 && (
+          <Button size="sm" variant="ghost" className="h-6 text-[11px]" data-testid="history-more"
+            onClick={() => setLimit((n) => n + LIMIT)}>Показать ещё</Button>
+        )}
         {items?.map((h) => (
           <div key={h.id} className="rounded border border-white/[0.06] p-1.5">
             <p className="text-white/80">

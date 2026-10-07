@@ -231,7 +231,7 @@ class Settings(BaseSettings):
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )
-    # API-ключ ElevenLabs — синтез речи TTS и SFX (POST /v1/text-to-speech, POST /v1/sound-effects).
+    # API-ключ ElevenLabs — синтез речи TTS и SFX (POST /v1/text-to-speech, POST /v1/sound-generation).
     elevenlabs_api_key: str = Field("", alias="ELEVENLABS_API_KEY")
     elevenlabs_proxy_url: str | None = Field(None, alias="ELEVENLABS_PROXY_URL")
     elevenlabs_model_id: str = Field("eleven_multilingual_v2", alias="ELEVENLABS_MODEL_ID")
