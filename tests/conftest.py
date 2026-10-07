@@ -11,9 +11,14 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
+
+# Tests never write into the real api-tracker/tracker.db (A08 stopped silencing test-time cost rows).
+os.environ.setdefault("API_TRACKER_DB", str(Path(tempfile.mkdtemp(prefix="vp-tracker-")) / "tracker.db"))
 
 from app.settings import settings
 
@@ -42,6 +47,19 @@ def _isolate_settings_paths(tmp_path_factory, monkeypatch):
     # На случай прямой записи settings.data_dir = ... в обход monkeypatch.
     settings.data_dir = _ORIG_DATA_DIR
     settings.sqlite_path = _ORIG_SQLITE_PATH
+
+
+@pytest.fixture(autouse=True)
+def _isolated_tracker_db(tmp_path_factory, monkeypatch):
+    """Each test gets its own api-tracker database: cost rows written by one test never show up in another
+    (or in the real ``api-tracker/tracker.db``)."""
+    try:
+        from app.services import api_tracker_hook
+    except Exception:
+        yield
+        return
+    monkeypatch.setattr(api_tracker_hook, "_TRACKER_DB", tmp_path_factory.mktemp("vp-tracker") / "tracker.db")
+    yield
 
 
 @pytest.fixture
@@ -93,3 +111,43 @@ def _ensure_base_schema():
         await engine.dispose()
 
     asyncio.run(_run())
+
+
+@pytest.fixture(autouse=True)
+def _operator_token_for_test_client(monkeypatch, request):
+    """In-process clients (starlette TestClient, httpx ASGI clients) play the
+    operator's own browser: they send the operator token the UI sends. Tests
+    that check the guard itself carry the ``raw_client`` marker (no header)."""
+    if request.node.get_closest_marker("raw_client"):
+        yield
+        return
+    try:
+        import httpx
+        from starlette.testclient import TestClient
+
+        from app.services.access_guard import OPERATOR_HEADER, get_operator_token
+    except Exception:
+        yield
+        return
+
+    def _wrap(original):
+        def _request(self, method, url, **kwargs):
+            headers = dict(kwargs.get("headers") or {})
+            if not any(k.lower() == OPERATOR_HEADER.lower() for k in headers):
+                headers[OPERATOR_HEADER] = get_operator_token()
+            kwargs["headers"] = headers
+            return original(self, method, url, **kwargs)
+        return _request
+
+    def _wrap_async(original):
+        async def _request(self, method, url, **kwargs):
+            headers = dict(kwargs.get("headers") or {})
+            if not any(k.lower() == OPERATOR_HEADER.lower() for k in headers):
+                headers[OPERATOR_HEADER] = get_operator_token()
+            kwargs["headers"] = headers
+            return await original(self, method, url, **kwargs)
+        return _request
+
+    monkeypatch.setattr(TestClient, "request", _wrap(TestClient.request))
+    monkeypatch.setattr(httpx.AsyncClient, "request", _wrap_async(httpx.AsyncClient.request))
+    yield

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.project_root import find_project_root, resolve_project_path
@@ -373,8 +373,19 @@ class Settings(BaseSettings):
     # true снимает это ограничение.
     orchestrator_allow_remote_without_auth: bool = Field(
         False, alias="ORCHESTRATOR_ALLOW_REMOTE_WITHOUT_AUTH")
-    # False — строки вызовов API не отправляются в облачный трекер (локальная запись остаётся).
-    api_tracker_cloud_enabled: bool = Field(True, alias="API_TRACKER_CLOUD_ENABLED")
+    # По умолчанию false (A17): строки вызовов API НЕ отправляются в облачный трекер и облачный
+    # рубильник не опрашивается: ни одного исходящего соединения. Локальная запись остаётся.
+    # Включать только осознанно, задав ещё URL и ключ ниже (в исходниках их больше нет).
+    api_tracker_cloud_enabled: bool = Field(False, alias="API_TRACKER_CLOUD_ENABLED")
+    api_tracker_supabase_url: str = Field("", alias="SUPABASE_URL")
+    api_tracker_supabase_key: str = Field(
+        "", validation_alias=AliasChoices("SUPABASE_KEY", "SUPABASE_ANON_KEY"))
+    # false: в облачные строки имя пользователя ОС и имя устройства уходят только как
+    # необратимый хэш с локальной солью; true: как есть (явное решение владельца).
+    api_tracker_cloud_send_identity: bool = Field(False, alias="API_TRACKER_CLOUD_SEND_IDENTITY")
+    # Запись трат нативных платных вызовов (spend_ledger). Выключение явное и видимое
+    # (счётчик пропусков и строка в журнале), а не по признаку pytest или ключа synthetic*.
+    media_spend_recording: bool = Field(True, alias="MEDIA_SPEND_RECORDING")
     # По умолчанию false: чат-оркестратор отказывает в edit_files / git_commit_push
     # (и в confirm-git-push). true включает правку кода и push из чата явно.
     chat_code_actions_enabled: bool = Field(False, alias="CHAT_CODE_ACTIONS_ENABLED")

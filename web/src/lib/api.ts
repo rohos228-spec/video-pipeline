@@ -4,6 +4,8 @@
  * сам отдаёт фронт + API из одного origin.
  */
 
+// Побочный эффект: ставит перехватчик fetch с токеном оператора (A04).
+import "./api-operator-token";
 import type {
   ArtifactDTO,
   ExcelHeroCharacter,

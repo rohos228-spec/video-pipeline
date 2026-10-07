@@ -32,7 +32,7 @@ from app.bots.kie_kling import (
     kie_uses_vps_relay,
 )
 from app.bots.outsee import GenerationResult
-from app.services import media_spend
+from app.services import media_spend, spend_guard
 from app.settings import settings
 
 _POLL_INTERVAL_S = 4.0
@@ -154,6 +154,22 @@ async def upload_file(
     return dl
 
 
+def _create_estimate(_args: tuple, _kwargs: dict) -> float | None:
+    """Catalog price of the submit being prepared (None = unknown: the gate uses its media default)."""
+    try:
+        usd = float((media_spend._kie_ctx.get() or {}).get("usd") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return usd if usd > 0 else None
+
+
+def _blocked_as_kie(blocked: spend_guard.PaidCallBlocked) -> KieHttpError:
+    """The refusal in the provider's own error class; ``context.no_resubmit`` stops the ladders."""
+    return KieHttpError(blocked.message_ru, context=dict(blocked.context))
+
+
+# The gate sits OUTSIDE the recording decorator: a refused submit is not a failed paid call.
+@spend_guard.paid_seam("kie", "createTask", estimate=_create_estimate, wrap_error=_blocked_as_kie)
 @media_spend.tracked_kie_create
 async def create_task(api: str, endpoint: str | None, body: dict[str, Any]) -> str:
     """Создать задачу; возвращает taskId."""

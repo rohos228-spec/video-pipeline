@@ -1,13 +1,23 @@
-"""Best-effort spend recording for native paid media/audio provider calls.
+"""Spend recording for native paid media/audio provider calls.
 
 Hooks wrap the narrowest submit seam of each provider (Kie createTask/poll, Outsee
 API generate, ElevenLabs POST). Every helper here is fire-and-forget: it never raises
 into the caller, never awaits the database on the request path (a local insert runs in a
 background task) and never changes the provider call, its retries or its result.
 
-Recorded in ``spend_ledger`` (kind ``actual``): estimated cost from the Kie catalog
-(1 credit = CREDIT_USD) where the model is priced, otherwise a zero-cost request row with
-``cost_unknown=true`` in the note. Kie task ids go to the append-only
+A failed record is NEVER silent (A08): the error is logged with its traceback, a counter grows
+(``gap_count``) and a gap row (``spend_ledger`` kind ``event``, source ``write_failed``, the lost
+amount in the note) is written; when even that cannot reach the database the gap goes to the
+append-only file ``<data_dir>/spend_gaps.jsonl``, so the money can be restored by hand.
+
+Estimate and fact are separate kinds in ``spend_ledger`` (A08): ``estimated`` is a price from the Kie
+catalog (1 credit = CREDIT_USD), an uncalibrated constant, or a call whose cost is unknown
+(``cost_unknown=true`` in the note); ``actual`` is a fact (a refused request or a poll that cost
+nothing). A provider-reported amount arrives as a ``settle`` row (actual minus the estimate). Totals
+still sum every kind, so the cap stays conservative.
+
+Recording is switched by the explicit ``MEDIA_SPEND_RECORDING`` setting, never by ``PYTEST_CURRENT_TEST``
+or by a ``synthetic*`` key (such a key only tags the row ``synthetic_key=true``). Kie task ids go to the append-only
 ``provider_task_ledger``. HTTP 402 / credit exhaustion engages the supervisory kill switch
 (``spend_guard.engage_on_credit_error``) and writes an audit row; native work is not stopped.
 """
@@ -16,17 +26,24 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import json
 import os
 import re
+import threading
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
+
+from loguru import logger
 
 # UNCALIBRATED: upper-end published overage rate per character; replace after a measured top-up.
 ELEVENLABS_USD_PER_CHAR = 0.0003
 # UNCALIBRATED: ~40 credits per second of generated effect at the same per-credit rate.
 ELEVENLABS_SFX_USD_PER_SEC = 0.012
 
-TEST_FORCE = False  # tests set True; otherwise recording is off under pytest (no writes to the dev DB)
+# Tests set True to skip only the "ledger database is the configured one" check (they pass their own
+# SessionLocal). It is not a recording switch: the switch is settings.media_spend_recording.
+TEST_FORCE = False
 
 _tasks: set = set()
 _kie_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar("media_spend_kie", default=None)
@@ -111,13 +128,148 @@ async def _serialized(coro) -> None:
         await coro
 
 
+# -- gaps: a lost record must leave a trace ------------------------------------
+
+_gap_lock = threading.Lock()
+_gap_count = 0
+_gap_recent: list[dict] = []
+_skipped: dict[str, int] = {}
+_GAP_RECENT_MAX = 200
+
+
+def gap_count() -> int:
+    """How many spend records were lost (and traced) since the process started."""
+    return _gap_count
+
+
+def recent_gaps() -> list[dict]:
+    with _gap_lock:
+        return list(_gap_recent)
+
+
+def skipped_counts() -> dict[str, int]:
+    """Calls not recorded on purpose (setting off, no key, ledger is not the configured DB), by reason."""
+    with _gap_lock:
+        return dict(_skipped)
+
+
+def reset_gap_state() -> None:
+    """Tests only."""
+    global _gap_count
+    with _gap_lock:
+        _gap_count = 0
+        _gap_recent.clear()
+        _skipped.clear()
+
+
+def _gap_file() -> Path:
+    from app.settings import settings
+    return Path(settings.data_dir) / "spend_gaps.jsonl"
+
+
+def _spill_gap(entry: dict) -> bool:
+    """Last resort when the database cannot take even a gap row: append the lost row to a file."""
+    try:
+        path = _gap_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("media_spend: gap file is not writable, the lost record is only in the log: {}", entry)
+        return False
+
+
+async def _write_gap_row(entry: dict) -> bool:
+    if not (TEST_FORCE or ledger_target_ok()):
+        return False  # not the configured database: the gap goes to the file instead of a foreign ledger
+    try:
+        from app.db import SessionLocal
+        from app.services import spend_guard
+        note = (f"write_failed {entry.get('what', '')} usd={float(entry.get('usd') or 0.0):.6f} "
+                f"{entry.get('error_type', '')} {entry.get('detail', '')}")
+        async with SessionLocal() as s:
+            await spend_guard.record_event(s, project_id=entry.get("project_id"),
+                                           provider=str(entry.get("provider") or ""),
+                                           source="write_failed", note=note)
+            await s.commit()
+        return True
+    except Exception:  # noqa: BLE001
+        logger.opt(exception=True).error("media_spend: gap row could not be written")
+        return False
+
+
+def _register_gap(provider: str, what: str, *, project_id=None, usd: float = 0.0,
+                  error: BaseException | None = None, detail: str = "") -> dict:
+    global _gap_count
+    entry = {"provider": provider, "what": what, "project_id": project_id, "usd": float(usd or 0.0),
+             "error_type": type(error).__name__ if error is not None else "", "detail": str(detail)[:80]}
+    logger.opt(exception=error).error(
+        "media_spend: record LOST ({} {} usd={} project={}): {}",
+        provider, what, entry["usd"], project_id, entry["error_type"] or detail)
+    with _gap_lock:
+        _gap_count += 1
+        _gap_recent.append(entry)
+        del _gap_recent[:-_GAP_RECENT_MAX]
+    return entry
+
+
+async def gap_async(provider: str, what: str, *, project_id=None, usd: float = 0.0,
+                    error: BaseException | None = None, detail: str = "") -> None:
+    """Trace a lost record from async code. Never raises."""
+    try:
+        entry = _register_gap(provider, what, project_id=project_id, usd=usd, error=error, detail=detail)
+        if not await _write_gap_row(entry):
+            _spill_gap(entry)
+    except Exception:  # noqa: BLE001
+        logger.exception("media_spend: gap tracing failed")
+
+
+async def _gap_row_or_spill(entry: dict) -> None:
+    if not await _write_gap_row(entry):
+        _spill_gap(entry)
+
+
+def note_gap(provider: str, what: str, *, project_id=None, usd: float = 0.0,
+             error: BaseException | None = None, detail: str = "") -> None:
+    """Trace a lost record from sync code (any thread). Never raises."""
+    try:
+        entry = _register_gap(provider, what, project_id=project_id, usd=usd, error=error, detail=detail)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            task = loop.create_task(_gap_row_or_spill(entry))
+            _tasks.add(task)
+            task.add_done_callback(_tasks.discard)
+        elif not asyncio.run(_write_gap_row(entry)):
+            _spill_gap(entry)
+    except Exception:  # noqa: BLE001
+        logger.exception("media_spend: gap tracing failed")
+        try:
+            _spill_gap({"provider": provider, "what": what, "usd": usd})
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _count_skip(provider: str, reason: str) -> None:
+    key = f"{provider}:{reason}"
+    with _gap_lock:
+        first = key not in _skipped
+        _skipped[key] = _skipped.get(key, 0) + 1
+    if first:
+        logger.warning("media_spend: {} calls are NOT recorded ({})", provider, reason)
+
+
 def _spawn(coro) -> None:
     try:
         task = asyncio.get_running_loop().create_task(_serialized(coro))
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         coro.close()
+        note_gap("", "spawn", error=exc, detail="no running loop: the write was not scheduled")
 
 
 async def drain() -> None:
@@ -131,26 +283,69 @@ def _project_id() -> int | None:
         from app.services.observation import _cost_project
         return _cost_project.get()
     except Exception:  # noqa: BLE001
+        logger.opt(exception=True).warning("media_spend: project id unavailable, the row is written without it")
+        return None
+
+
+def _provider_key(provider: str) -> str:
+    if provider == "kie":
+        from app.bots.kie_kling import kie_api_key
+        key = kie_api_key()
+    elif provider == "outsee":
+        from app.bots.outsee_http import outsee_api_key
+        key = outsee_api_key()
+    else:
+        from app.settings import settings
+        key = settings.elevenlabs_api_key
+    return str(key or "").strip()
+
+
+def _synthetic_key(provider: str) -> bool:
+    try:
+        return _provider_key(provider).startswith("synthetic")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def ledger_target_ok() -> bool:
+    """The ledger session writes to the configured database (settings.sqlite_path).
+
+    A mismatch means a process whose settings point elsewhere than its engine (a test sandbox, a broken
+    start): rows would land in somebody else's database, so recording is refused, counted and logged."""
+    try:
+        from app.db import engine
+        from app.settings import settings
+        db = engine.url.database
+        if not db:
+            return True
+        return Path(db).resolve() == Path(settings.sqlite_path).resolve()
+    except Exception:  # noqa: BLE001
+        logger.opt(exception=True).warning("media_spend: ledger target check failed, assuming it is right")
+        return True
+
+
+def disabled_reason(provider: str) -> str | None:
+    """Why recording is off for this provider, or None when it is on."""
+    try:
+        from app.settings import settings
+        if not settings.media_spend_recording:
+            return "setting_off"
+        if provider != "browser" and not _provider_key(provider):  # the browser path has no API key by design
+            return "no_key"
+        if not TEST_FORCE and not ledger_target_ok():
+            return "ledger_target_mismatch"
+        return None
+    except Exception:  # noqa: BLE001
+        logger.opt(exception=True).error("media_spend: cannot decide if recording is on, recording anyway")
         return None
 
 
 def _enabled(provider: str) -> bool:
-    try:
-        if not TEST_FORCE and "PYTEST_CURRENT_TEST" in os.environ:
-            return False
-        if provider == "kie":
-            from app.bots.kie_kling import kie_api_key
-            key = kie_api_key()
-        elif provider == "outsee":
-            from app.bots.outsee_http import outsee_api_key
-            key = outsee_api_key()
-        else:
-            from app.settings import settings
-            key = settings.elevenlabs_api_key
-        key = str(key or "").strip()
-        return bool(key) and not key.startswith("synthetic")
-    except Exception:  # noqa: BLE001
+    reason = disabled_reason(provider)
+    if reason is not None:
+        _count_skip(provider, reason)
         return False
+    return True
 
 
 def _status_of(exc: BaseException) -> int | None:
@@ -180,7 +375,13 @@ class _CreditShim(RuntimeError):
         self.context = {"status_code": 402, "provider": provider, "credits_exhausted": True}
 
 
-async def _write(project_id, provider, usd, note, credits=0.0, settle_from=None) -> None:
+def _kind_for(usd: float, unknown: bool) -> str:
+    """``actual``: a fact (a definite refusal or a poll: nothing was charged).
+    ``estimated``: a price we computed, or a call whose cost we do not know."""
+    return "estimated" if unknown or usd > 0 else "actual"
+
+
+async def _write(project_id, provider, usd, note, credits=0.0, settle_from=None, kind="actual") -> None:
     try:
         from app.db import SessionLocal
         from app.services import spend_guard
@@ -188,12 +389,19 @@ async def _write(project_id, provider, usd, note, credits=0.0, settle_from=None)
             if settle_from is not None:
                 await spend_guard.settle(s, project_id=project_id, run_id="", reserved_usd=settle_from,
                                          actual_usd=usd, source="media_native", provider=provider)
-            else:
+            elif kind == "actual":
                 await spend_guard.record_actual(s, project_id=project_id, usd=usd, provider=provider,
                                                 source="media_native", note=note, credits=credits)
+            else:
+                await spend_guard.ensure_schema(s)
+                s.add(spend_guard.SpendLedger(
+                    day=spend_guard._today(), kind=kind[:12], provider=provider[:32], project_id=project_id,
+                    run_id="", source="media_native", usd=spend_guard._valid(usd), credits=float(credits),
+                    note=note[:200]))
             await s.commit()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        await gap_async(provider, "settle" if settle_from is not None else "spend_row", project_id=project_id,
+                        usd=usd, error=exc, detail=note)
 
 
 async def _credit_stop(project_id, provider, note) -> None:
@@ -205,8 +413,8 @@ async def _credit_stop(project_id, provider, note) -> None:
             await spend_guard.record_event(s, project_id=project_id, provider=provider,
                                            source="media_402", note=note)
             await s.commit()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        await gap_async(provider, "credit_stop_402", project_id=project_id, error=exc, detail=note)
 
 
 async def _write_task(**kw) -> None:
@@ -216,8 +424,10 @@ async def _write_task(**kw) -> None:
         async with SessionLocal() as s:
             await spend_guard.append_task_event(s, **kw)
             await s.commit()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        await gap_async(str(kw.get("provider") or ""), "provider_task", project_id=kw.get("project_id"),
+                        usd=float(kw.get("est_usd") or 0.0), error=exc,
+                        detail=f"task={kw.get('task_id', '')} event={kw.get('event', '')}")
 
 
 def record(provider: str, *, usd: float, note: str, credits: float = 0.0, unknown: bool = False,
@@ -229,11 +439,14 @@ def record(provider: str, *, usd: float, note: str, credits: float = 0.0, unknow
         pid = _project_id()
         if unknown:
             note = f"{note} cost_unknown=true"
-        _spawn(_write(pid, provider, max(0.0, float(usd)), note, credits))
+        if _synthetic_key(provider):
+            note = f"{note} synthetic_key=true"
+        usd = max(0.0, float(usd))
+        _spawn(_write(pid, provider, usd, note, credits, kind=_kind_for(usd, unknown)))
         if exc is not None and is_credit_error(exc):
             _spawn(_credit_stop(pid, provider, f"{provider} 402: {note}"[:200]))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as err:  # noqa: BLE001
+        note_gap(provider, "record", error=err, detail=str(note))
 
 
 # -- Kie ----------------------------------------------------------------------
@@ -250,7 +463,7 @@ def price_kie(spec: dict | None, payload: dict | None) -> dict:
         if float(est["credits"]) > 0:
             out.update(credits=float(est["credits"]), usd=float(est["usd"]), unknown=False)
     except Exception:  # noqa: BLE001
-        pass
+        logger.opt(exception=True).warning("media_spend: Kie price estimate failed, the row is written as cost_unknown")
     return out
 
 
@@ -313,8 +526,8 @@ def _after_create_ok(api: str, task_id: str) -> None:
                                provider="kie", api=api, model=model, event="submitted", status="submitted",
                                est_credits=None if ctx.get("unknown", True) else ctx.get("credits"),
                                est_usd=None if ctx.get("unknown", True) else ctx.get("usd")))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        note_gap("kie", "after_create_ok", error=exc, detail=f"api={api} task={task_id}")
 
 
 def _after_create_failed(api: str, exc: BaseException) -> None:
@@ -329,8 +542,8 @@ def _after_create_failed(api: str, exc: BaseException) -> None:
             record("kie", usd=ctx.get("usd", 0.0), credits=ctx.get("credits", 0.0),
                    unknown=bool(ctx.get("unknown", True)),
                    note=f"create {api} {model} uncertain {type(exc).__name__}", exc=exc)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as err:  # noqa: BLE001
+        note_gap("kie", "after_create_failed", error=err, detail=f"api={api}")
 
 
 def count_poll() -> None:
@@ -375,8 +588,8 @@ def _after_poll(api, task_id, polls, status, note, exc) -> None:
             _spawn(_write_task(project_id=_project_id(), key=ctx.get("key", ""), task_id=task_id,
                                provider="kie", api=api, model=ctx.get("model", ""), event="poll",
                                status=status, note=f"{note} polls={polls}"))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as err:  # noqa: BLE001
+        note_gap("kie", "after_poll", error=err, detail=f"api={api} task={task_id}")
 
 
 async def track_kling(coro, *, kie_id: str, duration, has_frame: bool):
@@ -387,7 +600,7 @@ async def track_kling(coro, *, kie_id: str, duration, has_frame: bool):
         from app.services import kie_catalog
         spec = kie_catalog.get_model(f"{kie_id}-{'i2v' if has_frame else 't2v'}")
     except Exception:  # noqa: BLE001
-        pass
+        logger.opt(exception=True).warning("media_spend: Kling catalog lookup failed, the row is written as cost_unknown")
     price = price_kie(spec, {"duration": duration or 5})
     try:
         result = await coro
@@ -454,8 +667,8 @@ async def track_eleven_post(coro, *, chars: int, model: str = ""):
         else:
             record("elevenlabs", usd=0.0, exc=_CreditShim("elevenlabs") if resp.status_code == 402 else None,
                    note=f"tts {model} http={resp.status_code} not billed")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as err:  # noqa: BLE001
+        note_gap("elevenlabs", "tts_record", usd=est, error=err, detail=f"chars={chars}")
     return resp
 
 

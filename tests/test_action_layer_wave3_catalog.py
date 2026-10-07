@@ -125,10 +125,11 @@ async def test_resume_continue_preconditions(env, not_managed, monkeypatch) -> N
         assert r.status_code == 422 and "project_idle" in str(r.json())     # шаг выполняется
     await _status(env, pid, "paused")
     from app.services import montage_board_apply_job as job_mod
+    _orig_apply_job = job_mod.get_apply_job
     monkeypatch.setattr(job_mod, "get_apply_job", lambda p: {"status": "running"})
     r = await _preview(env, [{"action_id": "project.resume", "params": {"project_id": pid}}])
     assert r.status_code == 422 and "no_montage_jobs" in str(r.json())
-    monkeypatch.undo()
+    monkeypatch.setattr(job_mod, "get_apply_job", _orig_apply_job)
 
     async def _yes(p):
         return True

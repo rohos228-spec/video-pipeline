@@ -68,8 +68,28 @@ _ready: set[str] = set()
 _lock = threading.Lock()
 
 
+def backup_tracker_before_migration(conn: sqlite3.Connection) -> Path | None:
+    """Copy an existing tracker.db before its first pending migration (A15).
+
+    A fresh or in-memory database has nothing to protect and returns ``None``. A failed copy raises
+    ``BackupError`` and the migration does not start (the hook logs it; telemetry never stops the pipeline).
+    """
+    from app.services.schema_migrations import backup_sqlite
+
+    main = next((r[2] for r in conn.execute("PRAGMA database_list").fetchall() if r[1] == "main"), "")
+    if not main or not Path(main).is_file():
+        return None
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()}
+    done = ({r[0] for r in conn.execute(f"SELECT id FROM {MIGRATIONS_TABLE}").fetchall()}
+            if MIGRATIONS_TABLE in tables else set())
+    if not (tables - {MIGRATIONS_TABLE}) or all(mid in done for mid, _ in MIGRATIONS):
+        return None
+    return backup_sqlite(main, tag="pre-migration", keep=10, journal=False).path
+
+
 def migrate_tracker_db(conn: sqlite3.Connection) -> list[str]:
     """Apply pending migrations; return the ids applied now. Raises on failure after rolling that one back."""
+    backup_tracker_before_migration(conn)
     prev = conn.isolation_level
     conn.isolation_level = None  # explicit BEGIN/COMMIT below
     applied: list[str] = []

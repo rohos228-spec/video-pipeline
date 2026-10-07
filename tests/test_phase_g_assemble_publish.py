@@ -274,7 +274,7 @@ async def test_publish_run_does_not_record_unconfirmed_as_success(db, tmp_path, 
     monkeypatch.setattr(settings, "social_publish_enabled", True)
     calls = []
 
-    async def fake_everywhere(path, caption, *, skip_platforms=None):
+    async def fake_everywhere(path, caption, *, skip_platforms=None, gate=None):
         calls.append(set(skip_platforms or ()))
         return [
             PublishResult("tiktok", False, url="u", error="unconfirmed", status="unconfirmed"),

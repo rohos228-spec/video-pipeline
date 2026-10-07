@@ -30,6 +30,24 @@ class PublishResult:
     # confirmed: признак успеха найден; unconfirmed: кнопка нажата, итог не подтверждён;
     # failed: ошибка до или во время публикации.
     status: str = ""
+    # clicked: клик Post/Publish был (или мог быть) выполнен. По нему решается, можно ли автоповтор.
+    clicked: bool = False
+    post_id: str | None = None
+    error_code: str | None = None
+
+
+class PublishGate:
+    """Порт к журналу публикаций (app/services/publications_store). Нужен, чтобы
+    publishers.py не знал про БД: намерение пишется ДО клика, итог сразу после платформы."""
+
+    async def claim(self, platform: str) -> bool:  # взять платформу; False — не публиковать
+        return True
+
+    async def before_click(self, platform: str) -> bool:  # зафиксировать клик ДО клика
+        return True
+
+    async def record(self, result: "PublishResult") -> None:  # записать итог немедленно
+        return None
 
 
 class Publisher:
@@ -78,8 +96,17 @@ class Publisher:
             await asyncio.sleep(0.3)
         return None
 
-    async def publish(self, video_path: Path, caption: str) -> PublishResult:
+    async def publish(self, video_path: Path, caption: str, *, before_click=None) -> PublishResult:
+        """before_click: async-колбэк без аргументов; False/исключение — клик не делается.
+
+        Всё, что случилось ДО клика, даёт failed с clicked=False (безопасно повторить).
+        Любое исключение с момента вызова колбэка считается «клик мог состояться» (clicked=True).
+        """
+        clicked = False
         try:
+            if not (caption or "").strip():
+                return PublishResult(platform=self.platform, ok=False, status="failed",
+                                     error="подпись пуста: публикация не начата", error_code="caption_empty")
             page = await self._open()
 
             file_sel = await self._first_visible(page, self.file_input_selectors, timeout_ms=30_000)
@@ -87,31 +114,51 @@ class Publisher:
                 raise RuntimeError(f"{self.platform}: input[type=file] не найден")
             await page.locator(file_sel).first.set_input_files(str(video_path))
 
-            # подпись
+            # подпись: без неё пост не отправляем (failed ДО клика)
             cap_sel = await self._first_visible(page, self.caption_selectors, timeout_ms=30_000)
-            if cap_sel:
-                try:
-                    await page.locator(cap_sel).first.click()
-                    await page.locator(cap_sel).first.fill(caption)
-                except Exception:  # noqa: BLE001
-                    logger.warning("{}: не удалось заполнить caption", self.platform)
+            if not cap_sel:
+                return PublishResult(platform=self.platform, ok=False, status="failed",
+                                     error=f"{self.platform}: поле подписи не найдено, клик не делался",
+                                     error_code="caption_field_missing")
+            try:
+                await page.locator(cap_sel).first.click()
+                await page.locator(cap_sel).first.fill(caption)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("{}: не удалось заполнить caption", self.platform)
+                return PublishResult(platform=self.platform, ok=False, status="failed",
+                                     error=f"{self.platform}: подпись не заполнена ({e}), клик не делался",
+                                     error_code="caption_fill_failed")
 
             # кнопка post / publish
             pub_sel = await self._first_visible(page, self.publish_button_selectors, timeout_ms=60_000)
             if not pub_sel:
                 raise RuntimeError(f"{self.platform}: кнопка Publish не найдена")
+            if before_click is not None:
+                clicked = True  # если колбэк упадёт, лучше считать, что клик возможен
+                if not await before_click():
+                    return PublishResult(platform=self.platform, ok=False, status="failed",
+                                         error=f"{self.platform}: клик не разрешён журналом публикаций",
+                                         error_code="click_not_allowed", clicked=False)
+            clicked = True
             await page.locator(pub_sel).first.click()
 
             if await self._confirm(page):
-                return PublishResult(platform=self.platform, ok=True, url=page.url, status="confirmed")
+                if not page.url:  # confirmed без URL/ID невозможен
+                    return PublishResult(platform=self.platform, ok=False, status="unconfirmed", clicked=True,
+                                         error="unconfirmed: признак успеха есть, но URL поста пуст",
+                                         error_code="confirmed_without_url")
+                return PublishResult(platform=self.platform, ok=True, url=page.url, status="confirmed",
+                                     clicked=True)
             logger.warning("{}: публикация не подтверждена признаком успеха", self.platform)
             return PublishResult(
-                platform=self.platform, ok=False, url=page.url, status="unconfirmed",
+                platform=self.platform, ok=False, url=page.url, status="unconfirmed", clicked=True,
                 error="unconfirmed: кнопка нажата, признак успешной публикации не найден",
+                error_code="no_success_marker",
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("{}: publish failed", self.platform)
-            return PublishResult(platform=self.platform, ok=False, error=str(e), status="failed")
+            return PublishResult(platform=self.platform, ok=False, error=str(e), status="failed",
+                                 clicked=clicked, error_code="exception_after_click" if clicked else "exception_before_click")
 
     async def _confirm(self, page: Page) -> bool:
         """Ждём признак успеха; без признаков (или без совпадения) исход считается неподтверждённым."""
@@ -203,11 +250,12 @@ async def publish_everywhere(
     caption: str,
     *,
     skip_platforms: set[str] | None = None,
+    gate: PublishGate | None = None,
 ) -> list[PublishResult]:
     """Запускаем MoreLogin-профиль один раз и проходим по всем платформам.
 
-    Если `skip_platforms` задан — платформы из него пропускаются (для retry-логики,
-    чтобы не публиковать дважды туда, где уже успешно выложили).
+    skip_platforms — не публиковать (уже есть итог). gate — журнал публикаций: claim до работы,
+    before_click до клика, record сразу после каждой платформы (падение на следующей не теряет итог).
     """
     skip = skip_platforms or set()
     results: list[PublishResult] = []
@@ -217,8 +265,17 @@ async def publish_everywhere(
             if pub.platform in skip:
                 logger.info("skipping {} — уже опубликовано", pub.platform)
                 continue
+            if gate is not None and not await gate.claim(pub.platform):
+                logger.info("skipping {} — платформа занята или ждёт человека (журнал публикаций)", pub.platform)
+                continue
             logger.info("publishing → {}", pub.platform)
-            res = await pub.publish(video_path, caption)
+
+            async def _bc(_p=pub.platform):
+                return await gate.before_click(_p)
+
+            res = await pub.publish(video_path, caption, before_click=_bc if gate is not None else None)
+            if gate is not None:
+                await gate.record(res)
             results.append(res)
             # небольшая пауза между платформами
             await asyncio.sleep(3)

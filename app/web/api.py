@@ -120,12 +120,11 @@ async def _lifespan(app: FastAPI):
     Безопасно повторно вызывается. В дев-режиме (uvicorn `--reload` без app.main)
     этот lifespan единственный гарантирует наличие новых таблиц.
     """
-    try:
-        from app.services.access_guard import warn_if_exposed_without_auth
+    # A05: не-loopback WEB_HOST без входа - отказ старта (исключение пробрасывается намеренно;
+    # обход только явным ORCHESTRATOR_ALLOW_REMOTE_WITHOUT_AUTH=true, тогда предупреждение).
+    from app.services.access_guard import assert_safe_bind
 
-        warn_if_exposed_without_auth()
-    except Exception:  # noqa: BLE001 - предупреждение не должно мешать старту
-        pass
+    assert_safe_bind()
     try:
         from app.db import engine
         from app.models import Base
@@ -262,27 +261,34 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    # Локальный фронт ходит с localhost:3000 в dev — открываем CORS.
+    # A04: сначала защитный слой (Host/Origin/токен оператора), поверх него CORS по явному
+    # списку (последний добавленный слой - внешний, поэтому и отказы получают CORS-заголовки).
+    from app.services import access_guard
+
+    app.add_middleware(access_guard.SecurityGuardMiddleware)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=access_guard.allowed_origins(),
         allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", access_guard.OPERATOR_HEADER,
+                       "Idempotency-Key", "X-Action-Layer-Operator"],
     )
+    # Изменяющие ручки Studio без веб-входа принимаются только с loopback (чтения не трогаем).
+    mut = [access_guard.MutationLocalOnlyDep]
 
-    app.include_router(workflows_router.router, prefix=API_PREFIX)
-    app.include_router(projects_router.router, prefix=API_PREFIX)
-    app.include_router(project_ops_router.router, prefix=API_PREFIX)
+    app.include_router(workflows_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(projects_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(project_ops_router.router, prefix=API_PREFIX, dependencies=mut)
     app.include_router(generation_options_router.router, prefix=API_PREFIX)
     app.include_router(config_presets_router.router, prefix=API_PREFIX)
-    app.include_router(outsee_create_router.router, prefix=API_PREFIX)
-    app.include_router(outsee_http_router.router, prefix=API_PREFIX)
-    app.include_router(create_queue_router.router, prefix=API_PREFIX)
-    app.include_router(kie_create_router.router, prefix=API_PREFIX)
-    app.include_router(gpt_workspace_router.router, prefix=API_PREFIX)
-    app.include_router(text_llm_router.router, prefix=API_PREFIX)
-    app.include_router(gen_assistant_router.router, prefix=API_PREFIX)
+    app.include_router(outsee_create_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(outsee_http_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(create_queue_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(kie_create_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(gpt_workspace_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(text_llm_router.router, prefix=API_PREFIX, dependencies=mut)
+    app.include_router(gen_assistant_router.router, prefix=API_PREFIX, dependencies=mut)
     app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
     app.include_router(runtime_streams_router.router, prefix=API_PREFIX)
     app.include_router(runs_router.router, prefix=API_PREFIX)

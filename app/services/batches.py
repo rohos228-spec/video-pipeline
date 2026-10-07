@@ -344,6 +344,13 @@ async def list_batches(session: AsyncSession) -> list[BatchProject]:
     )
 
 
+def _publish_parked(p: Project) -> bool:
+    """assembled с пометкой «публикация пропущена / ждёт человека»: auto_mode не включаем,
+    иначе проект будет гоняться по кругу и не станет ни published, ни failed."""
+    m = p.meta if isinstance(p.meta, dict) else {}
+    return p.status is ProjectStatus.assembled and bool(m.get("publish_skipped") or m.get("publish_needs_human"))
+
+
 async def batch_progress(
     session: AsyncSession,
     batch: BatchProject,
@@ -356,7 +363,9 @@ async def batch_progress(
         "queued": int,       # new, planning, …
         "in_progress": int,  # любой *ing
         "ready": int,        # любой *_ready (не финальный)
-        "done": int,         # published
+        "done": int,         # только реально опубликованные (published)
+        "publish_skipped": int,  # публикация пропущена (флаг выключен), НЕ done
+        "publish_needs_human": int,  # итог публикации ждёт человека, НЕ done
         "paused": int,
         "failed": int,
         "by_status": {status_value: count}
@@ -372,11 +381,19 @@ async def batch_progress(
 
     by_status: dict[str, int] = {}
     queued = in_progress = ready = done = paused = failed = 0
+    publish_skipped = publish_needs_human = 0
     for p in subs:
         st = p.status
         by_status[st.value] = by_status.get(st.value, 0) + 1
+        pmeta = p.meta if isinstance(p.meta, dict) else {}
         if st is ProjectStatus.published:
             done += 1
+        elif st is ProjectStatus.assembled and pmeta.get("publish_skipped"):
+            publish_skipped += 1
+            by_status["publish_skipped"] = by_status.get("publish_skipped", 0) + 1
+        elif st is ProjectStatus.assembled and pmeta.get("publish_needs_human"):
+            publish_needs_human += 1
+            by_status["publish_needs_human"] = by_status.get("publish_needs_human", 0) + 1
         elif st is ProjectStatus.paused:
             paused += 1
         elif st is ProjectStatus.failed:
@@ -394,6 +411,8 @@ async def batch_progress(
         "in_progress": in_progress,
         "ready": ready,
         "done": done,
+        "publish_skipped": publish_skipped,
+        "publish_needs_human": publish_needs_human,
         "paused": paused,
         "failed": failed,
         "by_status": by_status,
@@ -852,7 +871,7 @@ async def start_batch_queue(
     ms = get_mass_settings(batch)
     auto_default = bool(ms["auto_mode"])
     for p in subs:
-        if p.status not in terminal:
+        if p.status not in terminal and not _publish_parked(p):
             p.auto_mode = auto_default
     await session.flush()
     logger.info(
@@ -899,7 +918,7 @@ async def resume_batch_queue(
     subs = await get_batch_subprojects(session, batch_id)
     terminal = {ProjectStatus.published, ProjectStatus.failed, ProjectStatus.paused}
     for p in subs:
-        if p.status not in terminal:
+        if p.status not in terminal and not _publish_parked(p):
             p.auto_mode = True
     await session.flush()
     logger.info("batch #{} ({}): возобновлено", batch.id, batch.slug)
@@ -1024,7 +1043,7 @@ async def resume_all_paused_batches(
         ProjectStatus.paused,
     }
     for p in subs_q.scalars().all():
-        if p.status not in terminal and not p.auto_mode:
+        if p.status not in terminal and not p.auto_mode and not _publish_parked(p):
             p.auto_mode = True
             out["auto_mode_on"] += 1
 

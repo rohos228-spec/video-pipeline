@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from app.services import media_spend
+from app.services import media_spend, spend_guard
 from app.services.elevenlabs_voices import DEFAULT_ELEVENLABS_VOICE_ID
 from app.settings import settings
 
@@ -32,6 +32,13 @@ class ElevenLabsApiError(RuntimeError):
 
 class ElevenLabsUncertainError(ElevenLabsApiError):
     """Таймаут или обрыв после отправки: запрос мог быть принят и оплачен."""
+
+
+def _blocked_as_eleven(blocked: spend_guard.PaidCallBlocked) -> "ElevenLabsApiError":
+    """The gate's refusal as this module's error (nothing was sent, so it is NOT an uncertain outcome)."""
+    err = ElevenLabsApiError(blocked.message_ru)
+    err.context = dict(blocked.context)  # type: ignore[attr-defined]
+    return err
 
 
 _UNCERTAIN_CAUSES = (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError)
@@ -255,10 +262,16 @@ async def synthesize_speech(
         }
         if active_proxy:
             client_kwargs["proxy"] = active_proxy
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            return await media_spend.track_eleven_post(
-                client.post(url, headers=headers, json=payload),
-                chars=len(clean_text), model=effective_model)
+        # Kill switch, disk and money cap before EVERY post (retries and the no-proxy repeat are posts too).
+        async with spend_guard.paid_call(
+            "elevenlabs", "tts post",
+            estimate_usd=len(clean_text) * media_spend.ELEVENLABS_USD_PER_CHAR,
+            wrap_error=_blocked_as_eleven,
+        ):
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                return await media_spend.track_eleven_post(
+                    client.post(url, headers=headers, json=payload),
+                    chars=len(clean_text), model=effective_model)
 
     import asyncio
 

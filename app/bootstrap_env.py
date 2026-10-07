@@ -24,6 +24,55 @@ def _data_dir() -> Path:
     return path.resolve()
 
 
+def _under_pytest() -> bool:
+    return "pytest" in sys.modules
+
+
+def _external_temp_root() -> Path:
+    """Корень временных папок ВНЕ data/.cache (для pytest и по VP_TEMP_ROOT)."""
+    base = (os.environ.get("LOCALAPPDATA") or "").strip()
+    root = Path(base) if base else Path.home() / ".cache"
+    return root / "video-pipeline-temp"
+
+
+def _temp_root(cache: Path) -> Path:
+    """Где живут ``pid-<PID>``.
+
+    Рабочий процесс: ``data/.cache/temp`` (NeMo/HF нужен путь без AppData).
+    Тесты (pytest в sys.modules) и ``VP_TEMP_ROOT``: вне рабочих данных, чтобы
+    ``pytest-of-*`` и файлы тестов не копились в ``data/.cache``.
+    """
+    override = (os.environ.get("VP_TEMP_ROOT") or "").strip()
+    if override:
+        return Path(override).resolve()
+    if _under_pytest():
+        return _external_temp_root()
+    return cache / "temp"
+
+
+def _run_startup_cleanup(cache: Path, temp_root: Path) -> None:
+    """Чистка устаревших pid-* мёртвых процессов; ошибки не мешают старту."""
+    if (os.environ.get("DISK_GUARD_DISABLE") or "").strip() in {"1", "true", "yes"}:
+        return
+    try:
+        from app.services import disk_guard
+
+        stamp = cache / ".startup-cleanup.stamp"
+        if not disk_guard._stamp_due(stamp, 600.0, __import__("time").time()):
+            return
+        for root in {temp_root, cache / "temp"}:
+            disk_guard.cleanup_stale_pid_temp(root, max_dirs=200)
+            disk_guard.cleanup_pytest_temp(
+                root, protect=[Path(tempfile.gettempdir()), Path.cwd()]
+            )
+        if not _under_pytest():
+            disk_guard.housekeeping(cache.parent, max_dirs=200, min_interval_s=600.0)
+            disk_guard.start_housekeeping_timer(data_dir=cache.parent)
+        disk_guard._touch(stamp)
+    except Exception:  # noqa: BLE001 — bootstrap не должен падать из-за чистки
+        pass
+
+
 def _patch_mkdtemp(pid_temp: str) -> None:
     global _mkdtemp_patched
     if _mkdtemp_patched:
@@ -62,13 +111,14 @@ def _patch_tempdir_cleanup_win32() -> None:
 def apply_nvidia_env(*, force: bool = True) -> Path:
     global _applied
     cache = _data_dir() / ".cache"
-    temp_root = cache / "temp"
+    temp_root = _temp_root(cache)
     pid_temp = temp_root / f"pid-{os.getpid()}"
     hf_root = cache / "huggingface"
     hf_hub = hf_root / "hub"
     nemo_root = cache / "nemo"
     for path in (cache, temp_root, pid_temp, hf_root, hf_hub, nemo_root):
         path.mkdir(parents=True, exist_ok=True)
+    _run_startup_cleanup(cache, temp_root)
 
     temp_s = str(pid_temp.resolve())
     pairs = {

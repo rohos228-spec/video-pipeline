@@ -42,8 +42,9 @@ def _wait_rows(db, timeout=5.0):
     raise AssertionError("tracker row was not written")
 
 
-def test_error_message_redacted_locally_and_in_cloud(tracker):
+def test_error_message_redacted_locally_and_in_cloud(tracker, monkeypatch):
     db, pushed = tracker
+    monkeypatch.setattr(settings, "api_tracker_cloud_enabled", True)
     hook.record_api_call(provider="kie", model="m", status_code=500,
                          error_message=f"HTTPError: Bearer {SECRET} key={SECRET}")
     rows = _wait_rows(db)
@@ -60,12 +61,12 @@ def test_cloud_flag_off_skips_push_and_marks_nothing_pending(tracker, monkeypatc
     assert rows[0][1] == 1  # synced=1: фоновая досылка не отправит строку позже
 
 
-def test_cloud_flag_default_keeps_push(tracker):
-    assert settings.api_tracker_cloud_enabled is True
+def test_cloud_flag_default_is_off_and_nothing_is_pushed(tracker):
+    assert settings.api_tracker_cloud_enabled is False  # A17: off by default
     db, pushed = tracker
     hook.record_api_call(provider="kie", model="m", error_message="boom")
     _wait_rows(db)
-    assert len(pushed) == 1
+    assert pushed == []
 
 
 def test_track_api_cost_redacts_before_record(monkeypatch):

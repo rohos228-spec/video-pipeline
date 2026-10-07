@@ -1019,20 +1019,20 @@ def _track_api_cost(*, model, usage, duration_sec, project_id=None,
     call site is additionally guarded since cost tracking must never be
     able to break a real model request).
 
-    Gated on a real (non-synthetic) credential, same check used everywhere
-    else in this codebase to distinguish test/synthetic runs from real ones
-    (decision_config.py, media_jobs.assert_entry). api_tracker_hook is a
-    separate, pre-existing, cross-project tool (api-tracker/) with its own
-    Supabase cloud sync under the operator's own account -- it must never
-    record a synthetic/test call as if it were real spend, and every
-    pytest run in this repo uses a synthetic or absent key by convention.
-    Without this gate, every test run in this repo would silently push
-    fake rows to that cloud project.
+    Not gated by a ``synthetic*`` key and not by pytest (A08): such a key used to switch recording off
+    silently. Now a call is skipped only when the provider has no credential at all (nothing could have been
+    billed) or MEDIA_SPEND_RECORDING is false; a ``synthetic*`` key only tags the row (``synthetic_key``
+    in the tracker metadata) so it can be told apart. The local spend ledger is written only when it is the
+    configured database (``media_spend.ledger_target_ok``), so a sandbox never writes into the real one.
+    Cloud sending is separate and off by default (API_TRACKER_CLOUD_ENABLED, A17).
 
     The gate is the key of the provider that took the request (Kie: GPT_API_KEY,
     Vibecode: VIBECODE_API_KEY); one provider's key never enables the other's row.
     Vibecode rows are priced from the catalog snapshot, not Kie's calibrated rates
-    (see api_tracker_hook.VIBECODE_PRICE_SOURCE).
+    (see api_tracker_hook.VIBECODE_PRICE_SOURCE). Every row carries ``cost_kind=estimated``:
+    the price is computed here, not reported by the provider.
+
+    A failure is never silent: logged with its traceback and traced as a gap (media_spend.note_gap).
     """
     try:
         if project_id is None:
@@ -1045,19 +1045,27 @@ def _track_api_cost(*, model, usage, duration_sec, project_id=None,
             key = str(settings.vibecode_api_key or "").strip()
         else:
             return
-        if not key or key.startswith("synthetic"):
+        if not key or not settings.media_spend_recording:
             return
-        from app.services import api_tracker_hook
+        from app.services import api_tracker_hook, media_spend
         prompt_tokens, completion_tokens, cached_tokens = _usage_tokens(usage)
         extra = {}
         if provider == "vibecode":
             extra["metadata"] = api_tracker_hook.vibecode_cost_metadata(
                 model, usage_known=bool(prompt_tokens or completion_tokens))
+        meta = dict(extra.get("metadata") or {})
+        meta["cost_kind"] = "estimated"
+        if key.startswith("synthetic"):
+            meta["synthetic_key"] = True
+        extra["metadata"] = meta
         if status_code == 200:  # local spend ledger: settle the reservation / record a native call
-            from app.services import spend_guard
-            spend_guard.schedule_actual(project_id=project_id, provider=provider, usd=api_tracker_hook._calc_cost(
-                str(model or "unknown"), prompt_tokens, completion_tokens, "text", duration_sec,
-                cached_tok=cached_tokens, provider=provider))
+            if media_spend.TEST_FORCE or media_spend.ledger_target_ok():
+                from app.services import spend_guard
+                spend_guard.schedule_actual(project_id=project_id, provider=provider, usd=api_tracker_hook._calc_cost(
+                    str(model or "unknown"), prompt_tokens, completion_tokens, "text", duration_sec,
+                    cached_tok=cached_tokens, provider=provider))
+            else:
+                media_spend._count_skip(provider, "ledger_target_mismatch")
         api_tracker_hook.record_api_call(
             provider=provider, model=str(model or "unknown"), call_type="text",
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
@@ -1065,8 +1073,14 @@ def _track_api_cost(*, model, usage, duration_sec, project_id=None,
             status_code=status_code, error_message=str(redact(str(error_message or "")))[:500],
             project_source=str(project_id) if project_id is not None else "", **extra,
         )
-    except Exception:
-        pass  # Cost tracking is observational only; it must never affect the real request.
+    except Exception as exc:
+        # Cost tracking must never affect the real request, but a lost row must leave a trace.
+        try:
+            from app.services import media_spend as _ms
+            _ms.note_gap(str(provider or ""), "track_api_cost", project_id=project_id, error=exc,
+                         detail=str(model or ""))
+        except Exception:
+            logger.opt(exception=True).error("observation: cost tracking failed and the gap was not traced")
 
 
 async def _credit_guard(exc, provider, master=None):

@@ -48,7 +48,9 @@ base = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = base
 _spec.loader.exec_module(base)
 
-SLUG, PORT, BASE, MALFORMED = base.SLUG, base.PORT, base.BASE, base.MALFORMED
+PORT, MALFORMED = base.PORT, base.MALFORMED
+guard = base.guard  # A19 guard shared with the base script
+BASE: str | None = None  # set in main() once the project id of the seed copy is known
 PROFILE_ID = base.PROFILE_ID
 TEXT = ("Синтетический текст: человек находит папку, читает записку и возвращает её на стол. " * 6).strip()
 NODE_TYPES = ("plan", "script", "split", "image_prompts")
@@ -66,6 +68,8 @@ def _args() -> argparse.Namespace:
                         "fixture instead of refusing it, so recovery verification can be observed offline")
     p.add_argument("--env-file", help="env file with GPT_* settings (required for --live)")
     p.add_argument("--seed-dir", required=True, help="data dir holding state.db and videos/<slug>/")
+    p.add_argument("--slug", default=None, help="slug of the project inside the seed (default: the fixture slug)")
+    p.add_argument("--project-id", type=int, default=None, help="project id in the seed (default: looked up by slug)")
     p.add_argument("--work-dir", required=True, help="scratch dir; seed is copied here")
     p.add_argument("--port", type=int, default=PORT, help="API port (distinct ports allow parallel dry runs)")
     p.add_argument("--max-real-posts", type=int, default=6)
@@ -74,37 +78,36 @@ def _args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _prepare_data(seed: Path, work: Path, typ: str, node_key: str) -> Path:
-    data = work / "data"
-    if data.exists():
-        shutil.rmtree(data)
-    shutil.copytree(seed, data)
-    video_dir = data / "videos" / SLUG
+def _prepare_data(seed: Path, work: Path, typ: str, node_key: str,
+                  slug: str | None = None, project_id: int | None = None) -> Path:
+    data = guard.prepare_scratch_data(seed, work)  # refuses live data; removes only <work>/data
+    pid = base.configure(data, slug, project_id, PORT)
+    video_dir = data / "videos" / base.SLUG
     db_paths = [data / "state.db", video_dir / "project.db"]
     node = {"id": node_key, "type": typ, "position": {"x": 100, "y": 100},
             "data": {"label": "Native " + typ, "modelId": "gpt-kie"}}
     nodes, edges = [node], []
     for path in db_paths:
-        with sqlite3.connect(path) as db:
-            meta = json.loads(db.execute("SELECT meta FROM projects WHERE id=2").fetchone()[0])
+        with guard.connect_scratch(path, work) as db:
+            meta = json.loads(db.execute("SELECT meta FROM projects WHERE id=?", (pid,)).fetchone()[0])
             meta.setdefault("canvas_graph", {}).update(nodes=nodes, edges=edges)
             meta.pop("step_failure", None)
             meta.pop("active_excel_gpt_node_key", None)
-            db.execute("DELETE FROM frames WHERE project_id=2")
-            db.execute("DELETE FROM hitl_requests WHERE project_id=2")
+            db.execute("DELETE FROM frames WHERE project_id=?", (pid,))
+            db.execute("DELETE FROM hitl_requests WHERE project_id=?", (pid,))
             # Same minimal real state as project_text_acceptance.prepare().
-            db.execute("UPDATE projects SET status='new',general_plan=?,script_text=?,meta=? WHERE id=2",
+            db.execute("UPDATE projects SET status='new',general_plan=?,script_text=?,meta=? WHERE id=?",
                        (None if typ == "plan" else TEXT, TEXT if typ in {"split", "image_prompts"} else None,
-                        json.dumps(meta)))
+                        json.dumps(meta), pid))
             if typ == "image_prompts":
                 words = TEXT.split()
                 mid = len(words) // 2
                 for number, vo in enumerate((" ".join(words[:mid]), " ".join(words[mid:])), 1):
                     db.execute(
                         "INSERT INTO frames(project_id,number,voiceover_text,status,attrs,uuid,sort_key,created_at,updated_at)"
-                        " VALUES(2,?,?,'planned','{}',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
-                        (number, vo, ("af" if number == 1 else "bf") * 16, number))
-            run = db.execute("SELECT id FROM workflow_runs WHERE project_id=2 ORDER BY id DESC LIMIT 1").fetchone()[0]
+                        " VALUES(?,?,?,'planned','{}',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                        (pid, number, vo, ("af" if number == 1 else "bf") * 16, number))
+            run = db.execute("SELECT id FROM workflow_runs WHERE project_id=? ORDER BY id DESC LIMIT 1", (pid,)).fetchone()[0]
             db.execute("UPDATE workflow_runs SET nodes_snapshot=?,edges_snapshot=? WHERE id=?",
                        (json.dumps(nodes), json.dumps(edges), run))
             db.execute("DELETE FROM node_runs WHERE workflow_run_id=?", (run,))
@@ -149,17 +152,19 @@ def _valid_answer(typ: str) -> str:
 
 def _db_state(data: Path, node_key: str) -> dict:
     out = {}
-    with sqlite3.connect(data / "videos" / SLUG / "project.db") as db:
+    pid = base.PROJECT_ID
+    with sqlite3.connect(data / "videos" / base.SLUG / "project.db") as db:
         row = db.execute("SELECT status,attempts FROM node_runs WHERE node_key=?", (node_key,)).fetchone()
         out["node"] = row[0] if row else None
         out["attempts"] = row[1] if row else None
-        prow = db.execute("SELECT status,length(general_plan),length(script_text),meta FROM projects WHERE id=2").fetchone()
+        prow = db.execute("SELECT status,length(general_plan),length(script_text),meta FROM projects WHERE id=?",
+                          (pid,)).fetchone()
         out["project_status"], out["plan_len"], out["script_len"] = prow[0], prow[1], prow[2]
         fs = (json.loads(prow[3]).get("step_failure") or {})
         out["total_fails"] = fs.get("total_fails")
         out["abandoned"] = bool(fs.get("abandoned_at"))
-        out["frames"] = db.execute("SELECT count(*) FROM frames WHERE project_id=2").fetchone()[0]
-        out["hitl"] = db.execute("SELECT kind,decision FROM hitl_requests WHERE project_id=2").fetchall()
+        out["frames"] = db.execute("SELECT count(*) FROM frames WHERE project_id=?", (pid,)).fetchone()[0]
+        out["hitl"] = db.execute("SELECT kind,decision FROM hitl_requests WHERE project_id=?", (pid,)).fetchall()
     return out
 
 
@@ -167,7 +172,6 @@ async def main() -> int:
     args = _args()
     typ = args.node
     global BASE
-    BASE = base.BASE = f"http://127.0.0.1:{args.port}/api/projects/2"
     node_key = f"native-{typ}-A"
     if args.live and (args.probe_retry or args.simulate_recovery):
         print("--probe-retry/--simulate-recovery are dry-only diagnostics")
@@ -186,7 +190,8 @@ async def main() -> int:
         if not env.get("GPT_API_KEY") or env["GPT_API_KEY"].startswith("synthetic"):
             print("env file has no real GPT_API_KEY")
             return 2
-    data = _prepare_data(seed, work, typ, node_key)
+    data = _prepare_data(seed, work, typ, node_key, args.slug, args.project_id)
+    BASE = base.BASE = base.api_base(base.PROJECT_ID, args.port)
     root = _HERE.parent
     os.chdir(root)
     sys.path.insert(0, str(root))
@@ -368,7 +373,7 @@ async def _probe(client, args, prefix, execution, node_key, incident_id) -> dict
     from app.services.profiles_v1 import ProfilesSupervisor
     try:
         ticket = await ProfilesSupervisor(get_observer()).recover(
-            overlay_id=overlay_id, project_id=2, execution_id=execution, incident_id=incident_id,
+            overlay_id=overlay_id, project_id=base.PROJECT_ID, execution_id=execution, incident_id=incident_id,
             node_key=node_key, idempotency_key=f"probe-profile-{node_key}", initiator="dry_probe",
             rationale="dry profile probe for text node recovery")
     except (ValueError, LookupError) as exc:

@@ -10,6 +10,11 @@ One persisted global flag (master DB, survives restart). While it is ON:
 * the Decision supervisor neither opens decisions nor starts model steps;
 * ``evaluate_start`` / managed successors refuse (in-process cached value).
 
+Native paid seams (``kie_http``, ``outsee_http``, ``gpt_api``, ``elevenlabs_api``,
+``sfx_gen``, the Create routers and the Outsee bot) check the same durable flag through
+``guard_native`` (called from ``spend_guard.paid_gate``), so a manual Studio button is
+stopped too. An unreadable flag blocks (fail-closed).
+
 It does NOT hold executions (no ``held`` flag is touched) and does not cancel
 an already-sent request. Switching it OFF is therefore the only step needed to
 resume; there is no per-execution state to unwind. Read-only endpoints, the
@@ -84,18 +89,27 @@ async def ensure_table(master) -> None:
         await session.commit()
 
 
+def _is_missing_table(exc: BaseException) -> bool:
+    """True only for "the table does not exist yet" (the switch was never set)."""
+    text_ = str(exc).lower()
+    return "no such table" in text_ or "does not exist" in text_ or "undefinedtable" in text_
+
+
 async def is_active(session) -> bool:
     """Durable read on the caller's session; also refreshes the cache.
 
     A missing table can only mean the switch was never set (setting creates the
-    table first), so it reads as OFF. Any other database error propagates: the
-    caller's own queries would fail on the same database anyway.
+    table first), so it reads as OFF. Any other database error (locked file, I/O
+    error, broken connection) propagates: reading it as OFF would let a paid call
+    through while the operator may have stopped everything (fail-closed).
     """
     try:
         value = await session.scalar(select(KillSwitchState.active).where(
             KillSwitchState.key == GLOBAL_KEY))
-    except (OperationalError, ProgrammingError):
+    except (OperationalError, ProgrammingError) as exc:
         await session.rollback()
+        if not _is_missing_table(exc):
+            raise
         _cache["active"] = False
         return False
     _cache["active"] = bool(value)
@@ -106,6 +120,27 @@ async def guard(session) -> None:
     """Raise KillSwitchActive before any charge / reservation / network call."""
     if await is_active(session):
         raise KillSwitchActive("kill switch active: operator emergency stop blocks supervisor requests")
+
+
+class KillSwitchCheckFailed(KillSwitchActive):
+    """The switch state could not be read. Treated as ON: nothing is sent (fail-closed)."""
+
+
+async def guard_native(sessions) -> None:
+    """Gate for native paid calls (manual Studio buttons, pipeline steps, routers).
+
+    ``sessions`` is a session factory (``async with sessions() as s``). Raises
+    ``KillSwitchActive`` when the durable flag is ON and ``KillSwitchCheckFailed`` when it
+    cannot be read. Never returns normally on an unreadable state.
+    """
+    try:
+        async with sessions() as session:
+            active = await is_active(session)
+    except Exception as exc:  # noqa: BLE001 - any failure to read the flag blocks the call
+        raise KillSwitchCheckFailed(
+            f"kill switch state unreadable ({type(exc).__name__}): paid call refused") from exc
+    if active:
+        raise KillSwitchActive("kill switch active: operator emergency stop blocks paid calls")
 
 
 async def load(master) -> bool:

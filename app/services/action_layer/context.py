@@ -12,7 +12,9 @@ from __future__ import annotations
 import base64
 import binascii
 import codecs
+import hashlib
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -119,6 +121,52 @@ def _magic_ok(ext: str, head: bytes, content: bytes) -> bool:
     return False
 
 
+def _attachment_row(real: Path) -> tuple[bool, str, int]:
+    """(это вложение?, sha256 из реестра, размер из реестра). Вложение = файл внутри DATA_DIR/attachments.
+
+    Реестр читается напрямую из SQLite (только чтение): загрузка в слое действий синхронная, а
+    привязка к хэшу должна отработать в момент чтения файла, не раньше (A06). Нет записи или
+    нет таблицы - отказ (fail-closed), а не пропуск.
+    """
+    from app.services.action_layer.attachments import ATTACH_DIR
+    from app.settings import settings
+
+    root = Path(settings.data_dir).resolve()
+    att_root = root / ATTACH_DIR
+    if att_root not in real.parents:
+        return False, "", 0
+    rel = real.relative_to(root).as_posix()
+    try:
+        uri = Path(settings.sqlite_path).resolve().as_uri() + "?mode=ro"
+        con = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
+            row = con.execute("SELECT sha256, size FROM action_layer_attachments WHERE rel_path = ?",
+                              (rel,)).fetchone()
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        row = None
+    if not row:
+        raise UploadRejected("вложение не найдено в реестре: загрузите файл заново через вложения")
+    return True, str(row[0] or ""), int(row[1] or 0)
+
+
+def verify_attachment_binding(real: Path, *, content: bytes | None = None, size: int | None = None) -> None:
+    """Файл вложения должен совпадать с тем, что принято при загрузке (sha256 и размер).
+
+    Подмена файла на диске между подтверждением плана и запуском даёт отказ. Не-вложения
+    (другие пути внутри DATA_DIR) не проверяются: для них хэша нет.
+    """
+    is_att, want_sha, want_size = _attachment_row(real)
+    if not is_att:
+        return
+    if size is not None and want_size and size != want_size:
+        raise UploadRejected("файл вложения изменён после загрузки (размер): загрузите его заново")
+    if content is not None:
+        if hashlib.sha256(content).hexdigest() != want_sha:
+            raise UploadRejected("файл вложения изменён после загрузки (sha256): загрузите его заново")
+
+
 @dataclass(frozen=True)
 class FileUpload:
     """Проверенный файл для multipart. Создавать через from_data_path / from_base64."""
@@ -204,12 +252,14 @@ class FileUpload:
         policy, real, _size = cls._resolve_data_path(kind, path)
         with real.open("rb") as fh:
             content = fh.read(policy.max_bytes + 1)
+        verify_attachment_binding(real, content=content)
         return cls.build(kind, real.name, content)
 
     @classmethod
     def check_data_path(cls, kind: str, path: str) -> int:
         """Те же проверки без чтения всего файла (для preview). Возвращает размер."""
         policy, real, size = cls._resolve_data_path(kind, path)
+        verify_attachment_binding(real, size=size)
         ext = real.suffix.lower()
         with real.open("rb") as fh:
             head = fh.read(65536)
@@ -291,7 +341,10 @@ class ActionContext:
                 raise UploadRejected("суммарный размер файлов больше лимита")
             multipart = {name: (f.filename, f.content, f.content_type)
                          for name, f in zip(files.keys(), checked)}
-        headers = {"X-Action-Layer-Operator": self.operator}
+        from app.services import access_guard
+        headers = {"X-Action-Layer-Operator": self.operator,
+                   # Внутренний вызов своего приложения: свой токен оператора (A04).
+                   access_guard.OPERATOR_HEADER: access_guard.get_operator_token()}
         if self.idempotency_key:
             headers["Idempotency-Key"] = self.idempotency_key
         transport = httpx.ASGITransport(app=self.app)

@@ -9,9 +9,11 @@ from pathlib import Path
 # Корень api-tracker
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Дефолтные настройки Supabase (зашиты как fallback для автономного .exe)
-DEFAULT_SUPABASE_URL = "https://jubhhajwknvhlntmwpoj.supabase.co"
-DEFAULT_SUPABASE_KEY = "sb_publishable_qxcebL4M8lXRj0s2qF4ZLA_VkHhp3a-"
+# Облако по умолчанию выключено (A17): URL и ключ в исходники не зашиты, их задаёт владелец через
+# окружение или .env (SUPABASE_URL, SUPABASE_KEY|SUPABASE_ANON_KEY) вместе с API_TRACKER_CLOUD_ENABLED=true.
+# Пустые значения отключают облачную синхронизацию в cloud_sync.py (там проверка `not url or not key`).
+DEFAULT_SUPABASE_URL = ""
+DEFAULT_SUPABASE_KEY = ""
 
 
 def _load_env_file() -> None:
@@ -38,11 +40,21 @@ def _load_env_file() -> None:
 _load_env_file()
 
 
+def cloud_enabled() -> bool:
+    """Облако включено только явным API_TRACKER_CLOUD_ENABLED=true (по умолчанию выключено)."""
+    return os.environ.get("API_TRACKER_CLOUD_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def get_supabase_url() -> str:
+    """Пустая строка, пока облако не включено явно: cloud_sync тогда не делает соединений."""
+    if not cloud_enabled():
+        return ""
     return os.environ.get("SUPABASE_URL", "").strip() or DEFAULT_SUPABASE_URL
 
 
 def get_supabase_key() -> str:
+    if not cloud_enabled():
+        return ""
     return os.environ.get("SUPABASE_KEY", "").strip() or os.environ.get("SUPABASE_ANON_KEY", "").strip() or DEFAULT_SUPABASE_KEY
 
 

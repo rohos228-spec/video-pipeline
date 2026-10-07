@@ -40,10 +40,76 @@ if (-not (Test-Path $logDir)) {
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 }
 
+# --- LOG-ROTATION-BEGIN (A03: ротация и потолок backend*.log) ---
+$LogMaxBytes = [long]10MB
+$LogBackups = 3
+$LogTotalCapBytes = [long]200MB
+$LogSessionMaxAgeDays = 7
+
+function Rotate-LogFile([string]$Path, [long]$MaxBytes, [int]$Backups) {
+    # Файл больше лимита: .1 .. .N сдвигаются, самый старый удаляется.
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return $false }
+        if ((Get-Item -LiteralPath $Path -ErrorAction Stop).Length -le $MaxBytes) { return $false }
+        if ($Backups -le 0) { Remove-Item -LiteralPath $Path -Force -ErrorAction Stop; return $true }
+        $oldest = "$Path.$Backups"
+        if (Test-Path -LiteralPath $oldest) { Remove-Item -LiteralPath $oldest -Force -ErrorAction Stop }
+        for ($i = $Backups - 1; $i -ge 1; $i--) {
+            $src = "$Path.$i"
+            if (Test-Path -LiteralPath $src) { Move-Item -LiteralPath $src -Destination "$Path.$($i + 1)" -Force -ErrorAction Stop }
+        }
+        Move-Item -LiteralPath $Path -Destination "$Path.1" -Force -ErrorAction Stop
+        return $true
+    } catch { return $false }
+}
+
+function Invoke-BackendLogRotation([string]$Dir, [string]$CurrentSessionLog, [long]$MaxBytes, [int]$Backups, [long]$TotalCap, [double]$MaxAgeDays) {
+    # 1) общий backend.log по размеру; 2) сессионные backend-<PID>.log старше срока;
+    # 3) суммарный потолок по всем backend*.log*: старые удаляются первыми,
+    #    общий и текущий сессионный лог не удаляются никогда.
+    $removed = 0
+    try {
+        Rotate-LogFile (Join-Path $Dir "backend.log") $MaxBytes $Backups | Out-Null
+        $keep = @((Join-Path $Dir "backend.log"), $CurrentSessionLog) | ForEach-Object { [System.IO.Path]::GetFullPath($_) }
+        $cutoff = (Get-Date).AddDays(-$MaxAgeDays)
+        $files = @(Get-ChildItem -LiteralPath $Dir -File -Filter "backend*.log*" -ErrorAction SilentlyContinue)
+        foreach ($f in $files) {
+            if ($keep -contains $f.FullName) { continue }
+            if ($f.LastWriteTime -lt $cutoff) {
+                try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $removed++ } catch { }
+            }
+        }
+        $files = @(Get-ChildItem -LiteralPath $Dir -File -Filter "backend*.log*" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime)
+        $total = [long]0
+        foreach ($f in $files) { $total += $f.Length }
+        foreach ($f in $files) {
+            if ($total -le $TotalCap) { break }
+            if ($keep -contains $f.FullName) { continue }
+            try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $total -= $f.Length; $removed++ } catch { }
+        }
+    } catch { }
+    return $removed
+}
+# --- LOG-ROTATION-END ---
+
+Invoke-BackendLogRotation $logDir $sessionLog $LogMaxBytes $LogBackups $LogTotalCapBytes $LogSessionMaxAgeDays | Out-Null
+
+$script:SessionLogCapped = $false
 function Write-BackendLogLine([string]$Line) {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $entry = "$ts  $Line"
-    try { Add-Content -Path $sessionLog -Value $entry -Encoding UTF8 -ErrorAction Stop } catch { }
+    # Сессионный лог не растёт выше лимита: после превышения пишется одна пометка.
+    try {
+        if (-not $script:SessionLogCapped) {
+            if ((Test-Path -LiteralPath $sessionLog) -and ((Get-Item -LiteralPath $sessionLog).Length -gt $LogMaxBytes)) {
+                $script:SessionLogCapped = $true
+                Add-Content -Path $sessionLog -Value "$ts  [лог достиг лимита $([int]($LogMaxBytes / 1MB)) МБ, дальнейшие строки только в backend.log]" -Encoding UTF8 -ErrorAction Stop
+            } else {
+                Add-Content -Path $sessionLog -Value $entry -Encoding UTF8 -ErrorAction Stop
+            }
+        }
+    } catch { }
+    Rotate-LogFile $sharedLog $LogMaxBytes $LogBackups | Out-Null
     try { Add-Content -Path $sharedLog -Value $entry -Encoding UTF8 -ErrorAction Stop } catch { }
 }
 

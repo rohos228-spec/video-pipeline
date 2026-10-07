@@ -558,6 +558,10 @@ function Invoke-StudioGitUpdate {
     if (-not (Invoke-StudioGitFetch)) {
         return $false
     }
+    if ($env:VP_HARD_RESET_ALLOWED -eq "0") {
+        Write-StudioMsg "СТОП: локальные правки не сохранены (STUDIO.cmd), жёсткий сброс git запрещён. Обновление пропущено." "Red"
+        return $false
+    }
     if (-not (Invoke-StudioGitLogged "git reset --hard origin/$StudioBranch" @("reset", "--hard", "origin/$StudioBranch"))) {
         Write-StudioMsg "ОШИБКА: git reset не удался." "Red"
         return $false

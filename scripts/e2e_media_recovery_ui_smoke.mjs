@@ -1,13 +1,19 @@
 // Headless Chrome pass over the media recovery panel. Start scripts/e2e_media_recovery_ui_server.py first (E2E_PORT=8803),
-// run with node from the repo root; screenshots go to C:/video-pipeline/_ui_check/media/. No network, no real spend:
+// run with node from anywhere; screenshots go to E2E_OUT (default: <system temp>/vp_ui_check/media/). No network, no real spend:
 // the resume plan is only previewed (never run); the release plan runs against a throw-away ledger.
 import { createRequire } from 'node:module';
-const require = createRequire('C:/video-pipeline/video-pipeline-observe-v1/web/package.json');
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(path.join(repoRoot, 'web', 'package.json'));
 const { chromium } = require('@playwright/test');
-const out = 'C:/video-pipeline/_ui_check/media/';
+const out = (process.env.E2E_OUT || path.join(os.tmpdir(), 'vp_ui_check', 'media')) + path.sep;
+fs.mkdirSync(out, { recursive: true });
 const PORT = process.env.E2E_PORT || '8803';
 const BASE = `http://127.0.0.1:${PORT}`;
-const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
+const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
 const page = await browser.newPage({ viewport: { width: 1500, height: 1200 } });
 const errors = [];
 const writes = [];

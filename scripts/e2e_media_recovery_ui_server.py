@@ -3,7 +3,7 @@ model, fake paid/destructive test.* actions (no network, no real spend), kill sw
 import asyncio, json, os, sys, tempfile
 from pathlib import Path
 
-ROOT = Path(r"C:\video-pipeline\video-pipeline-observe-v1")
+ROOT = Path(__file__).resolve().parent.parent  # A19: no hard-coded checkout path
 PORT = int(os.environ.get("E2E_PORT", "8802"))
 SEED_MEDIA = os.environ.get("E2E_SEED_MEDIA", "1") == "1"  # seed an open Kie task, a failed one and two unknown-outcome keys
 work = Path(tempfile.mkdtemp(prefix="ui_media_"))

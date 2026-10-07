@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
@@ -29,12 +29,17 @@ class ApprovalError(Exception):
 class OperatorIdentity:
     """Личность оператора из AuthDep (тот же формат, что в observations)."""
     id: str
+    # True, когда личность построена из HTTP-запроса (``from_token``): такое подтверждение
+    # обязано прийти с проверенным токеном оператора (A06). Личности, собранные в коде
+    # напрямую, не из сети, флага не имеют.
+    via_http: bool = field(default=False, compare=False)
 
     @classmethod
     def from_token(cls, token: str | None) -> "OperatorIdentity":
         if not token:
-            return cls("local_web_operator")
-        return cls("web_operator:" + hashlib.sha256(token.encode()).hexdigest()[:16])
+            return cls("local_web_operator", via_http=True)
+        return cls("web_operator:" + hashlib.sha256(token.encode()).hexdigest()[:16],
+                   via_http=True)
 
 
 def _check_operator(operator: OperatorIdentity) -> None:
@@ -42,6 +47,14 @@ def _check_operator(operator: OperatorIdentity) -> None:
         raise ApprovalError("operator_required", "Для подтверждения нужна личность оператора.")
     if operator.id.lower().startswith(_FORBIDDEN_PREFIXES):
         raise ApprovalError("operator_required", "Подтвердить может только оператор-человек.")
+    if operator.via_http:
+        # Автор плана (скрипт, чужая страница, модель через HTTP) без токена оператора
+        # подтвердить не может: токен выдаётся только своему интерфейсу (access_guard).
+        from app.services import access_guard
+        if access_guard.operator_token_enforced() and not access_guard.operator_token_verified.get():
+            raise ApprovalError(
+                "operator_token_required",
+                "Подтверждение возможно только из интерфейса Studio с токеном оператора.")
 
 
 def default_ttl_s() -> int:

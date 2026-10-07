@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,8 +35,21 @@ DEFAULT_ASS_W, DEFAULT_ASS_H = 1920, 1080
 
 
 def subtitles_vf_arg(filename: str = SUBTITLES_ASS_NAME) -> str:
-    """Return -vf value for burning ASS subtitles from cwd=temp dir."""
-    return f"subtitles={filename}"
+    """Return -vf value for burning ASS subtitles from cwd=temp dir.
+
+    The name is escaped for both ffmpeg levels (option value, then filtergraph) so a colon, comma, semicolon,
+    bracket, quote, backslash or equals sign in a file name cannot split the filter or inject another one.
+    A plain name such as ``subs.ass`` stays unchanged. Directory separators are normalised to ``/``.
+    """
+    name = str(filename).replace("\\", "/")
+    if not name or any(ch in name for ch in "\n\r\x00"):
+        raise ValueError("недопустимое имя файла субтитров")
+    if re.fullmatch(r"[\w.\-]+", name):
+        return f"subtitles={name}"
+    level1 = "".join("\\" + ch if ch in "\\':" else ch for ch in name)
+    level2 = "".join("\\" + ch if ch in "\\',;[] " else ch for ch in level1)
+    key = "filename=" if "=" in name else ""
+    return f"subtitles={key}{level2}"
 
 
 def subtitle_layout(width: int, height: int) -> tuple[int, int, str]:

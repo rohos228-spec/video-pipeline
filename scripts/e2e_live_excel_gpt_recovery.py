@@ -33,14 +33,33 @@ import sys
 import time
 from pathlib import Path
 
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+
 _ENV_WHITELIST = ("GPT_API_KEY", "GPT_BASE_URL", "GPT_CHAT_PATH", "GPT_API_MODE", "GPT_PROXY_URL",
                   "GPT_RELAY_TOKEN", "GPT_TIMEOUT_S")
-SLUG = "diagnostic-synthetic-scene-2026-09-24"
+SLUG = "diagnostic-synthetic-scene-2026-09-24"  # default fixture slug of the seed; override with --slug
 NODE = "n_excel_gpt_fw_script"
 PROFILE_ID = "production-json-repair-v1"
 MALFORMED = '{"ops": }'
 PORT = 18765
-BASE = f"http://127.0.0.1:{PORT}/api/projects/2"
+PROJECT_ID: int | None = None  # resolved from the seed copy by configure(); never hard-coded
+BASE: str | None = None  # http://127.0.0.1:<port>/api/projects/<PROJECT_ID>, set by configure()
+
+
+def api_base(project_id: int, port: int = PORT) -> str:
+    return f"http://127.0.0.1:{port}/api/projects/{project_id}"
+
+
+def configure(data: Path, slug: str | None, project_id: int | None, port: int = PORT) -> int:
+    """Pick the project of the seed COPY (by slug or explicit id) and build the API base URL."""
+    global SLUG, PROJECT_ID, BASE
+    SLUG = slug or SLUG
+    PROJECT_ID = guard.resolve_project_id(data / "state.db", SLUG, project_id)
+    BASE = api_base(PROJECT_ID, port)
+    return PROJECT_ID
 
 
 def _args() -> argparse.Namespace:
@@ -48,6 +67,8 @@ def _args() -> argparse.Namespace:
     p.add_argument("--live", action="store_true", help="send the Decision and recovery requests to the provider")
     p.add_argument("--env-file", help="env file with GPT_* settings (required for --live)")
     p.add_argument("--seed-dir", required=True, help="data dir holding state.db and videos/<slug>/")
+    p.add_argument("--slug", default=None, help="slug of the project inside the seed (default: the fixture slug)")
+    p.add_argument("--project-id", type=int, default=None, help="project id in the seed (default: looked up by slug)")
     p.add_argument("--work-dir", required=True, help="scratch dir; seed is copied here")
     p.add_argument("--max-real-posts", type=int, default=6)
     p.add_argument("--max-usd", type=float, default=0.10)
@@ -67,28 +88,26 @@ def _load_env(path: str) -> dict:
     return out
 
 
-def _prepare_data(seed: Path, work: Path) -> Path:
-    data = work / "data"
-    if data.exists():
-        shutil.rmtree(data)
-    shutil.copytree(seed, data)
+def _prepare_data(seed: Path, work: Path, slug: str | None = None, project_id: int | None = None) -> Path:
+    data = guard.prepare_scratch_data(seed, work)  # refuses live data / overlapping folders; removes only <work>/data
+    pid = configure(data, slug, project_id)
     db_paths = [data / "state.db", data / "videos" / SLUG / "project.db"]
     node = None
-    with sqlite3.connect(db_paths[0]) as db:
+    with guard.connect_scratch(db_paths[0], work) as db:
         nodes = json.loads(db.execute(
-            "SELECT nodes_snapshot FROM workflow_runs WHERE project_id=2 ORDER BY id DESC LIMIT 1").fetchone()[0])
+            "SELECT nodes_snapshot FROM workflow_runs WHERE project_id=? ORDER BY id DESC LIMIT 1", (pid,)).fetchone()[0])
         node = next(n for n in nodes if n["id"] == NODE)
     graph_nodes, graph_edges = [node], []
     for path in db_paths:
-        with sqlite3.connect(path) as db:
-            meta = json.loads(db.execute("SELECT meta FROM projects WHERE id=2").fetchone()[0])
+        with guard.connect_scratch(path, work) as db:
+            meta = json.loads(db.execute("SELECT meta FROM projects WHERE id=?", (pid,)).fetchone()[0])
             meta.setdefault("canvas_graph", {}).update(nodes=graph_nodes, edges=graph_edges)
             meta.pop("step_failure", None)
-            db.execute("UPDATE projects SET meta=?,status='new' WHERE id=2", (json.dumps(meta),))
-            db.execute("UPDATE workflow_runs SET nodes_snapshot=?,edges_snapshot=? WHERE project_id=2",
-                       (json.dumps(graph_nodes), json.dumps(graph_edges)))
+            db.execute("UPDATE projects SET meta=?,status='new' WHERE id=?", (json.dumps(meta), pid))
+            db.execute("UPDATE workflow_runs SET nodes_snapshot=?,edges_snapshot=? WHERE project_id=?",
+                       (json.dumps(graph_nodes), json.dumps(graph_edges), pid))
             db.execute("DELETE FROM node_runs WHERE workflow_run_id IN "
-                       "(SELECT id FROM workflow_runs WHERE project_id=2) AND node_key<>?", (NODE,))
+                       "(SELECT id FROM workflow_runs WHERE project_id=?) AND node_key<>?", (pid, NODE))
             db.execute("UPDATE node_runs SET status='pending',progress=0,attempts=0,error=NULL WHERE node_key=?",
                        (NODE,))
     return data
@@ -135,7 +154,7 @@ async def main() -> int:
         if not env.get("GPT_API_KEY") or env["GPT_API_KEY"].startswith("synthetic"):
             print("env file has no real GPT_API_KEY")
             return 2
-    data = _prepare_data(seed, work)
+    data = _prepare_data(seed, work, args.slug, args.project_id)
     root = Path(__file__).resolve().parent.parent
     os.chdir(root)
     sys.path.insert(0, str(root))

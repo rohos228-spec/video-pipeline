@@ -24,6 +24,7 @@ from loguru import logger
 from playwright.async_api import Download, Page
 
 from app.bots.browser import BrowserSession
+from app.services.disk_guard import append_rotating
 
 CHATGPT_URL = "https://chatgpt.com/"
 ERRORS_LOG_PATH = Path("logs/errors.log")
@@ -189,11 +190,10 @@ def chatgpt_login_page_text(text: str) -> bool:
 
 def _log_chatgpt_error(*, kind: str, text: str, node: str = "chatgpt") -> None:
     try:
-        ERRORS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.utcnow().isoformat(timespec="seconds")
         line = f"{ts}\tbot=chatgpt\tnode={node}\tkind={kind}\t{text}"
-        with ERRORS_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        # Ротация по размеру (A03): logs/errors.log не растёт без границы.
+        append_rotating(ERRORS_LOG_PATH, line)
     except OSError as e:
         logger.warning("chatgpt: cannot write {}: {}", ERRORS_LOG_PATH, e)
 

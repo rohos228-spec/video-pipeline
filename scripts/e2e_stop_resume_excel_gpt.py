@@ -6,9 +6,9 @@ malformed-JSON SSE body and every Decision/recovery (provider-bound) request is 
 is exactly 0. There is no --live mode on purpose.
 
 Two scenarios (one process each, fresh data copy):
-  project   POST /api/projects/2/stop       (the UI "stop" button: step_cancel stop-file + user_stop)
-            then POST /api/projects/2/continue (the UI "continue" button)
-  observer  POST /api/projects/2/observations/{id}/stop (observer-only stop, business_action=None)
+  project   POST /api/projects/<id>/stop       (the UI "stop" button: step_cancel stop-file + user_stop)
+            then POST /api/projects/<id>/continue (the UI "continue" button)
+  observer  POST /api/projects/<id>/observations/{id}/stop (observer-only stop, business_action=None)
 
 Usage:
     python scripts/e2e_stop_resume_excel_gpt.py --scenario project --seed-dir <seed> --work-dir <dir>
@@ -31,8 +31,9 @@ _spec = importlib.util.spec_from_file_location("e2e_live_excel_gpt_recovery", _B
 base = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(base)
 
-NODE, SLUG, BASE_URL, PROFILE_ID, MALFORMED = base.NODE, base.SLUG, base.BASE, base.PROFILE_ID, base.MALFORMED
-ROOT_URL = BASE_URL.rsplit("/projects/", 1)[0] + "/projects/2"
+NODE, PROFILE_ID, MALFORMED = base.NODE, base.PROFILE_ID, base.MALFORMED
+SLUG: str = base.SLUG
+ROOT_URL: str | None = None  # set in main() once the project id of the seed copy is known
 COUNTER_KEYS = ("injected_worker", "real_decision", "real_worker_recovery", "refused")
 
 
@@ -109,6 +110,8 @@ def _args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--scenario", choices=("project", "observer"), default="project")
     p.add_argument("--seed-dir", required=True)
+    p.add_argument("--slug", default=None, help="slug of the project inside the seed (default: the fixture slug)")
+    p.add_argument("--project-id", type=int, default=None, help="project id in the seed (default: looked up by slug)")
     p.add_argument("--work-dir", required=True)
     p.add_argument("--running-timeout-s", type=int, default=120)
     p.add_argument("--after-stop-s", type=int, default=45, help="observe window after stop")
@@ -118,7 +121,7 @@ def _args() -> argparse.Namespace:
 
 def _project_row(data: Path) -> dict:
     with sqlite3.connect(data / "videos" / SLUG / "project.db") as db:
-        status, meta = db.execute("SELECT status, meta FROM projects WHERE id=2").fetchone()
+        status, meta = db.execute("SELECT status, meta FROM projects WHERE id=?", (base.PROJECT_ID,)).fetchone()
     meta = json.loads(meta or "{}")
     return {"project_status": status, "user_stop": bool(meta.get("user_stop")),
             "auto_await_manual_start": bool(meta.get("auto_await_manual_start")),
@@ -176,7 +179,9 @@ async def main() -> int:
     args = _args()
     work, seed = Path(args.work_dir).resolve(), Path(args.seed_dir).resolve()
     work.mkdir(parents=True, exist_ok=True)
-    data = base._prepare_data(seed, work)
+    data = base._prepare_data(seed, work, args.slug, args.project_id)
+    global SLUG, ROOT_URL
+    SLUG, ROOT_URL = base.SLUG, base.BASE
     root = Path(__file__).resolve().parent.parent
     os.chdir(root)
     sys.path.insert(0, str(root))
@@ -251,7 +256,7 @@ async def main() -> int:
             t_stop = time.monotonic()
             if args.scenario == "project":
                 resp = await client.post(ROOT_URL + "/stop")
-                print("POST /projects/2/stop ->", resp.status_code, {k: v for k, v in resp.json().items() if k != "project"})
+                print(f"POST {ROOT_URL}/stop ->", resp.status_code, {k: v for k, v in resp.json().items() if k != "project"})
             else:
                 resp = await client.post(f"{ROOT_URL}/observations/{execution}/stop")
                 print("POST observations/stop ->", resp.status_code, resp.json())
@@ -268,7 +273,7 @@ async def main() -> int:
                 t_cont = time.monotonic()
                 resp = await client.post(ROOT_URL + "/continue")
                 body = resp.json()
-                print("POST /projects/2/continue ->", resp.status_code, {k: v for k, v in body.items() if k != "project"})
+                print(f"POST {ROOT_URL}/continue ->", resp.status_code, {k: v for k, v in body.items() if k != "project"})
                 result["continue_response"] = {"status": resp.status_code, "body": {k: v for k, v in body.items() if k != "project"}}
                 after_cont = await observe(client, data, execution, counters, args.after_continue_s, samples, "after-continue")
                 result["after_continue"] = after_cont

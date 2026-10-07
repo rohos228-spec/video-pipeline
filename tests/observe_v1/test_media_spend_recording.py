@@ -152,12 +152,15 @@ class NeverRaises(MediaSpendBase):
             media_spend.record("kie", usd=1.0, note="n")
             await media_spend.drain()
 
-    async def test_recording_off_for_synthetic_key_and_under_pytest(self):
+    async def test_recording_not_switched_off_by_synthetic_key_or_pytest(self):
         self.patches[1].stop()
         try:
-            self.assertFalse(media_spend._enabled("elevenlabs"))  # pytest guard
+            media_spend.reset_gap_state()
+            with patch.object(settings, "elevenlabs_api_key", "real-looking"):
+                self.assertFalse(media_spend._enabled("elevenlabs"))  # sandbox: ledger DB is not the configured one; counted, not silent
+            self.assertIn("elevenlabs:ledger_target_mismatch", media_spend.skipped_counts())
             with patch.object(media_spend, "TEST_FORCE", True), patch.object(settings, "elevenlabs_api_key", "synthetic-1"):
-                self.assertFalse(media_spend._enabled("elevenlabs"))
+                self.assertTrue(media_spend._enabled("elevenlabs"))  # A08: synthetic* no longer disables the ledger
             with patch.object(media_spend, "TEST_FORCE", True), patch.object(settings, "elevenlabs_api_key", "real-looking"):
                 self.assertTrue(media_spend._enabled("elevenlabs"))
         finally:
@@ -193,7 +196,7 @@ class ElevenLabsRecording(MediaSpendBase):
         self.assertTrue(out.exists())
         rows = await self.rows()
         chars = len("Привет мир")
-        est = [r for r in rows if r.kind == "actual"][0]
+        est = [r for r in rows if r.kind == "estimated"][0]  # A08: a price we computed is an estimate, not a fact
         self.assertAlmostEqual(est.usd, chars * media_spend.ELEVENLABS_USD_PER_CHAR)
         self.assertEqual((est.provider, est.project_id), ("elevenlabs", 7))
         settle = [r for r in rows if r.kind == "settle"]
@@ -223,7 +226,7 @@ class ElevenLabsRecording(MediaSpendBase):
                 await self.synth()
         self.assertIsInstance(cm.exception, elevenlabs_api.ElevenLabsUncertainError)  # still an ElevenLabsApiError
         self.assertEqual(len(calls), 1)  # no re-POST after a post-send timeout
-        rows = [r for r in await self.rows() if r.kind == "actual"]
+        rows = [r for r in await self.rows() if r.kind == "estimated"]
         self.assertEqual(len(rows), 1)
         self.assertTrue(all("uncertain" in r.note for r in rows))
 

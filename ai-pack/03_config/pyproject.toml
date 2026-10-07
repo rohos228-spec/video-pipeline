@@ -68,3 +68,4 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = ["raw_client: test talks to the app without the operator token (guard tests)"]

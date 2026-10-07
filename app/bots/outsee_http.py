@@ -27,6 +27,7 @@ from loguru import logger
 
 from app.bots.outsee import GenerationResult, OutseeDownloadError, OutseeImageError
 from app.generation_options import prepend_gen_id
+from app.services import spend_guard
 from app.settings import settings
 
 _DATA_URL_RE = re.compile(
@@ -436,6 +437,16 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
         tmp.unlink(missing_ok=True)
 
 
+def _generate_estimate(args: tuple, kwargs: dict) -> float:
+    """UNCALIBRATED in-flight estimate of one Outsee submit (the price is not known before the call)."""
+    path = str(args[0] if args else kwargs.get("path", ""))
+    return spend_guard.OUTSEE_VIDEO_ESTIMATE_USD if "/videos/" in path else spend_guard.MEDIA_SUBMIT_ESTIMATE_USD
+
+
+# Operator kill switch, disk guard and money cap BEFORE the first byte of every generate submit
+# (also the curl fallback below, which is reached only from inside this function). A refusal is a
+# ``spend_guard.PaidCallBlocked``: it is not an OutseeHttpError, so the browser-UI fallback never starts.
+@spend_guard.paid_seam("outsee", "generate submit", estimate=_generate_estimate)
 async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
     waits = 0
     net_tries = 0

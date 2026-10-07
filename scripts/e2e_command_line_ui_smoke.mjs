@@ -1,11 +1,18 @@
 // Headless Chrome pass over the command line card. Start scripts/e2e_command_line_ui_server.py first (port 8802, E2E_PORT to change),
-// run with node from the repo root; screenshots go to C:/video-pipeline/_ui_check/cmdline/ (create the folder first). No network, no real spend.
+// run with node from anywhere; screenshots go to E2E_OUT (default: <system temp>/vp_ui_check/cmdline/). No network, no real spend.
+// Chrome: CHROME_PATH or the default Windows install path.
 import { createRequire } from 'node:module';
-const require = createRequire('C:/video-pipeline/video-pipeline-observe-v1/web/package.json');
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(path.join(repoRoot, 'web', 'package.json'));
 const { chromium } = require('@playwright/test');
-const out = 'C:/video-pipeline/_ui_check/cmdline/';
+const out = (process.env.E2E_OUT || path.join(os.tmpdir(), 'vp_ui_check', 'cmdline')) + path.sep;
+fs.mkdirSync(out, { recursive: true });
 const PORT = process.env.E2E_PORT || '8802';
-const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
+const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
 const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } });
 const errors = [];
 page.on('response', r => { if (r.status() >= 500) errors.push(r.status() + ': ' + r.url()); });

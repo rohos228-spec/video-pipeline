@@ -26,7 +26,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project
-from app.services import media_spend
+from app.services import media_spend, spend_guard
 from app.services.ai_result_io import (
     ai_job_checkpoint,
     drop_ai_job_checkpoint,
@@ -164,6 +164,17 @@ def _synth(kind: str, duration: float, *, seed: int = 42) -> list[float]:
 # ── ElevenLabs SFX API (опционально) ──────────────────────────────────────
 
 
+def _sfx_estimate(args: tuple, kwargs: dict) -> float:
+    duration = args[1] if len(args) > 1 else kwargs.get("duration", 1.0)
+    try:
+        return min(max(float(duration), 0.5), 22.0) * media_spend.ELEVENLABS_SFX_USD_PER_SEC
+    except (TypeError, ValueError):
+        return 0.5 * media_spend.ELEVENLABS_SFX_USD_PER_SEC
+
+
+# Gate OUTSIDE the recording decorator. A refusal is a RuntimeError, so the caller's provider fallback
+# (local synth) records it as "provider answered, nothing charged", which is exactly true here.
+@spend_guard.paid_seam("elevenlabs", "sfx post", estimate=_sfx_estimate)
 @media_spend.track_eleven_sfx
 async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
     import httpx

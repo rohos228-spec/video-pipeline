@@ -3,7 +3,7 @@ model, fake paid/destructive test.* actions (no network, no real spend), kill sw
 import asyncio, json, os, sys, tempfile
 from pathlib import Path
 
-ROOT = Path(r"C:\video-pipeline\video-pipeline-observe-v1")
+ROOT = Path(__file__).resolve().parent.parent  # A19: no hard-coded checkout path
 PORT = int(os.environ.get("E2E_PORT", "8802"))
 work = Path(tempfile.mkdtemp(prefix="ui_cmdline_"))
 (work / "data").mkdir()

@@ -8,6 +8,11 @@
 """
 from __future__ import annotations
 
+import asyncio
+import json
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
 from app.services.action_layer.context import ActionContext
 from app.services.action_layer.spec import (
     RISK_LOCAL_SAFE, RISK_READ, ActionRegistry, ActionSpec, Precondition)
@@ -27,6 +32,68 @@ _QUEUE_OP_TYPES = ("image_regen", "image_regen_prompt", "image_regen_correction"
 
 def _base(pid: int) -> str:
     return f"/projects/{pid}/montage-board"
+
+
+# --- очередь pending_ops: защита от потери чужих правок (A12) ----------------------------------
+# Сервер сохраняет очередь целиком (POST /queue), поэтому слой делает read-modify-write. Здесь:
+# (1) замок на проект против двух действий слоя; (2) повторное чтение прямо перед записью и
+# сравнение отпечатка: если очередь изменили (человек в интерфейсе) между чтением и записью,
+# слияние делается заново поверх свежей очереди; (3) если сервер отдаёт ``meta.queue_rev``,
+# версия уходит в ``expected_rev`` и несовпадение (``queue_rev_mismatch``) тоже даёт повтор.
+# Чего слой не может: интерфейс человека со старым состоянием, сохранённый ПОСЛЕ нашей записи,
+# затрёт её (нужна серверная версия очереди; см. отчёт интегратору).
+
+QUEUE_ATTEMPTS = 4
+_QUEUE_LOCKS: dict[tuple[int, int], asyncio.Lock] = {}
+
+
+def _queue_lock(pid: int) -> asyncio.Lock:
+    loop_id = id(asyncio.get_running_loop())
+    for key in [k for k in _QUEUE_LOCKS if k[0] != loop_id]:
+        _QUEUE_LOCKS.pop(key, None)
+    return _QUEUE_LOCKS.setdefault((loop_id, int(pid)), asyncio.Lock())
+
+
+def queue_fingerprint(board: dict) -> str:
+    meta = (board or {}).get("meta") or {}
+    return json.dumps({"ops": meta.get("pending_ops") or [], "trims": meta.get("video_trims") or {},
+                       "rev": meta.get("queue_rev")}, sort_keys=True, ensure_ascii=False,
+                      default=str)
+
+
+@dataclass
+class QueueChange:
+    """Результат слияния: что сохранить и что вернуть из действия."""
+    ops: list[dict]
+    extra: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = field(default_factory=dict)
+    skip: bool = False  # ничего не писать (отказ по состоянию очереди)
+
+
+async def queue_update(ctx: ActionContext, pid: int,
+                       build: Callable[[dict], QueueChange]) -> tuple[QueueChange, dict]:
+    """Сохраняет очередь без потери параллельных правок. Возвращает (изменение, ответ сервера)."""
+    base = _base(pid)
+    async with _queue_lock(pid):
+        for _ in range(QUEUE_ATTEMPTS):
+            board = await ctx.call("GET", base)
+            change = build(board)
+            if change.skip:
+                return change, {}
+            if queue_fingerprint(await ctx.call("GET", base)) != queue_fingerprint(board):
+                continue  # очередь изменили между чтением и записью: слить заново
+            body: dict[str, Any] = {"pending_ops": change.ops, **change.extra}
+            rev = ((board.get("meta") or {}).get("queue_rev"))
+            if rev is not None:
+                body["expected_rev"] = rev
+            data = await ctx.call("POST", f"{base}/queue", json=body)
+            if data.get("rejected") in ("queue_rev_mismatch", "queue_conflict"):
+                continue
+            if not data.get("ok"):
+                raise RuntimeError(data.get("message") or data.get("rejected") or "queue rejected")
+            return change, data
+    raise RuntimeError("очередь правок меняется параллельно (интерфейс или другой план): "
+                       "правка не сохранена, чтобы не затереть чужие операции; повторите")
 
 
 async def _project_exists(ctx: ActionContext, params: dict) -> str | None:
@@ -111,15 +178,14 @@ def _op_key(op: dict) -> tuple:
 
 async def _queue_ops(ctx: ActionContext, params: dict) -> dict:
     """Дописывает правки в очередь (замена одноимённой). Apply не запускается."""
-    base = _base(params["project_id"])
-    board = await ctx.call("GET", base)
-    existing = list(((board.get("meta") or {}).get("pending_ops")) or [])
     new_ops = list(params["ops"])
     new_keys = {_op_key(o) for o in new_ops}
-    merged = [o for o in existing if _op_key(o) not in new_keys] + new_ops
-    data = await ctx.call("POST", f"{base}/queue", json={"pending_ops": merged})
-    if not data.get("ok"):
-        raise RuntimeError(data.get("message") or data.get("rejected") or "queue rejected")
+
+    def build(board: dict) -> QueueChange:
+        existing = list(((board.get("meta") or {}).get("pending_ops")) or [])
+        return QueueChange([o for o in existing if _op_key(o) not in new_keys] + new_ops)
+
+    _change, data = await queue_update(ctx, params["project_id"], build)
     return {"queued": len(new_ops), "total_in_queue": len(data.get("pending_ops") or []),
             "applied": False}
 

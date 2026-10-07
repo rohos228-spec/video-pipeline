@@ -24,6 +24,7 @@ from pathlib import Path
 from loguru import logger
 
 from app.models import NodeRun, NodeRunStatus
+from app.services.disk_guard import append_rotating
 from app.settings import settings
 
 STATUS_LOG_PATH = Path("logs/status.log")
@@ -88,15 +89,10 @@ def guard_direct_status_write(nr: NodeRun, new_status: NodeRunStatus) -> None:
     logger.error(msg)
 
 
-def _ensure_log_dir() -> None:
-    STATUS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-
 def _write_status_log(line: str) -> None:
+    # Ротация по размеру (A03): logs/status.log не растёт без границы.
     try:
-        _ensure_log_dir()
-        with STATUS_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        append_rotating(STATUS_LOG_PATH, line)
     except OSError as e:
         logger.warning("node_status_machine: cannot write {}: {}", STATUS_LOG_PATH, e)
 

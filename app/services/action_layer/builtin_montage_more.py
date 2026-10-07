@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.services.action_layer.builtin_montage import (
-    _PID, _PRE_NO_APPLY, _PRE_PROJECT, _base, _op_key)
+    _PID, _PRE_NO_APPLY, _PRE_PROJECT, QueueChange, _base, _op_key, queue_update)
 from app.services.action_layer.context import ActionContext
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_PAID, RISK_READ, ActionRegistry,
@@ -319,19 +319,18 @@ async def _start_apply(ctx: ActionContext, pid: int, queue: list[dict],
 # --- действия: очередь и применение ------------------------------------------
 
 async def _cancel_queue_ops(ctx, params):
-    base = _base(params["project_id"])
-    board = await ctx.call("GET", base)
-    existing = _ops(board)
-    if params.get("clear_all"):
-        kept = []
-    else:
-        gone = {_op_key({**o, "shot": o.get("shot", 1)}) for o in params["ops"]}
-        kept = [o for o in existing if _op_key(o) not in gone]
-    data = await ctx.call("POST", f"{base}/queue",
-                          json={"pending_ops": kept, "force_clear": not kept})
-    if not data.get("ok"):
-        raise RuntimeError(data.get("message") or data.get("rejected") or "queue rejected")
-    return {"removed": len(existing) - len(kept), "left_in_queue": len(kept)}
+    def build(board: dict) -> QueueChange:
+        existing = _ops(board)
+        if params.get("clear_all"):
+            kept = []
+        else:
+            gone = {_op_key({**o, "shot": o.get("shot", 1)}) for o in params["ops"]}
+            kept = [o for o in existing if _op_key(o) not in gone]
+        return QueueChange(kept, {"force_clear": not kept},
+                           {"removed": len(existing) - len(kept), "left_in_queue": len(kept)})
+
+    change, _data = await queue_update(ctx, params["project_id"], build)
+    return change.payload
 
 
 async def _pre_cancel_args(ctx, params):
@@ -388,25 +387,27 @@ def _queue_replacing(existing_media: list[dict], new_ops: list[dict]) -> list[di
 
 async def _queue_and_apply(ctx, pid: int, new_ops: list[dict], max_ops: int,
                            strict: bool = False) -> dict:
-    base = _base(pid)
     numbers = sorted({int(o["frame_number"]) for o in new_ops})
-    board = await ctx.call("GET", base)
-    merged = _queue_replacing(_media_ops(board), new_ops)
-    refusal = None
-    if len(new_ops) > max_ops:
-        refusal = f"операций картинок {len(new_ops)} больше заявленных {max_ops}"
-    elif any(o.get("type") in _VIDEO_OPS and int(o.get("frame_number") or 0) in numbers
-             for o in merged):
-        refusal = ("для этих кадров в очереди есть видео-операции: примените их отдельно "
-                   "(montage.apply_queue)")
+
+    def build(board: dict) -> QueueChange:
+        merged = _queue_replacing(_media_ops(board), new_ops)
+        refusal = None
+        if len(new_ops) > max_ops:
+            refusal = f"операций картинок {len(new_ops)} больше заявленных {max_ops}"
+        elif any(o.get("type") in _VIDEO_OPS and int(o.get("frame_number") or 0) in numbers
+                 for o in merged):
+            refusal = ("для этих кадров в очереди есть видео-операции: примените их отдельно "
+                       "(montage.apply_queue)")
+        return QueueChange(merged, payload={"refusal": refusal}, skip=bool(refusal))
+
+    change, _saved = await queue_update(ctx, pid, build)
+    refusal = change.payload["refusal"]
     if refusal:
         if strict:
             raise RuntimeError(refusal)
         return {"applied": False, "apply_started": False, "image_ops": len(new_ops),
                 "queued": 0, "reason": refusal}
-    saved = await ctx.call("POST", f"{base}/queue", json={"pending_ops": merged})
-    if not saved.get("ok"):
-        raise RuntimeError(saved.get("message") or saved.get("rejected") or "queue rejected")
+    merged = list(change.ops)
     merged.sort(key=lambda o: 0 if o.get("type") in _IMAGE_OPS else 1)
     started = await _start_apply(ctx, pid, merged, numbers)
     return {**started, "applied": True, "queued": len(new_ops), "image_ops": len(new_ops)}
@@ -626,20 +627,20 @@ async def _delete_video(ctx, params):
 async def _set_video_trim(ctx, params):
     if "end" in params and params["end"] <= params["start"]:
         raise ValueError("end должен быть больше start")
-    base = _base(params["project_id"])
-    board = await ctx.call("GET", base)
-    trims = copy.deepcopy((board.get("meta") or {}).get("video_trims") or {})
     key = f"{params['frame_number']}:{params['shot']}"
-    if params.get("clear"):
-        trims.pop(key, None)
-    else:
-        trims[key] = {"start": float(params["start"]),
-                      **({"end": float(params["end"])} if "end" in params else {})}
-    data = await ctx.call("POST", base + "/queue",
-                          json={"pending_ops": _ops(board), "video_trims": trims})
-    if not data.get("ok"):
-        raise RuntimeError(data.get("message") or data.get("rejected") or "queue rejected")
-    return {"key": key, "trim": trims.get(key)}
+
+    def build(board: dict) -> QueueChange:
+        trims = copy.deepcopy((board.get("meta") or {}).get("video_trims") or {})
+        if params.get("clear"):
+            trims.pop(key, None)
+        else:
+            trims[key] = {"start": float(params["start"]),
+                          **({"end": float(params["end"])} if "end" in params else {})}
+        return QueueChange(_ops(board), {"video_trims": trims},
+                           {"key": key, "trim": trims.get(key)})
+
+    change, _data = await queue_update(ctx, params["project_id"], build)
+    return change.payload
 
 
 async def _pre_trim_args(ctx, params):
@@ -665,6 +666,21 @@ async def _delete_ref(ctx, params):
     data = await ctx.call("POST", f"{_base(params['project_id'])}/delete-ref", params={
         "frame_number": params["frame_number"], "ref_id": params["ref_id"], "kind": params["kind"]})
     return {"deleted": bool(data.get("ok")), "refs": data.get("refs")}
+
+
+async def _unlink_ref(ctx, params):
+    """Только отвязка персонажа/предмета: один эндпоинт с delete_manual_ref, поэтому тип
+    проверяется здесь, чтобы ``manual`` (удаление файла с диска) сюда не попал никогда."""
+    if params.get("kind") not in ("character", "item"):
+        raise ValueError("unlink_ref: допустимы только kind=character|item; "
+                         "удаление загруженного рефа - отдельное действие delete_manual_ref")
+    return await _delete_ref(ctx, params)
+
+
+async def _delete_manual_ref(ctx, params):
+    if params.get("kind") != "manual":
+        raise ValueError("delete_manual_ref: допустим только kind=manual")
+    return await _delete_ref(ctx, params)
 
 
 # --- фоновые задачи без денег ------------------------------------------------
@@ -1038,7 +1054,7 @@ def _specs() -> list[ActionSpec]:
                               "ref_id": {"type": "string", "minLength": 1, "maxLength": 100},
                               "kind": {"type": "string", "enum": ["character", "item"]}},
                              ["frame_number", "ref_id", "kind"]),
-          executor=_delete_ref, risk=RISK_LOCAL_SAFE, idempotent=True,
+          executor=_unlink_ref, risk=RISK_LOCAL_SAFE, idempotent=True,
           preconditions=(_PRE_PROJECT, _pre_frame_numbers("frame_number")), tags=("montage", "refs")),
         S(id="montage.delete_manual_ref", title_ru="Удалить загруженный реф кадра",
           description_ru="Убирает ручной реф кадра; если файл был загружен для этого кадра, он "
@@ -1047,7 +1063,7 @@ def _specs() -> list[ActionSpec]:
                               "ref_id": {"type": "string", "minLength": 1, "maxLength": 100},
                               "kind": {"type": "string", "const": "manual"}},
                              ["frame_number", "ref_id", "kind"]),
-          executor=_delete_ref, risk=RISK_DESTRUCTIVE, destructive=True, reversible=False,
+          executor=_delete_manual_ref, risk=RISK_DESTRUCTIVE, destructive=True, reversible=False,
           idempotent=True,
           destructive_effects=lambda p: (
               f"Реф {p['ref_id']} снимается с кадра {p['frame_number']}; если он был загружен "

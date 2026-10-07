@@ -63,6 +63,11 @@ import uuid as _uuid
 from pathlib import Path
 from typing import Any
 
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+
 _HERE = Path(__file__).resolve().parent
 ROOT = _HERE.parent
 if str(ROOT) not in sys.path:
@@ -767,11 +772,7 @@ async def main(argv: list[str] | None = None) -> int:
         return 3
     hosts = allowed_hosts(live_env)
     work = Path(early.work_dir).resolve()
-    data = work / "data"
-    if data.exists():
-        shutil.rmtree(data)
-    work.mkdir(parents=True, exist_ok=True)
-    data.mkdir(parents=True)
+    data = guard.reset_scratch_data(work)  # A19: refuses live data; removes only <work>/data made by these scripts
     runtime_path = work / "runtime.json"
     endpoint = live_endpoint(live_env) if mode != "offline" else None
     runtime_path.write_text(json.dumps(runtime_config(early.port, early.request_limit, early.recovery, endpoint=endpoint),

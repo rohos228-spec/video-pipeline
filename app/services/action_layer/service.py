@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -113,9 +114,36 @@ async def approve_plan(app: Any, plan_id: str, operator: approval.OperatorIdenti
                 "operator": appr.operator, "expires_at": appr.expires_at.isoformat() + "Z"}
 
 
+_PREPARE_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def _prepare_lock() -> asyncio.Lock:
+    """Один замок на цикл событий: проверка project_busy и перевод в running атомарны."""
+    key = id(asyncio.get_running_loop())
+    lock = _PREPARE_LOCKS.get(key)
+    if lock is None:
+        _PREPARE_LOCKS.clear()
+        lock = _PREPARE_LOCKS[key] = asyncio.Lock()
+    return lock
+
+
 async def prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
                       registry: ActionRegistry | None = None) -> "store.ActionPlan":
-    """Проверки и перевод плана в running (с расходом подтверждения)."""
+    """Проверки и перевод плана в running (с расходом подтверждения).
+
+    Под замком: две одновременные заявки на один проект не проходят обе, а проект
+    удерживается заявкой до ``launch``, пока задача плана не стала живой.
+    """
+    async with _prepare_lock():
+        try:
+            return await _prepare_run(plan_id, operator, registry=registry)
+        except BaseException:
+            executor.release_claim(plan_id)
+            raise
+
+
+async def _prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
+                       registry: ActionRegistry | None = None) -> "store.ActionPlan":
     registry = registry or default_registry
     ensure_builtin_actions()
     from app.services.action_layer import planner
@@ -128,9 +156,24 @@ async def prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
             raise RunRefused("plan_finished", f"План уже завершён (состояние «{row.status}»): составьте новый.")
         if plan_hash(_plan_from_rows(row, steps), registry) != row.plan_hash:
             raise RunRefused("plan_changed", "План или определения действий изменились после предпросмотра. Составьте план заново.")
-        if await executor._kill_switch_on():
+        if await executor._kill_switch_on() and not all(
+                st.action_id in executor.KILL_EXEMPT_ACTIONS for st in steps):
             raise RunRefused("kill_switch_active", "Аварийная остановка включена оператором: планы не запускаются.")
+        for st in steps:
+            if st.status != store.STEP_SUCCEEDED:
+                bad = await executor.verify_attachments(st.params or {})
+                if bad:
+                    raise RunRefused("attachment_changed", bad)
         if row.project_id is not None:
+            orphan = executor.orphan_busy(row.project_id)
+            if orphan is not None and orphan["plan_id"] != plan_id:
+                raise RunRefused(
+                    "project_busy",
+                    "Серверная платная задача предыдущего плана ещё не подтверждённо остановлена: "
+                    "дождитесь её конца или остановите проект.")
+            holder = executor.claim_project(row.project_id, plan_id)
+            if holder is not None:
+                raise RunRefused("project_busy", "В этом проекте уже запускается другой план.")
             others = (await s.scalars(select(store.ActionPlan.id).where(
                 store.ActionPlan.project_id == row.project_id,
                 store.ActionPlan.status == store.PLAN_RUNNING,

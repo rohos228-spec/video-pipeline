@@ -52,8 +52,10 @@ class TrackApiCost(unittest.TestCase):
         self.track(provider="kie", vk=REAL_VK, kie="").assert_not_called()
         self.track(provider="kie", vk="", kie=REAL_KIE).assert_called_once()
 
-    def test_synthetic_vibecode_key_never_records(self):
-        self.track(vk="synthetic-vibecode-key").assert_not_called()
+    def test_synthetic_vibecode_key_is_recorded_and_tagged(self):
+        # A08: a synthetic* key no longer switches accounting off; the row is tagged.
+        meta = self.track(vk="synthetic-vibecode-key").call_args.kwargs["metadata"]
+        self.assertIs(meta["synthetic_key"], True)
 
     def test_unknown_provider_never_records(self):
         self.track(provider="unknown", kie=REAL_KIE).assert_not_called()
@@ -71,7 +73,8 @@ class TrackApiCost(unittest.TestCase):
     def test_kie_call_keeps_kie_provider_and_no_vibecode_metadata(self):
         record = self.track(provider="kie", vk="", kie=REAL_KIE, model="gpt-5-6-sol", usage={"input_tokens": 1, "output_tokens": 1})
         self.assertEqual(record.call_args.kwargs["provider"], "kie")
-        self.assertNotIn("metadata", record.call_args.kwargs)
+        meta = record.call_args.kwargs["metadata"]
+        self.assertEqual(meta, {"cost_kind": "estimated"})  # no Vibecode pricing fields on a Kie row
 
 
 class CalcCost(unittest.TestCase):

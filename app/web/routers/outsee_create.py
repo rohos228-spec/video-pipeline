@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Frame, Project
+from app.services import spend_guard
 from app.settings import settings
 from app.web.deps import get_session
 
@@ -499,9 +500,39 @@ def _clean_llm_prompt_response(raw: str) -> str:
     return s.strip()
 
 
+class _KieAnswered(RuntimeError):
+    """A Kie HTTP answer that is not success; ``context`` lets media_spend recognise HTTP 402."""
+
+    def __init__(self, status: int):
+        super().__init__(f"kie chat HTTP {status}")
+        self.context = {"status_code": int(status), "provider_code": int(status),
+                        "credits_exhausted": int(status) == 402}
+
+
+def _paid_blocked_info(exc: BaseException) -> dict | None:
+    """The gate's refusal (raw or wrapped in a provider error), as a small dict for the operator."""
+    if isinstance(exc, spend_guard.PaidCallBlocked):
+        return {"code": exc.code, "message_ru": exc.message_ru}
+    ctx = getattr(exc, "context", None)
+    if isinstance(ctx, dict) and ctx.get("paid_gate_blocked"):
+        return {"code": str(ctx.get("gate_code") or ""), "message_ru": str(exc)}
+    return None
+
+
+def _record_kie_chat(*, usd: float, note: str, exc: BaseException | None = None) -> None:
+    """A09: one ledger row for the paid Kie chat completion (estimate, not a measured price)."""
+    from app.services import media_spend
+    media_spend.record("kie", usd=usd, note=f"enhance-prompt {note}"[:190], exc=exc)
+
+
 @router.post("/enhance-prompt")
 async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
-    """Улучшить промпт с помощью LLM (GPT / Kimi / Vibecode / Kie.ai) или интеллектуального расширителя."""
+    """Улучшить промпт с помощью LLM (GPT / Kimi / Vibecode / Kie.ai) или интеллектуального расширителя.
+
+    Платные шаги (LLM, Kie chat) идут через рубильник, диск и денежный потолок. Если проверка не
+    пропустила, запрос к провайдеру не уходит, а промпт улучшает бесплатный локальный синтезатор;
+    в ответе поле ``paid_blocked`` с причиной по-русски.
+    """
     import httpx
 
     text = (req.prompt or "").strip()
@@ -518,8 +549,17 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
         "Output ONLY the final enhanced prompt text without any introductory text, quotes, or markdown codeblocks."
     )
 
+    blocked: dict | None = None
+    pre = await spend_guard.paid_precheck("llm", "enhance-prompt",
+                                          estimate_usd=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD)
+    if not pre.get("allowed"):
+        blocked = {"code": pre.get("code", ""), "message_ru": pre.get("message_ru", "")}
+
     # 1. Попытка через основной текстовый LLM (OpenAI / TokenRouter Kimi / Vibecode)
     try:
+        if blocked is not None:
+            raise spend_guard.PaidCallBlocked(blocked["code"], blocked["message_ru"], provider="llm",
+                                              what="enhance-prompt")
         from app.services.gpt_client import ApiGptClient, gpt_text_via_api
 
         if gpt_text_via_api():
@@ -535,10 +575,14 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
                 logger.info("AI prompt enhanced via ApiGptClient: {} -> {}", text[:30], cleaned[:60])
                 return {"ok": True, "enhanced_prompt": cleaned, "provider": "llm"}
     except Exception as e:
+        blocked = blocked or _paid_blocked_info(e)
         logger.warning("LLM prompt enhance (ApiGptClient) fallback: {}", e)
 
     # 2. Попытка через KIE_API_KEY (kie.ai chat completions)
     try:
+        if blocked is not None:
+            raise spend_guard.PaidCallBlocked(blocked["code"], blocked["message_ru"], provider="kie",
+                                              what="enhance-prompt chat")
         from app.bots import kie_http
         from app.bots.kie_kling import kie_api_base_url, kie_api_key
 
@@ -555,21 +599,38 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
                 "temperature": 0.7,
                 "max_tokens": 300,
             }
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                r = await client.post(url, headers={"Authorization": f"Bearer {key}"}, json=payload)
-                if r.status_code == 200:
-                    data = r.json()
-                    choices = data.get("choices") or []
-                    if choices and isinstance(choices, list):
-                        msg = choices[0].get("message", {}).get("content", "")
-                        cleaned = _clean_llm_prompt_response(msg)
-                        if cleaned and len(cleaned) > 10:
-                            logger.info("AI prompt enhanced via Kie.ai chat: {} -> {}", text[:30], cleaned[:60])
-                            return {"ok": True, "enhanced_prompt": cleaned, "provider": "kie-llm"}
+            est = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD
+            async with spend_guard.paid_call("kie", "enhance-prompt chat", estimate_usd=est):
+                try:
+                    async with httpx.AsyncClient(timeout=20.0) as client:
+                        r = await client.post(url, headers={"Authorization": f"Bearer {key}"}, json=payload)
+                except httpx.ConnectError as exc:
+                    _record_kie_chat(usd=0.0, note=f"connect failed {type(exc).__name__}")
+                    raise
+                except BaseException as exc:
+                    # Timeout or drop after the request left: it may have been accepted and billed.
+                    _record_kie_chat(usd=est, note=f"uncertain {type(exc).__name__} uncalibrated")
+                    raise
+            if r.status_code == 200:
+                _record_kie_chat(usd=est, note="gpt-4o-mini uncalibrated")
+                data = r.json()
+                choices = data.get("choices") or []
+                if choices and isinstance(choices, list):
+                    msg = choices[0].get("message", {}).get("content", "")
+                    cleaned = _clean_llm_prompt_response(msg)
+                    if cleaned and len(cleaned) > 10:
+                        logger.info("AI prompt enhanced via Kie.ai chat: {} -> {}", text[:30], cleaned[:60])
+                        return {"ok": True, "enhanced_prompt": cleaned, "provider": "kie-llm"}
+            else:
+                _record_kie_chat(usd=0.0, note=f"http={r.status_code} not billed",
+                                 exc=_KieAnswered(r.status_code))
     except Exception as e:
+        blocked = blocked or _paid_blocked_info(e)
         logger.warning("Kie LLM prompt enhance fallback: {}", e)
 
-    # 3. Умный локальный генератор (если ключи LLM не заданы или при сбое)
+    # 3. Умный локальный генератор (если ключи LLM не заданы, при сбое или отказе рубильника/потолка)
     fallback_prompt = _smart_enhance_prompt(text, req.style)
-    return {"ok": True, "enhanced_prompt": fallback_prompt, "provider": "synthesizer"}
-
+    out: dict[str, Any] = {"ok": True, "enhanced_prompt": fallback_prompt, "provider": "synthesizer"}
+    if blocked is not None:
+        out["paid_blocked"] = blocked
+    return out

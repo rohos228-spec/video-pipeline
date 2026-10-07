@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -64,9 +63,14 @@ class Ctx:
 
 
 def browser_enabled() -> bool:
-    """The browser path is guarded whenever work is real: no API key needed, but not under pytest (no dev DB writes)
-    unless a test turns recording on (``media_spend.TEST_FORCE``)."""
-    return bool(media_spend.TEST_FORCE or "PYTEST_CURRENT_TEST" not in os.environ)
+    """The browser path is guarded whenever recording is on: no API key needed. Off only by the explicit
+    ``MEDIA_SPEND_RECORDING=false`` or when the ledger is not the configured database (counted and logged by
+    ``media_spend``); never by ``PYTEST_CURRENT_TEST``."""
+    reason = media_spend.disabled_reason("browser")
+    if reason is not None:
+        media_spend._count_skip("outsee", reason)
+        return False
+    return True
 
 
 def make_ctx(args: tuple, kwargs: dict, media: str, *, browser: bool = False) -> Ctx:
@@ -99,7 +103,9 @@ async def _append(fn, **kw) -> bool:
             await s.commit()
         return True
     except Exception as e:  # noqa: BLE001
-        logger.warning("outsee_guard: ledger write failed ({}): {}", fn.__name__, type(e).__name__)
+        # Without the intent row a lost answer cannot be blocked from a second paid submit: leave a trace.
+        await media_spend.gap_async(API, "intent_row", project_id=kw.get("project_id"), error=e,
+                                    detail=f"{fn.__name__} key={kw.get('key', '')} event={kw.get('event', '')}")
         return False
 
 
@@ -124,7 +130,8 @@ async def begin(ctx: Ctx) -> None:
     try:
         unresolved = await _unresolved(ctx)
     except Exception as e:  # noqa: BLE001
-        logger.warning("outsee_guard: ledger read failed: {}", type(e).__name__)
+        # The guard cannot tell whether an earlier submit is unresolved; the call goes on, the gap is traced.
+        await media_spend.gap_async(API, "intent_read", project_id=ctx.project_id, error=e, detail=f"key={ctx.key}")
         return
     if not unresolved:
         return

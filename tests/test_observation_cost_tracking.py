@@ -61,13 +61,15 @@ def test_track_api_cost_never_raises_even_if_hook_fails():
         _track_api_cost(model="x", usage=None, duration_sec=0.1, project_id=1)  # must not raise
 
 
-def test_track_api_cost_skips_synthetic_key():
+def test_track_api_cost_records_synthetic_key_tagged():
+    # A08: a synthetic* key no longer switches accounting off; the row is tagged instead.
     from app.settings import settings
-    with patch.object(settings, "gpt_api_key", "synthetic-observe-test-key"), \
-         patch("app.services.api_tracker_hook.record_api_call") as mock_record:
+    with patch.object(settings, "gpt_api_key", "synthetic-observe-test-key"),          patch("app.services.api_tracker_hook.record_api_call") as mock_record:
         _track_api_cost(model="gpt-5-6-sol", usage={"input_tokens": 10, "output_tokens": 5},
             duration_sec=1.5, project_id=7)
-    mock_record.assert_not_called()
+    mock_record.assert_called_once()
+    meta = mock_record.call_args.kwargs["metadata"]
+    assert meta["synthetic_key"] is True and meta["cost_kind"] == "estimated"
 
 
 def test_track_api_cost_skips_empty_key():
@@ -159,7 +161,7 @@ def test_cost_project_explicit_project_id_wins():
         _cost_project.reset(token)
 
 
-def test_cost_project_fallback_keeps_real_key_gate():
+def test_cost_project_fallback_records_synthetic_key_tagged():
     from app.services.observation import _cost_project
     from app.settings import settings
     token = _cost_project.set(42)
@@ -167,7 +169,8 @@ def test_cost_project_fallback_keeps_real_key_gate():
         with patch.object(settings, "gpt_api_key", "synthetic-key"), \
                 patch("app.services.api_tracker_hook.record_api_call") as mock_record:
             _track_api_cost(model="m", usage=None, duration_sec=0.1)
-        mock_record.assert_not_called()
+        mock_record.assert_called_once()  # A08: synthetic* is tagged, not skipped
+        assert mock_record.call_args.kwargs["project_source"] == "42"
     finally:
         _cost_project.reset(token)
 

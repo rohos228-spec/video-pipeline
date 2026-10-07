@@ -1921,9 +1921,22 @@ async def fetch_completed_response(
     return "", last_status, last_raw
 
 
+from app.services import spend_guard
 from app.services.observation import observe_model, record_fact
 
 
+def _blocked_as_gpt(blocked: "spend_guard.PaidCallBlocked") -> GptApiError:
+    """The gate's refusal in this module's own error class (never retryable: nothing was sent)."""
+    return GptApiError(blocked.message_ru, context={
+        **blocked.context, "retryable": False, "error_kind": "paid_gate_blocked", "gate_code": blocked.code})
+
+
+# One gate per HTTP request, OUTSIDE ``observe_model`` so a refusal is not journaled as a model failure.
+_gpt_seam = spend_guard.paid_seam(
+    "gpt", "llm request", estimate=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD, wrap_error=_blocked_as_gpt)
+
+
+@_gpt_seam
 @observe_model
 async def _chat_responses_stream(
     *,
@@ -2249,6 +2262,7 @@ def _chat_sse_finish_seen(lines: list[str]) -> str:
     return finish
 
 
+@_gpt_seam
 @observe_model
 async def _chat_completions_nostream(
     *,
@@ -2290,6 +2304,7 @@ async def _chat_completions_nostream(
     )
 
 
+@_gpt_seam
 @observe_model
 async def _chat_completions_stream(
     *,
@@ -3058,8 +3073,12 @@ async def chat(
                 )
                 return result
 
-            async with _async_client(timeout=_http_timeout(use_timeout)) as client:
-                resp = await client.post(url, headers=headers, json=body)
+            async with spend_guard.paid_call(
+                "gpt", "llm request", estimate_usd=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
+                wrap_error=_blocked_as_gpt,
+            ):
+                async with _async_client(timeout=_http_timeout(use_timeout)) as client:
+                    resp = await client.post(url, headers=headers, json=body)
             status = resp.status_code
             _raise_http_status(status, resp.text, use_model=use_model)
             try:

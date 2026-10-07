@@ -33,7 +33,13 @@ from pathlib import Path
 
 ENV_FLAG = "ACTION_LAYER_TEST_ACTIONS"
 ROOT = Path(__file__).resolve().parents[1]
-LIVE_DATA = Path(r"C:\video-pipeline\_live\live\data")
+# The seed (a data folder whose state.db is COPIED, never opened for writing) comes from --seed-dir or the
+# E2E_SEED_DATA_DIR variable. There is no hard-coded default path: A19.
+SEED_ENV = "E2E_SEED_DATA_DIR"
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
 
 # Test seams (tests replace these); production code path uses the real clock.
 _now = time.monotonic
@@ -155,18 +161,22 @@ def register_fake_actions(registry=None) -> list[str]:
     return ids
 
 
-def _prepare_data_dir(arg: str | None) -> Path:
+def _prepare_data_dir(arg: str | None, seed: str | None = None) -> Path:
+    """Scratch data dir for the launcher. Never the live one: an existing --data-dir that is (or lies inside)
+    the live data folder is refused; the seed state.db is copied through the sqlite backup API (consistent)."""
     if arg:
-        d = Path(arg)
+        d = guard.assert_scratch_data_dir(Path(arg))
         if (d / "state.db").exists():
             return d
     else:
         d = Path(tempfile.mkdtemp(prefix="al_fake_paid_"))
     d.mkdir(parents=True, exist_ok=True)
-    for name in ("state.db", "state.db-wal", "state.db-shm"):
-        src = LIVE_DATA / name
-        if src.exists():
-            shutil.copy2(src, d / name)
+    seed_dir = seed or os.environ.get(SEED_ENV)
+    src = Path(seed_dir) / "state.db" if seed_dir else None
+    if src is not None and src.exists():
+        import sqlite3
+        with sqlite3.connect(str(src), timeout=30) as source, sqlite3.connect(str(d / "state.db")) as target:
+            source.backup(target)
     return d
 
 
@@ -174,14 +184,16 @@ def main(argv: list[str]) -> int:
     if not _enabled():
         print(f"REFUSED: set {ENV_FLAG}=1 to run this test-only launcher.", file=sys.stderr)
         return 2
-    port, data_arg = "8796", None
+    port, data_arg, seed_arg = "8796", None, None
     it = iter(argv)
     for a in it:
         if a == "--data-dir":
             data_arg = next(it, None)
+        elif a == "--seed-dir":
+            seed_arg = next(it, None)
         elif a.isdigit():
             port = a
-    d = _prepare_data_dir(data_arg)
+    d = _prepare_data_dir(data_arg, seed_arg)
     os.environ.update(
         TELEGRAM_ENABLED="false", DATA_DIR=str(d), SQLITE_PATH=str(d / "state.db"),
         SUPABASE_URL="http://127.0.0.1:9", SUPABASE_KEY="unused", WEB_PORT=port,
