@@ -25,6 +25,21 @@ _UNCLAIMED = {
 }
 
 
+# C05: what a recorded degradation of animation_prompts means for the step. The executor already carries on
+# by a local fallback when the provider is down; this fixes the POLICY for that outcome in one place:
+# the step counts as "success with degradation" (never silent success, never an automatic failure), the
+# incident `animation_degraded` is its visible record, and a repeated paid model request is a human decision.
+ANIMATION_DEGRADATION_POLICY = {
+    "outcome": "success_with_degradation",
+    "visible_as": "incident animation_degraded (warning, human_review)",
+    "step_status_unchanged": True,
+    "paid_retry": "human decision only; no automatic retry",
+    "operator_text_ru": ("Промты анимации получены запасным путём (сбой провайдера). Шаг принят как "
+                         "«успех с деградацией»: качество не проверялось. Повторный платный запрос "
+                         "выполняется только по вашему решению."),
+}
+
+
 def animation_prompts_contract():
     """Describe the shipped executor, parser, writes and coverage rules."""
     from app.services import animation_prompt_gpt as native
@@ -69,7 +84,9 @@ def animation_prompts_contract():
             "reasons": ["local_fallback (provider outage: rest of shot_01 filled by the local composer, no model, no images)",
                         "shot2_skipped (provider outage: remaining shot_02 prompts not made, step continues)"],
             "incident": "animation_degraded (non-blocking warning, human_review, never a recovery incident)",
-            "retry": "none: a degradation is not a failure of the attempt"},
+            "retry": "none: a degradation is not a failure of the attempt",
+            "policy": ANIMATION_DEGRADATION_POLICY,
+            "failed_result_check": "incident verification_hold (blocking when status=failed, warning when unknown)"},
         **_UNCLAIMED,
     }
 

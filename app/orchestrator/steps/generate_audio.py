@@ -37,7 +37,30 @@ from app.services.mapper import extract_local_frame_words
 from app.services.media_probe import probe_duration
 from app.services.asr import active_asr_backend
 from app.services.whisper import WordTS, dump_words_json
+from app.services.audio_verification import AudioStepError, classify_audio_failure, verify_audio
 from app.settings import settings
+
+
+def _emit(kind: str, payload: dict) -> None:
+    try:
+        from app.services.observation import emit
+
+        emit(kind, payload)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _report_failure(project: Project, exc: Exception) -> None:
+    """Единый путь ошибок звука: тип сбоя, русский текст, факт в журнале; исключение не подменяется."""
+    failure_class, text_ru = classify_audio_failure(exc)
+    try:
+        exc.failure_class = failure_class  # type: ignore[attr-defined]
+        exc.operator_text = text_ru  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    logger.error("[#{}] generate_audio сбой [{}]: {}", project.id, failure_class, exc)
+    _emit("audio_step_failure", {"node": "audio", "failure_class": failure_class, "error_class": type(exc).__name__,
+                                 "text_ru": text_ru, "detail": str(exc)[:400]})
 
 
 async def _latest_artifact(
@@ -70,6 +93,12 @@ async def _persist_audio_results(
     source: str,
     cells: list[tuple[int, str]] | None = None,
 ) -> None:
+    expected_total = clips[-1].end_ts if clips else 0.0
+    verdict = verify_audio(full_audio_path, expect_duration=expected_total or None,
+                           duration_tol=max(1.0, 0.05 * expected_total))
+    _emit("audio_result_verification", {"node": "audio", "source": source, **verdict.to_dict()})
+    if not verdict.ok:
+        raise AudioStepError("verification_failed", "; ".join(verdict.problems), verdict=verdict)
     for fr in frames:
         clip = next(c for c in clips if c.frame_number == fr.number)
         fr.start_ts = clip.start_ts
@@ -106,6 +135,8 @@ async def _persist_audio_results(
             "source": source,
             "clip_count": len(clips),
             "clips": clip_meta,
+            "verification": {"ok": True, "duration": verdict.duration, "format": verdict.format,
+                             "peak_db": verdict.peak_db, "rms_db": verdict.rms_db},
         },
     ))
     await session.flush()
@@ -192,6 +223,20 @@ async def run(
     *,
     force_full_asr: bool = False,
 ) -> None:
+    try:
+        await _run(session, project, bot, force_full_asr=force_full_asr)
+    except Exception as exc:  # noqa: BLE001  # отмена (BaseException) проходит мимо
+        _report_failure(project, exc)
+        raise
+
+
+async def _run(
+    session: AsyncSession,
+    project: Project,
+    bot: Bot | None = None,
+    *,
+    force_full_asr: bool = False,
+) -> None:
     if project.status is not ProjectStatus.generating_audio:
         return
     logger.info("[#{}] generate_audio starting (per-frame TTS, VO from DB)", project.id)
@@ -212,7 +257,7 @@ async def run(
         )
     ).scalars().all()
     if not frames:
-        raise RuntimeError("нет кадров")
+        raise AudioStepError("no_frames", "нет кадров")
 
     audio_dir = project.data_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -243,9 +288,10 @@ async def run(
 
     timeline_frames, cells = timeline_frames_and_cells(project, frames)
     if not timeline_frames:
-        raise RuntimeError(
+        raise AudioStepError(
+            "missing_text",
             "нет закадрового текста в БД (Frame.voiceover_text) — "
-            "сделай split/Импорт Excel или заполни Базу"
+            "сделай split/Импорт Excel или заполни Базу",
         )
 
     if voice_path is not None and voice_path.is_file():
@@ -293,9 +339,10 @@ async def run(
         return
 
     if not any(text.strip() for _, text in cells):
-        raise RuntimeError(
+        raise AudioStepError(
+            "missing_text",
             "нет закадрового текста (строка 49 / voiceover.txt / script_text) — "
-            "положите готовый mp3/wav в audio/ или заполните текст"
+            "положите готовый mp3/wav в audio/ или заполните текст",
         )
 
     import os
@@ -306,10 +353,11 @@ async def run(
     )
     if not use_11labs:
         audio_hint = project.data_dir / "audio"
-        raise RuntimeError(
+        raise AudioStepError(
+            "no_voice_source",
             f"[#{project.id}] нет озвучки в {audio_hint} — положите voice.mp3 или "
             f"voice_full_*.wav (проект «{project.slug}»). "
-            "11Labs отключён: AUDIO_USE_ELEVENLABS_FALLBACK=0"
+            "11Labs отключён: AUDIO_USE_ELEVENLABS_FALLBACK=0",
         )
 
     from app.services.elevenlabs_api import tts_run_budget

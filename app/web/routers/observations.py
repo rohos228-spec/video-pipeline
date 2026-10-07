@@ -934,3 +934,52 @@ async def project_timeline_export(project_id: int, format: str = Query("csv", ma
             raise HTTPException(422, str(exc)) from exc
     return Response(body, media_type=media,
                     headers={"Content-Disposition": f'attachment; filename="timeline-{project_id}.{ext}"'})
+
+
+# --- C01: автонаблюдение (добавление; прежние маршруты не изменены) ---------------------------------------
+class AutoObservation(BaseModel):
+    enabled: bool
+
+
+async def _auto_state(project_id: int) -> dict:
+    from app.services.observation import auto_observe_enabled
+    observer = get_observer()
+    async with observer.master() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        project_flag = (project.meta or {}).get("observer_auto") if isinstance(project.meta, dict) else None
+    active = [scope_json(s) for s in observer.scopes.values() if s.project_id == project_id]
+    return {"project_id": project_id, "enabled": auto_observe_enabled(project), "project_setting": project_flag,
+            "last_error": observer.auto_failures.get(project_id), "active_scopes": active,
+            "note": "Наблюдение включается само при старте шага; выключается переменной OBSERVER_AUTO_ENABLE=0 "
+                    "или настройкой проекта."}
+
+
+@router.get("/auto", dependencies=[Depends(require_web_user)])
+async def get_auto_observation(project_id: int):
+    return await _auto_state(project_id)
+
+
+@router.post("/auto", dependencies=[LocalOnlyDep])
+async def set_auto_observation(project_id: int, payload: AutoObservation):
+    """Включить/выключить автонаблюдение для проекта. Выключение останавливает действующее наблюдение
+    (режим observe); управляемый (managed) режим не затрагивается."""
+    observer = get_observer()
+    async with observer.master() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        project.meta = {**(project.meta or {}), "observer_auto": bool(payload.enabled)}
+        await session.commit()
+    if not payload.enabled:
+        for scope in [s for s in observer.scopes.values() if s.project_id == project_id and s.mode == "observe"]:
+            try:
+                await observer.stop(scope.execution_id, initiator="observation_auto_off")
+            except ValueError:
+                pass
+    else:
+        async with observer.master() as session:
+            project = await session.get(Project, project_id)
+        await observer.ensure_auto_scope(project, force=True)
+    return await _auto_state(project_id)

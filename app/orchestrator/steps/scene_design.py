@@ -11,7 +11,9 @@
 кадров) → scene_design_ready. В боевые таблицы пишет только сборка.
 
 Выключена (SCENE_DESIGN_ENABLED=false и нет per-project override) —
-обе фазы прозрачный pass-through.
+обе фазы пропускаются, но НЕ молча (W4-4, C05): шаг пишет в журнал событие
+``scene_design_skipped``, пометку в ``project.meta["scene_design_skipped"]`` и
+текст прогресса «Пропущено», чтобы приёмка не видела выполненный шаг без работы.
 """
 
 from __future__ import annotations
@@ -137,6 +139,53 @@ def _write_sd_reply_file(project: Project, marker: str, payload: object) -> None
         )
 
 
+SKIPPED_TEXT_RU = (
+    "Пропущено: режиссура сцен выключена (SCENE_DESIGN_ENABLED=false), фаза «{phase}» ничего не сделала, "
+    "модель не вызывалась."
+)
+_PHASE_RU = {"agents": "агенты сцен", "assemble": "сборка сцен"}
+
+
+async def _record_skipped(session: AsyncSession, project: Project, phase: str) -> dict:
+    """Явное «пропущено» вместо молчаливого pass-through: журнал, meta проекта, прогресс ноды, лог.
+
+    Каждый канал независим: сбой одного не мешает остальным и не ломает пропуск (шаг по-прежнему
+    переходит дальше, как раньше). Возвращает записанную пометку."""
+    from datetime import datetime, timezone
+
+    text = SKIPPED_TEXT_RU.format(phase=_PHASE_RU.get(phase, phase))
+    note = {
+        "phase": phase,
+        "reason": "scene_design_disabled",
+        "at": datetime.now(timezone.utc).isoformat(),
+        "summary_ru": text,
+        "model_called": False,
+    }
+    logger.warning("[#{}] scene_design {}: {}", project.id, phase, text)
+    try:
+        from app.services.observation import record_fact
+
+        await record_fact("scene_design_skipped", dict(note))
+    except Exception:  # noqa: BLE001 - журнал не должен ломать переход шага
+        logger.debug("[#{}] scene_design: событие пропуска не записано", project.id, exc_info=True)
+    try:
+        from app.services.project_meta import set_meta_fields
+
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        history = dict(meta.get("scene_design_skipped") or {})
+        history[phase] = note
+        set_meta_fields(project, scene_design_skipped=history)
+    except Exception:  # noqa: BLE001
+        logger.debug("[#{}] scene_design: пометка пропуска в meta не записана", project.id, exc_info=True)
+    try:
+        from app.services.run_sync import update_active_node_progress_text
+
+        await update_active_node_progress_text(session, project, text)
+    except Exception:  # noqa: BLE001
+        logger.debug("[#{}] scene_design: текст прогресса не записан", project.id, exc_info=True)
+    return note
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:
     """Фаза 1: категорийные агенты (параллельно) → staging-ячейки."""
     if project.status is not ProjectStatus.scene_designing:
@@ -148,7 +197,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     logger.info("[#{}] scene_design agents phase starting", project.id)
 
     if not runner.scene_design_enabled(project):
-        logger.info("[#{}] scene_design disabled — pass-through", project.id)
+        await _record_skipped(session, project, "agents")
         project.status = ProjectStatus.scene_agents_ready
         await session.flush()
         await session.commit()
@@ -282,7 +331,7 @@ async def run_assemble(
     logger.info("[#{}] scene_design assemble phase starting", project.id)
 
     if not runner.scene_design_enabled(project):
-        logger.info("[#{}] scene_design disabled — pass-through", project.id)
+        await _record_skipped(session, project, "assemble")
         project.status = ProjectStatus.scene_design_ready
         await session.flush()
         await session.commit()

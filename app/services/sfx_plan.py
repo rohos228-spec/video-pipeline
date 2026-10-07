@@ -542,6 +542,13 @@ def _sfx_wav_record(record, by_number):
         pcm = reader.readframes(count)
     if not count:
         raise ValueError("empty native sfx wav")
+    # Независимый верификатор звука (W4-3): формат, дорожка, длительность и ненулевая амплитуда другим кодом.
+    from app.services.audio_verification import verify_audio
+    verdict = verify_audio(path, expect_duration=count / 44100, duration_tol=0.25)
+    codes = [c for c in verdict.codes
+             if not (c in {"unreadable", "level_unknown"} and __import__("shutil").which("ffprobe") is None)]
+    if codes:
+        raise ValueError("native sfx audio verification failed: " + ",".join(codes))
     power = sum(sample[0] ** 2 for sample in __import__("struct").iter_unpack("<h", pcm)) / count
     if power <= 0:
         raise ValueError("silent native sfx wav")

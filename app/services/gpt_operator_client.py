@@ -1,8 +1,11 @@
 """Клиент оператора GPT через API (без браузера/CDP).
 
-Пока нет боевого chat+files провайдера — stub пишет фактический результат
-на диск (включая analysis.json / check_report.txt), чтобы связи/UI/resolve
-можно было проверять end-to-end.
+Без ключа провайдера (dev/тесты) работает stub: он пишет файлы на диск (analysis.json /
+check_report.txt), чтобы связи/UI/resolve можно было проверять end-to-end. Stub НИКОГДА не
+выдаёт вердикт «pass» (W4-4, C05): проверка без провайдера не проводилась, поэтому вердикт
+``not_checked``, шлюз по нему не открывает ни одну ветку, а в журнал пишется событие
+``operator_check_not_checked``. Переменная GPT_OPERATOR_STUB_STRICT=1 вместо stub-а
+останавливает шаг понятной русской ошибкой (боевой режим).
 """
 
 from __future__ import annotations
@@ -15,7 +18,6 @@ from pathlib import Path
 from loguru import logger
 
 from app.services.check_analysis import (
-    SCHEMA_ID,
     CheckAnalysis,
     append_response_footer,
     append_txt_report_footer,
@@ -186,35 +188,64 @@ def _log_apply_ops_coverage(
     )
 
 
+VERDICT_NOT_CHECKED = "not_checked"
+STUB_STRICT_ENV = "GPT_OPERATOR_STUB_STRICT"
+NOT_CHECKED_SUMMARY_RU = (
+    "Проверка НЕ выполнена: не задан ключ GPT-провайдера (нет боевого провайдера). "
+    "Вердикт «pass» не выдаётся; задайте ключ и запустите проверку заново."
+)
+NO_KEY_ERROR_RU = (
+    "Нет ключа GPT-провайдера: проверка (QC) и текстовые шаги оператора не могут быть выполнены. "
+    "Задайте ключ (VIBECODE_API_KEY или GPT_API_KEY) и повторите шаг."
+)
+
+
+def stub_strict() -> bool:
+    import os
+
+    return (os.environ.get(STUB_STRICT_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _stub_analysis(*, role: str, prompt: str, accompanying: str) -> CheckAnalysis:
-    """Детерминированный stub-вердикт в формате vp.check.v1."""
-    probe = f"{prompt}\n{accompanying}\n".lower()
-    fail_markers = ("fail", "не ок", "неок", "reject", "стоп", "ошибк")
-    is_fail = any(m in probe for m in fail_markers)
-    verdict = "fail" if is_fail else "pass"
-    return parse_check_analysis(
-        json.dumps(
-            {
-                "schema": SCHEMA_ID,
-                "verdict": verdict,
-                "summary": f"stub {role}: {verdict}",
-                "checks": [
-                    {
-                        "id": "stub",
-                        "ok": not is_fail,
-                        "note": "gpt-operator/api stub (нет боевого провайдера)",
-                    }
-                ],
-                "forward": {"mode": "inherit", "paths": []},
-                "fix": {
-                    "target": "source" if is_fail else "none",
-                    "instructions": "см. промт (stub fail)" if is_fail else "",
-                    "rewrite_file": None,
-                },
-            },
-            ensure_ascii=False,
-        )
+    """Stub-вердикт vp.check.v1: всегда ``not_checked``, никогда «pass».
+
+    Раньше stub выдавал «pass» на любой текст без слов-маркеров, и пустой ключ превращал QC-гейт в
+    всегда зелёный. Теперь вердикт честный: проверка не проводилась. ``CheckAnalysis.ok`` для него ложно,
+    а разбор такого отчёта (``_norm_verdict``) даёт «fail», то есть любой повторный разбор тоже закрыт."""
+    from app.services.check_analysis import CheckItem
+
+    return CheckAnalysis(
+        verdict=VERDICT_NOT_CHECKED,  # type: ignore[arg-type]
+        summary=NOT_CHECKED_SUMMARY_RU,
+        checks=[CheckItem(id="not_checked", ok=False, note=NOT_CHECKED_SUMMARY_RU)],
     )
+
+
+async def _record_stub_use(*, node_key: str, role: str, is_check: bool) -> None:
+    """Явное событие журнала + предупреждение: оператор работал без провайдера."""
+    logger.warning(
+        "gpt_operator/api: нет ключа провайдера, node={} role={} → {}",
+        node_key,
+        role,
+        VERDICT_NOT_CHECKED if is_check else "файл-заглушка",
+    )
+    try:
+        from app.services.observation import record_fact
+
+        await record_fact(
+            "operator_check_not_checked" if is_check else "operator_stub_output",
+            {
+                "node": node_key,
+                "role": role,
+                "verdict": VERDICT_NOT_CHECKED if is_check else None,
+                "reason": "gpt_api_disabled",
+                "summary_ru": NOT_CHECKED_SUMMARY_RU if is_check else
+                "Текстовый шаг выполнен заглушкой без провайдера: настоящего ответа модели нет.",
+                "semantic_quality_verified": False,
+            },
+        )
+    except Exception:  # noqa: BLE001 - журнал не должен ломать шаг, предупреждение уже в логе
+        logger.debug("gpt_operator/api: событие о заглушке не записано", exc_info=True)
 
 
 def _is_check(*, role: str, check_mode: bool) -> bool:
@@ -293,12 +324,16 @@ async def run_operator_api(
             allow_empty_ops=allow_empty_ops,
         )
 
+    if stub_strict():
+        raise RuntimeError(NO_KEY_ERROR_RU)
+
     out_dir = project_dir / "excel_gpt_uploads" / node_key
     out_dir.mkdir(parents=True, exist_ok=True)
 
     names = ", ".join(p.name for p in input_paths) or "(нет файлов)"
     is_check = _is_check(role=role, check_mode=check_mode)
     mode = "fix" if check_fix else "report_only"
+    await _record_stub_use(node_key=node_key, role=role, is_check=is_check)
     if check_mode:
         prompt_for_model = append_txt_report_footer(prompt or "")
     elif is_check:

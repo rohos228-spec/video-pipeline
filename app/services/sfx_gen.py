@@ -3,9 +3,10 @@
 Провайдеры (по порядку):
 1. ElevenLabs SFX API (``ELEVENLABS_API_KEY``) — ИИ-генерация по EN-промту.
 2. Локальный синтез (чистый Python, wave) — офлайн-фолбэк: whoosh/hit/
-   riser/ambience/transition/stinger/foley.
+   riser/ambience/transition/stinger/foley. Это ПОДМЕНА, а не норма: без ключа каждое событие
+   получает факт provider_fallback (reason=no_api_key, synthetic=true) и поле provider_fallback в записи.
 
-Приём результата: ``verify_audio_file`` (ffprobe + RMS) — брак не уходит
+Приём результата: ``verify_audio_file`` → ``audio_verification.verify_audio`` (ffprobe + амплитуда) — брак не уходит
 в монтаж. Файлы: ``data/videos/<slug>/sfx/sfx_NN_<kind>.wav|mp3``.
 Чекпоинт per-event: ``meta.ai_jobs["sfx_progress"]`` (готовые события + метки «запрос
 отправлен, ответа нет») пишется и коммитится по мере работы; итог — ``ai_jobs["sfx_files"]``
@@ -31,11 +32,17 @@ from app.services.ai_result_io import (
     ai_job_checkpoint,
     drop_ai_job_checkpoint,
     save_ai_job_checkpoint,
-    verify_audio_file,
 )
+from app.services.audio_verification import verify_audio
 from app.services.sfx_plan import SfxEvent
 
 _SAMPLE_RATE = 44100
+
+
+def verify_audio_file(path: Path, *, expect_duration: float | None = None, duration_tol: float = 0.6) -> list[str]:
+    """Приёмка звука: независимая проверка ``audio_verification.verify_audio`` (файл, формат, длительность,
+    ненулевая амплитуда). Пустой список = ок."""
+    return verify_audio(path, expect_duration=expect_duration, duration_tol=duration_tol).problems
 
 
 # ── Локальный синтез (офлайн, детерминированный) ──────────────────────────
@@ -256,6 +263,22 @@ async def _save_progress(session: Any, project: Project, prog: dict[str, dict[st
         await commit()
 
 
+def _record_synthetic_substitute(project: Project, idx: int, kind: str) -> dict[str, Any]:
+    """Ключа ElevenLabs нет: звук события подменён процедурным синтезом. Это явный факт (инцидент), не норма:
+    запись идёт тем же фактом provider_fallback, платного запроса не было (may_have_charged=no)."""
+    info = {"idx": idx, "kind": kind, "provider": "elevenlabs", "error_class": "NoApiKey",
+            "http_status": None, "may_have_charged": "no", "reason": "no_api_key", "synthetic": True}
+    logger.warning("[#{}] sfx_gen: нет ключа ElevenLabs, событие {} ({}) — процедурный синтез (подмена)",
+                   project.id, idx, kind)
+    try:
+        from app.services.observation import emit
+
+        emit("provider_fallback", info)
+    except Exception:  # noqa: BLE001
+        pass
+    return info
+
+
 def _uncertain_fallback(project: Project, idx: int, kind: str) -> dict[str, Any]:
     """Прошлая попытка оборвалась после отправки платного запроса: исход неизвестен, повтор запрещён."""
     info = {"idx": idx, "kind": kind, "provider": "elevenlabs", "error_class": "InterruptedAfterSend",
@@ -339,8 +362,10 @@ async def generate_sfx_files(
         ext = "mp3" if use_api else "wav"
         out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.{ext}"
         actual_provider = "elevenlabs" if use_api else "local_synth"
+        fb_this: dict[str, Any] | None = None
         if sent_unknown:
-            fallbacks.append(_uncertain_fallback(project, idx, ev.kind))
+            fb_this = _uncertain_fallback(project, idx, ev.kind)
+            fallbacks.append(fb_this)
             out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
             _write_wav(out_path, _synth(ev.kind, ev.duration, seed=1000 + idx))
             actual_provider = "local_synth"
@@ -367,13 +392,18 @@ async def generate_sfx_files(
                     e,
                 )
                 if use_api:
-                    fallback = _record_provider_fallback(project, idx, ev.kind, e)
-                    fallbacks.append(fallback)
+                    fb_this = _record_provider_fallback(project, idx, ev.kind, e)
+                    fallbacks.append(fb_this)
                 out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
                 samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
                 _write_wav(out_path, samples)
                 actual_provider = "local_synth"
             # BaseException (отмена, убитый процесс) сюда не попадает: метка inflight остаётся.
+
+        if actual_provider == "local_synth" and fb_this is None:
+            # Без ключа процедурный звук не «нормальный путь»: явная подмена в журнале и в записи события.
+            fb_this = _record_synthetic_substitute(project, idx, ev.kind)
+            fallbacks.append(fb_this)
 
         errs = verify_audio_file(out_path, expect_duration=ev.duration, duration_tol=0.6)
         if errs:
@@ -392,8 +422,7 @@ async def generate_sfx_files(
             "gain": ev.gain,
             "duck": ev.duck,
             "provider": actual_provider,
-            **({"provider_fallback": fallbacks[-1]}
-               if actual_provider == "local_synth" and (use_api or sent_unknown) else {}),
+            **({"provider_fallback": fb_this, "synthetic": True} if actual_provider == "local_synth" else {}),
             **({"provider_retry": 1} if retry_of is not None else {}),
         }
         files.append(rec_new)
@@ -405,7 +434,10 @@ async def generate_sfx_files(
         raise RuntimeError(f"sfx_gen: ни один файл не прошёл верификацию: {problems}")
 
     save_ai_job_checkpoint(
-        project, "sfx_files", {"files": files, "provider_fallbacks": len(fallbacks)})
+        project, "sfx_files", {
+            "files": files, "provider_fallbacks": len(fallbacks),
+            "synthetic": sum(1 for f in files if f.get("provider") == "local_synth"),
+            "no_api_key": not use_api})
     if not prog["inflight"]:  # итог записан, промежуточный чекпоинт больше не нужен
         drop_ai_job_checkpoint(project, _PROGRESS)
     await session.flush()

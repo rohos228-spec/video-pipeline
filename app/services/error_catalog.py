@@ -30,6 +30,12 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
         "Текст LLM: нет ключа",
         "Нода: VIBECODE_API_KEY. Шапка kie: GPT_API_KEY.",
     ),
+    "gpt_truncated": ErrorSpec(
+        "gpt_truncated",
+        "Текст LLM: ответ обрезан по лимиту",
+        "Модель не уложилась в лимит ответа (в том числе после одного повтора с большим лимитом). "
+        "Сократите вход или поднимите лимит; платный запрос сам не дублируется.",
+    ),
     "gpt_no_base": ErrorSpec(
         "gpt_no_base",
         "Текст LLM: нет базы",
@@ -167,6 +173,8 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
             return "media_no_key" if media else "gpt_no_key"
         if kind == "no_base":
             return "gpt_no_base"
+        if kind == "truncated":
+            return "gpt_truncated"
         if kind == "timeout":
             return "media_timeout" if media else "gpt_timeout"
         if kind == "network":

@@ -773,13 +773,19 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
             fact.payload.get("contract") == "native_animation_prompts"
             or fact.payload.get("node_type") == "animation_prompts"
             or fact.payload.get("check") == "native_animation_prompt_batch"
-            or fact.kind in {"parse_result", "node_output", "node_result_verification"})]
+            or fact.kind in {"parse_result", "node_output", "node_result_verification"})
+            # W4-2 (C03): the images node now has its OWN media verification; it is the images attempt's fact
+            and fact.payload.get("contract") != "native_media"]
         self.assertEqual(animation_facts, [],
                          "sidecar capture/result must not be attributed to an images NodeRun")
         self.assertEqual(getattr(image_ctx, "native_node_type", None), "images")
         self.assertFalse(hasattr(image_ctx, "animation_prompt_input"))
         self.assertFalse(getattr(image_ctx, "animation_verification_recorded", False))
-        self.assertEqual(sorted(self.observer.body_root.glob("**/*.json")), bodies)
+        # W4-2 (C03): the only new bodies are the images node's own media verification (node_type images).
+        import json as _json
+        new_bodies = set(self.observer.body_root.glob("**/*.json")) - set(bodies)
+        for body in new_bodies:
+            self.assertEqual(_json.loads(body.read_text(encoding="utf-8")).get("node_type"), "images", body)
         self.assertEqual(await self.state(), before)
         self.assertNotIn("retry_profile", capability_for("animation_prompts").actions)
         self.assertIsNone(get_permission(7))

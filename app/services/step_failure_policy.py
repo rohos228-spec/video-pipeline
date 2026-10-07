@@ -7,10 +7,19 @@
   - на 9-м fail (3 цикла × 3 попытки) → paused + следующий в gen_queue.
 
 Явный сброс шага — только через UI (reset_step), не при ошибках.
+
+Профиль ожидания (C08). По умолчанию «safe» - схема выше без изменений. Профиль «fast» сокращает
+ожидание: 2 отказа x 2 цикла = 4 отказа, сон 3 мин (формат-ошибки и обрыв связи - 1 мин), а ошибки
+настройки, которые повтор не вылечит (нет ключа, неверный ключ, модель не разрешена), закрывают шаг сразу.
+Профиль выбирает переменная окружения STEP_FAILURE_WAIT_PROFILE или ``project.meta["step_failure_profile"]``
+(приоритет у проекта). Профиль меняет ТОЛЬКО число и длину ожиданий: повтор остаётся «мягким» (файлы не
+трогаем), платный повтор после исчерпания решает человек/политика, а не профиль.
 """
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -33,10 +42,89 @@ SLEEP_MINUTES = 30
 XLSX_SHEET_FORMAT_SLEEP_MINUTES = 2
 
 
-def sleep_minutes_for_error(error: Exception) -> int:
+WAIT_PROFILE_ENV = "STEP_FAILURE_WAIT_PROFILE"
+WAIT_PROFILE_SAFE = "safe"
+WAIT_PROFILE_FAST = "fast"
+WAIT_PROFILE_NAMES = (WAIT_PROFILE_SAFE, WAIT_PROFILE_FAST)
+FAST_FAILS_PER_CYCLE = 2
+FAST_MAX_CYCLES = 2
+FAST_SLEEP_MINUTES = 3
+FAST_QUICK_SLEEP_MINUTES = 1
+# Ошибки настройки: ключа/доступа/модели нет, повтор через минуты их не лечит. Только профиль fast
+# закрывает шаг на первом таком отказе; в safe поведение прежнее.
+FATAL_CONFIG_ERROR_CODES = frozenset({
+    "gpt_no_key", "gpt_no_base", "gpt_auth", "gpt_model_unauthorized", "gpt_model_unsupported",
+    "media_no_key", "media_auth",
+})
+
+
+@dataclass(frozen=True)
+class WaitProfile:
+    name: str
+    fails_per_cycle: int
+    max_cycles: int
+    sleep_minutes: int
+    quick_sleep_minutes: int
+    abandon_on_fatal_config: bool
+
+    @property
+    def max_total_fails(self) -> int:
+        return self.fails_per_cycle * self.max_cycles
+
+
+def wait_profile(project: Project | None = None) -> WaitProfile:
+    """Профиль ожидания. Значения safe читаются из модуля в момент вызова (их подменяют стенды)."""
+    name = ""
+    if project is not None:
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        name = str(meta.get("step_failure_profile") or "").strip().lower()
+    if name not in WAIT_PROFILE_NAMES:
+        name = (os.environ.get(WAIT_PROFILE_ENV) or "").strip().lower()
+    if name == WAIT_PROFILE_FAST:
+        return WaitProfile(WAIT_PROFILE_FAST, FAST_FAILS_PER_CYCLE, FAST_MAX_CYCLES,
+                           FAST_SLEEP_MINUTES, FAST_QUICK_SLEEP_MINUTES, True)
+    return WaitProfile(WAIT_PROFILE_SAFE, FAILS_PER_CYCLE, MAX_CYCLES, SLEEP_MINUTES,
+                       XLSX_SHEET_FORMAT_SLEEP_MINUTES, False)
+
+
+def abandon_threshold(project: Project | None = None) -> int:
+    """Сколько отказов шага закрывают его для проекта (9 в safe, 4 в fast)."""
+    return wait_profile(project).max_total_fails
+
+
+def exhausted_threshold(project: Project | None) -> int:
+    """Порог, при котором шаг был закрыт: записанный при закрытии, иначе порог текущего профиля."""
+    if project is not None:
+        recorded = _failure_state(project).get("abandoned_threshold")
+        if isinstance(recorded, int) and not isinstance(recorded, bool) and recorded > 0:
+            return recorded
+    return abandon_threshold(project)
+
+
+def is_retry_exhausted(project: Project | None, running_key: str | None = None) -> bool:
+    """Нативные повторы исчерпаны: шаг закрыт (abandoned_at) и счётчик дошёл до порога.
+
+    ``running_key`` - счётчик именно этого running-статуса; без него берётся наибольший.
+    Закрытие из-за ошибки настройки (abandoned_reason=fatal_config) сюда не относится: повтор её не лечит."""
+    if project is None:
+        return False
+    fs = _failure_state(project)
+    if not fs.get("abandoned_at") or fs.get("abandoned_reason") == "fatal_config":
+        return False
+    totals = fs.get("total_fails") or {}
+    if running_key is not None:
+        counts = [int(totals.get(running_key) or 0)]
+    else:
+        counts = [int(v or 0) for v in totals.values()]
+    return bool(counts) and max(counts) >= exhausted_threshold(project)
+
+
+def sleep_minutes_for_error(error: Exception, profile: WaitProfile | None = None) -> int:
     msg = str(error)
+    long_sleep = profile.sleep_minutes if profile is not None else SLEEP_MINUTES
+    quick_sleep = profile.quick_sleep_minutes if profile is not None else XLSX_SHEET_FORMAT_SLEEP_MINUTES
     if "скачанный xlsx невалиден" in msg and "листы" in msg:
-        return XLSX_SHEET_FORMAT_SLEEP_MINUTES
+        return quick_sleep
     # Неполный TSV / prose без TSV / ошибки валидации LLM-ответов — не морозить 30 мин.
     if (
         "всё ещё неполный" in msg
@@ -53,7 +141,7 @@ def sleep_minutes_for_error(error: Exception) -> int:
         or "apply-ops" in msg
         or "apply_ops" in msg
     ):
-        return XLSX_SHEET_FORMAT_SLEEP_MINUTES
+        return quick_sleep
     conn_markers = (
         "Cannot connect to host",
         "ClientConnectorError",
@@ -62,8 +150,8 @@ def sleep_minutes_for_error(error: Exception) -> int:
         "connect call failed",
     )
     if any(m in msg for m in conn_markers):
-        return XLSX_SHEET_FORMAT_SLEEP_MINUTES
-    return SLEEP_MINUTES
+        return quick_sleep
+    return long_sleep
 
 
 def _meta(project: Project) -> dict[str, Any]:
@@ -422,6 +510,9 @@ async def record_step_failure(
     step_code = step.code if step else running.value
     fs = _failure_state(project)
     key = running.value
+    profile = wait_profile(project)
+    per_cycle = profile.fails_per_cycle
+    max_total = profile.max_total_fails
 
     totals: dict[str, int] = dict(fs.get("total_fails") or {})
     total = totals.get(key, 0) + 1
@@ -432,52 +523,65 @@ async def record_step_failure(
     fs["last_error"] = err_msg
     fs["last_error_code"] = err_code
     fs["last_running"] = key
-    cycle = (total - 1) // FAILS_PER_CYCLE + 1
-    fail_in_cycle = ((total - 1) % FAILS_PER_CYCLE) + 1
+    fs["wait_profile"] = profile.name
+    cycle = (total - 1) // per_cycle + 1
+    fail_in_cycle = ((total - 1) % per_cycle) + 1
 
     await _soft_retry_without_wipe(session, project, step_code)
 
-    if total >= MAX_TOTAL_FAILS:
+    fatal_config = profile.abandon_on_fatal_config and err_code in FATAL_CONFIG_ERROR_CODES
+    if total >= max_total or fatal_config:
         fs["abandoned_at"] = datetime.now(timezone.utc).isoformat()
-        fs["recovery_cycles"] = MAX_CYCLES
+        fs["recovery_cycles"] = profile.max_cycles
+        if fatal_config and total < max_total:
+            # Ошибка настройки: повтор её не вылечит, поэтому автоматическое восстановление не открывается
+            # (счётчик ниже порога) и человеку сразу показывается причина.
+            fs["abandoned_reason"] = "fatal_config"
+            fs.pop("abandoned_threshold", None)
+        else:
+            fs["abandoned_reason"] = "retries_exhausted"
+            fs["abandoned_threshold"] = max_total
         _save_failure_state(project, fs)
         await _fail_active_on_both(session, project, error, err_code)
         project.status = ProjectStatus.paused
         await session.flush()
         await _push_parked_runtime(session, project)
         logger.error(
-            "[#{}] abandoned after {} fails ({} cycles) on {}",
+            "[#{}] abandoned after {} fails (profile {}, {} cycles, reason {}) on {}",
             project.id,
             total,
-            MAX_CYCLES,
+            profile.name,
+            profile.max_cycles,
+            fs["abandoned_reason"],
             key,
         )
         return "abandon"
 
-    if total % FAILS_PER_CYCLE == 0:
-        sleep_min = sleep_minutes_for_error(error)
+    if total % per_cycle == 0:
+        sleep_min = sleep_minutes_for_error(error, profile)
         until = datetime.now(timezone.utc) + timedelta(minutes=sleep_min)
         fs["sleep_until"] = until.isoformat()
-        fs["recovery_cycles"] = total // FAILS_PER_CYCLE
+        fs["recovery_cycles"] = total // per_cycle
         _save_failure_state(project, fs)
         # Сначала failed по NodeRun в обеих БД (пока status ещё running-шаг).
         # state.db часто без fw_* — канвас читает project.db.
         await _fail_active_on_both(session, project, error, err_code)
         # Не откатывать в step.requires (часто enrich_N_ready): при auto_mode
         # auto_advance сразу уводит проект «назад» (например img_pr → enrich_3_ready → scripting).
-        # Во время 30-мин сна держим paused; ручной run_step снимает sleep.
+        # Во время сна держим paused; ручной run_step снимает sleep.
         project.status = ProjectStatus.paused
         await session.flush()
         await _push_parked_runtime(session, project)
         logger.warning(
-            "[#{}] sleep {} min after fail {}/{} on {} (cycle {}/{}) → status={}",
+            "[#{}] sleep {} min after fail {}/{} on {} (cycle {}/{}, profile {}) → status={}",
             project.id,
             sleep_min,
             total,
-            MAX_TOTAL_FAILS,
+            max_total,
             key,
             cycle,
-            MAX_CYCLES,
+            profile.max_cycles,
+            profile.name,
             project.status.value,
         )
         return "sleep"
@@ -487,7 +591,7 @@ async def record_step_failure(
     if step is not None:
         project.status = step.running_status
     short_err = err_msg.replace("\n", " ")[:120]
-    retry_text = f"Повтор {fail_in_cycle} из {FAILS_PER_CYCLE}: {short_err}"
+    retry_text = f"Повтор {fail_in_cycle} из {per_cycle}: {short_err}"
     from app.services.run_sync import (
         prepare_node_for_step_start,
         update_active_node_progress_text,
@@ -533,11 +637,11 @@ async def record_step_failure(
         "[#{}] fail {}/{} on {} (cycle {} fail {}/{}), soft retry без wipe: {}",
         project.id,
         total,
-        MAX_TOTAL_FAILS,
+        max_total,
         key,
         cycle,
         fail_in_cycle,
-        FAILS_PER_CYCLE,
+        per_cycle,
         fs["last_error"],
     )
     return "retry"
@@ -549,6 +653,8 @@ def clear_failure_on_success(project: Project, running: ProjectStatus) -> None:
     totals: dict[str, int] = dict(fs.get("total_fails") or {})
     totals.pop(running.value, None)
     fs["total_fails"] = totals
+    for stale in ("abandoned_reason", "abandoned_threshold"):
+        fs.pop(stale, None)
     fs.pop("sleep_until", None)
     fs.pop("recovery_cycles", None)
     fs.pop("last_error", None)

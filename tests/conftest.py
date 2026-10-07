@@ -50,6 +50,14 @@ def _isolate_settings_paths(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _observer_auto_off_by_default(monkeypatch):
+    """C01: automatic observation is on in production; tests keep it off so unrelated tests never write a
+    journal scope into a shared master database. Tests of auto-observation enable it explicitly."""
+    monkeypatch.setenv("OBSERVER_AUTO_ENABLE", "0")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolated_tracker_db(tmp_path_factory, monkeypatch):
     """Each test gets its own api-tracker database: cost rows written by one test never show up in another
     (or in the real ``api-tracker/tracker.db``)."""

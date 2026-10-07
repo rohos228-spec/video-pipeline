@@ -784,7 +784,8 @@ class AssembleDryRun(base.MediaDryRun):
         dispatch_at = source.index("start_node_running(node")
         self.assertLess(media_at, dispatch_at, "provider resumes still return BEFORE the worker dispatch line")
         self.assertIn("local = bool(media and media_admission.local_worker(node_type))", source)
-        self.assertIn("incident.type not in {\"invalid_json\", \"missing_payload\"} and not media", source)
+        # W4-4: the text-style incident check is now the retry class (recovery_class), still only when not media
+        self.assertIn("(rclass is None and not media)", source)
 
 
 class FinishedFileNodes(unittest.IsolatedAsyncioTestCase):

@@ -34,6 +34,7 @@ model_stream_event node_change node_end node_error node_input node_output node_r
 observer_control parse_result planner_successor profile_effective_context project_control provider_fallback
 recovery_continuation_deferred recovery_continuation_submitted recovery_verification rule_diary runtime_check
 runtime_wait observer_stop watchdog reconcile reload maintenance decision diagnosis consumer
+scene_design_skipped sfx_skipped sfx_node_degraded audio_step_failure audio_result_verification operator_check_not_checked operator_stub_output
 """.split())
 
 _EVENT_CALLS = {"record_fact", "emit", "_queue_event", "stage", "stage_project_fact", "fact", "_scene_fact",
@@ -347,3 +348,32 @@ def test_router_status_codes_are_unchanged_for_not_found():
     assert 'status_code=404, detail="Запрос подтверждения не найден"' in src
     assert 'status_code=400, detail="Решение по этому запросу уже принято"' in src
     assert HTTPException  # импорт нужен только чтобы тест падал при смене фреймворка
+
+
+# --- W4: новые виды событий, проверки и статусы -------------------------------------------------------------------
+def test_w4_new_event_kinds_check_names_and_notify_statuses():
+    tr.reset_unknown_report()
+    for kind in ("sfx_skipped", "sfx_node_degraded", "audio_step_failure", "audio_result_verification",
+                 "scene_design_skipped", "operator_check_not_checked", "operator_stub_output"):
+        title, _, severity = tr.describe({"source": "observation_events", "kind": kind, "payload": {}})
+        assert CYR.search(title) and severity in {"warn", "error", "info"}, kind
+    title, _, _ = tr.describe({"source": "observation_events", "kind": "runtime_check",
+                               "payload": {"check": "auto_approve_without_review", "status": "unchecked"}})
+    assert "автоодобрение без проверки" in title and "не проверено" in title
+    title, _, _ = tr.describe({"source": "observation_events", "kind": "runtime_check",
+                               "payload": {"check": "observe_only_split_result", "status": "failed"}})
+    assert "observe_only" not in title
+    for status, text in (("notified", "уведомлён"), ("notify_failed", "не доставлено")):
+        title, _, _ = tr.describe({"source": "action_v1_records", "action_kind": "incident_notify", "status": status})
+        assert text in title
+    assert tr.unknown_report() == {}
+
+
+def test_w4_observe_only_verification_does_not_claim_the_run_was_held():
+    for status in ("failed", "unknown"):
+        title, _, _ = tr.describe({"source": "observation_events", "kind": "node_result_verification",
+                                   "payload": {"status": status, "observe_only": True, "run_held": False}})
+        assert "запуск удержан" not in title and "запуск не остановлен" in title
+        held, _, _ = tr.describe({"source": "observation_events", "kind": "node_result_verification",
+                                  "payload": {"status": status}})
+        assert "запуск удержан" in held

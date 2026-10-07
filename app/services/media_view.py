@@ -5,7 +5,7 @@ from pathlib import Path
 from sqlalchemy import select
 from app.models import Artifact, Project, WorkflowRun
 from app.services.artifact_verifier import contained_path
-from app.services.media_jobs import MediaJob, MediaRequest
+from app.services.media_jobs import MediaJob, MediaRequest, media_profile_state
 from app.services.node_capabilities import capability_for
 
 
@@ -32,6 +32,11 @@ async def context_for_nodes(master, scope, *, project_session=None):
             continue
         if evidence.get("verification",{}).get("status")=="passed":
             by_job[evidence.get("job_id")] = artifact.uuid
+    try:
+        from app.services.decision_config import runtime_config
+        media_state = media_profile_state(runtime_config())
+    except (ValueError, OSError, TypeError):
+        media_state = media_profile_state(None)
     result = {}
     for key in scope.node_keys:
         capability=capability_for(str(nodes.get(key,{}).get("type") or ""))
@@ -46,7 +51,9 @@ async def context_for_nodes(master, scope, *, project_session=None):
             blockers.append("Управляемое исполнение этого типа ещё не принято")
         result[key]={"result_kind":capability.result_kind,
             "limited_management":capability.managed and not blockers,
-            "synthetic_only":True,"production_profile_configured":False,
+            "synthetic_only":media_state["synthetic_only"],
+            "production_profile_configured":media_state["production_profile_configured"],
+            "media_enabled":media_state["media_enabled"],
             "blockers":blockers,"allowed_actions":list(capability.actions),
             "requests":dict(Counter(r.category for r in requests if r.node_key==key)),
             "jobs":[{"job_id":j.job_id,"provider_job_id":j.provider_job_id,"phase":j.phase,

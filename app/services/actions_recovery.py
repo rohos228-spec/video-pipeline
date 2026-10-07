@@ -69,6 +69,49 @@ class RecoveryAction(Base):
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 
+# W4-4 (C08): which incidents can be offered ONE supervised retry ticket. Every class still needs a current
+# human/Decision authorization, the single-ticket rule (UNIQUE per execution+node), the request budget and the
+# kill switch; the class only decides what the facts must look like. Nothing here retries by itself.
+RECOVERY_FORMAT = "format"            # invalid_json / missing_payload: the answer arrived but is unusable
+RECOVERY_TRANSIENT_API = "transient_api"  # api_error where the gateway ANSWERED 5xx: the request was refused, never processed
+RECOVERY_LOCAL_FIX = "local_fix"      # contract_rejected after a recorded local correction of the node input/config
+FORMAT_INCIDENTS = frozenset({"invalid_json", "missing_payload"})
+RECOVERABLE_INCIDENT_TYPES = FORMAT_INCIDENTS | {"api_error", "contract_rejected"}
+# Never retried by this module, whatever the facts say: the outcome of the external request is unknown
+# (uncertain_request), a watchdog flagged a hang (stalled; diagnosis + notification only), the user stopped,
+# the journal is incomplete or the two databases disagree.
+NEVER_RETRIED_INCIDENTS = frozenset({"uncertain_request", "stalled", "user_stop", "journal_gap", "db_disagreement"})
+
+
+def recovery_class(incident_type, details):
+    """The retry class an incident MAY use, from its recorded details; None means no supervised retry.
+
+    This is only a pre-filter: recover_node re-checks the journal facts of the class itself."""
+    details = details if isinstance(details, dict) else {}
+    if incident_type in FORMAT_INCIDENTS:
+        return RECOVERY_FORMAT
+    if incident_type == "api_error" and (details.get("safe_retry") or {}).get("eligible") is True:
+        return RECOVERY_TRANSIENT_API
+    if incident_type == "contract_rejected" and details.get("local_fix_candidate") is True:
+        return RECOVERY_LOCAL_FIX
+    return None
+
+
+def server_rejected_requests(facts):
+    """Request ids the gateway refused with a 5xx answer (known outcome, not accepted, not uncertain).
+
+    A timeout, a dropped connection or a cancelled task is NOT in this set: the provider may have accepted it."""
+    out = set()
+    for e in facts:
+        if e.kind != "model_error" or not e.request_id:
+            continue
+        payload = e.payload or {}
+        status = payload.get("status_code")
+        if payload.get("uncertain") is False and type(status) is int and 500 <= status <= 599:
+            out.add(e.request_id)
+    return out
+
+
 def ticket_json(row):
     return {key: getattr(row, key) for key in (
         "action_id", "execution_id", "incident_id", "node_key", "source_attempt_id",
@@ -149,7 +192,7 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                        idempotency_key, initiator, rationale, decision_id=None, profile_overlay_id=None):
     from app.services.diagnosis import Incident, DiagnosisState, get_diagnoser
     from app.services.observation import ExecutionControl, ObservationEvent, digest, get_observer, business_snapshot
-    from app.services.step_failure_policy import MAX_TOTAL_FAILS, is_sleeping
+    from app.services.step_failure_policy import exhausted_threshold, is_sleeping
     from app.services.step_cancel import is_generation_active, stop_flag_path
     from app.project_db import project_db_session_scope, push_runtime_to_master
     from app.services.node_status_machine import start_node_running
@@ -177,9 +220,12 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
         media = bool(incident is not None and media_admission.is_media_incident(incident))
         if media and profile_overlay_id:
             raise ValueError("media recovery has no provider-profile strategy")
+        rclass = None if media or incident is None else recovery_class(incident.type, incident.details)
+        if rclass != RECOVERY_FORMAT and profile_overlay_id and not media:
+            raise ValueError("a provider profile retry exists only for JSON/payload format incidents")
         if (incident is None or incident.execution_id != execution_id or incident.project_id != project_id
                 or incident.node_key != node_key
-                or (incident.type not in {"invalid_json", "missing_payload"} and not media)
+                or (rclass is None and not media)
                 or incident.status == "resolved_confirmed" or not incident.details.get("currently_relevant")
                 or (incident.details.get("evidence_incomplete") and not media)):
             raise ValueError("current mandatory JSON/payload incident required")
@@ -260,14 +306,16 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             # provider-side facts come from the ledger (media_recovery.assess) before the ticket is reserved.
             if not any(e.kind == "node_error" for e in facts):
                 raise ValueError("uncertain request, unfinished attempt or unconfirmed partial apply")
-        elif (not starts or any(e.request_id not in ends for e in starts)
+        elif (not starts or any(e.request_id not in (server_rejected_requests(facts)
+                    if rclass == RECOVERY_TRANSIENT_API else ends) for e in starts)
                 or not any(e.kind == "node_error" for e in facts)
                 or any(e.kind in {"data_applied", "apply_input", "apply_error"} for e in facts)):
             raise ValueError("uncertain request, unfinished attempt or unconfirmed partial apply")
         # Only executors that emit an inner `json_retry` fact must show it. Native text
         # nodes have no inner JSON retry; their exhaustion is proven by the runtime
         # failure counter and abandonment check further below (all native retries).
-        if not media and capability.native_json_retry and not any(e.kind == "json_retry" for e in facts):
+        if not media and rclass == RECOVERY_FORMAT and capability.native_json_retry and not any(
+                e.kind == "json_retry" for e in facts):
             raise ValueError("native JSON retries not exhausted")
         if control.requests_used >= control.request_limit:
             raise ValueError("supervisor request budget exhausted")
@@ -290,7 +338,8 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 raise ValueError("previous worker is still active")
             fs = (project.meta or {}).get("step_failure") or {}
             running = fs.get("last_running")
-            if (not fs.get("abandoned_at") or (fs.get("total_fails") or {}).get(running, 0) < MAX_TOTAL_FAILS
+            if (not fs.get("abandoned_at") or fs.get("abandoned_reason") == "fatal_config"
+                    or (fs.get("total_fails") or {}).get(running, 0) < exhausted_threshold(project)
                     or is_sleeping(project) or project.status != ProjectStatus.paused):
                 raise ValueError("all native runtime retries must be exhausted")
             nodes = (await session.scalars(select(NodeRun).where(
@@ -310,8 +359,16 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             if scheme_problem:
                 raise ValueError(scheme_problem)
             parts_match = bool(previous_parts) and all(previous_parts.get(k) == v for k,v in current_parts.items())
-            if not parts_match and source.payload.get("recovery_input_revision") != revision:
-                changed = [k for k,v in current_parts.items() if previous_parts.get(k) != v]
+            revision_changed = not parts_match and source.payload.get("recovery_input_revision") != revision
+            changed = [k for k,v in current_parts.items() if previous_parts.get(k) != v]
+            if rclass == RECOVERY_LOCAL_FIX:
+                # contract_rejected is retried only AFTER a local correction: the answer was refused by a local
+                # check, so repeating the same request would buy the same refusal again. Both revisions must be
+                # recorded and different, otherwise nothing proves that anything was corrected.
+                if not source.payload.get("recovery_input_revision") or not revision_changed:
+                    raise ValueError("contract_rejected retry needs a recorded local correction: "
+                                     "node input/config revision is unchanged or was not recorded")
+            elif revision_changed:
                 raise ValueError("input/config revision changed or not recorded"
                                  + ("" if previous_parts else " (no parts recorded: legacy scheme 1 or missing)")
                                  + ": " + ",".join(changed))
@@ -332,12 +389,15 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 source_attempt_id=source.attempt_id, new_attempt_id=str(uuid.uuid4()),
                 idempotency_key=idempotency_key, preconditions={"native_failures": fs["total_fails"][running],
                     "running_status": running, "input_revision": revision, "graph_version": control.graph_version,
-                    "action_type": action_type, "effective_node_type": node_type,
+                    "action_type": action_type, "effective_node_type": node_type, "recovery_class": rclass,
+                    **({"local_correction_parts": changed, "same_body_required": False}
+                       if rclass == RECOVERY_LOCAL_FIX else {}),
                     "capability_actions": list(capability.actions),
                     "input_parts": current_parts, "revision_scheme": revisions.REVISION_SCHEME,
                     "node_config_revision": current_parts.get("node_config_revision"),
                     "graph_authority": "master revision + runtime canvas_graph",
-                    "first_body_hash": starts[0].payload["input_revision"] if starts else None,
+                    "first_body_hash": (None if rclass == RECOVERY_LOCAL_FIX
+                                        else starts[0].payload["input_revision"] if starts else None),
                     "prior_attempt_terminal": True,
                     "node_and_project_replicas_match": True,
                     "workflow_aggregate_status": {"master": primary_snapshot["workflow_status"],
@@ -360,7 +420,7 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 profile.attempt_id=action.new_attempt_id;profile.status="reserved"
                 profile.history=[*profile.history,{"kind":"recovery_reserved","action_id":action.action_id,
                     "attempt_id":action.new_attempt_id,"at":datetime.utcnow().isoformat()}]
-            if capability.volatile_attachment_names:
+            if capability.volatile_attachment_names and rclass != RECOVERY_LOCAL_FIX:
                 # Compare the first recovery request with the source request modulo the
                 # attachment file-name stamps (profile: the approved transformation of it).
                 source_body = load_source_body(observer, starts[0])
@@ -535,7 +595,14 @@ async def check_body(ctx, body_hash, body=None):
                     or ctx.scope.execution_id in ctx.observer.failures
                     or ctx.scope.execution_id in ctx.observer.commit_uncertainty):
             raise RuntimeError("recovery audit unavailable; blocked before transport")
-        if row and ctx.last_request_id is None:
+        if row and ctx.last_request_id is None and (
+                row.preconditions.get("recovery_class") == RECOVERY_LOCAL_FIX
+                and row.preconditions.get("same_body_required") is False
+                and row.preconditions.get("first_body_hash") is None):
+            # After a recorded local correction the first request body legitimately differs from the source
+            # body; the input revision was already pinned at reservation and is re-checked at claim.
+            pass
+        elif row and ctx.last_request_id is None:
             if row.preconditions.get("first_body_normalization") == STAMP_NORMALIZATION:
                 observed = body_identity(body, normalize_names=True) if body is not None else None
             else:

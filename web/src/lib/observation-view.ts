@@ -98,6 +98,13 @@ export const EVENT_KIND_LABELS: Record<string, string> = {
   decision: "Решение системы по инциденту",
   diagnosis: "Диагностика инцидентов",
   consumer: "Передача событий потребителю журнала",
+  sfx_skipped: "Звуковые эффекты пропущены: генерация выключена настройкой",
+  sfx_node_degraded: "Звуковые эффекты подменены процедурным звуком: шаг не считается готовым нормально",
+  audio_step_failure: "Шаг озвучки завершился сбоем",
+  audio_result_verification: "Независимая проверка аудиофайла",
+  scene_design_skipped: "Проектирование сцен пропущено: выключено настройкой",
+  operator_check_not_checked: "Проверка оператором не выполнена: нет ключа GPT-провайдера",
+  operator_stub_output: "Ответ оператора подменён заглушкой: нет ключа GPT-провайдера",
 };
 
 /** Равно CHECK_NAMES_RU в timeline_ru.py. */
@@ -112,6 +119,11 @@ export const CHECK_NAMES_RU: Record<string, string> = {
   qc_noop: "контроль качества: изменений не требуется",
   native_image_prompt_batch: "проверка пачки промтов изображений",
   native_split_voiceover_coverage: "проверка покрытия закадра разбивкой",
+  auto_approve_without_review: "автоодобрение без проверки",
+  observe_only_plan_result: "проверка результата плана (режим наблюдения)",
+  observe_only_script_result: "проверка результата сценария (режим наблюдения)",
+  observe_only_split_result: "проверка результата разбивки (режим наблюдения)",
+  observe_only_image_prompts_result: "проверка промтов изображений (режим наблюдения)",
 };
 
 /** Равно WAIT_REASONS_RU в timeline_ru.py. */
@@ -132,6 +144,7 @@ export const STATUS_WORDS_RU: Record<string, string> = {
   error: "ошибка",
   denied: "отказано",
   rejected: "отклонено",
+  unchecked: "не проверено",
 };
 
 export function eventLabel(event: Pick<ObservationEvent, "kind" | "payload">): string {
@@ -152,7 +165,10 @@ export function eventLabel(event: Pick<ObservationEvent, "kind" | "payload">): s
     return `Дневник правил кода: правил сработало ${rules}${stop}`;
   }
   if (event.kind === "node_result_verification") {
-    const st = p.status === "passed" ? "подтвердила результат" : p.status === "failed" ? "не подтвердила результат; запуск удержан" : p.status === "unknown" ? "не смогла сравнить результат со входом; запуск удержан" : `статус ${p.status ?? "неизвестен"}`;
+    const obs = p.observe_only === true;
+    const held = obs ? "" : "; запуск удержан";
+    const tail = obs ? "; режим наблюдения, запуск не остановлен" : "";
+    const st = p.status === "passed" ? "подтвердила результат" : p.status === "failed" ? `не подтвердила результат${held}${tail}` : p.status === "unknown" ? `не смогла сравнить результат со входом${held}${tail}` : `статус ${p.status ?? "неизвестен"}`;
     return `Нативная проверка ${st}`;
   }
   if (event.kind === "node_error" && typeof p.rule === "string" && p.rule) return `Ошибка исполнителя: результат остановило правило ${p.rule}`;

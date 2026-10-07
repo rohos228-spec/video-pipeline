@@ -265,8 +265,11 @@ class VerifierSpec:
     observe(session, project, node_type) is awaited. It is a callable or a
     'module:function' path resolved lazily, so an import failure is handled
     like any other hook failure.
-      managed_only          - run only in managed scope.
-      success_errors        - 'gap': a failure marks an audit gap and execution
+      managed_only          - run only in managed scope. A hook that must also look in observe scope
+                              (plan, script, split, image_prompts, excel_gpt; step C02) leaves this False
+                              and branches on ctx.scope.mode itself: managed holds/raises, observe only
+                              journals the proof and an incident (node_capabilities.record_observe_only_proof).
+      success_errors       - 'gap': a failure marks an audit gap and execution
                               goes on; 'raise': the failure propagates.
       success_flag          - AttemptContext attribute set True after a clean run.
       on_error              - also run when the native executor failed.

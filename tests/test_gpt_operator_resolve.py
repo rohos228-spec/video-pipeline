@@ -264,12 +264,13 @@ def test_api_stub_writes_reply(tmp_path: Path, monkeypatch) -> None:
     )
     assert res.output_paths
     assert any(p.name == "analysis.json" for p in res.output_paths)
-    assert "vp.check.v1" in res.reply_text or "stub" in res.reply_text.lower()
-    assert res.gate_status == "pass"
+    # W4-4 (C05): без ключа stub не выдаёт «pass» - проверка не проводилась.
+    assert "not_checked" in res.reply_text
+    assert res.gate_status == "not_checked"
     assert res.analysis is not None
-    assert res.analysis.verdict == "pass"
+    assert res.analysis.verdict == "not_checked"
     analysis_path = next(p for p in res.output_paths if p.name == "analysis.json")
-    assert "pass" in analysis_path.read_text(encoding="utf-8")
+    assert "not_checked" in analysis_path.read_text(encoding="utf-8")
 
 
 def test_patch_sets_transport_api(tmp_path: Path, monkeypatch) -> None:

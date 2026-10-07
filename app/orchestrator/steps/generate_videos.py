@@ -579,6 +579,7 @@ async def _shot1_job(
     gpt: Any,
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
+    errors: dict[tuple[int, int], BaseException] | None = None,
 ) -> bool:
     """Outsee ждёт минуты — SQLite-сессию НЕ держим (иначе parallel → database is locked).
 
@@ -637,7 +638,10 @@ async def _shot1_job(
                         _clear_video_inflight(fr)
                         await session.commit()
                 raise
-            # Один кадр (policy/сеть/длина) — не валим весь video-step.
+            # Один кадр (policy/сеть/длина) — не валим весь video-step сразу, но ошибку помним:
+            # после цикла run() обязан поднять её, а не завершиться «успешно».
+            if errors is not None:
+                errors[(1, frame_number)] = e
             await _note_video_fail_db(project_id, frame_id, e)
             async with SessionLocal() as session:
                 fr = await session.get(Frame, frame_id)
@@ -695,6 +699,7 @@ async def _shot2_job(
     gpt: Any,
     session_clip_paths: list[Path],
     clips_lock: asyncio.Lock,
+    errors: dict[tuple[int, int], BaseException] | None = None,
 ) -> bool:
     """Как _shot1_job: без открытой SQLite-сессии на время Outsee."""
     from app.db import SessionLocal
@@ -742,6 +747,8 @@ async def _shot2_job(
                         _clear_video_inflight(fr)
                         await session.commit()
                 raise
+            if errors is not None:
+                errors[(2, frame_number)] = e
             await _note_video_fail_db(project_id, frame_id, e)
             async with SessionLocal() as session:
                 fr = await session.get(Frame, frame_id)
@@ -824,6 +831,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             fr.attrs = attrs
     await session.flush()
 
+    # Кадры, у которых в ЭТОМ запуске был сбой и клипа так и нет. Нужны, чтобы шаг не завершался
+    # «успешно» с молча проглоченными ошибками: у попытки должен остаться node_error, иначе
+    # восстановление отказывает с «unfinished attempt».
+    failed_shots: dict[tuple[int, int], str] = {}
+    job_errors: dict[tuple[int, int], BaseException] = {}
+    done_shots: set[tuple[int, int]] = set()
+
     if streams == 0:
         missing = []
         for fr in frames:
@@ -873,6 +887,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                     # commit ДО Outsee: иначе parent-сессия + N stream-сессий
                     # держат SQLite → parallel projects: database is locked.
+                    batch_numbers = [fr.number for fr in batch]  # до commit/expire_all
                     await session.commit()
                     results = await asyncio.gather(
                         *[
@@ -885,6 +900,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                 gpt=gpt,
                                 session_clip_paths=session_clip_paths,
                                 clips_lock=clips_lock,
+                                errors=job_errors,
                             )
                             for fr in batch
                         ],
@@ -894,9 +910,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     # PK project.id после expire нельзя трогать — lazy-load → MissingGreenlet.
                     session.expire_all()
                     fail_n = 0
-                    for r in results:
+                    for num_b, r in zip(batch_numbers, results):
                         if isinstance(r, StepCancelledError):
                             raise r
+                        if r is True:
+                            done_shots.add((1, num_b))
+                        else:
+                            failed_shots[(1, num_b)] = (
+                                f"{type(r).__name__}: {r}" if isinstance(r, Exception)
+                                else "кадр пропущен после ошибки"
+                            )
                         if isinstance(r, Exception):
                             fail_n += 1
                             logger.warning(
@@ -969,6 +992,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             await session.flush()
                         continue
 
+                    batch2_numbers = [fr.number for fr, _p, _i in batch2]  # до commit/expire_all
                     await session.commit()
                     results2 = await asyncio.gather(
                         *[
@@ -982,15 +1006,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                                 gpt=gpt,
                                 session_clip_paths=session_clip_paths,
                                 clips_lock=clips_lock,
+                                errors=job_errors,
                             )
                             for fr, prompt2, s2_img in batch2
                         ],
                         return_exceptions=True,
                     )
                     session.expire_all()
-                    for r in results2:
+                    for num_b, r in zip(batch2_numbers, results2):
                         if isinstance(r, StepCancelledError):
                             raise r
+                        if r is True:
+                            done_shots.add((2, num_b))
+                        else:
+                            failed_shots[(2, num_b)] = (
+                                f"{type(r).__name__}: {r}" if isinstance(r, Exception)
+                                else "кадр пропущен после ошибки"
+                            )
                         if isinstance(r, Exception):
                             logger.warning(
                                 "[#{}] video s2 stream worker exception: {}",
@@ -1028,6 +1060,27 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     )
     if not frames:
         logger.warning("[#{}] generate_videos: нет кадров — split не делали?", project.id)
+
+    # Сбой кадра нельзя глотать: если у кадра в этом запуске была ошибка и клип так и не получен,
+    # шаг падает (node_error). Платный вызов тут не повторяется: исключение только сообщает о сбое,
+    # а кадры с video_gen_skip повторно не берутся в работу.
+    unresolved = {k: v for k, v in failed_shots.items() if k not in done_shots}
+    if unresolved:
+        shown = ", ".join(
+            f"{'shot' + str(shot)} кадр {num}" for (shot, num) in sorted(unresolved, key=lambda k: (k[1], k[0]))[:12]
+        )
+        first_reason = next(iter(unresolved.values()))
+        logger.warning("[#{}] generate_videos: {}", project_id, f"клипы не получены: {shown}")
+        # Исходное типизированное исключение сохраняет тип сбоя (лестница исчерпана, нет ключа и т.д.) для
+        # диагностики; без него (кадр пропущен молча) - обычная ошибка шага.
+        for key in sorted(unresolved, key=lambda k: (k[1], k[0])):
+            original = job_errors.get(key)
+            if original is not None:
+                raise original
+        raise RuntimeError(
+            f"generate_videos: клипы не получены ({len(unresolved)}): {shown}"
+            f"{'…' if len(unresolved) > 12 else ''}. Первая причина: {first_reason}"
+        )
 
     raise_if_cancelled(project.id)
     await session.refresh(project)

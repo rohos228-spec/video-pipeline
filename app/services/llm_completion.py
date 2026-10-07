@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 _COMPLETE_FINISH = {"stop", "end_turn"}
-_TRUNCATED_FINISH = {"length", "max_tokens", "max_output_tokens"}
+_TRUNCATED_FINISH = {"length", "max_tokens", "max_output_tokens", "incomplete"}
 
 
 def _finish_reason(raw: Mapping[str, Any] | None, finish_reason: str | None) -> str | None:

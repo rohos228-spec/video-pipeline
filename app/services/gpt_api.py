@@ -2665,6 +2665,8 @@ async def _chat_adaptive_1_2_4(
     pack_kind: str | None,
     level: int = 1,
     on_delta: Any | None = None,
+    max_output_tokens: int | None = None,
+    idempotent_text: bool = False,
 ) -> GptChatResult:
     """Сначала один вызов. Ошибка/обрез → этот кусок пополам (2). Снова → 4."""
     from app.services.adaptive_llm_batches import next_split_level
@@ -2686,6 +2688,8 @@ async def _chat_adaptive_1_2_4(
         auto_pack=False,
         pack_kind=pack_kind,
         on_delta=on_delta,
+        max_output_tokens=max_output_tokens,
+        idempotent_text=idempotent_text,
     )
     try:
         result = await chat(**kwargs)
@@ -2748,6 +2752,8 @@ async def _chat_adaptive_1_2_4(
                 pack_kind=pack_kind,
                 level=nxt,
                 on_delta=on_delta,
+                max_output_tokens=max_output_tokens,
+                idempotent_text=idempotent_text,
             )
             parts.append(part)
         merged = _merge_packed_apply_ops([p.text for p in parts])
@@ -2767,7 +2773,7 @@ async def _chat_adaptive_1_2_4(
         )
 
 
-async def chat(
+async def _chat_single(
     *,
     prompt: str,
     accompanying: str = "",
@@ -2783,6 +2789,7 @@ async def chat(
     auto_pack: bool = True,
     pack_kind: str | None = None,
     on_delta: Any | None = None,
+    output_cap: int | None = None,
 ) -> GptChatResult:
     """Вызвать текстовый LLM (kie GPT / vibecode) с ретраями.
 
@@ -2869,6 +2876,9 @@ async def chat(
         }
     if temperature is not None:
         body["temperature"] = temperature
+    if output_cap:
+        # C09: явный лимит ответа (задаёт политика усечения или вызывающий шаг).
+        body["max_output_tokens" if responses_mode else "max_tokens"] = int(output_cap)
 
     attempt = 0
     last_exc: Exception | None = None
@@ -3161,6 +3171,126 @@ async def chat(
             await asyncio.sleep(backoff)
 
     raise last_exc or GptApiError("GPT: неизвестная ошибка", context={"model": use_model})
+
+
+# --------------------------------------------------------------------------------------
+# C09: усечение ответа (finish_reason=length / status=incomplete).
+#
+# Правило: усечённый ответ никогда не выдаётся за полный молча.
+# - всегда: запись в журнал приложения (событие) и метка raw["truncation"];
+# - идемпотентный текстовый шаг (idempotent_text=True): ОДИН повтор с увеличенным лимитом
+#   ответа; если и повтор усечён (или лимит уже максимальный) - типизированный
+#   GptTruncatedError (error_kind="truncated"), его видит наблюдение как model_error;
+# - иначе (шаг не идемпотентен или сомнение): повтора нет, платный запрос не дублируется;
+#   частичный текст возвращается с меткой raw["truncation"], пустой ответ даёт GptTruncatedError.
+# Что это НЕ доказывает: поведение реального провайдера (замер reasoning.effort - шаг F03).
+# --------------------------------------------------------------------------------------
+TRUNCATION_RETRY_DEFAULT_TOKENS = 32768
+TRUNCATION_RETRY_MAX_TOKENS = 65536
+
+
+class GptTruncatedError(GptApiError):
+    """Ответ LLM усечён по лимиту; повтор невозможен или уже сделан."""
+
+
+def raised_output_cap(current: int | None) -> int | None:
+    """Лимит ответа для единственного повтора; None, если поднять уже нельзя."""
+    if not current:
+        return TRUNCATION_RETRY_DEFAULT_TOKENS
+    raised = min(int(current) * 2, TRUNCATION_RETRY_MAX_TOKENS)
+    return raised if raised > int(current) else None
+
+
+def _truncation_marker(*, finish: str, retried: bool, cap: int | None, retry_cap: int | None,
+                       outcome: str) -> dict[str, Any]:
+    return {"finish_reason": finish, "retried": retried, "output_cap": cap,
+            "retry_output_cap": retry_cap, "outcome": outcome}
+
+
+async def chat(
+    *,
+    prompt: str,
+    accompanying: str = "",
+    input_paths: list[Path] | None = None,
+    system: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    timeout: float | None = None,
+    max_retries: int | None = None,
+    xlsx_write_contract: str = "tsv",
+    volume_complete: bool | None = None,
+    auto_pack: bool = True,
+    pack_kind: str | None = None,
+    on_delta: Any | None = None,
+    max_output_tokens: int | None = None,
+    idempotent_text: bool = False,
+) -> GptChatResult:
+    """``_chat_single`` + политика усечения C09 (см. блок выше).
+
+    ``max_output_tokens``: явный лимит ответа (None - лимит провайдера).
+    ``idempotent_text``: True только если повторный платный вызов не меняет мир
+    (чистый текстовый шаг без побочных эффектов): тогда при усечении будет один повтор.
+    """
+    from app.services.llm_completion import response_truncated
+
+    if auto_pack:
+        return await _chat_adaptive_1_2_4(
+            prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system,
+            history=history, model=model, temperature=temperature, timeout=timeout,
+            max_retries=max_retries, xlsx_write_contract=xlsx_write_contract, pack_kind=pack_kind,
+            on_delta=on_delta, max_output_tokens=max_output_tokens, idempotent_text=idempotent_text,
+        )
+    cap = max_output_tokens
+    first_cap = cap
+    retried = False
+    while True:
+        result: GptChatResult | None = None
+        failure: GptApiError | None = None
+        try:
+            result = await _chat_single(
+                prompt=prompt, accompanying=accompanying, input_paths=input_paths, system=system,
+                history=history, model=model, temperature=temperature, timeout=timeout,
+                max_retries=max_retries, xlsx_write_contract=xlsx_write_contract,
+                volume_complete=volume_complete, auto_pack=False, pack_kind=pack_kind,
+                on_delta=on_delta, output_cap=cap,
+            )
+        except GptTruncatedError:
+            raise
+        except GptApiError as exc:
+            # пустой content при finish_reason=length: лимит съели рассуждения
+            if not response_truncated(None, (exc.context or {}).get("finish_reason")):
+                raise
+            failure = exc
+        if result is not None and not response_truncated(result.raw, result.finish_reason):
+            return result
+        finish = str((result.finish_reason if result is not None
+                      else (failure.context or {}).get("finish_reason")) or "length")
+        retry_cap = raised_output_cap(cap) if (idempotent_text and not retried) else None
+        logger.warning(
+            "gpt_api.chat TRUNCATED finish={} cap={} chars={} idempotent={} retry_cap={}",
+            finish, cap, len(result.text) if result is not None else 0, idempotent_text, retry_cap,
+        )
+        if retry_cap is not None:
+            retried, cap = True, retry_cap
+            continue
+        partial = result.text if result is not None else ""
+        if result is not None and not idempotent_text:
+            # событие: платный запрос не повторяем, частичный текст помечен
+            result.raw = {**(result.raw or {}), "truncation": _truncation_marker(
+                finish=finish, retried=False, cap=first_cap, retry_cap=None, outcome="event_no_retry")}
+            return result
+        raise GptTruncatedError(
+            "GPT: ответ усечён по лимиту"
+            + (" и после одного повтора с увеличенным лимитом" if retried else "")
+            + ("; ответ пуст" if not partial.strip() else ""),
+            context={
+                "error_kind": "truncated", "retryable": False, "finish_reason": finish,
+                "output_cap": first_cap, "retry_output_cap": cap if retried else None,
+                "retried": retried, "partial_chars": len(partial), "partial_text": partial,
+                "response_id": result.response_id if result is not None else "",
+            },
+        )
 
 
 def is_pdf_provider_failure(exc: BaseException) -> bool:

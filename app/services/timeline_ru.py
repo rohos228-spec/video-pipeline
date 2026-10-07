@@ -112,6 +112,13 @@ EVENT_LABELS_RU: dict[str, str] = {
     "decision": "Решение системы по инциденту",
     "diagnosis": "Диагностика инцидентов",
     "consumer": "Передача событий потребителю журнала",
+    "sfx_skipped": "Звуковые эффекты пропущены: генерация выключена настройкой",
+    "sfx_node_degraded": "Звуковые эффекты подменены процедурным звуком: шаг не считается готовым нормально",
+    "audio_step_failure": "Шаг озвучки завершился сбоем",
+    "audio_result_verification": "Независимая проверка аудиофайла",
+    "scene_design_skipped": "Проектирование сцен пропущено: выключено настройкой",
+    "operator_check_not_checked": "Проверка оператором не выполнена: нет ключа GPT-провайдера",
+    "operator_stub_output": "Ответ оператора подменён заглушкой: нет ключа GPT-провайдера",
 }
 
 # Виды, которые по умолчанию тревожные (если нет уточнения из полезной нагрузки).
@@ -124,6 +131,8 @@ _EVENT_SEVERITY: dict[str, str] = {
     "recovery_continuation_deferred": SEV_WARN, "decision_retrieve_denied": SEV_WARN,
     "decision_request_blocked": SEV_WARN, "decision_continuation_denied": SEV_WARN,
     "human_approval_pending": SEV_WARN, "local_recovery_guard": SEV_WARN, "observer_stop": SEV_WARN,
+    "sfx_skipped": SEV_WARN, "sfx_node_degraded": SEV_WARN, "audio_step_failure": SEV_ERROR,
+    "scene_design_skipped": SEV_WARN, "operator_check_not_checked": SEV_WARN, "operator_stub_output": SEV_WARN,
 }
 
 CHECK_NAMES_RU: dict[str, str] = {
@@ -137,6 +146,11 @@ CHECK_NAMES_RU: dict[str, str] = {
     "qc_noop": "контроль качества: изменений не требуется",
     "native_image_prompt_batch": "проверка пачки промтов изображений",
     "native_split_voiceover_coverage": "проверка покрытия закадра разбивкой",
+    "auto_approve_without_review": "автоодобрение без проверки",
+    "observe_only_plan_result": "проверка результата плана (режим наблюдения)",
+    "observe_only_script_result": "проверка результата сценария (режим наблюдения)",
+    "observe_only_split_result": "проверка результата разбивки (режим наблюдения)",
+    "observe_only_image_prompts_result": "проверка промтов изображений (режим наблюдения)",
 }
 WAIT_REASONS_RU: dict[str, str] = {
     "user_stop": "остановка пользователем",
@@ -148,6 +162,7 @@ WAIT_REASONS_RU: dict[str, str] = {
 STATUS_WORDS_RU: dict[str, str] = {
     "passed": "пройдена", "failed": "не пройдена", "unknown": "результат неизвестен",
     "ok": "успешно", "error": "ошибка", "denied": "отказано", "rejected": "отклонено",
+    "unchecked": "не проверено",
 }
 
 # --- инциденты (observation_incidents.type = ключи diagnosis.TITLES) ------------------------------------
@@ -212,8 +227,13 @@ ACTION_V1_RU = {
     "managed_launch": "Управляемый запуск",
     "watchdog_stalled": "Сторожевая проверка: запрос завис",
     "managed_successor": "Управляемый переход на следующую ноду",
+    "incident_notify": "Уведомление человека об инциденте",
 }
-_ACTION_V1_SEVERITY = {"recovery_denied": SEV_WARN, "kill_switch_on": SEV_WARN, "watchdog_stalled": SEV_WARN,
+INCIDENT_NOTIFY_STATUS_RU = {
+    "notified": "Человек уведомлён об инциденте",
+    "notify_failed": "Уведомление об инциденте не доставлено",
+}
+_ACTION_V1_SEVERITY = {"incident_notify": SEV_INFO, "recovery_denied": SEV_WARN, "kill_switch_on": SEV_WARN, "watchdog_stalled": SEV_WARN,
                        "human_review": SEV_WARN, "hold": SEV_WARN}
 
 # --- журнал слоя действий (action_layer_history.event) --------------------------------------------------
@@ -431,9 +451,11 @@ def event_title_ru(kind: str, payload: Mapping[str, Any] | None = None) -> str:
         return f"Дневник правил кода: правил сработало {rules}{stop}"
     if kind == "node_result_verification":
         status = p.get("status")
+        held = "" if p.get("observe_only") is True else "; запуск удержан"
+        tail = "; режим наблюдения, запуск не остановлен" if p.get("observe_only") is True else ""
         text = ("подтвердила результат" if status == "passed"
-                else "не подтвердила результат; запуск удержан" if status == "failed"
-                else "не смогла сравнить результат со входом; запуск удержан" if status == "unknown"
+                else f"не подтвердила результат{held}{tail}" if status == "failed"
+                else f"не смогла сравнить результат со входом{held}{tail}" if status == "unknown"
                 else f"статус {status or 'неизвестен'}")
         return f"Нативная проверка {text}"
     if kind == "node_error" and isinstance(p.get("rule"), str) and p.get("rule"):
@@ -564,6 +586,9 @@ def _describe(row: Mapping[str, Any]) -> tuple[str, str, str]:
     if source == "action_v1_records":
         kind = str(_get(row, "action_kind", "kind") or "")
         title = ACTION_V1_RU.get(kind) or _fallback(source, kind, "Действие")
+        notify_status = str(_get(row, "status") or "")
+        if kind == "incident_notify" and notify_status in INCIDENT_NOTIFY_STATUS_RU:
+            title = INCIDENT_NOTIFY_STATUS_RU[notify_status]
         detail = []
         if _get(row, "initiator"):
             detail.append(f"инициатор: {row['initiator']}")
@@ -571,7 +596,8 @@ def _describe(row: Mapping[str, Any]) -> tuple[str, str, str]:
             detail.append(f"нода {row['node_key']}")
         if _get(row, "rationale"):
             detail.append(_clip(row["rationale"], 250))
-        return title, _clip("; ".join(detail)), _ACTION_V1_SEVERITY.get(kind, SEV_INFO)
+        severity = SEV_WARN if kind == "incident_notify" and notify_status == "notify_failed" else _ACTION_V1_SEVERITY.get(kind, SEV_INFO)
+        return title, _clip("; ".join(detail)), severity
 
     if source == "action_layer_history":
         kind = str(_get(row, "event", "kind") or "")

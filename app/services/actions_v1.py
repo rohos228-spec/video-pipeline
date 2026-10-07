@@ -73,6 +73,11 @@ class ManagedRunAllowance(Base):
     created_at: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
 
 
+def _media_state(cfg):
+    from app.services.media_jobs import media_profile_state
+    return media_profile_state(cfg)
+
+
 async def claim_run_allowance(session,*,project_id,workflow_run_id,execution_id,request_limit,owner_policy):
     from sqlalchemy.dialects.sqlite import insert
     history=await session.scalar(select(ActionExecutionControl.execution_id).where(
@@ -283,7 +288,7 @@ async def continue_managed_image(session, project, source_key, target_key, node_
         return denied(gate.reason if gate else "permission_missing")
     cfg = runtime_config()
     if (not ctx.runtime_config_hash or ctx.runtime_config_hash != digest(cfg)
-            or cfg.get("mode") != "synthetic" or not (cfg.get("media") or {}).get("enabled")):
+            or not _media_state(cfg)["execution_allowed"] or _media_state(cfg)["production_profile_configured"]):
         return denied("media_configuration_changed_or_disabled")
     async with ctx.observer.master() as master:
         control = await master.get(ActionExecutionControl, scope.execution_id)

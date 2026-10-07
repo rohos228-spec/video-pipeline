@@ -157,6 +157,21 @@ def bind_image_prompt_batch_request(batch_i):
     finally:_request.reset(token)
 
 
+def auto_observe_enabled(project=None) -> bool:
+    """C01: observation starts by itself for every project (no explicit observer.enable).
+
+    Off switches: env OBSERVER_AUTO_ENABLE=0 (whole app) or project.meta["observer_auto"] = false (one project).
+    The behaviour is controlled only by the setting / env; tests switch it off in tests/conftest.py.
+    """
+    raw = os.environ.get("OBSERVER_AUTO_ENABLE")
+    if raw is not None and raw.strip().lower() in {"0", "false", "no", "off", ""}:
+        return False
+    meta = getattr(project, "meta", None)
+    if isinstance(meta, dict) and meta.get("observer_auto") is False:
+        return False
+    return True
+
+
 class Observer:
     MAX_BODY = 1024 * 1024
     MAX_TOTAL = 32 * 1024 * 1024  # per project (settings: observer_body_quota_bytes)
@@ -201,6 +216,9 @@ class Observer:
         self._uncertainty_restored = False
         self._uncertainty_lock = asyncio.Lock()
         self._tasks: set = set()
+        self._auto_lock = asyncio.Lock()
+        self._auto_decided: set[tuple[int, int]] = set()
+        self.auto_failures: dict[int, str] = {}
 
     @property
     def stage_errors(self):
@@ -230,6 +248,54 @@ class Observer:
             self.scopes[workflow_run_id] = scope
             self._execution_project[scope.execution_id] = project_id
             return scope
+
+    async def ensure_auto_scope(self, project, *, force=False):
+        """C01: an observe-mode scope over every node of the project's run, created at the first node start.
+
+        Never raises and never blocks native work: a failure is logged and kept in ``auto_failures``.
+        A scope that already exists (any state, including one the operator stopped) is never replaced,
+        unless ``force`` (the operator switched auto-observation back on) and no active scope remains.
+        """
+        existing = next((s for s in self.scopes.values() if s.project_id == project.id), None)
+        if existing is not None or not auto_observe_enabled(project):
+            return existing
+        async with self._auto_lock:
+            existing = next((s for s in self.scopes.values() if s.project_id == project.id), None)
+            if existing is not None:
+                return existing
+            try:
+                async with self.master() as session:
+                    run = (await session.scalars(select(WorkflowRun).where(
+                        WorkflowRun.project_id == project.id).order_by(WorkflowRun.id.desc()))).first()
+                    if run is None:
+                        return None
+                    decided = (project.id, run.id)
+                    if decided in self._auto_decided and not force:
+                        return None
+                    known = (await session.scalars(select(ExecutionControl.execution_id).where(
+                        ExecutionControl.project_id == project.id,
+                        ExecutionControl.workflow_run_id == run.id))).first()
+                    keys = [str(n.get("id")) for n in (run.nodes_snapshot or []) if n.get("id")]
+                    version = revisions_graph_version(run.nodes_snapshot, run.edges_snapshot)
+                    run_id = run.id
+                if known is not None and not force:
+                    self._auto_decided.add(decided)
+                    return None
+                keys = list(dict.fromkeys(keys))
+                if not keys:
+                    return None
+                try:
+                    scope = await self.enable(project_id=project.id, workflow_run_id=run_id, node_keys=keys,
+                                              graph_version=version, initiator="auto_observe")
+                except ValueError:
+                    return None
+                self._auto_decided.add(decided)
+                self.auto_failures.pop(project.id, None)
+                return scope
+            except Exception as exc:  # noqa: BLE001 - observation must never stop the node
+                self.auto_failures[project.id] = type(exc).__name__
+                logger.warning("observation: auto-enable failed for project {}: {}", project.id, type(exc).__name__)
+                return None
 
     async def ensure_project_schema(self, project_id):
         # Existing project.db files bypass init_project_db at application startup.
@@ -816,6 +882,11 @@ class Observer:
         return True
 
 
+def revisions_graph_version(nodes, edges):
+    from app.services import revisions
+    return revisions.graph_version(nodes, edges)
+
+
 def get_observer():
     global _observer
     if _observer is None:
@@ -1248,6 +1319,7 @@ def _media_resume_nodes():
 @asynccontextmanager
 async def observe_attempt(session, project):
     observer = get_observer()
+    await observer.ensure_auto_scope(project)
     from app.services.excel_gpt_node import active_excel_gpt_node_key
     node_key = active_excel_gpt_node_key(project)
     # Native media (and other registry nodes) do not use the excel active key.
@@ -1357,6 +1429,7 @@ async def observe_attempt(session, project):
         # (node_spec.verifier_spec_for), not per-type branches.
         from app.orchestrator.node_spec import run_verifier_after_success
         await run_verifier_after_success(ctx, session, project, capability.node_type)
+        await observe_only_result_check(ctx, session, project, capability.node_type)
         await record_guard()
         if getattr(ctx, 'scene_native_node', None) is not None:
             try:
@@ -1412,6 +1485,71 @@ async def observe_attempt(session, project):
         profile_stack.close()
         _attempt.reset(token)
         session.info.pop("recovery_attempt_id", None)
+
+
+OBSERVE_ONLY_CHECK_TYPES = frozenset({"plan", "script", "split", "image_prompts"})
+
+
+async def observe_only_result_check(ctx, session, project, node_type):
+    """C01/C02: the result check of plan/script/split/image_prompts outside a managed scope.
+
+    The native verifiers hold or fail the run in managed mode only. Here the same pure proofs are journalled with
+    ``observe_only`` and an incident (runtime_check failed) is raised on a broken result, but the run is never held,
+    retried or failed: no raise, no recovery right. Returns the proof dict, or None when nothing was checked.
+    """
+    if ctx.scope.mode == "managed" or node_type not in OBSERVE_ONLY_CHECK_TYPES:
+        return None
+    try:
+        from app.services import node_capabilities as caps
+        if node_type in {"plan", "script"}:
+            proof = caps.verify_project_text(project, node_type)
+            body = {proof["field"]: getattr(project, proof["field"], None)}
+        else:
+            from sqlalchemy.ext.asyncio import async_sessionmaker
+            from app.models import Frame
+            async with async_sessionmaker(session.bind, expire_on_commit=False, autoflush=False)() as reader:
+                frames = (await reader.scalars(select(Frame).where(Frame.project_id == project.id)
+                                               .order_by(Frame.number))).all()
+            if node_type == "split":
+                proof = caps.verify_split_frames(frames, project_id=project.id,
+                                                 voiceover=getattr(ctx, "split_input_voiceover", None))
+                body = {"frames": [{"uuid": f.uuid, "number": f.number, "voiceover_text": f.voiceover_text}
+                                   for f in frames]}
+            else:
+                proof = caps.verify_image_prompts(frames, project_id=project.id,
+                                                  snapshot=getattr(ctx, "image_prompt_input", None))
+                body = {"frame_count": len(frames), "frame_set_sha256": proof.get("frame_set_sha256")}
+        proof = {**proof, "observe_only": True, "run_held": False}
+        await record_fact("node_result_verification", proof, body=body)
+        if proof.get("status") == "failed" and node_type != "image_prompts":
+            # image_prompts already becomes a verification_hold incident from the verification fact itself.
+            await record_fact("runtime_check", {
+                "check": "observe_only_" + node_type + "_result", "performed": True, "status": "failed",
+                "observe_only": True, "initiator": "observer", "business_commit_claim": False,
+                "semantic_quality_verified": False, "reason": proof.get("reason")})
+        return proof
+    except Exception as exc:  # noqa: BLE001 - an observer check must never change the native outcome
+        ctx.observer.mark_gap(ctx.scope.execution_id, exc)
+        return None
+
+
+async def record_project_event(session, project, kind, payload):
+    """C06: a project-level journal fact (no node), staged in the caller's transaction.
+
+    Starts auto-observation if needed. Returns True when staged; False when the project has no active scope
+    (observation switched off or failed), so the caller can fall back to its own log line.
+    """
+    observer = get_observer()
+    scope = await observer.ensure_auto_scope(project)
+    if scope is None:
+        return False
+    sync_session = getattr(session, "sync_session", session)
+    source = "project" if Path(str(sync_session.bind.url.database)).name == "project.db" else "master"
+    try:
+        return bool(observer.stage(sync_session, scope, kind, db_scope=source, node_key=None, payload=payload))
+    except Exception as exc:  # noqa: BLE001
+        observer.mark_gap(scope.execution_id, exc)
+        return False
 
 
 @event.listens_for(Session, "before_flush")

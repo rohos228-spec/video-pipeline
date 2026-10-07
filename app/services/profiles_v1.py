@@ -1,6 +1,11 @@
-"""Fixed allowlisted synthetic node profiles on the original recovery executor.
+"""Fixed allowlisted node profiles on the original recovery executor.
 
-No production profiles are enabled. Approval binds the base and exact first
+Synthetic profiles serve isolated acceptance. Production has a built-in catalog of
+text-recovery profiles (PRODUCTION_CATALOG): it becomes active only when the owner's
+runtime config is production, has a decision model, lists ``retry_profile`` in
+``allowed_actions``, carries no explicit ``profiles`` and no ``incident_scope`` (a scoped
+pilot stays explicit). An explicit ``profiles`` object always wins; ``builtin_profiles:false``
+switches the built-in catalog off. Media nodes never get a profile. Approval binds the base and exact first
 request transformation; subsequent requests keep the same attempt overlay.
 Reverting configuration cannot roll back business data or billed work.
 """
@@ -21,13 +26,59 @@ CATALOG={'synthetic-json-v1':{'model_id':'gpt-synthetic-alt','provider':'kie',
 CATALOG.update({name:{**CATALOG['synthetic-json-v1'],'reasoning_effort':'low','max_output_tokens':1024,
     'prompt_variant':variant} for name,variant in (
         ('synthetic-original-v1','original-contract-v1'),('synthetic-format-v1','repair-json-only-v1'))})
-PRODUCTION_CATALOG={}
 PROVIDERS=('kie','vibecode')
 # Reference Vibecode repair profile (chat/completions). reasoning_effort / max_output_tokens stay None:
 # whether Vibecode honours them for this model is unverified, so the body never carries them.
 VIBECODE_REPAIR_PROFILE_ID='vibecode-json-repair-v1'
 VIBECODE_REPAIR_PROFILE={'model_id':'gpt-5.6-sol','provider':'vibecode','kind':'text','channel':'stable',
     'reasoning_effort':None,'max_output_tokens':None,'prompt_variant':'repair-json-only-v1','synthetic_only':False}
+
+# Built-in production recovery profiles for text nodes. Only real catalog models
+# (text_llm_catalog / vibecode_catalog); only prompt variants from the approved library
+# (original contract or formatting-only JSON repair). They never touch media, write
+# permissions, graph or budget: a profile changes only the body of one recovery request.
+# Kie (Responses) honours reasoning_effort / max_output_tokens; Vibecode chat/completions is
+# not known to, so its profile keeps both None (see validate_vibecode_profile).
+def _kie(effort,tokens,variant):
+    return {'model_id':'gpt-5-6-sol','provider':'kie','kind':'text','channel':'stable',
+        'reasoning_effort':effort,'max_output_tokens':tokens,'prompt_variant':variant,'synthetic_only':False}
+PRODUCTION_CATALOG={
+    'kie-original-v1':_kie('medium',4096,'original-contract-v1'),
+    'kie-json-repair-v1':_kie('medium',4096,'repair-json-only-v1'),
+    'kie-json-repair-roomy-v1':_kie('high',8192,'repair-json-only-v1'),
+    VIBECODE_REPAIR_PROFILE_ID:dict(VIBECODE_REPAIR_PROFILE)}
+# Managed text node types (capability must also be profile_compatible: that check stays in
+# decision_v1/_base) and the incidents a built-in profile may answer.
+BUILTIN_NODE_TYPES=frozenset({'excel_gpt','plan','script','split','image_prompts','sfx_plan',
+    'animation_prompts','sd_agent','sd_assemble'})
+BUILTIN_INCIDENTS=frozenset({'invalid_json','missing_payload'})
+MEDIA_NODE_TYPES=frozenset({'images','videos','items','music','audio','sfx_gen','hero','hitl_images','hitl_videos','assemble'})
+PROFILE_BINDINGS={pid:{'node_types':BUILTIN_NODE_TYPES,'incidents':BUILTIN_INCIDENTS} for pid in PRODUCTION_CATALOG}
+
+def builtin_production_profiles(cfg):
+    """Built-in profiles of the decision provider, or {} unless the owner opted in (see module doc).
+    A profile that no longer validates against the model catalogs is dropped (fail closed)."""
+    from app.services import decision_config as dc
+    if (not isinstance(cfg,dict) or cfg.get('mode')!='production' or cfg.get('decision') is None
+            or cfg.get('profiles') or cfg.get('incident_scope') or cfg.get('builtin_profiles') is False
+            or 'retry_profile' not in (cfg.get('allowed_actions') or [])):return {}
+    prov=dc.provider(cfg);result={}
+    for pid,c in PRODUCTION_CATALOG.items():
+        if c['provider']!=prov:continue
+        try:dc.validate_profile(c,'production')
+        except ValueError:continue
+        result[pid]=dict(c)
+    return result
+
+def effective_profiles(cfg):
+    """Owner's explicit profiles, else the built-in production catalog (when enabled)."""
+    return cfg['profiles'] if cfg.get('profiles') else builtin_production_profiles(cfg)
+
+def binding_allows(profile_id,*,node_type,incident_type):
+    """Built-in profiles are bound to node types and incidents; owner-defined ids are not restricted here."""
+    b=PROFILE_BINDINGS.get(profile_id)
+    return True if b is None else (node_type in b['node_types'] and incident_type in b['incidents']
+        and node_type not in MEDIA_NODE_TYPES)
 _current=ContextVar('attempt_profile_overlay',default=None)
 
 def source_provider(payload):
@@ -57,7 +108,7 @@ async def _source_events(s,execution_id,project_id,node_key):
 def active_catalog():
     from app.services.decision_config import runtime_config
     cfg=runtime_config()
-    return CATALOG if cfg['mode']=='synthetic' and not cfg.get('incident_scope') and not cfg['profiles'] else cfg['profiles']
+    return CATALOG if cfg['mode']=='synthetic' and not cfg.get('incident_scope') and not cfg['profiles'] else effective_profiles(cfg)
 
 def catalog_hash():return digest(active_catalog())
 
@@ -78,6 +129,16 @@ async def eligible_profiles(session,row,base_version):
         ObservationEvent.kind=='model_start').order_by(ObservationEvent.id).limit(1))
     src=source_provider(event.payload) if event else 'unknown'
     ids=[k for k in ids if not _provider_mismatch(catalog[k],src)]
+    if any(k in PROFILE_BINDINGS for k in ids):
+        from app.services.diagnosis import Incident
+        from app.services.observation import ExecutionControl
+        from app.services.excel_gpt_node import effective_node_type
+        incident=await session.get(Incident,row.incident_id)
+        scope=await session.get(ExecutionControl,row.execution_id)
+        run=await session.get(WorkflowRun,scope.workflow_run_id) if scope else None
+        node=next((n for n in (run.nodes_snapshot if run else []) if str(n.get('id'))==row.node_key),None)
+        node_type=effective_node_type(node) if node else ''
+        ids=[k for k in ids if binding_allows(k,node_type=node_type,incident_type=incident.type if incident else '')]
     return [{'profile_id':k,'candidate':dict(catalog[k]),'catalog_hash':policy['profile_catalog_hash'],
         'base_version':base_version} for k in ids]
 
@@ -232,6 +293,7 @@ class ProfilesSupervisor:
             _,start=await _source_events(s,project_id=project_id,execution_id=execution_id,node_key=node_key)
             src=source_provider(start.payload) if start else 'unknown'
             return {'base_version':version,'catalog_hash':catalog_hash(),'synthetic_only':__import__('app.services.decision_config',fromlist=['runtime_config']).runtime_config()['mode']=='synthetic',
+                'catalog_source':'synthetic' if active_catalog() is CATALOG else ('owner' if __import__('app.services.decision_config',fromlist=['runtime_config']).runtime_config()['profiles'] else 'builtin'),
                 'catalog':[{'profile_id':k,**v,'matches_source_provider':not _provider_mismatch(v,src)} for k,v in active_catalog().items()],
                 'source_provider':src,'available':available,'reason':reason,
                 'overlays':views}

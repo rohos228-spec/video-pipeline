@@ -17,7 +17,7 @@ from loguru import logger
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import session_scope
+from app.db import is_sqlite_locked as _is_sqlite_locked, session_scope
 from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.audio_align_methods import (
     SHARED_NEMO_FULL_METHODS,
@@ -35,10 +35,6 @@ from app.services.reset_step import reset_step
 from app.services.step_cancel import raise_if_cancelled
 from app.services.whisper import dump_words_json, load_words_json
 
-
-def _is_sqlite_locked(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return "database is locked" in msg or "database is busy" in msg
 
 
 async def _latest_words_artifact(

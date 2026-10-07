@@ -272,7 +272,8 @@ async def test_stub_api_writes_check_report(tmp_path: Path, monkeypatch) -> None
     body = report.read_text(encoding="utf-8")
     assert "verdict:" in body
     assert "mode: report_only" in body
-    assert out.gate_status in ("pass", "fail")
+    # W4-4 (C05): stub без ключа - не «pass» и не «fail», а явное «не проверено».
+    assert out.gate_status == "not_checked"
     assert any(p.name == CHECK_REPORT_NAME for p in out.output_paths)
 
 

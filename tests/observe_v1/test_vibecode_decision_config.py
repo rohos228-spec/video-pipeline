@@ -70,7 +70,8 @@ class VibecodeConfig(unittest.TestCase):
         profile={'model_id':'gpt-5-6-sol','provider':'kie','kind':'text','channel':'stable','reasoning_effort':'medium',
                  'max_output_tokens':2048,'prompt_variant':'require-apply-ops-v1','synthetic_only':False}
         self.invalid(vibecode(profiles={'p':profile}),'profile')
-        self.invalid(vibecode(allowed_actions=['retry_profile','human_review']),'retry_profile')
+        # the built-in production catalog (W5-1/D01) covers retry_profile unless the owner switches it off
+        self.invalid(vibecode(allowed_actions=['retry_profile','human_review'],builtin_profiles=False),'retry_profile')
 
     def test_synthetic_mode_is_rejected(self):
         self.invalid(vibecode(mode='synthetic',endpoint='http://127.0.0.1:1/v1/chat/completions',
@@ -152,6 +153,7 @@ def test_vibecode_config_with_matching_profile_loads_and_kie_profile_is_rejected
 
     empty = copy.deepcopy(raw)
     empty["profiles"] = {}
+    empty["builtin_profiles"] = False  # built-in production catalog (D01) would otherwise cover it
     try:
         validate(empty)
     except ValueError:

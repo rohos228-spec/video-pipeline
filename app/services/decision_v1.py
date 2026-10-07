@@ -26,8 +26,9 @@ ACTIONS=('read_events','read_contract','retry_same','human_review','wait','finis
 MAX_STEPS=3
 CHAT_TOKEN_PARAM='max_completion_tokens'  # live probe 2026-10-03: accepted, but vibecode.moe does not enforce the limit
 WAIT_SECONDS=30
-RECOVERY_INCIDENTS={'invalid_json','missing_payload'}
-DIAGNOSTIC_INCIDENTS=RECOVERY_INCIDENTS|{'contract_rejected','api_error'}
+from app.services.actions_recovery import FORMAT_INCIDENTS,RECOVERABLE_INCIDENT_TYPES,RECOVERY_FORMAT,recovery_class
+RECOVERY_INCIDENTS=set(FORMAT_INCIDENTS)  # only these may use an approved profile (format/payload failures)
+DIAGNOSTIC_INCIDENTS=set(RECOVERABLE_INCIDENT_TYPES)  # W4-4 retry classes: format, transient 5xx api_error, local_fix
 MEDIA_INCIDENTS={'media_failure','uncertain_request'}  # only a media-flagged incident of an admitted node is acted on
 SYSTEM='''You are a bounded diagnostic supervisor. Return only JSON with action,
 arguments, evidence_ids, context_version, explanation. Use only allowed_actions.
@@ -459,7 +460,11 @@ class DecisionSupervisor:
         action=await s.get(RecoveryAction,row.action_id) if row.action_id else None
         from app.services.managed_launch import allowed_actions
         execution_actions=await allowed_actions(s,row.execution_id,cfg['allowed_actions'])
-        if incident.type not in RECOVERY_INCIDENTS and not media_ok:execution_actions-= {'retry_same','retry_profile'}
+        # W4-4 retry classes decide whether a supervised retry ticket may be offered at all; a profile retry stays
+        # a format-only remedy. recover_node re-checks the journal facts of the class, and media stays fail-closed.
+        rclass=recovery_class(incident.type,incident.details)
+        if rclass is None and not media_ok:execution_actions-= {'retry_same','retry_profile'}
+        if rclass!=RECOVERY_FORMAT and not media_ok:execution_actions-= {'retry_profile'}
         if media_ok:execution_actions-= {'retry_profile'}
         if not media_ok and media_admission.admitted(capability.node_type):execution_actions-= {'retry_same','retry_profile'}
         if media_ok and not (media_info or {}).get('operation'):execution_actions-= {'retry_same'}
@@ -716,7 +721,7 @@ class DecisionSupervisor:
         from app.services.actions_recovery import RecoveryAction
         from app.services.actions_v1 import ActionExecutionControl
         from app.services.diagnosis import Incident
-        from app.services.step_failure_policy import MAX_TOTAL_FAILS
+        from app.services.step_failure_policy import is_retry_exhausted
         from app.models import NodeRun,NodeRunStatus
         if self.background:
             # Stuck-work detection keeps running under the emergency stop. Mark-only.
@@ -732,8 +737,7 @@ class DecisionSupervisor:
                 permission=await s.get(ActionExecutionControl,control.execution_id)
                 if not permission or not permission.enabled or permission.held:continue
                 project=await s.get(Project,control.project_id)
-                fs=(project.meta or {}).get('step_failure',{}) if project else {}
-                if fs.get('abandoned_at') and max((fs.get('total_fails') or {}).values(),default=0)>=MAX_TOTAL_FAILS:
+                if is_retry_exhausted(project):
                     incidents=(await s.scalars(select(Incident).where(Incident.execution_id==control.execution_id,
                         Incident.type.in_(DIAGNOSTIC_INCIDENTS|MEDIA_INCIDENTS),Incident.status!='resolved_confirmed'))).all()
                     for incident in incidents:

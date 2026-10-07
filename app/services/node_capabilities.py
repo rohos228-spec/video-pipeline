@@ -116,18 +116,27 @@ def _register_builtin_capabilities() -> None:
         C('excel_gpt', 'structured', 'enrich_xlsx.run',
             ('running', 'parse', 'validate', 'apply', 'commit'), ('project_database',),
             READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True, profile_compatible=True,
-            acceptance='excel_gpt_group', contract='structured',
+            acceptance='excel_gpt_group', verifier='excel_gpt_result', contract='structured',
             verifies=('Операции применяются только через общий контракт записи (db_apply)',
-                      'Покрытие кадров и проверки группы script_frames_qc'),
+                      'Покрытие кадров и проверки группы script_frames_qc',
+                      'После шага независимая проверка структуры кадров проекта: uuid не пустые и не повторяются, '
+                      'номера кадров положительные и не повторяются; брак записывается как инцидент, запуск не '
+                      'удерживается'),
             limits=('Один повтор на ноду за запуск',
                     'Повтор запрещён после любого применённого пакета (частичное применение)'),
             recovery_cap=1),
         C('images', 'image', 'generate_images.run → kie_http',
             _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'), READ_ACTIONS, True,
-            acceptance='synthetic_image_scenario', contract='media_jobs',
+            acceptance='synthetic_image_scenario', verifier='media_result', contract='media_jobs',
             successor='continue_managed_image',
-            verifies=('Файл картинки существует и читается (проверка артефакта)',
-                      'Журнал платных задач: неизвестный исход заново не отправляется'),
+            verifies=('У каждого кадра с промтом картинки есть файл: запись артефакта привязана к этому кадру, '
+                      'файл не пустой, декодируется как PNG, JPEG, WEBP или GIF, не меньше нативного порога сцены '
+                      'и не уже 256 пикселей; число картинок сверяется с числом кадров (проверка независимой сессией '
+                      'после шага, media_verification)',
+                      'Журнал платных задач: у кадра виден task id Kie или его отсутствие (Outsee); неизвестный '
+                      'исход заново не отправляется',
+                      'Качество картинки не оценивается; в бою проверка только наблюдает и запуск не удерживает '
+                      '(удержание делает синтетический управляемый контур, media_jobs.require_verified_images)'),
             forbidden_code='paid_uncertain_submit',
             forbidden_reason='Управляемый путь пока только синтетический; платная отправка с неизвестным '
                              'исходом могла быть списана, поэтому повторную отправку делает только человек.'),
@@ -188,6 +197,9 @@ def _register_builtin_capabilities() -> None:
             ('provider_generation', 'local_file', 'frame_timing', 'artifact_row'), READ_ACTIONS, False,
             verifier='media_result', contract='media_jobs',
             verifies=('Файл озвучки существует, читается (ffprobe: звуковая дорожка, длительность)',
+                      'Независимый верификатор audio_verification.verify_audio: формат из разрешённого набора, '
+                      'длительность в допуске, ненулевая амплитуда (тишина даёт провал), результат пишется фактом '
+                      'audio_result_verification',
                       'Число кусков озвучки сверяется с числом кадров с закадровым текстом',
                       'Маркер .tts_uncertain_* (таймаут или обрыв после отправки) выводится как неизвестный исход'),
             limits=('Повторный POST после таймаута запрещён, пока человек не снимет маркер или не положит файл',
@@ -244,6 +256,8 @@ def _register_builtin_capabilities() -> None:
             ('local_file', 'project_database'), READ_ACTIONS, False,
             verifier='sfx_result', contract='media_jobs',
             verifies=('Каждый звуковой файл существует, читается как WAV и не пустой по уровню',
+                      'Независимый верификатор audio_verification.verify_audio проверяет каждый файл: формат, '
+                      'звуковая дорожка, длительность, ненулевая амплитуда (тишина или битый файл дают провал)',
                       'Число файлов совпадает с планом, пути лежат внутри папки sfx проекта',
                       'Откат ElevenLabs на локальный синтез виден: факт provider_fallback, инцидент '
                       'provider_degraded и поле provider_fallback у события'),
@@ -618,7 +632,12 @@ def explain_image_prompt_verification(proof):
             text=_IMAGE_PROMPT_CRITERIA[code]
             criteria.append(code);lines.append(text[0].upper()+text[1:]+'.')
     if not lines:lines.append('Нативная проверка не подтвердила результат: '+str(proof.get('reason') or status)+'.')
-    summary=' '.join(lines)+' Снять удержание может только человек.'
+    if proof.get('observe_only'):
+        lines=[l.replace('по правилу безопасности запуск удержан, пока человек не посмотрит данные',
+            'запуск не остановлен: это режим наблюдения') for l in lines]
+        summary=' '.join(lines)+' Режим наблюдения: запуск не удерживался и ничего не повторялось, решает человек.'
+    else:
+        summary=' '.join(lines)+' Снять удержание может только человек.'
     return {'summary':summary,'criteria':criteria,'failing_frames':[
         {k:f.get(k) for k in ('criterion','frame_uuid','number','primary_len','second_len','required_min')}
         for f in failures[:IMAGE_PROMPT_FAILURES_LIMIT]],
@@ -682,7 +701,9 @@ async def observe_image_prompt_result(session,project,node_type):
     from app.models import Frame
     from app.services.observation import _attempt,record_fact
     ctx=_attempt.get()
-    if not ctx or ctx.scope.mode!='managed' or node_type!='image_prompts':return
+    if not ctx or node_type!='image_prompts':return
+    observe_only=ctx.scope.mode!='managed'
+    if observe_only and not _observe_only_applies(ctx):return
     project_id=ctx.scope.project_id
     read_error=None
     try:
@@ -702,9 +723,11 @@ async def observe_image_prompt_result(session,project,node_type):
             'image_prompt':f.image_prompt,'attrs':f.attrs} for f in frames]}
     await record_fact('node_output',{'frame_count':None if frames is None else len(frames),
         'frame_set_sha256':proof['frame_set_sha256'],'source':'committed original executor rows; independent read session'},body=output)
+    if observe_only:proof={**proof,'observe_only':True,'run_held':False}
     await record_fact('node_result_verification',proof,body=proof)
     ctx.image_prompt_verification_recorded=True
     if read_error:ctx.observer.mark_gap(ctx.scope.execution_id,read_error)
+    if observe_only:return  # observe scope: the incident is the result; nothing is held, nothing raised
     if proof['status']!='passed':
         from app.services.actions_v1 import ActionSupervisor
         try:
@@ -807,10 +830,39 @@ def verify_project_text(project,node_type):
         'semantic_quality_verified':False,'human_approval_preserved':True}
 
 
+async def record_observe_only_proof(ctx,node_type,proof,*,body=None,incident=True):
+    """Observe-mode result check (C02): journal the proof and, when it failed, a failed ``runtime_check`` that
+    diagnosis turns into a ``contract_rejected`` incident. Never raises, never holds, never retries: the run
+    goes on, a human sees the incident. A journal failure is an audit gap, not a failure of the node."""
+    from app.services.observation import record_fact
+    proof={**proof,'observe_only':True,'run_held':False}
+    try:
+        await record_fact('node_result_verification',proof,body=body if body is not None else proof)
+        if incident and proof.get('status')=='failed':
+            await record_fact('runtime_check',{'check':f'результата ноды {node_type} (режим наблюдения, запуск не остановлен)',
+                'status':'failed','performed':True,'observe_only':True,'reason':str(proof.get('reason'))[:200],
+                'business_commit_claim':False,'semantic_quality_verified':False})
+    except Exception as exc:
+        try:ctx.observer.mark_gap(ctx.scope.execution_id,exc)
+        except Exception:pass
+
+
+def _observe_only_applies(ctx):
+    """Observe scope, successful native attempt. A failed attempt already has its own node_error incident."""
+    return bool(ctx) and ctx.scope.mode!='managed' and getattr(ctx,'attempt_exception',None) is None
+
+
 async def observe_project_text_result(project,node_type):
     from app.services.observation import _attempt,record_fact
     ctx=_attempt.get()
-    if not ctx or ctx.scope.mode!='managed' or node_type not in {'plan','script'}:return
+    if not ctx or node_type not in {'plan','script'}:return
+    if ctx.scope.mode!='managed':
+        if _observe_only_applies(ctx):
+            try:proof=verify_project_text(project,node_type)
+            except Exception as exc:
+                ctx.observer.mark_gap(ctx.scope.execution_id,exc);return
+            await record_observe_only_proof(ctx,node_type,proof,body={proof['field']:getattr(project,proof['field'],None)})
+        return
     proof=verify_project_text(project,node_type)
     await record_fact('node_result_verification',proof,body={proof['field']:getattr(project,proof['field'],None)})
     if proof['status']!='passed':raise RuntimeError(proof['reason'])
@@ -913,7 +965,18 @@ async def observe_split_result(session,project,node_type):
     from app.models import Frame
     from app.services.observation import _attempt,record_fact
     ctx=_attempt.get()
-    if not ctx or ctx.scope.mode!='managed' or node_type!='split':return
+    if not ctx or node_type!='split':return
+    if ctx.scope.mode!='managed':
+        if _observe_only_applies(ctx):
+            try:
+                with session.no_autoflush:
+                    frames=(await session.scalars(select(Frame).where(Frame.project_id==project.id).order_by(Frame.number))).all()
+                proof=verify_split_frames(frames,project_id=project.id,voiceover=getattr(ctx,'split_input_voiceover',None))
+            except Exception as exc:
+                ctx.observer.mark_gap(ctx.scope.execution_id,exc);return
+            await record_observe_only_proof(ctx,'split',{**proof,'source':'original executor frame rows; observe mode'},
+                body={'frames':[{'uuid':f.uuid,'number':f.number,'voiceover_text':f.voiceover_text} for f in frames]})
+        return
     frames=(await session.scalars(select(Frame).where(Frame.project_id==project.id).order_by(Frame.number))).all()
     proof=verify_split_frames(frames,project_id=project.id,voiceover=getattr(ctx,'split_input_voiceover',None))
     await record_fact('node_result_verification',{**proof,'source':'original executor frame rows; commit requires outbox'},
@@ -937,14 +1000,18 @@ def _register_builtin_verifiers() -> None:
     looks them up by node type instead of an if-chain)."""
     from app.orchestrator.node_spec import VerifierSpec, register_verifier
     me = 'app.services.node_capabilities:'
+    # plan/script/split/image_prompts (C02): the same hook runs in observe scope too. There it only journals the
+    # proof and an incident (record_observe_only_proof); the hold/raise stays managed-only inside the hook.
     register_verifier(VerifierSpec('project_text_result', me + '_observe_project_text',
-        managed_only=True, success_errors='raise'))
+        success_errors='raise'))
     register_verifier(VerifierSpec('split_result', me + 'observe_split_result',
-        managed_only=True, success_errors='raise'))
+        success_errors='raise'))
     register_verifier(VerifierSpec('image_prompts_result', me + 'observe_image_prompt_result',
-        managed_only=True, success_errors='raise', on_error=True,
+        success_errors='raise', on_error=True,
         error_done_flag='image_prompt_verification_recorded',
         error_gap_exempt_flag='image_prompt_hold_saved'))
+    register_verifier(VerifierSpec('excel_gpt_result', me + 'observe_excel_gpt_result',
+        success_errors='gap'))
     register_verifier(VerifierSpec('sfx_result', 'app.services.sfx_plan:observe_sfx_result',
         success_errors='gap', success_flag='sfx_result_observed', on_error=True,
         error_done_flag='sfx_result_observed'))
@@ -981,3 +1048,133 @@ def _register_scene_agent_admission() -> None:
 _register_builtin_capabilities()
 _register_builtin_verifiers()
 _register_scene_agent_admission()
+
+
+# ---------------------------------------------------------------------------
+# C02: named result check of excel_gpt (observation only: it never holds or retries)
+# ---------------------------------------------------------------------------
+
+def verify_frame_structure(frames, *, project_id):
+    """Structural integrity of the project's Frame rows after an excel_gpt step (read-only, no quality claim).
+
+    ``failed``: a frame of another project, an empty or repeated uuid, a missing, non-positive or repeated
+    number. ``unknown``: no frames yet (nothing to check, not a pass). It does NOT prove that the step covered
+    the frames it had to (script_frames_qc coverage stays with the original runtime)."""
+    rows = [{'uuid': f.uuid, 'number': f.number, 'project_id': f.project_id} for f in frames]
+    errors = []
+    if any(r['project_id'] != project_id for r in rows):
+        errors.append('project_scope')
+    uuids = [r['uuid'] for r in rows]
+    if any(not isinstance(u, str) or not u.strip() for u in uuids):
+        errors.append('missing_uuid')
+    elif len(set(uuids)) != len(uuids):
+        errors.append('duplicate_uuid')
+    numbers = [r['number'] for r in rows]
+    if any(not isinstance(n, int) or isinstance(n, bool) or n < 1 for n in numbers):
+        errors.append('bad_number')
+    elif len(set(numbers)) != len(numbers):
+        errors.append('duplicate_number')
+    status = 'failed' if errors else ('passed' if rows else 'unknown')
+    return {'node_type': 'excel_gpt', 'contract': 'native_frame_structure', 'status': status,
+            'reason': errors[0] if errors else (None if rows else 'no_frames_yet'), 'errors': errors,
+            'frame_count': len(rows), 'business_commit_claim': False, 'semantic_quality_verified': False,
+            'source': 'independent read of project Frame rows after the step'}
+
+
+async def observe_excel_gpt_result(session, project, node_type):
+    """Verifier hook of excel_gpt (named ``excel_gpt_result``), observation only. Runs after a successful native
+    attempt in every scope: journals the proof, a failed one also as an incident. Never raises or holds."""
+    from sqlalchemy import select
+    from app.models import Frame
+    from app.services.observation import _attempt
+    ctx = _attempt.get()
+    if ctx is None or session is None or getattr(ctx, 'attempt_exception', None) is not None:
+        return
+    try:
+        with session.no_autoflush:
+            frames = (await session.scalars(select(Frame).where(Frame.project_id == ctx.scope.project_id)
+                                            .order_by(Frame.number))).all()
+        proof = verify_frame_structure(frames, project_id=ctx.scope.project_id)
+    except Exception as exc:  # noqa: BLE001
+        ctx.observer.mark_gap(ctx.scope.execution_id, exc)
+        return
+    await record_observe_only_proof(ctx, 'excel_gpt', proof, body=proof)
+
+
+# ---------------------------------------------------------------------------
+# C11: per-node proof registry ("what is in the data" vs "what a run confirmed")
+# ---------------------------------------------------------------------------
+# U unit test, D dry run through the real code with a replaced model, L live run on a real provider
+# (docs/LIVE_RUNS.md), H manual check by a human. ``proof`` is the text of the confirmation column and is
+# checked against the registry and docs/LIVE_RUNS.md by tests/w4_2_c11_proof_registry_test.py.
+# ``live_node`` lists dates of a live run of THE NODE; ``live_seam`` of a seam only (one provider call);
+# a node with no live run of its own says why in ``why_no_live`` (shown as "только сухо: причина").
+_NO_LIVE_ROW = 'в реестре живых прогонов строки по этой ноде нет'
+_RESUME_REASON = 'возобновление нужно проверять на реально оплаченной задаче провайдера, такого прогона не было'
+_LEGACY_REASON = 'устаревший тип: живой прогон не планируется, граф переносится миграцией'
+NODE_PROOF = {
+    'plan': dict(proof='D', live_node=(), live_seam=(),
+        why_no_live='живое восстановление не пройдено: попытка упала на отрицательном балансе Kie, на Vibecode не доказано'),
+    'script': dict(proof='D', live_node=(), live_seam=(),
+        why_no_live='живое восстановление не пройдено: баланс Kie, на Vibecode не доказано'),
+    'excel_gpt': dict(proof='D + L 2026-10-01 (сбой смоделирован)', live_node=('2026-10-01',), live_seam=(),
+        why_no_live=''),
+    'split': dict(proof='U/D', live_node=(), live_seam=(), why_no_live=_NO_LIVE_ROW),
+    'image_prompts': dict(proof='U/D', live_node=(), live_seam=(), why_no_live=_NO_LIVE_ROW),
+    'sfx_plan': dict(proof='D', live_node=(), live_seam=(), why_no_live=_NO_LIVE_ROW),
+    'animation_prompts': dict(proof='D', live_node=(), live_seam=(), why_no_live=_NO_LIVE_ROW),
+    'images': dict(proof='U/D (только синтетический путь); шов Outsee L 2026-10-07', live_node=(),
+        live_seam=('2026-10-07',),
+        why_no_live='нода целиком живьём не гонялась (проверен один запрос картинки), управляемый путь только '
+                    'синтетический, маршрут Outsee или Kie ждёт решения владельца'),
+    'videos': dict(proof='D (только возобновление)', live_node=(), live_seam=(), why_no_live=_RESUME_REASON),
+    'items': dict(proof='D (только возобновление)', live_node=(), live_seam=(), why_no_live=_RESUME_REASON),
+    'music': dict(proof='D (только возобновление)', live_node=(), live_seam=(), why_no_live=_RESUME_REASON),
+    'assemble': dict(proof='D (монтажный движок подменён)', live_node=(), live_seam=(),
+        why_no_live='живой сборки под надзором не было, в сухих прогонах монтажный движок подменён'),
+    'sd_agent': dict(proof='D (допуск: characters, world)', live_node=(), live_seam=(), why_no_live=_NO_LIVE_ROW),
+    'sd_assemble': dict(proof='D', live_node=(), live_seam=(), why_no_live=_NO_LIVE_ROW),
+    'hero': dict(proof='D', live_node=(), live_seam=(), why_no_live=_NO_LIVE_ROW),
+    'audio': dict(proof='U; шов TTS L 2026-10-07', live_node=(), live_seam=('2026-10-07',),
+        why_no_live='нода целиком живьём не гонялась, проверен только один запрос озвучки'),
+    'sfx_gen': dict(proof='D; шов SFX L 2026-10-07', live_node=(), live_seam=('2026-10-07',),
+        why_no_live='нода целиком живьём не гонялась, проверен только один запрос звукового эффекта'),
+    'scene_design': dict(proof='D (устаревший тип)', live_node=(), live_seam=(), why_no_live=_LEGACY_REASON),
+    **{f'enrich_{n}': dict(proof='U (миграция графов, устаревший тип)', live_node=(), live_seam=(),
+                           why_no_live=_LEGACY_REASON) for n in range(1, 6)},
+    'publish': dict(proof='U', live_node=(), live_seam=(),
+        why_no_live='публикация необратима, живой прогон возможен только по решению владельца; L и H нет'),
+}
+_LEVEL_RU = {'managed': 'под управлением', 'observed': 'под наблюдением', 'human_only': 'только человек'}
+PROOF_TABLE_HEADER = ('| Нода | Есть в данных (уровень) | Подтверждено прогоном (U/D/L/H) | '
+                      'Чего нет (без L: «только сухо» и причина) |')
+
+
+def node_proof_rows():
+    """One row per registered node type: level from coverage_level() and the proof entry above."""
+    from app.orchestrator.node_spec import coverage_level, registered_capability_specs
+    from app.services.node_coverage import registry_node_types
+    specs = registered_capability_specs()
+    rows = []
+    for node_type in registry_node_types():
+        spec, proof = specs.get(node_type), NODE_PROOF.get(node_type)
+        if spec is None or proof is None:
+            rows.append({'node_type': node_type, 'level': None, 'proof': None, 'complete': False})
+            continue
+        rows.append({'node_type': node_type, 'level': coverage_level(spec), 'proof': proof['proof'],
+                     'live_node': tuple(proof['live_node']), 'live_seam': tuple(proof['live_seam']),
+                     'missing': ('-' if proof['live_node'] else 'только сухо: ' + proof['why_no_live']),
+                     'complete': True})
+    return rows
+
+
+def render_proof_table() -> str:
+    """The markdown table of docs/NODE_COVERAGE.md (section "Подтверждено по нодам"), generated from the registry."""
+    lines = [PROOF_TABLE_HEADER, '|---|---|---|---|']
+    rows = {r['node_type']: r for r in node_proof_rows()}
+    for node_type in NODE_PROOF:
+        row = rows.get(node_type)
+        if row is None or not row['complete']:
+            continue
+        lines.append(f"| `{node_type}` | {_LEVEL_RU[row['level']]} | {row['proof']} | {row['missing']} |")
+    return '\n'.join(lines)

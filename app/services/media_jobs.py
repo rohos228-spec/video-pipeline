@@ -174,6 +174,25 @@ def validate_media_config(raw, *, mode):
         raise ValueError("invalid polling interval")
 
 
+def media_profile_state(cfg):
+    """What the owner's runtime config says about managed media; the single source for the panel and
+    the two execution gates (assert_entry, actions_v1 media start). Computed, never a constant.
+
+    Media stays fail-closed: ``validate_media_config`` rejects an enabled media policy outside
+    synthetic mode (no authorized network profile / ceiling exists yet), so a validated production
+    config always reports ``production_profile_configured=False`` and ``execution_allowed=False``.
+    A media node is never enabled implicitly by the built-in text recovery catalog."""
+    media = (cfg or {}).get("media") or {}
+    mode = (cfg or {}).get("mode")
+    enabled = bool(media.get("enabled"))
+    production = enabled and mode == "production"
+    synthetic = enabled and mode == "synthetic"
+    return {"mode": mode, "media_enabled": enabled, "provider": media.get("provider"),
+            "production_profile_configured": production,
+            "synthetic_only": not production,
+            "execution_allowed": synthetic or production}
+
+
 def check_url(url, config, *, download=False, path=None):
     u = urlsplit(url)
     origin = f"{u.scheme}://{u.netloc}"
@@ -205,10 +224,13 @@ async def assert_entry(*, project_id=None, provider):
     from app.services.decision_config import runtime_config
     cfg = runtime_config()
     media = cfg.get("media")
-    if not media or not media["enabled"] or media["provider"] != provider or cfg["mode"] != "synthetic":
+    state = media_profile_state(cfg)
+    if (not media or not state["execution_allowed"] or media["provider"] != provider
+            or state["production_profile_configured"]):
+        # A production media profile has no authorized network transport yet: fail closed.
         raise MediaPolicyError("media provider profile disabled or unsupported")
     from app.settings import settings
-    if not str(settings.gpt_api_key).startswith("synthetic"):
+    if state["synthetic_only"] and not str(settings.gpt_api_key).startswith("synthetic"):
         raise MediaPolicyError("media fixture requires synthetic application credentials")
     return ctx, cfg
 

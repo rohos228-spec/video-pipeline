@@ -238,6 +238,13 @@ async def _lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("auto_migrate_legacy_projects failed (non-fatal)")
 
+    try:
+        from app.services.diagnosis import register_default_escalation_notifier
+
+        register_default_escalation_notifier()
+    except Exception:  # noqa: BLE001 - уведомление не должно мешать запуску
+        logger.exception("escalation notifier registration failed (non-fatal)")
+
     from app.services.observation import get_observer
 
     observer_task = asyncio.create_task(get_observer().loop(), name="observation-consumer")

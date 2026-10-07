@@ -24,6 +24,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import is_sqlite_locked as _is_sqlite_locked
 from app.models import Entity, Frame, Project
 from app.project_db import project_db_session_scope as _isolated_project_scope
 from app.services.img_streams import acquire_image_slot, get_img_streams
@@ -99,10 +100,6 @@ def _ready_local_asset(path: Path, *, min_bytes: int) -> bool:
     except OSError:
         return False
 
-
-def _is_sqlite_locked(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return "database is locked" in msg or "database is busy" in msg
 
 
 def _is_sqlite_transient(exc: BaseException) -> bool:

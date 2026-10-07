@@ -180,8 +180,12 @@ A fifth, unrelated concept — **"profile"** in `profiles_v1.py` — bundles
 `(model_id, reasoning_effort, max_output_tokens, one fixed prompt_variant)`
 for the Decision layer's recovery-retry action only. It is not a general
 model/agent/strategy/prompt abstraction and should not be confused with the
-four above; `PRODUCTION_CATALOG={}` (empty) today — only a synthetic profile
-exists.
+four above. `profiles_v1.PRODUCTION_CATALOG` is the built-in production
+catalog of text-recovery profiles (Kie: same model with another
+`reasoning_effort`/`max_output_tokens`; Vibecode: formatting-only JSON repair,
+no effort/token knobs). It is active only when the owner's production config
+lists `retry_profile`, has no explicit `profiles`/`incident_scope` and does not
+set `builtin_profiles:false`; synthetic profiles stay test-only.
 
 **Practical implication**: changing which LLM answers a node's requests
 (model) never implies changing the node's executor code (agent/strategy), and

@@ -125,14 +125,16 @@ def validate_vibecode_policy(raw,endpoint):
     if any(not isinstance(item,dict) or item.get('provider')!='vibecode' for item in raw['profiles'].values()):
         raise ValueError('vibecode decision profiles must be vibecode profiles')
     if 'retry_profile' in raw['allowed_actions'] and not raw['profiles']:
-        raise ValueError('retry_profile requires at least one approved vibecode profile')
+        from app.services.profiles_v1 import builtin_production_profiles
+        if not builtin_production_profiles(raw):
+            raise ValueError('retry_profile requires at least one approved vibecode profile')
     if endpoint.scheme not in {'https','http'} or endpoint.hostname not in approved_vibecode_hosts():
         raise ValueError('vibecode endpoint host is not approved')
 
 
 def validate_config(raw):
     expected={'version','mode','online_enabled','endpoint','decision','profiles','allowed_actions'}
-    optional={'model_transport','external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack','incident_scope','media','budget_policy'}
+    optional={'model_transport','external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack','incident_scope','media','budget_policy','builtin_profiles'}
     if not isinstance(raw,dict) or not expected<=set(raw) or set(raw)-expected-optional or raw['version']!=1 or raw['mode'] not in {'synthetic','production'} or type(raw['online_enabled'])!=bool:
         raise ValueError('invalid runtime configuration')
     owner_budget_policy(raw)
@@ -147,7 +149,7 @@ def validate_config(raw):
     if 'media' in raw:
         from app.services.media_jobs import validate_media_config
         validate_media_config(raw['media'], mode=raw['mode'])
-    for key in ('external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack'):
+    for key in ('external_calls_enabled','retrieval_allowed','continuation_allowed','gateway_ack','builtin_profiles'):
         if key in raw and type(raw[key])!=bool:raise ValueError('invalid decision network policy')
     transport=raw.get('model_transport')
     if transport is not None and transport not in {'fixture','real'}:raise ValueError('invalid model transport')
@@ -209,13 +211,19 @@ def check_route(config,url):
         if not (settings.vibecode_api_key or '').strip():raise ValueError('vibecode credential missing')
 
 
+def effective_profiles(cfg):
+    from app.services.profiles_v1 import effective_profiles as _effective
+    return _effective(cfg)
+
+
 def status():
     try:
         cfg=runtime_config()
         available=bool(cfg['decision'] and cfg['online_enabled'])
         return {'mode':cfg['mode'],'configured':available,'decision_model':cfg['decision'],
             'budget_policy':owner_budget_policy(cfg),
-            'allowed_actions':cfg['allowed_actions'],'profile_count':len(cfg['profiles']),
+            'allowed_actions':cfg['allowed_actions'],'profile_count':len(effective_profiles(cfg)),
+            'profile_source':'owner' if cfg['profiles'] else ('builtin' if effective_profiles(cfg) else 'none'),
             'route':cfg['endpoint'],'provider':provider(cfg),'route_kind':route_kind(cfg),'reason':None if available else 'Модель принятия решений не настроена или выключена'}
     except (ValueError,OSError,TypeError):return {'mode':'production','configured':False,'decision_model':None,'allowed_actions':[],
-        'profile_count':0,'route':None,'provider':None,'route_kind':None,'reason':'Конфигурация модели недоступна или отклонена'}
+        'profile_count':0,'profile_source':'none','route':None,'provider':None,'route_kind':None,'reason':'Конфигурация модели недоступна или отклонена'}

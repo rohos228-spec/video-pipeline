@@ -7,11 +7,13 @@ outbox events. Correlation uses attempt/request links, never cross-DB clocks.
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+from loguru import logger
 from sqlalchemy import JSON, String, select, func
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,9 +24,10 @@ UNCERTAIN_ERROR_TYPES = frozenset({'CancelledError', 'ReadTimeout', 'ConnectTime
 
 from app.models import Base, WorkflowRun
 from app.services.error_catalog import ERROR_CATALOG
+from app.services.native_animation_contracts import ANIMATION_DEGRADATION_POLICY
 from app.services.observation import ExecutionControl, ObservationEvent, digest, panel_safe, business_snapshot, confirmed_qc_noop, accepted_qc_noop_parse
 
-RULE_VERSION = 'diagnose-v1.5-native-hitl'
+RULE_VERSION = 'diagnose-v1.6-outcomes'
 
 
 class DiagnosisState(Base):
@@ -75,6 +78,97 @@ RECOMMENDATIONS = {
     'review_provider_response':'Сверить сохранённый ответ провайдера',
     'restore_journal':'Восстановить доступность журнала', 'human_review':'Передать человеку',
 }
+
+
+# ---------------------------------------------------------------------------------------------------------
+# W4-4 (C08): an OUTCOME for every incident type. Nothing here retries anything; ``retry_gated`` means "the
+# supervisor may be offered ONE ticket (actions_recovery.recover_node) after a human/Decision authorization",
+# and a repeated paid request is never part of any outcome. ``notify`` marks the types a person is told about in
+# Telegram once per incident (INCIDENT_TELEGRAM_TYPES overrides the list; "none" switches it off).
+# ---------------------------------------------------------------------------------------------------------
+OUTCOME_RETRY_GATED = 'retry_gated'      # one supervised retry is possible, only with a decision
+OUTCOME_ESCALATE = 'escalate'            # a person decides; no automatic action exists
+OUTCOME_DIAGNOSE_ONLY = 'diagnose_only'  # visible in the journal; nothing to do and nobody is paged
+OUTCOME_WAIT = 'wait'                    # not an error: waiting for a queue, a person or a stop
+OUTCOME_DEGRADED = 'degraded_success'    # the step went on by a recorded fallback; a person may re-decide
+
+INCIDENT_OUTCOMES = {
+    'media_failure': dict(kind=OUTCOME_ESCALATE, notify=True, paid_retry='human_only',
+        summary_ru='Медиа-задача не подтверждена. Докачка уже оплаченной задачи возможна только после решения человека; новая отправка не делается сама.'),
+    'media_policy': dict(kind=OUTCOME_ESCALATE, notify=True, paid_retry='never',
+        summary_ru='Защитное ограничение остановило отправку. Снять его и продолжить может только человек.'),
+    'invalid_json': dict(kind=OUTCOME_RETRY_GATED, notify=True, paid_retry='gated', recovery_class='format',
+        summary_ru='Ответ модели не разобран. После исчерпания обычных повторов возможен один контролируемый повтор по решению; сам он не запускается.'),
+    'missing_payload': dict(kind=OUTCOME_RETRY_GATED, notify=True, paid_retry='gated', recovery_class='format',
+        summary_ru='В ответе модели нет обязательных данных. После исчерпания обычных повторов возможен один контролируемый повтор по решению; сам он не запускается.'),
+    'contract_rejected': dict(kind=OUTCOME_ESCALATE, notify=True, paid_retry='gated', recovery_class=None,
+        summary_ru='Ответ отклонён проверкой. Повторять тот же платный запрос бессмысленно: сначала нужна правка входа, затем один повтор по решению.'),
+    'api_error': dict(kind=OUTCOME_ESCALATE, notify=True, paid_retry='gated', recovery_class=None,
+        summary_ru='Ошибка API. Один повтор по решению возможен только если шлюз ответил кодом 5xx (запрос не принят); при таймауте и обрыве повтор запрещён.'),
+    'uncertain_request': dict(kind=OUTCOME_ESCALATE, notify=True, paid_retry='never',
+        summary_ru='Неизвестно, принял ли провайдер запрос. Новый платный запрос запрещён: человек сверяет результат у провайдера.'),
+    'runtime_wait': dict(kind=OUTCOME_WAIT, notify=False, paid_retry='never',
+        summary_ru='Ожидание очереди, блокировки или подтверждения. Это не ошибка.'),
+    'user_stop': dict(kind=OUTCOME_WAIT, notify=False, paid_retry='never',
+        summary_ru='Проект остановлен пользователем. Автоматически не продолжается.'),
+    'db_disagreement': dict(kind=OUTCOME_ESCALATE, notify=True, paid_retry='never',
+        summary_ru='Состояния двух баз расходятся. Повтор не делается, пока человек не сверит базы.'),
+    'journal_gap': dict(kind=OUTCOME_DIAGNOSE_ONLY, notify=False, paid_retry='never',
+        summary_ru='В журнале не хватает доказательств. Виден в ленте; повтор по такому инциденту запрещён.'),
+    'stalled': dict(kind=OUTCOME_ESCALATE, notify=True, paid_retry='never',
+        summary_ru='Запрос или выполнение зависли. Только диагностика и уведомление: платный запрос не повторяется, исход неизвестен.'),
+    'split_degraded': dict(kind=OUTCOME_DEGRADED, notify=False, paid_retry='never',
+        summary_ru='Разбивка получена локальным запасным путём. Шаг принят с деградацией; повторить может только человек.'),
+    'verification_hold': dict(kind=OUTCOME_ESCALATE, notify=True, paid_retry='never',
+        summary_ru='Проверка результата не подтвердила его, запуск удержан. Решает человек.'),
+    'provider_degraded': dict(kind=OUTCOME_DEGRADED, notify=False, paid_retry='never',
+        summary_ru='Звук сделан локальным синтезом после сбоя провайдера. Шаг принят с деградацией; повторить может только человек.'),
+    'animation_degraded': dict(kind=OUTCOME_DEGRADED, notify=False, paid_retry='never',
+        summary_ru='Промты анимации получены запасным путём. Шаг принят с деградацией (политика «успех с деградацией»); повтор платного запроса только по решению человека.'),
+}
+NOTIFY_ENV = 'INCIDENT_TELEGRAM_TYPES'
+
+
+def outcome_for(item):
+    """Outcome of one derived incident: the table row, adjusted by what the incident's own facts allow."""
+    base = dict(INCIDENT_OUTCOMES[item['type']])
+    base.setdefault('recovery_class', None)
+    kind = item['type']
+    if kind == 'api_error' and (item.get('safe_retry') or {}).get('eligible') is True:
+        base.update(kind=OUTCOME_RETRY_GATED, recovery_class='transient_api')
+    elif kind == 'contract_rejected' and item.get('local_fix_candidate') is True:
+        base.update(kind=OUTCOME_RETRY_GATED, recovery_class='local_fix')
+    if item.get('status') == 'resolved_confirmed':
+        base['settled'] = True
+    return base
+
+
+def notify_types():
+    raw = os.environ.get(NOTIFY_ENV)
+    if raw is None or not raw.strip():
+        return {t for t, o in INCIDENT_OUTCOMES.items() if o['notify']}
+    if raw.strip().lower() == 'none':
+        return set()
+    return {t.strip() for t in raw.split(',') if t.strip() in INCIDENT_OUTCOMES}
+
+
+def _api_retry_safety(payload):
+    """Is a repeated request of this failed API call safe and idempotent? Only a 5xx ANSWER qualifies.
+
+    A 5xx is a complete HTTP reply: the gateway refused the request, nothing was processed or billed. A timeout,
+    a dropped connection, a cancel or an unknown status says nothing about acceptance, so it never qualifies
+    (it is an uncertain_request or stays a plain api_error for a person). The journal does not record whether a
+    timeout happened before the request left the machine, so "timeout before send" cannot be proven here."""
+    status = payload.get('status_code')
+    if payload.get('uncertain') is not False:
+        return {'eligible': False, 'reason': 'Исход запроса неизвестен (таймаут, обрыв или отмена): повтор запрещён.'}
+    if type(status) is int and 500 <= status <= 599:
+        return {'eligible': True, 'http_status': status,
+                'reason': f'Шлюз ответил кодом {status}: запрос не принят и не оплачен. Один повтор возможен только по решению.'}
+    if type(status) is int:
+        return {'eligible': False, 'http_status': status,
+                'reason': f'Код {status} не относится к временным сбоям шлюза: повтор не предусмотрен.'}
+    return {'eligible': False, 'reason': 'Код ответа не записан: безопасность повтора не доказана.'}
 
 
 RULE_DIARY_RULES_SHOWN = 8
@@ -233,6 +327,14 @@ def derive_incidents(scope, events, snapshot):
                 item=issue('verification_hold',(node,attempt,'verify',e['event_id']),[e],
                     fact=exp.get('summary') or TITLES['verification_hold'],action='human_review')
                 item['hold_explanation']=exp; item['status']='human_review'
+            if kind=='node_result_verification' and p.get('node_type')=='animation_prompts' and p.get('status') in {'failed','unknown'}:
+                failed=p.get('status')=='failed'
+                reasons=[str(r) for r in (p.get('errors') or [])[:3]] or ([str(p.get('reason'))] if p.get('reason') else [])
+                item=issue('verification_hold',(node,attempt,'animation_verify',e['event_id']),[e],blocking=failed,
+                    severity='error' if failed else 'warning',action='human_review',
+                    fact=('Проверка промтов анимации не пройдена: ' if failed else 'Проверка промтов анимации не подтвердила результат: ')
+                         +('; '.join(reasons) or 'причина не записана')[:300]+'. Автоповтор не выполняется.')
+                item['status']='human_review'; item['semantic_quality_verified']=False; item['verification_status']=p.get('status')
             if kind=='node_result_verification' and p.get('contract')=='native_media':
                 if p.get('status') in {'failed','unknown'}:
                     item=issue('media_failure',(node,attempt,'verify',e['event_id']),[e],
@@ -247,13 +349,18 @@ def derive_incidents(scope, events, snapshot):
                              '). Новый submit запрещён.',action='review_provider_response',incomplete=True)
                     item['status']='human_review'; item['provider']=provider; item['media']=True
             if kind=='provider_fallback':
-                item=issue('provider_degraded',(node,attempt,'fallback',p.get('idx')),[e],blocking=False,severity='warning',
-                    fact='Звук события '+str(p.get('idx'))+' ('+str(p.get('kind'))+') сделан локальным синтезом: '+
+                if p.get('reason')=='no_api_key' or p.get('error_class')=='NoApiKey':
+                    provider_name={'elevenlabs':'ElevenLabs','eleven':'ElevenLabs'}.get(str(p.get('provider') or '').lower(),str(p.get('provider') or 'провайдера'))
+                    fallback_fact=('Звук события '+str(p.get('idx'))+' ('+str(p.get('kind'))+'): ключа '+provider_name+
+                        ' нет, звук процедурный. Платный запрос не отправлялся, списания нет.')
+                else:
+                    fallback_fact=('Звук события '+str(p.get('idx'))+' ('+str(p.get('kind'))+') сделан локальным синтезом: '+
                          str(p.get('provider'))+' вернул '+str(p.get('error_class'))+
                          (' (HTTP '+str(p.get('http_status'))+')' if p.get('http_status') else '')+'; списание: '+
                          {'no':'нет (получен ответ провайдера)','uncertain':'неизвестно (таймаут или обрыв)'}.get(
-                             str(p.get('may_have_charged')),'неизвестно')+'.',
-                    action='human_review')
+                             str(p.get('may_have_charged')),'неизвестно')+'.')
+                item=issue('provider_degraded',(node,attempt,'fallback',p.get('idx')),[e],blocking=False,severity='warning',
+                    fact=fallback_fact,action='human_review')
                 item['status']='human_review'; item['may_have_charged']=p.get('may_have_charged')
             if (kind=='node_result_verification' and str(p.get('contract') or '').startswith('native_scene_')
                     and p.get('status')=='failed'):
@@ -264,6 +371,7 @@ def derive_incidents(scope, events, snapshot):
                          str(p.get('reason') or 'причина не записана')[:200]+'. Автоповтор не выполняется.',
                     action='human_review')
                 item['status']='human_review'; item['failure_class']=klass; item['semantic_quality_verified']=False
+                item['local_fix_candidate']=True
             if kind=='animation_degraded':
                 nums=[n for n in (p.get('frame_numbers') or []) if isinstance(n,int)][:30]
                 where=(' для кадров '+', '.join(map(str,nums))) if nums else ''
@@ -276,6 +384,7 @@ def derive_incidents(scope, events, snapshot):
                 item=issue('animation_degraded',(node,attempt,'degraded',p.get('reason'),p.get('shot')),[e],blocking=False,
                     severity='warning',fact=text,action='human_review')
                 item['status']='human_review'; item['degradation']=p.get('reason'); item['semantic_quality_verified']=False
+                item['policy']=ANIMATION_DEGRADATION_POLICY['outcome']
             if kind == 'media_failure':
                 uncertain = p.get('uncertain') is True or p.get('phase') == 'unknown'
                 item = issue('uncertain_request' if uncertain else 'media_failure',
@@ -293,15 +402,24 @@ def derive_incidents(scope, events, snapshot):
                     action='human_review')
                 item['status'] = 'human_review'
             if kind=='domain_check' and p.get('verdict') in {'fail','reject'}:
-                issue('contract_rejected',(node,attempt,'verdict',e.get('request_id') or e['event_id']),[e],
+                item=issue('contract_rejected',(node,attempt,'verdict',e.get('request_id') or e['event_id']),[e],
                     fact='Исходная предметная проверка вернула verdict fail/reject. Проверка качества относится только к этому контракту.')
+                item['local_fix_candidate']=True
             if kind=='runtime_check' and p.get('check')=='regen_budget' and p.get('performed') is True and p.get('status')=='rejected':
                 item=issue('contract_rejected',(node,attempt,'regen_budget',e.get('request_id') or e['event_id']),[e],
                     fact=str(p.get('summary') or 'Лимит перегенераций исчерпан; проект остановлен.')[:300],action='human_review')
                 item['status']='human_review'
             elif (kind=='runtime_check' and p.get('performed') is True and p.get('status') in {'failed','rejected'}
                     and p.get('failure_class') not in {'invalid_json','missing_payload'}):
-                issue('contract_rejected',(node,attempt,p.get('check'),e.get('request_id') or e['event_id']),[e],fact=f"Проверка {p.get('check','unknown')} отклонила результат.")
+                if p.get('observe_only') is True:
+                    # Observe-only result check: the run was never held, so the incident must not block anything.
+                    item=issue('contract_rejected',(node,attempt,p.get('check'),e.get('request_id') or e['event_id']),[e],blocking=False,severity='warning',
+                        fact='Режим наблюдения: проверка результата ноды '+(str(p.get('check') or '').removeprefix('observe_only_').removesuffix('_result') or str(node))+' не подтвердила результат. Запуск не останавливался и не повторялся, решает человек.',
+                        action='human_review')
+                    item['observe_only']=True
+                else:
+                    item=issue('contract_rejected',(node,attempt,p.get('check'),e.get('request_id') or e['event_id']),[e],fact=f"Проверка {p.get('check','unknown')} отклонила результат.")
+                    item['local_fix_candidate']=True
             if kind in {'apply_error','node_error','model_error'}:
                 if kind == 'node_error' and any(r['kind']=='media_failure' for r in related):
                     continue  # the typed media evidence already owns this failure
@@ -313,7 +431,7 @@ def derive_incidents(scope, events, snapshot):
                     rule=' '.join(rule.split())[:120]
                     item=issue('contract_rejected',(node,attempt,'rule',e['event_id']),[e],
                         fact=_rule_text(rule,diary),action='human_review')
-                    item['rule']=rule; item['status']='human_review'
+                    item['rule']=rule; item['status']='human_review'; item['local_fix_candidate']=True
                     if diary: item['rule_diary']=diary
                     continue
                 if kind=='node_error' and bads:
@@ -331,6 +449,8 @@ def derive_incidents(scope, events, snapshot):
                         fact=title if code!='unknown' else 'Записано исключение транспорта; причина не установлена.',
                         action='review_provider_response' if uncertain else 'human_review',incomplete=uncertain)
                     item['catalog_code']=code; item['status']='human_review'
+                    item['safe_retry']=_api_retry_safety(p)
+                    if type(p.get('status_code')) is int: item['http_status']=p['status_code']
                     if any(r['kind']=='node_result_verification' and r['payload'].get('contract')=='native_media' for r in related):
                         item['media']=True  # the attempt of a media node: media_recovery.assess judges it from ledger facts
                     if p.get('catalog_source')=='exception_type_or_text':
@@ -389,7 +509,74 @@ def derive_incidents(scope, events, snapshot):
         active=latest_attempt.get(item['node_key'])
         if item['attempt_id'] and active and active!=item['attempt_id']:
             item.update(currently_relevant=False,blocking=False,historical_attempt=True)
+    for item in issues.values():
+        item['outcome']=outcome_for(item)
     return list(issues.values())
+
+
+_escalation_notifier=None
+
+
+def set_escalation_notifier(notifier):
+    """Register ``async notifier(project_id, text, url) -> bool`` (tests, or an app that owns its own bot).
+    None restores the default: the Telegram bot when Telegram is active, otherwise no escalation at all."""
+    global _escalation_notifier
+    _escalation_notifier=notifier
+
+
+def register_default_escalation_notifier():
+    """Register the Telegram notifier at app start. Safe by construction: nothing is registered when Telegram is
+    not active or a notifier is already set; the notifier itself re-checks Telegram at send time and any failure
+    of delivery is handled by ``Diagnoser.escalate`` (it never stops a diagnosis pass or the start of the app).
+    Returns True when a notifier was registered."""
+    try:
+        from app.settings import settings
+        if _escalation_notifier is not None or not settings.telegram_active:
+            return False
+
+        async def notifier(project_id,text,url):
+            send=await _default_notifier()
+            if send is None: return False
+            return await send(project_id,text,url)
+
+        set_escalation_notifier(notifier)
+        return True
+    except Exception as exc:
+        logger.warning('escalation notifier not registered: {}',type(exc).__name__)
+        return False
+
+
+def escalation_text_ru(details,*,project_id,node_title=None):
+    """Russian operator text of one escalation. Says what happened, what the outcome is, and that no paid
+    request is repeated by itself."""
+    outcome=details.get('outcome') or INCIDENT_OUTCOMES.get(details.get('type'),{})
+    title=details.get('title') or TITLES.get(details.get('type'),'Инцидент')
+    node=node_title or details.get('node_title') or details.get('node_key') or 'выполнение группы'
+    fact=str(details.get('fact') or title)[:500]
+    lines=[f'Нужно решение человека. Проект {project_id}, шаг «{node}».',title+'.',fact,
+        'Что дальше: '+str(outcome.get('summary_ru') or 'решает человек.'),
+        'Повторный платный запрос сам не выполняется: только по вашему решению.']
+    return '\n'.join(lines)[:1800]
+
+
+async def _default_notifier():
+    from app.settings import settings
+    if not settings.telegram_active: return None
+    async def send(project_id,text,url):
+        from app.telegram.bot import build_bot
+        from app.services.notification_log import notify
+        bot,_=await build_bot()
+        try:
+            markup=None
+            if url and url.startswith('https://'):
+                from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+                markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Открыть студию',url=url)]])
+            await notify(bot,'send_message',settings.telegram_owner_chat_id,text,kind='incident_escalation',
+                project_id=project_id,reply_markup=markup)
+            return True
+        finally:
+            await bot.session.close()
+    return send
 
 
 class Diagnoser:
@@ -484,7 +671,58 @@ class Diagnoser:
                 if state is None: state=DiagnosisState(execution_id=execution_id);s.add(state)
                 state.cursor=cursor;state.checked_at=datetime.utcnow();state.rule_version=RULE_VERSION;state.snapshot_hash=digest(snapshot)
                 await s.commit()
+            try: await self.escalate(execution_id)
+            except Exception as exc: logger.warning('incident escalation failed: {}',type(exc).__name__)
             self.failures.pop(execution_id,None)
+
+    async def escalate(self,execution_id):
+        """Tell a person about every incident whose outcome says so, ONCE per incident.
+
+        At most once: a reservation row (ActionRecord, unique per execution+key) is committed BEFORE the send, so a
+        restart or a second diagnosis pass never repeats the message; a failed send is retried up to 3 times. Only
+        the delivery is automatic. No retry, no paid request and no state change of the business node happens."""
+        notifier=_escalation_notifier or await _default_notifier()
+        types=notify_types()
+        if notifier is None or not types: return 0
+        from app.services.actions_v1 import ActionRecord
+        from app.settings import settings
+        sent=0
+        async with self.observer.master() as s:
+            rows=(await s.scalars(select(Incident).where(Incident.execution_id==execution_id,
+                Incident.status=='human_review',Incident.type.in_(types)))).all()
+            attempt_types=defaultdict(set)
+            for other in (await s.scalars(select(Incident).where(Incident.execution_id==execution_id))).all():
+                if other.status!='resolved_confirmed': attempt_types[(other.node_key,other.attempt_id)].add(other.type)
+            for row in rows:
+                d=row.details or {}
+                if d.get('currently_relevant') is False or d.get('historical_attempt'): continue
+                if (row.type=='contract_rejected' and not d.get('local_fix_candidate')
+                        and attempt_types[(row.node_key,row.attempt_id)]-{'contract_rejected'}):
+                    continue  # the generic echo of a failure that another incident of the same attempt already explains
+                key='incident-notify:'+row.incident_id
+                prior=await s.scalar(select(ActionRecord).where(ActionRecord.execution_id==execution_id,
+                    ActionRecord.idempotency_key==key))
+                if prior is not None and (prior.status!='notify_failed' or (prior.preconditions or {}).get('tries',0)>=3): continue
+                if prior is None:
+                    prior=ActionRecord(action_id=str(uuid.uuid4()),execution_id=execution_id,project_id=row.project_id,
+                        action_kind='incident_notify',node_key=row.node_key,attempt_id=row.attempt_id,initiator='diagnosis',
+                        rationale=('Уведомление человека об инциденте '+row.type)[:500],evidence_ids=[],
+                        preconditions={'incident_id':row.incident_id,'incident_type':row.type,'tries':0,'business_action':False},
+                        idempotency_key=key,status='reserved',verification={'verified':False,'business_action':False})
+                    s.add(prior); await s.commit()
+                text=escalation_text_ru({**d,'type':row.type},project_id=row.project_id,node_title=d.get('node_title'))
+                tries=int((prior.preconditions or {}).get('tries',0))+1
+                try:
+                    ok=bool(await notifier(row.project_id,text,getattr(settings,'fleet_public_url','') or ''))
+                    status='notified' if ok else 'notify_failed'; error=None if ok else 'notifier returned false'
+                except Exception as exc:
+                    status='notify_failed'; error=type(exc).__name__
+                prior.status=status
+                prior.preconditions={**(prior.preconditions or {}),'tries':tries,'last_error':error}
+                prior.verification={'verified':False,'business_action':False,'delivered':status=='notified'}
+                await s.commit()
+                sent+=int(status=='notified')
+        return sent
 
     async def safe_update(self,execution_id):
         try: await self.update(execution_id)

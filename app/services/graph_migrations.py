@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -245,3 +246,127 @@ async def rollback_stores(session: AsyncSession) -> dict[str, Any]:
         restored.append({"store": "project_canvas", "id": project.id, "restored": ids})
     await session.flush()
     return {"migration": ENRICH_TO_EXCEL_GPT_ID, "restored": restored}
+
+
+# ---------------------------------------------------------------- operator layer: backup, report, run
+
+class MigrationError(RuntimeError):
+    """Миграция остановлена; текст предназначен оператору (по-русски)."""
+
+
+def backup_database(db_path: Path, backup_dir: Path | None = None) -> Path:
+    """Консистентная копия SQLite-файла (онлайн-копирование, WAL учитывается) + проверка целостности."""
+    import sqlite3
+
+    db_path = Path(db_path)
+    if not db_path.is_file():
+        raise MigrationError(f"файл базы не найден: {db_path}")
+    backup_dir = Path(backup_dir) if backup_dir else db_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = backup_dir / f"{db_path.stem}.pre_graph_migration.{stamp}{db_path.suffix}"
+    n = 1
+    while dest.exists():
+        dest = backup_dir / f"{db_path.stem}.pre_graph_migration.{stamp}_{n}{db_path.suffix}"
+        n += 1
+    src = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=60)
+    try:
+        dst = sqlite3.connect(str(dest))
+        try:
+            src.backup(dst)
+            ok = dst.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    if not ok or ok[0] != "ok":
+        dest.unlink(missing_ok=True)
+        raise MigrationError(f"резервная копия не прошла проверку целостности: {ok}")
+    return dest
+
+
+def format_report_ru(report: dict[str, Any]) -> str:
+    """Читаемый отчёт «что изменится / что изменено» для оператора."""
+    dry = bool(report.get("dry_run", True))
+    head = "СУХОЙ ПРОХОД (ничего не записано)" if dry else "ПРИМЕНЕНО"
+    verb = "изменится" if dry else "изменено"
+    lines = [f"{head}: миграция узлов enrich_1..5 -> excel_gpt",
+             f"Хранилищ, где {verb} графы: {report.get('stores_changed', 0)}; узлов {verb}: {report.get('nodes_changed', 0)}"]
+    names = {"workflow": "шаблон графа", "workflow_run": "запуск", "project_canvas": "холст проекта"}
+    for item in report.get("items", []):
+        lines.append(f"- {names.get(item['store'], item['store'])} #{item['id']}")
+        for c in item.get("changes", []):
+            extra = []
+            if c.get("slot_index_added"):
+                extra.append("слот записан в data.slotIndex")
+            if c.get("label_changed"):
+                extra.append("пустая подпись заменена на стандартную")
+            tail = f" ({'; '.join(extra)})" if extra else ""
+            lines.append(f"    узел {c['node_id']}: {c['from_type']} -> {c['to_type']}, слот {c['slot_before']}{tail}")
+        for s in item.get("skipped", []):
+            lines.append(f"    ПРОПУЩЕН узел {s['node_id']}: {s['reason']}")
+    if not report.get("items"):
+        lines.append("Узлов enrich_N не найдено: менять нечего.")
+    return "\n".join(lines)
+
+
+async def count_enrich_nodes(session: AsyncSession) -> int:
+    """Сколько узлов enrich_N осталось во всех хранилищах (шаблоны, снимки запусков, холсты)."""
+    from app.models import Project, Workflow, WorkflowRun
+
+    total = 0
+    for wf in (await session.execute(select(Workflow))).scalars().all():
+        total += sum(1 for n in wf.nodes or [] if is_legacy_enrich_node(n))
+    for run in (await session.execute(select(WorkflowRun))).scalars().all():
+        total += sum(1 for n in run.nodes_snapshot or [] if is_legacy_enrich_node(n))
+    for project in (await session.execute(select(Project))).scalars().all():
+        graph = (project.meta or {}).get("canvas_graph") if isinstance(project.meta, dict) else None
+        if isinstance(graph, dict) and isinstance(graph.get("nodes"), list):
+            total += sum(1 for n in graph["nodes"] if is_legacy_enrich_node(n))
+    return total
+
+
+async def run_migration(session_factory: Any, db_path: Path, *, apply: bool = False, rollback: bool = False,
+                        backup_dir: Path | None = None) -> dict[str, Any]:
+    """Точка входа для скрипта. По умолчанию сухой проход.
+
+    ``apply``: резервная копия файла базы -> запись в одной транзакции -> проверка (повторный сухой проход
+    не должен находить применимых узлов). Если проверка не прошла, записи отката применяются сразу, а
+    результат помечается ``verified=False``. ``rollback``: возврат по записям отката (тоже с копией).
+    """
+    if apply and rollback:
+        raise MigrationError("--apply и --rollback нельзя вместе")
+    if rollback:
+        backup = backup_database(db_path, backup_dir)
+        async with session_factory() as session:
+            out = await rollback_stores(session)
+            await session.commit()
+        async with session_factory() as session:
+            out["enrich_nodes_after"] = await count_enrich_nodes(session)
+        out.update(mode="rollback", backup=str(backup))
+        return out
+    if not apply:
+        async with session_factory() as session:
+            out = await migrate_stores(session, dry_run=True)
+            out["enrich_nodes_total"] = await count_enrich_nodes(session)
+        out["mode"] = "dry_run"
+        return out
+    backup = backup_database(db_path, backup_dir)
+    async with session_factory() as session:
+        try:
+            out = await migrate_stores(session, dry_run=False)
+            await session.commit()
+        except Exception as exc:
+            await session.rollback()
+            raise MigrationError(f"запись не удалась, база не изменена; копия: {backup}; причина: {exc}") from exc
+    async with session_factory() as session:
+        again = await migrate_stores(session, dry_run=True)
+        left = await count_enrich_nodes(session)
+    verified = again["nodes_changed"] == 0
+    out.update(mode="apply", backup=str(backup), verified=verified, enrich_nodes_after=left)
+    if not verified:
+        async with session_factory() as session:
+            await rollback_stores(session)
+            await session.commit()
+        out["auto_rolled_back"] = True
+    return out

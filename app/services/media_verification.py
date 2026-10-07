@@ -3,6 +3,9 @@
 After a native step returns (or fails) the supervisor re-reads what the step left behind with a
 separate session and checks it structurally: the file exists, is not empty, decodes (image) or
 probes (video/audio: streams, duration), lies inside the project folder, and has a provider trail.
+``images`` is checked per frame (one image per frame with an image prompt, bound to the frame by an
+Artifact row, decodes, size and dimensions at the native scene threshold); the voice file is
+additionally checked by app/services/audio_verification.py (silence, format, zero duration).
 It never changes a row or a file, never starts a provider request and never holds the run: it only
 journals ``node_output`` and ``node_result_verification`` so diagnosis can show a typed incident.
 
@@ -22,15 +25,17 @@ from loguru import logger
 
 from app.services import spend_guard
 
-MEDIA_NODE_TYPES = ("videos", "hero", "items", "music", "audio", "assemble")
+MEDIA_NODE_TYPES = ("images", "videos", "hero", "items", "music", "audio", "assemble")
+MIN_IMAGE_SIDE = 256  # shorter side in pixels below which a "scene image" cannot be a real generation result
 VERIFY_BUDGET_S = 90.0
 PER_FILE_TIMEOUT_S = 25.0
 MAX_ITEMS = 200
 FACT_ITEMS = 40
 
 _HEX_TAIL = re.compile(r"_[0-9a-f]{8}$")
+_FRAME_FILE = re.compile(r"^frame_(\d+)_")
 
-NODE_LABEL = {"videos": "клипы", "hero": "герои", "items": "предметы", "music": "музыка",
+NODE_LABEL = {"images": "картинки кадров", "videos": "клипы", "hero": "герои", "items": "предметы", "music": "музыка",
               "audio": "озвучка", "assemble": "финальное видео"}
 
 
@@ -126,6 +131,63 @@ async def _artifacts(reader, project_id: int, kind):
         Artifact.project_id == project_id, Artifact.kind == kind).order_by(Artifact.id.desc()))).all())
 
 
+async def _images(reader, project, ledger, budget) -> tuple[list[dict], dict]:
+    """Scene images (shot 1) of every frame that has an image prompt: one item per frame.
+
+    Per frame: an Artifact row of kind scene_image bound to THAT frame whose file exists (the business
+    record), the file is not empty, decodes as PNG/JPEG/WEBP/GIF, is not smaller than the native scene
+    threshold (scan_frames.is_valid_scene_image) nor than MIN_IMAGE_SIDE pixels, and the ledger trail
+    is reported (a Kie task id, or none for Outsee). A file on disk without an Artifact row is
+    ``unknown`` (the business record is missing), a frame without any file is ``failed``.
+    """
+    from pathlib import Path as _P
+    from sqlalchemy import select
+    from app.generation_options import is_skippable_empty_prompt
+    from app.models import ArtifactKind, Frame
+    from app.services.plan_shot2 import effective_shot_from_artifact
+    from app.services.scan_frames import frame_image_prompt_text, is_valid_scene_image, newest_frame_image_path
+    from app.services.vo_shot_expand import is_coverage_leftover
+    frames = list((await reader.scalars(select(Frame).where(Frame.project_id == project.id)
+                                        .order_by(Frame.number))).all())
+    targets = [f for f in frames if not is_coverage_leftover(f)
+               and not is_skippable_empty_prompt(frame_image_prompt_text(f, frames))]
+    arts = await _artifacts(reader, project.id, ArtifactKind.scene_image)
+    by_frame: dict[int, list] = {}
+    for art in arts:
+        by_frame.setdefault(art.frame_id, []).append(art)
+    root = project.data_dir
+    items = []
+    for frame in targets[:MAX_ITEMS]:
+        key = f"frame_{frame.number:03d}"
+        path = next((p for a in by_frame.get(frame.id, []) if (p := _existing(a.path))
+                     and effective_shot_from_artifact(a.meta, p) == 1), None)
+        bound = path is not None
+        if path is None:
+            path = newest_frame_image_path(_P(root) / "scenes", frame.number)
+        if path is None:
+            items.append(_item(key, None, root, {"status": "failed", "reason": "missing_image"},
+                               provenance(ledger, key), frame_number=frame.number, artifact_bound=False))
+            continue
+        probe = await _probe(path, root=root, kind="image") if budget() else {"status": "unknown",
+                                                                             "reason": "verify_budget"}
+        named = _FRAME_FILE.match(path.name)
+        if probe.get("status") == "passed" and named and int(named.group(1)) != frame.number:
+            probe = {**probe, "status": "failed", "reason": "file_belongs_to_another_frame"}
+        if probe.get("status") == "passed":
+            small = min(int(probe.get("width") or 0), int(probe.get("height") or 0)) < MIN_IMAGE_SIDE
+            if small:
+                probe = {**probe, "status": "failed", "reason": "image_dimensions_too_small"}
+            elif not is_valid_scene_image(path):
+                probe = {**probe, "status": "failed", "reason": "image_too_small_for_scene"}
+            elif not bound:
+                probe = {**probe, "status": "unknown", "reason": "no_artifact_row_for_frame"}
+        items.append(_item(key, path, root, probe, provenance(ledger, key), frame_number=frame.number,
+                           artifact_bound=bound))
+    passed = sum(1 for i in items if i["status"] == "passed")
+    return items, {"targets": len(targets), "frames": len(frames), "images_total": len(arts),
+                   "images_ok": passed, "images_equal_targets": passed == len(targets)}
+
+
 async def _videos(reader, project, ledger, budget) -> tuple[list[dict], dict]:
     from sqlalchemy import select
     from app.models import ArtifactKind, Frame
@@ -215,6 +277,26 @@ async def _music(reader, project, ledger, budget) -> tuple[list[dict], dict]:
     return [_item("music", path, root, probe, provenance(ledger, "music"))], {"artifacts": len(arts)}
 
 
+async def _audio_content_check(path: Path, probe: dict) -> tuple[dict, dict | None]:
+    """Content check of the voice file (owned by app/services/audio_verification.py, step C04): silence,
+    format, zero duration. Only runs on a file that already probed; a checker failure is never a pass."""
+    if probe.get("status") != "passed":
+        return probe, None
+    try:
+        from app.services.audio_verification import verify_audio
+        verdict = await asyncio.wait_for(asyncio.to_thread(verify_audio, path), PER_FILE_TIMEOUT_S * 6)
+    except Exception as exc:  # noqa: BLE001
+        return {**probe, "status": "unknown", "reason": f"audio_check_{type(exc).__name__}"}, None
+    data = {"ok": verdict.ok, "codes": list(verdict.codes), "silent": verdict.silent,
+            "peak_db": verdict.peak_db, "rms_db": verdict.rms_db}
+    if verdict.ok:
+        return probe, data
+    hard = [c for c in verdict.codes if c != "level_unknown"]
+    if hard:
+        return {**probe, "status": "failed", "reason": hard[0]}, data
+    return {**probe, "status": "unknown", "reason": "level_unknown"}, data
+
+
 async def _audio(reader, project, ledger, budget) -> tuple[list[dict], dict]:
     from sqlalchemy import select
     from app.models import ArtifactKind, Frame
@@ -225,11 +307,14 @@ async def _audio(reader, project, ledger, budget) -> tuple[list[dict], dict]:
         return [{"key": "voice", "status": "failed", "reason": "missing_voice_file", "path": None}], {
             "artifacts": len(arts)}
     probe = await _probe(path, root=root, kind="audio")
+    probe, audio_check = await _audio_content_check(path, probe)
     art = next(a for a in arts if _existing(a.path) == path)
     frames = list((await reader.scalars(select(Frame).where(Frame.project_id == project.id))).all())
     spoken = sum(1 for f in frames if str(f.voiceover_text or "").strip())
     clips = (art.meta or {}).get("clip_count")
     extra: dict[str, Any] = {"source": (art.meta or {}).get("source"), "clip_count": clips, "spoken_frames": spoken}
+    if audio_check is not None:
+        extra["audio_check"] = audio_check
     if probe.get("status") == "passed" and isinstance(clips, int) and clips != spoken:
         probe = {**probe, "status": "unknown", "reason": "clip_count_differs_from_spoken_frames"}
     return [_item("voice", path, root, probe, None, **extra)], {"artifacts": len(arts), "spoken_frames": spoken}
@@ -270,7 +355,7 @@ async def _assemble(reader, project, ledger, budget) -> tuple[list[dict], dict]:
     return [_item("final", path, root, probe, None, approval=approval)], {"artifacts": len(arts)}
 
 
-_COLLECTORS = {"videos": _videos, "hero": _heroes, "items": _items, "music": _music, "audio": _audio,
+_COLLECTORS = {"images": _images, "videos": _videos, "hero": _heroes, "items": _items, "music": _music, "audio": _audio,
                "assemble": _assemble}
 
 
@@ -378,11 +463,14 @@ async def observe_media_result(session, project, node_type):
         from sqlalchemy.ext.asyncio import async_sessionmaker
         from app.models import Project as ProjectModel
         failure = getattr(ctx, "attempt_exception", None)
-        if node_type in LOCAL_ATTEMPT_NODES and failure is None:
-            # A local node writes its result rows (final artifact, approve_final request) in the worker's own
-            # transaction, which commits only after this hook returns: an independent connection would still see
-            # the EARLIER rows and call a successful assembly failed. Read the flushed rows of this attempt through
-            # its own session, without flushing anything (the files are probed from disk either way).
+        from sqlalchemy.ext.asyncio import AsyncSession
+        if failure is None and isinstance(session, AsyncSession) and project is not None:
+            # A successful step writes its result rows (final artifact, clip/item artifacts recovered from disk,
+            # approve requests) in the worker's own transaction, which commits only after this hook returns (the
+            # step only flushes). An independent connection would still see the EARLIER rows and call a successful
+            # step failed (missing_clip / missing_item). Read the flushed rows of this attempt through its own
+            # session, without flushing anything (the files are probed from disk either way). A failed attempt keeps
+            # the independent read: its uncommitted rows may be rolled back and must not count as proof.
             with session.no_autoflush:
                 proof = await build_proof(session, project, node_type)
         else:

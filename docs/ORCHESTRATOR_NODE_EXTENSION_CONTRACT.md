@@ -73,6 +73,13 @@ Profiles are exact catalog entries, not free model instructions. Current fields:
 `max_output_tokens`, `prompt_variant`, `synthetic_only`.
 `decision_config.validate_profile` validates compatibility and token/reasoning
 bounds; `profiles_v1.active_catalog` respects an explicit owner catalog.
+Without one, a production config that allows `retry_profile` gets the built-in
+`PRODUCTION_CATALOG` of its decision provider (`builtin_profiles:false` turns it
+off). Built-in profiles are bound by `PROFILE_BINDINGS` to the managed text node
+types (excel_gpt, plan, script, split, image_prompts, sfx_plan, animation_prompts,
+sd_agent, sd_assemble; the node capability must still be `profile_compatible`) and
+to the incidents `invalid_json`/`missing_payload`. Media node types are never bound;
+managed media stays fail-closed (`media_jobs.media_profile_state`).
 
 Registered prompt variants live in `prompt_library.APPROVED_PROFILE_PROMPTS`:
 original contract, formatting-only JSON repair, and required apply operations.

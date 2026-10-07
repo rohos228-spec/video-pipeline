@@ -841,6 +841,49 @@ async def _final_verified(session: AsyncSession, project: Project) -> bool:
     return recorded is None or recorded == res.get("sha256")
 
 
+UNCHECKED_AUTO_APPROVE_CHECK = "auto_approve_without_review"
+_UNCHECKED_REASONS_RU = {
+    "visual_review_off": "визуальная проверка выключена (AUTO_REVIEW_VISUAL / auto_review_kinds)",
+    "visual_review_not_implemented": "визуальная проверка включена, но для этого шага она не подключена",
+}
+
+
+async def _record_unchecked_auto_approve(
+    session: AsyncSession,
+    project: Project,
+    transition: StepTransition,
+    status: ProjectStatus,
+    reason: str,
+) -> None:
+    """C06: an approval that nobody and nothing checked is written down as exactly that.
+
+    The journal event and the log line both say "auto-approved without a check", never "approved by review".
+    A journal failure never blocks the approval itself.
+    """
+    reason_ru = _UNCHECKED_REASONS_RU.get(reason, reason)
+    summary = (f"Автоодобрение без проверки: шаг {transition.kind.value} ({status.value}) принят автоматически, "
+               f"качество результата не проверялось: {reason_ru}.")
+    payload = {
+        "check": UNCHECKED_AUTO_APPROVE_CHECK,
+        "performed": False,
+        "status": "unchecked",
+        "hitl_kind": transition.kind.value,
+        "ready_status": status.value,
+        "reason": reason,
+        "summary": summary,
+        "initiator": "auto_advance",
+        "semantic_quality_verified": False,
+        "business_commit_claim": False,
+    }
+    logger.warning("auto_advance: #{} {} -> {}", project.id, status.value, summary)
+    try:
+        from app.services.observation import record_project_event
+
+        await record_project_event(session, project, "runtime_check", payload)
+    except Exception:  # noqa: BLE001 - the journal must not block the approval
+        logger.exception("auto_advance: #{} unchecked auto-approve event failed", project.id)
+
+
 async def _apply_approve(
     session: AsyncSession,
     project: Project,
@@ -1641,6 +1684,9 @@ async def maybe_auto_advance(
             "auto_advance: #{} {} → auto-approve (visual, no GPT check)",
             project.id, status.value,
         )
+        await _record_unchecked_auto_approve(
+            session, project, transition, status, "visual_review_off"
+        )
         await _apply_approve(session, project, hitl, transition, bot=bot)
         return True
 
@@ -1691,8 +1737,11 @@ async def maybe_auto_advance(
             session, project, hitl, transition, result, bot=bot
         )
 
-    # Все остальные случаи (visual + AUTO_REVIEW_VISUAL=1) — TODO.
-    # Пока — auto-approve.
+    # Все остальные случаи (visual + AUTO_REVIEW_VISUAL=1): проверки для них нет.
+    # Одобряем, но честно записываем «автоодобрение без проверки» (C06).
+    await _record_unchecked_auto_approve(
+        session, project, transition, status, "visual_review_not_implemented"
+    )
     await _apply_approve(session, project, hitl, transition, bot=bot)
     return True
 
