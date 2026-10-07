@@ -1838,6 +1838,9 @@ async def run_split_xlsx(
             f"(кадров={len(frames_spec)}). Нужен JSON "
             '{"ops":[{"target":"replace_frames","frames":[...]}]}'
         )
+    # E1b: в управляемом запуске ответ проверяется по контракту ДО любой записи в БД.
+    from app.services.node_capabilities import enforce_split_contract_before_write
+    await enforce_split_contract_before_write(frames_spec)
 
     # GPT as-is → DB (≥2 кадров). Лимиты символов — только в prompt settings.
     logger.info("split_db: кадров из GPT/fallback={}", len(frames_spec))

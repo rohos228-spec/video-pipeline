@@ -822,6 +822,7 @@ def split_contract():
         'effects':['replace_all_frames','original XLSX export and snapshots','original split metadata'],
         'managed_verification':['scoped project','unique nonempty UUID','unique sequential number',
             'nonempty voiceover','complete ordered voiceover after whitespace normalization'],
+        'pre_write_validation':'managed runs: answer is verified before any DB write (E1b); invalid -> SplitContractRejected, project untouched',
         'semantic_quality_verified':False,'retry_policy':'original runtime only; no supervisor recovery/profile'}
 
 
@@ -860,17 +861,40 @@ async def record_split_input(voiceover):
         body={'voiceover':voiceover})
 
 
+class SplitContractRejected(RuntimeError):
+    """The model's split answer violates the split contract; raised BEFORE any DB write (E1b)."""
+    failure_class='contract_rejected'
+    def __init__(self,errors,reason):
+        self.errors=list(errors);super().__init__('split answer rejected before write: '+str(reason))
+
+
+def _split_spec_frames(frames_spec,project_id):
+    from types import SimpleNamespace
+    return [SimpleNamespace(project_id=project_id,uuid='extracted-'+str(i),number=i,
+        voiceover_text=str(f.get('voiceover_text') or f.get('закадр') or f.get('voiceover') or '').strip())
+        for i,f in enumerate(frames_spec,1)]
+
+
+async def enforce_split_contract_before_write(frames_spec):
+    """Managed runs only: validate the extracted frames against the split contract before
+    anything reaches the DB. An invalid answer raises SplitContractRejected and the project
+    stays untouched. Outside a managed attempt the native behaviour is unchanged."""
+    from app.services.observation import _attempt
+    ctx=_attempt.get()
+    if ctx is None or ctx.scope.mode!='managed':return
+    proof=verify_split_frames(_split_spec_frames(frames_spec,ctx.scope.project_id),
+        project_id=ctx.scope.project_id,voiceover=getattr(ctx,'split_input_voiceover',None))
+    if proof['status']=='failed':raise SplitContractRejected(proof['errors'],proof['reason'])
+
+
 async def record_split_parse(reply,frames_spec,*,frames_source=None,dash_rejected=False):
     import json
-    from types import SimpleNamespace
     from app.services.observation import _attempt,record_fact
     ctx=_attempt.get()
     if ctx is None:return
     try:json.loads(reply);syntax_valid=True
     except (ValueError,TypeError):syntax_valid=False
-    frames=[SimpleNamespace(project_id=ctx.scope.project_id,uuid='extracted-'+str(i),number=i,
-        voiceover_text=str(f.get('voiceover_text') or f.get('закадр') or f.get('voiceover') or '').strip())
-        for i,f in enumerate(frames_spec,1)]
+    frames=_split_spec_frames(frames_spec,ctx.scope.project_id)
     proof=verify_split_frames(frames,project_id=ctx.scope.project_id,voiceover=ctx.split_input_voiceover)
     await record_fact('parse_result',{'contract':'native_split','syntax_valid':syntax_valid,
         'parsed':bool(frames_spec),'payload_present':bool(frames_spec),'payload_required':False,
