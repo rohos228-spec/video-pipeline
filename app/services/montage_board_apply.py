@@ -45,6 +45,7 @@ from app.services.montage_board_meta import (
     slot_key_from_op,
     touch_applied,
 )
+from app.services.request_context import scoped_async
 from app.services.montage_board_regen import (
     _frame_by_number,
     execute_image_regen,
@@ -760,6 +761,7 @@ async def _run_ops_phase(
         await asyncio.gather(*(_guarded(fr) for fr in wave))
 
 
+@scoped_async("regen", lambda session, project, *a, **k: project.id)
 async def apply_montage_board(
     session: AsyncSession,
     project: Project,

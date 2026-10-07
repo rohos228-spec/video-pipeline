@@ -477,6 +477,32 @@ def _on_write_failed(inputs: dict[str, Any], exc: BaseException) -> None:
         logger.opt(exception=True).error("api_tracker: пробел не записан в журнал трат")
 
 
+def _with_correlation(metadata: dict[str, Any] | None, project_source: str) -> tuple[dict[str, Any] | None, str]:
+    """B02: put project/run/request/plan ids of the CALLER into the row (the write runs in another thread, where
+    contextvars are not inherited, so they are read here). Our own ids are added after redaction: they are
+    not secrets. An id the caller already set is kept. tracker.db has no columns for them yet: they live in
+    ``metadata_json`` (``json_extract``) until the integrator adds the columns (docs in the W2-3 report)."""
+    try:
+        from app.services import request_context
+        corr = request_context.correlation()
+        meta = dict(metadata or {})
+        run_id, request_id = corr["run_id"], corr["request_id"]
+        if run_id:
+            meta.setdefault("run_id", run_id)
+            if run_id.startswith("plan:"):
+                meta.setdefault("plan_id", run_id[len("plan:"):])
+        if request_id:
+            meta.setdefault("request_id", request_id)
+        if corr["project_id"] is not None:
+            meta.setdefault("project_id", corr["project_id"])
+            if not project_source:
+                project_source = str(corr["project_id"])
+        return (meta or metadata), project_source
+    except Exception:  # noqa: BLE001 - telemetry never breaks the call
+        logger.opt(exception=True).warning("api_tracker: correlation ids unavailable, the row is written without them")
+        return metadata, project_source
+
+
 def record_api_call(
     *,
     provider: str,
@@ -502,6 +528,7 @@ def record_api_call(
     error_message = str(_redact_value(str(error_message or "")))
     project_source = str(_redact_value(str(project_source or "")))
     metadata = _redact_value(metadata) if metadata else metadata
+    metadata, project_source = _with_correlation(metadata, project_source)
     inputs: dict[str, Any] = {
         "provider": provider, "model": model, "call_type": call_type, "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens, "cached_tokens": cached_tokens, "media_count": media_count,

@@ -18,6 +18,7 @@ from app.models import Project, ProjectStatus
 from app.orchestrator.auto_advance import TRANSITIONS
 from app.orchestrator.graph.planner import load_graph_for_project
 from app.services.mass_factory import is_mass_factory_child
+from app.services.request_context import scoped_async
 from app.services.gen_queue_run import (
     gen_queue_slot_skipped,
     is_gen_queue_run_complete,
@@ -189,6 +190,7 @@ async def _advance_ready_project(session: AsyncSession, project: Project) -> boo
     return await maybe_auto_advance(session, project, bot=None, force=True)
 
 
+@scoped_async("queue", lambda session, project, *a, **k: project.id)
 async def _start_or_advance_project(
     session: AsyncSession, project: Project, *, queue_pos: int
 ) -> int:

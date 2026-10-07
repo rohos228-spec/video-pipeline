@@ -109,29 +109,11 @@ class CommitUncertaintyMarker(Base):
     clear_reason: Mapped[str | None] = mapped_column(String(500), default=None)
 
 
-_CREDENTIAL_FIELDS = {"authorization", "proxy_authorization", "cookie", "set_cookie",
-                      "api_key", "apikey", "access_token", "refresh_token", "id_token",
-                      "password", "secret", "client_secret", "token"}
-_CREDENTIAL_TEXT = re.compile(
-    r"(?i)(\bBearer\s+)[^\s\"'<>]+|"
-    r"(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|cookie)[\"']?\s*[:=]\s*[\"']?)[^\s\"'<>;,}\]]+|"
-    r"\b(?:sk|vk)-[A-Za-z0-9_-]{8,}"
+from app.services.redact import (  # noqa: E402  (A16: единый redact)
+    CREDENTIAL_FIELDS as _CREDENTIAL_FIELDS,
+    _CREDENTIAL_TEXT,
+    redact,
 )
-
-
-def redact(value):
-    """Allow numeric usage; redact credentials by exact field or known syntax."""
-    if isinstance(value, dict):
-        return {str(k): "[redacted]" if (str(k).lower().replace("-", "_") in _CREDENTIAL_FIELDS
-                or str(k).lower().replace("-", "_").endswith(("_api_key", "_access_token", "_refresh_token", "_secret")))
-                else redact(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [redact(v) for v in value]
-    if isinstance(value, str):
-        return _CREDENTIAL_TEXT.sub(lambda m: (m.group(1) or m.group(2) or "") + "[redacted]", value)
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return redact(str(value))
 
 
 def digest(value) -> str:

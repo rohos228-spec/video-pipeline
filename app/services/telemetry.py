@@ -263,6 +263,28 @@ def budget_summary(control: Any) -> dict[str, Any]:
     }
 
 
+def reconcile_summary(report: dict[str, Any] | None) -> dict[str, Any]:
+    """Сводка сверки денег для оператора (B10): отчёт ``spend_reconcile.project_report`` плюс русские строки.
+    Чистая функция; ничего не пересчитывает, только раскладывает уже записанное."""
+    if not report:
+        return {"available": False, "lines_ru": ["Сверка денег недоступна: журнал трат не прочитан."]}
+    lines = [
+        f"Оценено: ${report['estimated_usd']:.4f}; фактически: ${report['actual_usd']:.4f}; "
+        f"всего в журнале трат: ${report['ledger_total_usd']:.4f}.",
+        f"Открытые резервы: ${report['open_reserves_usd']:.4f} (запусков: {report['open_reserves_runs']}); "
+        "это верхняя граница.",
+        f"Журнал трат против трекера запросов: разница ${report['ledger_vs_tracker_gap_usd']:+.4f}"
+        + (" (выше допуска)." if report["ledger_vs_tracker_flag"] else "."),
+    ]
+    if report["balance_reconciled"]:
+        lines.append(f"Сверок с балансом провайдера: {report['reconciliations_total']}, "
+                     f"с расхождением: {report['reconciliations_gap']}; "
+                     f"открытых инцидентов расхождения: {report['open_mismatch_incidents']}.")
+    else:
+        lines.append("Сверка с балансом провайдера не выполнялась: отклонение неизвестно.")
+    return {"available": True, "lines_ru": lines, **report}
+
+
 async def project_telemetry(session, project_id: int, *, since: datetime | None = None) -> dict[str, Any]:
     """Project-wide summary across every execution this project has ever
     had -- deliberately not scoped to one execution_id, unlike the rest of
@@ -296,9 +318,16 @@ async def project_telemetry(session, project_id: int, *, since: datetime | None 
     controls = (await session.scalars(select(ActionExecutionControl).where(
         ActionExecutionControl.project_id == project_id))).all()
 
+    try:
+        from app.services import spend_reconcile
+        reconcile = reconcile_summary(await spend_reconcile.project_report(session, project_id, since=since))
+    except Exception:  # noqa: BLE001 - сверка не должна ронять общую телеметрию
+        reconcile = reconcile_summary(None)
+
     return {
         "project_id": project_id,
         "since": since.isoformat() if since else None,
+        "reconcile": reconcile,
         "incidents": incident_summary(incidents),
         "decisions": decision_summary(decisions),
         "node_latency": node_request_latency(events),

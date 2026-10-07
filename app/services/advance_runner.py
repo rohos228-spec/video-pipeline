@@ -23,14 +23,34 @@ class AdvanceJobResult:
     new_status: str | None  # None если статус не изменился
 
 
+def _tick_run_id(project_id: int) -> str:
+    """Run of this tick: the confirmed managed execution id, otherwise ``native:<project>:<tick>``."""
+    from app.services import request_context
+    try:
+        from app.services.actions_v1 import get_permission
+        permission = get_permission(project_id)
+        execution_id = str(getattr(permission, "execution_id", "") or "") if permission is not None else ""
+        if execution_id:
+            return execution_id
+    except Exception:  # noqa: BLE001 - a native id is still a real, unique run id
+        pass
+    return request_context.native_run_id(project_id)
+
+
 async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
     """Один такт advance_project в своей сессии изолированной проектной БД."""
     from app.services.actions_v1 import worker_entry_admission
     admission=await worker_entry_admission(project_id)
     if not admission.allowed:
         return AdvanceJobResult(project_id,'',None)
+    from app.services import request_context
     from app.services.observation import _cost_project
     cost_token = _cost_project.set(project_id)
+    # B02: every paid call of this tick carries a project, a run and a request id. Run = the managed execution
+    # when the project has one, else a native tick id; request = this tick (the worker has no HTTP request).
+    corr_scope = request_context.ensure_request_scope(
+        "tick-", run_id=_tick_run_id(project_id), project_id=project_id)
+    corr_scope.__enter__()
     try:
         async with project_db_session_scope(project_id) as session:
             project = await session.get(Project, project_id)
@@ -90,6 +110,10 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
             logger.warning("advance_project_job: refresh #{} after cancel failed", project_id)
         raise
     finally:
+        try:
+            corr_scope.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             _cost_project.reset(cost_token)
         except Exception:  # noqa: BLE001

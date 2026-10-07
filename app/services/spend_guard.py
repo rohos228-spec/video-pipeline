@@ -72,6 +72,16 @@ class SpendCapExceeded(RuntimeError):
                 "source_ru": _source_ru(self.source)}
 
 
+def _ctx_request_id() -> str:
+    from app.services.request_context import get_request_id
+    return get_request_id()
+
+
+def _ctx_run_id() -> str:
+    from app.services.request_context import get_run_id
+    return get_run_id()
+
+
 class SpendLedger(Base):
     """Append-only: kind reserve (+estimate), settle (actual-reserved), actual (native), event (0)."""
     __tablename__ = "spend_ledger"
@@ -81,11 +91,15 @@ class SpendLedger(Base):
     kind: Mapped[str] = mapped_column(String(12))
     provider: Mapped[str] = mapped_column(String(32), default="")
     project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    run_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    run_id: Mapped[str] = mapped_column(String(80), default=_ctx_run_id, server_default="", index=True)
     source: Mapped[str] = mapped_column(String(32), default="")
     usd: Mapped[float] = mapped_column(Float, default=0.0)
     credits: Mapped[float] = mapped_column(Float, default=0.0)
     note: Mapped[str] = mapped_column(String(200), default="")
+    # B02: correlation. request_id = the operator request / worker tick that caused the spend;
+    # ref = the provider task id or the plan step ("plan:<id>#<step>"). Added by ALTER on old databases.
+    request_id: Mapped[str] = mapped_column(String(64), default=_ctx_request_id, server_default="", index=True)
+    ref: Mapped[str] = mapped_column(String(120), default="", server_default="")
 
 
 _TRIGGERS = (
@@ -94,7 +108,42 @@ _TRIGGERS = (
     "CREATE TRIGGER IF NOT EXISTS spend_ledger_no_delete BEFORE DELETE ON "
     "spend_ledger BEGIN SELECT RAISE(ABORT, 'spend ledger is append-only'); END",
 )
+# B02: columns added after the first release. ``ensure_schema`` applies them by ALTER TABLE ADD COLUMN (allowed
+# by the append-only triggers: they forbid UPDATE/DELETE of rows, not a new column). The integrator registers the
+# same lists as a numbered migration (see ``add_missing_columns``); nothing is dropped or rewritten.
+SPEND_ADDED_COLUMNS = (
+    ("request_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
+    ("ref", "VARCHAR(120) NOT NULL DEFAULT ''"),
+)
+SPEND_ADDED_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS ix_spend_ledger_request_id ON spend_ledger (request_id)",
+)
+TASK_ADDED_COLUMNS = (
+    ("run_id", "VARCHAR(80) NOT NULL DEFAULT ''"),
+    ("request_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
+)
+TASK_ADDED_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS ix_provider_task_ledger_run_id ON provider_task_ledger (run_id)",
+    "CREATE INDEX IF NOT EXISTS ix_provider_task_ledger_request_id ON provider_task_ledger (request_id)",
+)
 _ensured: set[str] = set()
+
+
+def add_missing_columns(sync_conn, table: str, columns, indexes=()) -> list[str]:
+    """Idempotent ``ALTER TABLE ADD COLUMN`` for a database created before the columns existed.
+
+    ``sync_conn`` is a synchronous SQLAlchemy connection (``await session.run_sync(lambda s:
+    add_missing_columns(s.connection(), ...))`` or ``conn.run_sync``). Returns the names added."""
+    from sqlalchemy import inspect
+    have = {c["name"] for c in inspect(sync_conn).get_columns(table)}
+    added: list[str] = []
+    for name, ddl in columns:
+        if name not in have:
+            sync_conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+            added.append(name)
+    for ddl in indexes:
+        sync_conn.exec_driver_sql(ddl)
+    return added
 
 
 def _today() -> str:
@@ -108,6 +157,8 @@ async def ensure_schema(session) -> None:
     if key in _ensured:
         return
     await session.run_sync(lambda s: SpendLedger.__table__.create(s.connection(), checkfirst=True))
+    await session.run_sync(lambda s: add_missing_columns(
+        s.connection(), "spend_ledger", SPEND_ADDED_COLUMNS, SPEND_ADDED_INDEXES))
     if session.get_bind().dialect.name == "sqlite":
         for ddl in _TRIGGERS:
             await session.execute(text(ddl))
@@ -197,22 +248,26 @@ _pending: contextvars.ContextVar[Pending | None] = contextvars.ContextVar("spend
 
 async def reserve(session, *, project_id: int | None, run_id: str, estimate_usd: float,
                   source: str, provider: str = "", credits: float = 0.0, note: str = "",
-                  track: bool = True) -> float:
+                  track: bool = True, request_id: str | None = None, ref: str = "") -> float:
     """Atomically check all caps and append a reserve row in the caller's transaction.
 
-    Raises SpendCapExceeded (nothing written). The caller commits.
+    Raises SpendCapExceeded (nothing written). The caller commits. ``request_id`` defaults to the current
+    request (``request_context``); ``run_id`` is the cap window and is written as given (caps are unchanged).
     """
     usd = _valid(estimate_usd)
     await ensure_schema(session)
     c = caps()
+    rid = (request_id if request_id is not None else _ctx_request_id())[:64]
     res = await session.execute(text(
-        "INSERT INTO spend_ledger (created_at, day, kind, provider, project_id, run_id, source, usd, credits, note) "
-        "SELECT :now, :day, 'reserve', :prov, :pid, :run, :src, :usd, :cr, :note WHERE "
+        "INSERT INTO spend_ledger (created_at, day, kind, provider, project_id, run_id, source, usd, credits, note, "
+        "request_id, ref) "
+        "SELECT :now, :day, 'reserve', :prov, :pid, :run, :src, :usd, :cr, :note, :rid, :ref WHERE "
         "(:rcap <= 0 OR :run = '' OR COALESCE((SELECT SUM(usd) FROM spend_ledger WHERE run_id = :run), 0) + :usd <= :rcap) AND "
         "(:pcap <= 0 OR :pid IS NULL OR COALESCE((SELECT SUM(usd) FROM spend_ledger WHERE project_id = :pid), 0) + :usd <= :pcap) AND "
         "(:dcap <= 0 OR COALESCE((SELECT SUM(usd) FROM spend_ledger WHERE day = :day), 0) + :usd <= :dcap)"),
         {"now": datetime.utcnow(), "day": _today(), "prov": provider[:32], "pid": project_id,
-         "run": run_id[:80], "src": source[:32], "usd": usd, "cr": float(credits), "note": note[:200],
+         "run": run_id[:80], "src": source[:32], "usd": usd, "cr": float(credits), "note": _clean(note),
+         "rid": rid, "ref": ref[:120],
          "rcap": c["run"], "pcap": c["project"], "dcap": c["daily"]})
     if res.rowcount != 1:
         raise await _refusal(session, project_id, run_id, usd, source)
@@ -223,33 +278,64 @@ async def reserve(session, *, project_id: int | None, run_id: str, estimate_usd:
 
 async def settle(session, *, project_id: int | None, run_id: str, reserved_usd: float,
                  actual_usd: float | None, source: str, provider: str = "",
-                 credits_delta: float = 0.0) -> None:
-    """Append actual - reserved; unknown actual leaves the reserve (conservative)."""
+                 credits_delta: float = 0.0, basis: str = "", request_id: str | None = None,
+                 ref: str = "") -> None:
+    """Append actual - reserved; unknown actual leaves the reserve (conservative).
+
+    ``basis`` (B03) says where the amount came from: ``reported`` (the provider's own answer or a measured
+    balance change) makes the settle row an ``actual`` in the unified model; ``estimate`` (or empty, the old
+    rows) keeps it an ``estimated``."""
     if actual_usd is None or actual_usd < 0 or math.isnan(actual_usd):
         return
     delta = float(actual_usd) - float(reserved_usd)
     if delta:
         await ensure_schema(session)
         session.add(SpendLedger(day=_today(), kind="settle", provider=provider[:32],
-                                project_id=project_id, run_id=run_id[:80], source=source[:32],
-                                usd=delta, credits=credits_delta))
+                                project_id=project_id, run_id=(run_id or _ctx_run_id())[:80], source=source[:32],
+                                usd=delta, credits=credits_delta, note=_basis_note(basis),
+                                request_id=(request_id if request_id is not None else _ctx_request_id())[:64],
+                                ref=ref[:120]))
+
+
+def _clean(note: str) -> str:
+    """Notes are free text from callers: secrets never reach the append-only ledger."""
+    try:
+        from app.services.redact import redact_text
+
+        return redact_text(str(note or ""))[:200]
+    except Exception:  # noqa: BLE001
+        return str(note or "")[:200]
+
+
+def _basis_note(basis: str) -> str:
+    return f"basis={basis}" if basis else ""
 
 
 async def record_actual(session, *, project_id: int | None, usd: float, provider: str,
                         source: str = "native_call", run_id: str = "", note: str = "",
-                        credits: float = 0.0) -> None:
-    """Record a call that was never reserved (native pipeline). Never refuses."""
+                        credits: float = 0.0, kind: str = "actual", request_id: str | None = None,
+                        ref: str = "") -> None:
+    """Record a call that was never reserved (native pipeline). Never refuses.
+
+    ``kind="actual"`` only for a fact (the provider's answer or a measurement). A price computed by us is
+    ``kind="estimated"`` (B03)."""
     usd = _valid(usd)
     await ensure_schema(session)
-    session.add(SpendLedger(day=_today(), kind="actual", provider=provider[:32], project_id=project_id,
-                            run_id=run_id[:80], source=source[:32], usd=usd, credits=float(credits), note=note[:200]))
+    session.add(SpendLedger(day=_today(), kind=kind[:12], provider=provider[:32], project_id=project_id,
+                            run_id=(run_id or _ctx_run_id())[:80], source=source[:32], usd=usd,
+                            credits=float(credits), note=_clean(note),
+                            request_id=(request_id if request_id is not None else _ctx_request_id())[:64],
+                            ref=ref[:120]))
 
 
-async def record_event(session, *, project_id: int | None, provider: str, source: str, note: str = "") -> None:
+async def record_event(session, *, project_id: int | None, provider: str, source: str, note: str = "",
+                       run_id: str = "", request_id: str | None = None, ref: str = "") -> None:
     """Zero-USD audit row (kind event)."""
     await ensure_schema(session)
     session.add(SpendLedger(day=_today(), kind="event", provider=provider[:32], project_id=project_id,
-                            source=source[:32], note=note[:200]))
+                            run_id=(run_id or _ctx_run_id())[:80], source=source[:32], note=_clean(note),
+                            request_id=(request_id if request_id is not None else _ctx_request_id())[:64],
+                            ref=ref[:120]))
 
 
 class ProviderTaskLedger(Base):
@@ -268,6 +354,9 @@ class ProviderTaskLedger(Base):
     est_credits: Mapped[float | None] = mapped_column(Float, nullable=True)
     est_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     note: Mapped[str] = mapped_column(String(200), default="")
+    # B02: the run and request this task belongs to (same values as the money rows of the same call).
+    run_id: Mapped[str] = mapped_column(String(80), default=_ctx_run_id, server_default="", index=True)
+    request_id: Mapped[str] = mapped_column(String(64), default=_ctx_request_id, server_default="", index=True)
 
 
 _TASK_TRIGGERS = (
@@ -285,6 +374,8 @@ async def ensure_task_schema(session) -> None:
     if key in _task_ensured:
         return
     await session.run_sync(lambda s: ProviderTaskLedger.__table__.create(s.connection(), checkfirst=True))
+    await session.run_sync(lambda s: add_missing_columns(
+        s.connection(), "provider_task_ledger", TASK_ADDED_COLUMNS, TASK_ADDED_INDEXES))
     if session.get_bind().dialect.name == "sqlite":
         for ddl in _TASK_TRIGGERS:
             await session.execute(text(ddl))
@@ -294,12 +385,17 @@ async def ensure_task_schema(session) -> None:
 async def append_task_event(session, *, project_id: int | None, key: str, task_id: str, provider: str,
                             api: str, model: str, event: str, status: str,
                             est_credits: float | None = None, est_usd: float | None = None,
-                            note: str = "") -> None:
-    """Append one event; the caller commits. Never updates an existing row."""
+                            note: str = "", run_id: str = "", request_id: str | None = None) -> None:
+    """Append one event; the caller commits. Never updates an existing row.
+
+    ``run_id`` / ``request_id`` default to the current correlation (B02), so a task row and the money row of
+    the same call carry the same ids."""
     await ensure_task_schema(session)
     session.add(ProviderTaskLedger(project_id=project_id, key=key[:120], task_id=str(task_id)[:100],
                                    provider=provider[:32], api=api[:16], model=model[:64], event=event[:16],
-                                   status=status[:16], est_credits=est_credits, est_usd=est_usd, note=note[:200]))
+                                   status=status[:16], est_credits=est_credits, est_usd=est_usd, note=_clean(note),
+                                   run_id=(run_id or _ctx_run_id())[:80],
+                                   request_id=(request_id if request_id is not None else _ctx_request_id())[:64]))
 
 
 async def list_provider_tasks(session, project_id: int, limit: int = 200) -> list[dict]:
@@ -373,16 +469,23 @@ async def resolve_intent(session, *, project_id: int | None, key: str, model: st
 _tasks: set = set()
 
 
-def schedule_actual(*, project_id: int | None, usd: float, provider: str) -> None:
+def schedule_actual(*, project_id: int | None, usd: float, provider: str, reported: bool = False) -> None:
     """Sync entry for _track_api_cost: settle the pending reservation or record a native call.
 
-    Fire and forget; never raises and never blocks the caller.
+    Fire and forget; never raises and never blocks the caller. ``usd`` is a price computed from token counts
+    (tracker rates), so by default it is an ESTIMATE in the unified model (B03); pass ``reported=True`` only
+    when the provider itself sent the amount. The correlation (project, run, request) is captured here, in the
+    caller's context, not later in the background task.
     """
     try:
         pending = _pending.get()
         _pending.set(None)
         loop = asyncio.get_running_loop()
-        task = loop.create_task(_write_actual(pending, project_id, float(usd), provider))
+        corr = {"run_id": _ctx_run_id(), "request_id": _ctx_request_id()}
+        if project_id is None:
+            from app.services.request_context import get_project_id
+            project_id = get_project_id()
+        task = loop.create_task(_write_actual(pending, project_id, float(usd), provider, reported, corr))
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
     except Exception:  # noqa: BLE001 - recording must never affect the real request
@@ -407,16 +510,28 @@ def _note_write_failure(where: str) -> None:
         pass
 
 
-async def _write_actual(pending, project_id, usd, provider) -> None:
+def _price_note(provider: str, reported: bool) -> str:
+    """Why a computed price is an estimate: Vibecode rates are not calibrated against its balance."""
+    if reported:
+        return "basis=reported"
+    return "basis=computed uncalibrated" if str(provider or "").lower() == "vibecode" else "basis=computed"
+
+
+async def _write_actual(pending, project_id, usd, provider, reported=False, corr=None) -> None:
+    corr = corr or {}
     try:
         from app.db import SessionLocal
         async with SessionLocal() as s:
             if pending is not None:
-                await settle(s, project_id=pending.project_id, run_id=pending.run_id,
+                await settle(s, project_id=pending.project_id, run_id=pending.run_id or corr.get("run_id", ""),
                              reserved_usd=pending.usd, actual_usd=usd, source=pending.source,
-                             provider=provider or pending.provider)
+                             provider=provider or pending.provider, basis="reported" if reported else "estimate",
+                             request_id=corr.get("request_id"))
             else:
-                await record_actual(s, project_id=project_id, usd=usd, provider=provider)
+                await record_actual(s, project_id=project_id, usd=usd, provider=provider,
+                                    kind="actual" if reported else "estimated",
+                                    note=_price_note(provider, reported), run_id=corr.get("run_id", ""),
+                                    request_id=corr.get("request_id"))
             await s.commit()
     except Exception:  # noqa: BLE001
         _note_write_failure("write_actual")
@@ -580,9 +695,8 @@ def _resolve_project(project_id: int | None) -> int | None:
     if project_id is not None:
         return project_id
     try:
-        from app.services.observation import _cost_project
-        value = _cost_project.get()
-        return int(value) if value is not None else None
+        from app.services.request_context import get_project_id  # _cost_project first, then the scope variable
+        return get_project_id()
     except Exception:  # noqa: BLE001
         return None
 
@@ -786,3 +900,157 @@ async def paid_precheck(provider: str, what: str = "submit", *, estimate_usd: fl
         return {"allowed": True, "code": ""}
     except PaidCallBlocked as blocked:
         return blocked.as_dict()
+
+
+# ---------------------------------------------------------------------------
+# Unified spend model (B03) and correlation chain (B02)
+# ---------------------------------------------------------------------------
+# One vocabulary for money, whatever table or path wrote it:
+#   estimated  a price we computed or could not know (catalog, constant, tokens x rate, "cost unknown")
+#   reserved   an open reserve held before a call (the action layer, the planner, a managed run)
+#   actual     a fact: the provider's own answer/amount, a measured balance change, or a definite refusal (0 USD)
+#   gap        a lost record (``write_failed``): the money is not in the ledger and must be restored by hand
+#   event      other zero-USD audit rows (kill switch, 402, a blocked paid call)
+# Common fields of every row: project_id, run_id (+ execution_id when the run is a managed execution),
+# request_id, ref, provider, source, amount_usd, credits.
+
+UNIFIED_KINDS = ("estimated", "reserved", "actual", "gap", "event")
+_NOT_A_FACT_MARKS = ("uncalibrated", "cost_unknown", "basis=computed", "basis=estimate")
+_RUN_PREFIXES = ("plan:", "native:", "regen:", "queue:")
+
+
+def unified_kind(kind: str | None, source: str | None = "", note: str | None = "") -> str:
+    """Map a stored ``spend_ledger`` row to the unified kind. An ``actual`` that carries an uncalibrated /
+    unknown-cost / computed mark is NOT a fact (old rows written before B03), so it reads as ``estimated``."""
+    kind, source, low = (kind or ""), (source or ""), (note or "").lower()
+    if kind == "event":
+        return "gap" if source == "write_failed" else "event"
+    if kind == "reserve":
+        return "reserved"
+    if kind == "settle":
+        if "basis=closes_reserve" in low:
+            return "reserved"  # nets an open reserve to zero; the money itself is in the native rows
+        return "actual" if "basis=reported" in low else "estimated"
+    if kind == "actual":
+        return "estimated" if any(m in low for m in _NOT_A_FACT_MARKS) else "actual"
+    return "estimated"
+
+
+def execution_of(run_id: str | None) -> str | None:
+    """``run_id`` is an execution id unless it is a plan (``plan:<id>``) or a native tick (``native:..``)."""
+    run_id = (run_id or "").strip()
+    return run_id if run_id and not run_id.startswith(_RUN_PREFIXES) else None
+
+
+def unified_row(row) -> dict:
+    created = getattr(row, "created_at", None)
+    return {
+        "id": row.id, "ts": created.isoformat() if created else None,
+        "project_id": row.project_id, "run_id": row.run_id or "", "execution_id": execution_of(row.run_id),
+        "request_id": getattr(row, "request_id", "") or "", "ref": getattr(row, "ref", "") or "",
+        "provider": row.provider or "", "source": row.source or "", "ledger_kind": row.kind,
+        "kind": unified_kind(row.kind, row.source, row.note), "amount_usd": float(row.usd or 0.0),
+        "credits": float(row.credits or 0.0), "note": row.note or "",
+    }
+
+
+async def unified_rows(session, *, project_id: int | None = None, run_id: str = "", request_id: str = "",
+                       limit: int = 500) -> list[dict]:
+    """Row-by-row view in the unified model, oldest first (B06 will show it as the "what was charged for" list)."""
+    await ensure_schema(session)
+    q = select(SpendLedger)
+    if project_id is not None:
+        q = q.where(SpendLedger.project_id == project_id)
+    if run_id:
+        q = q.where(SpendLedger.run_id == run_id)
+    if request_id:
+        q = q.where(SpendLedger.request_id == request_id)
+    rows = (await session.scalars(q.order_by(SpendLedger.id.desc()).limit(max(1, int(limit))))).all()
+    return [unified_row(r) for r in reversed(rows)]
+
+
+async def run_totals(session, run_id: str) -> dict:
+    """Totals of one run by unified kind. ``total_usd`` is the logical spend of the run: facts + still open
+    reserves + estimates, with a closed reserve netted to zero by its settle row (one call is counted once)."""
+    rows = await unified_rows(session, run_id=run_id, limit=100000)
+    out: dict = {"run_id": run_id, "rows": len(rows), "total_usd": 0.0,
+                 **{f"{k}_usd": 0.0 for k in UNIFIED_KINDS}}
+    for r in rows:
+        out[f"{r['kind']}_usd"] += r["amount_usd"]
+        out["total_usd"] += r["amount_usd"]
+    out["gaps"] = sum(1 for r in rows if r["kind"] == "gap")
+    return {k: (round(v, 9) if isinstance(v, float) else v) for k, v in out.items()}
+
+
+async def correlation_gaps(session, *, since: datetime | None = None) -> list[dict]:
+    """Money rows that cannot be traced: no project, or neither a run nor a request id.
+
+    Zero-USD ``event`` rows are audit lines and are not counted. An empty result is the B02 law
+    "every spend has a project and a run/request"."""
+    await ensure_schema(session)
+    q = select(SpendLedger).where(SpendLedger.kind != "event")
+    if since is not None:
+        q = q.where(SpendLedger.created_at >= since)
+    rows = (await session.scalars(q.order_by(SpendLedger.id))).all()
+    bad = [r for r in rows if r.project_id is None or not (r.run_id or getattr(r, "request_id", ""))]
+    return [unified_row(r) for r in bad]
+
+
+def _present(sync_conn, table: str) -> set[str]:
+    from sqlalchemy import inspect
+    insp = inspect(sync_conn)
+    return {c["name"] for c in insp.get_columns(table)} if insp.has_table(table) else set()
+
+
+def _pick(cols: set[str], *names: str, default: str = "NULL") -> str:
+    for n in names:
+        if n in cols:
+            return n
+    return default
+
+
+def _chain_sql(sync_conn) -> str:
+    """One UNION ALL over the tables that exist and carry ``request_id`` (operator audit, action history,
+    money, provider tasks). Columns that a table lacks are NULL, so the shape stays the same."""
+    parts: list[str] = []
+    audit = _present(sync_conn, "operator_audit")
+    if "request_id" in audit:
+        parts.append(
+            f"SELECT 'operator' AS stage, {_pick(audit, 'ts', 'created_at')} AS at, request_id, "
+            f"{_pick(audit, 'project_id')} AS project_id, '' AS run_id, '' AS ref, "
+            f"COALESCE({_pick(audit, 'summary_ru', 'path', default=chr(39) * 2)}, '') AS what, "
+            "0.0 AS usd, '' AS kind FROM operator_audit WHERE request_id = :rid")
+    hist = _present(sync_conn, "action_layer_history")
+    if "request_id" in hist:
+        parts.append(
+            f"SELECT 'plan_step' AS stage, {_pick(hist, 'created_at', 'ts')} AS at, request_id, "
+            f"{_pick(hist, 'project_id')} AS project_id, "
+            f"COALESCE({_pick(hist, 'execution_id', default=chr(39) * 2)}, '') AS run_id, "
+            "COALESCE(plan_id, '') || '#' || COALESCE(step_index, '') AS ref, "
+            f"COALESCE({_pick(hist, 'event', default=chr(39) * 2)}, '') AS what, 0.0 AS usd, '' AS kind "
+            "FROM action_layer_history WHERE request_id = :rid")
+    parts.append(
+        "SELECT 'money' AS stage, created_at AS at, request_id, project_id, run_id, ref, "
+        "COALESCE(provider, '') || ' ' || COALESCE(note, '') AS what, usd, kind "
+        "FROM spend_ledger WHERE request_id = :rid")
+    tasks = _present(sync_conn, "provider_task_ledger")
+    if "request_id" in tasks:
+        parts.append(
+            "SELECT 'provider_task' AS stage, created_at AS at, request_id, project_id, run_id, task_id AS ref, "
+            "COALESCE(provider, '') || ' ' || COALESCE(event, '') || ' ' || COALESCE(status, '') AS what, "
+            "COALESCE(est_usd, 0.0) AS usd, 'task' AS kind FROM provider_task_ledger WHERE request_id = :rid")
+    return " UNION ALL ".join(parts) + " ORDER BY at, stage"
+
+
+async def correlation_chain(session, request_id: str) -> list[dict]:
+    """The chain operator -> plan -> step -> request -> task_id -> money for one ``request_id``, one query.
+
+    Stages: ``operator`` (operator_audit, W2-2), ``plan_step`` (action_layer_history once it has the
+    ``request_id`` column, W2-1), ``money`` (spend_ledger), ``provider_task`` (provider_task_ledger)."""
+    if not request_id:
+        return []
+    await ensure_schema(session)
+    await ensure_task_schema(session)
+    sql = await session.run_sync(lambda s: _chain_sql(s.connection()))
+    result = await session.execute(text(sql), {"rid": request_id})
+    return [dict(r._mapping) for r in result]

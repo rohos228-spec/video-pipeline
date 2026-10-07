@@ -16,6 +16,7 @@ from threading import Lock
 from loguru import logger
 
 from app.services import disk_guard
+from app.services.redact import install_log_redaction, redact, redact_text
 
 _lock = Lock()
 _events_file = None
@@ -86,6 +87,7 @@ def init(monitor_dir: Path | None = None) -> Path:
     _ensure_dir(monitor_dir / "events")
 
     remove_sinks()
+    install_log_redaction()  # A16: глобальный фильтр секретов для всех приёмников loguru
 
     lim = sink_limits()
     rotation = f"{int(lim['rotation_bytes']) // disk_guard.MB} MB"
@@ -102,6 +104,7 @@ def init(monitor_dir: Path | None = None) -> Path:
         ),
         level=level,
         enqueue=True,
+        diagnose=False,  # A16: diagnose печатает значения локальных переменных (секреты)
     )
     _sink_ids.append(_sink_id)
 
@@ -113,6 +116,7 @@ def init(monitor_dir: Path | None = None) -> Path:
             level=level,
             enqueue=True,
             serialize=True,
+            diagnose=False,
         )
     )
 
@@ -179,7 +183,7 @@ def _json_format(record: dict) -> str:
         "module": rec.get("name", ""),
         "function": rec.get("function", ""),
         "line": rec.get("line", 0),
-        "message": rec.get("message", ""),
+        "message": redact_text(str(rec.get("message", ""))),
     }
     return json.dumps(entry, ensure_ascii=False, default=str) + "\n"
 
@@ -205,7 +209,7 @@ def emit_event(
     if screenshot_path:
         entry["screenshot"] = screenshot_path
     if detail:
-        entry["detail"] = detail
+        entry["detail"] = redact(detail)
 
     line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
 

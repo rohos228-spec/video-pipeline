@@ -37,9 +37,9 @@ async def _legacy_table(eng):
     return cols, notnull
 
 
-def test_0010_is_registered_last_and_ordered():
+def test_0010_is_registered_and_ordered():
     ids = [m.id for m in sm.MIGRATIONS]
-    assert ids[-1] == "0010_change_proposals_reject_columns" and ids == sorted(ids)
+    assert "0010_change_proposals_reject_columns" in ids and ids == sorted(ids)
 
 
 async def test_legacy_table_gets_the_columns_once_and_keeps_rows(engine):

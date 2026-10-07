@@ -190,6 +190,9 @@ async def _lifespan(app: FastAPI):
     from app.settings import settings
     from app.telegram.noop_bot import get_worker_bot
 
+    from app.services.redact import install_log_redaction
+
+    install_log_redaction()  # A16: секреты не попадают в studio-live.log
     live_log_path = settings.data_dir / "studio-live.log"
     live_log_path.parent.mkdir(parents=True, exist_ok=True)
     live_log_sink = logger.add(
@@ -199,6 +202,7 @@ async def _lifespan(app: FastAPI):
         enqueue=True,
         rotation="30 MB",
         retention=2,
+        diagnose=False,  # A16: без значений локальных переменных
     )
     logger.info("studio live log → {}", live_log_path)
 
@@ -274,6 +278,11 @@ def create_app() -> FastAPI:
         allow_headers=["Content-Type", "Authorization", access_guard.OPERATOR_HEADER,
                        "Idempotency-Key", "X-Action-Layer-Operator"],
     )
+    # B01: самый внешний слой - request_id для /api и строка аудита на каждый POST/PUT/PATCH/DELETE
+    # (в том числе отказанный защитным слоем).
+    from app.services.operator_audit import OperatorAuditMiddleware
+
+    app.add_middleware(OperatorAuditMiddleware)
     # Изменяющие ручки Studio без веб-входа принимаются только с loopback (чтения не трогаем).
     mut = [access_guard.MutationLocalOnlyDep]
 

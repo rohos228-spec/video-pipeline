@@ -160,6 +160,7 @@ def reset_gap_state() -> None:
         _gap_count = 0
         _gap_recent.clear()
         _skipped.clear()
+        _uncorrelated.clear()
 
 
 def _gap_file() -> Path:
@@ -280,8 +281,8 @@ async def drain() -> None:
 
 def _project_id() -> int | None:
     try:
-        from app.services.observation import _cost_project
-        return _cost_project.get()
+        from app.services.request_context import get_project_id  # _cost_project first, then the scope variable
+        return get_project_id()
     except Exception:  # noqa: BLE001
         logger.opt(exception=True).warning("media_spend: project id unavailable, the row is written without it")
         return None
@@ -381,37 +382,45 @@ def _kind_for(usd: float, unknown: bool) -> str:
     return "estimated" if unknown or usd > 0 else "actual"
 
 
-async def _write(project_id, provider, usd, note, credits=0.0, settle_from=None, kind="actual") -> None:
+def _corr(ref: str = "") -> dict:
+    """Correlation of the CALLER (B02), captured when the record is scheduled, not in the background task."""
+    from app.services import request_context
+    return {"run_id": request_context.get_run_id(), "request_id": request_context.get_request_id(), "ref": ref}
+
+
+async def _write(project_id, provider, usd, note, credits=0.0, settle_from=None, kind="actual", corr=None,
+                 basis="") -> None:
+    corr = corr or _corr()
     try:
         from app.db import SessionLocal
         from app.services import spend_guard
         async with SessionLocal() as s:
             if settle_from is not None:
-                await spend_guard.settle(s, project_id=project_id, run_id="", reserved_usd=settle_from,
-                                         actual_usd=usd, source="media_native", provider=provider)
-            elif kind == "actual":
-                await spend_guard.record_actual(s, project_id=project_id, usd=usd, provider=provider,
-                                                source="media_native", note=note, credits=credits)
+                await spend_guard.settle(s, project_id=project_id, run_id=corr["run_id"], reserved_usd=settle_from,
+                                         actual_usd=usd, source="media_native", provider=provider,
+                                         basis=basis, request_id=corr["request_id"], ref=corr["ref"])
             else:
-                await spend_guard.ensure_schema(s)
-                s.add(spend_guard.SpendLedger(
-                    day=spend_guard._today(), kind=kind[:12], provider=provider[:32], project_id=project_id,
-                    run_id="", source="media_native", usd=spend_guard._valid(usd), credits=float(credits),
-                    note=note[:200]))
+                # estimated or actual, same columns (B03: the kind is decided by the caller, never by the amount)
+                await spend_guard.record_actual(s, project_id=project_id, usd=usd, provider=provider,
+                                                source="media_native", note=note, credits=credits, kind=kind,
+                                                run_id=corr["run_id"], request_id=corr["request_id"],
+                                                ref=corr["ref"])
             await s.commit()
     except Exception as exc:  # noqa: BLE001
         await gap_async(provider, "settle" if settle_from is not None else "spend_row", project_id=project_id,
                         usd=usd, error=exc, detail=note)
 
 
-async def _credit_stop(project_id, provider, note) -> None:
+async def _credit_stop(project_id, provider, note, corr=None) -> None:
+    corr = corr or _corr()
     try:
         from app.db import SessionLocal
         from app.services import spend_guard
         await spend_guard.engage_on_credit_error(_CreditShim(provider), provider=provider)
         async with SessionLocal() as s:
             await spend_guard.record_event(s, project_id=project_id, provider=provider,
-                                           source="media_402", note=note)
+                                           source="media_402", note=note, run_id=corr["run_id"],
+                                           request_id=corr["request_id"], ref=corr["ref"])
             await s.commit()
     except Exception as exc:  # noqa: BLE001
         await gap_async(provider, "credit_stop_402", project_id=project_id, error=exc, detail=note)
@@ -430,21 +439,49 @@ async def _write_task(**kw) -> None:
                         detail=f"task={kw.get('task_id', '')} event={kw.get('event', '')}")
 
 
+_uncorrelated: dict[str, int] = {}
+
+
+def uncorrelated_counts() -> dict[str, int]:
+    """Spend rows scheduled with no project or with neither a run nor a request id, by provider (B02).
+
+    A non-empty result means a paid entry point did not set the correlation (``request_context.project_scope``)."""
+    with _gap_lock:
+        return dict(_uncorrelated)
+
+
+def _check_correlation(provider: str, pid, corr: dict) -> None:
+    if pid is not None and (corr.get("run_id") or corr.get("request_id")):
+        return
+    with _gap_lock:
+        first = provider not in _uncorrelated
+        _uncorrelated[provider] = _uncorrelated.get(provider, 0) + 1
+    if first:
+        logger.warning("media_spend: {} spend row has no project/run/request id (project={}, run={!r}, request={!r}): "
+                       "a paid entry point is not wrapped in request_context.project_scope",
+                       provider, pid, corr.get("run_id"), corr.get("request_id"))
+
+
 def record(provider: str, *, usd: float, note: str, credits: float = 0.0, unknown: bool = False,
-           exc: BaseException | None = None) -> None:
-    """Schedule one ledger row; on a credit error also engage the kill switch. Never raises."""
+           exc: BaseException | None = None, ref: str = "") -> None:
+    """Schedule one ledger row; on a credit error also engage the kill switch. Never raises.
+
+    ``ref``: the provider task id (or another handle) of this call; the project, run and request ids come from
+    ``request_context`` at the moment of the call."""
     try:
         if not _enabled(provider):
             return
         pid = _project_id()
+        corr = _corr(ref)
+        _check_correlation(provider, pid, corr)
         if unknown:
             note = f"{note} cost_unknown=true"
         if _synthetic_key(provider):
             note = f"{note} synthetic_key=true"
         usd = max(0.0, float(usd))
-        _spawn(_write(pid, provider, usd, note, credits, kind=_kind_for(usd, unknown)))
+        _spawn(_write(pid, provider, usd, note, credits, kind=_kind_for(usd, unknown), corr=corr))
         if exc is not None and is_credit_error(exc):
-            _spawn(_credit_stop(pid, provider, f"{provider} 402: {note}"[:200]))
+            _spawn(_credit_stop(pid, provider, f"{provider} 402: {note}"[:200], corr))
     except Exception as err:  # noqa: BLE001
         note_gap(provider, "record", error=err, detail=str(note))
 
@@ -520,7 +557,8 @@ def _after_create_ok(api: str, task_id: str) -> None:
         ctx = _kie_ctx.get() or {}
         model = ctx.get("model", "")
         record("kie", usd=ctx.get("usd", 0.0), credits=ctx.get("credits", 0.0),
-               unknown=bool(ctx.get("unknown", True)), note=f"create {api} {model} task={task_id}")
+               unknown=bool(ctx.get("unknown", True)), note=f"create {api} {model} task={task_id}",
+               ref=str(task_id))
         if _enabled("kie"):
             _spawn(_write_task(project_id=_project_id(), key=ctx.get("key", ""), task_id=task_id,
                                provider="kie", api=api, model=model, event="submitted", status="submitted",
@@ -583,7 +621,8 @@ def tracked_kie_poll(fn):
 def _after_poll(api, task_id, polls, status, note, exc) -> None:
     try:
         ctx = _kie_ctx.get() or {}
-        record("kie", usd=0.0, note=f"poll {api} {ctx.get('model', '')} task={task_id} polls={polls}", exc=exc)
+        record("kie", usd=0.0, note=f"poll {api} {ctx.get('model', '')} task={task_id} polls={polls}", exc=exc,
+               ref=str(task_id))
         if _enabled("kie"):
             _spawn(_write_task(project_id=_project_id(), key=ctx.get("key", ""), task_id=task_id,
                                provider="kie", api=api, model=ctx.get("model", ""), event="poll",
@@ -612,7 +651,7 @@ async def track_kling(coro, *, kie_id: str, duration, has_frame: bool):
                    note=f"kling {kie_id} uncertain {type(exc).__name__}", exc=exc)
         raise
     record("kie", usd=price["usd"], credits=price["credits"], unknown=price["unknown"],
-           note=f"kling {kie_id} task={getattr(result, 'gen_id', '')}")
+           note=f"kling {kie_id} task={getattr(result, 'gen_id', '')}", ref=str(getattr(result, "gen_id", "") or ""))
     return result
 
 
@@ -662,8 +701,9 @@ async def track_eleven_post(coro, *, chars: int, model: str = ""):
             record("elevenlabs", usd=est, note=f"tts {model} chars={chars} uncalibrated")
             billed = resp.headers.get("character-cost")  # reported credits; absent header -> estimate stays
             if billed and _enabled("elevenlabs") and str(billed).isdigit() and int(billed) != chars:
+                # the provider's own answer (character-cost header): the settle row is a fact (B03)
                 _spawn(_write(_project_id(), "elevenlabs", int(billed) * ELEVENLABS_USD_PER_CHAR, "",
-                              settle_from=est))
+                              settle_from=est, corr=_corr(), basis="reported"))
         else:
             record("elevenlabs", usd=0.0, exc=_CreditShim("elevenlabs") if resp.status_code == 402 else None,
                    note=f"tts {model} http={resp.status_code} not billed")

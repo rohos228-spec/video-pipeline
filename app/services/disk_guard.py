@@ -412,6 +412,12 @@ def append_rotating(
 
     Бросает ``OSError`` как обычный ``open``: вызывающий код сам решает, что с ним делать.
     """
+    try:
+        from app.services.redact import redact_text
+
+        line = redact_text(line)
+    except Exception:  # noqa: BLE001 - a redaction failure must not lose the log line
+        pass
     mb, bk = log_limits()
     mb = max_bytes if max_bytes is not None else mb
     bk = backups if backups is not None else bk

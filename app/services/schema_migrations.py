@@ -257,6 +257,30 @@ def _change_proposals_reject_columns_fp() -> str:
     return _columns_fp("change_proposals", _ADDED_COLUMNS)
 
 
+async def _operator_audit(conn) -> None:
+    from app.services import operator_audit
+    await _create_tables(conn, [operator_audit.OperatorAudit.__table__], operator_audit._TRIGGERS)
+
+
+def _operator_audit_fp() -> str:
+    from app.services import operator_audit
+    return tables_fingerprint([operator_audit.OperatorAudit.__table__], operator_audit._TRIGGERS)
+
+
+async def _publications(conn) -> None:
+    # Тот же DDL, что у publications_store.ensure_schema: CREATE ... IF NOT EXISTS, поэтому таблица,
+    # уже созданная самим хранилищем, миграцию не ломает.
+    from app.services import publications_store
+    if conn.dialect.name == "sqlite":
+        for ddl in publications_store._DDL:
+            await conn.exec_driver_sql(ddl)
+
+
+def _publications_fp() -> str:
+    from app.services import publications_store
+    return _digest({"publications_ddl": [" ".join(d.split()) for d in publications_store._DDL]})
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_observation_core", "observation, diagnosis, actions, decision, profiles, media, "
               "managed launch, kill switch tables", _observation, _observation_fp,
@@ -278,6 +302,10 @@ MIGRATIONS: tuple[Migration, ...] = (
               _projects_columns, _projects_columns_fp),
     Migration("0010_change_proposals_reject_columns", "change_proposals.rejected_by / reject_reason / rejected_at",
               _change_proposals_reject_columns, _change_proposals_reject_columns_fp),
+    Migration("0011_operator_audit", "append-only operator audit of mutating /api requests",
+              _operator_audit, _operator_audit_fp),
+    Migration("0012_publications", "publications journal (idempotency, intent before click, lease)",
+              _publications, _publications_fp),
 )
 
 

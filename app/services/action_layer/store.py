@@ -10,10 +10,11 @@ from datetime import datetime
 from typing import Any, Callable
 
 from sqlalchemy import (JSON, Boolean, DateTime, Float, Index, Integer, String, Text,
-                        UniqueConstraint)
+                        UniqueConstraint, event)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base
+from app.services.redact import redact, redact_text
 
 PLAN_PROPOSED = "proposed"
 PLAN_RUNNING = "running"
@@ -120,6 +121,10 @@ class ActionHistory(Base):
     cost_estimate_low: Mapped[float | None] = mapped_column(Float, nullable=True)
     cost_estimate_high: Mapped[float | None] = mapped_column(Float, nullable=True)
     cost_recorded: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # B02: корреляция. Для уже существующих БД колонки добавляет ensure_action_layer_schema.
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    execution_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ActionPlanContext(Base):
@@ -165,10 +170,26 @@ _TRIGGERS = (
 )
 
 
+_HISTORY_EXTRA_COLUMNS = (("project_id", "INTEGER"), ("execution_id", "TEXT"), ("request_id", "TEXT"))
+
+
+def _ensure_history_columns(sync_conn) -> None:
+    """Безопасный ALTER ADD COLUMN: только недостающие колонки, повторный вызов ничего не делает."""
+    from sqlalchemy import inspect, text
+    insp = inspect(sync_conn)
+    if "action_layer_history" not in insp.get_table_names():
+        return
+    have = {c["name"] for c in insp.get_columns("action_layer_history")}
+    for name, ddl in _HISTORY_EXTRA_COLUMNS:
+        if name not in have:
+            sync_conn.execute(text(f"ALTER TABLE action_layer_history ADD COLUMN {name} {ddl}"))
+
+
 async def ensure_action_layer_schema(conn) -> None:
     """Идемпотентно создаёт таблицы слоя (вызывается из стартового пути)."""
     await conn.run_sync(lambda sync_conn: Base.metadata.create_all(
         sync_conn, tables=_TABLES, checkfirst=True))
+    await conn.run_sync(_ensure_history_columns)
     if conn.dialect.name == "sqlite":
         for ddl in _TRIGGERS:
             await conn.exec_driver_sql(ddl)
@@ -196,12 +217,47 @@ def append_history(session, *, event: str, plan_id: str = "", step_index: int | 
                    actor: str = "", request_text: str = "", action_id: str = "",
                    params: dict | None = None, outcome: str = "", error: str = "",
                    cost_estimate: tuple[float | None, float | None] = (None, None),
-                   cost_recorded: float | None = None) -> ActionHistory:
-    """Добавляет запись в журнал в транзакции вызывающего (commit — его дело)."""
+                   cost_recorded: float | None = None, project_id: int | None = None,
+                   execution_id: str | None = None,
+                   request_id: str | None = None) -> ActionHistory:
+    """Добавляет запись в журнал в транзакции вызывающего (commit — его дело).
+
+    Текст, параметры и ошибка проходят redact (A16) до записи.
+    """
     row = ActionHistory(
         event=event, plan_id=plan_id, step_index=step_index, actor=actor[:120],
-        request_text=request_text[:2000], action_id=action_id, params=params,
-        outcome=outcome, error=error[:2000], cost_estimate_low=cost_estimate[0],
-        cost_estimate_high=cost_estimate[1], cost_recorded=cost_recorded)
+        request_text=redact_text(request_text)[:2000], action_id=action_id,
+        params=redact(params) if params is not None else None,
+        outcome=outcome, error=redact_text(error)[:2000], cost_estimate_low=cost_estimate[0],
+        cost_estimate_high=cost_estimate[1], cost_recorded=cost_recorded,
+        project_id=project_id, execution_id=execution_id, request_id=request_id)
     session.add(row)
     return row
+
+
+# --- A16: redact на границе записи ---------------------------------------------
+# Любая запись в таблицы слоя (планы, шаги, история, макросы, контекст) проходит
+# через redact независимо от того, кто её создал.
+
+_REDACTED_FIELDS: dict[type, tuple[str, ...]] = {
+    ActionPlan: ("request_text", "plan_json", "error", "stop_reason"),
+    ActionPlanStep: ("params", "progress_note", "result", "error"),
+    ActionHistory: ("request_text", "params", "error"),
+    ActionMacro: ("description_ru", "steps", "params_schema"),
+}
+
+
+def _redact_target(_mapper, _connection, target) -> None:
+    for field in _REDACTED_FIELDS[type(target)]:
+        old = getattr(target, field, None)
+        if old is None:
+            continue
+        new = redact(old)
+        if new != old:
+            setattr(target, field, new)
+
+
+for _model in _REDACTED_FIELDS:
+    event.listen(_model, "before_insert", _redact_target)
+    if _model is not ActionHistory:  # история append-only: UPDATE заблокирован триггером
+        event.listen(_model, "before_update", _redact_target)
