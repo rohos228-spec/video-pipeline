@@ -88,6 +88,7 @@ from app.services.step_cancel import (
     raise_if_cancelled,
     sleep_cancellable,
 )
+from app.services.notification_log import notify
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -1973,9 +1974,12 @@ async def _generate_and_send(
                     f"⚠️ Кадр #{frame.number} проекта #{project.id}: "
                     f"картинку поймать не удалось ({kind}).\n\n"
                 )
-            await bot.send_message(
+            await notify(
+                bot, "send_message",
                 settings.telegram_owner_chat_id,
                 (head + f"<pre>{_html_escape(e.format_text())}</pre>")[:3800],
+                kind="image_capture_failed",
+                project_id=project.id,
                 parse_mode="HTML",
             )
         except Exception:  # noqa: BLE001

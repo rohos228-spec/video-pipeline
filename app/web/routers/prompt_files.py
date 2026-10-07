@@ -110,13 +110,13 @@ def _ensure_step(step_code: str) -> None:
     if step_code not in STEP_FOLDERS:
         raise HTTPException(
             status_code=404,
-            detail=f"step '{step_code}' has no prompt folder",
+            detail=f"У шага «{step_code}» нет папки с промтами",
         )
 
 
 def _ensure_name(name: str) -> None:
     if not is_valid_prompt_name(name):
-        raise HTTPException(status_code=400, detail=f"invalid prompt name: {name!r}")
+        raise HTTPException(status_code=400, detail=f"Недопустимое имя промта: {name!r}")
 
 
 def _disk_prompt_path(
@@ -157,7 +157,7 @@ async def resolve_prompt_for_project(
     _ensure_step(step_code)
     project = await session.get(Project, project_id)
     if project is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     overrides = project.prompt_overrides if isinstance(project.prompt_overrides, dict) else {}
     meta = project.meta if isinstance(project.meta, dict) else {}
     name, source = resolve_project_prompt_with_source(
@@ -222,11 +222,11 @@ async def get_prompt_file(
     _ensure_name(name)
     p = _disk_prompt_path(step_code, name, group_id=group_id)
     if not p.is_file():
-        raise HTTPException(status_code=404, detail="prompt file not found")
+        raise HTTPException(status_code=404, detail="Файл промта не найден")
     try:
         body = p.read_text(encoding="utf-8")
     except OSError as e:
-        raise HTTPException(status_code=404, detail="prompt file not found") from e
+        raise HTTPException(status_code=404, detail="Файл промта не найден") from e
     stat = p.stat()
     return PromptFileContent(
         name=name,
@@ -243,7 +243,7 @@ async def download_prompt_file(step_code: str, name: str) -> FileResponse:
     _ensure_name(name)
     p = _disk_prompt_path(step_code, name)
     if not p.is_file():
-        raise HTTPException(status_code=404, detail="prompt file not found")
+        raise HTTPException(status_code=404, detail="Файл промта не найден")
     return FileResponse(
         path=str(p),
         filename=f"{name}.md",
@@ -307,7 +307,7 @@ async def delete_prompt_file(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not removed:
-        raise HTTPException(status_code=404, detail="prompt file not found")
+        raise HTTPException(status_code=404, detail="Файл промта не найден")
     await lib.log_event(
         session,
         "deleted",
@@ -339,7 +339,7 @@ async def get_prompt_file_history_content(
         raise HTTPException(status_code=400, detail=str(e)) from e
     meta = next((v for v in list_prompt_versions(step_code, name) if v["id"] == version_id), None)
     if meta is None:
-        raise HTTPException(status_code=404, detail="version not found")
+        raise HTTPException(status_code=404, detail="Версия не найдена")
     return PromptVersionContent(
         id=version_id,
         label=str(meta["label"]),
@@ -395,7 +395,7 @@ async def rename_prompt_file_route(
     _ensure_name(name)
     new_name = payload.new_name.strip()
     if not new_name:
-        raise HTTPException(status_code=400, detail="new_name required")
+        raise HTTPException(status_code=400, detail="Нужно указать новое имя (new_name)")
     try:
         final = rename_prompt_file(step_code, name, new_name)
     except FileNotFoundError as e:
@@ -427,14 +427,14 @@ async def upload_prompt_file(
     """
     _ensure_step(step_code)
     if not file.filename:
-        raise HTTPException(status_code=400, detail="filename required")
+        raise HTTPException(status_code=400, detail="Нужно указать имя файла")
     raw_name = name or file.filename
     # Срезаем расширение .md если есть.
     if raw_name.lower().endswith(".md"):
         raw_name = raw_name[:-3]
     raw_name = raw_name.strip()
     if not raw_name:
-        raise HTTPException(status_code=400, detail="empty prompt name")
+        raise HTTPException(status_code=400, detail="Пустое имя промта")
     if not is_valid_prompt_name(raw_name):
         raise HTTPException(
             status_code=400,
@@ -447,7 +447,7 @@ async def upload_prompt_file(
     try:
         text = blob.decode("utf-8")
     except UnicodeDecodeError as e:
-        raise HTTPException(status_code=400, detail="file must be utf-8 text") from e
+        raise HTTPException(status_code=400, detail="Файл должен быть текстом в кодировке UTF-8") from e
     write_prompt_with_history(step_code, raw_name, text)
     file_path = _library_prompt_path(step_code, raw_name)
     await lib.create_or_update_item(

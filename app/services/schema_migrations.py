@@ -281,6 +281,60 @@ def _publications_fp() -> str:
     return _digest({"publications_ddl": [" ".join(d.split()) for d in publications_store._DDL]})
 
 
+def _ddl_statements(script) -> list[str]:
+    """DDL-скрипт (строка или кортеж операторов) -> список отдельных операторов (триггеры с BEGIN..END целиком)."""
+    parts = [script] if isinstance(script, str) else list(script)
+    out: list[str] = []
+    for part in parts:
+        buf = ""
+        for line in part.splitlines(keepends=True):
+            buf += line
+            if sqlite3.complete_statement(buf):
+                if buf.strip():
+                    out.append(buf.strip())
+                buf = ""
+        if buf.strip():
+            out.append(buf.strip())
+    return out
+
+
+async def _notification_log(conn) -> None:
+    # Тот же DDL, что создаёт notification_log.py сам (IF NOT EXISTS): уже созданная модулем таблица не мешает.
+    from app.services import notification_log
+    if conn.dialect.name == "sqlite":
+        for ddl in _ddl_statements(notification_log.NOTIFICATION_LOG_DDL):
+            await conn.exec_driver_sql(ddl)
+
+
+def _notification_log_fp() -> str:
+    from app.services import notification_log
+    return _digest({"notification_log_ddl": [" ".join(d.split()) for d in _ddl_statements(notification_log.NOTIFICATION_LOG_DDL)]})
+
+
+async def _journal_archive_log(conn) -> None:
+    from app.services import journal_archive
+    if conn.dialect.name == "sqlite":
+        for ddl in _ddl_statements(journal_archive.ARCHIVE_LOG_DDL):
+            await conn.exec_driver_sql(ddl)
+
+
+def _journal_archive_log_fp() -> str:
+    from app.services import journal_archive
+    return _digest({"journal_archive_log_ddl": [" ".join(d.split()) for d in _ddl_statements(journal_archive.ARCHIVE_LOG_DDL)]})
+
+
+async def _create_jobs(conn) -> None:
+    from app.services import create_jobs
+    if conn.dialect.name == "sqlite":
+        for ddl in _ddl_statements(create_jobs.CREATE_JOBS_DDL):
+            await conn.exec_driver_sql(ddl)
+
+
+def _create_jobs_fp() -> str:
+    from app.services import create_jobs
+    return _digest({"create_jobs_ddl": [" ".join(d.split()) for d in _ddl_statements(create_jobs.CREATE_JOBS_DDL)]})
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_observation_core", "observation, diagnosis, actions, decision, profiles, media, "
               "managed launch, kill switch tables", _observation, _observation_fp,
@@ -306,6 +360,12 @@ MIGRATIONS: tuple[Migration, ...] = (
               _operator_audit, _operator_audit_fp),
     Migration("0012_publications", "publications journal (idempotency, intent before click, lease)",
               _publications, _publications_fp),
+    Migration("0013_notification_log", "append-only log of messages sent to the operator",
+              _notification_log, _notification_log_fp),
+    Migration("0014_journal_archive_log", "append-only log of journal archiving (the only allowed delete path)",
+              _journal_archive_log, _journal_archive_log_fp),
+    Migration("0015_create_jobs", "durable state of Create jobs (survives restart)",
+              _create_jobs, _create_jobs_fp),
 )
 
 
@@ -423,6 +483,7 @@ JOURNAL_TABLES: tuple[str, ...] = (
     "action_layer_plans", "action_layer_steps", "action_layer_approvals", "action_layer_spend",
     "action_layer_history", "action_layer_plan_context",
     "change_proposals", "config_versions", "config_pointers", "schema_migrations",
+    "notification_log", "journal_archive_log", "operator_audit", "publications",
 )
 
 

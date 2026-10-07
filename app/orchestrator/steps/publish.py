@@ -21,6 +21,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.bots.publishers import ALL_PUBLISHERS, PublishGate, PublishResult, publish_everywhere
 from app.models import Artifact, ArtifactKind, Project, ProjectStatus
 from app.services import publications_store as pstore
+from app.services.notification_log import notify
 from app.settings import settings
 
 _META_KEY = "published_platforms"
@@ -238,7 +239,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                      + ", ".join(f"{k}={v}" for k, v in sorted(gate.not_claimed.items())) + ")")
     if results or gate.not_claimed:
         try:
-            await bot.send_message(settings.telegram_owner_chat_id, "\n".join(lines))
+            await notify(bot, "send_message", settings.telegram_owner_chat_id, "\n".join(lines),
+                         kind="publish_summary", project_id=project.id)
         except Exception:  # noqa: BLE001 — итог уже в журнале, уведомление вторично
             logger.exception("[#{}] publish: Telegram не отправлен", project.id)
 

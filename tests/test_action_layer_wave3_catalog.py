@@ -206,7 +206,7 @@ async def test_reload_xlsx_needs_approval_and_fails_cleanly_without_file(env) ->
     assert pv["needs_approval"] and pv["destructive_effects"]
     assert "project.xlsx" in pv["destructive_effects"][0]["text"]
     view = await _run(env, [{"action_id": "project.reload_xlsx", "params": {"project_id": pid}}])
-    assert view["status"] == "failed" and "project.xlsx not found" in view["steps"][0]["error"]
+    assert view["status"] == "failed" and "project.xlsx не найден" in view["steps"][0]["error"]
 
 
 async def test_reload_xlsx_overwrites_db_from_file(env) -> None:

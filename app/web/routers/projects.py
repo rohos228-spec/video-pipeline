@@ -196,7 +196,7 @@ async def project_shots_report(
 
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     existing = existing_shots_report_path(p)
     if existing is None:
         raise HTTPException(
@@ -212,7 +212,7 @@ async def get_project(
 ) -> ProjectDetail:
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     # Свежий meta (user_stop) — иначе stale recompute затирает ⏹ и снова крутит ноду.
     await session.refresh(p)
     # GET не пишет canvas_graph. Poll #60 каждые ~2с делал upgrade
@@ -238,7 +238,7 @@ async def get_project(
         await session.rollback()
         p = await session.get(Project, project_id)
         if p is None:
-            raise HTTPException(status_code=404, detail="project not found")
+            raise HTTPException(status_code=404, detail="Проект не найден")
     return project_to_detail(p)
 
 
@@ -248,7 +248,7 @@ async def create_project(
     session: AsyncSession = Depends(get_session),
 ) -> Project:
     if not body.title or not body.title.strip():
-        raise HTTPException(status_code=400, detail="title is required")
+        raise HTTPException(status_code=400, detail="Нужно указать название проекта")
     display_title = body.title.strip()
     base_slug = _slugify(display_title)
     # Уникализируем slug.
@@ -338,7 +338,7 @@ async def create_child_project(
 
     parent = await session.get(Project, project_id)
     if parent is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
 
     try:
         child = await create_child_from_parent(session, parent, slugify=_slugify)
@@ -374,10 +374,10 @@ async def ensure_project_run(
     """Гарантирует WorkflowRun для проекта (связь с графом в БД)."""
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     wf_id = await _get_default_workflow_id(session)
     if wf_id is None:
-        raise HTTPException(status_code=404, detail="default workflow not found")
+        raise HTTPException(status_code=404, detail="Не найден основной сценарий (workflow) по умолчанию")
     run_id = await ensure_run_for_project(project_id, wf_id, session=session)
     await session.commit()
     return {"run_id": run_id}
@@ -390,7 +390,7 @@ async def get_project_run(
     """Run канваса из project.db (там ноды группы). state.db часто без fw_*."""
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     from app.services.canvas_graph import sync_run_snapshot_from_canvas_graph
 
     run = (
@@ -404,7 +404,7 @@ async def get_project_run(
     if run is None:
         wf_id = await _get_default_workflow_id(session)
         if wf_id is None:
-            raise HTTPException(status_code=404, detail="run not found")
+            raise HTTPException(status_code=404, detail="Запуск не найден")
         await ensure_run_for_project(project_id, wf_id, session=session)
         created = True
     pulled = False
@@ -427,7 +427,7 @@ async def get_project_run(
         )
     ).scalar_one_or_none()
     if run is None:
-        raise HTTPException(status_code=404, detail="run not found")
+        raise HTTPException(status_code=404, detail="Запуск не найден")
     return run
 
 
@@ -437,7 +437,7 @@ async def delete_project(
 ) -> None:
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     data_dir = p.data_dir
     remove_project_from_layout(project_id)
     await session.delete(p)
@@ -466,7 +466,7 @@ async def patch_project(
     """Частичное обновление полей проекта (для inspector-панели)."""
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     from app.generation_options import (
         IMAGE_GENERATORS_BY_ID,
         VIDEO_GENERATORS_BY_ID,
@@ -489,10 +489,10 @@ async def patch_project(
 
     img_gid = payload.get("image_generator")
     if "image_generator" in payload and img_gid and img_gid not in IMAGE_GENERATORS_BY_ID:
-        raise HTTPException(status_code=400, detail=f"unknown image_generator: {img_gid}")
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор изображений: {img_gid}")
     vid_gid = payload.get("video_generator")
     if "video_generator" in payload and vid_gid and vid_gid not in VIDEO_GENERATORS_BY_ID:
-        raise HTTPException(status_code=400, detail=f"unknown video_generator: {vid_gid}")
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор видео: {vid_gid}")
     ALLOWED = {
         "title", "topic", "hero_mode", "general_plan", "hero_description", "script_text",
         "image_generator", "aspect_ratio", "image_resolution", "image_quality", "image_relax",
@@ -667,7 +667,7 @@ async def run_project_step(
     """
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     if dry_run:
         from app.web.studio_dry_run import validate_project_step_dry_run
 
@@ -684,7 +684,7 @@ async def run_project_step(
     from app.services.actions_v1 import managed_project_enabled
     if await managed_project_enabled(project_id):
         raise HTTPException(status_code=409,
-            detail="managed execution must be started from the Actions-v1 panel for audit and idempotency")
+            detail="Управляемый запуск нужно начинать из панели «Действия v1»: так он попадает в журнал и не запускается дважды")
     resolved_force_wipe = bool(force_wipe) if force_wipe is not None else False
     try:
         await start_step(

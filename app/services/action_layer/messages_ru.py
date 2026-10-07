@@ -42,3 +42,40 @@ def spend_cap_ru(exc) -> str:
     """SpendCapExceeded по-русски (код остаётся в поле code)."""
     return (f"Локальный потолок расходов исчерпан ({exc.code}): потрачено {exc.spent:.2f} USD, "
             f"оценка {exc.estimate:.2f} USD, потолок {exc.cap:.2f} USD.")
+
+
+# Журнал слоя действий (action_layer_history.event): код события -> фраза для оператора.
+# Коды остаются машинными; этот словарь использует лента проекта (timeline_ru) и история в интерфейсе.
+HISTORY_EVENT_RU: dict[str, str] = {
+    "plan_created": "План действий создан",
+    "plan_started": "План действий запущен",
+    "plan_finished": "План действий завершён",
+    "planner_call": "Планировщик обратился к модели",
+    "planner_plan_linked": "Планировщик связал план с проектом",
+    "approval_created": "Запрошено подтверждение плана",
+    "approval_consumed": "Подтверждение плана использовано",
+    "run_requested": "Оператор запросил выполнение плана",
+    "resume_refused": "Продолжение плана отклонено",
+    "stop_requested": "Оператор запросил остановку плана",
+    "step_started": "Шаг плана начат",
+    "step_succeeded": "Шаг плана выполнен",
+    "step_failed": "Шаг плана завершился ошибкой",
+    "step_unknown": "Итог шага плана не подтверждён",
+    "step_skipped": "Шаг плана пропущен",
+    "step_cancelled": "Шаг плана отменён",
+    "budget_block": "Шаг остановлен лимитом расходов",
+    "kill_switch_block": "Шаг остановлен аварийным стопом",
+    "job_stop_after_failure": "Задача остановлена после сбоя",
+}
+
+
+STEP_STATUS_RU: dict[str, str] = {
+    "pending": "ждёт очереди", "running": "выполняется", "succeeded": "выполнен", "failed": "ошибка",
+    "unknown": "итог не подтверждён", "skipped": "пропущен", "cancelled": "отменён",
+}
+
+
+def history_event_ru(code: str | None) -> str:
+    """Фраза для события журнала слоя действий; незнакомый код возвращается как есть (не прячется)."""
+    text = str(code or "")
+    return HISTORY_EVENT_RU.get(text, text)

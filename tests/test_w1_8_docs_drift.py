@@ -80,7 +80,7 @@ def test_security_defaults_lists_all_migrations():
     from app.services.schema_migrations import MIGRATIONS
     ids = [m.id for m in MIGRATIONS]
     text = _doc("SECURITY_DEFAULTS.md")
-    assert ids[0] == "0001_observation_core" and ids[-1].startswith("0012")
+    assert ids[0] == "0001_observation_core" and ids[-1].startswith("0015")
     assert f"`{ids[0]}` … `{ids[-1]}`" in text
     assert f"всего {len(ids)}" in text
     assert "`0001` … `0009_projects_columns`" not in text

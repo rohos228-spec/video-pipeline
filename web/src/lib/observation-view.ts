@@ -27,13 +27,125 @@ export function mergeEvents(old: ObservationEvent[], incoming: ObservationEvent[
   return [...unique.values()].sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? "") || a.id - b.id);
 }
 
+/** Равно EVENT_LABELS_RU в app/services/timeline_ru.py (сверяет tests/w3_1_timeline_ru_test.py): сервер, лента и панель говорят одно. */
+export const EVENT_KIND_LABELS: Record<string, string> = {
+  node_start: "Исполнитель начал ноду",
+  node_end: "Исполнитель вернулся (запись данных не подтверждена)",
+  node_input: "Вход ноды",
+  node_output: "Выход ноды",
+  node_error: "Ошибка исполнителя",
+  node_change: "Изменение состояния ноды в БД",
+  node_result_verification: "Нативная проверка результата ноды",
+  model_start: "Запрос к модели отправлен",
+  model_end: "Ответ модели получен",
+  model_error: "Ошибка запроса к модели",
+  model_stream_event: "Событие потока ответа модели",
+  model_retrieve_start: "Запрос на получение готового ответа модели отправлен",
+  model_retrieve_end: "Готовый ответ модели получен",
+  parse_result: "Разбор ответа модели",
+  json_retry: "Штатный повтор разбора JSON",
+  domain_check: "Вердикт проверки",
+  rule_diary: "Дневник правил кода",
+  runtime_check: "Проверка во время выполнения",
+  runtime_wait: "Ожидание",
+  project_control: "Ограничение проекта",
+  data_applied: "Изменения БД записаны",
+  apply_input: "Вход применения изменений",
+  apply_error: "Ошибка применения изменений",
+  planner_successor: "Решение планировщика о переходе",
+  artifact_created: "Артефакт создан",
+  artifact_saved: "Артефакт сохранён на диск",
+  artifact_verified: "Файл артефакта проверен",
+  assemble_retry: "Повтор сборки",
+  action_blocked: "Действие заблокировано защитой",
+  human_approval_pending: "Ожидается решение человека",
+  local_recovery_guard: "Защита локального восстановления: платные вызовы запрещены",
+  managed_successor: "Управляемый переход на следующую ноду выполнен",
+  managed_successor_denied: "Управляемый переход на следующую ноду отклонён",
+  observer_control: "Управление наблюдением",
+  observer_stop: "Наблюдение остановлено",
+  profile_effective_context: "Применён профиль настроек для попытки",
+  provider_fallback: "Платный провайдер не ответил: использован запасной путь",
+  animation_degraded: "Промты анимации получены запасным путём",
+  recovery_continuation_deferred: "Продолжение после восстановления отложено",
+  recovery_continuation_submitted: "Продолжение после восстановления отправлено",
+  recovery_verification: "Проверка результата восстановления",
+  media_request_reserved: "Под медиа-запрос зарезервирован бюджет",
+  media_request_input: "Входные данные медиа-запроса приняты",
+  media_response: "Ответ медиа-провайдера получен",
+  media_wait: "Ожидание результата медиа-провайдера",
+  media_phase: "Медиа-задача перешла в новую фазу",
+  media_download: "Файл медиа-задачи скачан",
+  media_failure: "Медиа-задача завершилась сбоем",
+  media_policy_denied: "Отправка медиа-запроса остановлена защитным ограничением",
+  media_auxiliary_denied: "Вспомогательный платный вызов запрещён",
+  media_node_verified: "Результат медиа-ноды подтверждён",
+  body_cleanup: "Старые тела запросов очищены по сроку хранения",
+  body_quota_blocked: "Тело запроса не сохранено: превышена квота хранилища",
+  decision_model_start: "Запрос к модели решений отправлен",
+  decision_model_end: "Ответ модели решений получен",
+  decision_model_error: "Ошибка запроса к модели решений",
+  decision_retrieve_start: "Запрос на получение ответа модели решений отправлен",
+  decision_retrieve_denied: "Получение ответа модели решений запрещено",
+  decision_request_blocked: "Запрос к модели решений заблокирован",
+  decision_continuation_denied: "Продолжение по решению запрещено",
+  decision_gateway_ack: "Шлюз решений подтвердил приём",
+  decision_gateway_ack_error: "Шлюз решений не подтвердил приём",
+  watchdog: "Сторожевая проверка зависших запросов",
+  reconcile: "Сверка журнала с состоянием БД",
+  reload: "Перечитана конфигурация наблюдения",
+  maintenance: "Плановое обслуживание журнала",
+  decision: "Решение системы по инциденту",
+  diagnosis: "Диагностика инцидентов",
+  consumer: "Передача событий потребителю журнала",
+};
+
+/** Равно CHECK_NAMES_RU в timeline_ru.py. */
+export const CHECK_NAMES_RU: Record<string, string> = {
+  apply_ops_validation: "проверка операций перед записью в БД",
+  native_animation_prompt_batch: "проверка пачки промтов анимации",
+  native_sfx_events_validation: "проверка списка звуковых событий",
+  original_harness_gate: "проверка прежней обвязки исполнителя",
+  regen_budget: "лимит повторных генераций",
+  sfx_plan_checkpoint_reset: "сброс контрольной точки плана звуков",
+  frame_coverage_gate: "проверка покрытия закадра кадрами",
+  qc_noop: "контроль качества: изменений не требуется",
+  native_image_prompt_batch: "проверка пачки промтов изображений",
+  native_split_voiceover_coverage: "проверка покрытия закадра разбивкой",
+};
+
+/** Равно WAIT_REASONS_RU в timeline_ru.py. */
+export const WAIT_REASONS_RU: Record<string, string> = {
+  user_stop: "остановка пользователем",
+  queue_predecessor: "очередь: впереди другой проект",
+  failure_sleep: "пауза после сбоя",
+  parallel_slots_full: "заняты все параллельные места",
+  recovery_verification_pending: "ждёт проверки результата восстановления",
+};
+
+/** Равно STATUS_WORDS_RU в timeline_ru.py. */
+export const STATUS_WORDS_RU: Record<string, string> = {
+  passed: "пройдена",
+  failed: "не пройдена",
+  unknown: "результат неизвестен",
+  ok: "успешно",
+  error: "ошибка",
+  denied: "отказано",
+  rejected: "отклонено",
+};
+
 export function eventLabel(event: Pick<ObservationEvent, "kind" | "payload">): string {
-  const p = event.payload;
-  if (event.kind === "observer_control") return `Наблюдение: ${p.action ?? "неизвестно"} (${p.initiator ?? "инициатор неизвестен"})`;
-  if (event.kind === "runtime_check") return `${p.check ?? "проверка"}: ${p.status ?? "неизвестно"}`;
+  const p = event.payload ?? {};
+  const unknown = "неизвестно";
+  if (event.kind === "observer_control") return `Наблюдение: ${p.action ?? unknown} (${p.initiator ?? "инициатор неизвестен"})`;
+  if (event.kind === "runtime_check") {
+    const name = String(p.check ?? "проверка");
+    const status = p.status == null ? unknown : (STATUS_WORDS_RU[String(p.status)] ?? String(p.status));
+    return `${CHECK_NAMES_RU[name] ?? name}: ${status}`;
+  }
   if (event.kind === "parse_result" && p.contract === "native_split" && p.fallback_used === true)
     return `Разбивка: ответ модели непригоден${p.dash_rejected === true ? " (тире не покрывает закадр)" : ""}; кадры получены локальной разбивкой закадра`;
-  if (event.kind === "parse_result") return `Разбор: ${p.parsed === true ? "извлечён" : p.parsed === false ? "не извлечён" : "неизвестно"}; схема ${p.schema_valid == null ? "не проверялась" : p.schema_valid ? "верна" : "нарушена"}`;
+  if (event.kind === "parse_result") return `Разбор: ${p.parsed === true ? "извлечён" : p.parsed === false ? "не извлечён" : unknown}; схема ${p.schema_valid == null ? "не проверялась" : p.schema_valid ? "верна" : "нарушена"}`;
   if (event.kind === "rule_diary") {
     const stop = typeof p.stop_rule === "string" && p.stop_rule ? `; остановило правило ${p.stop_rule}` : "";
     const rules = p.rules && typeof p.rules === "object" ? Object.keys(p.rules as Record<string, unknown>).length : 0;
@@ -44,15 +156,18 @@ export function eventLabel(event: Pick<ObservationEvent, "kind" | "payload">): s
     return `Нативная проверка ${st}`;
   }
   if (event.kind === "node_error" && typeof p.rule === "string" && p.rule) return `Ошибка исполнителя: результат остановило правило ${p.rule}`;
-  if (event.kind === "json_retry") return "Штатный повтор разбора JSON";
-  if (event.kind === "domain_check") return `Вердикт: ${p.verdict ?? "неизвестно"}; качество модели не проверено`;
+  if (event.kind === "domain_check") return `Вердикт: ${p.verdict ?? unknown}; качество модели не проверено`;
   if (event.kind === "node_change") {
     const transitions = p.transitions as {from: string; to: string; initiator?: string}[] | undefined;
     return transitions?.length ? transitions.map(t => `${t.from} → ${t.to} (${t.initiator ?? "инициатор неизвестен"})`).join("; ") : "Изменение состояния БД; инициатор неизвестен";
   }
   if (event.kind === "model_end") return `Ответ модели · ${usageLabel(p.usage as Record<string, unknown> | null)}`;
-  if (event.kind === "runtime_wait") return `Ожидание: ${p.reason ?? "неизвестно"} (${p.initiator ?? "неизвестно"})`;
-  if (event.kind === "project_control") return `Ограничение проекта: user_stop=${String(p.user_stop ?? "неизвестно")}`;
-  const labels: Record<string, string> = {node_start:"Исполнитель начал ноду",node_end:"Исполнитель вернулся (запись данных не подтверждена)",model_start:"Запрос к модели отправлен",model_stream_event:"Событие потока",domain_check:"Вердикт проверки",data_applied:"Изменения БД записаны",apply_input:"Вход применения",planner_successor:"Решение планировщика о переходе",artifact_created:"Артефакт создан",node_input:"Вход ноды",node_output:"Выход ноды",node_error:"Ошибка исполнителя",model_error:"Ошибка запроса к модели",apply_error:"Ошибка применения",observer_stop:"Наблюдение остановлено"};
-  return labels[event.kind] ?? event.kind;
+  if (event.kind === "runtime_wait") { const reason = String(p.reason ?? unknown); return `Ожидание: ${WAIT_REASONS_RU[reason] ?? reason} (${p.initiator ?? unknown})`; }
+  if (event.kind === "project_control") return `Ограничение проекта: остановка пользователем ${p.user_stop === true ? "включена" : p.user_stop === false ? "снята" : unknown}`;
+  if (event.kind === "media_phase" && p.phase) return `Медиа-задача перешла в фазу «${p.phase}»`;
+  if (event.kind === "media_failure" && p.phase) return `Медиа-задача завершилась сбоем на фазе «${p.phase}»`;
+  if (event.kind === "human_approval_pending" && p.kind) return `Ожидается решение человека: ${p.kind}`;
+  if (event.kind === "planner_successor" && p.from && p.to) return `Решение планировщика о переходе: ${p.from} → ${p.to}`;
+  if (event.kind === "provider_fallback" && p.provider) return `Провайдер «${p.provider}» не ответил: использован запасной путь`;
+  return EVENT_KIND_LABELS[event.kind] ?? `Событие ${event.kind} (подробности в журнале)`;
 }

@@ -24,6 +24,7 @@ from app.services.step_cancel import (
     unregister_advance_task,
 )
 from app.prompts_loader import sync_prompts_from_files
+from app.services.notification_log import notify
 from app.settings import settings
 
 from app.services.step_registry import running_statuses_list
@@ -68,7 +69,8 @@ async def _loop_once(bot) -> None:  # noqa: ANN001 — aiogram.Bot | NoopBot
                 # не висит молча
                 try:
                     msg = f"⚠️ Ошибка на проекте #{p.id} (статус={p.status.value}): {type(e).__name__}: {e}"
-                    await bot.send_message(settings.telegram_owner_chat_id, msg[:3800])
+                    await notify(bot, "send_message", settings.telegram_owner_chat_id, msg[:3800],
+                                 kind="worker_advance_error", project_id=p.id)
                 except Exception:  # noqa: BLE001
                     logger.warning("не удалось отправить уведомление об ошибке в Telegram")
             finally:

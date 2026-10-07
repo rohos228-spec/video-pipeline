@@ -253,7 +253,8 @@ async def engine(tmp_path):
 
 def test_0011_0012_registered_in_order():
     ids = [m.id for m in sm.MIGRATIONS]
-    assert ids[-2:] == ["0011_operator_audit", "0012_publications"] and ids == sorted(ids)
+    assert ids[-5:-3] == ["0011_operator_audit", "0012_publications"] and ids == sorted(ids)
+    assert ids[-3:] == ["0013_notification_log", "0014_journal_archive_log", "0015_create_jobs"]
 
 
 async def test_migrations_create_tables_and_triggers_idempotently(engine):

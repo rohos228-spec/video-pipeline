@@ -64,12 +64,12 @@ async def list_for_project(
             candidate = folder / "project.db"
             database = candidate.resolve()
             if not folder.is_relative_to(root) or not database.is_relative_to(root):
-                raise HTTPException(status_code=400, detail="project database outside data_dir")
+                raise HTTPException(status_code=400, detail="База проекта лежит вне папки данных")
             existing = candidate.exists() or candidate.is_symlink()
             if existing and not candidate.is_file():
-                raise HTTPException(status_code=503, detail="project database unavailable")
+                raise HTTPException(status_code=503, detail="База проекта недоступна")
         except (OSError, RuntimeError) as exc:
-            raise HTTPException(status_code=503, detail="project database unavailable") from exc
+            raise HTTPException(status_code=503, detail="База проекта недоступна") from exc
         if existing:
             # Existing project storage is authoritative even with no HITL rows.
             # Never initialize, migrate or copy master rows during this GET.
@@ -78,11 +78,11 @@ async def list_for_project(
                 async with sessions() as local:
                     owner = await local.get(Project, project_id)
                     if owner is None or owner.slug != project.slug:
-                        raise HTTPException(status_code=503, detail="project database unavailable")
+                        raise HTTPException(status_code=503, detail="База проекта недоступна")
                     rows = (await local.execute(query)).scalars().all()
                 return list(rows)
             except (SQLAlchemyError, OSError) as exc:
-                raise HTTPException(status_code=503, detail="project database unavailable") from exc
+                raise HTTPException(status_code=503, detail="База проекта недоступна") from exc
 
     # Master-only legacy storage: no project file means no initialization.
     rows = (await session.execute(query)).scalars().all()
@@ -97,9 +97,9 @@ async def submit_decision(
 ) -> HITLRequest:
     req = await session.get(HITLRequest, hitl_id)
     if req is None:
-        raise HTTPException(status_code=404, detail="hitl request not found")
+        raise HTTPException(status_code=404, detail="Запрос подтверждения не найден")
     if req.decision != HITLDecision.pending:
-        raise HTTPException(status_code=400, detail="already decided")
+        raise HTTPException(status_code=400, detail="Решение по этому запросу уже принято")
 
     mapping = {
         "approve": HITLDecision.approved,
@@ -112,7 +112,7 @@ async def submit_decision(
     }
     new_decision = mapping.get(payload.decision)
     if new_decision is None:
-        raise HTTPException(status_code=400, detail=f"unknown decision '{payload.decision}'")
+        raise HTTPException(status_code=400, detail=f"Неизвестное решение «{payload.decision}»")
 
     req.decision = new_decision
     req.decided_at = datetime.utcnow()

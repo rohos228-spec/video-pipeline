@@ -22,6 +22,7 @@ from loguru import logger
 from app.db import engine
 from app.models import Base, Project, ProjectStatus
 from app.prompts_loader import sync_prompts_from_files
+from app.services.notification_log import notify
 from app.settings import settings
 from app.telegram.bot import build_bot, dp
 
@@ -390,36 +391,47 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                     f"⚠️ #{p.id} ({p.status.value}): "
                                     f"{type(e).__name__}: {e}"
                                 )
-                            await bot.send_message(
-                                settings.telegram_owner_chat_id, msg[:3800]
+                            await notify(
+                                bot, "send_message",
+                                settings.telegram_owner_chat_id, msg[:3800],
+                                kind="step_failure_retry", project_id=p.id,
                             )
                         elif action == "sleep":
-                            await bot.send_message(
+                            await notify(
+                                bot, "send_message",
                                 settings.telegram_owner_chat_id,
                                 (
                                     f"😴 #{p.id}: 3 ошибки — reset, "
                                     f"пауза 30 мин (макс. 9 попыток)"
                                 )[:3800],
+                                kind="step_failure_sleep",
+                                project_id=p.id,
                             )
                         elif action == "abandon":
-                            await bot.send_message(
+                            await notify(
+                                bot, "send_message",
                                 settings.telegram_owner_chat_id,
                                 (
                                     f"🛑 #{p.id}: 3 цикла отказов — "
                                     f"paused, следующий в очереди"
                                 )[:3800],
+                                kind="step_failure_abandon",
+                                project_id=p.id,
                             )
                             from app.services.gen_queue import gen_queue_tick
 
                             await gen_queue_tick(s)
                             await s.commit()
                         elif action == "pause_infra":
-                            await bot.send_message(
+                            await notify(
+                                bot, "send_message",
                                 settings.telegram_owner_chat_id,
                                 (
                                     f"🌐 #{p.id}: Chrome не восстановился — "
                                     f"paused. Start-Chrome.cmd + ▶"
                                 )[:3800],
+                                kind="step_failure_pause_infra",
+                                project_id=p.id,
                             )
                 fail_counts.pop(key, None)
             except Exception:  # noqa: BLE001

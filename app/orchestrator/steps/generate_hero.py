@@ -63,6 +63,7 @@ from app.services import gpt_text_builder as gtb
 from app.services.excel_characters import ExcelCharacter
 from app.services.hitl import send_hitl_photo
 from app.services.outsee_retry import generate_image_with_retries
+from app.services.notification_log import notify
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -896,9 +897,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"Статус откатил в <b>frames_ready</b>. Проверь Chrome/outsee и нажми «4. Hero» снова."
                     )
                 try:
-                    await bot.send_message(
+                    await notify(
+                        bot, "send_message",
                         settings.telegram_owner_chat_id,
                         msg[:3800],
+                        kind="hero_failed",
+                        project_id=project.id,
                         parse_mode="HTML",
                     )
                 except Exception:  # noqa: BLE001
@@ -1130,8 +1134,10 @@ async def _run_excel(
             project.status = ProjectStatus.frames_ready
             await session.flush()
             try:
-                await bot.send_message(
-                    settings.telegram_owner_chat_id, msg, parse_mode="HTML"
+                await notify(
+                    bot, "send_message",
+                    settings.telegram_owner_chat_id, msg, parse_mode="HTML",
+                    kind="excel_hero_deadlock", project_id=project.id,
                 )
             except Exception:  # noqa: BLE001
                 logger.warning("[#{}] не удалось отправить TG-deadlock", project.id)
@@ -1258,11 +1264,14 @@ async def _generate_one_excel_character(
             project.status = ProjectStatus.frames_ready
             await session.flush()
             try:
-                await bot.send_message(
+                await notify(
+                    bot, "send_message",
                     settings.telegram_owner_chat_id,
                     f"🚫 Проект #{project.id} excel-hero {ch.id}: "
                     f"референс-файлы для {ch.ref_ids} пропали с диска. "
                     "Перегенери референсы.",
+                    kind="excel_hero_refs_missing",
+                    project_id=project.id,
                 )
             except Exception:  # noqa: BLE001
                 logger.warning("[#{}] не удалось отправить TG", project.id)
@@ -1421,9 +1430,12 @@ async def _generate_one_excel_character(
                         f"Статус откатил в <b>frames_ready</b>."
                     )
                 try:
-                    await bot.send_message(
+                    await notify(
+                        bot, "send_message",
                         settings.telegram_owner_chat_id,
                         msg[:3800],
+                        kind="excel_hero_failed",
+                        project_id=project.id,
                         parse_mode="HTML",
                     )
                 except Exception:  # noqa: BLE001

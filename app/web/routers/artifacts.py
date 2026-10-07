@@ -44,9 +44,9 @@ async def serve_data_file(
     try:
         candidate.relative_to(base)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="path outside data_dir") from exc
+        raise HTTPException(status_code=400, detail="Путь выходит за пределы папки данных") from exc
     if not candidate.is_file():
-        raise HTTPException(status_code=404, detail="file not found")
+        raise HTTPException(status_code=404, detail="Файл не найден")
     download_name, mime = suggested_name_and_mime(candidate)
     kwargs: dict = {
         "media_type": mime or "application/octet-stream",
@@ -89,7 +89,7 @@ async def get_artifact(
         await session.execute(select(Artifact).where(Artifact.uuid == artifact_uuid))
     ).scalar_one_or_none()
     if a is None:
-        raise HTTPException(status_code=404, detail="artifact not found")
+        raise HTTPException(status_code=404, detail="Артефакт не найден")
     return a
 
 
@@ -115,7 +115,7 @@ async def download_artifact(
         query = query.where(Artifact.project_id == project_id)
     a = (await session.execute(query)).scalar_one_or_none()
     if a is None:
-        raise HTTPException(status_code=404, detail="artifact not found")
+        raise HTTPException(status_code=404, detail="Артефакт не найден")
     path = Path(a.path)
     # Managed artifacts are shown only while their recorded structural proof
     # still matches the file owned by this project. No caller-supplied path.
@@ -126,21 +126,21 @@ async def download_artifact(
 
         project = await session.get(Project, a.project_id)
         if project is None:
-            raise HTTPException(status_code=404, detail="artifact project not found")
+            raise HTTPException(status_code=404, detail="Проект артефакта не найден")
         try:
             path = contained_path(path, project.data_dir)
         except ValueError as exc:
-            raise HTTPException(status_code=403, detail="artifact outside project") from exc
+            raise HTTPException(status_code=403, detail="Артефакт лежит вне папки проекта") from exc
     if not path.is_file():
-        raise HTTPException(status_code=410, detail="file gone from disk")
+        raise HTTPException(status_code=410, detail="Файл пропал с диска")
     if managed:
         binding = a.meta.get("orchestrator")
         expected = binding.get("verification") if isinstance(binding, dict) else None
         if not isinstance(expected, dict) or expected.get("status") != "passed":
-            raise HTTPException(status_code=409, detail="artifact verification unavailable")
+            raise HTTPException(status_code=409, detail="Проверка артефакта сейчас недоступна")
         actual = await verify_artifact(path, root=project.data_dir, kind=expected.get("kind"))
         if actual["status"] != "passed" or actual.get("sha256") != expected.get("sha256"):
-            raise HTTPException(status_code=409, detail="artifact verification changed")
+            raise HTTPException(status_code=409, detail="Результат проверки артефакта изменился: обновите страницу и повторите")
     mime, _ = mimetypes.guess_type(str(path))
     return FileResponse(path, media_type=mime or "application/octet-stream",
                         headers={"Cache-Control": "private, no-store"} if managed else None)

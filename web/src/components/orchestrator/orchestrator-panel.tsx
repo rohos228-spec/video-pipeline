@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { ObservationSection } from "./observation-section";
 import { KillSwitchSection } from "./kill-switch-section";
 import { SpendSection } from "./spend-section";
+import { JournalSection } from "./journal-section";
 import { ActionLayerSection } from "../action-layer/action-layer-section";
 import { ChangeControlSection } from "../change-control/change-control-section";
 
@@ -579,6 +580,7 @@ export function OrchestratorPanel({ projectId }: Props) {
             <ObservationSection projectId={projectId} />
             <KillSwitchSection projectId={projectId} />
             <SpendSection projectId={projectId} />
+            <JournalSection projectId={projectId} />
             <ActionLayerSection projectId={projectId} />
             <ChangeControlSection projectId={projectId} />
             <div className="my-3 border-t border-white/10" />

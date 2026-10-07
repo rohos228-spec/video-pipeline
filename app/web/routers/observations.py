@@ -7,6 +7,7 @@ import hashlib
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -890,3 +891,46 @@ async def telemetry_stream(project_id: int, since_hours: int | None = Query(defa
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# --- B05: единая лента проекта (только чтение; контракт - docs/REGISTRAR_FULL_PLAN.md, W3) -----------------
+# Префикс отличается от `router` (/observations), поэтому отдельный роутер: интегратор подключает его в api.py
+# строкой `app.include_router(observations.timeline_router, prefix=API_PREFIX)`.
+timeline_router = APIRouter(prefix="/projects/{project_id}/timeline", tags=["timeline"])
+
+
+@timeline_router.get("", dependencies=[Depends(require_web_user)])
+async def project_timeline(project_id: int, since: str | None = Query(None, max_length=64),
+                           until: str | None = Query(None, max_length=64),
+                           kinds: str | None = Query(None, max_length=500),
+                           q: str | None = Query(None, max_length=200),
+                           severity: str | None = Query(None, max_length=8),
+                           limit: int = Query(100, ge=1, le=500),
+                           cursor: str | None = Query(None, max_length=300)):
+    """Единая лента: события, инциденты, решения, действия, траты, задачи, действия оператора, публикации."""
+    from app.services import timeline as tl
+    async with get_observer().master() as session:
+        try:
+            return await tl.timeline(session, project_id, since=since, until=until, kinds=kinds, q=q,
+                                     severity=severity, limit=limit, cursor=cursor)
+        except tl.TimelineError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+
+@timeline_router.get("/export", dependencies=[Depends(require_web_user)])
+async def project_timeline_export(project_id: int, format: str = Query("csv", max_length=8),
+                                  since: str | None = Query(None, max_length=64),
+                                  until: str | None = Query(None, max_length=64),
+                                  kinds: str | None = Query(None, max_length=500),
+                                  q: str | None = Query(None, max_length=200),
+                                  severity: str | None = Query(None, max_length=8)):
+    """Выгрузка ленты (до 50000 строк): csv (UTF-8 с BOM) или json."""
+    from app.services import timeline as tl
+    async with get_observer().master() as session:
+        try:
+            body, media, ext = await tl.export(session, project_id, format, since=since, until=until,
+                                               kinds=kinds, q=q, severity=severity)
+        except tl.TimelineError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    return Response(body, media_type=media,
+                    headers={"Content-Disposition": f'attachment; filename="timeline-{project_id}.{ext}"'})

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import session_scope
 from app.models import HITLDecision, HITLKind, HITLRequest, Project
 from app.services.event_bus import publish_hitl_event
+from app.services.notification_log import notify
 from app.settings import settings
 
 
@@ -119,9 +120,12 @@ async def send_hitl_text(
     msg = None
     for i, c in enumerate(chunks):
         is_last = i == len(chunks) - 1
-        msg = await bot.send_message(
+        msg = await notify(
+            bot, "send_message",
             settings.telegram_owner_chat_id,
             c,
+            kind="hitl_request",
+            project_id=project.id,
             parse_mode="HTML",
             reply_markup=_keyboard(req.id) if is_last else None,
         )
@@ -194,9 +198,12 @@ async def send_hitl_photo(
     msg = None
     if not use_document:
         try:
-            msg = await bot.send_photo(
+            msg = await notify(
+                bot, "send_photo",
                 settings.telegram_owner_chat_id,
                 FSInputFile(photo_path),
+                kind="hitl_photo",
+                project_id=project.id,
                 caption=short_caption,
                 reply_markup=photo_kb,
             )
@@ -212,9 +219,12 @@ async def send_hitl_photo(
                 raise
 
     if use_document:
-        msg = await bot.send_document(
+        msg = await notify(
+            bot, "send_document",
             settings.telegram_owner_chat_id,
             FSInputFile(photo_path),
+            kind="hitl_photo",
+            project_id=project.id,
             caption=short_caption,
             reply_markup=photo_kb,
         )
@@ -226,9 +236,12 @@ async def send_hitl_photo(
         chunks = [tail[i : i + 3800] for i in range(0, len(tail), 3800)] or [tail]
         for i, c in enumerate(chunks):
             is_last = i == len(chunks) - 1
-            tail_msg = await bot.send_message(
+            tail_msg = await notify(
+                bot, "send_message",
                 settings.telegram_owner_chat_id,
                 c,
+                kind="hitl_photo_tail",
+                project_id=project.id,
                 reply_markup=kb if is_last else None,
             )
             if is_last:
@@ -268,9 +281,12 @@ async def send_hitl_video(
         return req
     if bot is None:
         raise RuntimeError("telegram_active but bot is None")
-    msg = await bot.send_video(
+    msg = await notify(
+        bot, "send_video",
         settings.telegram_owner_chat_id,
         FSInputFile(video_path),
+        kind="hitl_video",
+        project_id=project.id,
         caption=caption[:1000],
         reply_markup=_keyboard(req.id),
     )

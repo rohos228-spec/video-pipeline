@@ -60,6 +60,7 @@ from app.services.xlsx_flow_locks import (
     is_xlsx_flow_active,
     xlsx_flow_active_set,
 )
+from app.services.notification_log import notify
 from app.settings import settings
 from app.storage import ProjectSheet
 from app.storage import for_project as _sheet_for_project
@@ -4307,10 +4308,12 @@ async def _kick_test_iteration(
     # Не даём запускать второй цикл, если уже идёт.
     existing = _test_running_tasks.get(tid)
     if existing is not None and not existing.done():
-        await bot_obj.send_message(
+        await notify(
+            bot_obj, "send_message",
             user_id,
             "⏳ Для этого проекта уже запущена итерация. "
             "Дождись завершения или нажми 🛑 Стоп.",
+            kind="test_prompt_busy",
         )
         return
 
@@ -4318,11 +4321,13 @@ async def _kick_test_iteration(
         # Проверяем глобальный лок (только один тестовый цикл).
         running = await tp.get_running_project(s)
         if running is not None and running.id != tid:
-            await bot_obj.send_message(
+            await notify(
+                bot_obj, "send_message",
                 user_id,
                 f"⏳ Уже идёт тестовый цикл (проект #{running.id} "
                 f"«{running.name}»). Дождись его завершения или нажми "
                 f"🛑 Стоп в том проекте.",
+                kind="test_prompt_busy",
             )
             return
 
@@ -4337,7 +4342,8 @@ async def _kick_test_iteration(
                     )
                 ).scalar_one_or_none()
                 if p is None:
-                    await bot_obj.send_message(user_id, "Проект не найден.")
+                    await notify(bot_obj, "send_message", user_id, "Проект не найден.",
+                                 kind="test_prompt_missing")
                     return
                 # Запускаем итерацию (внутри коммитит и обновляет p).
                 txt_path, img_path = await tp.run_iteration(
@@ -4355,23 +4361,27 @@ async def _kick_test_iteration(
 
                 photo = FSInputFile(str(img_path))
                 doc = FSInputFile(str(txt_path))
-                await bot_obj.send_photo(
+                await notify(
+                    bot_obj, "send_photo",
                     user_id,
                     photo,
+                    kind="test_prompt_result",
                     caption=(
                         f"🧪 #{proj_id} «{proj_name}» — "
                         f"итерация {iter_n}"
                     ),
                 )
-                await bot_obj.send_document(user_id, doc)
+                await notify(bot_obj, "send_document", user_id, doc, kind="test_prompt_result")
             except Exception as e:  # noqa: BLE001
                 logger.exception(
                     "test_prompt: send result failed: {}", e
                 )
-                await bot_obj.send_message(
+                await notify(
+                    bot_obj, "send_message",
                     user_id,
                     f"❌ Не удалось отправить результат итерации "
                     f"{iter_n}: {e}",
+                    kind="test_prompt_error",
                 )
             # Перерисуем меню — там теперь кнопка «✏ Добавить критику».
             await _render_test_project_to_user(bot_obj, user_id, tid)
@@ -4408,10 +4418,12 @@ async def _kick_test_iteration(
                     p.meta = meta
                     await s.flush()
             with contextlib.suppress(Exception):
-                await bot_obj.send_message(
+                await notify(
+                    bot_obj, "send_message",
                     user_id,
                     f"❌ Тестовый проект #{tid}: ошибка итерации.\n"
                     f"<code>{_html_escape(str(e))[:1500]}</code>",
+                    kind="test_prompt_error",
                     parse_mode="HTML",
                 )
                 await _render_test_project_to_user(bot_obj, user_id, tid)
@@ -4440,8 +4452,9 @@ async def _render_test_project_to_user(
         f"итерация {p.current_iter}, статус: <code>{p.status}</code>"
     )
     with contextlib.suppress(Exception):
-        await bot_obj.send_message(
-            user_id, text, parse_mode="HTML", reply_markup=kb,
+        await notify(
+            bot_obj, "send_message",
+            user_id, text, kind="test_prompt_menu", parse_mode="HTML", reply_markup=kb,
         )
 
 
@@ -6490,9 +6503,11 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
             )
             return
         try:
-            await cb.bot.send_document(
+            await notify(
+                cb.bot, "send_document",
                 settings.telegram_owner_chat_id,
                 FSInputFile(photo_path),
+                kind="hitl_original",
                 caption=f"Оригинал (без сжатия TG): {_Path(photo_path).name}",
             )
         except Exception as e:  # noqa: BLE001
@@ -6519,13 +6534,16 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                     await s.execute(select(Frame).where(Frame.id == req.frame_id))
                 ).scalar_one_or_none()
             current_prompt = (frame.image_prompt if frame else None) or "(пусто)"
-            ask_msg = await cb.bot.send_message(
+            ask_msg = await notify(
+                cb.bot, "send_message",
                 settings.telegram_owner_chat_id,
                 (
                     f"✏️ Новый промт для кадра #{frame.number if frame else '?'}.\n"
                     f"Текущий:\n\n<pre>{_html_escape(current_prompt)}</pre>\n\n"
                     f"Ответь на это сообщение новым текстом — перегенерирую."
                 ),
+                kind="hitl_edit_prompt",
+                project_id=getattr(frame, "project_id", None),
                 parse_mode="HTML",
             )
             req.payload = {
@@ -6920,9 +6938,12 @@ async def notify_step_done(
             return
         status_val = project.status.value
         try:
-            await bot.send_message(
+            await notify(
+                bot, "send_message",
                 settings.telegram_owner_chat_id,
                 f"✅ Шаг завершён: статус <b>{status_val}</b>",
+                kind="step_done",
+                project_id=project_id,
                 parse_mode="HTML",
             )
             logger.info(
@@ -6942,9 +6963,12 @@ async def notify_step_done(
         xlsx_path = project.data_dir / "project.xlsx"
         if xlsx_path.exists():
             try:
-                await bot.send_document(
+                await notify(
+                    bot, "send_document",
                     settings.telegram_owner_chat_id,
                     FSInputFile(str(xlsx_path)),
+                    kind="step_done_xlsx",
+                    project_id=project_id,
                     caption=(
                         f"📥 Результат: project.xlsx после «{new_status}»\n"
                         f"Проект #{project_id}"

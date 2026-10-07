@@ -304,6 +304,7 @@ def create_app() -> FastAPI:
     from app.web.routers import observations
 
     app.include_router(observations.router, prefix=API_PREFIX)
+    app.include_router(observations.timeline_router, prefix=API_PREFIX)
     from app.services.action_layer.router import router as action_layer_router
 
     app.include_router(action_layer_router, prefix=API_PREFIX)

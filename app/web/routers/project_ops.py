@@ -36,7 +36,7 @@ router = APIRouter(prefix="/projects", tags=["project-ops"])
 
 def _project_or_404(project: Project | None) -> Project:
     if project is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     return project
 
 
@@ -449,7 +449,7 @@ async def download_xlsx(
         sheet = ProjectSheet(file_path=xlsx)
         sheet.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
-        raise HTTPException(status_code=404, detail="project.xlsx not found")
+        raise HTTPException(status_code=404, detail="Файл project.xlsx не найден")
     if snapshot_name and str(snapshot_name).startswith("upload:"):
         fname = Path(str(snapshot_name).split(":", 1)[-1]).name
     elif snapshot_name:
@@ -470,7 +470,7 @@ async def reload_xlsx(
     p = _project_or_404(await session.get(Project, project_id))
     xlsx = p.data_dir / "project.xlsx"
     if not xlsx.exists():
-        raise HTTPException(status_code=404, detail="project.xlsx not found")
+        raise HTTPException(status_code=404, detail="Файл project.xlsx не найден")
     await sync_project_xlsx(session, p, xlsx)
     await session.commit()
     await session.refresh(p)
@@ -487,7 +487,7 @@ async def upload_xlsx(
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
-        raise HTTPException(status_code=400, detail="need .xlsx file")
+        raise HTTPException(status_code=400, detail="Нужен файл .xlsx")
     dest = p.data_dir / "project.xlsx"
     dest.parent.mkdir(parents=True, exist_ok=True)
     content = await file.read()
@@ -1916,14 +1916,14 @@ async def replace_hero_image(
     """Заменить reference-картинку персонажа (файл в data/.../characters/)."""
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename:
-        raise HTTPException(status_code=400, detail="empty filename")
+        raise HTTPException(status_code=400, detail="Пустое имя файла")
     ext = Path(file.filename).suffix.lower()
     if ext not in {".png", ".jpg", ".jpeg", ".webp"}:
-        raise HTTPException(status_code=400, detail="need image file (.png, .jpg, .webp)")
+        raise HTTPException(status_code=400, detail="Нужен файл изображения (.png, .jpg, .webp)")
 
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="empty file")
+        raise HTTPException(status_code=400, detail="Пустой файл")
 
     chars_dir = p.data_dir / "characters"
     chars_dir.mkdir(parents=True, exist_ok=True)
@@ -1936,7 +1936,7 @@ async def replace_hero_image(
         try:
             candidate.resolve().relative_to(p.data_dir.resolve())
         except ValueError as e:
-            raise HTTPException(status_code=400, detail="replace_path outside project") from e
+            raise HTTPException(status_code=400, detail="Путь замены (replace_path) выходит за пределы проекта") from e
         dest = candidate
         dest.parent.mkdir(parents=True, exist_ok=True)
     else:
@@ -2117,7 +2117,7 @@ async def patch_canvas_edge_kind(
     kind = normalize_edge_kind((payload or {}).get("kind"))
     updated = set_edge_kind_in_canvas(p, edge_id, kind)
     if updated is None:
-        raise HTTPException(status_code=404, detail="edge not found in canvas_graph")
+        raise HTTPException(status_code=404, detail="Связь не найдена в графе холста")
     flag_modified(p, "meta")
     await session.commit()
     return {"ok": True, "edge": updated}
@@ -2142,7 +2142,7 @@ async def upload_excel_gpt_file(
 
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename:
-        raise HTTPException(status_code=400, detail="need filename")
+        raise HTTPException(status_code=400, detail="Нужно указать имя файла")
     safe_name = Path(file.filename).name
     if not is_allowed_upload_filename(safe_name):
         raise HTTPException(
@@ -2151,7 +2151,7 @@ async def upload_excel_gpt_file(
         )
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="empty file")
+        raise HTTPException(status_code=400, detail="Пустой файл")
 
     ext = Path(safe_name).suffix.lower()
     cfg_before = node_config(p, node_key)
@@ -2277,7 +2277,7 @@ async def upload_check_agent_file(
 
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename:
-        raise HTTPException(status_code=400, detail="need filename")
+        raise HTTPException(status_code=400, detail="Нужно указать имя файла")
     content = await file.read()
     try:
         result = save_check_agent_file(
@@ -2446,7 +2446,7 @@ async def remap_excel_gpt_keys(
     p = _project_or_404(await session.get(Project, project_id))
     raw = payload.get("mapping")
     if not isinstance(raw, dict):
-        raise HTTPException(status_code=400, detail="mapping dict required")
+        raise HTTPException(status_code=400, detail="Нужен словарь соответствий (mapping)")
     mapping = {str(k): str(v) for k, v in raw.items() if k and v}
     remapped = remap_node_keys_in_meta(p, mapping)
     flag_modified(p, "meta")
@@ -2771,7 +2771,7 @@ async def preview_original_voiceover(
     if not is_parent_project(p):
         raise HTTPException(
             status_code=400,
-            detail="preview только для родительских проектов",
+            detail="Предпросмотр доступен только для родительских проектов",
         )
     cand = await find_original_voiceover(session, p)
     if cand is None:
