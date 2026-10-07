@@ -22,8 +22,9 @@ class CoverageOnlyRecoveryDenials(unittest.IsolatedAsyncioTestCase):
     assert_retry_denied = base_tests.RecoveryCapabilityAdmission.assert_retry_denied
 
     # scene_design (legacy node) is refused even earlier: it never enters a managed scope (node admission);
-    # sd_agent is managed per type and admitted per agent: test_scene_agents_retry_dry_run.py
-    NODE_TYPES = ("sd_assemble", "hero", "enrich_1", "sfx_gen", "audio")
+    # sd_agent is managed per type and admitted per agent: test_scene_agents_retry_dry_run.py;
+    # sd_assemble is managed with one supervised retry: test_scene_assemble_retry_dry_run.py
+    NODE_TYPES = ("hero", "enrich_1", "sfx_gen", "audio")
     # managed for supervised RECOVERY only: a media resume, never a text-style restart
     MEDIA_RESUME_TYPES = ("videos", "items", "music")
     # managed for a supervised LOCAL re-run only (media incident + worker ticket): the same text-style refusal
@@ -39,7 +40,7 @@ class CoverageOnlyRecoveryDenials(unittest.IsolatedAsyncioTestCase):
                 await self.assert_retry_denied(node_type)
 
     async def test_retry_profile_is_refused_for_every_node_without_recovery(self):
-        for node_type in ("sd_assemble", "hero", "audio"):
+        for node_type in ("hero", "audio"):
             with self.subTest(node_type=node_type):
                 await self.asyncTearDown()
                 await self.asyncSetUp()

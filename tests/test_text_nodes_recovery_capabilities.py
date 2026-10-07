@@ -56,7 +56,7 @@ def test_profile_eligibility_is_capability_data_not_result_kind():
 
 def test_no_other_node_gained_recovery_actions():
     for node_type in ("images", "audio", "sfx_gen", "publish", "hero",
-                      "scene_design", "sd_assemble", "enrich_1",
+                      "scene_design", "enrich_1",
                       "split", "image_prompts", "future-unsupported"):
         assert not RECOVERY_ACTIONS & set(capability_for(node_type).actions), node_type
 

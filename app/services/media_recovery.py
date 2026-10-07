@@ -210,6 +210,11 @@ def assess_sfx(project) -> dict[str, Any]:
     cp = ai_job_checkpoint(project, "sfx_files")
     files = cp.get("files") if isinstance(cp, dict) and isinstance(cp.get("files"), list) else []
     items: list[dict[str, Any]] = []
+    prog = ai_job_checkpoint(project, "sfx_progress")
+    inflight = prog.get("inflight") if isinstance(prog, dict) and isinstance(prog.get("inflight"), dict) else {}
+    for idx in inflight:  # платный запрос отправлен, ответ не записан: исход неизвестен
+        items.append({"key": f"sfx_{idx}", **_verdict("denied", "unknown_outcome_elevenlabs", provider="elevenlabs",
+                                                      error_class="InterruptedAfterSend")})
     for rec in files:
         if not isinstance(rec, dict):
             continue

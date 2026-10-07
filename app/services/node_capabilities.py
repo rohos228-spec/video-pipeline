@@ -251,9 +251,11 @@ def _register_builtin_capabilities() -> None:
                     'Откат после таймаута или обрыва (мог быть списан платёж) не повторяется никогда',
                     'Готовые файлы событий переиспользует сама нода по чекпоинту; вердикта resume_local у sfx_gen нет, '
                     'надзор повтор не делает',
-                    'Не допущен к надзорному повтору (сухой прогон test_sfx_gen_dry_run.py): чекпоинт sfx_files пишется '
-                    'один раз после всего цикла, поэтому упавшая попытка не оставляет готовых событий; повтор в режиме '
-                    '«только возобновление» шлёт ноль POST, но на первом же событии без чекпоинта получает '
+                    'Не допущен к надзорному повтору (сухой прогон test_sfx_gen_dry_run.py): по событию чекпоинт '
+                    'sfx_progress (файл и исход провайдера, коммит сразу; метка «запрос отправлен» ставится до POST) '
+                    'сохраняет готовые события упавшей попытки, событие с отправленным запросом без записанного исхода '
+                    'повторно не отправляется (локальный синтез, исход неизвестен); но повтор в режиме '
+                    '«только возобновление» на первом же событии без чекпоинта, которому нужен платный POST, получает '
                     'ResumeOnlyBlocked и не может закончить; повтор события после ответа провайдера требует нового '
                     'платного POST, а после таймаута запрещён; нет статической оценки «все события плана готовы», '
                     'сбой попытки не типизируется (проверка sfx_result, а не media_result), независимой проверки '
@@ -329,6 +331,7 @@ def _watch(node_type, code, reason, *, verifies=(), hook=None):
 
 
 def _coverage_only_specs():
+    from app.orchestrator.node_spec import CapabilitySpec as C
     scene_hook = 'app.services.scene_contracts:observe_scene_result'
     legacy = ('Устаревший тип enrich_N: управляемый путь и повтор есть только у excel_gpt; граф переносится '
               'миграцией (app/services/graph_migrations.py, scripts/migrate_enrich_graphs.py: сухой проход, '
@@ -342,16 +345,31 @@ def _coverage_only_specs():
                          'Для сборки: итоговый payload по нативной проверке и сверка с Frame.attrs',
                          'Сбой ответа типизируется как invalid_json, missing_payload или contract_rejected'),
                hook=scene_hook),
-        _watch('sd_assemble', 'pre_request_commit',
-               'До запроса к модели нода уже записала дочерние кадры (камера дробит закадр), а обработчик сбоя их '
-               'коммитит: сухой прогон test_scene_assemble_dry_run.py показал 2 кадра до сбоя и 4 после. Поэтому '
-               'записанная ревизия входа не совпадает с входом повтора и recover_node отказывает (изменились кадры); '
-               'в режиме chrono_dyn запроса к модели нет вовсе. Чтобы допустить повтор, ревизия должна исключать '
-               'кадры, порождённые самим шагом (revisions.py), и повтор надо доказать сухим прогоном.',
-               verifies=('Разбор и проверка итогового payload, сверка его полей с реальными Frame.attrs',
-                         'Сбой типизируется: invalid_json (нет JSON), missing_payload (нет scenes или ops), '
-                         'contract_rejected (правила сборки отклонили)'),
-               hook=scene_hook),
+        C('sd_assemble', 'structured',
+            'scene_design.run_assemble → scene_contracts.verify_scene_assembly → pkg:scene_design',
+            ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
+            ('project_database', 'local_checkpoint', 'local_file'),
+            READ_ACTIONS + ('retry_same', 'finish'), True, native_json_retry=False,
+            recovery_continuation='none', acceptance='native_scene_assembly',
+            verifier='scene_agent_result', contract='scene_agent',
+            observation_hook='app.services.scene_contracts:observe_scene_result',
+            verifies=('Разбор и проверка итогового payload, сверка его полей с реальными Frame.attrs и реестром сцен',
+                      'Результат читается независимой сессией после шага; без пройденной проверки управляемый '
+                      'запуск удерживается, а попытка считается проваленной',
+                      'Применение (атрибуты кадров, реестр сцен) одной транзакцией с фактом data_applied от db_apply.apply_ops',
+                      'Сбой типизируется: invalid_json (нет JSON), missing_payload (нет scenes или ops), '
+                      'contract_rejected (правила сборки отклонили)'),
+            limits=('Один повтор на ноду за запуск, только по инциденту invalid_json или missing_payload',
+                    'Сбой шага откатывает всё, что попытка записала после старта (дочерние кадры камеры, их '
+                    'родителей, частичное применение): вход повтора равен входу попытки, uuid дочерних кадров '
+                    'выводятся из родителя и номера шота, поэтому первый запрос повтора равен первому запросу сбоя',
+                    'После факта data_applied повтор запрещён как частичное применение; проваленный по правилам '
+                    'сборки payload повтором не лечится',
+                    'Сущности (Entity), scene_space и файлы проверкой результата не покрыты (unchecked_effects)',
+                    'В режиме chrono_dyn запроса к модели нет: повтор детерминированной локальной сборки '
+                    'ничего не исправит, решает человек',
+                    'Смена профиля запрещена; не запускает остальных агентов и следующие ноды'),
+            recovery_cap=1),
         _watch('hero', 'no_resumable_task',
                'Промт героя v1 теперь сохраняется до платного вызова и после рестарта берётся тот же (GPT заново '
                'не спрашивается), но возобновлять нечего: герой по умолчанию идёт через Outsee (GPT Image 2 VIP) '

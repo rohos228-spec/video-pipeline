@@ -544,14 +544,16 @@ class DecisionDurability(actions_tests.DurableActions):
                 record=await self.native_contract_fixture('excel_gpt',data)
                 context=await self.loop.context(record['decision_id'])
                 self.assertEqual(context['node_capability']['node_type'],typ)
-                self.assertFalse(context['node_capability']['managed'])
-                self.assertNotIn('retry_same',context['allowed_actions'])
+                # sd_assemble is managed with ONE supervised retry (test_scene_assemble_retry_dry_run.py): its own
+                # capability and scene contract, never the generic Excel text recovery or a profile retry.
+                self.assertTrue(context['node_capability']['managed'])
+                self.assertIn('retry_same',context['allowed_actions'])
                 self.assertNotIn('retry_profile',context['allowed_actions'])
-                self.assertNotIn('finish',context['allowed_actions'])
                 self.assertEqual(context['eligible_profiles'],[])
                 contract=await self.loop.read_contract(record['decision_id'])
                 self.assertEqual(contract['node_type'],typ)
-                self.assertEqual(contract['result_kind'],'unsupported')
+                self.assertEqual(contract['result_kind'],'structured')
+                self.assertEqual(contract['contract']['agent'],'assemble')
                 self.assertEqual(contract['compatible_profiles'],[])
                 self.assertNotIn('nonempty_payload_required',contract)
                 self.assertNotIn('jobs',contract)
@@ -645,8 +647,16 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertNotIn('nonempty_payload_required',result)
         self.assertIn('chunked_requests',node_admission_problem({'id':'n1','type':'excel_gpt','data':{'sd_agent':'camera'}}))
 
-    async def test_assembler_descriptive_contract_cannot_inherit_excel_tools(self):
-        await self._assert_descriptive_native_contract('excel_gpt',{'sd_agent':'assemble'},'sd_assemble')
+    async def test_assembler_managed_contract_cannot_inherit_excel_tools(self):
+        record=await self.native_contract_fixture('excel_gpt',{'sd_agent':'assemble'})
+        with patch('app.services.excel_gpt_node.node_config',side_effect=AssertionError('not generic Excel')):
+            result=await self.loop.read_contract(record['decision_id'])
+        self.assertTrue(result['managed'])
+        self.assertEqual(result['node_type'],'sd_assemble')
+        self.assertEqual(result['contract']['agent'],'assemble')
+        self.assertEqual(result['contract']['result_kind'],'scene_assembly')
+        self.assertNotIn('descriptive_contract',result)
+        self.assertNotIn('jobs',result)
 
 
 def load_tests(loader,tests,pattern):

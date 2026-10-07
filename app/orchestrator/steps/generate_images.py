@@ -80,7 +80,7 @@ from app.services.img_streams import (
     acquire_image_slot,
     get_img_streams,
 )
-from app.services.outsee_retry import generate_image_with_retries
+from app.services.outsee_retry import KieSlugWithoutOutseeBotError, generate_image_with_retries
 from app.services.video_error_policy import is_no_resubmit
 from app.services.step_cancel import (
     StepCancelledError,
@@ -1957,6 +1957,11 @@ async def _generate_and_send(
                     f"🚫 Кадр #{frame.number} проекта #{project.id}: "
                     f"outsee отклонил промт (модерация). "
                     f"6 попыток + GPT-rewrite не помогли.\n\n"
+                )
+            elif isinstance(e, KieSlugWithoutOutseeBotError):
+                head = (
+                    f"Кадр #{frame.number} проекта #{project.id}: модель Kie не используется "
+                    f"в этом маршруте, бота Outsee нет. Платный запрос не отправлялся.\n\n"
                 )
             elif is_no_resubmit(e):
                 head = (

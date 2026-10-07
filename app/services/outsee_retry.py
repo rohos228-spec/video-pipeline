@@ -946,6 +946,21 @@ def _uniquify_prompt_id(base: str | None, round_idx: int, attempt: int) -> str |
     return f"{stripped} r{round_idx + 1}a{attempt}"
 
 
+class KieSlugWithoutOutseeBotError(OutseeImageError):
+    """Слаг картинки ведёт в Kie, а бота Outsee нет: native-маршрут Kie для картинок не используется.
+
+    Бросается ДО любой отправки (платного запроса не было). Решение по маршруту за владельцем."""
+
+    def __init__(self, slug: str | None) -> None:
+        super().__init__(
+            f"Модель «{slug}» относится к Kie, а Kie для картинок в этом маршруте не используется; "
+            "бот Outsee не создан (задан ключ Outsee), поэтому отправить запрос некуда. "
+            "Платный запрос не отправлялся. Выберите модель Outsee или дождитесь решения по маршруту Kie.",
+            context={"error_kind": "kie_slug_no_outsee_bot", "provider": "kie", "slug": slug,
+                     "request_sent": False},
+        )
+
+
 async def generate_image_with_retries(
     outsee: OutseeBot | None,
     gpt: Any | None,
@@ -998,6 +1013,9 @@ async def generate_image_with_retries(
             "OUTSEE_API_KEY пуст — генерация идёт через ключ Outsee",
             context={"error_kind": "no_key", "provider": "outsee"},
         )
+    if backend == "kie" and outsee is None:
+        # Раньше здесь был AttributeError на outsee.generate_image; маршрут и платное поведение не менялись.
+        raise KieSlugWithoutOutseeBotError(str(raw_slug) if raw_slug else None)
     last_err: OutseeImageError | None = None
     current_prompt = prompt
     base_prompt_id = kwargs.get("prompt_id_prefix")

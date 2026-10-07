@@ -192,6 +192,7 @@ async def test_generate_sfx_files_local(tmp_path) -> None:
         return None
 
     session.flush = _flush
+    session.commit = _flush
     events = [_ev(t_start=0.5, duration=0.8), _ev(frame_number=2, t_start=3.0, kind="hit", duration=0.6)]
     files = await generate_sfx_files(session, project, events)
     assert len(files) == 2

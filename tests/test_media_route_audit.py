@@ -51,18 +51,32 @@ async def test_a_kie_slug_goes_to_the_outsee_browser_seam_not_to_kie_in_the_nati
 @pytest.mark.parametrize("slug", KIE_IMAGE_SLUGS)
 async def test_a_kie_slug_with_an_outsee_key_and_no_browser_bot_never_reaches_kie_either(slug):
     """The images step passes outsee=None when an Outsee key is set (HTTP primary). A Kie slug then has no seam
-    at all: the call fails on None instead of submitting to Kie. Documents the defect, not a wanted behaviour."""
+    at all: the call fails BEFORE any submit with a typed, human-readable error (it used to be an AttributeError
+    on None). Routing is unchanged (owner decision pending): Kie is still not reached."""
     kie = AsyncMock(side_effect=AssertionError("kie seam reached"))
     api = AsyncMock(side_effect=AssertionError("outsee api reached"))
     with patch("app.bots.kie_http.generate_kie_image", kie), \
          patch("app.bots.outsee_http.generate_image", api), \
          patch("app.bots.outsee_http.outsee_api_configured", return_value=True):
-        with pytest.raises(AttributeError):
+        with pytest.raises(outsee_retry.KieSlugWithoutOutseeBotError) as caught:
             await outsee_retry.generate_image_with_retries(
                 None, None, prompt="x" * 150, out_path=Path("frame_001_abcdef12.png"),
                 model_slug=slug, project_id=None, gpt_rewrite=False)
+    err = caught.value
+    assert isinstance(err, outsee_retry.OutseeImageError) and not isinstance(err, AttributeError)
+    assert slug in str(err) and "Kie" in str(err) and "Платный запрос не отправлялся" in str(err)
+    assert err.context["error_kind"] == "kie_slug_no_outsee_bot" and err.context["request_sent"] is False
     kie.assert_not_called()
     api.assert_not_called()
+
+
+def test_the_images_step_treats_the_typed_kie_slug_error_as_a_normal_frame_failure():
+    """generate_images catches OutseeImageError (frame -> failed, owner message); the typed error is one, with its own
+    head text, so it no longer leaves the step as an unhandled AttributeError."""
+    src = (APP / "orchestrator" / "steps" / "generate_images.py").read_text(encoding="utf-8-sig")
+    assert "except OutseeImageError as e:" in src
+    assert "KieSlugWithoutOutseeBotError" in src
+    assert issubclass(outsee_retry.KieSlugWithoutOutseeBotError, outsee_retry.OutseeImageError)
 
 
 def test_the_only_production_caller_of_generate_kie_image_is_the_unreachable_branch_and_the_managed_one():

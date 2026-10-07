@@ -1022,6 +1022,15 @@ def record_scene_applied(session: Any, agent: str, stats: dict) -> bool:
     return True
 
 
+def managed_scene_attempt() -> bool:
+    """True inside an attempt of a node that belongs to a managed (observed, supervised) execution."""
+    from app.services.observation import _attempt
+
+    ctx = _attempt.get()
+    return bool(ctx is not None and ctx.attempt_id and ctx.scope.observer_state in {"active", "degraded"}
+                and ctx.node_key in ctx.scope.node_keys)
+
+
 async def observe_scene_agent_gate(session, project, node_type="sd_agent"):
     """Managed scope only, after a SUCCESSFUL step (verifier registry, success_errors='raise').
 

@@ -24,7 +24,7 @@ REGISTRY_TYPES = node_coverage.registry_node_types()
 
 # Changing this set is a conscious decision: these are the only node types with automatic recovery.
 RECOVERING = {"plan", "script", "excel_gpt", "sfx_plan", "animation_prompts", "videos", "items", "music", "assemble",
-              "sd_agent"}
+              "sd_agent", "sd_assemble"}
 # Managed for supervised RECOVERY only: a resume of a known provider task, never a start or a paid re-submit.
 RECOVERY_ONLY = {"videos", "items", "music"}
 # Managed for a supervised LOCAL re-run only: no model request, no provider job; the original worker runs it once
@@ -32,8 +32,8 @@ RECOVERY_ONLY = {"videos", "items", "music"}
 LOCAL_RECOVERY = {"assemble"}
 EXPECTED_LEVELS = {
     "managed": {"plan", "script", "split", "image_prompts", "excel_gpt", "images", "sfx_plan",
-                "animation_prompts", "videos", "items", "music", "assemble", "sd_agent"},
-    "observed": {"sfx_gen", "scene_design", "sd_assemble", "hero",
+                "animation_prompts", "videos", "items", "music", "assemble", "sd_agent", "sd_assemble"},
+    "observed": {"sfx_gen", "scene_design", "hero",
                  "audio",
                  "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5"},
     "human_only": {"publish"},  # publish stays human-only forever (irreversible external effect)
@@ -162,7 +162,7 @@ def test_only_recovery_only_nodes_carry_the_flag():
 
 def test_coverage_only_entries_change_no_behaviour():
     """A coverage-only entry is the same capability payload as an unregistered type."""
-    for node_type in ("scene_design", "sd_assemble", "hero", "enrich_3"):
+    for node_type in ("scene_design", "hero", "enrich_3"):
         cap = capability_for(node_type)
         unknown = capability_for("future-unsupported")
         assert (cap.result_kind, cap.executor, cap.phases, cap.effects, cap.actions, cap.managed) == (
@@ -288,7 +288,7 @@ def test_new_specs_are_visible_in_capability_registry_and_verifiers_resolve():
 
 # ---- scene nodes and animation degradation: what is checked, what stays forbidden -------------
 
-SCENE_NODES = {"scene_design": "legacy_node_type", "sd_assemble": "pre_request_commit"}
+SCENE_NODES = {"scene_design": "legacy_node_type"}
 
 
 def test_sd_agent_is_managed_per_type_but_admitted_per_agent():
@@ -318,6 +318,19 @@ def test_scene_nodes_are_observed_through_the_result_hook_and_recovery_stays_for
     assert spec.observation_hook == "app.services.scene_contracts:observe_scene_result"
     assert spec.forbidden_code == SCENE_NODES[node_type] and not spec.recovery_actions
     assert any("invalid_json" in line and "contract_rejected" in line for line in spec.verifies), node_type
+
+
+def test_sd_assemble_is_managed_with_one_retry_proven_by_the_dry_run():
+    from app.orchestrator.node_spec import node_admission_problem
+    spec = SPECS["sd_assemble"]
+    assert coverage_level(spec) == "managed" and spec.recovery_actions == ("retry_same",) and spec.recovery_cap == 1
+    assert spec.forbidden_code is None and not spec.recovery_only and not spec.local_recovery
+    assert spec.verifier == "scene_agent_result" and spec.contract == "scene_agent"
+    assert spec.acceptance == "native_scene_assembly"
+    assert any("invalid_json" in line and "contract_rejected" in line for line in spec.verifies)
+    assert any("chrono_dyn" in line for line in spec.limits)
+    node = {"id": "n", "type": "sd_assemble", "data": {"sd_agent": "assemble"}}
+    assert node_admission_problem(node) is None and node_capabilities.require_managed_node(node).managed
 
 
 def test_scene_contracts_describe_every_agent_marker_and_never_offer_a_retry():

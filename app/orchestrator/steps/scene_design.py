@@ -489,9 +489,25 @@ async def run_assemble(
         await session.flush()
         await session.commit()
     except Exception as e:
-        runner.mark_failed(project, str(e))
         import contextlib
 
+        # Everything this attempt wrote since mark_assemble_running's commit (camera subdivision child
+        # frames, their rewritten parents, a partial apply) is DERIVED work of a failed attempt: it is
+        # rolled back, so a failure leaves the step input exactly as the attempt found it and a repeat
+        # (native or supervised) starts from the same rows.
+        with contextlib.suppress(Exception):
+            await session.rollback()
+            await session.refresh(project)
+        runner.mark_failed(project, str(e))
+        from app.services import scene_contracts
+        from app.services.scene_design import agents as ag
+
+        if scene_contracts.managed_scene_attempt():
+            # Managed execution: the repeat must replay the SAME request sequence (the recovery guard compares
+            # its first request with the failed attempt's first one), so chunk results of the failed attempt
+            # are dropped. An unmanaged native run keeps resuming from them.
+            with contextlib.suppress(Exception):
+                runner.clear_chunk_checkpoints(project, ag.ASSEMBLER)
         with contextlib.suppress(Exception):
             await session.commit()
         raise

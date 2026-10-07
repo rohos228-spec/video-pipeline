@@ -900,6 +900,7 @@ async def _wipe_sfx_gen(session: AsyncSession, project: Project) -> dict[str, An
     from app.services.ai_result_io import drop_ai_job_checkpoint
 
     drop_ai_job_checkpoint(project, "sfx_files")
+    drop_ai_job_checkpoint(project, "sfx_progress")
     sfx_dir = project.data_dir / "sfx"
     removed = 0
     if sfx_dir.is_dir():

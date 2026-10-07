@@ -25,16 +25,17 @@
 - `:1027` `if use_outsee_api:` оборачивает всё: и ветку Kie (`:1049-1083`, `generate_kie_image`), и ветку Outsee API (`:1084-1118`).
   Внутри этого `if` проверка `if backend == "kie":` (`:1049`) никогда не бывает истинной, потому что внешнее условие требует `backend == "outsee"`.
 - `:1123-1126` для слага Kie выполняется `media_spend.assert_submit_allowed("outsee", ...)` и `outsee.generate_image(send_prompt, out_path, **attempt_kwargs)`
-  со слагом Kie. Если `outsee is None`, это `AttributeError: 'NoneType' object has no attribute 'generate_image'`; страж `:996-1000` проверяет
-  только `backend == "outsee"`.
+  со слагом Kie. Раньше при `outsee is None` это был `AttributeError: 'NoneType' object has no attribute 'generate_image'`; теперь перед циклом отправки
+  стоит страж: `backend == "kie" and outsee is None` бросает `KieSlugWithoutOutseeBotError` (наследник `OutseeImageError`, русское сообщение
+  «модель Kie не используется в этом маршруте, бота Outsee нет», платный запрос не отправлялся). Маршрут и платное поведение не менялись.
 
 Кто какой `outsee` передаёт:
 
 - `items`: всегда настоящий `OutseeBot(browser_session())` (`generate_items.py:145-147`), слаг `img_gen.outsee_slug` (`:155`); у Kie-генераторов в
   `generation_options.py:41-70` это слаги Kie.
 - `images`: при настроенном ключе Outsee бот не создаётся, `outsee = None` (`generate_images.py:94-102, 732-734`), вызовы `:1890, :1910`
-  со слагом `generation_options` (`:1793`). Kie-слаг при ключе Outsee даёт `AttributeError` до всякой отправки; он выходит из шага, потому что
-  вызывающий ловит только `OutseeImageError` (`generate_images.py:1928`), а в `generate_image_with_retries` нет общего `except Exception` для картинок.
+  со слагом `generation_options` (`:1793`). Kie-слаг при ключе Outsee даёт `KieSlugWithoutOutseeBotError` до всякой отправки (раньше `AttributeError`, он выходил из шага мимо
+  `except OutseeImageError`). Теперь шаг ловит его как обычный сбой кадра: кадр `failed`, владельцу уходит сообщение со своим заголовком.
 - `hero`: тот же вызов (`generate_hero.py:846-861`, `:1383`), слаг `img_gen.outsee_slug`.
 - `montage_board_regen.py:565`: тот же `generate_image_with_retries`.
 
@@ -57,7 +58,7 @@ task id Kie (`media_recovery.classify_states`, `media_recovery.py:117-138`); с�
 | `items` (`predmetN`) | Outsee: `gpt-image-2-vip`, `nano-banana-2`, `nano-banana-2-lite` | Outsee API или браузер (`outsee_retry.py:1084` / `outsee.py:2101,2132`) | да, только намерение, api `outsee` (`outsee_guard.py:43,72-91`) | нет (нет task id) |
 | `items` | Kie: `flux-2-pro`, `seedream-5-pro`, `z-image`, `qwen3-image` | **Outsee** (браузерный бот со слагом Kie, `outsee_retry.py:1123-1126`), не Kie | да, только намерение Outsee; строки Kie нет | **нет** |
 | `images` (`frame_N`) | Outsee-модели | Outsee API (при ключе) или браузер | намерение Outsee | нет |
-| `images` | Kie-модели | при ключе Outsee `outsee=None`: `AttributeError` до отправки; без ключа браузер Outsee со слагом Kie | нет (при падении до отправки) / намерение Outsee | **нет** |
+| `images` | Kie-модели | при ключе Outsee `outsee=None`: типизированная ошибка `KieSlugWithoutOutseeBotError` до отправки (раньше `AttributeError`); без ключа браузер Outsee со слагом Kie | нет (при падении до отправки) / намерение Outsee | **нет** |
 | `hero` (`hero_N_vK`) | Outsee-модели (по умолчанию GPT Image 2 VIP) | Outsee API или браузер | намерение Outsee | нет |
 | `hero` | Kie-модели | Outsee (как у `items`) | намерение Outsee | **нет** |
 | любая из трёх | любая модель, управляемый синтетический режим | Kie loopback (`outsee_retry.py:983-994`, `kie_http.py:483-525`) | нет в `provider_task_ledger`; есть `MediaJob` | нет (другой транспорт, только синтетика) |

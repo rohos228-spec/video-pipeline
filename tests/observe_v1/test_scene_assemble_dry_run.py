@@ -1,18 +1,15 @@
-"""Dry run of the sd_assemble phase through the REAL step: why a supervised retry is NOT admitted.
+"""Dry run of the sd_assemble phase through the REAL step: the failure handler and the unchanged input.
 
-No network, no provider, no paid call. REAL: scene_design.run_assemble (cell backfill, chronology,
-camera_expand.subdivide_vo_frames_by_camera, chunked assembler, validation, apply_scene_design through
-db_apply.apply_ops, the failure handler), observe_attempt, the journal, the Diagnoser, recover_node.
-SCRIPTED: the model boundary only. SEEDED: the agents' checkpoints and cells (what the earlier agents
-steps leave), by the application's own writers.
+No network, no provider, no paid call. REAL: scene_design.run_assemble (cell backfill, chronology, camera_expand.
+subdivide_vo_frames_by_camera, chunked assembler, validation, apply_scene_design through db_apply.apply_ops, the
+failure handler), observe_attempt, the journal, the Diagnoser. SCRIPTED: the model boundary only. SEEDED: the
+agents' checkpoints and cells (what the earlier agents steps leave), by the application's own writers.
 
-What it shows (the facts behind `pre_request_commit`):
-  1. the step writes NEW child frames (camera subdivision) BEFORE it asks the model anything;
-  2. when the model reply is unusable, the failure handler COMMITS them: the failed attempt leaves
-     changed business rows although nothing was "applied";
-  3. so the input of a repeat is not the input the attempt started with: the recorded request-input
-     revision no longer matches and recover_node refuses, naming the changed parts. No fact says that
-     the subdivision is a derived, harmless change, and the revision code cannot be told so from here.
+History: sd_assemble used to be observed only (`pre_request_commit`): the step wrote child frames (camera
+subdivision) BEFORE the first model request and the failure handler committed them (2 frames before, 4 after a
+failed attempt), so the recorded input revision no longer matched and recover_node refused. The handler now
+rolls the attempt's uncommitted work back; this file keeps the shared fixture and pins that fact. The
+supervised retry itself is proven in test_scene_assemble_retry_dry_run.py.
 """
 import json
 import unittest
@@ -204,19 +201,20 @@ class SceneAssembleDryRun(AssembleFixture):
         async with self.sessions() as session:
             return (await session.scalars(select(Incident).where(Incident.execution_id == EXECUTION))).all()
 
-    async def test_the_step_commits_new_child_frames_before_any_model_request_and_keeps_them_on_failure(self):
+    async def test_the_step_writes_child_frames_before_any_request_but_a_failure_rolls_them_back(self):
         before = await self.frames()
         self.assertEqual(len(before), 2)
         with self.assertRaises(Exception):
             await self.worker(["I cannot produce JSON for this.", "still no json"])
         after = await self.frames()
-        self.assertEqual((len(before), len(after)), (2, 4), "camera subdivision rows were COMMITTED by the failed attempt")
-        self.assertEqual({f.uuid for f in before}, {f.uuid for f in after} & {f.uuid for f in before})
-        self.assertGreaterEqual(len(sd.SCRIPT["bodies"]), 1, "the model was asked only AFTER the rows were written")
+        self.assertEqual([(f.id, f.uuid, f.voiceover_text, f.attrs) for f in before],
+                         [(f.id, f.uuid, f.voiceover_text, f.attrs) for f in after],
+                         "the camera subdivision of the failed attempt was rolled back")
+        self.assertGreaterEqual(len(sd.SCRIPT["bodies"]), 1)
         await self.diagnose()
         incidents = [i for i in await self.incidents() if i.type in {"invalid_json", "missing_payload"}]
         self.assertEqual([i.type for i in incidents], ["invalid_json"], "the failure itself is typed like the agents'")
-        self.assertEqual(await self._facts("data_applied"), [], "nothing was applied: the changed rows are not an apply fact")
+        self.assertEqual(await self._facts("data_applied"), [], "nothing was applied")
 
     async def _facts(self, kind):
         await self.deliver()
@@ -224,43 +222,6 @@ class SceneAssembleDryRun(AssembleFixture):
             rows = (await session.scalars(select(observation.ObservationEvent).where(
                 observation.ObservationEvent.execution_id == EXECUTION))).all()
         return [r for r in rows if r.kind == kind]
-
-    async def test_even_if_the_capability_allowed_it_the_repeat_is_refused_by_the_changed_input_revision(self):
-        """What-if: sd_assemble is registered as managed WITH retry_same for this test only."""
-        from dataclasses import replace
-        from app.orchestrator import node_spec
-        from app.services import node_capabilities
-        original = node_spec._CAPABILITY_SPECS["sd_assemble"]
-        whatif = replace(original, result_kind="structured", executor="scene_design.run_assemble", managed=True,
-                         acceptance="what_if_only", actions=("read_events", "read_contract", "wait", "human_review",
-                                                             "retry_same", "finish"),
-                         native_json_retry=False, recovery_continuation="none", forbidden_code=None,
-                         forbidden_reason=None, recovery_cap=1, contract="structured")
-        cfg = decision_config.validate_config({'version': 1, 'mode': 'synthetic', 'online_enabled': True,
-            'endpoint': 'http://127.0.0.1:18766/codex/v1/responses',
-            'decision': {'catalog_id': 'gpt-kie', 'model_id': 'gpt-5-6-sol', 'reasoning_effort': 'low',
-                         'max_output_tokens': 1024, 'timeout_s': 30},
-            'profiles': {}, 'allowed_actions': sorted(decision_config.ALL_ACTIONS)})
-        try:
-            node_capabilities.register_capability_spec(whatif, replace=True)
-            with patch.object(decision_config, "runtime_config", return_value=cfg):
-                await self.supervisor.enable(project_id=7, execution_id=EXECUTION, group_id="g1", node_keys=["n1"],
-                    graph_version=self.graph, initiator="dry-run", rationale="what-if", request_limit=20)
-                await self.observer.reload()
-                with self.assertRaises(Exception):
-                    await self.worker(["I cannot produce JSON for this.", "still no json"])
-                await self.diagnose()
-                incident = next(i for i in await self.incidents() if i.type == "invalid_json")
-                self.assertTrue(incident.details["currently_relevant"])
-                with self.assertRaisesRegex(ValueError, r"input/config revision changed or not recorded.*frames"):
-                    await self.supervisor.recover_node(project_id=7, execution_id=EXECUTION,
-                        incident_id=incident.incident_id, node_key="n1", idempotency_key="assemble-retry-0001",
-                        initiator="dry-run", rationale="the subdivided frames change the recorded input")
-        finally:
-            node_capabilities.register_capability_spec(original, replace=True)
-        async with self.sessions() as session:
-            self.assertIsNone(await session.scalar(select(__import__("app.services.actions_recovery",
-                fromlist=["RecoveryAction"]).RecoveryAction)))
 
 
 if __name__ == "__main__":

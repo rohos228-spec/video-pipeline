@@ -7,7 +7,10 @@
 
 Приём результата: ``verify_audio_file`` (ffprobe + RMS) — брак не уходит
 в монтаж. Файлы: ``data/videos/<slug>/sfx/sfx_NN_<kind>.wav|mp3``.
-Чекпоинты per-event в ``meta.ai_jobs["sfx_files"]`` — повтор без переделки.
+Чекпоинт per-event: ``meta.ai_jobs["sfx_progress"]`` (готовые события + метки «запрос
+отправлен, ответа нет») пишется и коммитится по мере работы; итог — ``ai_jobs["sfx_files"]``
+после всего цикла. Повтор переиспользует готовые события; событие с меткой «отправлено, ответа
+нет» (исход неизвестен) автоматически НЕ отправляется повторно.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from app.models import Project
 from app.services import media_spend
 from app.services.ai_result_io import (
     ai_job_checkpoint,
+    drop_ai_job_checkpoint,
     save_ai_job_checkpoint,
     verify_audio_file,
 )
@@ -221,6 +225,40 @@ def _record_provider_fallback(project: Project, idx: int, kind: str, exc: BaseEx
 # ── Генерация плана событий ───────────────────────────────────────────────
 
 
+_PROGRESS = "sfx_progress"
+
+
+def _load_progress(project: Project) -> dict[str, dict[str, Any]]:
+    cp = ai_job_checkpoint(project, _PROGRESS)
+    events = cp.get("events") if isinstance(cp, dict) else None
+    inflight = cp.get("inflight") if isinstance(cp, dict) else None
+    return {"events": dict(events) if isinstance(events, dict) else {},
+            "inflight": dict(inflight) if isinstance(inflight, dict) else {}}
+
+
+async def _save_progress(session: Any, project: Project, prog: dict[str, dict[str, Any]]) -> None:
+    """Записать и закоммитить чекпоинт сразу: упавшая попытка не теряет оплаченные события."""
+    save_ai_job_checkpoint(project, _PROGRESS, prog)
+    await session.flush()
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        await commit()
+
+
+def _uncertain_fallback(project: Project, idx: int, kind: str) -> dict[str, Any]:
+    """Прошлая попытка оборвалась после отправки платного запроса: исход неизвестен, повтор запрещён."""
+    info = {"idx": idx, "kind": kind, "provider": "elevenlabs", "error_class": "InterruptedAfterSend",
+            "http_status": None, "may_have_charged": "uncertain"}
+    logger.warning("[#{}] sfx_gen provider_fallback (обрыв после отправки): {}", project.id, info)
+    try:
+        from app.services.observation import emit
+
+        emit("provider_fallback", info)
+    except Exception:  # noqa: BLE001
+        pass
+    return info
+
+
 def _retry_eligible(rec: dict[str, Any]) -> bool:
     """Откат на локальный синтез после ОТВЕТА провайдера (списания не было) и без прежнего повтора."""
     fb = rec.get("provider_fallback")
@@ -256,6 +294,14 @@ async def generate_sfx_files(
             if isinstance(rec, dict) and isinstance(rec.get("idx"), int):
                 done_by_idx[rec["idx"]] = rec
 
+    prog = _load_progress(project)
+    if force:
+        prog = {"events": {}, "inflight": {}}
+    else:
+        for rec in prog["events"].values():  # свежее итогового sfx_files
+            if isinstance(rec, dict) and isinstance(rec.get("idx"), int):
+                done_by_idx[rec["idx"]] = rec
+
     use_api = bool(settings.elevenlabs_api_key)
     files: list[dict[str, Any]] = []
     problems: list[str] = []
@@ -263,9 +309,18 @@ async def generate_sfx_files(
 
     for idx, ev in enumerate(events):
         retry_of: dict[str, Any] | None = None
+        # Платный запрос ушёл, исход не записан (обрыв): повторно НЕ отправляем никогда.
+        sent_unknown = (not force) and str(idx) in prog["inflight"]
         if not force and idx in done_by_idx:
             rec = done_by_idx[idx]
             if Path(str(rec.get("path") or "")).is_file():
+                if sent_unknown:  # обрыв во время повторного платного вызова: ещё одного POST не будет
+                    rec = {**rec, "provider_retry": 1, "provider_retry_outcome": "uncertain"}
+                    prog["events"][str(idx)] = rec
+                    prog["inflight"].pop(str(idx), None)
+                    await _save_progress(session, project, prog)
+                    files.append(rec)
+                    continue
                 if not (retry_degraded and use_api and _retry_eligible(rec)):
                     files.append(rec)
                     continue
@@ -273,56 +328,75 @@ async def generate_sfx_files(
         ext = "mp3" if use_api else "wav"
         out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.{ext}"
         actual_provider = "elevenlabs" if use_api else "local_synth"
-        try:
-            if use_api:
-                await _elevenlabs_sfx(ev.prompt, ev.duration, out_path)
-            else:
+        if sent_unknown:
+            fallbacks.append(_uncertain_fallback(project, idx, ev.kind))
+            out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
+            _write_wav(out_path, _synth(ev.kind, ev.duration, seed=1000 + idx))
+            actual_provider = "local_synth"
+        else:
+            try:
+                if use_api:
+                    prog["inflight"][str(idx)] = {"kind": ev.kind}
+                    await _save_progress(session, project, prog)  # метка ДО отправки
+                    await _elevenlabs_sfx(ev.prompt, ev.duration, out_path)
+                else:
+                    samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
+                    _write_wav(out_path, samples)
+            except media_spend.ResumeOnlyBlocked:
+                # отказ до POST: запрос не отправлен, метку снимаем
+                if prog["inflight"].pop(str(idx), None) is not None:
+                    await _save_progress(session, project, prog)
+                raise  # режим «только возобновление»: платный запрос запрещён, молча подменять нельзя
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] sfx_gen: событие {} ({}) упало: {} — локальный синтез",
+                    project.id,
+                    idx,
+                    ev.kind,
+                    e,
+                )
+                if use_api:
+                    fallback = _record_provider_fallback(project, idx, ev.kind, e)
+                    fallbacks.append(fallback)
+                out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
                 samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
                 _write_wav(out_path, samples)
-        except media_spend.ResumeOnlyBlocked:
-            raise  # режим «только возобновление»: платный запрос запрещён, молча подменять нельзя
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] sfx_gen: событие {} ({}) упало: {} — локальный синтез",
-                project.id,
-                idx,
-                ev.kind,
-                e,
-            )
-            if use_api:
-                fallback = _record_provider_fallback(project, idx, ev.kind, e)
-                fallbacks.append(fallback)
-            out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
-            samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
-            _write_wav(out_path, samples)
-            actual_provider = "local_synth"
+                actual_provider = "local_synth"
+            # BaseException (отмена, убитый процесс) сюда не попадает: метка inflight остаётся.
 
         errs = verify_audio_file(out_path, expect_duration=ev.duration, duration_tol=0.6)
         if errs:
             problems.extend(errs)
             logger.warning("[#{}] sfx_gen verify: {}", project.id, errs)
+            if prog["inflight"].pop(str(idx), None) is not None:
+                await _save_progress(session, project, prog)
             continue
-        files.append(
-            {
-                "idx": idx,
-                "path": str(out_path.resolve()),
-                "frame_number": ev.frame_number,
-                "t_start": ev.t_start,
-                "duration": ev.duration,
-                "kind": ev.kind,
-                "gain": ev.gain,
-                "duck": ev.duck,
-                "provider": actual_provider,
-                **({"provider_fallback": fallbacks[-1]} if actual_provider == "local_synth" and use_api else {}),
-                **({"provider_retry": 1} if retry_of is not None else {}),
-            }
-        )
+        rec_new = {
+            "idx": idx,
+            "path": str(out_path.resolve()),
+            "frame_number": ev.frame_number,
+            "t_start": ev.t_start,
+            "duration": ev.duration,
+            "kind": ev.kind,
+            "gain": ev.gain,
+            "duck": ev.duck,
+            "provider": actual_provider,
+            **({"provider_fallback": fallbacks[-1]}
+               if actual_provider == "local_synth" and (use_api or sent_unknown) else {}),
+            **({"provider_retry": 1} if retry_of is not None else {}),
+        }
+        files.append(rec_new)
+        prog["events"][str(idx)] = rec_new
+        prog["inflight"].pop(str(idx), None)
+        await _save_progress(session, project, prog)
 
     if not files:
         raise RuntimeError(f"sfx_gen: ни один файл не прошёл верификацию: {problems}")
 
     save_ai_job_checkpoint(
         project, "sfx_files", {"files": files, "provider_fallbacks": len(fallbacks)})
+    if not prog["inflight"]:  # итог записан, промежуточный чекпоинт больше не нужен
+        drop_ai_job_checkpoint(project, _PROGRESS)
     await session.flush()
     logger.info(
         "[#{}] sfx_gen: {} файлов ({}), проблем {}, откатов провайдера {}",

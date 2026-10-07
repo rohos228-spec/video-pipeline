@@ -326,6 +326,13 @@ def _subdivide_attr(fr: Frame) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def derived_shot_uuid(parent_uuid: str | None, shot_index: int) -> str:
+    """Deterministic uuid (24 hex like new_frame_uuid) of the child frame ``shot_index`` of a VO parent."""
+    import hashlib
+
+    return hashlib.sha256(f"shot-child:{parent_uuid}:{int(shot_index)}".encode()).hexdigest()[:24]
+
+
 def _is_shot_child(fr: Frame) -> bool:
     meta = _subdivide_attr(fr)
     return int(meta.get("shot_index") or 1) > 1
@@ -733,10 +740,13 @@ async def subdivide_vo_frames_by_camera(
 
         children: list[Frame] = []
         after_id = parent.id
-        for _ in range(need - 1):
+        for shot_no in range(2, need + 1):
             child = await insert_frame_after(
                 session, project, after_frame_id=after_id
             )
+            # Derived identity: the same parent and shot index always give the same uuid, so a
+            # re-run after a rolled-back attempt rebuilds identical child frames (identical requests).
+            child.uuid = derived_shot_uuid(parent_uuid, shot_no)
             children.append(child)
             after_id = child.id
             inserted += 1

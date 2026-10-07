@@ -5,19 +5,17 @@ with its ``track_eleven_sfx`` guard, ``media_spend.resume_only``, the real check
 mp3/wav files, ``media_recovery.assess`` and ``media_admission.admit``. SCRIPTED: only the HTTP boundary
 (``httpx.AsyncClient`` with a ``MockTransport``): every POST of the node is counted there.
 
-DECISION: sfx_gen stays observed. The admissible supervised retry would be a re-run inside ``resume_only`` (zero paid
-requests), but the node cannot finish such a re-run after a failed attempt:
+DECISION: sfx_gen stays observed. Since the per-event checkpoint (``ai_jobs["sfx_progress"]``, committed per event, with a
+"request sent, no answer recorded" mark written BEFORE every paid POST) a failed attempt keeps its finished events and a
+re-run makes only the POSTs of events that were definitively not sent; an event whose POST was sent without a recorded
+outcome is never re-POSTed (it gets a local synth with ``may_have_charged=uncertain``). Still blocking promotion:
 
-1. the per-event progress is NOT checkpointed: ``sfx_files`` is written once, after the whole loop. A failed attempt
-   leaves no checkpoint, so a re-run finds no finished event to reuse;
-2. every event without a checkpoint needs a new paid POST. Inside ``resume_only`` the first one raises
-   ``ResumeOnlyBlocked`` (zero POSTs reach the wire) and the whole re-run fails: it can only finish when every event is
-   already checkpointed, i.e. when there is nothing left to repair;
-3. an event that fell back after a provider answer (``may_have_charged=no``) is retried by the native layer with a new
-   paid POST; inside ``resume_only`` that retry is refused and the re-run fails; after a timeout (``uncertain``) the
-   event is never retried (the earlier POST may have been charged), which stays with a human;
-4. there is no static assessment of the form "all planned events are done" (``media_recovery.assess`` reads only the
-   checkpoint records, it has no plan), no typing of the attempt's own failure (the node uses the ``sfx_result``
+1. the first event without a checkpoint needs a new paid POST: inside ``resume_only`` it raises ``ResumeOnlyBlocked`` (zero
+   POSTs reach the wire), so a supervised re-run finishes only when no paid event is missing;
+2. an event that fell back after a provider answer (``may_have_charged=no``) is retried by the native layer with a new
+   paid POST; inside ``resume_only`` that retry is refused; after a timeout (``uncertain``) the event is never retried;
+3. there is no static assessment of the form "all planned events are done" (``media_recovery.assess`` reads only the
+   checkpoint records, it has no plan), no typing of the attempt failure (the node uses the ``sfx_result``
    verifier, not ``media_result``) and no independent verifier for a re-run (``local_node_recovery._VERIFIERS``).
 """
 import asyncio
@@ -45,8 +43,14 @@ _REAL_CLIENT = httpx.AsyncClient
 
 
 class _Sess:
+    def __init__(self):
+        self.commits = 0
+
     async def flush(self):
         return None
+
+    async def commit(self):
+        self.commits += 1
 
 
 class Wire:
@@ -78,6 +82,7 @@ class SfxGenDryRun(unittest.IsolatedAsyncioTestCase):
         self.mp3 = base.media_bytes("audio", self.root / "scratch")  # a real 2 s mp3
         self.project = SimpleNamespace(id=base.PID, data_dir=self.root / "project", meta={})
         self.events = [SfxEvent(i + 1, float(i), 2.0, "hit", f"p{i}", 0.5, False) for i in range(3)]
+        self.sess = _Sess()
         self.facts: list = []
         import app.services.observation as obs
         self.stack = [patch.object(obs, "emit", lambda kind, payload=None, **k: self.facts.append((kind, payload))),
@@ -92,7 +97,7 @@ class SfxGenDryRun(unittest.IsolatedAsyncioTestCase):
 
     async def run_node(self, wire: Wire, **kw):
         with patch("httpx.AsyncClient", wire.client):
-            return await sfx_gen.generate_sfx_files(_Sess(), self.project, self.events, **kw)
+            return await sfx_gen.generate_sfx_files(self.sess, self.project, self.events, **kw)
 
     # -- the status of a provider answer is never silent again ------------------------------------------------
 
@@ -120,22 +125,85 @@ class SfxGenDryRun(unittest.IsolatedAsyncioTestCase):
             await self.run_node(wire)
         return wire
 
-    async def test_1_a_failed_attempt_leaves_no_event_checkpoint_although_two_events_were_paid(self):
+    def four_events(self):
+        self.events = [SfxEvent(i + 1, float(i), 2.0, "hit", f"p{i}", 0.5, False) for i in range(4)]
+
+    async def test_1_a_failed_attempt_keeps_the_paid_events_in_a_per_event_checkpoint(self):
         wire = await self.failed_attempt()
         self.assertEqual(len(wire.posts), 3)
-        self.assertEqual(len(list((self.project.data_dir / "sfx").glob("sfx_*.mp3"))), 2)  # files exist on disk ...
-        self.assertIsNone(ai_job_checkpoint(self.project, "sfx_files"))                    # ... but nothing records them
+        self.assertEqual(len(list((self.project.data_dir / "sfx").glob("sfx_*.mp3"))), 2)
+        prog = ai_job_checkpoint(self.project, "sfx_progress")
+        self.assertEqual(sorted(prog["events"]), ["0", "1"])          # the two finished events are recorded
+        self.assertEqual(prog["events"]["0"]["provider"], "elevenlabs")
+        self.assertEqual(list(prog["inflight"]), ["2"])               # the third was sent, its outcome is unknown
+        self.assertIsNone(ai_job_checkpoint(self.project, "sfx_files"))   # the final result is not written yet
+        self.assertGreaterEqual(self.sess.commits, 5)                 # committed as it went: 3 marks + 2 results
 
-    async def test_2_the_resume_only_rerun_after_a_failed_attempt_makes_zero_posts_and_cannot_finish(self):
+    async def test_2_the_resume_only_rerun_after_a_failed_attempt_makes_zero_posts_and_does_not_resend(self):
         await self.failed_attempt()
         wire = Wire(self.mp3, [])
         hits: list = []
         with media_spend.resume_only(hits):
+            again = await self.run_node(wire, retry_degraded=True)
+        self.assertEqual(wire.posts, [])
+        self.assertEqual(hits, [])    # nothing paid is missing: the uncertain event is not re-sent
+        self.assertEqual([f["provider"] for f in again], ["elevenlabs", "elevenlabs", "local_synth"])
+        self.assertEqual(again[2]["provider_fallback"]["may_have_charged"], "uncertain")
+        self.assertIsNone(ai_job_checkpoint(self.project, "sfx_progress"))
+        self.assertEqual(len(ai_job_checkpoint(self.project, "sfx_files")["files"]), 3)
+        report = await media_recovery.assess(self.project, "sfx_gen")
+        self.assertEqual(report["keys"][0]["code"], "unknown_outcome_elevenlabs")
+
+    async def test_2a_failure_after_2_of_4_events_rerun_posts_only_the_two_unsent_events(self):
+        self.four_events()
+        wire = Wire(self.mp3, [])
+        real = media_spend.assert_submit_allowed
+        calls = []
+
+        def guard(provider, what="submit"):   # the 3rd paid request is refused BEFORE the wire: definitively not sent
+            calls.append(1)
+            if len(calls) == 3:
+                raise media_spend.ResumeOnlyBlocked(provider, what)
+            return real(provider, what)
+        with patch.object(media_spend, "assert_submit_allowed", guard):
             with self.assertRaises(media_spend.ResumeOnlyBlocked):
-                await self.run_node(wire, retry_degraded=True)
-        self.assertEqual(wire.posts, [])           # zero provider POSTs: that part is safe
-        self.assertEqual(len(hits), 1)             # but the first event already needs a new paid one
-        self.assertIsNone(ai_job_checkpoint(self.project, "sfx_files"))  # and no result is produced
+                await self.run_node(wire)
+        self.assertEqual(len(wire.posts), 2)
+        prog = ai_job_checkpoint(self.project, "sfx_progress")
+        self.assertEqual((sorted(prog["events"]), prog["inflight"]), (["0", "1"], {}))  # the refused event left no mark
+        rerun = Wire(self.mp3, [])
+        files = await self.run_node(rerun)
+        self.assertEqual(len(rerun.posts), 2)                       # only events 2 and 3; 0 and 1 are not re-sent
+        self.assertEqual([f["idx"] for f in files], [0, 1, 2, 3])
+        self.assertEqual({f["provider"] for f in files}, {"elevenlabs"})
+
+    async def test_2c_failure_after_2_of_4_events_the_sent_but_unanswered_third_is_never_resent(self):
+        self.four_events()
+        wire = Wire(self.mp3, ["ok", "ok", asyncio.CancelledError()])
+        with self.assertRaises(asyncio.CancelledError):
+            await self.run_node(wire)
+        self.assertEqual(len(wire.posts), 3)
+        rerun = Wire(self.mp3, [])
+        files = await self.run_node(rerun)
+        self.assertEqual(len(rerun.posts), 1)                       # only event 3 (never sent); event 2 is uncertain
+        self.assertEqual([f["provider"] for f in files],
+                         ["elevenlabs", "elevenlabs", "local_synth", "elevenlabs"])
+        self.assertEqual(files[2]["provider_fallback"]["may_have_charged"], "uncertain")
+        again = Wire(self.mp3, [])
+        await self.run_node(again, retry_degraded=True)
+        self.assertEqual(again.posts, [])                           # and a later rerun never retries the uncertain one
+
+    async def test_2d_a_third_run_after_a_second_failure_does_not_resend_checkpointed_events(self):
+        self.four_events()
+        with self.assertRaises(asyncio.CancelledError):
+            await self.run_node(Wire(self.mp3, ["ok", asyncio.CancelledError()]))     # event 0 done, event 1 sent
+        with self.assertRaises(asyncio.CancelledError):
+            await self.run_node(Wire(self.mp3, ["ok", asyncio.CancelledError()]))     # 1 uncertain, 2 done, 3 sent
+        final = Wire(self.mp3, [])
+        files = await self.run_node(final)
+        self.assertEqual(final.posts, [])                           # everything is done or uncertain: zero POSTs
+        self.assertEqual([f["provider"] for f in files],
+                         ["elevenlabs", "local_synth", "elevenlabs", "local_synth"])
 
     async def test_2b_the_resume_only_rerun_finishes_only_when_every_event_is_already_checkpointed(self):
         first = Wire(self.mp3, ["ok", "ok", "ok"])
@@ -184,7 +252,7 @@ class SfxGenDryRun(unittest.IsolatedAsyncioTestCase):
 
     async def test_5_the_blocking_reasons_are_written_in_the_capability_limits(self):
         text = " ".join(capability_spec_for("sfx_gen").limits)
-        for needle in ("чекпоинт", "ResumeOnlyBlocked", "sfx_result", "Не допущен"):
+        for needle in ("чекпоинт", "ResumeOnlyBlocked", "sfx_result", "Не допущен", "sfx_progress"):
             self.assertIn(needle, text)
 
 
