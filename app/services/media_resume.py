@@ -302,10 +302,52 @@ async def _reattach_one(project, t: dict, key: str, stats: dict) -> str:
     return "downloaded"
 
 
+_GENERATING_STATUSES = ("generating_images", "generating_videos", "generating_hero", "generating_items",
+                        "generating_music")
+
+
+async def outsee_startup_report(stats: dict) -> None:
+    """D04: after a restart, say which Outsee frames of running projects must NOT be sent again. Read-only.
+
+    Outsee has no task id to poll, so there is nothing to reattach; the request-key record (outsee_idempotency) is the
+    only proof. ``outsee_uncertain``: an attempt without a verdict (a human decides, a second request is refused);
+    ``outsee_result_on_record``: a paid picture that is on disk and not yet taken by the step (the step takes it
+    without a request). Counts are added to ``stats``; every uncertain key is logged."""
+    stats.setdefault("outsee_uncertain", 0)
+    stats.setdefault("outsee_result_on_record", 0)
+    if window_s() <= 0 or media_spend._managed() or media_spend.disabled_reason("browser") is not None:
+        return
+    from sqlalchemy import select
+    from app.db import SessionLocal
+    from app.models import Project, ProjectStatus
+    from app.services import outsee_idempotency as idem
+    running = [ProjectStatus(v) for v in _GENERATING_STATUSES if v in ProjectStatus.__members__]
+    async with SessionLocal() as s:
+        await idem.ensure_schema(s)
+        ids = (await s.scalars(select(Project.id).where(Project.status.in_(running)))).all()
+        keys = [(pid, k) for pid in ids for k in (await s.scalars(select(idem.OutseeIdempotency.key).where(
+            idem.OutseeIdempotency.project_id == pid).distinct())).all() if k]
+    for pid, key in keys:
+        verdict = await idem.assess(pid, key)
+        if verdict["mode"] == "uncertain":
+            stats["outsee_uncertain"] += 1
+            logger.warning("media_resume startup: project {} key {}: Outsee request without a known outcome, "
+                           "a second paid request is refused until a human decides", pid, key)
+        elif verdict["mode"] == "adopt":
+            stats["outsee_result_on_record"] += 1
+            logger.warning("media_resume startup: project {} key {}: a paid Outsee picture is on record, the step "
+                           "takes it without a request", pid, key)
+
+
 async def reconcile_on_startup(budget_s: float = 90.0) -> dict:
     """One-shot, before the worker re-queues: for projects found in generating_images/videos reattach
-    ledger tasks that are open. One status request per task, results downloaded; never submits."""
+    ledger tasks that are open. One status request per task, results downloaded; never submits.
+    Outsee frames (no task id) are only reported, see ``outsee_startup_report``."""
     stats = {"checked": 0, "downloaded": 0, "failed": 0, "pending": 0, "errors": 0}
+    try:
+        await asyncio.wait_for(outsee_startup_report(stats), min(budget_s, 30.0))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("media_resume startup: Outsee report skipped ({})", type(e).__name__)
     if not enabled():
         return stats
 

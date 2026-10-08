@@ -278,13 +278,14 @@ class MediaObservation(MediaJobs):
         require_managed_capability("excel_gpt")
         require_managed_capability("plan")
         require_managed_capability("script")
-        for kind in ("publish", "audio", "unregistered"):
+        for kind in ("publish", "unregistered"):
             self.assertFalse(capability_for(kind).managed, "unaccepted adapters stay disabled even if tools are later installed")
             with self.assertRaisesRegex(ValueError, "adapter"):
                 require_managed_capability(kind)
         # videos/items/music are managed for supervised RECOVERY only: never startable by the supervisor
         # assemble likewise: managed only for ONE local re-run under a claimed ticket, never a fresh managed start
-        for kind in ("videos", "items", "music", "assemble"):
+        # hero / audio / sfx_gen likewise (D06): a local resume of a recorded result, never a managed start
+        for kind in ("videos", "items", "music", "assemble", "hero", "audio", "sfx_gen"):
             self.assertTrue(capability_for(kind).managed)
             with self.assertRaisesRegex(ValueError, "recovery only"):
                 require_managed_capability(kind)
@@ -360,7 +361,9 @@ class MediaObservation(MediaJobs):
         self.assertEqual(result["image"]["jobs"], [])
         self.assertFalse(result["image"]["production_profile_configured"])
         self.assertTrue(result["image"]["synthetic_only"])
-        self.assertNotIn("retry_same", result["image"]["allowed_actions"])
+        # D06: the capability offers retry_same, but only as a local resume of a recorded result (media_local_resume)
+        self.assertIn("retry_same", result["image"]["allowed_actions"])
+        self.assertNotIn("retry_profile", result["image"]["allowed_actions"])
 
     async def test_publication_preview_is_read_only_and_unknown_is_not_ready(self):
         from app.orchestrator.steps.publish import preview_publication
@@ -453,8 +456,8 @@ class MediaObservation(MediaJobs):
         # Unit-level DB dependency binding only; no worker/HTTP replacement.
         with patch("app.project_db.project_db_session_scope", lambda _id: self.sessions()):
             context = await supervisor.context("media-decision")
+            # D06: no admitted operation for this image attempt, so no retry_same (a text-style restart is never offered)
             self.assertNotIn("retry_same", context["allowed_actions"])
-            self.assertNotIn("finish", context["allowed_actions"])
             contract = await supervisor.read_contract("media-decision")
         self.assertEqual(contract["result_kind"], "image")
         self.assertNotIn("empty_ops_allowed", contract)

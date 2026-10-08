@@ -28,7 +28,8 @@ class Capabilities(unittest.TestCase):
         from app.services.node_capabilities import capability_for, split_contract
         cap = capability_for('split')
         self.assertEqual(cap.result_kind, 'frame_set')
-        self.assertEqual(cap.actions, ('read_events','read_contract','wait','human_review'))
+        # W5 (D05): one bounded supervised retry, only for invalid_json / missing_payload with nothing written
+        self.assertEqual(cap.actions, ('read_events','read_contract','wait','human_review','retry_same','retry_profile','finish'))
         contract = split_contract()
         self.assertEqual(contract['minimum_frames'], 2)
         self.assertIn('native_local_voiceover_fallback', contract['formats'])
@@ -131,8 +132,10 @@ class Capabilities(unittest.TestCase):
             self.assertIn(typ, WORK_NODES)
             self.assertEqual(cap.result_kind, kind)
             # videos is managed for supervised RECOVERY only (resume of a known provider task)
+            # images / audio: supervised recovery is a LOCAL resume of a recorded result only (D06), no paid resend
             # assemble is managed for ONE supervised local re-run through the original worker (no provider job)
-            self.assertEqual("retry_same" in cap.actions, typ in {"videos", "assemble"})
+            self.assertIn("retry_same", cap.actions)
+            self.assertNotIn("retry_profile", cap.actions)
             self.assertIn("human_review", cap.actions)
         self.assertFalse(capability_for("imaginary").managed)
         self.assertEqual(capability_for("publish").actions, ("read_events", "read_contract", "human_review"))
@@ -211,9 +214,8 @@ class ImagePromptsContract(unittest.TestCase):
         self.assertEqual(require_managed_capability("image_prompts"), cap)
         self.assertIn("generate_image_prompts.run", cap.executor)
         self.assertIn("xlsx_step_runners.run_img_pr_xlsx", cap.executor)
-        self.assertEqual(cap.actions, READ_ACTIONS)
-        for action in ("retry_same", "retry_profile", "finish"):
-            self.assertNotIn(action, cap.actions)
+        # W5 (D05): one bounded supervised retry (same body or approved profile) after invalid_json / missing_payload
+        self.assertEqual(cap.actions, READ_ACTIONS + ("retry_same", "retry_profile", "finish"))
         contract = image_prompts_contract()
         self.assertEqual(IMG_PR_MIN_WRITE_CHARS, 200)
         self.assertEqual(contract["min_characters"], IMG_PR_MIN_WRITE_CHARS)

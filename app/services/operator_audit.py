@@ -233,6 +233,12 @@ def resolve_actor(scope: dict) -> str:
     try:
         from app.services.access_guard import OPERATOR_HEADER, check_operator_token
         if check_operator_token(_hdr(scope, OPERATOR_HEADER.lower().encode())):
+            # D12: the action layer names the person behind its internal call; the name is trusted only together
+            # with a valid operator token (an outside caller cannot forge it) and is reduced to safe characters.
+            named = _hdr(scope, b"x-action-layer-operator")
+            if named:
+                from app.services.action_layer.context import normalize_operator
+                return ("operator:" + normalize_operator(named))[:120]
             return "operator"
     except Exception:  # noqa: BLE001
         logger.debug("operator_audit: operator token check failed", exc_info=True)

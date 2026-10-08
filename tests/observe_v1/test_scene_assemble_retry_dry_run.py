@@ -353,14 +353,16 @@ class SceneAssembleRetry(ManagedAssembleFixture):
                 incident_id=incident.incident_id, node_key="n1", idempotency_key="blocked-retry-0001",
                 initiator="dry-run", rationale="apply evidence must block the retry")
 
-    async def test_profile_retry_is_denied_by_capability(self):
+    async def test_profile_retry_with_an_unapproved_overlay_is_refused_without_a_ticket(self):
+        # W5 D05: sd_assemble is profile compatible, so the capability no longer denies a profile retry; an unapproved overlay is still refused and no ticket is issued
         await self.failed_native_attempts([BAD])
         incident = await self.typed_incident()
-        with self.assertRaisesRegex(ValueError, "denied by node capability"):
+        with self.assertRaisesRegex(ValueError, "execution grant|profile outside|unknown or incompatible"):
             await self.supervisor.recover_node(project_id=7, execution_id=EXECUTION,
                 incident_id=incident.incident_id, node_key="n1", idempotency_key="profile-retry-0001",
                 initiator="dry-run", rationale="profile retry is not an assembly capability",
                 profile_overlay_id="no-such-overlay")
+        self.assertIsNone(await self.ticket())
 
     async def test_a_successful_first_attempt_applies_once_and_passes_the_managed_gate(self):
         await self.run_step([GOOD, GOOD])

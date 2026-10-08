@@ -24,9 +24,10 @@ class CoverageOnlyRecoveryDenials(unittest.IsolatedAsyncioTestCase):
     # scene_design (legacy node) is refused even earlier: it never enters a managed scope (node admission);
     # sd_agent is managed per type and admitted per agent: test_scene_agents_retry_dry_run.py;
     # sd_assemble is managed with one supervised retry: test_scene_assemble_retry_dry_run.py
-    NODE_TYPES = ("hero", "enrich_1", "sfx_gen", "audio")
+    NODE_TYPES = ("enrich_1",)
     # managed for supervised RECOVERY only: a media resume, never a text-style restart
-    MEDIA_RESUME_TYPES = ("videos", "items", "music")
+    # (hero, audio, sfx_gen, images: a LOCAL resume of a recorded result only, D06)
+    MEDIA_RESUME_TYPES = ("videos", "items", "music", "hero", "audio", "sfx_gen", "images")
     # managed for a supervised LOCAL re-run only (media incident + worker ticket): the same text-style refusal
     LOCAL_RERUN_TYPES = ("assemble",)
 
@@ -40,7 +41,7 @@ class CoverageOnlyRecoveryDenials(unittest.IsolatedAsyncioTestCase):
                 await self.assert_retry_denied(node_type)
 
     async def test_retry_profile_is_refused_for_every_node_without_recovery(self):
-        for node_type in ("hero", "audio"):
+        for node_type in ("enrich_1",):
             with self.subTest(node_type=node_type):
                 await self.asyncTearDown()
                 await self.asyncSetUp()
@@ -57,7 +58,7 @@ class CoverageOnlyRecoveryDenials(unittest.IsolatedAsyncioTestCase):
             for profile in (False, True):
                 with self.subTest(node_type=node_type, profile=profile):
                     spec = capability_spec_for(node_type)
-                    self.assertTrue(spec.recovery_only and spec.forbidden_code is None)
+                    self.assertTrue((spec.recovery_only or node_type == "images") and spec.forbidden_code is None)
                     await self.asyncTearDown()
                     await self.asyncSetUp()
                     await self.assert_retry_denied(node_type, profile=profile,

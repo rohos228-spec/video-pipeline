@@ -159,7 +159,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 # Keep committed partial prompts; do not roll back or reset retry.
                 await session.commit()
             from app.services import xlsx_step_runners as xsr
+            from app.services.node_capabilities import clear_image_prompt_unusable
 
+            clear_image_prompt_unusable()
             result = await xsr.run_img_pr_xlsx(
                 project,
                 n_frames=len(need),
@@ -255,6 +257,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 e,
             )
             if attempt >= 2:
+                # D05: the whole step failed because no batch gave a writeable operation (nothing applied):
+                # type it (invalid_json / missing_payload) so a single supervised retry is possible.
+                try:
+                    from app.services.node_capabilities import record_image_prompt_unusable
+
+                    await record_image_prompt_unusable()
+                except Exception as note_err:  # noqa: BLE001 - journal only
+                    logger.warning("[#{}] image_prompts typed failure not recorded: {}", project.id, note_err)
                 raise RuntimeError(
                     f"generate_image_prompts: не удалось получить промты: {e}"
                 ) from e

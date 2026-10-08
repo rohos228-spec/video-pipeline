@@ -24,18 +24,21 @@ REGISTRY_TYPES = node_coverage.registry_node_types()
 
 # Changing this set is a conscious decision: these are the only node types with automatic recovery.
 RECOVERING = {"plan", "script", "excel_gpt", "sfx_plan", "animation_prompts", "videos", "items", "music", "assemble",
-              "sd_agent", "sd_assemble"}
-# Managed for supervised RECOVERY only: a resume of a known provider task, never a start or a paid re-submit.
-RECOVERY_ONLY = {"videos", "items", "music"}
+              "sd_agent", "sd_assemble", "split", "image_prompts", "images", "hero", "audio", "sfx_gen"}
+# Managed for supervised RECOVERY only: a resume of a known provider task or of a recorded local result (D06,
+# media_local_resume), never a start or a paid re-submit. images keeps its synthetic managed launch (successor
+# continue_managed_image), so it is NOT recovery_only although its supervised recovery is a local resume only.
+RECOVERY_ONLY = {"videos", "items", "music", "hero", "audio", "sfx_gen"}
+# Recovery is a LOCAL resume of a recorded result (Outsee request key, finished files), never a paid resend.
+LOCAL_RESUME = {"images", "hero", "audio", "sfx_gen"}
 # Managed for a supervised LOCAL re-run only: no model request, no provider job; the original worker runs it once
 # under a ticket inside the resume-only scope and the ticket is verified from independent facts.
 LOCAL_RECOVERY = {"assemble"}
 EXPECTED_LEVELS = {
     "managed": {"plan", "script", "split", "image_prompts", "excel_gpt", "images", "sfx_plan",
-                "animation_prompts", "videos", "items", "music", "assemble", "sd_agent", "sd_assemble"},
-    "observed": {"sfx_gen", "scene_design", "hero",
-                 "audio",
-                 "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5"},
+                "animation_prompts", "videos", "items", "music", "assemble", "sd_agent", "sd_assemble",
+                "hero", "audio", "sfx_gen"},
+    "observed": {"scene_design", "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5"},
     "human_only": {"publish"},  # publish stays human-only forever (irreversible external effect)
 }
 
@@ -130,6 +133,10 @@ def test_every_media_decision_node_is_resume_only_local_retry_or_has_a_coded_hum
             assert decision["decision"] == "local_retry", node_type
             assert spec.local_recovery and not spec.recovery_only and spec.effective_managed, node_type
             assert spec.forbidden_code is None and spec.recovery_actions == ("retry_same",), node_type
+        elif node_type in LOCAL_RESUME:
+            assert decision["decision"] == "resume_local", node_type
+            assert spec.effective_managed and spec.forbidden_code is None, node_type
+            assert spec.recovery_actions == ("retry_same",) and spec.recovery_only is (node_type in RECOVERY_ONLY), node_type
         elif node_type in RECOVERY_ONLY:
             assert decision["decision"] == "resume_only", node_type
             assert spec.recovery_only and spec.effective_managed and spec.forbidden_code is None, node_type
@@ -162,7 +169,7 @@ def test_only_recovery_only_nodes_carry_the_flag():
 
 def test_coverage_only_entries_change_no_behaviour():
     """A coverage-only entry is the same capability payload as an unregistered type."""
-    for node_type in ("scene_design", "hero", "enrich_3"):
+    for node_type in ("scene_design", "enrich_3"):
         cap = capability_for(node_type)
         unknown = capability_for("future-unsupported")
         assert (cap.result_kind, cap.executor, cap.phases, cap.effects, cap.actions, cap.managed) == (
@@ -245,14 +252,18 @@ def test_panel_data_is_complete_serializable_and_honest():
             assert row["recovery"]["actions"] == []
             assert row["forbidden"]["code"] in KNOWN_FORBIDDEN_CODES
             assert row["forbidden"]["reason"] and row["forbidden"]["meaning"]
-    assert rows["sfx_plan"]["recovery"]["actions"] == ["retry_same"]
+    assert rows["sfx_plan"]["recovery"]["actions"] == ["retry_same", "retry_profile"]
+    assert rows["split"]["recovery"]["actions"] == ["retry_same", "retry_profile"]
+    assert rows["image_prompts"]["recovery"]["actions"] == ["retry_same", "retry_profile"]
     for node_type in RECOVERING:
         assert rows[node_type]["recovery"]["resume_only"] is (node_type in RECOVERY_ONLY), node_type
     assert rows["videos"]["level"] == "managed" and rows["videos"]["recovery"]["profile_compatible"] is False
-    assert rows["hero"]["forbidden"]["code"] == "no_resumable_task"
+    assert rows["hero"]["forbidden"] is None and rows["hero"]["level"] == "managed"
+    assert rows["hero"]["recovery"]["actions"] == ["retry_same"] and rows["hero"]["recovery"]["resume_only"] is True
     assert rows["assemble"]["forbidden"] is None and rows["assemble"]["level"] == "managed"
     assert rows["assemble"]["recovery"]["actions"] == ["retry_same"] and rows["assemble"]["recovery"]["resume_only"] is False
-    assert rows["sfx_plan"]["recovery"]["profile_compatible"] is False
+    assert rows["sfx_plan"]["recovery"]["profile_compatible"] is True
+    assert rows["animation_prompts"]["recovery"]["profile_compatible"] is False
     assert rows["plan"]["recovery"]["profile_compatible"] is True
     assert rows["publish"]["level"] == "human_only"
 
@@ -272,7 +283,7 @@ def test_endpoint_serves_the_same_data():
     body = response.json()
     assert {row["node_type"] for row in body["nodes"]} == set(REGISTRY_TYPES)
     assert body["uncovered"] == [] and body["summary"]["total"] == 24
-    assert next(r for r in body["nodes"] if r["node_type"] == "hero")["forbidden"]["code"] == "no_resumable_task"
+    assert next(r for r in body["nodes"] if r["node_type"] == "hero")["forbidden"] is None
 
 
 def test_new_specs_are_visible_in_capability_registry_and_verifiers_resolve():
@@ -283,7 +294,7 @@ def test_new_specs_are_visible_in_capability_registry_and_verifiers_resolve():
     assert node_spec.verifier_spec_for("sfx_gen").name == "sfx_result"
     assert node_spec.contract_name_for(capability_for("sfx_plan")) == "sfx_plan"
     assert node_spec.contract_name_for(capability_for("animation_prompts")) == "animation_prompts"
-    assert node_capabilities.capability_for("sfx_plan").actions == READ_ACTIONS + ("retry_same", "finish")
+    assert node_capabilities.capability_for("sfx_plan").actions == READ_ACTIONS + ("retry_same", "retry_profile", "finish")
 
 
 # ---- scene nodes and animation degradation: what is checked, what stays forbidden -------------
@@ -295,7 +306,8 @@ def test_sd_agent_is_managed_per_type_but_admitted_per_agent():
     from app.orchestrator.node_spec import node_admission_problem
     from app.services.scene_contracts import RETRY_ADMITTED_AGENTS, SLICE_AGENTS
     spec = SPECS["sd_agent"]
-    assert coverage_level(spec) == "managed" and spec.recovery_actions == ("retry_same",) and spec.recovery_cap == 1
+    assert coverage_level(spec) == "managed" and spec.recovery_actions == ("retry_same", "retry_profile")
+    assert spec.recovery_cap == 1 and spec.profile_compatible is True
     assert spec.forbidden_code is None and not spec.recovery_only and not spec.local_recovery
     assert spec.verifier == "scene_agent_result" and spec.contract == "scene_agent"
     assert any("skeleton" in line and "camera" in line and "action" in line for line in spec.limits)
@@ -323,7 +335,8 @@ def test_scene_nodes_are_observed_through_the_result_hook_and_recovery_stays_for
 def test_sd_assemble_is_managed_with_one_retry_proven_by_the_dry_run():
     from app.orchestrator.node_spec import node_admission_problem
     spec = SPECS["sd_assemble"]
-    assert coverage_level(spec) == "managed" and spec.recovery_actions == ("retry_same",) and spec.recovery_cap == 1
+    assert coverage_level(spec) == "managed" and spec.recovery_actions == ("retry_same", "retry_profile")
+    assert spec.recovery_cap == 1 and spec.profile_compatible is True
     assert spec.forbidden_code is None and not spec.recovery_only and not spec.local_recovery
     assert spec.verifier == "scene_agent_result" and spec.contract == "scene_agent"
     assert spec.acceptance == "native_scene_assembly"
@@ -352,19 +365,19 @@ def test_animation_prompts_names_its_degradation_fact_and_it_is_not_a_recovery_i
     assert animation_prompts_contract()["degradation_facts"]["fact_kind"] == "animation_degraded"
 
 
-# ---- local media nodes: assemble is promoted by its dry run, audio and sfx_gen stay observed ----------
+# ---- local media nodes: assemble is promoted by its dry run, audio and sfx_gen admit a LOCAL resume only ------
 
-LOCAL_MEDIA = {"audio": "paid_no_idempotency", "sfx_gen": "paid_no_idempotency"}
-
-
-@pytest.mark.parametrize("node_type", sorted(LOCAL_MEDIA))
-def test_audio_and_sfx_gen_stay_observed_with_an_honest_code_and_no_recovery_action(node_type):
+@pytest.mark.parametrize("node_type", ["audio", "sfx_gen", "hero", "images"])
+def test_local_resume_nodes_offer_retry_same_for_a_recorded_result_only(node_type):
     spec = SPECS[node_type]
-    assert coverage_level(spec) == "observed" and spec.forbidden_code == LOCAL_MEDIA[node_type]
-    assert not spec.recovery_actions and not spec.recovery_only and not spec.local_recovery
-    assert node_type not in RECOVERING
-    assert not capability_for(node_type).managed
-    assert MEDIA_RECOVERY_DECISIONS[node_type]["decision"] == "human_only"
+    assert coverage_level(spec) == "managed" and spec.forbidden_code is None
+    assert spec.recovery_actions == ("retry_same",) and "retry_profile" not in spec.actions
+    assert not spec.local_recovery and spec.recovery_cap == 1
+    assert node_type in RECOVERING and capability_for(node_type).managed
+    assert MEDIA_RECOVERY_DECISIONS[node_type]["decision"] == "resume_local"
+    text = " ".join(spec.limits)
+    assert "resume_local" in text and "retry_same_not_admitted" in text
+    assert "ТОЛЬКО локальное возобновление" in text
 
 
 def test_assemble_is_managed_for_a_local_rerun_and_its_text_names_what_the_dry_run_proved():
@@ -381,6 +394,6 @@ def test_assemble_is_managed_for_a_local_rerun_and_its_text_names_what_the_dry_r
     assert "approve_final" in MEDIA_RECOVERY_DECISIONS["assemble"]["reason"]
 
 
-def test_audio_and_sfx_gen_say_that_a_finished_file_is_not_resumed_by_the_supervisor():
-    assert any("resume_local" in line and "надзор" in line for line in SPECS["audio"].limits)
+def test_audio_and_sfx_gen_say_that_only_a_finished_file_is_resumed_by_the_supervisor():
+    assert any("resume_local" in line and "надзор" in line.lower() for line in SPECS["audio"].limits)
     assert any("resume_local" in line for line in SPECS["sfx_gen"].limits)

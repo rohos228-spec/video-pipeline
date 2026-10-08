@@ -1,11 +1,12 @@
-"""Dry run of sfx_gen: why the node is NOT promoted to supervised recovery (and what is pinned instead).
+"""Dry run of sfx_gen: what blocks a PAID supervised retry (D06 admits only a local resume of the checkpointed files).
 
 No network, no paid call. REAL: ``sfx_gen.generate_sfx_files`` (the node's own function), the real ``_elevenlabs_sfx``
 with its ``track_eleven_sfx`` guard, ``media_spend.resume_only``, the real checkpoint helpers, ffprobe/ffmpeg on real
 mp3/wav files, ``media_recovery.assess`` and ``media_admission.admit``. SCRIPTED: only the HTTP boundary
 (``httpx.AsyncClient`` with a ``MockTransport``): every POST of the node is counted there.
 
-DECISION: sfx_gen stays observed. Since the per-event checkpoint (``ai_jobs["sfx_progress"]``, committed per event, with a
+DECISION: a paid retry stays with the native layer; since D06 the supervisor may only resume the checkpointed event files
+(media_local_resume, resume_local, recovery-only, no new paid POST). Since the per-event checkpoint (``ai_jobs["sfx_progress"]``, committed per event, with a
 "request sent, no answer recorded" mark written BEFORE every paid POST) a failed attempt keeps its finished events and a
 re-run makes only the POSTs of events that were definitively not sent; an event whose POST was sent without a recorded
 outcome is never re-POSTed (it gets a local synth with ``may_have_charged=uncertain``). Still blocking promotion:
@@ -247,12 +248,15 @@ class SfxGenDryRun(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(local_node_recovery.spec_ok("sfx_gen"))
         spec = capability_spec_for("sfx_gen")
         self.assertFalse(spec.local_recovery)
-        self.assertFalse(node_capabilities.capability_for("sfx_gen").managed)
-        self.assertEqual((spec.verifier, spec.forbidden_code), ("sfx_result", "paid_no_idempotency"))
+        # D06: managed for supervised recovery only, and the recovery is a LOCAL resume of the checkpointed event
+        # files (media_local_resume); media_admission above still refuses, and nothing here is a paid resend
+        self.assertTrue(node_capabilities.capability_for("sfx_gen").managed and spec.recovery_only)
+        self.assertEqual((spec.verifier, spec.forbidden_code), ("sfx_result", None))
+        self.assertEqual(spec.recovery_actions, ("retry_same",))
 
     async def test_5_the_blocking_reasons_are_written_in_the_capability_limits(self):
         text = " ".join(capability_spec_for("sfx_gen").limits)
-        for needle in ("чекпоинт", "ResumeOnlyBlocked", "sfx_result", "Не допущен", "sfx_progress"):
+        for needle in ("чекпоинт", "sfx_progress", "resume_local", "ТОЛЬКО локальное возобновление", "denied"):
             self.assertIn(needle, text)
 
 

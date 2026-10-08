@@ -260,14 +260,16 @@ class AdmittedAgentRetry:
                 initiator="dry-run", rationale="apply evidence must block the retry")
         self.assertIsNone(await self.ticket())
 
-    async def test_profile_retry_is_denied_by_capability(self):
+    async def test_profile_retry_with_an_unapproved_overlay_is_refused_without_a_ticket(self):
+        # W5 D05: sd_agent (characters/world) is profile compatible, so the capability no longer denies a profile retry; an unapproved overlay is still refused and no ticket is issued
         await self.failed_native_attempts([self.bad_reply])
         incident = await self.typed_incident()
-        with self.assertRaisesRegex(ValueError, "denied by node capability"):
+        with self.assertRaisesRegex(ValueError, "execution grant|profile outside|unknown or incompatible"):
             await self.supervisor.recover_node(project_id=7, execution_id=EXECUTION,
                 incident_id=incident.incident_id, node_key="n1", idempotency_key="profile-retry-0001",
                 initiator="dry-run", rationale="profile retry is not a scene agent capability",
                 profile_overlay_id="no-such-overlay")
+        self.assertIsNone(await self.ticket())
 
     # ---- the cells and the application fact are one transaction ---------------------------------
     async def test_a_failure_inside_the_cell_transaction_keeps_the_old_cells_and_stages_no_fact(self):

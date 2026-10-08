@@ -814,7 +814,10 @@ class FinishedFileNodes(unittest.IsolatedAsyncioTestCase):
             await media_admission.admit(self.project, "audio")
         self.assertEqual(caught.exception.code, "node_not_admitted")
         self.assertNotIn("audio", media_admission.ADMITTED_NODES)
-        self.assertFalse(node_capabilities.capability_for("audio").managed)
+        # D06: the finished file IS admitted for a supervised resume, but by media_local_resume (not media_admission)
+        from app.services import media_local_resume
+        self.assertTrue(media_local_resume.admitted("audio"))
+        self.assertTrue(node_capabilities.capability_for("audio").managed)
 
     async def test_resume_local_has_no_operation_behind_it_so_nothing_registers_the_finished_file(self):
         report = await media_recovery.assess(self.project, "audio")
@@ -874,8 +877,12 @@ class FinishedFileNodes(unittest.IsolatedAsyncioTestCase):
 
     def test_the_local_nodes_keep_their_honest_forbidden_codes(self):
         from app.orchestrator.node_spec import capability_spec_for
-        self.assertEqual(capability_spec_for("audio").forbidden_code, "paid_no_idempotency")
-        self.assertEqual(capability_spec_for("sfx_gen").forbidden_code, "paid_no_idempotency")
+        # D06: no forbidden code any more; the recovery is a LOCAL resume of a finished file only
+        for node_type in ("audio", "sfx_gen"):
+            spec = capability_spec_for(node_type)
+            self.assertIsNone(spec.forbidden_code)
+            self.assertTrue(spec.recovery_only and spec.effective_managed)
+            self.assertEqual(spec.recovery_actions, ("retry_same",))
         # assemble was promoted by this dry run: no forbidden code any more
         self.assertIsNone(capability_spec_for("assemble").forbidden_code)
         self.assertNotIn("media_recovery_not_admitted", KNOWN_FORBIDDEN_CODES)

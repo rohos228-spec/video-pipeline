@@ -487,14 +487,17 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             self.assertIsNone(await session.scalar(select(RecoveryAction)))
 
-    async def test_profile_retry_is_denied_by_capability(self):
+    async def test_profile_retry_with_an_unapproved_overlay_is_refused_without_a_ticket(self):
+        # W5 D05: sfx_plan is profile compatible, so the capability no longer denies a profile retry; an unapproved overlay is still refused and no ticket is issued
         await self.failed_attempt(["no json here", "still {not json"])
         incident = await self.typed_incident()
-        with self.assertRaisesRegex(ValueError, "denied by node capability"):
+        with self.assertRaisesRegex(ValueError, "execution grant|profile outside|unknown or incompatible"):
             await self.supervisor.recover_node(project_id=7, execution_id=EXECUTION,
                 incident_id=incident.incident_id, node_key="n1", idempotency_key="profile-retry-0001",
                 initiator="dry-run", rationale="profile retry is not a sfx_plan capability",
                 profile_overlay_id="no-such-overlay")
+        async with self.sessions() as session:
+            self.assertIsNone(await session.scalar(select(RecoveryAction)))
 
 
 if __name__ == "__main__":

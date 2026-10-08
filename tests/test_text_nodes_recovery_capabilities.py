@@ -28,11 +28,14 @@ def test_plan_and_script_are_recovery_ready_by_capability_data(node_type):
 
 
 @pytest.mark.parametrize("node_type", ["split", "image_prompts"])
-def test_split_and_image_prompts_stay_read_only(node_type):
+def test_split_and_image_prompts_are_recovery_ready_since_w5_d05(node_type):
+    # W5 D05: a retry is idempotent only when nothing was written; that is proven by data_applied facts and by the
+    # validate-before-write rules of both nodes (tests/w5_d05_*). The mandatory incident gate stays in actions_recovery.
     cap = capability_for(node_type)
     assert cap.managed
-    assert set(cap.actions) == set(READ_ACTIONS)
-    assert cap.profile_compatible is False
+    assert set(cap.actions) == set(READ_ACTIONS) | RECOVERY_ACTIONS
+    assert cap.profile_compatible is True and cap.native_json_retry is False
+    assert cap.volatile_attachment_names is True and cap.recovery_continuation == "none"
 
 
 def test_excel_gpt_behaviour_is_unchanged():
@@ -43,30 +46,34 @@ def test_excel_gpt_behaviour_is_unchanged():
 
 
 def test_profile_eligibility_is_capability_data_not_result_kind():
-    # sfx_plan is result_kind 'structured' and now managed with retry_same, but the old gate
-    # (kind alone) would have made it profile-eligible; eligibility needs an explicit
-    # profile_compatible flag, which sfx_plan and animation_prompts do not have.
+    # Eligibility needs an explicit profile_compatible flag (never result_kind). W5 D05 opened it for the text nodes
+    # whose retry is idempotent and validated before writing; animation_prompts (image strip in the request, batches
+    # applied one by one) and every media node stay closed.
     sfx = capability_for("sfx_plan")
-    assert sfx.result_kind == "structured" and sfx.managed and not sfx.profile_compatible
-    assert "retry_profile" not in sfx.actions
+    assert sfx.result_kind == "structured" and sfx.managed and sfx.profile_compatible
+    assert "retry_profile" in sfx.actions
     compatible = {t for t in ("plan", "script", "split", "image_prompts", "excel_gpt", "images", "audio",
-                              "videos", "assemble", "sfx_plan", "sfx_gen", "publish") if capability_for(t).profile_compatible}
-    assert compatible == {"plan", "script", "excel_gpt"}
+                              "videos", "assemble", "sfx_plan", "sfx_gen", "publish", "animation_prompts",
+                              "sd_agent", "sd_assemble") if capability_for(t).profile_compatible}
+    assert compatible == {"plan", "script", "split", "image_prompts", "excel_gpt", "sfx_plan", "sd_agent", "sd_assemble"}
 
 
 def test_no_other_node_gained_recovery_actions():
-    for node_type in ("images", "audio", "sfx_gen", "publish", "hero",
-                      "scene_design", "enrich_1",
-                      "split", "image_prompts", "future-unsupported"):
+    for node_type in ("publish", "scene_design", "enrich_1", "future-unsupported"):
         assert not RECOVERY_ACTIONS & set(capability_for(node_type).actions), node_type
+    # D06: images / hero / audio / sfx_gen carry retry_same ONLY as a local resume of a recorded result
+    # (media_local_resume); never a profile retry, never a paid resend.
+    for node_type in ("images", "hero", "audio", "sfx_gen"):
+        actions = set(capability_for(node_type).actions)
+        assert "retry_same" in actions and "retry_profile" not in actions, node_type
 
 
-def test_sd_agent_gets_retry_same_only_per_type_with_agent_admission():
+def test_sd_agent_gets_retry_same_and_profile_per_type_with_agent_admission():
     from app.orchestrator.node_spec import capability_spec_for
     cap = capability_for("sd_agent")
     spec = capability_spec_for("sd_agent")
-    assert cap.managed and "retry_same" in cap.actions and "retry_profile" not in cap.actions
-    assert cap.profile_compatible is False and cap.recovery_continuation == "none"
+    assert cap.managed and "retry_same" in cap.actions and "retry_profile" in cap.actions
+    assert cap.profile_compatible is True and cap.recovery_continuation == "none"
     assert not spec.recovery_only and not spec.local_recovery and spec.recovery_cap == 1
 
 
@@ -87,8 +94,15 @@ def test_media_nodes_are_recovery_only():
         assert cap.profile_compatible is False and "retry_profile" not in cap.actions, node_type
 
 
-@pytest.mark.parametrize("node_type", ["sfx_plan", "animation_prompts"])
-def test_sfx_plan_and_animation_prompts_get_retry_same_only(node_type):
+def test_sfx_plan_gets_retry_same_and_profile():
+    cap = capability_for("sfx_plan")
+    assert cap.managed and set(cap.actions) == set(READ_ACTIONS) | RECOVERY_ACTIONS
+    assert cap.profile_compatible is True and cap.native_json_retry is False
+    assert cap.recovery_continuation == "none" and cap.volatile_attachment_names is False
+
+
+@pytest.mark.parametrize("node_type", ["animation_prompts"])
+def test_animation_prompts_gets_retry_same_only(node_type):
     cap = capability_for(node_type)
     assert cap.managed
     assert set(cap.actions) == set(READ_ACTIONS) | {"retry_same", "finish"}
@@ -128,14 +142,16 @@ def test_script_without_any_usable_payload_requires_one_but_short_text_does_not_
     assert short["payload_required"] is False and short["schema_valid"] is False
 
 
-def test_split_and_image_prompts_cannot_produce_recoverable_json_incident():
-    """Their parse facts are payload_required=False (native fallback / partial extraction), so a
-    malformed reply is never typed invalid_json/missing_payload and recover_node's incident gate
-    would refuse it even if the capability allowed retry."""
+def test_split_and_image_prompts_type_only_a_total_failure_as_recoverable_json_incident():
+    """Per-attempt parse facts stay payload_required=False for image_prompts (partial extraction) and for a split
+    that still has a usable answer or the native fallback. Only a TOTAL failure (no frames at all / no writeable
+    operation from any batch, nothing written) is typed invalid_json/missing_payload: the behavioural proof
+    is in tests/w5_d05_split_image_prompts_retry_test.py."""
     import inspect
     from app.services import node_capabilities as nc
-    assert "'payload_required':False" in inspect.getsource(nc.record_split_parse).replace(" ", "")
+    assert "'payload_required':notframes_spec" in inspect.getsource(nc.record_split_parse).replace(" ", "")
     assert "'payload_required':False" in inspect.getsource(nc.record_image_prompt_parse).replace(" ", "")
+    assert "'payload_required':True" in inspect.getsource(nc.record_image_prompt_unusable).replace(" ", "")
 
 
 def test_contract_text_describes_bounded_hitl_preserving_recovery():

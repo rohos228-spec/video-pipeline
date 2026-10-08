@@ -76,8 +76,12 @@ def test_spec_conformance(node_type):
         assert spec.effective_managed
         # a media node may carry the retry slot ONLY as a supervised resume of a known provider task, or (a local
         # node without any provider job) as one supervised re-run through the original worker
+        # D06: images keeps its synthetic managed launch, and its supervised recovery is a LOCAL resume of a
+        # recorded result (media_local_resume), never a paid resend: the one media node that is not recovery_only.
+        from app.services import media_local_resume
         assert spec.result_kind not in MEDIA_KINDS or (
-            (spec.recovery_only or spec.local_recovery) and "retry_profile" not in actions)
+            (spec.recovery_only or spec.local_recovery or node_type in media_local_resume.NODES)
+            and "retry_profile" not in actions)
         assert spec.recovery_continuation in node_spec._KNOWN_RECOVERY_CONTINUATIONS
     if "retry_profile" in actions:
         assert spec.profile_compatible, "profile retry without profile_compatible"
@@ -85,7 +89,8 @@ def test_spec_conformance(node_type):
         assert "retry_profile" in actions
     # media nodes expose retry only as a resume-only recovery (media_admission) and are never profile compatible.
     if spec.result_kind in MEDIA_KINDS:
-        assert not actions & RETRY or spec.recovery_only or spec.local_recovery
+        assert (not actions & RETRY or spec.recovery_only or spec.local_recovery
+                or node_type in __import__('app.services.media_local_resume', fromlist=['NODES']).NODES)
         assert not spec.profile_compatible
     if spec.recovery_only:
         assert spec.result_kind in MEDIA_KINDS and spec.effective_managed and spec.recovery_cap == 1

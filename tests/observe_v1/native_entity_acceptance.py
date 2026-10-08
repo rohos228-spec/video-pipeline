@@ -310,7 +310,7 @@ async def run(client, fixtures, observer, root, result, prepared, handler):
     root = Path(root)
     base = "http://127.0.0.1:18765/api/projects/2"
     paths = {"master": fixtures.DATA / "state.db", "project": fixtures.DB}
-    assert prepared["scenario"] == MODE and not capability_for("hero").managed
+    assert prepared["scenario"] == MODE and "retry_profile" not in capability_for("hero").actions
     # Check the effective native client settings, including choice-file
     # resolution; never alter that selection or read/log any credential.
     assert settings.resolved_text_llm_provider() == "kie"
@@ -450,7 +450,7 @@ async def run(client, fixtures, observer, root, result, prepared, handler):
         event for event in history if event["kind"] in {"node_start", "node_end", "model_start", "model_end", "node_error", "model_error"}]
     assert not any(entry.get("unexpected") for entry in handler.transport)
     _observe_state(paths["master"], execution, prepared["run_ids"]["master"])
-    assert not capability_for("hero").managed
+    assert "retry_profile" not in capability_for("hero").actions
     result.update(accepted=True, paid_calls=0,
         accepted_claim="original observe-only base-character worker path and structural output",
         provenance_limit="native generation request/result binding and shared media counter remain unproven")

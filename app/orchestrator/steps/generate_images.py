@@ -1903,6 +1903,7 @@ async def _generate_and_send(
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=refs if refs else None,
                     project_id=project.id,
+                    idempotent=True,
                 )
         else:
             # До 3 попыток с исходным image_prompt; если все 3 провалились —
@@ -1923,6 +1924,7 @@ async def _generate_and_send(
                 prompt_id_prefix=prompt_id_prefix,
                 reference_image=refs if refs else None,
                 project_id=project.id,
+                idempotent=True,
             )
     except StepCancelledError:
         raise
@@ -1963,6 +1965,13 @@ async def _generate_and_send(
                 head = (
                     f"Кадр #{frame.number} проекта #{project.id}: модель Kie не используется "
                     f"в этом маршруте, бота Outsee нет. Платный запрос не отправлялся.\n\n"
+                )
+            elif getattr(e, "context", {}).get("code") in ("outsee_uncertain_submit", "outsee_resume_only_no_result") or (
+                    is_no_resubmit(e) and "Outsee" in type(e).__name__):
+                head = (
+                    f"Кадр #{frame.number} проекта #{project.id}: исход прошлой платной отправки в Outsee "
+                    f"неизвестен (запрос мог быть оплачен). Новый платный запрос не отправляю. Проверьте историю "
+                    f"генераций и баланс Outsee и решите: снять блокировку или подставить найденный файл.\n\n"
                 )
             elif is_no_resubmit(e):
                 head = (
@@ -2049,6 +2058,10 @@ async def _generate_and_send(
     )
     # Коммитим сразу, чтобы callback-хендлер в другом таске видел HITL.
     await session.commit()
+    # Результат взят в проект и закоммичен: платная картинка больше не предлагается для повторного использования
+    # (обычная перегенерация с тем же промтом — новый запрос). До этого места её подберёт рестарт.
+    from app.services import media_spend as _media_spend, outsee_idempotency
+    await outsee_idempotency.mark_consumed(project.id, _media_spend._task_key(file_path))
 
 
 def _html_escape(s: str) -> str:

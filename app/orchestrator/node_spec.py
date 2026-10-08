@@ -128,12 +128,7 @@ KNOWN_SUCCESSORS = frozenset({"continue_managed_image"})
 # A code is data, not a branch: the supervisor never switches on it. It exists so the coverage
 # panel, the tests and a human reviewer can tell WHY, and so a new reason must be added here.
 KNOWN_FORBIDDEN_CODES = {
-    "no_resumable_task": "в рабочем маршруте ноды у платной задачи нет идентификатора провайдера (Outsee) или он недостижим: возобновлять нечего, а повторная отправка может заплатить заново",
-    "paid_no_idempotency": "платный запрос без ключа идемпотентности: после таймаута неизвестно, списаны ли деньги",
-    "paid_uncertain_submit": "исход отправки может быть неизвестен, а деньги уже списаны; управляемый путь только синтетический",
     "external_irreversible": "действие во внешнем аккаунте необратимо: повтор может опубликовать дважды",
-    "destructive_rewrite": "нода целиком заменяет данные проекта: повтор стирает прежний результат",
-    "native_skips_filled_rows": "нативный запуск не перезапрашивает уже заполненные строки: повтор не изменит результат",
     "legacy_node_type": "устаревший тип ноды: управляемый путь только после миграции графа",
 }
 COVERAGE_LEVELS = ("managed", "observed", "human_only")

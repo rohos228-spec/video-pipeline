@@ -495,7 +495,8 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertNotIn('jobs',contract)
         self.assertEqual(contract['compatible_profiles'],[])
         self.assertTrue(contract['verification_status'].startswith('not_checked'))
-        self.assertNotIn('retry_same',before['allowed_actions'])
+        # W5 D05: a split with a typed format incident may take ONE retry_same; a profile needs an approved catalog
+        self.assertIn('retry_same',before['allowed_actions'])
         self.assertNotIn('retry_profile',before['allowed_actions'])
         self.assertEqual((await self.loop.context(record['decision_id']))['context_version'],before['context_version'])
 
@@ -517,7 +518,7 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertEqual(first['compatible_profiles'],[])
         self.assertFalse(first['semantic_quality_verified'])
         self.assertTrue(first['verification_status'].startswith('not_checked'))
-        self.assertNotIn('retry_same',context['allowed_actions'])
+        self.assertIn('retry_same',context['allowed_actions'])   # W5 D05: typed format incident only, nothing applied
         self.assertNotIn('retry_profile',context['allowed_actions'])
         self.assertNotIn('jobs',first)
         async with self.sessions() as s:
@@ -559,7 +560,8 @@ class DecisionDurability(actions_tests.DurableActions):
                 self.assertNotIn('jobs',contract)
 
     async def test_unsupported_native_contract_does_not_claim_media_verification(self):
-        record=await self.native_contract_fixture('hero')
+        # scene_design (legacy) stays unsupported; hero became managed for recovery only (D06)
+        record=await self.native_contract_fixture('scene_design')
         contract=await self.loop.read_contract(record['decision_id'])
         self.assertFalse(contract['managed'])
         self.assertEqual(contract['result_kind'],'unsupported')
@@ -588,8 +590,18 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertEqual(before['eligible_profiles'],[])
         self.assertEqual((await self.loop.context(record['decision_id']))['context_version'],before['context_version'])
 
-    async def test_hero_descriptive_contract_cannot_authorize_generation(self):
-        await self._assert_descriptive_native_contract('hero',None,'hero')
+    async def test_hero_is_managed_for_recovery_only_and_a_text_style_incident_offers_no_retry(self):
+        """D06: hero has the media contract; recovery is a local resume of a recorded result (media_local_resume),
+        so an invalid_json style incident never offers a restart, a profile or a generation."""
+        record=await self.native_contract_fixture('hero',None)
+        before=await self.loop.context(record['decision_id'])
+        result=await self.loop.read_contract(record['decision_id'])
+        self.assertTrue(result['managed'])
+        self.assertEqual(result['result_kind'],'image')
+        self.assertIn('jobs',result)
+        for action in ('retry_same','retry_profile'):
+            self.assertNotIn(action,before['allowed_actions'])
+        self.assertEqual(before['eligible_profiles'],[])
 
     async def test_legacy_scene_design_descriptive_contract_cannot_authorize_generation(self):
         await self._assert_descriptive_native_contract('scene_design',None,'scene_design')

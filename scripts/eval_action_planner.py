@@ -12,6 +12,11 @@ Only VIBECODE_API_KEY / VIBECODE_BASE_URL / GPT_RELAY_TOKEN / GPT_PROXY_URL / GP
 Cases with context.attachments ([{kind, name, size}]) get fake attachments (no files, no paths shown to the model):
 the server fills source_path of the upload step from the attachment id, as in the real command line.
 The scoring helpers (load_cases, sample_cases, score_case) are offline and unit-tested.
+--set main|heldout|both picks the fixture: main = tests/fixtures/action_planner_eval.json, heldout =
+tests/fixtures/action_planner_heldout.json (a held-out sample written in other wording; never tune rules on it).
+The report always has the metrics per set (``by_set``), so the held-out number is separate; transport errors
+are counted apart (``transport_errors``) and also give ``*_no_transport`` figures that leave them out.
+Cases with ``requires_action`` are skipped while that action is not in the registry (reported as ``skipped``).
 """
 from __future__ import annotations
 
@@ -27,6 +32,8 @@ from pathlib import Path
 
 _ENV = ("VIBECODE_API_KEY", "VIBECODE_BASE_URL", "GPT_RELAY_TOKEN", "GPT_PROXY_URL", "GPT_BASE_URL")
 FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_eval.json"
+HELDOUT_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout.json"
+SETS = ("main", "heldout", "both")
 
 
 def load_env(path: str) -> dict:
@@ -42,6 +49,49 @@ def load_env(path: str) -> dict:
 
 def load_cases(path: Path = FIXTURE) -> list[dict]:
     return json.loads(Path(path).read_text(encoding="utf-8"))["cases"]
+
+
+def load_heldout(path: Path = HELDOUT_FIXTURE) -> list[dict]:
+    return load_cases(path)
+
+
+def tag_set(cases: list[dict], name: str) -> list[dict]:
+    """Копии случаев с пометкой набора (``set``): по ней отчёт считает метрики раздельно."""
+    return [{**c, "set": name} for c in cases]
+
+
+def check_disjoint(main: list[dict], heldout: list[dict]) -> list[str]:
+    """Нарушения неприкосновенности отложенной выборки: общие id или совпадающий (без регистра/пробелов) текст."""
+    def norm(t: str) -> str:
+        return " ".join(str(t).lower().replace("ё", "е").split())
+
+    bad = [f"id {i}" for i in {c["id"] for c in main} & {c["id"] for c in heldout}]
+    texts = {norm(c["text"]) for c in main}
+    bad += [f"text {c['id']}" for c in heldout if norm(c["text"]) in texts]
+    return bad
+
+
+def load_selected(which: str) -> list[dict]:
+    """Случаи выбранного набора (main, heldout, both) с пометкой ``set``; both = main затем heldout."""
+    if which not in SETS:
+        raise ValueError(f"--set must be one of {SETS}, got {which!r}")
+    main, held = tag_set(load_cases(), "main"), tag_set(load_heldout(), "heldout")
+    bad = check_disjoint(main, held)
+    if bad:
+        raise ValueError(f"held-out set overlaps the main set: {bad[:5]}")
+    return {"main": main, "heldout": held, "both": main + held}[which]
+
+
+def runnable(cases: list[dict], registry) -> tuple[list[dict], list[str]]:
+    """(случаи, которые можно гонять; id пропущенных): ``requires_action`` ещё не в реестре - пропуск."""
+    keep, skipped = [], []
+    for c in cases:
+        need = c.get("requires_action")
+        if need and registry.find(need) is None:
+            skipped.append(c["id"])
+        else:
+            keep.append(c)
+    return keep, skipped
 
 
 def sample_cases(cases: list[dict], n: int) -> list[dict]:
@@ -173,7 +223,8 @@ def score_case(case: dict, steps: list[dict], clarification: str | None, error_c
     kind = case["outcome"]
     got = [s.get("action_id") for s in steps]
     row = {"id": case["id"], "outcome": kind, "got_actions": got, "clarified": bool(clarification),
-           "error": error_code}
+           "error": error_code, "set": case.get("set", "main"),
+           "transport_error": error_code == "transport_error"}
     if kind == "plan":
         want = [s["action_id"] for s in case["steps"]]
         row["ids_ok"] = got == want
@@ -210,7 +261,22 @@ def summarize(rows: list[dict]) -> dict:
         "avg_prompt_tokens": round(sum(r.get("prompt_tokens", 0) for r in rows) / max(1, len(rows))),
         "est_cost_usd": round(sum(r.get("est_cost_usd") or 0.0 for r in rows), 5),
         "failed_ids": [r["id"] for r in rows if not r.get("ok")],
+        "transport_errors": sum(1 for r in rows if r.get("transport_error")),
+        "accuracy_no_transport": _ratio([r for r in rows if not r.get("transport_error")],
+                                        lambda r: r.get("ok")),
+        "plan_ids_exact_no_transport": _ratio([r for r in plans if not r.get("transport_error")],
+                                              lambda r: r.get("ids_ok")),
     }
+
+
+def _ratio(rows: list[dict], pred) -> float:
+    return round(sum(1 for r in rows if pred(r)) / max(1, len(rows)), 3)
+
+
+def summarize_by_set(rows: list[dict]) -> dict:
+    """{набор: summarize(строки набора)}: отложенная выборка считается отдельно от основной."""
+    names = sorted({r.get("set", "main") for r in rows})
+    return {n: summarize([r for r in rows if r.get("set", "main") == n]) for n in names}
 
 
 def _load_seed_module():
@@ -231,6 +297,8 @@ async def main() -> int:
     parser.add_argument("--project-id", type=int, default=2)
     parser.add_argument("--seed-realistic", action=argparse.BooleanOptionalAction, default=True,
                         help="fill the project with frames, files, queue, nodes, proposals, prompt variants")
+    parser.add_argument("--set", dest="case_set", choices=SETS, default="main",
+                        help="main = основной набор, heldout = отложенная выборка, both = оба (метрики раздельно)")
     parser.add_argument("--max-requests", type=int, default=10)
     parser.add_argument("--only", default="", help="comma-separated case ids to run (cheap re-run of failures)")
     parser.add_argument("--max-usd", type=float, default=0.10)
@@ -249,7 +317,7 @@ async def main() -> int:
         print(str(exc))
         return 2
     try:
-        select_cases(load_cases(), args.only, args.max_requests)  # unknown ids fail before anything starts
+        select_cases(load_selected(args.case_set), args.only, args.max_requests)  # unknown ids fail early
     except ValueError as exc:
         print(str(exc))
         return 2
@@ -316,15 +384,21 @@ async def main() -> int:
                    attempts=meta.get("attempts"), applied_defaults=meta.get("applied_defaults"))
         return row
 
-    cases = shard_cases(select_cases(load_cases(), args.only, args.max_requests), shard_i, shard_n)
+    from app.services.action_layer.spec import registry as live_registry
+    pool, skipped = runnable(load_selected(args.case_set), live_registry)
+    if skipped:
+        print(f"skipped (action not in registry): {skipped}")
+    cases = shard_cases(select_cases(pool, args.only, args.max_requests), shard_i, shard_n)
     budget = SpendBudget(args.max_usd, floor_usd=args.est_usd)
     rows = await run_cases(cases, run_one, concurrency=args.concurrency, budget=budget,
                            on_row=lambda r: print(json.dumps(r, ensure_ascii=False, default=str), flush=True))
     if budget.stopped:
         print(f"stopped: estimated spend {budget.spent:.4f} USD reached --max-usd {args.max_usd} "
               f"({len(rows)} of {len(cases)} cases ran)")
-    report = {"summary": summarize(rows), "rows": rows, "shard": args.shard, "concurrency": args.concurrency}
+    report = {"summary": summarize(rows), "by_set": summarize_by_set(rows), "skipped": skipped,
+              "rows": rows, "shard": args.shard, "concurrency": args.concurrency}
     print(json.dumps(report["summary"], ensure_ascii=False))
+    print(json.dumps({"by_set": report["by_set"]}, ensure_ascii=False))
     if args.out:
         Path(args.out).write_text(json.dumps(report, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
     return 0

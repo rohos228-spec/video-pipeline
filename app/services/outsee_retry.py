@@ -990,6 +990,8 @@ async def generate_image_with_retries(
     from app.settings import settings as _settings
 
     fallback_done = bool(kwargs.pop("_image_model_fallback_done", False))
+    # D03: the step asks for request-key idempotency (images/hero/items); never forwarded to the bot.
+    idem_flag = bool(kwargs.pop("idempotent", False))
     raw_slug = kwargs.get("model_slug") or getattr(
         _settings, "outsee_default_image_model", None
     )
@@ -1016,6 +1018,32 @@ async def generate_image_with_retries(
     if backend == "kie" and outsee is None:
         # Раньше здесь был AttributeError на outsee.generate_image; маршрут и платное поведение не менялись.
         raise KieSlugWithoutOutseeBotError(str(raw_slug) if raw_slug else None)
+    idem_ctx = None
+    if idem_flag:
+        from app.services import outsee_idempotency
+        idem_ctx = outsee_idempotency.make_ctx(kwargs.get("project_id"), out_path, raw_slug, prompt)
+        if not idem_ctx.usable:
+            idem_ctx = None
+        else:
+            adopted = await outsee_idempotency.check(idem_ctx)  # uncertain -> raises, nothing is sent
+            if adopted is not None:
+                logger.warning(
+                    "outsee_retry: {} — платный результат этого запроса уже записан ({}); новый запрос не отправляю",
+                    idem_ctx.key, Path(adopted["file_path"]).name,
+                )
+                return outsee_idempotency.adopted_result(adopted)
+
+    async def _paid(call: Any, sent: str) -> Any:
+        if idem_ctx is None:
+            return await call()
+        from app.services import outsee_idempotency as _idem
+        return await _idem.run(idem_ctx, call, sent_prompt=sent)
+
+    async def _idem_downloaded(exc: BaseException, dl_result: Any) -> None:
+        if idem_ctx is not None:
+            from app.services import outsee_idempotency as _idem
+            await _idem.record_download(idem_ctx, exc, dl_result)
+
     last_err: OutseeImageError | None = None
     current_prompt = prompt
     base_prompt_id = kwargs.get("prompt_id_prefix")
@@ -1100,7 +1128,7 @@ async def generate_image_with_retries(
                             logger.debug("kie sidecar write skipped", exc_info=True)
                         return result
                     if use_outsee_api:
-                        result = await outsee_api_generate_image(
+                        result = await _paid(lambda: outsee_api_generate_image(
                             send_prompt,
                             out_path,
                             model_slug=slug,
@@ -1112,7 +1140,7 @@ async def generate_image_with_retries(
                             timeout=float(attempt_kwargs.get("timeout") or 600),
                             gen_id=attempt_kwargs.get("gen_id"),
                             project_id=pid if isinstance(pid, int) else None,
-                        )
+                        ), send_prompt)
                         try:
                             from app.services.generation_storage import write_sidecar
 
@@ -1139,9 +1167,9 @@ async def generate_image_with_retries(
                         send_prompt, out_path, **attempt_kwargs
                     )
                 media_spend.assert_submit_allowed("outsee", "browser image")
-                return await outsee.generate_image(
+                return await _paid(lambda: outsee.generate_image(
                     send_prompt, out_path, **attempt_kwargs
-                )
+                ), send_prompt)
             except StepCancelledError:
                 raise
             except OutseeDownloadError as e:
@@ -1166,14 +1194,16 @@ async def generate_image_with_retries(
                                 from app.bots.outsee_http import _download
 
                                 await _download(img_url, out_path)
-                                return GenerationResult(
+                                dl_result = GenerationResult(
                                     file_path=out_path,
                                     raw_url=img_url,
                                     gen_id=gen_id or None,
                                 )
+                                await _idem_downloaded(e, dl_result)
+                                return dl_result
                             if outsee is None:
                                 raise last_err or e
-                            return await outsee.retry_image_download(
+                            dl_result = await outsee.retry_image_download(
                                 img_url=img_url,
                                 out_path=out_path,
                                 gen_id=gen_id,
@@ -1183,6 +1213,8 @@ async def generate_image_with_retries(
                                 project_id=pid if isinstance(pid, int) else None,
                                 model_slug=attempt_kwargs.get("model_slug"),
                             )
+                            await _idem_downloaded(e, dl_result)
+                            return dl_result
                         except OutseeImageError as dl_err:
                             last_err = dl_err
                             logger.warning(
@@ -1357,6 +1389,7 @@ async def generate_image_with_retries(
         fb_kwargs["model_slug"] = fb
         fb_kwargs.pop("quality", None)
         fb_kwargs["_image_model_fallback_done"] = True
+        fb_kwargs["idempotent"] = idem_flag
         return await generate_image_with_retries(
             outsee,
             gpt,

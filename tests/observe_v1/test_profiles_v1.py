@@ -49,7 +49,8 @@ class Profiles(DecisionDurability):
 
     async def test_marked_scene_profiles_rejected_despite_excel_gpt_ui_type(self):
         from app.models import WorkflowRun
-        for marker in ('skeleton','assemble','camera'):
+        # 'assemble' (sd_assemble) is admitted since W5-3: one retry, only invalid_json/missing_payload
+        for marker in ('skeleton','camera'):
             with self.subTest(marker=marker):
                 async with self.sessions() as s:
                     run=await s.get(WorkflowRun,11)

@@ -5,7 +5,11 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+import re
+from dataclasses import dataclass
+from typing import Annotated, Any, Awaitable, Callable
+
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -80,6 +84,73 @@ def _operator(token: str | None) -> approval.OperatorIdentity:
     return approval.OperatorIdentity.from_token(token)
 
 
+# --- D12: Idempotency-Key и X-Action-Layer-Operator на изменяющих ручках слоя действий ----------------------
+# Только этот роутер: остальные эндпоинты приложения заголовок ключа сами не разбирают (оператора в журнал
+# изменяющих запросов записывает operator_audit). Повтор с тем же ключом и тем же запросом отдаёт ответ первой
+# попытки и не исполняется второй раз; тот же ключ с другим запросом считается другим вызовом; начатая и не
+# завершённая попытка блокирует слепой повтор (409), потому что исход неизвестен.
+
+_IDEM_KEY_RE = re.compile(r"^[A-Za-z0-9_.:\-]{1,80}$")
+
+
+@dataclass(frozen=True)
+class IdemHeaders:
+    key: str | None
+    operator: str
+
+
+def _idem_headers(
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    operator_header: Annotated[str | None, Header(alias="X-Action-Layer-Operator")] = None,
+) -> IdemHeaders:
+    from app.services.action_layer.context import normalize_operator
+
+    key = (idempotency_key or "").strip() or None
+    if key is not None and not _IDEM_KEY_RE.match(key):
+        raise HTTPException(422, detail={
+            "code": "bad_idempotency_key",
+            "message": "Idempotency-Key: 1-80 символов из A-Z a-z 0-9 _ . : -"})
+    return IdemHeaders(key=key, operator=normalize_operator(operator_header) if operator_header else "")
+
+
+IdemDep = Annotated[IdemHeaders, Depends(_idem_headers)]
+
+
+async def _once(request: Request, idem: IdemHeaders, who: approval.OperatorIdentity,
+                call: Callable[[], Awaitable[Any]], *, body: Any = None) -> Any:
+    """Выполняет ``call`` не более одного раза на (Idempotency-Key, запрос). Без ключа - просто вызов."""
+    if not idem.key:
+        return await call()
+    from sqlalchemy.exc import SQLAlchemyError
+
+    fp = store.call_fingerprint(request.method, request.url.path,
+                                params=sorted(request.query_params.multi_items()), body=body)
+    actor = idem.operator or who.id
+    try:
+        state, row = await store.claim_call(idem.key, fp, method=request.method, path=request.url.path,
+                                            operator=actor)
+    except SQLAlchemyError:
+        # Журнала вызовов нет (БД до миграции 0016): без дедупликации, не ломая запрос.
+        return await call()
+    if state == "done":
+        if row is not None and row.response_omitted:
+            return {"idempotent_replay": True, "response_omitted": True}
+        return row.response if row is not None else {"idempotent_replay": True}
+    if state == "unknown":
+        raise HTTPException(409, detail={
+            "code": "idempotency_unknown",
+            "message": "Предыдущая попытка с этим Idempotency-Key началась и не завершилась записью исхода: "
+                       "результат неизвестен, повтор запрещён. Проверьте состояние вручную."})
+    try:
+        result = await call()
+    except HTTPException as exc:
+        await store.finish_call(idem.key, fp, ok=False, http_status=exc.status_code)
+        raise
+    # Обрыв или внутренняя ошибка: запись остаётся 'started', исход неизвестен, слепой повтор запрещён.
+    await store.finish_call(idem.key, fp, ok=True, http_status=200, response=result)
+    return result
+
+
 @router.get("/catalog")
 async def catalog(operator: AuthDep, risk: str | None = Query(None),
                   prefix: str | None = Query(None)) -> dict:
@@ -89,22 +160,31 @@ async def catalog(operator: AuthDep, risk: str | None = Query(None),
 
 
 @router.post("/plans/preview", dependencies=[LocalOnlyDep])
-async def preview_plan(request: Request, body: PlanIn, operator: AuthDep) -> dict:
+async def preview_plan(request: Request, body: PlanIn, operator: AuthDep, idem: IdemDep) -> dict:
     who = _operator(operator)
-    try:
-        plan_id, preview = await service.create_plan(
-            request.app, [s.model_dump() for s in body.steps], operator=who,
-            request_text=body.request_text)
-    except PlanFormatError as exc:
-        raise HTTPException(422, detail={"code": "bad_plan", "message": str(exc)}) from exc
-    if plan_id is None:
-        raise HTTPException(422, detail={"code": "plan_invalid", "preview": preview})
-    return {"plan_id": plan_id, "preview": preview}
+
+    async def call() -> dict:
+        try:
+            plan_id, preview = await service.create_plan(
+                request.app, [s.model_dump() for s in body.steps], operator=who,
+                request_text=body.request_text)
+        except PlanFormatError as exc:
+            raise HTTPException(422, detail={"code": "bad_plan", "message": str(exc)}) from exc
+        if plan_id is None:
+            raise HTTPException(422, detail={"code": "plan_invalid", "preview": preview})
+        return {"plan_id": plan_id, "preview": preview}
+
+    return await _once(request, idem, who, call, body=body.model_dump())
 
 
 @router.post("/plans/from-text", dependencies=[LocalOnlyDep])
-async def plan_from_text(request: Request, body: FromTextIn, operator: AuthDep) -> dict:
+async def plan_from_text(request: Request, body: FromTextIn, operator: AuthDep, idem: IdemDep) -> dict:
     """Запрос -> планировщик -> только preview (proposed). Не подтверждает и не запускает."""
+    who = _operator(operator)
+    return await _once(request, idem, who, lambda: _plan_from_text(request, body, operator), body=body.model_dump())
+
+
+async def _plan_from_text(request: Request, body: FromTextIn, operator: str | None) -> dict:
     who = _operator(operator)
     try:
         refs = await attachments.resolve(body.attachments, body.project_id)
@@ -194,8 +274,13 @@ async def delete_macro(macro_id: str, operator: AuthDep) -> dict:
 
 
 @router.post("/plans/from-macro", dependencies=[LocalOnlyDep])
-async def plan_from_macro(request: Request, body: FromMacroIn, operator: AuthDep) -> dict:
+async def plan_from_macro(request: Request, body: FromMacroIn, operator: AuthDep, idem: IdemDep) -> dict:
     """Макрос -> шаги -> тот же preview, что у /plans/preview. Ничего не запускает."""
+    who = _operator(operator)
+    return await _once(request, idem, who, lambda: _plan_from_macro(request, body, operator), body=body.model_dump())
+
+
+async def _plan_from_macro(request: Request, body: FromMacroIn, operator: str | None) -> dict:
     who = _operator(operator)
     ensure_builtin_actions()
     try:
@@ -230,35 +315,43 @@ async def plan_from_macro(request: Request, body: FromMacroIn, operator: AuthDep
 
 
 @router.post("/plans/{plan_id}/approve", dependencies=[LocalOnlyDep])
-async def approve(request: Request, plan_id: str, operator: AuthDep,
+async def approve(request: Request, plan_id: str, operator: AuthDep, idem: IdemDep,
                   body: EmptyBody | None = None) -> dict:
     who = _operator(operator)
-    try:
-        return await service.approve_plan(request.app, plan_id, who)
-    except planner.StalePlan as exc:
-        raise _stale(exc) from exc
-    except LookupError as exc:
-        raise HTTPException(404, detail="План не найден.") from exc
-    except approval.ApprovalError as exc:
-        raise HTTPException(409, detail={"code": exc.code, "message": str(exc)}) from exc
+
+    async def call() -> dict:
+        try:
+            return await service.approve_plan(request.app, plan_id, who)
+        except planner.StalePlan as exc:
+            raise _stale(exc) from exc
+        except LookupError as exc:
+            raise HTTPException(404, detail="План не найден.") from exc
+        except approval.ApprovalError as exc:
+            raise HTTPException(409, detail={"code": exc.code, "message": str(exc)}) from exc
+
+    return await _once(request, idem, who, call)
 
 
 @router.post("/plans/{plan_id}/run", dependencies=[LocalOnlyDep])
-async def run(request: Request, plan_id: str, operator: AuthDep,
+async def run(request: Request, plan_id: str, operator: AuthDep, idem: IdemDep,
               body: EmptyBody | None = None) -> dict:
     who = _operator(operator)
-    try:
-        await service.prepare_run(plan_id, who)
-    except planner.StalePlan as exc:
-        raise _stale(exc) from exc
-    except LookupError as exc:
-        raise HTTPException(404, detail="План не найден.") from exc
-    except approval.ApprovalError as exc:
-        raise HTTPException(403, detail={"code": exc.code, "message": str(exc)}) from exc
-    except service.RunRefused as exc:
-        raise HTTPException(409, detail={"code": exc.code, "message": str(exc)}) from exc
-    executor.launch(request.app, plan_id, who.id)
-    return {"plan_id": plan_id, "status": "running"}
+
+    async def call() -> dict:
+        try:
+            await service.prepare_run(plan_id, who)
+        except planner.StalePlan as exc:
+            raise _stale(exc) from exc
+        except LookupError as exc:
+            raise HTTPException(404, detail="План не найден.") from exc
+        except approval.ApprovalError as exc:
+            raise HTTPException(403, detail={"code": exc.code, "message": str(exc)}) from exc
+        except service.RunRefused as exc:
+            raise HTTPException(409, detail={"code": exc.code, "message": str(exc)}) from exc
+        executor.launch(request.app, plan_id, who.id)
+        return {"plan_id": plan_id, "status": "running"}
+
+    return await _once(request, idem, who, call)
 
 
 @router.get("/plans")
@@ -277,12 +370,17 @@ async def get_plan(plan_id: str, operator: AuthDep) -> dict:
 
 
 @router.post("/plans/{plan_id}/stop", dependencies=[LocalOnlyDep])
-async def stop(plan_id: str, operator: AuthDep, body: EmptyBody | None = None) -> dict:
+async def stop(request: Request, plan_id: str, operator: AuthDep, idem: IdemDep,
+               body: EmptyBody | None = None) -> dict:
     who = _operator(operator)
-    try:
-        return await executor.request_stop(plan_id, who.id)
-    except LookupError as exc:
-        raise HTTPException(404, detail="План не найден.") from exc
+
+    async def call() -> dict:
+        try:
+            return await executor.request_stop(plan_id, who.id)
+        except LookupError as exc:
+            raise HTTPException(404, detail="План не найден.") from exc
+
+    return await _once(request, idem, who, call)
 
 
 @router.get("/history")

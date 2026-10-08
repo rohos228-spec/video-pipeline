@@ -108,7 +108,9 @@ async def test_backend_error_becomes_failed_step(env) -> None:
          "params": {"project_id": project, "frame_id": 987654, "text": "x"}},
         {"action_id": "montage.get_board", "params": {"project_id": project}}])
     assert view["status"] == "failed"
-    assert view["steps"][0]["status"] == "failed" and "HTTP 404" in view["steps"][0]["error"]
+    assert view["steps"][0]["status"] == "failed" and (
+        # D11: the previous value is read BEFORE the edit; a missing frame stops the step there ("edit not started")
+        "HTTP 404" in view["steps"][0]["error"] or "правка не начата" in view["steps"][0]["error"])
     assert view["steps"][1]["status"] == "skipped"
 
 

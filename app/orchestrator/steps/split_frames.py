@@ -35,6 +35,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
         await session.flush()
         return
 
+    # D05: in a supervised retry refuse (before any model request) to replace frames that carry work; in a
+    # managed attempt keep the pre-replacement frames so a failed post-write check can give them back.
+    from app.services.node_capabilities import prepare_split_replacement
+
+    await prepare_split_replacement(session, project)
+
     result = await xsr.run_split_xlsx(project)
     # Never hand an unverified answer to replace_all_frames (it is irreversible:
     # frames, prompt versions and artifact links are recreated under new UUIDs).

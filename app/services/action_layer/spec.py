@@ -241,6 +241,8 @@ def _builtin_spec_list() -> list:
         from app.services.action_layer.builtin_media_recovery import register_media_recovery_actions
         from app.services.action_layer.builtin_montage import register_montage_actions
         from app.services.action_layer.builtin_wave3 import register_wave3
+        from app.services.action_layer.builtin_wave5 import register_wave5
+        from app.services.action_layer.publish_action import register_publish_actions
 
         staging = ActionRegistry()
         register_montage_actions(staging)
@@ -248,6 +250,11 @@ def _builtin_spec_list() -> list:
         register_wave3(staging)
         register_change_actions(staging)
         register_media_recovery_actions(staging)
+        register_wave5(staging)
+        # D15: publication is destructive + irreversible: every plan with it needs a one-time human approval of that
+        # exact plan, the managed (agent) mode is refused by a precondition, and SOCIAL_PUBLISH_ENABLED=false (the
+        # default) makes the step publish nothing. No auto-start: a person approves EACH publication.
+        register_publish_actions(staging)
         _builtin_specs = staging.list()
     return _builtin_specs
 

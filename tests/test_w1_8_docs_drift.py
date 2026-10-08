@@ -27,7 +27,7 @@ def coverage() -> dict:
 
 def test_registry_numbers_are_the_agreed_ones(coverage):
     s = coverage["summary"]
-    assert (s["managed"], s["observed"], s["human_only"]) == (14, 9, 1)
+    assert (s["managed"], s["observed"], s["human_only"]) == (17, 6, 1)
     assert s["total"] == 24
 
 
@@ -72,7 +72,7 @@ def test_node_coverage_confirmation_table_matches_registry(coverage):
 
 def test_node_coverage_doc_names_current_levels(coverage):
     text = _doc("NODE_COVERAGE.md")
-    assert "14 под управлением / 9 под наблюдением / 1 только человек" in text
+    assert "17 под управлением / 6 под наблюдением / 1 только человек" in text
     assert "11 под управлением, 12 под наблюдением" not in text
 
 
@@ -80,7 +80,7 @@ def test_security_defaults_lists_all_migrations():
     from app.services.schema_migrations import MIGRATIONS
     ids = [m.id for m in MIGRATIONS]
     text = _doc("SECURITY_DEFAULTS.md")
-    assert ids[0] == "0001_observation_core" and ids[-1].startswith("0015")
+    assert ids[0] == "0001_observation_core" and ids[-1].startswith("0016")
     assert f"`{ids[0]}` … `{ids[-1]}`" in text
     assert f"всего {len(ids)}" in text
     assert "`0001` … `0009_projects_columns`" not in text

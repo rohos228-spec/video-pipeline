@@ -90,7 +90,8 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
 
     # ---- admission by node type -------------------------------------------------------
     async def test_plan_and_script_exhausted_invalid_json_without_inner_retry_is_admitted(self):
-        for node_type in ('plan', 'script'):
+        # W5 D05: split and image_prompts (nothing written before the typed failure) are admitted the same way.
+        for node_type in ('plan', 'script', 'split', 'image_prompts'):
             with self.subTest(node_type=node_type):
                 await self.asyncTearDown()
                 await self.asyncSetUp()
@@ -104,7 +105,7 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(ticket['preconditions']['no_partial_apply'])
 
     async def test_plan_and_script_profile_recovery_is_admitted_through_reservation(self):
-        for node_type in ('plan', 'script'):
+        for node_type in ('plan', 'script', 'split', 'image_prompts'):
             with self.subTest(node_type=node_type):
                 await self.asyncTearDown()
                 await self.asyncSetUp()
@@ -114,8 +115,8 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(ticket['preconditions']['action_type'], 'retry_profile')
                 self.assertEqual(ticket['preconditions']['profile_overlay_id'], overlay_id)
 
-    async def test_split_and_image_prompts_are_still_denied_by_capability(self):
-        for node_type in ('split', 'image_prompts'):
+    async def test_media_nodes_are_still_denied_by_capability(self):
+        for node_type in ('audio', 'images'):
             for profile in (False, True):
                 with self.subTest(node_type=node_type, profile=profile):
                     await self.asyncTearDown()
@@ -156,11 +157,20 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(ticket['preconditions']['effective_node_type'], node_type)
                     self.assertEqual(ticket['preconditions']['action_type'], 'retry_same')
                     self.assertIn('retry_same', ticket['preconditions']['capability_actions'])
-                    self.assertNotIn('retry_profile', ticket['preconditions']['capability_actions'])
+                    # W5 D05: sfx_plan also carries retry_profile; animation_prompts (image strip) never does
+                    self.assertEqual('retry_profile' in ticket['preconditions']['capability_actions'],
+                                     node_type == 'sfx_plan')
                     self.assertEqual(ticket['budget_state']['recovery_limit'], 1)
 
-    async def test_sfx_plan_and_animation_prompts_profile_retry_is_denied_by_capability(self):
-        for node_type in ('sfx_plan', 'animation_prompts'):
+    async def test_sfx_plan_profile_retry_is_admitted_through_reservation(self):
+        await self.text_fixture('sfx_plan')
+        overlay_id = await self.approved_profile_fixture()
+        ticket = await self.retry(profile_overlay_id=overlay_id)
+        self.assertEqual(ticket['preconditions']['action_type'], 'retry_profile')
+        self.assertEqual(ticket['preconditions']['profile_overlay_id'], overlay_id)
+
+    async def test_animation_prompts_profile_retry_is_denied_by_capability(self):
+        for node_type in ('animation_prompts',):
             with self.subTest(node_type=node_type):
                 await self.asyncTearDown()
                 await self.asyncSetUp()
@@ -352,7 +362,8 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
     async def test_profile_base_gate_by_capability_for_each_node_type(self):
         """ProfilesSupervisor._base: text nodes with the flag pass the capability gate; the others
         are refused with the capability reason (or fail later on a different, non-capability guard)."""
-        expectations = {'plan': True, 'script': True, 'excel_gpt': True, 'split': False, 'image_prompts': False}
+        expectations = {'plan': True, 'script': True, 'excel_gpt': True, 'split': True, 'image_prompts': True,
+                        'sfx_plan': True, 'sd_assemble': True, 'animation_prompts': False, 'audio': False}
         for node_type, allowed in expectations.items():
             with self.subTest(node_type=node_type):
                 await self.asyncTearDown()

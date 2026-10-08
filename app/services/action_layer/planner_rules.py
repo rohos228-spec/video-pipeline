@@ -116,11 +116,31 @@ def fill_defaults(action_id: str, params: dict, facts: dict | None, schema: dict
         out["max_image_ops"] = n
         notes.append(f"max_image_ops={n} (по размеру сцены)")
 
+    if action_id == "publish.send":
+        _fill_publish(out, facts, notes)
+
     _frame_ids_to_numbers(out, props, facts, notes)
     _fill_shots(action_id, out, facts, notes)
 
     _normalize_values(action_id, out, notes)
     return Filled(out, notes)
+
+
+def _fill_publish(out: dict, facts: dict, notes: list[str]) -> None:
+    """Подпись публикации задаёт СЕРВЕР, а не модель: значение модели отбрасывается.
+
+    Подпись - тема проекта (недоверенный текст) и в промпт не идёт, поэтому модель не может её знать,
+    а подмена подписи через инъекцию не пройдёт. Площадки подставляются сервером, если модель их не
+    назвала; названные моделью остаются как есть, чтобы расхождение с тем, что опубликует шаг,
+    отказало в предусловии публикации и было видно в превью (молча заменять выбор человека нельзя)."""
+    server = facts.get("publish_server") or {}
+    out.pop("caption", None)
+    if server.get("caption"):
+        out["caption"] = server["caption"]
+    if "platforms" not in out and server.get("platforms"):
+        out["platforms"] = list(server["platforms"])
+    if server.get("caption"):
+        notes.append("подпись публикации подставлена сервером из темы проекта")
 
 
 _NUMBER_KEYS = ("frame_number", "a_frame", "b_frame", "from_frame", "to_frame", "parent_number")
@@ -423,6 +443,20 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "change.apply": ("примен", "apply", "внес", "внеси", "примени", "прмен", "накат", "активир"),
     "change.rollback": ("откат", "откач", "верни", "вернуть", "назад", "отмен", "прежн"),
     "project.set_auto_mode": ("автопродвиж", "автореж", "автомат", "auto"),
+    # Действия W5-4: платное, разрушающее или необратимое выполняется только по прямой просьбе.
+    "step.run_step": ("запуст", "прогон", "прогна", "старт", "run", "выполн", "гони", "пуск", "сгенер",
+                      "генерир", "запусти"),
+    "hitl.approve": ("одобр", "подтверд", "принят", "принять", "утверд", "согласу", "approve", "аппрув"),
+    "hitl.reject": ("отклон", "забрак", "отказ", "reject", "завал"),
+    "hitl.regenerate": ("перегенер", "заново", "переделай", "переделат", "повтор", "regenerate"),
+    "history.rollback": ("откат", "откач", "верни", "вернуть", "назад", "отмен", "прежн", "rollback"),
+    "massfactory.start": ("фабрик", "массов", "серию", "серия", "партию", "партия", "запуст", "старт"),
+    "project.upload_xlsx": ("xlsx", "эксел", "excel", "таблиц", "загруз", "залей", "залить", "upload",
+                            "замен", "подмен"),
+    "hero.replace_image": ("загруз", "залей", "залить", "upload", "замен", "подмен", "положи", "прикреп"),
+    "storage.clear_files": _DELETE + ("сброс", "сбрас"),
+    "publish.send": ("опублик", "публикац", "публик", "выложи", "выкла", "запост", "постни", "publish",
+                     "разошли", "отправь на площад", "залей на"),
     "montage.set_anchors": ("якор", "anchor"),
     "montage.set_scene_chain": ("цепоч", "последовательн", "разбер", "действи"),
 }

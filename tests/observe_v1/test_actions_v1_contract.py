@@ -533,15 +533,17 @@ class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(get_permission(7), permission)
         self.assertIsNone(restricted_node(7))
 
-    # plan/script were denied here until their native executors were shown sound for the
-    # bounded recovery. Their admission (retry_same/retry_profile, no inner json_retry, body
-    # identity modulo attachment stamps) is asserted in tests/observe_v1/test_text_nodes_recovery.py;
-    # split/image_prompts stay denied below.
-    async def test_retry_same_denies_native_split_with_inherited_grant(self):
-        await self.assert_retry_denied('split')
+    # plan/script, and since W5 D05 also split/image_prompts/sfx_plan/sd_assemble, were denied here until their native
+    # executors were shown sound for the bounded recovery. Their admission (retry_same/retry_profile, no inner
+    # json_retry, body identity modulo attachment stamps) is asserted in tests/observe_v1/test_text_nodes_recovery.py
+    # and tests/observe_v1/w5_d05_split_image_prompts_admission_test.py. Nodes that stay denied are used below.
+    # D06: audio / sfx_gen / images are admitted for MEDIA incidents only (a local resume of a recorded result); a
+    # text-style (invalid_json) restart or a profile retry never reaches them.
+    async def test_retry_same_denies_audio_with_inherited_grant(self):
+        await self.assert_retry_denied('audio', reason='admitted for media incidents only')
 
-    async def test_retry_profile_denies_native_split_with_inherited_grant(self):
-        await self.assert_retry_denied('split', profile=True)
+    async def test_retry_profile_denies_audio_with_inherited_grant(self):
+        await self.assert_retry_denied('audio', profile=True, reason='admitted for media incidents only')
 
     # sd_agent is managed per type and admitted per agent: a refused agent (camera) never enters a managed
     # scope at all, so it has no inherited grant to retry with (the refusal is the denial).
@@ -552,19 +554,18 @@ class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
     async def test_retry_profile_denies_marked_scene_with_inherited_grant(self):
         with self.assertRaisesRegex(ValueError, "scene agent 'camera' is not admitted"):
             await self.mixed_recovery_fixture('excel_gpt', marker='camera')
-        await self.assert_retry_denied('excel_gpt', marker='assemble', profile=True)
 
-    async def test_retry_same_denies_scene_assembler_with_inherited_grant(self):
-        await self.assert_retry_denied('excel_gpt', marker='assemble')
+    async def test_retry_same_denies_sfx_gen_with_inherited_grant(self):
+        await self.assert_retry_denied('sfx_gen', reason='admitted for media incidents only')
 
-    async def test_retry_profile_denies_scene_assembler_with_inherited_grant(self):
-        await self.assert_retry_denied('excel_gpt', marker='assemble', profile=True)
+    async def test_retry_profile_denies_sfx_gen_with_inherited_grant(self):
+        await self.assert_retry_denied('sfx_gen', profile=True, reason='admitted for media incidents only')
 
-    async def test_retry_same_denies_image_prompts_with_inherited_grant(self):
-        await self.assert_retry_denied('image_prompts')
+    async def test_retry_same_denies_images_with_inherited_grant(self):
+        await self.assert_retry_denied('images', reason='admitted for media incidents only')
 
-    async def test_retry_profile_denies_image_prompts_with_inherited_grant(self):
-        await self.assert_retry_denied('image_prompts', profile=True)
+    async def test_retry_profile_denies_images_with_inherited_grant(self):
+        await self.assert_retry_denied('images', profile=True, reason='admitted for media incidents only')
 
     async def test_retry_same_denies_unsupported_node_with_inherited_grant(self):
         await self.assert_retry_denied('future-unsupported')
@@ -708,7 +709,7 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
              patch('app.services.node_capabilities.observe_image_prompt_result', new=AsyncMock()):
             async with self.sessions() as session:
                 project = await session.get(Project, 7)
-                with self.assertRaisesRegex(RuntimeError, 'capability'):
+                with self.assertRaisesRegex((RuntimeError, ValueError), 'capability|recovery only'):
                     if through_worker:
                         async with observation.observe_attempt(session, project):
                             await body()
@@ -738,29 +739,37 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
     async def test_old_retry_profile_script_claims_once_after_restart(self):
         await self.assert_old_excel_claims_once(profile=True, node_type='script')
 
-    async def test_old_retry_same_split_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('split')
+    # W5 D05: split and image_prompts carry retry capabilities now; a queued ticket for them follows the same
+    # single-claim rule as plan/script (the incident / partial-apply / revision gates stay in recover_node).
+    async def test_old_retry_same_split_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(node_type='split')
 
-    async def test_old_retry_profile_split_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('split', profile=True)
+    async def test_old_retry_profile_split_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(profile=True, node_type='split')
 
-    async def test_old_retry_same_image_prompts_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('image_prompts')
+    async def test_old_retry_same_image_prompts_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(node_type='image_prompts')
 
-    async def test_old_retry_profile_image_prompts_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('image_prompts', profile=True)
+    async def test_old_retry_profile_image_prompts_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(profile=True, node_type='image_prompts')
 
-    async def test_old_retry_same_marked_scene_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('excel_gpt', marker='assemble')
+    async def test_old_retry_same_sd_assemble_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(node_type='sd_assemble')
 
-    async def test_old_retry_profile_marked_scene_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('excel_gpt', marker='assemble', profile=True)
+    async def test_old_retry_profile_sd_assemble_claims_once_after_restart(self):
+        await self.assert_old_excel_claims_once(profile=True, node_type='sd_assemble')
 
-    async def test_old_retry_same_scene_assembler_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('excel_gpt', marker='assemble')
+    async def test_old_retry_same_audio_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('audio')
 
-    async def test_old_retry_profile_scene_assembler_claim_denied_after_restart(self):
-        await self.assert_legacy_claim_denied('excel_gpt', marker='assemble', profile=True)
+    async def test_old_retry_profile_audio_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('audio', profile=True)
+
+    async def test_old_retry_same_images_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('images')
+
+    async def test_old_retry_profile_images_claim_denied_after_restart(self):
+        await self.assert_legacy_claim_denied('images', profile=True)
 
     async def test_old_retry_same_unsupported_claim_denied_after_restart(self):
         await self.assert_legacy_claim_denied('future-unsupported')
@@ -769,10 +778,10 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
         await self.assert_legacy_claim_denied('future-unsupported', profile=True)
 
     async def test_old_native_retry_same_cannot_enter_worker_body_after_restart(self):
-        await self.assert_legacy_claim_denied('split', through_worker=True)
+        await self.assert_legacy_claim_denied('audio', through_worker=True)
 
     async def test_old_native_retry_profile_cannot_activate_profile_or_enter_body_after_restart(self):
-        await self.assert_legacy_claim_denied('split', profile=True, through_worker=True)
+        await self.assert_legacy_claim_denied('audio', profile=True, through_worker=True)
 
     async def assert_old_excel_claims_once(self, *, profile=False, node_type='excel_gpt'):
         from app.services.actions_v1 import ActionRecord

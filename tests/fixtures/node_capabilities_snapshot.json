@@ -155,7 +155,9 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -169,8 +171,8 @@
     "artifact_row"
    ],
    "executor": "generate_audio.run → elevenlabs_api",
-   "managed": false,
-   "native_json_retry": true,
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "audio",
    "phases": [
     "reserved",
@@ -182,7 +184,7 @@
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "recovery_continuation": "none",
    "result_kind": "audio",
    "volatile_attachment_names": false
   },
@@ -191,7 +193,9 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -206,8 +210,8 @@
     "artifact_row"
    ],
    "executor": "generate_audio.run → elevenlabs_api",
-   "managed": false,
-   "native_json_retry": true,
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "audio",
    "phases": [
     "reserved",
@@ -219,7 +223,7 @@
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "recovery_continuation": "none",
    "result_kind": "audio",
    "semantic_quality_verified": false,
    "volatile_attachment_names": false,
@@ -569,31 +573,51 @@
    "actions": [
     "read_events",
     "read_contract",
-    "human_review"
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
     "budget",
     "provider_profile"
    ],
-   "effects": [],
-   "executor": "",
-   "managed": false,
-   "native_json_retry": true,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_hero.run → generate_image_with_retries (Outsee / Kie)",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "hero",
    "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "unsupported",
+   "recovery_continuation": "none",
+   "result_kind": "image",
    "volatile_attachment_names": false
   },
   "contract": {
    "actions": [
     "read_events",
     "read_contract",
-    "human_review"
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -601,17 +625,31 @@
     "provider_profile"
    ],
    "arbitrary_shell_code_paths": false,
-   "effects": [],
-   "executor": "",
-   "managed": false,
-   "native_json_retry": true,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_hero.run → generate_image_with_retries (Outsee / Kie)",
+   "managed": true,
+   "native_json_retry": false,
    "node_type": "hero",
    "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "unsupported",
+   "recovery_continuation": "none",
+   "result_kind": "image",
    "semantic_quality_verified": false,
    "volatile_attachment_names": false,
    "write_authority": "existing worker only"
@@ -623,7 +661,10 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -637,7 +678,7 @@
    ],
    "executor": "generate_image_prompts.run → xlsx_step_runners.run_img_pr_xlsx",
    "managed": true,
-   "native_json_retry": true,
+   "native_json_retry": false,
    "node_type": "image_prompts",
    "phases": [
     "running",
@@ -647,17 +688,20 @@
     "commit",
     "verify"
    ],
-   "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "profile_compatible": true,
+   "recovery_continuation": "none",
    "result_kind": "frame_prompts",
-   "volatile_attachment_names": false
+   "volatile_attachment_names": true
   },
   "contract": {
    "actions": [
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -672,7 +716,7 @@
    ],
    "executor": "generate_image_prompts.run → xlsx_step_runners.run_img_pr_xlsx",
    "managed": true,
-   "native_json_retry": true,
+   "native_json_retry": false,
    "node_type": "image_prompts",
    "phases": [
     "running",
@@ -682,11 +726,11 @@
     "commit",
     "verify"
    ],
-   "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "profile_compatible": true,
+   "recovery_continuation": "none",
    "result_kind": "frame_prompts",
    "semantic_quality_verified": false,
-   "volatile_attachment_names": false,
+   "volatile_attachment_names": true,
    "write_authority": "existing worker only"
   }
  },
@@ -696,7 +740,9 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -710,7 +756,7 @@
    ],
    "executor": "generate_images.run → kie_http",
    "managed": true,
-   "native_json_retry": true,
+   "native_json_retry": false,
    "node_type": "images",
    "phases": [
     "reserved",
@@ -726,7 +772,7 @@
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "recovery_continuation": "none",
    "result_kind": "image",
    "volatile_attachment_names": false
   },
@@ -735,7 +781,9 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -750,7 +798,7 @@
    ],
    "executor": "generate_images.run → kie_http",
    "managed": true,
-   "native_json_retry": true,
+   "native_json_retry": false,
    "node_type": "images",
    "phases": [
     "reserved",
@@ -766,7 +814,7 @@
     "unknown"
    ],
    "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "recovery_continuation": "none",
    "result_kind": "image",
    "semantic_quality_verified": false,
    "volatile_attachment_names": false,
@@ -1280,6 +1328,7 @@
     "wait",
     "human_review",
     "retry_same",
+    "retry_profile",
     "finish"
    ],
    "approval": [
@@ -1304,7 +1353,7 @@
     "commit",
     "verify"
    ],
-   "profile_compatible": false,
+   "profile_compatible": true,
    "recovery_continuation": "none",
    "result_kind": "structured",
    "volatile_attachment_names": false
@@ -1316,6 +1365,7 @@
     "wait",
     "human_review",
     "retry_same",
+    "retry_profile",
     "finish"
    ],
    "approval": [
@@ -1341,7 +1391,7 @@
     "commit",
     "verify"
    ],
-   "profile_compatible": false,
+   "profile_compatible": true,
    "recovery_continuation": "none",
    "result_kind": "structured",
    "semantic_quality_verified": false,
@@ -1357,6 +1407,7 @@
     "wait",
     "human_review",
     "retry_same",
+    "retry_profile",
     "finish"
    ],
    "approval": [
@@ -1381,9 +1432,87 @@
     "commit",
     "verify"
    ],
-   "profile_compatible": false,
+   "profile_compatible": true,
    "recovery_continuation": "none",
    "result_kind": "structured",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "project_database",
+    "local_checkpoint",
+    "local_file"
+   ],
+   "executor": "scene_design.run_assemble → scene_contracts.verify_scene_assembly → pkg:scene_design",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "sd_assemble",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "structured",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "sfx_gen": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "local_file",
+    "project_database"
+   ],
+   "executor": "generate_sfx.run → sfx_gen.generate_sfx_files → elevenlabs_api/local_synth",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "sfx_gen",
+   "phases": [
+    "running",
+    "generating",
+    "writing",
+    "verifying",
+    "verified",
+    "failed",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "audio",
    "volatile_attachment_names": false
   },
   "contract": {
@@ -1402,97 +1531,24 @@
    ],
    "arbitrary_shell_code_paths": false,
    "effects": [
-    "project_database",
-    "local_checkpoint",
-    "local_file"
+    "local_file",
+    "project_database"
    ],
-   "executor": "scene_design.run_assemble → scene_contracts.verify_scene_assembly → pkg:scene_design",
+   "executor": "generate_sfx.run → sfx_gen.generate_sfx_files → elevenlabs_api/local_synth",
    "managed": true,
    "native_json_retry": false,
-   "node_type": "sd_assemble",
+   "node_type": "sfx_gen",
    "phases": [
     "running",
-    "parse",
-    "validate",
-    "apply",
-    "commit",
-    "verify"
+    "generating",
+    "writing",
+    "verifying",
+    "verified",
+    "failed",
+    "unknown"
    ],
    "profile_compatible": false,
    "recovery_continuation": "none",
-   "result_kind": "structured",
-   "semantic_quality_verified": false,
-   "volatile_attachment_names": false,
-   "write_authority": "existing worker only"
-  }
- },
- "sfx_gen": {
-  "asdict": {
-   "actions": [
-    "read_events",
-    "read_contract",
-    "wait",
-    "human_review"
-   ],
-   "approval": [
-    "scope",
-    "budget",
-    "provider_profile"
-   ],
-   "effects": [
-    "local_file",
-    "project_database"
-   ],
-   "executor": "generate_sfx.run → sfx_gen.generate_sfx_files → elevenlabs_api/local_synth",
-   "managed": false,
-   "native_json_retry": true,
-   "node_type": "sfx_gen",
-   "phases": [
-    "running",
-    "generating",
-    "writing",
-    "verifying",
-    "verified",
-    "failed",
-    "unknown"
-   ],
-   "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
-   "result_kind": "audio",
-   "volatile_attachment_names": false
-  },
-  "contract": {
-   "actions": [
-    "read_events",
-    "read_contract",
-    "wait",
-    "human_review"
-   ],
-   "approval": [
-    "scope",
-    "budget",
-    "provider_profile"
-   ],
-   "arbitrary_shell_code_paths": false,
-   "effects": [
-    "local_file",
-    "project_database"
-   ],
-   "executor": "generate_sfx.run → sfx_gen.generate_sfx_files → elevenlabs_api/local_synth",
-   "managed": false,
-   "native_json_retry": true,
-   "node_type": "sfx_gen",
-   "phases": [
-    "running",
-    "generating",
-    "writing",
-    "verifying",
-    "verified",
-    "failed",
-    "unknown"
-   ],
-   "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
    "result_kind": "audio",
    "semantic_quality_verified": false,
    "volatile_attachment_names": false,
@@ -1507,6 +1563,7 @@
     "wait",
     "human_review",
     "retry_same",
+    "retry_profile",
     "finish"
    ],
    "approval": [
@@ -1531,7 +1588,7 @@
     "commit",
     "verify"
    ],
-   "profile_compatible": false,
+   "profile_compatible": true,
    "recovery_continuation": "none",
    "result_kind": "structured",
    "volatile_attachment_names": false
@@ -1543,6 +1600,7 @@
     "wait",
     "human_review",
     "retry_same",
+    "retry_profile",
     "finish"
    ],
    "approval": [
@@ -1568,7 +1626,7 @@
     "commit",
     "verify"
    ],
-   "profile_compatible": false,
+   "profile_compatible": true,
    "recovery_continuation": "none",
    "result_kind": "structured",
    "semantic_quality_verified": false,
@@ -1582,7 +1640,10 @@
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -1595,26 +1656,30 @@
    ],
    "executor": "split_frames.run → xlsx_step_runners.run_split_xlsx",
    "managed": true,
-   "native_json_retry": true,
+   "native_json_retry": false,
    "node_type": "split",
    "phases": [
     "running",
     "parse",
+    "validate",
     "apply",
     "commit",
     "verify"
    ],
-   "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "profile_compatible": true,
+   "recovery_continuation": "none",
    "result_kind": "frame_set",
-   "volatile_attachment_names": false
+   "volatile_attachment_names": true
   },
   "contract": {
    "actions": [
     "read_events",
     "read_contract",
     "wait",
-    "human_review"
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
    ],
    "approval": [
     "scope",
@@ -1628,20 +1693,21 @@
    ],
    "executor": "split_frames.run → xlsx_step_runners.run_split_xlsx",
    "managed": true,
-   "native_json_retry": true,
+   "native_json_retry": false,
    "node_type": "split",
    "phases": [
     "running",
     "parse",
+    "validate",
     "apply",
     "commit",
     "verify"
    ],
-   "profile_compatible": false,
-   "recovery_continuation": "excel_gpt_chain",
+   "profile_compatible": true,
+   "recovery_continuation": "none",
    "result_kind": "frame_set",
    "semantic_quality_verified": false,
-   "volatile_attachment_names": false,
+   "volatile_attachment_names": true,
    "write_authority": "existing worker only"
   }
  },

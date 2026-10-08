@@ -592,6 +592,151 @@ def _assemble_retryable(exc: BaseException) -> bool:
     return isinstance(exc, RuntimeError) and "ffmpeg" in str(exc).lower()
 
 
+# D07: independent check of the assembled file's tracks and length, on top of verify_artifact. A defect proven by the
+# probe (a missing track, tracks of very different length, a length far outside the voice) fails the attempt, which the
+# existing single local retry may repeat; a probe that cannot run is "unknown" and never turns a passed
+# verify_artifact into a failure (verify_artifact has already refused a file that ffprobe cannot read).
+ASSEMBLE_TRACK_TOLERANCE_S = 3.0      # absolute slack between the video and the audio track
+ASSEMBLE_TRACK_TOLERANCE_RATIO = 0.05  # plus this share of the longer track
+ASSEMBLE_MAX_OVERRUN_RATIO = 1.5       # the file may not be longer than this multiple of the voice (plus tail)
+ASSEMBLE_MAX_OVERRUN_SLACK_S = 10.0
+
+
+async def _probe_tracks(path: Path) -> dict | None:
+    """ffprobe the file (streams and format) as JSON; None when the probe cannot run or answers nothing usable."""
+    import json
+
+    if not shutil.which("ffprobe"):
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+            "-show_streams", "-show_format", "-of", "json", str(path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode:
+            return None
+        data = json.loads(stdout)
+    except (OSError, ValueError, asyncio.TimeoutError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _stream_seconds(stream: dict, fallback: float | None) -> float | None:
+    try:
+        value = float(stream.get("duration"))
+    except (TypeError, ValueError):
+        return fallback
+    return value if value == value and value > 0 else fallback
+
+
+def check_assembly_tracks(
+    probe: dict | None,
+    *,
+    expected_duration: float,
+    tail_seconds: float = 0.0,
+    size_bytes: int | None = None,
+) -> dict:
+    """Pure verdict on an ffprobe answer for the assembled file. ``passed`` / ``failed`` / ``unknown`` (no probe)."""
+    result: dict = {"status": "unknown", "errors": [], "expected_duration": round(float(expected_duration), 3),
+                    "size_bytes": size_bytes, "semantic_quality_verified": False}
+    if size_bytes is not None and size_bytes <= 0:
+        return {**result, "status": "failed", "errors": ["file_empty"], "reason": "file_empty"}
+    if not isinstance(probe, dict) or not isinstance(probe.get("streams"), list):
+        return {**result, "reason": "probe_unavailable"}
+    streams = [s for s in probe["streams"] if isinstance(s, dict)]
+    try:
+        fmt_duration = float((probe.get("format") or {}).get("duration"))
+    except (TypeError, ValueError):
+        fmt_duration = None
+    video = [s for s in streams if s.get("codec_type") == "video"]
+    audio = [s for s in streams if s.get("codec_type") == "audio"]
+    errors: list[str] = []
+    if not video:
+        errors.append("video_track_missing")
+    if not audio:
+        errors.append("audio_track_missing")
+    v_dur = _stream_seconds(video[0], fmt_duration) if video else None
+    a_dur = _stream_seconds(audio[0], fmt_duration) if audio else None
+    if video and not v_dur:
+        errors.append("video_track_empty")
+    if audio and not a_dur:
+        errors.append("audio_track_empty")
+    if v_dur and a_dur:
+        slack = ASSEMBLE_TRACK_TOLERANCE_S + ASSEMBLE_TRACK_TOLERANCE_RATIO * max(v_dur, a_dur) + max(0.0, tail_seconds)
+        if abs(v_dur - a_dur) > slack:
+            errors.append("tracks_out_of_sync")
+    if fmt_duration is not None and expected_duration > 0:
+        if fmt_duration < 0.9 * expected_duration:
+            errors.append("shorter_than_voice")
+        elif fmt_duration > ASSEMBLE_MAX_OVERRUN_RATIO * expected_duration + max(0.0, tail_seconds) + ASSEMBLE_MAX_OVERRUN_SLACK_S:
+            errors.append("longer_than_voice")
+    return {**result, "status": "failed" if errors else "passed", "errors": errors,
+            "reason": errors[0] if errors else None,
+            "video_tracks": len(video), "audio_tracks": len(audio),
+            "video_duration": None if v_dur is None else round(v_dur, 3),
+            "audio_duration": None if a_dur is None else round(a_dur, 3),
+            "format_duration": None if fmt_duration is None else round(fmt_duration, 3)}
+
+
+async def _journal(kind: str, payload: dict) -> None:
+    """Write a runtime fact to the observation journal when an attempt is open; never raises, never blocks assembly."""
+    try:
+        from app.services.observation import _attempt, record_fact
+
+        if _attempt.get() is not None:
+            await record_fact(kind, payload)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _verify_result_tracks(work_path: Path, *, expected_duration: float, tail_seconds: float) -> dict:
+    """Independent file / length / tracks check of the part file; always journals one ``artifact_verified`` fact."""
+    try:
+        size = work_path.stat().st_size
+    except OSError:
+        size = 0
+    check = check_assembly_tracks(await _probe_tracks(work_path), expected_duration=expected_duration,
+                                  tail_seconds=tail_seconds, size_bytes=size)
+    await _journal("artifact_verified", {"stage": "assembly_result", "kind": "assembly", "local_name": work_path.name,
+                                         **{k: v for k, v in check.items() if k != "semantic_quality_verified"},
+                                         "semantic_quality_verified": False})
+    return check
+
+
+async def _keep_approve_final_after_notify_failure(
+    session: AsyncSession, project: Project, sha256: str, final_path: Path, exc: BaseException
+) -> HITLRequest:
+    """Telegram refused the notification: the verified file stays assembled and the approve_final request is kept
+    (created here when the failure happened before it existed), marked as not notified. Nothing is approved."""
+    from datetime import datetime, timezone
+
+    from app.services.hitl import create_hitl
+
+    rows = (await session.execute(
+        select(HITLRequest).where(
+            HITLRequest.project_id == project.id,
+            HITLRequest.kind == HITLKind.approve_final,
+        ).order_by(HITLRequest.id.desc())
+    )).scalars().all()
+    req = next((r for r in rows if (r.payload or {}).get("sha256") == sha256
+                and r.decision in (HITLDecision.pending, HITLDecision.approved)), None)
+    if req is None:
+        req = await create_hitl(session, project, HITLKind.approve_final,
+                                payload={"step": "final", "sha256": sha256, "video_path": str(final_path)})
+    req.payload = {**(req.payload or {}), "notify_failed": {
+        "error_type": type(exc).__name__, "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}}
+    await session.flush()
+    logger.warning("[#{}] assemble: Telegram не принял ролик ({}); запрос approve_final #{} сохранён без уведомления",
+                   project.id, type(exc).__name__, req.id)
+    await _journal("runtime_check", {"check": "уведомление в Telegram о финальном ролике", "status": "failed",
+                                     "performed": True, "reason": type(exc).__name__, "hitl_request_id": req.id,
+                                     "request_kept": True, "business_commit_claim": False,
+                                     "semantic_quality_verified": False})
+    return req
+
+
 async def _approve_final_exists(session: AsyncSession, project: Project, sha256: str) -> bool:
     """Запрос approve_final для этого проекта и этого файла (по sha256) уже создан."""
     rows = (await session.execute(
@@ -645,6 +790,21 @@ async def _assemble_body(
                     f"({verification.get('status')}: {verification.get('reason', '')}); "
                     "финальный файл не изменён, подтверждение не создаётся"
                 )
+            tail = 0.0
+            try:
+                tail = float(post_voiceover_tail_seconds_for_project(project) or 0.0)
+            except Exception:  # noqa: BLE001
+                tail = 0.0
+            tracks = await _verify_result_tracks(
+                work_path, expected_duration=max(0.0, audio_duration - skip_intro), tail_seconds=tail)
+            if tracks.get("status") == "failed":
+                raise AssembleVerificationError(
+                    "assemble: независимая проверка файла и дорожек не пройдена "
+                    f"({', '.join(tracks.get('errors') or [])}); "
+                    "финальный файл не изменён, подтверждение не создаётся"
+                )
+            verification = {**verification, "result_check": {
+                k: tracks.get(k) for k in ("status", "errors", "video_duration", "audio_duration", "format_duration")}}
             os.replace(work_path, final_path)
             break
         except (StepCancelledError, asyncio.CancelledError):
@@ -693,10 +853,15 @@ async def _assemble_body(
 
     await on_child_montage_complete(session, project)
 
-    await send_hitl_video(
-        bot, session, project,
-        kind=HITLKind.approve_final,
-        video_path=str(final_path),
-        caption=f"Финальный ролик #{project.id} готов. Одобрить и публиковать?",
-        payload={"step": "final", "sha256": sha256},
-    )
+    try:
+        await send_hitl_video(
+            bot, session, project,
+            kind=HITLKind.approve_final,
+            video_path=str(final_path),
+            caption=f"Финальный ролик #{project.id} готов. Одобрить и публиковать?",
+            payload={"step": "final", "sha256": sha256},
+        )
+    except (StepCancelledError, asyncio.CancelledError):
+        raise
+    except Exception as exc:  # noqa: BLE001 - the file is verified; a notification failure must not lose the request
+        await _keep_approve_final_after_notify_failure(session, project, sha256, final_path, exc)

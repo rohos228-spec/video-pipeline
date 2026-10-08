@@ -166,6 +166,13 @@ async def input_revision(session, project, node_key, *, parts=None):
     return await compute_input_revision(session, project, node_key, parts=parts)
 
 
+def _media_gate(node_type):
+    """The admission module of a media node (D06): ``media_local_resume`` for the nodes without a provider task id
+    (images, hero, items, audio, sfx_gen: request-key record and finished files), ``media_admission`` for the rest."""
+    from app.services import media_admission, media_local_resume
+    return media_local_resume if media_local_resume.admitted(node_type) else media_admission
+
+
 class NodeNotAdmitted(ValueError, RuntimeError):
     """Typed refusal: this graph node (not just its type) is outside the managed-retry set. ``code`` is machine
     readable, the message is for people. A ValueError at ticket issue and a RuntimeError at claim, so every
@@ -285,9 +292,9 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
         node_type = effective_node_type(graph_node)
         _require_node_admitted(graph_node, "до выдачи билета")
         capability = capability_for(node_type)
-        if media and not media_admission.admitted(node_type):
+        if media and not _media_gate(node_type).admitted(node_type):
             raise media_admission.MediaAdmissionDenied("node_not_admitted", node_type)
-        if not media and node_type in media_admission.ADMITTED_NODES:
+        if not media and (node_type in media_admission.ADMITTED_NODES or _media_gate(node_type).admitted(node_type)):
             raise ValueError(f"recovery of {node_type} is admitted for media incidents only")
         # A local node (assemble) has no provider task to resume: its ticket re-dispatches the original worker once
         # (below), inside the resume-only scope, and is verified from independent facts (local_node_recovery).
@@ -375,8 +382,10 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             admission = None
             if media:
                 # Read-only ledger/file assessment BEFORE any ticket exists: a refusal leaves no trace to consume.
-                admission = await media_admission.admit(project, node_type,
-                                                        source_facts=facts if local else None)
+                gate = _media_gate(node_type)
+                admission = (await gate.admit(project, node_type) if gate is not media_admission
+                             else await media_admission.admit(project, node_type,
+                                                              source_facts=facts if local else None))
             profile = None
             if profile_overlay_id:
                 from app.services.profiles_v1 import reservation, source_provider
@@ -480,7 +489,7 @@ async def _execute_media(master, scope, control, action, record, project, node_t
     action.result = {"media_operation": admission["operation"], "worker_dispatched": False,
                      "claimed_at": datetime.utcnow().isoformat()}
     await master.commit()
-    outcome = await media_admission.run_and_verify(project, node_type, admission)
+    outcome = await _media_gate(node_type).run_and_verify(project, node_type, admission)
     verified = bool(outcome["verified"])
     action.result = {**action.result, "worker_returned": False, "new_paid_requests": outcome["new_paid_requests"],
                      "continuation": "none; the node is continued by a human with the ordinary start"}
@@ -562,6 +571,12 @@ async def claim(observer, session, project, node_key, attempt_id, *, execution_i
         capability = capability_for(node_type)
         if not capability.managed or action_type not in capability.actions:
             raise RuntimeError(f"recovery strategy {action_type} denied by node capability before claim: {node_type}")
+        from app.services import media_admission as _ma
+        if _media_gate(node_type).admitted(node_type) and not _ma.local_worker(node_type):
+            # Media nodes (videos, items, music, images, hero, audio, sfx_gen) are resumed ONLY inside the supervisor
+            # process (_execute_media); a queued worker ticket for one is a stale or forged text-style retry.
+            raise RuntimeError(f"recovery strategy {action_type} denied by node capability before claim: "
+                               f"{node_type} is resumed by the supervisor only, never by a worker attempt")
         if row.preconditions.get("local_worker"):
             # A local re-run (assemble): the node must still be a declared local_recovery node and the provider
             # ledger must be exactly as it was when the ticket was reserved. Fail-closed on any doubt.

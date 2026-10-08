@@ -179,15 +179,20 @@ class HeroDryRun(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, ["seedream-5-pro"])
         kie.assert_not_called()
 
-    async def test_hero_is_not_a_recovery_node(self):
+    async def test_hero_admits_only_a_local_resume_of_a_recorded_result(self):
+        """D06: hero is managed for supervised recovery only, and the recovery is resume_local (request key)."""
         from app.orchestrator.node_spec import capability_spec_for, coverage_level
-        from app.services.node_capabilities import capability_for
-        self.assertFalse(media_admission.admitted("hero"))
-        self.assertFalse(capability_for("hero").managed)
+        from app.services import media_local_resume
+        from app.services.node_capabilities import capability_for, require_managed_capability
+        self.assertFalse(media_admission.admitted("hero"))        # no provider task resume
+        self.assertTrue(media_local_resume.admitted("hero"))
+        self.assertTrue(capability_for("hero").managed)
+        with self.assertRaises(ValueError):
+            require_managed_capability("hero")                      # the supervisor never starts it
         spec = capability_spec_for("hero")
-        self.assertEqual(coverage_level(spec), "observed")
-        self.assertEqual(spec.forbidden_code, "no_resumable_task")
-        self.assertFalse(spec.recovery_actions)
+        self.assertEqual(coverage_level(spec), "managed")
+        self.assertIsNone(spec.forbidden_code)
+        self.assertEqual(spec.recovery_actions, ("retry_same",))
 
 
 if __name__ == "__main__":

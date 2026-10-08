@@ -77,9 +77,17 @@ MEDIA_RESUME_NODES = frozenset({"videos", "items", "music"})
 # Nodes without a model request or a provider job that the supervisor re-runs once through the original worker
 # (app/services/local_node_recovery.py). Their input revision covers the TRUE inputs of the local work only.
 LOCAL_RECOVERY_NODES = frozenset({"assemble"})
+# D06: media nodes without a provider task id (Outsee request key, finished voice / effect files). Their supervised
+# recovery is a LOCAL resume of the recorded result only (media_local_resume), never a paid resend, so they are
+# kept apart from MEDIA_RESUME_NODES (media_admission.RESUME_NODES = provider task resume). Their input revision
+# covers the paid request inputs only, like the task-resume nodes.
+MEDIA_LOCAL_RESUME_NODES = frozenset({"images", "hero", "audio", "sfx_gen"})
 # Everything that records a request-input baseline at attempt start (observation.observe_attempt).
-BASELINE_NODES = MEDIA_RESUME_NODES | LOCAL_RECOVERY_NODES
+BASELINE_NODES = MEDIA_RESUME_NODES | MEDIA_LOCAL_RESUME_NODES | LOCAL_RECOVERY_NODES
 MEDIA_FRAME_COLUMNS = ("id", "number", "uuid", "animation_prompt")
+# images / hero / audio / sfx_gen: the request is the image prompt (images, hero), the voiceover text (audio) and
+# the frame set the sound-effect plan is cut from; statuses, counters and files written by the attempt are progress.
+MEDIA_LOCAL_FRAME_COLUMNS = ("id", "number", "uuid", "image_prompt", "animation_prompt", "voiceover_text")
 # assemble: the frame columns that are INPUT. start_ts / end_ts / duration_seconds are written by the assembly
 # itself (progress of the attempt) and never enter the revision.
 ASSEMBLE_FRAME_COLUMNS = ("id", "number", "uuid", "voiceover_text")
@@ -475,12 +483,13 @@ async def compute_input_revision(session, project, node_key, *, parts=None) -> s
             node_type = "excel_gpt"
 
     state: dict[str, Any] = {k: getattr(project, k, None) for k in DATA_COLUMNS}
-    if node_type in MEDIA_RESUME_NODES:
+    if node_type in MEDIA_RESUME_NODES or node_type in MEDIA_LOCAL_RESUME_NODES:
         # A supervised media resume depends on the REQUEST inputs of the paid task (prompts), not on the
         # progress the failed attempt itself writes (frame status, fail counters, in-flight markers).
         rows = (await session.scalars(select(Frame).where(Frame.project_id == project.id)
                                       .order_by(Frame.id))).all()
-        state[Frame.__tablename__] = [{c: getattr(row, c, None) for c in MEDIA_FRAME_COLUMNS} for row in rows]
+        columns = MEDIA_FRAME_COLUMNS if node_type in MEDIA_RESUME_NODES else MEDIA_LOCAL_FRAME_COLUMNS
+        state[Frame.__tablename__] = [{c: getattr(row, c, None) for c in columns} for row in rows]
     elif node_type in LOCAL_RECOVERY_NODES:
         # A supervised local re-run depends on what the local work READS: the voiceover text, the set of frames,
         # the clip / image / voice / music / sound-effect files and the assembly parameters. Everything the

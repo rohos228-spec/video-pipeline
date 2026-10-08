@@ -92,27 +92,57 @@ def _register_builtin_capabilities() -> None:
                     'Обязательное утверждение человеком не снимается и не подменяется'),
             recovery_cap=1),
         C('split', 'frame_set', 'split_frames.run → xlsx_step_runners.run_split_xlsx',
-            ('running', 'parse', 'apply', 'commit', 'verify'), ('project_database', 'local_xlsx'),
-            READ_ACTIONS, True, acceptance='native_split',
+            ('running', 'parse', 'validate', 'apply', 'commit', 'verify'), ('project_database', 'local_xlsx'),
+            READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True,
+            profile_compatible=True, volatile_attachment_names=True, native_json_retry=False,
+            recovery_continuation='none', acceptance='native_split',
             verifier='split_result', contract='frame_rows',
             verifies=('Кадров не меньше двух, у каждого свой uuid и подряд идущий номер',
                       'Закадровый текст сохранён целиком и по порядку',
-                      'При провале проверки запуск удерживается до решения человека'),
-            forbidden_code='destructive_rewrite',
-            forbidden_reason='Нода целиком заменяет кадры проекта: повтор стёр бы прежний результат, '
-                             'поэтому при провале проверки запуск удерживается, а решает человек.'),
+                      'В управляемом запуске ответ проверяется по контракту ДО записи в БД: негодный ответ не '
+                      'трогает проект (SplitContractRejected)',
+                      'Если не получилось ни ответа модели, ни локальной разбивки, это записывается типизированным '
+                      'сбоем (invalid_json / missing_payload) до любой записи кадров',
+                      'При провале проверки после записи запуск удерживается до решения человека; прежние кадры, '
+                      'снятые перед заменой, возвращаются откатом (rollback_split)'),
+            limits=('Один повтор на ноду за запуск, только по инциденту invalid_json или missing_payload (и 5xx шлюза), '
+                    'после исчерпания штатных повторов; повтор идёт тем же исполнителем и ничего не записал до сбоя',
+                    'Повтор запрещён после любого применённого пакета (data_applied): замена кадров необратима для '
+                    'надзора, провал проверки после записи решает человек',
+                    'Повтор не стирает ручную работу: если в проекте есть кадры с промтами, статусами или атрибутами '
+                    'и разбивка не помечена завершённой, повторная замена отказывает ДО запроса к модели',
+                    'Уже завершённая разбивка (split_completed и не меньше двух кадров) повтором не запускается заново',
+                    'Локальная разбивка по предложениям при негодном ответе остаётся принятой деградацией '
+                    '(split_degraded), повтор её не заменяет',
+                    'Откат возвращает кадры, их uuid, закадр, поля и привязку артефактов; история версий промтов '
+                    'выводится заново из полей кадра, а не восстанавливается',
+                    'Смена профиля меняет только тело запроса: ответ по-прежнему проверяется до записи'),
+            recovery_cap=1),
         C('image_prompts', 'frame_prompts',
             'generate_image_prompts.run → xlsx_step_runners.run_img_pr_xlsx',
             ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
-            ('project_database', 'local_xlsx', 'local_checkpoint'), READ_ACTIONS, True,
+            ('project_database', 'local_xlsx', 'local_checkpoint'),
+            READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True,
+            profile_compatible=True, volatile_attachment_names=True, native_json_retry=False,
+            recovery_continuation='none',
             acceptance='native_image_prompts', verifier='image_prompts_result',
             contract='frame_rows',
             verifies=('Набор кадров, номера и закадр не изменились',
                       'У каждого кадра-родителя основной промпт не короче порога',
+                      'Каждая операция записи проверяется до записи: короткий или пустой промпт отбрасывается '
+                      '(writeable_img_pr_ops), адрес кадра только по uuid',
+                      'Если ни одна пачка не дала пригодных операций, это записывается типизированным сбоем '
+                      '(invalid_json / missing_payload) до любой записи',
                       'Причина удержания объясняется человеку по записанной проверке'),
-            forbidden_code='native_skips_filled_rows',
-            forbidden_reason='Нативный запуск не перезапрашивает уже непустой промпт, поэтому повтор '
-                             'ничего не изменит; удержание после провала проверки снимает только человек.'),
+            limits=('Один повтор на ноду за запуск, только по инциденту invalid_json или missing_payload, '
+                    'когда ничего не применено и чекпоинт пуст',
+                    'Повтор запрещён после любого применённого пакета (data_applied): частичный результат решает человек',
+                    'Дублей записей нет: операции адресуются по uuid кадра, а нативный запуск не перезапрашивает '
+                    'уже непустой промпт и не затирает ручные правки',
+                    'Заполненный, но короткий или негодный промпт повтором не перезапрашивается: удержание после '
+                    'провала проверки снимает только человек',
+                    'Смена профиля меняет только тело запроса пачки; каждая пачка по-прежнему проверяется до записи'),
+            recovery_cap=1),
         C('excel_gpt', 'structured', 'enrich_xlsx.run',
             ('running', 'parse', 'validate', 'apply', 'commit'), ('project_database',),
             READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True, profile_compatible=True,
@@ -126,7 +156,9 @@ def _register_builtin_capabilities() -> None:
                     'Повтор запрещён после любого применённого пакета (частичное применение)'),
             recovery_cap=1),
         C('images', 'image', 'generate_images.run → kie_http',
-            _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'), READ_ACTIONS, True,
+            _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'),
+            READ_ACTIONS + ('retry_same', 'finish'), True,
+            native_json_retry=False, recovery_continuation='none',
             acceptance='synthetic_image_scenario', verifier='media_result', contract='media_jobs',
             successor='continue_managed_image',
             verifies=('У каждого кадра с промтом картинки есть файл: запись артефакта привязана к этому кадру, '
@@ -135,11 +167,17 @@ def _register_builtin_capabilities() -> None:
                       'после шага, media_verification)',
                       'Журнал платных задач: у кадра виден task id Kie или его отсутствие (Outsee); неизвестный '
                       'исход заново не отправляется',
+                      'Outsee: идемпотентность по ключу запроса (проект, ключ кадра, модель, промт): намерение пишется '
+                      'до платного вызова, результат после; возобновление resume_local берёт записанный результат '
+                      'без платного вызова (media_local_resume)',
                       'Качество картинки не оценивается; в бою проверка только наблюдает и запуск не удерживает '
                       '(удержание делает синтетический управляемый контур, media_jobs.require_verified_images)'),
-            forbidden_code='paid_uncertain_submit',
-            forbidden_reason='Управляемый путь пока только синтетический; платная отправка с неизвестным '
-                             'исходом могла быть списана, поэтому повторную отправку делает только человек.'),
+            limits=('Надзор допускает ТОЛЬКО локальное возобновление resume_local из записанного результата '
+                    '(ключ запроса Outsee с результатом, целый файл): ни одного нового платного запроса',
+                    'Платный повтор retry_same_not_admitted: его делает нативный слой или человек',
+                    'Попытка Outsee без вердикта или с неизвестным исходом (uncertain) не возобновляется: решает человек',
+                    'Один билет на ноду за запуск; надзор ноду не запускает и не перезапускает'),
+            recovery_cap=1),
         C('videos', 'video', 'generate_videos.run → kie_http',
             _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'),
             READ_ACTIONS + ('retry_same', 'finish'), True,
@@ -194,7 +232,10 @@ def _register_builtin_capabilities() -> None:
             recovery_cap=1),
         C('audio', 'audio', 'generate_audio.run → elevenlabs_api',
             ('reserved', 'submitted', 'verifying', 'verified', 'alignment', 'failed', 'unknown'),
-            ('provider_generation', 'local_file', 'frame_timing', 'artifact_row'), READ_ACTIONS, False,
+            ('provider_generation', 'local_file', 'frame_timing', 'artifact_row'),
+            READ_ACTIONS + ('retry_same', 'finish'), True,
+            native_json_retry=False, recovery_continuation='none',
+            acceptance='media_resume_dry_run', recovery_only=True,
             verifier='media_result', contract='media_jobs',
             verifies=('Файл озвучки существует, читается (ffprobe: звуковая дорожка, длительность)',
                       'Независимый верификатор audio_verification.verify_audio: формат из разрешённого набора, '
@@ -202,15 +243,13 @@ def _register_builtin_capabilities() -> None:
                       'audio_result_verification',
                       'Число кусков озвучки сверяется с числом кадров с закадровым текстом',
                       'Маркер .tts_uncertain_* (таймаут или обрыв после отправки) выводится как неизвестный исход'),
-            limits=('Повторный POST после таймаута запрещён, пока человек не снимет маркер или не положит файл',
-                    'Готовый файл озвучки на диске переиспользуется без POST',
-                    'Вердикт resume_local (готовый файл) надзором не исполняется: результатом ноды файл делает только '
-                    'её собственный запуск целиком (повторный ASR, тайминги кадров, проверка с удалением артефактов), '
-                    'а независимой проверки и сухого прогона для такого повтора нет',
-                    'Один платный POST на сегмент без ключа идемпотентности: исход таймаута не доказать'),
-            forbidden_code='paid_no_idempotency',
-            forbidden_reason='Запрос озвучки без ключа идемпотентности: после таймаута неизвестно, '
-                             'списаны ли деньги, поэтому повтор делает только человек.'),
+            limits=('Надзор допускает ТОЛЬКО локальное возобновление resume_local по готовому файлу озвучки: '
+                    'ни одного нового платного POST',
+                    'Повторный платный POST после таймаута запрещён, пока человек не снимет маркер или не положит файл: '
+                    'платный повтор retry_same_not_admitted',
+                    'Один платный POST на сегмент без ключа идемпотентности: исход таймаута не доказать',
+                    'Один билет на ноду за запуск; надзор ноду не запускает и не перезапускает'),
+            recovery_cap=1),
         C('assemble', 'assembly', 'assemble.run → assembly.assemble',
             ('inputs', 'processing', 'subtitles', 'verifying', 'verified', 'failed', 'unknown'),
             ('local_file', 'artifact_row'), READ_ACTIONS + ('retry_same', 'finish'), True,
@@ -219,6 +258,12 @@ def _register_builtin_capabilities() -> None:
             verifier='media_result', contract='media_jobs',
             verifies=('Итоговый файл собран во временный файл и подменяет прежний только после verify_artifact '
                       '(видео и звук, длительность)',
+                      'Независимая проверка частичного файла перед подменой (ffprobe): файл не пуст, есть видеодорожка '
+                      'и звуковая дорожка, их длины сходятся, длина файла не короче 0,9 и не длиннее 1,5 озвучки с '
+                      'запасом; итог пишется событием artifact_verified (stage assembly_result); доказанный брак '
+                      'проваливает попытку, и единственный локальный повтор может её повторить',
+                      'Отказ Telegram после проверки не теряет запрос: approve_final сохраняется с пометкой '
+                      'notify_failed, сборка остаётся собранной, подтверждение не выдаётся',
                       'Заново читаются файл, его sha256 и запрос approve_final для этого файла',
                       'Сбой сборки типизируется по исходу самой попытки (медиа-сбой), а не по прежнему файлу на диске',
                       'Повтор надзора проверяется независимо от ноды: итог создан после запуска повтора, verify_artifact '
@@ -237,7 +282,8 @@ def _register_builtin_capabilities() -> None:
             'plan_sfx.run → sfx_plan.plan_sfx_events → ai_result_io.text_job',
             ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
             ('project_database', 'local_file', 'local_checkpoint'),
-            READ_ACTIONS + ('retry_same', 'finish'), True, native_json_retry=False,
+            READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True, profile_compatible=True,
+            native_json_retry=False,
             recovery_continuation='none', acceptance='native_sfx_plan',
             verifier='sfx_plan_result', contract='sfx_plan',
             verifies=('План читается заново из чекпоинта и файла sfx_plan.json независимой сессией',
@@ -247,13 +293,18 @@ def _register_builtin_capabilities() -> None:
             limits=('Один повтор на ноду за запуск',
                     'Только если ответ модели не разобран (invalid_json / missing_payload) и ничего не применено',
                     'Нарушение правил таймлайна у разобранного плана повтором не лечится: решает человек',
+                    'Смена профиля меняет только тело единственного текстового запроса плана; ответ по-прежнему '
+                    'разбирается и проверяется (validate_events) ДО записи файла плана и чекпоинта',
                     'Не запускает sfx_gen (платный ElevenLabs) и не меняет кадры',
                     'Выключенный SFX (проход без плана) в управляемом запуске не считается проверенным'),
             recovery_cap=1),
         C('sfx_gen', 'audio',
             'generate_sfx.run → sfx_gen.generate_sfx_files → elevenlabs_api/local_synth',
             ('running', 'generating', 'writing', 'verifying', 'verified', 'failed', 'unknown'),
-            ('local_file', 'project_database'), READ_ACTIONS, False,
+            ('local_file', 'project_database'),
+            READ_ACTIONS + ('retry_same', 'finish'), True,
+            native_json_retry=False, recovery_continuation='none',
+            acceptance='media_resume_dry_run', recovery_only=True,
             verifier='sfx_result', contract='media_jobs',
             verifies=('Каждый звуковой файл существует, читается как WAV и не пустой по уровню',
                       'Независимый верификатор audio_verification.verify_audio проверяет каждый файл: формат, '
@@ -261,24 +312,13 @@ def _register_builtin_capabilities() -> None:
                       'Число файлов совпадает с планом, пути лежат внутри папки sfx проекта',
                       'Откат ElevenLabs на локальный синтез виден: факт provider_fallback, инцидент '
                       'provider_degraded и поле provider_fallback у события'),
-            limits=('Повтор по событию не больше одного и только после ответа провайдера (списания не было)',
+            limits=('Надзор допускает ТОЛЬКО локальное возобновление resume_local по файлам событий из чекпоинта '
+                    'sfx_progress: ни одного нового платного вызова',
+                    'Событие с отправленным запросом без записанного исхода остаётся denied (исход неизвестен), решает человек',
                     'Откат после таймаута или обрыва (мог быть списан платёж) не повторяется никогда',
-                    'Готовые файлы событий переиспользует сама нода по чекпоинту; вердикта resume_local у sfx_gen нет, '
-                    'надзор повтор не делает',
-                    'Не допущен к надзорному повтору (сухой прогон test_sfx_gen_dry_run.py): по событию чекпоинт '
-                    'sfx_progress (файл и исход провайдера, коммит сразу; метка «запрос отправлен» ставится до POST) '
-                    'сохраняет готовые события упавшей попытки, событие с отправленным запросом без записанного исхода '
-                    'повторно не отправляется (локальный синтез, исход неизвестен); но повтор в режиме '
-                    '«только возобновление» на первом же событии без чекпоинта, которому нужен платный POST, получает '
-                    'ResumeOnlyBlocked и не может закончить; повтор события после ответа провайдера требует нового '
-                    'платного POST, а после таймаута запрещён; нет статической оценки «все события плана готовы», '
-                    'сбой попытки не типизируется (проверка sfx_result, а не media_result), независимой проверки '
-                    'повтора нет',
-                    'Платный вызов на событие остаётся без ключа идемпотентности'),
-            forbidden_code='paid_no_idempotency',
-            forbidden_reason='Платный вызов на каждое событие без ключа идемпотентности: исход таймаута '
-                             'не доказать, поэтому повтор по событию допускает только нативный слой '
-                             'и только после ответа провайдера.'),
+                    'Платный повтор события retry_same_not_admitted: его делает нативный слой или человек',
+                    'Один билет на ноду за запуск; надзор ноду не запускает и не перезапускает'),
+            recovery_cap=1),
         C('publish', 'publication', 'publish.run',
             ('input_validation', 'dry_run', 'blocked'), ('external_accounts',),
             ('read_events', 'read_contract', 'human_review'), False, contract='media_jobs',
@@ -297,7 +337,9 @@ def _register_builtin_capabilities() -> None:
                       'Исходная проверка harness anim_pr пройдена до статуса готовности'),
             limits=('Один повтор на ноду за запуск',
                     'Только пока ни одна пачка не применена: после первого применения повтор запрещён',
-                    'Смена профиля запрещена: во входе картинки, профиль не может пересобрать запрос',
+                    'Смена профиля запрещена и нода не помечена совместимой с профилями: во входе может быть лента '
+                    'картинок (input_image), профиль пересобирает только текстовый запрос, а пачки применяются по '
+                    'одной, то есть проверка до записи не охватывает весь результат',
                     'Локальный запасной путь и пропуск shot_02 при сбое провайдера видны фактом animation_degraded '
                     'и инцидентом animation_degraded; сам по себе он повтор не открывает',
                     'Не запускает videos (платная нода с утверждением человеком)'),
@@ -306,7 +348,8 @@ def _register_builtin_capabilities() -> None:
             'scene_design.run → scene_contracts.verify_scene_agent → pkg:scene_design',
             ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
             ('project_database', 'local_checkpoint', 'local_file'),
-            READ_ACTIONS + ('retry_same', 'finish'), True, native_json_retry=False,
+            READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True, profile_compatible=True,
+            native_json_retry=False,
             recovery_continuation='none', acceptance='native_scene_agent',
             verifier='scene_agent_result', contract='scene_agent',
             observation_hook='app.services.scene_contracts:observe_scene_result',
@@ -326,7 +369,9 @@ def _register_builtin_capabilities() -> None:
                     'Один повтор на ноду за запуск, только по инциденту invalid_json или missing_payload',
                     'После факта data_applied (ячейки записаны) повтор запрещён как частичное применение; '
                     'проваленный по контракту срез повтором не лечится',
-                    'Смена профиля запрещена; не запускает остальных агентов и сборку sd_assemble'),
+                    'Смена профиля допущена только агентам characters и world (один текстовый запрос без картинок); '
+                    'профиль меняет тело запроса, срез проверяется по контракту ДО записи ячеек',
+                    'Не запускает остальных агентов и сборку sd_assemble'),
             recovery_cap=1),
         *_coverage_only_specs(),
     ):
@@ -363,7 +408,8 @@ def _coverage_only_specs():
             'scene_design.run_assemble → scene_contracts.verify_scene_assembly → pkg:scene_design',
             ('running', 'parse', 'validate', 'apply', 'commit', 'verify'),
             ('project_database', 'local_checkpoint', 'local_file'),
-            READ_ACTIONS + ('retry_same', 'finish'), True, native_json_retry=False,
+            READ_ACTIONS + ('retry_same', 'retry_profile', 'finish'), True, profile_compatible=True,
+            native_json_retry=False,
             recovery_continuation='none', acceptance='native_scene_assembly',
             verifier='scene_agent_result', contract='scene_agent',
             observation_hook='app.services.scene_contracts:observe_scene_result',
@@ -382,15 +428,27 @@ def _coverage_only_specs():
                     'Сущности (Entity), scene_space и файлы проверкой результата не покрыты (unchecked_effects)',
                     'В режиме chrono_dyn запроса к модели нет: повтор детерминированной локальной сборки '
                     'ничего не исправит, решает человек',
-                    'Смена профиля запрещена; не запускает остальных агентов и следующие ноды'),
+                    'Смена профиля меняет только тело текстового запроса сборки; payload проверяется правилами '
+                    'сборки ДО записи, сбой откатывает записанное, первый запрос повтора равен первому запросу сбоя '
+                    'с учётом профиля',
+                    'Не запускает остальных агентов и следующие ноды'),
             recovery_cap=1),
-        _watch('hero', 'no_resumable_task',
-               'Промт героя v1 теперь сохраняется до платного вызова и после рестарта берётся тот же (GPT заново '
-               'не спрашивается), но возобновлять нечего: герой по умолчанию идёт через Outsee (GPT Image 2 VIP) '
-               'без идентификатора задачи, а слаг модели Kie в рабочем маршруте generate_image_with_retries уходит '
-               'к Outsee, не к Kie. Неизвестный исход отправки блокирует повтор по ключу героя, решает человек.',
-               verifies=('У героя есть файл картинки: существует, не пустой, декодируется, лежит в папке проекта',
-                         'Журнал платных задач: task id Kie или отсутствие id у Outsee')),
+        C('hero', 'image', 'generate_hero.run → generate_image_with_retries (Outsee / Kie)',
+            _JOB_PHASES, ('provider_job', 'local_file', 'artifact_row'),
+            READ_ACTIONS + ('retry_same', 'finish'), True,
+            native_json_retry=False, recovery_continuation='none',
+            acceptance='media_resume_dry_run', recovery_only=True,
+            verifier='media_result', contract='media_jobs',
+            verifies=('У героя есть файл картинки: существует, не пустой, декодируется, лежит в папке проекта',
+                      'Журнал платных задач: task id Kie или отсутствие id у Outsee',
+                      'Outsee: идемпотентность по ключу запроса (проект, ключ героя, модель, промт); промт героя v1 '
+                      'сохраняется до платного вызова и после рестарта берётся тот же'),
+            limits=('Надзор допускает ТОЛЬКО локальное возобновление resume_local из записанного результата '
+                    '(ключ запроса Outsee с результатом, целый файл): ни одного нового платного запроса',
+                    'Неизвестный исход отправки блокирует повтор по ключу героя, решает человек',
+                    'Платный повтор retry_same_not_admitted: его делает нативный слой или человек',
+                    'Один билет на ноду за запуск; надзор ноду не запускает и не перезапускает'),
+            recovery_cap=1),
         *(_watch(f'enrich_{n}', 'legacy_node_type', legacy,
                  verifies=('Журнал ведётся как у excel_gpt (observe_attempt подставляет excel_gpt)',),
                  hook='app.services.observation:observe_attempt')
@@ -402,21 +460,23 @@ def _coverage_only_specs():
 # NodeCapability on purpose: contract() is built with asdict() and is persisted/sent to the
 # decision layer, so a new dataclass field would change those payloads. Nothing reads this
 # table at runtime; docs/MEDIA_NODES_READINESS.md and tests/test_media_nodes_recovery_decision.py
-# are its only consumers. Every entry is human-only (no supervisor retry) except the resume-only ones
+# are its only consumers. Every entry is human-only (no supervisor retry) except the local-resume ones (hero, images,
+# audio, sfx_gen: only a recorded result is resumed, never a paid resend) and the resume-only ones
 # (videos, items, music): the supervisor may only resume a known provider task, never submit a new one, and
 # the local-retry one (assemble): a single re-run of a node without any provider call through the original worker.
 # Facts are code-grounded (file:line in the doc); "reason" is the honest short justification.
 _MEDIA_HUMAN_ONLY = "human_only"
 _MEDIA_RESUME_ONLY = "resume_only"
 _MEDIA_LOCAL_RETRY = "local_retry"
+_MEDIA_LOCAL_RESUME = "resume_local"
 MEDIA_RECOVERY_DECISIONS = {
-    "hero": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
+    "hero": {"decision": _MEDIA_LOCAL_RESUME, "cost_class": "paid_per_image",
         "provider": "outsee/kie via generate_image_with_retries",
-        "reason": "No managed lifecycle. The v1 prompt is now saved before the paid call and reused after a restart "
-                  "while a paid generation is unfinished (test_hero_dry_run.py), but there is nothing to resume: the "
-                  "default generator is Outsee (no task id) and a Kie slug is routed to the Outsee seam in the native "
-                  "route; an unknown submit is blocked by the Outsee guard keyed by the hero key, a human decides "
-                  "(observation: media_result verifier, ledger trail)."},
+        "reason": "Outsee gives no task id, so a repeat is made safe by a REQUEST KEY (project, hero key, model, prompt): "
+                  "the intent is recorded before the paid call and the result after it (outsee_idempotency). The "
+                  "supervisor admits ONLY a local resume (resume_local) of a recorded result with an intact file, with "
+                  "zero new paid requests; an attempt without a verdict or with an unknown outcome is denied and a "
+                  "human decides. A paid re-submit (retry_same) stays with the native layer or a human."},
     "items": {"decision": _MEDIA_RESUME_ONLY, "cost_class": "paid_per_image",
         "provider": "outsee/kie via generate_image_with_retries",
         "reason": "Supervisor admission is a resume of a known Kie task id only (poll and download inside the "
@@ -424,30 +484,34 @@ MEDIA_RECOVERY_DECISIONS = {
                   "resubmitted) and a paid re-submit stays with the native layer or a human: a retry could double-pay. "
                   "The native items step routes a Kie slug to the Outsee seam (docs/MEDIA_ROUTE_AUDIT.md), so the Kie "
                   "task row this resume needs is not created by the step itself."},
-    "images": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_image",
-        "provider": "kie (managed, synthetic loopback only) / outsee (native)",
-        "reason": "Managed route is synthetic-loopback only (no authorized production network profile); "
-                  "a failed or unknown job is terminal and never resubmitted; uncertain submit may "
-                  "already be charged."},
+    "images": {"decision": _MEDIA_LOCAL_RESUME, "cost_class": "paid_per_image",
+        "provider": "kie (managed, synthetic loopback) / outsee (native, idempotent by request key)",
+        "reason": "Outsee idempotency by request key (project, frame key, model, prompt): intent before the paid call, "
+                  "result after it. The supervisor admits ONLY a local resume (resume_local) of a recorded result with "
+                  "an intact file, zero new paid requests; an unknown outcome is denied and a human decides. A paid "
+                  "re-submit (retry_same) stays with the native layer or a human."},
     "videos": {"decision": _MEDIA_RESUME_ONLY, "cost_class": "paid_per_clip_highest",
         "provider": "outsee/kie (Seedance, Kling, Veo ladder)",
         "reason": "Supervisor admission is a resume of a known Kie task id only (poll and download inside the "
                   "resume-only scope, zero new paid requests); Outsee has no id and the native ladder is up to "
                   "4 primary + 3 fallback paid submits per clip, so a paid re-submit by the supervisor is not "
                   "admitted: a blind retry can double-pay."},
-    "audio": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_character",
+    "audio": {"decision": _MEDIA_LOCAL_RESUME, "cost_class": "paid_per_character",
         "provider": "elevenlabs_api (direct HTTP)",
-        "reason": "managed=False; request has no idempotency key and the native client already retries "
-                  "3 times on timeout/429/5xx, so a timeout after acceptance may be charged twice."},
+        "reason": "The request has no idempotency key, so a paid re-submit (a second POST could be charged twice) is never admitted to the supervisor. It admits "
+                  "ONLY a local resume (resume_local) of a finished voice file already on disk (zero new paid requests); "
+                  "an .tts_uncertain_* marker (timeout after send) is denied and a human decides."},
     "music": {"decision": _MEDIA_RESUME_ONLY, "cost_class": "paid_per_generation",
         "provider": "kie suno (direct) or browser outsee",
         "reason": "Supervisor admission is a resume of a known Suno task id only (poll and download inside the "
                   "resume-only scope, saved prompt, zero new paid requests); a paid re-submit is not admitted "
                   "because a retry could re-submit and re-pay."},
-    "sfx_gen": {"decision": _MEDIA_HUMAN_ONLY, "cost_class": "paid_per_event_small_or_free_local",
+    "sfx_gen": {"decision": _MEDIA_LOCAL_RESUME, "cost_class": "paid_per_event_small_or_free_local",
         "provider": "elevenlabs sound-generation (or local_synth when no key)",
-        "reason": "managed=False; per-event paid call without idempotency key; on error it falls back to local "
-                  "synthesis (now recorded as provider_fallback), a timeout outcome stays unknown and may be charged."},
+        "reason": "A per-event paid call has no idempotency key, so a paid re-send is never admitted to the supervisor. It "
+                  "admits ONLY a local resume (resume_local) of the event files recorded in the sfx_progress checkpoint "
+                  "(zero new paid requests); an event with a request sent and no recorded outcome is denied and a human "
+                  "decides."},
     "assemble": {"decision": _MEDIA_LOCAL_RETRY, "cost_class": "no_provider_spend_local_cpu",
         "provider": "local ffmpeg (+ local ASR timing)",
         "reason": "No provider spend (dry run: guard and import scan). The supervisor re-runs the node ONCE through the "
@@ -695,6 +759,45 @@ async def record_image_prompt_parse(reply,ops,*,batch_i,target_uuids):
         'business_commit_claim':False},request_id=request_id)
 
 
+def note_image_prompt_unusable(reply,*,batch_i=None):
+    """A batch gave no writeable operation and the node cannot split further. Only remembered on the attempt:
+    the typed fact is written by record_image_prompt_unusable when the whole step finally fails, so a native
+    second attempt that succeeds never leaves an open incident behind."""
+    from app.services.observation import _attempt
+    ctx=_attempt.get()
+    if ctx is not None:ctx.image_prompt_unusable={'reply':reply or '','batch':batch_i}
+
+
+def clear_image_prompt_unusable():
+    from app.services.observation import _attempt
+    ctx=_attempt.get()
+    if ctx is not None:ctx.image_prompt_unusable=None
+
+
+async def record_image_prompt_unusable():
+    """Terminal typed failure of image_prompts: no batch produced a writeable operation, so nothing was written.
+    payload_required makes diagnosis derive invalid_json (reply is not JSON) or missing_payload (JSON without
+    usable prompt operations); the step has failed and a supervised retry is idempotent. Journal only, never raises."""
+    import json
+    from app.services.observation import _attempt,record_fact
+    ctx=_attempt.get();note=getattr(ctx,'image_prompt_unusable',None) if ctx else None
+    if not note or getattr(ctx,'image_prompt_unusable_recorded',False):return False
+    ctx.image_prompt_unusable_recorded=True
+    reply,batch_i=note['reply'],note['batch']
+    try:json.loads(reply or '');syntax=True
+    except (ValueError,TypeError):syntax=False
+    requests=getattr(ctx,'image_prompt_batch_requests',None) or {}
+    request_id=requests.get(batch_i) if batch_i is not None else None
+    if request_id is None and requests:request_id=requests[max(requests)]
+    await record_fact('parse_result',{'contract':'native_image_prompts','terminal':True,'batch':batch_i,
+        'syntax_valid':syntax,'parsed':False,'payload_present':False,'payload_required':True,
+        'nonempty_payload_required':True,'schema_valid':False,'ops_count':0,'writeable_ops_count':0,
+        'applied_before':False,'semantic_quality_verified':False,
+        'parser':'original img_pr_batches.parse_img_pr_ops; no writeable operation from any batch'},
+        request_id=request_id,body={'text':reply})
+    return True
+
+
 async def observe_image_prompt_result(session,project,node_type):
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -875,7 +978,12 @@ def split_contract():
         'managed_verification':['scoped project','unique nonempty UUID','unique sequential number',
             'nonempty voiceover','complete ordered voiceover after whitespace normalization'],
         'pre_write_validation':'managed runs: answer is verified before any DB write (E1b); invalid -> SplitContractRejected, project untouched',
-        'semantic_quality_verified':False,'retry_policy':'original runtime only; no supervisor recovery/profile'}
+        'semantic_quality_verified':False,
+        'retry_policy':('original native runtime first; after it is exhausted with invalid_json/missing_payload '
+            '(nothing written: the answer is verified before any DB write) ONE bounded supervisor retry_same or '
+            'approved-profile retry of the same executor. Refused after any applied package, over frames that carry '
+            'manual work, and for an already completed split. A post-write verification failure holds the run and '
+            'restores the pre-replacement frames (rollback_split); it is never retried by the supervisor.')}
 
 
 def verify_split_frames(frames, *, project_id, voiceover):
@@ -939,6 +1047,147 @@ async def enforce_split_contract_before_write(frames_spec):
     if proof['status']=='failed':raise SplitContractRejected(proof['errors'],proof['reason'])
 
 
+# --- D05: safe split retry (preflight over manual work) and rollback to the pre-replacement frames -------------------
+# Project.meta keys that split_frames.run resets after a replacement; the snapshot keeps their previous values.
+SPLIT_SNAPSHOT_META_KEYS=('split_completed','split_params_applied','enrich_completed_slots','excel_gpt_completed_keys',
+    'active_excel_gpt_node_key','scene_design','scene_registry')
+_SPLIT_SNAPSHOT_COLUMNS=('id','number','voiceover_text','meaning','transition_from','transition_to','duration_seconds',
+    'start_ts','end_ts','image_prompt','animation_prompt','status','attrs','uuid','sort_key','scene_id')
+
+
+class SplitRetryRefused(RuntimeError):
+    """A supervised split retry would replace frames that carry work. Raised BEFORE any model request or write."""
+    failure_class='retry_refused'
+
+
+def is_supervised_retry():
+    """True inside the worker attempt of a supervisor recovery ticket (retry_same / retry_profile)."""
+    from app.services.observation import _attempt
+    ctx=_attempt.get()
+    attempt_id=getattr(ctx,'attempt_id',None)
+    info=getattr(getattr(ctx,'session',None),'info',None)
+    return bool(attempt_id and isinstance(info,dict) and info.get('recovery_attempt_id')==attempt_id)
+
+
+def frame_has_manual_work(frame):
+    """A frame that is more than a bare split result: a prompt, a non-initial status or attributes of a later step."""
+    attrs=frame.attrs if isinstance(getattr(frame,'attrs',None),dict) else {}
+    status=getattr(frame.status,'value',frame.status)
+    return bool((frame.image_prompt or '').strip() or (getattr(frame,'animation_prompt',None) or '').strip()
+        or attrs or status not in (None,'','planned'))
+
+
+def split_retry_refusal(frames,meta):
+    """Russian reason why a repeated split must not run over the existing frames, or None. Pure.
+
+    A completed split (>=2 frames and split_completed) is skipped by the executor itself, so it is not a refusal.
+    Otherwise existing frames carrying work (prompts, statuses, attributes) would be replaced by the new answer."""
+    frames=list(frames or [])
+    if len(frames)>=2 and (meta or {}).get('split_completed'):return None
+    worked=[f for f in frames if frame_has_manual_work(f)]
+    if not worked:return None
+    nums=', '.join(str(f.number) for f in worked[:10])
+    return ('Повтор разбивки отклонён до запроса к модели: в проекте есть кадры с промтами, статусами или '
+        f'атрибутами (кадры: {nums}), а разбивка не помечена завершённой. Замена стёрла бы эту работу; решает человек.')
+
+
+def _jsonable(value):
+    import json
+    return json.loads(json.dumps(value,ensure_ascii=False,default=lambda o:getattr(o,'value',None) or str(o)))
+
+
+async def capture_split_snapshot(session,project):
+    """Snapshot of the project's frames, their artifact links and the meta keys a split resets, taken before the
+    replacement. None when the project has no frames (nothing to give back). Read-only; the file copy is best effort."""
+    import json
+    from sqlalchemy import select
+    from app.models import Artifact,Frame
+    frames=(await session.execute(select(Frame).where(Frame.project_id==project.id).order_by(Frame.number))).scalars().all()
+    if not frames:return None
+    links=(await session.execute(select(Artifact.id,Artifact.frame_id).where(Artifact.project_id==project.id,
+        Artifact.frame_id.is_not(None)))).all()
+    meta=project.meta if isinstance(project.meta,dict) else {}
+    snapshot={'version':1,'project_id':project.id,
+        'frames':[_jsonable({c:getattr(f,c) for c in _SPLIT_SNAPSHOT_COLUMNS}) for f in frames],
+        'artifact_links':[{'artifact_id':a,'frame_id':f} for a,f in links],
+        'meta':_jsonable({k:meta[k] for k in SPLIT_SNAPSHOT_META_KEYS if k in meta}),
+        'meta_absent':[k for k in SPLIT_SNAPSHOT_META_KEYS if k not in meta]}
+    try:
+        from app.services.observation import _attempt
+        ctx=_attempt.get();name=(ctx.attempt_id if ctx is not None and ctx.attempt_id else 'manual')
+        folder=project.data_dir/'split_rollback';folder.mkdir(parents=True,exist_ok=True)
+        path=folder/f'{name}.json';path.write_text(json.dumps(snapshot,ensure_ascii=False),encoding='utf-8')
+        snapshot['path']=str(path)
+    except Exception:pass
+    return snapshot
+
+
+async def rollback_split(session,project,snapshot):
+    """Give back the frames of a snapshot (same ids, uuids, numbers, text, prompts, attributes), re-link their
+    artifacts and restore the meta keys the split reset. The frames of the rejected replacement are removed.
+    Prompt versions, texts and edges are derived again from the frame fields (backfill), not restored from history."""
+    from sqlalchemy import delete,select,update
+    from app.models import Artifact,Frame,FrameEdge,FrameStatus,FrameText,PromptVersion
+    from app.services import db_v2
+    if not isinstance(snapshot,dict) or not snapshot.get('frames') or snapshot.get('project_id')!=project.id:
+        return {'rolled_back':False,'reason':'no_prior_frames'}
+    await session.execute(update(Artifact).where(Artifact.project_id==project.id).values(frame_id=None))
+    await session.execute(delete(FrameEdge).where(FrameEdge.project_id==project.id))
+    current=list((await session.execute(select(Frame.id).where(Frame.project_id==project.id))).scalars())
+    if current:
+        await session.execute(delete(PromptVersion).where(PromptVersion.frame_id.in_(current)))
+        await session.execute(delete(FrameText).where(FrameText.frame_id.in_(current)))
+        await session.execute(delete(Frame).where(Frame.project_id==project.id))
+    await session.flush()
+    # bulk deletes leave the removed rows in the identity map; a restored row has the old primary key
+    for obj in list(session.identity_map.values()):
+        if (isinstance(obj,(Frame,FrameEdge)) and obj.project_id==project.id) or (
+                isinstance(obj,(FrameText,PromptVersion)) and obj.frame_id in current):
+            session.expunge(obj)
+    for row in snapshot['frames']:
+        values={c:row.get(c) for c in _SPLIT_SNAPSHOT_COLUMNS}
+        values['status']=FrameStatus(values['status']) if values.get('status') else FrameStatus.planned
+        values['attrs']=values.get('attrs') or {}
+        session.add(Frame(project_id=project.id,**values))
+    await session.flush()
+    restored=set(r['id'] for r in snapshot['frames'])
+    relinked={}
+    for link in snapshot.get('artifact_links') or []:
+        if link.get('frame_id') in restored:
+            relinked[link['artifact_id']]=link['frame_id']
+            await session.execute(update(Artifact).where(Artifact.id==link['artifact_id'],
+                Artifact.project_id==project.id).values(frame_id=link['frame_id']))
+    from sqlalchemy.orm.attributes import set_committed_value
+    for obj in list(session.identity_map.values()):
+        if isinstance(obj,Artifact) and obj.project_id==project.id:
+            set_committed_value(obj,'frame_id',relinked.get(obj.id))
+    meta=dict(project.meta or {})
+    for key in snapshot.get('meta_absent') or []:meta.pop(key,None)
+    meta.update(snapshot.get('meta') or {})
+    project.meta=meta
+    await session.flush()
+    await db_v2.backfill_project_v2(session,project)
+    await session.flush()
+    return {'rolled_back':True,'frames':len(snapshot['frames']),'artifact_links':len(snapshot.get('artifact_links') or [])}
+
+
+async def prepare_split_replacement(session,project):
+    """Called by split_frames.run right before the model is asked. In a supervised retry it refuses to run over
+    frames with work (no request, no write). In a managed attempt it keeps the pre-replacement snapshot on the
+    attempt context for rollback_split. Outside a managed scope nothing changes."""
+    from sqlalchemy import select
+    from app.models import Frame
+    from app.services.observation import _attempt
+    ctx=_attempt.get()
+    if ctx is None or ctx.scope.mode!='managed':return None
+    frames=(await session.execute(select(Frame).where(Frame.project_id==project.id).order_by(Frame.number))).scalars().all()
+    if is_supervised_retry():
+        reason=split_retry_refusal(frames,project.meta)
+        if reason:raise SplitRetryRefused(reason)
+    ctx.split_pre_snapshot=await capture_split_snapshot(session,project)
+    return ctx.split_pre_snapshot
+
+
 async def record_split_parse(reply,frames_spec,*,frames_source=None,dash_rejected=False):
     import json
     from app.services.observation import _attempt,record_fact
@@ -948,8 +1197,11 @@ async def record_split_parse(reply,frames_spec,*,frames_source=None,dash_rejecte
     except (ValueError,TypeError):syntax_valid=False
     frames=_split_spec_frames(frames_spec,ctx.scope.project_id)
     proof=verify_split_frames(frames,project_id=ctx.scope.project_id,voiceover=ctx.split_input_voiceover)
+    # payload_required only when NOTHING usable exists (not even the native local fallback): then nothing is
+    # written, the step fails and diagnosis types it invalid_json / missing_payload (a retry is idempotent).
+    # A usable answer or the accepted local fallback never opens such an incident (split_degraded covers it).
     await record_fact('parse_result',{'contract':'native_split','syntax_valid':syntax_valid,
-        'parsed':bool(frames_spec),'payload_present':bool(frames_spec),'payload_required':False,
+        'parsed':bool(frames_spec),'payload_present':bool(frames_spec),'payload_required':not frames_spec,
         'schema_valid':proof['status']=='passed','frame_count':len(frames_spec),
         'native_fallback_allowed':True,'frames_source':frames_source,
         'fallback_used':frames_source=='local_voiceover_fallback',
@@ -983,9 +1235,26 @@ async def observe_split_result(session,project,node_type):
         body={'frames':[{'uuid':f.uuid,'number':f.number,'voiceover_text':f.voiceover_text} for f in frames]})
     if proof['status']!='passed':
         from app.services.actions_v1 import ActionSupervisor
+        rationale=str(proof['reason'])
+        snapshot=getattr(ctx,'split_pre_snapshot',None)
+        if snapshot:
+            # D05: the replacement is already committed. Give the previous frames back, then hold. The run is
+            # never retried by the supervisor (data_applied exists); a human decides what happens next.
+            try:
+                outcome=await rollback_split(session,project,snapshot)
+                await session.commit()
+                ok=bool(outcome.get('rolled_back'))
+            except Exception as exc:
+                try:await session.rollback()
+                except Exception:pass
+                outcome={'rolled_back':False,'reason':type(exc).__name__};ok=False
+            await record_fact('runtime_check',{'check':'откат разбивки к прежним кадрам','status':'passed' if ok else 'failed',
+                'performed':True,'frames':outcome.get('frames'),'reason':outcome.get('reason'),
+                'business_commit_claim':False,'semantic_quality_verified':False})
+            rationale+='; прежние кадры возвращены' if ok else '; откат к прежним кадрам не удался'
         await ActionSupervisor(ctx.observer.master).set_held(project_id=ctx.scope.project_id,
             execution_id=ctx.scope.execution_id,held=True,initiator='native_split_verifier',
-            rationale=proof['reason'],idempotency_key='split-verify:'+ctx.attempt_id,operator_request=False)
+            rationale=rationale,idempotency_key='split-verify:'+ctx.attempt_id,operator_request=False)
         raise RuntimeError('native split verification not confirmed: '+str(proof['reason']))
 
 

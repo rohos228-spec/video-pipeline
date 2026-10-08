@@ -246,6 +246,21 @@ async def change_facts(project_id: int) -> dict:
         return {"proposals": [], "versions": []}
 
 
+def publish_facts(project: Any) -> dict:
+    """Подпись и площадки публикации, известные только серверу (в промпт НЕ идут: тема проекта это
+    недоверенный текст). Их подставляет ``planner_rules.fill_defaults`` в шаг ``publish.send``."""
+    try:
+        from app.services.action_layer import publish_action as pa
+        meta = project.meta if isinstance(getattr(project, "meta", None), dict) else {}
+        done = meta.get("published_platforms") if isinstance(meta.get("published_platforms"), dict) else {}
+        platforms = [p for p in pa.registry_platforms() if p not in done]
+        caption = pa.caption_of({"topic": getattr(project, "topic", None),
+                                 "slug": getattr(project, "slug", None)})
+    except Exception:  # noqa: BLE001 - публикаторов нет в окружении: шаг получит отказ в проверке
+        return {"platforms": [], "caption": ""}
+    return {"platforms": platforms, "caption": caption}
+
+
 # --- сборка фактов ----------------------------------------------------------------------
 
 async def build_facts(s, project: Any, project_id: int, selected_frame: int | None) -> dict:
@@ -280,6 +295,7 @@ async def build_facts(s, project: Any, project_id: int, selected_frame: int | No
     overrides = project.prompt_overrides if isinstance(project.prompt_overrides, dict) else {}
     facts["prompt_overrides"] = {str(k)[:40]: str(v)[:120] for k, v in list(overrides.items())[:20]
                                  if isinstance(v, str) and v}
+    facts["publish_server"] = publish_facts(project)
     facts.update(await change_facts(project_id))
     return facts
 
@@ -328,7 +344,16 @@ def _mentioned_numbers(text: str) -> set[int]:
 
 def prompt_context(facts: dict, offered: list[str] | frozenset[str], registry: Any,
                    text: str = "") -> dict:
-    """Часть фактов, нужная модели для показанных ей действий (остальное в промпт не идёт)."""
+    """Часть фактов, нужная модели для показанных ей действий (остальное в промпт не идёт).
+
+    Все строки очищаются (``planner_guard.sanitize_tree``): имена, подписи и тексты из проекта
+    - недоверенные данные, а не часть инструкции."""
+    from app.services.action_layer import planner_guard
+    return planner_guard.sanitize_tree(_prompt_context(facts, offered, registry, text))
+
+
+def _prompt_context(facts: dict, offered: list[str] | frozenset[str], registry: Any,
+                    text: str = "") -> dict:
     ids = set(offered)
     out: dict = {k: facts[k] for k in ("project_id", "selected_scene", "selected_frame", "status",
                                        "frame_count") if k in facts}

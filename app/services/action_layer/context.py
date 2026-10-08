@@ -78,6 +78,8 @@ UPLOAD_POLICIES: dict[str, UploadPolicy] = {
     "node_file": UploadPolicy("node_file", frozenset(_NODE_TYPES), 25 * MIB, _NODE_TYPES),
     "check_agent": UploadPolicy("check_agent", frozenset({".txt", ".md"}), 1 * MIB,
                                 {".txt": "text/plain", ".md": "text/markdown"}),
+    # Excel проекта (замена project.xlsx): только .xlsx; содержимое проверяет сам эндпоинт.
+    "xlsx": UploadPolicy("xlsx", frozenset({".xlsx"}), 25 * MIB, {".xlsx": _NODE_TYPES[".xlsx"]}),
 }
 
 _TEXT_EXT = frozenset({".txt", ".md", ".json", ".csv"})
@@ -304,6 +306,25 @@ def validate_source_params(params: dict, kind: str) -> str | None:
     return None
 
 
+_OPERATOR_BAD = re.compile(r"[^0-9A-Za-z_.:@-]")
+
+
+def normalize_operator(value: Any) -> str:
+    """D12: атрибуция оператора в заголовке - только безопасные ASCII-символы, до 120 знаков.
+
+    Заголовок идёт в события и журналы приложения; управляющие символы и переводы строк (подмена
+    записи в журнале) заменяются, пустое значение становится ``unknown``.
+    """
+    text = _OPERATOR_BAD.sub("_", str(value or "").strip())[:120]
+    return text or "unknown"
+
+
+@dataclass(frozen=True)
+class _Replay:
+    """Повтор уже выполненного записывающего вызова: ответ первой попытки."""
+    body: Any
+
+
 ProgressSink = Callable[[float | None, str], Awaitable[None]]
 
 
@@ -342,11 +363,18 @@ class ActionContext:
             multipart = {name: (f.filename, f.content, f.content_type)
                          for name, f in zip(files.keys(), checked)}
         from app.services import access_guard
-        headers = {"X-Action-Layer-Operator": self.operator,
+        headers = {"X-Action-Layer-Operator": normalize_operator(self.operator),
                    # Внутренний вызов своего приложения: свой токен оператора (A04).
                    access_guard.OPERATOR_HEADER: access_guard.get_operator_token()}
         if self.idempotency_key:
             headers["Idempotency-Key"] = self.idempotency_key
+        # D12: записывающий вызов с ключом выполняется не более одного раза (повтор отдаёт тот же ответ).
+        fingerprint = None
+        if self.idempotency_key and method != "GET":
+            fingerprint = await self._claim(method, path, params, json, multipart)
+            if isinstance(fingerprint, _Replay):
+                return fingerprint.body
+        # При отмене или обрыве запись остаётся 'started': исход неизвестен, повтор решает _claim.
         transport = httpx.ASGITransport(app=self.app)
         async with httpx.AsyncClient(transport=transport, base_url=_BASE_URL,
                                      timeout=timeout) as client:
@@ -357,9 +385,75 @@ class ActionContext:
         except ValueError:
             body = resp.text
         if resp.status_code >= 400:
+            await self._finish(fingerprint, ok=False, status=resp.status_code, body=None)
             detail = body.get("detail") if isinstance(body, dict) else body
             raise ActionCallError(resp.status_code, detail)
+        # Ответ 2xx с отказом внутри (rejected / ok=false) не считается выполненным: повтор разрешён.
+        refused = isinstance(body, dict) and (body.get("rejected") or body.get("ok") is False)
+        await self._finish(fingerprint, ok=not refused, status=resp.status_code, body=body)
         return body
+
+    async def _claim(self, method: str, path: str, params: Any, json: Any, multipart: Any):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from app.services.action_layer import store
+
+        files_fp = None
+        if multipart:
+            files_fp = {k: [v[0], hashlib.sha256(v[1]).hexdigest()] for k, v in multipart.items()}
+        fp = store.call_fingerprint(method, path, params=params, body=json, files=files_fp)
+        try:
+            state, row = await store.claim_call(
+                self.idempotency_key, fp, method=method, path=path,
+                operator=normalize_operator(self.operator), plan_id=self.plan_id or "")
+        except SQLAlchemyError:
+            # Таблицы журнала нет (старая БД до миграции): без дедупликации, не ломая вызов.
+            return None
+        if state == "done":
+            if row.response_omitted:
+                return _Replay({"idempotent_replay": True, "response_omitted": True})
+            return _Replay(row.response)
+        if state == "unknown" and row is not None and await self._step_is_idempotent():
+            # Повтор безвреден (значение выставляется, а не переключается): берём запись заново.
+            if await store.reclaim_call(row.id):
+                return fp
+        if state == "unknown":
+            raise ActionCallError(409, (
+                "предыдущая попытка этого шага с тем же запросом началась и не завершилась "
+                "записью исхода: результат неизвестен, повтор запрещён (проверьте состояние "
+                "проекта вручную)"))
+        return fp
+
+    async def _step_is_idempotent(self) -> bool:
+        """Шаг плана - идемпотентное действие (по реестру): повтор после обрыва допустим."""
+        if not self.plan_id or self.step_index is None:
+            return False
+        from sqlalchemy import select
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from app.services.action_layer import store
+        from app.services.action_layer.spec import registry
+        try:
+            async with store.sessions()() as s:
+                action_id = await s.scalar(select(store.ActionPlanStep.action_id).where(
+                    store.ActionPlanStep.plan_id == self.plan_id,
+                    store.ActionPlanStep.idx == self.step_index))
+        except SQLAlchemyError:
+            return False
+        spec = registry.find(action_id) if action_id else None
+        return bool(spec and spec.idempotent)
+
+    async def _finish(self, fingerprint: Any, *, ok: bool, status: int, body: Any) -> None:
+        if not fingerprint or isinstance(fingerprint, _Replay):
+            return
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from app.services.action_layer import store
+        try:
+            await store.finish_call(self.idempotency_key, fingerprint, ok=ok,
+                                    http_status=status, response=body)
+        except SQLAlchemyError:
+            return
 
     async def progress(self, fraction: float | None, note: str = "") -> None:
         if self.progress_sink is not None:

@@ -100,7 +100,9 @@ class NativeHeroInputContract(unittest.TestCase):
         self.assertFalse(contract["managed"])
         self.assertEqual(tuple(contract["actions"]), READ_ACTIONS)
         self.assertFalse(contract["semantic_quality_verified"])
-        self.assertFalse(capability_for("hero").managed)
+        # D06: hero is managed for supervised recovery ONLY (a local resume of a recorded result); the supervisor
+        # still never starts it, and this entity contract grants no execution path.
+        self.assertTrue(capability_for("hero").managed)
         with self.assertRaises(ValueError):
             require_managed_capability("hero")
 

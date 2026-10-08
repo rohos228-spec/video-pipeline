@@ -14,11 +14,14 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project
 from app.services import kill_switch, media_admission, media_recovery, media_unknown
+from app.services.action_layer.context import normalize_operator
+from app.services.actions_recovery import _media_gate
 from app.services.project_state import is_running_status
 from app.web.deps import get_session
 
@@ -72,6 +75,7 @@ async def release_unknown(project_id: int, body: ReleaseUnknownIn, session: Asyn
     Это снова открывает платную повторную отправку: второе списание возможно. Нужна письменная причина,
     пишется запись в журнал действий до и после. Ничего не отправляет."""
     project = await _project(session, project_id)
+    operator = normalize_operator(operator)  # D12: only safe characters reach the ledger and the event journal
     if await kill_switch.is_active(session):
         raise HTTPException(status_code=409, detail={"code": "kill_switch_active"})
     if is_running_status(project.status):
@@ -90,22 +94,25 @@ async def get_assessment(project_id: int, node_type: str, session: AsyncSession 
     node_type = _node(node_type)
     report = await media_recovery.assess(project, node_type)
     admission, denied = None, None
+    gate = _media_gate(node_type)
     try:
-        admission = (await media_admission.admit(project, node_type))["operation"]
+        admission = (await gate.admit(project, node_type))["operation"]
     except media_admission.MediaAdmissionDenied as exc:
         denied = exc.code
     return {"project_id": project_id, "node_type": node_type, "verdict": report["verdict"],
             "keys": _keys(report), "ledger": report.get("ledger"), "retry_same_max": report["retry_same_max"],
-            "supervisor_admission": {"admitted_node": media_admission.admitted(node_type),
+            "supervisor_admission": {"admitted_node": gate.admitted(node_type),
                                      "operation": admission, "denied": denied},
             "submits_new_paid_request": False}
 
 
 @router.post("/{node_type}/resume-poll")
-async def resume_poll(project_id: int, node_type: str, session: AsyncSession = Depends(get_session)) -> dict:
+async def resume_poll(project_id: int, node_type: str, session: AsyncSession = Depends(get_session),
+                      operator: str = Header(default="local_web_operator", alias="X-Action-Layer-Operator")) -> dict:
     """Опросить известную задачу Kie и скачать готовое. Новых платных запросов нет (проверяется по журналу)."""
     project = await _project(session, project_id)
     node_type = _node(node_type)
+    gate = _media_gate(node_type)
     if not media_admission.resumable(node_type):
         # a local node (assemble) is re-run by the original worker under a supervisor ticket, never from here
         raise HTTPException(status_code=409, detail={"code": "node_not_admitted", "node_type": node_type})
@@ -114,11 +121,13 @@ async def resume_poll(project_id: int, node_type: str, session: AsyncSession = D
     if is_running_status(project.status):
         raise HTTPException(status_code=409, detail={"code": "project_busy", "status": project.status.value})
     try:
-        admission = await media_admission.admit(project, node_type)
+        admission = await gate.admit(project, node_type)
     except media_admission.MediaAdmissionDenied as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code, "message": str(exc)}) from exc
     if admission["operation"] != "resume_poll":
         raise HTTPException(status_code=409, detail={"code": "not_a_provider_resume",
                                                      "operation": admission["operation"]})
-    outcome = await media_admission.run_and_verify(project, node_type, admission)
-    return {"project_id": project_id, "node_type": node_type, **outcome}
+    operator = normalize_operator(operator)
+    logger.info("media-recovery resume-poll: project={} node={} operator={}", project_id, node_type, operator)
+    outcome = await gate.run_and_verify(project, node_type, admission)
+    return {"project_id": project_id, "node_type": node_type, "operator": operator, **outcome}

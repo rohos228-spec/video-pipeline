@@ -2442,6 +2442,9 @@ async def run_img_pr_xlsx(
                         len(all_ops),
                     )
                     return
+                from app.services.node_capabilities import note_image_prompt_unusable
+
+                note_image_prompt_unusable(last_reply, batch_i=bi)
                 raise RuntimeError(
                     f"img_pr batch {bi} L{level}: нет apply-ops "
                     f"(reply_len={len(last_reply)}). "
@@ -2558,6 +2561,10 @@ async def run_img_pr_xlsx(
                         )
 
         if not any_ok and not all_ops:
+            if replies:
+                from app.services.node_capabilities import note_image_prompt_unusable
+
+                note_image_prompt_unusable(replies[-1])
             raise RuntimeError(
                 "img_pr: все параллельные батчи провалились без ops"
             )
@@ -2565,6 +2572,10 @@ async def run_img_pr_xlsx(
     await xgf.run_under_xlsx_lock(project.id, "img_pr", _run_batches)
 
     if not all_ops:
+        if replies:
+            from app.services.node_capabilities import note_image_prompt_unusable
+
+            note_image_prompt_unusable(replies[-1])
         raise RuntimeError(
             "GPT не вернул apply-ops с промт_картинки по frame_uuid. "
             'Нужен {"ops":[{"frame_uuid":"…","fields":{"промт_картинки":"…"}}]}'

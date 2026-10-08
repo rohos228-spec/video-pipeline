@@ -262,6 +262,11 @@ class ProfilesSupervisor:
         # itself let an incompatible node start using a profile.
         if not capability or not capability.managed or not capability.profile_compatible:
             raise ValueError('incompatible accepted text node contract')
+        # D05: compatibility is per TYPE, admission per NODE (sd_agent: only the agents characters and world); a
+        # node of a refused agent never gets a profile overlay, whatever path put it into the grant.
+        from app.orchestrator.node_spec import node_admission_problem
+        problem=node_admission_problem(node)
+        if problem:raise ValueError('incompatible accepted text node contract: '+str(problem)[:200])
         project=await s.get(Project,project_id)
         if not control.enabled or control.held or scope.observer_state!='active' or scope.gaps or (project.meta or {}).get('user_stop'):
             raise ValueError('stop, permission or audit blocker')

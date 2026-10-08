@@ -62,7 +62,9 @@ from app.models import (
 from app.services import gpt_text_builder as gtb
 from app.services.excel_characters import ExcelCharacter
 from app.services.hitl import send_hitl_photo
+from app.services import outsee_idempotency
 from app.services.outsee_retry import generate_image_with_retries
+from app.services.video_error_policy import is_no_resubmit
 from app.services.notification_log import notify
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
@@ -859,6 +861,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     reference_image=ref_path,
                     timeout=600,
                     project_id=project.id,
+                    idempotent=True,
                 )
             except OutseeImageError as e:
                 # Отличаем модерационный reject от прочего
@@ -877,7 +880,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 project.status = ProjectStatus.frames_ready
                 await session.flush()
                 project_label = (project.topic or project.slug or "")[:60]
-                if is_moderation:
+                if is_no_resubmit(e):
+                    msg = (
+                        f"Проект #{project.id} «{project_label}» — hero {hero_idx}/{n_total} v{v_idx}/{n_variations}: "
+                        f"исход прошлой платной отправки в Outsee неизвестен (запрос мог быть оплачен). "
+                        f"Новый платный запрос не отправляю. Проверьте историю генераций и баланс Outsee и решите: "
+                        f"снять блокировку или подставить найденный файл.\n"
+                        f"Статус откатил в <b>frames_ready</b>."
+                    )
+                elif is_moderation:
                     msg = (
                         f"🚫 Проект #{project.id} «{project_label}» — hero {hero_idx}/{n_total} v{v_idx}/{n_variations}:\n"
                         f"6 попыток в outsee подряд отклонены модерацией (3 оригинал + 3 после GPT-rewrite).\n\n"
@@ -937,6 +948,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     session.add(art)
     project.status = ProjectStatus.hero_ready
     await session.flush()
+    await outsee_idempotency.mark_consumed(project.id, f"hero_{hero_idx}_v{v_idx}")
 
     # 6) xlsx — пишем «текущий» референс героя.
     try:
@@ -1404,6 +1416,7 @@ async def _generate_one_excel_character(
                         reference_image=(ref_paths or None) if used_refs else None,
                         timeout=600,
                         project_id=project.id,
+                        idempotent=True,
                     )
             except OutseeImageError as e:
                 is_moderation = isinstance(e, OutseeContentRejectedError)

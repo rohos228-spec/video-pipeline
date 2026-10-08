@@ -160,8 +160,23 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     reference_image=None,
                     timeout=600,
                     project_id=project.id,
+                    idempotent=True,
                 )
         except OutseeImageError as e:
+            from app.services.video_error_policy import is_no_resubmit
+            if is_no_resubmit(e):
+                # Платный запрос мог уйти и быть оплачен: тип ошибки сохраняем (неизвестный исход), решает человек.
+                logger.error(
+                    "[#{}] items: predmet{} исход платного запроса неизвестен, новый не отправляю: {}",
+                    project.id, idx, getattr(e, "reason", None) or str(e),
+                )
+                project.status = ProjectStatus.hero_ready
+                await session.flush()
+                raise RuntimeError(
+                    f"items: predmet{idx} не удалось сгенерить: исход платного запроса в Outsee неизвестен, "
+                    f"новый запрос не отправляю (запрос мог быть оплачен). Проверьте историю генераций и баланс "
+                    f"Outsee, затем снимите блокировку или подставьте найденный файл. Статус откатил на hero_ready."
+                ) from e
             is_moderation = isinstance(e, OutseeContentRejectedError)
             logger.error(
                 "[#{}] items: predmet{} 6 попыток provalились "
@@ -195,6 +210,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
         session.add(a)
         await session.flush()
+        from app.services import outsee_idempotency
+        await outsee_idempotency.mark_consumed(project.id, f"predmet{idx}")
         logger.info(
             "[#{}] items: predmet{} → {}",
             project.id,

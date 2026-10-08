@@ -443,7 +443,9 @@ class DecisionSupervisor:
             node_key=row.node_key,source_attempt_id=row.source_attempt_id)
         from app.services.profiles_v1 import eligible_profiles
         from app.services import media_admission
-        media_ok=media_admission.is_media_incident(incident) and media_admission.admitted(capability.node_type)
+        from app.services.actions_recovery import _media_gate
+        gate=_media_gate(capability.node_type)
+        media_ok=media_admission.is_media_incident(incident) and gate.admitted(capability.node_type)
         media_info=await self._media_info(project,capability.node_type,events) if media_ok and project else None
         eligible=await eligible_profiles(s,row,revision) if incident.type in RECOVERY_INCIDENTS and capability.managed and capability.profile_compatible else []
         # Deterministic hint only — never forces a choice. For a diagnosed
@@ -466,7 +468,7 @@ class DecisionSupervisor:
         if rclass is None and not media_ok:execution_actions-= {'retry_same','retry_profile'}
         if rclass!=RECOVERY_FORMAT and not media_ok:execution_actions-= {'retry_profile'}
         if media_ok:execution_actions-= {'retry_profile'}
-        if not media_ok and media_admission.admitted(capability.node_type):execution_actions-= {'retry_same','retry_profile'}
+        if not media_ok and gate.admitted(capability.node_type):execution_actions-= {'retry_same','retry_profile'}
         if media_ok and not (media_info or {}).get('operation'):execution_actions-= {'retry_same'}
         # A terminal record is not proof of a complete response. Only a complete
         # reply or a known HTTP rejection settles the external request.
@@ -500,9 +502,11 @@ class DecisionSupervisor:
         """What a media retry_same would do: a resume of a known provider task, one re-run of a local node by the
         original worker, or a typed denial. Read-only. A local node is judged from the failed attempt's own facts."""
         from app.services import media_admission
+        from app.services.actions_recovery import _media_gate
+        gate=_media_gate(node_type)
         try:
-            adm=await media_admission.admit(project,node_type,
-                source_facts=(list(events or []) if media_admission.local_worker(node_type) else None))
+            adm=(await gate.admit(project,node_type) if gate is not media_admission else await media_admission.admit(project,node_type,
+                source_facts=(list(events or []) if media_admission.local_worker(node_type) else None)))
         except media_admission.MediaAdmissionDenied as exc:
             return {'operation':None,'denied':exc.code,'submits_new_paid_request':False}
         except Exception as exc:
@@ -744,8 +748,9 @@ class DecisionSupervisor:
                         node=await s.scalar(select(NodeRun).where(NodeRun.workflow_run_id==permission.workflow_run_id,
                             NodeRun.node_key==incident.node_key))
                         from app.services import media_admission
+                        from app.services.actions_recovery import _media_gate
                         if incident.type not in DIAGNOSTIC_INCIDENTS and not (node and incident.type=='media_failure'
-                                and media_admission.is_media_incident(incident) and media_admission.admitted(node.node_type)):continue
+                                and media_admission.is_media_incident(incident) and _media_gate(node.node_type).admitted(node.node_type)):continue
                         if (node and node.status==NodeRunStatus.failed and node.finished_at and incident.attempt_id
                                 and incident.node_key in permission.node_keys
                                 and incident.details.get('currently_relevant') and decision_config.incident_in_scope(

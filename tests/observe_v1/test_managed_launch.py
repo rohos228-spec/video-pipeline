@@ -32,8 +32,8 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
         self.nodes = [
             {'id':'draft-A','type':'excel_gpt','data':{'slot':0}},
             {'id':'report-Z','type':'excel_gpt','data':{'slot':0}},
-            # split stays read-only native (script/plan gained bounded recovery capabilities)
-            {'id':'outside','type':'split','data':{}},
+            # images stays managed but read-only (no retry): split/image_prompts gained a bounded recovery in W5 D05
+            {'id':'outside','type':'images','data':{}},
         ]
         self.edges = [{'id':'a-z','source':'draft-A','target':'report-Z'}]
         self.graph = revisions.graph_version(self.nodes, self.edges)
@@ -155,15 +155,16 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data['graph_version'],self.graph)
         self.assertEqual({n['node_key'] for n in data['nodes'] if n['supported']},{'draft-A','report-Z','outside'})
         native=next(n for n in data['nodes'] if n['node_key']=='outside')
-        self.assertEqual(native['result_kind'],'frame_set')
-        self.assertNotIn('retry_same',native['actions'])
+        self.assertEqual(native['result_kind'],'image')
+        # D06: images offers retry_same ONLY as a local resume of a recorded result; a profile retry is never offered
+        self.assertNotIn('retry_profile',native['actions'])
         self.assertEqual(data['request_limit_max'],100)
         self.assertEqual(data['online_authorized'],False)
         async with self.sessions() as s:self.assertIsNone(await s.scalar(select(ActionExecutionControl)))
 
     async def test_native_scope_cannot_preapprove_an_unimplemented_recovery_strategy(self):
         from app.services.managed_launch import prepare
-        request={**self.payload,'node_keys':['outside'],'strategies':['wait','human_review','retry_same']}
+        request={**self.payload,'node_keys':['outside'],'strategies':['wait','human_review','retry_profile']}
         async with self.sessions() as session:
             with self.assertRaisesRegex(ValueError,'strategy.*node|node.*strategy'):
                 await prepare(observation.get_observer(),session,project_id=7,request=request,initiator='test')

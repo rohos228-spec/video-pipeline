@@ -66,6 +66,8 @@ HISTORY_EVENT_RU: dict[str, str] = {
     "budget_block": "Шаг остановлен лимитом расходов",
     "kill_switch_block": "Шаг остановлен аварийным стопом",
     "job_stop_after_failure": "Задача остановлена после сбоя",
+    "snapshot_saved": "Снимок состояния перед шагом сохранён",
+    "snapshot_restored": "Состояние восстановлено из снимка",
 }
 
 

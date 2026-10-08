@@ -217,3 +217,100 @@ def price_request_credits(in_tokens: int, out_tokens: int) -> tuple[float, str] 
         return None
     credits = usd * PRICE_MARKUP / CREDIT_USD
     return credits, f"{model}, прайс Vibecode x{PRICE_MARKUP:g} (наценка каталога, не откалибрована)"
+
+
+# --- шаги конвейера проекта (D08): оценка запуска img/video/audio/music/... ----------------------
+#
+# Откуда числа: количество генераций берётся из доски монтажа (кадры и второй шот), цена за генерацию -
+# из ``kie_catalog`` по тем же значениям, что уходят в запрос (``builtin_montage_more._kie_unit``).
+# Что оценка НЕ знает: Outsee и прочие модели без тарифа в репозитории, озвучка (по символам),
+# музыка, LLM-шаги промтов. Для них код оценки неизвестен, и запуск возможен только с потолком
+# ``ceiling_credits``, который назвал оператор (потолок входит в хэш плана и резервируется в бюджете).
+# Шаг ``assemble`` локальный (ffmpeg и локальный ASR), платных вызовов провайдеров нет
+# (``node_capabilities.MEDIA_RECOVERY_DECISIONS['assemble']['cost_class']``).
+
+MEDIA_UNCALIBRATED = "оценка по каталогу тарифов, расход шага не сверялся с балансом провайдера"
+
+# код шага -> (вид оплаты, название). Публикации нет: она остаётся действием человека.
+MEDIA_STEPS: dict[str, tuple[str, str]] = {
+    "img_pr": ("llm", "Промты картинок"),
+    "img": ("image", "Картинки"),
+    "anim_pr": ("llm", "Промты анимации"),
+    "video": ("video", "Видео"),
+    "audio": ("audio", "Озвучка"),
+    "music": ("music", "Музыка"),
+    "assemble": ("local", "Финальная сборка"),
+}
+# Сколько платных попыток на одну картинку/клип закладывает оценка (как у регенерации на доске).
+IMAGE_STEP_ATTEMPTS = 3
+VIDEO_STEP_ATTEMPTS = 4
+
+
+def media_units(board_frames: list[dict]) -> dict[str, int]:
+    """Верхняя граница числа генераций шага: по картинке/клипу на шот (второй шот = ещё одна)."""
+    frames = [f for f in board_frames or [] if isinstance(f, dict)]
+    shots = sum(2 if f.get("has_shot2") else 1 for f in frames)
+    return {"frames": len(frames), "images": shots, "videos": shots}
+
+
+def media_step_kind(step_code: str) -> str | None:
+    meta = MEDIA_STEPS.get(str(step_code or ""))
+    return meta[0] if meta else None
+
+
+def media_code_estimate(step_code: str, *, units: int | None, image_generator: str | None = None,
+                        image_resolution: str | None = None, video_generator: str | None = None,
+                        video_resolution: str | None = None):
+    """Оценка по коду: CostEstimate (известная) либо None с причиной в ``basis`` неизвестной оценки."""
+    from app.services.action_layer.builtin_montage_more import (
+        _VIDEO_CLIP_SECONDS, _kie_unit)
+    from app.services.action_layer.spec import CostEstimate
+
+    kind = media_step_kind(step_code)
+    if kind is None:
+        return CostEstimate.unknown(f"шаг {step_code!r} не входит в каталог запуска")
+    if kind == "local":
+        return CostEstimate(0.0, 0.0, "сборка идёт локально (ffmpeg, локальный ASR), "
+                                      "платных вызовов провайдеров нет")
+    if kind in ("image", "video"):
+        if not units or units < 1:
+            return CostEstimate.unknown("не заявлено число генераций (count): возьмите его у "
+                                        "step.get_run_cost_basis")
+        if kind == "image":
+            unit, why = _kie_unit("image", image_generator, image_resolution)
+            attempts = IMAGE_STEP_ATTEMPTS
+        else:
+            unit, why = _kie_unit("video", video_generator, video_resolution)
+            attempts = VIDEO_STEP_ATTEMPTS
+        if unit is None:
+            return CostEstimate.unknown(why)
+        note = (f"{MEDIA_UNCALIBRATED}: до {units} генераций x {attempts} платные попытки, {why}"
+                + (f"; клип допущен {_VIDEO_CLIP_SECONDS} с (шаг длительность не передаёт)"
+                   if kind == "video" else ""))
+        return CostEstimate(0.0, round(units * attempts * unit, 2), note)
+    why = {"llm": "число и размер LLM-вызовов шага из кода не определены",
+           "audio": "озвучка тарифицируется по символам, объём и провайдер из кода не определены",
+           "music": "трек Suno: провайдер (Kie или браузерный Outsee) выбирается на ходу"}[kind]
+    return CostEstimate.unknown(why)
+
+
+def apply_ceiling(code_estimate, ceiling: float | None):
+    """Итоговая оценка с потолком оператора.
+
+    Известная оценка по коду остаётся как есть; потолок ниже её верхней границы - неизвестная
+    оценка (запуск не подтвердить). Нет оценки по коду - верхняя граница равна потолку оператора.
+    """
+    from app.services.action_layer.spec import CostEstimate
+
+    if code_estimate.known:
+        if ceiling is not None and ceiling < code_estimate.high:
+            return CostEstimate.unknown(
+                f"потолок {ceiling:g} кр ниже расчёта {code_estimate.high:g} кр: запуск не подтвердить")
+        return code_estimate
+    if ceiling is None:
+        return code_estimate
+    return CostEstimate(
+        0.0, round(float(ceiling), 2),
+        f"потолок оператора {ceiling:g} кр (цену по коду определить нельзя: {code_estimate.basis}); "
+        "потолок резервируется в бюджете слоя, воркер его сам не знает - жёсткий предел расхода "
+        "дают лимиты spend_guard и аварийный стоп")

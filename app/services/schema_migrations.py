@@ -135,9 +135,14 @@ async def _action_layer(conn) -> None:
     await ensure_action_layer_schema(conn)
 
 
+# Tables added to the action layer after 0004 was released (W5): they belong to 0016, so the 0004 fingerprint of
+# databases that already applied it does not change (no false drift).
+_ACTION_LAYER_W5_TABLES = ("action_layer_calls", "action_layer_snapshots")
+
+
 def _action_layer_fp() -> str:
     from app.services.action_layer import store
-    return tables_fingerprint(store._TABLES, store._TRIGGERS)
+    return tables_fingerprint([t for t in store._TABLES if t.name not in _ACTION_LAYER_W5_TABLES], store._TRIGGERS)
 
 
 async def _change_control(conn) -> None:
@@ -335,6 +340,24 @@ def _create_jobs_fp() -> str:
     return _digest({"create_jobs_ddl": [" ".join(d.split()) for d in _ddl_statements(create_jobs.CREATE_JOBS_DDL)]})
 
 
+async def _outsee_idempotency(conn) -> None:
+    # Same definition the module creates for itself on first use (IF NOT EXISTS / checkfirst): a table created by
+    # the module earlier does not break the migration. The action layer's idempotency / snapshot tables ride along.
+    from app.services import outsee_idempotency
+    from app.services.action_layer import store
+    tables = [outsee_idempotency.OutseeIdempotency.__table__] + [
+        t for t in store._TABLES if t.name in _ACTION_LAYER_W5_TABLES]
+    await _create_tables(conn, tables, outsee_idempotency._TRIGGERS)
+
+
+def _outsee_idempotency_fp() -> str:
+    from app.services import outsee_idempotency
+    from app.services.action_layer import store
+    tables = [outsee_idempotency.OutseeIdempotency.__table__] + [
+        t for t in store._TABLES if t.name in _ACTION_LAYER_W5_TABLES]
+    return tables_fingerprint(tables, outsee_idempotency._TRIGGERS)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_observation_core", "observation, diagnosis, actions, decision, profiles, media, "
               "managed launch, kill switch tables", _observation, _observation_fp,
@@ -366,6 +389,8 @@ MIGRATIONS: tuple[Migration, ...] = (
               _journal_archive_log, _journal_archive_log_fp),
     Migration("0015_create_jobs", "durable state of Create jobs (survives restart)",
               _create_jobs, _create_jobs_fp),
+    Migration("0016_outsee_idempotency", "append-only Outsee request-key log; action layer call journal and snapshots",
+              _outsee_idempotency, _outsee_idempotency_fp),
 )
 
 
@@ -484,6 +509,7 @@ JOURNAL_TABLES: tuple[str, ...] = (
     "action_layer_history", "action_layer_plan_context",
     "change_proposals", "config_versions", "config_pointers", "schema_migrations",
     "notification_log", "journal_archive_log", "operator_audit", "publications",
+    "outsee_idempotency", "action_layer_calls", "action_layer_snapshots",
 )
 
 

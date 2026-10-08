@@ -35,7 +35,7 @@ def test_the_two_columns_are_the_data_level_and_the_run_proof():
     got = {lvl: sum(r["level"] == lvl for r in rows.values()) for lvl in ("managed", "observed", "human_only")}
     assert got == {"managed": summary["managed"], "observed": summary["observed"],
                    "human_only": summary["human_only"]}
-    assert (summary["managed"], summary["observed"], summary["human_only"]) == (14, 9, 1)
+    assert (summary["managed"], summary["observed"], summary["human_only"]) == (17, 6, 1)
 
 
 def test_the_table_in_the_doc_is_exactly_the_generated_one():

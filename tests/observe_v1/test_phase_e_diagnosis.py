@@ -133,11 +133,16 @@ def test_recompute_is_read_only_and_does_not_touch_hold(tmp_path):
     assert rows == [(1, 'x' * 250), (2, 'short')]
 
 
-def test_capability_data_for_hold_stays_read_only():
+def test_capability_data_for_hold_stays_bounded():
+    """W5 D05: image_prompts may take one retry for a typed format incident; the hold itself (a failed or unknown
+    post-write check, verification_hold) is never retried: that stays a human decision (see actions_recovery gates)."""
     from app.services.node_capabilities import capability_for
+    from app.services.diagnosis import INCIDENT_OUTCOMES
     cap = capability_for('image_prompts')
-    assert set(cap.actions) == {'read_events', 'read_contract', 'wait', 'human_review'}
+    assert set(cap.actions) == {'read_events', 'read_contract', 'wait', 'human_review', 'retry_same', 'retry_profile', 'finish'}
     assert cap.contract()['semantic_quality_verified'] is False
+    assert INCIDENT_OUTCOMES['verification_hold']['paid_retry'] == 'never'
+    assert INCIDENT_OUTCOMES['verification_hold'].get('recovery_class') is None
 
 
 # ---------- E3: rule diary ----------

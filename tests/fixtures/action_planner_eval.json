@@ -5453,6 +5453,513 @@
    "outcome": "clarify",
    "steps": [],
    "also_offered": []
+  },
+  {
+   "id": "w5_cost_img",
+   "text": "сколько будет стоить запуск шага генерации картинок",
+   "workflow": "step run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "step.get_run_cost_basis",
+     "params": {
+      "step_code": "img"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_cost_video",
+   "text": "оцени расход на шаг видео перед запуском",
+   "workflow": "step run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "step.get_run_cost_basis",
+     "params": {
+      "step_code": "video"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_run_assemble",
+   "text": "запусти шаг сборки ролика",
+   "workflow": "step run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "step.run_step",
+     "params": {
+      "step_code": "assemble"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_run_audio",
+   "text": "запусти шаг озвучки, потолок расхода 20 кредитов",
+   "workflow": "step run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "step.run_step",
+     "params": {
+      "step_code": "audio",
+      "ceiling_credits": 20
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hitl_list",
+   "text": "покажи, какие запросы на утверждение сейчас ждут",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.list_pending",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hitl_list_b",
+   "text": "есть ли что-то, что ждёт моего подтверждения по проекту",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.list_pending",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hitl_approve",
+   "text": "утверди запрос на проверку номер 8",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.approve",
+     "params": {
+      "hitl_id": 8
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_hitl_approve_b",
+   "text": "одобряю запрос на проверку номер 21",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.approve",
+     "params": {
+      "hitl_id": 21
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_hitl_reject",
+   "text": "отклони запрос на проверку 3",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.reject",
+     "params": {
+      "hitl_id": 3
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_hitl_reject_b",
+   "text": "не принимаю, отклоняю запрос номер 14",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.reject",
+     "params": {
+      "hitl_id": 14
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_hitl_regen",
+   "text": "перегенерируй по запросу 9 картинки заново, потолок 40 кредитов",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.regenerate",
+     "params": {
+      "hitl_id": 9,
+      "ceiling_credits": 40
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_hitl_regen_b",
+   "text": "запрос на проверку 2 не устраивает, сгенерируй вариант заново, не больше 15 кредитов",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.regenerate",
+     "params": {
+      "hitl_id": 2,
+      "ceiling_credits": 15
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_proj_create",
+   "text": "заведи новый проект с названием «Утро в горах»",
+   "workflow": "project create",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.create",
+     "params": {
+      "title": "Утро в горах"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_proj_create_b",
+   "text": "создай проект «Ночной город» с темой про огни мегаполиса",
+   "workflow": "project create",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.create",
+     "params": {
+      "title": "Ночной город",
+      "topic": "огни мегаполиса"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_proj_child",
+   "text": "сделай дочерний проект от этого",
+   "workflow": "project create",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.create_child",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_proj_child_b",
+   "text": "создай ответвление проекта, дочерний проект",
+   "workflow": "project create",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.create_child",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_patch_ratio",
+   "text": "смени у проекта соотношение сторон на 9:16",
+   "workflow": "project settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.patch_settings",
+     "params": {
+      "aspect_ratio": "9:16"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_patch_video_res",
+   "text": "поставь разрешение видео 1080p в настройках проекта",
+   "workflow": "project settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.patch_settings",
+     "params": {
+      "video_resolution": "1080p"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_mass",
+   "text": "запусти массовую фабрику по темам «кофе» и «чай», потолок 120 кредитов",
+   "workflow": "massfactory",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "massfactory.start",
+     "params": {
+      "topics": [
+       "кофе",
+       "чай"
+      ],
+      "ceiling_credits": 120
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_mass_b",
+   "text": "массовый запуск: темы «осень», «зима», «весна», лимит 300 кредитов",
+   "workflow": "massfactory",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "massfactory.start",
+     "params": {
+      "topics": [
+       "осень",
+       "зима",
+       "весна"
+      ],
+      "ceiling_credits": 300
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_kill",
+   "text": "экстренно останови все платные вызовы, причина: подозрительный расход",
+   "workflow": "kill switch",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "kill_switch.engage",
+     "params": {
+      "rationale": "подозрительный расход"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_kill_b",
+   "text": "включи аварийный рубильник, причина: нужно проверить баланс",
+   "workflow": "kill switch",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "kill_switch.engage",
+     "params": {
+      "rationale": "нужно проверить баланс"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_xlsx",
+   "text": "загрузи новый excel-файл проекта",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.upload_xlsx",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hero_replace",
+   "text": "замени картинку героя на мой файл",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hero.replace_image",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_storage_up",
+   "text": "загрузи мой файл-вложение в раздел хранилища узла n_excel_gpt_fw_qc",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "storage.upload_file",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_storage_clear",
+   "text": "удали файлы из хранилища ноды n_excel_gpt_fw_shots",
+   "workflow": "storage clear",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "storage.clear_files",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hist_list",
+   "text": "покажи журнал моих недавних правок со старыми значениями",
+   "workflow": "history",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "history.list_snapshots",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hist_roll",
+   "text": "откати правку, снимок номер 17",
+   "workflow": "history",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "history.rollback",
+     "params": {
+      "snapshot_id": 17
+     }
+    }
+   ],
+   "also_offered": [
+    "history.list_snapshots"
+   ]
+  },
+  {
+   "id": "w5_hist_roll_b",
+   "text": "верни прежнее значение из снимка 4",
+   "workflow": "history",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "history.rollback",
+     "params": {
+      "snapshot_id": 4
+     }
+    }
+   ],
+   "also_offered": [
+    "history.list_snapshots"
+   ]
+  },
+  {
+   "id": "w5_publish",
+   "text": "отправь собранный ролик на публикацию во все соцсети",
+   "workflow": "publish",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "publish.send",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_publish_b",
+   "text": "выложи собранное видео в соцсети",
+   "workflow": "publish",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "publish.send",
+     "params": {}
+    }
+   ],
+   "also_offered": []
   }
  ]
 }
