@@ -50,6 +50,12 @@ async def _project(db, tmp_path, slug="w16", status=ProjectStatus.publishing) ->
     video.write_bytes(b"SYNTHETIC-VIDEO")
     db.add(Artifact(project_id=p.id, kind=ArtifactKind.final_video, uuid=f"u-{slug}", path=str(video)))
     await db.flush()
+    # W6-1 (E01): без подтверждения человека клика нет; здесь человек подтвердил все площадки для этого файла.
+    sha = await ps.sha256_of_file_async(video)
+    csha = step.caption_sha256(step.caption_for(p))
+    for pl in PLATFORMS:
+        await ps.grant_approval(db, project_id=p.id, platform=pl, sha256=sha, caption_sha256=csha,
+                                approved_by="operator:test")
     return p
 
 

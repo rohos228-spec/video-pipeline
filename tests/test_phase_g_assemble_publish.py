@@ -272,9 +272,16 @@ async def test_publish_run_does_not_record_unconfirmed_as_success(db, tmp_path, 
     db.add(Artifact(project_id=p.id, kind=ArtifactKind.final_video, uuid="u2", path=str(video)))
     await db.flush()
     monkeypatch.setattr(settings, "social_publish_enabled", True)
+    # W6-1 (E01): клик возможен только после подтверждения человека на каждую площадку для этого файла.
+    from app.services import publications_store as ps
+    sha = await ps.sha256_of_file_async(video)
+    csha = pub.caption_sha256(pub.caption_for(p))
+    for cls in pub.ALL_PUBLISHERS:
+        await ps.grant_approval(db, project_id=p.id, platform=cls.platform, sha256=sha, caption_sha256=csha,
+                                approved_by="operator:test")
     calls = []
 
-    async def fake_everywhere(path, caption, *, skip_platforms=None, gate=None):
+    async def fake_everywhere(path, caption, *, skip_platforms=None, gate=None, project_label=None):
         calls.append(set(skip_platforms or ()))
         return [
             PublishResult("tiktok", False, url="u", error="unconfirmed", status="unconfirmed"),

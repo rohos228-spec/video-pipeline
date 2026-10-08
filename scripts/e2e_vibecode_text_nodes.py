@@ -168,6 +168,10 @@ ASM_CAMERA = {"shot_plan": [
      "цитата": "Альфа долго открывает старую книгу", "крупность": "VLS→MS→CU"},
     {**_ASM_SHOT, "id_scene": "scene_02", "phase_index": 1, "beat": "закрывает",
      "цитата": "Бета медленно закрывает книгу", "крупность": "MS→CU"}]}
+# style_arc with lighting: the assembler then adds "освещение" to every op (as for real projects); the verifier must accept it.
+ASM_STYLE = {"style_arc": [
+    {"scene_hint": "Альфа долго открывает", "тип_сцены": "continuity", "освещение": "тёплый свет из окон",
+     "палитра": "охра", "тон": "спокойный", "сдвиг": "нет", "сцены": ["scene_01", "scene_02"]}]}
 ANIMATION_TEXT = "A continuous medium shot: the person slowly opens the blue folder on the wooden desk. NO VOICE."
 ANIMATION_READY = "Ready to receive the original frame batch."
 
@@ -546,7 +550,7 @@ async def _post_seed(node: str, pid: int) -> None:
     async with project_db_session_scope(pid) as session:
         project = await session.get(Project, pid)
         await db_v2.backfill_project_v2(session, project)
-        for name, data in parts:
+        for name, data in (*parts, ("style", ASM_STYLE)):
             runner.save_checkpoint(project, name, data)
         await session.commit()
         for name, data in parts:

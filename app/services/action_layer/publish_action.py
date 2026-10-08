@@ -16,6 +16,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+
 from app.services.action_layer.context import ActionCallError, ActionContext
 from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, ActionRegistry, ActionSpec, JobState, Precondition)
@@ -40,9 +42,44 @@ def caption_of(project: dict) -> str:
     return str(project.get("topic") or project.get("slug") or "")[:MAX_CAPTION]
 
 
-def account_text() -> str:
-    """Аккаунт для превью: профиль MoreLogin (кроме последних 4 символов id не показывается)."""
+# Факты публикации (sha256 файла и подписи) из GET /projects/{id}/publications (publication_facts), которые
+# предусловие project_exists кладёт сюда ДО построения превью: effects_text синхронный и сам БД не читает.
+_FACTS: dict[int, dict] = {}
+
+
+def _remember_facts(project_id: int, facts: object) -> None:
+    got = {}
+    if isinstance(facts, dict):
+        got = {k: facts.get(k) for k in ("sha256", "caption_sha256") if isinstance(facts.get(k), str) and facts.get(k)}
+    if got:
+        if len(_FACTS) > 64:
+            _FACTS.clear()
+        _FACTS[project_id] = got
+    else:
+        _FACTS.pop(project_id, None)
+
+
+def account_text(platforms: list[str] | None = None) -> str:
+    """Аккаунт для превью. Есть конфиг по площадкам: подпись аккаунта каждой площадки (publish_accounts, label()
+    без секретов); иначе один профиль MORELOGIN_PROFILE_ID (кроме последних 4 символов id не показывается)."""
+    from app.services import publish_accounts as pa
     from app.settings import settings
+    try:
+        cfg = pa.load_accounts()
+    except pa.AccountsConfigError as exc:
+        return f"конфиг аккаунтов публикации неверен ({exc}), публикация не начнётся"
+    if cfg.configured:
+        names = platforms or registry_platforms()
+        parts = []
+        for p in names:
+            acct = cfg.for_platform(p)
+            if not acct.enabled:
+                parts.append(f"{PLATFORM_TITLES.get(p, p)}: площадка выключена в конфиге")
+            elif not acct.profile_id:
+                parts.append(f"{PLATFORM_TITLES.get(p, p)}: профиль не задан, площадка не опубликуется")
+            else:
+                parts.append(f"{PLATFORM_TITLES.get(p, p)}: {acct.label()}")
+        return "; ".join(parts)
     pid = str(settings.morelogin_profile_id or "").strip()
     if not pid:
         return "профиль MoreLogin не задан (MORELOGIN_PROFILE_ID), публикация не начнётся"
@@ -51,10 +88,17 @@ def account_text() -> str:
 
 def effects_text(params: dict) -> str:
     names = ", ".join(PLATFORM_TITLES.get(p, p) for p in params.get("platforms") or [])
+    facts = _FACTS.get(params.get("project_id")) or {}
+    caption = params.get("caption", "")
+    csha = facts.get("caption_sha256") or hashlib.sha256(str(caption).encode("utf-8")).hexdigest()
+    sha = facts.get("sha256") or "не определён (финальный файл не найден)"
     return (f"Готовый ролик проекта {params.get('project_id')} будет ОПУБЛИКОВАН на площадки: {names}. "
-            f"Аккаунт: {account_text()}. Подпись дословно: «{params.get('caption', '')}». "
+            f"Аккаунт: {account_text(list(params.get('platforms') or []))}. Подпись дословно: «{caption}». "
+            f"Файл (sha256): {sha}. Подпись (sha256): {csha}. "
             "Опубликованное нельзя отозвать из студии; если сбой случится после нажатия «Опубликовать», "
-            "автоповтора не будет и итог нужно проверить на площадке вручную.")
+            "автоповтора не будет и итог нужно проверить на площадке вручную. "
+            "Клик возможен только после отдельного подтверждения человека на каждую площадку в панели "
+            "«Публикации» для этого файла и этой подписи.")
 
 
 # --- предусловия -------------------------------------------------------------
@@ -65,6 +109,10 @@ async def _project(ctx: ActionContext, params: dict) -> dict:
 
 async def _pre_project(ctx: ActionContext, params: dict) -> str | None:
     await _project(ctx, params)
+    try:  # факты только для превью (sha256); их отсутствие не блокирует предусловие
+        _remember_facts(params["project_id"], await ctx.call("GET", f"/projects/{params['project_id']}/publications"))
+    except Exception:  # noqa: BLE001
+        _remember_facts(params["project_id"], None)
     return None
 
 

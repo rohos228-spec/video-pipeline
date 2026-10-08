@@ -346,6 +346,32 @@ class SceneContracts(unittest.TestCase):
         # Registry string sc01 is not the actual Scene primary key (31).
         self.assertTrue(all(f.scene_id == 31 for f in self.frames))
 
+    def test_assembler_lighting_field_is_ignored_not_unsupported(self):
+        # Prompt/product add "освещение" to ops[].fields; apply does not write it, so it is neither checked nor unsupported.
+        for key in ("освещение", "lighting", "scene_lighting"):
+            payload = assembly_payload(self.frames)
+            for op in payload["ops"]:
+                op["fields"][key] = "тёплый свет"
+            with self.subTest(key=key):
+                result = self.assembly_result(payload=payload, frames=applied_frames(self.frames, payload))
+                self.assertEqual(result["status"], "passed", result)
+                for checked in result["checked_fields"].values():
+                    self.assertNotIn("lighting", checked)
+
+    def test_assembler_other_unknown_field_is_still_unsupported(self):
+        payload = assembly_payload(self.frames)
+        for op in payload["ops"]:
+            op["fields"]["освещение"] = "свет"
+            op["fields"]["bits"] = "x"  # known to normalize_fields, never written by apply
+        result = self.assembly_result(payload=payload, frames=applied_frames(self.frames, payload))
+        self.assertEqual(result["status"], "unknown", result)
+        self.assertIn("биты", result["reason"])
+        self.assertNotIn("lighting", result["reason"])
+        # a name nobody knows is still rejected outright
+        payload["ops"][0]["fields"]["unknown_extra"] = "x"
+        self.assertEqual(self.assembly_result(payload=payload,
+                                              frames=applied_frames(self.frames, payload))["status"], "failed")
+
     def test_assembler_missing_payload_or_input_remains_unknown(self):
         for snapshot, payload in ((None, assembly_payload(self.frames)), (self.snapshot(), None)):
             with self.subTest(snapshot=snapshot, payload=payload):

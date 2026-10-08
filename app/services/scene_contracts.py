@@ -556,6 +556,10 @@ def verify_scene_agent(project: Any, node: dict, cells: Any, *, frames: Any,
     return _result(proof, errors)
 
 
+# Fields the assembler prompt/product emit but db_apply never writes to frame attrs (lighting lives in scenes[]).
+_IGNORED_ASSEMBLY_FIELDS = frozenset({"lighting", "scene_lighting"})
+
+
 def verify_scene_assembly(project: Any, frames: Any, *, snapshot: Any, payload: Any) -> dict:
     """Check native coverage, registry and supported attrs, after camera_expand.
 
@@ -630,6 +634,8 @@ def verify_scene_assembly(project: Any, frames: Any, *, snapshot: Any, payload: 
                     for key in ("characters", "persons", "персонажи"):
                         attrs[key] = str(value or "").strip()
                         checks.add(key)
+                elif field in _IGNORED_ASSEMBLY_FIELDS:
+                    continue  # apply does not write these; nothing to verify
                 else:
                     unsupported.add(field)
             expected_by_uuid[uid].attrs = attrs

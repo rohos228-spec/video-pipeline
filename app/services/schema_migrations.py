@@ -358,6 +358,19 @@ def _outsee_idempotency_fp() -> str:
     return tables_fingerprint(tables, outsee_idempotency._TRIGGERS)
 
 
+async def _publish_approvals(conn) -> None:
+    # Same DDL as publications_store.ensure_schema (_DDL_W6, IF NOT EXISTS): lazily created tables do not break it.
+    from app.services import publications_store
+    if conn.dialect.name == "sqlite":
+        for ddl in publications_store._DDL_W6:
+            await conn.exec_driver_sql(ddl)
+
+
+def _publish_approvals_fp() -> str:
+    from app.services import publications_store
+    return _digest({"publications_w6_ddl": [" ".join(d.split()) for d in publications_store._DDL_W6]})
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_observation_core", "observation, diagnosis, actions, decision, profiles, media, "
               "managed launch, kill switch tables", _observation, _observation_fp,
@@ -391,6 +404,8 @@ MIGRATIONS: tuple[Migration, ...] = (
               _create_jobs, _create_jobs_fp),
     Migration("0016_outsee_idempotency", "append-only Outsee request-key log; action layer call journal and snapshots",
               _outsee_idempotency, _outsee_idempotency_fp),
+    Migration("0017_publish_approvals", "one-time publish approvals; append-only manual publication actions",
+              _publish_approvals, _publish_approvals_fp),
 )
 
 
@@ -510,6 +525,7 @@ JOURNAL_TABLES: tuple[str, ...] = (
     "change_proposals", "config_versions", "config_pointers", "schema_migrations",
     "notification_log", "journal_archive_log", "operator_audit", "publications",
     "outsee_idempotency", "action_layer_calls", "action_layer_snapshots",
+    "publish_approvals", "publication_manual_actions",
 )
 
 

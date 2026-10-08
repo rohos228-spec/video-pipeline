@@ -321,6 +321,9 @@ def create_app() -> FastAPI:
     from app.web.routers import media_recovery as media_recovery_router
 
     app.include_router(media_recovery_router.router, prefix=API_PREFIX)
+    from app.web.routers import publications as publications_router  # W6-1: E01/E02/E11
+
+    app.include_router(publications_router.router, prefix=API_PREFIX, dependencies=mut)
     app.include_router(prompts_router.router, prefix=API_PREFIX)
     app.include_router(prompt_studio_router.router, prefix=API_PREFIX)
     app.include_router(prompt_files_router.router, prefix=API_PREFIX)

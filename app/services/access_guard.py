@@ -244,6 +244,7 @@ _TOKEN_PATHS = [re.compile(p) for p in (
     r"^/projects/[^/]+/steps/[^/]+/run$",
     r"^/projects/[^/]+/mass-lanes/start$",
     r"^/runs/[^/]+/cancel$",
+    r"^/projects/[^/]+/publications/",                    # подтверждение «да», ручные действия по публикациям
     r".*publish.*",                                       # любая публикация
 )]
 

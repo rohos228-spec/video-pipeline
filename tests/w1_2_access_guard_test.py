@@ -160,11 +160,14 @@ def test_sensitive_path_table():
             ("POST", "/api/projects/3/media-recovery/release-unknown"),
             ("POST", "/api/projects/3/steps/make_plan/run"), ("POST", "/api/projects/3/stop"),
             ("POST", "/api/projects/3/publish"), ("POST", "/api/projects/3/social/publish-now"),
+            ("POST", "/api/projects/3/publications/youtube/approve"),
+            ("POST", "/api/projects/3/publications/youtube/confirm-manual"),
+            ("POST", "/api/projects/3/publications/youtube/mark-failed"),
             ("DELETE", "/api/action-layer/macros/m1"), ("POST", "/api/runs/9/cancel"),
             ("POST", "/api/change-control/anything")]
     for method, path in need:
         assert ag.path_needs_operator_token(path, method), (method, path)
-    for method, path in [("GET", "/api/action-layer/plans/abc"), ("GET", "/api/projects/3/stop"),
+    for method, path in [("GET", "/api/action-layer/plans/abc"), ("GET", "/api/projects/3/stop"), ("GET", "/api/projects/3/publications"),
                          ("POST", "/api/auth/login"), ("POST", "/api/prompts")]:
         assert not ag.path_needs_operator_token(path, method), (method, path)
 

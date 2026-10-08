@@ -1636,6 +1636,15 @@ async def maybe_auto_advance(
         _nxt = await _graph_next_running(session, project, status)
         if _nxt is None:
             return False
+        # W6-1 (E01/E02): пока публикация пропущена / ждёт подтверждения человека / ждёт его проверки,
+        # проект не возвращается в publishing сам (иначе цикл assembled -> publishing -> assembled).
+        # Выход - только через панель «Публикации»; auto_mode и HITL_AUTO_APPROVE подтверждение не создают.
+        from app.orchestrator.steps.publish import publish_hold_reason
+
+        _hold = await publish_hold_reason(session, project)
+        if _hold is not None:
+            logger.info("auto_advance: #{} assembled -> publishing не запускаем: {}", project.id, _hold)
+            return False
 
     hitl = await get_latest_hitl(session, project.id, transition.kind)
 
