@@ -50,7 +50,18 @@ paid request: the server only resumes an already known provider task (poll and
 download) when context.media_recovery.operation is set; if it names a denial
 code, choose human_review. finish is
 only a summary: it cannot declare verification or close an incident. If facts
-are incomplete, read evidence or human_review. Maximum three model steps.'''
+are incomplete, read evidence or human_review. Maximum three model steps.
+context.incident_status 'human_review' is only the diagnosis label "this incident
+needs a decision"; it is NOT an earlier escalation and does not forbid retry_same.
+node_capability.native_json_retry=false only says that the node's executor has no
+inner JSON retry; the runtime already proved that all native retries are used up
+before a decision exists. context.recovery_guidance states which remedy the server
+itself offers: when it says retry_same_offered=true for a format incident
+(invalid_json / missing_payload), one retry_same is the matching remedy (it is the
+same request through the same executor, no profile is needed; retry_profile is a
+different action and needs an approved or eligible profile). Choose human_review
+when retry_same is not in allowed_actions or the recorded facts contradict the
+guidance.'''
 
 
 def validate_proposal(text,context):
@@ -77,6 +88,11 @@ def validate_proposal(text,context):
             raise ValueError('profile arguments not approved in context')
     elif args:raise ValueError('arguments not permitted for this action')
     return p
+
+
+class StaleContext(ValueError):
+    """The scoped evidence moved while the model was thinking (the diagnosis finished its pass, a new event arrived).
+    Nothing was acted on: the step is answered again from the fresh context, within the model step limit."""
 
 
 class DecisionTruncated(ValueError):
@@ -459,6 +475,11 @@ class DecisionSupervisor:
         version=digest({'runtime_config':digest(cfg),'approved_profiles':approved,'eligible_profiles':eligible,'graph':graph,'config':revision,'latest_attempt':latest.attempt_id if latest else None,
             'user_stop':bool((project.meta or {}).get('user_stop')) if project else True,
             'incident_status':incident.status,'event_ids':[e.event_id for e in events],'media':media_info})
+        # Everything except the diagnosis' own view (incident status, journal ids): a change of THESE after a request
+        # went out is a change of the node's input / configuration / policy and always denies the late reply. A change
+        # of the diagnosis view alone (its pass finished while the model was thinking) is resumable.
+        stable=digest({'runtime_config':digest(cfg),'approved_profiles':approved,'eligible_profiles':eligible,'graph':graph,'config':revision,'latest_attempt':latest.attempt_id if latest else None,
+            'user_stop':bool((project.meta or {}).get('user_stop')) if project else True,'media':media_info})
         action=await s.get(RecoveryAction,row.action_id) if row.action_id else None
         from app.services.managed_launch import allowed_actions
         execution_actions=await allowed_actions(s,row.execution_id,cfg['allowed_actions'])
@@ -477,7 +498,17 @@ class DecisionSupervisor:
             (e.kind=='model_error' and e.payload.get('uncertain') is False
                 and type(e.payload.get('status_code')) is int and 400<=e.payload['status_code']<=599)}
         open_requests=[e.request_id for e in events if e.kind=='model_start' and e.request_id not in completed_requests]
-        return {'context_version':version,'execution_id':row.execution_id,'node_key':row.node_key,
+        allowed=[a for a in (list(ACTIONS)+(['retry_profile'] if approved or eligible else []) if not action else ['read_events','read_contract','human_review','wait','finish']) if a in execution_actions and a in capability.actions]
+        from app.services.step_failure_policy import is_retry_exhausted
+        try:exhausted=bool(project and is_retry_exhausted(project))
+        except Exception:exhausted=False
+        # Server-side facts only (never the model's claim): what the server itself offers for this incident, so that the
+        # model does not read the diagnosis label or a capability flag as a prohibition.
+        guidance={'recovery_class':rclass,'retry_same_offered':'retry_same' in allowed,
+            'retry_profile_offered':'retry_profile' in allowed,'native_retries_exhausted':exhausted,
+            'incident_status_meaning':'human_review = needs a decision; not an earlier escalation',
+            'native_json_retry_meaning':'false = the executor has no inner JSON retry; not a retry prohibition'}
+        return {'context_version':version,'stable_version':stable,'execution_id':row.execution_id,'node_key':row.node_key,
             'attempt_id':row.source_attempt_id,'incident_id':row.incident_id,
             'incident':panel_safe(incident.details),'incident_type':incident.type,'incident_status':incident.status,
             'native_active':bool(native_node and native_node.status in {NodeRunStatus.running,NodeRunStatus.queued,NodeRunStatus.waiting_hitl}),
@@ -486,7 +517,7 @@ class DecisionSupervisor:
             'approved_profiles':approved,
             'eligible_profiles':eligible,
             'recommended_profile_id':recommended_profile_id,
-            'allowed_actions':[a for a in (list(ACTIONS)+(['retry_profile'] if approved or eligible else []) if not action else ['read_events','read_contract','human_review','wait','finish']) if a in execution_actions and a in capability.actions],
+            'allowed_actions':allowed,'recovery_guidance':guidance,
             'node_capability':capability.contract(),
             'decision_runtime':{'mode':cfg['mode'],'model':cfg['decision'],'config_hash':digest(cfg)},
             'incident_scope':cfg.get('incident_scope'),
@@ -521,6 +552,14 @@ class DecisionSupervisor:
             if not row:raise LookupError('decision not found')
             return await self._context(s,row)
 
+    async def diagnosis_settled(self,s,execution_id):
+        """True when the diagnosis has processed every journal event of the execution. A decision started earlier would
+        read an incident that the very next diagnosis pass still rewrites (stale context after a paid model answer)."""
+        from app.services.diagnosis import DiagnosisState
+        state=await s.get(DiagnosisState,execution_id)
+        last=await s.scalar(select(func.max(ObservationEvent.id)).where(ObservationEvent.execution_id==execution_id))
+        return state is not None and (last is None or state.cursor>=last)
+
     async def begin(self,*,project_id,execution_id,incident_id,automatic=False):
         from app.services.diagnosis import Incident
         async with self.master() as s:
@@ -528,6 +567,10 @@ class DecisionSupervisor:
             if not control or not control.enabled:raise ValueError('decision mode disabled')
             if not incident or control.project_id!=project_id or incident.project_id!=project_id or incident.execution_id!=execution_id or not incident.node_key:
                 raise ValueError('incident not in authorized execution')
+            if (incident.details or {}).get('echo_of'):
+                if automatic:return None
+                raise ValueError('incident is the echo of '+str(incident.details['echo_of'])+'; decide on the primary incident')
+            if automatic and not await self.diagnosis_settled(s,execution_id):return None
             row=DecisionRecord(decision_id=str(uuid.uuid4()),execution_id=execution_id,project_id=project_id,
                 incident_id=incident_id,node_key=incident.node_key,source_attempt_id=incident.attempt_id,context_version='pending')
             context=await self._context(s,row);row.context_version=context['context_version']
@@ -581,14 +624,16 @@ class DecisionSupervisor:
             return await contract_builder_for(capability)(SimpleNamespace(s=s,row=row,scope=scope,
                 node=node,context=context,capability=capability))
 
-    async def _live(self,s,row,token,*,version=None):
+    async def _live(self,s,row,token,*,version=None,stable=None):
         control=await s.get(DecisionControl,row.execution_id)
         if not control or not control.enabled or row.lease_token!=token or row.status not in {'model_pending','acting'}:
             raise ValueError('decision disabled or ownership changed')
         ctx=await self._context(s,row)
         if not ctx['permission_active'] or ctx['user_stop'] or not ctx['observer_active'] or ctx['audit_gaps'] or not ctx['graph_matches']:
             raise ValueError('stop, permission, audit or graph policy blocker')
-        if version is not None and ctx['context_version']!=version:raise ValueError('stale context version')
+        if version is not None and ctx['context_version']!=version:
+            if stable is not None and ctx['stable_version']==stable:raise StaleContext('stale context version')  # diagnosis view only
+            raise ValueError('stale context version')
         if not row.action_id and ctx['current_attempt']!=row.source_attempt_id:raise ValueError('stale source attempt')
         if not row.action_id and (ctx['native_active'] or ctx['open_model_requests']):
             raise ValueError('native attempt or model request is still active; no concurrent decision model')
@@ -643,7 +688,7 @@ class DecisionSupervisor:
                 turns=(await s.scalars(select(DecisionTurn).where(DecisionTurn.decision_id==decision_id,
                     DecisionTurn.role.in_(['assistant','tool'])).order_by(DecisionTurn.id))).all()
                 history=[{'role':'assistant' if t.role=='assistant' else 'user','content':json.dumps({'tool_result':t.payload} if t.role=='tool' else t.payload,ensure_ascii=False)} for t in turns]
-            hook=HttpDecision(self,decision_id,token,context['context_version'])
+            hook=HttpDecision(self,decision_id,token,context['context_version'],context['stable_version'])
             ct=decision_transport.current.set(hook)
             try:
                 cfg=decision_config.runtime_config()
@@ -665,13 +710,13 @@ class DecisionSupervisor:
             try:proposal=validate_proposal(response.text,context)
             except ValueError as exc:
                 async with self.master() as s:
-                    row=await s.get(DecisionRecord,decision_id);await self._live(s,row,token,version=context['context_version'])
+                    row=await s.get(DecisionRecord,decision_id);await self._live(s,row,token,version=context['context_version'],stable=context['stable_version'])
                     await self._turn(s,row,'schema:'+str(row.model_steps),'tool',{'action':'repair_decision_json','error':str(exc)})
                     row.status='ready';row.lease_token=None;row.lease_until=None;await s.commit()
                 if row.model_steps>=MAX_STEPS:await self.escalate(decision_id,'decision schema repair limit exhausted')
                 return
             async with self.master() as s:
-                row=await s.get(DecisionRecord,decision_id);await self._live(s,row,token,version=context['context_version'])
+                row=await s.get(DecisionRecord,decision_id);await self._live(s,row,token,version=context['context_version'],stable=context['stable_version'])
                 signature=digest({'proposal':proposal,'evidence_version':context['context_version']})
                 if signature==row.last_signature:raise ValueError('repeated decision without new evidence')
                 row.last_signature=signature;row.proposal=proposal;row.policy_result={'allowed':True,'evidence_verified':True}
@@ -719,6 +764,17 @@ class DecisionSupervisor:
                     row.status='waiting_evidence' if action=='wait' else 'ready'
                     if action=='wait':row.policy_result={**row.policy_result,'wait':result}
                     row.lease_token=None;row.lease_until=None;await s.commit()
+        except StaleContext as exc:
+            # No action was taken on the outdated answer. Ask again from the fresh context; the step limit bounds it.
+            async with self.master() as s:
+                row=await s.get(DecisionRecord,decision_id)
+                if row and row.lease_token==token and row.status in {'model_pending','acting'}:
+                    await self._turn(s,row,'stale:'+str(row.model_steps),'tool',{'action':'context_changed','error':str(exc)})
+                    row.status='ready';row.lease_token=None;row.lease_until=None;await s.commit()
+                    exhausted=row.model_steps>=MAX_STEPS
+                else:exhausted=False
+            if exhausted:await self.escalate(decision_id,'context kept changing; decision step limit exhausted')
+            elif row is None or row.status!='ready':await self.escalate(decision_id,str(exc))
         except Exception as exc:await self.escalate(decision_id,str(exc))
 
     async def tick(self):
@@ -751,6 +807,7 @@ class DecisionSupervisor:
                         from app.services.actions_recovery import _media_gate
                         if incident.type not in DIAGNOSTIC_INCIDENTS and not (node and incident.type=='media_failure'
                                 and media_admission.is_media_incident(incident) and _media_gate(node.node_type).admitted(node.node_type)):continue
+                        if incident.details.get('echo_of'):continue  # echo of a primary incident: no competing record
                         if (node and node.status==NodeRunStatus.failed and node.finished_at and incident.attempt_id
                                 and incident.node_key in permission.node_keys
                                 and incident.details.get('currently_relevant') and decision_config.incident_in_scope(
@@ -831,12 +888,14 @@ class DecisionSupervisor:
                     if not ticket:await self.escalate(row.decision_id,'interrupted decision turn is uncertain; no repeat POST')
                 continue
             if row.model_steps>=MAX_STEPS:await self.escalate(row.decision_id,'model step limit exhausted')
-            else:await self._dispatch_step(row)
+            else:
+                async with self.master() as s:settled=await self.diagnosis_settled(s,row.execution_id)
+                if settled:await self._dispatch_step(row)
 
 
 class HttpDecision:
-    def __init__(self,supervisor,decision_id,token,version):
-        self.supervisor=supervisor;self.decision_id=decision_id;self.token=token;self.version=version;self.request_id=None;self.response_id=None
+    def __init__(self,supervisor,decision_id,token,version,stable=None):
+        self.supervisor=supervisor;self.decision_id=decision_id;self.token=token;self.version=version;self.stable=stable;self.request_id=None;self.response_id=None
 
     async def ack_gateway(self,stage):
         cfg=decision_config.runtime_config()
@@ -875,7 +934,7 @@ class HttpDecision:
             raise ValueError('retrieval outside approved response route')
         async with self.supervisor.master() as s:
             row=await s.get(DecisionRecord,self.decision_id)
-            await self.supervisor._live(s,row,self.token,version=self.version);self.execution_id=row.execution_id
+            await self.supervisor._live(s,row,self.token,version=self.version,stable=self.stable);self.execution_id=row.execution_id
         if cfg.get('retrieval_allowed') is False:
             await self.fact('decision_retrieve_denied',{'method':'GET','sent':False,'reason':'execution_policy'})
             raise ValueError('decision retrieval disabled for execution')
@@ -897,7 +956,7 @@ class HttpDecision:
         else:kwargs={**kwargs,'body':{**kwargs['body'],'max_output_tokens':m['max_output_tokens'],'reasoning':{'effort':m['reasoning_effort']}}}
         cost_extra={'provider':'vibecode'} if vibecode else {}
         async with self.supervisor.master() as s:
-            row=await s.get(DecisionRecord,self.decision_id);await self.supervisor._live(s,row,self.token,version=self.version)
+            row=await s.get(DecisionRecord,self.decision_id);await self.supervisor._live(s,row,self.token,version=self.version,stable=self.stable)
             self.execution_id=row.execution_id;project_id=row.project_id
         self.request_id=str(uuid.uuid4())
         encoded=json.dumps(kwargs['body'],ensure_ascii=False,separators=(',', ':'),allow_nan=False).encode('utf-8')

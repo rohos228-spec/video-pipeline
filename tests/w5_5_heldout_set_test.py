@@ -107,8 +107,8 @@ def test_held_out_does_not_repeat_the_main_set() -> None:
 
 def test_loader_marks_sets_and_rejects_overlap(monkeypatch) -> None:
     both = ev.load_selected("both")
-    assert {c["set"] for c in both} == {"main", "heldout"}
-    assert len(both) == len(MAIN) + len(HELD)
+    assert {c["set"] for c in both} == {"main", "heldout", "heldout2"}
+    assert len(both) == len(MAIN) + len(HELD) + len(ev.load_cases(ev.HELDOUT2_FIXTURE))
     assert {c["set"] for c in ev.load_selected("heldout")} == {"heldout"}
     with pytest.raises(ValueError):
         ev.load_selected("nonsense")

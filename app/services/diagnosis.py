@@ -203,6 +203,48 @@ def _rule_text(rule, diary):
     return text
 
 
+# A failure of one attempt can leave several incidents: the specific one (invalid_json, missing_payload, api_error,
+# uncertain_request, verification_hold, ...) and the generic contract_rejected that the same ``node_error`` produces.
+# The generic one is only an ECHO of the specific one: it carries no other fact and owns no remedy of its own. The
+# specific incident is the PRIMARY. The echo stays in the journal (it is append-only) but points at the primary
+# (``echo_of``), so that nobody (Decision, notification) opens a second competing record for one failure.
+FORMAT_PRIMARY_TYPES = ('invalid_json', 'missing_payload')
+ECHO_PRIMARY_ORDER = ('invalid_json', 'missing_payload', 'api_error', 'uncertain_request', 'verification_hold',
+                      'media_failure')
+
+
+def echo_primary(item, items):
+    """The incident an echo item belongs to, or None. Pure: ``item`` / ``items`` are derived incident dicts.
+
+    An echo is a ``contract_rejected`` of the same attempt that (a) is the generic node_error one (no own fact, not a
+    local-fix candidate), or (b) is the failed result check of the very request that the primary incident already
+    reports (format failure: the check ``native_<node>_text_requirement`` and the like are the same fact seen twice).
+    A rule rejection and an observe-only check are never echoes, and neither is a check of another request."""
+    if item.get('type') != 'contract_rejected' or not item.get('attempt_id') or item.get('rule') or item.get('observe_only'):
+        return None
+    others = [o for o in items if o is not item and o.get('node_key') == item.get('node_key')
+              and o.get('attempt_id') == item.get('attempt_id') and o.get('type') != 'contract_rejected'
+              and o.get('status') != 'resolved_confirmed']
+    if item.get('local_fix_candidate'):
+        mine = set(item.get('request_ids') or [])
+        others = [o for o in others if o.get('type') in FORMAT_PRIMARY_TYPES and mine
+                  and mine <= set(o.get('request_ids') or [])]
+    if not others:
+        return None
+    rank = {t: i for i, t in enumerate(ECHO_PRIMARY_ORDER)}
+    others.sort(key=lambda o: (rank.get(o['type'], len(rank)), o['type'], o['incident_id']))
+    return others[0]
+
+
+def bind_echo_incidents(items):
+    items = list(items)
+    for item in items:
+        primary = echo_primary(item, items)
+        if primary is not None:
+            item['echo_of'] = primary['incident_id']
+            item['echo_of_type'] = primary['type']
+
+
 def derive_incidents(scope, events, snapshot):
     """Pure projection; all inputs are recorded facts, not provider body guesses."""
     rows = {e['event_id']: e for e in events if e.get('project_id') == scope.project_id
@@ -509,6 +551,7 @@ def derive_incidents(scope, events, snapshot):
         active=latest_attempt.get(item['node_key'])
         if item['attempt_id'] and active and active!=item['attempt_id']:
             item.update(currently_relevant=False,blocking=False,historical_attempt=True)
+    bind_echo_incidents(issues.values())
     for item in issues.values():
         item['outcome']=outcome_for(item)
     return list(issues.values())
@@ -644,7 +687,8 @@ class Diagnoser:
                     RecoveryAction.status == "verified"))).all()
                 proofs = {r.incident_id: r for r in verified_recoveries if r.verification_result.get("verified")}
                 for item in computed:
-                    proof = proofs.get(item['incident_id'])
+                    # an echo is settled together with its primary incident (same verified recovery, same attempt)
+                    proof = proofs.get(item['incident_id']) or proofs.get(item.get('echo_of'))
                     if proof and item['attempt_id'] == proof.source_attempt_id:
                         item.update(status='resolved_confirmed', blocking=False, currently_relevant=False,
                             resolution={'kind':'supervisor_recovery_verified','action_id':proof.action_id,
@@ -696,7 +740,7 @@ class Diagnoser:
             for row in rows:
                 d=row.details or {}
                 if d.get('currently_relevant') is False or d.get('historical_attempt'): continue
-                if (row.type=='contract_rejected' and not d.get('local_fix_candidate')
+                if d.get('echo_of') or (row.type=='contract_rejected' and not d.get('local_fix_candidate')
                         and attempt_types[(row.node_key,row.attempt_id)]-{'contract_rejected'}):
                     continue  # the generic echo of a failure that another incident of the same attempt already explains
                 key='incident-notify:'+row.incident_id

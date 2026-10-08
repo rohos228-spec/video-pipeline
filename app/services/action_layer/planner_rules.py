@@ -346,6 +346,9 @@ ACTION_NOTES: dict[str, str] = {
     "montage.set_coverage": "Не для «меню съёмки» (там shot.edit_field). plan ОБЩИЙ|ДАЛЬНИЙ|СРЕДНИЙ|КРУПНЫЙ|ДЕТАЛЬ; angle фронт|3/4|с плеча|сверху|снизу|макро; "
                             "move статика|наезд|отъезд|панорама|следование|ручная; light дневной|ночной|закат|"
                             "рассвет|контровой|холодный верхний|туман. parent_number только для coverage_kind.",
+    "project.resume": "ceiling_credits только если человек назвал сумму; иначе опусти, не спрашивай.",
+    "project.continue_pipeline": "ceiling_credits только если человек назвал сумму; иначе опусти, не спрашивай.",
+    "publish.send": "platforms и caption сервер подставит сам: не спрашивай; площадки назови только если они есть в запросе.",
     "project.set_auto_mode": "enabled=true: включить автопродвижение, false: выключить. Шаг не запускает.",
     "montage.set_assemble_params": "Передай только названные настройки. bgm_level: шкала 0..100, доля 0.2 = 20.",
     "montage.insert_frame": "Без уточнения kind=parent (новая сцена после кадра), voiceover не нужен.",
@@ -606,6 +609,21 @@ _SAFETY_STEMS = ("удал", "убер", "убра", "сотр", "снес", "с
 _DEICTIC = ("этот", "эт", "текущ", "выбран", "выделен", "данн", "нынешн")
 
 
+def _publish_known(qw: list[str], facts: dict) -> list[dict]:
+    """Вопрос о подписи/площадках публикации: их подставляет сервер (``_fill_publish``).
+
+    Текст подписи в промпт не отдаётся (это недоверенная тема проекта), поэтому значение условное."""
+    server = facts.get("publish_server") or {}
+    if _has_stem(qw, ("удал", "убер", "delete", "remove")):
+        return []
+    found: list[dict] = []
+    if server.get("caption") and _has_stem(qw, ("подпис", "описани", "caption")):
+        found.append({"param": "caption", "value": "server-side", "source": "default"})
+    if server.get("platforms") and _has_stem(qw, ("площадк", "платформ", "platform", "соцсет")):
+        found.append({"param": "platforms", "value": "server-side", "source": "default"})
+    return found
+
+
 def resolve_clarification(question: str, request_text: str, facts: dict | None) -> list[dict]:
     """Какие значения сервер уже знает для параметров, о которых спросила модель.
 
@@ -614,6 +632,9 @@ def resolve_clarification(question: str, request_text: str, facts: dict | None) 
     if not facts or facts.get("project_id") is None:
         return []
     qw, rw = _words(question), _words(request_text)
+    pub = _publish_known(qw, facts)
+    if pub:
+        return pub
     if _has_stem(qw, _SAFETY_STEMS) or _has_stem(rw, _SAFETY_STEMS):
         return []
     defaults = facts.get("defaults") or {}

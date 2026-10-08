@@ -40,6 +40,7 @@ PLANNER_CATALOG_ID = "gpt-5.6-sol-vibecode"
 MAX_ATTEMPTS = 2  # первый POST + не более одного повтора формата/параметров
 MAX_TRANSPORT_RETRIES = 1
 MAX_CLARIFY_REPAIRS = 1
+TIMEOUT_RETRY_S = 120  # повтор после таймаута: не-потоковый ответ с долгим рассуждением модели
 RETRY_DELAY_S = 0.5  # короткая пауза перед повтором после сбоя сети
 NETWORK_RETRY_MESSAGE = "сеть/модель недоступны, повторите"
 MAX_TEXT_LEN = 2000
@@ -83,9 +84,10 @@ class PlannerRateLimited(PlannerRefused):
 class PlannerFailed(PlannerError):
     """Транспортная ошибка и после автоматического повтора. ``retryable``: человеку имеет смысл повторить."""
 
-    def __init__(self, code: str, message: str = "", *, retryable: bool = False):
+    def __init__(self, code: str, message: str = "", *, retryable: bool = False, detail: str = ""):
         super().__init__(code, message)
         self.retryable = retryable
+        self.detail = detail  # тип и текст исходного исключения после redact (для отчёта и истории)
 
 
 class _FormatError(Exception):
@@ -94,6 +96,38 @@ class _FormatError(Exception):
 
 class StalePlan(Exception):
     pass
+
+
+_DETAIL_LIMIT = 300
+_CONTEXT_KEYS = ("status_code", "status", "retryable", "finish_reason", "provider_code", "code")
+
+
+def describe_exception(exc: BaseException) -> str:
+    """``Тип: текст`` исходного исключения (и причины), без секретов и не длиннее ~300 знаков.
+
+    Пустой текст у таймаутов httpx/asyncio заменяется пометкой ``timeout``."""
+    from app.services.redact import redact_text
+    parts: list[str] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen and len(parts) < 3:
+        seen.add(id(cur))
+        msg = " ".join(str(cur).split())
+        if not msg and "timeout" in type(cur).__name__.lower():
+            msg = "timeout"
+        extra = getattr(cur, "context", None)
+        if isinstance(extra, dict):
+            ctx = ",".join(f"{k}={extra[k]}" for k in _CONTEXT_KEYS
+                           if isinstance(extra.get(k), (str, int, float, bool)))
+            if ctx:
+                msg = (msg + " [" + ctx + "]").strip()
+        parts.append(type(cur).__name__ + (": " + msg if msg else ""))
+        cur = cur.__cause__ or cur.__context__
+    return redact_text(" <- ".join(parts))[:_DETAIL_LIMIT]
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    return isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timeout" in type(exc).__name__.lower()
 
 
 # --- транспорт --------------------------------------------------------------
@@ -266,7 +300,9 @@ SYSTEM = """Ты планировщик действий видеостудии.
 10. Параметры без * необязательны: НЕ спрашивай о них, опусти. Сервер сам добавит project_id, image_/video_generator и *_resolution, max_*_ops, единственный шот; их не спрашивай и не придумывай. Значения из defaults называй в explanation_ru.
 11. notes - подсказки по конкретным действиям из catalog, следуй им.
 12. К вопросу добавь до 4 коротких вариантов ответа в clarification_options.
-13. attachments (если есть) - файлы, которые человек прикрепил к запросу: id, name, kind, size. Для шага загрузки выбери действие по виду файла и НЕ указывай source_path, data_base64, filename и путь: сервер сам подставит файл. Другие параметры загрузки (кадр, нода) бери из запроса."""
+13. attachments (если есть) - файлы, которые человек прикрепил к запросу: id, name, kind, size. Для шага загрузки выбери действие по виду файла и НЕ указывай source_path, data_base64, filename и путь: сервер сам подставит файл. Другие параметры загрузки (кадр, нода) бери из запроса.
+14. Не уточняй необязательное и то, что подставит сервер: потолок расхода (ceiling_credits), лимиты, подпись и площадки публикации, генератор, разрешение, метод. Не назвали - опусти параметр (цену и подтверждение человек увидит в превью). Спрашивай только то, без чего шаг нельзя собрать из запроса и project_context; если названо достаточно для плана, верни план, а не вопрос.
+"""
 
 
 def _compact_schema(schema: Any) -> Any:
@@ -604,6 +640,7 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
     total_cost: float | None = 0.0
     last_error = ""
     repairs = transport_retries = clarify_repairs = 0
+    call_timeout = TIMEOUT_S
     for attempt in range(1, MAX_ATTEMPTS + MAX_TRANSPORT_RETRIES + MAX_CLARIFY_REPAIRS + 1):
         body = {"model": model, "stream": False, "messages": messages,
                 decision_v1.CHAT_TOKEN_PARAM: _OUTPUT_TOKENS,
@@ -615,26 +652,30 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
         try:
             try:
                 result = await asyncio.wait_for(
-                    send(url=url, headers=headers, body=body, timeout=TIMEOUT_S, use_model=model),
-                    TIMEOUT_S + 15)
+                    send(url=url, headers=headers, body=body, timeout=call_timeout, use_model=model),
+                    call_timeout + 15)
             finally:
                 _pending[operator] = max(0, _pending.get(operator, 1) - 1)
         except Exception as exc:  # noqa: BLE001 - исход неизвестен
             if real:
                 _track(model, None, started, exc)
             await _record(operator, text, model=model, attempt=attempt, outcome="transport_error",
-                          usage=(0, 0, 0), cost=None, error=f"{type(exc).__name__}",
+                          usage=(0, 0, 0), cost=None,
+                          error=f"{describe_exception(exc)} (timeout_s={call_timeout}, "
+                                f"{time.monotonic() - started:.1f}s)",
                           finish_reason="", context_version=ctx["version"], info=info)
             transient = _is_transient(exc)
             if transient and transport_retries < MAX_TRANSPORT_RETRIES:
                 transport_retries += 1
+                if _is_timeout(exc):
+                    call_timeout = TIMEOUT_RETRY_S
                 await asyncio.sleep(RETRY_DELAY_S)
                 continue
             raise PlannerFailed(
                 "transport_error",
                 NETWORK_RETRY_MESSAGE if transient else
                 "модель отклонила запрос, повтор не поможет: проверьте ключ и настройки провайдера",
-                retryable=transient) from exc
+                retryable=transient, detail=describe_exception(exc)) from exc
         if real:
             _track(model, getattr(result, "usage", None), started, None)
         usage = _usage(result)
@@ -734,7 +775,7 @@ def _track(model: str, usage: Any, started: float, exc: Exception | None) -> Non
         from app.services.observation import _track_api_cost
         _track_api_cost(model=model, usage=usage, duration_sec=time.monotonic() - started,
                         provider="vibecode", status_code=0 if exc else 200,
-                        error_message=f"{type(exc).__name__}" if exc else "")
+                        error_message=describe_exception(exc) if exc else "")
     except Exception:  # noqa: BLE001
         pass
 

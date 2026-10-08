@@ -116,7 +116,9 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(ticket['preconditions']['profile_overlay_id'], overlay_id)
 
     async def test_media_nodes_are_still_denied_by_capability(self):
-        for node_type in ('audio', 'images'):
+        # images / audio / hero / sfx_gen are admitted since W5 ONLY for local resume of a recorded result
+        # (resume_local, never a paid resend); the nodes below still have no recovery admission at all.
+        for node_type in ('videos', 'music'):
             for profile in (False, True):
                 with self.subTest(node_type=node_type, profile=profile):
                     await self.asyncTearDown()

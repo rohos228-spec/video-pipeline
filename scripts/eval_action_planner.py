@@ -12,8 +12,10 @@ Only VIBECODE_API_KEY / VIBECODE_BASE_URL / GPT_RELAY_TOKEN / GPT_PROXY_URL / GP
 Cases with context.attachments ([{kind, name, size}]) get fake attachments (no files, no paths shown to the model):
 the server fills source_path of the upload step from the attachment id, as in the real command line.
 The scoring helpers (load_cases, sample_cases, score_case) are offline and unit-tested.
---set main|heldout|both picks the fixture: main = tests/fixtures/action_planner_eval.json, heldout =
-tests/fixtures/action_planner_heldout.json (a held-out sample written in other wording; never tune rules on it).
+--set main|heldout|heldout2|both picks the fixture: main = tests/fixtures/action_planner_eval.json, heldout =
+tests/fixtures/action_planner_heldout.json (first held-out sample, already looked at: now a regression set),
+heldout2 = tests/fixtures/action_planner_heldout2.json (second, fresh held-out sample; never tune rules on it
+and do not read its cases next to the errors). Never tune rules on any held-out set.
 The report always has the metrics per set (``by_set``), so the held-out number is separate; transport errors
 are counted apart (``transport_errors``) and also give ``*_no_transport`` figures that leave them out.
 Cases with ``requires_action`` are skipped while that action is not in the registry (reported as ``skipped``).
@@ -33,7 +35,8 @@ from pathlib import Path
 _ENV = ("VIBECODE_API_KEY", "VIBECODE_BASE_URL", "GPT_RELAY_TOKEN", "GPT_PROXY_URL", "GPT_BASE_URL")
 FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_eval.json"
 HELDOUT_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout.json"
-SETS = ("main", "heldout", "both")
+HELDOUT2_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout2.json"
+SETS = ("main", "heldout", "heldout2", "both")
 
 
 def load_env(path: str) -> dict:
@@ -72,14 +75,23 @@ def check_disjoint(main: list[dict], heldout: list[dict]) -> list[str]:
 
 
 def load_selected(which: str) -> list[dict]:
-    """Случаи выбранного набора (main, heldout, both) с пометкой ``set``; both = main затем heldout."""
+    """Случаи выбранного набора (main, heldout, heldout2, both) с пометкой ``set``;
+    both = main, heldout, heldout2 подряд (если файл второго набора есть)."""
     if which not in SETS:
         raise ValueError(f"--set must be one of {SETS}, got {which!r}")
     main, held = tag_set(load_cases(), "main"), tag_set(load_heldout(), "heldout")
     bad = check_disjoint(main, held)
     if bad:
         raise ValueError(f"held-out set overlaps the main set: {bad[:5]}")
-    return {"main": main, "heldout": held, "both": main + held}[which]
+    held2: list[dict] = []
+    if which in ("heldout2", "both") and HELDOUT2_FIXTURE.exists():
+        held2 = tag_set(load_cases(HELDOUT2_FIXTURE), "heldout2")
+        bad = check_disjoint(main + held, held2)
+        if bad:
+            raise ValueError(f"heldout2 overlaps other sets: {bad[:5]}")
+    elif which == "heldout2":
+        raise ValueError(f"{HELDOUT2_FIXTURE.name} not found")
+    return {"main": main, "heldout": held, "heldout2": held2, "both": main + held + held2}[which]
 
 
 def runnable(cases: list[dict], registry) -> tuple[list[dict], list[str]]:
@@ -262,11 +274,22 @@ def summarize(rows: list[dict]) -> dict:
         "est_cost_usd": round(sum(r.get("est_cost_usd") or 0.0 for r in rows), 5),
         "failed_ids": [r["id"] for r in rows if not r.get("ok")],
         "transport_errors": sum(1 for r in rows if r.get("transport_error")),
+        "transport_error_kinds": _kinds(rows),
         "accuracy_no_transport": _ratio([r for r in rows if not r.get("transport_error")],
                                         lambda r: r.get("ok")),
         "plan_ids_exact_no_transport": _ratio([r for r in plans if not r.get("transport_error")],
                                               lambda r: r.get("ids_ok")),
     }
+
+
+def _kinds(rows: list[dict]) -> dict:
+    """{тип исключения: сколько} по строкам с transport_error (текст в ``error_detail`` строки)."""
+    out: dict[str, int] = {}
+    for r in rows:
+        if r.get("transport_error"):
+            kind = str(r.get("error_detail") or "unknown").split(":", 1)[0].split(" ", 1)[0]
+            out[kind] = out.get(kind, 0) + 1
+    return out
 
 
 def _ratio(rows: list[dict], pred) -> float:
@@ -359,7 +382,7 @@ async def main() -> int:
     async def run_one(case: dict) -> dict:
         ctx = case.get("context") or {}
         started = time.monotonic()
-        steps, clar, code, meta, outcome = [], None, None, {}, None
+        steps, clar, code, meta, outcome, detail = [], None, None, {}, None, ""
         try:
             outcome = await planner.plan_from_text(
                 case["text"], operator="local_web_operator", project_id=args.project_id,
@@ -371,9 +394,12 @@ async def main() -> int:
             clar, meta = outcome.reply.needs_clarification, outcome.meta
         except Exception as exc:  # noqa: BLE001 - a planner refusal/rejection is a scored result
             code = getattr(exc, "code", type(exc).__name__)
+            # type and text of the underlying exception (redacted by the planner) - for transport_error
+            detail = getattr(exc, "detail", "") or planner.describe_exception(exc)
         expl = outcome.reply.explanation_ru if outcome is not None else None
         opts = list(outcome.reply.clarification_options) if outcome is not None else []
         row = score_case(case, steps, clar, code, expl, variables, opts)
+        row["error_detail"] = detail
         row.update(text=case["text"], clarification=clar, explanation=expl,
                    want=[x["action_id"] for x in case.get("steps", [])], params=[x.get("params") for x in steps],
                    want_params=[x.get("params") for x in resolve_vars(case.get("steps", []), variables)],
