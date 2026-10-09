@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -611,6 +612,21 @@ async def _spend_gate(project_id: int | None) -> None:
         raise PlannerRefused(exc.code, spend_cap_ru(exc)) from exc
 
 
+_BYPASS_RE = re.compile(
+    r"(?:отключ|выключ|сними|снять|убер|убрат|отмен|обойд|обход|игнор|пропуст|деактив)\w*\s+"
+    r"(?:(?:все|всё|любые|эти|наши|мои|для\s+всех)\s+)?"
+    r"(?:лимит|подтвержд|одобрен|защит|ограничен|рубильник|аварийн|согласован)"
+    r"|без\s+(?:подтвержден|одобрен|согласован|лимит|ограничен)")
+
+
+def approval_bypass_intent(text: str) -> bool:
+    """Просьба отключить/обойти подтверждения, лимиты, защиту или аварийный стоп.
+
+    Такого действия в каталоге нет и быть не должно, поэтому отказ даёт сервер, без обращения к модели
+    (бесплатно и всегда одинаково), а не зависит от того, заметит ли это модель."""
+    return bool(_BYPASS_RE.search((text or "").lower().replace("ё", "е")))
+
+
 async def plan_from_text(text: str, *, operator: str, project_id: int | None = None,
                          selected_scene: int | None = None, selected_frame: int | None = None,
                          registry: ActionRegistry | None = None,
@@ -626,6 +642,12 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
     text = (text or "").strip()
     if not text or len(text) > MAX_TEXT_LEN:
         raise PlannerRejected("bad_request", f"Запрос должен быть от 1 до {MAX_TEXT_LEN} символов.")
+    if approval_bypass_intent(text):
+        raise PlannerRefused(
+            "approval_bypass_refused",
+            "Отключать или обходить подтверждения, лимиты расходов, защиту и аварийный стоп из командной "
+            "строки нельзя: это решает человек в настройках. Опишите, какое действие нужно выполнить, и "
+            "я составлю план с обычным подтверждением.")
     max_steps = int(settings.action_layer_max_steps)
     url, headers, model = preflight()  # до любых запросов
     from app.services.action_layer import executor

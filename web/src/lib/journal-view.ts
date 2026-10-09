@@ -62,6 +62,10 @@ export const KIND_LABELS_RU: Record<string, string> = {
   publication: "Публикация",
   notification: "Уведомление",
   job: "Фоновая задача",
+  gap: "Пробел журнала",
+  // Событие наблюдения у сервера имеет «сырой» вид (node_error, retry_scheduled...), поэтому фильтр и подпись
+  // идут по источнику: сервер принимает имя источника в `kinds`.
+  observation_events: "Событие наблюдения",
 };
 
 export const SEVERITY_LABELS_RU: Record<JournalSeverity, string> = {
@@ -78,9 +82,30 @@ export const PERIOD_LABELS_RU: Record<JournalPeriod, string> = {
   "30d": "Последние 30 дней",
 };
 
-export function kindLabel(kind: string): string {
-  return KIND_LABELS_RU[kind] ?? `Событие «${kind}»`;
+/**
+ * Русская подпись вида записи. Сырой вид с сервера человеку не показывается никогда:
+ * событие наблюдения подписывается по источнику, незнакомое получает «Прочее».
+ * Понятный текст самой записи берётся с сервера (`title_ru`).
+ */
+export function kindLabel(kind: string, source?: string): string {
+  if (source === "observation_events") return KIND_LABELS_RU.observation_events;
+  return KIND_LABELS_RU[kind] ?? (source ? SOURCE_KIND_LABELS_RU[source] : undefined) ?? "Прочее";
 }
+
+const SOURCE_KIND_LABELS_RU: Record<string, string> = {
+  node_runs: "Запуск ноды",
+  observation_incidents: "Инцидент",
+  observation_degradations: "Пробел журнала",
+  observation_commit_uncertainty: "Пробел журнала",
+  decision_records: "Решение",
+  action_v1_records: "Действие системы",
+  action_layer_history: "Действие системы",
+  spend_ledger: "Трата",
+  provider_task_ledger: "Задача провайдера",
+  operator_audit: "Действие оператора",
+  publications: "Публикация",
+  notification_log: "Уведомление",
+};
 
 export function severityLabel(s: string): string {
   return SEVERITY_LABELS_RU[s as JournalSeverity] ?? "Обычное";
@@ -223,6 +248,10 @@ const SOURCE_LABELS_RU: Record<string, string> = {
   node_runs: "запуски нод",
   observation_events: "события наблюдения",
   observation_incidents: "инциденты",
+  observation_degradations: "пробелы журнала наблюдения",
+  observation_commit_uncertainty: "неопределённость записи данных",
+  decision_records: "решения",
+  action_v1_records: "действия системы",
   action_layer_history: "история слоя действий",
   spend_ledger: "учёт расходов",
   provider_task_ledger: "задачи провайдеров",
@@ -231,9 +260,14 @@ const SOURCE_LABELS_RU: Record<string, string> = {
   notification_log: "уведомления",
 };
 
+/** Русское название источника записи (вместо имени таблицы). Незнакомый источник не показывается как есть. */
+export function sourceLabel(source: string): string {
+  return SOURCE_LABELS_RU[source] ?? "другой источник";
+}
+
 export function missingSourcesText(missing: string[]): string {
   if (!missing.length) return "";
-  const names = missing.map((s) => SOURCE_LABELS_RU[s] ?? s);
+  const names = missing.map(sourceLabel);
   return `В этой базе нет источников: ${names.join(", ")}. Их записей в ленте нет.`;
 }
 

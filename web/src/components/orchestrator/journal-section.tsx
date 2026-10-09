@@ -18,6 +18,7 @@ import {
   missingSourcesText,
   severityClass,
   severityLabel,
+  sourceLabel,
   summarize,
   toggleKind,
   type JournalFilters,
@@ -36,14 +37,14 @@ function Row({ it }: { it: JournalItem }) {
   if (it.run_id) meta.push(`запуск ${it.run_id}`);
   if (it.request_id) meta.push(`запрос ${it.request_id}`);
   if (it.ref) meta.push(`ссылка ${it.ref}`);
-  meta.push(`источник ${it.source}`);
+  meta.push(`источник: ${sourceLabel(it.source)}`);
   return (
-    <li data-testid="journal-row" data-severity={it.severity} className={cn("rounded border p-1.5 break-words", sev.row)}>
+    <li data-testid="journal-row" data-severity={it.severity} className={cn("rounded border p-1.5 break-words [contain-intrinsic-size:auto_72px] [content-visibility:auto]", sev.row)}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
         <span aria-hidden className={cn("inline-block h-2 w-2 shrink-0 rounded-full", sev.dot)} />
         <span className={cn("shrink-0", sev.text)}>{severityLabel(it.severity)}</span>
         <span className="text-white/45">{formatTs(it.ts)}</span>
-        <span className="rounded bg-white/10 px-1 text-white/70">{kindLabel(it.kind)}</span>
+        <span className="rounded bg-white/10 px-1 text-white/70">{kindLabel(it.kind, it.source)}</span>
         {it.amount_usd !== null && <span className="text-white/90">{formatUsd(it.amount_usd)}</span>}
       </div>
       <p className="mt-0.5 text-white/90">{it.title_ru || "Событие без описания"}</p>
@@ -69,6 +70,7 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
   const [loaded, setLoaded] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
 
   // Смена проекта: сбросить всё.
   useEffect(() => {
@@ -93,6 +95,7 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
       .then((page) => {
         if (ctrl.signal.aborted) return;
         setItems(mergeItems([], page.items)); setCursor(page.next_cursor);
+        if (listRef.current) listRef.current.scrollTop = 0;
         setMissing(page.sources_missing); setTotal(page.total_hint); setLoaded(true);
       })
       .catch((e) => {
@@ -225,7 +228,8 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
           )}
 
           {items.length > 0 && (
-            <ul className="space-y-1" aria-label="Записи журнала">
+            // Длинный журнал листается внутри своего окна, а не растягивает всю панель на тысячи пикселей.
+            <ul ref={listRef} data-testid="journal-list" tabIndex={0} className="max-h-[60vh] space-y-1 overflow-y-auto overscroll-contain pr-1" aria-label="Записи журнала">
               {items.map((it) => <Row key={it.id} it={it} />)}
             </ul>
           )}

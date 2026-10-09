@@ -275,8 +275,17 @@ def _spawn(coro) -> None:
 
 async def drain() -> None:
     """Wait for pending background writes (tests, shutdown)."""
+    loop = asyncio.get_running_loop()
     while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+        mine = []
+        for task in list(_tasks):
+            # a task of a closed or foreign loop can never finish here: drop it instead of spinning forever
+            if task.done() or task.get_loop() is not loop:
+                _tasks.discard(task)
+            else:
+                mine.append(task)
+        if mine:
+            await asyncio.gather(*mine, return_exceptions=True)
 
 
 def _project_id() -> int | None:

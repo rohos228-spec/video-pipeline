@@ -19,6 +19,7 @@ from app.bots.publishers import ALL_PUBLISHERS
 from app.models import Project, ProjectStatus
 from app.orchestrator.steps import publish as publish_step
 from app.services import access_guard
+from app.services import hitl as hitl_service
 from app.services import publications_store as pstore
 from app.services.action_layer.context import normalize_operator
 from app.telegram import publish_texts as ptexts
@@ -102,17 +103,17 @@ async def list_publications(project_id: int, session: AsyncSession = Depends(get
 
 
 async def _recompute(session: AsyncSession, project: Project, sha: str) -> dict:
-    final = await publish_step._latest_final(session, project)
-    rows = await pstore.list_for(session, project.id, sha)
-    caption_sha = publish_step.caption_sha256(publish_step.caption_for(project))
-    approvals = await pstore.list_approvals(session, project.id, sha, caption_sha)
-    state = await publish_step.apply_project_state(
-        session, project, rows=rows, platforms=_PLATFORMS, sha=sha,
-        artifact_uuid=final.uuid if final is not None else None,
-        approved={p for p, a in approvals.items() if a["valid"]})
-    publish_step._sync_meta(project, rows, _PLATFORMS)
-    await session.commit()
-    return state
+    return await hitl_service.recompute_publication_state(session, project, sha)
+
+
+def _approve_message(queued: bool, publish_enabled: bool) -> str:
+    """Один честный итог после «Разрешить публикацию»: поставлено в очередь, выключено настройкой или шаг уже идёт."""
+    if queued:
+        return "Разрешено и поставлено в очередь: публикацию выполнит шаг публикации."
+    if not publish_enabled:
+        return ("Разрешено, но публикация выключена настройкой (автопубликация выключена): "
+                "сейчас ничего не публикуется, пока её не включат.")
+    return "Разрешено: шаг публикации уже идёт или ещё не дошёл до этой площадки, он учтёт ваше разрешение."
 
 
 @router.post("/approve", dependencies=[Depends(require_operator_token)])
@@ -134,26 +135,15 @@ async def approve_publication(project_id: int, body: ApproveIn, session: AsyncSe
         raise HTTPException(status_code=409, detail={
             "code": "stale_caption", "message": "Подпись изменилась после того, как вы открыли список. Обновите и проверьте."})
     actor = _actor(operator)
-    granted: list[str] = []
-    for p in dict.fromkeys(body.platforms):
-        try:
-            await pstore.grant_approval(session, project_id=project.id, platform=p, sha256=sha,
-                                        caption_sha256=caption_sha, approved_by=actor)
-        except pstore.PublicationRefused as exc:
-            raise _refused(exc) from exc
-        granted.append(p)
-    queued = False
-    from app.settings import settings
-    if settings.social_publish_enabled and project.status is ProjectStatus.assembled:
-        publish_step._set_markers(project, **{publish_step._AWAITING_KEY: None, publish_step._HUMAN_KEY: None,
-                                              publish_step._CLOSED_KEY: None})
-        project.status = ProjectStatus.publishing
-        queued = True
-    await session.commit()
-    return {"approved": granted, "sha256": sha, "queued_for_publish_step": queued,
-            "publish_enabled": bool(settings.social_publish_enabled),
-            "message": ("Подтверждено. Публикация пойдёт на шаге публикации." if queued else
-                        "Подтверждение записано. Автопубликация выключена или шаг уже идёт: сейчас ничего не публикуется.")}
+    try:
+        res = await hitl_service.grant_publish_approvals(
+            session, project, body.platforms, sha256=sha, caption_sha256=caption_sha, actor=actor)
+    except pstore.PublicationRefused as exc:
+        raise _refused(exc) from exc
+    queued = res["queued_for_publish_step"]
+    return {"approved": res["approved"], "sha256": sha, "queued_for_publish_step": queued,
+            "publish_enabled": res["publish_enabled"],
+            "message": _approve_message(queued, res["publish_enabled"])}
 
 
 @router.post("/{platform}/confirm-manual", dependencies=[Depends(require_operator_token)])

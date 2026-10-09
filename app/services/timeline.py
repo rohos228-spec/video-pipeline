@@ -243,7 +243,7 @@ def _b_event(r):
     sev = "error" if any(k in low for k in ("fail", "error", "reject")) else (
         "warn" if any(k in low for k in ("retry", "timeout", "stall", "degrad", "uncertain")) else "info")
     node = f" (шаг «{r['node_key']}»)" if r.get("node_key") else ""
-    return dict(kind=kind, severity=sev, title_ru=f"Событие «{kind}»{node}",
+    return dict(kind=kind, severity=sev, title_ru=f"Событие наблюдения{node}",
                 detail_ru=_payload_text(r.get("payload")), run_id=r.get("execution_id"),
                 request_id=r.get("request_id"), ref=r.get("node_key"))
 
@@ -414,11 +414,13 @@ def _plan_operator(cols, have):
 def _b_operator(r):
     code = int(r.get("status_code") or 0)
     sev = "error" if code >= 500 else ("warn" if code >= 400 else "info")
+    # Настоящий путь (не шаблон маршрута с {project_id}) и код ответа: человеку видно, что именно и чем кончилось.
+    where = _safe(r.get("path") or r.get("route_template"))
     return dict(kind="operator", severity=sev,
-                title_ru=f"Оператор: {r.get('method')} {_safe(r.get('route_template') or r.get('path'))} → {code}",
+                title_ru=f"Оператор: {r.get('method')} {where} → код ответа {code}",
                 detail_ru=" · ".join(x for x in (f"кто: {r.get('actor')}" if r.get("actor") else "",
                                                  f"исход: {r.get('outcome')}" if r.get("outcome") else "") if x),
-                request_id=r.get("request_id"), ref=r.get("route_template"))
+                request_id=r.get("request_id"), ref=where or None)
 
 
 def _plan_publications(cols, have):
@@ -431,12 +433,15 @@ def _plan_publications(cols, have):
 
 def _b_publication(r):
     st = str(r.get("status") or "")
-    detail = " · ".join(x for x in (f"ошибка: {r['error_code']}" if r.get("error_code") else "",
+    code = str(r.get("error_code") or "")
+    manual = code in ("manual_not_published", "manual_confirmed")  # решения человека, не сбои
+    detail = " · ".join(x for x in (f"ошибка: {r['error_code']}" if code and not manual else "",
                                     _safe(r.get("post_url")),
                                     f"попыток: {r['attempts']}" if r.get("attempts") else "") if x)
-    return dict(kind="publication", severity=_sev(st, err=("failed", "error", "needs_human"),
-                                                  warn=("skipped", "uncertain")),
-                title_ru=f"Публикация на «{r.get('platform')}»: {st}", detail_ru=detail,
+    sev = "info" if manual else _sev(st, err=("failed", "error", "needs_human"), warn=("skipped", "uncertain"))
+    title = ("Закрыто человеком: публикация помечена как «не опубликовано»" if code == "manual_not_published"
+             else f"Публикация на «{r.get('platform')}»: {st}")
+    return dict(kind="publication", severity=sev, title_ru=title, detail_ru=detail,
                 ref=(r.get("sha256") or "")[:12] or None)
 
 

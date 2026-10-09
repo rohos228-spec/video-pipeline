@@ -60,3 +60,52 @@ def manual_action_text(project_id: int, platform: str, action: str, actor: str, 
                                      "(нужно новое подтверждение)"}.get(action, action)
     tail = " Все площадки подтверждены: проект опубликован." if all_published else ""
     return f"Проект #{project_id}, {platform}: {what} ({actor}). Клик по площадке не повторялся.{tail}"
+
+
+# --- W7: «да» на публикацию из Telegram (вид HITL approve_publish) ---------------------------------------
+
+BTN_PUBLISH_YES = "Разрешить публикацию"
+BTN_PUBLISH_NO = "Не публиковать"
+
+
+def publish_approval_title(project_id: int) -> str:
+    return f"Проект #{project_id}: разрешить публикацию?"
+
+
+def publish_approval_request_text(platform: str, sha256: str | None, caption: str) -> str:
+    """Тело сообщения оператору (заголовок - publish_approval_title). Простой текст: экранирует отправитель.
+
+    Подпись приводится дословно."""
+    return (f"Площадка: {platform}\n"
+            f"Файл (sha256, первые 12 символов): {_sha_short(sha256)}\n"
+            "Подпись дословно:\n" + caption + "\n\n"
+            "«Разрешить публикацию» действует один раз и только для этой площадки, этого файла и этой подписи. "
+            "Пока вы не нажали, ничего не публикуется. «Не публиковать» закрывает эту площадку для этого файла.")
+
+
+def publish_approval_refusal_text(code: str) -> str:
+    """Короткий ответ оператору на нажатие, которое «да» не создало."""
+    return {
+        "forbidden": "Нет доступа: подтверждать публикацию может только владелец.",
+        "bad_callback": "Плохая кнопка: запрос подтверждения не разобран.",
+        "not_found": "Запрос подтверждения не найден.",
+        "already_decided": "Уже обработано: повторное нажатие «да» не создаёт.",
+        "stale_artifact": "Сообщение устарело: видео пересобрано. «Да» не выдано, ждите нового сообщения.",
+        "stale_caption": "Сообщение устарело: подпись изменилась. «Да» не выдано, ждите нового сообщения.",
+        "project_not_ready": "Проект сейчас не готов к публикации: «да» не выдано.",
+        "no_final_video": "Нет финального видео: «да» не выдано.",
+        "file_unreadable": "Файл финального видео не читается: «да» не выдано.",
+        "unknown_platform": "Неизвестная площадка: «да» не выдано.",
+    }.get(code, "«Да» не выдано: " + code)
+
+
+def publish_approval_done_text(project_id: int, platform: str, action: str, actor: str, *, queued: bool,
+                               publish_enabled: bool) -> str:
+    """Итог нажатия, который дописывается к исходному сообщению."""
+    if action == "yes":
+        tail = ("Публикация пойдёт на шаге публикации." if queued else
+                "Автопубликация выключена или шаг уже идёт: сейчас ничего не публикуется."
+                if not publish_enabled else "Подтверждение записано; публикацию выполнит шаг публикации.")
+        return f"Разрешено ({actor}): {platform}, проект #{project_id}. Одноразово. {tail}"
+    return (f"Не публиковать ({actor}): площадка {platform} закрыта человеком для этого файла, "
+            f"проект #{project_id}. Автоповтора не будет.")

@@ -315,6 +315,30 @@ PUBLICATION_STATUS_RU = {
 }
 _PUBLICATION_SEVERITY = {"unconfirmed": SEV_WARN, "failed": SEV_ERROR, "rejected": SEV_ERROR, "clicked": SEV_WARN}
 
+# Причины в записях публикаций (publications.error_code): те же фразы, что оператор видит в панели «Публикации»
+# (web/src/lib/publication-text.ts, PUBLICATION_CODE_RU; равенство таблиц проверяет tests/w7_b_*).
+MANUAL_CONFIRMED_CODE = "manual_confirmed"
+MANUAL_NOT_PUBLISHED_CODE = "manual_not_published"
+_PUBLICATION_CODE_EXTRA_RU = {
+    "manual_confirmed": "Подтверждено человеком вручную.",
+    "manual_not_published": "Закрыто человеком как «не опубликовано».",
+    "publish_disabled": "Автопубликация выключена настройкой: ничего не отправлялось.",
+    "confirm_timeout": "Площадка не подтвердила публикацию вовремя. Проверьте площадку вручную.",
+}
+try:  # те же фразы, что и в отказах площадок (publish_accounts.REFUSALS): один источник
+    from app.services.publish_accounts import REFUSALS as _REFUSALS
+except Exception:  # noqa: BLE001
+    _REFUSALS = {}
+PUBLICATION_CODE_RU: dict[str, str] = {**_PUBLICATION_CODE_EXTRA_RU, **_REFUSALS}
+
+
+def publication_code_text(code: Any) -> str:
+    """Русская фраза для кода причины публикации; незнакомый код не показывается как есть."""
+    c = str(code or "").strip()
+    if not c:
+        return ""
+    return PUBLICATION_CODE_RU.get(c) or "Причина записана в журнале (код не расшифрован)."
+
 # --- уведомления (notification_log) ----------------------------------------------------------------------
 NOTIFICATION_STATUS_RU = {
     "sent": "доставлено", "delivered": "доставлено", "ok": "доставлено",
@@ -654,7 +678,11 @@ def _describe(row: Mapping[str, Any]) -> tuple[str, str, str]:
         method = str(_get(row, "method") or "").upper()
         title = _get(row, "summary_ru") or _METHOD_RU.get(method) or _fallback(source, method, "Действие оператора")
         outcome = str(_get(row, "outcome") or "")
-        detail = [f"{method} {_get(row, 'route_template', 'path') or ''}".strip()]
+        # Настоящий путь запроса (в route_template лежит шаблон с {project_id}, человеку он ничего не говорит).
+        detail = [f"{method} {_get(row, 'path', 'route_template') or ''}".strip()]
+        code = _get(row, "status_code")
+        if code is not None:
+            detail.append(f"код ответа {code}")
         if outcome:
             detail.append(_OUTCOME_RU.get(outcome, outcome))
         if _get(row, "actor"):
@@ -664,15 +692,22 @@ def _describe(row: Mapping[str, Any]) -> tuple[str, str, str]:
 
     if source == "publications":
         status = str(_get(row, "status", "kind") or "")
+        code = str(_get(row, "error_code") or "")
         title = PUBLICATION_STATUS_RU.get(status) or _fallback(source, status, "Публикация")
+        severity = _PUBLICATION_SEVERITY.get(status, SEV_INFO)
         detail = []
         if _get(row, "platform"):
             detail.append(f"площадка {row['platform']}")
         if _get(row, "post_url"):
             detail.append(str(row["post_url"]))
-        if _get(row, "error_code"):
-            detail.append(f"ошибка {row['error_code']}")
-        return title, _clip("; ".join(detail)), _PUBLICATION_SEVERITY.get(status, SEV_INFO)
+        if code == MANUAL_NOT_PUBLISHED_CODE:
+            # Решение человека, а не сбой: не красная ошибка и не входит в счётчик ошибок.
+            title, severity = "Закрыто человеком: публикация помечена как «не опубликовано»", SEV_INFO
+        elif code == MANUAL_CONFIRMED_CODE:
+            title, severity = "Подтверждено человеком вручную как опубликованное", SEV_INFO
+        elif code:
+            detail.append(f"причина: {publication_code_text(code).rstrip('.')}")
+        return title, _clip("; ".join(detail)), severity
 
     if source == "notification_log":
         kind = str(_get(row, "kind") or "")

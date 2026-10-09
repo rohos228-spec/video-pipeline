@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import HITLDecision, HITLRequest, Project
+from app.models import HITLDecision, HITLKind, HITLRequest, Project
 from app.project_db import get_project_sessionmaker
 from app.services.event_bus import publish_hitl_event
 from app.services.hitl_apply import apply_hitl_side_effects
@@ -26,6 +26,9 @@ from app.web.deps import get_session
 from app.web.schemas import HITLDecisionRequest, HITLDTO
 
 router = APIRouter(prefix="/hitl", tags=["hitl"])
+
+PUBLISH_DECISION_ELSEWHERE_RU = (
+    "Решение по публикации принимается только на странице публикаций или кнопкой в Telegram")
 
 
 @router.get("/pending", response_model=list[HITLDTO])
@@ -98,6 +101,10 @@ async def submit_decision(
     req = await session.get(HITLRequest, hitl_id)
     if req is None:
         raise HTTPException(status_code=404, detail="Запрос подтверждения не найден")
+    if req.kind is HITLKind.approve_publish:
+        # Разрешение на публикацию выдаётся только с проверкой файла, подписи и площадки (страница публикаций
+        # или кнопка в Telegram). Общая ручка не должна менять такой запрос в обход этих проверок.
+        raise HTTPException(status_code=409, detail=PUBLISH_DECISION_ELSEWHERE_RU)
     if req.decision != HITLDecision.pending:
         raise HTTPException(status_code=400, detail="Решение по этому запросу уже принято")
 

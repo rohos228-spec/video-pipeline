@@ -6465,6 +6465,31 @@ async def _create_new_project(msg: Message) -> None:
 
 
 # ---------------------------------------------------------------------------
+# W7: HITL approve_publish - «да» на публикацию одной площадки: hpub:<id>:yes|no.
+# Решает сервер (app.services.hitl.decide_publish_approval): владелец, одноразовость, актуальность файла и подписи,
+# запись в operator_audit. Здесь только показ ответа и снятие кнопок.
+
+@dp.callback_query(F.data.startswith("hpub:"))
+async def on_publish_approval_callback(cb: CallbackQuery) -> None:
+    from app.services.hitl import handle_publish_approval_callback
+
+    async with session_scope() as s:
+        res = await handle_publish_approval_callback(s, cb.data, cb.from_user.id if cb.from_user else None)
+    await cb.answer(res.text[:190], show_alert=not res.ok)
+    if res.hide_buttons and cb.message is not None:
+        # Подпись дословная и может содержать < и &: текст сообщения не переписываем, а только снимаем кнопки
+        # и пишем итог отдельным простым сообщением.
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001 - повторное нажатие всё равно будет отклонено сервером
+            logger.debug("approve_publish: кнопки не сняты")
+        try:
+            await cb.message.answer(res.badge or res.text, parse_mode=None)
+        except Exception:  # noqa: BLE001
+            logger.debug("approve_publish: итог не отправлен")
+
+
+# ---------------------------------------------------------------------------
 # Старый HITL-callback (картинки кадров): hitl:<id>:<action>
 
 @dp.callback_query(F.data.startswith("hitl:"))

@@ -95,7 +95,14 @@ test("итоги: деньги только по kind=spend, ошибки и п�
 
 test("подписи по-русски, неизвестные виды не ломаются", () => {
   assert.equal(v.kindLabel("spend"), "Трата");
-  assert.equal(v.kindLabel("zzz"), "Событие «zzz»");
+  assert.equal(v.kindLabel("zzz"), "Прочее");
+  // событие наблюдения: сырой вид с сервера человеку не показывается
+  for (const raw of ["node_error", "node_start", "node_end", "retry_scheduled", "zz_unknown_kind_for_ui"]) {
+    assert.equal(v.kindLabel(raw, "observation_events"), "Событие наблюдения");
+    assert.doesNotMatch(v.kindLabel(raw), /node_|retry_|zz_/);
+  }
+  assert.equal(v.kindLabel("gap", "observation_degradations"), "Пробел журнала");
+  assert.equal(v.kindLabel("новый", "spend_ledger"), "Трата");
   assert.equal(v.severityLabel("error"), "Ошибка");
   assert.equal(v.severityLabel("???"), "Обычное");
   assert.match(v.severityClass("error").text, /red/);
@@ -121,7 +128,13 @@ test("нормализация ответа: пропуски, неизвест�
 
 test("тексты про отсутствующие источники и ошибки", () => {
   assert.equal(v.missingSourcesText([]), "");
-  assert.match(v.missingSourcesText(["publications", "foo"]), /публикации, foo/);
+  assert.match(v.missingSourcesText(["publications", "foo"]), /публикации, другой источник/);
+  // служебные имена таблиц человеку не показываются
+  for (const t of ["spend_ledger", "operator_audit", "notification_log", "publications", "observation_events", "node_runs"]) {
+    assert.doesNotMatch(v.sourceLabel(t), /_|^publications$/);
+  }
+  assert.equal(v.sourceLabel("spend_ledger"), "учёт расходов");
+  assert.equal(v.sourceLabel("что-то новое"), "другой источник");
   assert.match(v.journalErrorText(500), /Сервер/);
   assert.match(v.journalErrorText(0), /не ответил/);
   assert.match(v.journalErrorText(422), /фильтры/);

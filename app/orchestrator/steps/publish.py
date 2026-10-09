@@ -485,6 +485,17 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 {"at": _now_iso(), "sha256": sha, "artifact_uuid": final.uuid, "platforms": deferred,
                  "text": "Часть площадок перенесена (лимит или окно публикации)."} if deferred else None)})
 
+    # W7: вид HITL approve_publish. Ждём «да» человека: спрашиваем в Telegram (если он активен) по каждой площадке.
+    # Ответ идёт той же серверной логикой, что и панель; auto_mode и HITL_AUTO_APPROVE «да» не создают.
+    if st["state"] == pstore.PS_AWAITING_APPROVAL and st["awaiting_approval"] and settings.telegram_active:
+        try:
+            from app.services.hitl import request_publish_approval
+            await request_publish_approval(bot, session, project, platforms=list(st["awaiting_approval"]),
+                                           sha256=sha, caption=caption, caption_sha256=csha,
+                                           artifact_uuid=final.uuid)
+        except Exception:  # noqa: BLE001 — «да» остаётся доступным из панели, шаг публикации не ломаем
+            logger.exception("[#{}] publish: запрос approve_publish в Telegram не создан", project.id)
+
     # Одно уведомление за запуск. Перенос (skipped) в «сбои» не попадает: он не ошибка и не ждёт человека.
     shown = [r for r in results if r.status != pstore.S_SKIPPED]
     human = [r for r in shown if r.needs_human and not r.clicked]

@@ -123,6 +123,8 @@ class HITLKind(str, enum.Enum):
     approve_images = "approve_images"
     approve_videos = "approve_videos"
     approve_final = "approve_final"
+    # W7: «да» оператора на публикацию одной площадки (файл x подпись); решает сервер, а не поле decision.
+    approve_publish = "approve_publish"
 
 
 class HITLDecision(str, enum.Enum):
