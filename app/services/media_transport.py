@@ -18,7 +18,8 @@ ROUTES = {("POST", "/api/v1/jobs/createTask"): "generation_submit",
           ("GET", "/api/v1/jobs/recordInfo"): "status"}
 
 
-async def json_request(method, path, *, payload=None, params=None):
+async def json_request(method, path, *, payload=None, params=None, headers=None):
+    # headers (Authorization) go only to the wire: record_fact below receives body/params, never headers.
     job = current_job.get()
     category = ROUTES.get((method, path))
     if job is None or category is None:
@@ -30,7 +31,7 @@ async def json_request(method, path, *, payload=None, params=None):
     request_id = await job.reserve(category)
     try:
         async with asyncio.timeout(cfg["timeout_s"]), httpx.AsyncClient(timeout=cfg["timeout_s"], trust_env=False, follow_redirects=False) as client:
-            async with client.stream(method, url, json=payload, params=params) as response:
+            async with client.stream(method, url, json=payload, params=params, headers=headers) as response:
                 content = bytearray()
                 async for chunk in response.aiter_bytes():
                     content.extend(chunk)

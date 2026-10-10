@@ -188,7 +188,7 @@ async def create_task(api: str, endpoint: str | None, body: dict[str, Any]) -> s
     url = f"{kie_api_base_url()}{path}"
     from app.services.media_transport import current_job, json_request
     if current_job.get() is not None:
-        r = await json_request("POST", path, payload=body)
+        r = await json_request("POST", path, payload=body, headers=_headers())
         payload = r.json()
     else:
         r, payload, _src = await kie_post_json(url, body, timeout=120.0)
@@ -355,7 +355,7 @@ async def poll_task(api: str, task_id: str, *, timeout_s: float = _POLL_MAX_S) -
                 if job:
                     if polls >= job.config["media"]["max_polls"]:
                         raise MediaPolicyError("media status polling allowance exhausted")
-                    r = await json_request("GET", path, params={"taskId": task_id})
+                    r = await json_request("GET", path, params={"taskId": task_id}, headers=_headers())
                     polls += 1
                 else:
                     r = await client.get(url, headers=_headers(), params={"taskId": task_id})

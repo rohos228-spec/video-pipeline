@@ -189,12 +189,13 @@ class DownloadRightAway(base.Env):
 
 
 class ManagedTransportBoundary(unittest.TestCase):
-    def test_D04_5_the_managed_json_request_has_no_auth_and_reference_adapter_yet(self):
+    def test_D04_5_managed_references_stay_refused_fail_closed(self):
         """Граница, зафиксированная тестом (не закрытие): управляемый `json_request` не принимает заголовки, а
         `generate_kie_image` отказывает в референсах. Закрытие требует правки `media_transport.py` /
         `media_jobs.py` (вне границы W5-2), патч в отчёте."""
         from app.services import media_transport
-        self.assertNotIn("headers", inspect.signature(media_transport.json_request).parameters)
+        # авторизация закрыта (tests/w5_d04_5_managed_auth_test.py): headers принимается и передаётся в провод
+        self.assertIn("headers", inspect.signature(media_transport.json_request).parameters)
         source = inspect.getsource(kie_http.generate_kie_image)
         self.assertIn("managed reference upload has no authorized adapter", source)
 
