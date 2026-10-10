@@ -494,7 +494,8 @@ def test_scenes_to_frames_resolves_v8_template() -> None:
     )
     assert "node_groups/script_frames_qc" in str(path).replace("\\", "/")
     text = path.read_text(encoding="utf-8")
-    assert "видимый шаг" in text or "шаги действия" in text
+    # шаблон v14 (23426a95): вход = главное_действие + площадка, режем действие
+    assert "главное_действие" in text
     assert "объект" in text
     grouped = list_group_owned_prompts("script_frames_qc")
     assert grouped is not None

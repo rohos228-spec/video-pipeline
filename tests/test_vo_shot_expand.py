@@ -39,7 +39,9 @@ def test_apply_shot_meta_sets_action_when_empty() -> None:
 
     fr = SimpleNamespace(attrs={})
     _apply_shot_meta(fr, {"действие": "у доски сверяют папки"})
-    assert fr.attrs["main_action"] == "у доски сверяют папки"
+    # b1b8b454: действие шота НИКОГДА не пишется в main_action (иначе stub первого
+    # шага маскирует полное главное_действие); оно идёт только в shot01_action
+    assert "main_action" not in fr.attrs
     assert fr.attrs["shot01_action"] == "у доски сверяют папки"
 
 
@@ -293,7 +295,7 @@ def test_group_prompts_for_four_node_markup_exist() -> None:
     shots = _load_script_frames_qc_prompt("scenes_to_frames_ru")
     assert "главное_действие" in action
     assert "видимый шаг" in shots or "объект" in shots
-    assert "Правило 30°" in shots
+    assert "30°" in shots  # шаблон v14: «минимум на 30°» (12f4d347/23426a95)
     assert "`старт`" in shots and "`конец`" in shots
 
 
@@ -1277,7 +1279,10 @@ def test_enrich_xlsx_coverage_hook_includes_shots_frames_qc() -> None:
     from pathlib import Path
 
     src = Path("app/orchestrator/steps/enrich_xlsx.py").read_text(encoding="utf-8")
-    assert 'endswith(("_fw_shots", "_fw_frames", "_fw_qc"))' in src
+    # b1b8b454: QC вынесен в отдельную ветку (не пересобирает покрытие, только sync полей),
+    # покрытие по-прежнему строится на shots/frames
+    assert 'endswith(("_fw_shots", "_fw_frames"))' in src
+    assert 'nk_now.endswith("_fw_qc") and _canvas_has_fw_shots(project)' in src
     assert "apply_shot_coverage_to_vo_cells" in src
     assert "collapse_flattened_coverage_cells" in src
     assert "_canvas_has_fw_shots(project)" in src

@@ -522,6 +522,9 @@ class _Db:
     async def flush(self):
         return None
 
+    async def commit(self):
+        return None
+
 
 async def test_items_step_passes_its_project_to_the_generation_guard(monkeypatch, tmp_path):
     from contextlib import asynccontextmanager

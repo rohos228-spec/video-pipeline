@@ -1325,9 +1325,14 @@ def shots_coverage_ops_reason(
             continue
         uid = str(op.get("frame_uuid") or "").strip()
         vo = _frame_vo(by_uid_pre.get(uid) or {})
-        notes = repair_shot_vo_lengths(
-            [s for s in shots if isinstance(s, dict)], vo
-        )
+        # репейр склеивает/удаляет кадры (pop) - ему нужен сам список op, а не копия,
+        # иначе текст соседа меняется, а «пустышка» остаётся и закадр дублируется
+        if all(isinstance(s, dict) for s in shots):
+            notes = repair_shot_vo_lengths(shots, vo)
+        else:
+            notes = repair_shot_vo_lengths(
+                [s for s in shots if isinstance(s, dict)], vo
+            )
         if notes:
             logger.info(
                 "repair_shot_vo_lengths uuid={}: {}",

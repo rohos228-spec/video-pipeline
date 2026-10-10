@@ -210,6 +210,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
         session.add(a)
         await session.flush()
+        # Результат взят в проект и закоммичен: только теперь платный файл больше не предлагается для повторного
+        # использования (как в generate_images). Раньше он гасился до коммита: сбой между flush и коммитом откатывал
+        # строку, а запись уже была «потреблена», и повтор платил второй раз.
+        await session.commit()
         from app.services import outsee_idempotency
         await outsee_idempotency.mark_consumed(project.id, f"predmet{idx}")
         logger.info(

@@ -257,12 +257,21 @@ def _package_files(name: str) -> list[str]:
     raise LookupError(f"executor package {name!r} not found")
 
 
+# Names that appear in an executor description but are not module files: the code lives in the named module.
+# Without this the description of `hero` ('... generate_image_with_retries ...') and of `sfx_gen` ('... local_synth')
+# was unresolvable, so the node_code part of the input revision carried a random nonce and was NEVER equal to itself:
+# every Decision context of those nodes was stale and ended in human_review.
+EXECUTOR_NAME_MODULES = {"generate_image_with_retries": "outsee_retry", "local_synth": "sfx_gen"}
+
+
 def executor_modules(capability) -> list[str]:
     """Module files named by the capability's executor description, e.g.
     'make_plan.run -> xlsx_step_runners.run_plan_xlsx'. A 'pkg:<name>' chunk names a whole package
-    directory (every .py file under it, sorted). Raises if one is unresolvable."""
+    directory (every .py file under it, sorted). A bracketed note ('(Outsee / Kie)') is not a module.
+    Raises if one is unresolvable."""
     files = []
     for part in re.split(r"→|->", capability.executor or ""):
+        part = re.sub(r"\([^)]*\)", "", part)
         for chunk in part.split("/"):
             chunk = chunk.strip()
             if not chunk:
@@ -271,6 +280,7 @@ def executor_modules(capability) -> list[str]:
                 files.extend(_package_files(chunk[len(PACKAGE_MARK):].strip()))
                 continue
             module = chunk.split(".")[0].strip()
+            module = EXECUTOR_NAME_MODULES.get(module, module)
             rel = _module_file(module)
             if rel is None:
                 raise LookupError(f"executor module {module!r} not found")
@@ -414,14 +424,28 @@ def _stat_row(path: Path) -> dict:
         return {"missing": True}
 
 
-def _files_under(root: Path, suffixes: tuple[str, ...], *, prefix: str | None = None) -> dict:
-    """Relative path -> size and mtime of the input files of one folder. Absent folder = empty listing."""
+def _content_row(path: Path) -> dict:
+    """Size and sha256 of a (small) file: stable when the same bytes are written again."""
+    try:
+        digest, size = hashlib.sha256(), 0
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1 << 20), b""):
+                digest.update(chunk)
+                size += len(chunk)
+        return {"size": size, "sha256": digest.hexdigest()}
+    except OSError:
+        return {"missing": True}
+
+
+def _files_under(root: Path, suffixes: tuple[str, ...], *, prefix: str | None = None, content: bool = False) -> dict:
+    """Relative path -> size and mtime (``content``: size and sha256) of the input files of one folder.
+    Absent folder = empty listing."""
     out: dict[str, dict] = {}
     if not root.is_dir():
         return out
     for path in sorted(root.rglob("*")):
         if path.is_file() and path.suffix.lower() in suffixes and (prefix is None or path.name.startswith(prefix)):
-            out[path.relative_to(root).as_posix()] = _stat_row(path)
+            out[path.relative_to(root).as_posix()] = _content_row(path) if content else _stat_row(path)
     return out
 
 
@@ -439,7 +463,11 @@ def assemble_inputs(project) -> dict:
         "videos": _files_under(root / "videos", (".mp4", ".mov", ".webm", ".mkv")),
         "scenes": _files_under(root / "scenes", (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov")),
         # the voice FILES (voice*.mp3/wav): words_*.json and sidecars are written by the attempt itself
-        "voice": _files_under(root / "audio", (".mp3", ".wav", ".m4a"), prefix="voice"),
+        # by CONTENT, not by mtime: the assembly itself rewrites voice_full.mp3 (build_assembly_timeline re-concatenates
+        # it from frame_*.mp3 whenever the container durations differ by more than 0.05 s, which is the normal case:
+        # every concatenated mp3 adds a silent header frame). The same bytes written again are not a changed input;
+        # with the mtime every supervised re-run of assemble was refused as "assemble_inputs changed".
+        "voice": _files_under(root / "audio", (".mp3", ".wav", ".m4a"), prefix="voice", content=True),
         "music": _files_under(root / "music", (".mp3", ".wav", ".m4a")),
         "sfx": _files_under(root / "sfx", (".wav", ".mp3")),
         "params": {

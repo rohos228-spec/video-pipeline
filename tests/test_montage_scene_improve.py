@@ -675,7 +675,9 @@ async def test_improve_writes_full_scene_card_and_shot_coverage(
                     },
                     {
                         "действие": "девушка кричит и убегает",
-                        "план": "СРЕДНИЙ",
+                        # R-PLAN-STEP (b1b8b454): прыжок крупности на 3+ ступени
+                        # (ДЕТАЛЬ -> СРЕДНИЙ) код выправляет, поэтому фикстура легальная
+                        "план": "КРУПНЫЙ",
                         "ракурс": "3/4",
                         "движение": "отъезд",
                         "стык": "cut_on_action",
@@ -718,7 +720,7 @@ async def test_improve_writes_full_scene_card_and_shot_coverage(
     kids = [fr for fr in cell if fr.uuid != UID]
     assert kids
     kid = board[int(kids[0].number)]
-    assert kid["shot_plan"] == "СРЕДНИЙ"
+    assert kid["shot_plan"] == "КРУПНЫЙ"
     assert kid["shot_angle"] == "3/4"
     assert kid["shot_move"] == "отъезд"
     assert _cs(kids[0]).get("роль_кадра") == "следствие"

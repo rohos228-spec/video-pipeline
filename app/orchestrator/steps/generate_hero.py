@@ -668,7 +668,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         if not hero_prompt and v_idx == 1:
             from app.services import media_resume
 
-            if await media_resume.pending_for_key(project.id, f"hero_{hero_idx}_v{v_idx}"):
+            hero_key = f"hero_{hero_idx}_v{v_idx}"
+            resume_same_request = await media_resume.pending_for_key(project.id, hero_key)
+            if not resume_same_request:
+                # Платный результат Outsee этого героя уже записан, но шаг его не забрал (упал после скачивания):
+                # новый ответ GPT дал бы другой промт = другой запрос = второе списание. Берём сохранённый промт,
+                # тогда тот же запрос подхватит записанный файл без платной отправки.
+                resume_same_request = (await outsee_idempotency.assess(project.id, hero_key)).get("mode") == "adopt"
+            if resume_same_request:
                 hero_prompt = _read_saved_hero_prompt(prompt_cache)
                 if hero_prompt:
                     logger.info(
@@ -948,7 +955,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     session.add(art)
     project.status = ProjectStatus.hero_ready
     await session.flush()
-    await outsee_idempotency.mark_consumed(project.id, f"hero_{hero_idx}_v{v_idx}")
 
     # 6) xlsx — пишем «текущий» референс героя.
     try:
@@ -1001,6 +1007,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "hero_style": style_chosen,
         },
     )
+    # Результат взят в проект и закоммичен: только теперь платный файл больше не предлагается для повторного
+    # использования (как в generate_images). До этого места его подберёт рестарт, а не новая платная отправка.
+    await session.commit()
+    await outsee_idempotency.mark_consumed(project.id, f"hero_{hero_idx}_v{v_idx}")
 
 
 # ---------------------------------------------------------------------------

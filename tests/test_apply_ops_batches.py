@@ -1485,7 +1485,9 @@ def test_shots_vo_rejects_comma_splinter() -> None:
 def test_shots_vo_rejects_dangling_preposition() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
-    vo = "Его записывали как «душу», продавали вместе с землёй."
+    # второй кусок >= 26 симв. (SHOT_VO_MIN): короткий хвост «землёй.» репейр
+    # склеил бы с предыдущим кадром и обрубок бы исчез
+    vo = "Его записывали как «душу», продавали вместе с землёй и всем нажитым скарбом до нитки."
     frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
     ops = [
         {
@@ -1508,7 +1510,7 @@ def test_shots_vo_rejects_dangling_preposition() -> None:
                         "ракурс": "сбоку",
                         "место": "контора",
                         "действие": "берёт купчую",
-                        "закадр": "землёй.",
+                        "закадр": "землёй и всем нажитым скарбом до нитки.",
                     },
                 ]
             },

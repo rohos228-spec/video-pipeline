@@ -62,7 +62,10 @@ async def test_space_plan_through_six_node_group(monkeypatch, tmp_path) -> None:
     assert "S2-K1" in suffixes
     by_id = {_sid(fr).split("-", 1)[1]: fr for fr in frames}
     act = {k: (fr.attrs or {}).get("shot01_action") for k, fr in by_id.items()}
-    assert act["S1-K1"] == "Иван бежит по улице"
+    # fake-QC переписывает K1 в «...к открытой двери дома»; код площадки обязан вернуть
+    # «закрытой» (R-DOOR-STATE), а не оставить QC-ошибку и не потерять начало действия
+    assert act["S1-K1"].startswith("Иван бежит по улице"), act
+    assert "закрыт" in act["S1-K1"] and "открытой" not in act["S1-K1"], act
     assert any("открывает входную дверь" in str(v or "") for v in act.values()), act
     assert any("входит через входную дверь" in str(v or "") for v in act.values()), act
 
