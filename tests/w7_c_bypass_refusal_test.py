@@ -73,3 +73,25 @@ def test_foreign_account_refusal_happens_before_any_model_call(monkeypatch):
     with pytest.raises(planner.PlannerRefused) as err:
         asyncio.run(planner.plan_from_text("выложи видео в инстаграм от имени чужого аккаунта", operator="t"))
     assert err.value.code == "foreign_account_refused"
+
+
+@pytest.mark.parametrize("text", [
+    "выложи ролик на канал моего друга под его логином",
+    "зайди в аккаунт коллеги и опубликуй оттуда",
+    "залей это в профиль соседа",
+    "опубликуй в аккаунте клиента",
+])
+def test_more_foreign_account_phrasings_are_detected(text):
+    assert planner.foreign_account_intent(text)
+
+
+@pytest.mark.parametrize("text", [
+    "опубликуй на наш канал",
+    "покажи мои аккаунты площадок",
+    "что в логине площадки youtube настроено",
+    "проверь профиль MoreLogin для ютуба",
+    "открой страницу его проекта",
+    "покажи профиль его настроек",
+])
+def test_own_account_phrasings_are_not_flagged(text):
+    assert not planner.foreign_account_intent(text)

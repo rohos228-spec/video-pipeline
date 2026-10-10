@@ -478,6 +478,7 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
     clean: list[dict] = []
     notes: list[str] = []
     swaps: list[str] = []
+    unnamed: list[str] = []
     for i, raw in enumerate(steps):
         if not isinstance(raw, dict):
             raise PlannerRejected("bad_step", f"шаг {i + 1}: должен быть объектом")
@@ -507,6 +508,17 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
             notes += pnotes
             if ask:
                 return PlannerReply([], ask[0][:500], expl.strip()[:1000], planner_rules.clean_options(ask[1]))
+        if request_text:
+            params = planner_rules.apply_request_values(action_id, params, request_text)
+            if action_id == "project.patch_settings":
+                params, gone = planner_rules.drop_unnamed_settings(params, request_text)
+                unnamed += gone
+                if gone and not set(params) - {"project_id"}:
+                    q, opts = planner_rules.settings_question(gone)
+                    return PlannerReply([], q, expl.strip()[:1000], opts)
+            clear = planner_rules.queue_clear_question(action_id, params, request_text)
+            if clear:
+                return PlannerReply([], clear[0], expl.strip()[:1000], clear[1])
         if attachments and action_id in planner_rules.UPLOAD_ACTIONS:
             req = list(registry.get(action_id).params_schema.get("required") or [])
             ask = planner_uploads.ask_missing(action_id, params, attachments[0], req)
@@ -528,6 +540,8 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
     expl = expl.strip()
     if swaps:
         expl = (expl + " Выбрано другое действие: " + "; ".join(swaps) + ".").strip()
+    if unnamed:
+        expl = (expl + " Не названо в запросе и поэтому не меняется: " + ", ".join(unnamed) + ".").strip()
     dropped: list[str] = []
     if request_text:
         clean, dropped = planner_rules.drop_unrequested(clean, request_text, registry)
@@ -640,10 +654,14 @@ def approval_bypass_intent(text: str) -> bool:
     return bool(_BYPASS_RE.search((text or "").lower().replace("ё", "е")))
 
 
+_FOREIGN_OWNER = r"(?:чуж\w*|друг\w*|коллег\w*|знаком\w*|приятел\w*|подруг\w*|сосед\w*|клиент\w*|не\s+наш\w*|не\s+мо\w*)"
 _FOREIGN_ACCOUNT_RE = re.compile(
     r"(?:от\s+имени|под\s+именем|с\s+аккаунта|через\s+аккаунт|на\s+аккаунт|в\s+аккаунт)\s+"
     r"(?:чуж|друг\w+\s+(?:человек|пользовател|аккаунт)|не\s+наш|не\s+мо)"
-    r"|чуж\w*\s+(?:аккаунт|канал|страниц|профил)")
+    r"|(?:аккаунт|канал|профил|логин|учетн)\w*\s+" + _FOREIGN_OWNER +
+    r"|" + _FOREIGN_OWNER + r"\s+(?:аккаунт|канал|профил|логин|учетн)\w*"
+    r"|под\s+(?:его|ее|их|чуж\w*|друг\w*)\s+(?:логин|парол|аккаунт|имен)\w*"
+    r"|(?:зайд|войд|залогин)\w*\s+(?:в|под)\s+(?:аккаунт|профил|учетн)\w*\s+" + _FOREIGN_OWNER)
 
 
 def foreign_account_intent(text: str) -> bool:
