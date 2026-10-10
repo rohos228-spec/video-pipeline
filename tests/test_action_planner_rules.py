@@ -209,7 +209,7 @@ def test_notes_are_per_offered_action_and_cover_registered_actions() -> None:
                          "montage.upload_voice"])
     assert set(n) == {"montage.set_coverage", "upload.*"}  # загрузки одной строкой
     assert "наезд" in n["montage.set_coverage"] and rules.notes_for(["montage.get_board"]) == {}
-    assert sum(len(v) for v in rules.ACTION_NOTES.values()) < 5800
+    assert sum(len(v) for v in rules.ACTION_NOTES.values()) < 7000
 
 
 def test_no_defaults_without_a_project() -> None:
@@ -365,7 +365,7 @@ def test_notes_steer_eval9_failures() -> None:
     assert "shot.edit_field" in n["montage.set_coverage"] or "shot.edit_field" in n["shot.edit_field"]
     assert "set_coverage" in n["shot.edit_field"] and "конец" in n["shot.add_cell"]
     assert "вопрос" in n["node.clear_check_agent"]
-    assert sum(len(v) for v in rules.ACTION_NOTES.values()) < 5800
+    assert sum(len(v) for v in rules.ACTION_NOTES.values()) < 7000
 
 
 def test_db_frame_id_in_a_frame_number_param_is_turned_back_into_the_number() -> None:

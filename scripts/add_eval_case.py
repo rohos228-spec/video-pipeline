@@ -43,7 +43,7 @@ OUTCOMES = ("plan", "clarify", "refuse")
 CONTEXT_KEYS = ("selected_scene", "selected_frame", "status", "frame_count", "attachments")
 ATTACHMENT_KINDS = ("image", "video", "audio", "excel", "json", "text")
 CASE_KEYS = ("id", "text", "workflow", "context", "outcome", "steps", "also_offered",
-             "clarify_contains", "explanation_contains")
+             "clarify_contains", "explanation_contains", "post_live_edit")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 PLACEHOLDER_RE = re.compile(r"^\$[a-z_]+(\.[A-Za-z0-9_]+)+$")
 PREFIX_ONLY_KEYS = {"source_path"}   # в фикстуре пишется префиксом "attachments/": путь подставляет сервер

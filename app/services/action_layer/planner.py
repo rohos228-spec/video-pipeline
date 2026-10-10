@@ -340,6 +340,8 @@ def build_prompt(text: str, ctx: dict, registry: ActionRegistry, max_steps: int,
         from app.settings import settings
         max_catalog = int(settings.action_layer_planner_max_catalog)
     sel = planner_catalog.select_catalog(text, ctx["facts"], registry, max_catalog, macros)
+    if attachments and sel.filtered:
+        sel.ids = sorted({*sel.ids, *planner_uploads.actions_for_attachments(attachments, registry)})
     payload: dict = {"data_policy": planner_guard.DATA_POLICY,
                      "catalog": catalog_for_prompt(registry, sel.ids),
                      "project_context": planner_context.prompt_context(
@@ -391,6 +393,7 @@ class PlannerReply:
     attachments_used: list[str] = field(default_factory=list)  # id вложений, подставленных в шаги
     model_question: bool = False  # вопрос задала модель (а не правило сервера): его можно снять повтором
     catalog_steps: list[dict] = field(default_factory=list)  # шаги дословно из каталога (planner_guard)
+    guard_question: bool = False  # вопрос защиты: все шаги не названы в запросе, ждём «Да, подготовить»
 
 
 def _upload_with_attachments(act: str, expl: str, *, text: str, registry: ActionRegistry,
@@ -479,6 +482,7 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
     notes: list[str] = []
     swaps: list[str] = []
     unnamed: list[str] = []
+    caption_notes: list[str] = []
     for i, raw in enumerate(steps):
         if not isinstance(raw, dict):
             raise PlannerRejected("bad_step", f"шаг {i + 1}: должен быть объектом")
@@ -509,7 +513,11 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
             if ask:
                 return PlannerReply([], ask[0][:500], expl.strip()[:1000], planner_rules.clean_options(ask[1]))
         if request_text:
+            before = dict(params)
             params = planner_rules.apply_request_values(action_id, params, request_text)
+            changed = [k for k in params if params.get(k) != before.get(k)]
+            if changed:  # значение теперь из слов человека: заметка «подставлено по умолчанию» устарела
+                notes = [n for n in notes if not any(n.startswith(k + "=") for k in changed)]
             if action_id == "project.patch_settings":
                 params, gone = planner_rules.drop_unnamed_settings(params, request_text)
                 unnamed += gone
@@ -519,6 +527,9 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
             clear = planner_rules.queue_clear_question(action_id, params, request_text)
             if clear:
                 return PlannerReply([], clear[0], expl.strip()[:1000], clear[1])
+            cap_note = planner_rules.caption_override_note(action_id, params, request_text)
+            if cap_note:
+                caption_notes.append(cap_note)
         if attachments and action_id in planner_rules.UPLOAD_ACTIONS:
             req = list(registry.get(action_id).params_schema.get("required") or [])
             ask = planner_uploads.ask_missing(action_id, params, attachments[0], req)
@@ -544,12 +555,38 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
         expl = (expl + " Не названо в запросе и поэтому не меняется: " + ", ".join(unnamed) + ".").strip()
     dropped: list[str] = []
     if request_text:
-        clean, dropped = planner_rules.drop_unrequested(clean, request_text, registry)
+        proposed = clean
+        confirmed = planner_rules.guard_confirmed(request_text)
+        clean, dropped = planner_rules.drop_unrequested(clean, request_text, registry, confirmed=confirmed)
         if not clean:
-            raise PlannerRejected(
-                "unrequested_action", "Все шаги плана выходят за рамки вашей просьбы.")
+            # Защита убрала ВСЕ шаги: не отказ, а вопрос, который называет предложенное. Шагов нет, пока
+            # человек не ответит «Да, подготовить»; массовые и необратимые просьбы остаются вопросом.
+            asked = (planner_rules.bare_publish_question(proposed, request_text)
+                     or planner_rules.mass_destructive_question(proposed, request_text, registry))
+            if asked:
+                return PlannerReply([], asked[0][:500], expl[:1000], asked[1], dropped_steps=dropped)
+            q, opts = planner_rules.guard_confirm_question(proposed, registry, facts)
+            return PlannerReply(
+                [], q, "Модель предложила действие, о котором нет слов в запросе: " + ", ".join(dropped)
+                + ". План не составлен, пока вы не подтвердите.", opts, dropped_steps=dropped,
+                guard_question=True)
         if dropped:
             expl = (expl + " Убрано как не запрошенное: " + ", ".join(dropped) + ".").strip()
+        if confirmed:
+            lifted = planner_rules.unhinted_titles(clean, request_text, registry)
+            if lifted:
+                expl = (expl + " Подготовлено по вашему ответу «" + planner_rules.CONFIRM_YES
+                        + "»: в исходной просьбе не было слов о действии (" + ", ".join(lifted)
+                        + "), проверьте превью.").strip()
+    if request_text:
+        asked = (planner_rules.bare_publish_question(clean, request_text)
+                 or planner_rules.vague_publish_question(clean, request_text)
+                 or planner_rules.undo_question(clean, request_text)
+                 or planner_rules.mass_destructive_question(clean, request_text, registry))
+        if asked:
+            return PlannerReply([], asked[0][:500], expl[:1000], asked[1], dropped_steps=dropped)
+    if caption_notes:
+        expl = (expl + " " + " ".join(dict.fromkeys(caption_notes))).strip()
     uploads = [st for st in clean if st["action_id"] in planner_rules.UPLOAD_ACTIONS]
     used: list[str] = []
     if uploads and attachments:
@@ -643,7 +680,12 @@ _BYPASS_RE = re.compile(
     r"(?:отключ|выключ|сними|снять|убер|убрат|отмен|обойд|обход|игнор|пропуст|деактив)\w*\s+"
     r"(?:(?:все|всё|любые|эти|наши|мои|для\s+всех)\s+)?"
     r"(?:лимит|подтвержд|одобрен|защит|ограничен|рубильник|аварийн|согласован)"
-    r"|без\s+(?:подтвержден|одобрен|согласован|лимит|ограничен)")
+    r"|без\s+(?:(?:моего|нашего|твоего|вашего|любого|какого[\s-]?либо|чьего[\s-]?либо|лишнего)\s+)?"
+    r"(?:подтвержден|одобрен|согласован|лимит|ограничен)"
+    r"|без\s+(?:моего|нашего|твоего|вашего|любого|чьего[\s-]?либо)\s+(?:согласи|разрешен|аппрув|апрув)"
+    r"|не\s+(?:спрашивай|проси|жди|требуй|запрашивай)\w*\s+(?:(?:моего|у\s+меня|у\s+человека)\s+)?"
+    r"(?:подтвержден|одобрен|согласи|разрешен|аппрув|апрув)"
+    r"|без\s+кнопк\w*\s+[«\"“']?\s*(?:подтверд|одобр|согласова|аппрув|апрув)")
 
 
 def approval_bypass_intent(text: str) -> bool:
@@ -654,14 +696,38 @@ def approval_bypass_intent(text: str) -> bool:
     return bool(_BYPASS_RE.search((text or "").lower().replace("ё", "е")))
 
 
-_FOREIGN_OWNER = r"(?:чуж\w*|друг\w*|коллег\w*|знаком\w*|приятел\w*|подруг\w*|сосед\w*|клиент\w*|не\s+наш\w*|не\s+мо\w*)"
+# Другие люди и роли: аккаунт, канал, страница или имя заказчика/подрядчика/админа/родственника - не наши.
+_FOREIGN_ROLE = (r"(?:заказчик\w*|подрядчик\w*|админ\w*|администратор\w*|редактор\w*|менеджер\w*|владельц\w*|"
+                 r"хозяин\w*|хозяйк\w*|директор\w*|руководител\w*|начальник\w*|партнер\w*|сотрудник\w*|"
+                 r"исполнител\w*|фрилансер\w*|модератор\w*|куратор\w*|основател\w*)")
+# Родственники: «моего отца», «жены», «сестры» (точные формы, чтобы не цеплять «материал», «мужской», «папка»).
+_KINSHIP = (r"(?:(?:мо(?:его|ей|ю|их|им|ему)|наш(?:его|ей|у|их)|сво(?:его|ей|ю|их)|ее|его|их)\s+)?"
+            r"(?:отц\w*|отец|мать|матер(?:и|ью)|мам\w*|пап(?:а|ы|е|у|ой|ин\w*)|жен(?:а|ы|е|у|ой)|"
+            r"муж(?:а|у|ем|е)?|сестр\w*|брат(?:а|у|ом|е|ья|ьев|ьям|ьями)?|дед(?:а|у|ом|е|ушк\w*)?|бабушк\w*|"
+            r"сын(?:а|у|ом|е)?|дочер\w*|дочк\w*|родител\w*|тещ\w*|тест(?:я|ю|ем)|свекр\w*|невест\w*|"
+            r"девушк\w*)(?![а-я])")
+_FOREIGN_OWNER = (r"(?:чуж\w*|друг\w*|коллег\w*|знаком\w*|приятел\w*|подруг\w*|сосед\w*|клиент\w*|не\s+наш\w*|"
+                  r"не\s+мо\w*|" + _FOREIGN_ROLE + r"|" + _KINSHIP + r")")
+# Страница или сообщество принадлежит не нам (слова «другой/друг» здесь не берутся: «другая страница» нейтрально).
+_COMMUNITY = r"(?:страниц\w*|страничк\w*|сообществ\w*|паблик\w*|стен(?:а|е|у|ы)(?![а-я]))"
+_NOT_OURS = r"(?:чуж\w*|не\s+наш\w*|не\s+мо(?:й|я|е|и|его|ей|их)(?![а-я])|" + _FOREIGN_ROLE + r"|" + _KINSHIP + r")"
 _FOREIGN_ACCOUNT_RE = re.compile(
     r"(?:от\s+имени|под\s+именем|с\s+аккаунта|через\s+аккаунт|на\s+аккаунт|в\s+аккаунт)\s+"
     r"(?:чуж|друг\w+\s+(?:человек|пользовател|аккаунт)|не\s+наш|не\s+мо)"
     r"|(?:аккаунт|канал|профил|логин|учетн)\w*\s+" + _FOREIGN_OWNER +
     r"|" + _FOREIGN_OWNER + r"\s+(?:аккаунт|канал|профил|логин|учетн)\w*"
+    r"|" + _COMMUNITY + r"\s+" + _NOT_OURS + r"|" + _NOT_OURS + r"\s+" + _COMMUNITY +
+    r"|(?:на|в|через|с|от)\s+(?:его|ее|их)\s+(?:аккаунт|профил|страниц|стен|сообществ|паблик|логин)\w*"
     r"|под\s+(?:его|ее|их|чуж\w*|друг\w*)\s+(?:логин|парол|аккаунт|имен)\w*"
-    r"|(?:зайд|войд|залогин)\w*\s+(?:в|под)\s+(?:аккаунт|профил|учетн)\w*\s+" + _FOREIGN_OWNER)
+    r"|(?:зайд|войд|залогин)\w*\s+(?:в|под)\s+(?:аккаунт|профил|учетн)\w*\s+" + _FOREIGN_OWNER +
+    r"|от\s+(?:его|ее|их)\s+(?:имен|лиц)\w*"
+    r"|от\s+имени\s+(?:" + _FOREIGN_ROLE + r"|" + _KINSHIP + r")"
+    r"|от\s+лица\s+(?!(?:мен[яи]|себя|нас)(?![а-я])|(?:(?:мо|наш)\w*\s+)?(?:студи|компани|команд|бренд|проект|канал)\w*)"
+    r"|под\s+роль\w*\s+(?:" + _FOREIGN_ROLE + r"|чуж\w*|друг\w*|его|ее|их|пользовател\w*|" + _KINSHIP + r")"
+    r"|в\s+роли\s+(?:" + _FOREIGN_ROLE + r"|чуж\w*)"
+    r"|(?:авториз|аутентиф|залогин|зайд|войд|логин)\w*\s+(?:\w+\s+){0,2}?под\s+(?:" + _FOREIGN_ROLE + r"|чуж\w*|друг\w*|его|ее|их)"
+    r"|под\s+(?:админ|администратор|заказчик|подрядчик|владельц)\w*"
+    r"|(?:его|ее|их|чуж\w*|друг\w*)\s+парол\w*")
 
 
 def foreign_account_intent(text: str) -> bool:
@@ -703,6 +769,16 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
     if await executor._kill_switch_on():
         raise PlannerRefused("kill_switch_active", "Аварийная остановка включена оператором: планы не составляются.")
     ctx = await load_context(project_id, selected_scene, selected_frame)
+    if planner_rules.guard_declined(text):  # «Нет, другое» на вопрос защиты: модель не нужна
+        return PlannerOutcome(
+            PlannerReply([], "Опишите, какое действие нужно вместо этого: что сделать и с чем (кадр, нода, шаг).",
+                         "Предложенное действие отклонено вами; ничего не планируется.", []),
+            ctx, {"model": model, "attempts": 0, "prompt_tokens": 0, "completion_tokens": 0,
+                  "est_cost_usd": 0.0, "cost_calibrated": False, "context_version": ctx["version"],
+                  "catalog_offered": 0, "catalog_total": 0, "applied_defaults": [], "dropped_steps": [],
+                  "attachments_used": [], "catalog_steps": [], "guard_question": False,
+                  "explanation_source": planner_guard.EXPLANATION_SOURCE, "transport_retries": 0,
+                  "clarify_repairs": 0, "declined": True})
     messages, info = build_prompt(text, ctx, registry, max_steps, attachments=attachments)
     offered = frozenset(info["offered"])
     send = _resolve_transport()
@@ -815,7 +891,8 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
             continue
         await _record(operator, text, model=model, attempt=attempt,
                       outcome="clarify" if reply.needs_clarification else "ok", usage=usage,
-                      cost=cost, error="", finish_reason=finish, context_version=ctx["version"], info=info)
+                      cost=cost, error="unrequested_action" if reply.guard_question else "",
+                      finish_reason=finish, context_version=ctx["version"], info=info)
         meta = {"model": model, "attempts": attempt, "prompt_tokens": totals[0],
                 "completion_tokens": totals[1], "est_cost_usd": total_cost,
                 "cost_calibrated": False, "context_version": ctx["version"],
@@ -824,6 +901,7 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
                 "dropped_steps": list(reply.dropped_steps),
                 "attachments_used": list(reply.attachments_used),
                 "catalog_steps": list(reply.catalog_steps),
+                "guard_question": reply.guard_question,
                 "explanation_source": planner_guard.EXPLANATION_SOURCE,
                 "transport_retries": transport_retries, "clarify_repairs": clarify_repairs}
         return PlannerOutcome(reply, ctx, meta)

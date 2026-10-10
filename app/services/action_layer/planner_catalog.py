@@ -34,22 +34,22 @@ _W_SYN, _W_TITLE, _W_TAG, _W_DESC = 2.0, 1.5, 1.2, 0.6
 
 # Синонимы и разговорные формы: начала слов (сравнение по началу слова запроса).
 SYNONYMS: dict[str, str] = {
-    "hero.replace_image": "загруз залей замен подмен картинк геро персонаж characters",
+    "hero.replace_image": "загруз залей замен подмен картинк геро персонаж characters основн фото",
     "history.list_snapshots": "истор снимк прежн значен было стало правк журнал откат",
     "history.rollback": "откат откач верн назад прежн значен правк снимок журнал",
     "hitl.approve": "одобр подтверд принят утверд согласу ок hitl ожида запрос",
     "hitl.list_pending": "ожида подтвержден запрос hitl одобрен решен очеред",
     "hitl.regenerate": "перегенер пересозд заново переделай повтор hitl кадр запрос",
-    "hitl.reject": "отклон забракуй откаж hitl кадр запрос",
+    "hitl.reject": "отклон забракуй откаж hitl кадр запрос подход нрав негодн",
     "kill_switch.engage": "аварийн стоп рубильник остановк все платн немедленно",
     "massfactory.start": "массов фабрик очеред тем роликов серия партия",
     "project.create": "созда нов проект завед",
-    "project.create_child": "дочерн проект копи клон созда",
+    "project.create_child": "дочерн проект копи клон созда ответвл форк дубл",
     "project.patch_settings": "настройк проект назван тем режим геро разрешен картинок видео модел формат кадр соотношен сторон аспект",
     "project.upload_xlsx": "загруз залей замен подмен excel эксел xlsx таблиц проект",
     "step.get_run_cost_basis": "сколько стоить стоимост оцен прогон шаг картинок видео озвучк музык сборк",
     "step.run_step": "запуст прогон прогна старт гони выполн шаг картинок видео озвучк музык сборк генерац",
-    "storage.clear_files": "очист удал файл хранилищ нод",
+    "storage.clear_files": "очист удал файл хранилищ нод избав обнул",
     "storage.upload_file": "загруз залей добав файл хранилищ нод",
     "change.apply": "предложен изменен промпт",
     "change.get": "предложен изменен верс истор промпт покаж парамет нод",
@@ -59,23 +59,23 @@ SYNONYMS: dict[str, str] = {
     "group.delete": "удал убер сотр групп пользовательск",
     "group.get": "состав описан групп внутр нод откр",
     "group.insert": "встав вставь добав групп канвас",
-    "group.list": "групп каталог библиотек списк",
+    "group.list": "групп каталог библиотек списк набор готов сохранен шаблон заготов",
     "group.save_from_selection": "сохран выделен групп",
     "group.shots_report": "отчет кадров шот qc проверк замечан",
     "group.update": "переимен названи групп",
-    "media.get_recovery_assessment": "провер задач kie киэ состоян провайдер зависл завис восстанов",
-    "media.list_unknown_outcomes": "неизвестн исход блокиров заблокир заблок застр потерян ответ outsee аутси kie киэ отправк",
+    "media.get_recovery_assessment": "провер задач kie киэ состоян провайдер зависл завис восстанов вытян реальн недоделан",
+    "media.list_unknown_outcomes": "неизвестн неясн неопредел исход блокиров заблокир заблок застр потерян ответ outsee аутси kie киэ отправк",
     "media.release_unknown": "сними снять отпуст разблок блокиров заблокир неизвестн исход ключ outsee аутси kie киэ разреш повтор отправк списан",
     "media.resume_poll": "докач возобнов продолж опрос дожд подтян доведи задач kie киэ провайдер",
-    "montage.align_audio": "разбор аудио таймкод выровн озвучк голос синхрон asr nemo пауз",
-    "montage.apply_queue": "примен правк очеред выполн сгенер перегенер запуст генерац применить",
-    "montage.apply_status": "статус примен правк прогресс идет генерац готов",
+    "montage.align_audio": "разбор аудио таймкод выровн озвучк голос синхрон asr nemo пауз подгон подстро",
+    "montage.apply_queue": "примен правк очеред выполн сгенер перегенер запуст генерац применить отработ обработ прогон",
+    "montage.apply_status": "статус примен правк прогресс идет генерац готов выполня отстрел отработ закончил завершил",
     "montage.cancel_queue_ops": "убер отмен очеред правк сними сброс",
     "montage.delete_child_frame": "удал дочерн кадр убер",
-    "montage.delete_frame": "удал кадр убер снес",
-    "montage.delete_image": "удал картинк изображен убер",
+    "montage.delete_frame": "удал кадр убер снес дроп избав выпил",
+    "montage.delete_image": "удал картинк изображен убер избав",
     "montage.delete_manual_ref": "удал реф референс загруж",
-    "montage.delete_video": "удал видео клип убер",
+    "montage.delete_video": "удал видео клип ролик убер избав",
     "montage.explode_scene": "раздел сцен кажд кадр отдельн разбей",
     "montage.generate_scene": "сгенер сцен пересобер куск придум заказ промт",
     "montage.generate_scene_images": "сгенер картинк изображен сцен нарису",
@@ -87,19 +87,19 @@ SYNONYMS: dict[str, str] = {
     "montage.list_ref_assets": "реф референс готов",
     "montage.merge_scenes": "объедин склей слей сцен",
     "montage.montage_status": "статус монтаж сборк собрал смонтир монтир",
-    "montage.move_image": "перенес перетащ перемест перекин переложи отправ картинк слот",
+    "montage.move_image": "перенес перетащ перемест перекин переложи отправ картинк слот переех переед",
     "montage.queue_ops": "постав очеред правк перегенер регенер картинк кадр изменен ии",
-    "montage.recover_outsee": "забер галере outsee восстанов готов карточ",
+    "montage.recover_outsee": "забер галере outsee восстанов готов карточ вытащ достан аутси",
     "montage.recover_status": "статус галере забор восстановлен зависш outsee аутси",
-    "montage.run_montage": "смонтир монтир монтаж собер сбор ролик видео финальн",
-    "montage.set_anchors": "якор",
-    "montage.set_assemble_params": "настройк сборк хвост громкост музык субтитр пропуст интро",
+    "montage.run_montage": "смонтир монтир замантир монтаж собер сбор ролик видео финальн",
+    "montage.set_anchors": "якор заякор",
+    "montage.set_assemble_params": "настройк сборк хвост громкост музык музон субтитр субтр титр потиш тише громч тихо пропуст интро",
     "montage.set_coverage": "крупност ракурс движен стык свет план роль родител дочерн покрыт",
     "montage.set_scene_chain": "последовательн цепочк разбер разбир действи шот кадров",
-    "montage.set_video_trim": "обрез трим видео начал конец",
+    "montage.set_video_trim": "обрез подреж подрез урез трим видео ролик начал конец",
     "montage.set_voiceover": "закадр озвучк текст голос поправ исправ измен реплик",
     "montage.set_voiceover_span": "закрепи кусок закадр сцен фрагмент",
-    "montage.split_scene": "раздел отдел оторв вынес сцен нов ножниц",
+    "montage.split_scene": "раздел отдел оторв вынес сцен нов ножниц правее",
     "montage.suggest_scene_variants": "подбер вариант предлож иде",
     "montage.swap_shots": "помен мест шот перв втор",
     "montage.swap_slots": "помен мест слот картинк видео обмен кадр",
@@ -108,28 +108,28 @@ SYNONYMS: dict[str, str] = {
     "node.get_llm_route": "модел через какую нод маршрут",
     "node.reset_from_step": "сброс сброс шаг",
     "node.run_step": "запуст шаг нод",
-    "node.set_config": "измен пульт нод настройк роль режим",
-    "node.set_disabled": "отключ включ нод выключ выруб верни работ обратн",
+    "node.set_config": "измен пульт нод настройк роль режим автоисправ проверк",
+    "node.set_disabled": "отключ включ нод выключ выруб отруб заглуш верни работ обратн",
     "node.set_prompt_variant": "вариант промт слот мастер нод",
-    "node.clear_check_agent": "сброс агент проверк убер загруж нод",
+    "node.clear_check_agent": "сброс агент проверк убер загруж нод избав",
     "node.get_run_cost_basis": "стоимост цен сколько стоит прогон оценк нод запуск шаг",
     "node.upload_check_agent": "загруз агент проверк нод файл txt",
     "node.upload_file": "загруз залей залит файл нод excel эксел xlsx подмен",
     "project.continue_pipeline": "продолж конвейер пайплайн дальше запуст проект",
-    "project.pause": "пауз приостанов поставь замороз",
+    "project.pause": "пауз пасн приостанов поставь замороз",
     "project.reload_xlsx": "перечит перезагруз обнов xlsx эксел excel таблиц",
-    "project.resume": "сними пауз возобнов продолж пауз",
+    "project.resume": "сними пауз возобнов продолж пауз выход выйд",
     "prompt.create_master": "созда нов мастер промт вариант добав",
-    "prompt.delete_master": "удал мастер промт вариант убер",
+    "prompt.delete_master": "удал мастер промт вариант убер избав",
     "prompt.get_master": "покаж прочит мастер промт текст",
     "prompt.save_master": "сохран перепиш измен правк обнов мастер промт",
     "montage.set_send_to_main_pc": "отправ основн компьютер сборк пк main",
     "montage.upload_image": "загруз залей залит положи картинк изображен файл слот компьютер",
-    "montage.upload_music": "загруз залей залит музык фонов bgm трек компьютер",
+    "montage.upload_music": "загруз залей залит музык фонов фон bgm трек саундтрек мелод компьютер",
     "montage.upload_ref": "загруз залей залит реф референс картинк кадр компьютер",
     "montage.upload_video": "загруз залей залит видео клип mp4 файл слот компьютер",
     "montage.upload_voice": "загруз залей залит озвучк голос аудио компьютер",
-    "project.set_auto_mode": "автопродвиж автореж автоматическ автомат включ выключ",
+    "project.set_auto_mode": "автопродвиж автореж автоматическ автомат включ выключ само самост дальш",
     "publish.send": "опублик публикац выложи выкла запост площадк tiktok тикток youtube ютуб shorts reels инстаграм vk клипы likee",
     "project.stop": "останов стоп прекрат хватит отмен",
     "shot.add_cell": "добав ячейк меню съемк",
@@ -222,6 +222,21 @@ def _matches(token: str, keys: set[str]) -> bool:
     return any(token.startswith(k) for k in keys)
 
 
+_TYPO_MAX_TAIL = 3  # слово длиннее основы больше чем на столько букв - другое слово, а не опечатка
+_TYPO_MIN_KEY = 6  # опечатка в одну букву допускается только у основ из 6+ букв (короткие дали бы ложные совпадения)
+
+
+def _typo_matches(token: str, keys: set[str]) -> bool:
+    """Слово запроса отличается от начала основы одной буквой («возабнови» - «возобнов»)."""
+    for k in keys:
+        n = len(k)
+        if n < _TYPO_MIN_KEY or not n <= len(token) <= n + _TYPO_MAX_TAIL or token[0] != k[0]:
+            continue
+        if sum(1 for a, b in zip(token[:n], k) if a != b) == 1:
+            return True
+    return False
+
+
 _BASE_ACTIONS = 56  # опорный размер каталога для idf: рост реестра не сдвигает веса прежних действий
 
 
@@ -238,6 +253,11 @@ def _score_docs(tokens: list[str], docs: dict[str, list[tuple[float, set[str]]]]
             best = max((w for w, keys in fields if _matches(tok, keys)), default=0.0)
             if best:
                 hit[aid] = best
+        if not hit and len(tok) >= _TYPO_MIN_KEY:  # слово ничему не соответствует: пробуем с опечаткой
+            for aid, fields in docs.items():
+                best = max((w for w, keys in fields if _typo_matches(tok, keys)), default=0.0)
+                if best:
+                    hit[aid] = best
         if hit:
             idf = math.log(1.0 + n / len(hit))
             per_token.append({aid: w * idf for aid, w in hit.items()})

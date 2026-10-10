@@ -143,12 +143,14 @@ async def test_requested_montage_run_is_kept(live) -> None:
     assert len(out.reply.steps) == 2 and out.reply.dropped_steps == []
 
 
-async def test_plan_with_only_unrequested_steps_is_rejected(live) -> None:
-    fake = use(res(reply([st("montage.run_montage")])))
-    with pytest.raises(planner.PlannerRejected) as err:
-        await planner.plan_from_text("что с роликом", operator=OP, project_id=PID)
-    assert err.value.code == "unrequested_action" and len(fake.calls) == 1  # без повтора
-    assert [r.outcome for r in await history_rows(live, "planner_call")] == ["rejected"]
+async def test_plan_with_only_unrequested_steps_becomes_a_confirmation_question(live) -> None:
+    out, fake = await run("что с роликом", res(reply([st("montage.run_montage")])))
+    reply_ = out.reply
+    assert reply_.steps == [] and reply_.guard_question and "Вы хотите: смонтировать видео" in reply_.needs_clarification
+    assert reply_.clarification_options == ["Да, подготовить", "Нет, другое"]
+    assert out.meta["guard_question"] is True and len(fake.calls) == 1  # без повтора
+    rows = await history_rows(live, "planner_call")
+    assert [r.outcome for r in rows] == ["clarify"] and rows[0].error == "unrequested_action"
 
 
 # --- загрузки файлов ---------------------------------------------------------------------------
@@ -280,10 +282,11 @@ async def test_node_run_limits_come_from_the_project_basis(monkeypatch) -> None:
               "depends_on": []},
              {"action_id": "montage.get_board", "params": {"project_id": 2}, "depends_on": []}]
     notes = await planner_autofill.fill_node_run_limits(object(), "op", steps)
-    assert seen == ["n_excel_gpt_fw_shots"]  # заданные моделью и код-ноды отчёта не трогаются
+    assert seen == ["n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc"]  # код-ноды отчёта не трогаются
     assert steps[0]["params"]["max_input_tokens"] == 9000 and steps[0]["params"]["min_llm_requests"] == 2
-    assert "max_llm_requests" in steps[1]["params"] and "min_llm_requests" not in steps[1]["params"]
-    assert "limits" not in str(steps[2]["params"]) and len(notes) == 1 and "n_excel_gpt_fw_shots" in notes[0]
+    # названное или заданное ранее значение не перезаписывается, недостающие лимиты берутся из расчёта
+    assert steps[1]["params"]["max_llm_requests"] == 7 and steps[1]["params"]["min_llm_requests"] == 2
+    assert "limits" not in str(steps[2]["params"]) and len(notes) == 2 and "n_excel_gpt_fw_shots" in notes[0]
 
 
 async def test_node_run_limits_stay_empty_when_the_basis_cannot_be_computed(monkeypatch) -> None:

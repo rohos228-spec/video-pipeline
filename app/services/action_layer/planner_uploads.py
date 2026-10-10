@@ -105,6 +105,13 @@ def pick(action_id: str, title: str, atts: list[AttachmentRef], used: set[str],
     return None, f"Какой из прикреплённых файлов загрузить для действия «{title}»?", names
 
 
+def actions_for_attachments(atts: list[AttachmentRef], registry) -> list[str]:
+    """Действия загрузки, которым подходит вид прикреплённого файла: приложенный файл показывает, что
+    человек говорит о загрузке, даже если глагол в запросе разговорный и предфильтр каталога его не знает."""
+    kinds = {a.kind for a in atts}
+    return [aid for aid, ok in ACTION_KINDS.items() if kinds & set(ok) and registry.find(aid) is not None]
+
+
 def request_for(action_id: str, params: dict) -> dict:
     clean = {k: v for k, v in params.items() if k not in rules.FILE_PARAMS and k != "project_id"}
     return {"action_id": action_id, "params": clean, "formats": rules._FORMATS.get(action_id, "файл")}

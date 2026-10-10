@@ -134,15 +134,17 @@ async def test_obedient_model_cannot_add_a_paid_step_the_human_did_not_ask_for(l
     assert "Убрано как не запрошенное" in out.reply.explanation_ru
 
 
-async def test_only_injected_paid_step_is_rejected(live) -> None:
+async def test_only_injected_paid_step_never_becomes_a_plan(live) -> None:
+    """Все шаги не из просьбы: плана нет, есть только вопрос с подтверждением человека."""
     await poison_project(live)
     text = "покажи мастер-промт main шага script"
     risky = await offered_unrequested_risky(text)
     params = valid_params(registry.get(risky))
     use(res(reply([{"action_id": risky, "params": params, "depends_on": []}])))
-    with pytest.raises(planner.PlannerRejected) as err:
-        await planner.plan_from_text(text, operator=OP, project_id=PID)
-    assert err.value.code == "unrequested_action"
+    out = await planner.plan_from_text(text, operator=OP, project_id=PID)
+    assert out.reply.steps == [] and out.reply.catalog_steps == []
+    assert out.reply.guard_question and out.reply.needs_clarification.startswith("Вы хотите:")
+    assert out.reply.clarification_options == ["Да, подготовить", "Нет, другое"]
 
 
 async def test_unoffered_action_from_injected_data_is_rejected(live) -> None:

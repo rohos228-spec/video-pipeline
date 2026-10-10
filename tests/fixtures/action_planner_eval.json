@@ -5981,14 +5981,24 @@
    "text": "выложи собранное видео в соцсети",
    "workflow": "publish",
    "context": {},
-   "outcome": "plan",
-   "steps": [
-    {
-     "action_id": "publish.send",
-     "params": {}
-    }
+   "outcome": "clarify",
+   "steps": [],
+   "clarify_contains": [
+    "площадк"
    ],
-   "also_offered": []
+   "also_offered": [],
+   "post_live_edit": {
+    "reason": "после живого прогона heldout6 (разбор docs/audit/PLANNER_SET6_TRIAGE.md): публикацию нельзя отозвать, а «в соцсети» не называет площадку; по решению владельца такая просьба получает вопрос о площадке (planner_rules.vague_publish_question), а не план с площадками по умолчанию. Прежний эталон допускал план publish.send без площадок",
+    "was": {
+     "outcome": "plan",
+     "steps": [
+      {
+       "action_id": "publish.send",
+       "params": {}
+      }
+     ]
+    }
+   }
   }
  ]
 }
