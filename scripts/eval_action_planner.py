@@ -12,7 +12,7 @@ Only VIBECODE_API_KEY / VIBECODE_BASE_URL / GPT_RELAY_TOKEN / GPT_PROXY_URL / GP
 Cases with context.attachments ([{kind, name, size}]) get fake attachments (no files, no paths shown to the model):
 the server fills source_path of the upload step from the attachment id, as in the real command line.
 The scoring helpers (load_cases, sample_cases, score_case) are offline and unit-tested.
---set main|heldout|heldout2|heldout3|heldout4|heldout5|heldout6|heldout7|both picks the fixture: main = tests/fixtures/action_planner_eval.json, heldout =
+--set main|heldout|heldout2|heldout3|heldout4|heldout5|heldout6|heldout7|heldout8|both picks the fixture: main = tests/fixtures/action_planner_eval.json, heldout =
 tests/fixtures/action_planner_heldout.json (first held-out sample, already looked at: now a regression set),
 heldout2 = tests/fixtures/action_planner_heldout2.json (second, fresh held-out sample; never tune rules on it
 and do not read its cases next to the errors), heldout3 = tests/fixtures/action_planner_heldout3.json (third fresh sample,
@@ -20,7 +20,8 @@ written before the rule fixes of the heldout2 review; not part of ``both``), hel
 (fourth fresh sample, written before the rule fixes of the heldout3 review; not part of ``both``), heldout5 = tests/fixtures/action_planner_heldout5.json
 (fifth fresh, blind sample; not part of ``both``), heldout6 = tests/fixtures/action_planner_heldout6.json
 (sixth fresh, blind sample; not part of ``both``), heldout7 = tests/fixtures/action_planner_heldout7.json
-(seventh fresh, blind sample written to look like a real operator's day; not part of ``both``). Never tune rules on any held-out set.
+(seventh fresh, blind sample written to look like a real operator's day; not part of ``both``), heldout8 = tests/fixtures/action_planner_heldout8.json
+(eighth fresh, blind sample of everyday operator phrasing; not part of ``both``). Never tune rules on any held-out set.
 The report always has the metrics per set (``by_set``), so the held-out number is separate; transport errors
 are counted apart (``transport_errors``) and also give ``*_no_transport`` figures that leave them out.
 Cases with ``requires_action`` are skipped while that action is not in the registry (reported as ``skipped``).
@@ -46,7 +47,8 @@ HELDOUT4_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 HELDOUT5_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout5.json"
 HELDOUT6_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout6.json"
 HELDOUT7_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout7.json"
-SETS = ("main", "heldout", "heldout2", "heldout3", "heldout4", "heldout5", "heldout6", "heldout7", "both")
+HELDOUT8_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout8.json"
+SETS = ("main", "heldout", "heldout2", "heldout3", "heldout4", "heldout5", "heldout6", "heldout7", "heldout8", "both")
 
 
 def load_env(path: str) -> dict:
@@ -159,8 +161,22 @@ def load_selected(which: str) -> list[dict]:
         bad = check_disjoint(others, held7)
         if bad:
             raise ValueError(f"heldout7 overlaps other sets: {bad[:5]}")
+    held8: list[dict] = []
+    if which == "heldout8":
+        if not HELDOUT8_FIXTURE.exists():
+            raise ValueError(f"{HELDOUT8_FIXTURE.name} not found")
+        held8 = tag_set(load_cases(HELDOUT8_FIXTURE), "heldout8")
+        others = main + held
+        for extra in (HELDOUT2_FIXTURE, HELDOUT3_FIXTURE, HELDOUT4_FIXTURE, HELDOUT5_FIXTURE, HELDOUT6_FIXTURE,
+                      HELDOUT7_FIXTURE):
+            if extra.exists():
+                others += tag_set(load_cases(extra), extra.stem)
+        bad = check_disjoint(others, held8)
+        if bad:
+            raise ValueError(f"heldout8 overlaps other sets: {bad[:5]}")
     return {"main": main, "heldout": held, "heldout2": held2, "heldout3": held3, "heldout4": held4,
-            "heldout5": held5, "heldout6": held6, "heldout7": held7, "both": main + held + held2}[which]
+            "heldout5": held5, "heldout6": held6, "heldout7": held7, "heldout8": held8,
+            "both": main + held + held2}[which]
 
 
 def runnable(cases: list[dict], registry) -> tuple[list[dict], list[str]]:
@@ -448,7 +464,7 @@ async def main() -> int:
     parser.add_argument("--seed-realistic", action=argparse.BooleanOptionalAction, default=True,
                         help="fill the project with frames, files, queue, nodes, proposals, prompt variants")
     parser.add_argument("--set", dest="case_set", choices=SETS, default="main",
-                        help="main = основной набор, heldout..heldout7 = отложенные выборки, both = main+heldout+heldout2 "
+                        help="main = основной набор, heldout..heldout8 = отложенные выборки, both = main+heldout+heldout2 "
                              "(метрики раздельно)")
     parser.add_argument("--max-requests", type=int, default=10)
     parser.add_argument("--only", default="", help="comma-separated case ids to run (cheap re-run of failures)")
