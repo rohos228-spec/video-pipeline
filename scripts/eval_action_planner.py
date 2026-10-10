@@ -48,7 +48,8 @@ HELDOUT5_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 HELDOUT6_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout6.json"
 HELDOUT7_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout7.json"
 HELDOUT8_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout8.json"
-SETS = ("main", "heldout", "heldout2", "heldout3", "heldout4", "heldout5", "heldout6", "heldout7", "heldout8", "both")
+HELDOUT9_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout9.json"
+SETS = ("main", "heldout", "heldout2", "heldout3", "heldout4", "heldout5", "heldout6", "heldout7", "heldout8", "heldout9", "both")
 
 
 def load_env(path: str) -> dict:
@@ -174,8 +175,21 @@ def load_selected(which: str) -> list[dict]:
         bad = check_disjoint(others, held8)
         if bad:
             raise ValueError(f"heldout8 overlaps other sets: {bad[:5]}")
+    held9: list[dict] = []
+    if which == "heldout9":
+        if not HELDOUT9_FIXTURE.exists():
+            raise ValueError(f"{HELDOUT9_FIXTURE.name} not found")
+        held9 = tag_set(load_cases(HELDOUT9_FIXTURE), "heldout9")
+        others = main + held
+        for extra in (HELDOUT2_FIXTURE, HELDOUT3_FIXTURE, HELDOUT4_FIXTURE, HELDOUT5_FIXTURE, HELDOUT6_FIXTURE,
+                      HELDOUT7_FIXTURE, HELDOUT8_FIXTURE):
+            if extra.exists():
+                others += tag_set(load_cases(extra), extra.stem)
+        bad = check_disjoint(others, held9)
+        if bad:
+            raise ValueError(f"heldout9 overlaps other sets: {bad[:5]}")
     return {"main": main, "heldout": held, "heldout2": held2, "heldout3": held3, "heldout4": held4,
-            "heldout5": held5, "heldout6": held6, "heldout7": held7, "heldout8": held8,
+            "heldout5": held5, "heldout6": held6, "heldout7": held7, "heldout8": held8, "heldout9": held9,
             "both": main + held + held2}[which]
 
 
@@ -464,7 +478,7 @@ async def main() -> int:
     parser.add_argument("--seed-realistic", action=argparse.BooleanOptionalAction, default=True,
                         help="fill the project with frames, files, queue, nodes, proposals, prompt variants")
     parser.add_argument("--set", dest="case_set", choices=SETS, default="main",
-                        help="main = основной набор, heldout..heldout8 = отложенные выборки, both = main+heldout+heldout2 "
+                        help="main = основной набор, heldout..heldout9 = отложенные выборки, both = main+heldout+heldout2 "
                              "(метрики раздельно)")
     parser.add_argument("--max-requests", type=int, default=10)
     parser.add_argument("--only", default="", help="comma-separated case ids to run (cheap re-run of failures)")

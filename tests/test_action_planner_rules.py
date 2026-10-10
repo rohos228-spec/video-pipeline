@@ -390,3 +390,39 @@ def test_legit_frame_number_is_not_mistaken_for_an_id() -> None:
     h = rules.fill_defaults("montage.move_image", {"from_frame": 9999, "to_frame": 3}, facts,
                             schema("montage.move_image"))
     assert h.params["from_frame"] == 9999
+
+
+# --- набор №8: разговорные синонимы и разрешение из фразы ------------------------------------------------
+
+@pytest.mark.parametrize("action_id,text", [
+    ("montage.delete_child_frame", "шот 26 внутри сцены не нужен, вычёркивай его"),
+    ("montage.delete_frame", "29-й кадр вырежи из ролика целиком"),
+    ("montage.delete_frame", "24-й кадр — в утиль"),
+    ("montage.delete_image", "в шестом кадре ни картинки, ни клипа не оставляй"),
+    ("node.reset_from_step", "результаты script и всех последующих шагов зачисти"),
+    ("prompt.save_master", "перезапиши main у шага split текстом «Режь на короткие блоки»"),
+    ("hero.replace_image", "картинку героя надо поменять на мою"),
+])
+def test_colloquial_synonyms_count_as_a_request_for_the_action(action_id, text):
+    ensure_builtin_actions()
+    assert rules.request_hints_action(text, registry.find(action_id)) is True
+
+
+def test_colloquial_words_do_not_unlock_unrelated_destructive_actions():
+    ensure_builtin_actions()
+    assert rules.request_hints_action("покажи кадр 5", registry.find("montage.delete_frame")) is False
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("по сценам для 10-го и 11-го кадров сделай картинки, разрешение 4к", "4k"),
+    ("картинки первых трёх кадров сгенерируй в 3к", "3k"),
+])
+def test_resolution_named_in_the_request_overrides_the_default(text, expected):
+    out = rules.apply_request_values("montage.generate_scene_images", {"image_resolution": "2k"}, text)
+    assert out["image_resolution"] == expected
+
+
+def test_resolution_is_left_alone_when_the_request_names_none_or_two():
+    base = {"image_resolution": "2k"}
+    assert rules.apply_request_values("montage.generate_scene_images", base, "сделай картинки кадров 2 к 5")["image_resolution"] == "2k"
+    assert rules.apply_request_values("montage.generate_scene_images", base, "кадры в 3к, потом в 4к")["image_resolution"] == "2k"
