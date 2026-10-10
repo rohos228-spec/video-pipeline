@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 import random
 import struct
@@ -256,7 +257,9 @@ def _load_progress(project: Project) -> dict[str, dict[str, Any]]:
 
 async def _save_progress(session: Any, project: Project, prog: dict[str, dict[str, Any]]) -> None:
     """Записать и закоммитить чекпоинт сразу: упавшая попытка не теряет оплаченные события."""
-    save_ai_job_checkpoint(project, _PROGRESS, prog)
+    # A SNAPSHOT, not the live dict: the caller keeps mutating ``prog`` in place, and a JSON column holding that very
+    # object compares equal to itself, so SQLAlchemy would skip the UPDATE and the per-event commit would store nothing.
+    save_ai_job_checkpoint(project, _PROGRESS, copy.deepcopy(prog))
     await session.flush()
     commit = getattr(session, "commit", None)
     if callable(commit):
