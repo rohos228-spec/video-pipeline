@@ -144,6 +144,21 @@ def _ans_sfx(frames: list[dict]) -> str:
 
 GOOD_CHARACTERS = {"characters": [{"id": "c01", "имя": "Альфа", "внешность": "высокий, около 45",
                                    "одежда": "серое пальто", "характер": "сдержанный"}]}
+# The skeleton checkpoint the application's wave 0 leaves. runner.load_checkpoint treats a skeleton with an
+# empty ``scenes`` list as "no checkpoint" (agents.LIST_KEY["skeleton"] == "scenes"), so the world request would
+# carry no SKELETON block; one scene per stand frame (frame numbers 1 and 2), both placed in loc01.
+WORLD_SKELETON = {
+    "scenes": [
+        {"id_scene": "scene_01", "id_cell": "cell_01", "кадры": [1], "место_id": "loc01", "суть": "чтение",
+         "фокус": "чтение", "биты": [], "персонажи": [], "предметы": []},
+        {"id_scene": "scene_02", "id_cell": "cell_02", "кадры": [2], "место_id": "loc01", "суть": "чтение",
+         "фокус": "чтение", "биты": [], "персонажи": [], "предметы": []},
+    ],
+    "locations_seed": [{"id": "loc01", "name": "Читальный зал"}],
+    "characters_seed": [],
+    "items_seed": [],
+    "threads": [],
+}
 GOOD_WORLD = {"locations": [{"id": "loc01", "name": "Читальный зал", "описание": "высокие окна, дубовые столы"}],
               "report": "локаций:1"}
 
@@ -509,6 +524,8 @@ async def _seed(node: str, agent: str) -> tuple[int, str, str]:
         session.add(wf)
         await session.flush()
         meta = {"canvas_graph": {"workflow_id": wf.id, "nodes": nodes, "edges": edges}, **spec.meta}
+        if node == "sd_agent" and agent == "world":
+            meta["scene_design_skeleton"] = True  # the world prompt reads the skeleton the earlier wave leaves
         if node == "sd_agent":
             meta["scene_design"] = {"only_agent": agent}
         project = Project(slug=slug, topic=f"vibecode {node} e2e", status=ProjectStatus.new, auto_mode=False,
@@ -534,9 +551,25 @@ async def _seed(node: str, agent: str) -> tuple[int, str, str]:
     return pid, slug, cnode["id"]
 
 
-async def _post_seed(node: str, pid: int) -> None:
-    """sd_assemble only: what the earlier agent steps leave (backfilled frames, checkpoints and cells), written by
-    the application's own writers into the project database, exactly as tests/observe_v1/test_scene_assemble_dry_run.py."""
+async def _post_seed(node: str, pid: int, agent: str = "characters") -> None:
+    """sd_assemble: what the earlier agent steps leave (backfilled frames, checkpoints and cells), written by
+    the application's own writers into the project database, exactly as tests/observe_v1/test_scene_assemble_dry_run.py.
+    sd_agent world: the skeleton checkpoint (locations_seed) the earlier wave leaves, written by the same writer."""
+    if node == "sd_agent" and agent == "world":
+        from app.models import Project
+        from app.project_db import migrate_project_by_id, project_db_session_scope
+        from app.services.scene_design import runner
+        await migrate_project_by_id(pid, create_backup=False)
+        async with project_db_session_scope(pid) as session:
+            project = await session.get(Project, pid)
+            runner.save_checkpoint(project, "skeleton", WORLD_SKELETON)
+            await session.commit()
+        from app.db import session_scope
+        async with session_scope() as session:  # the master row carries the same agent status
+            project = await session.get(Project, pid)
+            runner.save_checkpoint(project, "skeleton", WORLD_SKELETON)
+            await session.commit()
+        return
     if node != "sd_assemble":
         return
     from app.models import Project
@@ -641,7 +674,7 @@ async def main(argv: list[str] | None = None) -> int:
     from app import main as app_main
     await app_main._init_db()
     pid, slug, target = await _seed(node, agent)
-    await _post_seed(node, pid)
+    await _post_seed(node, pid, agent)
     project_db = data / "videos" / slug / "project.db"
     base = f"http://127.0.0.1:{args.port}/api/projects/{pid}"
 
