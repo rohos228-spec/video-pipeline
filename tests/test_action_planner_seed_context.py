@@ -186,4 +186,4 @@ def test_prompt_stays_small() -> None:
     for c in CASES:
         _m, info = planner.build_prompt(c["text"], {"facts": facts, "version": "v"}, registry, 20, 24)
         sizes.append(info["chars"])
-    assert sum(sizes) / len(sizes) < 7800 and max(sizes) < 12500  # +300: подсказки set6 про близкие действия
+    assert sum(sizes) / len(sizes) < 8000 and max(sizes) < 12500  # +200: подсказки set7 про близкие действия и пределы

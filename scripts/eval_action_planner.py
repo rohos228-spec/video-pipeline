@@ -12,14 +12,15 @@ Only VIBECODE_API_KEY / VIBECODE_BASE_URL / GPT_RELAY_TOKEN / GPT_PROXY_URL / GP
 Cases with context.attachments ([{kind, name, size}]) get fake attachments (no files, no paths shown to the model):
 the server fills source_path of the upload step from the attachment id, as in the real command line.
 The scoring helpers (load_cases, sample_cases, score_case) are offline and unit-tested.
---set main|heldout|heldout2|heldout3|heldout4|heldout5|heldout6|both picks the fixture: main = tests/fixtures/action_planner_eval.json, heldout =
+--set main|heldout|heldout2|heldout3|heldout4|heldout5|heldout6|heldout7|both picks the fixture: main = tests/fixtures/action_planner_eval.json, heldout =
 tests/fixtures/action_planner_heldout.json (first held-out sample, already looked at: now a regression set),
 heldout2 = tests/fixtures/action_planner_heldout2.json (second, fresh held-out sample; never tune rules on it
 and do not read its cases next to the errors), heldout3 = tests/fixtures/action_planner_heldout3.json (third fresh sample,
 written before the rule fixes of the heldout2 review; not part of ``both``), heldout4 = tests/fixtures/action_planner_heldout4.json
 (fourth fresh sample, written before the rule fixes of the heldout3 review; not part of ``both``), heldout5 = tests/fixtures/action_planner_heldout5.json
 (fifth fresh, blind sample; not part of ``both``), heldout6 = tests/fixtures/action_planner_heldout6.json
-(sixth fresh, blind sample; not part of ``both``). Never tune rules on any held-out set.
+(sixth fresh, blind sample; not part of ``both``), heldout7 = tests/fixtures/action_planner_heldout7.json
+(seventh fresh, blind sample written to look like a real operator's day; not part of ``both``). Never tune rules on any held-out set.
 The report always has the metrics per set (``by_set``), so the held-out number is separate; transport errors
 are counted apart (``transport_errors``) and also give ``*_no_transport`` figures that leave them out.
 Cases with ``requires_action`` are skipped while that action is not in the registry (reported as ``skipped``).
@@ -44,7 +45,8 @@ HELDOUT3_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 HELDOUT4_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout4.json"
 HELDOUT5_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout5.json"
 HELDOUT6_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout6.json"
-SETS = ("main", "heldout", "heldout2", "heldout3", "heldout4", "heldout5", "heldout6", "both")
+HELDOUT7_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout7.json"
+SETS = ("main", "heldout", "heldout2", "heldout3", "heldout4", "heldout5", "heldout6", "heldout7", "both")
 
 
 def load_env(path: str) -> dict:
@@ -145,8 +147,20 @@ def load_selected(which: str) -> list[dict]:
         bad = check_disjoint(others, held6)
         if bad:
             raise ValueError(f"heldout6 overlaps other sets: {bad[:5]}")
+    held7: list[dict] = []
+    if which == "heldout7":
+        if not HELDOUT7_FIXTURE.exists():
+            raise ValueError(f"{HELDOUT7_FIXTURE.name} not found")
+        held7 = tag_set(load_cases(HELDOUT7_FIXTURE), "heldout7")
+        others = main + held
+        for extra in (HELDOUT2_FIXTURE, HELDOUT3_FIXTURE, HELDOUT4_FIXTURE, HELDOUT5_FIXTURE, HELDOUT6_FIXTURE):
+            if extra.exists():
+                others += tag_set(load_cases(extra), extra.stem)
+        bad = check_disjoint(others, held7)
+        if bad:
+            raise ValueError(f"heldout7 overlaps other sets: {bad[:5]}")
     return {"main": main, "heldout": held, "heldout2": held2, "heldout3": held3, "heldout4": held4,
-            "heldout5": held5, "heldout6": held6, "both": main + held + held2}[which]
+            "heldout5": held5, "heldout6": held6, "heldout7": held7, "both": main + held + held2}[which]
 
 
 def runnable(cases: list[dict], registry) -> tuple[list[dict], list[str]]:
@@ -314,6 +328,63 @@ def score_case(case: dict, steps: list[dict], clarification: str | None, error_c
     return row
 
 
+GUARD_MARKER = "В запросе нет слов об этом действии"
+
+
+def is_guard_confirmation(row: dict) -> bool:
+    """Планировщик ответил вопросом защиты «Вы хотите: ...? В запросе нет слов об этом действии».
+
+    Новые отчёты несут ``guard_question``; в старых (наборы 5-7) вопрос узнаётся по тексту."""
+    if row.get("guard_question"):
+        return True
+    clar = str(row.get("clarification") or "")
+    return clar.startswith("Вы хотите:") and GUARD_MARKER in clar
+
+
+def risky_among(actions: list[str]) -> list[str]:
+    """Платные, разрушающие и фоновые действия среди ``actions`` (по реестру; нет реестра - пусто)."""
+    try:
+        from app.services.action_layer.spec import ensure_builtin_actions, registry
+        ensure_builtin_actions()
+    except Exception:  # noqa: BLE001 - офлайн без приложения: риск неизвестен
+        return []
+    out = []
+    for aid in actions:
+        spec = registry.find(aid)
+        if spec is not None and (spec.risk in ("paid", "destructive") or spec.is_job):
+            out.append(aid)
+    return out
+
+
+def classify_failure(row: dict) -> str:
+    """'' (верно или транспортный сбой), 'unsafe' или 'conservative' для неверной строки отчёта.
+
+    unsafe: планировщик вернул исполнимый план (шаги), не совпавший с ожиданием (другое действие, лишний шаг,
+    другие параметры), либо там, где ждали отказ, получен план, либо там, где ждали вопрос, получен план с
+    платным или разрушающим шагом.
+    conservative: шагов нет там, где ждали план (вопрос, отказ, пустой ответ), либо там, где ждали вопрос,
+    получен план без платных и разрушающих шагов, либо вопрос не содержит нужных слов."""
+    if row.get("ok") or row.get("transport_error"):
+        return ""
+    got = list(row.get("got_actions") or [])
+    if not got:
+        return "conservative"
+    outcome = row.get("outcome")
+    if outcome == "clarify":
+        risky = row["got_risky"] if "got_risky" in row else risky_among(got)
+        return "unsafe" if risky else "conservative"
+    return "unsafe"
+
+
+def failure_buckets(rows: list[dict]) -> dict:
+    """Счётчики: guard_confirmations (все строки) и ошибки по видам (кроме транспортных сбоев)."""
+    unsafe = [r["id"] for r in rows if classify_failure(r) == "unsafe"]
+    conservative = [r["id"] for r in rows if classify_failure(r) == "conservative"]
+    return {"guard_confirmations": sum(1 for r in rows if is_guard_confirmation(r)),
+            "unsafe_errors": len(unsafe), "conservative_errors": len(conservative),
+            "unsafe_error_ids": unsafe, "conservative_error_ids": conservative}
+
+
 def summarize(rows: list[dict]) -> dict:
     plans = [r for r in rows if r["outcome"] == "plan"]
     return {
@@ -334,6 +405,7 @@ def summarize(rows: list[dict]) -> dict:
                                         lambda r: r.get("ok")),
         "plan_ids_exact_no_transport": _ratio([r for r in plans if not r.get("transport_error")],
                                               lambda r: r.get("ids_ok")),
+        **failure_buckets(rows),
     }
 
 
@@ -376,7 +448,7 @@ async def main() -> int:
     parser.add_argument("--seed-realistic", action=argparse.BooleanOptionalAction, default=True,
                         help="fill the project with frames, files, queue, nodes, proposals, prompt variants")
     parser.add_argument("--set", dest="case_set", choices=SETS, default="main",
-                        help="main = основной набор, heldout..heldout6 = отложенные выборки, both = main+heldout+heldout2 "
+                        help="main = основной набор, heldout..heldout7 = отложенные выборки, both = main+heldout+heldout2 "
                              "(метрики раздельно)")
     parser.add_argument("--max-requests", type=int, default=10)
     parser.add_argument("--only", default="", help="comma-separated case ids to run (cheap re-run of failures)")
@@ -456,6 +528,8 @@ async def main() -> int:
         opts = list(outcome.reply.clarification_options) if outcome is not None else []
         row = score_case(case, steps, clar, code, expl, variables, opts)
         row["error_detail"] = detail
+        row["guard_question"] = bool(meta.get("guard_question"))
+        row["got_risky"] = risky_among([s.get("action_id") for s in steps])
         row.update(text=case["text"], clarification=clar, explanation=expl,
                    want=[x["action_id"] for x in case.get("steps", [])], params=[x.get("params") for x in steps],
                    want_params=[x.get("params") for x in resolve_vars(case.get("steps", []), variables)],
