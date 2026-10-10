@@ -588,14 +588,20 @@ PS_CLOSED = "resolved_unpublished"
 
 
 def derive_project_state(rows: list[dict], platforms: list[str], approved: set[str], *,
-                         legacy: dict[str, bool] | None = None, now: float | None = None) -> dict:
+                         legacy: dict[str, bool] | None = None, now: float | None = None,
+                         publish_enabled: bool | None = None) -> dict:
     """Статус проекта считается ТОЛЬКО из записей журнала (и «старых» отметок meta до появления журнала).
 
     published: все площадки confirmed с URL/ID. publishing: есть работа, которую воркер доделает сам
     (занято или повтор после сбоя ДО клика с действующим подтверждением). needs_human: есть
     unconfirmed/сбой после клика/исчерпанные попытки: выход только через ручное подтверждение или пометку.
     awaiting_approval: клика не было, но нет действующего подтверждения человека. resolved_unpublished:
-    остальное человек закрыл как «не опубликовано»."""
+    остальное человек закрыл как «не опубликовано».
+
+    publish_enabled: настройка автопубликации. None (по умолчанию) - как раньше, настройка не учитывается.
+    False - шаг публикации не пойдёт, поэтому разрешённая человеком площадка НЕ «в работе»: состояние остаётся
+    awaiting_approval (публикация не начата), а такие площадки перечислены в `approved_publish_off`
+    (подтверждение есть, ждут включения настройки). Занятая площадка (busy) по-прежнему «в работе»."""
     summ = summarize(rows, platforms, now)
     confirmed = list(summ["confirmed"])
     human = list(summ["needs_human"])
@@ -604,18 +610,21 @@ def derive_project_state(rows: list[dict], platforms: list[str], approved: set[s
         if legacy and p in legacy:  # итог из старого meta без строки журнала: автоповтор запрещён
             retry.remove(p)
             (confirmed if legacy[p] else human).append(p)
-    working_retry = [p for p in retry if p in approved]
-    awaiting = [p for p in retry if p not in approved]
+    publish_off = publish_enabled is False
+    approved_off = [p for p in retry if p in approved] if publish_off else []
+    working_retry = [p for p in retry if p in approved] if not publish_off else []
+    awaiting = [p for p in retry if p not in approved or publish_off]
     if len(set(confirmed)) == len(platforms):
         state = PS_PUBLISHED
     elif summ["busy"] or working_retry:
         state = PS_WORKING
     elif human:
         state = PS_NEEDS_HUMAN
-    elif awaiting:
+    elif awaiting:  # при выключенной настройке сюда попадают и разрешённые площадки: шаг публикации их не возьмёт
         state = PS_AWAITING_APPROVAL
     else:
         state = PS_CLOSED
-    return {"state": state, "confirmed": confirmed, "needs_human": human, "awaiting_approval": awaiting,
-            "retry_approved": working_retry, "busy": list(summ["busy"]),
+    return {"state": state, "confirmed": confirmed, "needs_human": human,
+            "awaiting_approval": [p for p in awaiting if p not in approved_off],
+            "approved_publish_off": approved_off, "retry_approved": working_retry, "busy": list(summ["busy"]),
             "manual_failed": list(summ["manual_failed"])}

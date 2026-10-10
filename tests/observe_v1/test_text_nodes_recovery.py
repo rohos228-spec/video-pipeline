@@ -117,7 +117,8 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
 
     async def test_media_nodes_are_still_denied_by_capability(self):
         # images / audio / hero / sfx_gen are admitted since W5 ONLY for local resume of a recorded result
-        # (resume_local, never a paid resend); the nodes below still have no recovery admission at all.
+        # (resume_local, never a paid resend); videos / music are managed since W5 for media incidents only, so a text
+        # retry is still refused (the message names the media-only admission) and nothing is dispatched.
         for node_type in ('videos', 'music'):
             for profile in (False, True):
                 with self.subTest(node_type=node_type, profile=profile):
@@ -125,7 +126,8 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                     await self.asyncSetUp()
                     await self.text_fixture(node_type)
                     overlay_id = await self.approved_profile_fixture() if profile else None
-                    with self.assertRaisesRegex(ValueError, 'denied by node capability'):
+                    with self.assertRaisesRegex(
+                            ValueError, 'denied by node capability|admitted for media incidents only'):
                         await self.retry(profile_overlay_id=overlay_id)
                     await self.assert_no_dispatch()
 

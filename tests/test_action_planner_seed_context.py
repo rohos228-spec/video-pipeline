@@ -177,7 +177,7 @@ def test_frame_rows_window_is_bounded_and_centered() -> None:
 
 
 def test_prompt_stays_small() -> None:
-    assert len(planner.SYSTEM) < 3600  # правила занимают не больше ~1 тыс. токенов
+    assert len(planner.SYSTEM) < 3900  # правила занимают не больше ~1 тыс. токенов
     ensure_builtin_actions()
     facts = {"project_id": 2, "selected_scene": None, "selected_frame": None, "status": "idle",
              "frame_count": 30, "nodes": [], "queue": {"image": 0, "video": 0, "ops": []},

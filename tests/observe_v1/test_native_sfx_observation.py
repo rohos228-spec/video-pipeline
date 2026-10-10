@@ -65,6 +65,8 @@ GENERATION_CASES = {
     "test_foreign_file_checkpoint_is_rejected_without_repair",
     "test_unreadable_native_wav_is_failed_read_evidence",
     "test_partial_committed_file_coverage_is_failed_without_status_change",
+    "test_sfx_gen_proof_carries_the_shared_media_contract",
+    "test_failed_sfx_gen_attempt_never_passes_on_earlier_files",
 }
 
 
@@ -263,10 +265,11 @@ class NativeSfxObservation(unittest.IsolatedAsyncioTestCase):
         from app.services.node_capabilities import capability_for
         from app.services.observation import ExecutionControl
 
-        # sfx_plan allows one bounded retry_same / retry_profile (W5 D05); sfx_gen stays unmanaged.
+        # sfx_plan allows one bounded retry_same / retry_profile (W5 D05); sfx_gen is in the registry as managed since D06
+        # (resume of a recorded result only, never a paid resend).
         # Neither grants authority to an observation scope: the checks below stay in force.
         self.assertIn("retry_same", capability_for("sfx_plan").actions)
-        self.assertFalse(capability_for("sfx_gen").managed)
+        self.assertTrue(capability_for("sfx_gen").managed)
         self.assertIsNone(get_permission(7))
         async with self.sessions() as reader:
             self.assertEqual((await reader.get(ExecutionControl, EXECUTION)).mode, "observe")
@@ -668,6 +671,38 @@ class NativeSfxObservation(unittest.IsolatedAsyncioTestCase):
 
     async def test_partial_committed_file_coverage_is_failed_without_status_change(self):
         await self.generation_fault(lambda records: records.pop())
+
+    async def test_sfx_gen_proof_carries_the_shared_media_contract(self):
+        """sfx_gen is typed like the other media nodes (diagnosis reads contract native_media), sfx_plan is not."""
+        observe = self.api("observe_sfx_result")
+        async with self.business_sessions() as business:
+            project, frames = await self.inputs(business)
+            with self.context(business):
+                await self.capture(project, frames)
+                await self.native_commit(business, project)
+                await observe(business, project, "sfx_gen")
+        proof = self.one(await self.facts(), "node_result_verification").payload
+        self.assertEqual((proof["status"], proof["contract"], proof["node_type"]), ("passed", "native_media", "sfx_gen"))
+        self.assertEqual(proof["items_total"], 2)
+        self.assertNotIn("attempt_failure", proof)
+        self.unclaimed(proof)
+
+    async def test_failed_sfx_gen_attempt_never_passes_on_earlier_files(self):
+        """The attempt raised after complete files from an earlier run: typed failed with its own error type."""
+        observe = self.api("observe_sfx_result")
+        async with self.business_sessions() as business:
+            project, frames = await self.inputs(business)
+            with self.context(business) as ctx:
+                await self.capture(project, frames)
+                await self.native_commit(business, project)
+                ctx.attempt_exception = RuntimeError("sfx_gen: ни один файл не прошёл верификацию")
+                await observe(business, project, "sfx_gen")
+        proof = self.one(await self.facts(), "node_result_verification").payload
+        self.assertEqual((proof["status"], proof["contract"]), ("failed", "native_media"))
+        self.assertEqual(proof["reason"], "attempt_failed:RuntimeError")
+        self.assertEqual(proof["attempt_failure"], {"error_type": "RuntimeError", "retryable_by_node": False,
+                                                    "new_verified_artifact": False})
+        self.unclaimed(proof)
 
     async def test_failed_sql_session_reads_committed_plan_without_repair(self):
         from sqlalchemy.exc import IntegrityError, PendingRollbackError

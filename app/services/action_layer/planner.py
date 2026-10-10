@@ -303,6 +303,7 @@ SYSTEM = """Ты планировщик действий видеостудии.
 12. К вопросу добавь до 4 коротких вариантов ответа в clarification_options.
 13. attachments (если есть) - файлы, которые человек прикрепил к запросу: id, name, kind, size. Для шага загрузки выбери действие по виду файла и НЕ указывай source_path, data_base64, filename и путь: сервер сам подставит файл. Другие параметры загрузки (кадр, нода) бери из запроса.
 14. Не уточняй необязательное и то, что подставит сервер: потолок расхода (ceiling_credits), лимиты, подпись и площадки публикации, генератор, разрешение, метод. Не назвали - опусти параметр (цену и подтверждение человек увидит в превью). Спрашивай только то, без чего шаг нельзя собрать из запроса и project_context; если названо достаточно для плана, верни план, а не вопрос.
+15. Составной запрос («и», «потом», «затем», через запятую): каждое названное действие - отдельный шаг в порядке запроса; ясную часть не превращай в вопрос. Просьба показать или узнать - одно подходящее чтение, соседние чтения не добавляй.
 """
 
 
@@ -429,6 +430,10 @@ def _clarification(question: str, expl: str, options: list[str], *, text: str,
         up = planner_rules.upload_clarification(
             act, planner_rules.upload_params_from_text(act, text), spec.title_ru)
         return PlannerReply([], up["question"], expl.strip()[:1000], up["options"], up["attachment"])
+    if not attachments:
+        ask = planner_rules.deictic_file_request(text)  # вид «поставь это в кадр N» без файла
+        if ask:
+            return PlannerReply([], ask[:500], expl.strip()[:1000], ["Прикрепить файл"])
     return PlannerReply([], question.strip()[:500], expl.strip()[:1000], options, model_question=True)
 
 
@@ -472,6 +477,7 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
         raise PlannerRejected("too_many_steps", f"Модель предложила {len(steps)} шагов, допустимо не больше {max_steps}. Разбейте просьбу на части.")
     clean: list[dict] = []
     notes: list[str] = []
+    swaps: list[str] = []
     for i, raw in enumerate(steps):
         if not isinstance(raw, dict):
             raise PlannerRejected("bad_step", f"шаг {i + 1}: должен быть объектом")
@@ -487,6 +493,11 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
                 "action_not_offered", f"шаг {i + 1}: действие {action_id!r} не предлагалось модели для этого запроса")
         if not isinstance(params, dict):
             raise PlannerRejected("bad_params", f"шаг {i + 1}: params должен быть объектом")
+        if request_text:
+            swap = planner_rules.pick_similar_action(action_id, params, request_text, facts, offered, registry)
+            if swap:
+                action_id, params, swap_note = swap
+                swaps.append(swap_note)
         if facts is not None:
             filled = planner_rules.fill_defaults(
                 action_id, params, facts, registry.get(action_id).params_schema)
@@ -515,6 +526,8 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
             notes += planner_rules.defaults_used(action_id, params, facts, request_text)
         clean.append({"action_id": action_id, "params": params, "depends_on": sorted(set(deps))})
     expl = expl.strip()
+    if swaps:
+        expl = (expl + " Выбрано другое действие: " + "; ".join(swaps) + ".").strip()
     dropped: list[str] = []
     if request_text:
         clean, dropped = planner_rules.drop_unrequested(clean, request_text, registry)
@@ -627,6 +640,19 @@ def approval_bypass_intent(text: str) -> bool:
     return bool(_BYPASS_RE.search((text or "").lower().replace("ё", "е")))
 
 
+_FOREIGN_ACCOUNT_RE = re.compile(
+    r"(?:от\s+имени|под\s+именем|с\s+аккаунта|через\s+аккаунт|на\s+аккаунт|в\s+аккаунт)\s+"
+    r"(?:чуж|друг\w+\s+(?:человек|пользовател|аккаунт)|не\s+наш|не\s+мо)"
+    r"|чуж\w*\s+(?:аккаунт|канал|страниц|профил)")
+
+
+def foreign_account_intent(text: str) -> bool:
+    """Просьба действовать от имени или в аккаунте другого человека (публикация, вход).
+
+    Публиковать можно только в настроенные площадки владельца, поэтому отказ даёт сервер до обращения к модели."""
+    return bool(_FOREIGN_ACCOUNT_RE.search((text or "").lower().replace("ё", "е")))
+
+
 async def plan_from_text(text: str, *, operator: str, project_id: int | None = None,
                          selected_scene: int | None = None, selected_frame: int | None = None,
                          registry: ActionRegistry | None = None,
@@ -648,6 +674,11 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
             "Отключать или обходить подтверждения, лимиты расходов, защиту и аварийный стоп из командной "
             "строки нельзя: это решает человек в настройках. Опишите, какое действие нужно выполнить, и "
             "я составлю план с обычным подтверждением.")
+    if foreign_account_intent(text):
+        raise PlannerRefused(
+            "foreign_account_refused",
+            "Действовать от имени чужого аккаунта нельзя. Публикация возможна только в настроенные "
+            "площадки владельца и только после подтверждения человека.")
     max_steps = int(settings.action_layer_max_steps)
     url, headers, model = preflight()  # до любых запросов
     from app.services.action_layer import executor

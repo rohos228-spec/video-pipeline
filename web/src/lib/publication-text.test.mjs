@@ -37,6 +37,16 @@ test("«разрешено» при выключенной автопублик�
   assert.match(t.projectStateLines({ ...d, busy: ["tiktok"] }, false)[0], /Публикация идёт/);
 });
 
+test("сервер при выключенной автопубликации отдаёт awaiting_approval + approved_publish_off: панель говорит честно", () => {
+  const d = { state: "awaiting_approval", busy: [], approved_publish_off: ["vk_clips"], awaiting_approval: [] };
+  const lines = t.projectStateLines(d, false);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /выключена настройкой/);
+  assert.doesNotMatch(lines[0], /Публикация идёт/);
+  assert.equal(t.projectStateLines({ ...d, awaiting_approval: ["tiktok"] }, false).length, 2);
+  assert.match(t.projectStateLines({ state: "awaiting_approval", awaiting_approval: ["a"] }, false)[0], /нужно ваше подтверждение/);
+});
+
 test("«ждёт проверки человека» не прячется за разрешённой площадкой", () => {
   const lines = t.projectStateLines({ state: "publishing", busy: [], retry_approved: ["a"], needs_human: ["b"] }, false);
   assert.equal(lines.length, 2);

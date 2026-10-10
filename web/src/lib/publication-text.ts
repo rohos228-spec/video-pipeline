@@ -77,6 +77,7 @@ export interface DerivedState {
   needs_human?: string[];
   retry_approved?: string[];
   awaiting_approval?: string[];
+  approved_publish_off?: string[];
 }
 
 const PROJECT_STATE_TEXT: Record<string, string> = {
@@ -102,6 +103,14 @@ export function projectStateLines(derived: DerivedState | null | undefined, publ
     else lines.push("Публикация разрешена и поставлена в очередь: её выполнит шаг публикации.");
     // «Ждёт проверки человека» не прячем за разрешённой площадкой.
     if ((derived.needs_human ?? []).length > 0) lines.push(PROJECT_STATE_TEXT.needs_human);
+    return lines;
+  }
+  // Сервер при выключенной автопубликации не считает разрешённую площадку «в работе»: состояние awaiting_approval,
+  // а разрешённые вами площадки перечислены отдельно.
+  if (derived.state === "awaiting_approval" && (derived.approved_publish_off ?? []).length > 0) {
+    lines.push("Публикация разрешена вами, но выключена настройкой (автопубликация выключена): "
+      + "ничего не будет опубликовано, пока её не включат.");
+    if ((derived.awaiting_approval ?? []).length > 0) lines.push(PROJECT_STATE_TEXT.awaiting_approval);
     return lines;
   }
   lines.push(PROJECT_STATE_TEXT[derived.state] ?? "Состояние проекта публикаций уточняется.");

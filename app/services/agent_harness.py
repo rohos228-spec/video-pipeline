@@ -640,10 +640,17 @@ def verify_project_disk(
             checks.append(HarnessCheck("node_runs_failed", True, "failed=0 db_missing"))
         else:
             db = sqlite3.connect(str(db_file))
-            row = db.execute(
-                "SELECT id FROM workflow_runs WHERE project_id=? ORDER BY id DESC LIMIT 1",
-                (project_id,),
+            has_runs = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_runs'"
             ).fetchone()
+            row = (
+                db.execute(
+                    "SELECT id FROM workflow_runs WHERE project_id=? ORDER BY id DESC LIMIT 1",
+                    (project_id,),
+                ).fetchone()
+                if has_runs
+                else None
+            )
             if row:
                 failed_n = db.execute(
                     "SELECT COUNT(*) FROM node_runs WHERE workflow_run_id=? AND status='failed'",

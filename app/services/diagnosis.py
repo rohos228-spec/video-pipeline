@@ -727,7 +727,10 @@ class Diagnoser:
         the delivery is automatic. No retry, no paid request and no state change of the business node happens."""
         notifier=_escalation_notifier or await _default_notifier()
         types=notify_types()
-        if notifier is None or not types: return 0
+        if not types: return 0
+        if notifier is None:
+            await self.log_undelivered_holds(execution_id,types)  # no Telegram: the hold is still written to the log
+            return 0
         from app.services.actions_v1 import ActionRecord
         from app.settings import settings
         sent=0
@@ -767,6 +770,37 @@ class Diagnoser:
                 await s.commit()
                 sent+=int(status=='notified')
         return sent
+
+    async def log_undelivered_holds(self,execution_id,types):
+        """Telegram is off, so a verification hold cannot be announced. The same rule as ``notify()`` with the no-op
+        bot: write ONE row to ``notification_log`` marked as not delivered (channel ``telegram_off``), so the operator
+        journal shows that a verification hold needed a person. Once per incident (own reservation key, independent
+        of the delivery key: a later working Telegram still announces it). No state of the business node changes."""
+        if 'verification_hold' not in types: return 0
+        from app.services import notification_log
+        from app.services.actions_v1 import ActionRecord
+        written=0
+        async with self.observer.master() as s:
+            rows=(await s.scalars(select(Incident).where(Incident.execution_id==execution_id,
+                Incident.status=='human_review',Incident.type=='verification_hold'))).all()
+            for row in rows:
+                d=row.details or {}
+                if d.get('currently_relevant') is False or d.get('historical_attempt') or d.get('echo_of'): continue
+                key='incident-notify-off:'+row.incident_id
+                if await s.scalar(select(ActionRecord).where(ActionRecord.execution_id==execution_id,
+                        ActionRecord.idempotency_key==key)) is not None: continue
+                s.add(ActionRecord(action_id=str(uuid.uuid4()),execution_id=execution_id,project_id=row.project_id,
+                    action_kind='incident_notify_off',node_key=row.node_key,attempt_id=row.attempt_id,initiator='diagnosis',
+                    rationale=('Удержание проверкой записано в журнал уведомлений без отправки: Telegram отключён')[:500],
+                    evidence_ids=[],preconditions={'incident_id':row.incident_id,'incident_type':row.type,'business_action':False},
+                    idempotency_key=key,status='notify_off',verification={'verified':False,'business_action':False,'delivered':False}))
+                await s.commit()  # reserved BEFORE the write: a second pass never repeats the row
+                text=escalation_text_ru({**d,'type':row.type},project_id=row.project_id,node_title=d.get('node_title'))
+                ok=await asyncio.to_thread(notification_log.log_notification,project_id=row.project_id,run_id=execution_id,
+                    channel=notification_log.CHANNEL_OFF,kind='verification_hold',text=text,ok=False,
+                    error=notification_log.NOOP_ERROR_RU)
+                written+=int(bool(ok))
+        return written
 
     async def safe_update(self,execution_id):
         try: await self.update(execution_id)

@@ -254,6 +254,21 @@ async def test_facts_show_sha_post_url_status_and_actions(db, env, monkeypatch):
     assert facts["derived"]["state"] == ps.PS_NEEDS_HUMAN
 
 
+async def test_facts_with_publish_off_do_not_report_publishing_for_an_approved_platform(db, env, monkeypatch):
+    """Панель/наблюдение: «да» есть, а настройка выключена - состояние не «publishing», площадка в approved_publish_off."""
+    fake_registry(monkeypatch)
+    p = await make_project(db, env.workdir)
+    await grant(db, p, PLATFORMS[:1])
+    monkeypatch.setattr(settings, "social_publish_enabled", False)
+    facts = await step.publication_facts(db, p)
+    assert facts["publish_enabled"] is False
+    assert facts["derived"]["state"] == ps.PS_AWAITING_APPROVAL
+    assert facts["derived"]["approved_publish_off"] == [PLATFORMS[0]] and facts["derived"]["retry_approved"] == []
+    monkeypatch.setattr(settings, "social_publish_enabled", True)
+    on = await step.publication_facts(db, p)
+    assert on["derived"]["state"] == ps.PS_WORKING and on["derived"]["approved_publish_off"] == []
+
+
 async def test_facts_is_read_only_and_works_without_a_final_video(db, env):
     from app.models import Project
 

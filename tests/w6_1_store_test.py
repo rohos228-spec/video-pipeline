@@ -260,6 +260,29 @@ def test_project_state_without_any_records_awaits_approval_and_busy_is_working()
     assert ps.derive_project_state(busy, PLATFORMS, set())["state"] == ps.PS_WORKING
 
 
+def test_publish_off_never_reports_publishing_for_an_approved_platform():
+    """Публикация не бывает автоматической: при выключенной настройке «да» человека не делает состояние «в работе»."""
+    rows = _rows({p: {"status": ps.S_FAILED, "attempts": 1} for p in PLATFORMS})
+    approved = {PLATFORMS[0]}
+    assert ps.derive_project_state(rows, PLATFORMS, approved)["state"] == ps.PS_WORKING  # как раньше (настройка не передана)
+    assert ps.derive_project_state(rows, PLATFORMS, approved, publish_enabled=True)["state"] == ps.PS_WORKING
+    off = ps.derive_project_state(rows, PLATFORMS, approved, publish_enabled=False)
+    assert off["state"] == ps.PS_AWAITING_APPROVAL
+    assert off["retry_approved"] == [] and off["approved_publish_off"] == [PLATFORMS[0]]
+    assert PLATFORMS[0] not in off["awaiting_approval"] and set(off["awaiting_approval"]) == set(PLATFORMS[1:])
+    only = ps.derive_project_state(rows[:1], PLATFORMS[:1], approved, publish_enabled=False)
+    assert only["state"] == ps.PS_AWAITING_APPROVAL and only["awaiting_approval"] == []
+
+
+def test_publish_off_keeps_busy_needs_human_and_published_states():
+    busy = _rows({PLATFORMS[0]: {"status": ps.S_PLANNED, "lease_until": 10**12}})
+    assert ps.derive_project_state(busy, PLATFORMS, set(), publish_enabled=False)["state"] == ps.PS_WORKING
+    human = _rows({PLATFORMS[0]: {"status": ps.S_UNCONFIRMED, "clicked_at": 1.0}})
+    assert ps.derive_project_state(human, PLATFORMS, {PLATFORMS[1]}, publish_enabled=False)["state"] == ps.PS_NEEDS_HUMAN
+    done = _rows({p: _conf() for p in PLATFORMS})
+    assert ps.derive_project_state(done, PLATFORMS, set(), publish_enabled=False)["state"] == ps.PS_PUBLISHED
+
+
 def test_legacy_meta_results_are_not_retried():
     st = ps.derive_project_state([], PLATFORMS, set(), legacy={PLATFORMS[0]: True, PLATFORMS[1]: False})
     assert PLATFORMS[0] in st["confirmed"] and PLATFORMS[1] in st["needs_human"]

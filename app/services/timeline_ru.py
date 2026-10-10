@@ -228,12 +228,13 @@ ACTION_V1_RU = {
     "watchdog_stalled": "Сторожевая проверка: запрос завис",
     "managed_successor": "Управляемый переход на следующую ноду",
     "incident_notify": "Уведомление человека об инциденте",
+    "incident_notify_off": "Удержание проверкой записано в журнал уведомлений без отправки (Telegram отключён)",
 }
 INCIDENT_NOTIFY_STATUS_RU = {
     "notified": "Человек уведомлён об инциденте",
     "notify_failed": "Уведомление об инциденте не доставлено",
 }
-_ACTION_V1_SEVERITY = {"incident_notify": SEV_INFO, "recovery_denied": SEV_WARN, "kill_switch_on": SEV_WARN, "watchdog_stalled": SEV_WARN,
+_ACTION_V1_SEVERITY = {"incident_notify": SEV_INFO, "incident_notify_off": SEV_WARN, "recovery_denied": SEV_WARN, "kill_switch_on": SEV_WARN, "watchdog_stalled": SEV_WARN,
                        "human_review": SEV_WARN, "hold": SEV_WARN}
 
 # --- журнал слоя действий (action_layer_history.event) --------------------------------------------------

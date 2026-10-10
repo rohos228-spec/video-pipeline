@@ -12,10 +12,11 @@ Only VIBECODE_API_KEY / VIBECODE_BASE_URL / GPT_RELAY_TOKEN / GPT_PROXY_URL / GP
 Cases with context.attachments ([{kind, name, size}]) get fake attachments (no files, no paths shown to the model):
 the server fills source_path of the upload step from the attachment id, as in the real command line.
 The scoring helpers (load_cases, sample_cases, score_case) are offline and unit-tested.
---set main|heldout|heldout2|both picks the fixture: main = tests/fixtures/action_planner_eval.json, heldout =
+--set main|heldout|heldout2|heldout3|both picks the fixture: main = tests/fixtures/action_planner_eval.json, heldout =
 tests/fixtures/action_planner_heldout.json (first held-out sample, already looked at: now a regression set),
 heldout2 = tests/fixtures/action_planner_heldout2.json (second, fresh held-out sample; never tune rules on it
-and do not read its cases next to the errors). Never tune rules on any held-out set.
+and do not read its cases next to the errors), heldout3 = tests/fixtures/action_planner_heldout3.json (third fresh sample,
+written before the rule fixes of the heldout2 review; not part of ``both``). Never tune rules on any held-out set.
 The report always has the metrics per set (``by_set``), so the held-out number is separate; transport errors
 are counted apart (``transport_errors``) and also give ``*_no_transport`` figures that leave them out.
 Cases with ``requires_action`` are skipped while that action is not in the registry (reported as ``skipped``).
@@ -36,7 +37,8 @@ _ENV = ("VIBECODE_API_KEY", "VIBECODE_BASE_URL", "GPT_RELAY_TOKEN", "GPT_PROXY_U
 FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_eval.json"
 HELDOUT_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout.json"
 HELDOUT2_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout2.json"
-SETS = ("main", "heldout", "heldout2", "both")
+HELDOUT3_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout3.json"
+SETS = ("main", "heldout", "heldout2", "heldout3", "both")
 
 
 def load_env(path: str) -> dict:
@@ -91,7 +93,18 @@ def load_selected(which: str) -> list[dict]:
             raise ValueError(f"heldout2 overlaps other sets: {bad[:5]}")
     elif which == "heldout2":
         raise ValueError(f"{HELDOUT2_FIXTURE.name} not found")
-    return {"main": main, "heldout": held, "heldout2": held2, "both": main + held + held2}[which]
+    held3: list[dict] = []
+    if which == "heldout3":
+        if not HELDOUT3_FIXTURE.exists():
+            raise ValueError(f"{HELDOUT3_FIXTURE.name} not found")
+        held3 = tag_set(load_cases(HELDOUT3_FIXTURE), "heldout3")
+        if HELDOUT2_FIXTURE.exists():
+            held2 = tag_set(load_cases(HELDOUT2_FIXTURE), "heldout2")
+        bad = check_disjoint(main + held + held2, held3)
+        if bad:
+            raise ValueError(f"heldout3 overlaps other sets: {bad[:5]}")
+    return {"main": main, "heldout": held, "heldout2": held2, "heldout3": held3,
+            "both": main + held + held2}[which]
 
 
 def runnable(cases: list[dict], registry) -> tuple[list[dict], list[str]]:

@@ -22,7 +22,8 @@ MAX_OPTION_LEN = 60
 
 UPLOAD_ACTIONS = frozenset({
     "montage.upload_image", "montage.upload_video", "montage.upload_voice",
-    "montage.upload_music", "montage.upload_ref", "node.upload_file", "node.upload_check_agent"})
+    "montage.upload_music", "montage.upload_ref", "node.upload_file", "node.upload_check_agent",
+    "project.upload_xlsx", "hero.replace_image", "storage.upload_file"})
 FILE_PARAMS = ("source_path", "data_base64", "filename")
 
 _GEN_KEYS = ("image_generator", "image_resolution", "video_generator", "video_resolution")
@@ -324,14 +325,16 @@ def resolve_prompt_target(action_id: str, params: dict, facts: dict | None,
 
 _UPLOAD_NOTE = "Шаг без source_path, data_base64, filename: файл прикрепит человек, сервер спросит сам."
 ACTION_NOTES: dict[str, str] = {
-    "montage.move_image": "from_frame/to_frame - НОМЕРА кадров (кадр 5 = 5), не frame_id из карты кадров. Шот не назван: берётся единственный шот кадра; файлы в обоих шотах исходного кадра и шот не назван - вопрос (шот 1/шот 2), не угадывай.",
+    "montage.move_image": "Перенос картинки между кадрами («отправь/переложи/перекинь из A в B»). from_frame/to_frame - НОМЕРА кадров (кадр 5 = 5), не frame_id из карты кадров. Шот не назван: берётся единственный шот кадра; файлы в обоих шотах исходного кадра и шот не назван - вопрос (шот 1/шот 2), не угадывай.",
     "montage.swap_slots": "Шот не назван: шот 1 у обоих; у обоих по 2 шота с такими файлами - два шага (1-1, 2-2).",
     "montage.swap_shots": "kind не пиши, если не сказано (по умолчанию картинки и видео).",
-    "montage.queue_ops": "Только постановка в очередь, apply не добавляй. shot не пиши, если у кадра один шот; "
+    "montage.queue_ops": "Постановка в очередь; apply_queue добавь вторым шагом ТОЛЬКО если в запросе сказано "
+                         "выполнить/применить/запустить очередь. shot не пиши, если у кадра один шот; "
                          "файлы в обоих шотах и шот не назван - вопрос (шот 1/шот 2/оба шота).",
     "montage.cancel_queue_ops": "ops: операции кадра из queue.ops [кадр,тип,шот]; их нет - вопрос. "
                                 "Вся очередь - clear_all.",
-    "montage.apply_queue": "max_image_ops/max_video_ops опусти: сервер возьмёт по очереди названных кадров.",
+    "montage.apply_queue": "«Выполни/примени/запусти очередь» = это действие. max_image_ops/max_video_ops "
+                           "опусти: сервер возьмёт по очереди названных кадров.",
     "montage.improve_scene": "max_image_ops опусти. frame_id головы сцены.",
     "montage.generate_scene": "Пишет текст сцены по заказу: prompt = заказ из запроса. frame_id головы сцены.",
     "montage.generate_scene_images": "Рисует картинки уже существующих кадров, сцену не переписывает; "
@@ -343,7 +346,8 @@ ACTION_NOTES: dict[str, str] = {
     "montage.merge_scenes": "left/right = frame_id голов соседних сцен.",
     "montage.explode_scene": "frame_id головы сцены.",
     "montage.split_scene": "frame_id отделяемого кадра (не головы сцены).",
-    "montage.set_coverage": "Не для «меню съёмки» (там shot.edit_field). plan ОБЩИЙ|ДАЛЬНИЙ|СРЕДНИЙ|КРУПНЫЙ|ДЕТАЛЬ; angle фронт|3/4|с плеча|сверху|снизу|макро; "
+    "montage.set_coverage": "Крупность/ракурс/движение/свет/стык кадра БЕЗ слов «меню съёмки» - это действие "
+                            "(крупность = type coverage_plan); с «меню съёмки» - shot.edit_field. plan ОБЩИЙ|ДАЛЬНИЙ|СРЕДНИЙ|КРУПНЫЙ|ДЕТАЛЬ; angle фронт|3/4|с плеча|сверху|снизу|макро; "
                             "move статика|наезд|отъезд|панорама|следование|ручная; light дневной|ночной|закат|"
                             "рассвет|контровой|холодный верхний|туман. parent_number только для coverage_kind.",
     "project.resume": "ceiling_credits только если человек назвал сумму; иначе опусти, не спрашивай.",
@@ -372,11 +376,20 @@ ACTION_NOTES: dict[str, str] = {
     "prompt.delete_master": "step_code из слов запроса или где есть вариант; выбранный в проекте и default "
                             "не удаляются.",
     "shot.edit_cell_voiceover": "parent_uuid из frame_uuids.",
-    "shot.edit_field": "frame_uuid из frame_uuids. «В меню съёмки ... движение/крупность/стык» = это действие "
-                       "(field move/size/...), не montage.set_coverage.",
+    "shot.edit_field": "frame_uuid из frame_uuids. Только если в запросе есть «меню съёмки»/«ячейка»: тогда "
+                       "движение/крупность/стык = field move/size/stitch. Без этих слов - montage.set_coverage.",
     "shot.add_cell": "Позицию не спрашивай: без before_index ячейка идёт в конец.",
     "group.get": "«Открой описание/состав группы X» = group_id X (group.list не нужен).",
     "group.list": "Только каталог групп без названной группы; названная группа - group.get.",
+    "kill_switch.engage": "Только аварийный стоп всех платных вызовов (слова «аварийный», «рубильник», "
+                          "«экстренно», причина инцидента). Просто «останови/стоп/хватит» = project.stop.",
+    "media.get_recovery_assessment": "Состояние задач провайдера медиа-ноды (node_type: videos|music|hero|...). "
+                                     "Про Outsee и галерею - montage.recover_status / recover_outsee.",
+    "montage.recover_status": "Статус забора из галереи Outsee: без параметров, ничего не спрашивай.",
+    "hitl.regenerate": "hitl_id = номер запроса из просьбы; ceiling_credits = названная сумма, иначе опусти. "
+                       "Ничего больше не спрашивай.",
+    "project.create": "title из просьбы (в кавычках или после «проект»); hero_mode опусти, не спрашивай.",
+    "montage.get_cost_basis": "Модель оплаты и очередь правок одним вызовом: get_board рядом не нужен.",
     "node.clear_check_agent": "node_key только названная или выбранная нода; не угадывай из списка нод - вопрос, какая нода.",
 }
 for _aid in UPLOAD_ACTIONS:
@@ -407,7 +420,8 @@ def with_defaults_note(explanation: str, notes: list[str]) -> str:
 
 # --- защита от лишнего --------------------------------------------------------------------
 
-_DELETE = ("удал", "убер", "убра", "сотр", "снес", "снос", "выкин", "очист", "delete", "remove")
+_DELETE = ("удал", "убер", "убра", "сотр", "снес", "снос", "выкин", "очист", "delete", "remove",
+           "стер", "стир", "выбрас", "выброс", "вычист", "затр")
 
 # Слова запроса (начала слов), без которых платный/разрушающий/фоновый шаг не нужен.
 GUARD_HINTS: dict[str, tuple[str, ...]] = {
@@ -415,17 +429,22 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
                             "рендер", "финальн", "собират"),
     "montage.align_audio": ("разбер", "разбор", "таймкод", "выровн", "синхрон", "asr", "nemo",
                             "align", "разметь"),
-    "montage.apply_queue": ("примен", "apply", "запуст", "сгенер", "генерир", "генерац"),
-    "montage.generate_scene_images": ("сгенер", "генерир", "нарису", "созда", "сдела"),
+    "montage.apply_queue": ("примен", "apply", "запуст", "сгенер", "генерир", "генерац", "выполн", "прогон",
+                            "прогна", "отработ", "обработ", "пусти", "стартуй"),
+    "montage.generate_scene_images": ("сгенер", "генерир", "нарису", "созда", "сдела", "отрис", "дорис",
+                                      "изобрази"),
     "montage.generate_scene": ("сгенер", "генерир", "придум", "пересобер", "сочин", "созда",
                                "напиш", "пересоздай"),
-    "montage.improve_scene": ("улучш", "лучше", "живее", "динамик", "динамич", "доработ", "усиль"),
+    "montage.improve_scene": ("улучш", "лучше", "живее", "динамик", "динамич", "доработ", "усиль", "прокач",
+                              "оживи", "оживл", "детализ", "обогат", "отполир"),
     "montage.suggest_scene_variants": ("вариант", "подбер", "предлож", "иде", "подскаж"),
     "montage.recover_outsee": ("outsee", "аутси", "галере", "забер", "восстанов", "достань"),
-    "montage.merge_scenes": ("объедин", "склей", "слей", "слить", "соедин", "склеи"),
+    "montage.merge_scenes": ("объедин", "склей", "слей", "слить", "соедин", "склеи", "слит", "сплав"),
     "montage.split_scene": ("раздел", "отдел", "раздро", "разбей", "разбить", "раздр", "ножниц",
-                            "отреж", "разреж", "режь"),
-    "montage.explode_scene": ("раздел", "разбей", "разбить", "кажд", "отдельн", "раздро"),
+                            "отреж", "разреж", "режь", "оторв", "вынес", "вынь", "выдел", "отсоедин",
+                            "отдельн"),
+    "montage.explode_scene": ("раздел", "разбей", "разбить", "кажд", "отдельн", "раздро", "разнес",
+                              "разлож", "одиночн", "дроби"),
     "montage.delete_frame": _DELETE, "montage.delete_child_frame": _DELETE,
     "montage.delete_image": _DELETE, "montage.delete_video": _DELETE,
     "montage.delete_manual_ref": _DELETE, "group.delete": _DELETE,
@@ -437,11 +456,13 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "project.reload_xlsx": ("xlsx", "эксел", "excel", "таблиц", "перечит", "перезагруз", "обнов"),
     "prompt.save_master": ("сохран", "перепиш", "измен", "правк", "обнов", "замен", "запиш",
                            "поправ", "исправ", "отредакт", "помен", "смен", "переде", "напиш"),
-    "media.resume_poll": ("докач", "возобнов", "дожд", "скач", "подтян", "доведи", "забер", "достан"),
+    "media.resume_poll": ("докач", "возобнов", "дожд", "скач", "подтян", "доведи", "забер", "достан",
+                          "продолж", "опрос", "дотян", "заверш"),
     "media.get_recovery_assessment": ("провер", "задач", "kie", "киэ", "кие", "состоян", "статус", "восстанов",
                                       "зависл", "завис", "докач", "возобнов", "узна", "посмотр", "покаж"),
     # Снятие блокировки открывает платную повторную отправку: только если запрос говорит именно об этом.
-    "media.release_unknown": ("блок", "разблок", "неизвестн", "исход", "release", "unknown"),
+    "media.release_unknown": ("блок", "разблок", "неизвестн", "исход", "release", "unknown", "отпуст",
+                              "освобод", "ключ", "списан"),
     "media.list_unknown_outcomes": ("блок", "заблок", "неизвестн", "исход", "потерян", "застр", "unknown"),
     "change.apply": ("примен", "apply", "внес", "внеси", "примени", "прмен", "накат", "активир"),
     "change.rollback": ("откат", "откач", "верни", "вернуть", "назад", "отмен", "прежн"),
@@ -451,20 +472,24 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
                       "генерир", "запусти"),
     "hitl.approve": ("одобр", "подтверд", "принят", "принять", "утверд", "согласу", "approve", "аппрув"),
     "hitl.reject": ("отклон", "забрак", "отказ", "reject", "завал"),
-    "hitl.regenerate": ("перегенер", "заново", "переделай", "переделат", "повтор", "regenerate"),
-    "history.rollback": ("откат", "откач", "верни", "вернуть", "назад", "отмен", "прежн", "rollback"),
+    "hitl.regenerate": ("перегенер", "заново", "переделай", "переделат", "повтор", "regenerate", "пересозд",
+                        "пересдел", "созда", "сгенер"),
+    "history.rollback": ("откат", "откач", "верни", "вернуть", "назад", "отмен", "прежн", "rollback",
+                         "отмот", "возвр", "снимк"),
     "massfactory.start": ("фабрик", "массов", "серию", "серия", "партию", "партия", "запуст", "старт"),
     "project.upload_xlsx": ("xlsx", "эксел", "excel", "таблиц", "загруз", "залей", "залить", "upload",
-                            "замен", "подмен"),
-    "hero.replace_image": ("загруз", "залей", "залить", "upload", "замен", "подмен", "положи", "прикреп"),
+                            "замен", "подмен", "использ", "приложен"),
+    "hero.replace_image": ("загруз", "залей", "залить", "upload", "замен", "подмен", "положи", "прикреп",
+                           "использ", "приложен", "постав", "закин"),
     "storage.clear_files": _DELETE + ("сброс", "сбрас"),
     "publish.send": ("опублик", "публикац", "публик", "выложи", "выкла", "запост", "постни", "publish",
                      "разошли", "отправь на площад", "залей на"),
     "montage.set_anchors": ("якор", "anchor"),
     "montage.set_scene_chain": ("цепоч", "последовательн", "разбер", "действи"),
 }
-_UPLOAD_HINT = ("загруз", "upload", "залей", "залить", "прикреп", "подмен", "замен", "положи",
-                "добав", "постав")
+_UPLOAD_HINT = ("загруз", "upload", "залей", "залить", "залив", "прикреп", "подмен", "замен", "положи",
+                "добав", "постав", "закин", "кинь", "брос", "помест", "встав", "использ", "приложен",
+                "возьм", "подгруз")
 for _aid in UPLOAD_ACTIONS:
     GUARD_HINTS.setdefault(_aid, _UPLOAD_HINT)
 
@@ -483,6 +508,42 @@ def unguarded_risky(registry: Any) -> list[str]:
 def request_hints_action(text: str, spec: Any) -> bool:
     """Есть ли в запросе хоть одно слово, указывающее на это действие."""
     return _has_stem(_words(text), tuple(GUARD_HINTS.get(spec.id) or ()))
+
+
+# --- выбор между близкими действиями по словам запроса ---------------------------------------------
+
+_EMERGENCY = re.compile(r"аварийн|рубильник|\bkill\b|экстренн|авари|стоп-?кран|утечк|взлом|компромет"
+                        r"|все\s+платн|платн\w+\s+(?:вызов|запрос|трат|генерац)|сжига|двойн\w+\s+списан")
+_MENU_WORDS = re.compile(r"меню|съем|ячейк")
+_EDIT_FIELD_TO_COVERAGE = {"size": "coverage_plan", "move": "coverage_move", "stitch": "coverage_stitch"}
+
+
+def pick_similar_action(action_id: str, params: dict, text: str, facts: dict | None,
+                        offered: Any, registry: Any) -> tuple[str, dict, str] | None:
+    """(action_id, params, заметка), если модель взяла не то из двух близких действий.
+
+    1. kill_switch.engage без слов об аварии («останови всё», «стоп») - это project.stop: рубильник
+       всех платных вызовов человек должен назвать явно.
+    2. shot.edit_field (поле меню съёмки) без слов «меню съёмки»/«ячейка»: крупность, движение и стык
+       кадра меняет montage.set_coverage (та же запись, другое действие каталога)."""
+    low = _norm(text)
+    if action_id == "kill_switch.engage" and not _EMERGENCY.search(low):
+        stop = "project.stop"
+        if registry.find(stop) is not None and (offered is None or stop in offered):
+            out = {"project_id": params["project_id"]} if "project_id" in params else {}
+            return stop, out, "остановка проекта вместо аварийного стопа (слов об аварии в запросе нет)"
+    if action_id == "shot.edit_field" and not _MENU_WORDS.search(low) and facts:
+        ctype = _EDIT_FIELD_TO_COVERAGE.get(str(params.get("field")))
+        target = "montage.set_coverage"
+        number = next((int(n) for n, u in (facts.get("frame_uuids") or {}).items()
+                       if u == params.get("frame_uuid")), None)
+        if (ctype and number is not None and registry.find(target) is not None
+                and (offered is None or target in offered)):
+            out = {"frame_number": number, "type": ctype, "value": params.get("value", "")}
+            if "project_id" in params:
+                out["project_id"] = params["project_id"]
+            return target, out, f"покрытие кадра {number} вместо поля меню съёмки (слов «меню съёмки» нет)"
+    return None
 
 
 def drop_unrequested(steps: list[dict], text: str, registry: Any) -> tuple[list[dict], list[str]]:
@@ -519,7 +580,9 @@ def drop_unrequested(steps: list[dict], text: str, registry: Any) -> tuple[list[
 _FORMATS = {
     "montage.upload_image": "PNG", "montage.upload_video": "MP4", "montage.upload_voice": "аудио",
     "montage.upload_music": "аудио", "montage.upload_ref": "картинка",
-    "node.upload_file": "xlsx, txt или md", "node.upload_check_agent": "txt или md"}
+    "node.upload_file": "xlsx, txt или md", "node.upload_check_agent": "txt или md",
+    "project.upload_xlsx": "xlsx", "hero.replace_image": "картинка (png, jpg, webp)",
+    "storage.upload_file": "xlsx, txt, md или json"}
 
 
 def _target_text(action_id: str, p: dict) -> str:
@@ -532,8 +595,12 @@ def _target_text(action_id: str, p: dict) -> str:
         return "озвучка проекта"
     if action_id == "montage.upload_music":
         return "фоновая музыка проекта"
-    if action_id == "node.upload_file":
+    if action_id in ("node.upload_file", "storage.upload_file"):
         return f"нода {p.get('node_key', '?')}"
+    if action_id == "project.upload_xlsx":
+        return "таблица проекта (project.xlsx)"
+    if action_id == "hero.replace_image":
+        return "картинка героя проекта"
     return f"агент проверки ноды {p.get('node_key', '?')}"
 
 
@@ -549,14 +616,19 @@ def upload_clarification(action_id: str, params: dict, title: str) -> dict:
 
 _UPLOAD_INTENT = ("загруз", "загруж", "залей", "залить", "залив", "upload", "прикреп", "подгруз", "положи",
                   "подмен")
-_UPLOAD_NOUNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("montage.upload_ref", ("реф", "референс")),
-    ("node.upload_check_agent", ("агент",)),
-    ("montage.upload_voice", ("озвуч", "голос", "аудио", "voice")),
-    ("montage.upload_music", ("музык", "bgm", "трек")),
-    ("montage.upload_video", ("видео", "клип", "mp4")),
-    ("montage.upload_image", ("картин", "изображ", "фото", "png", "image")),
-    ("node.upload_file", ("excel", "эксел", "xlsx", "файл", "таблиц")),
+# (действие, слова-признаки, слова-исключения): ноды и хранилище вытесняют «таблицу проекта».
+_NODE_WORDS = ("нод", "n_", "хранилищ")
+_UPLOAD_NOUNS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("montage.upload_ref", ("реф", "референс"), ()),
+    ("node.upload_check_agent", ("агент",), ()),
+    ("storage.upload_file", ("хранилищ",), ()),
+    ("hero.replace_image", ("геро", "портрет"), ()),
+    ("montage.upload_voice", ("озвуч", "голос", "аудио", "voice", "диктор"), ()),
+    ("montage.upload_music", ("музык", "bgm", "трек"), ()),
+    ("montage.upload_video", ("видео", "клип", "mp4"), ()),
+    ("montage.upload_image", ("картин", "изображ", "фото", "png", "image", "рисун"), ()),
+    ("project.upload_xlsx", ("excel", "эксел", "xlsx", "таблиц"), _NODE_WORDS),
+    ("node.upload_file", ("excel", "эксел", "xlsx", "файл", "таблиц"), ()),
 )
 
 
@@ -565,10 +637,33 @@ def upload_intent_action(text: str, offered: frozenset[str] | set[str]) -> str |
     words = _words(text)
     if not _has_stem(words, _UPLOAD_INTENT):
         return None
-    for aid, nouns in _UPLOAD_NOUNS:
-        if aid in offered and _has_stem(words, nouns):
+    for aid, nouns, excluded in _UPLOAD_NOUNS:
+        if aid in offered and _has_stem(words, nouns) and not _has_stem(words, excluded):
             return aid
     return None
+
+
+_DEICTIC_OBJECT = ("это", "эту", "этот", "этим", "эти", "вот")
+_PLACE_VERBS = _UPLOAD_INTENT + ("постав", "закин", "кинь", "вставь", "помест", "брос", "засуни")
+_PLACE_TARGET = re.compile(r"\b(?:в|на|для)\s+(?:кадр|слот|шот|нод)\w*")
+
+
+def deictic_file_request(text: str) -> str:
+    """Вопрос «какой файл», если в запросе «поставь ЭТО в кадр N» без существительного и без файла.
+
+    Пустая строка - запрос не такой. Сервер не знает вида файла (картинка, видео, аудио), поэтому просит
+    прикрепить файл, а вид определит по вложению."""
+    norm = _norm(text)
+    words = _words(norm)
+    if not (_has_stem(words, _DEICTIC_OBJECT) and _has_stem(words, _PLACE_VERBS)
+            and _PLACE_TARGET.search(norm)):
+        return ""
+    if any(_has_stem(words, nouns) for aid, nouns, _ex in _UPLOAD_NOUNS if aid != "node.upload_file"):
+        return ""
+    m = re.search(r"(?:кадр\w*|слот\w*|шот\w*)\s*(?:№|#|номер\s*)?(\d+)", norm)
+    target = f" в кадр {m.group(1)}" if m else ""
+    return (f"Какой файл поставить{target}? Прикрепите файл кнопкой загрузки (картинка, видео или аудио) "
+            "и повторите запрос.")
 
 
 def upload_params_from_text(action_id: str, text: str) -> dict:
@@ -577,7 +672,7 @@ def upload_params_from_text(action_id: str, text: str) -> dict:
     if m and action_id in ("montage.upload_image", "montage.upload_video", "montage.upload_ref"):
         p["frame_number"] = int(m.group(1))
     node = re.search(r"\b(n_[\w.\-]+)", text or "")
-    if node and action_id.startswith("node."):
+    if node and action_id.startswith(("node.", "storage.")):
         p["node_key"] = node.group(1)
     return p
 
@@ -654,6 +749,8 @@ def resolve_clarification(question: str, request_text: str, facts: dict | None) 
                     found.append({"param": name, "value": defaults[name], "source": "default"})
     if _has_stem(qw, ("проект", "project")) and _has_stem(qw, ("как", "котор", "which", "what")):
         found.append({"param": "project_id", "value": facts["project_id"], "source": "context"})
+    if _has_stem(qw, ("геро", "hero")) and _has_stem(qw, ("режим", "mode")) and not _has_stem(rw, ("геро", "hero")):
+        found.append({"param": "hero_mode", "value": "auto", "source": "default"})
     if (_has_stem(qw, ("метод", "method")) and _has_stem(qw, ("аудио", "разбор", "выравн", "таймкод"))):
         found.append({"param": "method", "value": "nemo_auto", "source": "default"})
     selected = facts.get("selected") or {}

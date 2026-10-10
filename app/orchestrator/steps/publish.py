@@ -386,7 +386,9 @@ async def publication_facts(session: AsyncSession, project: Project) -> dict:
                                 or r["status"] == pstore.S_PLANNED and not r.get("clicked_at")),
         })
     facts["platforms"] = items
-    facts["derived"] = (pstore.derive_project_state(rows, platforms, approved, legacy=_legacy_map(project.meta or {}, rows))
+    # Публикация не бывает автоматической: при выключенной настройке разрешённая площадка не «в работе».
+    facts["derived"] = (pstore.derive_project_state(rows, platforms, approved, legacy=_legacy_map(project.meta or {}, rows),
+                                                    publish_enabled=bool(settings.social_publish_enabled))
                         if sha else None)
     return facts
 

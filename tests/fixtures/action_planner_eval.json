@@ -5826,13 +5826,23 @@
   {
    "id": "w5_xlsx",
    "text": "загрузи новый excel-файл проекта",
-   "workflow": "upload",
-   "context": {},
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "excel",
+      "name": "plan.xlsx",
+      "size": 500000
+     }
+    ]
+   },
    "outcome": "plan",
    "steps": [
     {
      "action_id": "project.upload_xlsx",
-     "params": {}
+     "params": {
+      "source_path": "attachments/"
+     }
     }
    ],
    "also_offered": []
@@ -5840,13 +5850,23 @@
   {
    "id": "w5_hero_replace",
    "text": "замени картинку героя на мой файл",
-   "workflow": "upload",
-   "context": {},
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "image",
+      "name": "hero.png",
+      "size": 500000
+     }
+    ]
+   },
    "outcome": "plan",
    "steps": [
     {
      "action_id": "hero.replace_image",
-     "params": {}
+     "params": {
+      "source_path": "attachments/"
+     }
     }
    ],
    "also_offered": []
@@ -5854,14 +5874,23 @@
   {
    "id": "w5_storage_up",
    "text": "загрузи мой файл-вложение в раздел хранилища узла n_excel_gpt_fw_qc",
-   "workflow": "upload",
-   "context": {},
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "text",
+      "name": "notes.txt",
+      "size": 500000
+     }
+    ]
+   },
    "outcome": "plan",
    "steps": [
     {
      "action_id": "storage.upload_file",
      "params": {
-      "node_key": "n_excel_gpt_fw_qc"
+      "node_key": "n_excel_gpt_fw_qc",
+      "source_path": "attachments/"
      }
     }
    ],

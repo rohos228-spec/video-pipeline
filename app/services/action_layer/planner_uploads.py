@@ -25,18 +25,24 @@ ACTION_KINDS: dict[str, tuple[str, ...]] = {
     "montage.upload_music": ("audio",),
     "node.upload_file": ("excel", "json", "text"),
     "node.upload_check_agent": ("text",),
+    "project.upload_xlsx": ("excel",),
+    "hero.replace_image": ("image",),
+    "storage.upload_file": ("excel", "json", "text"),
 }
 ACTION_POLICY: dict[str, str] = {
     "montage.upload_image": "scene_image", "montage.upload_ref": "ref_image",
     "montage.upload_video": "scene_video", "montage.upload_voice": "voice",
     "montage.upload_music": "music", "node.upload_file": "node_file",
-    "node.upload_check_agent": "check_agent",
+    "node.upload_check_agent": "check_agent", "project.upload_xlsx": "xlsx",
+    "hero.replace_image": "ref_image", "storage.upload_file": "node_file",
 }
 _WANT_RU = {
     "montage.upload_image": "картинка PNG", "montage.upload_ref": "картинка (png, jpg, webp)",
     "montage.upload_video": "видео MP4", "montage.upload_voice": "аудио (mp3, wav, m4a, ogg)",
     "montage.upload_music": "аудио (mp3, wav, m4a, ogg)", "node.upload_file": "таблица xlsx, txt, md или json",
-    "node.upload_check_agent": "текстовый файл txt или md",
+    "node.upload_check_agent": "текстовый файл txt или md", "project.upload_xlsx": "таблица xlsx",
+    "hero.replace_image": "картинка героя (png, jpg, webp)",
+    "storage.upload_file": "таблица xlsx, txt, md или json",
 }
 _ASK_PARAM = {
     "frame_number": "В какой кадр загрузить файл «{name}»? Назовите номер кадра.",

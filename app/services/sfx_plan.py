@@ -564,6 +564,29 @@ def _sfx_wav_record(record, by_number):
             "artifact_row": None}
 
 
+def _type_sfx_gen_as_media(proof: dict, failure: BaseException | None) -> dict:
+    """Give the sfx_gen proof the shared ``native_media`` contract so diagnosis types a failure as ``media_failure``.
+
+    Same shape as the other media nodes (contract, node_type, summary). A failed attempt never passes on files an
+    earlier run left behind: its own error type is recorded and the failure is not repeatable by the node
+    (``retryable_by_node`` False: sfx_gen stays observed, a paid or local repeat is not admitted)."""
+    typed = {**proof, "contract": "native_media", "node_type": "sfx_gen", "items_total": len(proof.get("files") or [])}
+    if failure is not None:
+        error_type = type(failure).__name__
+        typed.update(status="failed", reason=f"attempt_failed:{error_type}",
+                     attempt_failure={"error_type": error_type, "retryable_by_node": False,
+                                      "new_verified_artifact": False})
+    status = typed["status"]
+    if status == "passed":
+        typed["summary"] = f"Звуки: проверено файлов {typed['items_total']}, структура в порядке (качество не оценивалось)."
+    elif status == "failed":
+        typed["summary"] = ("Звуки: попытка завершилась ошибкой (" + str(typed.get("error_type") or typed.get("reason"))
+                            + "); нового проверенного результата нет.")
+    else:
+        typed["summary"] = "Звуки: результат не подтверждён (нет записанного входа или результата)."
+    return typed
+
+
 async def observe_sfx_result(session, project, node_type="sfx_plan"):
     ctx = _sfx_context(project, node_type=node_type)
     if ctx is None or session is None or session.bind is not getattr(ctx.session, "bind", None):
@@ -614,6 +637,8 @@ async def observe_sfx_result(session, project, node_type="sfx_plan"):
         proof.update(status="failed" if entry.get("input") is not None else "unknown",
                      reason="committed native sfx result unavailable", errors=[type(error).__name__],
                      error_type=type(error).__name__)
+    if node_type == "sfx_gen":
+        proof = _type_sfx_gen_as_media(proof, getattr(ctx, "attempt_exception", None))
     await _sfx_fact(ctx, "node_output", {"contract": "native_" + node_type,
                     "sha256": hashlib.sha256(json.dumps(output, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest(),
                     "source": "committed original executor rows; independent read session"}, body=output)
