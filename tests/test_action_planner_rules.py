@@ -426,3 +426,66 @@ def test_resolution_is_left_alone_when_the_request_names_none_or_two():
     base = {"image_resolution": "2k"}
     assert rules.apply_request_values("montage.generate_scene_images", base, "сделай картинки кадров 2 к 5")["image_resolution"] == "2k"
     assert rules.apply_request_values("montage.generate_scene_images", base, "кадры в 3к, потом в 4к")["image_resolution"] == "2k"
+
+
+# --- набор №9: потолок кредитов и «после какой ноды» из фразы -------------------------------------------
+
+@pytest.mark.parametrize("action_id,text,expected", [
+    ("step.run_step", "прогони шаг картинок, трать не больше 40 кредитов", 40),
+    ("project.resume", "выведи проект из паузы, потолок 12,5 кредита", 12.5),
+    ("step.run_step", "шаг video запусти, лимит 8 кр", 8),
+])
+def test_named_credit_ceiling_is_kept(action_id, text, expected):
+    assert rules.apply_request_values(action_id, {"step_code": "img"}, text)["ceiling_credits"] == expected
+
+
+def test_credit_ceiling_is_not_invented_or_overwritten():
+    assert "ceiling_credits" not in rules.apply_request_values("step.run_step", {}, "прогони шаг картинок")
+    assert "ceiling_credits" not in rules.apply_request_values("step.run_step", {}, "кадры 3 и 5 прогони, кредитов осталось мало")
+    assert rules.apply_request_values("step.run_step", {"ceiling_credits": 7}, "не больше 40 кредитов")["ceiling_credits"] == 7
+    assert "ceiling_credits" not in rules.apply_request_values("montage.delete_frame", {}, "удали 40 кредитов")
+
+
+def test_group_insert_keeps_the_named_node_to_insert_after():
+    out = rules.apply_request_values("group.insert", {"group_id": "g"}, "вставь группу g после n_excel_gpt_fw_split")
+    assert out["after"] == "n_excel_gpt_fw_split"
+    out = rules.apply_request_values("group.insert", {"group_id": "g"}, "в канвас, сразу за n_excel_gpt_fw_script, добавь g")
+    assert out["after"] == "n_excel_gpt_fw_script"
+    assert "after" not in rules.apply_request_values("group.insert", {"group_id": "g"}, "вставь группу g")
+
+
+@pytest.mark.parametrize("action_id,text", [
+    ("media.get_recovery_assessment", "оцени, что стряслось с видео у провайдера"),
+    ("montage.align_audio", "пересчитай привязку озвучки по паузам"),
+    ("hero.replace_image", "герой теперь выглядит так, обнови его картинку"),
+    ("montage.upload_image", "для 3 кадра картинка в аттаче"),
+])
+def test_set9_words_count_as_a_request_for_the_action(action_id, text):
+    ensure_builtin_actions()
+    assert rules.request_hints_action(text, registry.find(action_id)) is True
+
+
+# --- набор №10: отказы по имени человека и «без предварительного просмотра» ----------------------------
+
+@pytest.mark.parametrize("text", [
+    "залогинься под аккаунтом Марины и опубликуй с него",
+    "публикуй от имени Ивана",
+    "выложи ролик на канал Сергея",
+])
+def test_account_named_by_a_persons_name_is_refused(text):
+    assert planner.foreign_account_intent(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "опубликуй на канал Ютуба",
+    "выложи в аккаунт Инстаграма",
+    "опубликуй от имени Студии",
+    "опубликуй в инстаграм и тикток",
+])
+def test_platforms_and_own_entities_are_not_a_persons_account(text):
+    assert planner.foreign_account_intent(text) is False
+
+
+def test_publishing_without_a_preview_is_a_bypass_but_showing_frames_is_not():
+    assert planner.approval_bypass_intent("опубликуй всё без предварительного просмотра") is True
+    assert planner.approval_bypass_intent("покажи кадры без просмотра") is False

@@ -439,6 +439,12 @@ def named_hero_mode(text: str) -> str:
     return ""
 
 
+_CEILING_ACTIONS = frozenset({"step.run_step", "project.resume", "project.continue_pipeline", "hitl.regenerate",
+                              "massfactory.start", "node.run_step"})
+_CREDITS_RE = re.compile(r"(?<![\w.,])(\d+(?:[.,]\d+)?)\s*(?:кредит|кр(?![а-я]))")
+_AFTER_NODE_RE = re.compile(r"(?:после|сразу\s+за|вслед\s+за|следом\s+за)\s+(n_[a-z0-9_]+)")
+
+
 def apply_request_values(action_id: str, params: dict, text: str) -> dict:
     """Значения, которые человек назвал словами, а модель опустила (по подсказке «опусти необязательное»).
 
@@ -465,6 +471,16 @@ def apply_request_values(action_id: str, params: dict, text: str) -> dict:
         mode = named_hero_mode(text)
         if mode:
             out["hero_mode"] = mode
+    if action_id in _CEILING_ACTIONS and "ceiling_credits" not in out:
+        credits = _CREDITS_RE.findall(_norm(text))
+        if len(set(credits)) == 1:  # сумма названа цифрами и одна: потолок расхода нельзя терять
+            out["ceiling_credits"] = float(credits[0].replace(",", "."))
+            if out["ceiling_credits"].is_integer():
+                out["ceiling_credits"] = int(out["ceiling_credits"])
+    if action_id == "group.insert" and not out.get("after"):
+        after = _AFTER_NODE_RE.findall(_norm(text))
+        if len(set(after)) == 1:
+            out["after"] = after[0]
     if "image_resolution" in out and action_id.startswith("montage."):
         named = _IMG_RES_TIGHT.findall(_norm(text))
         if len(set(named)) == 1:  # разрешение названо слитно («4к», «3k») и одно: модель подставила своё по умолчанию
@@ -980,7 +996,7 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "montage.run_montage": ("смонтир", "монтир", "монтаж", "собер", "собери", "собра", "сборк",
                             "рендер", "финальн", "собират", "пересобер", "пересобр"),
     "montage.align_audio": ("разбер", "разбор", "таймкод", "выровн", "синхрон", "asr", "nemo",
-                            "align", "разметь", "подгон", "подстро"),
+                            "align", "разметь", "подгон", "подстро", "привяз", "пауз"),
     "montage.apply_queue": ("примен", "apply", "запуст", "сгенер", "генерир", "генерац", "выполн", "прогон",
                             "прогна", "отработ", "обработ", "пусти", "стартуй", "жми", "нажм", "гони", "погон"),
     "montage.generate_scene_images": ("сгенер", "генерир", "нарису", "созда", "сдела", "отрис", "дорис",
@@ -1016,7 +1032,7 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "media.resume_poll": ("докач", "возобнов", "дожд", "скач", "подтян", "доведи", "забер", "достан",
                           "продолж", "опрос", "дотян", "заверш"),
     "media.get_recovery_assessment": ("провер", "задач", "kie", "киэ", "кие", "состоян", "статус", "восстанов",
-                                      "зависл", "завис", "докач", "возобнов", "узна", "посмотр", "покаж",
+                                      "зависл", "завис", "докач", "возобнов", "узна", "посмотр", "покаж", "оцен", "стряс", "случил",
                                       "вытян", "вытащ", "реальн", "возможн"),
     # Снятие блокировки открывает платную повторную отправку: только если запрос говорит именно об этом.
     "media.release_unknown": ("блок", "разблок", "неизвестн", "исход", "release", "unknown", "отпуст",
@@ -1042,7 +1058,7 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "project.upload_xlsx": ("xlsx", "эксел", "excel", "таблиц", "загруз", "залей", "залить", "upload",
                             "замен", "подмен", "использ", "приложен"),
     "hero.replace_image": ("загруз", "залей", "залить", "upload", "замен", "подмен", "положи", "прикреп",
-                           "использ", "приложен", "постав", "закин", "помен", "подстав", "смен"),
+                           "использ", "приложен", "постав", "закин", "помен", "подстав", "смен", "обнов", "аттач"),
     "storage.clear_files": _DELETE + ("сброс", "сбрас"),
     "publish.send": ("опублик", "публикац", "публик", "выложи", "выкла", "запост", "постни", "publish",
                      "разошли", "отправ", "залей", "размест", "выгруз", "выпуст", "релиз"),
@@ -1051,7 +1067,8 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
 }
 _UPLOAD_HINT = ("загруз", "загруж", "upload", "залей", "залить", "залив", "прикреп", "подмен", "замен", "положи",
                 "добав", "постав", "закин", "кинь", "брос", "помест", "встав", "использ", "прилож",
-                "вложен", "вложи", "возьм", "подгруз", "закач", "держи", "скин", "засун", "помен", "подстав", "смен")
+                "вложен", "вложи", "возьм", "подгруз", "закач", "держи", "скин", "засун", "помен", "подстав", "смен",
+                "аттач", "прикрепл")
 for _aid in UPLOAD_ACTIONS:
     GUARD_HINTS.setdefault(_aid, _UPLOAD_HINT)
 

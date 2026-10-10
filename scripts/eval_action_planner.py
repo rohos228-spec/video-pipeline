@@ -49,7 +49,8 @@ HELDOUT6_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 HELDOUT7_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout7.json"
 HELDOUT8_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout8.json"
 HELDOUT9_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout9.json"
-SETS = ("main", "heldout", "heldout2", "heldout3", "heldout4", "heldout5", "heldout6", "heldout7", "heldout8", "heldout9", "both")
+HELDOUT10_FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "action_planner_heldout10.json"
+SETS = ("main", "heldout", "heldout2", "heldout3", "heldout4", "heldout5", "heldout6", "heldout7", "heldout8", "heldout9", "heldout10", "both")
 
 
 def load_env(path: str) -> dict:
@@ -188,8 +189,22 @@ def load_selected(which: str) -> list[dict]:
         bad = check_disjoint(others, held9)
         if bad:
             raise ValueError(f"heldout9 overlaps other sets: {bad[:5]}")
+    held10: list[dict] = []
+    if which == "heldout10":
+        if not HELDOUT10_FIXTURE.exists():
+            raise ValueError(f"{HELDOUT10_FIXTURE.name} not found")
+        held10 = tag_set(load_cases(HELDOUT10_FIXTURE), "heldout10")
+        others = main + held
+        for extra in (HELDOUT2_FIXTURE, HELDOUT3_FIXTURE, HELDOUT4_FIXTURE, HELDOUT5_FIXTURE, HELDOUT6_FIXTURE,
+                      HELDOUT7_FIXTURE, HELDOUT8_FIXTURE, HELDOUT9_FIXTURE):
+            if extra.exists():
+                others += tag_set(load_cases(extra), extra.stem)
+        bad = check_disjoint(others, held10)
+        if bad:
+            raise ValueError(f"heldout10 overlaps other sets: {bad[:5]}")
     return {"main": main, "heldout": held, "heldout2": held2, "heldout3": held3, "heldout4": held4,
             "heldout5": held5, "heldout6": held6, "heldout7": held7, "heldout8": held8, "heldout9": held9,
+            "heldout10": held10,
             "both": main + held + held2}[which]
 
 
