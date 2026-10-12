@@ -323,6 +323,16 @@ async def run(ctx: Ctx, call: Callable[[], Awaitable[Any]], *, sent_prompt: str 
     import asyncio
     from app.bots.outsee import OutseeDownloadError
     from app.services.step_cancel import StepCancelledError
+    from app.services import spend_guard
+    spend_guard.mark_live_attempt(attempt)
+    try:
+        return await _run_attempt(ctx, call, attempt, OutseeDownloadError, StepCancelledError)
+    finally:
+        spend_guard.drop_live_attempt(attempt)
+
+
+async def _run_attempt(ctx: Ctx, call, attempt: str, OutseeDownloadError, StepCancelledError) -> Any:
+    import asyncio
     try:
         result = await call()
     except (asyncio.CancelledError, StepCancelledError):

@@ -659,6 +659,18 @@ def reset_inflight() -> None:
     _block_event_stamp.clear()
 
 
+_live_attempts: set[str] = set()
+
+
+def mark_live_attempt(attempt_id: str) -> None:
+    """The Outsee attempt this process is running now (its money is the in-flight estimate, not an open intent)."""
+    _live_attempts.add(attempt_id)
+
+
+def drop_live_attempt(attempt_id: str) -> None:
+    _live_attempts.discard(attempt_id)
+
+
 def _missing_table(exc: BaseException) -> bool:
     low = str(exc).lower()
     return "no such table" in low or "does not exist" in low
@@ -688,6 +700,25 @@ async def conservative_sums(session, *, project_id: int | None, run_id: str) -> 
             out[name] = 0.0
             continue
         out[name] = float(row[0] or 0.0) + int(row[1] or 0) * unit
+    # A paid Outsee request whose process died after the submit leaves no spend row (spend is written after the
+    # call returns) but an open attempt in outsee_idempotency: the task may exist and be billed. Each open
+    # attempt counts as one unknown-cost row until a human releases or adopts it.
+    open_sql = ("SELECT attempt_id, event FROM outsee_idempotency WHERE id IN (SELECT MAX(id) FROM outsee_idempotency "
+                "WHERE {w} GROUP BY attempt_id)")
+    for name, clause, value in (("daily", "date(created_at) = :v", _today()),
+                                ("project", "project_id = :v", project_id)):
+        if name == "project" and value is None:
+            continue
+        try:
+            rows = (await session.execute(text(open_sql.format(w=clause)), {"v": value})).all()
+        except (OperationalError, ProgrammingError) as exc:
+            await session.rollback()
+            if not _missing_table(exc):
+                raise
+            continue
+        # The attempt this process is running right now is already covered by its in-flight estimate.
+        n = sum(1 for attempt_id, event in rows if event in ("intent", "uncertain") and attempt_id not in _live_attempts)
+        out[name] += n * unit
     return out
 
 

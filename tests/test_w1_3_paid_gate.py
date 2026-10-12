@@ -655,3 +655,68 @@ def test_other_gated_entry_points_reference_the_gate():
     assert "outsee_tracked" in (REPO / "app/web/routers/outsee_http.py").read_text(encoding="utf-8")
     bot_src = (REPO / "app/bots/outsee.py").read_text(encoding="utf-8")
     assert "spend_guard.paid_gate" in bot_src and "outsee_tracked(oh.generate_video" in bot_src
+
+
+# --------------------------------------------------------------------------- убитая отправка Outsee видна потолкам
+
+
+async def _add_attempt(sessions, *, attempt_id, event, project_id=7):
+    from app.services.outsee_idempotency import OutseeIdempotency
+    async with sessions() as s:
+        s.add(OutseeIdempotency(project_id=project_id, key="frame_1", request_sha="x" * 8, attempt_id=attempt_id,
+                                event=event, model="gpt-image-2", media="image"))
+        await s.commit()
+
+
+async def test_open_outsee_attempt_counts_in_cap_sums_until_resolved(db, monkeypatch):
+    """Процесс убит после отправки: траты в ledger нет, но открытая попытка (intent) учитывается как строка неизвестной цены."""
+    unit = spend_guard.unknown_row_estimate_usd()
+    async with db() as s:
+        base = await spend_guard.conservative_sums(s, project_id=7, run_id="")
+    await _add_attempt(db, attempt_id="a1", event="intent")
+    async with db() as s:
+        after_intent = await spend_guard.conservative_sums(s, project_id=7, run_id="")
+        other_project = await spend_guard.conservative_sums(s, project_id=8, run_id="")
+    assert after_intent["project"] == pytest.approx(base["project"] + unit)
+    assert after_intent["daily"] == pytest.approx(base["daily"] + unit)
+    assert other_project["project"] == 0.0 and other_project["daily"] == pytest.approx(base["daily"] + unit)
+    # результат получен и записан: попытка закрыта, лишнего не считаем
+    await _add_attempt(db, attempt_id="a1", event="result")
+    async with db() as s:
+        closed = await spend_guard.conservative_sums(s, project_id=7, run_id="")
+    assert closed["project"] == pytest.approx(base["project"])
+    # неопределённый исход считается, пока человек не снял его ("released")
+    await _add_attempt(db, attempt_id="a2", event="uncertain")
+    async with db() as s:
+        assert (await spend_guard.conservative_sums(s, project_id=7, run_id=""))["project"] == pytest.approx(
+            base["project"] + unit)
+    await _add_attempt(db, attempt_id="a2", event="released")
+    async with db() as s:
+        assert (await spend_guard.conservative_sums(s, project_id=7, run_id=""))["project"] == pytest.approx(
+            base["project"])
+
+
+async def test_open_outsee_attempt_can_block_next_paid_call_by_cap(db, monkeypatch):
+    unit = spend_guard.unknown_row_estimate_usd()
+    monkeypatch.setattr(settings, "spend_project_cap_usd", unit * 1.5)
+    await _add_attempt(db, attempt_id="a9", event="intent", project_id=11)
+    with pytest.raises(spend_guard.PaidCallBlocked) as e:
+        await spend_guard.paid_gate(provider="outsee", estimate_usd=unit, project_id=11)
+    assert e.value.code == "spend_cap_project"
+
+
+async def test_attempt_running_in_this_process_is_not_double_counted(db):
+    unit = spend_guard.unknown_row_estimate_usd()
+    async with db() as s:
+        base = await spend_guard.conservative_sums(s, project_id=7, run_id="")
+    await _add_attempt(db, attempt_id="live1", event="intent")
+    spend_guard.mark_live_attempt("live1")
+    try:
+        async with db() as s:
+            assert (await spend_guard.conservative_sums(s, project_id=7, run_id=""))["project"] == pytest.approx(
+                base["project"])
+    finally:
+        spend_guard.drop_live_attempt("live1")
+    async with db() as s:  # process "died": the same open attempt now counts
+        assert (await spend_guard.conservative_sums(s, project_id=7, run_id=""))["project"] == pytest.approx(
+            base["project"] + unit)
