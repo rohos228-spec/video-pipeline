@@ -1,0 +1,105 @@
+name: tests
+
+# Без секретов, без сети к платным провайдерам. Тесты с маркерами live/paid здесь НЕ запускаются никогда.
+# Порядок: один процесс pytest на задачу (память).
+
+on:
+  push:
+    branches: [feature/orchestrator-observe-v1, main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      legacy:
+        description: "Запустить legacy-набор по частям (долго)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  orchestrator:
+    name: Orchestrator suite (scripts/run_orchestrator_tests.py)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Run suite
+        run: >
+          python scripts/run_orchestrator_tests.py
+          --junitxml=reports/orchestrator.xml
+          -m "not live and not paid"
+          -p no:warnings
+      - name: Docs drift and live-runs registry
+        run: >
+          python -m pytest -q -p no:cacheprovider -p no:warnings
+          tests/test_testing_doc_drift.py tests/test_live_runs_registry.py
+          --junitxml=reports/docs.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-orchestrator
+          path: reports/*.xml
+
+  docker:
+    name: Docker-only tests (4 modules in tests/observe_v1)
+    runs-on: ubuntu-latest
+    # Контейнерная задача: внутри есть /.dockerenv, которого требуют эти модули.
+    container: python:3.12-bookworm
+    timeout-minutes: 30
+    env:
+      VP_RUN_DOCKER_ONLY: "1"
+      PYTHONPATH: tests:tests/observe_v1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Provide gateway source where test_gateway_route_policy expects it
+        run: mkdir -p /test-source && cp scripts/diagnostics/gateway.py /test-source/gateway.py
+      - name: Run docker-only tests
+        run: >
+          python -m pytest -q -p no:cacheprovider -p no:warnings
+          tests/observe_v1/test_decision_tool_cycle_gateway_ack.py
+          tests/observe_v1/test_gateway_route_policy.py
+          tests/observe_v1/test_hitl_project_authority.py
+          tests/observe_v1/test_managed_restart_safety.py
+          --junitxml=reports/docker.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-docker
+          path: reports/docker.xml
+
+  legacy:
+    name: Legacy suite in chunks (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.legacy
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Run chunks, one pytest process at a time
+        run: python scripts/run_legacy_chunked.py --chunk 40 --junit-dir reports/legacy
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-legacy
+          path: reports/legacy/*.xml

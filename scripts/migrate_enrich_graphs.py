@@ -54,6 +54,12 @@ def main(argv: list[str] | None = None) -> int:
         db = Path(settings.sqlite_path)
     else:
         db = args.db.resolve()
+    # --db, указывающий внутрь боевой папки data/ репозитория, не считается «копией»: нужен тот же --confirm-live.
+    in_live_dir = not live and (Path(__file__).resolve().parents[1] / "data").resolve() in (db, *db.parents)
+    if (args.apply or args.rollback) and in_live_dir and not args.confirm_live:
+        print("Отказ: --db указывает внутрь боевой папки data/ репозитория; запись без --confirm-live не выполняется. "
+              "Сделайте копию вне data/ и укажите её.", file=sys.stderr)
+        return 2
     if (args.apply or args.rollback) and live and not args.confirm_live:
         print("Отказ: запись в базу из настроек (боевую) без --confirm-live не выполняется. "
               "Для проверки укажите --db <копия>.", file=sys.stderr)

@@ -241,4 +241,4 @@ def test_every_notify_call_site_names_kind_and_imports():
                     break
             assert re.search(r"\bkind\s*=", text[pos:i]), f"{rel}: notify без kind= ({text[pos:pos + 80]!r})"
             sites += 1
-    assert sites == 42  # 28 (граница W3-4) + 11 в wizard.py + 2 в test_prompt.py + 1 уведомление об инциденте (diagnosis, W4-4)
+    assert sites == 43  # A18: +1 тревога сторожа (supervisor_heartbeat); 42 = 28 (граница W3-4) + 11 в wizard.py + 2 в test_prompt.py + 1 уведомление об инциденте (diagnosis, W4-4)

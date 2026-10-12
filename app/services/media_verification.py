@@ -236,6 +236,10 @@ async def _heroes(reader, project, ledger, budget) -> tuple[list[dict], dict]:
         if len(items) >= MAX_ITEMS:
             break
     if not items:
+        meta = project.meta if isinstance(getattr(project, "meta", None), dict) else {}
+        if meta.get("hero_skipped_empty"):
+            # Шаг героя законно пропущен (в листе нет описания героя): нет файла - не сбой (F10-D3).
+            return items, {"artifacts": len(arts), "skipped": "hero_skipped_empty"}
         items.append({"key": "hero", "status": "failed", "reason": "no_hero_artifact", "path": None})
     return items, {"artifacts": len(arts)}
 
@@ -394,6 +398,8 @@ async def build_proof(reader, project, node_type: str) -> dict[str, Any]:
     if not items:
         if node_type == "items" and not counts.get("descriptions"):
             status, reason = "passed", "no_item_descriptions"  # the step had nothing to generate
+        elif node_type == "hero" and counts.get("skipped") == "hero_skipped_empty":
+            status, reason = "passed", "hero_skipped_empty"  # законно пропущенный шаг: нет описания героя
         else:
             reason = "no_targets"
     return {"contract": "native_media", "node_type": node_type, "status": status,

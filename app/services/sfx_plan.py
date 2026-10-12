@@ -531,10 +531,32 @@ def record_sfx_plan_pass_through(project):
         _sfx_entry(ctx)["step_finished"] = True
 
 
+def _sfx_provider_record(record, by_number, path):
+    """Звук платного провайдера (mp3): независимая проверка ffprobe, без разбора WAV (F10-D10)."""
+    from app.services.audio_verification import verify_audio
+    verdict = verify_audio(path)
+    codes = [c for c in verdict.codes
+             if not (c in {"unreadable", "level_unknown"} and __import__("shutil").which("ffprobe") is None)]
+    if codes:
+        raise ValueError("provider sfx audio verification failed: " + ",".join(codes))
+    frame = by_number.get(record.get("frame_number"))
+    if frame is None:
+        raise ValueError("native sfx source frame unavailable")
+    return {"idx": record.get("idx"), "path": str(path),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "duration_seconds": verdict.duration,
+            "rms_db": verdict.rms_db,
+            "provider": record.get("provider"),
+            "source_frame": {field: getattr(frame, field) for field in ("id", "project_id", "uuid", "number")},
+            "artifact_row": None}
+
+
 def _sfx_wav_record(record, by_number):
     path = Path(str(record.get("path") or "")).resolve()
     if not path.is_file():
         raise FileNotFoundError(str(path))
+    if path.suffix.lower() != ".wav":
+        return _sfx_provider_record(record, by_number, path)
     with wave.open(str(path), "rb") as reader:
         if (reader.getnchannels(), reader.getsampwidth(), reader.getframerate()) != (1, 2, 44100):
             raise ValueError("unsupported native sfx wav")

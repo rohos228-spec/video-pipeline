@@ -18,6 +18,7 @@ Three things the Docker entrypoint (container_test_entry.py) did implicitly:
 from __future__ import annotations
 
 import inspect
+import os
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,12 @@ _DOCKER_ONLY = {
     "test_hitl_project_authority.py",
     "test_managed_restart_safety.py",
 }
-collect_ignore = [name for name in _DOCKER_ONLY if (Path(__file__).parent / name).exists()]
+# CI docker job (container with /.dockerenv) sets VP_RUN_DOCKER_ONLY=1 to collect these four modules.
+collect_ignore = (
+    []
+    if os.environ.get("VP_RUN_DOCKER_ONLY") == "1" and Path("/.dockerenv").exists()
+    else [name for name in _DOCKER_ONLY if (Path(__file__).parent / name).exists()]
+)
 
 
 @pytest.fixture(autouse=True)

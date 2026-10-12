@@ -298,6 +298,7 @@ def test_a_dry_run_of_one_node_runs_only_that_node(tmp_path):
     assert not any(c["name"].startswith("sfx_") for c in result["checks"])
 
 
+@pytest.mark.slow
 def test_the_dry_run_refuses_a_work_dir_inside_live_data():
     proc = subprocess.run([sys.executable, "-X", "utf8", str(_PATH), "--work-dir", str(ROOT / "data" / "x"), "--dry"],
                           cwd=ROOT, env={**os.environ, "PYTHONUTF8": "1"}, capture_output=True, text=True,

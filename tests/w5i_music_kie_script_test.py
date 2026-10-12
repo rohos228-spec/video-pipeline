@@ -326,6 +326,7 @@ def test_a_failed_task_or_rejected_submit_is_not_passed_and_never_resubmits(tmp_
     assert any(r["note"].startswith("create suno") for r in result["spend_rows"]) or scenario == "create_rejected"
 
 
+@pytest.mark.slow
 def test_the_dry_run_refuses_a_work_dir_inside_live_data():
     proc = subprocess.run([sys.executable, "-X", "utf8", str(_PATH), "--work-dir", str(ROOT / "data" / "x"), "--dry"],
                           cwd=ROOT, env={**os.environ, "PYTHONUTF8": "1"}, capture_output=True, text=True,
@@ -333,6 +334,7 @@ def test_the_dry_run_refuses_a_work_dir_inside_live_data():
     assert proc.returncode != 0 and not (ROOT / "data" / "x" / "result.json").exists()
 
 
+@pytest.mark.slow
 def test_the_script_without_dry_or_live_refuses(tmp_path):
     proc = subprocess.run([sys.executable, "-X", "utf8", str(_PATH), "--work-dir", str(tmp_path / "w")],
                           cwd=ROOT, env={**os.environ, "PYTHONUTF8": "1"}, capture_output=True, text=True,

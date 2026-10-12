@@ -107,6 +107,7 @@ def test_env_file_is_read_only_by_the_whitelist(tmp_path):
     assert set(got) == {"KIE_API_KEY", "KIE_API_BASE_URL"} and got["KIE_API_KEY"] == "secret-kie"
 
 
+@pytest.mark.slow
 def test_the_script_without_dry_or_live_refuses(tmp_path):
     proc = subprocess.run([sys.executable, "-X", "utf8", str(_PATH), "--work-dir", str(tmp_path / "w")],
                           cwd=ROOT, env={**os.environ, "PYTHONUTF8": "1"}, capture_output=True, text=True,
@@ -464,6 +465,7 @@ def test_a_missing_expired_pending_or_failed_task_is_not_passed_and_never_posts(
     assert result["snapshot"]["music_files"] == []
 
 
+@pytest.mark.slow
 def test_the_dry_run_refuses_a_work_dir_inside_live_data():
     proc = subprocess.run([sys.executable, "-X", "utf8", str(_PATH), "--work-dir", str(ROOT / "data" / "x"), "--dry"],
                           cwd=ROOT, env={**os.environ, "PYTHONUTF8": "1"}, capture_output=True, text=True,

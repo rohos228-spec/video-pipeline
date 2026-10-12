@@ -11,10 +11,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "e2e_test_agentic_loop.py"
 
 
+@pytest.mark.slow
 def test_dry_run_reaches_pass_for_both_scenarios():
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--dry-run"],

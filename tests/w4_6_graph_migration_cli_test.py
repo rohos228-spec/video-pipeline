@@ -102,6 +102,17 @@ def test_cli_refuses_live_write_without_confirm(tmp_path):
     assert not (tmp_path / "data").exists()
 
 
+def test_cli_refuses_write_to_db_inside_repo_data_dir_without_confirm():
+    """Явный --db внутри data/ репозитория (боевая папка) не обходит защиту. Файл не создаётся: отказ раньше проверки."""
+    probe = ROOT / "data" / "_c10_guard_probe.db"
+    for flag in ("--apply", "--rollback"):
+        r = _cli("--db", str(probe), flag)
+        assert r.returncode == 2 and "--confirm-live" in r.stderr, r.stderr
+    assert not probe.exists()
+    r = _cli("--db", str(probe))  # сухой проход не блокируется защитой (дойдёт до «не найден»)
+    assert r.returncode == 2 and "не найден" in r.stderr
+
+
 def test_cli_missing_db_is_reported(tmp_path):
     r = _cli("--db", str(tmp_path / "none.db"))
     assert r.returncode == 2 and "не найден" in r.stderr

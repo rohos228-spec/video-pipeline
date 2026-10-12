@@ -292,6 +292,7 @@ def test_dry_run_passes_for_every_supported_node(node, tmp_path):
     assert result["summary"]["verdict"] == "DRY CHECK OK (nothing sent)"
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("node", sorted(script.UNSUPPORTED))
 def test_unsupported_node_is_refused_with_its_reason(node, tmp_path):
     env = {**os.environ, "PYTHONUTF8": "1"}

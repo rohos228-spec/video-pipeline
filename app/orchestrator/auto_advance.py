@@ -1813,13 +1813,23 @@ async def _run_verdict_review_for_step(
 
     gpt = get_gpt_client()
     await gpt.new_conversation()
-    verdict = await run_verdict_review(
-        session,
-        project,
-        step_code,
-        gpt,
-        user_prompt=check_prompt,
-    )
+    # Платный вызов проверки идёт вне такта шага: без области проект и запуск не попадали в spend_ledger (F10-D4).
+    from app.services import request_context
+    from app.services.observation import _cost_project
+    cost_token = _cost_project.set(int(project.id))
+    try:
+        with request_context.project_scope(
+                int(project.id), run_id=request_context.native_run_id(int(project.id), f"verdict-{step_code}"),
+                prefix="verdict-"):
+            verdict = await run_verdict_review(
+                session,
+                project,
+                step_code,
+                gpt,
+                user_prompt=check_prompt,
+            )
+    finally:
+        _cost_project.reset(cost_token)
 
     if verdict.approved or verdict.fix_applied:
         return ReviewResult(

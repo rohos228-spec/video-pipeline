@@ -533,6 +533,7 @@ def test_a_real_dry_run_proves_the_video_node_offline(tmp_path):
     assert any("no request-key record" in x for x in result["reality"]["not_real"])
 
 
+@pytest.mark.slow
 def test_the_dry_run_refuses_a_work_dir_inside_live_data():
     proc = subprocess.run([sys.executable, "-X", "utf8", str(_PATH), "--node", "hero", "--work-dir", str(ROOT / "data" / "x"),
                            "--dry"], cwd=ROOT, env={**os.environ, "PYTHONUTF8": "1"}, capture_output=True, text=True,

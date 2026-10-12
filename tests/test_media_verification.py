@@ -197,8 +197,18 @@ class VideosVerification(Env):
 
 @unittest.skipUnless(FFMPEG, "ffmpeg/ffprobe are required for the media fixtures")
 class OtherMediaNodes(Env):
+    async def test_skipped_hero_step_is_not_a_failure(self):
+        """F10-D3: в листе нет описания героя - шаг законно пропущен, независимая проверка не поднимает сбой."""
+        async with self.sessions() as s:
+            project = await s.get(Project, PID)
+            project.meta = {"hero_skipped_empty": True}
+            await s.commit()
+        proof = await self.proof("hero")
+        self.assertEqual((proof["status"], proof["reason"]), ("passed", "hero_skipped_empty"))
+
     async def test_hero_images(self):
         self.assertEqual((await self.proof("hero"))["reason"], "no_hero_artifact")
+        self.assertNotEqual((await self.proof("hero"))["status"], "passed")
         path = self.write("characters/hero_1_v1_ab12cd34.png", self.png)
         await self.add(Artifact(project_id=PID, kind=ArtifactKind.hero_reference, uuid="h1", path=str(path), meta={}))
         await self.ledger("hero_1_v1", "T-9", "downloaded")

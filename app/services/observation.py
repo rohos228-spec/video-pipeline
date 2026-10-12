@@ -783,7 +783,9 @@ class Observer:
 
     async def loop(self):
         loaded = False
+        from app.services import supervisor_heartbeat
         while True:
+            supervisor_heartbeat.beat()  # A18: пульс цикла; молчание ловит независимая проверка
             if not loaded:
                 await self._run_stage("reload", self.reload)
                 loaded = "reload" not in self._stages

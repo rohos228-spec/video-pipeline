@@ -116,6 +116,9 @@ export const CHECK_NAMES_RU: Record<string, string> = {
   regen_budget: "лимит повторных генераций",
   sfx_plan_checkpoint_reset: "сброс контрольной точки плана звуков",
   frame_coverage_gate: "проверка покрытия закадра кадрами",
+  frame_uuid_repair: "починка идентификаторов кадров",
+  json_text_repair: "починка JSON в ответе модели",
+  write_contract: "фильтр операций записи по контракту ноды",
   qc_noop: "контроль качества: изменений не требуется",
   native_image_prompt_batch: "проверка пачки промтов изображений",
   native_split_voiceover_coverage: "проверка покрытия закадра разбивкой",
@@ -145,6 +148,22 @@ export const STATUS_WORDS_RU: Record<string, string> = {
   denied: "отказано",
   rejected: "отклонено",
   unchecked: "не проверено",
+  performed: "выполнено",
+  filtered: "отфильтровано",
+};
+
+const NODE_STATUS_RU: Record<string, string> = {
+  pending: "ожидает", queued: "в очереди", running: "выполняется", waiting_hitl: "ждёт решения человека",
+  done: "готово", failed: "ошибка", skipped: "пропущено", cancelled: "отменено",
+};
+const INITIATOR_RU: Record<string, string> = {
+  worker: "воркер", api: "кнопка в Studio", ui_restart: "перезапуск из Studio", auto_unstick: "авто-расклинивание",
+  api_reset: "сброс из Studio", api_stop: "стоп из Studio", decision_supervisor: "решение надзора",
+  only_agent_scope: "режим наблюдения", observation_api: "наблюдение", diagnosis: "диагностика",
+  watchdog: "сторож", sync: "синхронизация баз", supervisor_recovery: "восстановление надзором",
+  supervisor: "надзор", startup_reconcile: "сверка при старте", sidecar: "боковой процесс",
+  only_agent_reconcile: "сверка режима наблюдения", observation_auto_off: "автоотключение наблюдения",
+  native_split_verifier: "проверка разбивки", native_sfx_plan_verifier: "проверка плана звуков",
 };
 
 export function eventLabel(event: Pick<ObservationEvent, "kind" | "payload">): string {
@@ -175,7 +194,7 @@ export function eventLabel(event: Pick<ObservationEvent, "kind" | "payload">): s
   if (event.kind === "domain_check") return `Вердикт: ${p.verdict ?? unknown}; качество модели не проверено`;
   if (event.kind === "node_change") {
     const transitions = p.transitions as {from: string; to: string; initiator?: string}[] | undefined;
-    return transitions?.length ? transitions.map(t => `${t.from} → ${t.to} (${t.initiator ?? "инициатор неизвестен"})`).join("; ") : "Изменение состояния БД; инициатор неизвестен";
+    return transitions?.length ? transitions.map(t => `${NODE_STATUS_RU[t.from] ?? t.from} → ${NODE_STATUS_RU[t.to] ?? t.to} (${t.initiator ? (INITIATOR_RU[t.initiator] ?? t.initiator) : "инициатор неизвестен"})`).join("; ") : "Изменение состояния БД; инициатор неизвестен";
   }
   if (event.kind === "model_end") return `Ответ модели · ${usageLabel(p.usage as Record<string, unknown> | null)}`;
   if (event.kind === "runtime_wait") { const reason = String(p.reason ?? unknown); return `Ожидание: ${WAIT_REASONS_RU[reason] ?? reason} (${p.initiator ?? unknown})`; }

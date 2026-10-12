@@ -380,6 +380,7 @@ def _real_run_skip_reason():
     return None
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(_real_run_skip_reason() is not None, reason=_real_run_skip_reason() or "")
 def test_a_real_dry_run_with_real_speech_asr_and_burned_subtitles(tmp_path):
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}

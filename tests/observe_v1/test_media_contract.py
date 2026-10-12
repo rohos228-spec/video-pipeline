@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 
 class Environment(unittest.TestCase):
     def test_record_existing_tools(self):
@@ -713,6 +715,7 @@ class Artifacts(unittest.IsolatedAsyncioTestCase):
         path.write_text(path.read_text().replace("0:00:00.80", "0:00:00.00"))
         self.assertEqual((await verify_artifact(path, root=self.root, kind="subtitles"))["status"], "failed")
 
+    @pytest.mark.slow
     async def test_video_audio_streams_and_duration(self):
         from app.services.artifact_verifier import verify_artifact
         if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):

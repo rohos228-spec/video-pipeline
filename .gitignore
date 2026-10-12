@@ -62,3 +62,6 @@ prompts/**/.history/
 
 # Лаборатория: раунды, ответы моделей, свои копии промтов
 /lab/threads/
+
+# CI junit output
+reports/

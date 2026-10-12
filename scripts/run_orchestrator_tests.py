@@ -52,8 +52,9 @@ ACCEPTANCE = [
 
 def main() -> int:
     fast_only = "--fast" in sys.argv
+    extra = [a for a in sys.argv[1:] if a != "--fast"]  # e.g. --junitxml=reports/orchestrator.xml
     targets = FAST if fast_only else FAST + ACCEPTANCE
-    cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *targets]
+    cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *extra, *targets]
     print("Running:", " ".join(cmd), flush=True)
     return subprocess.call(cmd, cwd=str(ROOT))
 

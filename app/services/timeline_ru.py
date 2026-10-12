@@ -143,6 +143,9 @@ CHECK_NAMES_RU: dict[str, str] = {
     "regen_budget": "лимит повторных генераций",
     "sfx_plan_checkpoint_reset": "сброс контрольной точки плана звуков",
     "frame_coverage_gate": "проверка покрытия закадра кадрами",
+    "frame_uuid_repair": "починка идентификаторов кадров",
+    "json_text_repair": "починка JSON в ответе модели",
+    "write_contract": "фильтр операций записи по контракту ноды",
     "qc_noop": "контроль качества: изменений не требуется",
     "native_image_prompt_batch": "проверка пачки промтов изображений",
     "native_split_voiceover_coverage": "проверка покрытия закадра разбивкой",
@@ -162,7 +165,7 @@ WAIT_REASONS_RU: dict[str, str] = {
 STATUS_WORDS_RU: dict[str, str] = {
     "passed": "пройдена", "failed": "не пройдена", "unknown": "результат неизвестен",
     "ok": "успешно", "error": "ошибка", "denied": "отказано", "rejected": "отклонено",
-    "unchecked": "не проверено",
+    "unchecked": "не проверено", "performed": "выполнено", "filtered": "отфильтровано",
 }
 
 # --- инциденты (observation_incidents.type = ключи diagnosis.TITLES) ------------------------------------
@@ -374,6 +377,22 @@ JOB_STATUS_RU = {
 }
 _JOB_SEVERITY = {"failed": SEV_ERROR, "error": SEV_ERROR, "interrupted": SEV_WARN, "cancelled": SEV_WARN}
 
+
+# --- состояния нод и инициаторы переходов (F10-D9: лента не должна говорить по-английски) -----------------------
+NODE_STATUS_RU = {
+    "pending": "ожидает", "queued": "в очереди", "running": "выполняется", "waiting_hitl": "ждёт решения человека",
+    "done": "готово", "failed": "ошибка", "skipped": "пропущено", "cancelled": "отменено",
+}
+INITIATOR_RU = {
+    "worker": "воркер", "api": "кнопка в Studio", "ui_restart": "перезапуск из Studio", "auto_unstick": "авто-расклинивание",
+    "api_reset": "сброс из Studio", "api_stop": "стоп из Studio", "decision_supervisor": "решение надзора",
+    "only_agent_scope": "режим наблюдения", "observation_api": "наблюдение", "diagnosis": "диагностика",
+    "watchdog": "сторож", "sync": "синхронизация баз", "supervisor_recovery": "восстановление надзором",
+    "supervisor": "надзор", "startup_reconcile": "сверка при старте", "sidecar": "боковой процесс",
+    "only_agent_reconcile": "сверка режима наблюдения", "observation_auto_off": "автоотключение наблюдения",
+    "native_split_verifier": "проверка разбивки", "native_sfx_plan_verifier": "проверка плана звуков",
+}
+
 # --- ручные действия оператора ---------------------------------------------------------------------------------
 _METHOD_RU = {"POST": "Оператор выполнил действие", "PUT": "Оператор изменил данные",
               "PATCH": "Оператор изменил данные", "DELETE": "Оператор удалил данные"}
@@ -490,7 +509,9 @@ def event_title_ru(kind: str, payload: Mapping[str, Any] | None = None) -> str:
     if kind == "node_change":
         transitions = p.get("transitions")
         if isinstance(transitions, list) and transitions:
-            return "; ".join(f"{t.get('from')} → {t.get('to')} ({t.get('initiator') or 'инициатор неизвестен'})"
+            return "; ".join(f"{NODE_STATUS_RU.get(str(t.get('from')), t.get('from'))} → "
+                             f"{NODE_STATUS_RU.get(str(t.get('to')), t.get('to'))} "
+                             f"({INITIATOR_RU.get(str(t.get('initiator')), t.get('initiator')) or 'инициатор неизвестен'})"
                              for t in transitions if isinstance(t, Mapping))
         return "Изменение состояния БД; инициатор неизвестен"
     if kind == "model_end":

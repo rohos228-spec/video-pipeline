@@ -470,6 +470,7 @@ def test_a_real_dry_run_proves_the_machinery_offline(tmp_path):
     assert "fake" in json.dumps(result["reality"]["not_real"]) and "live" not in summary["verdict"].lower().replace("not a live proof", "")
 
 
+@pytest.mark.slow
 def test_the_dry_run_refuses_a_work_dir_inside_live_data(tmp_path):
     proc = subprocess.run([sys.executable, "-X", "utf8", str(_PATH), "--work-dir", str(ROOT / "data" / "x"), "--dry"],
                           cwd=ROOT, env={**os.environ, "PYTHONUTF8": "1"}, capture_output=True, text=True,

@@ -247,13 +247,21 @@ async def _lifespan(app: FastAPI):
 
     from app.services.observation import get_observer
 
+    from app.services import supervisor_heartbeat
+
     observer_task = asyncio.create_task(get_observer().loop(), name="observation-consumer")
+    # A18: независимая от цикла надзора задача проверки пульса (второй рубеж - scripts/watchdog_check.py).
+    checker_task = asyncio.create_task(supervisor_heartbeat.run_checker(), name="observer-heartbeat-checker")
     try:
         yield
     finally:
+        checker_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await checker_task
         observer_task.cancel()
         with suppress(asyncio.CancelledError):
             await observer_task
+        supervisor_heartbeat.mark_stopped()
         logger.remove(live_log_sink)
         try:
             from app.project_db import close_all_project_engines
