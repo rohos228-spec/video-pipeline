@@ -312,6 +312,25 @@ async def test_validation_errors(db):
             await tl.export(s, P, "xml")
 
 
+async def test_http_totals_cover_whole_project(db, monkeypatch):
+    """B06: итоги вкладки считаются по всему проекту, а не по странице; деньги, диск и счётчики на месте."""
+    async with db() as s:
+        want_err = len((await tl.timeline(s, P, severity="error", limit=500))["items"])
+        want_warn = len((await tl.timeline(s, P, severity="warn", limit=500))["items"])
+        want_gap = len((await tl.timeline(s, P, kinds="gap", limit=500))["items"])
+    async with _app(db, monkeypatch) as c:
+        r = await c.get(f"/api/projects/{P}/timeline/totals")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["counts"]["errors"] == {"count": want_err, "more": False}
+        assert body["counts"]["warnings"] == {"count": want_warn, "more": False}
+        assert body["counts"]["gaps"] == {"count": want_gap, "more": False}
+        assert {"daily_spent", "project_spent", "run_spent", "run_id", "caps"} <= set(body["spend"])
+        assert body["disk"]["level"] in ("ok", "low", "critical", "unknown")
+        assert body["disk"]["free_gb"] is None or body["disk"]["free_gb"] >= 0
+        assert (await c.post(f"/api/projects/{P}/timeline/totals")).status_code == 405
+
+
 async def test_http_timeline_and_export(db, monkeypatch):
     async with _app(db, monkeypatch) as c:
         r = await c.get(f"/api/projects/{P}/timeline", params={"limit": 5})

@@ -239,6 +239,12 @@ def test_operator_and_notification_and_publication_rows():
     assert s == "warn" and "прерван" in t
 
 
+def test_archive_rollup_row_has_a_human_title():
+    """B09: свёртка архива не показывается как «Запись расходов archive»."""
+    title, detail, sev = tr.describe({"source": "spend_ledger", "kind": "archive", "usd": 1.21, "provider": "kie"})
+    assert title.startswith("Свёртка архива") and "archive" not in title and "$1.2100" in detail and sev == "info"
+
+
 def test_short_source_aliases_work():
     a = tr.describe({"source": "spend", "kind": "reserve", "usd": 1})
     b = tr.describe({"source": "spend_ledger", "kind": "reserve", "usd": 1})

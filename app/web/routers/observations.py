@@ -917,6 +917,20 @@ async def project_timeline(project_id: int, since: str | None = Query(None, max_
             raise HTTPException(422, str(exc)) from exc
 
 
+@timeline_router.get("/totals", dependencies=[Depends(require_web_user)])
+async def project_timeline_totals(project_id: int, run_id: str | None = Query(None, max_length=64)):
+    """Итоги вкладки «Журнал» по всему проекту: деньги (сегодня/проект/запуск), ошибки, пробелы, место на диске."""
+    from app.services import disk_guard, timeline as tl
+    spend = await spend_state(project_id, run_id)
+    async with get_observer().master() as session:
+        counts = await tl.journal_counts(session, project_id)
+    d = disk_guard.check(paid=False)
+    disk = {"level": d.level, "free_gb": None if d.free_bytes is None else round(d.free_bytes / disk_guard.GB, 1),
+            "total_gb": None if d.total_bytes is None else round(d.total_bytes / disk_guard.GB, 1),
+            "reason": d.reason}
+    return panel_safe({"spend": spend, "counts": counts, "disk": disk})
+
+
 @timeline_router.get("/export", dependencies=[Depends(require_web_user)])
 async def project_timeline_export(project_id: int, format: str = Query("csv", max_length=8),
                                   since: str | None = Query(None, max_length=64),

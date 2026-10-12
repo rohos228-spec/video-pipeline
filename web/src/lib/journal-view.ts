@@ -230,6 +230,59 @@ export function summarize(items: JournalItem[]): JournalTotals {
   return { count: items.length, errors, warnings, spentUsd: Math.round(spentUsd * 1e6) / 1e6, spendRows };
 }
 
+/** Итоги по всему проекту с сервера: GET /api/projects/{id}/timeline/totals. */
+export interface CountCell { count: number; more: boolean }
+export interface ServerTotals {
+  spend: { daily_spent: number | null; project_spent: number | null; run_spent: number | null; run_id: string | null;
+    caps: { daily: number; project: number; run: number } | null };
+  counts: { errors: CountCell; warnings: CountCell; gaps: CountCell };
+  disk: { level: string; free_gb: number | null; total_gb: number | null; reason: string };
+}
+
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const cell = (v: unknown): CountCell => {
+  const r = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  return { count: num(r.count) ?? 0, more: r.more === true };
+};
+
+/** Безопасная форма ответа: пропущенное остаётся «неизвестно» (null), а не превращается в ноль. */
+export function normalizeTotals(raw: unknown): ServerTotals {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, any>;
+  const sp = (r.spend && typeof r.spend === "object" ? r.spend : {}) as Record<string, any>;
+  const caps = sp.caps && typeof sp.caps === "object"
+    ? { daily: num(sp.caps.daily) ?? 0, project: num(sp.caps.project) ?? 0, run: num(sp.caps.run) ?? 0 } : null;
+  const c = (r.counts && typeof r.counts === "object" ? r.counts : {}) as Record<string, unknown>;
+  const d = (r.disk && typeof r.disk === "object" ? r.disk : {}) as Record<string, unknown>;
+  return {
+    spend: { daily_spent: num(sp.daily_spent), project_spent: num(sp.project_spent), run_spent: num(sp.run_spent),
+      run_id: typeof sp.run_id === "string" ? sp.run_id : null, caps },
+    counts: { errors: cell(c.errors), warnings: cell(c.warnings), gaps: cell(c.gaps) },
+    disk: { level: typeof d.level === "string" ? d.level : "unknown", free_gb: num(d.free_gb), total_gb: num(d.total_gb),
+      reason: typeof d.reason === "string" ? d.reason : "" },
+  };
+}
+
+/** «12» или «500+» (если сервер насчитал до потолка). */
+export function countText(c: CountCell): string {
+  return c.more ? `${c.count}+` : String(c.count);
+}
+
+/** «$0.31 из $2.00» или «$0.31» без лимита; неизвестное - «нет данных». */
+export function spendVsCap(spent: number | null, cap: number | null | undefined): string {
+  if (spent === null) return "нет данных";
+  return cap && cap > 0 ? `${formatUsd(spent)} из ${formatUsd(cap)}` : formatUsd(spent);
+}
+
+export const DISK_LEVEL_RU: Record<string, string> = {
+  ok: "достаточно", low: "мало", critical: "критично мало", unknown: "не удалось измерить",
+};
+
+export function diskText(d: ServerTotals["disk"]): string {
+  const lvl = DISK_LEVEL_RU[d.level] ?? "не удалось измерить";
+  if (d.free_gb === null) return `место на диске: ${lvl}`;
+  return `свободно ${d.free_gb.toFixed(1).replace(".", ",")} ГБ (${lvl})`;
+}
+
 export function formatUsd(v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return "—";
   const abs = Math.abs(v);

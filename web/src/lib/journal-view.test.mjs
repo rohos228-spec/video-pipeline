@@ -139,3 +139,27 @@ test("тексты про отсутствующие источники и ош�
   assert.match(v.journalErrorText(0), /не ответил/);
   assert.match(v.journalErrorText(422), /фильтры/);
 });
+
+test("итоги сервера: пропущенное остаётся «нет данных», а не нулём", () => {
+  const t = v.normalizeTotals({});
+  assert.equal(t.spend.daily_spent, null);
+  assert.equal(v.spendVsCap(t.spend.daily_spent, null), "нет данных");
+  assert.deepEqual(t.counts.errors, { count: 0, more: false });
+  assert.equal(t.disk.level, "unknown");
+  assert.match(v.diskText(t.disk), /не удалось измерить/);
+});
+
+test("итоги сервера: деньги с лимитом, счётчик с потолком, диск по-русски", () => {
+  const t = v.normalizeTotals({
+    spend: { daily_spent: 0.31, project_spent: 1.5, run_spent: 0, run_id: "r1", caps: { daily: 5, project: 20, run: 2 } },
+    counts: { errors: { count: 500, more: true }, warnings: { count: 3, more: false }, gaps: { count: 0, more: false } },
+    disk: { level: "low", free_gb: 12.34, total_gb: 500, reason: "Мало места" },
+  });
+  assert.equal(v.spendVsCap(t.spend.daily_spent, t.spend.caps.daily), "$0.31 из $5.00");
+  assert.equal(v.spendVsCap(t.spend.run_spent, t.spend.caps.run), "$0.00 из $2.00");
+  assert.equal(v.spendVsCap(1, 0), "$1.00");
+  assert.equal(v.countText(t.counts.errors), "500+");
+  assert.equal(v.countText(t.counts.warnings), "3");
+  assert.equal(v.diskText(t.disk), "свободно 12,3 ГБ (мало)");
+  assert.equal(v.normalizeTotals({ spend: { daily_spent: "x" } }).spend.daily_spent, null);
+});

@@ -667,6 +667,21 @@ async def timeline(session, project_id: int, *, since=None, until=None, kinds=No
     return await collect(session, project_id, flt, int(limit))
 
 
+COUNT_CAP = MAX_LIMIT  # считаем до потолка одной страницы; больше - «N+»
+
+
+async def _count(session, project_id: int, **flt) -> dict:
+    res = await timeline(session, project_id, limit=COUNT_CAP, **flt)
+    return {"count": len(res["items"]), "more": res["next_cursor"] is not None}
+
+
+async def journal_counts(session, project_id: int) -> dict:
+    """Итоги журнала по ВСЕМУ проекту, а не по загруженной странице: ошибки, предупреждения, пробелы записи."""
+    return {"errors": await _count(session, project_id, severity="error"),
+            "warnings": await _count(session, project_id, severity="warn"),
+            "gaps": await _count(session, project_id, kinds="gap")}
+
+
 # --- экспорт ----------------------------------------------------------------------------------------
 
 def _csv_cell(v):

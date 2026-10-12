@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { downloadJournalExport, fetchJournalPage } from "@/lib/journal-api";
+import { downloadJournalExport, fetchJournalPage, fetchJournalTotals } from "@/lib/journal-api";
 import {
   EMPTY_FILTERS,
   EXPORT_MAX_ROWS,
@@ -10,6 +10,10 @@ import {
   PRESETS,
   activePresetId,
   applyPreset,
+  countText,
+  diskText,
+  spendVsCap,
+  type ServerTotals,
   formatTs,
   formatUsd,
   journalErrorText,
@@ -69,6 +73,8 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
   const [exporting, setExporting] = useState<"" | "csv" | "json">("");
   const [loaded, setLoaded] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  const [server, setServer] = useState<ServerTotals | null>(null);
+  const [serverError, setServerError] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
 
@@ -106,6 +112,17 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
       .finally(() => { if (!ctrl.signal.aborted) setLoading(false); });
     return () => ctrl.abort();
   }, [projectId, filters, reloadTick]);
+
+  // Итоги по всему проекту: не зависят от фильтров, обновляются вместе с кнопкой «Обновить».
+  useEffect(() => {
+    if (projectId == null) { setServer(null); return; }
+    const ctrl = new AbortController();
+    setServerError(false);
+    fetchJournalTotals(projectId, ctrl.signal)
+      .then((t) => { if (!ctrl.signal.aborted) setServer(t); })
+      .catch(() => { if (!ctrl.signal.aborted) { setServer(null); setServerError(true); } });
+    return () => ctrl.abort();
+  }, [projectId, reloadTick]);
 
   const loadMore = useCallback(async () => {
     if (projectId == null || !cursor || loadingMore) return;
@@ -200,6 +217,19 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
               <button type="button" className={chip(false)} onClick={() => { setSearch(""); setFilters(EMPTY_FILTERS); }}>Сбросить фильтры</button>
             )}
           </div>
+
+          {server && (
+            <dl data-testid="journal-server-totals" className="grid grid-cols-2 gap-x-3 gap-y-0.5 rounded border border-white/10 p-1.5 sm:grid-cols-3">
+              <div><dt className="text-white/45">Потрачено сегодня</dt><dd>{spendVsCap(server.spend.daily_spent, server.spend.caps?.daily)}</dd></div>
+              <div><dt className="text-white/45">Потрачено на проект</dt><dd>{spendVsCap(server.spend.project_spent, server.spend.caps?.project)}</dd></div>
+              <div><dt className="text-white/45">Потрачено за запуск{server.spend.run_id ? ` ${server.spend.run_id}` : ""}</dt>
+                <dd>{server.spend.run_id ? spendVsCap(server.spend.run_spent, server.spend.caps?.run) : "запусков нет"}</dd></div>
+              <div><dt className="text-white/45">Ошибок за всё время</dt><dd className={server.counts.errors.count ? "text-red-300" : ""}>{countText(server.counts.errors)}</dd></div>
+              <div><dt className="text-white/45">Пробелов в записи журнала</dt><dd className={server.counts.gaps.count ? "text-amber-200" : ""}>{countText(server.counts.gaps)}</dd></div>
+              <div><dt className="text-white/45">Диск</dt><dd className={server.disk.level === "ok" ? "" : "text-amber-200"} title={server.disk.reason}>{diskText(server.disk)}</dd></div>
+            </dl>
+          )}
+          {serverError && <p role="alert" className="text-amber-200">Итоги по проекту не загрузились. Нажмите «Обновить».</p>}
 
           {loaded && !error && (
             <p data-testid="journal-totals" className="text-white/60">

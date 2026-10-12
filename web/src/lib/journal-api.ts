@@ -4,6 +4,8 @@ import {
   buildTimelineUrl,
   exportFileName,
   normalizePage,
+  normalizeTotals,
+  type ServerTotals,
   type JournalFilters,
   type JournalPage,
 } from "./journal-view";
@@ -17,6 +19,11 @@ export async function fetchJournalPage(
 ): Promise<JournalPage> {
   const raw = await http<unknown>(buildTimelineUrl(projectId, filters, { cursor }), { signal });
   return normalizePage(raw);
+}
+
+/** Итоги по всему проекту (деньги, ошибки, пробелы, диск). */
+export async function fetchJournalTotals(projectId: number, signal?: AbortSignal): Promise<ServerTotals> {
+  return normalizeTotals(await http<unknown>(`/api/projects/${projectId}/timeline/totals`, { signal }));
 }
 
 /** Скачивает экспорт ленты файлом. При ошибке бросает Error с числовым полем `status`. */
