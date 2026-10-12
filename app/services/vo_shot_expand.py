@@ -1714,7 +1714,14 @@ def relink_shot_roles_by_scene(
                 gap = int(fr.number) - int(prev_fr.number) > 1
             except (TypeError, ValueError):
                 gap = False
-        if not last or last[0] != key or gap:
+        # Ручное «разделить сцену» на доске: голова новой сцены режет прогон по
+        # месту, иначе пересборка доски склеивает кадры обратно.
+        manual = (
+            resplit_places
+            and not is_shot_child(fr)
+            and bool(_cs(fr).get("manual_split"))
+        )
+        if not last or last[0] != key or gap or manual:
             groups.append((key, [fr]))
         else:
             last[1].append(fr)

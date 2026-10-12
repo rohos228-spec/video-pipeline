@@ -370,6 +370,7 @@ def _promote_to_vo_parent(frame: Frame) -> None:
         leftover=False,
         shot_index=1,
         shots_in_beat=1,
+        manual_split=True,
     )
 
 
