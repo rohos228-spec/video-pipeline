@@ -677,7 +677,9 @@ def _describe(row: Mapping[str, Any]) -> tuple[str, str, str]:
 
     if source == "operator_audit":
         method = str(_get(row, "method") or "").upper()
-        title = _get(row, "summary_ru") or _METHOD_RU.get(method) or _fallback(source, method, "Действие оператора")
+        from app.services.operator_phrases import operator_phrase
+        title = (_get(row, "summary_ru") or operator_phrase(method, str(_get(row, "route_template", "path") or ""))
+                 or _METHOD_RU.get(method) or _fallback(source, method, "Действие оператора"))
         outcome = str(_get(row, "outcome") or "")
         # Настоящий путь запроса (в route_template лежит шаблон с {project_id}, человеку он ничего не говорит).
         detail = [f"{method} {_get(row, 'path', 'route_template') or ''}".strip()]

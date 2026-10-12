@@ -222,7 +222,9 @@ def test_money_rows_and_secrets_are_not_leaked():
 def test_operator_and_notification_and_publication_rows():
     t, d, s = tr.describe({"source": "operator_audit", "method": "POST", "route_template": "/api/projects/{id}/stop",
                            "outcome": "denied", "actor": "operator"})
-    assert t == "Оператор выполнил действие" and s == "warn" and "отказано в доступе" in d
+    assert t == "Оператор остановил: проект" and s == "warn" and "отказано в доступе" in d
+    t, _, _ = tr.describe({"source": "operator_audit", "method": "POST"})  # маршрут неизвестен - общая фраза
+    assert t == "Оператор выполнил действие"
     t, _, _ = tr.describe({"source": "operator_audit", "method": "POST", "summary_ru": "Нажата кнопка «Стоп»"})
     assert t == "Нажата кнопка «Стоп»"
     t, d, s = tr.describe({"source": "notification_log", "kind": "telegram", "status": "failed", "error": "timeout"})
