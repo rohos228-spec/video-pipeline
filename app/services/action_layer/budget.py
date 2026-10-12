@@ -204,6 +204,31 @@ async def measure_native_credits(session, *, project_id: int | None, since: date
     return max(0.0, total)
 
 
+async def native_unknown_cost_rows(session, *, project_id: int | None, since: datetime) -> tuple[int, bool]:
+    """(число нативных строк «цена неизвестна», есть ли «дыра» записи) с момента ``since``.
+
+    Провайдеры без цены в ответе (Outsee, ElevenLabs) пишут строку usd=0 с пометкой cost_unknown; такую строку потолки
+    уже считают фиксированной оценкой. Резерв слоя при этом не должен висеть вечно поверх неё (F09-D1).
+    """
+    if project_id is None:
+        return 0, False
+    from app.services import spend_guard
+    await spend_guard.ensure_schema(session)
+    rows = (await session.scalars(select(spend_guard.SpendLedger).where(
+        spend_guard.SpendLedger.project_id == project_id,
+        spend_guard.SpendLedger.created_at >= since,
+        spend_guard.SpendLedger.kind != "event",
+        spend_guard.SpendLedger.source != "action_layer"))).all()
+    unknown = gap = 0
+    for r in rows:
+        note = (r.note or "").lower()
+        if "write_failed" in note:
+            gap += 1
+        elif "cost_unknown" in note:
+            unknown += 1
+    return unknown, bool(gap)
+
+
 async def guard_kill_switch(session) -> None:
     """Бросает KillSwitchActive до любого шага (и чтения тоже)."""
     await kill_switch.guard(session)

@@ -182,6 +182,8 @@ async def run(ctx: Ctx, call: Callable[[], Awaitable[Any]]) -> Any:
     try:
         result = await call()
     except (asyncio.CancelledError, StepCancelledError):
+        if probe.get("in_flight"):
+            probe["maybe_sent"] = True  # отмена во время POST: запрос мог уйти и быть оплачен, intent остаётся открытым
         if probe["task_id"] is None and not probe["maybe_sent"]:
             await resolve("rejected", "cancelled before submit")
         elif probe["done"]:

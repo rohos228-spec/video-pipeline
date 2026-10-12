@@ -119,7 +119,9 @@ async def test_action_reported_credits_win_and_are_settled(env) -> None:
     assert await _ledger_sum(env, run_id=f"plan:{plan_id}") == pytest.approx(3.0)
 
 
-async def test_unknown_cost_row_keeps_reserve_conservatively(env) -> None:
+async def test_unknown_cost_row_closes_reserve_but_keeps_actual_unknown(env) -> None:
+    """F09-D1: цена неизвестна (Outsee), но трата записана строкой cost_unknown, которую потолки уже считают оценкой:
+    резерв слоя закрывается (иначе копится поверх строки и запирает потолки), факт плана остаётся неизвестным."""
     pid = await env.add_project()
 
     async def paid(ctx, params):
@@ -131,7 +133,24 @@ async def test_unknown_cost_row_keeps_reserve_conservatively(env) -> None:
     plan_id = await _plan(env, reg, {"action_id": "t.paid", "params": {"project_id": pid}})
     view = await _go(env, reg, plan_id, approve=True)
     assert view["steps"][0]["cost"]["actual"] is None
-    assert view["spent_credits"] == pytest.approx(6.0)  # резерв не снят: факт неизвестен
+    assert view["spent_credits"] == pytest.approx(0.0)
+    assert await _ledger_sum(env, source="action_layer", run_id=f"plan:{plan_id}") == pytest.approx(0.0)
+
+
+async def test_write_gap_keeps_reserve_conservatively(env) -> None:
+    """Если запись траты потеряна (write_failed), резерв остаётся: деньги могли уйти, а следа нет."""
+    pid = await env.add_project()
+
+    async def paid(ctx, params):
+        await _native_row(env, params["project_id"], 0.0, note="outsee submit write_failed cost_unknown=true")
+        return {}
+
+    reg = fresh_registry(make_spec("t.paid", paid, risk="paid", spends=True, cost=(1, 6),
+                                   schema=PROJ_SCHEMA))
+    plan_id = await _plan(env, reg, {"action_id": "t.paid", "params": {"project_id": pid}})
+    view = await _go(env, reg, plan_id, approve=True)
+    assert view["steps"][0]["cost"]["actual"] is None
+    assert view["spent_credits"] == pytest.approx(6.0)
 
 
 async def test_failed_paid_step_releases_reserve_so_cap_does_not_self_block(env, monkeypatch) -> None:

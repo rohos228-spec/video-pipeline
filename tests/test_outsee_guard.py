@@ -152,6 +152,17 @@ class Guard(Env):
             await self.call(ok)
         self.assertEqual(self.calls, 1)
 
+    async def test_cancel_while_the_post_is_in_flight_keeps_the_hold(self):
+        """F09-D5: рубильник/стоп отменяют клиента, пока POST в полёте: запрос мог уйти и быть оплачен."""
+        async def cancelled_in_flight():
+            outsee_http._probe_mark(in_flight=True)
+            raise StepCancelledError("kill switch")
+        with self.assertRaises(StepCancelledError):
+            await self.call(cancelled_in_flight)
+        with self.assertRaises(OutseeSubmitUnknownError):
+            await self.call(ok)
+        self.assertEqual(self.calls, 1)  # второй платный submit не ушёл
+
     async def test_cancel_before_anything_was_sent_does_not_block(self):
         async def cancelled_early():
             raise StepCancelledError("stop")

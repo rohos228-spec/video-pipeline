@@ -454,9 +454,18 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
     while True:
         try:
             async with httpx.AsyncClient(timeout=_generate_timeout()) as client:
-                r = await client.post(
-                    f"{_base_url()}{path}", headers=_headers(), json=body
-                )
+                # Пока POST в полёте, отмена (рубильник, стоп) не доказывает, что запрос не ушёл: см. outsee_guard.run.
+                _probe_mark(in_flight=True)
+                try:
+                    r = await client.post(
+                        f"{_base_url()}{path}", headers=_headers(), json=body
+                    )
+                except asyncio.CancelledError:
+                    raise  # флаг остаётся поднятым: outsee_guard.run увидит отмену посреди POST
+                except BaseException:
+                    _probe_mark(in_flight=False)
+                    raise
+                _probe_mark(in_flight=False)
                 if r.status_code >= 400:
                     _raise_api(r, where=path)
                 data = r.json()

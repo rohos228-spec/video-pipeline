@@ -293,6 +293,16 @@ async def _settle_step(plan_id: str, step: "store.ActionPlanStep", spec: ActionS
                 pid = await budget._plan_project(s, plan_id)
                 actual = await budget.measure_native_credits(s, project_id=pid, since=t0)
                 native = actual is not None
+                if actual is None and reserved:
+                    # Цена неизвестна, но трата записана строкой cost_unknown (её потолки считают оценкой): резерв
+                    # закрываем, иначе он копится поверх строки (F09-D1). Факт плана остаётся неизвестным (None).
+                    unknown, gap = await budget.native_unknown_cost_rows(s, project_id=pid, since=t0)
+                    if unknown and not gap:
+                        await budget.settle(s, key=budget.session_key(plan_id), plan_id=plan_id,
+                                            step_index=step.idx, reserved=reserved, actual=0.0,
+                                            native_counted=True)
+                        await s.commit()
+                        return None
             await budget.settle(s, key=budget.session_key(plan_id), plan_id=plan_id,
                                 step_index=step.idx, reserved=reserved, actual=actual,
                                 native_counted=native)

@@ -219,8 +219,12 @@ async def _poll_step(ctx, params, started):
     state = await _poll_project_idle(ctx, params, started)
     if not state.done:
         return state
-    if str((state.result or {}).get("final_status")) == "failed":
+    final = str((state.result or {}).get("final_status"))
+    if final == "failed":
         return replace(state, ok=False, error="шаг завершился с ошибкой (статус проекта failed)")
+    if final == "paused":
+        # Сбой шага ставит проект на паузу: это не успех плана (F09-D3).
+        return replace(state, ok=False, error="шаг не завершён: проект поставлен на паузу (статус paused)")
     return state
 
 
