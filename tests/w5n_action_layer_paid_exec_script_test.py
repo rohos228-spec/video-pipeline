@@ -206,7 +206,8 @@ def test_main_refuses_live_without_key_or_with_bad_base(mod, tmp_path, capsys):
     assert not Path(work).exists()
 
 
-def test_main_refuses_work_dir_inside_repo_or_not_empty(mod, tmp_path, capsys):
+def test_main_refuses_work_dir_inside_repo_or_not_empty(mod, outside_tmp, capsys):
+    tmp_path = outside_tmp
     assert mod.main(["--dry", "--work-dir", str(mod.ROOT / "data" / "f09_should_not_exist")]) == 3
     assert not (mod.ROOT / "data" / "f09_should_not_exist").exists()
     (tmp_path / "old.txt").write_text("x")
@@ -214,7 +215,8 @@ def test_main_refuses_work_dir_inside_repo_or_not_empty(mod, tmp_path, capsys):
     assert "not empty" in capsys.readouterr().err
 
 
-def test_server_env_is_keyless_synthetic_and_loopback(mod, tmp_path):
+def test_server_env_is_keyless_synthetic_and_loopback(mod, outside_tmp):
+    tmp_path = outside_tmp
     cfg = {"work": str(tmp_path), "mode": "dry", "gate_posts": 1, "fake_port": 1, "app_cap_usd": 0.45, "port": 18999,
            "outsee_base": "http://127.0.0.1:1", "outsee_host": "", "seam": "none"}
     env = mod.server_env(tmp_path, 18999, cfg, "", dry=True)

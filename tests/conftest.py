@@ -159,3 +159,16 @@ def _operator_token_for_test_client(monkeypatch, request):
     monkeypatch.setattr(TestClient, "request", _wrap(TestClient.request))
     monkeypatch.setattr(httpx.AsyncClient, "request", _wrap_async(httpx.AsyncClient.request))
     yield
+
+
+@pytest.fixture
+def outside_tmp():
+    """Пустая папка ВНЕ репозитория: общий временный каталог pytest может лежать в data/ (приложение переносит TEMP туда),
+    а охрана стендов и миграций справедливо отказывается писать в боевую папку."""
+    from _stand_workdir import make_workdir, remove_workdir
+
+    path = make_workdir("t_")
+    try:
+        yield path
+    finally:
+        remove_workdir(path)

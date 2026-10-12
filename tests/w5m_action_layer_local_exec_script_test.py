@@ -25,7 +25,8 @@ def test_scrub_env_drops_secret_names(mod):
     assert mod.scrub_env(env) == {"PATH": "x", "HOME": "h"}
 
 
-def test_server_env_is_loopback_local_and_keyless(mod, tmp_path):
+def test_server_env_is_loopback_local_and_keyless(mod, outside_tmp):
+    tmp_path = outside_tmp
     env = mod.server_env({"PATH": "p", "VIBECODE_API_KEY": "k", "FLEET_AGENT_TOKEN": "t"}, tmp_path / "w", 18999, "medium")
     assert env["WEB_HOST"] == "127.0.0.1" and env["WEB_PORT"] == "18999"
     assert env["TELEGRAM_ENABLED"] == "false" and env["WORKER_ENABLED"] == "false"
@@ -54,7 +55,8 @@ def test_main_refuses_work_dir_inside_repo(mod, capsys):
     assert not (mod.ROOT / "data" / "f08_should_not_exist").exists()
 
 
-def test_main_refuses_non_empty_work_dir(mod, tmp_path, capsys):
+def test_main_refuses_non_empty_work_dir(mod, outside_tmp, capsys):
+    tmp_path = outside_tmp
     (tmp_path / "old.txt").write_text("x")
     assert mod.main(["--run", "--work-dir", str(tmp_path)]) == 2
     assert "не пуст" in capsys.readouterr().err

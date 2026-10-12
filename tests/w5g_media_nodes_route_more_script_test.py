@@ -465,6 +465,8 @@ def test_the_voice_inputs_of_assemble_are_hashed_by_content_not_by_mtime(tmp_pat
     stat_before = _files_under(audio, (".mp3",), prefix="voice")
     os.utime(voice, (1, 1))
     voice.write_bytes(b"ID3" + b"\x01" * 4000)  # the same bytes written again, a new mtime
+    shifted = voice.stat().st_mtime_ns + 5_000_000_000  # время файла могло не измениться (грубые часы ФС): сдвигаем явно
+    os.utime(voice, ns=(shifted, shifted))
     assert _files_under(audio, (".mp3",), prefix="voice", content=True) == before
     assert _files_under(audio, (".mp3",), prefix="voice") != stat_before  # the old stat-based row WOULD have changed
     voice.write_bytes(b"ID3" + b"\x02" * 4000)

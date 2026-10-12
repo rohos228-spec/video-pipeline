@@ -62,8 +62,8 @@ def _cli(*args: str, cwd: Path | None = None):
 
 
 @pytest.fixture
-def db(tmp_path):
-    p = tmp_path / "copy.db"
+def db(outside_tmp):
+    p = outside_tmp / "copy.db"
     _make_db(p)
     return p
 
