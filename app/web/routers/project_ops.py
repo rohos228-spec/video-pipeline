@@ -40,6 +40,19 @@ def _project_or_404(project: Project | None) -> Project:
     return project
 
 
+async def _with_master_project(project_id: int, fallback: Project, fn):
+    """``fn(project)`` по строке проекта из master state.db (там живёт состояние фоновых задач); при сбое - по ``fallback``."""
+    from app.db import session_scope
+
+    try:
+        async with session_scope() as master:
+            mp = await master.get(Project, project_id)
+            return fn(mp if mp is not None else fallback)
+    except Exception:  # noqa: BLE001 - статус не должен падать из-за чтения master
+        return fn(fallback)
+
+
+
 @router.post("/{project_id}/pause", response_model=ProjectDetail)
 async def pause_project(
     project_id: int, session: AsyncSession = Depends(get_project_session)
@@ -1366,7 +1379,8 @@ async def montage_board_montage_status(
     from app.services.montage_board_montage_job import get_montage_job
 
     p = _project_or_404(await session.get(Project, project_id))
-    return {"job": get_montage_job(p)}
+    # Фоновая задача пишет своё состояние в master state.db, а не в project.db: читаем оттуда (иначе после конца видно "idle").
+    return {"job": await _with_master_project(project_id, p, get_montage_job)}
 
 
 @router.post("/{project_id}/montage-board/recover-outsee")
@@ -2606,7 +2620,18 @@ async def project_asr_words(
 
     _project_or_404(await session.get(Project, project_id))
     rows = await load_project_asr_words(session, project_id)
-    words = asr_words_to_dicts(rows)
+    if not rows:
+        # Монтаж и разбор аудио пишут слова в master state.db; в project.db их может не быть - читаем master.
+        from app.db import session_scope
+
+        try:
+            async with session_scope() as master:
+                rows = await load_project_asr_words(master, project_id)
+                words = asr_words_to_dicts(rows)
+        except Exception:  # noqa: BLE001
+            words = []
+    else:
+        words = asr_words_to_dicts(rows)
     run_uuid = words[0]["run_uuid"] if words else None
     backend = words[0]["backend"] if words else None
     return {
@@ -2665,10 +2690,12 @@ async def audio_align_status(
     from app.services.audio_align_job import get_audio_align_job
 
     p = _project_or_404(await session.get(Project, project_id))
-    last = None
-    if isinstance(p.meta, dict):
-        last = p.meta.get("audio_align_last")
-    return {"job": get_audio_align_job(p), "last": last}
+
+    def _read(proj: Project) -> dict:
+        meta = proj.meta if isinstance(proj.meta, dict) else {}
+        return {"job": get_audio_align_job(proj), "last": meta.get("audio_align_last")}
+
+    return await _with_master_project(project_id, p, _read)
 
 
 @router.post("/{project_id}/remount-video")

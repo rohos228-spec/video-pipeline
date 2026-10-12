@@ -345,6 +345,9 @@ def _plan_layer(cols, have):
                        if "project_id" not in cols else
                        "(h.project_id IS NULL AND h.plan_id IN "
                        "(SELECT plan_id FROM action_layer_plan_context WHERE project_id = :p))"))
+    if "action_layer_plans" in have:
+        # План, созданный через /plans/preview, не имеет контекста и строк истории с project_id: проект берём из самого плана.
+        scoped.append("(h.project_id IS NULL AND h.plan_id IN (SELECT id FROM action_layer_plans WHERE project_id = :p))")
     where = "(" + " OR ".join(scoped) + ")" if scoped else "0"
     sel = ("h.plan_id AS plan_id, h.step_index AS step_index, h.event AS event, h.actor AS actor, "
            "h.request_text AS request_text, h.action_id AS action_id, h.outcome AS outcome, h.error AS error, "

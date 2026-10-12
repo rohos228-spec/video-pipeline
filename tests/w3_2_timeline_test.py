@@ -410,3 +410,29 @@ async def test_http_timeline_filters_and_export_russian(db, monkeypatch):
         assert all(r_[tl.EXPORT_COLUMNS.index("title_ru")].strip() for r_ in rows[1:])
         j = (await c.get(f"/api/projects/{P}/timeline/export", params={"format": "json"})).json()
         assert len(j["items"]) == 15 and j["truncated"] is False
+
+
+async def test_layer_history_scoped_via_plan_project_without_context(tmp_path):
+    """План из /plans/preview: ни контекста, ни project_id в истории, но проект записан в самом плане (D-3)."""
+    eng, sm = await _make_db(tmp_path)
+    try:
+        async with sm() as s:
+            await s.execute(text(
+                "INSERT INTO action_layer_plans(id,project_id,operator,request_text,plan_json,plan_hash,risk_max,"
+                "needs_approval,status,cost_low,cost_high,cost_unknown_steps,stop_requested,stop_reason,error,created_at,updated_at) VALUES "
+                "('plX',:p,'op','правка','{}','h','safe',0,'done',0,0,0,0,'','',:t,:t)"), {"p": P, "t": _t(1)})
+            await s.execute(text(
+                "INSERT INTO action_layer_plans(id,project_id,operator,request_text,plan_json,plan_hash,risk_max,"
+                "needs_approval,status,cost_low,cost_high,cost_unknown_steps,stop_requested,stop_reason,error,created_at,updated_at) VALUES "
+                "('plY',99,'op','чужой','{}','h','safe',0,'done',0,0,0,0,'','',:t,:t)"), {"t": _t(1)})
+            for plan in ("plX", "plY"):
+                await s.execute(text(
+                    "INSERT INTO action_layer_history(created_at,plan_id,event,actor,request_text,action_id,outcome,"
+                    "error) VALUES (:t,:pl,'executed','op','','a','ok','')"), {"t": _t(2), "pl": plan})
+            await s.commit()
+        async with sm() as s:
+            page = await tl.timeline(s, P, limit=50)
+        layer = [i for i in page["items"] if i.get("kind") == "action" and "executed" in (i.get("title_ru") or "")]
+        assert len(layer) == 1  # план своего проекта виден, план проекта 99 - нет
+    finally:
+        await eng.dispose()
