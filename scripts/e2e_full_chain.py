@@ -79,7 +79,7 @@ scan = _load_sibling("scan_secrets")                    # scan_tree
 
 DEFAULT_PORT = 18831
 DEFAULT_FAKE_PORT = 18832
-DEFAULT_VOICE = r"C:\video-pipeline\_asr1\voice.wav"
+DEFAULT_VOICE = os.environ.get("VP_STAND_VOICE_WAV", "")  # wav с русской речью (SAPI); путь задаёт вызывающий
 DEFAULT_ASR = "medium"
 LEVELS = ("A", "B", "C", "D", "E")
 EXIT_PASS, EXIT_FAIL, EXIT_ARGS = 0, 1, 2
@@ -1876,7 +1876,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry", action="store_true", required=True, help="единственный режим: loopback-подмены, без денег и сети")
     ap.add_argument("--until", default="E", help="A|B|C|D|E (см. описание уровней)")
-    ap.add_argument("--work-dir", default=r"C:\video-pipeline\_f10_work\dry1")
+    ap.add_argument("--work-dir", required=True, help="пустая папка ВНЕ репозитория")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--fake-port", type=int, default=DEFAULT_FAKE_PORT)
     ap.add_argument("--voice-wav", default=DEFAULT_VOICE, help="озвучка-запасной вариант, если SAPI недоступен")

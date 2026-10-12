@@ -33,7 +33,7 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parent.parent
 SELF = Path(__file__).resolve()
 DEFAULT_PORT = 18811
-DEFAULT_VOICE = r"C:\video-pipeline\_asr1\voice.wav"
+DEFAULT_VOICE = os.environ.get("VP_STAND_VOICE_WAV", "")  # wav с русской речью (SAPI); путь задаёт вызывающий
 DEFAULT_ASR = "medium"
 VERDICT_OK = "LOCAL OK (live server process, no provider involved)"
 VERDICT_FAIL = "LOCAL FAIL (live server process, no provider involved)"
@@ -1020,6 +1020,8 @@ def preflight(args) -> tuple[Path | None, str]:
         return None, "ffprobe не найден в PATH"
     if find_cached_model(args.asr_model) is None:
         return None, f"модель faster-whisper {args.asr_model!r} не в локальном кэше (офлайн)"
+    if not args.voice_wav:
+        return None, "не задана озвучка: передайте --voice-wav или переменную VP_STAND_VOICE_WAV (wav с русской речью)"
     try:
         validate_wav(Path(args.voice_wav))
     except (OSError, ValueError, EOFError) as exc:
@@ -1035,7 +1037,7 @@ def main(argv: list[str] | None = None) -> int:
         return serve_main()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--run", action="store_true", required=True, help="единственный режим: всё локально и бесплатно")
-    ap.add_argument("--work-dir", default=r"C:\video-pipeline\_f08_work\run1")
+    ap.add_argument("--work-dir", required=True, help="пустая папка ВНЕ репозитория")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--voice-wav", default=DEFAULT_VOICE)
     ap.add_argument("--asr-model", default=DEFAULT_ASR)

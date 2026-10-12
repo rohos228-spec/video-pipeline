@@ -478,15 +478,15 @@ def test_no_dotenv_and_no_env_file_option_in_the_stand_source(mod):
 def test_arguments(mod):
     a = mod.parse_args(["--dry", "--until", "b", "--work-dir", "x"])
     assert a.until == "B" and a.dry is True and a.no_seams is False and a.without_seam == []
-    b = mod.parse_args(["--dry", "--without-seam", "hitl_to_master", "--without-seam", "store_mirror"])
+    b = mod.parse_args(["--dry", "--work-dir", "x", "--without-seam", "hitl_to_master", "--without-seam", "store_mirror"])
     assert b.without_seam == ["hitl_to_master", "store_mirror"]
     with pytest.raises(SystemExit):
         mod.parse_args(["--dry", "--without-seam", "no_such_seam"])
     with pytest.raises(SystemExit):
         mod.parse_args(["--until", "A"])                   # --dry is mandatory: there is no live mode here
     with pytest.raises(ValueError):
-        mod.parse_args(["--dry", "--until", "Z"])
-    assert mod.main(["--dry", "--until", "Z"]) == mod.EXIT_ARGS
+        mod.parse_args(["--dry", "--work-dir", "x", "--until", "Z"])
+    assert mod.main(["--dry", "--work-dir", "x", "--until", "Z"]) == mod.EXIT_ARGS
 
 
 def test_mirror_statuses_are_exactly_the_steps_that_open_the_master_store(mod):

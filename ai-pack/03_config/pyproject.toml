@@ -68,4 +68,10 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-markers = ["raw_client: test talks to the app without the operator token (guard tests)"]
+markers = [
+  "raw_client: test talks to the app without the operator token (guard tests)",
+  "live: calls a real external service (network); never run in CI, only by hand with explicit approval",
+  "paid: spends real money (provider API); never run in CI, only by hand with a ceiling",
+  "docker: needs the isolated Docker runner (/.dockerenv); run by the CI docker job",
+  "slow: starts a real subprocess/server/ffmpeg/whisper; still offline and free, only slower",
+]

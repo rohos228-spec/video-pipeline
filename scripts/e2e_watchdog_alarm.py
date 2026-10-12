@@ -1,6 +1,6 @@
 r"""Живой стенд A18: убитый процесс цикла надзора даёт тревогу сторожа.
 
-    python scripts/e2e_watchdog_alarm.py [--port 8798] [--work-dir C:\video-pipeline\_a18_work\run1] [--window 5]
+    python scripts/e2e_watchdog_alarm.py [--port 8798] [--work-dir <пустая папка вне репозитория>] [--window 5]
 
 Настоящий ``python -m app.main`` на loopback с НОВОЙ базой в рабочей папке (вне репозитория), без Telegram и
 ключей. Шаги: пульс растёт -> проверка ``scripts/watchdog_check.py`` молчит -> процесс убивается (os-уровень) ->
@@ -148,7 +148,7 @@ def run(port: int, work: Path, window: float) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8798)
-    ap.add_argument("--work-dir", default=r"C:\video-pipeline\_a18_work\run1")
+    ap.add_argument("--work-dir", default=r"<пустая папка вне репозитория>")
     ap.add_argument("--window", type=float, default=5.0)
     args = ap.parse_args(argv)
     work = Path(args.work_dir)
