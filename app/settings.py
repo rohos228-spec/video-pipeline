@@ -418,6 +418,9 @@ class Settings(BaseSettings):
     # Денежный потолок тех же перегенераций: оценка USD (число кадров x цена платного запроса) на прогон шага.
     # Счётчики попыток не знают цены; этот потолок останавливает дорогие повторы. 0 = без ограничения.
     regen_max_usd_per_run: float = Field(25.0, ge=0, alias="REGEN_MAX_USD_PER_RUN")
+    # F10-D1: автопродвижение воркера идёт на сессии project.db проекта, а не на строке master (там данных проекта нет,
+    # и plan_ready откатывается в new). По умолчанию выключено: откат = убрать флаг.
+    worker_use_project_db: bool = Field(False, alias="WORKER_USE_PROJECT_DB")
     # Оценка одной перегенерации кадра/героя; 0 = взять MEDIA_SUBMIT_ESTIMATE_USD из spend_guard.
     regen_estimate_usd_per_item: float = Field(0.0, ge=0, alias="REGEN_ESTIMATE_USD_PER_ITEM")
     action_layer_approval_ttl_s: int = Field(600, ge=1, alias="ACTION_LAYER_APPROVAL_TTL_S")

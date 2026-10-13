@@ -1047,7 +1047,6 @@ async def _run_excel(
     Параллель = ``meta.outsee_streams`` / ``img_streams`` (общий пул Outsee).
     Реф-вариации ждут файл родителя, затем идут следующей волной.
     """
-    from app.db import SessionLocal
     from app.services.artifact_recovery import recover_hero_references_from_disk
     from app.services.hero_check_regen import META_IDS, get_hero_check_regen_ids
     from app.services.img_streams import get_img_streams
@@ -1178,7 +1177,7 @@ async def _run_excel(
         await session.commit()
 
         async def _one(ch: ExcelCharacter) -> str:
-            async with SessionLocal() as s:
+            async with _sibling_session(session) as s:
                 p = (
                     await s.execute(select(Project).where(Project.id == project_id))
                 ).scalar_one()
@@ -1247,6 +1246,21 @@ async def _run_excel(
 
         if project.status is not ProjectStatus.generating_hero:
             return
+
+
+def _sibling_session(session: AsyncSession) -> AsyncSession:
+    """Новая сессия на том же движке, что и сессия шага (D2).
+
+    Раньше параллельные задачи героев открывали ``SessionLocal()`` (master) и читали проект там, хотя шаг
+    работает в ``project.db`` проекта: герой, артефакты и статус уходили в чужую базу."""
+    from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+
+    from app import db as app_db
+
+    bind = getattr(session, "bind", None)
+    if not isinstance(bind, AsyncEngine) or bind is app_db.engine:
+        return app_db.SessionLocal()  # master (и подмена SessionLocal в тестах)
+    return async_sessionmaker(bind, expire_on_commit=False, class_=AsyncSession)()
 
 
 async def _generate_one_excel_character(

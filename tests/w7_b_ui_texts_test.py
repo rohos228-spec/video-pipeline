@@ -29,8 +29,15 @@ CYR = re.compile("[а-яёА-ЯЁ]")
 
 
 @pytest.fixture
-async def env():
+async def env(monkeypatch):
     e = await Env().create()
+    # настоящий путь HITL: master-база стенда и папка данных подставлены на уровне модулей, а не
+    # переопределением зависимости get_session в приложении
+    import app.db as app_db
+    from app.settings import settings
+    monkeypatch.setattr(app_db, "SessionLocal", e.maker)
+    monkeypatch.setattr(deps, "SessionLocal", e.maker)
+    monkeypatch.setattr(settings, "data_dir", e.workdir)
     yield e
     await e.close()
 
@@ -40,12 +47,7 @@ async def env():
 def _hitl_app(env: Env) -> FastAPI:
     app = FastAPI()
     app.include_router(hitl_router.router, prefix="/api")
-
-    async def _session():
-        async with env.maker() as s:
-            yield s
-
-    app.dependency_overrides[deps.get_session] = _session
+    assert not app.dependency_overrides  # без подмены сессии
     return app
 
 

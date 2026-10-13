@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -28,6 +28,37 @@ from app.orchestrator.auto_advance import (
     get_latest_hitl,
 )
 from app.services.auto_review import ReviewResult
+
+
+async def claim_hitl_decision(
+    session: AsyncSession,
+    req: HITLRequest,
+    decision: HITLDecision,
+    *,
+    actor: str | None = None,
+    edited_prompt: str | None = None,
+) -> bool:
+    """Атомарно занять запрос: ``pending`` -> решение одним условным UPDATE.
+
+    Возвращает False, если кто-то уже принял решение (второе решение не пишется). Автор решения
+    лежит в ``payload["decided_by"]``, чтобы не менять схему обеих баз.
+    """
+    from datetime import datetime
+
+    payload = dict(req.payload or {})
+    if actor:
+        payload["decided_by"] = actor[:120]
+    if edited_prompt is not None and decision is HITLDecision.edit_prompt:
+        payload["edited_prompt"] = edited_prompt
+    result = await session.execute(
+        update(HITLRequest)
+        .where(HITLRequest.id == req.id, HITLRequest.decision == HITLDecision.pending)
+        .values(decision=decision, decided_at=datetime.utcnow(), payload=payload)
+    )
+    if result.rowcount != 1:
+        return False
+    await session.refresh(req)
+    return True
 
 
 def _action_for_decision(decision: HITLDecision) -> str:

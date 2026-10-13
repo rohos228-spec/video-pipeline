@@ -679,7 +679,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                 try:
                     from app.orchestrator.auto_advance import (
                         TRANSITIONS,
-                        maybe_auto_advance,
+                        maybe_auto_advance_for_worker,
                         serial_tick_batches,
                         serial_tick_mass_lanes,
                     )
@@ -723,7 +723,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 continue
                         prev = ap.status.value
                         try:
-                            advanced = await maybe_auto_advance(s, ap, bot)
+                            advanced = await maybe_auto_advance_for_worker(s, ap, bot)
                         except Exception:  # noqa: BLE001
                             logger.exception(
                                 "auto_advance failed for #{}", ap.id

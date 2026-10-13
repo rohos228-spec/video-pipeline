@@ -98,12 +98,14 @@ async def drain_anim_pr_from_image_prompts(
     max_batches: int | None = 4,
 ) -> dict[str, int]:
     """Один проход: до max_batches пачек GPT → R48/DB, статус проекта не трогаем."""
-    from app.db import SessionLocal
     from app.orchestrator.steps.make_animation_prompts import fill_animation_prompts
     from app.services import animation_prompt_gpt as apg
+    from app.services.frame_store import session_factory_for
 
     async with _lock_for(project_id):
-        async with SessionLocal() as session:
+        # D2: кадры проекта лежат в его project.db; на id-коллизию IdCollisionError до платного вызова GPT
+        factory = await session_factory_for(project_id)
+        async with factory() as session:
             project = await session.get(Project, project_id)
             if project is None:
                 return {"batches": 0, "pending": 0}
@@ -139,7 +141,7 @@ async def drain_anim_pr_from_image_prompts(
 
 
 async def _sidecar_loop(project_id: int) -> None:
-    from app.db import SessionLocal
+    from app.services.frame_store import IdCollisionError, session_factory_for
 
     idle_rounds = 0
     try:
@@ -150,6 +152,10 @@ async def _sidecar_loop(project_id: int) -> None:
                 )
             except asyncio.CancelledError:
                 raise
+            except IdCollisionError:
+                # повтором это не лечится: выходим, а не пробуем каждые 20 с
+                logger.exception("[#{}] anim_pr_sidecar: id-коллизия master/project.db — stop", project_id)
+                break
             except Exception:  # noqa: BLE001
                 logger.exception("[#{}] anim_pr_sidecar: drain failed", project_id)
                 await asyncio.sleep(20)
@@ -162,7 +168,8 @@ async def _sidecar_loop(project_id: int) -> None:
                 await asyncio.sleep(2)
                 continue
 
-            async with SessionLocal() as session:
+            factory = await session_factory_for(project_id)
+            async with factory() as session:
                 project = await session.get(Project, project_id)
                 status = project.status if project is not None else None
                 if project is not None and pending == 0:

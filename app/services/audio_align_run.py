@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,7 @@ from loguru import logger
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import is_sqlite_locked as _is_sqlite_locked, session_scope
+from app.db import is_sqlite_locked as _is_sqlite_locked
 from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.audio_align_methods import (
     SHARED_NEMO_FULL_METHODS,
@@ -35,6 +37,25 @@ from app.services.reset_step import reset_step
 from app.services.step_cancel import raise_if_cancelled
 from app.services.whisper import dump_words_json, load_words_json
 
+
+
+@asynccontextmanager
+async def _project_scope(project_id: int) -> AsyncIterator[AsyncSession]:
+    """Как ``session_scope()``, но в хранилище кадров проекта (D2): его ``project.db``, а не master.
+
+    Кадры, таймкоды и артефакты проекта из API лежат в ``project.db``; на master выравнивание не находило кадров
+    или писало таймкоды в чужую базу."""
+    from app.db import commit_with_retry
+    from app.services.frame_store import session_factory_for
+
+    factory = await session_factory_for(project_id)
+    async with factory() as session:
+        try:
+            yield session
+            await commit_with_retry(session)
+        except Exception:
+            await session.rollback()
+            raise
 
 
 async def _latest_words_artifact(
@@ -223,7 +244,7 @@ async def _persist_align_db_with_retry(
     last: BaseException | None = None
     for attempt in range(1, 10):
         try:
-            async with session_scope() as session:
+            async with _project_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     raise RuntimeError(f"проект #{project_id} не найден")
@@ -277,7 +298,7 @@ async def run_audio_align_for_project(
         "engine": "nemo" if method_id != "silence" else "ffmpeg_silence",
     }
 
-    async with session_scope() as session:
+    async with _project_scope(project_id) as session:
         project = await session.get(Project, project_id)
         if project is None:
             summary["error"] = "проект не найден"
@@ -374,7 +395,7 @@ async def run_audio_align_for_project(
         try:
             from app.services.audio_marks import build_marks_from_words
 
-            async with session_scope() as session:
+            async with _project_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is not None:
                     frames = (
@@ -434,7 +455,7 @@ async def run_audio_align_for_project(
     from app.orchestrator.steps import assemble as assemble_mod
 
     try:
-        async with session_scope() as session:
+        async with _project_scope(project_id) as session:
             project = await session.get(Project, project_id)
             if project is None:
                 summary["error"] = "проект не найден"
@@ -462,7 +483,7 @@ async def run_audio_align_for_project(
     except Exception as exc:  # noqa: BLE001
         logger.exception("[#{}] audio_align: assemble failed", project_id)
         summary["error"] = str(exc)
-        async with session_scope() as session:
+        async with _project_scope(project_id) as session:
             project = await session.get(Project, project_id)
             if project is not None:
                 actual = await compute_actual_status(session, project)

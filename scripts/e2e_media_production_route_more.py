@@ -128,6 +128,7 @@ ANIMATION_PROMPT = "Slow push-in towards the blue folder on the desk, soft morni
 
 FAULT_HITL = "simulated outcome loss: the HITL card of the new hero could not be sent"
 FAULT_TAIL = "simulated outcome loss: the database write of the new item row failed"
+LOST_CLIPS_DIR = "_stand_lost_clips"
 FAULT_VALIDATE = "simulated outcome loss: the post-step validation of the video step crashed"
 
 
@@ -514,9 +515,11 @@ def evaluate_videos(snap: dict, *, mode: str, max_real_posts: int = 1) -> list[d
     out = [
         check("exactly_one_paid_submit_at_most", paid == 1 and paid <= max_real_posts,
               {"paid_posts": paid, "max_real_posts": max_real_posts, "fake_posts": counters.get("fake_posts")}),
-        check("provider_ledger_holds_one_intent",
+        check("provider_ledger_binds_exactly_one_submit",
               sum(1 for r in ledger if r.get("api") == "outsee" and str(r.get("key")) == prof.key
-                  and r.get("event") == "intent") == 1,
+                  and r.get("event") == "intent_done" and r.get("status") == "bound") == 1
+              and not any(r.get("event") == "intent_done" and r.get("status") not in ("bound", "rejected") for r in ledger
+                          if r.get("api") == "outsee" and str(r.get("key")) == prof.key),
               [(r.get("event"), r.get("status"), r.get("key")) for r in ledger][:6]),
         check("outcome_loss_injected_and_native_retries_ran",
               counters.get("injected_validate", 0) >= 1 and attempts >= 3,
@@ -727,7 +730,19 @@ def _install_faults(prof: NodeProfile, counters: dict, restore: list) -> None:
         from app.services import post_step_validate
         patch(generate_videos, "browser_session", _no_browser)
 
-        async def broken_validate(*_a, **_k):
+        async def broken_validate(*a, **_k):
+            # The outcome is really lost for the application: the provider was paid and answered, but the clip is not
+            # where the step looks for it after the crash (the project keeps one store now, so a file that stayed in
+            # place would simply be re-bound by the disk recovery). The stand keeps the paid file aside, to prove it
+            # exists exactly once.
+            project = a[1] if len(a) > 1 else None
+            root = getattr(project, "data_dir", None)
+            if root is not None:
+                aside = Path(root) / LOST_CLIPS_DIR
+                aside.mkdir(parents=True, exist_ok=True)
+                for clip in (Path(root) / "videos").glob("clip_*.mp4"):
+                    if clip.is_file():
+                        clip.replace(aside / clip.name)
             await lost("injected_validate", FAULT_VALIDATE)
 
         async def lost_text(*_a, **_k):
@@ -992,7 +1007,8 @@ async def _verify_downloaded(prof: NodeProfile, project_root: Path, state_db: Pa
     from app.services.artifact_verifier import verify_artifact
     directory = project_root / prof.result_dir
     pattern = prof.file_prefix + "_*" + (".mp4" if prof.kind == "video" else ".png")
-    files = sorted((p for p in directory.glob(pattern) if p.is_file()), key=lambda p: p.stat().st_mtime) if directory.is_dir() else []
+    files = [p for d in (directory, project_root / LOST_CLIPS_DIR) if d.is_dir() for p in d.glob(pattern) if p.is_file()]
+    files.sort(key=lambda p: p.stat().st_mtime)
     if not files:
         return {"status": "failed", "reason": "no_result_file", "dir": prof.result_dir}
     got = await verify_artifact(files[-1], root=project_root, kind=prof.kind)
@@ -1182,7 +1198,8 @@ def _finish(args, prof, mode, result, gate, counters, probes, advisories, decisi
     if prof.kind == "video":
         folder = project_root / prof.result_dir
         clips = [{"name": p.name, "exists": True, "bytes": p.stat().st_size}
-                 for p in sorted(folder.glob(prof.file_prefix + "_*.mp4"))] if folder.is_dir() else []
+                 for d in (folder, project_root / LOST_CLIPS_DIR) if d.is_dir()
+                 for p in sorted(d.glob(prof.file_prefix + "_*.mp4"))]
     events = qc._events(state_db, execution)
     attempts = sum(1 for e in events if e["kind"] == "node_start" and e.get("node_key") == prof.target)
     fs = qc._step_failure(project_db)

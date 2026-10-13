@@ -2172,3 +2172,34 @@ async def serial_tick_mass_lanes(session: AsyncSession) -> int:
             (next_p.meta or {}).get("mass_lane_position"),
         )
     return started
+
+
+
+async def maybe_auto_advance_for_worker(
+    session: AsyncSession, project: Project, bot: Bot, *, force: bool = False
+) -> bool:
+    """Тик воркера: автопродвижение на базе проекта (F10-D1).
+
+    Содержимое проекта (general_plan, script_text, кадры, HITL, артефакты) лежит в его project.db, а воркер держит
+    сессию master. На строке master ``clamp_status_to_data`` видит пустые данные и откатывает ``plan_ready`` в ``new``.
+    При ``WORKER_USE_PROJECT_DB=true`` та же боевая функция идёт на сессии project.db (как ``advance_project_job`` для
+    шагов): рантайм подтягивается из master до тика и возвращается в master после. Флаг выключен: прежнее поведение.
+    Строки проекта нет в project.db: возврат на master, как и раньше."""
+    if not settings.worker_use_project_db:
+        return await maybe_auto_advance(session, project, bot, force=force)
+    from app.project_db import project_db_session_scope, pull_master_runtime_into_project, push_runtime_to_master
+
+    pid = int(project.id)
+    async with project_db_session_scope(pid) as ps:
+        p = await ps.get(Project, pid)
+        if p is None:
+            return await maybe_auto_advance(session, project, bot, force=force)
+        await pull_master_runtime_into_project(ps, p)
+        advanced = await maybe_auto_advance(ps, p, bot, force=force)
+        await ps.commit()
+        await push_runtime_to_master(ps, p)
+    try:
+        await session.refresh(project)
+    except Exception:  # noqa: BLE001
+        logger.debug("auto_advance: refresh проекта #{} после тика на project.db не удался", pid)
+    return advanced

@@ -6504,6 +6504,15 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         await cb.answer("Плохой callback", show_alert=True)
         return
 
+    from app.services.hitl_locator import AMBIGUOUS_RU, HitlAmbiguous, hitl_session_scope, locate_hitl, mirror_decision_to_master
+    from app.services.hitl_apply import claim_hitl_decision
+    try:
+        await locate_hitl(hitl_id)
+    except HitlAmbiguous:
+        # Старая кнопка несёт только номер запроса: при совпадении номеров у разных проектов не угадываем.
+        await cb.answer(AMBIGUOUS_RU, show_alert=True)
+        return
+
     if action == "original":
         # Шлём оригинал (send_document, без TG-сжатия). Файл лежит в
         # payload.photo_path.
@@ -6511,7 +6520,7 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
 
         from aiogram.types import FSInputFile
 
-        async with session_scope() as s:
+        async with hitl_session_scope(hitl_id) as (s, hitl_loc):
             req = (
                 await s.execute(select(HITLRequest).where(HITLRequest.id == hitl_id))
             ).scalar_one_or_none()
@@ -6543,7 +6552,7 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         return
 
     if action == "edit":
-        async with session_scope() as s:
+        async with hitl_session_scope(hitl_id) as (s, hitl_loc):
             req = (
                 await s.execute(select(HITLRequest).where(HITLRequest.id == hitl_id))
             ).scalar_one_or_none()
@@ -6593,7 +6602,8 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         await cb.answer("Жду новый текст")
         return
 
-    async with session_scope() as s:
+    decided_for_mirror = None
+    async with hitl_session_scope(hitl_id) as (s, hitl_loc):
         req = (
             await s.execute(select(HITLRequest).where(HITLRequest.id == hitl_id))
         ).scalar_one_or_none()
@@ -6608,7 +6618,12 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
             "regen": HITLDecision.regenerate,
             "reject": HITLDecision.rejected,
         }.get(action, HITLDecision.pending)
-        req.decision = decision
+        if decision is not HITLDecision.pending and not await claim_hitl_decision(
+                s, req, decision, actor="telegram:owner"):
+            await cb.answer("Уже обработан", show_alert=True)
+            return
+        if hitl_loc is not None and hitl_loc.store == "project" and decision is not HITLDecision.pending:
+            decided_for_mirror = req
 
         # В ручном режиме 🔁 на hero-карточке = «перезапустить шаг 4
         # для текущего героя» (с тем же описанием). На ✅ — если у проекта
@@ -6710,6 +6725,8 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                             )
                         # Если это последняя вариация последнего героя —
                         # статус остаётся hero_ready (шаг полностью завершён).
+    if decided_for_mirror is not None:
+        await mirror_decision_to_master(decided_for_mirror)
     await cb.answer(f"Решение: {action}")
     badge = {
         HITLDecision.approved: "✅ Одобрено",

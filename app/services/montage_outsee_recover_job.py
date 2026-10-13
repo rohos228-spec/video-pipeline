@@ -8,7 +8,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.db import session_scope
+from app.project_db import project_db_session_scope
 from app.models import Project
 from app.services.event_bus import publish_project_event
 from app.services.montage_board_job_state import resolve_job_status
@@ -61,7 +61,7 @@ def spawn_recover_job(project_id: int) -> asyncio.Task[None]:
     async def _runner() -> None:
         result: dict[str, Any] = {}
         try:
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     return
@@ -78,7 +78,7 @@ def spawn_recover_job(project_id: int) -> asyncio.Task[None]:
                 )
             await _publish(project_id, "running")
 
-            async with session_scope() as session:
+            async with project_db_session_scope(project_id) as session:
                 project = await session.get(Project, project_id)
                 if project is None:
                     return
@@ -181,7 +181,7 @@ def spawn_recover_job(project_id: int) -> asyncio.Task[None]:
         except asyncio.CancelledError:
             logger.info("recover_outsee_job #{} cancelled", project_id)
             try:
-                async with session_scope() as session:
+                async with project_db_session_scope(project_id) as session:
                     project = await session.get(Project, project_id)
                     if project is not None:
                         _set_job(
@@ -199,7 +199,7 @@ def spawn_recover_job(project_id: int) -> asyncio.Task[None]:
         except Exception as exc:  # noqa: BLE001
             logger.exception("recover_outsee_job #{} failed", project_id)
             try:
-                async with session_scope() as session:
+                async with project_db_session_scope(project_id) as session:
                     project = await session.get(Project, project_id)
                     if project is not None:
                         _set_job(

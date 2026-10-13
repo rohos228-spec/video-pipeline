@@ -306,7 +306,7 @@ async def test_massfactory_start_needs_ceiling_and_stays_behind_approval(env, no
     assert stub_writes["calls"] == []
     # потолок выше потолка расходов сессии слоя подтвердить нельзя
     huge = await _preview(env, [step("massfactory.start", project_id=pid, topics=["а", "б"],
-                                     ceiling_credits=5000)])
+                                     ceiling_credits=50000)])  # выше потолка плана по умолчанию (10000 кредитов)
     assert huge.status_code == 200 and huge.json()["preview"]["budget"]["fits"] is False
     assert (await env.client.post(f"{BASE}/plans/{huge.json()['plan_id']}/approve")
             ).status_code == 409

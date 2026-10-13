@@ -1420,6 +1420,8 @@ async def generate_video_with_retries(
     лимиты — VIDEO_PRIMARY_TOTAL_ATTEMPTS / VIDEO_FALLBACK_ATTEMPTS.
     """
     del max_attempts_per_prompt  # лестница фиксирована константами
+    # N-7: шаг просит ключ запроса (как images/hero/items); боту этот флаг не передаётся.
+    idem_flag = bool(kwargs.pop("idempotent", False))
     last_err: BaseException | None = None
     current_prompt = prompt
     base_prompt_id = kwargs.get("prompt_id_prefix")
@@ -1461,6 +1463,31 @@ async def generate_video_with_retries(
             "OUTSEE_API_KEY пуст — генерация идёт через ключ Outsee",
             context={"error_kind": "no_key", "provider": "outsee"},
         )
+
+    # Ключ запроса клипа: платная отправка Outsee идёт под записью намерения. Исход неизвестен (ответ потерян,
+    # файл не скачан) -> второй платный запрос не уходит, решает человек; записанный результат берётся как есть.
+    idem_ctx = None
+    if idem_flag and primary_backend == "outsee" and not primary_is_kling:
+        from app.services import outsee_idempotency
+
+        idem_ctx = outsee_idempotency.make_ctx(project_id, out_path, primary_slug, prompt, media="video")
+        if not idem_ctx.usable:
+            idem_ctx = None
+        else:
+            adopted = await outsee_idempotency.check(idem_ctx)  # неизвестный исход -> исключение, ничего не уходит
+            if adopted is not None:
+                logger.warning(
+                    "outsee_retry: {} — платный результат этого клипа уже записан ({}); новый запрос не отправляю",
+                    idem_ctx.key, Path(adopted["file_path"]).name,
+                )
+                return outsee_idempotency.adopted_result(adopted)
+
+    async def _paid_video(call: Any, sent: str) -> Any:
+        if idem_ctx is None:
+            return await call()
+        from app.services import outsee_idempotency as _idem
+
+        return await _idem.run(idem_ctx, call, sent_prompt=sent)
 
     _DOWNLOAD_ONLY_RETRIES = 2
     primary_burns = 0
@@ -1565,20 +1592,23 @@ async def generate_video_with_retries(
             ar = attempt_kwargs.get("aspect_ratio") or "9:16"
             res = attempt_kwargs.get("resolution") or "720p"
             dur = attempt_kwargs.get("duration")
-            result = await outsee_api_generate_video(
+            result = await _paid_video(
+                lambda: outsee_api_generate_video(
+                    send_prompt,
+                    out_path,
+                    model_slug=slug,
+                    aspect_ratio=str(ar).replace("_", ":"),
+                    resolution=str(res),
+                    duration=int(dur) if dur else None,
+                    generate_audio=False,
+                    reference_image=attempt_kwargs.get("start_frame"),
+                    last_frame_image=attempt_kwargs.get("last_frame_image"),
+                    prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
+                    timeout=float(attempt_kwargs.get("timeout") or 900),
+                    gen_id=attempt_kwargs.get("gen_id"),
+                    project_id=project_id,
+                ),
                 send_prompt,
-                out_path,
-                model_slug=slug,
-                aspect_ratio=str(ar).replace("_", ":"),
-                resolution=str(res),
-                duration=int(dur) if dur else None,
-                generate_audio=False,
-                reference_image=attempt_kwargs.get("start_frame"),
-                last_frame_image=attempt_kwargs.get("last_frame_image"),
-                prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
-                timeout=float(attempt_kwargs.get("timeout") or 900),
-                gen_id=attempt_kwargs.get("gen_id"),
-                project_id=project_id,
             )
             try:
                 from app.services.generation_storage import write_sidecar
@@ -1608,8 +1638,11 @@ async def generate_video_with_retries(
             if k not in {"last_frame_image", "end_frame", "generate_audio"}
         }
         media_spend.assert_submit_allowed("outsee", "browser video")
-        return await outsee.generate_video(
-            send_prompt, out_path, project_id=project_id, **cdp_kwargs
+        return await _paid_video(
+            lambda: outsee.generate_video(
+                send_prompt, out_path, project_id=project_id, **cdp_kwargs
+            ),
+            send_prompt,
         )
 
     async def _rewrite_prompt_after_fail(err: BaseException) -> None:
@@ -1713,7 +1746,7 @@ async def generate_video_with_retries(
                 for dl_try in range(1, _DOWNLOAD_ONLY_RETRIES + 1):
                     abort_if_cancelled(project_id)
                     try:
-                        return await outsee.retry_video_download(
+                        dl_result = await outsee.retry_video_download(
                             video_url=video_url,
                             out_path=out_path,
                             gen_id=gen_id,
@@ -1721,6 +1754,11 @@ async def generate_video_with_retries(
                             project_id=project_id,
                             model_slug=attempt_kwargs.get("model_slug"),
                         )
+                        if idem_ctx is not None:
+                            from app.services import outsee_idempotency as _idem
+
+                            await _idem.record_download(idem_ctx, e, dl_result)
+                        return dl_result
                     except OutseeDownloadError as dl_err:
                         last_err = dl_err
                         if dl_try < _DOWNLOAD_ONLY_RETRIES:

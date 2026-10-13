@@ -267,7 +267,7 @@ _PRE_HITL = Precondition("hitl_pending", "Запрос подтверждени�
 def _decide(decision: str):
     async def executor(ctx, params):
         data = await ctx.call("POST", f"/hitl/{params['hitl_id']}/decision",
-                              json={"decision": decision})
+                              json={"decision": decision, "project_id": params.get("project_id")})
         return {"hitl_id": params["hitl_id"], "decision": (data or {}).get("decision"),
                 "kind": (data or {}).get("kind"), "frame_id": (data or {}).get("frame_id")}
     return executor

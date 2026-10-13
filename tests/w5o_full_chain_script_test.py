@@ -413,13 +413,12 @@ def test_findings_point_at_lines_that_still_say_that(mod):
     """A finding without a living reference is noise: each ``where`` line must still contain the quoted code."""
     # F10-D3, D4, D9 и D10 исправлены (W32): ссылки на строки больше не нужны, стенд сам покажет возврат дефекта.
     checks = {
-        "F10-D1": [("app/main.py", "maybe_auto_advance(s, ap, bot)"),
+        "F10-D1": [("app/main.py", "maybe_auto_advance_for_worker(s, ap, bot)"),
                    ("app/orchestrator/auto_advance.py", "await clamp_status_to_data(session, project)"),
                    ("app/services/step_data_guard.py", "статус опережал данные")],
         "F10-D2": [("app/orchestrator/steps/generate_videos.py", "if project is None or fr is None:"),
                    ("app/orchestrator/steps/generate_videos.py", "async with SessionLocal() as session:")],
-        "F10-D5": [("app/web/routers/hitl.py", "req = await session.get(HITLRequest, hitl_id)"),
-                   ("app/services/hitl_apply.py", "async def apply_hitl_side_effects")],
+        # F10-D5 исправлен (W44): решение идёт в проектную базу, ссылки на строки больше не нужны
         "F10-D6": [("app/orchestrator/auto_advance.py", "visual, no GPT check"),
                    ("app/orchestrator/auto_advance.py", "async def _record_unchecked_auto_approve")],
         "F10-D8": [("app/web/routers/projects.py", "pulled = await _heal_get_runtime_from_master(session, p)"),

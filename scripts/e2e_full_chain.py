@@ -27,7 +27,8 @@ linear and interleaves text and media nodes, so a level is "everything up to thi
 
 STAND SEAMS (``SEAMS``; each one is listed in the report as "not real" and tied to a finding, ``--no-seams`` /
 ``--without-seam NAME`` switch them off to reproduce the finding):
-  auto_on_project_db  F10-D1  the worker's auto_advance runs on the project's own project.db session
+  auto_on_project_db  F10-D1  PRODUCTION FLAG WORKER_USE_PROJECT_DB=true (no code patch any more): the worker's auto_advance
+                      runs on the project's own project.db session
   store_mirror        F10-D2  rows project.db <-> master around the two steps that open the master store (hero, videos)
   hitl_to_master      F10-D5  the project's HITL rows are copied into master so the human's production route finds them
 
@@ -649,45 +650,10 @@ def install_child_seams(cfg: dict) -> None:
 
     outsee_http._post_generate_via_curl = no_curl_post
 
-    if "auto_on_project_db" in (cfg.get("seams") or []):
-        install_auto_on_project_db_seam()
     if "store_mirror" in (cfg.get("seams") or []):
         install_store_mirror_seam()
     if "hitl_to_master" in (cfg.get("seams") or []):
         install_hitl_to_master_seam()
-
-
-def install_auto_on_project_db_seam() -> None:
-    """STAND SEAM (not production behaviour), finding F10-D1.
-
-    The worker calls ``maybe_auto_advance(s, ap, bot)`` with a session of the MASTER state.db, but the content of a
-    project (general_plan, script_text, frames, HITL rows, artifacts) lives only in the project's own project.db. The
-    master row has an empty general_plan, so ``clamp_status_to_data`` rolls ``plan_ready`` back to ``new`` and the
-    worker never moves on. With this seam the SAME production function runs on the authoritative project.db session
-    (exactly what advance_project_job does for the steps) and the runtime is pushed back to the master afterwards."""
-    from app.orchestrator import auto_advance
-    from app.models import Project
-    from app.project_db import project_db_session_scope, pull_master_runtime_into_project, push_runtime_to_master
-
-    real = auto_advance.maybe_auto_advance
-
-    async def on_project_db(session, project, bot, *, force: bool = False):
-        pid = int(project.id)
-        async with project_db_session_scope(pid) as ps:
-            p = await ps.get(Project, pid)
-            if p is None:
-                return await real(session, project, bot, force=force)
-            await pull_master_runtime_into_project(ps, p)
-            advanced = await real(ps, p, bot, force=force)
-            await ps.commit()
-            await push_runtime_to_master(ps, p)
-        try:
-            await session.refresh(project)
-        except Exception:  # noqa: BLE001
-            pass
-        return advanced
-
-    auto_advance.maybe_auto_advance = on_project_db
 
 
 def install_store_mirror_seam() -> None:
@@ -872,6 +838,7 @@ class TextOracle:
         self.kinds: list[str] = []
         self.unknown: list[str] = []
         self.sfx_events = 0
+        self.sfx_requests = 0
         self.with_hero = with_hero
         self.frames: list[dict] = []         # filled from the project's own frames when a later node asks about them
 
@@ -941,7 +908,9 @@ class TextOracle:
             events.append({"frame_number": int(f["frame_number"]), "t_start": round(float(f["start"]) + 0.5, 2),
                            "duration": 1.0, "kind": kinds[i % len(kinds)],
                            "prompt": "soft paper whoosh" if i % 2 == 0 else "light desk hit", "gain": 0.5, "duck": False})
+        # the application sends one paid request per DISTINCT (prompt, duration): a repeated event is a free copy
         self.sfx_events = len(events)
+        self.sfx_requests = len({(e["prompt"], e["duration"]) for e in events})
         return json.dumps({"events": events}, ensure_ascii=False)
 
     def answer_animation_prompts(self, text: str, ctx: dict) -> str:
@@ -1505,7 +1474,7 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
     R.check("ни одного отказа по ключу и ни одного неизвестного пути у провайдера",
             fake.extra["auth_failures"] == 0 and fake.extra["not_found"] == 0, fake.extra)
     hero_n = 1 if chain.args.with_hero else 0
-    exp = expected_counts_for(until, ev.frames, chain.sfx_events, hero_n)
+    exp = expected_counts_for(until, ev.frames, oracle.sfx_requests or chain.sfx_events, hero_n)
     for bucket in ("outsee_image", "outsee_video", "tts", "kie_music", "sfx"):
         got = fake.counts[bucket]
         if exp[bucket] or until == "E":
@@ -1516,7 +1485,8 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
     got_llm = count_by([{"k": k} for k in oracle.kinds], "k")
     for kind, n in expected_llm_calls(until, ev.frames, hero_n).items():
         R.check(f"текстовая модель: запросов узла «{kind}» ровно {n} (без повторного запуска шага и без отказов контракта)",
-                got_llm.get(kind, 0) == n, {"получено": got_llm.get(kind, 0), "ожидалось": n}, known=None)
+                got_llm.get(kind, 0) == n, {"получено": got_llm.get(kind, 0), "ожидалось": n},
+                known="F10-D11" if kind == "animation_prompts" else None)
     if level_index(until) >= level_index("C"):
         want_up = uploads_expected(ev.frames, hero_n)
         R.check("видео и картинки по референсу: одна загрузка кадра на публичный файловый хост на каждый платный запрос "
@@ -1526,8 +1496,9 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
                  "потому что Yandex S3 не настроен: стартовые кадры видео" + (" и референсы героя для картинок" if hero_n else "")
                  + "; в стенде это loopback-подмена, в живом прогоне кадры проекта окажутся на сторонних сайтах")
     intents = [r for r in ev.idem if r["event"] == "intent"]
-    R.check("Outsee: одно намерение (intent) в идемпотентности на кадр, ключи не повторяются",
-            len(intents) == len({r["key"] for r in intents}) == (ev.frames if level_index(until) >= 1 else 0),
+    want_intents = (ev.frames if level_index(until) >= 1 else 0) + (ev.frames if level_index(until) >= 2 else 0)
+    R.check("Outsee: одно намерение (intent) в идемпотентности на каждую картинку и каждый клип, ключи не повторяются",
+            len(intents) == len({r["key"] for r in intents}) == want_intents,
             [(r["key"]) for r in intents])
     refused = [e for e in ev.wire if e.get("event") == "refused"]
     R.check("сеть: ни одного запроса за пределы loopback (хук отправки и сторож сокетов)",
@@ -1581,8 +1552,13 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
     R.check("инциденты: каждый записанный инцидент типизирован (type и статус)", len(typed) == len(ev.incidents),
             len(ev.incidents))
     known_nodes = {"n_hero": "F10-D3", "n_sfx_gen": "F10-D10"}
-    other = [b for b in blocking if b[0] not in known_nodes]
+    # F10-D11: the anim_pr sidecar spawned by the images step inherits its attempt; a model call still in flight when
+    # the attempt closes is recorded as an unconfirmed request of n_images (timing dependent, not on every run)
+    sidecar_race = [b for b in blocking if b[0] == "n_images" and b[1] == "uncertain_request"]
+    other = [b for b in blocking if b[0] not in known_nodes and b not in sidecar_race]
     R.check("у чистого прогона нет блокирующих инцидентов наблюдения (кроме описанных находок)", not other, other)
+    R.check("независимая проверка images: нет неподтверждённого запроса от фонового sidecar промтов анимации",
+            not sidecar_race, sidecar_race, known="F10-D11")
     R.check("независимая проверка hero знает о законно пропущенном шаге (нет блокирующего инцидента n_hero)",
             not [b for b in blocking if b[0] == "n_hero"], [b for b in blocking if b[0] == "n_hero"], known="F10-D3")
     if level_index(until) >= level_index("D"):
@@ -1651,18 +1627,19 @@ FINDINGS: list[dict] = [
     {"id": "F10-D1", "level": "A", "node": "plan -> script (auto_advance)",
      "title": "Воркер двигает auto_mode-проект по строке master (state.db), а содержимое проекта лежит только в project.db: "
               "clamp_status_to_data откатывает plan_ready в new, цепочка встаёт после первой же ноды.",
-     "where": ["app/main.py:717 (maybe_auto_advance(s, ap, bot) с сессией master)",
+     "where": ["app/main.py:717 (maybe_auto_advance_for_worker(s, ap, bot): без флага WORKER_USE_PROJECT_DB сессия master)",
                "app/orchestrator/auto_advance.py:1518 (clamp_status_to_data)",
                "app/services/step_data_guard.py:449 (лог «статус опережал данные»)"],
      "repro": "python scripts/e2e_full_chain.py --dry --until A --no-seams --work-dir <пустая папка вне репозитория>: "
               "статус planning -> plan_ready -> new, в логе сервера clamp_status_to_data: plan_ready -> new.",
-     "masked_by": "auto_on_project_db", "stops_at": "plan_ready"},
+     "masked_by": "боевой флаг WORKER_USE_PROJECT_DB=true (шов auto_on_project_db)", "stops_at": "plan_ready"},
     {"id": "F10-D2", "level": "C", "node": "animation_prompts -> videos",
      "title": "Нода videos читает Project и Frame через app.db.SessionLocal (master); у проекта, созданного через API, "
               "кадров в master нет, задача кадра молча возвращает False, шаг падает «клипы не получены ... кадр пропущен "
               "после ошибки» без единого запроса к провайдеру и без записанной причины.",
-     "where": ["app/orchestrator/steps/generate_videos.py:591-594 (SessionLocal; if project is None or fr is None: return False)",
-               "app/orchestrator/steps/generate_videos.py:1073-1080 (общее сообщение шага)"],
+     "where": ["app/orchestrator/steps/generate_videos.py:634-635 (задача шота; if project is None or fr is None: return False; "
+               "с W44 хранилище кадров выбирает _frame_store, остаётся для hero)",
+               "app/orchestrator/steps/generate_videos.py:1150-1153 (общее сообщение шага)"],
      "repro": "python scripts/e2e_full_chain.py --dry --until C --without-seam store_mirror --work-dir <пустая папка>: "
               "статус generating_videos -> paused; work/server.log: «generate_videos: клипы не получены (3) ... "
               "Первая причина: кадр пропущен после ошибки», запросов к провайдеру видео 0.",
@@ -1735,6 +1712,17 @@ FINDINGS: list[dict] = [
                "app/services/sfx_plan.py:538 (_sfx_wav_record: wave.open(...) на любом файле события)"],
      "repro": "любой прогон уровня D/E стенда: observation_incidents, type=media_failure, node_key=n_sfx_gen; "
               "событие node_result_verification: errors=['Error'].",
+     "masked_by": None, "stops_at": None},
+    {"id": "F10-D11", "level": "B", "node": "anim_pr_sidecar -> animation_prompts (вход в шаг стирает выход)",
+     "title": "Фоновый sidecar промтов анимации во время шага картинок уже вызывает текстовую модель по кадрам проекта "
+              "(хранилище кадров теперь project.db); при входе в шаг animation_prompts replace_step_outputs_on_enter "
+              "стирает этот выход, и шаг вызывает модель второй раз: запросов узла вдвое больше ожидаемого. Задача sidecar "
+              "наследует попытку n_images: если вызов модели не закончен к её закрытию, остаётся блокирующий инцидент "
+              "uncertain_request у n_images (зависит от времени, бывает не в каждом прогоне).",
+     "where": ["app/services/step_replace.py:replace_step_outputs_on_enter (force_wipe=True для anim_pr)",
+               "app/services/anim_pr_sidecar.py (drain_anim_pr_from_image_prompts)"],
+     "repro": "прогон стенда до уровня B: llm_requests содержит 4 запроса узла animation_prompts вместо 2; server.log: "
+              "«anim_pr_sidecar: drain pending=3 (status=generating_images)», затем «wiped=['anim_pr']».",
      "masked_by": None, "stops_at": None},
 ]
 
@@ -1851,6 +1839,10 @@ def server_env(work: Path, port: int, cfg: dict, asr_model: str) -> dict[str, st
         "DISK_GUARD_CRITICAL_FREE_GB": "0.0005", "NO_PROXY": "127.0.0.1,localhost,::1", "no_proxy": "127.0.0.1,localhost,::1",
         "PYTHONUNBUFFERED": "1",
     })
+    if "auto_on_project_db" in (cfg.get("seams") or []):
+        env["WORKER_USE_PROJECT_DB"] = "true"   # боевой флаг F10-D1, не заплатка кода
+    else:
+        env.pop("WORKER_USE_PROJECT_DB", None)
     return env
 
 
