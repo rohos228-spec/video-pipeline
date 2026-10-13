@@ -389,7 +389,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("0008_frames_space_manual", "frames_space.manual flag (scene space)",
               _frames_space_manual, _frames_space_manual_fp, (SCOPE_MASTER, SCOPE_PROJECT)),
     Migration("0009_projects_columns", "projects settings columns added after the first release",
-              _projects_columns, _projects_columns_fp),
+              _projects_columns, _projects_columns_fp, (SCOPE_MASTER, SCOPE_PROJECT)),
     Migration("0010_change_proposals_reject_columns", "change_proposals.rejected_by / reject_reason / rejected_at",
               _change_proposals_reject_columns, _change_proposals_reject_columns_fp),
     Migration("0011_operator_audit", "append-only operator audit of mutating /api requests",

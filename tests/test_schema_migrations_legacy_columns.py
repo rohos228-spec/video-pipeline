@@ -50,7 +50,8 @@ def test_legacy_migrations_are_registered_after_0006():
     ids = [m.id for m in sm.MIGRATIONS]
     assert ids[6:9] == LEGACY_IDS and ids == sorted(ids)
     by_id = {m.id: m for m in sm.MIGRATIONS}
-    assert by_id["0009_projects_columns"].scopes == (sm.SCOPE_MASTER,)
+    # S-1: the projects columns are also added to already existing project.db files
+    assert by_id["0009_projects_columns"].scopes == (sm.SCOPE_MASTER, sm.SCOPE_PROJECT)
     assert sm.SCOPE_PROJECT in by_id["0007_frames_v2_columns"].scopes
 
 
@@ -116,11 +117,11 @@ async def test_missing_tables_are_skipped_not_created(engine):
     assert not {"projects", "frames", "frames_space"} & names
 
 
-async def test_project_scope_skips_the_projects_migration(engine):
+async def test_project_scope_adds_the_projects_columns_to_an_old_project_db(engine):
     await _old_schema(engine)
     report = await _run(engine, scope=sm.SCOPE_PROJECT)
-    assert "0009_projects_columns" not in report.applied and "0007_frames_v2_columns" in report.applied
-    assert "image_generator" not in await _cols(engine, "projects")
+    assert "0009_projects_columns" in report.applied and "0007_frames_v2_columns" in report.applied
+    assert NEW_PROJECT_COLS <= await _cols(engine, "projects")
 
 
 async def test_failing_column_migration_rolls_back_every_column_of_it(engine):

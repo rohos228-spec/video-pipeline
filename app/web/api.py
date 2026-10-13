@@ -239,6 +239,15 @@ async def _lifespan(app: FastAPI):
         logger.exception("auto_migrate_legacy_projects failed (non-fatal)")
 
     try:
+        from app.services.project_db_guard import migrate_existing_project_dbs
+
+        schema_report = await migrate_existing_project_dbs()
+        if schema_report["failed"]:
+            logger.error("web lifespan: project.db schema migration failed for {}", schema_report["failed"])
+    except Exception:  # noqa: BLE001
+        logger.exception("migrate_existing_project_dbs failed (non-fatal)")
+
+    try:
         from app.services.diagnosis import register_default_escalation_notifier
 
         register_default_escalation_notifier()
@@ -252,9 +261,23 @@ async def _lifespan(app: FastAPI):
     observer_task = asyncio.create_task(get_observer().loop(), name="observation-consumer")
     # A18: независимая от цикла надзора задача проверки пульса (второй рубеж - scripts/watchdog_check.py).
     checker_task = asyncio.create_task(supervisor_heartbeat.run_checker(), name="observer-heartbeat-checker")
+    # S-3: плановый бэкап state.db, tracker.db и project.db каждого проекта (копия + проверка восстановления).
+    backup_stop = asyncio.Event()
+    backup_task = None
+    try:
+        from app.services.project_db_guard import start_scheduled_backups
+
+        backup_task = start_scheduled_backups(stop=backup_stop)
+    except Exception:  # noqa: BLE001
+        logger.exception("scheduled backups failed to start (non-fatal)")
     try:
         yield
     finally:
+        backup_stop.set()
+        if backup_task is not None:
+            backup_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await backup_task
         checker_task.cancel()
         with suppress(asyncio.CancelledError):
             await checker_task

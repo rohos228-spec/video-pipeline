@@ -1717,7 +1717,7 @@ FINDINGS: list[dict] = [
               "каждые 0,5 с (прогон x12, два запроса plan в llm_requests); интерфейс опрашивает реже, воспроизводится "
               "не по заказу.",
      "where": ["app/web/routers/projects.py:222-234 (_heal_get_runtime_from_master + commit в GET)",
-               "app/project_db.py:812-818 (pull_master_runtime: «берём master»)"],
+               "app/project_db.py:730-737 (pull_master_runtime: «берём master»)"],
      "repro": "work/llm_requests: два запроса «Тема ролика» подряд; server.log: «pull_master_runtime: #2 project.db=plan_ready "
               "master=planning — берём master». Стенд поэтому читает статус из project.db без GET во время прогона.",
      "masked_by": "стенд опрашивает project.db только на чтение", "stops_at": None},

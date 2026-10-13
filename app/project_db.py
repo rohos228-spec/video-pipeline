@@ -87,13 +87,18 @@ async def migrate_single_project_data(
     db_path = resolve_project_db_path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    if db_path.exists() and create_backup:
-        try:
-            bak = db_path.with_suffix(".db.bak")
-            shutil.copy2(db_path, bak)
-            logger.info("Backup created: {}", bak)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Backup failed for {}: {}", db_path, exc)
+    if db_path.exists():
+        # S-3: перезапись строки проекта из master затрагивает существующий project.db, поэтому копия обязательна
+        # (онлайн-копия SQLite с проверкой, WAL учтён) и не зависит от create_backup, если в базе есть данные.
+        # Не удалось сделать копию - миграции нет (BackupError).
+        from app.services.schema_migrations import KEEP_PRE_MIGRATION, _has_user_data, backup_sqlite
+
+        if create_backup or await asyncio.to_thread(_has_user_data, db_path):
+            made = await asyncio.to_thread(backup_sqlite, db_path, None, tag="pre-master-sync",
+                                           keep=KEEP_PRE_MIGRATION)
+            bak = db_path.with_suffix(".db.bak")  # прежнее имя оставлено для старых сценариев восстановления
+            shutil.copy2(made.path, bak)
+            logger.info("Backup created: {} (verified copy {})", bak, made.path)
 
     await init_project_db(target_dir)
 
@@ -297,155 +302,72 @@ def register_text_project(text_id: int, project_id: int) -> None:
     _TEXT_TO_PROJECT[text_id] = project_id
 
 
-async def resolve_frame_project_id(frame_id: int) -> int | None:
-    """Определить project_id по frame_id с поиском в кэше, state.db и проектных базах."""
-    if frame_id in _FRAME_TO_PROJECT:
-        return _FRAME_TO_PROJECT[frame_id]
+async def _resolve_owner_project_id(model: type, obj_id: int, cache: dict[int, int], label: str) -> int | None:
+    """project_id владельца строки: master и все открытые проектные базы.
+
+    D-9: у master и каждой project.db свой автоинкремент, поэтому один id может принадлежать разным проектам.
+    Если базы не согласны, кто владелец, молча брать строку master нельзя: ``IdCollisionError``.
+    """
+    if obj_id in cache:
+        return cache[obj_id]
 
     from app.db import SessionLocal
+    from app.services.project_db_guard import IdCollisionError, ambiguity
 
+    owners: dict[str, int | None] = {}
     async with SessionLocal() as s:
-        fr = await s.get(Frame, frame_id)
-        if fr is not None:
-            _FRAME_TO_PROJECT[frame_id] = fr.project_id
-            return fr.project_id
+        row = await s.get(model, obj_id)
+        if row is not None:
+            owners["master"] = row.project_id
 
     # Проверяем в активных проектных базах
     for key, sm in list(_SESSION_MAKERS.items()):
         try:
             async with sm() as p_sess:
-                fr = await p_sess.get(Frame, frame_id)
-                if fr is not None:
-                    _FRAME_TO_PROJECT[frame_id] = fr.project_id
-                    return fr.project_id
+                row = await p_sess.get(model, obj_id)
+                if row is not None:
+                    owners[key] = row.project_id
         except Exception:
             continue
-    return None
+
+    if not owners:
+        return None
+    if ambiguity(set(owners.values())):
+        logger.error("ID COLLISION: {} id={} belongs to different projects: {}", label, obj_id, owners)
+        raise IdCollisionError(f"{label} id={obj_id} принадлежит разным проектам в разных базах: {owners}")
+    owner = next(iter(owners.values()))
+    cache[obj_id] = owner
+    return owner
+
+
+async def resolve_frame_project_id(frame_id: int) -> int | None:
+    """Определить project_id по frame_id с поиском в кэше, state.db и проектных базах."""
+    return await _resolve_owner_project_id(Frame, frame_id, _FRAME_TO_PROJECT, "frame")
 
 
 async def resolve_entity_project_id(entity_id: int) -> int | None:
     """Определить project_id по entity_id."""
-    if entity_id in _ENTITY_TO_PROJECT:
-        return _ENTITY_TO_PROJECT[entity_id]
-
-    from app.db import SessionLocal
-
-    async with SessionLocal() as s:
-        en = await s.get(Entity, entity_id)
-        if en is not None:
-            _ENTITY_TO_PROJECT[entity_id] = en.project_id
-            return en.project_id
-
-    for key, sm in list(_SESSION_MAKERS.items()):
-        try:
-            async with sm() as p_sess:
-                en = await p_sess.get(Entity, entity_id)
-                if en is not None:
-                    _ENTITY_TO_PROJECT[entity_id] = en.project_id
-                    return en.project_id
-        except Exception:
-            continue
-    return None
+    return await _resolve_owner_project_id(Entity, entity_id, _ENTITY_TO_PROJECT, "entity")
 
 
 async def resolve_scene_project_id(scene_id: int) -> int | None:
     """Определить project_id по scene_id."""
-    if scene_id in _SCENE_TO_PROJECT:
-        return _SCENE_TO_PROJECT[scene_id]
-
-    from app.db import SessionLocal
-
-    async with SessionLocal() as s:
-        sc = await s.get(Scene, scene_id)
-        if sc is not None:
-            _SCENE_TO_PROJECT[scene_id] = sc.project_id
-            return sc.project_id
-
-    for key, sm in list(_SESSION_MAKERS.items()):
-        try:
-            async with sm() as p_sess:
-                sc = await p_sess.get(Scene, scene_id)
-                if sc is not None:
-                    _SCENE_TO_PROJECT[scene_id] = sc.project_id
-                    return sc.project_id
-        except Exception:
-            continue
-    return None
+    return await _resolve_owner_project_id(Scene, scene_id, _SCENE_TO_PROJECT, "scene")
 
 
 async def resolve_edge_project_id(edge_id: int) -> int | None:
     """Определить project_id по edge_id."""
-    if edge_id in _EDGE_TO_PROJECT:
-        return _EDGE_TO_PROJECT[edge_id]
-
-    from app.db import SessionLocal
-
-    async with SessionLocal() as s:
-        ed = await s.get(FrameEdge, edge_id)
-        if ed is not None:
-            _EDGE_TO_PROJECT[edge_id] = ed.project_id
-            return ed.project_id
-
-    for key, sm in list(_SESSION_MAKERS.items()):
-        try:
-            async with sm() as p_sess:
-                ed = await p_sess.get(FrameEdge, edge_id)
-                if ed is not None:
-                    _EDGE_TO_PROJECT[edge_id] = ed.project_id
-                    return ed.project_id
-        except Exception:
-            continue
-    return None
+    return await _resolve_owner_project_id(FrameEdge, edge_id, _EDGE_TO_PROJECT, "frame_edge")
 
 
 async def resolve_prompt_project_id(prompt_id: int) -> int | None:
     """Определить project_id по prompt_id."""
-    if prompt_id in _PROMPT_TO_PROJECT:
-        return _PROMPT_TO_PROJECT[prompt_id]
-
-    from app.db import SessionLocal
-
-    async with SessionLocal() as s:
-        pv = await s.get(PromptVersion, prompt_id)
-        if pv is not None:
-            _PROMPT_TO_PROJECT[prompt_id] = pv.project_id
-            return pv.project_id
-
-    for key, sm in list(_SESSION_MAKERS.items()):
-        try:
-            async with sm() as p_sess:
-                pv = await p_sess.get(PromptVersion, prompt_id)
-                if pv is not None:
-                    _PROMPT_TO_PROJECT[prompt_id] = pv.project_id
-                    return pv.project_id
-        except Exception:
-            continue
-    return None
+    return await _resolve_owner_project_id(PromptVersion, prompt_id, _PROMPT_TO_PROJECT, "prompt_version")
 
 
 async def resolve_text_project_id(text_id: int) -> int | None:
     """Определить project_id по text_id."""
-    if text_id in _TEXT_TO_PROJECT:
-        return _TEXT_TO_PROJECT[text_id]
-
-    from app.db import SessionLocal
-
-    async with SessionLocal() as s:
-        ft = await s.get(FrameText, text_id)
-        if ft is not None:
-            _TEXT_TO_PROJECT[text_id] = ft.project_id
-            return ft.project_id
-
-    for key, sm in list(_SESSION_MAKERS.items()):
-        try:
-            async with sm() as p_sess:
-                ft = await p_sess.get(FrameText, text_id)
-                if ft is not None:
-                    _TEXT_TO_PROJECT[text_id] = ft.project_id
-                    return ft.project_id
-        except Exception:
-            continue
-    return None
+    return await _resolve_owner_project_id(FrameText, text_id, _TEXT_TO_PROJECT, "frame_text")
 
 
 async def get_project_engine(project_data_dir: Path | str) -> AsyncEngine:
@@ -1074,6 +996,16 @@ async def project_session_scope(
             raise
 
 
+async def _check_collisions_once(project_id: int, data_dir: Path | str) -> None:
+    """D-9: при первом открытии проекта сверить id master и project.db (ошибка в лог, проект не падает)."""
+    try:
+        from app.services.project_db_guard import check_project_id_collisions
+
+        await check_project_id_collisions(project_id, data_dir)
+    except Exception as exc:  # noqa: BLE001 - проверка не должна ломать открытие проекта
+        logger.warning("id collision check failed for project #{}: {}", project_id, exc)
+
+
 @asynccontextmanager
 async def project_db_session_scope(
     project_id_or_dir: int | Path | str,
@@ -1093,6 +1025,7 @@ async def project_db_session_scope(
         db_path = resolve_project_db_path(target_dir)
         if not db_path.exists():
             await migrate_project_by_id(project_id_or_dir, create_backup=False)
+        await _check_collisions_once(project_id_or_dir, target_dir)
     else:
         target_dir = Path(project_id_or_dir)
         db_path = resolve_project_db_path(target_dir)
@@ -1118,6 +1051,7 @@ async def get_project_db_session(project_id: int) -> AsyncIterator[AsyncSession]
     db_path = resolve_project_db_path(data_dir)
     if not db_path.exists():
         await migrate_project_by_id(project_id, create_backup=False)
+    await _check_collisions_once(project_id, data_dir)
 
     sm = await get_project_sessionmaker(data_dir)
     session = sm()

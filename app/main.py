@@ -69,6 +69,15 @@ async def _init_db() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("auto_migrate_legacy_projects failed in main (non-fatal)")
 
+    try:
+        from app.services.project_db_guard import migrate_existing_project_dbs
+
+        schema_report = await migrate_existing_project_dbs()
+        if schema_report["failed"]:
+            logger.error("main init_db: project.db schema migration failed for {}", schema_report["failed"])
+    except Exception:  # noqa: BLE001
+        logger.exception("migrate_existing_project_dbs failed in main (non-fatal)")
+
 
 async def _backfill_from_disk() -> None:
     """ROOT FIX: подтягиваем project.xlsx и voiceover.txt в БД для всех

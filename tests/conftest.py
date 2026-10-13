@@ -31,6 +31,12 @@ def _clear_project_db_caches() -> None:
 
     project_db._PROJECT_DIR_CACHE.clear()
     project_db._FRAME_TO_PROJECT.clear()
+    for cache in (project_db._ENTITY_TO_PROJECT, project_db._SCENE_TO_PROJECT, project_db._EDGE_TO_PROJECT,
+                  project_db._PROMPT_TO_PROJECT, project_db._TEXT_TO_PROJECT):
+        cache.clear()
+    from app.services import project_db_guard
+
+    project_db_guard.reset_state()
 
 
 @pytest.fixture(autouse=True)

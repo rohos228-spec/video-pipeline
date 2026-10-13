@@ -250,7 +250,8 @@ class RuntimeAcceptance(test_journal.JournalAcceptance):
         await self.observer.consume(self.scope.execution_id, "master", self.master)
         async with self.master() as session:
             rows = (await session.scalars(select(observation.ObservationEvent))).all()
-            self.assertEqual([row.kind for row in rows], ["node_start", "node_end"])
+            # между началом и концом попытки нода текстового типа журналирует проверку результата
+            self.assertEqual([row.kind for row in rows], ["node_start", "node_result_verification", "node_end"])
             self.assertEqual(len({row.attempt_id for row in rows}), 1)
             self.assertIsNotNone(rows[0].attempt_id)
 
