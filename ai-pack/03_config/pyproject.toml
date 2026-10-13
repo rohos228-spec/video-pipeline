@@ -74,4 +74,5 @@ markers = [
   "paid: spends real money (provider API); never run in CI, only by hand with a ceiling",
   "docker: needs the isolated Docker runner (/.dockerenv); run by the CI docker job",
   "slow: starts a real subprocess/server/ffmpeg/whisper; still offline and free, only slower",
+  "ffmpeg: needs ffmpeg/ffprobe on PATH; skipped without them (tests/conftest.py marks these automatically and reports the skip)",
 ]

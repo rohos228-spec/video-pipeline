@@ -81,8 +81,11 @@ class Caps(actions_tests.DurableActions):
             self.assertEqual((await s.get(ActionExecutionControl, "exec-durable")).requests_used, 2)
 
     async def test_defaults_do_not_affect_current_workflow(self):
-        self.assertEqual((settings.spend_daily_cap_usd, settings.spend_project_cap_usd, settings.spend_run_cap_usd),
-                         (25.0, 10.0, 5.0))
+        # C-17 (W42): потолки по умолчанию подняты до высоких предохранителей ($200 / $100 / $50). Смысл теста прежний:
+        # значения по умолчанию не ниже прежних $25 / $10 / $5 и не мешают обычному прогону.
+        for value, previous in ((settings.spend_daily_cap_usd, 25.0), (settings.spend_project_cap_usd, 10.0),
+                                (settings.spend_run_cap_usd, 5.0)):
+            self.assertGreaterEqual(value, previous)
         await self.supervisor.enable(project_id=7, execution_id="exec-durable", group_id="g1", node_keys=["n1"],
             graph_version=self.graph, initiator="test-operator", rationale="spend fixture", request_limit=40)
         for expected in range(1, 41):  # a 40-request live run fits under the default run cap

@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sqlite3
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,7 @@ def test_server_env_is_loopback_local_and_keyless(mod, outside_tmp):
 
 def test_inside_repo(mod):
     assert mod.inside_repo(mod.ROOT / "data") and mod.inside_repo(mod.ROOT)
-    assert not mod.inside_repo(Path("C:/video-pipeline/_f08_work/x"))
+    assert not mod.inside_repo(Path(tempfile.gettempdir()) / "_f08_work" / "x")
 
 
 def test_main_requires_run_flag(mod):

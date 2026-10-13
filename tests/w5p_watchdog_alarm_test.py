@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import subprocess
 import sys
 import time
@@ -112,11 +113,17 @@ def test_checker_script_without_heartbeat_exits_zero(tmp_path):
     assert out.returncode == 0 and json.loads(out.stdout.strip().splitlines()[-1])["decision"] == "no_heartbeat"
 
 
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 @pytest.mark.slow
-@pytest.mark.skipif(not Path(r"C:\video-pipeline").exists(), reason="нужна рабочая папка вне репозитория")
-def test_live_stand_kill_alarm_dedup_resolve():
-    work = Path(r"C:\video-pipeline\_a18_work") / f"pytest_{int(time.time())}"
+def test_live_stand_kill_alarm_dedup_resolve(outside_tmp):
+    """Рабочая папка стенда вне репозитория (фикстура outside_tmp), порт свободный: не зависит от диска C: и занятого порта."""
+    work = outside_tmp / f"pytest_{int(time.time())}"
     r = subprocess.run([sys.executable, "-X", "utf8", str(ROOT / "scripts" / "e2e_watchdog_alarm.py"),
-                        "--port", "8797", "--work-dir", str(work)], cwd=str(ROOT), capture_output=True, text=True,
+                        "--port", str(_free_port()), "--work-dir", str(work)], cwd=str(ROOT), capture_output=True, text=True,
                        timeout=600)
     assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-1000:]

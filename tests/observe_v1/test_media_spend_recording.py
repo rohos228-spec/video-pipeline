@@ -136,9 +136,11 @@ class KieRecording(MediaSpendBase):
 
 class NeverRaises(MediaSpendBase):
     async def test_broken_database_does_not_affect_the_call(self):
-        def broken():
-            raise RuntimeError("db down")
-        with patch("app.db.SessionLocal", broken):
+        # Проверка рубильника и потолков перед платным вызовом закрыта по умолчанию (нечитаемая база = отказ, это
+        # проверяют свои тесты). Здесь проверяется ДРУГОЕ: сломанная ЗАПИСЬ расхода не ломает отправленный вызов.
+        # Поэтому ломаем писателей записи, а не всю базу.
+        db_down = dict(side_effect=RuntimeError("db down"))
+        with patch.object(media_spend, "_write", **db_down), patch.object(media_spend, "_write_task", **db_down),                 patch.object(media_spend, "_credit_stop", **db_down), patch.object(media_spend, "_write_gap_row", **db_down):
             res = await self.run_gen("z-image", {"code": 200, "data": {"taskId": "T-9"}}, 1)
             await media_spend.drain()
         self.assertEqual(res.gen_id, "T-9")

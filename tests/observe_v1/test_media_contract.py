@@ -12,6 +12,8 @@ import pytest
 
 
 class Environment(unittest.TestCase):
+    # Пишет /results/media-environment.json и проверяет /.dockerenv: имеет смысл только в изолированном контейнере.
+    @unittest.skipUnless(Path("/.dockerenv").exists() and Path("/results").is_dir(), "нужен контейнер с папкой /results")
     def test_record_existing_tools(self):
         tools = {name: shutil.which(name) for name in ("ffmpeg", "ffprobe")}
         modules = {name: importlib.util.find_spec(name) is not None

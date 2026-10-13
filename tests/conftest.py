@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import os
+import re
+import sys
 import tempfile
 from pathlib import Path
 
@@ -20,10 +22,88 @@ import pytest
 # Tests never write into the real api-tracker/tracker.db (A08 stopped silencing test-time cost rows).
 os.environ.setdefault("API_TRACKER_DB", str(Path(tempfile.mkdtemp(prefix="vp-tracker-")) / "tracker.db"))
 
+# Соседние служебные модули tests/ (_pytest_guard, _stand_workdir) должны находиться и без PYTHONPATH=tests.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _pytest_guard  # noqa: E402
+
+# Глобальный движок БД создаётся при импорте app.db и берёт путь из SQLITE_PATH. Без переменной это боевой data/state.db
+# (один тест уже записал в него проект), поэтому ДО импорта приложения ставим временные SQLITE_PATH / DATA_DIR,
+# а явный путь внутрь боевой data/ отклоняем.
+_SKIPPED: list[tuple[str, str]] = []  # (nodeid, причина) пропущенных тестов этого прогона
+_LIVE_DB_ERROR = _pytest_guard.prepare_isolated_env()
+if _LIVE_DB_ERROR:
+    raise pytest.UsageError(_LIVE_DB_ERROR)
+
 from app.settings import settings
 
 _ORIG_DATA_DIR = Path(settings.data_dir)
 _ORIG_SQLITE_PATH = Path(settings.sqlite_path)
+
+
+def pytest_configure(config):
+    """Один процесс pytest за раз: настоящий замок вместо договорённости (tests/_pytest_guard.py)."""
+    if hasattr(config, "workerinput") or config.getoption("collectonly", default=False):
+        return
+    if not _pytest_guard.lock_wanted():
+        return
+    ok, message = _pytest_guard.acquire_run_lock(wait_s=float(os.environ.get("VP_PYTEST_LOCK_WAIT") or 0))
+    if not ok:
+        raise pytest.UsageError(message)
+    os.environ[_pytest_guard.HELD_ENV] = str(os.getpid())
+    config._vp_run_lock = True
+
+
+def pytest_unconfigure(config):
+    if getattr(config, "_vp_run_lock", False):
+        _pytest_guard.release_run_lock()
+        os.environ.pop(_pytest_guard.HELD_ENV, None)
+
+
+_FFMPEG_RE = re.compile(r"ffmpeg|ffprobe", re.IGNORECASE)
+
+
+def _skipif_reason(mark) -> str:
+    reason = mark.kwargs.get("reason")
+    if reason is None and len(mark.args) > 1:
+        reason = mark.args[1]
+    return str(reason or "")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Q-15: тесты, которые молча пропускаются без ffmpeg/ffprobe, получают явную метку ``ffmpeg``
+    (``-m ffmpeg`` выбирает именно их, ``-m "not ffmpeg"`` их исключает)."""
+    for item in items:
+        for mark in item.iter_markers("skipif"):
+            if _FFMPEG_RE.search(_skipif_reason(mark)):
+                item.add_marker(pytest.mark.ffmpeg)
+                break
+
+
+def pytest_runtest_logreport(report):
+    if report.skipped and report.when in ("setup", "call"):
+        longrepr = report.longrepr
+        reason = str(longrepr[2]) if isinstance(longrepr, tuple) and len(longrepr) == 3 else str(longrepr)
+        _SKIPPED.append((report.nodeid, reason))
+
+
+def pytest_terminal_summary(terminalreporter):
+    """Пропуски без ffmpeg видны в итоге прогона; при VP_STRICT_SKIPS=1 (CI) они делают прогон красным."""
+    missing = [(n, r) for n, r in _SKIPPED if _FFMPEG_RE.search(r)]
+    if not missing:
+        return
+    terminalreporter.section("пропуски из-за ffmpeg/ffprobe")
+    terminalreporter.write_line(
+        f"Пропущено без ffmpeg/ffprobe: {len(missing)} тест(ов) в {len({n.split('::')[0] for n, _ in missing})} файл(ах). "
+        "Проверки медиа в этот прогон не вошли; поставьте ffmpeg и ffprobe, чтобы они выполнились."
+    )
+    if os.environ.get("VP_STRICT_SKIPS") == "1":
+        terminalreporter.write_line("VP_STRICT_SKIPS=1: пропуск из-за отсутствия ffmpeg считается ошибкой прогона.", red=True)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if os.environ.get("VP_STRICT_SKIPS") == "1" and exitstatus == 0 and any(_FFMPEG_RE.search(r) for _, r in _SKIPPED):
+        session.exitstatus = 1
 
 
 def _clear_project_db_caches() -> None:
@@ -119,6 +199,10 @@ def _ensure_base_schema():
 
     from app.db import engine
     from app.main import _init_db
+
+    violation = _pytest_guard.live_db_violation(engine.url.database)
+    if violation:
+        pytest.exit(violation, returncode=3)
 
     async def _run() -> None:
         await _init_db()

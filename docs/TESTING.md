@@ -7,10 +7,15 @@
 | Набор | Команда | Что внутри |
 |---|---|---|
 | orchestrator | `python scripts/run_orchestrator_tests.py` (`--fast` - только быстрые) | Тесты оркестратора. Без денег и сети: синтетические ключи, одноразовые SQLite. |
-| legacy | `python scripts/run_legacy_chunked.py --chunk 40` | Остальные `tests/test_*.py` и `tests/*_test.py` кусками по 40 файлов, каждый кусок в новом процессе. |
-| docker | задача `docker` в `.github/workflows/tests.yml` | Четыре модуля `tests/observe_v1`, которым нужен `/.dockerenv` (`_DOCKER_ONLY` в `tests/observe_v1/conftest.py`). Локально они пропущены; в контейнере включаются переменной `VP_RUN_DOCKER_ONLY=1`. |
+| legacy | `python scripts/run_legacy_chunked.py --suite legacy --chunk 40` | Остальные `tests/test_*.py` и `tests/*_test.py` кусками по 40 файлов, каждый кусок в новом процессе. |
+| observe | `python scripts/run_legacy_chunked.py --suite observe --chunk 12 --per-chunk-timeout 2400` | Весь `tests/observe_v1` (без пяти docker-модулей), тоже кусками. Раньше эти модули не входили ни в один набор. Набор тяжёлый: на этой машине около 70 минут (медиа-стенды), поэтому куски по 12 файлов и таймаут куска 2400 с. Без `--suite` раннер гонит legacy, потом observe. |
+| docker | задача `docker` в `.github/workflows/tests.yml` | Пять модулей `tests/observe_v1`, которым нужен `/.dockerenv` (`_DOCKER_ONLY` в `tests/observe_v1/conftest.py`). Локально они пропущены; в контейнере включаются переменной `VP_RUN_DOCKER_ONLY=1`. |
 
 Дополнительные ключи pytest раннер orchestrator передаёт как есть, например `--junitxml=reports/orchestrator.xml`.
+
+Состав наборов считает `scripts/test_suites.py`. Тест `tests/test_testing_doc_drift.py` требует, чтобы любой файл `test_*.py` или `*_test.py` под `tests/` входил хотя бы в один набор: новый файл или папка без набора роняют сборку.
+
+CI (`.github/workflows/tests.yml`): `orchestrator`, `observe` и `docker` идут на каждый push и pull request, `legacy` по ночам и вручную. На GitHub этот файл пока ни разу не прогонялся: зелёность там не подтверждена, проверено только локально и чтением.
 
 ## Маркеры
 
@@ -21,12 +26,18 @@
 - `docker` - нужен изолированный Docker-раннер.
 - `slow` - поднимает настоящий подпроцесс, сервер, ffmpeg или whisper; бесплатно и без сети, но дольше.
 - `raw_client` - тест ходит в приложение без токена оператора (проверки защиты).
+- `ffmpeg` - нужны ffmpeg и ffprobe. Метку ставит `tests/conftest.py` сам на тесты со `skipif` по ffmpeg; `-m ffmpeg` выбирает их, `-m "not ffmpeg"` исключает. Без ffmpeg такие тесты пропускаются, и итог прогона печатает, сколько их и в скольких файлах. С `VP_STRICT_SKIPS=1` (в CI включено) такой пропуск делает прогон красным.
 
 ## Правила памяти
 
 - Одновременно ровно ОДИН процесс pytest. Два параллельных прогона на этой машине роняют память.
+- Замок настоящий, в коде (`tests/_pytest_guard.py`, подключён в `tests/conftest.py`): файл `_pytest.run.lock` в папке над репозиторием с pid держателя. Второй pytest сразу останавливается с сообщением, кто держит замок; `VP_PYTEST_LOCK_WAIT=секунды` заставляет его ждать. Замок упавшего прогона снимается сам. `--collect-only` замок не берёт. Выключить: `VP_PYTEST_NO_LOCK=1`.
+- Старая договорённость `mkdir C:\video-pipeline\_pytest.lock` остаётся очередью между агентами (занять, прогнать, `rmdir`) и настоящему замку не мешает.
 - Весь legacy-набор целиком не запускать: только `run_legacy_chunked.py`, он гонит куски по одному.
-- Перед ручным прогоном другого агента занять замок `mkdir C:\video-pipeline\_pytest.lock`, после прогона `rmdir`.
+
+## Боевая база
+
+Глобальный движок БД создаётся при импорте приложения и берёт путь из `SQLITE_PATH`. Раньше без переменной тесты смотрели в боевой `data/state.db` и один тест записал туда проект. Теперь `tests/conftest.py` до импорта приложения ставит `SQLITE_PATH` и `DATA_DIR` во временную папку, а явный путь внутрь `data/` репозитория отклоняет с ошибкой; в начале сессии движок проверяется ещё раз.
 
 ## Сборка блока чисел
 
@@ -34,7 +45,8 @@
 python scripts/run_orchestrator_tests.py --junitxml=reports/orchestrator.xml
 python scripts/run_legacy_chunked.py --junit-dir reports/legacy
 python scripts/test_report.py --suite orchestrator=reports/orchestrator.xml \
-    --suite "legacy=reports/legacy/chunk_*.xml" --deselected orchestrator=<N из итоговой строки pytest> \
+    --suite "legacy=reports/legacy/chunk_*.xml" --suite "observe=reports/legacy/observe_*.xml" \
+    --deselected orchestrator=<N из итоговой строки pytest> \
     --write docs/TESTING.md
 ```
 
@@ -54,10 +66,4 @@ python scripts/test_report.py --suite orchestrator=reports/orchestrator.xml \
 
 Известные красные тесты (G01, класс C, нужно решение владельца):
 - `test_prompt_library_topic.py::test_nii67_prompt_is_the_file_even_with_blocks_v2`
-- `test_check_analysis.py::test_every_pipeline_node_type_resolves`
-- `test_check_analysis.py::test_prompts_declare_stable_check_ids`
-- `test_montage_board_frames.py::test_split_scene_at_keeps_numbers`
-- `test_montage_board_frames.py::test_split_scene_all_each_frame_own_scene`
-- `test_montage_board_frames.py::test_split_all_visible_ids_hides_extra_shots`
-- `test_montage_scene_anchors.py::test_split_sends_each_anchor_to_scene_with_its_text`
 <!-- tests:end -->

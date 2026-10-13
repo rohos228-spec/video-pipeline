@@ -65,3 +65,6 @@ prompts/**/.history/
 
 # CI junit output
 reports/
+
+# scheduled DB backups (runtime artefacts)
+api-tracker/backups/

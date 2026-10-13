@@ -30,8 +30,10 @@ _DOCKER_ONLY = {
     "test_gateway_route_policy.py",
     "test_hitl_project_authority.py",
     "test_managed_restart_safety.py",
+    # зовёт scripts/readonly_qc_pilot.py: без /.dockerenv он отвечает blocked/isolated_container_required, нужен и сокет /gateway
+    "test_readonly_pilot.py",
 }
-# CI docker job (container with /.dockerenv) sets VP_RUN_DOCKER_ONLY=1 to collect these four modules.
+# CI docker job (container with /.dockerenv) sets VP_RUN_DOCKER_ONLY=1 to collect these five modules.
 collect_ignore = (
     []
     if os.environ.get("VP_RUN_DOCKER_ONLY") == "1" and Path("/.dockerenv").exists()
