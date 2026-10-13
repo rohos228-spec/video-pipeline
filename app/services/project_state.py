@@ -632,6 +632,34 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     return frames_exit
 
 
+def meta_diff(before: dict, after: dict) -> tuple[dict, list[str]]:
+    """Что поменялось между двумя снимками meta: (изменённые/добавленные ключи, удалённые ключи)."""
+    set_keys = {k: v for k, v in after.items() if k not in before or before[k] != v}
+    del_keys = [k for k in before if k not in after]
+    return set_keys, del_keys
+
+
+async def apply_meta_diff(session, project: Project, set_keys: dict, del_keys: list[str]) -> bool:
+    """Записать в meta ТОЛЬКО изменённые ключи поверх свежей версии из БД.
+
+    Раньше устаревший снимок meta целиком затирал ключи, которые параллельно
+    поставили воркер или оператор (user_stop, step_failure и т.п.).
+    """
+    if not set_keys and not del_keys:
+        return False
+    from sqlalchemy.orm.attributes import flag_modified
+
+    await session.refresh(project, attribute_names=["meta"])
+    fresh = dict(project.meta or {})
+    for k, v in set_keys.items():
+        fresh[k] = v
+    for k in del_keys:
+        fresh.pop(k, None)
+    project.meta = fresh
+    flag_modified(project, "meta")
+    return True
+
+
 async def recompute_status(
     session,
     project: Project,

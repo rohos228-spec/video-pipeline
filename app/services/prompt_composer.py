@@ -511,7 +511,40 @@ def compose_step(
     vars_: dict[str, Any],
 ) -> str:
     """Склеить финальный промт для шага."""
-    text = _read_template(step_id)
+    return render_template_text(_read_template(step_id), blocks, vars_)
+
+
+UNRESOLVED_RE = re.compile(
+    r"\{\{\s*(?:VAR|BLOCK)\s*:[^}]*\}\}"
+    r"|<!--\s*(?:missing var|missing block|block file missing|invalid block config)[^>]*-->"
+)
+
+
+class UnresolvedPlaceholdersError(ValueError):
+    """В итоговом тексте промта остались неподставленные {{VAR:..}} / {{BLOCK:..}}."""
+
+
+def find_unresolved_placeholders(text: str) -> list[str]:
+    return [m.group(0).strip() for m in UNRESOLVED_RE.finditer(text or "")]
+
+
+def assert_prompt_resolved(text: str, *, label: str) -> None:
+    """Падает ДО платного вызова, если в промте остались шаблонные метки."""
+    left = find_unresolved_placeholders(text)
+    if left:
+        shown = ", ".join(dict.fromkeys(left))[:300]
+        raise UnresolvedPlaceholdersError(
+            f"Промт «{label}» собран не полностью: остались неподставленные метки ({shown}). "
+            "Запрос к модели не отправлен, деньги не потрачены. Проверьте блоки и переменные шаблона."
+        )
+
+
+def render_template_text(
+    text: str,
+    blocks: dict[str, BlockValue],
+    vars_: dict[str, Any],
+) -> str:
+    """Подставить {{BLOCK:..}} и {{VAR:..}} в произвольный текст шаблона."""
 
     def repl_block(m: re.Match[str]) -> str:
         cat = m.group(1)

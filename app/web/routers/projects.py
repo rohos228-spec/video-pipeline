@@ -206,35 +206,67 @@ async def project_shots_report(
     return HTMLResponse(existing.read_text(encoding="utf-8"))
 
 
-@router.get("/{project_id}", response_model=ProjectDetail)
-async def get_project(
-    project_id: int, session: AsyncSession = Depends(get_project_session)
-) -> ProjectDetail:
-    p = await session.get(Project, project_id)
-    if p is None:
-        raise HTTPException(status_code=404, detail="Проект не найден")
-    # Свежий meta (user_stop) — иначе stale recompute затирает ⏹ и снова крутит ноду.
+async def _sync_project_state(session: AsyncSession, p: Project) -> tuple[bool, bool]:
+    """Притянуть статус/meta из master и пересчитать статус. Пишет в БД, поэтому только явным вызовом.
+
+    meta пишется слиянием ключей (apply_meta_diff), а не целым словарём.
+    Возвращает (pulled, recomputed).
+    """
+    import copy
+
+    from app.services.project_state import apply_meta_diff, meta_diff
+
     await session.refresh(p)
-    # GET не пишет canvas_graph. Poll #60 каждые ~2с делал upgrade
-    # 20↔18 нод, commit stale snapshot и выжигал сокеты (GPT errno=8).
+    before = copy.deepcopy(p.meta) if isinstance(p.meta, dict) else {}
     pulled = False
     try:
         pulled = await _heal_get_runtime_from_master(session, p)
     except Exception:  # noqa: BLE001
-        logger.warning(
-            "get_project: #{} pull parked runtime failed",
-            project_id,
-            exc_info=True,
-        )
+        logger.warning("sync_project: #{} pull parked runtime failed", p.id, exc_info=True)
     _old, _new, recomputed = await recompute_status(
-        session, p, log_prefix="recompute(web_get)"
+        session, p, log_prefix="recompute(web_sync)"
     )
-    if recomputed or pulled:
+    after = dict(p.meta) if isinstance(p.meta, dict) else {}
+    set_keys, del_keys = meta_diff(before, after)
+    await apply_meta_diff(session, p, set_keys, del_keys)
+    return pulled, recomputed
+
+
+@router.get("/{project_id}", response_model=ProjectDetail)
+async def get_project(
+    project_id: int, session: AsyncSession = Depends(get_project_session)
+) -> ProjectDetail:
+    """Чистое чтение: ничего не пишет в БД (D8).
+
+    Показываем то, что показала бы синхронизация (статус из master, пересчёт),
+    но все изменения остаются в памяти сессии и откатываются. Запись состояния
+    делает только ``POST /{id}/sync``.
+    """
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    await session.refresh(p)
+    try:
+        await _sync_project_state(session, p)
+        detail = project_to_detail(p)
+    finally:
+        await session.rollback()
+    return detail
+
+
+@router.post("/{project_id}/sync", response_model=ProjectDetail)
+async def sync_project(
+    project_id: int, session: AsyncSession = Depends(get_project_session)
+) -> ProjectDetail:
+    """Явная синхронизация состояния проекта (то, что раньше делал каждый GET)."""
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    pulled, recomputed = await _sync_project_state(session, p)
+    if pulled or recomputed or session.dirty:
         await session.commit()
         await session.refresh(p)
     else:
-        # Poll GET не должен commit'ить stale snapshot: иначе ▶
-        # (enriching_*) затирается обратно в *_ready, воркер не берёт ноду.
         await session.rollback()
         p = await session.get(Project, project_id)
         if p is None:

@@ -929,7 +929,30 @@ def read_resolved_project_prompt(
     from app.services.gpt_text_builder import inject_topic_placeholders
 
     topic = str(getattr(project, "topic", None) or "")
+    if step_code in ENRICH_STEP_CODES:
+        text = _render_enrich_template(project, step_code, text, topic)
     return name, path, inject_topic_placeholders(text, topic), source
+
+
+def _render_enrich_template(project, step_code: str, text: str, topic: str) -> str:
+    """enrich_*/excel_gpt читаются файлом: подставляем {{VAR}}/{{BLOCK}} и не пускаем остатки к модели."""
+    from app.services.prompt_composer import (
+        assert_prompt_resolved,
+        merge_project_prompt_config,
+        render_template_text,
+    )
+
+    if "{{" not in text:
+        return text
+    heroes = getattr(project, "hero_descriptions", None)
+    blocks, vars_ = merge_project_prompt_config(
+        getattr(project, "prompt_overrides", None) or {},
+        hero_description=heroes[0] if isinstance(heroes, list) and heroes else None,
+        topic=topic or None,
+    )
+    rendered = render_template_text(text, blocks, vars_)
+    assert_prompt_resolved(rendered, label=step_code)
+    return rendered
 
 
 def get_project_prompt(project, step_code: str) -> str:
