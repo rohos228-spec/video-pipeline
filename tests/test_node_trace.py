@@ -157,7 +157,7 @@ def _fake_operator(monkeypatch, ops: list[dict]) -> None:
     monkeypatch.setattr("app.services.apply_ops_batches.run_operator_api", fake_run)
 
 
-async def _run_node(tmp_path, *, footer_kind: str, frames: list[dict]):
+async def _run_node(tmp_path, *, footer_kind: str, frames: list[dict], **kw):
     ctx = tmp_path / "db_frames.json"
     ctx.write_text("{}", encoding="utf-8")
     return await run_apply_ops_batched(
@@ -173,13 +173,18 @@ async def _run_node(tmp_path, *, footer_kind: str, frames: list[dict]):
         dense=False,
         chunk_size=8,
         footer_kind=footer_kind,
+        **kw,
     )
 
 
 @pytest.mark.asyncio
 async def test_live_node_saves_trace_and_replay_matches(tmp_path, monkeypatch) -> None:
     _fake_operator(monkeypatch, _gpt_ops())
-    res = await _run_node(tmp_path, footer_kind="shots", frames=_chunk())
+    # Тест про дневник и повтор, не про гейт шотов (R-SHOTS-GATE): кадры
+    # без промтов, а порог добавляет код — гейт здесь выключен явно.
+    res = await _run_node(
+        tmp_path, footer_kind="shots", frames=_chunk(), shots_gate=False
+    )
     run_dir = resolve_run_dir(tmp_path, node="shots")
     meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     assert meta["status"] == "ok" and meta["kind"] == "shots" and meta["calls"] == 1

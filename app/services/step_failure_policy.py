@@ -424,6 +424,27 @@ async def record_step_failure(
     cycle = (total - 1) // FAILS_PER_CYCLE + 1
     fail_in_cycle = ((total - 1) % FAILS_PER_CYCLE) + 1
 
+    # Площадка / excel: упавшая пачка не должна заново запускать всю ноду.
+    # Раньше soft retry ставил статус обратно в enriching_* и prepare
+    # сбрасывал карточку на первую пачку.
+    if str(step_code).startswith("enrich") or step_code == "excel_gpt":
+        fs["last_error"] = err_msg
+        fs["last_error_code"] = err_code
+        fs["last_running"] = key
+        _save_failure_state(project, fs)
+        await _fail_active_on_both(session, project, error, err_code)
+        # Не шаг.requires: при auto_mode воркер снова вошёл бы в ту же ноду.
+        project.status = ProjectStatus.paused
+        await session.flush()
+        await _push_parked_runtime(session, project)
+        logger.warning(
+            "[#{}] {} упал — ноду с начала не перезапускаем → {}",
+            project.id,
+            step_code,
+            project.status.value,
+        )
+        return "stopped"
+
     await _soft_retry_without_wipe(session, project, step_code)
 
     if total >= MAX_TOTAL_FAILS:

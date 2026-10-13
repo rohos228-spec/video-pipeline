@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     # Формат API: chat (messages/choices) | responses (input/output) | auto.
     # auto → responses, если в пути есть "responses" (kie.ai gpt-5.6/5.5/5.4 codex).
     gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
-    gpt_timeout_s: float = Field(600.0, alias="GPT_TIMEOUT_S")
+    gpt_timeout_s: float = Field(1200.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
     # 0 = ждать EOF SSE (не рвать по GPT_TIMEOUT). >0 = httpx read timeout.
     gpt_stream_read_timeout_s: float = Field(0.0, alias="GPT_STREAM_READ_TIMEOUT_S")

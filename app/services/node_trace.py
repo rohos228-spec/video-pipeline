@@ -237,6 +237,7 @@ class NodeRunRecorder:
     calls: int = 0
     counts: dict[str, int] = field(default_factory=dict)
     started: str = ""
+    skipped: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def start(
@@ -283,6 +284,7 @@ class NodeRunRecorder:
                 "error": error,
                 "calls": self.calls,
                 "counts": self.counts,
+                "skipped": self.skipped,
             },
         )
 
@@ -319,6 +321,15 @@ class NodeRunRecorder:
             self._write_run(status="running")
         except Exception:  # noqa: BLE001
             logger.debug("node_trace: record_call failed for {}", self.node_key, exc_info=True)
+
+    def record_skip(self, *, uuids: list[str], reason: str) -> None:
+        """Пачка не записана (гейт после повтора) — ошибка в run.json."""
+        self.skipped.append({"uuids": list(uuids), "reason": (reason or "")[:1000]})
+        self.counts["error"] = self.counts.get("error", 0) + 1
+        try:
+            self._write_run(status="running")
+        except Exception:  # noqa: BLE001
+            logger.debug("node_trace: record_skip failed for {}", self.node_key, exc_info=True)
 
     def finish(self, *, ok: bool, error: str = "") -> None:
         try:

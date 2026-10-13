@@ -1,6 +1,6 @@
 """Нода «Границы сцен» (группа script_frames_qc, шаг 1 перед «Каркасом»).
 
-Один вызов claude-opus-5 (vibecode, Anthropic ``/v1/messages``, stream) возвращает
+Один вызов gpt-5.6-sol (vibecode через VPS, gpt_api) возвращает
 весь закадр дословно с [ ] вокруг фрагментов сцен. Проверка кодом: склейка
 фрагментов = закадр (без учёта пробелов и знаков ударения), вне скобок нет
 текста, скобки не вложены. Не прошло — один повтор. Промт и логика — как в
@@ -24,8 +24,8 @@ from typing import Any
 
 from loguru import logger
 
-URL = "https://vibecode.moe/v1/messages"
-MODEL = "claude-opus-5"
+URL = "vibecode chat (gpt_api, VPS /v1/chat/completions)"
+MODEL = "gpt-5.6-sol"
 MAX_TOK = 64000
 PROMPT_REL = "prompts/scene_design/scene_boundaries_agent.md"
 OUT_DIRNAME = "scene_boundaries"
@@ -188,31 +188,36 @@ def _api_key() -> str:
     return key
 
 
+async def _kie_once(user: str, system: str) -> tuple[str, dict[str, Any]]:
+    from app.services import gpt_api
+    from app.services.llm_override import NodeLlmOverride, use_override
+
+    ov = NodeLlmOverride(
+        model_id=MODEL,
+        channel="stable",
+        kind="text",
+        provider="vibecode",
+        label=f"{MODEL} (vibecode · high)",
+        reasoning_effort="high",
+    )
+    with use_override(ov):
+        res = await gpt_api.chat(prompt=user, system=system, model=MODEL, auto_pack=False, max_retries=1)
+    txt = getattr(res, "text", None) or getattr(res, "content", None) or str(res)
+    return txt, {"finish_reason": getattr(res, "finish_reason", None) or getattr(res, "status", None), "model": MODEL, "usage": getattr(res, "usage", None)}
+
+
 async def call_opus(user: str, system: str, tag: str, trace_dir: Path, tries: int = 4) -> str:
     trace_dir.mkdir(parents=True, exist_ok=True)
     (trace_dir / f"{tag}.req.txt").write_text(
         f"=== MODEL: {MODEL}\n=== URL: {URL}\n=== SYSTEM ===\n{system}\n=== USER ===\n{user}\n",
         encoding="utf-8",
     )
-    key = _api_key()
-    headers = {
-        "x-api-key": key,
-        "Authorization": f"Bearer {key}",
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    payload: dict[str, Any] = {
-        "model": MODEL,
-        "max_tokens": MAX_TOK,
-        "stream": True,
-        "system": system,
-        "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],
-    }
+    payload: dict[str, Any] = {}
     last: Exception | None = None
     for k in range(tries):
         t0 = time.time()
         try:
-            txt, meta = await _stream_once(payload, headers)
+            txt, meta = await _kie_once(user, system)
             dt = round(time.time() - t0, 1)
             if not txt.strip():
                 raise RuntimeError(f"empty output after {dt}s; finish={meta['finish_reason']}")
@@ -227,9 +232,6 @@ async def call_opus(user: str, system: str, tag: str, trace_dir: Path, tries: in
             msg = f"{type(e).__name__}: {e}"
             logger.warning("scene_boundaries {} try{} failed: {}", tag, k, msg[:500])
             (trace_dir / f"{tag}.err{k}.txt").write_text(msg, encoding="utf-8")
-            if "HTTP 400" in msg and "max_tokens" in msg and payload["max_tokens"] > 32000:
-                payload["max_tokens"] = 32000
-                continue
             if "HTTP 4" in msg and not any(x in msg for x in ("429", "408")):
                 raise
             if k < tries - 1:

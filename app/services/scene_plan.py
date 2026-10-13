@@ -696,6 +696,52 @@ def angles_under_30(prev: Any, cur: Any) -> bool:
     return {a, b} == {"3/4", "с плеча"}
 
 
+_SHOULDER_RE = re.compile(r"через\s+(?:(?:левое|правое)\s+)?плечо\s+([\w-]+)", re.I)
+_NOT_SUBJ = {"и", "а", "но", "не", "снова", "тихо", "громко", "резко", "сразу", "уже", "ещё", "еще", "он", "она", "тот", "та"}
+_VERB_AT = re.compile(r"([\w-]+)\s+(?:(?:не|снова|тихо|резко|сразу|уже|громко)\s+)?(?:говор|спрашива|спросил|отвеча|произнос|требу|крич|шепч|"
+                      r"возража|бросает|повторя|объясня|сообща|приказ|проси|заявля|отрица|диктует|обращается|подтвержда|объявля)", re.I)
+
+
+def _speaker_key(shot: dict[str, Any]) -> str:
+    """Кто говорит в кадре: «Следователь спрашивает: «…»» / «задержанный отрицает вину» → «следо» / «задер»."""
+    who = str(shot.get("говорит") or "").strip()
+    if who:  # поле реплики кадра (Кадры §3) — главный сигнал
+        return who.casefold()[:5]
+    act = str(shot.get("действие") or "")
+    i = act.find("«")
+    head = act[:i] if i >= 0 else act
+    for clause in re.split(r"[.!?;]\s+", head):
+        m = _VERB_AT.search(clause)
+        if not m:
+            continue
+        w = m.group(1)
+        if w.casefold() in _NOT_SUBJ:
+            w = (clause.strip().split() or [""])[0]
+        return w.casefold()[:5]
+    return ""
+
+
+def _shoulder_key(shot: dict[str, Any]) -> str:
+    """Через чьё плечо камера: «через правое плечо задержанного» → «задер»."""
+    for k in ("ракурс", "позы", "где", "промт_картинки", "промт_старт", "промт_конец", "действие"):
+        m = _SHOULDER_RE.search(str(shot.get(k) or ""))
+        if m:
+            return m.group(1).casefold()[:5]
+    return ""
+
+
+def is_reverse_shot_pair(prev: dict[str, Any], cur: dict[str, Any]) -> bool:
+    """Встречные планы диалога: оба `с плеча`, но говорят разные люди или
+    камера через плечо разных людей — это другая точка, не повтор (§3 промта Кадров)."""
+    if named_angle_token(prev.get("ракурс")) != "с плеча" or named_angle_token(cur.get("ракурс")) != "с плеча":
+        return False
+    a, b = _speaker_key(prev), _speaker_key(cur)
+    if a and b and a != b:
+        return True
+    a, b = _shoulder_key(prev), _shoulder_key(cur)
+    return bool(a and b and a != b)
+
+
 def next_named_angle_30(raw: Any, obj: Any = "") -> str:
     """Следующий именованный ракурс с шагом ≥30°."""
     cur = named_angle_token(raw) or _key(raw)
@@ -1414,12 +1460,33 @@ class _Sim:
                 return False
         return True
 
+    def _reply_locked(self, i: int) -> bool:
+        """Кадр реплики (поле `реплика`) во встречной паре с соседом — план и имя ракурса не трогаем:
+        иначе правка 30°/лестницы по прошлому (не диалоговому) кадру ломает пару встречных."""
+        cur = self.shots[i]
+        if not str(cur.get("реплика") or "").strip():
+            return False
+        # c62: кадр реплики с камерой по §3 (с плеча / КРУПНЫЙ фронт) не трогаем никогда —
+        # раньше защищался только соседний встречный, одиночная реплика после реакции ломалась
+        ang = named_angle_token(cur.get("ракурс"))
+        if ang == "с плеча" or (_key(cur.get("план")) == _key("КРУПНЫЙ") and ang == "фронт"):
+            return True
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(self.shots) and self.shots[j].get("_zk") == cur.get("_zk"):
+                a, b = (self.shots[j], cur) if j < i else (cur, self.shots[j])
+                if is_reverse_shot_pair(a, b) and _key(a.get("план")) == _key(b.get("план")):
+                    return True
+        return False
+
     def vary_shot_sizes(self) -> None:
         """Одинаковый план подряд, запрет ОБЩИЙ↔СРЕДНИЙ / СРЕДНИЙ↔СРЕДНЕ-КРУПНЫЙ, прыжок 3+."""
         prev: dict[str, Any] | None = None
-        for shot in self.shots:
+        for idx, shot in enumerate(self.shots):
             if not self.owned(shot) or prev is None or prev.get("_zk") != shot.get("_zk"):
                 prev = shot
+                continue
+            if self._reply_locked(idx):
+                prev = shot  # кадр реплики во встречной паре
                 continue
             cur_r = _plan_rung(shot.get("план"))
             prev_r = _plan_rung(prev.get("план"))
@@ -1427,6 +1494,9 @@ class _Sim:
                 prev = shot
                 continue
             delta = abs(cur_r - prev_r)
+            if delta == 0 and is_reverse_shot_pair(prev, shot):
+                prev = shot  # встречные планы диалога: тот же план — норма
+                continue
             forbidden = (prev_r, cur_r) in _FORBIDDEN_ADJACENT
             if delta == 0 or forbidden or delta >= 3:
                 nxt = None
@@ -1508,6 +1578,8 @@ class _Sim:
                         break
             prev_ang = prev.get("ракурс")
             cur_ang = cur.get("ракурс")
+            if is_reverse_shot_pair(prev, cur) or self._reply_locked(i):
+                continue  # встречные: другая точка (через плечо другого), компас выше держит стороны
             if not angles_under_30(prev_ang, cur_ang):
                 continue
             nxt = next_named_angle_30(

@@ -154,7 +154,7 @@ def read_choice(cfg: Settings | None = None) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except Exception as e:  # noqa: BLE001
         logger.warning("text_llm_choice: read failed: {}", e)

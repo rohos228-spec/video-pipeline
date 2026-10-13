@@ -261,7 +261,7 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
         res = await insert_node_group(session, project, "script_frames_qc")
 
     assert res["after"] == "n_plan"
-    assert len(res["nodes"]) == 6
+    assert len(res["nodes"]) == 7  # + «Стиль» (fw_style) между QC и отчётом
     cg = project.meta["canvas_graph"]
     by_id = {n["id"]: n for n in cg["nodes"]}
     plan_x = by_id["n_plan"]["position"]["x"]
@@ -312,7 +312,13 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc") in pairs
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames") not in pairs
     assert ("n_excel_gpt_fw_frames", "n_excel_gpt_fw_qc") not in pairs
-    assert ("n_excel_gpt_fw_qc", "n_excel_gpt_fw_report") in pairs
+    assert ("n_excel_gpt_fw_qc", "n_excel_gpt_fw_report") not in pairs
+    assert ("n_excel_gpt_fw_qc", "n_excel_gpt_fw_style") in pairs
+    assert ("n_excel_gpt_fw_style", "n_excel_gpt_fw_report") in pairs
+    assert project.meta["prompt_slot_variants"]["n_excel_gpt_fw_style"] == {
+        "main": "style_noir_watercolour_16_09"
+    }
+    assert project.meta["excel_gpt_nodes"]["n_excel_gpt_fw_style"]["transport"] == "code"
     # выход группы → старая цель plan (script)
     assert ("n_excel_gpt_fw_report", "n_script") in pairs
     assert "n_excel_gpt_fw_report" not in project.meta["prompt_slot_variants"]
@@ -918,6 +924,9 @@ def test_restore_script_frames_qc_puts_whole_group_back() -> None:
     assert ("n_excel_gpt_fw_action", "n_excel_gpt_fw_shots") in pairs
     assert "n_excel_gpt_fw_action" in meta["excel_gpt_nodes"]
     assert meta["prompt_slot_variants"]["n_excel_gpt_fw_action"]["main"] == "action"
+    # «Стиль» (fw_style) ещё не вставлен — needs_upgrade до вставки стиля True.
+    assert ng.script_frames_qc_needs_upgrade(meta) is True
+    assert ng.insert_script_frames_qc_style_graph(meta) is True
     assert ng.script_frames_qc_needs_upgrade(meta) is False
 
 
@@ -996,6 +1005,7 @@ def test_script_frames_qc_needs_upgrade_when_group_truncated() -> None:
     }
     assert ng.script_frames_qc_needs_upgrade(stale) is True
     assert ng.restore_script_frames_qc_check_and_action_graph(stale) is True
+    assert ng.insert_script_frames_qc_style_graph(stale) is True
     assert ng.script_frames_qc_needs_upgrade(stale) is False
 
 

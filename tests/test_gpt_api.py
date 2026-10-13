@@ -463,6 +463,14 @@ def test_sse_wall_clock_uses_call_timeout_not_idle_read() -> None:
     assert _sse_deadline_s(280.0) == 280.0
     assert _sse_deadline_s(10.0) == 30.0
     assert _sse_deadline_s(0.0) >= 30.0
+    # Studio-чат ставит 1800с. Потолок 1500с обрывал ещё живой ответ.
+    assert _sse_deadline_s(1800.0) == 1800.0
+
+
+def test_kie_route_follows_the_node_not_a_hardcoded_switch() -> None:
+    """Без ноды kie запрос не уезжает на Responses. Иначе сокет рвётся о чужой хост."""
+    assert gpt_api._node_kie_override() is False
+    assert gpt_api._node_vibecode_override() is False
 
 
 def test_responses_retrieve_urls_include_post_path_and_jobs() -> None:

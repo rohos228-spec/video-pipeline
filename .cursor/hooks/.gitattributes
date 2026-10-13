@@ -1,3 +1,0 @@
-# run.cmd — polyglot (cmd + sh): CRLF ломает sh-часть, cmd работает и с LF.
-run.cmd text eol=lf
-*.py text eol=lf

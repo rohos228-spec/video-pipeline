@@ -119,6 +119,30 @@ def test_extract_apply_ops_json_repairs_double_quoted_bit_key() -> None:
     assert bits[1]["якорь"] == "два"
 
 
+def test_extract_apply_ops_json_strips_trailing_commas() -> None:
+    """Площадка: модель закрывает зону как ``},],``. Без починки extract=None,
+    в логе при этом уже есть успешный ответ, а в карточки пачка не пишется.
+    """
+    text = (
+        '{"ops":[{"frame_uuid":"d8c0b5055d2340e6aa288aec","fields":'
+        '{"площадка":{"зоны":[{"id":"архив","что":"комната","предметы":'
+        '[{"имя":"календарь","где":"запад","состояние":"лист"}]}'
+        ',],"проходы":[],"люди":[]},"меняет":[]}},'
+        '{"frame_uuid":"65758452ae2b45ffa1337e81","fields":'
+        '{"площадка":{"зоны":[{"id":"зал","что":"суд",}]},"меняет":[],}}]}'
+    )
+    data = db_apply.extract_apply_ops_json(text)
+    assert data is not None
+    assert [op["frame_uuid"][:8] for op in data["ops"]] == ["d8c0b505", "65758452"]
+    zone = data["ops"][0]["fields"]["площадка"]["зоны"][0]
+    assert zone["id"] == "архив"
+    kept = db_apply.extract_apply_ops_json(
+        '{"ops":[{"frame_uuid":"u1","fields":{"место":"текст,] скобка"}}]}'
+    )
+    assert kept is not None
+    assert kept["ops"][0]["fields"]["место"] == "текст,] скобка"
+
+
 def test_extract_apply_ops_json_uses_partial_salvage() -> None:
     text = (
         'Вот JSON:\n{"ops":['

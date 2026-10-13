@@ -30,6 +30,9 @@ ACTION_FIELDS = frozenset({"shot01_action", "main_action"})
 CAMERA_MENU_FIELDS = frozenset({"крупность", "движение", "набор", "camera_subdivide"})
 # Закадр пишет только split / n_script / человек. excel_gpt не генерирует текст.
 VO_FIELDS = frozenset({"voiceover_text", "meaning"})
+# Поля реплики внутри fields.кадры[] (Кадры, fw_shots): кто говорит + дословная реплика из речи Каркаса.
+# Внутренние ключи кадра не режутся allowlist'ом (пишется целиком поле «кадры»); список — для гейта и отчётов.
+SHOT_SPEECH_FIELDS = frozenset({"говорит", "реплика"})
 # Сценарист (fw_script): только смысловые биты на seed-ячейке.
 BITS_FIELDS = frozenset({"биты"})
 

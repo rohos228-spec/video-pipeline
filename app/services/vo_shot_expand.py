@@ -677,6 +677,12 @@ def kadry_vo_pieces(
     if n < 1:
         text = " ".join((full or "").split())
         return [text] if text else [""]
+    # Раскладка из кадры[] — источник правды, если склейка непустых кусков =
+    # закадр ячейки (гейт шотов: пустой закадр у кадра — норма). Слепо не
+    # перерезаем: иначе пустые кадры получают куски и закадр дублируется.
+    laid = [" ".join(str(item.get("закадр") or "").split()) for item in planned]
+    if any(laid) and _norm_words(" ".join(p for p in laid if p)) == _norm_words(full):
+        return laid
     chain_parts = partition_planned_by_scene_chain(planned, action) if action else None
     if chain_parts is not None:
         out = list(chain_parts[:n])
@@ -1890,11 +1896,32 @@ def _ladder_keep_key(members: list[Any], index: int) -> tuple[int, int, int]:
     return (has_s, max_id, -index)
 
 
+_LADDER_CELL_RE = re.compile(r"^(\d+)-")
+
+
+def _ladder_cell_key(frame: Any) -> str:
+    """Префикс ячейки из id лестницы (``57-S1-K1`` → ``57``).
+
+    GPT нумерует ``сцена`` локально (каждая ячейка с 1) — без префикса
+    лестницы разных ячеек считались дублями одной сцены и удалялись.
+    """
+    for sid in (coverage_shot_id(frame), str(_cs(frame).get("shot_id") or "")):
+        m = _LADDER_CELL_RE.match((sid or "").strip())
+        if m:
+            return m.group(1)
+    planned = planned_shots_from_attrs(frame)
+    if planned:
+        m = _LADDER_CELL_RE.match(str(planned[0].get("id") or "").strip())
+        if m:
+            return m.group(1)
+    return ""
+
+
 def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
     """Вторые лестницы той же сцены (``1-K7`` рядом с ``1-S3-K*``)."""
     groups = _group_by_parent(frames)
     seen: set[int] = set()
-    ladders: dict[int, list[tuple[int, list[Any]]]] = {}
+    ladders: dict[tuple[str, int], list[tuple[int, list[Any]]]] = {}
     idx = 0
     for members in groups.values():
         if not members:
@@ -1906,7 +1933,7 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
         sc = frame_scene_number(parent)
         if sc is None:
             continue
-        ladders.setdefault(sc, []).append((idx, list(members)))
+        ladders.setdefault((_ladder_cell_key(parent), sc), []).append((idx, list(members)))
         idx += 1
         for fr in members:
             seen.add(id(fr))
@@ -1916,7 +1943,7 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
         sc = frame_scene_number(fr)
         if sc is None:
             continue
-        ladders.setdefault(sc, []).append((idx, [fr]))
+        ladders.setdefault((_ladder_cell_key(fr), sc), []).append((idx, [fr]))
         idx += 1
         seen.add(id(fr))
     extra: list[Any] = []
@@ -2266,6 +2293,22 @@ async def rebuild_vo_cells_from_shots(
         if not _is_pipeline_frame(fr) or not has_vo:
             drop.append(fr)
             seen.add(id(fr))
+    # 2026-10-11: never delete a main scene cell (has «площадка» from the
+    # Площадка node): losing it loses that scene's VO from the DB.
+    _protected = [
+        fr for fr in drop
+        if isinstance(getattr(fr, "attrs", None), dict)
+        and (getattr(fr, "attrs") or {}).get("площадка")
+        and not is_shot_child(fr)
+    ]
+    if _protected:
+        logger.warning(
+            "[#{}] rebuild VO cells: keep {} main cells (площадка) instead of deleting: {}",
+            project.id, len(_protected),
+            [str(getattr(fr, "uuid", ""))[:8] for fr in _protected],
+        )
+        _pid = {id(fr) for fr in _protected}
+        drop = [fr for fr in drop if id(fr) not in _pid]
     drop_ids = [int(fr.id) for fr in drop]
     if drop_ids:
         await session.execute(
@@ -2893,6 +2936,14 @@ async def _expand_vo_cells_into_shots_group(
             joined = " ".join(joined.split())
             if joined:
                 original_vo = joined
+        # Полный закадр ячейки — в vo_cell_full ДО раздачи кусков детям:
+        # иначе _cell_full_text дальше склеит «полный текст родителя + куски
+        # детей» и закадр задвоится (promote_shots_to_vo_cells).
+        p_attrs = dict(getattr(parent, "attrs", None) or {})
+        if original_vo and not str(p_attrs.get("vo_cell_full") or "").strip():
+            p_attrs["vo_cell_full"] = original_vo
+            parent.attrs = p_attrs
+            _flag_attrs(parent)
         if planned:
             need = len(planned)
             vo_parts = kadry_vo_pieces(planned, original_vo, main_action_text(parent))
@@ -2937,9 +2988,9 @@ async def _expand_vo_cells_into_shots_group(
         group = [parent, *children]
         parent.voiceover_text = original_vo
         for i, fr in enumerate(group):
+            # Пустой кусок остаётся пустым: действие шота — не закадр, и весь
+            # закадр ячейки в пустой шот не копируем (раскладка VO — отдельно).
             piece = vo_parts[i] if i < len(vo_parts) else ""
-            if not piece and i < len(planned):
-                piece = str(planned[i].get("действие") or "").strip()
             if i == 0:
                 fr.start_ts = start_ts
                 fr.end_ts = end_ts
@@ -2956,7 +3007,7 @@ async def _expand_vo_cells_into_shots_group(
                 parent_uuid=parent_uuid,
                 shot_index=i + 1,
                 shots_in_beat=need,
-                vo_shot=piece or original_vo,
+                vo_shot=piece,
             )
             _apply_shot_meta(fr, planned[i] if i < len(planned) else None)
 

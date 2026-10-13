@@ -699,19 +699,15 @@ def merge_gpt_shots_with_action(
             )
         missing_n = expected - len(cleaned)
         ratio = len(cleaned) / float(expected)
-        mild = ratio >= 0.7 or (missing_n <= 2 and ratio >= 0.5)
-        if mild:
-            soft = (
-                f"WARN underproduction: GPT кадров {len(cleaned)} < ожидаемых {expected} "
-                f"(steps {steps_raw}, VO-cap {cap if cap else 0}) — "
-                "repair VO, без дописывания шагов действия"
-            )
-            return cleaned, soft
-        return None, (
-            f"GPT кадров {len(cleaned)} < ожидаемых {expected} "
-            f"(steps {steps_raw}, VO-cap {cap if cap else 0}) "
-            "— нужен добор GPT, код не дописывает шаги молча"
+        # Было hard-stop при severe (<70%). С 2026-10-06: любой недобор
+        # при got>=1 — soft WARN (как до b1b8b454 PassStop), без добора.
+        soft = (
+            f"WARN underproduction: GPT кадров {len(cleaned)} < ожидаемых {expected} "
+            f"(steps {steps_raw}, VO-cap {cap if cap else 0}, "
+            f"missing={missing_n}, ratio={ratio:.2f}) — "
+            "repair VO, без дописывания шагов действия"
         )
+        return cleaned, soft
     canonical = expand_action_to_shots(
         action, cell_number=cell_number, prev_place=prev_place
     )
@@ -871,8 +867,11 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 "(код не разворачивает шаги действие молча)"
             )
         if isinstance(shots, list) and shots:
-            missing_vo = any(
-                isinstance(s, dict) and not str(s.get("закадр") or "").strip()
+            # Пустой закадр у части кадров — норма (пауза/перебивка, промт §4).
+            # Раскладываем VO по кадрам, только если GPT не дал закадр ни одному
+            # кадру; иначе куски ложились поверх уже разложенных — дубли.
+            missing_vo = not any(
+                isinstance(s, dict) and str(s.get("закадр") or "").strip()
                 for s in shots
             )
             if vo and missing_vo:
@@ -1070,11 +1069,14 @@ def scene_script_text(place: str, action: str) -> str:
 
 
 def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
-    """Перерезать закадр: >80 — дробим; <26 (не перебивка) — склеиваем и УДАЛЯЕМ пустышку.
+    """Перерезать закадр НА МЕСТЕ (тот же список кадров ячейки), без дублей.
 
-    Предпочитаем меньше более длинных кусков в 26–80, а не десятки пустых
-    оболочек после склейки. Хвост пустых non-cutaway выкидываем; число
-    обычных кадров режем по VO-cap (floor(len/26)).
+    >80 — режем; хвост кладём в следующие пустые кадры по порядку (порядок
+    речи не меняется). <26 (не перебивка) — переносим в ближайший непустой
+    кусок, если склейка ≤80; кадр со шагом остаётся с пустым закадром
+    (пауза между кусками — норма по промту). Текст никогда не копируется:
+    кусок переносится, исходный кадр очищается. Удаляем только пустые
+    оболочки без шага, без закадра и без промтов.
     Возвращает список предупреждений.
     """
     from app.services.scene_design.camera_expand import split_text_into_parts
@@ -1083,178 +1085,119 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
         return []
     warnings: list[str] = []
     norm_vo = " ".join((vo or "").split())
-    cap = vo_shot_capacity(vo)
 
-    # 0) underproduction grow ОТКЛЮЧЁН: пустые оболочки под VO давали empty_vo
-    # и маскировали undercount. Severe undercount → PassStop/retry GPT,
-    # а не invent оболочек без действия.
-    # 1) короткие non-cutaway → склеить с соседом и pop (не оставлять пустой закадр)
-    i = 0
-    while i < len(shots):
-        shot = shots[i]
-        if not isinstance(shot, dict):
-            i += 1
-            continue
-        chunk = str(shot.get("закадр") or "").strip()
-        if not chunk:
-            i += 1
-            continue
-        n = visible_len(chunk)
-        if n < SHOT_VO_MIN and not is_cutaway_shot(shot) and len(shots) > 1:
-            if i + 1 < len(shots) and isinstance(shots[i + 1], dict):
-                nxt = str(shots[i + 1].get("закадр") or "").strip()
-                shots[i + 1]["закадр"] = " ".join((chunk + " " + nxt).split()).strip()
-                if not str(shots[i + 1].get("действие") or "").strip():
-                    shots[i + 1]["действие"] = shot.get("действие") or ""
-                shots.pop(i)
-                warnings.append(f"склеили короткий закадр {n}->сосед (удалили пустышку)")
-                continue
-            if i > 0 and isinstance(shots[i - 1], dict):
-                prev = str(shots[i - 1].get("закадр") or "").strip()
-                shots[i - 1]["закадр"] = " ".join((prev + " " + chunk).split()).strip()
-                shots.pop(i)
-                warnings.append(f"склеили короткий закадр {n}<-сосед (удалили пустышку)")
-                continue
-        i += 1
+    def _vo(s: Any) -> str:
+        return str(s.get("закадр") or "").strip() if isinstance(s, dict) else ""
 
-    # 2) длиннее 80 — разрезать; куски кладём в пустые соседи
+    def _join(a: str, b: str) -> str:
+        return " ".join((a + " " + b).split()).strip()
+
+    def _reply(s: Any) -> bool:
+        # guard: закадр никогда не кладём на кадр с непустой «реплика»
+        return isinstance(s, dict) and bool(str(s.get("реплика") or "").strip())
+
+    # 1) длиннее 80 — разрезать; куски в следующие пустые кадры до первого непустого
     idx = 0
     while idx < len(shots):
         shot = shots[idx]
-        if not isinstance(shot, dict):
-            idx += 1
-            continue
-        chunk = str(shot.get("закадр") or "").strip()
-        if not chunk:
-            idx += 1
-            continue
+        chunk = _vo(shot)
         n = visible_len(chunk)
-        if n <= SHOT_VO_MAX:
+        if not chunk or n <= SHOT_VO_MAX:
             idx += 1
             continue
+        empties: list[int] = []
+        j = idx + 1
+        while j < len(shots):
+            if not isinstance(shots[j], dict):
+                j += 1
+                continue
+            if _vo(shots[j]):
+                break
+            if _reply(shots[j]):
+                j += 1
+                continue
+            empties.append(j)
+            j += 1
+        nxt_i = j if j < len(shots) and not _reply(shots[j]) else None
         target = max(2, (n + SHOT_VO_IDEAL - 1) // SHOT_VO_IDEAL)
-        if cap > 0:
-            others = sum(
-                1
-                for j, s in enumerate(shots)
-                if j != idx
-                and isinstance(s, dict)
-                and str(s.get("закадр") or "").strip()
-                and not is_cutaway_shot(s)
-            )
-            room = max(1, cap - others)
-            target = min(target, room)
+        target = min(target, 1 + len(empties)) if empties else target
         parts = [" ".join(p.split()) for p in split_text_into_parts(chunk, target)]
         parts = [p for p in parts if p]
         if len(parts) <= 1:
             warnings.append(f"кадр[{idx}] закадр {n} не удалось разрезать")
             idx += 1
             continue
+        if not empties:
+            # Нет пустого слота: хвост — в начало следующего куска, если влезет.
+            if nxt_i is not None and len(parts) == 2 and visible_len(
+                _join(parts[1], _vo(shots[nxt_i]))
+            ) <= SHOT_VO_MAX and visible_len(parts[0]) >= SHOT_VO_MIN:
+                shot["закадр"] = parts[0]
+                shots[nxt_i]["закадр"] = _join(parts[1], _vo(shots[nxt_i]))
+                warnings.append(f"кадр[{idx}] закадр {n}: хвост перенесён в следующий кусок")
+            else:
+                warnings.append(f"кадр[{idx}] закадр {n} >80, пустого кадра рядом нет — оставили")
+            idx += 1
+            continue
         shot["закадр"] = parts[0]
         rest = parts[1:]
-        ri = 0
-        j = idx + 1
-        while ri < len(rest) and j < len(shots):
-            nxt = shots[j]
-            if not isinstance(nxt, dict):
-                j += 1
-                continue
-            cur = str(nxt.get("закадр") or "").strip()
-            if not cur:
-                nxt["закадр"] = rest[ri]
-                ri += 1
-            elif visible_len(cur) < SHOT_VO_MIN and not is_cutaway_shot(nxt):
-                nxt["закадр"] = " ".join((rest[ri] + " " + cur).split())
-                ri += 1
-            j += 1
-        if ri < len(rest):
-            # Под VO-cap: плодим пустые оболочки только под VO (без invent действия).
-            inserted = 0
-            while ri < len(rest):
-                normals_now = sum(
-                    1
-                    for s in shots
-                    if isinstance(s, dict)
-                    and str(s.get("закадр") or "").strip()
-                    and not is_cutaway_shot(s)
-                )
-                if cap > 0 and normals_now >= cap:
-                    break
-                piece = rest[ri]
-                ri += 1
-                shell = {
-                    "id": f"{shot.get('id') or 'S'}-v{idx}-{inserted}",
-                    "действие": "",  # не invent шагов из narrative
-                    "закадр": piece,
-                    "объект": shot.get("объект") or "место",
-                    "parent_id": shot.get("parent_id") or shot.get("id"),
-                }
-                shots.insert(idx + 1 + inserted, shell)
-                inserted += 1
-            if ri < len(rest):
-                leftover = " ".join(rest[ri:])
-                shot["закадр"] = " ".join(
-                    (str(shot.get("закадр") or "") + " " + leftover).split()
-                )
-                warnings.append(
-                    f"кадр[{idx}] закадр был {n}, хвост {visible_len(leftover)} приклеен (VO-cap)"
-                )
+        slots = empties[: len(rest)]
+        for k, sj in enumerate(slots):
+            if k == len(slots) - 1 and len(rest) > len(slots):
+                shots[sj]["закадр"] = " ".join(rest[k:])
             else:
-                warnings.append(
-                    f"кадр[{idx}] закадр {n} разрезан на {len(parts)} "
-                    f"(+{inserted} оболочек VO)"
-                )
-            idx += 1 + inserted
-        else:
-            warnings.append(f"кадр[{idx}] закадр {n} разрезан на {len(parts)}")
-            idx += 1
+                shots[sj]["закадр"] = rest[k]
+        warnings.append(f"кадр[{idx}] закадр {n} разрезан на {1 + len(slots)}")
+        idx = (slots[-1] if slots else idx) + 1
 
-    # 3) выкинуть пустые non-cutaway оболочки (фикс «35 empty»)
+    # 2) короткие (<26, не перебивка) → в ближайший непустой кусок, кадр оставляем
+    i = 0
+    while i < len(shots):
+        shot = shots[i]
+        chunk = _vo(shot)
+        n = visible_len(chunk)
+        if not chunk or n >= SHOT_VO_MIN or is_cutaway_shot(shot):
+            i += 1
+            continue
+        nxt = next((j for j in range(i + 1, len(shots)) if _vo(shots[j])), None)
+        prv = next((j for j in range(i - 1, -1, -1) if _vo(shots[j])), None)
+        if nxt is not None and _reply(shots[nxt]):
+            nxt = None
+        if prv is not None and _reply(shots[prv]):
+            prv = None
+        if nxt is not None and visible_len(_join(chunk, _vo(shots[nxt]))) <= SHOT_VO_MAX:
+            shots[nxt]["закадр"] = _join(chunk, _vo(shots[nxt]))
+            shot["закадр"] = ""
+            warnings.append(f"короткий закадр {n} перенесён в следующий кусок (кадр оставлен)")
+        elif prv is not None and visible_len(_join(_vo(shots[prv]), chunk)) <= SHOT_VO_MAX:
+            shots[prv]["закадр"] = _join(_vo(shots[prv]), chunk)
+            shot["закадр"] = ""
+            warnings.append(f"короткий закадр {n} перенесён в предыдущий кусок (кадр оставлен)")
+        i += 1
+
+    # 3) выкинуть только пустые оболочки: без шага, без закадра, без промтов
     before = len(shots)
     kept: list[Any] = []
     for s in shots:
-        if not isinstance(s, dict):
-            kept.append(s)
+        if (
+            isinstance(s, dict)
+            and not _vo(s)
+            and not str(s.get("действие") or "").strip()
+            and not any(str(s.get(k) or "").strip() for k in s if str(k).startswith("промт"))
+        ):
             continue
-        chunk = str(s.get("закадр") or "").strip()
-        if chunk or is_cutaway_shot(s):
-            kept.append(s)
+        kept.append(s)
     if len(kept) < before:
-        warnings.append(f"удалили пустые закадры {before - len(kept)} шт")
+        warnings.append(f"удалили пустые оболочки без шага {before - len(kept)} шт")
         shots[:] = kept
 
-    # 4) VO-cap: склеить лишние обычные в более длинные 26–80
-    if cap > 0:
-        while True:
-            normals = [
-                (i, s)
-                for i, s in enumerate(shots)
-                if isinstance(s, dict)
-                and str(s.get("закадр") or "").strip()
-                and not is_cutaway_shot(s)
-            ]
-            if len(normals) <= cap:
-                break
-            _li, last = normals[-1]
-            _pi, prev = normals[-2]
-            prev["закадр"] = " ".join(
-                (
-                    str(prev.get("закадр") or "").strip()
-                    + " "
-                    + str(last.get("закадр") or "").strip()
-                ).split()
-            )
-            shots.pop(_li)
-        if len(normals) > cap:
-            warnings.append(f"сжали до VO-cap {cap} обычных кадров")
-
-    glued = " ".join(
-        str(s.get("закадр") or "").strip()
-        for s in shots
-        if isinstance(s, dict) and str(s.get("закадр") or "").strip()
-    )
+    glued = " ".join(_vo(s) for s in shots if _vo(s))
     if norm_vo and glued and " ".join(glued.split()) != norm_vo:
         warnings.append("после перерезки склейка != VO — флаг")
+    # R-VO-SENTENCE: закадр режется ТОЛЬКО по концу предложения (.!?…);
+    # всё порезанное выше по словам/запятым собирается обратно в целые предложения.
+    if norm_vo and glued and " ".join(glued.split()) == norm_vo:
+        warnings.extend(reflow_vo_by_sentences(shots, norm_vo))
     return warnings
 
 
@@ -1299,12 +1242,13 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
             covers = bool(norm_vo) and " ".join(chunk.split()) == norm_vo
             cell_short = len(shots) == 1 and visible_len(vo) < SHOT_VO_MIN
             cutaway = is_cutaway_shot(shot)
-            if n > SHOT_VO_MAX:
+            whole = vo_piece_ends_sentence(chunk)
+            if n > SHOT_VO_MAX and not whole:
                 return (
                     f"{prefix}кадр закадр {n} симв. "
                     f"(разрежь, не вали весь VO; норма {SHOT_VO_MIN}–{SHOT_VO_MAX})"
                 )
-            if n < SHOT_VO_CUTAWAY_MIN and not (cutaway or cell_short):
+            if n < SHOT_VO_CUTAWAY_MIN and not (cutaway or cell_short or whole):
                 return (
                     f"{prefix}кадр закадр {n} симв. "
                     f"(<{SHOT_VO_CUTAWAY_MIN} только у перебивки/реакции)"
@@ -1313,6 +1257,7 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
                 n < SHOT_VO_MIN
                 and not cutaway
                 and not cell_short
+                and not whole
             ):
                 return (
                     f"{prefix}кадр закадр {n} симв. "
@@ -1349,3 +1294,357 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
     if cell and glued and " ".join(glued.split()) != cell:
         return f"{prefix}склейка закадр кадров ≠ voiceover_text"
     return None
+
+
+# ---- R-VO-SENTENCE (c61): закадр режется ТОЛЬКО по концу предложения ----
+import re as _re
+_SENT_END = _re.compile(r'(?<=[.!?…])["»)]*\s+(?=["«(]?[A-ZА-ЯЁ0-9—–-])')
+_END_OK = _re.compile(r'[.!?…]["»)]*\s*$')
+
+
+def split_vo_sentences(vo):
+    """VO → предложения (склейка через пробел = исходный VO)."""
+    t = " ".join(str(vo or "").split())
+    if not t:
+        return []
+    out, pos = [], 0
+    for m in _SENT_END.finditer(t):
+        out.append(t[pos:m.start()].strip())
+        pos = m.end()
+    out.append(t[pos:].strip())
+    return [s for s in out if s]
+
+
+def vo_piece_ends_sentence(piece):
+    return bool(_END_OK.search(" ".join(str(piece or "").split())))
+
+
+def reflow_vo_by_sentences(shots, vo):
+    """Детерминированно: каждое предложение VO целиком — в кадр, где оно началось
+    (по текущей раскладке), на кадрах с репликой закадра нет (предложение уходит на
+    ближайший предыдущий кадр без реплики, иначе — следующий). Склейка = VO."""
+    rows = [s for s in shots if isinstance(s, dict)]
+    sents = split_vo_sentences(vo)
+    if not rows or not sents:
+        return []
+    norm = " ".join(sents)
+
+    def v(s):
+        return " ".join(str(s.get("закадр") or "").split())
+
+    def rep(s):
+        return bool(str(s.get("реплика") or "").strip())
+
+    # позиция начала каждого куска в склейке
+    starts, pos = [], 0
+    for i, s in enumerate(rows):
+        if v(s):
+            starts.append((pos, i))
+            pos += len(v(s)) + 1
+    free = [i for i, s in enumerate(rows) if not rep(s)]
+    if not free:
+        return ["нет кадров без реплики под закадр"]
+    owner = {}
+    p = 0
+    for k, sent in enumerate(sents):
+        own = None
+        for st, i in starts:
+            if st <= p:
+                own = i
+        if own is None:
+            own = free[0]
+        if rep(rows[own]):
+            prev = [j for j in free if j < own]
+            nxt = [j for j in free if j > own]
+            own = prev[-1] if prev else nxt[0]
+        # порядок не должен идти назад
+        if k and owner[k - 1] > own:
+            own = owner[k - 1]
+        owner[k] = own
+        p += len(sent) + 1
+    new = {i: "" for i in range(len(rows))}
+    for k, sent in enumerate(sents):
+        i = owner[k]
+        new[i] = (new[i] + " " + sent).strip()
+    notes = []
+    for i, s in enumerate(rows):
+        if v(s) != new[i]:
+            notes.append(f"{s.get('id')}: закадр по предложениям")
+            s["закадр"] = new[i]
+    assert " ".join(v(s) for s in rows if v(s)) == norm
+    return notes
+
+
+def vo_sentence_problems(shots, vo):
+    """Гейт: кусок закадра = целые предложения; нет закадра на кадре реплики;
+    реплика не стоит внутри предложения (гарантируется первым)."""
+    out = []
+    rows = [s for s in shots if isinstance(s, dict)]
+    pieces = [(s, " ".join(str(s.get("закадр") or "").split())) for s in rows]
+    nonempty = [(s, t) for s, t in pieces if t]
+    for s, t in nonempty[:-1]:
+        if not vo_piece_ends_sentence(t):
+            out.append(f"{s.get('id')}: закадр рвёт предложение «…{t[-30:]}»")
+    for s, t in pieces:
+        if t and str(s.get("реплика") or "").strip():
+            out.append(f"{s.get('id')}: закадр и реплика в одном кадре")
+    return out
+
+
+# ---- R-CHAR-ID (c61): персонаж из базы — всегда с id (вариант образа — id варианта) ----
+def _strip_acc(t):
+    return str(t or "").replace("\u0301", "")
+
+
+def _char_patterns(cards, scene_ids=None):
+    """[(id, имя, regex)]. Вариант (правила = id родителя, имя-заглушка) берёт имя родителя;
+    если в сцене есть вариант родителя, а самого родителя нет — имя родителя → id варианта."""
+    by = {str(c.get("id") or c.get("code") or "").strip(): c for c in cards or []}
+    scene = [str(x).strip() for x in (scene_ids or []) if str(x).strip()]
+    parent = {cid: str(c.get("правила") or "").strip() for cid, c in by.items()
+              if str(c.get("правила") or "").strip() in by and str(c.get("правила") or "").strip() != cid}
+    out = []
+    for cid, c in by.items():
+        if cid in parent:
+            continue
+        nm = _strip_acc(c.get("имя") or c.get("name") or "").strip()
+        words = [w for w in nm.split() if len(w) >= 4 and w.isalpha() and w[0].isupper()]
+        if not cid or not words:
+            continue
+        use = cid
+        if cid not in scene:
+            var = [v for v in scene if parent.get(v) == cid]
+            if var:
+                use = var[0]
+        family = [cid] + [v for v, p in parent.items() if p == cid]
+        stems = sorted({(w[:-1] if w[-1] in "аяйоеьи" else w) for w in words}, key=len, reverse=True)
+        alt = "|".join(_re.escape(x) for x in stems)
+        rx = _re.compile(r"(?<![\wА-Яа-яЁё])(?:" + alt + r")[а-яё]*(?:\s+(?:" + alt + r")[а-яё]*)?", _re.I)
+        out.append((use, nm, rx, family))
+    return out
+
+
+def _norm_scene_ids(scene_ids):
+    """2026-10-11: «персонажи» may come as a string 'c01, c07' -> list of ids."""
+    if scene_ids is None:
+        return None
+    if isinstance(scene_ids, str):
+        return [x for x in re.findall(r'c\d+', scene_ids)]
+    return [str(x).strip() for x in scene_ids if str(x).strip()]
+
+
+def ensure_character_ids(shots, cards, scene_ids=None):
+    scene_ids = _norm_scene_ids(scene_ids)
+    """Первое упоминание персонажа базы в каждом поле промта/кто без id → «Имя (cNN)»;
+    чужой id семьи (c01 вместо варианта c05 этой сцены) → id сцены. `говорит` = имя → id."""
+    pats = _char_patterns(cards, scene_ids)
+    notes = []
+    for s in shots or []:
+        if not isinstance(s, dict):
+            continue
+        for key in [k for k in list(s) if str(k).startswith("промт")] + ["кто", "действие", "позы", "где"]:
+            txt = s.get(key)
+            if not isinstance(txt, str) or not txt:
+                continue
+            new = txt
+            for cid, nm, rx, fam in pats:
+                for f in fam:
+                    if f != cid:
+                        new = _re.sub(r"\(\s*(?:id\s*)?" + f + r"\s*\)", f"({cid})", new)
+                        new = _re.sub(r"\bid\s+" + f + r"\b", f"id {cid}", new)
+                if key not in ("кто",) and not str(key).startswith("промт"):
+                    continue
+                if cid in _strip_acc(new):
+                    continue
+                m = rx.search(new)
+                if m:
+                    new = new[:m.end()] + f" ({cid})" + new[m.end():]
+            if new != txt:
+                s[key] = new
+                notes.append(f"{s.get('id')}: id в {key}")
+        who = _strip_acc(str(s.get("говорит") or "")).strip()
+        for cid, nm, rx, fam in pats:
+            if who and who != cid and (rx.fullmatch(who) or who in fam):
+                s["говорит"] = cid
+                notes.append(f"{s.get('id')}: говорит → {cid}")
+        for p in s.get("люди") or []:
+            if isinstance(p, dict) and isinstance(p.get("кто"), str):
+                t = p["кто"]
+                for cid, nm, rx, fam in pats:
+                    for f in fam:
+                        if f != cid:
+                            t = _re.sub(r"\(\s*" + f + r"\s*\)", f"({cid})", t)
+                    t = _re.sub(r"(\(" + cid + r"\))(\s*\(" + cid + r"\))+", r"\1", t)
+                p["кто"] = t
+                w = _strip_acc(str(p.get("кто") or ""))
+                for cid, nm, rx, fam in pats:
+                    if w and not any(f in w for f in fam) and rx.search(w):
+                        p["кто"] = f"{p['кто']} ({cid})"
+    return notes
+
+
+def character_id_problems(shots, cards, scene_ids=None):
+    scene_ids = _norm_scene_ids(scene_ids)
+    out = []
+    pats = _char_patterns(cards, scene_ids)
+    if scene_ids is not None:
+        allowed = set()
+        for cid, nm, rx, fam in pats:
+            if cid in [str(x) for x in scene_ids]:
+                allowed |= set(fam)
+        allowed |= {str(x) for x in scene_ids}
+        blob = _strip_acc(" ".join(" ".join(str(v) for k, v in s.items() if str(k).startswith("промт") or k in ("кто", "говорит", "действие")) for s in shots or [] if isinstance(s, dict)))
+        known = {str(c.get("id")) for c in cards or []}
+        extra = sorted({m for m in _re.findall(r"\bc\d\d\b", blob) if m in known and m not in allowed})
+        if extra:
+            out.append(f"в ячейке нет персонажей {', '.join(extra)} (персонажи = {list(scene_ids)}): роли без карточки не подменяй персонажами базы")
+    for s in shots or []:
+        if not isinstance(s, dict):
+            continue
+        txt = _strip_acc(" ".join(str(v) for k, v in s.items() if str(k).startswith("промт")) + " " + str(s.get("кто") or ""))
+        for cid, nm, rx, fam in pats:
+            if rx.search(txt) and cid not in txt:
+                out.append(f"{s.get('id')}: «{nm}» без id {cid}")
+            for f in fam:
+                if f != cid and _re.search(r"\b" + f + r"\b", txt):
+                    out.append(f"{s.get('id')}: id {f}, а в этой ячейке образ {cid}")
+                    break
+    return out
+
+
+
+
+# ---- R-REPLY-CAM (c62): камера кадров реплик по §3, после всех правок плана/30° ----
+_PLAN_RX = _re.compile(r"План\s+(ДАЛЬНИЙ|ОБЩИЙ|СРЕДНЕ-КРУПНЫЙ|СРЕДНИЙ|КРУПНЫЙ|ДЕТАЛЬ)")
+_ANG_RX = _re.compile(r"Ракурс\s+[^.]*\.")
+_HGT_RX = _re.compile(r"Высота\s+(снизу вверх|сверху вниз|уровень глаз)")
+
+
+def _ang(v):
+    t = str(v or "").strip().casefold()
+    for k in ("с плеча", "фронт", "3/4", "сверху", "снизу", "макро"):
+        if t.startswith(k):
+            return k
+    return t
+
+
+def _set_cam_text(s, plan, ang_sentence):
+    for k in [k for k in s if str(k).startswith("промт") and k != "промт_видео"]:
+        t = s.get(k)
+        if not isinstance(t, str) or not t:
+            continue
+        t = _PLAN_RX.sub(f"План {plan}", t, count=1)
+        t = _ANG_RX.sub(ang_sentence, t, count=1)
+        t = _HGT_RX.sub("Высота уровень глаз", t, count=1)
+        s[k] = t
+
+
+def normalize_reply_cameras(shots):
+    """Кадр реплики: `с плеча` (через плечо слушающего на говорящего) или монолог КРУПНЫЙ фронт.
+    Подряд идущие реплики разных людей — встречная пара: оба `с плеча`, один план СРЕДНЕ-КРУПНЫЙ."""
+    rows = [s for s in shots or [] if isinstance(s, dict)]
+    reps = [s for s in rows if str(s.get("реплика") or "").strip()]
+    notes = []
+    for idx, s in enumerate(reps):
+        who = str(s.get("говорит") or "").strip()
+        others = {str(r.get("говорит") or "").strip().casefold() for r in reps} - {who.casefold(), ""}
+        plan = str(s.get("план") or "").strip().upper()
+        ang = _ang(s.get("ракурс"))
+        legal = ang == "с плеча" or (plan == "КРУПНЫЙ" and ang == "фронт")
+        neighbours = [reps[j] for j in (idx - 1, idx + 1) if 0 <= j < len(reps)]
+        in_pair = any(str(n.get("говорит") or "").strip().casefold() != who.casefold() for n in neighbours)
+        if legal and not (in_pair and (ang != "с плеча" or plan != "СРЕДНЕ-КРУПНЫЙ")):
+            continue
+        if not others and not in_pair:
+            new_plan, new_ang, sent = "КРУПНЫЙ", "фронт", f"Ракурс фронт — камера спереди на говорящего {who}."
+        else:
+            lst = next((str(n.get("говорит") or "") for n in neighbours if str(n.get("говорит") or "").strip().casefold() != who.casefold()), "") or (sorted(others)[0] if others else "собеседника")
+            new_plan, new_ang, sent = "СРЕДНЕ-КРУПНЫЙ", "с плеча", f"Ракурс с плеча — через плечо {lst} на говорящего {who}."
+        before = (s.get("план"), s.get("ракурс"))
+        s["план"], s["ракурс"], s["высота"] = new_plan, new_ang, "уровень глаз"
+        if "точка" in s:
+            s["точка"] = "с плеча" if new_ang == "с плеча" else "фронт"
+        if str(s.get("объект") or "") not in ("двое", "лицо"):
+            s["объект"] = "двое" if new_ang == "с плеча" else "лицо"
+        _set_cam_text(s, new_plan, sent)
+        notes.append(f"{s.get('id')}: камера реплики {before} → ({new_plan}, {new_ang})")
+    return notes
+
+
+# ---- R-POSE-CARRY (c62): поза прошлого кадра — в промт текущего ----
+def carry_pose(shots):
+    rows = [s for s in shots or [] if isinstance(s, dict)]
+    notes = []
+    for i in range(1, len(rows)):
+        p, s = rows[i - 1], rows[i]
+        if p.get("место") != s.get("место") or str(s.get("кто") or "").strip().casefold() in ("", "никого", "нет"):
+            continue
+        act = str(s.get("действие") or "")
+        if _UP.search(act):
+            continue
+        if _SIT.search(_prompts_text(s)) or _STANDS.search(str(s.get("позы") or "")):
+            continue
+        clause = ""
+        for src, f in ((s, "позы"), (p, "позы"), (p, "конец"), (p, "действие")):
+            for part in _re.split(r"[;.]\s*", str(src.get(f) or "")):
+                if _SIT.search(part):
+                    clause = part.strip()
+                    break
+            if clause:
+                break
+        if not clause:
+            continue
+        add = f"Поза из прошлого кадра сохраняется: {clause}."
+        if not _SIT.search(str(s.get("позы") or "")):
+            s["позы"] = (str(s.get("позы") or "").rstrip(" .") + ("; " if s.get("позы") else "") + clause).strip()
+        for k in ("промт_старт", "промт_картинки"):
+            if isinstance(s.get(k), str) and s[k].strip():
+                s[k] = s[k].rstrip() + " " + add
+                break
+        notes.append(f"{s.get('id')}: поза перенесена «{clause[:40]}»")
+    return notes
+
+
+
+# ---- R-CONTINUITY (c61): заметил → кадр объекта; поза; внутри/снаружи ----
+_NOTICE = _re.compile(r"\b(замеча\w*|заметил\w*|видит|увидел\w*|смотрит на|смотрит в|разглядыва\w*|обнаружива\w*|обнаружил\w*|находит|нашёл|нашел|рассматрива\w*)\b", _re.I)
+_SIT = _re.compile(r"\b(сел|села|сидит|сидя|садится|усажива\w*|присел\w*|приседа\w*|на корточках|лёг|лег|легла|лежит|лёжа|лежа)\b", _re.I)
+_UP = _re.compile(r"\b(вста\w*|поднима\w*ся|поднял\w*ся|выпрямл\w*|идёт|идет|шагает|выходит|уходит|входит|уводит)\b", _re.I)
+_EXIT = _re.compile(r"\b(выходит|вышел|выйдя|покидает|покинул)\w*\s+(из|на)\s+(здани|подъезд|дом|отдел|улиц|двор|крыльц)", _re.I)
+_INSIDE = _re.compile(r"(дверь комнаты|дверь кабинета|в коридоре|в комнате|в кабинете|внутри здания|открывает дверь|«комната)", _re.I)
+_STANDS = _re.compile(r"\b(стоит|стоя|стоят|встал\w*|встаёт|поднят\w*|выпрям\w*)\b", _re.I)
+_ENTER = _re.compile(r"\b(входит|вошёл|вошел|заходит|возвращается|заводят|вводят)\b", _re.I)
+
+
+def _prompts_text(s):
+    return " ".join(str(v) for k, v in s.items() if str(k).startswith("промт"))
+
+
+def shots_continuity_problems(shots):
+    rows = [s for s in shots or [] if isinstance(s, dict)]
+    out = []
+    exited = False
+    for i, s in enumerate(rows):
+        act = str(s.get("действие") or "")
+        sid = s.get("id") or f"кадр {i + 1}"
+        _mn = _NOTICE.search(act)
+        if _mn and not _re.search(r"\bне\s+$", act[:_mn.start()]):
+            n = rows[i + 1] if i + 1 < len(rows) else None
+            nobody = n is not None and str(n.get("кто") or "").strip().casefold() in ("", "никого", "нет")
+            ok = (n is not None and (str(n.get("план") or "").upper() in ("ДЕТАЛЬ", "КРУПНЫЙ") or nobody)
+                  and n.get("объект") in ("предмет", "взгляд", "место") and not _NOTICE.search(str(n.get("действие") or "")))
+            if not ok:
+                out.append(f"{sid}: «{_mn.group(0)}» — следующим кадром нужна вставка ДЕТАЛЬ/КРУПНЫЙ того, что он видит (POV)")
+        if i and rows[i - 1].get("место") == s.get("место") and str(s.get("кто") or "").strip().casefold() not in ("", "никого", "нет"):
+            p = rows[i - 1]
+            ptxt = " ".join(str(p.get(k) or "") for k in ("действие", "конец", "позы"))
+            if _SIT.search(ptxt) and not _UP.search(act) and not _STANDS.search(str(s.get("позы") or "")) and not _SIT.search(_prompts_text(s)):
+                out.append(f"{sid}: в прошлом кадре сидит/присел/лежит — поза не перенесена в промт")
+        if exited and _INSIDE.search(act + " " + str(s.get("где") or "")) and not _ENTER.search(act):
+            out.append(f"{sid}: вышел из здания, а теперь снова внутри без кадра входа")
+            exited = False
+        if _EXIT.search(act):
+            exited = True
+        elif _ENTER.search(act):
+            exited = False
+    return out

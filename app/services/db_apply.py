@@ -460,11 +460,56 @@ _DOUBLE_KEY_QUOTE_RE = re.compile(
 )
 
 
+def _strip_json_trailing_commas(text: str) -> str:
+    """Убрать запятые перед ``]`` и ``}`` вне строк.
+
+    Модель часто закрывает объект так: ``},],``. Стандартный JSON это
+    отвергает целиком, хотя все кадры в ответе уже есть.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_str = False
+    esc = False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "]}":
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def repair_apply_ops_json_text(text: str) -> str:
-    """Типичный обрыв/опечатка kie: ``{""порядок":27`` вместо ``{"порядок":27``."""
+    """Починить частые опечатки модели до json.loads.
+
+    ``{""порядок":27`` → ``{"порядок":27``.
+    Запятая перед ``]`` / ``}`` вне строки выкидывается.
+    """
     if not text:
         return text
-    return _DOUBLE_KEY_QUOTE_RE.sub(r'{"\1"', text)
+    text = _DOUBLE_KEY_QUOTE_RE.sub(r'{"\1"', text)
+    return _strip_json_trailing_commas(text)
 
 
 def close_truncated_json(text: str) -> dict[str, Any] | None:
@@ -1025,8 +1070,12 @@ async def upsert_characters(
     session: AsyncSession,
     project: Project,
     characters: list[Any],
+    *,
+    replace: bool = False,
 ) -> int:
-    """Записать/обновить сущности type=character по code (c01…)."""
+    """Записать/обновить сущности type=character по code (c01…).
+
+    replace=True: коды, которых нет в новом списке, удаляются (Каркас)."""
     from app.models import Entity
 
     if not isinstance(characters, list):
@@ -1048,9 +1097,11 @@ async def upsert_characters(
     }
     max_key = max((float(e.sort_key or 0) for e in existing), default=0.0)
     n = 0
+    seen: set[str] = set()
     for raw in characters:
         card = _normalize_character_card(raw)
         code = card["code"]
+        seen.add(code)
         en = by_code.get(code)
         if en is None:
             max_key += 10.0
@@ -1069,6 +1120,18 @@ async def upsert_characters(
             en.attrs = card["attrs"]
             en.type = "character"
         n += 1
+    if replace and seen:
+        from loguru import logger
+
+        for code, en in list(by_code.items()):
+            if code not in seen:
+                await session.delete(en)
+                logger.info(
+                    "[#{}] upsert_characters replace: удалён {} ({})",
+                    project.id,
+                    code,
+                    en.name,
+                )
     await session.flush()
     return n
 

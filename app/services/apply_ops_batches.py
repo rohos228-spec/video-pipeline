@@ -8,6 +8,7 @@ stream_partial, salvage ops=65, нода done. Аналитика (коротк�
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import re
 import unicodedata
@@ -39,8 +40,16 @@ from app.services.scene_shot_grammar import (
     fill_bit_spans,
     is_cutaway_shot,
     merge_same_place_scenes,
+    carry_pose,
+    character_id_problems,
+    ensure_character_ids,
+    normalize_reply_cameras,
+    reflow_vo_by_sentences,
     repair_shot_vo_lengths,
+    shots_continuity_problems,
     shots_grammar_reason,
+    vo_piece_ends_sentence,
+    vo_sentence_problems,
 )
 from app.services.shot_templates import fill_kadry_from_catalog
 
@@ -57,15 +66,21 @@ _LIGHT_JSON_BYTES_PER_BATCH = 180_000
 # Сценарист / закадр (прочие ноды): пачка = 6 ячеек VO.
 VO_UNITS_PER_BATCH = 6
 # Группа script_frames_qc (биты → действие → кадры-шаги → QC):
-# биты/действие/кадры — по 8 отрезков, до 10 пачек параллельно, сдвиг 0.5 с.
+# по 8 отрезков. В полёте не больше 8 пачек, старт с разницей в несколько секунд.
 # fw_frames (старые канвасы) — по 6 кадров (тяжёлые image+anim).
 # Из main: соло-пачка жирного K1, автопочинка UUID, не резать пачку на salvage.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 8
-SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 10
+SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 8
+# Площадка: весь набор тремя пачками, старт через 30 с.
+ACTION_TARGET_BATCHES = 3
+ACTION_STAGGER_SEC = 30.0
 FW_FRAMES_PER_BATCH = 6
-VO_PARALLEL_MAX = 10
-FW_FRAMES_PARALLEL_BATCHES = 10
-VO_STAGGER_SEC = 0.5
+VO_PARALLEL_MAX = 8
+FW_FRAMES_PARALLEL_BATCHES = 8
+VO_STAGGER_SEC = 5.0
+# Жёсткий потолок отправки: и первая волна, и разрезанные половины.
+PACK_IN_FLIGHT_MAX = 8
+PACK_SEND_GAP_S = 5.0
 SHOT_VO_MIN_CHARS = SHOT_VO_MIN
 SHOT_VO_MAX_CHARS = SHOT_VO_MAX
 # Жирная ячейка кадров: длинная цепь действия → соло-пачка (не схлопывать в 1–5).
@@ -95,19 +110,50 @@ ProgressFn = Callable[[str], Awaitable[None]]
 
 
 def pack_call_timeout_s(footer_kind: str | None = None) -> float:
-    """Стена на одну apply-ops пачку: GPT_TIMEOUT_S × 3.
-
-    Внутри ``run_operator_api`` JSON-retry — второй полный chat.
-    CF-continue к каждому chat добавляет ещё до 300с×2. Одна стена
-    ``GPT_TIMEOUT_S`` убивает retry после длинного первого стрима
-    (fw_script: L1 timeout 600s при уже готовом salvage).
-    ``footer_kind`` оставлен в сигнатуре — все виды пачек ждут одну стену.
-    """
+    """Стена на одну пачку: 20 минут. Все виды пачек ждут одно и то же."""
     del footer_kind
-    from app.settings import settings
+    return 1200.0
 
-    wall = float(getattr(settings, "gpt_timeout_s", 600.0) or 600.0)
-    return max(180.0, wall * 3.0)
+
+class _PackSendGate:
+    """Не больше 8 запросов этого прогона, старт с разницей в gap_s."""
+
+    def __init__(self, gap_s: float) -> None:
+        self.sem = asyncio.Semaphore(PACK_IN_FLIGHT_MAX)
+        self.lock = asyncio.Lock()
+        self.next_at = 0.0
+        self.gap_s = max(0.0, float(gap_s))
+
+
+_pack_gate: contextvars.ContextVar[_PackSendGate | None] = contextvars.ContextVar(
+    "pack_send_gate",
+    default=None,
+)
+
+
+async def _acquire_pack_send_slot() -> None:
+    gate = _pack_gate.get()
+    if gate is None:
+        return
+    await gate.sem.acquire()
+    try:
+        while True:
+            async with gate.lock:
+                now = asyncio.get_running_loop().time()
+                wait = gate.next_at - now
+                if wait <= 0:
+                    gate.next_at = now + gate.gap_s
+                    return
+            await asyncio.sleep(wait)
+    except BaseException:
+        gate.sem.release()
+        raise
+
+
+def _release_pack_send_slot() -> None:
+    gate = _pack_gate.get()
+    if gate is not None:
+        gate.sem.release()
 
 
 def frames_per_batch(
@@ -307,7 +353,9 @@ def split_vo_units(
 
 
 def split_into_n_packs(frames: list[dict[str, Any]], n: int) -> list[list[dict[str, Any]]]:
-    """Ровно n пачек. VO-ячейка (родитель+шоты) не режется пополам."""
+    """Ровно n пачек. VO-ячейка (родитель+шоты) не режется пополам.
+    Без HEAVY-solo: иначе 68 юнитов раздуваются до ~34 пачек.
+    """
     if not frames:
         return []
     n = max(1, int(n))
@@ -315,7 +363,14 @@ def split_into_n_packs(frames: list[dict[str, Any]], n: int) -> list[list[dict[s
     if len(units) > 1:
         n = min(n, len(units))
         per = max(1, (len(units) + n - 1) // n)
-        return split_vo_units(frames, per)
+        packs: list[list[dict[str, Any]]] = []
+        for i in range(0, len(units), per):
+            pack: list[dict[str, Any]] = []
+            for unit in units[i : i + per]:
+                pack.extend(unit)
+            if pack:
+                packs.append(pack)
+        return packs
     n = min(n, len(frames))
     per = max(1, (len(frames) + n - 1) // n)
     return split_frames(frames, per)
@@ -1123,6 +1178,11 @@ def _same_place_plan_ladder_reason(
         if len(plans) != 1:
             continue
         plan = next(iter(plans))
+        from app.services.scene_plan import is_reverse_shot_pair
+        if len(group) >= 2 and all(
+            is_reverse_shot_pair(a, b) for a, b in zip(group, group[1:])
+        ):
+            continue  # встречные планы диалога (пара СРЕДНЕ-КРУПНЫХ с плеча) — норма
         if plan.startswith("общ") or len(group) >= 3:
             return (
                 f"uuid {uid[:8]}: {len(group)} кадров «{place}» все план "
@@ -1325,9 +1385,9 @@ def shots_coverage_ops_reason(
             continue
         uid = str(op.get("frame_uuid") or "").strip()
         vo = _frame_vo(by_uid_pre.get(uid) or {})
-        notes = repair_shot_vo_lengths(
-            [s for s in shots if isinstance(s, dict)], vo
-        )
+        # Чиним НА МЕСТЕ: раньше сюда шла копия списка — удаления/склейки
+        # терялись, а перенесённый текст оставался и в источнике (дубли).
+        notes = repair_shot_vo_lengths(shots, vo)
         if notes:
             logger.info(
                 "repair_shot_vo_lengths uuid={}: {}",
@@ -1427,51 +1487,20 @@ def _batch_footer(
             "Не пиши закадр и биты. JSON apply-ops, без прозы.\n"
         )
     if kind in {"shots_coverage", "shots"}:
-        expect_lines: list[str] = []
-        for fr in frames or []:
-            if not isinstance(fr, dict):
-                continue
-            uid = str(fr.get("uuid") or "").strip()
-            expected = _frame_expected_shots(fr)
-            steps = _frame_action_steps(fr)
-            vo_n = _frame_vo_chars(fr)
-            if uid and expected > 0:
-                expect_lines.append(
-                    f"- uuid {uid[:8]}: СДЕЛАЙ ≈{expected} кадров "
-                    f"(VO-capacity; steps={steps}, VO≈{vo_n} симв.) — "
-                    f"не 1–5 обобщений; каждый закадр 26–80"
-                )
-        expect_block = ""
-        if expect_lines:
-            expect_block = (
-                "Ожидаемое число кадров по uuid (VO-capacity expected N):\n"
-                + "\n".join(expect_lines[:12])
-                + "\n"
-            )
-        solo_note = ""
-        if n == 1:
-            solo_note = (
-                "СОЛО-ЯЧЕЙКА: это единственный uuid в пачке — не схлопывай в 1–5. "
-                "Верни ≈N кадров по VO-capacity выше.\n"
-            )
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
             f"(кадры-шаги, пачка {batch_i}, "
             f"{SCRIPT_FRAMES_QC_PARALLEL_BATCHES} параллельно)\n"
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Верни ops ровно по каждому uuid: fields.кадры.\n"
-            "ГЛАВНОЕ: число кадров ≈ VO-capacity expected N "
-            "(= min(шаги главное_действие, floor(len(VO)/26))). "
-            "Длинный VO → много кадров. Схлопывать в 1–5 = брак.\n"
-            "Лимиты 26–80 — длина закадра ОДНОГО кадра, а не повод сделать меньше "
-            "кадров. Перебивка: 10–30 или короткий эмо/реакция (можно пустой).\n"
-            f"{solo_note}"
-            f"{expect_block}"
             "Один кадр = один видимый шаг действия + кусок закадра. "
+            "Закадр режь ТОЛЬКО по концу предложения (. ! ? …): кусок = одно или несколько ЦЕЛЫХ предложений, цель 26–80, длинное предложение — целиком в один кадр, остальные кадры шага пустые. Внутри предложения нет ни реплики, ни пустого кадра. Диалог ставь только на стыке предложений закадра: весь закадр → диалог или диалог → закадр. Заметил/увидел/обнаружил → следующим кадром вставка ДЕТАЛЬ/КРУПНЫЙ того, на что он смотрит (POV), без людей. Поза переходит в следующий кадр: сидит/присел/лежит — так и пиши в промте, пока не встал. Персонаж из базы — всегда с id из `персонажи` ячейки (вариант образа: c05/c06 вместо c01), `говорит` = id; роли без id (Следователь, Задержанный) не подменяй персонажами базы. Вышел из здания — дальше снаружи; снова внутри только через кадр входа. "
+            "Кроме кадров с репликой (поле `реплика` не пустое): там `закадр` пустой, кусок закадра идёт на соседний кадр без реплики. "
+            "Диалог: установочный ОБЩИЙ до первой реплики; каждый кадр реплики — `с плеча` через плечо слушающего на говорящего, у соседних реплик разных людей один план (обычно СРЕДНЕ-КРУПНЫЙ); монолог — КРУПНЫЙ фронт.\n"
             "Поле объект: место|тело|двое|предмет|лицо|взгляд. "
             "Камеру (план, линза_мм, ракурс, движение) можно не писать — "
             "код подставит из таблицы. "
-            "Не вали весь VO в один кадр; не дроби ниже 10. "
+            "Не вали весь VO в один кадр, но предложение не дроби никогда. "
             "Склейка непустых закадр = весь voiceover_text. "
             "СТАРТ/КОНЕЦ только если точность жеста обязательна "
             "(открыл/положил/достал улику); иначе одно действие-процесс. "
@@ -1480,6 +1509,7 @@ def _batch_footer(
             "лево/право и раскладку посчитает код. "
             "Не пиши биты и главное_действие. JSON apply-ops, без прозы.\n"
         )
+
     if kind in {"shots_qc", "qc_shots"}:
         return (
             f"\n# BATCH call={batch_i} split={split_level} "
@@ -1487,7 +1517,7 @@ def _batch_footer(
             f"В db_frames.json только этот кусок: {n} ячеек закадра.\n"
             "Чини только нарушителей: fields.кадры. "
             "Проверь: картина кадра = смысл его закадра; склейка непустых = весь текст; "
-            "число кадров ≈ шагам действие; норма закадра 26–80 на кадр (не меньше кадров); перебивка 10–30 или короткий эмо/реакция (можно пустой); "
+            "число кадров ≈ шагам действие; закадр только целыми предложениями (цель 26–80), не рвать предложение; заметил → вставка объекта; поза и id персонажа в промте; нет скачков внутри/снаружи; перебивка 10–30 или короткий эмо/реакция (можно пустой); "
             "нет микрожестов без закадра; СТАРТ/КОНЕЦ только у точных жестов; "
             "объект enum, parent_id на одном месте, зоны из площадки, "
             "одну сторону оси у двоих, направление бега по экрану. "
@@ -1571,6 +1601,404 @@ class PassStopError(RuntimeError):
         super().__init__(message)
         self.rule = rule
         self.diary = diary
+
+
+SHOTS_GATE_KINDS = frozenset({"shots_coverage", "shots"})
+SHOTS_GATE_RULE = "R-SHOTS-GATE"
+
+
+class ShotsGateError(RuntimeError):
+    """Ответ «Шотов» не прошёл гейт (промты / закадр) — пачку не пишем."""
+
+    def __init__(self, message: str, *, problems: list[tuple[str, str]], bad_chunk: list | None = None) -> None:
+        super().__init__(message)
+        self.problems = problems
+        self.bad_chunk = bad_chunk
+
+
+class OutrightJunkError(RuntimeError):
+    """В ответе нет самой работы: пустые кадры, пустая площадка или пустые биты."""
+
+
+_SHOT_PAYLOAD_KEYS = (
+    "действие",
+    "action",
+    "закадр",
+    "voiceover_text",
+    "промт_картинки",
+    "image_prompt",
+    "промт_старт",
+    "промт_видео",
+    "реплика",
+    "объект",
+    "план",
+)
+
+
+def _shot_has_payload(shot: dict[str, Any]) -> bool:
+    return any(str(shot.get(key) or "").strip() for key in _SHOT_PAYLOAD_KEYS)
+
+
+def outright_junk_reason(
+    op: dict[str, Any],
+    kind: str,
+    frame: dict[str, Any] | None = None,
+) -> str | None:
+    """Выкинуть ячейку можно только если в ней нет самой работы.
+
+    Кривой формат, короткий закадр, нет одного промта — не брак, это пишется.
+    """
+    fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
+    if kind in {"shots_coverage", "shots"}:
+        raw = fields.get("кадры")
+        if not isinstance(raw, list):
+            raw = fields.get("shots")
+        shots = [s for s in raw if isinstance(s, dict)] if isinstance(raw, list) else []
+        if not any(_shot_has_payload(s) for s in shots):
+            return "нет кадров"
+        return None
+    if kind in {"shots_qc", "qc_shots"}:
+        raw = fields.get("кадры") if "кадры" in fields else fields.get("shots")
+        if isinstance(raw, list):
+            shots = [s for s in raw if isinstance(s, dict)]
+            if not any(_shot_has_payload(s) for s in shots):
+                return "нет кадров"
+        return None
+    if kind in {"action_chain", "main_action"}:
+        text = str(
+            fields.get("главное_действие") or fields.get("main_action") or ""
+        ).strip()
+        plan = (
+            fields.get("площадка")
+            or fields.get("план_площадки")
+            or fields.get("space_plan")
+        )
+        has_plan = (isinstance(plan, (dict, list)) and bool(plan)) or (
+            isinstance(plan, str) and bool(plan.strip())
+        )
+        changes = fields.get("меняет")
+        has_changes = (isinstance(changes, (dict, list)) and bool(changes)) or (
+            isinstance(changes, str) and bool(changes.strip())
+        )
+        if not text and not has_plan and not has_changes:
+            return "пустой ответ"
+        return None
+    if kind in {"bits", "script_beats"}:
+        raw = fields.get("биты") if "биты" in fields else fields.get("bits")
+        vo = _frame_vo(frame) if frame is not None else "x"
+        if not vo and raw == []:
+            return None
+        if not isinstance(raw, list) or not raw:
+            return "пустые биты"
+        return None
+    return None
+
+
+def _is_empty_parent_id(value: Any) -> bool:
+    return value is None or str(value).strip().lower() in {"", "null", "none"}
+
+
+def shots_reply_gate_problems(
+    ops: list[Any],
+    frames: list[dict[str, Any]] | None = None,
+) -> list[tuple[str, str]]:
+    """Гейт ответа «Шотов» после всех проходов кода: (uuid, что не так).
+
+    Главный кадр ячейки (первый с пустым ``parent_id``) — нужен
+    ``промт_картинки``. Дочерний (``parent_id`` есть) — нужен
+    ``промт_старт``. Главный следующей сцены в той же ячейке (S2-K1…,
+    ``parent_id`` пустой, не первый) — ``промт_старт`` или
+    ``промт_картинки``.
+
+    Закадр (промт §4): пустой закадр у кадра — норма (пауза между кусками,
+    перебивка, стык сцен). Гейт требует, чтобы склейка НЕпустых кусков
+    ячейки = закадр ячейки (пробелы нормализуются), кусок не длиннее 80 и
+    не короче 10 (короче 10 — только перебивка). ``frames`` — кадры пачки
+    (вход), без них сверка склейки пропускается.
+    Op без кадров — тоже брак. Пустой список = пачку можно писать.
+    """
+    by_uid = _frames_by_uuid(frames or [])
+    problems: list[tuple[str, str]] = []
+    for op in ops or []:
+        if not isinstance(op, dict):
+            continue
+        uid = str(op.get("frame_uuid") or "").strip()
+        fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
+        raw = fields.get("кадры")
+        if not isinstance(raw, list):
+            raw = fields.get("shots")
+        shots = [s for s in raw if isinstance(s, dict)] if isinstance(raw, list) else []
+        if not shots:
+            problems.append((uid, "нет кадров"))
+            continue
+        master = next(
+            (i for i, s in enumerate(shots) if _is_empty_parent_id(s.get("parent_id"))),
+            0,
+        )
+        cell_vo = " ".join(_frame_vo(by_uid.get(uid)).split()) if uid in by_uid else ""
+        cell_n = _vo_visible_len(cell_vo)
+        pieces: list[str] = []
+        for i, shot in enumerate(shots):
+            sid = str(shot.get("id") or shot.get("id_shot") or f"кадр {i + 1}").strip()
+            img = str(shot.get("промт_картинки") or shot.get("image_prompt") or "").strip()
+            start = str(shot.get("промт_старт") or "").strip()
+            if i == master:
+                if not img:
+                    problems.append((uid, f"{sid}: главный кадр без промт_картинки"))
+            elif _is_empty_parent_id(shot.get("parent_id")):
+                if not (start or img):
+                    problems.append((uid, f"{sid}: главный кадр сцены без промт_старт"))
+            elif not start:
+                problems.append((uid, f"{sid}: дочерний кадр без промт_старт"))
+            chunk = " ".join(_shot_vo_chunk(shot).split())
+            if not chunk:
+                continue  # пустой закадр — норма
+            pieces.append(chunk)
+            n = _vo_visible_len(chunk)
+            whole = vo_piece_ends_sentence(chunk)
+            if n > SHOT_VO_MAX_CHARS and not whole:
+                problems.append((uid, f"{sid}: закадр {n} симв. > {SHOT_VO_MAX_CHARS}"))
+            elif (
+                not whole
+                and n < SHOT_VO_CUTAWAY_MIN
+                and cell_n >= SHOT_VO_CUTAWAY_MIN
+                and not is_cutaway_shot(shot)
+            ):
+                problems.append(
+                    (uid, f"{sid}: закадр {n} симв. < {SHOT_VO_CUTAWAY_MIN} (не перебивка)")
+                )
+        if uid in by_uid:
+            glued = " ".join(pieces)
+            if cell_vo and not glued:
+                problems.append((uid, "закадр ячейки не разложен ни в один кадр"))
+            elif glued != cell_vo:
+                problems.append((uid, "склейка закадра кадров ≠ закадр ячейки"))
+        if uid in by_uid:
+            problems.extend((uid, w) for w in shots_dialogue_problems(shots, by_uid[uid].get("речь")))
+        problems.extend((uid, w) for w in vo_sentence_problems(shots, cell_vo))
+        problems.extend((uid, w) for w in shots_continuity_problems(shots))
+        cards = _GATE_CHARACTERS.get()
+        if cards:
+            problems.extend((uid, w) for w in character_id_problems(shots, cards, (by_uid.get(uid) or {}).get("персонажи")))
+    return problems
+
+
+import contextvars as _cv
+
+# база персонажей для гейта/фикса id (ставит нода Кадры перед пачками)
+_GATE_CHARACTERS: "_cv.ContextVar[list[dict[str, Any]]]" = _cv.ContextVar("_GATE_CHARACTERS", default=[])
+
+
+def set_shot_characters(cards: list[dict[str, Any]] | None) -> None:
+    _GATE_CHARACTERS.set(list(cards or []))
+
+
+_REPLY_SPLIT = re.compile(r"\s+—\s+(?=[^:.—«»]{1,40}:)")
+
+
+def scene_replies(speech: Any) -> list[tuple[str, str]]:
+    """``речь`` Каркаса → [(кто, текст)] для диалог/монолог, иначе []."""
+    if isinstance(speech, str):
+        with suppress(json.JSONDecodeError):
+            speech = json.loads(speech)
+    if not isinstance(speech, dict):
+        return []
+    if str(speech.get("тип") or "").strip() not in ("диалог", "монолог"):
+        return []
+    out: list[tuple[str, str]] = []
+    for part in _REPLY_SPLIT.split(str(speech.get("текст") or "").strip()):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r"^([^:«»]{1,40}):\s*(.*)$", part)
+        out.append((m.group(1).strip(), m.group(2).strip()) if m else ("", part))
+    return out
+
+
+def _reply_norm(text: Any) -> str:
+    return " ".join(str(text or "").replace("«", "").replace("»", "").split()).strip().casefold()
+
+
+def shots_dialogue_problems(shots: list[dict[str, Any]], speech: Any) -> list[str]:
+    """Гейт кадров реплик (Кадры §3) — только сообщает, ничего не переписывает.
+
+    Число кадров с ``реплика`` = числу реплик ``речь``; каждая дословно, ровно раз,
+    по порядку; один говорящий на кадр; кадр реплики — ``с плеча`` или КРУПНЫЙ
+    фронт; ОБЩИЙ до первой реплики; реплики разных людей подряд — встречная пара
+    (оба ``с плеча``, один план).
+    """
+    from app.services.scene_plan import named_angle_token
+
+    reps = scene_replies(speech)
+    if not reps:
+        return []
+    out: list[str] = []
+    rf = [(i, s) for i, s in enumerate(shots) if str(s.get("реплика") or "").strip()]
+
+    def sid(s: dict[str, Any], i: int) -> str:
+        return str(s.get("id") or f"кадр {i + 1}")
+
+    if len(rf) != len(reps):
+        out.append(f"реплик в речи {len(reps)}, кадров с репликой {len(rf)}")
+    got = [_reply_norm(s.get("реплика")) for _, s in rf]
+    want = [_reply_norm(t) for _, t in reps]
+    for w, (who, t) in zip(want, reps):
+        if got.count(w) != 1:
+            out.append(f"реплика «{t[:40]}» ({who}): в кадрах {got.count(w)} раз, нужно ровно 1 дословно")
+    if got != want and sorted(got) == sorted(want):
+        out.append("реплики в кадрах не в порядке речи")
+    for i, s in rf:
+        who = str(s.get("говорит") or "").strip()
+        if not who:
+            out.append(f"{sid(s, i)}: реплика без «говорит»")
+        elif re.search(r",|\s+и\s+|/", who):
+            out.append(f"{sid(s, i)}: два говорящих «{who}»")
+        if _REPLY_SPLIT.search(str(s.get("реплика") or "")):
+            out.append(f"{sid(s, i)}: две реплики в одном кадре")
+        ang = named_angle_token(s.get("ракурс"))
+        plan = str(s.get("план") or "").strip().upper()
+        if not (ang == "с плеча" or (plan == "КРУПНЫЙ" and ang == "фронт")):
+            out.append(f"{sid(s, i)}: кадр реплики {plan}/{s.get('ракурс')} — нужен «с плеча» или КРУПНЫЙ фронт")
+    if rf:
+        first = rf[0][0]
+        if not any(str(s.get("план") or "").strip().upper() == "ОБЩИЙ" for s in shots[:first]):
+            out.append(f"нет установочного ОБЩИЙ до первой реплики ({sid(rf[0][1], first)})")
+    for (i, a), (j, b) in zip(rf, rf[1:]):
+        wa = str(a.get("говорит") or "").strip().casefold()
+        wb = str(b.get("говорит") or "").strip().casefold()
+        if wa and wb and wa != wb:
+            same_plan = str(a.get("план") or "").strip().upper() == str(b.get("план") or "").strip().upper()
+            pair = named_angle_token(a.get("ракурс")) == named_angle_token(b.get("ракурс")) == "с плеча"
+            if not (pair and same_plan):
+                out.append(f"{sid(a, i)}→{sid(b, j)}: разные говорящие, не встречная пара (оба «с плеча», один план)")
+    return out
+
+
+def _is_reply_shot(shot: dict[str, Any]) -> bool:
+    return bool(str(shot.get("реплика") or "").strip())
+
+
+def rebalance_shot_vo(shots: list[Any]) -> list[str]:
+    """Детерминированно, без новых слов: (1) закадр с кадра реплики — на соседний кадр без реплики;
+    (2) кусок >80 — режем по границе слова, хвост/голову на соседний кадр. Только если склейка
+    непустых кусков не меняется (между донором и приёмником нет непустого закадра) и кусок ≤80.
+    Иначе оставляем как есть (неизбежно) — гейт сообщит."""
+    rows = [s for s in shots if isinstance(s, dict)]
+    notes: list[str] = []
+
+    def vo(s: dict[str, Any]) -> str:
+        return " ".join(str(s.get("закадр") or "").split())
+
+    def glued() -> str:
+        return " ".join(vo(s) for s in rows if vo(s))
+
+    before = glued()
+
+    def neighbours(i: int) -> list[tuple[int, bool]]:
+        """(j, before_i) — ближайшие кадры без реплики слева/справа; между ними только пустой закадр."""
+        out = []
+        for step in (-1, 1):
+            j = i + step
+            while 0 <= j < len(rows):
+                if not _is_reply_shot(rows[j]):
+                    out.append((j, step < 0))
+                    break
+                if vo(rows[j]):
+                    break
+                j += step
+        return out
+
+    # 0) перелив по кадрам без реплики: куски реплик — в предыдущий такой кадр, >80 — слова
+    #    переливаются в следующий/предыдущий кадр без реплики (порядок слов тот же)
+    slots = [i for i, s in enumerate(rows) if not _is_reply_shot(s)]
+    need = any(_is_reply_shot(s) and vo(s) for s in rows) or any(
+        _vo_visible_len(vo(s)) > SHOT_VO_MAX_CHARS for s in rows
+    )
+    if need and slots:
+        texts: list[list[str]] = [[] for _ in slots]
+        cur = 0
+        for i, s in enumerate(rows):
+            if i in slots:
+                cur = slots.index(i)
+            texts[cur].extend(vo(s).split())
+
+        def ln(ws: list[str]) -> int:
+            return _vo_visible_len(" ".join(ws))
+
+        for a in range(len(texts) - 1):
+            while ln(texts[a]) > SHOT_VO_MAX_CHARS and len(texts[a]) > 1:
+                texts[a + 1].insert(0, texts[a].pop())
+        for a in range(len(texts) - 1, 0, -1):
+            while ln(texts[a]) > SHOT_VO_MAX_CHARS and len(texts[a]) > 1:
+                texts[a - 1].append(texts[a].pop(0))
+        if all(ln(t) <= SHOT_VO_MAX_CHARS for t in texts):
+            for i, s in enumerate(rows):
+                if i not in slots and vo(s):
+                    notes.append(f"{s.get('id')}: закадр снят с кадра реплики")
+                    s["закадр"] = ""
+            for a, i in enumerate(slots):
+                new = " ".join(texts[a])
+                if new != vo(rows[i]):
+                    rows[i]["закадр"] = new
+                    notes.append(f"{rows[i].get('id')}: закадр перелит")
+    # 1) реплика без закадра
+    for i, s in enumerate(rows):
+        if not (_is_reply_shot(s) and vo(s)):
+            continue
+        piece = vo(s)
+        for j, left in neighbours(i):
+            tgt = vo(rows[j])
+            new = f"{tgt} {piece}".strip() if left else f"{piece} {tgt}".strip()
+            if _vo_visible_len(new) <= SHOT_VO_MAX_CHARS:
+                rows[j]["закадр"] = new
+                s["закадр"] = ""
+                notes.append(f"{s.get('id')}: закадр снят с кадра реплики → {rows[j].get('id')}")
+                break
+    # 2) >80 — по границе слова в соседний кадр
+    for i, s in enumerate(rows):
+        piece = vo(s)
+        if _vo_visible_len(piece) <= SHOT_VO_MAX_CHARS:
+            continue
+        words = piece.split()
+        done = False
+        cands = []
+        for j in (i + 1, i - 1):
+            if 0 <= j < len(rows):
+                cands.append(j)
+        for j in sorted(cands, key=lambda j: (_is_reply_shot(rows[j]), -1 if j > i else 0)):
+            tgt = vo(rows[j])
+            for cut in range(len(words) - 1, 0, -1):
+                head, tail = " ".join(words[:cut]), " ".join(words[cut:])
+                if j > i:
+                    keep, move, new = head, tail, f"{tail} {tgt}".strip()
+                else:
+                    keep, move, new = tail, head, f"{tgt} {head}".strip()
+                if _vo_visible_len(keep) <= SHOT_VO_MAX_CHARS and _vo_visible_len(new) <= SHOT_VO_MAX_CHARS:
+                    s["закадр"], rows[j]["закадр"] = keep, new
+                    notes.append(f"{s.get('id')}: закадр {_vo_visible_len(piece)}>80 разрезан → {rows[j].get('id')}")
+                    done = True
+                    break
+            if done:
+                break
+    if glued() != before:  # страховка: склейка обязана остаться дословной
+        raise RuntimeError("rebalance_shot_vo изменил склейку закадра")
+    # R-VO-SENTENCE: после переливов по словам — собрать куски в целые предложения
+    notes.extend(reflow_vo_by_sentences(rows, before))
+    return notes
+
+
+def rebalance_shot_vo_ops(ops: list[Any]) -> int:
+    n = 0
+    for op in ops or []:
+        fields = op.get("fields") if isinstance(op, dict) else None
+        shots = (fields or {}).get("кадры") if isinstance(fields, dict) else None
+        if isinstance(shots, list):
+            snap = json.loads(json.dumps(shots, ensure_ascii=False))
+            try:
+                n += len(rebalance_shot_vo(shots))
+            except RuntimeError:
+                shots[:] = snap
+    return n
 
 
 def _shot_rows(fields: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1802,7 +2230,7 @@ def run_code_passes(
             _warn("bits_check", bad_bits)
             logger.warning(
                 "[#{}] apply_ops batched node={!r}: call {} L{} "
-                "биты слабоваты (пишем как есть): {}",
+                "биты: замечание, пишем: {}",
                 project_id,
                 node_key,
                 my_i,
@@ -1845,7 +2273,7 @@ def run_code_passes(
             _warn("action_check", bad_action)
             logger.warning(
                 "[#{}] apply_ops batched node={!r}: call {} L{} "
-                "действие слабовато (пишем как есть): {}",
+                "действие: замечание, пишем: {}",
                 project_id,
                 node_key,
                 my_i,
@@ -2046,7 +2474,7 @@ def run_code_passes(
             _warn("shots_check", bad_shots)
             logger.warning(
                 "[#{}] apply_ops batched node={!r}: call {} L{} "
-                "кадры слабоваты (пишем как есть): {}",
+                "кадры: замечание, пишем: {}",
                 project_id,
                 node_key,
                 my_i,
@@ -2094,6 +2522,16 @@ def run_code_passes(
                 level,
                 "; ".join(plan_hard2[:6]),
             )
+    if kind == "shots_coverage":
+        # закадр: снять с кадров реплик, разрезать >80 в соседний кадр (склейка дословная)
+        _traced("shot_vo_fill", lambda: rebalance_shot_vo_ops(ops))
+        if _GATE_CHARACTERS.get():
+            _ids_by_uid = {str(r.get("uuid") or "").strip(): r.get("персонажи") for r in chunk}
+            pass
+        # R-REPLY-CAM / R-POSE-CARRY (c62): после всех правок плана/30° — камера реплик по §3, поза в промт
+        _traced("shot_vo_fill", lambda: [(normalize_reply_cameras((o.get("fields") or {}).get("кадры") or []), carry_pose((o.get("fields") or {}).get("кадры") or [])) for o in ops if isinstance(o, dict)])
+        if _GATE_CHARACTERS.get():
+            _traced("shot_vo_fill", lambda: [ensure_character_ids((o.get("fields") or {}).get("кадры") or [], _GATE_CHARACTERS.get(), _ids_by_uid.get(str(o.get("frame_uuid") or "").strip())) for o in ops if isinstance(o, dict)])
     if kind in {"prompts", "img"}:
         bad_prompts = prompts_ops_reason(ops, chunk)
         if bad_prompts:
@@ -2216,14 +2654,22 @@ async def run_apply_ops_batched(
     footer_kind: str | None = None,
     on_progress: ProgressFn | None = None,
     allow_empty_ops: bool = False,
+    shots_gate: bool | None = None,
 ) -> OperatorApiResult:
     """Один GPT-вызов на пачку. Ошибка внутри пачки → 2, затем 4.
 
+    ``shots_gate`` (по умолчанию — для ``shots_coverage``/``shots``): замечания
+    (нет промта, длина закадра, склейка) пишутся в лог, ответ с кадрами
+    записывается. Выкидывается только откровенный брак: нет кадров, пустая
+    площадка без действия, пустые биты. Такой ответ один раз повторяется,
+    второй брак — ячейка пропускается, старые данные остаются.
+
     ``chunk_size`` — заранее резать pending (script_frames_qc: 8
     отрезков закадра). ``chunk_by_vo_unit`` — пачка = N ячеек закадра
-    (родитель + его шоты вместе), не N строк кадров. ``parallel_max`` —
-    сколько пачек стартовать сразу (10), со сдвигом ``stagger_sec`` (0.5 с).
-    Без chunk_size — ``target_batches`` (dense: 10) или все pending.
+    (родитель + его шоты вместе), не N строк кадров. В полёте не больше
+    8 пачек, между отправками несколько секунд. Ошибка одной пачки
+    её пропускает и не перезапускает ноду.
+    Без chunk_size — ``target_batches`` или все pending.
     """
     from app.services.adaptive_llm_batches import next_split_level, split_in_half
 
@@ -2234,6 +2680,17 @@ async def run_apply_ops_batched(
         skip_if_field=skip_if_field,
         force_full=force_full,
     )
+    # 2026-10-11: one-shot targeted rerun of specific cells (data/_only_cells_<node>.json = [uuid,...]).
+    try:
+        import json as _j, os as _os
+        _oc = _os.path.join("data", f"_only_cells_{node_key}.json")
+        if _os.path.exists(_oc):
+            _want = set(_j.load(open(_oc, encoding="utf-8")))
+            _os.replace(_oc, _oc + ".used")
+            pending = [f for f in all_frames if str(f.get("uuid") or "") in _want]
+            logger.warning("[#{}] apply_ops only_cells node={}: {} cells", project_id, node_key, len(pending))
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("only_cells filter failed: {}", _e)
     if not pending:
         logger.info(
             "[#{}] apply_ops batched node={!r}: нечего писать "
@@ -2258,12 +2715,15 @@ async def run_apply_ops_batched(
         packs = split_frames(pending, size)
     else:
         packs = [pending]
-    wave_n = int(parallel_max) if parallel_max and int(parallel_max) > 1 else 1
-    delay_s = (
-        float(stagger_sec)
-        if stagger_sec is not None
-        else (VO_STAGGER_SEC if wave_n > 1 else 0.0)
-    )
+    # В полёте не больше 8. Между отправками несколько секунд.
+    # Разрезанные половины идут через тот же семафор.
+    asked = int(parallel_max) if parallel_max and int(parallel_max) > 0 else PACK_IN_FLIGHT_MAX
+    wave_n = min(PACK_IN_FLIGHT_MAX, max(1, asked), max(1, len(packs)))
+    # Боевой вызов приходит с 5 с. Тест может передать свою короткую паузу.
+    if stagger_sec is None:
+        delay_s = PACK_SEND_GAP_S
+    else:
+        delay_s = max(0.0, float(stagger_sec))
     logger.info(
         "[#{}] apply_ops batched node={!r}: pending={} packs={} "
         "pack_size={} parallel={} stagger={}s adaptive 1→2→4 dense={}",
@@ -2287,6 +2747,11 @@ async def run_apply_ops_batched(
     replies: list[str] = []
     last_paths: list[Path] = [ctx_path]
     call_i = 0
+    kind_key = (footer_kind or "").strip().lower()
+    gate_on = (
+        bool(shots_gate) if shots_gate is not None else kind_key in SHOTS_GATE_KINDS
+    )
+    skipped_packs: list[dict[str, Any]] = []
     used_senses: list[str] = []
     used_places: list[str] = []
     meta_lock = asyncio.Lock()
@@ -2335,16 +2800,20 @@ async def run_apply_ops_batched(
             auto_pack=False,
         )
         pack_timeout = pack_call_timeout_s(footer_kind)
+        await _acquire_pack_send_slot()
         try:
-            res = await asyncio.wait_for(
-                run_operator_api(**api_kw),
-                timeout=pack_timeout,
-            )
-        except TimeoutError as exc:
-            raise RuntimeError(
-                f"excel_gpt node={node_key}: L{level} call {my_i} "
-                f"timeout {pack_timeout:.0f}s ({len(chunk)} кадров)"
-            ) from exc
+            try:
+                res = await asyncio.wait_for(
+                    run_operator_api(**api_kw),
+                    timeout=pack_timeout,
+                )
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"excel_gpt node={node_key}: L{level} call {my_i} "
+                    f"timeout {pack_timeout:.0f}s ({len(chunk)} кадров)"
+                ) from exc
+        finally:
+            _release_pack_send_slot()
         ops = []
         if isinstance(res.apply_ops, dict):
             ops = list(res.apply_ops.get("ops") or [])
@@ -2373,6 +2842,49 @@ async def run_apply_ops_batched(
             )
             raise
         ops = passes.ops
+        by_frame = {
+            str(fr.get("uuid") or "").strip(): fr
+            for fr in chunk
+            if isinstance(fr, dict)
+        }
+        kept_ops: list[Any] = []
+        junk_notes: list[tuple[str, str]] = []
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            uid = str(op.get("frame_uuid") or "").strip()
+            why = outright_junk_reason(op, kind_key, by_frame.get(uid))
+            if why:
+                junk_notes.append((uid, why))
+            else:
+                kept_ops.append(op)
+        if junk_notes:
+            note = "; ".join(f"{u[:8]} {w}" for u, w in junk_notes[:8])
+            logger.warning(
+                "[#{}] excel_gpt node={}: L{} call {} откровенный брак, "
+                "не пишем ({}): {}",
+                project_id,
+                node_key,
+                level,
+                my_i,
+                len(junk_notes),
+                note[:500],
+            )
+        ops = kept_ops
+        gate_problems = shots_reply_gate_problems(ops, chunk) if gate_on and ops else []
+        if gate_problems:
+            note = "; ".join(f"{u[:8]} {w}" for u, w in gate_problems[:8])
+            logger.warning(
+                "[#{}] excel_gpt node={}: L{} call {} гейт шотов {}: "
+                "{} замечаний, пишем: {}",
+                project_id,
+                node_key,
+                level,
+                my_i,
+                SHOTS_GATE_RULE,
+                len(gate_problems),
+                note[:500],
+            )
         recorder.record_call(
             call=my_i,
             level=level,
@@ -2404,9 +2916,10 @@ async def run_apply_ops_batched(
             if allow_empty_ops:
                 # QC: ops только по нарушителям; пустой пакет = ок.
                 return []
-            raise RuntimeError(
+            why = "; ".join(f"{u[:8]} {w}" for u, w in junk_notes[:6]) or "без ops"
+            raise OutrightJunkError(
                 f"excel_gpt node={node_key}: L{level} call {my_i} "
-                f"без ops (ждали {len(chunk)} кадров)."
+                f"откровенный брак ({why})"
             )
         if apply_fn is not None:
             payload = dict(res.apply_ops or {})
@@ -2449,11 +2962,81 @@ async def run_apply_ops_batched(
         ]
         return missing
 
+    def _skip_pack(chunk: list[dict[str, Any]], level: int, reason: str) -> None:
+        uids = [str(fr.get("uuid") or "").strip() for fr in chunk]
+        skipped_packs.append({"level": level, "uuids": uids, "reason": reason[:1000]})
+        recorder.record_skip(uuids=uids, reason=reason)
+        logger.error(
+            "[#{}] apply_ops node={!r}: L{} пачка ({} ячеек) пропущена после "
+            "повтора — старые данные оставлены: {}",
+            project_id,
+            node_key,
+            level,
+            len(uids),
+            reason[:300],
+        )
+
+    async def _gate_retry_once(
+        chunk: list[dict[str, Any]], level: int, first: ShotsGateError
+    ) -> None:
+        """Гейт шотов (2026-10-11): только бракованные ячейки, по одной, параллельно (5с), до 3 раундов."""
+        todo = list(getattr(first, "bad_chunk", None) or chunk)
+        reasons: dict[str, str] = {}
+        for rnd in range(1, 4):
+            logger.warning(
+                "[#{}] apply_ops node={!r}: L{} гейт шотов → раунд {} повтор {} ячеек по одной (параллельно)",
+                project_id, node_key, level, rnd, len(todo),
+            )
+
+            async def _cell(fr: dict[str, Any]) -> str | None:
+                try:
+                    miss = await _one_chunk([fr], level)
+                    return None if not miss else "нет ops"
+                except ShotsGateError as e:
+                    return str(e)
+                except Exception as e:  # noqa: BLE001
+                    return f"{type(e).__name__}: {e}"
+
+            res = await asyncio.gather(*[_stag(k * 5.0, _cell(fr)) for k, fr in enumerate(todo)])
+            nxt = []
+            for fr, r in zip(todo, res):
+                if r is not None:
+                    reasons[str(fr.get("uuid") or "")] = r
+                    nxt.append(fr)
+            todo = nxt
+            if not todo:
+                return
+        for fr in todo:
+            _skip_pack([fr], level, reasons.get(str(fr.get("uuid") or ""), str(first)))
+
     async def _run_adaptive(
-        chunk: list[dict[str, Any]], level: int, under_retries: int = 2
+        chunk: list[dict[str, Any]],
+        level: int,
+        under_retries: int = 2,
+        junk_left: int = 1,
     ) -> None:
         try:
             missing = await _one_chunk(chunk, level)
+        except OutrightJunkError as exc:
+            if junk_left > 0:
+                logger.warning(
+                    "[#{}] apply_ops node={!r}: L{} откровенный брак → "
+                    "повтор пачки 1 раз ({})",
+                    project_id,
+                    node_key,
+                    level,
+                    str(exc)[:160],
+                )
+                await asyncio.sleep(1.0)
+                await _run_adaptive(
+                    chunk, level, under_retries=under_retries, junk_left=0
+                )
+                return
+            _skip_pack(chunk, level, str(exc))
+            return
+        except ShotsGateError as exc:
+            await _gate_retry_once(chunk, level, exc)
+            return
         except Exception as exc:
             if allow_empty_ops:
                 logger.warning(
@@ -2490,7 +3073,40 @@ async def run_apply_ops_batched(
                     await asyncio.sleep(1.0)
                     await _run_adaptive(chunk, level, under_retries=left)
                     return
-                raise
+                # Молчание одной пачки не валит шаг: иначе soft retry
+                # перезапускает всю ноду с первой пачки.
+                timed_out = (
+                    isinstance(exc, RuntimeError) and "timeout" in msg.lower()
+                )
+                _net = timed_out or type(exc).__name__ in (
+                    "GptApiError",
+                    "ReadTimeout",
+                    "ConnectError",
+                    "RemoteProtocolError",
+                    "TimeoutError",
+                )
+                if _net:
+                    _tries = getattr(_run_adaptive, "_net_tries", {})
+                    _run_adaptive._net_tries = _tries
+                    _k = tuple(str(fr.get("uuid") or "") for fr in chunk)
+                    _tries[_k] = _tries.get(_k, 0) + 1
+                    if _tries[_k] <= 3:
+                        logger.warning("[#{}] apply_ops node={!r}: L{} net/LLM fail ({}) → retry {}/3 in 20s", project_id, node_key, level, msg[:120], _tries[_k])
+                        await asyncio.sleep(20.0)
+                        await _run_adaptive(chunk, level, under_retries=under_retries)
+                        return
+                    _skip_pack(chunk, level, f"LLM/сеть после 3 повторов: {msg[:200]}")
+                    return
+                logger.error(
+                    "[#{}] apply_ops node={!r}: L{} пачка упала, "
+                    "ноду не перезапускаем: {}",
+                    project_id,
+                    node_key,
+                    level,
+                    msg[:300],
+                )
+                _skip_pack(chunk, level, msg)
+                return
             parts = split_in_half(chunk)
             logger.warning(
                 "[#{}] apply_ops node={!r}: L{} fail ({}) → split {} "
@@ -2502,8 +3118,7 @@ async def run_apply_ops_batched(
                 len(chunk),
                 len(parts),
             )
-            for part in parts:
-                await _run_adaptive(part, nxt, under_retries=2)
+            await asyncio.gather(*[_stag(k * 5.0, _run_adaptive(part, nxt, under_retries=2)) for k, part in enumerate(parts)])  # 2026-10-11 parallel
             return
         if not missing:
             return
@@ -2512,10 +3127,12 @@ async def run_apply_ops_batched(
         if len(missing) == 1:
             uid = str(missing[0].get("uuid") or "")[:8]
             if len(chunk) <= 1:
-                raise RuntimeError(
-                    f"excel_gpt node={node_key}: L{level} неполный apply-ops "
-                    f"(0/1). uuid: {uid}"
+                _skip_pack(
+                    chunk,
+                    level,
+                    f"неполный apply-ops (0/1), ноду не перезапускаем. uuid: {uid}",
                 )
+                return
             logger.warning(
                 "[#{}] apply_ops node={!r}: L{} incomplete {}/{} → retry uuid {}",
                 project_id,
@@ -2525,7 +3142,12 @@ async def run_apply_ops_batched(
                 len(chunk),
                 uid,
             )
-            await _run_adaptive(missing, next_split_level(level) or level, under_retries=0)
+            await _run_adaptive(
+                missing,
+                next_split_level(level) or level,
+                under_retries=0,
+                junk_left=0,
+            )
             return
 
         # Если не хватает нескольких кадров (обрыв сокета / неполный стрим) —
@@ -2542,16 +3164,18 @@ async def run_apply_ops_batched(
                 len(missing),
             )
             await asyncio.sleep(1.0)
-            await _run_adaptive(missing, level, under_retries=0)
+            await _run_adaptive(missing, level, under_retries=0, junk_left=0)
             return
 
         nxt = next_split_level(level)
         if nxt is None:
-            raise RuntimeError(
-                f"excel_gpt node={node_key}: L{level} неполный apply-ops "
-                f"({len(chunk) - len(missing)}/{len(chunk)}). uuid: "
-                f"{', '.join(str(fr.get('uuid') or '')[:8] for fr in missing[:8])}"
+            _skip_pack(
+                missing,
+                level,
+                "неполный apply-ops, резать дальше некуда, ноду не перезапускаем: "
+                + ", ".join(str(fr.get("uuid") or "")[:8] for fr in missing[:8]),
             )
+            return
         logger.warning(
             "[#{}] apply_ops node={!r}: L{} incomplete {}/{} → split L{}",
             project_id,
@@ -2561,8 +3185,13 @@ async def run_apply_ops_batched(
             len(chunk),
             nxt,
         )
-        for part in split_in_half(missing):
-            await _run_adaptive(part, nxt, under_retries=2)
+        _halves = list(split_in_half(missing))
+        await asyncio.gather(*[_run_pack(k * 5.0, part) if False else _stag(k * 5.0, _run_adaptive(part, nxt, under_retries=2)) for k, part in enumerate(_halves)])
+
+    async def _stag(delay: float, coro: Any) -> Any:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        return await coro
 
     async def _run_pack(delay: float, pack: list[dict[str, Any]]) -> None:
         if delay > 0:
@@ -2570,7 +3199,7 @@ async def run_apply_ops_batched(
         await _run_adaptive(pack, 1)
 
     async def _run_waves() -> None:
-        if wave_n <= 1 or len(packs) <= 1:
+        if len(packs) <= 1:
             for pack in packs:
                 await _run_adaptive(pack, 1)
         else:
@@ -2601,24 +3230,60 @@ async def run_apply_ops_batched(
                     ],
                     return_exceptions=True,
                 )
-                errs = [r for r in results if isinstance(r, BaseException)]
-                if errs:
-                    raise errs[0]
+                for err in results:
+                    if isinstance(err, asyncio.CancelledError):
+                        raise err
+                    if isinstance(err, BaseException):
+                        logger.error(
+                            "[#{}] apply_ops node={!r}: пачка упала, "
+                            "ноду не перезапускаем: {}",
+                            project_id,
+                            node_key,
+                            err,
+                        )
 
+    gate_token = _pack_gate.set(_PackSendGate(delay_s))
     try:
-        await _run_waves()
-    except BaseException as exc:
-        recorder.finish(ok=False, error=f"{type(exc).__name__}: {exc}")
-        raise
-    recorder.finish(ok=True)
+        try:
+            await _run_waves()
+        except asyncio.CancelledError:
+            recorder.finish(ok=False, error="cancelled")
+            raise
+        except BaseException as exc:
+            # Пачка или внутренняя ошибка не должны ронять шаг:
+            # soft retry заново открывает ноду с первой пачки.
+            recorder.finish(ok=False, error=f"{type(exc).__name__}: {exc}")
+            logger.error(
+                "[#{}] apply_ops node={!r}: прогон пачек остановился, "
+                "ноду не перезапускаем: {}",
+                project_id,
+                node_key,
+                exc,
+            )
+        if skipped_packs:
+            n_cells = sum(len(p["uuids"]) for p in skipped_packs)
+            recorder.finish(
+                ok=True,
+                error=(
+                    f"гейт шотов: пропущено пачек {len(skipped_packs)} "
+                    f"({n_cells} ячеек), старые данные оставлены"
+                ),
+            )
+        else:
+            recorder.finish(ok=True)
 
-    ctx_path.write_text(
-        json.dumps(db_ctx, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return OperatorApiResult(
-        reply_text="\n\n".join(replies),
-        output_paths=last_paths,
-        apply_ops={"ops": merged_ops},
-        applied_in_runner=apply_fn is not None,
-    )
+        ctx_path.write_text(
+            json.dumps(db_ctx, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        apply_ops_out: dict[str, Any] = {"ops": merged_ops}
+        if skipped_packs:
+            apply_ops_out["skipped_packs"] = skipped_packs
+        return OperatorApiResult(
+            reply_text="\n\n".join(replies),
+            output_paths=last_paths,
+            apply_ops=apply_ops_out,
+            applied_in_runner=apply_fn is not None,
+        )
+    finally:
+        _pack_gate.reset(gate_token)

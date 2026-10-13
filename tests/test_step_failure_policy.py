@@ -373,3 +373,31 @@ async def test_maybe_resume_when_last_running_is_paused_uses_total_fails(
     ):
         assert await maybe_resume_after_sleep(session, p) is True
     assert p.status is ProjectStatus.generating_image_prompts
+
+
+@pytest.mark.asyncio
+async def test_enrich_failure_does_not_restart_the_node(
+    session: AsyncSession,
+) -> None:
+    """Упавшая пачка площадки не возвращает шаг в enriching и не гоняет ноду заново."""
+    p = Project(
+        slug="enrich-no-restart",
+        topic="t",
+        status=ProjectStatus.enriching_1,
+        auto_mode=True,
+    )
+    session.add(p)
+    await session.flush()
+    with patch(
+        "app.services.run_sync.mark_running_node_failed",
+        new_callable=AsyncMock,
+    ):
+        action = await record_step_failure(
+            session,
+            p,
+            error=RuntimeError(
+                "excel_gpt node=n_excel_gpt_fw_action: L4 call 45 timeout 600s (1 кадров)"
+            ),
+        )
+    assert action == "stopped"
+    assert p.status is ProjectStatus.paused

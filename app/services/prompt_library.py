@@ -157,10 +157,25 @@ def node_group_prompts_dir(group_id: str) -> Path:
     return find_project_root() / "templates" / "node_groups" / group_id
 
 
+def _script_frames_qc_style_path(name: str | None) -> Path | None:
+    """Стиль ноды «Стиль» (fw_style): templates/node_groups/script_frames_qc/styles/style_*.md."""
+    from app.services.frame_style import style_path
+
+    return style_path(name)
+
+
+def script_frames_qc_style_names() -> list[str]:
+    from app.services.frame_style import list_style_names
+
+    return list_style_names()
+
+
 def is_script_frames_qc_prompt(name: str) -> bool:
     clean = (name or "").strip()
     if clean.lower().endswith(".md"):
         clean = clean[:-3].rstrip()
+    if _script_frames_qc_style_path(clean) is not None:
+        return True
     return clean in SCRIPT_FRAMES_QC_PROMPT_NAMES
 
 
@@ -180,6 +195,7 @@ _SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
     "_fw_shots",
     "_fw_frames",
     "_fw_qc",
+    "_fw_style",
     "_fw_report",
 )
 
@@ -233,11 +249,13 @@ def list_group_owned_prompts(group_id: str | None) -> list[str] | None:
     """Промты группы. None — общий список «Работа с GPT»."""
     if script_frames_qc_group_id(group_id) is None:
         return None
-    return sorted(
+    names = {
         n
         for n in SCRIPT_FRAMES_QC_PROMPT_NAMES
         if resolve_script_frames_qc_prompt_path(n).is_file()
-    )
+    }
+    names.update(script_frames_qc_style_names())
+    return sorted(names)
 
 
 def script_frames_qc_prompt_relpath(name: str) -> str:
@@ -248,6 +266,8 @@ def script_frames_qc_prompt_relpath(name: str) -> str:
     shared = SCRIPT_FRAMES_QC_SHARED_PROMPTS.get(clean)
     if shared:
         return shared
+    if _script_frames_qc_style_path(clean) is not None:
+        return f"templates/node_groups/script_frames_qc/styles/{clean}.md"
     return f"templates/node_groups/script_frames_qc/{clean}.md"
 
 
@@ -265,11 +285,17 @@ def resolve_script_frames_qc_prompt_path(name: str) -> Path:
     shared = SCRIPT_FRAMES_QC_SHARED_PROMPTS.get(clean)
     if shared:
         return find_project_root() / shared
+    style = _script_frames_qc_style_path(clean)
+    if style is not None:
+        return style
     return node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
 
 
 def _group_prompt_path(name: str) -> Path | None:
     clean = name.strip()
+    style = _script_frames_qc_style_path(clean)
+    if style is not None:
+        return style
     if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
         p = resolve_script_frames_qc_prompt_path(clean)
         if p.is_file():
@@ -337,6 +363,10 @@ def resolve_excel_gpt_prompt_path(
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
+    # Стили ноды «Стиль» (style_*.md) — только в папке группы, не в 05_excel_gpt.
+    style = _script_frames_qc_style_path(clean)
+    if style is not None:
+        return style
     if (
         uses_script_frames_qc_prompts(
             group_id=group_id, project=project, node_key=node_key
@@ -510,6 +540,12 @@ def list_excel_gpt_prompts() -> list[str]:
                 names.append(extra)
                 seen.add(extra)
     names = [n for n in names if n not in SCRIPT_FRAMES_QC_PROMPT_NAMES]
+    # Стили ноды «Стиль» (группа script_frames_qc) — видны в пикере Studio,
+    # фронт не шлёт group_id. Файлы только в templates/node_groups/.../styles/.
+    for style in script_frames_qc_style_names():
+        if style not in seen:
+            names.append(style)
+            seen.add(style)
     if DEFAULT_NAME in names:
         names.remove(DEFAULT_NAME)
         names.insert(0, DEFAULT_NAME)
@@ -557,6 +593,10 @@ def read_prompt(
 def write_prompt(step_code: str, name: str, content: str) -> Path:
     if is_excel_gpt_prompt_step(step_code):
         clean = _clean_variant_name(name) if name else ""
+        style = _script_frames_qc_style_path(clean)
+        if style is not None:
+            style.write_text(content, encoding="utf-8")
+            return style
         if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
             p = resolve_script_frames_qc_prompt_path(clean)
             p.parent.mkdir(parents=True, exist_ok=True)

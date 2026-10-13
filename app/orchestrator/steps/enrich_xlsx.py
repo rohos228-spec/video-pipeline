@@ -19,6 +19,7 @@ override (через `Project.gpt_text_overrides["enrich_<i>"]`).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from aiogram import Bot
@@ -259,6 +260,7 @@ def _is_scenes_to_frames_node(
         (
             "_fw_frames",
             "_fw_qc",
+            "_fw_style",
             "_fw_report",
             "_fw_script",
             "_fw_action",
@@ -295,6 +297,7 @@ _SCRIPT_FRAMES_QC_SUFFIXES = (
     "_fw_shots",
     "_fw_frames",
     "_fw_qc",
+    "_fw_style",
     "_fw_report",
 )
 # Ноды, которые на каждом прогоне пишут свой выход заново (не fw_frames).
@@ -348,6 +351,8 @@ def _script_frames_qc_footer_kind(
         return "shots_qc"
     if nk.endswith("_fw_report"):
         return "report"
+    if nk.endswith("_fw_style"):
+        return "style"
     if _is_script_writer_node(variant, master, node_key):
         return "bits"
     if _is_main_action_node(variant, master, node_key):
@@ -1281,6 +1286,157 @@ async def _run_fw_report_node(
     )
 
 
+async def _run_fw_style_node(
+    session: AsyncSession,
+    project: Project,
+    *,
+    node_key: str,
+    slot_idx: int,
+) -> None:
+    """Код-нода «Стиль»: style_*.md → промт главного кадра (K1) + image_prompt. GPT не зовём."""
+    import json
+    from datetime import datetime
+
+    from sqlalchemy import select
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services import frame_style as fs
+    from app.services.excel_gpt_node import upload_dir
+    from app.services.gpt_operator import save_operator_result
+    from app.services.run_sync import complete_excel_gpt_node_by_key
+
+    running_status, ready_status, _code = _SLOT_MAP[slot_idx]
+    started = datetime.now().isoformat(timespec="seconds")
+    try:
+        variant, _src_path, _text, prompt_source = read_resolved_project_prompt(
+            project, EXCEL_GPT_STEP_CODE, node_key=node_key, slot_id="main"
+        )
+    except FileNotFoundError:
+        variant, prompt_source = "", "missing"
+    style_name = fs.clean_style_name(variant)
+    if fs.style_path(style_name) is None:
+        if style_name in ("", "default"):
+            logger.warning(
+                "[#{}] fw_style: стиль ноды {} не выбран ({}), берём {}",
+                project.id,
+                node_key,
+                prompt_source,
+                fs.DEFAULT_STYLE,
+            )
+            style_name = fs.DEFAULT_STYLE
+        else:
+            raise RuntimeError(
+                f"fw_style: выбран не стиль ({variant!r}); нужен файл "
+                f"templates/node_groups/script_frames_qc/styles/style_*.md"
+            )
+    style_text = fs.load_style_text(style_name)
+    style_file = fs.style_path(style_name)
+
+    frames = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        ).scalars().all()
+    )
+    report = fs.apply_style_to_frames(
+        frames, style_name=style_name, style_text=style_text
+    )
+    await session.flush()
+    report.update(
+        {
+            "project_id": project.id,
+            "node_key": node_key,
+            "style_file": str(style_file) if style_file else "",
+            "prompt_source": prompt_source,
+            "started": started,
+            "finished": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    out_dir = upload_dir(project, node_key)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "style_report.json"
+    payload = json.dumps(report, ensure_ascii=False, indent=2)
+    out_path.write_text(payload, encoding="utf-8")
+    try:
+        trace_dir = (
+            project.data_dir
+            / "node_trace"
+            / node_key
+            / datetime.now().strftime("%Y%m%d-%H%M%S")
+        )
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        (trace_dir / "style_report.json").write_text(payload, encoding="utf-8")
+    except OSError:
+        logger.warning("[#{}] fw_style: node_trace не записан", project.id)
+    c = report["counts"]
+    save_operator_result(
+        project,
+        node_key,
+        input_paths=[style_file] if style_file else [],
+        output_paths=[out_path],
+        reply_text=(
+            f"стиль {style_name}: главных кадров {c['main_rows']}, "
+            f"оформлено {c['styled'] + c['unchanged']}, без промта {c['no_prompt']}, "
+            f"обрезано {c['trimmed']} · без GPT"
+        ),
+        gate_status="pass",
+    )
+    meta = dict(project.meta or {})
+    completed = [
+        int(x) for x in (meta.get("enrich_completed_slots") or []) if str(x).isdigit()
+    ]
+    if slot_idx not in completed:
+        completed.append(slot_idx)
+        completed.sort()
+        meta["enrich_completed_slots"] = completed
+    done_keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+    if node_key not in done_keys:
+        done_keys.append(node_key)
+        meta["excel_gpt_completed_keys"] = done_keys
+    meta.pop("active_excel_gpt_node_key", None)
+    meta["frame_style_report_path"] = str(out_path)
+    project.meta = meta
+    flag_modified(project, "meta")
+    await session.flush()
+    try:
+        await complete_excel_gpt_node_by_key(
+            session, project, node_key, enrich_slot=slot_idx
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "[#{}] fw_style: complete_excel_gpt_node_by_key failed",
+            project.id,
+        )
+    if project.status is running_status:
+        _apply_enrich_ready_status(
+            project,
+            running_status=running_status,
+            ready_status=ready_status,
+        )
+        await session.flush()
+    logger.info(
+        "[#{}] fw_style {}: main={} styled={} unchanged={} no_prompt={} trimmed={} → {}",
+        project.id,
+        style_name,
+        c["main_rows"],
+        c["styled"],
+        c["unchanged"],
+        c["no_prompt"],
+        c["trimmed"],
+        out_path,
+    )
+    await _after_excel_gpt_done(
+        session,
+        project,
+        node_key=node_key,
+        slot_idx=slot_idx,
+        ready_status=ready_status,
+    )
+
+
 async def _run_fw_boundaries_node(
     session: AsyncSession,
     project: Project,
@@ -1288,7 +1444,7 @@ async def _run_fw_boundaries_node(
     node_key: str,
     slot_idx: int,
 ) -> None:
-    """«Границы сцен»: закадр → фрагменты [ ] (claude-opus-5) + проверка кодом.
+    """«Границы сцен»: закадр → фрагменты [ ] (gpt-5-6-sol via kie) + проверка кодом.
 
     Промт — ``prompts/scene_design/scene_boundaries_agent.md``. Выход —
     ``scene_boundaries/fragments.json``; «Каркас» пишет по сцене на фрагмент.
@@ -1413,7 +1569,9 @@ async def _run_fw_skeleton_node(
     frags: list[str],
     full_vo: str,
 ) -> None:
-    """«Каркас» после «Границ сцен»: сцена на фрагмент, пачки по 8.
+    """«Каркас» после «Границ сцен»: сцена на фрагмент.
+
+    Персонажи — один запрос. Сцены — три пачки по фрагментам границ.
 
     Ответ промта каркаса — ``{"сцены": [...]}``, не apply-ops: пишем кодом.
     Ячейка = фрагмент (закадр дословно), поля сцены → attrs кадра.
@@ -1439,22 +1597,33 @@ async def _run_fw_skeleton_node(
     )
     model = current_text_model_id() or "?"
     logger.info(
-        "[#{}] fw_skeleton: {} фрагментов, пачки по {}, model={} → {}",
+        "[#{}] fw_skeleton: {} фрагментов, персонажи 1 пачкой, сцены {} пачками, model={} → {}",
         project.id,
         len(frags),
-        skb.B_BATCH,
+        skb.SCENE_BATCH_COUNT,
         model,
         trace_dir,
     )
     await session.commit()
-    draft, rep = await skb.run_skeleton_batches(frags, master, trace_dir)
+    # 2026-10-11: one-shot reuse of the validated skeleton.json (no LLM) when
+    # data/_reuse_skeleton.flag exists - rematerialize the 33 main cells.
+    import os as _os
+    _flag = _os.path.join("data", "_reuse_skeleton.flag")
+    if _os.path.exists(_flag) and skb.output_path(project).exists():
+        _os.replace(_flag, _flag + ".used")
+        draft = json.loads(skb.output_path(project).read_text(encoding="utf-8"))
+        rep = (draft.get("_setup") or {}).get("report") or {"reused": True}
+        logger.warning("[#{}] fw_skeleton: REUSE existing skeleton.json ({} scenes), no LLM", project.id, len(draft.get("сцены") or []))
+    else:
+        draft, rep = await skb.run_skeleton_batches(frags, master, trace_dir)
     scenes = draft["сцены"]
     cov = skb.coverage(full_vo, scenes)
     draft["_setup"] = {
         "node_key": node_key,
         "model": model,
         "fragments": len(frags),
-        "batch": skb.B_BATCH,
+        "registry_batches": 1,
+        "scene_batches": skb.SCENE_BATCH_COUNT,
         "report": rep,
         "coverage": cov,
     }
@@ -1505,7 +1674,9 @@ async def _run_fw_skeleton_node(
         )
     n_chars = 0
     if characters:
-        n_chars = await db_apply.upsert_characters(session, project, characters)
+        n_chars = await db_apply.upsert_characters(
+            session, project, characters, replace=True
+        )
     frames = list(
         (
             await session.execute(
@@ -1640,6 +1811,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         return
     if str(node_key or "").endswith("_fw_report"):
         await _run_fw_report_node(
+            session, project, node_key=str(node_key), slot_idx=slot_idx
+        )
+        return
+    if str(node_key or "").endswith("_fw_style"):
+        await _run_fw_style_node(
             session, project, node_key=str(node_key), slot_idx=slot_idx
         )
         return
@@ -2176,7 +2352,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     await session.flush()
                     logger.info(
                         "[#{}] {} skeleton: {} ячеек из «Границ сцен» "
-                        "(пачки по 8, закадр дословно)",
+                        "(персонажи 1 пачкой, сцены 3 пачками, закадр дословно)",
                         project.id,
                         node_key,
                         len(skeleton_fragments),
@@ -2426,6 +2602,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             # Только DB-снимок. Никакого project.xlsx / check_report / мусора
             # со стрелок — иначе модель снова думает про Excel.
             data_paths = [ctx_path]
+            # 2026-10-11: wire the c62 character-id fix/gate into the studio path
+            # (set_shot_characters was never called -> ensure_character_ids no-op).
+            try:
+                from app.services.apply_ops_batches import set_shot_characters as _ssc
+                _skp = project.data_dir / "scene_skeleton" / "skeleton.json"
+                _cards = []
+                if _skp.exists():
+                    _cards = list(_json.loads(_skp.read_text(encoding="utf-8")).get("база_персонажей") or [])
+                if not _cards:
+                    _cards = list(db_ctx.get("characters") or [])
+                _ssc(_cards)
+                logger.info("[#{}] enrich_xlsx node={!r}: shot characters for id-fix/gate = {}", project.id, node_key, len(_cards))
+            except Exception as _e:  # noqa: BLE001
+                logger.warning("[#{}] set_shot_characters failed: {}", project.id, _e)
             logger.info(
                 "[#{}] enrich_xlsx node={!r}: project_file/DB SoT — "
                 "только db_frames.json frames={} characters={} "
@@ -2658,7 +2848,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 DENSE_PARALLEL_MAX,
                 DENSE_TARGET_BATCHES,
                 FW_FRAMES_PER_BATCH,
+                ACTION_STAGGER_SEC,
+                ACTION_TARGET_BATCHES,
                 SCRIPT_FRAMES_QC_UNITS_PER_BATCH,
+                SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
                 SKIP_CAMERA_MENU,
                 SKIP_PROMPTS_AND_ACTION,
                 VO_PARALLEL_MAX,
@@ -2669,6 +2862,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             from app.services.node_write_contract import filter_ops_for_node
 
             nk = str(node_key or "")
+            action_node = nk.endswith("_fw_action")
             frame_prompts = _is_frame_prompts_prompt(variant, master) or nk.endswith(
                 "_fw_frames"
             )
@@ -2706,6 +2900,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     applied_in_runner=True,
                 )
             else:
+                _db_lock = asyncio.Lock()
+
                 async def _apply_batch(payload: dict) -> None:
                     from app.services.db_apply import FIELD_ALIASES
 
@@ -2760,23 +2956,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                             fw_camera_menu_only,
                         )
                         return
-                    chars = payload.get("characters")
-                    await _db_apply.apply_ops(
-                        session,
-                        project,
-                        ops,
-                        characters=chars if isinstance(chars, list) and chars else None,
-                        export_xlsx=bool(payload.get("export_xlsx", False)),
-                        node_kind=apply_kind,
-                    )
-                    await session.commit()
-                    await session.refresh(project)
+                    async with _db_lock:
+                        chars = payload.get("characters")
+                        await _db_apply.apply_ops(
+                            session,
+                            project,
+                            ops,
+                            characters=chars if isinstance(chars, list) and chars else None,
+                            export_xlsx=bool(payload.get("export_xlsx", False)),
+                            node_kind=apply_kind,
+                        )
+                        await session.commit()
+                        await session.refresh(project)
 
                 async def _progress(msg: str) -> None:
                     from app.services.run_sync import update_active_node_progress_text
 
-                    await update_active_node_progress_text(session, project, msg)
-                    await session.commit()
+                    async with _db_lock:
+                        await update_active_node_progress_text(session, project, msg)
+                        await session.commit()
 
                 script_frames_qc = (not fw_camera_menu_only) and (
                     _is_script_frames_qc_group_node(variant, master, node_key)
@@ -2800,6 +2998,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"fw_frames по {FW_FRAMES_PER_BATCH} кадров, "
                         f"параллельно {VO_PARALLEL_MAX}, "
                         f"сдвиг {VO_STAGGER_SEC:g}с"
+                    )
+                elif action_node:
+                    batch_label = (
+                        f"площадка {ACTION_TARGET_BATCHES} пачки, "
+                        f"сдвиг {ACTION_STAGGER_SEC:g}с"
                     )
                 elif script_frames_qc:
                     batch_label = (
@@ -2859,30 +3062,54 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                     ),
                     chunk_size=(
-                        CAMERA_MENU_UNITS_PER_BATCH
-                        if fw_camera_menu_only
+                        None
+                        if action_node
                         else (
-                            FW_FRAMES_PER_BATCH
-                            if fw_frames
+                            CAMERA_MENU_UNITS_PER_BATCH
+                            if fw_camera_menu_only
                             else (
-                                SCRIPT_FRAMES_QC_UNITS_PER_BATCH
-                                if script_frames_qc
-                                else None
+                                FW_FRAMES_PER_BATCH
+                                if fw_frames
+                                else (
+                                    SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+                                    if script_frames_qc
+                                    else None
+                                )
                             )
                         )
                     ),
                     target_batches=(
-                        DENSE_TARGET_BATCHES if dense_shot_fill else None
+                        ACTION_TARGET_BATCHES
+                        if action_node
+                        else (
+                            SCRIPT_FRAMES_QC_PARALLEL_BATCHES
+                            if script_frames_qc
+                            and str(node_key or "").endswith("_fw_shots")
+                            else (DENSE_TARGET_BATCHES if dense_shot_fill else None)
+                        )
                     ),
                     parallel_max=(
-                        VO_PARALLEL_MAX
-                        if fw_camera_menu_only or script_frames_qc
-                        else (DENSE_PARALLEL_MAX if dense_shot_fill else None)
+                        ACTION_TARGET_BATCHES
+                        if action_node
+                        else (
+                            SCRIPT_FRAMES_QC_PARALLEL_BATCHES
+                            if script_frames_qc
+                            and str(node_key or "").endswith("_fw_shots")
+                            else (
+                                VO_PARALLEL_MAX
+                                if fw_camera_menu_only or script_frames_qc
+                                else (DENSE_PARALLEL_MAX if dense_shot_fill else None)
+                            )
+                        )
                     ),
                     stagger_sec=(
-                        VO_STAGGER_SEC
-                        if fw_camera_menu_only or script_frames_qc or dense_shot_fill
-                        else None
+                        ACTION_STAGGER_SEC
+                        if action_node
+                        else (
+                            VO_STAGGER_SEC
+                            if fw_camera_menu_only or script_frames_qc or dense_shot_fill
+                            else None
+                        )
                     ),
                     chunk_by_vo_unit=bool(script_frames_qc and not fw_frames),
                     footer_kind=(

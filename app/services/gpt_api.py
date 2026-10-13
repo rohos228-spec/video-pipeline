@@ -111,6 +111,24 @@ def _responses_reasoning_block() -> dict[str, str] | None:
     return {"effort": effort}
 
 
+def _node_reasoning_effort() -> str | None:
+    """Явное мышление ноды. Шапка GPT_REASONING_EFFORT сюда не подмешивается."""
+    try:
+        from app.services.llm_override import current_override
+
+        ov = current_override()
+    except Exception:  # noqa: BLE001
+        return None
+    if ov is None or not ov.reasoning_effort:
+        return None
+    raw = str(ov.reasoning_effort).strip().lower()
+    aliases = {"середина": "medium", "mid": "medium", "низкий": "low", "высокий": "high"}
+    effort = aliases.get(raw, raw)
+    if effort not in _REASONING_EFFORTS:
+        return None
+    return effort
+
+
 class GptApiError(Exception):
     """Ошибка GPT API с контекстом для логов/повторов."""
 
@@ -1597,7 +1615,7 @@ def _sse_deadline_s(timeout: float) -> float:
     except (TypeError, ValueError):
         value = 0.0
     if value <= 0:
-        value = float(getattr(settings, "gpt_timeout_s", 600.0) or 600.0)
+        value = float(getattr(settings, "gpt_timeout_s", 1200.0) or 1200.0)
     return max(30.0, value)
 
 
@@ -2877,12 +2895,16 @@ async def chat(
         provider_label = settings.text_llm_label
     proxy = _gpt_proxy_url()
     via = "vps-relay" if _vps_relay_base() else ("proxy" if proxy else "direct")
+    effort_log = ""
+    if _node_vibecode_override():
+        effort_log = _node_reasoning_effort() or ""
     logger.info(
-        "text_llm.chat → {} model={} url={} via={}",
+        "text_llm.chat → {} model={} url={} via={}{}",
         provider_label,
         use_model,
         url,
         via if via != "proxy" else _mask_proxy_url(proxy),
+        f" reasoning_effort={effort_log}" if effort_log else "",
     )
 
     responses_mode = is_responses_mode()
@@ -2918,6 +2940,11 @@ async def chat(
                 xlsx_write_contract=xlsx_write_contract,
             ),
         }
+        # vibecode chat: степень мышления — поле reasoning_effort, не суффикс модели.
+        if _node_vibecode_override():
+            effort = _node_reasoning_effort()
+            if effort:
+                body["reasoning_effort"] = effort
     if temperature is not None:
         body["temperature"] = temperature
     anth_body: dict[str, Any] | None = None

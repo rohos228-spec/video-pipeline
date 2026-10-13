@@ -1,6 +1,6 @@
 ---
 description: Операционные скиллы из корня проекта (plan-then-build, long-run, spec-revise). Всегда применять.
-alwaysApply: true
+alwaysApply: false
 ---
 
 # Операционные скиллы — всегда в силе

@@ -166,14 +166,18 @@ async def analyze_style_images(
 
     # 1) Пачки → заметки по общим критериям
     notes: list[dict[str, Any]] = []
-    for i, batch in enumerate(batch_paths(images)):
-        raw = await client.ask_with_files(
+    async def _ask(i: int, batch: Any) -> Any:
+        await asyncio.sleep(i * 5.0)  # 2026-10-11: parallel, 5s stagger
+        return await client.ask_with_files(
             "Проанализируй эту пачку референсов по критериям из system-промпта.",
             batch,
             system=_NOTES_SYSTEM,
             timeout=240,
             max_retries=1,
         )
+
+    _raws = await asyncio.gather(*[_ask(i, b) for i, b in enumerate(batch_paths(images))])
+    for i, raw in enumerate(_raws):
         note = parse_json_object(raw)
         if note:
             notes.append(note)
@@ -326,15 +330,21 @@ async def build_style_agent(
 
     notes: list[dict[str, Any]] = []
     last_err = ""
-    for i, batch in enumerate(batch_paths(images)):
+    async def _ask2(i: int, batch: Any) -> Any:
+        await asyncio.sleep(i * 5.0)  # 2026-10-11: parallel, 5s stagger
+        return await client.ask_with_files(
+            "Проанализируй эту пачку референсов по критериям из system-промпта.",
+            batch,
+            system=_NOTES_SYSTEM,
+            timeout=240,
+            max_retries=1,
+        )
+
+    _raws2 = await asyncio.gather(*[_ask2(i, b) for i, b in enumerate(batch_paths(images))], return_exceptions=True)
+    for i, raw in enumerate(_raws2):
         try:
-            raw = await client.ask_with_files(
-                "Проанализируй эту пачку референсов по критериям из system-промпта.",
-                batch,
-                system=_NOTES_SYSTEM,
-                timeout=240,
-                max_retries=1,
-            )
+            if isinstance(raw, BaseException):
+                raise raw
         except Exception as e:  # noqa: BLE001
             last_err = str(e)
             logger.warning("build_style_agent: пачка {} — GPT недоступен ({})", i + 1, e)

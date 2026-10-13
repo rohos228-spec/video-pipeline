@@ -162,6 +162,18 @@ RULES: tuple[Rule, ...] = (
         ),
     ),
     Rule(
+        "R-SHOTS-GATE",
+        "Шоты: промты у кадров и закадр ячейки целиком",
+        "Замечания гейта (нет промта, склейка закадра, длина куска) пишутся "
+        "в лог, ответ с кадрами записывается. Пустой закадр у кадра — норма. "
+        "Выкидывается только откровенный брак: в ячейке нет кадров. "
+        "Такую ячейку повторяем один раз; снова брак — ячейка пропущена, "
+        "старые данные остаются.",
+        "предупреждает",
+        ("shots",),
+        ("app.services.apply_ops_batches:shots_reply_gate_problems",),
+    ),
+    Rule(
         "R-SCENE-PLAN",
         "Площадка на кадрах",
         "По плану площадки программа расставляет зоны, камеру и людей в "
@@ -318,6 +330,7 @@ PASS_RULES: dict[str, str] = {
     "shot_vo_fill": "R-SHOT-VO-FILL",
     "scene_plan": "R-SCENE-PLAN",
     "shots_check": "R-SHOT-COVERAGE",
+    "shots_gate": "R-SHOTS-GATE",
     "prompts_check": "R-PROMPTS-SHAPE",
 }
 
@@ -372,7 +385,7 @@ NODE_FLOW: tuple[NodeFlow, ...] = (
         "script",
         "Каркас",
         "prompts/scene_design/scene_skeleton_agent.md",
-        ("фрагменты «Границ сцен» (ячейка на фрагмент, пачки по 8)",),
+        ("фрагменты «Границ сцен» (персонажи одной пачкой, сцены тремя)",),
         ("сцены: закадр, место, персонажи, предметы, речь, сцена", "база_персонажей", "предметы"),
         ("R-UUID", "R-BITS-REPAIR", "R-BITS-SHAPE"),
         ("биты",),
@@ -409,6 +422,7 @@ NODE_FLOW: tuple[NodeFlow, ...] = (
             "R-FREEZE-PRECISE",
             "R-LAYOUT",
             "R-SHOT-COVERAGE",
+            "R-SHOTS-GATE",
         ),
         (
             "кадры: parent_id, закадр, план, линза_мм, ракурс, движение",

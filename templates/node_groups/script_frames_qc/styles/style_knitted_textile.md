@@ -1,0 +1,3 @@
+STYLE: knitted textile children's book illustration. handmade textile / cut-paper / felt, fibrous surfaces, soft stylized forms, warm autumnal palette (deep crimson, burnt orange, mustard, olive, forest green, warm peach). One unified frame. Improve only inside this style, never change medium.
+
+Final style lock: children's book illustration, handmade textile texture, cut-paper and felt layering, fibrous surfaces, stylized simple faces, warm autumnal palette, poetic emotional warmth. Negative: photorealistic humans, 3D plastic, glossy skin, anime, realistic facial details, hard outlines, cold colors, scary mood, text, watermark, logo.

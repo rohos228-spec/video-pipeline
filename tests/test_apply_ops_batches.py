@@ -13,16 +13,12 @@ from app.services.apply_ops_batches import (
 )
 
 
-def test_pack_call_timeout_uses_gpt_timeout_not_90(monkeypatch) -> None:
-    """script_frames_qc (bits/shots) нельзя резать wait_for(90) — GPT пишет дольше."""
-    from app.settings import settings
-
-    monkeypatch.setattr(settings, "gpt_timeout_s", 600.0)
-    assert pack_call_timeout_s("bits") == 1800.0
-    assert pack_call_timeout_s("shots_coverage") == 1800.0
-    assert pack_call_timeout_s("prompts") == 1800.0
-    monkeypatch.setattr(settings, "gpt_timeout_s", 90.0)
-    assert pack_call_timeout_s("bits") >= 180.0
+def test_pack_call_timeout_is_twenty_minutes() -> None:
+    """Пачка любой ноды ждёт 20 минут."""
+    assert pack_call_timeout_s("bits") == 1200.0
+    assert pack_call_timeout_s("shots_coverage") == 1200.0
+    assert pack_call_timeout_s("prompts") == 1200.0
+    assert pack_call_timeout_s(None) == 1200.0
 
 
 def test_dense_102_splits_into_ten_packs() -> None:
@@ -1929,6 +1925,7 @@ async def test_shots_short_vo_writes_without_failing_node(tmp_path, monkeypatch)
                                     "место": "двор",
                                     "действие": "стоит во дворе",
                                     "закадр": frames[0]["voiceover_text"],
+                                    "промт_картинки": "двор, человек стоит",
                                 },
                                 {
                                     "id": "1-S2-K2",
@@ -1937,6 +1934,7 @@ async def test_shots_short_vo_writes_without_failing_node(tmp_path, monkeypatch)
                                     "место": "двор",
                                     "действие": "смотрит на землю",
                                     "закадр": "судов",
+                                    "промт_старт": "земля двора крупно",
                                 },
                             ]
                         },

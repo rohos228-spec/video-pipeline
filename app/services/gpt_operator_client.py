@@ -687,15 +687,17 @@ async def _run_check_vision_batched(
             )
         return bi, res
 
-    if streams <= 1:
-        ordered: list[tuple[int, OperatorApiResult]] = []
-        for bi, batch in enumerate(batches, start=1):
-            ordered.append(await _one_batch(bi, batch))
-    else:
-        gathered = await asyncio.gather(
-            *[_one_batch(bi, batch) for bi, batch in enumerate(batches, start=1)]
-        )
-        ordered = sorted(gathered, key=lambda x: x[0])
+    # 2026-10-11 user: always parallel, ~5s apart
+    streams = max(streams, len(batches))
+
+    async def _stag_batch(bi: int, batch: Any) -> tuple[int, OperatorApiResult]:
+        await asyncio.sleep((bi - 1) * 5.0)
+        return await _one_batch(bi, batch)
+
+    gathered = await asyncio.gather(
+        *[_stag_batch(bi, batch) for bi, batch in enumerate(batches, start=1)]
+    )
+    ordered = sorted(gathered, key=lambda x: x[0])
 
     parts: list[str] = []
     any_fail = False

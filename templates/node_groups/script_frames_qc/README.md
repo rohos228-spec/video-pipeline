@@ -2,7 +2,7 @@
 
 Группа «Каркас → площадка → шоты + QC». Цепочка нод:
 
-**Каркас → Площадка → Шоты → QC кадров → Отчёт**
+**Каркас → Площадка → Шоты → QC кадров → Стиль → Отчёт**
 
 Изолированы от общих `prompts/05_excel_gpt` и `templates/excel_gpt_agents`.
 В пикере «Работа с GPT» у чужих нод эти имена **не показываются**.
@@ -15,6 +15,7 @@
 | `n_excel_gpt_fw_action` | Площадка | `action` | `prompts/scene_design/action.md` |
 | `n_excel_gpt_fw_shots` | Шоты | `scenes_to_frames_ru` | `templates/node_groups/script_frames_qc/scenes_to_frames_ru.md` |
 | `n_excel_gpt_fw_qc` | GPT: QC кадров | `shots_qc_ru` | `templates/node_groups/script_frames_qc/shots_qc_ru.md` |
+| `n_excel_gpt_fw_style` | Стиль | `style_noir_watercolour_16_09` (по умолчанию) | `templates/node_groups/script_frames_qc/styles/style_*.md` |
 | `n_excel_gpt_fw_report` | Отчёт: кадры | — | код собирает HTML |
 
 id нод (`fw_*`) не меняли — на суффиксы завязан раннер. Поменялись подписи
@@ -47,3 +48,14 @@ id нод (`fw_*`) не меняли — на суффиксы завязан р
 § «Площадка» и `docs/NODE_GROUP_RULES.md`.
 
 Каталог кадров T/X (`templates/shot_templates/`) — для монтажа, не для этой группы.
+
+**Стиль** (`fw_style`, код, без GPT) — выбранный в Studio файл
+`styles/style_*.md` дописывается после сцены к промту главного кадра (K1
+VO-родителя; поле `промт_картинки`, иначе `промт_старт`) и в
+`frames.image_prompt` этой строки. Исходная сцена — в `промт_без_стиля`,
+вариант — в `стиль`; повторный прогон стиль не дублирует. Лимит 4877
+(`OUTSEE_PROMPT_TARGET_BODY_CHARS`): режется сцена по предложению, стиль
+никогда; стиль длиннее 4677 — ошибка. Отчёт: `excel_gpt_uploads/n_excel_gpt_fw_style/style_report.json`.
+Варианты: `style_noir_watercolour_16_09` (§7 агента «нуар акварель 16.09»),
+`style_archival_noir_watercolor_aug` (STYLE_HEAD+TAIL img_pr, август),
+`style_knitted_textile` (KNITTED head+tail). Дети (K2/K3) не трогаются.

@@ -1,6 +1,6 @@
 ---
 description: Автономный режим агентов video-pipeline (Superpowers + хуки vp-kit). Приоритет над остальными правилами в вопросах git и процесса.
-alwaysApply: true
+alwaysApply: false
 ---
 
 # Автономная разработка video-pipeline (vp-kit)
