@@ -71,6 +71,10 @@ def _stub_app() -> FastAPI:
     async def login(payload: dict):
         return {}
 
+    @app.post("/api/projects/{project_id}/ensure-run")
+    async def ensure_run(project_id: int):
+        return {"run_id": 1}
+
     @app.post("/api/boom")
     async def boom():
         raise RuntimeError("boom")
@@ -99,6 +103,22 @@ async def test_mutating_methods_write_and_get_does_not():
     rows = _rows()
     assert sorted(r["method"] for r in rows) == ["DELETE", "POST", "PUT"]
     assert all(r["path"].startswith("/api/") for r in rows)
+
+
+async def test_automatic_ensure_run_is_not_an_operator_action():
+    async with _client(_stub_app()) as c:
+        assert (await c.post("/api/projects/4/ensure-run")).status_code == 200
+        assert (await c.post("/api/projects/4/go")).status_code == 200
+    paths = [r["path"] for r in _rows()]
+    assert not any(p.endswith("/ensure-run") for p in paths)
+    assert any(p.endswith("/go") for p in paths)
+
+
+def test_failed_ensure_run_is_still_recorded():
+    assert oa.is_automatic_ok("/api/projects/4/ensure-run", 200)
+    assert not oa.is_automatic_ok("/api/projects/4/ensure-run", 403)
+    assert not oa.is_automatic_ok("/api/projects/4/ensure-run", 500)
+    assert not oa.is_automatic_ok("/api/projects/4/go", 200)
 
 
 async def test_row_fields_route_project_actor_outcome():

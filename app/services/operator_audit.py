@@ -185,6 +185,11 @@ def route_template(scope: dict, path: str) -> str | None:
     return "/".join(segs)[:300]
 
 
+def is_automatic_ok(path: str, status_code: int) -> bool:
+    """Интерфейс сам зовёт ensure-run при открытии проекта: успешный вызов — не действие оператора."""
+    return path.endswith("/ensure-run") and 0 < status_code < 400
+
+
 def outcome_for(status: int, crashed: bool = False) -> str:
     if crashed or status >= 500:
         return OUTCOME_ERROR
@@ -385,7 +390,7 @@ class OperatorAuditMiddleware:
                 crashed = True
                 raise
             finally:
-                if audited:
+                if audited and not is_automatic_ok(path, status["code"]):
                     row = self._row(scope, path, method, rid, status["code"], crashed, started, body)
                     # shield: отмена запроса (разрыв клиента) не должна терять строку аудита
                     await asyncio.shield(asyncio.ensure_future(record(row)))
