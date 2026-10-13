@@ -26,6 +26,7 @@ from loguru import logger
 
 from app.bots.outsee import GenerationResult, OutseeImageError
 from app.generation_options import KIE_KLING_PROMPT_MAX_CHARS
+from app.services import spend_guard
 from app.settings import settings
 
 KLING_I2V_MODEL = "kling-2.6/image-to-video"
@@ -306,6 +307,26 @@ def _raise_from_kie_payload(
     )
 
 
+def _create_estimate(args: tuple, kwargs: dict) -> float | None:
+    """Catalog price of the Kling submit being prepared (None = unknown: the gate uses its media default)."""
+    try:
+        from app.services import kie_catalog, media_spend
+        body = args[0] if args else kwargs.get("body")
+        spec = kie_catalog.get_model(str((body or {}).get("model") or ""))
+        usd = float(media_spend.price_kie(spec, body)["usd"])
+    except Exception:  # noqa: BLE001 - an unknown price is the gate's default, never a reason to fail
+        return None
+    return usd if usd > 0 else None
+
+
+def _blocked_as_kling(blocked: spend_guard.PaidCallBlocked) -> "KieKlingError":
+    """The refusal in the provider's own error class; ``context.no_resubmit`` stops the ladders."""
+    return KieKlingError(blocked.message_ru, context=dict(blocked.context))
+
+
+# The Kling fallback has its own client (not kie_http.create_task), so the kill switch, the disk guard and
+# the three caps must be applied here: this is the one place that sends the paid createTask.
+@spend_guard.paid_seam("kie", "createTask", estimate=_create_estimate, wrap_error=_blocked_as_kling)
 async def _create_task(body: dict[str, Any]) -> str:
     url = f"{kie_api_base_url()}{_CREATE_PATH}"
     r, payload, _source = await kie_post_json(url, body, timeout=120.0)

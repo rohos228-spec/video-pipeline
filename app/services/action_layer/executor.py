@@ -433,6 +433,8 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
 
     reserved = 0.0
     key = budget.session_key(plan_id)
+    if spec.spends_money:
+        await mark_stale_reserves()
     async with store.sessions()() as s:
         try:
             if spec.spends_money:
@@ -526,6 +528,23 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
                              outcome="succeeded", cost_estimate=est_pair, cost_recorded=actual)
         await s.commit()
     return "ok"
+
+
+async def mark_stale_reserves() -> list[dict]:
+    """C-9: незакрытые резервы завершённых шагов получают явную метку в журнале слоя (по одной на шаг).
+    Резерв при этом не снимается; снять его может только оператор. Никогда не бросает."""
+    from app.settings import settings
+    try:
+        async with store.sessions()() as s:
+            rows = await budget.unresolved_reserves(
+                s, older_than_s=float(settings.action_layer_reserve_stale_s),
+                skip_plans={info["plan_id"] for info in _ORPHANS.values()})
+            fresh = await budget.mark_unresolved_reserves(s, rows)
+            await s.commit()
+        return fresh
+    except Exception:  # noqa: BLE001 - the sweep is bookkeeping, never a reason to fail a step
+        logger.exception("action layer stale reserve sweep failed")
+        return []
 
 
 async def _plan_project(plan_id: str) -> int | None:

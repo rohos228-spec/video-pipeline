@@ -383,6 +383,41 @@ async def stop(request: Request, plan_id: str, operator: AuthDep, idem: IdemDep,
     return await _once(request, idem, who, call)
 
 
+class ReleaseReserveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plan_id: str = Field(..., min_length=1, max_length=32)
+    step_index: int = Field(..., ge=0)
+    reason: str = Field(..., min_length=3, max_length=500)
+
+
+@router.get("/reserves")
+async def list_unresolved_reserves(operator: AuthDep, older_than_s: float = Query(0.0, ge=0)) -> dict:
+    """C-9: резервы завершённых шагов, не закрытые фактом (удерживаются в потолках до решения оператора)."""
+    from app.services.action_layer import budget
+    async with store.sessions()() as s:
+        rows = await budget.unresolved_reserves(s, older_than_s=older_than_s)
+    return {"items": rows, "total_held_credits": round(sum(r["held_credits"] for r in rows), 6)}
+
+
+@router.post("/reserves/release", dependencies=[LocalOnlyDep])
+async def release_unresolved_reserve(request: Request, body: ReleaseReserveIn, operator: AuthDep,
+                                     idem: IdemDep) -> dict:
+    who = _operator(operator)
+
+    async def call() -> dict:
+        from app.services.action_layer import budget
+        async with store.sessions()() as s:
+            try:
+                out = await budget.release_reserve(s, plan_id=body.plan_id, step_index=body.step_index,
+                                                   operator=who.id, reason=body.reason)
+            except budget.BudgetError as exc:
+                raise HTTPException(409, detail={"code": exc.code, "message": str(exc)}) from exc
+            await s.commit()
+        return out
+
+    return await _once(request, idem, who, call, body=body.model_dump())
+
+
 @router.get("/history")
 async def get_history(operator: AuthDep, plan_id: str | None = Query(None),
                       limit: int = Query(100, ge=1, le=500),

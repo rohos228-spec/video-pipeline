@@ -51,6 +51,13 @@ def fake(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _explicit_plan_cap(monkeypatch):
+    """The default plan cap is a high fuse (C-17); these tests assert exact budget numbers, so pin 200 credits."""
+    from app.settings import settings
+    monkeypatch.setattr(settings, "action_layer_session_cap_credits", 200.0)
+
+
+@pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
     real = socket.socket.connect
 
@@ -204,7 +211,9 @@ async def test_job_runs_to_completion_and_reports_credits(env, fake) -> None:
 
 # --- C: одноразовость, срок, хэш, потолок -----------------------------------
 
-async def test_over_session_cap_cannot_be_approved(env, fake) -> None:
+async def test_over_session_cap_cannot_be_approved(env, fake, monkeypatch) -> None:
+    from app.settings import settings
+    monkeypatch.setattr(settings, "action_layer_session_cap_credits", 200.0)  # потолок задан явно (по умолчанию он высокий)
     pid, preview = await _plan(env, fake, *[{"action_id": "test.fake_paid_instant"}] * 5)
     assert preview["cost"]["high"] == 250.0 and preview["budget"]["fits"] is False
     with pytest.raises(approval.ApprovalError) as e:

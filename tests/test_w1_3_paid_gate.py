@@ -344,6 +344,61 @@ async def test_seam_kie_create_task(db, monkeypatch, no_recording):
     assert no_recording == [] or all("rejected" not in str(x) for x in no_recording)  # отказ не записан как платный
 
 
+async def test_seam_kie_kling_create_task_is_gated(db, monkeypatch, no_recording):
+    """C-3: the Kling fallback has its own client; its createTask honours the kill switch and the caps."""
+    from app.bots import kie_kling
+
+    calls: list = []
+
+    async def fake_post(url, body, timeout=120.0):
+        calls.append(url)
+        return _Resp(200), {"code": 200, "data": {"taskId": "k-1"}}, "test"
+
+    monkeypatch.setattr(kie_kling, "kie_post_json", fake_post)
+    monkeypatch.setattr(kie_kling, "kie_api_base_url", lambda: "https://kie.invalid")
+    body = {"model": "kling-2.6/text-to-video", "input": {"prompt": "p", "duration": 5}}
+    assert await kie_kling._create_task(body) == "k-1"
+    assert len(calls) == 1 and spend_guard.inflight_usd()["count"] == 0
+    await _kill(db)
+    with pytest.raises(kie_kling.KieKlingError) as e:
+        await kie_kling._create_task(body)
+    assert len(calls) == 1  # ни одного нового запроса
+    assert e.value.context["no_resubmit"] is True and e.value.context["gate_code"] == spend_guard.BLOCK_KILL_SWITCH
+    await _kill(db, on=False)
+    monkeypatch.setattr(settings, "spend_daily_cap_usd", 0.01)
+    with pytest.raises(kie_kling.KieKlingError) as e2:
+        await kie_kling._create_task(body)
+    assert len(calls) == 1 and e2.value.context["gate_code"] == "spend_cap_daily"
+
+
+async def test_seam_without_run_id_still_counts_against_the_run_cap(db, monkeypatch, no_recording):
+    """C-8: a native seam that is not handed ``run_id`` takes it from the correlation context, so
+    SPEND_RUN_CAP_USD holds on native calls (before, the run window was skipped for them)."""
+    from app.bots import kie_http
+    from app.services import request_context
+
+    calls: list = []
+
+    async def fake_post(url, body, timeout=120.0):
+        calls.append(url)
+        return _Resp(200), {"code": 200, "data": {"taskId": "t-run"}}, "test"
+
+    monkeypatch.setattr(kie_http, "kie_post_json", fake_post)
+    monkeypatch.setattr(kie_http, "kie_api_base_url", lambda: "https://kie.invalid")
+    monkeypatch.setattr(settings, "spend_run_cap_usd", 1.0)
+    await _add_ledger(db, kind="actual", usd=0.9, run_id="run-c8")
+    request_context.bind_run("run-c8")
+    try:
+        with pytest.raises(kie_http.KieHttpError) as e:
+            await kie_http.create_task("jobs", None, {"model": "m", "input": {}})  # default estimate 0.30
+        assert calls == [] and e.value.context["gate_code"] == "spend_cap_run"
+    finally:
+        request_context.unbind_run("run-c8")
+    # another run (or none): the same call passes, the cap is per run
+    assert await kie_http.create_task("jobs", None, {"model": "m", "input": {}}) == "t-run"
+    assert len(calls) == 1
+
+
 async def test_seam_outsee_post_generate(db, monkeypatch):
     from app.bots import outsee_http as oh
 
@@ -625,10 +680,7 @@ EXCEPTIONS = {
 
 # Известные дыры, чужая граница: файл платный, шлюза в нём нет. Тест фиксирует список ТОЧНО: закрытие дыры
 # требует убрать запись, новая дыра роняет тест.
-KNOWN_GAPS = {
-    "app/bots/kie_kling.py": "резервный Kling через kie_post_json/_create_task; файл вне границы W1-3, "
-                             "интегратору: обернуть kie_post_json (или оба вызова track_kling) в paid_seam",
-}
+KNOWN_GAPS: dict[str, str] = {}
 
 
 def test_every_http_sending_module_is_gated_or_listed():
@@ -647,6 +699,56 @@ def test_every_http_sending_module_is_gated_or_listed():
     stale = sorted((set(EXCEPTIONS) | set(KNOWN_GAPS)) & gated)
     assert stale == [], f"в списках исключений числятся модули, которые уже закрыты шлюзом: {stale}"
     assert all(reason.strip() for reason in {**EXCEPTIONS, **KNOWN_GAPS}.values())
+
+
+def _enclosing_functions(tree):
+    """(call node, enclosing function definition) for every call in the module."""
+    import ast
+    out = []
+
+    def walk(node, fn):
+        for child in ast.iter_child_nodes(node):
+            nxt = child if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else fn
+            if isinstance(child, ast.Call):
+                out.append((child, fn))
+            walk(child, nxt)
+    walk(tree, None)
+    return out
+
+
+def _is_paid_seam_decorated(fn) -> bool:
+    import ast
+    for dec in getattr(fn, "decorator_list", []):
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        if isinstance(target, ast.Attribute) and target.attr == "paid_seam":
+            return True
+        if isinstance(target, ast.Name) and target.id == "paid_seam":
+            return True
+    return False
+
+
+def test_every_paid_post_sender_is_a_decorated_function_not_just_a_file_with_a_mark():
+    """C-24: a file is not closed because some line mentions paid_*. Every function that calls the shared
+    paid transport (kie_post_json) must itself sit under @paid_seam."""
+    import ast
+    sender = "kie_post_json"
+    bad = []
+    seen = 0
+    for path in sorted((REPO / "app").rglob("*.py")):
+        rel = path.relative_to(REPO).as_posix()
+        text_ = path.read_text(encoding="utf-8", errors="replace")
+        if sender not in text_:
+            continue
+        for call, fn in _enclosing_functions(ast.parse(text_)):
+            f = call.func
+            name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else "")
+            if name != sender:
+                continue
+            seen += 1
+            if fn is None or not _is_paid_seam_decorated(fn):
+                bad.append(f"{rel}:{call.lineno} {getattr(fn, 'name', '<module>')}")
+    assert seen >= 2, "the scan found no callers of kie_post_json: the check would be vacuous"
+    assert bad == [], f"функции, шлющие платный createTask без @paid_seam: {bad}"
 
 
 def test_other_gated_entry_points_reference_the_gate():

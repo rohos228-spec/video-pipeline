@@ -397,13 +397,16 @@ class Settings(BaseSettings):
 
     # Слой действий: потолок трат на один план (кредиты), срок жизни одноразового
     # подтверждения, лимит шагов в плане, таймаут одного шага.
+    # C-17: решение заказчика «лимита нет, важно не зацикливание». Денежные потолки ниже стоят как ВЫСОКИЕ ПРЕДОХРАНИТЕЛИ
+    # (защита от ошибки и утечки, а не рабочий лимит): обычный ролик в них не упирается. От зацикливания «брак ->
+    # перезапуск» защищают счётчики regen_budget (REGEN_MAX_PER_FRAME / REGEN_MAX_PER_RUN), а не эти суммы.
     action_layer_session_cap_credits: float = Field(
-        200.0, ge=0, alias="ACTION_LAYER_SESSION_CAP_CREDITS"
+        10000.0, ge=0, alias="ACTION_LAYER_SESSION_CAP_CREDITS"
     )
     # Локальные денежные потолки надзорного слоя (USD, 0 = без ограничения); docs/SPEND_LIMITS.md.
-    spend_daily_cap_usd: float = Field(25.0, ge=0, alias="SPEND_DAILY_CAP_USD")
-    spend_project_cap_usd: float = Field(10.0, ge=0, alias="SPEND_PROJECT_CAP_USD")
-    spend_run_cap_usd: float = Field(5.0, ge=0, alias="SPEND_RUN_CAP_USD")
+    spend_daily_cap_usd: float = Field(200.0, ge=0, alias="SPEND_DAILY_CAP_USD")
+    spend_project_cap_usd: float = Field(100.0, ge=0, alias="SPEND_PROJECT_CAP_USD")
+    spend_run_cap_usd: float = Field(50.0, ge=0, alias="SPEND_RUN_CAP_USD")
     # HTTP 402 / нет кредитов у провайдера: включить аварийный стоп надзорного слоя.
     spend_auto_kill_on_402: bool = Field(True, alias="SPEND_AUTO_KILL_ON_402")
     # Окно (сек): живая или не скачанная задача Kie возобновляется вместо нового createTask; 0 = выкл.
@@ -414,12 +417,14 @@ class Settings(BaseSettings):
     regen_max_per_run: int = Field(12, ge=0, alias="REGEN_MAX_PER_RUN")
     # Денежный потолок тех же перегенераций: оценка USD (число кадров x цена платного запроса) на прогон шага.
     # Счётчики попыток не знают цены; этот потолок останавливает дорогие повторы. 0 = без ограничения.
-    regen_max_usd_per_run: float = Field(5.0, ge=0, alias="REGEN_MAX_USD_PER_RUN")
+    regen_max_usd_per_run: float = Field(25.0, ge=0, alias="REGEN_MAX_USD_PER_RUN")
     # Оценка одной перегенерации кадра/героя; 0 = взять MEDIA_SUBMIT_ESTIMATE_USD из spend_guard.
     regen_estimate_usd_per_item: float = Field(0.0, ge=0, alias="REGEN_ESTIMATE_USD_PER_ITEM")
     action_layer_approval_ttl_s: int = Field(600, ge=1, alias="ACTION_LAYER_APPROVAL_TTL_S")
     action_layer_max_steps: int = Field(20, ge=1, le=100, alias="ACTION_LAYER_MAX_STEPS")
     action_layer_step_timeout_s: float = Field(900.0, gt=0, alias="ACTION_LAYER_STEP_TIMEOUT_S")
+    # C-9: через сколько секунд после конца шага незакрытый резерв получает явную метку в журнале слоя.
+    action_layer_reserve_stale_s: float = Field(3600.0, gt=0, alias="ACTION_LAYER_RESERVE_STALE_S")
     # Окно, в течение которого прерванный план можно продолжить по уже израсходованному
     # подтверждению; позже нужно новое подтверждение оператора.
     action_layer_resume_window_s: int = Field(3600, ge=1, alias="ACTION_LAYER_RESUME_WINDOW_S")

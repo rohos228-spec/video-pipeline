@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, text
 
@@ -232,3 +232,80 @@ async def native_unknown_cost_rows(session, *, project_id: int | None, since: da
 async def guard_kill_switch(session) -> None:
     """Бросает KillSwitchActive до любого шага (и чтения тоже)."""
     await kill_switch.guard(session)
+
+
+# --- C-9: резерв, который не закрылся фактом --------------------------------------------------------------
+# Резерв остаётся, когда факт неизвестен (таймаут без подтверждённой остановки, итог шага не подтверждён, шаг без
+# проекта, строка «цена неизвестна»). Это консервативно, но без метки такой резерв висел бы вечно и молча занимал
+# потолок. Здесь он получает явную метку в журнале слоя и может быть снят оператором после проверки кабинета.
+
+_TERMINAL_STEP = (store.STEP_SUCCEEDED, store.STEP_FAILED, store.STEP_UNKNOWN, store.STEP_CANCELLED)
+
+
+async def unresolved_reserves(session, *, older_than_s: float = 0.0, now: datetime | None = None,
+                              skip_plans: frozenset[str] | set[str] = frozenset()) -> list[dict]:
+    """Шаги, у которых резерв кредитов не закрыт фактом: шаг завершён, ``cost_actual`` пуст, сумма записей
+    ``action_layer_spend`` по шагу больше нуля. Шаги из ``skip_plans`` (серверная задача ещё наблюдается) пропускаются."""
+    cutoff = (now or datetime.utcnow()) - timedelta(seconds=max(0.0, float(older_than_s)))
+    held = (select(store.ActionSpend.plan_id.label("plan_id"), store.ActionSpend.step_index.label("idx"),
+                   func.sum(store.ActionSpend.credits).label("held"))
+            .group_by(store.ActionSpend.plan_id, store.ActionSpend.step_index)
+            .having(func.sum(store.ActionSpend.credits) > 1e-9)).subquery()
+    q = (select(store.ActionPlanStep, held.c.held)
+         .join(held, (held.c.plan_id == store.ActionPlanStep.plan_id) & (held.c.idx == store.ActionPlanStep.idx))
+         .where(store.ActionPlanStep.cost_actual.is_(None), store.ActionPlanStep.status.in_(_TERMINAL_STEP)))
+    out: list[dict] = []
+    for step, amount in (await session.execute(q)).all():
+        if step.plan_id in skip_plans:
+            continue
+        ended = step.finished_at or step.started_at
+        if ended is None or ended > cutoff:
+            continue
+        out.append({"plan_id": step.plan_id, "step_index": step.idx, "action_id": step.action_id,
+                    "status": step.status, "held_credits": round(float(amount), 6),
+                    "ended_at": ended.isoformat() + "Z"})
+    return out
+
+
+async def mark_unresolved_reserves(session, rows: list[dict]) -> list[dict]:
+    """Явная метка в журнале слоя (по одной на шаг, повтор не дублируется). Резерв не меняется. Возвращает новые метки."""
+    fresh: list[dict] = []
+    for row in rows:
+        seen = await session.scalar(select(func.count()).select_from(store.ActionHistory).where(
+            store.ActionHistory.event == "reserve_unresolved", store.ActionHistory.plan_id == row["plan_id"],
+            store.ActionHistory.step_index == row["step_index"]))
+        if seen:
+            continue
+        store.append_history(
+            session, event="reserve_unresolved", plan_id=row["plan_id"], step_index=row["step_index"],
+            actor="system", action_id=row["action_id"], outcome="held",
+            error=(f"Резерв {row['held_credits']:g} кр. не закрыт фактом: итог шага ({row['status']}) неизвестен. "
+                   "Сумма удерживается в потолках. Сверьте кабинет провайдера и снимите резерв вручную."),
+            cost_recorded=row["held_credits"])
+        fresh.append(row)
+    return fresh
+
+
+async def release_reserve(session, *, plan_id: str, step_index: int, operator: str, reason: str) -> dict:
+    """Снять незакрытый резерв по решению оператора (он сверил кабинет провайдера). Записи только добавляются:
+    отрицательная сверка в ``action_layer_spend`` и в ``spend_ledger``. Без причины и для закрытого шага - отказ."""
+    reason = (reason or "").strip()
+    if len(reason) < 3:
+        raise BudgetError("reason_required", "Укажите причину: что именно вы проверили в кабинете провайдера.")
+    rows = [r for r in await unresolved_reserves(session)
+            if r["plan_id"] == plan_id and r["step_index"] == int(step_index)]
+    if not rows:
+        raise BudgetError("not_releasable", "У этого шага нет незакрытого резерва (шаг не завершён или резерв уже снят).")
+    held = float(rows[0]["held_credits"])
+    from app.services import spend_guard
+    from app.services.kie_catalog import CREDIT_USD
+    await spend_guard.settle(session, project_id=await _plan_project(session, plan_id), run_id=f"plan:{plan_id}",
+                             reserved_usd=held * CREDIT_USD, actual_usd=0.0, source="action_layer",
+                             credits_delta=-held, basis="released_by_operator",
+                             ref=f"plan:{plan_id}#{step_index}")
+    session.add(store.ActionSpend(session_key=session_key(plan_id), plan_id=plan_id, step_index=int(step_index),
+                                  kind="settle", credits=-held))
+    store.append_history(session, event="reserve_released", plan_id=plan_id, step_index=int(step_index),
+                         actor=operator, action_id=rows[0]["action_id"], outcome="released", error=reason[:500],
+                         cost_recorded=held)
+    return {"plan_id": plan_id, "step_index": int(step_index), "released_credits": held}

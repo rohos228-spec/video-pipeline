@@ -815,6 +815,12 @@ async def paid_gate(*, provider: str, what: str = "submit", estimate_usd: float 
     call is never counted twice.
     """
     pid = _resolve_project(project_id)
+    # The run window is the run the ledger row will be written under (``_ctx_run_id`` is that column's
+    # default), so a seam that does not pass ``run_id`` still counts against SPEND_RUN_CAP_USD.
+    try:
+        run_id = run_id or _ctx_run_id()
+    except Exception:  # noqa: BLE001 - no correlation context: the run window simply does not apply
+        run_id = ""
     try:
         return await _paid_gate(provider, what, estimate_usd, pid, run_id, register)
     except PaidCallBlocked as blocked:

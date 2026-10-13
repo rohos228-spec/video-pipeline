@@ -244,7 +244,7 @@ _ACTION_V1_SEVERITY = {"incident_notify": SEV_INFO, "incident_notify_off": SEV_W
 ACTION_LAYER_RU = HISTORY_EVENT_RU  # единственный источник фраз - action_layer/messages_ru.py
 _ACTION_LAYER_SEVERITY = {"step_failed": SEV_ERROR, "step_unknown": SEV_WARN, "budget_block": SEV_WARN,
                           "kill_switch_block": SEV_WARN, "resume_refused": SEV_WARN, "job_stop_after_failure": SEV_ERROR,
-                          "step_cancelled": SEV_WARN, "step_skipped": SEV_WARN}
+                          "step_cancelled": SEV_WARN, "step_skipped": SEV_WARN, "reserve_unresolved": SEV_WARN}
 
 # --- траты (spend_ledger.kind / source) -----------------------------------------------------------------
 SPEND_KIND_RU = {
