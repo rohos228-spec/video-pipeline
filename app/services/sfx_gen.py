@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import math
 import random
+import shutil
 import struct
 import wave
 from pathlib import Path
@@ -35,6 +36,13 @@ from app.services.ai_result_io import (
     save_ai_job_checkpoint,
 )
 from app.services.audio_verification import verify_audio
+from app.services.elevenlabs_api import (
+    SFX_MAX_PROMPT_CHARS,
+    SFX_PROMPT_INFLUENCE,
+    sfx_find_cached,
+    sfx_request_key,
+    sfx_write_sidecar,
+)
 from app.services.sfx_plan import SfxEvent
 
 _SAMPLE_RATE = 44100
@@ -197,9 +205,9 @@ async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
             "https://api.elevenlabs.io/v1/sound-generation",
             headers={"xi-api-key": key},
             json={
-                "text": prompt[:450],
+                "text": prompt[:SFX_MAX_PROMPT_CHARS],
                 "duration_seconds": min(max(duration, 0.5), 22.0),
-                "prompt_influence": 0.5,
+                "prompt_influence": SFX_PROMPT_INFLUENCE,
             },
         )
         if resp.status_code != 200:
@@ -375,9 +383,21 @@ async def generate_sfx_files(
         else:
             try:
                 if use_api:
-                    prog["inflight"][str(idx)] = {"kind": ev.kind}
-                    await _save_progress(session, project, prog)  # метка ДО отправки
-                    await _elevenlabs_sfx(ev.prompt, ev.duration, out_path)
+                    req_key = sfx_request_key(ev.prompt, ev.duration)
+                    # Тот же запрос уже оплачен и лежит в папке: второй POST не нужен (N-12). Осознанная
+                    # перегенерация (force) и платный повтор деградировавшего файла идут мимо этого кэша.
+                    cached = None if (force or retry_of is not None) else sfx_find_cached(sfx_dir, req_key)
+                    if cached is not None:
+                        if cached != out_path:
+                            shutil.copy2(cached, out_path)
+                            sfx_write_sidecar(out_path, req_key)
+                        logger.info("[#{}] sfx_gen: событие {} с тем же запросом уже оплачено ({}), POST не нужен",
+                                    project.id, idx, cached.name)
+                    else:
+                        prog["inflight"][str(idx)] = {"kind": ev.kind}
+                        await _save_progress(session, project, prog)  # метка ДО отправки
+                        await _elevenlabs_sfx(ev.prompt, ev.duration, out_path)
+                        sfx_write_sidecar(out_path, req_key)
                 else:
                     samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
                     _write_wav(out_path, samples)

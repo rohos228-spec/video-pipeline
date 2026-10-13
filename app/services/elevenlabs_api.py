@@ -103,6 +103,42 @@ def _find_cached(directory: Path, key: str) -> Path | None:
     return None
 
 
+_SFX_SIDECAR_SUFFIX = ".sfx.json"
+SFX_PROMPT_INFLUENCE = 0.5
+SFX_MAX_PROMPT_CHARS = 450
+
+
+def sfx_request_key(prompt: str, duration: float) -> str:
+    """Ключ платного запроса SFX: тот же текст, длительность и параметры = тот же ключ = повторный POST не нужен."""
+    raw = json.dumps(["sfx", (prompt or "")[:SFX_MAX_PROMPT_CHARS],
+                      round(min(max(float(duration), 0.5), 22.0), 3), SFX_PROMPT_INFLUENCE], ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def sfx_write_sidecar(sound: Path, key: str) -> None:
+    try:
+        sound.with_name(sound.name + _SFX_SIDECAR_SUFFIX).write_text(json.dumps({"key": key}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def sfx_find_cached(directory: Path, key: str) -> Path | None:
+    """Уже оплаченный файл SFX с тем же ключом запроса (метка рядом с файлом), либо None."""
+    try:
+        for side in directory.glob("*" + _SFX_SIDECAR_SUFFIX):
+            try:
+                if json.loads(side.read_text(encoding="utf-8")).get("key") != key:
+                    continue
+            except (OSError, ValueError, AttributeError):
+                continue
+            sound = side.with_name(side.name[: -len(_SFX_SIDECAR_SUFFIX)])
+            if sound.is_file() and sound.stat().st_size > 0:
+                return sound
+    except OSError:
+        pass
+    return None
+
+
 def elevenlabs_api_configured() -> bool:
     """Проверяет наличие API-ключа ElevenLabs в настройках или переменных окружения."""
     key = getattr(settings, "elevenlabs_api_key", None) or os.environ.get("ELEVENLABS_API_KEY", "")

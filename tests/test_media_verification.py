@@ -206,6 +206,18 @@ class OtherMediaNodes(Env):
         proof = await self.proof("hero")
         self.assertEqual((proof["status"], proof["reason"]), ("passed", "hero_skipped_empty"))
 
+    async def test_no_hero_mode_and_zero_count_are_legal_skips(self):
+        """N-13: шаг пропускается и по режиму «без героя», и по hero_count=0, даже без флага в meta."""
+        for field, value in (("hero_mode", "no_hero"), ("hero_count", 0)):
+            async with self.sessions() as s:
+                project = await s.get(Project, PID)
+                project.meta = {}
+                project.hero_mode, project.hero_count = "auto", None
+                setattr(project, field, value)
+                await s.commit()
+            proof = await self.proof("hero")
+            self.assertEqual((proof["status"], proof["reason"]), ("passed", "hero_skipped_empty"), field)
+
     async def test_hero_images(self):
         self.assertEqual((await self.proof("hero"))["reason"], "no_hero_artifact")
         self.assertNotEqual((await self.proof("hero"))["status"], "passed")

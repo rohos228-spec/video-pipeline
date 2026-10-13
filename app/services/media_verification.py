@@ -237,8 +237,10 @@ async def _heroes(reader, project, ledger, budget) -> tuple[list[dict], dict]:
             break
     if not items:
         meta = project.meta if isinstance(getattr(project, "meta", None), dict) else {}
-        if meta.get("hero_skipped_empty"):
-            # Шаг героя законно пропущен (в листе нет описания героя): нет файла - не сбой (F10-D3).
+        # Шаг героя законно пропущен: флаг шага, режим «без героя» или нулевое число героев - ровно те
+        # условия, по которым сам шаг generate_hero ничего не создаёт. Нет файла - не сбой (F10-D3, N-13).
+        if (meta.get("hero_skipped_empty") or getattr(project, "hero_mode", None) == "no_hero"
+                or getattr(project, "hero_count", None) == 0):
             return items, {"artifacts": len(arts), "skipped": "hero_skipped_empty"}
         items.append({"key": "hero", "status": "failed", "reason": "no_hero_artifact", "path": None})
     return items, {"artifacts": len(arts)}
