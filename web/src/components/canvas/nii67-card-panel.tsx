@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Nii67FrameList, type Nii67Frame } from "./nii67-frame-menu";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
@@ -42,10 +43,9 @@ import {
   moveBlock,
   reorderBlock,
   updateBlock,
-  updateDoor,
   updateFinale,
-  updateGg,
-  updateIntro,
+  updateIntroVideo,
+  updatePortal,
 } from "@/lib/nii67";
 import { cn } from "@/lib/utils";
 
@@ -222,6 +222,40 @@ function ImageSlot({
         className={fieldClass}
       />
     </div>
+  );
+}
+
+function UploadSlot({
+  label,
+  accept,
+  testId,
+  fileName,
+  busy,
+  onFile,
+}: {
+  label: string;
+  accept: string;
+  testId: string;
+  fileName: string;
+  busy: boolean;
+  onFile: (file: File) => void;
+}) {
+  return (
+    <label className="block rounded-lg border border-dashed border-teal-400/30 bg-black/25 p-2 text-[11px] text-zinc-400">
+      <span className="mb-1 block font-medium uppercase tracking-wide text-teal-200/80">{label}</span>
+      <span className="mb-1 block truncate">{busy ? "Загрузка…" : fileName || "Файл не выбран"}</span>
+      <input
+        data-testid={testId}
+        type="file"
+        accept={accept}
+        disabled={busy}
+        className="block w-full text-[11px] text-zinc-300 file:mr-2 file:rounded-md file:border-0 file:bg-teal-500/20 file:px-2 file:py-1 file:text-[11px] file:text-teal-100"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) onFile(file);
+        }}
+      />
+    </label>
   );
 }
 
@@ -472,33 +506,16 @@ function BlockCard({
             </div>
           ) : null}
           {block.kind === "exit" ? (
-            <>
-              <Field
-                label="Действие выхода"
-                value={block.exit_action}
-                rows={2}
-                testId={`nii67-exit-action-${block.id}`}
-                placeholder="Герой проходит, дверь закрывается"
-                onChange={(exit_action) => onPatch({ exit_action })}
-              />
-              <Field
-                label="Анимация выхода"
-                value={block.exit_animation}
-                rows={2}
-                testId={`nii67-exit-animation-${block.id}`}
-                placeholder="Створки сходятся, свет гаснет"
-                onChange={(exit_animation) => onPatch({ exit_animation })}
-              />
-              <Field
-                label="Комната после перехода"
-                value={block.room_after}
-                rows={2}
-                testId={`nii67-room-after-${block.id}`}
-                placeholder="Что видно в комнате после выхода"
-                onChange={(room_after) => onPatch({ room_after })}
-              />
-            </>
-          ) : null}
+            <Field
+              label="Что произошло с героем (по описанию генерируется иллюстрация)"
+              value={block.text}
+              rows={3}
+              testId={`nii67-illustration-${block.id}`}
+              maxLength={4000}
+              placeholder="Итог этой двери для героя"
+              onChange={(text) => onPatch({ text })}
+            />
+          ) : (
           <Field
             label={
               block.kind === "gg_action"
@@ -519,6 +536,7 @@ function BlockCard({
             }
             onChange={(text) => onPatch({ text })}
           />
+          )}
           {block.kind === "gg_action" ? (
             <p className="text-[11px] text-zinc-500">
               На весь ролик один главный герой. Здесь только его действие в этой двери.
@@ -619,6 +637,7 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   const [dirty, setDirty] = useState(false);
   const [drag, setDrag] = useState<{ doorId: string; index: number } | null>(null);
   const [previewText, setPreviewText] = useState<string | null>(null);
+  const [frames, setFrames] = useState<Nii67Frame[]>([]);
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const dirtyRef = useRef(false);
   const cardRef = useRef(card);
@@ -644,6 +663,7 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
   useEffect(() => {
     if (!cardQ.data || dirtyRef.current) return;
     setCard(cardFromUnknown(cardQ.data.card));
+    if (Array.isArray(cardQ.data.frames)) setFrames(cardQ.data.frames);
   }, [cardQ.data]);
 
   useEffect(
@@ -658,6 +678,24 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
     dirtyRef.current = true;
     setDirty(true);
     setCard((prev) => mutator(prev));
+  }
+
+  const [uploading, setUploading] = useState<string | null>(null);
+  async function upload(
+    slot: "intro_video" | "portal_image" | "portal_video",
+    file: File,
+    applyName: (name: string) => void,
+  ) {
+    setUploading(slot);
+    try {
+      const res = await api.uploadNii67(projectId, slot, file);
+      applyName(res.name);
+      toast.success("Файл сохранён в проект");
+    } catch (error) {
+      toast.error(errorMessageFromUnknown(error));
+    } finally {
+      setUploading(null);
+    }
   }
 
   function rememberFile(key: string, file: File, applyName: (name: string) => void) {
@@ -693,6 +731,15 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
     onError: (error) => toast.error(errorMessageFromUnknown(error)),
   });
 
+  const saveFrames = useMutation({
+    mutationFn: (list: Nii67Frame[]) => api.putNii67Frames(projectId, list),
+    onSuccess: (res) => {
+      setFrames(res.frames);
+      toast.success("Кадры сохранены");
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Не удалось сохранить кадры"),
+  });
+
   const generate = useMutation({
     mutationFn: async () => {
       const gen = editGen.current;
@@ -706,6 +753,7 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
         setCard(cardFromUnknown(res.card));
       }
       setPreviewText(res.general_plan);
+      if (Array.isArray(res.frames)) setFrames(res.frames);
       toast.success("Сценарий записан в общий план");
       void qc.invalidateQueries({ queryKey: ["nii67", projectId] });
       void qc.invalidateQueries({ queryKey: ["project", projectId] });
@@ -823,88 +871,89 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
               </section>
             ) : null}
 
-            <section className="mb-3 rounded-2xl border border-white/10 bg-[#0c161e] p-3">
+            <section data-testid="nii67-intro-block" className="mb-3 rounded-2xl border border-white/10 bg-[#0c161e] p-3">
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-teal-200/90">
                 Интро
               </div>
-              <Field
-                label="Вступление и вход в историю"
-                value={card.intro.text}
-                rows={3}
-                testId="nii67-intro"
-                placeholder="С чего начинается ролик, до выбора двери"
-                onChange={(text) => change((current) => updateIntro(current, text))}
+              <UploadSlot
+                label="Исходное видео"
+                accept="video/*"
+                testId="nii67-intro-video"
+                fileName={card.intro.video_name}
+                busy={uploading === "intro_video"}
+                onFile={(file) =>
+                  upload("intro_video", file, (name) => change((current) => updateIntroVideo(current, name)))
+                }
               />
-              <div className="mt-2 grid gap-2 md:grid-cols-2">
-                <ShortField
-                  label="Главный герой — один на весь ролик"
-                  value={card.gg.name}
-                  testId="nii67-gg-name"
-                  placeholder="Имя ГГ"
-                  onChange={(name) => change((current) => updateGg(current, { name }))}
-                />
-                <Field
-                  label="Черта ГГ"
-                  value={card.gg.note}
-                  rows={2}
-                  testId="nii67-gg-note"
-                  placeholder="Роль и одна яркая черта"
-                  onChange={(note) => change((current) => updateGg(current, { note }))}
-                />
-              </div>
             </section>
 
-            <section className="mb-3 rounded-2xl border border-white/10 bg-[#0c161e] p-3">
-              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-teal-200/90">
-                Тематические двери
+            <section data-testid="nii67-portal-block" className="mb-3 rounded-2xl border border-white/10 bg-[#0c161e] p-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-teal-200/90">
+                Двери
               </div>
-              <p className="mb-2 text-[12px] text-zinc-400">
-                Обзор обеих дверей. Выберите тематику для каждого пути.
-              </p>
-              <div className="grid gap-3 md:grid-cols-2">
-                {card.doors.map((door) => (
-                  <div key={door.id} className="rounded-xl border border-white/10 bg-black/25 p-2">
-                    <div className="mb-2 text-[12px] font-semibold text-zinc-100">{door.title}</div>
-                    <ShortField
-                      label="Тема"
-                      value={door.theme}
-                      testId={`nii67-theme-${door.id}`}
-                      placeholder={
-                        door.id === "door1" ? "Фэнтези / Древний лес" : "Киберпанк / Заброшенная станция"
-                      }
-                      onChange={(theme) => change((current) => updateDoor(current, door.id, { theme }))}
-                    />
-                    <div className="mt-2">
-                      <Field
-                        label="Заметка к теме"
-                        value={door.theme_note}
-                        rows={2}
-                        testId={`nii67-theme-note-${door.id}`}
-                        placeholder="Коротко, чем этот путь отличается"
-                        onChange={(theme_note) =>
-                          change((current) => updateDoor(current, door.id, { theme_note }))
-                        }
-                      />
-                    </div>
-                    <div className="mt-2">
-                      <ImageSlot
-                        testId={`nii67-door-image-${door.id}`}
-                        prompt={door.image_prompt}
-                        fileName={door.image_name}
-                        previewUrl={previews[`door:${door.id}`]}
-                        placeholder="Образ двери: что видно на картинке"
-                        onPrompt={(image_prompt) =>
-                          change((current) => updateDoor(current, door.id, { image_prompt }))
-                        }
-                        onFile={(file) =>
-                          rememberFile(`door:${door.id}`, file, (image_name) =>
-                            change((current) => updateDoor(current, door.id, { image_name })),
-                          )
-                        }
-                      />
-                    </div>
-                  </div>
-                ))}
+              <div className="mb-2 grid gap-2 md:grid-cols-2">
+                <UploadSlot
+                  label="Фото дверей (одно на обе)"
+                  accept="image/*"
+                  testId="nii67-portal-image"
+                  fileName={card.portal.image_name}
+                  busy={uploading === "portal_image"}
+                  onFile={(file) =>
+                    upload("portal_image", file, (image_name) =>
+                      change((current) => updatePortal(current, { image_name })),
+                    )
+                  }
+                />
+                <UploadSlot
+                  label="Видео трансформации (одно на обе)"
+                  accept="video/*"
+                  testId="nii67-portal-video"
+                  fileName={card.portal.video_name}
+                  busy={uploading === "portal_video"}
+                  onFile={(file) =>
+                    upload("portal_video", file, (video_name) =>
+                      change((current) => updatePortal(current, { video_name })),
+                    )
+                  }
+                />
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                <div className="flex flex-col gap-2">
+                  <Field
+                    label="Дизайн левой двери"
+                    value={card.portal.left_design}
+                    rows={2}
+                    testId="nii67-portal-left-design"
+                    placeholder="Как выглядит левая дверь"
+                    onChange={(left_design) => change((current) => updatePortal(current, { left_design }))}
+                  />
+                  <Field
+                    label="Анимация трансформации левой"
+                    value={card.portal.left_anim}
+                    rows={2}
+                    testId="nii67-portal-left-anim"
+                    placeholder="Как левая дверь превращается"
+                    onChange={(left_anim) => change((current) => updatePortal(current, { left_anim }))}
+                  />
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Field
+                    label="Дизайн правой двери"
+                    value={card.portal.right_design}
+                    rows={2}
+                    testId="nii67-portal-right-design"
+                    placeholder="Как выглядит правая дверь"
+                    onChange={(right_design) => change((current) => updatePortal(current, { right_design }))}
+                  />
+                  <Field
+                    label="Анимация трансформации правой"
+                    value={card.portal.right_anim}
+                    rows={2}
+                    testId="nii67-portal-right-anim"
+                    placeholder="Как правая дверь превращается"
+                    onChange={(right_anim) => change((current) => updatePortal(current, { right_anim }))}
+                  />
+                </div>
               </div>
             </section>
 
@@ -960,6 +1009,24 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
             </section>
           </div>
 
+          {frames.length > 0 ? (
+            <section data-testid="nii67-frames" className="max-h-[45vh] shrink-0 overflow-y-auto border-t border-white/10 px-4 py-3">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold">Кадры ({frames.length}) · 60 с · 9:16</h3>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  data-testid="nii67-frames-save"
+                  disabled={saveFrames.isPending}
+                  onClick={() => saveFrames.mutate(frames)}
+                >
+                  Сохранить кадры
+                </Button>
+              </div>
+              <Nii67FrameList frames={frames} onChange={setFrames} />
+            </section>
+          ) : null}
           <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-white/10 px-4 py-3">
             <p className="max-w-md text-[11px] text-zinc-500">
               Блоки — последовательные элементы, вставляются между любыми другими.

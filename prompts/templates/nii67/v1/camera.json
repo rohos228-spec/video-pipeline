@@ -1,0 +1,3 @@
+{"version":"1","cameras":["far","mid","close","side","POV"],
+"feels":["handheld_soft","handheld_action","handheld_intimate"],
+"rules":["всегда лёгкая ручная камера, только микродвижения, без 360","close и action = сильнее shake","intro/финал/far = handheld_soft","нельзя два close подряд"]}

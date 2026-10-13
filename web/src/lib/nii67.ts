@@ -28,7 +28,7 @@ export const KIND_LABEL: Record<BlockKind, string> = {
   world_character: "Появление персонажа мира",
   character_action: "Действие персонажа",
   gg_action: "Действие ГГ",
-  exit: "Выход",
+  exit: "Иллюстрация: что произошло",
   custom: "Свой блок",
 };
 
@@ -97,9 +97,18 @@ export interface Nii67Door {
   blocks: Nii67Block[];
 }
 
+export const PORTAL_FIELDS = ["image_name", "video_name", "left_design", "right_design", "left_anim", "right_anim"] as const;
+export type PortalField = (typeof PORTAL_FIELDS)[number];
+export type Nii67Portal = Record<PortalField, string>;
+
+export function defaultPortal(): Nii67Portal {
+  return { image_name: "", video_name: "", left_design: "", right_design: "", left_anim: "", right_anim: "" };
+}
+
 export interface Nii67Card {
   version: 1;
-  intro: { text: string };
+  intro: { text: string; video_name: string };
+  portal: Nii67Portal;
   gg: { name: string; note: string };
   doors: Nii67Door[];
   finale: { standard: string; notes: string };
@@ -179,7 +188,8 @@ function defaultDoor(id: "door1" | "door2"): Nii67Door {
 export function defaultCard(): Nii67Card {
   return {
     version: 1,
-    intro: { text: "" },
+    intro: { text: "", video_name: "" },
+    portal: defaultPortal(),
     gg: { name: "", note: "" },
     doors: [defaultDoor("door1"), defaultDoor("door2")],
     finale: { standard: "", notes: "" },
@@ -260,13 +270,25 @@ export function cardFromUnknown(raw: unknown): Nii67Card {
       blocks,
     });
   }
-  const intro = src.intro && typeof src.intro === "object" ? src.intro : { text: "" };
+  const intro: { text?: unknown; video_name?: unknown } =
+    src.intro && typeof src.intro === "object" ? src.intro : {};
+  const portalSrc: Record<string, unknown> =
+    src.portal && typeof src.portal === "object" ? (src.portal as Record<string, unknown>) : {};
+  const portal = defaultPortal();
+  for (const key of PORTAL_FIELDS) {
+    const raw = portalSrc[key];
+    portal[key] = clip(typeof raw === "string" ? raw : "", key.endsWith("_name") ? SHORT_LIMIT : TEXT_LIMIT);
+  }
   const gg = src.gg && typeof src.gg === "object" ? src.gg : { name: "", note: "" };
   const finale = src.finale && typeof src.finale === "object" ? src.finale : { standard: "", notes: "" };
   const last = src.last_save === "draft" || src.last_save === "save" ? src.last_save : "";
   return {
     version: 1,
-    intro: { text: clip(typeof intro.text === "string" ? intro.text : "", TEXT_LIMIT) },
+    intro: {
+      text: clip(typeof intro.text === "string" ? intro.text : "", TEXT_LIMIT),
+      video_name: clip(typeof intro.video_name === "string" ? intro.video_name : "", SHORT_LIMIT),
+    },
+    portal,
     gg: {
       name: clip(typeof gg.name === "string" ? gg.name : "", SHORT_LIMIT),
       note: clip(typeof gg.note === "string" ? gg.note : "", TEXT_LIMIT),
@@ -389,7 +411,20 @@ export function updateBlock(
 }
 
 export function updateIntro(card: Nii67Card, text: string): Nii67Card {
-  return { ...card, intro: { text: clip(text, TEXT_LIMIT) } };
+  return { ...card, intro: { ...card.intro, text: clip(text, TEXT_LIMIT) } };
+}
+
+export function updateIntroVideo(card: Nii67Card, video_name: string): Nii67Card {
+  return { ...card, intro: { ...card.intro, video_name: clip(video_name, SHORT_LIMIT) } };
+}
+
+export function updatePortal(card: Nii67Card, patch: Partial<Nii67Portal>): Nii67Card {
+  const portal = { ...card.portal };
+  for (const key of PORTAL_FIELDS) {
+    const value = patch[key];
+    if (typeof value === "string") portal[key] = clip(value, key.endsWith("_name") ? SHORT_LIMIT : TEXT_LIMIT);
+  }
+  return { ...card, portal };
 }
 
 export function updateGg(card: Nii67Card, patch: Partial<Nii67Card["gg"]>): Nii67Card {

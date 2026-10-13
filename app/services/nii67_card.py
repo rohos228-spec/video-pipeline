@@ -37,7 +37,7 @@ KIND_LABEL: dict[str, str] = {
     "world_character": "Появление персонажа мира",
     "character_action": "Действие персонажа",
     "gg_action": "Действие ГГ",
-    "exit": "Выход",
+    "exit": "Иллюстрация: что произошло",
     "custom": "Свой блок",
 }
 KIND_MARK: dict[str, str] = {
@@ -221,10 +221,27 @@ def _normalize_door(door_id: str, raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+PORTAL_FIELDS = ("image_name", "video_name", "left_design", "right_design", "left_anim", "right_anim")
+
+
+def default_portal() -> dict[str, str]:
+    return {key: "" for key in PORTAL_FIELDS}
+
+
+def _normalize_portal(raw: Any) -> dict[str, str]:
+    src = raw if isinstance(raw, dict) else {}
+    out = default_portal()
+    for key in PORTAL_FIELDS:
+        limit = SHORT_LIMIT if key.endswith("_name") else TEXT_LIMIT
+        out[key] = _clip(src.get(key), limit)
+    return out
+
+
 def default_card() -> dict[str, Any]:
     return {
         "version": 1,
-        "intro": {"text": ""},
+        "intro": {"text": "", "video_name": ""},
+        "portal": default_portal(),
         "gg": {"name": "", "note": ""},
         "doors": [_default_door("door1"), _default_door("door2")],
         "finale": {"standard": "", "notes": ""},
@@ -256,7 +273,11 @@ def normalize_card(raw: Any) -> dict[str, Any]:
         last_save = ""
     return {
         "version": 1,
-        "intro": {"text": _clip(intro.get("text"), TEXT_LIMIT)},
+        "intro": {
+            "text": _clip(intro.get("text"), TEXT_LIMIT),
+            "video_name": _clip(intro.get("video_name"), SHORT_LIMIT),
+        },
+        "portal": _normalize_portal(src.get("portal")),
         "gg": {
             "name": _clip(gg.get("name"), SHORT_LIMIT),
             "note": _clip(gg.get("note"), TEXT_LIMIT),
@@ -489,14 +510,10 @@ def _block_body(block: dict[str, Any], gg_name: str) -> str:
         if text:
             lines.append(text)
     elif kind == "exit":
-        if str(block.get("exit_action") or "").strip():
-            lines.append("Выход: " + str(block["exit_action"]).strip())
-        if str(block.get("exit_animation") or "").strip():
-            lines.append("Анимация выхода: " + str(block["exit_animation"]).strip())
-        if str(block.get("room_after") or "").strip():
-            lines.append("Комната после перехода: " + str(block["room_after"]).strip())
-        if text:
-            lines.append(text)
+        what = text or " ".join(
+            str(block.get(k) or "").strip() for k in ("exit_action", "exit_animation", "room_after")
+        ).strip()
+        lines.append("Что произошло с героем (по описанию генерируется иллюстрация): " + (what or "—"))
     elif text:
         lines.append(text)
     return "\n".join(lines)
@@ -506,24 +523,27 @@ def compile_scenario(card: dict[str, Any]) -> str:
     """Собрать текст сценария из карточки. Один ГГ на весь ролик, две двери, общий финал."""
     data = normalize_card(card)
     gg_name = str(data["gg"]["name"] or "").strip()
-    lines: list[str] = ["ИНТРО", str(data["intro"]["text"] or "").strip() or "—", ""]
+    video = str(data["intro"].get("video_name") or "").strip()
+    lines: list[str] = ["ИНТРО", "Исходное видео: " + (video or "не загружено"), ""]
     lines.append("ГЛАВНЫЙ ГЕРОЙ (один на всё видео)")
     lines.append("Имя: " + (gg_name or "без имени"))
     note = str(data["gg"]["note"] or "").strip()
     if note:
         lines.append(note)
     lines.append("")
-    lines.append("ТЕМАТИЧЕСКИЕ ДВЕРИ")
+    portal = data["portal"]
+    lines.append("ДВЕРИ (одно фото, одно видео трансформации)")
+    lines.append("Фото дверей: " + (portal["image_name"] or "не загружено"))
+    lines.append("Видео трансформации: " + (portal["video_name"] or "не загружено"))
+    lines.append("Левая дверь: " + (portal["left_design"] or "—"))
+    lines.append("Анимация левой: " + (portal["left_anim"] or "—"))
+    lines.append("Правая дверь: " + (portal["right_design"] or "—"))
+    lines.append("Анимация правой: " + (portal["right_anim"] or "—"))
+    lines.append("")
     lines.append("Сценарий делится на две параллельные ветви, затем сходится в общий финал.")
     for door in data["doors"]:
         lines.append("")
-        theme = str(door["theme"] or "").strip() or "тема не задана"
         lines.append(f"{door['title']} — {door['branch']}")
-        lines.append(f"Тема: {theme}")
-        if str(door["theme_note"] or "").strip():
-            lines.append(str(door["theme_note"]).strip())
-        if str(door["image_prompt"] or "").strip():
-            lines.append("Образ двери: " + str(door["image_prompt"]).strip())
         for index, block in enumerate(door["blocks"], start=1):
             lines.append("")
             lines.append(f"{index}. {block_heading(block)}")

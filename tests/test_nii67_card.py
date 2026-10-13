@@ -180,8 +180,8 @@ def test_compile_one_gg_optional_world_character_and_shared_finale() -> None:
     assert "Лея" in text
     assert "одна на весь ролик" in text
     assert "Door 1" in text and "Door 2" in text
-    assert "Фэнтези / Древний лес" in text
-    assert "Киберпанк / Заброшенная станция" in text
+    assert "ТЕМАТИЧЕСКИЕ ДВЕРИ" not in text
+    assert "Фото дверей" in text and "Видео трансформации" in text
     assert "Шелест листьев." in text
     assert "Персонаж мира не используется." in text
     assert "дверь закрывается" in text
@@ -238,3 +238,20 @@ def test_prompt_file_describes_parallel_doors_and_one_gg() -> None:
     assert "двер" in lowered
     assert "один" in lowered
     assert "финал" in lowered
+
+
+def test_portal_and_intro_video_normalized() -> None:
+    from app.services.nii67_card import normalize_card
+
+    card = normalize_card(
+        {
+            "intro": {"video_name": "src.mp4"},
+            "portal": {"image_name": "doors.png", "left_design": "дубовая", "junk": "x"},
+        }
+    )
+    assert card["intro"]["video_name"] == "src.mp4"
+    assert card["portal"]["image_name"] == "doors.png"
+    assert card["portal"]["left_design"] == "дубовая"
+    assert "junk" not in card["portal"]
+    text = compile_scenario(card)
+    assert "Исходное видео: src.mp4" in text and "Левая дверь: дубовая" in text

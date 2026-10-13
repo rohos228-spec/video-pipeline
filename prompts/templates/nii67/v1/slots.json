@@ -1,0 +1,35 @@
+{
+ "version": "1",
+ "format": {
+  "duration_s": 60,
+  "aspect": "9:16"
+ },
+ "kind_to_interaction": {
+  "world_frame": "entry",
+  "enter_action": "entry",
+  "world_character": "creature_reaction",
+  "character_action": "punchline",
+  "gg_action": "gg_action",
+  "exit": "exit",
+  "custom": "gift",
+  "exit_action": "exit",
+  "exit_animation": "escape",
+  "room_after": "exit"
+ },
+ "kind_to_camera": {
+  "world_frame": "far",
+  "enter_action": "mid",
+  "world_character": "close",
+  "character_action": "mid",
+  "gg_action": "side",
+  "exit": "far",
+  "custom": "mid",
+  "exit_action": "mid",
+  "exit_animation": "POV",
+  "room_after": "far"
+ },
+ "creature_kinds": [
+  "world_character",
+  "character_action"
+ ]
+}
