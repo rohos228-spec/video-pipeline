@@ -30,8 +30,8 @@ import { ItemsConfigPanel } from "./items-config-panel";
 import { AssembleMontageTrigger } from "./assemble-montage-board";
 import { ShotMenuPanel, ShotMenuTrigger } from "./shot-menu-panel";
 import { GptOperatorCardPanel } from "./gpt-operator-card-panel";
-import { NodeModelPicker } from "./node-model-picker";
 import { Nii67CardPanel } from "./nii67-card-panel";
+import { NodeModelPicker } from "./node-model-picker";
 import { projectUsesNii67Script } from "@/lib/nii67";
 
 import {

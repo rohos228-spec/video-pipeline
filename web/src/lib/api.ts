@@ -4,6 +4,8 @@
  * сам отдаёт фронт + API из одного origin.
  */
 
+import type { Nii67Card } from "./nii67";
+import type { Nii67Frame } from "@/components/canvas/nii67-frame-menu";
 import type {
   ArtifactDTO,
   ExcelHeroCharacter,
@@ -876,6 +878,37 @@ export const api = {
       { method: "PATCH", body: JSON.stringify(body) },
       90_000,
     ),
+  getNii67: (id: number) => http<{ card: Nii67Card; frames?: Nii67Frame[] }>(`/api/projects/${id}/nii67`),
+  putNii67: (id: number, card: Nii67Card, mode: "draft" | "save") =>
+    http<{ card: Nii67Card }>(`/api/projects/${id}/nii67?mode=${mode}`, {
+      method: "PUT",
+      body: JSON.stringify({ card }),
+    }),
+  previewNii67: (id: number, card: Nii67Card) =>
+    http<{ text: string }>(`/api/projects/${id}/nii67/preview`, {
+      method: "POST",
+      body: JSON.stringify({ card }),
+    }),
+  generateNii67: (id: number, card: Nii67Card) =>
+    http<{ card: Nii67Card; general_plan: string; frames?: Nii67Frame[] }>(`/api/projects/${id}/nii67/generate`, {
+      method: "POST",
+      body: JSON.stringify({ card }),
+    }),
+  putNii67Frames: (id: number, frames: Nii67Frame[]) =>
+    http<{ frames: Nii67Frame[] }>(`/api/projects/${id}/nii67/frames`, {
+      method: "PUT",
+      body: JSON.stringify({ frames }),
+    }),
+  uploadNii67: (id: number, slot: "intro_video" | "portal_image" | "portal_video", file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return http<{ slot: string; name: string; path: string; size: number }>(
+      `/api/projects/${id}/nii67/upload?slot=${slot}`,
+      { method: "POST", body: form },
+    );
+  },
+  resetNii67: (id: number) =>
+    http<{ card: Nii67Card }>(`/api/projects/${id}/nii67/reset`, { method: "POST" }),
   deleteProject: (id: number) =>
     http<void>(`/api/projects/${id}`, { method: "DELETE" }),
   createChildProject: (parentId: number) =>
