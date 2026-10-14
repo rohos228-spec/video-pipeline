@@ -145,3 +145,52 @@ def test_remember_pause_origin_keeps_running_step():
     p.status = ProjectStatus.paused
     restart_chain.remember_pause_origin(p)          # уже на паузе: источник не затирается
     assert p.meta["paused_from_status"] == "plan_ready"
+
+
+def test_animation_prompt_placeholder_counts_as_missing():
+    """Живой F10 14.10: модель вернула «нет исходных данных для заполнения» для кадров 7-8; повтор шага не просил их заново."""
+    from app.models import Frame
+    from app.services.animation_prompt_gpt import has_animation_prompt_for_frame
+
+    fr = Frame(project_id=1, number=7, animation_prompt="нет исходных данных для заполнения")
+    assert has_animation_prompt_for_frame(None, fr) is False
+    fr.animation_prompt = "Камера медленно приближается к двери, свет меняется на тёплый, дверь приоткрывается."
+    assert has_animation_prompt_for_frame(None, fr) is True
+
+
+def test_sfx_disabled_pass_through_status_is_confirmed(monkeypatch):
+    """Живой F10 14.10: при SFX_ENABLED=false sfx_plan_ready откатывался в music_ready и шаг крутился бесконечно."""
+    from app.models import Project, ProjectStatus
+    from app.services.step_data_guard import ready_status_confirmed_by_data
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "sfx_enabled", False)
+    for st in (ProjectStatus.sfx_plan_ready, ProjectStatus.sfx_ready):
+        p = Project(id=1, slug="t", topic="t", meta={}, status=st)
+        assert asyncio.run(ready_status_confirmed_by_data(None, p, st)) is True
+
+
+def test_plan_sheet_is_created_for_db_first_workbook(tmp_path):
+    """Живой F10 14.10: в книге проекта нет листа «план», таймкоды R15 некуда писать, сборка вставала."""
+    from openpyxl import Workbook, load_workbook
+
+    from app.storage.plan_sheet_v8 import (
+        ensure_plan_sheet, read_plan_timestamps_cells, write_plan_timestamps)
+
+    wb = Workbook()
+    wb.active.title = "Кадры"
+    wb.save(tmp_path / "project.xlsx")
+    p = SimpleNamespace(id=1, data_dir=tmp_path)
+    cells = [(1, "Первая фраза."), (2, "Вторая фраза.")]
+    assert ensure_plan_sheet(p, cells) is True
+    assert ensure_plan_sheet(p, cells) is False                      # повтор ничего не меняет
+    assert "план" in load_workbook(tmp_path / "project.xlsx").sheetnames
+    assert write_plan_timestamps(p, [(1, "0:00.00-0:03.00"), (2, "0:03.00-0:06.00")]) == 2
+    got, _row = read_plan_timestamps_cells(p, [1, 2])
+    assert [t for _n, t in got] == ["0:00.00-0:03.00", "0:03.00-0:06.00"]
+
+
+def test_create_project_keeps_aspect_and_generators():
+    """Живой F10 14.10: POST /api/projects принимал aspect_ratio и генераторы, но не сохранял их."""
+    src = open("app/web/routers/projects.py", encoding="utf-8").read()
+    assert 'for _field in ("aspect_ratio", "image_resolution", "video_resolution", "image_generator", "video_generator")' in src

@@ -386,7 +386,7 @@ def ledger_spend(rows: list[dict]) -> dict:
         usd = float(r.get("usd") or 0.0)
         note = str(r.get("note") or "").lower()
         out["paid_rows"] += 1
-        if r.get("kind") == "actual" and usd == 0.0 and any(m in note for m in ("cost_unknown", "uncalibrated", "basis=estimate")):
+        if r.get("kind") in ("actual", "estimated") and usd == 0.0 and any(m in note for m in ("cost_unknown", "uncalibrated", "basis=estimate")):
             usd = UNKNOWN_ROW_USD[cls]
             out["unknown_rows"] += 1
         out[f"{cls}_usd"] = round(out[f"{cls}_usd"] + usd, 6)
@@ -565,6 +565,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--frames", type=int, default=1)
     ap.add_argument("--owner-approved-media-usd", type=float, default=0.0, help=f"слово владельца: потолок медиа выше $1, не больше ${OWNER_MEDIA_CEILING_LIMIT}")
     ap.add_argument("--owner-approved-frames", type=int, default=0, help=f"слово владельца: кадров больше 5, не больше {OWNER_FRAMES_LIMIT}")
+    ap.add_argument("--adopt", action="store_true", help="продолжить проект в существующей work-dir прошлого живого прогона (расход журнала копится, потолки общие)")
+    ap.add_argument("--adopt-step", default="anim_pr", help="шаг, который оператор нажимает для продолжения (с --adopt)")
     ap.add_argument("--no-human-text-gate", action="store_true", help="не одобрять план/сценарий за человека (проверять только встроенный Вердикт)")
     ap.add_argument("--with-music", action="store_true", help="настоящая музыка Kie Suno (≈ $0.6, съедает потолок медиа)")
     ap.add_argument("--with-sfx", action="store_true", help="настоящие звуки ElevenLabs (по умолчанию SFX_ENABLED=false)")
@@ -689,7 +691,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
                 return EXIT_ARGS
         print("ПРЕДПОЛЁТ ПРОЙДЕН: ключи на месте, оценка в пределах потолков. Ничего не отправлялось и не оплачивалось.")
         return EXIT_PASS
-    work, why = fc.preflight(args)
+    if args.adopt:
+        work = Path(args.work_dir).resolve()
+        why = "" if (work / "data" / "state.db").is_file() and not loc.inside_repo(work) else "--adopt: нужна work-dir прошлого прогона вне репозитория"
+        if why:
+            work = None
+    else:
+        work, why = fc.preflight(args)
     if work is None:
         print("ОТКАЗ до запуска:", why, file=sys.stderr)
         return EXIT_ARGS
@@ -697,7 +705,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     caps = wire_caps(args)
     ceilings = (float(args.max_text_usd), float(args.max_media_usd))
     work.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(ROOT / "prompts", work / "prompts")
+    if not (work / "prompts").exists():
+        shutil.copytree(ROOT / "prompts", work / "prompts")
     cfg = {"work": str(work), "port": args.port, "fake_port": 0, "app_cap_usd": float(args.app_cap_usd), "seams": list(fc.SEAMS),
            "text_provider": args.text_provider, "image_provider": args.image_provider, "video_provider": args.video_provider,
            "with_sfx": bool(args.with_sfx), "wire_caps": caps, "allowed_post_hosts": allowed_post_hosts(live_env)}
@@ -742,7 +751,14 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
         db = loc.Db(work / "data" / "state.db")
         chain = fc.Chain(args, work, api, db, R, None)
         chain.create_extra = video_extra(args)
-        if chain.create():
+        if args.adopt:
+            row = db.q("SELECT id, slug FROM projects ORDER BY id DESC LIMIT 1")
+            chain.pid, chain.slug = int(row[0]["id"]), str(row[0]["slug"])
+            def _adopt_start() -> bool:
+                chain.api.req("PATCH", f"/api/projects/{chain.pid}", json_body={"auto_mode": True})   # прошлый прогон мог выключить
+                return chain.api.post(f"/api/projects/{chain.pid}/steps/{args.adopt_step}/run")[0] == 200
+            chain.start = _adopt_start
+        if args.adopt or chain.create():
             if fc.level_index(args.until) >= fc.level_index("D") and not args.with_music:
                 music_dir = work / "data" / "videos" / chain.slug / "music"
                 music_dir.mkdir(parents=True, exist_ok=True)

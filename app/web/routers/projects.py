@@ -303,6 +303,17 @@ async def create_project(
         auto_mode=auto_mode,
         meta={},
     )
+    # Поля схемы создания не должны теряться молча (живой F10 14.10.2026: aspect_ratio 9_16 не сохранился, картинки пошли 16:9).
+    from app.generation_options import IMAGE_GENERATORS_BY_ID, VIDEO_GENERATORS_BY_ID
+
+    if body.image_generator and body.image_generator not in IMAGE_GENERATORS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор изображений: {body.image_generator}")
+    if body.video_generator and body.video_generator not in VIDEO_GENERATORS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор видео: {body.video_generator}")
+    for _field in ("aspect_ratio", "image_resolution", "video_resolution", "image_generator", "video_generator"):
+        _val = getattr(body, _field, None)
+        if _val:
+            setattr(p, _field, _val)
     session.add(p)
     await session.flush()
     if auto_mode:
