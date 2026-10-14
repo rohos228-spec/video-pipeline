@@ -94,7 +94,8 @@ class RealStepStand:
             await session.commit()
 
     async def step_database_frame(self, number=1):
-        async with self.ledger() as session:
+        # D2: the step writes frame state into the store it runs in (the worker's session), not the master ledger
+        async with self.business() as session:
             return await session.scalar(select(Frame).where(Frame.project_id == base.PID, Frame.number == number))
 
     async def worker(self, *, start=True):

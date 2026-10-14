@@ -46,7 +46,11 @@ class Boundary(fixtures.DurableActions):
             self.assertEqual(p.status,ProjectStatus.plan_ready if managed else ProjectStatus.scripting)
             self.assertEqual(node.attempts,0) # Native worker increments attempts, not prepare.
             model.assert_not_awaited()
-        Path('/results/planner-'+('on' if managed else 'off')+'.json').write_text(json.dumps(result,indent=2))
+        try:  # отчёт-артефакт контейнерного прогона; на обычной машине каталога может не быть
+            out = Path('/results'); out.mkdir(parents=True, exist_ok=True)
+            (out/('planner-'+('on' if managed else 'off')+'.json')).write_text(json.dumps(result,indent=2))
+        except OSError:
+            pass
     async def test_native_auto_advance_off_really_starts_next_node(self):await self.check_boundary(False)
     async def test_native_auto_advance_managed_blocks_before_dispatch(self):await self.check_boundary(True)
 

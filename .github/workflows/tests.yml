@@ -99,6 +99,11 @@ jobs:
           mkdir -p /test-source
           cp scripts/diagnostics/gateway.py /test-source/gateway.py
           cmp scripts/diagnostics/gateway.py /test-source/gateway.py
+          # test_decision_tool_cycle_gateway_ack ждёт исходники пилота в /observe-source
+          mkdir -p /observe-source/scripts /observe-source/config
+          cp -r scripts/diagnostics /observe-source/scripts/diagnostics
+          cp scripts/diagnostics/gateway.py /observe-source/gateway.py
+          cp config/decision-tool-cycle.example.json /observe-source/config/
       - name: Run docker-only tests
         run: >
           python -m pytest -q -p no:cacheprovider -p no:warnings

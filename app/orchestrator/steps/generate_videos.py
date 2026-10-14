@@ -268,6 +268,7 @@ async def _claim_shot1_video_batch(
     project_id: int,
     *,
     limit: int,
+    exclude_numbers: frozenset[int] = frozenset(),
 ) -> list[Frame]:
     if limit < 1:
         return []
@@ -286,6 +287,9 @@ async def _claim_shot1_video_batch(
     claimed: list[Frame] = []
     dirty = False
     for fr in frames:
+        if fr.number in exclude_numbers:
+            # сбой в этом запуске: повтор только новой попыткой узла (со счётчиком), не циклом внутри запуска
+            continue
         attrs = dict(fr.attrs or {})
         if attrs.get(VIDEO_INFLIGHT_ATTR):
             continue
@@ -329,6 +333,7 @@ async def _claim_shot2_video_batch(
     scenes_dir: Path,
     *,
     limit: int,
+    exclude_numbers: frozenset[int] = frozenset(),
 ) -> list[tuple[Frame, str, Path]]:
     if limit < 1:
         return []
@@ -347,6 +352,8 @@ async def _claim_shot2_video_batch(
 
     claimed: list[tuple[Frame, str, Path]] = []
     for fr in frames:
+        if fr.number in exclude_numbers:
+            continue
         attrs = dict(fr.attrs or {})
         if str(attrs.get(SHOT2_STATUS_ATTR) or "") == "skipped":
             continue
@@ -954,7 +961,12 @@ async def _run_inner(
                 while True:
                     raise_if_cancelled(project.id)
                     batch = await _claim_shot1_video_batch(
-                        fs, project.id, limit=streams
+                        fs,
+                        project.id,
+                        limit=streams,
+                        exclude_numbers=frozenset(
+                            n for (sh, n) in failed_shots if sh == 1
+                        ),
                     )
                     if not batch:
                         break
@@ -1041,6 +1053,9 @@ async def _run_inner(
                         out_dir,
                         scenes_dir,
                         limit=streams,
+                        exclude_numbers=frozenset(
+                            n for (sh, n) in failed_shots if sh == 2
+                        ),
                     )
                     if not batch2:
                         break
