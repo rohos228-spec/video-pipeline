@@ -403,7 +403,7 @@ def test_seam_targets_exist_in_production(mod):
     assert advance_runner.advance_project is pipeline.advance_project
     for name in ("project_db_session_scope", "pull_master_runtime_into_project", "push_runtime_to_master"):
         assert callable(getattr(pdb, name))
-    assert mod.SEAMS == ("auto_on_project_db", "store_mirror", "hitl_to_master")
+    assert mod.SEAMS == ("auto_on_project_db",)
     cfg = mod.build_cfg(Path("w"), 1, 2, 3.0)
     assert cfg["seams"] == list(mod.SEAMS)
     assert mod.build_cfg(Path("w"), 1, 2, 3.0, seams=[])["seams"] == []
@@ -416,8 +416,6 @@ def test_findings_point_at_lines_that_still_say_that(mod):
         "F10-D1": [("app/main.py", "maybe_auto_advance_for_worker(s, ap, bot)"),
                    ("app/orchestrator/auto_advance.py", "await clamp_status_to_data(session, project)"),
                    ("app/services/step_data_guard.py", "статус опережал данные")],
-        "F10-D2": [("app/orchestrator/steps/generate_videos.py", "if project is None or fr is None:"),
-                   ("app/orchestrator/steps/generate_videos.py", "async with SessionLocal() as session:")],
         # F10-D5 исправлен (W44): решение идёт в проектную базу, ссылки на строки больше не нужны
         "F10-D6": [("app/orchestrator/auto_advance.py", "visual, no GPT check"),
                    ("app/orchestrator/auto_advance.py", "async def _record_unchecked_auto_approve")],
@@ -469,16 +467,17 @@ def test_preflight_refuses_unsafe_work_dirs(mod, tmp_path, monkeypatch):
 
 def test_no_dotenv_and_no_env_file_option_in_the_stand_source(mod):
     src = SCRIPT.read_text(encoding="utf-8")
-    # the stand never reads an env file (the live whitelist loaders of the sibling stands are NOT used) and has no live mode
-    assert "load_env_whitelist" not in src and "--env-file" not in src and "--live" not in src
+    # the DRY stand never reads an env file; the live part (keys, money) is a separate sibling script it only delegates to
+    assert "load_env_whitelist" not in src and "--env-file" not in src
+    assert "e2e_full_chain_live" in src
     assert not re.search(r"open\([^)]*\.env", src)
 
 
 def test_arguments(mod):
     a = mod.parse_args(["--dry", "--until", "b", "--work-dir", "x"])
     assert a.until == "B" and a.dry is True and a.no_seams is False and a.without_seam == []
-    b = mod.parse_args(["--dry", "--work-dir", "x", "--without-seam", "hitl_to_master", "--without-seam", "store_mirror"])
-    assert b.without_seam == ["hitl_to_master", "store_mirror"]
+    b = mod.parse_args(["--dry", "--work-dir", "x", "--without-seam", "auto_on_project_db"])
+    assert b.without_seam == ["auto_on_project_db"]
     with pytest.raises(SystemExit):
         mod.parse_args(["--dry", "--without-seam", "no_such_seam"])
     with pytest.raises(SystemExit):
@@ -486,22 +485,6 @@ def test_arguments(mod):
     with pytest.raises(ValueError):
         mod.parse_args(["--dry", "--work-dir", "x", "--until", "Z"])
     assert mod.main(["--dry", "--work-dir", "x", "--until", "Z"]) == mod.EXIT_ARGS
-
-
-def test_mirror_statuses_are_exactly_the_steps_that_open_the_master_store(mod):
-    """F10-D2: only these step modules use app.db.SessionLocal; the seam mirrors only around them."""
-    steps = ROOT / "app" / "orchestrator" / "steps"
-    users = sorted(p.stem for p in steps.glob("*.py") if "SessionLocal" in p.read_text(encoding="utf-8"))
-    assert users == ["generate_hero", "generate_videos"]
-    assert mod.MIRROR_STATUSES == frozenset({"generating_hero", "generating_videos"})
-    from app.models import ProjectStatus
-    assert {s.value for s in (ProjectStatus.generating_hero, ProjectStatus.generating_videos)} == set(mod.MIRROR_STATUSES)
-
-
-def test_hitl_seam_target_and_result_shape(mod):
-    from app.services import advance_runner
-    assert callable(advance_runner.advance_project_job)
-    assert "new_status" in advance_runner.AdvanceJobResult.__dataclass_fields__
 
 
 def test_data_fingerprint_ignores_logs_and_sqlite_sidecars_but_sees_real_changes(mod, tmp_path):

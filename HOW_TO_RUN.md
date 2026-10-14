@@ -1,5 +1,7 @@
 # Как запустить video-pipeline (Windows)
 
+> **УСТАРЕЛО (пометка поставки, 2026-10-14).** Документ описывает более раннее состояние проекта и не является текущим описанием. Актуально: `README.md`, `docs/ARCHITECTURE.md`, `docs/TESTING.md`, `docs/ORCHESTRATOR_CURRENT_STATE.md`, `docs/audit/W40_FINAL_PLAN.md`. Числа тестов и статусы ниже не использовать.
+
 ## Единственная точка входа — `STUDIO.cmd`
 
 1. Открой папку `video-pipeline\` в Проводнике.

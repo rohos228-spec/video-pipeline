@@ -134,6 +134,16 @@ async def _charge_manual_regen(session: AsyncSession, project: Project, node: Pr
     return False
 
 
+async def request_hero_regen(session: AsyncSession, project: Project) -> bool:
+    """Ручной 🔁 на hero-карточке (Telegram): платный перезапуск generating_hero идёт через общий потолок цепочки.
+
+    True - статус переведён в generating_hero. False - потолок исчерпан, проект на паузе с причиной."""
+    if not await _charge_manual_regen(session, project, ProjectStatus.generating_hero):
+        return False
+    project.status = ProjectStatus.generating_hero
+    return True
+
+
 async def _apply_frame_visual_hitl(
     session: AsyncSession,
     project: Project,

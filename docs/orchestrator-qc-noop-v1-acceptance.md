@@ -3,7 +3,7 @@
 Дата: 2026-09-29. Ветка: feature/orchestrator-observe-v1.
 Начальная база: c8edfd0184db9668828401ae4dae729bc3068107.
 Runtime checkpoint: 090d3ba5 (полный SHA — в final-state-v2.json). Предыдущий checkpoint 270608c27023a72c7a246508f4a0eb4ba304b2bc сохранён.
-Корень стенда: `C:/Users/Никита/Documents/Codex/2026-09-24/files-mentioned-by-the-user-doc`. Все пути `outputs/...` ниже относительно этого корня.
+Корень стенда: `<корень стенда>`. Все пути `outputs/...` ниже относительно этого корня.
 Все новые проверки локальные, synthetic, Docker --network none.
 Новых реальных API-вызовов: 0. Frontend и production-конфигурация не изменены.
 

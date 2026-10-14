@@ -63,10 +63,28 @@ def test_credentials_use_compare_digest(monkeypatch):
     assert sessions.verify_credentials("", "s3cret-pass") is False
 
 
-def test_login_source_has_no_plain_comparison():
-    import inspect
-    src = inspect.getsource(auth_router.login)
-    assert "!=" not in src and "==" not in src
+async def test_login_endpoint_goes_through_constant_time_check_and_does_not_leak_which_part_is_wrong(monkeypatch):
+    """Поведение вместо поиска «==» в тексте функции: ручка входа сравнивает через compare_digest (оба поля
+    при любом вводе) и отвечает одинаково на неверное имя и неверный пароль."""
+    calls: list[int] = []
+    real = hmac.compare_digest
+
+    def spy(a, b):
+        calls.append(1)
+        return real(a, b)
+    monkeypatch.setattr(sessions.hmac, "compare_digest", spy)
+    async with _client() as c:
+        bad_user = await _login(c, user="nobody", pwd="s3cret-pass")
+        n_bad_user = len(calls)
+        calls.clear()
+        bad_pwd = await _login(c, pwd="wrong")
+        n_bad_pwd = len(calls)
+        calls.clear()
+        ok = await _login(c)
+    assert bad_user.status_code == bad_pwd.status_code == 401
+    assert bad_user.json() == bad_pwd.json()
+    assert n_bad_user == n_bad_pwd == len(calls) == 2  # имя и пароль сравниваются всегда, без раннего выхода
+    assert ok.status_code == 200 and ok.json()["token"]
 
 
 def test_password_hash_roundtrip_and_formats():

@@ -119,7 +119,12 @@ def test_ci_workflow_runs_every_suite_and_is_not_windows_bound():
     ts = _suites()
     for token in ("run_orchestrator_tests.py", "--suite observe", "--suite legacy", "schedule:", "VP_STRICT_SKIPS", "VP_RUN_DOCKER_ONLY"):
         assert token in wf, f"CI не содержит: {token}"
+    # test_readonly_pilot ждёт архивные файлы пилота вне репозитория (см. docs/TESTING.md) и в CI не идёт
+    not_in_ci = {"tests/observe_v1/test_readonly_pilot.py"}
     for path in ts.DOCKER_ONLY:
+        if path in not_in_ci:
+            assert path not in wf
+            continue
         assert path in wf, f"docker-модуль не запускается в CI: {path}"
     assert "windows" not in wf.lower() and "C:\\" not in wf
     assert "cmp scripts/diagnostics/gateway.py" in wf and (ROOT / "scripts" / "diagnostics" / "gateway.py").exists()

@@ -15,7 +15,7 @@ Final collected suites are GREEN: **41 adapter, 49 Decision, 63 Actions, 26 Prof
 
 Current positive worker refresh, short-prompt rejection, genuine profile recovery→image and ordinary mode are accepted. Ordinary retains six nodes/five POST/8113-byte HTML; managed checkpoint recovery retains 22 historical operations and finishes at 28 with two Decision steps, one worker POST and three image operations. Outside video/pilot remain pending/new. Existing v653 frontend source194/export43 hashes match, reusing prior140 assertions/TypeScript/build/browser evidence; no new browser scenario or build was needed.
 
-Evidence root: `C:\Users\Никита\Documents\Codex\2026-09-24\files-mentioned-by-the-user-doc\outputs\orchestrator-completion-20260930`. This document records boundaries and references, without copying response bodies or secrets.
+Evidence root: `<корень стенда>\outputs\orchestrator-completion-20260930`. This document records boundaries and references, without copying response bodies or secrets.
 
 ## Remaining implementation matrix
 

@@ -165,7 +165,7 @@ async def test_operator_header_is_checked_and_sent(env) -> None:
 
     await _ctx(app, key="k-9").call("POST", "/who", json={})
     assert got == {"op": "web_operator:abc", "key": "k-9"}
-    evil = ActionContext(app=app, operator="web\r\nX-Evil: 1 Никита", idempotency_key=None)
+    evil = ActionContext(app=app, operator="web\r\nX-Evil: 1 Оператор", idempotency_key=None)
     await evil.call("POST", "/who", json={})
     assert "\n" not in got["op"] and "\r" not in got["op"] and got["op"].isascii()
 

@@ -862,6 +862,9 @@ export const api = {
   // ── Projects ─────────────────────────────────────────────────────
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
+  // Явная синхронизация состояния проекта (GET больше не подтягивает runtime сам).
+  syncProject: (id: number) =>
+    http<ProjectDetail>(`/api/projects/${id}/sync`, { method: "POST" }),
   getProjectRun: (projectId: number) =>
     http<WorkflowRunDetail>(`/api/projects/${projectId}/run`),
   createProject: (body: {

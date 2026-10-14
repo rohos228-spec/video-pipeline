@@ -1,5 +1,7 @@
 # Orchestrator status — current, per component
 
+> **Исторический снимок** на `400933de` (2026-10-01). Числа тестов («94 failed» и т.п.) и состав работ с тех пор изменились; действующие правила и числа: `docs/TESTING.md` (числа собирает `scripts/test_report.py`), `docs/audit/W40_FINAL_PLAN.md`, `docs/LIVE_RUNS.md`.
+
 Snapshot at `git log --oneline -1` → `400933de` on `feature/orchestrator-observe-v1` (2026-10-01).
 
 This is a compact index. The authoritative, evidence-linked detail lives in

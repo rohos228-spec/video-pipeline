@@ -18,8 +18,53 @@ from sqlalchemy.orm import selectinload
 from app.models import Frame, NodeRunStatus, Project, ProjectStatus, WorkflowRun
 
 
+# Что sidecar уже получил: project_id -> {номер кадра: (хеш входов, хеш полученного промта)}.
+# Вход в шаг animation_prompts не стирает такой выход (иначе второй платный вызов модели). В памяти процесса, а не в
+# Frame.attrs: шаг картинок целиком переписывает attrs кадра параллельно и теряет метку. После рестарта процесса записей
+# нет, шаг стирает и считает заново, как раньше.
+_RESULTS: dict[int, dict[int, tuple[str, str]]] = {}
+
 _LOCKS: dict[int, asyncio.Lock] = {}
 _TASKS: dict[int, asyncio.Task[Any]] = {}
+
+
+def _h(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def sidecar_source_hash(frame: Frame) -> str:
+    return _h(f"{(frame.image_prompt or '').strip()}\x1f{(frame.voiceover_text or '').strip()}")
+
+
+def stamp_sidecar_results(project_id: int, frames: list[Frame]) -> int:
+    """Запомнить кадры, у которых видеопромт уже есть: хеш входов и хеш самого промта."""
+    from app.services.animation_prompt_gpt import (
+        frame_has_usable_image_prompt,
+        has_animation_prompt_for_frame,
+    )
+
+    got = _RESULTS.setdefault(project_id, {})
+    n = 0
+    for fr in frames:
+        if not frame_has_usable_image_prompt(fr) or not has_animation_prompt_for_frame(None, fr):
+            continue
+        rec = (sidecar_source_hash(fr), _h((fr.animation_prompt or "").strip()))
+        if got.get(fr.number) != rec:
+            got[fr.number] = rec
+            n += 1
+    return n
+
+
+def take_fresh_sidecar_frames(project_id: int, frames: list[Frame]) -> set[int]:
+    """Номера кадров, где промт всё ещё тот, что получил sidecar, и входы не менялись. Записи проекта снимаются."""
+    got = _RESULTS.pop(project_id, {})
+    return {
+        fr.number for fr in frames
+        if got.get(fr.number) == (sidecar_source_hash(fr), _h((fr.animation_prompt or "").strip()))
+        and (fr.animation_prompt or "").strip()
+    }
 
 
 def _lock_for(project_id: int) -> asyncio.Lock:
@@ -133,6 +178,7 @@ async def drain_anim_pr_from_image_prompts(
                 finalize_status=False,
                 max_batches=max_batches,
             )
+            stamp_sidecar_results(project_id, list(frames))
             left = len(apg.collect_batch_items(project, list(frames)))
             if left == 0:
                 await sync_anim_pr_noderun_done(session, project)

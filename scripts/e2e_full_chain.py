@@ -29,10 +29,12 @@ STAND SEAMS (``SEAMS``; each one is listed in the report as "not real" and tied 
 ``--without-seam NAME`` switch them off to reproduce the finding):
   auto_on_project_db  F10-D1  PRODUCTION FLAG WORKER_USE_PROJECT_DB=true (no code patch any more): the worker's auto_advance
                       runs on the project's own project.db session
-  store_mirror        F10-D2  rows project.db <-> master around the two steps that open the master store (hero, videos)
-  hitl_to_master      F10-D5  the project's HITL rows are copied into master so the human's production route finds them
+(F10-D2 store_mirror and F10-D5 hitl_to_master were removed: both fixed in W45, the stand passes without them.)
 
 ``--keep-auto`` (level E) does not hand the final to a human: it only watches whether the automation approves it (F10-D6).
+
+LIVE mode (``--live`` / ``--live-preflight``) is in scripts/e2e_full_chain_live.py (same Chain / Report / checks, real
+providers, hard spend ceilings); this file delegates to it. Run ``--live-preflight`` first: it pays nothing.
 
 Exit codes: 0 PASS (no FAIL; KNOWN findings allowed unless --strict), 1 FAIL, 2 bad arguments / refused before start.
 """
@@ -650,140 +652,6 @@ def install_child_seams(cfg: dict) -> None:
 
     outsee_http._post_generate_via_curl = no_curl_post
 
-    if "store_mirror" in (cfg.get("seams") or []):
-        install_store_mirror_seam()
-    if "hitl_to_master" in (cfg.get("seams") or []):
-        install_hitl_to_master_seam()
-
-
-def install_store_mirror_seam() -> None:
-    """STAND SEAM (not production behaviour), finding F10-D2.
-
-    A project created through POST /api/projects keeps its content (project columns, frames, artifacts, HITL rows) only
-    in its own project.db, but a few steps open ``app.db.SessionLocal`` (the MASTER state.db) and read the project and
-    its frames there (generate_videos._shot1_job / _shot2_job, generate_hero): the frame is not found, the job returns
-    False without an error and the step fails with 'клипы не получены'. The seam copies the rows project.db -> master
-    BEFORE every worker tick and master -> project.db AFTER it (last writer wins by updated_at), so the node's own code
-    runs unchanged."""
-    from sqlalchemy import select
-    from app import models as M
-    from app.db import session_scope
-    from app.orchestrator import pipeline
-    from app.services import advance_runner
-
-    ORDER = [M.Scene, M.Frame, M.FrameText, M.PromptVersion, M.FrameEdge, M.Entity, M.Artifact, M.HITLRequest,
-             M.AsrWord, M.SceneDesignCell]
-    RUNTIME_COLS = {"status", "meta", "auto_mode", "updated_at"}
-
-    def row_data(r) -> dict:
-        return {c.name: getattr(r, c.name) for c in r.__table__.columns}
-
-    def newer(a, b) -> bool:
-        ua, ub = getattr(a, "updated_at", None), getattr(b, "updated_at", None)
-        if ua is not None and ub is not None:
-            return ua > ub
-        if hasattr(a, "decided_at"):
-            return (a.decided_at is not None and b.decided_at is None) or \
-                   (a.decided_at is not None and b.decided_at is not None and a.decided_at > b.decided_at)
-        return False
-
-    async def copy(src, dst, pid: int, *, project_content: bool) -> int:
-        n = 0
-        if project_content:
-            sp, dp = await src.get(M.Project, pid), await dst.get(M.Project, pid)
-            if sp is not None and dp is not None:
-                for col in sp.__table__.columns:
-                    if col.name in RUNTIME_COLS or col.name == "id":
-                        continue
-                    if getattr(dp, col.name) != getattr(sp, col.name):
-                        setattr(dp, col.name, getattr(sp, col.name))
-                        n += 1
-                await dst.flush()
-        for model in ORDER:
-            if not hasattr(model, "project_id"):
-                continue
-            rows = (await src.execute(select(model).where(model.project_id == pid))).scalars().all()
-            for r in rows:
-                cur = await dst.get(model, r.id)
-                if cur is None:
-                    dst.add(model(**row_data(r)))
-                    n += 1
-                elif newer(r, cur):
-                    for k, v in row_data(r).items():
-                        if k != "id":
-                            setattr(cur, k, v)
-                    n += 1
-            await dst.flush()
-        return n
-
-    real = pipeline.advance_project
-
-    async def mirrored(session, project, bot):
-        pid = int(project.id)
-        if getattr(project.status, "value", str(project.status)) not in MIRROR_STATUSES:
-            # every other step is left exactly as production runs it (no extra latency inside its completion window)
-            return await real(session, project, bot)
-        try:
-            async with session_scope() as master:
-                if await master.get(M.Project, pid) is not None:
-                    await copy(session, master, pid, project_content=True)
-        except Exception as exc:  # noqa: BLE001 - a seam failure must be visible in the server log, not silent
-            from loguru import logger
-            logger.warning("stand seam store_mirror: project.db -> master failed: {}", exc)
-        try:
-            return await real(session, project, bot)
-        finally:
-            try:
-                async with session_scope() as master:
-                    if await master.get(M.Project, pid) is not None:
-                        await copy(master, session, pid, project_content=False)
-                await session.flush()
-            except Exception as exc:  # noqa: BLE001
-                from loguru import logger
-                logger.warning("stand seam store_mirror: master -> project.db failed: {}", exc)
-
-    pipeline.advance_project = mirrored
-    advance_runner.advance_project = mirrored
-
-
-# the only steps that open the MASTER store with their own sessions (finding F10-D2)
-MIRROR_STATUSES = frozenset({"generating_hero", "generating_videos"})
-
-
-def install_hitl_to_master_seam() -> None:
-    """STAND SEAM (not production behaviour), finding F10-D5.
-
-    The human's route POST /api/hitl/{id}/decision looks the request up in the MASTER store, but the approve_final
-    request the assemble step created lives in the project's project.db. After the assemble tick this seam copies the
-    project's HITL rows into the master so the production route can find them (the route itself is untouched)."""
-    from sqlalchemy import select
-    from app import models as M
-    from app.db import session_scope
-    from app.project_db import project_db_session_scope
-    from app.services import advance_runner
-
-    real_job = advance_runner.advance_project_job
-
-    async def job(project_id, bot):
-        result = await real_job(project_id, bot)
-        try:
-            if getattr(result, "new_status", None) == "assembled":
-                async with project_db_session_scope(int(project_id)) as ps:
-                    rows = (await ps.execute(select(M.HITLRequest).where(M.HITLRequest.project_id == int(project_id)))).scalars().all()
-                    data = [{c.name: getattr(r, c.name) for c in r.__table__.columns} for r in rows]
-                async with session_scope() as master:
-                    for d in data:
-                        cur = await master.get(M.HITLRequest, d["id"])
-                        if cur is None:
-                            master.add(M.HITLRequest(**d))
-                    await master.flush()
-        except Exception as exc:  # noqa: BLE001
-            from loguru import logger
-            logger.warning("stand seam hitl_to_master failed: {}", exc)
-        return result
-
-    advance_runner.advance_project_job = job
-
 
 def read_wire(path: Path) -> list[dict]:
     out: list[dict] = []
@@ -1029,9 +897,10 @@ class Chain:
 
     def create(self) -> bool:
         R = self.R
-        code, body = self.api.post("/api/projects", {
-            "title": "F10 tiny chain", "topic": self.args.topic, "auto_mode": True, "hero_mode": "auto",
-            "aspect_ratio": "9_16"})
+        payload = {"title": "F10 tiny chain", "topic": self.args.topic, "auto_mode": True, "hero_mode": "auto",
+                   "aspect_ratio": "9_16"}
+        payload.update(getattr(self, "create_extra", None) or {})        # the live part sets hero_mode / generators
+        code, body = self.api.post("/api/projects", payload)
         if not R.check("проект создан через настоящий API (201)", code == 201 and isinstance(body, dict) and body.get("id"),
                        (code, str(body)[:300])):
             return False
@@ -1145,6 +1014,11 @@ class Chain:
                 self.status_log.append({"t": round(time.time() - self.t0, 2), "status": st})
                 print(f"  [{time.time() - self.t0:6.1f}s] status={st}", flush=True)
                 last, last_change = st, time.time()
+            hook = getattr(self, "tick_hook", None)          # the live part: spend ceilings / frame gate
+            if hook is not None:
+                why = hook(st)
+                if why:
+                    return why
             if until == "E":
                 if not self.args.keep_auto:
                     self.hand_over_to_human(st)
@@ -1308,7 +1182,6 @@ def expected_counts_for(until: str, frames: int, sfx_events: int, hero: int = 0)
 
 LOG_EVIDENCE = {
     "F10-D1 clamp_status_to_data откатил ready в new": "clamp_status_to_data: ",
-    "F10-D2 кадр пропущен после ошибки (videos)": "кадр пропущен после ошибки",
     "F10-D8 берём master (откат статуса при чтении)": "— берём master",
     "ошибки шагов (ERROR)": " | ERROR ",
     "трассировки (Traceback)": "Traceback (most recent call last)",
@@ -1485,8 +1358,7 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
     got_llm = count_by([{"k": k} for k in oracle.kinds], "k")
     for kind, n in expected_llm_calls(until, ev.frames, hero_n).items():
         R.check(f"текстовая модель: запросов узла «{kind}» ровно {n} (без повторного запуска шага и без отказов контракта)",
-                got_llm.get(kind, 0) == n, {"получено": got_llm.get(kind, 0), "ожидалось": n},
-                known="F10-D11" if kind == "animation_prompts" else None)
+                got_llm.get(kind, 0) == n, {"получено": got_llm.get(kind, 0), "ожидалось": n})
     if level_index(until) >= level_index("C"):
         want_up = uploads_expected(ev.frames, hero_n)
         R.check("видео и картинки по референсу: одна загрузка кадра на публичный файловый хост на каждый платный запрос "
@@ -1617,7 +1489,7 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
             "timeline_kinds": kinds, "hitl": hitl_rows, "incidents_blocking": blocking}
 
 
-SEAMS = ("auto_on_project_db", "store_mirror", "hitl_to_master")
+SEAMS = ("auto_on_project_db",)
 
 # ───────────────────────────── findings, honest lists, report ─────────────────────────────
 
@@ -1633,17 +1505,6 @@ FINDINGS: list[dict] = [
      "repro": "python scripts/e2e_full_chain.py --dry --until A --no-seams --work-dir <пустая папка вне репозитория>: "
               "статус planning -> plan_ready -> new, в логе сервера clamp_status_to_data: plan_ready -> new.",
      "masked_by": "боевой флаг WORKER_USE_PROJECT_DB=true (шов auto_on_project_db)", "stops_at": "plan_ready"},
-    {"id": "F10-D2", "level": "C", "node": "animation_prompts -> videos",
-     "title": "Нода videos читает Project и Frame через app.db.SessionLocal (master); у проекта, созданного через API, "
-              "кадров в master нет, задача кадра молча возвращает False, шаг падает «клипы не получены ... кадр пропущен "
-              "после ошибки» без единого запроса к провайдеру и без записанной причины.",
-     "where": ["app/orchestrator/steps/generate_videos.py:634-635 (задача шота; if project is None or fr is None: return False; "
-               "с W44 хранилище кадров выбирает _frame_store, остаётся для hero)",
-               "app/orchestrator/steps/generate_videos.py:1150-1153 (общее сообщение шага)"],
-     "repro": "python scripts/e2e_full_chain.py --dry --until C --without-seam store_mirror --work-dir <пустая папка>: "
-              "статус generating_videos -> paused; work/server.log: «generate_videos: клипы не получены (3) ... "
-              "Первая причина: кадр пропущен после ошибки», запросов к провайдеру видео 0.",
-     "masked_by": "store_mirror", "stops_at": "generating_videos"},
     {"id": "F10-D3", "level": "B", "node": "hero (пропущен, нет героев) -> наблюдение",
      "title": "Независимая проверка результата hero не знает, что шаг законно пропущен (hero_skipped_empty): без файла "
               "героя она пишет блокирующий инцидент media_failure «no_hero_artifact» с передачей человеку, хотя конвейер "
@@ -1659,16 +1520,12 @@ FINDINGS: list[dict] = [
                "app/services/advance_runner.py:51 (request_context.ensure_request_scope есть только у тика шага)"],
      "repro": "SELECT project_id, run_id FROM spend_ledger WHERE provider='vibecode': строки с NULL / ''.",
      "masked_by": None, "stops_at": None},
-    {"id": "F10-D5", "level": "E", "node": "assemble -> approve_final (решение человека)",
-     "title": "Ручка человека POST /api/hitl/{id}/decision ищет запрос в master (get_session), а запросы подтверждения "
-              "проекта пишутся в project.db: без заплатки решение даёт 404 «Запрос подтверждения не найден». С заплаткой "
-              "(запрос скопирован в master) ручка отвечает 200, но решение остаётся только в master: в project.db "
-              "approve_final так и висит pending, узел publish в master остаётся running, шаг публикации не стартует.",
-     "where": ["app/web/routers/hitl.py:99-101 (get_session; session.get(HITLRequest, hitl_id))",
-               "app/services/hitl_apply.py:104-125 (apply_hitl_side_effects на сессии master)"],
-     "repro": "python scripts/e2e_full_chain.py --dry --until E --without-seam hitl_to_master ...: 404; без этого ключа "
-              "200, но GET /api/hitl/project/<pid> по-прежнему показывает approve_final pending.",
-     "masked_by": "hitl_to_master (только до ответа 200, не до project.db)", "stops_at": "assembled"},
+    {"id": "F10-D5", "level": "E", "node": "approve_final (решение человека) -> publish",
+     "title": "Решение человека по approve_final теперь доходит до project.db (закрыто в W45, шов hitl_to_master убран), "
+              "но узел publish в master остаётся running: шага публикации нет, публикацию не запускали.",
+     "where": ["app/services/hitl_apply.py (apply_hitl_side_effects: узел publish не переводится)"],
+     "repro": "любой прогон стенда до уровня E: узел n_publish в статусе running после решения человека.",
+     "masked_by": None, "stops_at": None},
     {"id": "F10-D6", "level": "E", "node": "assembled -> approve_final (auto_mode)",
      "title": "В auto_mode воркер сам закрывает approve_final: за ~2 с после assembled запрос уже approved без человека "
               "(прогон --keep-auto), статус уходит в publishing; публикацию затем останавливает только "
@@ -1713,16 +1570,14 @@ FINDINGS: list[dict] = [
      "repro": "любой прогон уровня D/E стенда: observation_incidents, type=media_failure, node_key=n_sfx_gen; "
               "событие node_result_verification: errors=['Error'].",
      "masked_by": None, "stops_at": None},
-    {"id": "F10-D11", "level": "B", "node": "anim_pr_sidecar -> animation_prompts (вход в шаг стирает выход)",
-     "title": "Фоновый sidecar промтов анимации во время шага картинок уже вызывает текстовую модель по кадрам проекта "
-              "(хранилище кадров теперь project.db); при входе в шаг animation_prompts replace_step_outputs_on_enter "
-              "стирает этот выход, и шаг вызывает модель второй раз: запросов узла вдвое больше ожидаемого. Задача sidecar "
-              "наследует попытку n_images: если вызов модели не закончен к её закрытию, остаётся блокирующий инцидент "
-              "uncertain_request у n_images (зависит от времени, бывает не в каждом прогоне).",
-     "where": ["app/services/step_replace.py:replace_step_outputs_on_enter (force_wipe=True для anim_pr)",
-               "app/services/anim_pr_sidecar.py (drain_anim_pr_from_image_prompts)"],
-     "repro": "прогон стенда до уровня B: llm_requests содержит 4 запроса узла animation_prompts вместо 2; server.log: "
-              "«anim_pr_sidecar: drain pending=3 (status=generating_images)», затем «wiped=['anim_pr']».",
+    {"id": "F10-D11", "level": "B", "node": "anim_pr_sidecar -> n_images (попытка наследуется)",
+     "title": "Повторный платный вызов исправлен: результат sidecar для тех же входов не стирается при входе в шаг "
+              "animation_prompts (step_replace). Остаётся: задача sidecar наследует попытку n_images, и вызов модели, не "
+              "законченный к её закрытию, оставляет блокирующий инцидент uncertain_request у n_images (зависит от "
+              "времени, бывает не в каждом прогоне).",
+     "where": ["app/services/anim_pr_sidecar.py (ensure_anim_pr_sidecar: create_task копирует контекст попытки)"],
+     "repro": "редкий прогон стенда до уровня B: инцидент uncertain_request у n_images (проверка «нет неподтверждённого "
+              "запроса от фонового sidecar» даёт KNOWN F10-D11).",
      "masked_by": None, "stops_at": None},
 ]
 
@@ -1879,7 +1734,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--no-seams", action="store_true",
                     help="без заплаток стенда: воспроизводит находки F10-D1/D2 (цепочка встаёт после plan)")
     ap.add_argument("--without-seam", action="append", default=[], choices=SEAMS,
-                    help="отключить одну заплатку стенда (повторяемо), например hitl_to_master: показывает находку F10-D5")
+                    help="отключить одну заплатку стенда (повторяемо), например auto_on_project_db: показывает находку F10-D1")
     ap.add_argument("--with-hero", action="store_true",
                     help="добавить в ответы excel_gpt реестр персонажей: нода hero делает платный референс (по умолчанию "
                          "в малом проекте героев нет, hero и items пропускаются)")
@@ -1895,6 +1750,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "--serve":
         return child_main()
+    if any(a in ("--live", "--live-preflight") for a in argv):      # the paid part lives in its own sibling script
+        return _load_sibling("e2e_full_chain_live").main(argv)
     try:
         args = parse_args(argv)
     except ValueError as exc:

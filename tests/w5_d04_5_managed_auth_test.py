@@ -68,10 +68,22 @@ class ManagedAuth(unittest.IsolatedAsyncioTestCase):
                 await kie_http.poll_task("jobs", "T-1")
         self.assertEqual(calls[0][1], {"Authorization": "Bearer " + KEY})
 
-    def test_create_task_call_site_passes_headers(self):
+    async def test_create_task_passes_auth_headers_to_managed_transport(self):
+        """Поведение вместо поиска строки в исходнике: в управляемом режиме createTask отдаёт транспорту
+        Authorization (платный шов снят через unwrap: нужен именно вызывающий код create_task)."""
         import inspect
-        src = inspect.getsource(kie_http.create_task)
-        self.assertIn('json_request("POST", path, payload=body, headers=_headers())', src)
+        calls = []
+
+        async def fake(method, path, **kw):
+            calls.append((method, path, kw.get("headers")))
+            return httpx.Response(200, json={"code": 200, "data": {"taskId": "T-9"}},
+                                  request=httpx.Request(method, ORIGIN + path))
+
+        raw_create = inspect.unwrap(kie_http.create_task)
+        with patch.object(media_transport, "json_request", fake):
+            task_id = await raw_create("jobs", None, {"model": "m"})
+        self.assertEqual(task_id, "T-9")
+        self.assertEqual(calls, [("POST", "/api/v1/jobs/createTask", {"Authorization": "Bearer " + KEY})])
 
 
 if __name__ == "__main__":

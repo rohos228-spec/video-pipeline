@@ -301,3 +301,36 @@ async def test_c4_deferred_spend_action_keeps_its_reserve() -> None:
     assert got is None
     settle.assert_not_awaited()                                    # резерв не закрыт нулём
     measure.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_telegram_hero_regen_goes_through_the_chain_cap(monkeypatch, session) -> None:
+    """Ручной 🔁 на hero-карточке (Telegram) - платный перезапуск generating_hero в общем потолке."""
+    from app.services.hitl_apply import request_hero_regen
+
+    monkeypatch.setattr(app_settings.settings, "restart_chain_max_per_node", 2)
+    p = _project(ProjectStatus.hero_ready)
+    session.add(p)
+    await session.flush()
+    for _ in range(2):
+        p.status = ProjectStatus.hero_ready
+        assert await request_hero_regen(session, p) is True
+        assert p.status is ProjectStatus.generating_hero
+    assert restart_chain.count(p, "generating_hero") == 2
+    assert p.meta["restart_chain"]["generating_hero"]["by"] == {"manual": 2}
+    p.status = ProjectStatus.hero_ready
+    assert await request_hero_regen(session, p) is False             # третий запуск не сделан
+    assert p.status is ProjectStatus.paused and "общий потолок" in p.meta["auto_paused_reason"]
+
+
+def test_telegram_hero_regen_branches_use_the_helper() -> None:
+    """Обе ветки 🔁 в app/telegram/bot.py (excel_id и вариации) не ставят generating_hero напрямую."""
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "app" / "telegram" / "bot.py").read_text(encoding="utf-8")
+    start = src.index("regen_step_msg = \"\"")
+    block = src[start:src.index("if decided_for_mirror is not None", start)]
+    regen_blocks = re.findall(r'if action == "regen":(.*?)(?=\n\s+elif action == "approve":)', block, re.S)
+    assert len(regen_blocks) == 2
+    for b in regen_blocks:
+        assert "request_hero_regen" in b and "project.status = ProjectStatus.generating_hero" not in b

@@ -35,6 +35,42 @@ def step_code_for_running_status(status: ProjectStatus | None) -> str | None:
     return NODE_TYPE_TO_STEP_CODE.get(node_type)
 
 
+async def _keep_fresh_sidecar_anim_pr(
+    session: AsyncSession, project: Project
+) -> dict[str, Any] | None:
+    """Если sidecar уже получил видеопромты для тех же входов - не стирать (иначе повторный платный вызов).
+
+    Записи sidecar снимаются при входе: следующий явный ▶ шага снова пересоберёт всё с нуля.
+    Кадры без свежего результата sidecar очищаются как обычно (промт и shot2).
+    """
+    from sqlalchemy import select
+
+    from app.models import Frame, FrameStatus
+    from app.services.anim_pr_sidecar import take_fresh_sidecar_frames
+    from app.services.plan_shot2 import SHOT2_VIDEO_PROMPT_ATTR
+
+    frames = (
+        await session.execute(select(Frame).where(Frame.project_id == project.id))
+    ).scalars().all()
+    kept = take_fresh_sidecar_frames(int(project.id), list(frames))
+    if not kept:
+        return None
+    cleared = 0
+    for fr in frames:
+        if fr.number in kept:
+            continue
+        if (fr.animation_prompt or "").strip():
+            fr.animation_prompt = None
+            cleared += 1
+        attrs = dict(fr.attrs or {})
+        if attrs.pop(SHOT2_VIDEO_PROMPT_ATTR, None) is not None:
+            fr.attrs = attrs
+        if fr.status is FrameStatus.animation_prompt_ready:
+            fr.status = FrameStatus.image_approved
+    await session.flush()
+    return {"anim_pr": {"kept_from_sidecar": len(kept), "frames_cleared": cleared}}
+
+
 async def replace_step_outputs_on_enter(
     session: AsyncSession,
     project: Project,
@@ -48,6 +84,19 @@ async def replace_step_outputs_on_enter(
     step_code = step_code_for_running_status(running_status)
     if not step_code:
         return {}
+    if step_code == "anim_pr":
+        try:
+            kept = await _keep_fresh_sidecar_anim_pr(session, project)
+        except Exception:  # noqa: BLE001
+            logger.exception("[#{}] replace_step_outputs_on_enter: sidecar keep failed", project.id)
+            kept = None
+        if kept is not None:
+            logger.info(
+                "[#{}] replace_step_outputs_on_enter: anim_pr оставлен от sidecar {}",
+                project.id,
+                kept["anim_pr"],
+            )
+            return kept
     try:
         summary = await clear_step_outputs_for_rerun(
             session, project, step_code, force_wipe=True

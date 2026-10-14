@@ -6645,10 +6645,15 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                 excel_id = payload.get("excel_id")
                 if isinstance(excel_id, str) and excel_id:
                     if action == "regen":
-                        project.status = ProjectStatus.generating_hero
-                        regen_step_msg = (
-                            f"\n\n▶ Перегенерирую персонажа {excel_id}."
-                        )
+                        from app.services.hitl_apply import request_hero_regen
+                        if await request_hero_regen(s, project):
+                            regen_step_msg = (
+                                f"\n\n▶ Перегенерирую персонажа {excel_id}."
+                            )
+                        else:
+                            regen_step_msg = (
+                                "\n\n⏸ Общий потолок перезапусков hero исчерпан: проект на паузе, нужно решение человека."
+                            )
                     elif action == "approve":
                         # Считаем сколько ещё не одобрено в excel-списке.
                         meta = dict(project.meta or {})
@@ -6703,11 +6708,16 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                         # 🔁 эту же вариацию — выйдет в generating_hero,
                         # generate_hero.run() увидит, что (hi, vi) не
                         # одобрены, и перегенерит ровно её.
-                        project.status = ProjectStatus.generating_hero
-                        regen_step_msg = (
-                            f"\n\n▶ Перегенерирую герой {cur_hi}/{n_total} "
-                            f"вариацию {cur_vi}/{n_var}."
-                        )
+                        from app.services.hitl_apply import request_hero_regen
+                        if await request_hero_regen(s, project):
+                            regen_step_msg = (
+                                f"\n\n▶ Перегенерирую герой {cur_hi}/{n_total} "
+                                f"вариацию {cur_vi}/{n_var}."
+                            )
+                        else:
+                            regen_step_msg = (
+                                "\n\n⏸ Общий потолок перезапусков hero исчерпан: проект на паузе, нужно решение человека."
+                            )
                     elif action == "approve":
                         # ✅ — определяем что дальше: следующая вариация
                         # этого же героя; следующий герой; или всё готово.
