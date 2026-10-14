@@ -837,6 +837,9 @@ async def _final_verified(session: AsyncSession, project: Project) -> bool:
         return False
     if res.get("status") != "passed":
         return False
+    # Звуки подменены процедурным синтезом (нет ключа / сбой провайдера): финал смотрит человек, а не автоодобрение.
+    if isinstance(project.meta, dict) and project.meta.get("sfx_degraded") is True:
+        return False
     recorded = (art.meta or {}).get("sha256")
     return recorded is None or recorded == res.get("sha256")
 

@@ -817,6 +817,7 @@ async def montage_board_merge_scenes(
     from app.services.montage_board_frames import merge_montage_scenes
 
     p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
     try:
         result = await merge_montage_scenes(
             session,
@@ -956,6 +957,7 @@ async def montage_board_delete_frame(
     from app.services.montage_board_frames import delete_montage_frame
 
     p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
     try:
         result = await delete_montage_frame(session, p, frame_id)
     except RuntimeError as e:

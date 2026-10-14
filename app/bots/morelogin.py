@@ -135,7 +135,10 @@ async def morelogin_browser(profile_id: str | None = None, *, platform: str | No
     stop = stop_on_exit_default() if stop_on_exit is None else stop_on_exit
     cdp_url = await start_profile(pid)
     logger.info("morelogin started: profile=…{}", str(pid)[-4:])
-    pw = await async_playwright().start()
+    try:
+        pw = await async_playwright().start()
+    except Exception as e:  # noqa: BLE001 - нет драйвера Playwright: площадка получит понятный отказ, остальные пойдут дальше
+        raise MoreLoginError(f"Playwright не запустился: {type(e).__name__}", "profile_unavailable") from e
     try:
         try:
             browser = await pw.chromium.connect_over_cdp(cdp_url)

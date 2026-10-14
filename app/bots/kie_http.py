@@ -305,7 +305,9 @@ def _task_state(api: str, data: dict[str, Any]) -> str:
     st = str(data.get("status") or data.get("state") or "").upper()
     if st in ("SUCCESS", "FIRST_SUCCESS"):
         return "success"
-    if st in ("FAILED", "FAIL", "CREATE_TASK_FAILED", "GENERATE_AUDIO_FAILED"):
+    if st in ("FAILED", "FAIL", "CREATE_TASK_FAILED", "GENERATE_AUDIO_FAILED") or any(
+            m in st for m in ("ERROR", "FAIL", "EXCEPTION")):
+        # SENSITIVE_WORD_ERROR, CALLBACK_EXCEPTION и т.п. - окончательный отказ; раньше ждали таймаут 15-20 минут
         return "fail"
     return "pending"
 

@@ -194,3 +194,13 @@ def test_create_project_keeps_aspect_and_generators():
     """Живой F10 14.10: POST /api/projects принимал aspect_ratio и генераторы, но не сохранял их."""
     src = open("app/web/routers/projects.py", encoding="utf-8").read()
     assert 'for _field in ("aspect_ratio", "image_resolution", "video_resolution", "image_generator", "video_generator")' in src
+
+
+def test_suno_error_statuses_are_final_failures():
+    from app.bots.kie_http import _task_state
+
+    for st in ("FAILED", "SENSITIVE_WORD_ERROR", "CALLBACK_EXCEPTION", "GENERATE_AUDIO_FAILED"):
+        assert _task_state("suno", {"status": st}) == "fail", st
+    for st in ("PENDING", "TEXT_SUCCESS", "GENERATING"):
+        assert _task_state("suno", {"status": st}) == "pending", st
+    assert _task_state("suno", {"status": "SUCCESS"}) == "success"
