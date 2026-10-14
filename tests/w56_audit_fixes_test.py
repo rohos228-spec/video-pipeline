@@ -133,3 +133,15 @@ def test_fleet_safe_path_rejects_sibling_prefix(tmp_path):
     with pytest.raises(HTTPException):
         _safe_path(base, "../root-evil/x.txt")
     assert _safe_path(base, "a/b.txt").is_relative_to(base.resolve())
+
+
+def test_remember_pause_origin_keeps_running_step():
+    from app.models import Project, ProjectStatus
+    from app.services import restart_chain
+
+    p = Project(id=9, slug="t", topic="t", meta={"x": 1}, status=ProjectStatus.plan_ready)
+    restart_chain.remember_pause_origin(p)
+    assert p.meta["paused_from_status"] == "plan_ready" and p.meta["x"] == 1
+    p.status = ProjectStatus.paused
+    restart_chain.remember_pause_origin(p)          # уже на паузе: источник не затирается
+    assert p.meta["paused_from_status"] == "plan_ready"

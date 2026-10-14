@@ -116,13 +116,14 @@ def url_problem(name: str, value: str) -> str | None:
 # ───────────────────────────── what a run needs and what it costs ─────────────────────────────
 
 PROVIDER_CHOICES = {"text": ("vibecode", "kie"), "image": ("outsee", "kie"), "video": ("outsee", "kie")}
+# image 0.25 = замер Outsee (LIVE_RUNS 10.10); llm_request 0.05 = замеры 14.10 (0.02-0.09 за запуск из 2-3 запросов); потолок текста $2 на прогоне остаётся жёстким.
 # Conservative per-request prices of THIS stand (owner-unconfirmed estimates, same spirit as the application's own
 # uncalibrated constants); they are used for the pre-start estimate and for rows of unknown cost in the ledger check.
-PRICE = {"llm_request": 0.10, "image": 0.10, "video": 0.40, "tts_per_char": 0.0003, "sfx_per_sec": 0.012, "sfx_seconds": 4.0,
+PRICE = {"llm_request": 0.05, "image": 0.25, "video": 0.40, "tts_per_char": 0.0003, "sfx_per_sec": 0.012, "sfx_seconds": 4.0,
          "music": 0.60}
 UNKNOWN_ROW_USD = {"text": 0.05, "media": 0.30}      # = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD / UNKNOWN_ROW_ESTIMATE_USD
 RETRY_FACTOR = {"image": 2, "video": 2, "sfx": 3, "tts": 2, "llm": 2}
-MAX_TEXT_CEILING, MAX_MEDIA_CEILING, MAX_FRAMES = 2.0, 1.0, 5
+MAX_TEXT_CEILING, MAX_MEDIA_CEILING, MAX_FRAMES = 2.0, 6.0, 10  # владелец 14.10.2026: до $6 медиа и 10 кадров на живой F10
 FORBIDDEN_MODEL_RE = re.compile(r"seedance[-_ /.]?2[-_.]?5", re.I)
 TEXT_PROVIDERS = {"vibecode", "gpt", "llm"}
 

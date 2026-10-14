@@ -120,6 +120,17 @@ def summary(node: str, cur: int, cap: int, source: str) -> str:
             f"ещё один платный запуск без решения человека не делается")
 
 
+def remember_pause_origin(project) -> None:
+    """Перед прямой установкой status=paused: запомнить, откуда пауза, чтобы «Продолжить» вернул в этот шаг, а не в new."""
+    from app.models import ProjectStatus
+
+    if project.status != ProjectStatus.paused:
+        meta = dict(project.meta or {})
+        meta["paused_from_status"] = project.status.value
+        project.meta = meta
+        flag_modified(project, "meta")
+
+
 async def stop(session, project, node: str, cur: int, cap: int, source: str) -> str:
     """Поставить проект на паузу с причиной и записать факт для инцидента. Возвращает текст причины."""
     from app.models import ProjectStatus

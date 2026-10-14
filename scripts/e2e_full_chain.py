@@ -1531,7 +1531,7 @@ FINDINGS: list[dict] = [
               "(прогон --keep-auto), статус уходит в publishing; публикацию затем останавливает только "
               "SOCIAL_PUBLISH_ENABLED=false (publish_skipped), а узел publish остаётся running. Барьер человека держится "
               "лишь на выключенном auto_mode до сборки.",
-     "where": ["app/orchestrator/auto_advance.py:1690-1700 (auto-approve visual, no GPT check)",
+     "where": ["app/orchestrator/auto_advance.py:1714-1724 (auto-approve visual, no GPT check)",
                "app/orchestrator/auto_advance.py:851 (_record_unchecked_auto_approve)"],
      "repro": "python scripts/e2e_full_chain.py --dry --until E --keep-auto ...: auto_final.requests[0].decision = approved, "
               "status_after = publishing; человек ничего не нажимал.",

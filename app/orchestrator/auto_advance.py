@@ -1197,6 +1197,8 @@ async def _apply_regen(
 
     if not manual and count > MAX_AUTO_REGEN_PER_STEP:
         # Превышен лимит — pause проекта.
+        from app.services import restart_chain as _rc_pause
+        _rc_pause.remember_pause_origin(project)
         project.status = ProjectStatus.paused
         meta = dict(project.meta or {})
         meta["auto_paused_reason"] = (
@@ -1229,6 +1231,8 @@ async def _apply_regen(
             "auto_advance: не знаю как откатить {} → running",
             transition.ready_status.value,
         )
+        from app.services import restart_chain as _rc_pause
+        _rc_pause.remember_pause_origin(project)
         project.status = ProjectStatus.paused
     else:
         await _prepare_node_run_for_status(
@@ -1264,6 +1268,8 @@ async def _apply_reject(
 ) -> None:
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.rejected
+    from app.services import restart_chain as _rc_pause
+    _rc_pause.remember_pause_origin(project)
     project.status = ProjectStatus.paused
     meta = dict(project.meta or {})
     meta["auto_paused_reason"] = (
@@ -1425,6 +1431,8 @@ async def _harness_gate(
     project.meta = meta
     await session.flush()
     if fails[key] >= 3:
+        from app.services import restart_chain as _rc_pause
+        _rc_pause.remember_pause_origin(project)
         project.status = ProjectStatus.paused
         meta2 = dict(project.meta or {})
         meta2["auto_paused_reason"] = f"harness gate: {status.value} — {names}"
