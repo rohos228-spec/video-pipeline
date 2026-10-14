@@ -502,7 +502,7 @@ function FieldCell({
       const tc = graph.excel_rows?.[String(f.number)]?.r15_timecode;
       return (
         <span className="text-[11px] text-white/70">
-          {f.duration_seconds != null ? `${f.duration_seconds}с` : "—"}
+          {f.duration_seconds != null ? `${Number(f.duration_seconds.toFixed(2))}с` : "—"}
           {tc ? (
             <span className="ml-1 block font-mono text-[9px] text-white/35">{tc}</span>
           ) : null}
@@ -591,7 +591,7 @@ function FrameThumb({
       {f.duration_seconds != null && (
         <div className="absolute bottom-1 right-1 flex items-center gap-0.5 rounded-full bg-black/55 px-1 py-0.5 text-[8.5px] text-white/75">
           <Clock3 className="h-2 w-2" />
-          {f.duration_seconds}с
+          {Number(f.duration_seconds.toFixed(2))}с
         </div>
       )}
     </button>

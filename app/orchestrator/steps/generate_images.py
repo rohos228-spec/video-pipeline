@@ -588,6 +588,25 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     from app.services.vo_shot_expand import is_shot_child
 
+    # Платная генерация по «пустому» промту (шаблон стиля, поля сцены = «нет исходных данных») даёт бессмысленные
+    # картинки: живой F10 15.10.2026 заплатил за 8 одинаковых абстрактных пятен. Останавливаемся до оплаты.
+    from app.generation_options import is_scene_prompt_hollow
+    from app.settings import settings as _settings
+
+    if not getattr(_settings, "images_allow_hollow_prompts", False):
+        hollow = [
+            fr.number
+            for fr in frames
+            if not is_shot_child(fr) and is_scene_prompt_hollow(frame_image_prompt_text(fr, frames))
+        ]
+        non_child = [fr for fr in frames if not is_shot_child(fr)]
+        if hollow and len(hollow) == len(non_child):
+            raise RuntimeError(
+                f"промты картинок пустые у всех {len(hollow)} кадров: поля сцены заполнены заглушкой «нет исходных данных». "
+                "Платная генерация не запускается. Заполните сцены шагом «Работа с GPT» (нужен промт для описания сцен) "
+                "или задайте IMAGES_ALLOW_HOLLOW_PROMPTS=true, если так и задумано."
+            )
+
     missing_prompts = [
         fr.number
         for fr in frames

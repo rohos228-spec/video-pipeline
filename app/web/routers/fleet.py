@@ -44,6 +44,14 @@ from app.web.auth_sessions import AuthDep
 router = APIRouter(prefix="/fleet", tags=["fleet"])
 
 
+@router.get("/transfers/active")
+async def active_transfers() -> dict:
+    """Активные передачи проектов между станциями. Интерфейс опрашивает этот адрес каждые несколько секунд;
+    раньше его не было (404 в консоли на каждом опросе, найдено при проверке в браузере 15.10.2026).
+    Серверного реестра передач пока нет, поэтому список пуст: передача идёт через явные вызовы fleet-ручек."""
+    return {"transfers": []}
+
+
 def _pipeline_root() -> Path:
     return find_project_root().resolve()
 

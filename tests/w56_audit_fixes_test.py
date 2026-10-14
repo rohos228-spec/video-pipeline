@@ -223,3 +223,20 @@ def test_release_for_human_everywhere_clears_both_sessions(monkeypatch):
     monkeypatch.setattr(pdb, "run_on_replica_project", _fake_replica)
     asyncio.run(restart_chain.release_for_human_everywhere(_S(), main))
     assert not (main.meta or {}).get("restart_chain") and not (mirror.meta or {}).get("restart_chain")
+
+
+def test_fleet_active_transfers_route_exists():
+    from app.web.routers.fleet import active_transfers
+
+    assert asyncio.run(active_transfers()) == {"transfers": []}
+
+
+def test_hollow_scene_prompt_is_detected():
+    """Живой F10 15.10: промты из шаблона стиля с заглушками в каждом поле сцены ушли в платную генерацию."""
+    from app.generation_options import is_scene_prompt_hollow
+
+    hollow = ("Референс: персонажи отсутствуют. Фон: нет исходных данных для заполнения. Свет: нет исходных данных для "
+              "заполнения. Действие: нет исходных данных для заполнения.")
+    real = "Старый почтовый вагон на рассвете, пар над рельсами, тёплый свет в окне. Фон: нет исходных данных для заполнения."
+    assert is_scene_prompt_hollow(hollow) is True
+    assert is_scene_prompt_hollow(real) is False

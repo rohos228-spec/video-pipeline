@@ -426,6 +426,17 @@ def _normalize_prompt_ws(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def placeholder_count(prompt: str) -> int:
+    """Сколько раз в промте стоит заглушка «нет исходных данных…» (поля сцены без содержания)."""
+    low = (prompt or "").lower()
+    return sum(low.count(p) for p in _PLACEHOLDER_PHRASES)
+
+
+def is_scene_prompt_hollow(prompt: str, *, min_placeholders: int = 3) -> bool:
+    """Промт формально длинный (шаблон стиля), но поля сцены пустые: платить за такую картинку нельзя."""
+    return placeholder_count(prompt) >= min_placeholders
+
+
 def is_skippable_empty_prompt(prompt: str) -> bool:
     """True — промт пустой или заглушка; в outsee не отправляем."""
     body = strip_prompt_id_lines((prompt or "").strip())
