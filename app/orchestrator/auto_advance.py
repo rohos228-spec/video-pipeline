@@ -1367,7 +1367,7 @@ async def continue_project_pipeline(
     # An explicit continue is the user's manual ▶, so the manual-start gate goes too.
     clear_auto_await_manual_start(project)
     from app.services import restart_chain  # явное «продолжить» человека снимает счётчики цепочки (C-11, C-12)
-    restart_chain.release_for_human(project)
+    await restart_chain.release_for_human_everywhere(session, project)
     await session.flush()
 
     if project.status is ProjectStatus.paused:

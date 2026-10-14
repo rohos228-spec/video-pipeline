@@ -204,3 +204,22 @@ def test_suno_error_statuses_are_final_failures():
     for st in ("PENDING", "TEXT_SUCCESS", "GENERATING"):
         assert _task_state("suno", {"status": st}) == "pending", st
     assert _task_state("suno", {"status": "SUCCESS"}) == "success"
+
+
+def test_release_for_human_everywhere_clears_both_sessions(monkeypatch):
+    from app.models import Project, ProjectStatus
+    from app.services import restart_chain
+
+    class _S:
+        pass
+
+    main = Project(id=5, slug="a", topic="t", meta={"restart_chain": {"generating_images": 61}}, status=ProjectStatus.paused)
+    mirror = Project(id=5, slug="a", topic="t", meta={"restart_chain": {"generating_images": 61}}, status=ProjectStatus.paused)
+
+    async def _fake_replica(session, project, fn):
+        await fn(None, mirror)
+
+    import app.project_db as pdb
+    monkeypatch.setattr(pdb, "run_on_replica_project", _fake_replica)
+    asyncio.run(restart_chain.release_for_human_everywhere(_S(), main))
+    assert not (main.meta or {}).get("restart_chain") and not (mirror.meta or {}).get("restart_chain")

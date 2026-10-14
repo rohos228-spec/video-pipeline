@@ -1500,7 +1500,7 @@ FINDINGS: list[dict] = [
      "title": "Воркер двигает auto_mode-проект по строке master (state.db), а содержимое проекта лежит только в project.db: "
               "clamp_status_to_data откатывает plan_ready в new, цепочка встаёт после первой же ноды.",
      "where": ["app/main.py:717 (maybe_auto_advance_for_worker(s, ap, bot): без флага WORKER_USE_PROJECT_DB сессия master)",
-               "app/orchestrator/auto_advance.py:1518 (clamp_status_to_data)",
+               "app/orchestrator/auto_advance.py:1550 (clamp_status_to_data)",
                "app/services/step_data_guard.py:449 (лог «статус опережал данные»)"],
      "repro": "python scripts/e2e_full_chain.py --dry --until A --no-seams --work-dir <пустая папка вне репозитория>: "
               "статус planning -> plan_ready -> new, в логе сервера clamp_status_to_data: plan_ready -> new.",

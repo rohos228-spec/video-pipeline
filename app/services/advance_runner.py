@@ -87,6 +87,11 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                     prev_status=prev_status,
                     new_status=project.status,
                 )
+            # Сначала фиксируем project.db, потом показываем итог в master: иначе при сбое коммита master уже
+            # новее, а project.db откатился, и платный шаг мог бы выполниться второй раз (аудит W56 K6).
+            from app.db import commit_with_retry
+
+            await commit_with_retry(session)
             try:
                 from app.project_db import push_runtime_to_master
 

@@ -160,6 +160,21 @@ async def stop(session, project, node: str, cur: int, cap: int, source: str) -> 
     return text
 
 
+async def release_for_human_everywhere(session, project) -> None:
+    """release_for_human в этой сессии и в зеркальной БД (master <-> project.db): счётчики лежат в обеих, сброс только в одной
+    оставлял на другой потолок, и следующий раунд сразу снова ставил проект на паузу (аудит W56 K1)."""
+    release_for_human(project)
+    try:
+        from app.project_db import run_on_replica_project
+
+        async def _rel(_replica_session, replica) -> None:
+            release_for_human(replica)
+
+        await run_on_replica_project(session, project, _rel)
+    except Exception:  # noqa: BLE001 - зеркало не должно ломать ручное «продолжить»
+        logger.warning("[#{}] restart_chain: сброс на зеркальной БД не удался", getattr(project, "id", "?"), exc_info=True)
+
+
 def release_for_human(project) -> bool:
     """Человек снял паузу: общая цепочка, счётчики regen_budget и авто-ревью начинаются заново (C-11, C-12).
 
