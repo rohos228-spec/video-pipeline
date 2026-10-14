@@ -286,6 +286,11 @@ async def _settle_step(plan_id: str, step: "store.ActionPlanStep", spec: ActionS
     """
     if not spec.spends_money and reported is None:
         return None
+    if spec.deferred_spend:
+        # C-4: работа пойдёт в воркере позже и в plan:<id> не попадёт; закрыть резерв нулём значило бы «ничего не стоило».
+        logger.info("action layer: reserve of plan={} step={} ({}) is held, spend happens in the worker",
+                    plan_id, step.idx, spec.id)
+        return None
     try:
         async with store.sessions()() as s:
             actual, native = reported, False

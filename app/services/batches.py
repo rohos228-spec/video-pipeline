@@ -944,6 +944,7 @@ async def retry_paused_subprojects(
             for k in list(meta.keys()):
                 if k.startswith("auto_retry_") or k in (
                     "auto_paused_reason", "auto_paused_fix_hints",
+                    "restart_chain", "restart_chain_stop", "regen_budget", "regen_budget_stop",
                 ):
                     del meta[k]
             p.meta = meta

@@ -1159,6 +1159,10 @@ async def _apply_approve(
         ):
             return
     _reset_retry_count(project, transition.ready_status)
+    _node = _running_for_ready(transition.ready_status)
+    if _node is not None:  # шаг принят: цепочка перезапусков этого узла закончилась (C-12)
+        from app.services import restart_chain
+        restart_chain.clear_node(project, _node.value)
     await session.flush()
     logger.info(
         "auto_advance: #{} {} → approved → {}",
@@ -1179,14 +1183,19 @@ async def _apply_regen(
     result: ReviewResult,
     *,
     bot: Bot | None = None,
+    manual: bool = False,
 ) -> None:
-    """Эмулируем клик `regen` + кладём fix_hints для следующей генерации."""
+    """Эмулируем клик `regen` + кладём fix_hints для следующей генерации.
+
+    ``manual=True``: решение человека (HITL). Оно не считается «авто-регенерацией» (счётчик ``auto_retry_*`` не
+    растёт, пауза «GPT просил regen» не ставится), но считается в общей цепочке перезапусков узла (C-11, C-12, N-16).
+    """
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.regenerate
 
-    count = _bump_retry_count(project, transition.ready_status)
+    count = 0 if manual else _bump_retry_count(project, transition.ready_status)
 
-    if count > MAX_AUTO_REGEN_PER_STEP:
+    if not manual and count > MAX_AUTO_REGEN_PER_STEP:
         # Превышен лимит — pause проекта.
         project.status = ProjectStatus.paused
         meta = dict(project.meta or {})
@@ -1205,6 +1214,16 @@ async def _apply_regen(
 
     # Откатываемся к running-статусу шага.
     back_to = _running_for_ready(transition.ready_status)
+
+    # Общий потолок перезапусков узла (C-12): платный перезапуск сверх него не делается, решает человек.
+    from app.services import restart_chain
+    _node = back_to.value if back_to is not None else transition.ready_status.value
+    _src = "manual" if manual else "auto_review"
+    _ok, _n, _cap = restart_chain.charge(project, _node, _src)
+    if not _ok:
+        await restart_chain.stop(session, project, _node, _n, _cap, _src)
+        return
+
     if back_to is None:
         logger.warning(
             "auto_advance: не знаю как откатить {} → running",
@@ -1338,6 +1357,8 @@ async def continue_project_pipeline(
     # silently discards unflushed changes (the stop flag used to survive "continue").
     # An explicit continue is the user's manual ▶, so the manual-start gate goes too.
     clear_auto_await_manual_start(project)
+    from app.services import restart_chain  # явное «продолжить» человека снимает счётчики цепочки (C-11, C-12)
+    restart_chain.release_for_human(project)
     await session.flush()
 
     if project.status is ProjectStatus.paused:

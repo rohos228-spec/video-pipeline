@@ -9,13 +9,13 @@
 | orchestrator | `python scripts/run_orchestrator_tests.py` (`--fast` - только быстрые) | Тесты оркестратора. Без денег и сети: синтетические ключи, одноразовые SQLite. |
 | legacy | `python scripts/run_legacy_chunked.py --suite legacy --chunk 40` | Остальные `tests/test_*.py` и `tests/*_test.py` кусками по 40 файлов, каждый кусок в новом процессе. |
 | observe | `python scripts/run_legacy_chunked.py --suite observe --chunk 12 --per-chunk-timeout 2400` | Весь `tests/observe_v1` (без пяти docker-модулей), тоже кусками. Раньше эти модули не входили ни в один набор. Набор тяжёлый: на этой машине около 70 минут (медиа-стенды), поэтому куски по 12 файлов и таймаут куска 2400 с. Без `--suite` раннер гонит legacy, потом observe. |
-| docker | задача `docker` в `.github/workflows/tests.yml` | Пять модулей `tests/observe_v1`, которым нужен `/.dockerenv` (`_DOCKER_ONLY` в `tests/observe_v1/conftest.py`). Локально они пропущены; в контейнере включаются переменной `VP_RUN_DOCKER_ONLY=1`. |
+| docker | задача `docker` в `.github/workflows/tests.yml` | Пять модулей `tests/observe_v1`, которым нужен `/.dockerenv` (`_DOCKER_ONLY` в `tests/observe_v1/conftest.py`). Локально они пропущены; в контейнере включаются переменной `VP_RUN_DOCKER_ONLY=1`. В CI идут четыре; `test_readonly_pilot.py` не идёт: ему нужны архивные файлы пилота (`/observe-source/pilot-context.json`, `pilot_gateway.py`, `existing_gateway.py`), которых нет в репозитории (на GitHub 8 его тестов падают именно из-за этого). |
 
 Дополнительные ключи pytest раннер orchestrator передаёт как есть, например `--junitxml=reports/orchestrator.xml`.
 
 Состав наборов считает `scripts/test_suites.py`. Тест `tests/test_testing_doc_drift.py` требует, чтобы любой файл `test_*.py` или `*_test.py` под `tests/` входил хотя бы в один набор: новый файл или папка без набора роняют сборку.
 
-CI (`.github/workflows/tests.yml`): `orchestrator`, `observe` и `docker` идут на каждый push и pull request, `legacy` по ночам и вручную. На GitHub этот файл пока ни разу не прогонялся: зелёность там не подтверждена, проверено только локально и чтением.
+CI (`.github/workflows/tests.yml`): `orchestrator`, `observe` и `docker` идут на каждый push и pull request, `legacy` по ночам и вручную. На GitHub (запуск 14.10.2026 для коммита e52bcd8) задачи `orchestrator` и `observe` прошли зелёными; `docker` падал только на `test_readonly_pilot.py`, он снят из CI (см. выше).
 
 ## Маркеры
 

@@ -530,10 +530,22 @@ async def record_step_failure(
     await _soft_retry_without_wipe(session, project, step_code)
 
     fatal_config = profile.abandon_on_fatal_config and err_code in FATAL_CONFIG_ERROR_CODES
-    if total >= max_total or fatal_config:
+    # C-12: каждый повтор после ошибки - платный перезапуск узла в общей цепочке; успех соседнего счётчика её не сбрасывает
+    from app.services import restart_chain
+    chain_ok, chain_n, chain_cap = restart_chain.charge(project, running.value, "step_failure")
+    chain_stop = not chain_ok and total < max_total and not fatal_config
+    if total >= max_total or fatal_config or not chain_ok:
         fs["abandoned_at"] = datetime.now(timezone.utc).isoformat()
         fs["recovery_cycles"] = profile.max_cycles
-        if fatal_config and total < max_total:
+        if chain_stop:
+            fs["abandoned_reason"] = "restart_chain"
+            fs.pop("abandoned_threshold", None)
+            _m = _meta(project)
+            _m["auto_paused_reason"] = restart_chain.summary(running.value, chain_n, chain_cap, "step_failure")
+            _m["restart_chain_stop"] = {"node": running.value, "count": chain_n, "cap": chain_cap,
+                                        "source": "step_failure"}
+            project.meta = _m
+        elif fatal_config and total < max_total:
             # Ошибка настройки: повтор её не вылечит, поэтому автоматическое восстановление не открывается
             # (счётчик ниже порога) и человеку сразу показывается причина.
             fs["abandoned_reason"] = "fatal_config"

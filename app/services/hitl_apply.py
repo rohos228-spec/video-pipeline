@@ -110,11 +110,37 @@ async def _maybe_advance_visual_ready(
     await _apply_approve(session, project, hitl, transition, bot=None)
 
 
+REJECTED_BY_HUMAN = "rejected_by_human"
+
+
+def _mark_rejected(frame: Frame, value: bool) -> None:
+    """N-17: кадр, отклонённый человеком, не возвращается в очередь автоматикой (requeue_failed_frames_without_png)."""
+    attrs = dict(frame.attrs or {})
+    if value:
+        attrs[REJECTED_BY_HUMAN] = True
+    elif attrs.pop(REJECTED_BY_HUMAN, None) is None:
+        return
+    frame.attrs = attrs
+
+
+async def _charge_manual_regen(session: AsyncSession, project: Project, node: ProjectStatus) -> bool:
+    """N-16: ручная перегенерация - платный перезапуск узла в общей цепочке. False: потолок, проект на паузе."""
+    from app.services import restart_chain
+
+    ok, n, cap = restart_chain.charge(project, node.value, "manual")
+    if ok:
+        return True
+    await restart_chain.stop(session, project, node.value, n, cap, "manual")
+    return False
+
+
 async def _apply_frame_visual_hitl(
     session: AsyncSession,
     project: Project,
     req: HITLRequest,
     decision: HITLDecision,
+    *,
+    advance: bool = True,
 ) -> bool:
     """Решение по одному кадру — не ставим весь проект на паузу."""
     if req.frame_id is None or req.kind not in _FRAME_VISUAL_KINDS:
@@ -122,6 +148,12 @@ async def _apply_frame_visual_hitl(
     frame = await session.get(Frame, req.frame_id)
     if frame is None:
         return True
+    if decision in (HITLDecision.regenerate, HITLDecision.edit_prompt):
+        node = (ProjectStatus.generating_images if req.kind is HITLKind.approve_images
+                else ProjectStatus.generating_videos)
+        if not await _charge_manual_regen(session, project, node):
+            return True  # потолок: кадр не возвращается в очередь, проект на паузе с причиной
+    _mark_rejected(frame, decision is HITLDecision.rejected)
     if req.kind is HITLKind.approve_images:
         if decision is HITLDecision.approved:
             frame.status = FrameStatus.image_approved
@@ -137,7 +169,7 @@ async def _apply_frame_visual_hitl(
         elif decision in (HITLDecision.regenerate, HITLDecision.edit_prompt):
             frame.status = FrameStatus.animation_prompt_ready
     await session.flush()
-    if not getattr(project, "auto_mode", False):
+    if advance and not getattr(project, "auto_mode", False):
         await _maybe_advance_visual_ready(session, project, req.kind)
     return True
 
@@ -146,8 +178,13 @@ async def apply_hitl_side_effects(
     session: AsyncSession,
     req: HITLRequest,
     decision: HITLDecision,
+    *,
+    advance: bool = True,
 ) -> None:
-    """Обновить статус проекта после решения по HITL (если нужно)."""
+    """Обновить статус проекта после решения по HITL (если нужно).
+
+    ``advance=False`` (слой действий, C-14): решение записывается, а следующий платный шаг не запускается; его
+    запускают отдельным действием с оценкой цены и потолком."""
     if decision is HITLDecision.pending:
         return
 
@@ -155,17 +192,21 @@ async def apply_hitl_side_effects(
     if project is None:
         return
 
-    if await _apply_frame_visual_hitl(session, project, req, decision):
+    if await _apply_frame_visual_hitl(session, project, req, decision, advance=advance):
         return
 
     action = _action_for_decision(decision)
 
     if req.kind is HITLKind.approve_hero:
         if action == "regen":
+            if not await _charge_manual_regen(session, project, ProjectStatus.generating_hero):
+                return
             project.status = ProjectStatus.generating_hero
             await session.flush()
             return
         if action == "approve":
+            if not advance:
+                return
             project.status = await _next_status_after_hero_approve(
                 session, project, req
             )
@@ -182,7 +223,8 @@ async def apply_hitl_side_effects(
         return
 
     if decision is HITLDecision.approved:
-        await _apply_approve(session, project, req, transition, bot=None)
+        if advance:
+            await _apply_approve(session, project, req, transition, bot=None)
     elif decision is HITLDecision.regenerate:
         await _apply_regen(
             session,
@@ -195,6 +237,7 @@ async def apply_hitl_side_effects(
                 fix_hints=list((req.payload or {}).get("fix_hints") or []),
             ),
             bot=None,
+            manual=True,
         )
     elif decision is HITLDecision.rejected:
         await _apply_reject(

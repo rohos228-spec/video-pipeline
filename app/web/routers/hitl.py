@@ -151,7 +151,7 @@ async def _decide(session: AsyncSession, hitl_id: int, payload: HITLDecisionRequ
                                      edited_prompt=payload.edited_prompt):
         await session.rollback()
         raise HTTPException(status_code=400, detail="Решение по этому запросу уже принято")
-    await apply_hitl_side_effects(session, req, new_decision)
+    await apply_hitl_side_effects(session, req, new_decision, advance=payload.advance)
     await session.commit()
     await session.refresh(req)
     return req

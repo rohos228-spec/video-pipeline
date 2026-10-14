@@ -530,7 +530,7 @@ async def maybe_start_vision_check_loop_after_check(
     if gate == "pass":
         from app.services import regen_budget
 
-        regen_budget.clear(project, "vision")
+        regen_budget.clear(project, f"vision:{kind}")  # C-12: только свой вид, не соседние
         if vision_check_loop_active(project):
             clear_vision_check_meta(project)
             logger.info(

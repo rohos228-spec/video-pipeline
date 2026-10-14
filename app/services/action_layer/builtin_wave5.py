@@ -266,8 +266,10 @@ _PRE_HITL = Precondition("hitl_pending", "Запрос подтверждени�
 
 def _decide(decision: str):
     async def executor(ctx, params):
-        data = await ctx.call("POST", f"/hitl/{params['hitl_id']}/decision",
-                              json={"decision": decision, "project_id": params.get("project_id")})
+        body = {"decision": decision, "project_id": params.get("project_id")}
+        if decision == "approve":
+            body["advance"] = False  # C-14: решение записывается, следующий платный шаг запускается отдельным действием
+        data = await ctx.call("POST", f"/hitl/{params['hitl_id']}/decision", json=body)
         return {"hitl_id": params["hitl_id"], "decision": (data or {}).get("decision"),
                 "kind": (data or {}).get("kind"), "frame_id": (data or {}).get("frame_id")}
     return executor
@@ -424,15 +426,15 @@ def _specs() -> list[ActionSpec]:
           params_schema=_obj({}, []), executor=_list_pending, risk=RISK_READ, idempotent=True,
           preconditions=(_PRE_PROJECT,), tags=("hitl",)),
         S(id="hitl.approve", title_ru="Одобрить запрос подтверждения (HITL)",
-          description_ru="Принимает результат: кадр получает статус одобренного, а когда закрыты все "
-                         "запросы шага, проект переходит дальше. Решение необратимо. Выполняется с "
-                         "токеном оператора. Автопродвижение должно быть выключено, иначе одобрение "
-                         "запустило бы следующие платные шаги без оценки.",
+          description_ru="Принимает результат: кадр получает статус одобренного. Следующий шаг "
+                         "НЕ запускается (платный запуск идёт отдельным действием step.run_step с оценкой "
+                         "цены и потолком). Решение необратимо. Выполняется с токеном оператора. "
+                         "Автопродвижение должно быть выключено.",
           params_schema=_obj(_HITL_PARAMS, ["hitl_id"]), executor=_decide("approve"),
           risk=RISK_DESTRUCTIVE, destructive=True, reversible=False, idempotent=False,
           destructive_effects=lambda p: (f"Решение по запросу {p['hitl_id']} будет принято "
-                                         "«одобрено» и повторно не меняется; проект может "
-                                         "перейти на следующий шаг."),
+                                         "«одобрено» и повторно не меняется; следующий шаг "
+                                         "не запускается."),
           preconditions=(_PRE_PROJECT, _PRE_HITL, _PRE_NO_AUTO_CHAIN), tags=("hitl",)),
         S(id="hitl.reject", title_ru="Отклонить запрос подтверждения (HITL)",
           description_ru="Отклоняет результат: кадр получает статус failed, проект может уйти на "
@@ -450,7 +452,7 @@ def _specs() -> list[ActionSpec]:
                          "должно быть выключено. Решение необратимо.",
           params_schema=_obj({**_HITL_PARAMS, "ceiling_credits": _CEILING},
                              ["hitl_id", "ceiling_credits"]),
-          executor=_decide("regenerate"), risk=RISK_DESTRUCTIVE, spends_money=True,
+          executor=_decide("regenerate"), risk=RISK_DESTRUCTIVE, spends_money=True, deferred_spend=True,
           destructive=True, reversible=False, idempotent=False,
           estimator=lambda p: _ceiling_estimate(CostEstimate.unknown(
               "перегенерация: число попыток и цена модели из параметров не определяются"), p),
@@ -500,7 +502,7 @@ def _specs() -> list[ActionSpec]:
               "topics": {"type": "array", "minItems": 1, "maxItems": 20,
                          "items": {"type": "string", "minLength": 1, "maxLength": 300}},
               "ceiling_credits": _CEILING}, ["topics", "ceiling_credits"]),
-          executor=_mass_start, risk=RISK_DESTRUCTIVE, spends_money=True, destructive=True,
+          executor=_mass_start, risk=RISK_DESTRUCTIVE, spends_money=True, deferred_spend=True, destructive=True,
           reversible=False, idempotent=False, estimator=_mass_estimate,
           destructive_effects=lambda p: (
               f"Очередь из {len(p['topics'])} тем стартует; прежние нетронутые дочерние проекты "

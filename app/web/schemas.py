@@ -270,6 +270,7 @@ class HITLDecisionRequest(BaseModel):
     decision: str  # approve | regenerate | reject | edit_prompt
     edited_prompt: str | None = None
     project_id: int | None = None  # какому проекту принадлежит запрос (номера в разных базах могут совпасть)
+    advance: bool = True  # False: записать решение, но не запускать следующий шаг (слой действий, C-14)
 
 
 # ── Artifact ──

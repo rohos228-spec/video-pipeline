@@ -423,6 +423,11 @@ class Settings(BaseSettings):
     worker_use_project_db: bool = Field(False, alias="WORKER_USE_PROJECT_DB")
     # Оценка одной перегенерации кадра/героя; 0 = взять MEDIA_SUBMIT_ESTIMATE_USD из spend_guard.
     regen_estimate_usd_per_item: float = Field(0.0, ge=0, alias="REGEN_ESTIMATE_USD_PER_ITEM")
+    # C-12: единый потолок платных перезапусков ОДНОГО узла проекта поверх трёх счётчиков (regen_budget, авто-ревью,
+    # повторы после ошибки), которые сбрасывают друг друга успехом. Сбрасывается одобрением шага или решением человека
+    # снять паузу; на потолке проект встаёт на паузу с инцидентом «нужен человек». 0 = без ограничения. Значение
+    # по умолчанию - безопасная оценка, итоговое число выбирает владелец (docs/audit/W40_PHASE4_OWNER_QUESTIONS.md).
+    restart_chain_max_per_node: int = Field(60, ge=0, alias="RESTART_CHAIN_MAX_PER_NODE")
     action_layer_approval_ttl_s: int = Field(600, ge=1, alias="ACTION_LAYER_APPROVAL_TTL_S")
     action_layer_max_steps: int = Field(20, ge=1, le=100, alias="ACTION_LAYER_MAX_STEPS")
     action_layer_step_timeout_s: float = Field(900.0, gt=0, alias="ACTION_LAYER_STEP_TIMEOUT_S")

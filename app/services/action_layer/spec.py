@@ -97,6 +97,9 @@ class ActionSpec:
     poll: Poller | None = None
     stop: Stopper | None = None
     poll_interval_s: float = 2.0
+    # C-4: платную работу после ответа действия делает воркер (не job: опросить нечем). Резерв потолка не закрывается
+    # по журналу трат (пустой журнал = «0» было бы ложью): он остаётся до решения человека.
+    deferred_spend: bool = False
     scope: str = "project"
     tags: tuple[str, ...] = ()
 

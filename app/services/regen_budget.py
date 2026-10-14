@@ -51,13 +51,21 @@ class Verdict:
     usd_spent: float = 0.0
     usd_round: float = 0.0
     usd_cap: float = 0.0
+    chain_exhausted: bool = False
+    chain_count: int = 0
+    chain_cap: int = 0
 
     @property
     def ok(self) -> bool:
-        return not self.blocked and not self.run_exhausted and not self.usd_exhausted
+        return (not self.blocked and not self.run_exhausted and not self.usd_exhausted
+                and not self.chain_exhausted)
 
     def summary(self) -> str:
         title = _KIND_TITLES.get(self.kind, self.kind)
+        if self.chain_exhausted:
+            from app.services import restart_chain
+            return restart_chain.summary(restart_chain.node_for_kind(self.kind), self.chain_count,
+                                         self.chain_cap, "regen_budget")
         if self.usd_exhausted:
             return (f"{title}: исчерпан денежный лимит перегенераций (потрачено по оценке ${self.usd_spent:.2f}, "
                     f"ещё один раунд ${self.usd_round:.2f}, лимит ${self.usd_cap:.2f}); дальше решает человек")
@@ -151,6 +159,14 @@ def charge(project, kind: str, items: Iterable[object] = ()) -> Verdict:
             verdict.allowed.append(name)
     if verdict.blocked:
         return verdict
+    # C-12: общий потолок цепочки перезапусков узла; успех проверки его не сбрасывает
+    from app.services import restart_chain
+    chain_ok, chain_n, chain_cap = restart_chain.charge(project, restart_chain.node_for_kind(kind), "regen_budget")
+    if not chain_ok:
+        verdict.chain_exhausted = True
+        verdict.chain_count, verdict.chain_cap = chain_n, chain_cap
+        verdict.blocked = names
+        return verdict
     for name in names:
         frames[name] = int(frames.get(name) or 0) + 1
     bucket.update(frames=frames, rounds=rounds + 1, usd=round(spent + round_usd, 4))
@@ -164,7 +180,7 @@ def charge(project, kind: str, items: Iterable[object] = ()) -> Verdict:
 def clear(project, kind_prefix: str | None = None) -> bool:
     """Forget the counters of a step that finished (or all kinds when no prefix is given)."""
     state = dict(_state(project))
-    gone = [k for k in state if kind_prefix is None or k == kind_prefix or k.startswith(kind_prefix + ":")]
+    gone = [k for k in state if kind_prefix is None or k == kind_prefix or k.startswith(kind_prefix + ":")]  # exact kind: clear(p, "vision:videos")
     if not gone:
         return False
     for k in gone:
@@ -196,7 +212,7 @@ async def stop(session, project, verdict: Verdict) -> None:
     meta["regen_budget_stop"] = {"kind": verdict.kind, "blocked": verdict.blocked[:24],
                                  "run_exhausted": verdict.run_exhausted, "rounds": verdict.rounds,
                                  "usd_exhausted": verdict.usd_exhausted, "usd_spent": verdict.usd_spent,
-                                 "usd_cap": verdict.usd_cap}
+                                 "usd_cap": verdict.usd_cap, "chain_exhausted": verdict.chain_exhausted}
     project.meta = meta
     flag_modified(project, "meta")
     project.status = ProjectStatus.paused
@@ -212,6 +228,7 @@ async def stop(session, project, verdict: Verdict) -> None:
             "blocked": verdict.blocked[:24], "run_exhausted": verdict.run_exhausted, "rounds": verdict.rounds,
             "per_frame_cap": verdict.per_frame, "per_run_cap": verdict.per_run,
             "usd_exhausted": verdict.usd_exhausted, "usd_spent": verdict.usd_spent,
-            "usd_round": verdict.usd_round, "usd_cap": verdict.usd_cap, "summary": text})
+            "usd_round": verdict.usd_round, "usd_cap": verdict.usd_cap,
+            "restart_chain": verdict.chain_exhausted, "summary": text})
     except Exception:  # noqa: BLE001
         logger.debug("regen_budget: observation fact skipped", exc_info=True)
