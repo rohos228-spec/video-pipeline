@@ -123,7 +123,9 @@ PRICE = {"llm_request": 0.05, "image": 0.25, "video": 0.40, "tts_per_char": 0.00
          "music": 0.60}
 UNKNOWN_ROW_USD = {"text": 0.05, "media": 0.30}      # = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD / UNKNOWN_ROW_ESTIMATE_USD
 RETRY_FACTOR = {"image": 2, "video": 2, "sfx": 3, "tts": 2, "llm": 2}
-MAX_TEXT_CEILING, MAX_MEDIA_CEILING, MAX_FRAMES = 2.0, 6.0, 10  # владелец 14.10.2026: до $6 медиа и 10 кадров на живой F10
+MAX_TEXT_CEILING, MAX_MEDIA_CEILING, MAX_FRAMES = 2.0, 1.0, 5
+# Выше этих пределов только по явному слову владельца в командной строке (владелец 14.10.2026: до $6 медиа и 10 кадров на живой F10).
+OWNER_MEDIA_CEILING_LIMIT, OWNER_FRAMES_LIMIT = 6.0, 10
 FORBIDDEN_MODEL_RE = re.compile(r"seedance[-_ /.]?2[-_.]?5", re.I)
 TEXT_PROVIDERS = {"vibecode", "gpt", "llm"}
 
@@ -561,6 +563,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--max-text-usd", type=float, default=MAX_TEXT_CEILING)
     ap.add_argument("--max-media-usd", type=float, default=MAX_MEDIA_CEILING)
     ap.add_argument("--frames", type=int, default=1)
+    ap.add_argument("--owner-approved-media-usd", type=float, default=0.0, help=f"слово владельца: потолок медиа выше $1, не больше ${OWNER_MEDIA_CEILING_LIMIT}")
+    ap.add_argument("--owner-approved-frames", type=int, default=0, help=f"слово владельца: кадров больше 5, не больше {OWNER_FRAMES_LIMIT}")
+    ap.add_argument("--no-human-text-gate", action="store_true", help="не одобрять план/сценарий за человека (проверять только встроенный Вердикт)")
     ap.add_argument("--with-music", action="store_true", help="настоящая музыка Kie Suno (≈ $0.6, съедает потолок медиа)")
     ap.add_argument("--with-sfx", action="store_true", help="настоящие звуки ElevenLabs (по умолчанию SFX_ENABLED=false)")
     ap.add_argument("--sfx-max-events", type=int, default=3)
@@ -581,12 +586,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.with_hero = False
     if args.live and not args.work_dir:
         ap.error("--live требует --work-dir")
-    if not 1 <= args.frames <= MAX_FRAMES:
-        ap.error(f"--frames должен быть от 1 до {MAX_FRAMES}")
+    media_cap = min(max(MAX_MEDIA_CEILING, args.owner_approved_media_usd), OWNER_MEDIA_CEILING_LIMIT)
+    frames_cap = min(max(MAX_FRAMES, args.owner_approved_frames), OWNER_FRAMES_LIMIT)
+    if not 1 <= args.frames <= frames_cap:
+        ap.error(f"--frames должен быть от 1 до {frames_cap}")
     if args.max_text_usd <= 0 or args.max_media_usd <= 0:
         ap.error("потолки должны быть больше нуля")
-    if args.max_text_usd > MAX_TEXT_CEILING or args.max_media_usd > MAX_MEDIA_CEILING:
-        ap.error(f"потолки выше правила владельца (текст ${MAX_TEXT_CEILING}, медиа ${MAX_MEDIA_CEILING} на прогон) не принимаются")
+    if args.max_text_usd > MAX_TEXT_CEILING or args.max_media_usd > media_cap:
+        ap.error(f"потолки выше правила владельца (текст ${MAX_TEXT_CEILING}, медиа ${media_cap} на прогон) не принимаются")
     if args.sfx_max_events < 1 or args.tts_chars_per_frame < 1:
         ap.error("--sfx-max-events и --tts-chars-per-frame должны быть положительными")
     return args
@@ -743,7 +750,26 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
             state_db = loc.Db(work / "data" / "state.db")
             last_check = [0.0]
 
+            human_gate = {"done": set(), "log": []}
+
+            def human_text_gate(status: str) -> None:
+                """Оператор-человек (владелец 14.10.2026: «если нужно подтверждение человеком, будь им»): строгий встроенный
+                «Вердикт» почти не пропускает сгенерированные план/сценарий, поэтому на plan_ready/script_ready стенд сам
+                одобряет ожидающий запрос ручкой UI POST /api/hitl/{id}/decision. Это отражено в результате, не скрыто."""
+                if status not in ("plan_ready", "script_ready"):
+                    return
+                code, rows = chain.api.get(f"/api/hitl/project/{chain.pid}")
+                for h in (rows if isinstance(rows, list) else []):
+                    if h.get("decision") == "pending" and h.get("kind") in ("approve_plan", "approve_script") \
+                            and h.get("id") not in human_gate["done"]:
+                        human_gate["done"].add(h.get("id"))
+                        c2, b2 = chain.api.post(f"/api/hitl/{h['id']}/decision", {"decision": "approve"})
+                        human_gate["log"].append({"hitl_id": h.get("id"), "kind": h.get("kind"), "code": c2})
+                        print(f"  оператор-человек одобрил {h.get('kind')} (HTTP {c2})", flush=True)
+
             def tick(_status: str) -> str:
+                if not args.no_human_text_gate:
+                    human_text_gate(_status)
                 if time.time() - last_check[0] < 2.0:
                     return ""
                 last_check[0] = time.time()
@@ -804,7 +830,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
                        "ledger": info.get("ledger"), "spend": info.get("spend"), "counts_wire": info.get("counts_wire", {}),
                        "level_reached": info.get("level_reached"), "final_probe": ev.final_probe, "audit_rows": len(ev.audit),
                        "incidents": [{k: i[k] for k in ("node_key", "type", "severity", "status")} for i in ev.incidents],
-                       "seconds": round(time.time() - t_start, 1), "stand_mutations": chain.api.mutations,
+                       "seconds": round(time.time() - t_start, 1), "stand_mutations": chain.api.mutations, "human_text_gate": human_gate["log"],
                        "log_evidence": fc.log_evidence(work / "server.log")})
     result.update({"checks": R.checks, "failed": R.failed, "known_defects": R.known_defects, "advisories": R.advisories})
     result["args"] = {k: v for k, v in vars(args).items() if k != "env_file"}
