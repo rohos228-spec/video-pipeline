@@ -233,6 +233,8 @@ async def main() -> int:
         await base._wait_api()
         async with httpx.AsyncClient(timeout=30, trust_env=False,
                                      limits=httpx.Limits(max_keepalive_connections=0)) as client:
+            from _operator_headers import attach_operator_token
+            await attach_operator_token(client, ROOT_URL)
             options = (await client.get(ROOT_URL + "/observations/launch-options")).json()
             response = await client.post(ROOT_URL + "/observations/launch", json={
                 "workflow_run_id": options["workflow_run_id"], "graph_version": options["graph_version"],

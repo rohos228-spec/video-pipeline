@@ -129,6 +129,8 @@ async def stop(session, project, node: str, cur: int, cap: int, source: str) -> 
     meta = dict(project.meta or {})
     meta[regen_budget.PAUSE_REASON_KEY] = text
     meta["restart_chain_stop"] = {"node": node, "count": cur, "cap": cap, "source": source}
+    if project.status != ProjectStatus.paused:
+        meta["paused_from_status"] = project.status.value  # «Продолжить» вернёт проект в этот шаг, а не в new
     project.meta = meta
     flag_modified(project, "meta")
     project.status = ProjectStatus.paused

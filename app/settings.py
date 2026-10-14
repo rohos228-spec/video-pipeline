@@ -423,6 +423,8 @@ class Settings(BaseSettings):
     # Денежный потолок тех же перегенераций: оценка USD (число кадров x цена платного запроса) на прогон шага.
     # Счётчики попыток не знают цены; этот потолок останавливает дорогие повторы. 0 = без ограничения.
     regen_max_usd_per_run: float = Field(25.0, ge=0, alias="REGEN_MAX_USD_PER_RUN")
+    # Сборка по умолчанию не пропускает кадры с озвучкой без клипа (иначе ролик короче голоса).
+    assemble_allow_missing_clips: bool = Field(False, alias="ASSEMBLE_ALLOW_MISSING_CLIPS")
     # F10-D1: автопродвижение воркера идёт на сессии project.db проекта, а не на строке master (там данных проекта нет,
     # и plan_ready откатывается в new). По умолчанию выключено: откат = убрать флаг.
     worker_use_project_db: bool = Field(False, alias="WORKER_USE_PROJECT_DB")

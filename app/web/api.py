@@ -544,7 +544,18 @@ def _mount_frontend(app: FastAPI) -> None:
                     headers={"Cache-Control": "no-cache, must-revalidate"},
                 )
         # Next static export — все маршруты как .html-файлы.
+        base = out_dir.resolve()
+
+        def _inside(p):
+            try:
+                p.resolve().relative_to(base)
+                return True
+            except (ValueError, OSError):
+                return False
+
         candidate = out_dir / full_path
+        if not _inside(candidate):
+            return _html_response(out_dir / "index.html")  # выход из web/out запрещён
         if candidate.is_file():
             if candidate.suffix.lower() in {".html", ".htm"}:
                 return _html_response(candidate)
@@ -555,7 +566,7 @@ def _mount_frontend(app: FastAPI) -> None:
                 )
             return FileResponse(candidate)
         html_variant = out_dir / f"{full_path}.html"
-        if html_variant.is_file():
+        if html_variant.is_file() and _inside(html_variant):
             return _html_response(html_variant)
         return _html_response(out_dir / "index.html")  # SPA fallback
 

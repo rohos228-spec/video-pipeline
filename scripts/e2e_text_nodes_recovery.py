@@ -262,6 +262,8 @@ async def main() -> int:
         await base._wait_api()
         async with httpx.AsyncClient(timeout=30, trust_env=False,
                                      limits=httpx.Limits(max_keepalive_connections=0)) as client:
+            from _operator_headers import attach_operator_token
+            await attach_operator_token(client, BASE)
             options = (await client.get(BASE + "/observations/launch-options")).json()
             print("launch-options configured:", options["configured"], "mode:", options["mode"],
                   "strategies:", options["strategies"], "profiles:", [p["profile_id"] for p in options["profiles"]])

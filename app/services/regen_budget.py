@@ -213,6 +213,8 @@ async def stop(session, project, verdict: Verdict) -> None:
                                  "run_exhausted": verdict.run_exhausted, "rounds": verdict.rounds,
                                  "usd_exhausted": verdict.usd_exhausted, "usd_spent": verdict.usd_spent,
                                  "usd_cap": verdict.usd_cap, "chain_exhausted": verdict.chain_exhausted}
+    if project.status != ProjectStatus.paused:
+        meta["paused_from_status"] = project.status.value  # «Продолжить» вернёт проект в этот шаг, а не в new
     project.meta = meta
     flag_modified(project, "meta")
     project.status = ProjectStatus.paused

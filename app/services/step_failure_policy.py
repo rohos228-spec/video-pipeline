@@ -37,6 +37,7 @@ from app.telegram.menu import step_by_running_status
 FAILS_PER_CYCLE = 3
 MAX_CYCLES = 3
 MAX_TOTAL_FAILS = FAILS_PER_CYCLE * MAX_CYCLES  # 9
+INFRA_LOCK_MAX_STREAK = 20  # подряд «БД занята» без прогресса -> пауза
 SLEEP_MINUTES = 30
 # Лишние листы GPT / hotfix normalize — не морозить на полчаса.
 XLSX_SHEET_FORMAT_SLEEP_MINUTES = 2
@@ -451,6 +452,19 @@ async def record_step_failure(
 
     if err_code_early == "infra_db_locked":
         running = project.status
+        _fs0 = _failure_state(project)
+        _streak = int(_fs0.get("infra_lock_streak") or 0) + 1
+        _fs0["infra_lock_streak"] = _streak
+        _save_failure_state(project, _fs0)
+        if _streak > INFRA_LOCK_MAX_STREAK:
+            from app.services.project_control import pause_project as pause_project_svc
+            # вечная блокировка БД: не крутить шаг бесконечно, пауза с причиной (человек снимает «Продолжить»)
+            _fs0["infra_lock_streak"] = 0
+            _save_failure_state(project, _fs0)
+            await pause_project_svc(session, project)
+            await session.flush()
+            logger.error("[#{}] infra_db_locked {} раз подряд — пауза", project.id, _streak)
+            return "pause_infra"
         step = step_by_running_status(running)
         step_code = step.code if step else running.value
         await _soft_retry_without_wipe(session, project, step_code)
@@ -670,6 +684,7 @@ def clear_failure_on_success(project: Project, running: ProjectStatus) -> None:
     fs.pop("sleep_until", None)
     fs.pop("recovery_cycles", None)
     fs.pop("last_error", None)
+    fs.pop("infra_lock_streak", None)
     _save_failure_state(project, fs)
 
 

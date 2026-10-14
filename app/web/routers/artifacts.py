@@ -26,6 +26,16 @@ router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 files_router = APIRouter(tags=["files"])
 
 
+_PRIVATE_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".log", ".env", ".key", ".pem"}
+_PRIVATE_NAMES = {"web_sessions", "sidebar_layout.json", ".env"}
+
+
+def _is_private_file(p: Path) -> bool:
+    """Базы состояния, логи и ключи лежат под data_dir, но наружу через /api/files не отдаются."""
+    name = p.name.lower()
+    return p.suffix.lower() in _PRIVATE_SUFFIXES or name.startswith(".env") or name in _PRIVATE_NAMES         or any(name.startswith(n) for n in ("web_sessions",))
+
+
 @files_router.get("/files")
 async def serve_data_file(
     path: str = Query(..., description="Абсолютный путь под data_dir"),
@@ -47,6 +57,8 @@ async def serve_data_file(
         raise HTTPException(status_code=400, detail="Путь выходит за пределы папки данных") from exc
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="Файл не найден")
+    if _is_private_file(candidate):
+        raise HTTPException(status_code=403, detail="Служебный файл (база, лог, ключи) не отдаётся")
     download_name, mime = suggested_name_and_mime(candidate)
     kwargs: dict = {
         "media_type": mime or "application/octet-stream",

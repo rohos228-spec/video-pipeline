@@ -172,6 +172,11 @@ async def _run_assemble(session: AsyncSession, project: Project, bot: Bot) -> No
             frames.append(fr)
         elif (fr.voiceover_text or "").strip():
             skipped_no_video.append(fr.number)
+    if skipped_no_video and not settings.assemble_allow_missing_clips:
+        raise RuntimeError(
+            f"кадры {skipped_no_video} с озвучкой без видео-клипа: ролик получился бы короче голоса. "
+            "Допогенерируйте видео для этих кадров (или ASSEMBLE_ALLOW_MISSING_CLIPS=true, чтобы пропустить)"
+        )
     if skipped_no_video:
         logger.warning(
             "[#{}] assemble: кадры {} без клипа — не входят в финальный ролик",
@@ -521,12 +526,18 @@ async def _assemble_core(
             sfx=sfx_inputs,
         )
     else:
+        from app.services.sfx_mix import collect_sfx_inputs
+
+        sfx_v2 = collect_sfx_inputs(project)
+        if sfx_v2:
+            logger.info("[#{}] assemble: {} SFX из sfx_gen идут в микс (variant2)", project.id, len(sfx_v2))
         await run_variant2(
             project,
             frame_numbers,
             audio_path,
             out_path,
             bgm=bgm,
+            sfx=sfx_v2,
         )
         # ASS ещё нет на диске: путь зарезервирован выше, файл пишем здесь.
         # Старый `subs_path.is_file()` пропускал весь burn на montage-v3.

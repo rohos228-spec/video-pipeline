@@ -739,8 +739,10 @@ async def _mux(
     *,
     voice_s: float,
     bgm: BgmConfig | None,
+    sfx: list | None = None,
 ) -> None:
     cmd: list[str] = ["ffmpeg", "-y", "-i", str(video), "-i", str(voice)]
+    sfx_ok = [s for s in (sfx or []) if s.path.is_file()]
     gain = max(
         float(getattr(settings, "assembly_voice_gain", _DEFAULT_VOICE_GAIN)),
         0.1,
@@ -748,7 +750,27 @@ async def _mux(
     bgm_ratio = float(
         getattr(settings, "assembly_bgm_mix_ratio", _DEFAULT_BGM_MIX_RATIO)
     )
-    if bgm is not None and bgm.path.is_file():
+    if sfx_ok:
+        # SFX из sfx_gen: те же правила микса, что в ветке per-frame (sfx_mix): adelay по метке + gain, amix без нормализации
+        chains = [f"[1:a]volume={gain:.4f}[vox]"]
+        mix_in = ["[vox]"]
+        nxt = 2
+        if bgm is not None and bgm.path.is_file():
+            bgm_gain = max(bgm.level, 0.0) * max(bgm_ratio, 0.0)
+            cmd.extend(["-stream_loop", "-1", "-i", str(bgm.path)])
+            chains.append(f"[{nxt}:a]volume={bgm_gain:.4f},atrim=0:{voice_s:.3f},asetpts=PTS-STARTPTS[bgm]")
+            mix_in.append("[bgm]")
+            nxt += 1
+        for k, s in enumerate(sfx_ok):
+            cmd.extend(["-i", str(s.path)])
+            ms = max(0, int(round(s.t_start * 1000)))
+            chains.append(f"[{nxt}:a]adelay={ms}|{ms},volume={s.gain:.4f}[sf{k}]")
+            mix_in.append(f"[sf{k}]")
+            nxt += 1
+        fc = (";".join(chains) + ";" + "".join(mix_in)
+              + f"amix=inputs={len(mix_in)}:duration=first:dropout_transition=2:normalize=0[aout]")
+        cmd.extend(["-filter_complex", fc, "-map", "0:v:0", "-map", "[aout]"])
+    elif bgm is not None and bgm.path.is_file():
         bgm_gain = max(bgm.level, 0.0) * max(bgm_ratio, 0.0)
         fc = (
             f"[1:a]volume={gain:.4f}[vox];"
@@ -775,6 +797,7 @@ async def run_variant2(
     out: Path,
     *,
     bgm: BgmConfig | None = None,
+    sfx: list | None = None,
 ) -> Path:
     if not voice.is_file():
         raise RuntimeError(f"нет озвучки: {voice}")
@@ -857,7 +880,7 @@ async def run_variant2(
         shutil.copy2(video, pre_mux)
         logger.info("[#{}] variant3: timeline сохранён → {} (перед mux)", project.id, pre_mux)
         out.parent.mkdir(parents=True, exist_ok=True)
-        await _mux(video, voice, out, voice_s=voice_s, bgm=bgm)
+        await _mux(video, voice, out, voice_s=voice_s, bgm=bgm, sfx=sfx)
         if pre_mux.is_file():
             pre_mux.unlink(missing_ok=True)
 

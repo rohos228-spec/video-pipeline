@@ -321,6 +321,9 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
             if db_locked_err is not None:
                 raise db_locked_err
             assert result is not None
+            if not result.prev_status:
+                # допуск отказал или проекта нет: шаг не выполнялся, историю отказов не стираем
+                return
             async with session_scope() as s:
                 p = await s.get(Project, project_id)
                 if p is not None:
