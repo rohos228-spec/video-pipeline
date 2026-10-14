@@ -1549,15 +1549,15 @@ function RunOverlay({
     <>
       {/* Тумблер Автопродвижения */}
       {project ? (
-        <div className="pointer-events-none absolute right-4 top-3 z-40">
-          <div className="pointer-events-auto min-w-[200px] max-w-[260px] shadow-sm">
+        <div className="pointer-events-none absolute right-2 top-3 z-40 sm:right-4">
+          <div className="pointer-events-auto min-w-[160px] max-w-[260px] shadow-sm sm:min-w-[200px]">
             <AutoAdvanceToggle project={project} />
           </div>
         </div>
       ) : null}
 
       {/* Верхняя компактная панель управления процессом */}
-      <div className="pointer-events-none absolute right-4 top-[5.5rem] z-30 flex max-w-[min(100%,640px)] flex-wrap items-center justify-end gap-2">
+      <div className="pointer-events-none absolute right-2 top-[5.5rem] z-30 flex max-w-[calc(100%-1rem)] sm:right-4 sm:max-w-[min(100%,640px)] flex-wrap items-center justify-end gap-2">
         <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
           <span className="text-muted-foreground">Run:</span>
           <span className="font-medium">

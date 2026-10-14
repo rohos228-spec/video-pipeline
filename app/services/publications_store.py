@@ -485,6 +485,25 @@ async def consume_approval(session: AsyncSession, *, project_id: int, platform: 
     return upd.rowcount == 1
 
 
+async def revoke_approval(session: AsyncSession, *, project_id: int, platform: str, sha256: str,
+                          now: float | None = None) -> dict:
+    """Отозвать ещё не потраченное «да» (U-7). Атомарно: если шаг публикации уже потратил его, отзыв отклоняется.
+
+    Запись не удаляется, а помечается потраченной (consumed_at): шаг публикации видит её как недействительную
+    и не кликает. Новое «да» (grant_approval) сбрасывает пометку."""
+    await ensure_schema(session)
+    now = time.time() if now is None else now
+    upd = await session.execute(text(
+        "UPDATE publish_approvals SET consumed_at=:now WHERE project_id=:p AND platform=:pl AND sha256=:s "
+        "AND consumed_at IS NULL"), {"now": now, "p": project_id, "pl": platform, "s": sha256})
+    await _commit(session)
+    if upd.rowcount != 1:
+        raise PublicationRefused(
+            "no_active_approval",
+            "Действующего разрешения на эту площадку нет: оно не выдавалось, уже отозвано или уже использовано.")
+    return {"platform": platform, "sha256": sha256, "revoked_at": now}
+
+
 async def _manual_target(session: AsyncSession, project_id: int, platform: str, sha256: str, now: float) -> dict:
     await ensure_schema(session)
     row = await _get(session, project_id, platform, sha256)

@@ -22,10 +22,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { usePersistedState } from "@/hooks/use-persisted-state";
+import { NARROW_QUERY, useMediaQuery } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
 import { ObservationSection } from "./observation-section";
 import { KillSwitchSection } from "./kill-switch-section";
 import { SpendSection } from "./spend-section";
+import { ReservesSection } from "./reserves-section";
 import { PublicationsSection } from "./publications-section";
 import { JournalSection } from "./journal-section";
 import { ActionLayerSection } from "../action-layer/action-layer-section";
@@ -72,7 +74,18 @@ export const BUG_MODE_CODE_NOTE =
   "оркестратор ищет причину и запускает шаги пайплайна, но код не меняет, пока настройку не включат на сервере.";
 
 export function OrchestratorPanel({ projectId }: Props) {
-  const [open, setOpen] = usePersistedState("vp-orchestrator-open", true);
+  const [openStored, setOpenStored] = usePersistedState("vp-orchestrator-open", true);
+  // U-6: на телефоне панель открывается свёрнутой (иначе она закрывает холст сразу), пока человек сам её не раскрыл.
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const [touched, setTouched] = useState(false);
+  const open = openStored && !(narrow && !touched);
+  const setOpen = useCallback(
+    (v: boolean) => {
+      setTouched(true);
+      setOpenStored(v);
+    },
+    [setOpenStored],
+  );
   const [expanded, setExpanded] = usePersistedState("vp-orchestrator-expanded", true);
   const storageKey = `vp-orchestrator-log-${projectId ?? "none"}`;
   const [chatLog, setChatLog] = usePersistedState<ChatMsg[]>(storageKey, []);
@@ -581,6 +594,7 @@ export function OrchestratorPanel({ projectId }: Props) {
             <ObservationSection projectId={projectId} />
             <KillSwitchSection projectId={projectId} />
             <SpendSection projectId={projectId} />
+            <ReservesSection />
             <PublicationsSection projectId={projectId} />
             <JournalSection projectId={projectId} />
             <ActionLayerSection projectId={projectId} />
@@ -610,10 +624,10 @@ export function OrchestratorPanel({ projectId }: Props) {
                     return (
                       <span
                         key={`rm-${ci}`}
-                        className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
+                        className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
                       >
                         <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                        <span className="flex-1 text-[11px] text-white/80">
+                        <span className="min-w-[10rem] flex-1 text-[11px] text-white/80">
                           Удалить {c.count} нод
                           {c.node_type ? ` типа «${c.node_type}»` : ""}
                           {c.only === "duplicates" ? " (только дубли)" : ""}?
@@ -643,10 +657,10 @@ export function OrchestratorPanel({ projectId }: Props) {
                     return (
                       <span
                         key={`del-${ci}`}
-                        className="mt-1.5 flex items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
+                        className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5"
                       >
                         <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                        <span className="flex-1 text-[11px] text-white/80">
+                        <span className="min-w-[10rem] flex-1 text-[11px] text-white/80">
                           Удалить {c.count} проект(ов)
                           {(c.files ?? []).length
                             ? `: ${(c.files ?? []).slice(0, 4).join(", ")}`
@@ -678,10 +692,10 @@ export function OrchestratorPanel({ projectId }: Props) {
                     return (
                       <span
                         key={`git-${ci}`}
-                        className="mt-1.5 flex items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5"
+                        className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1.5"
                       >
                         <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
-                        <span className="flex-1 text-[11px] text-white/80">
+                        <span className="min-w-[10rem] flex-1 text-[11px] text-white/80">
                           Push: {c.message || "commit"}
                           {(c.files ?? c.nodes).length
                             ? ` (${(c.files ?? c.nodes).slice(0, 3).join(", ")})`

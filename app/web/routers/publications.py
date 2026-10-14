@@ -89,6 +89,10 @@ class ConfirmManualIn(BaseModel):
     reason: str | None = Field(default=None, max_length=pstore.MAX_REASON_CHARS)
 
 
+class RevokeIn(BaseModel):
+    sha256: str = Field(min_length=8, max_length=64)
+
+
 class MarkFailedIn(BaseModel):
     sha256: str = Field(min_length=8, max_length=64)
     reason: str | None = Field(default=None, max_length=pstore.MAX_REASON_CHARS)
@@ -144,6 +148,26 @@ async def approve_publication(project_id: int, body: ApproveIn, session: AsyncSe
     return {"approved": res["approved"], "sha256": sha, "queued_for_publish_step": queued,
             "publish_enabled": res["publish_enabled"],
             "message": _approve_message(queued, res["publish_enabled"])}
+
+
+@router.post("/{platform}/revoke", dependencies=[Depends(require_operator_token)])
+async def revoke_publication(project_id: int, platform: str, body: RevokeIn,
+                             session: AsyncSession = Depends(get_session),
+                             operator: str | None = Header(default=None, alias="X-Action-Layer-Operator")) -> dict:
+    """U-7: отозвать выданное «да» до того, как шаг публикации его потратил. После отзыва клика не будет.
+
+    Если «да» уже потрачено (идёт или прошла публикация), отзыв отклоняется кодом no_active_approval."""
+    project = await _project(session, project_id)
+    platform = _platform(platform)
+    sha = await _current_sha(session, project, body.sha256)
+    actor = _actor(operator)
+    try:
+        res = await pstore.revoke_approval(session, project_id=project.id, platform=platform, sha256=sha)
+    except pstore.PublicationRefused as exc:
+        raise _refused(exc) from exc
+    state = await _recompute(session, project, sha)
+    return {**res, "revoked_by": actor, "project_state": state["state"], "project_status": project.status.value,
+            "message": f"Разрешение на {platform} отозвано: публикация туда не начнётся, пока вы не разрешите снова."}
 
 
 @router.post("/{platform}/confirm-manual", dependencies=[Depends(require_operator_token)])

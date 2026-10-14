@@ -30,6 +30,9 @@ import {
   type JournalPeriod,
 } from "@/lib/journal-view";
 
+/** U-10: как часто журнал и итоги обновляются сами, пока панель открыта и вкладка видна. */
+export const JOURNAL_REFRESH_MS = 10_000;
+
 function statusOf(e: unknown): number | null {
   const s = (e as { status?: unknown } | null)?.status;
   return typeof s === "number" ? s : null;
@@ -75,6 +78,8 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
   const [reloadTick, setReloadTick] = useState(0);
   const [server, setServer] = useState<ServerTotals | null>(null);
   const [serverError, setServerError] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
 
@@ -124,6 +129,31 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
     return () => ctrl.abort();
   }, [projectId, reloadTick]);
 
+  // U-10: тихое автообновление первой страницы и итогов. Новые записи добавляются сверху, уже загруженные
+  // («Показать ещё») и прокрутка не сбрасываются; при ошибке или скрытой вкладке цикл просто ждёт следующего шага.
+  useEffect(() => {
+    if (projectId == null || !autoRefresh || !loaded || loading || loadingMore || error) return;
+    let stopped = false;
+    let ctrl: AbortController | null = null;
+    const timer = setInterval(() => {
+      if (stopped || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
+      ctrl?.abort();
+      const mine = new AbortController();
+      ctrl = mine;
+      fetchJournalPage(projectId, filters, null, mine.signal)
+        .then((page) => {
+          if (mine.signal.aborted || stopped) return;
+          setItems((old) => mergeItems(old, page.items));
+          setMissing(page.sources_missing); setTotal(page.total_hint); setRefreshedAt(new Date());
+        })
+        .catch(() => { /* тихо: прежние строки остаются, кнопка «Обновить» работает как раньше */ });
+      fetchJournalTotals(projectId, mine.signal)
+        .then((t) => { if (!mine.signal.aborted && !stopped) { setServer(t); setServerError(false); } })
+        .catch(() => { /* итоги останутся прежними */ });
+    }, JOURNAL_REFRESH_MS);
+    return () => { stopped = true; clearInterval(timer); ctrl?.abort(); };
+  }, [projectId, filters, autoRefresh, loaded, loading, loadingMore, error]);
+
   const loadMore = useCallback(async () => {
     if (projectId == null || !cursor || loadingMore) return;
     const ctrl = abortRef.current;
@@ -163,6 +193,11 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
         <h4>Журнал проекта</h4>
         <div className="flex flex-wrap gap-1.5">
           <button type="button" className={chip(false)} disabled={loading || projectId == null} onClick={() => setReloadTick((n) => n + 1)}>Обновить</button>
+          <button type="button" aria-pressed={autoRefresh} className={chip(autoRefresh)} disabled={projectId == null}
+            title={`Журнал сам обновляется раз в ${JOURNAL_REFRESH_MS / 1000} с, пока панель открыта`}
+            onClick={() => setAutoRefresh((v) => !v)}>
+            {autoRefresh ? "Автообновление: вкл" : "Автообновление: выкл"}
+          </button>
           <button type="button" className={chip(false)} disabled={!!exporting || projectId == null} onClick={() => void doExport("csv")}
             title={`Таблица для Excel (до ${EXPORT_MAX_ROWS} строк, с учётом фильтров)`}>
             {exporting === "csv" ? "Готовлю CSV…" : "Скачать CSV"}
@@ -241,6 +276,9 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
             </p>
           )}
 
+          {autoRefresh && refreshedAt && (
+            <p data-testid="journal-refreshed" className="text-white/35">Обновлено автоматически в {refreshedAt.toLocaleTimeString("ru-RU")}.</p>
+          )}
           {missingSourcesText(missing) && <p className="text-white/45">{missingSourcesText(missing)}</p>}
           {exportError && <p role="alert" className="text-amber-200">{exportError}</p>}
           {error && (

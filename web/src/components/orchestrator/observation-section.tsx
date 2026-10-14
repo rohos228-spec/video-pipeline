@@ -305,7 +305,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       <p className="text-white/50">Закрытие запуска не означает, что весь прогон проекта завершён. Остановку пользователем оркестратор не снимает.</p>
       <p className="text-white/50">По умолчанию выключено. Разрешение ограничено одним execution, выбранной группой и снимком графа; общий бюджет задаётся выше до включения. Остановка наблюдения и пауза выполнения — разные действия.</p>
       <label className="block">Обоснование оператора
-        <input value={actionRationale} onChange={e=>setActionRationale(e.target.value)} maxLength={1000} className="ml-2 w-72 rounded border border-white/15 bg-[#161616] p-1.5" placeholder="Почему разрешается это выполнение"/>
+        <input value={actionRationale} onChange={e=>setActionRationale(e.target.value)} maxLength={1000} className="ml-2 w-72 max-w-full rounded border border-white/15 bg-[#161616] p-1.5" placeholder="Почему разрешается это выполнение"/>
       </label>
       {!actionState?.configured ? <Button size="sm" variant="outline" disabled={busy || !actionState || !execution || !group || context.observer_state==='stopped' || actionRationale.trim().length<3} onClick={()=>void enableActions()}>Разрешить выполнение выбранной группы</Button> : !actionState.enabled ? <p className="text-white/50">Управляемый запуск закрыт. Для нового разрешения создайте новое наблюдение.</p> : <>
         <span>Статус: {actionState.held ? '⏸ на паузе' : '🟢 разрешено'} · запросы: {actionState.requests_used}/{actionState.request_limit}</span>

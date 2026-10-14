@@ -3212,7 +3212,7 @@ export function AssembleMontageBoard({
   const mergeScenesAt = async (left: MontageBoardFrame, right: MontageBoardFrame) => {
     if (!projectId) return;
     const ok = window.confirm(
-      `Объединить ячейки #${left.number} и #${right.number} в одну сцену?`,
+      `Объединить сцену ${left.vo_scene_ordinal ?? `#${left.number}`} и сцену ${right.vo_scene_ordinal ?? `#${right.number}`} в одну?`,
     );
     if (!ok) return;
     setFrameEditBusy(true);
@@ -3224,7 +3224,7 @@ export function AssembleMontageBoard({
       );
       refreshBoard();
       toast.success(
-        `Сцена #${res.parent_number}: ${res.vo_scene_size} кадров`,
+        `Сцена ${res.parent_ordinal ?? `#${res.parent_number}`}: ${res.vo_scene_size} кадров`,
       );
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
@@ -3252,7 +3252,7 @@ export function AssembleMontageBoard({
       );
       refreshBoard();
       toast.success(
-        `Сцены #${res.left_number} (${res.left_size}) и #${res.right_number} (${res.right_size})`,
+        `Сцены ${res.left_ordinal ?? `#${res.left_number}`} (${res.left_size}) и ${res.right_ordinal ?? `#${res.right_number}`} (${res.right_size}). Номера сцен правее сдвинулись. Можно отменить деление.`,
       );
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
@@ -3264,7 +3264,7 @@ export function AssembleMontageBoard({
   const splitSceneAll = async (head: MontageBoardFrame, sceneFrameIds: number[]) => {
     if (!projectId) return;
     const ok = window.confirm(
-      `Разделить сцену #${head.number} на ${sceneFrameIds.length} отдельных сцен? Каждый кадр станет своей ячейкой закадра.`,
+      `Разделить сцену ${head.vo_scene_ordinal ?? `#${head.number}`} на ${sceneFrameIds.length} отдельных сцен? Каждый кадр станет своей ячейкой закадра. Деление можно отменить.`,
     );
     if (!ok) return;
     setFrameEditBusy(true);
@@ -3277,6 +3277,27 @@ export function AssembleMontageBoard({
       );
       refreshBoard();
       toast.success(`Сцена разделена на ${res.scenes} ячеек`);
+    } catch (e) {
+      toast.error(errorMessageFromUnknown(e));
+    } finally {
+      setFrameEditBusy(false);
+    }
+  };
+
+  const undoSplit = async () => {
+    if (!projectId) return;
+    const ok = window.confirm(
+      "Отменить последнее деление сцены? Сцены вернутся к состоянию до деления. Картинки и клипы не удаляются и остаются на своих кадрах.",
+    );
+    if (!ok) return;
+    setFrameEditBusy(true);
+    try {
+      const res = await api.undoSplitMontageScene(projectId, meta?.split_undo?.undo_id);
+      refreshBoard();
+      const kept = res.paid_media_kept.total;
+      toast.success(
+        `Деление отменено (кадров: ${res.restored_frames})${kept ? `. Файлы сохранены на кадрах: ${kept}` : ""}`,
+      );
     } catch (e) {
       toast.error(errorMessageFromUnknown(e));
     } finally {
@@ -3993,14 +4014,14 @@ export function AssembleMontageBoard({
                 showPreview({
                   url: parentStill,
                   kind: "image",
-                  label: `Сцена · #${head.number}`,
+                  label: `Сцена ${head.vo_scene_ordinal ?? `#${head.number}`}`,
                 })
               }
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={parentStill}
-                alt={`Сцена #${head.number}`}
+                alt={`Сцена ${head.vo_scene_ordinal ?? `#${head.number}`}`}
                 className="max-h-28 w-full object-cover"
               />
             </button>
@@ -4605,6 +4626,17 @@ export function AssembleMontageBoard({
                         )}
                       >
                         Сцены
+                        {meta?.split_undo?.can_undo ? (
+                          <button
+                            type="button"
+                            title="Вернуть сцены к состоянию до последнего деления; картинки и клипы не удаляются"
+                            disabled={frameEditBusy}
+                            onClick={() => void undoSplit()}
+                            className="mt-1 block rounded border border-white/15 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-white/60 transition hover:border-[rgba(209,254,23,0.45)] hover:text-[rgba(209,254,23,1)] disabled:opacity-40"
+                          >
+                            Отменить деление
+                          </button>
+                        ) : null}
                       </th>
                       {ranges.map((range, ri) => {
                         const head = range.frames[0];

@@ -16,7 +16,7 @@ interface PublicationManual {action: string; actor: string; reason: string | nul
 interface PublicationItem {
   platform: string; state: string; state_label: string; status: string | null;
   post_url: string | null; post_id: string | null; error_code: string | null; attempts: number; clicked: boolean;
-  approved: boolean; approved_by: string | null; manual: PublicationManual | null;
+  approved: boolean; approved_by: string | null; account_id?: string | null; manual: PublicationManual | null;
   can_confirm_manual: boolean; can_mark_failed: boolean; can_approve: boolean;
 }
 interface PublicationFacts {
@@ -75,7 +75,7 @@ export function PublicationsSection({projectId}: {projectId: number | null}) {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [load, project]);
 
-  async function act(platform: string, kind: "confirm-manual" | "mark-failed" | "approve") {
+  async function act(platform: string, kind: "confirm-manual" | "mark-failed" | "approve" | "revoke") {
     if (!facts?.sha256) return;
     const value = (text[platform] ?? "").trim();
     let path = `${base}/${platform}/${kind}`;
@@ -83,6 +83,8 @@ export function PublicationsSection({projectId}: {projectId: number | null}) {
     if (kind === "approve") {
       path = `${base}/approve`;
       body = {platforms: [platform], sha256: facts.sha256, caption_sha256: facts.caption_sha256};
+    } else if (kind === "revoke") {
+      body = {sha256: facts.sha256};
     } else if (kind === "confirm-manual") {
       body = /^https?:\/\//i.test(value) ? {sha256: facts.sha256, post_url: value} : {sha256: facts.sha256, reason: value};
     } else {
@@ -124,7 +126,15 @@ export function PublicationsSection({projectId}: {projectId: number | null}) {
             <div>
               <span className="font-medium">{p.platform}</span> · {p.state_label}
               {p.approved && <span className="text-emerald-300"> · разрешено вами</span>}
+              {p.account_id && <span className="text-white/50"> · аккаунт: {p.account_id}</span>}
             </div>
+            {p.approved && (
+              <Button size="sm" variant="outline" data-testid={`revoke-${p.platform}`} disabled={busy !== ""}
+                title="Отозвать разрешение до того, как шаг публикации его использовал: публикации не будет"
+                onClick={() => void act(p.platform, "revoke")}>
+                Отозвать разрешение
+              </Button>
+            )}
             {p.post_url && <div>Ссылка: <a className="underline" href={p.post_url} target="_blank" rel="noreferrer">{p.post_url}</a></div>}
             {p.error_code && !isManualDecisionCode(p.error_code) && (
               <div className="text-amber-200">Причина: {publicationCodeText(p.error_code)}</div>

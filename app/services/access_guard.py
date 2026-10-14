@@ -246,6 +246,20 @@ _TOKEN_PATHS = [re.compile(p) for p in (
     r"^/runs/[^/]+/cancel$",
     r"^/projects/[^/]+/publications/",                    # подтверждение «да», ручные действия по публикациям
     r".*publish.*",                                       # любая публикация
+    # Фаза 6 (Q-03): платные/опасные POST, которые раньше шли без токена. Страница шлёт заголовок
+    # на все изменяющие запросы (api-operator-token.ts), поэтому UI не ломается.
+    r"^/projects/[^/]+/finish/",                          # массовая генерация картинок/анимации/видео
+    r"^/projects/[^/]+/montage-board/(queue|montage|recover-outsee)$",
+    r"^/projects/[^/]+/montage-board/frames/[^/]+/scene-(action-generate|generate-with-images|variants|improve)$",
+    r"^/projects/[^/]+/observations/(launch|auto)?$",     # запуск надзора (POST на корень тоже)
+    r"^/projects/[^/]+/observations/[^/]+/actions/(start|retry)$",
+    r"^/outsee/generate$",
+    r"^/kie-create/generate$",
+    r"^/sidebar-layout/gen-queue/(enqueue|bulk-enqueue)$",
+    r"^/runs/from-workflow/",
+    r"^/prompt-studio/projects/[^/]+/gpt-verdict/[^/]+/run$",
+    r"^/fleet/(local|nodes/[^/]+)/powershell",            # выполнение команд на машине
+    r"^/db/projects/[^/]+/orchestrator/",                 # чат-оркестратор и его подтверждения
 )]
 
 

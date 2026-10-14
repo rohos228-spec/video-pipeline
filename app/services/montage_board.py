@@ -845,6 +845,7 @@ def _empty_coverage_fields() -> dict[str, Any]:
         "scene_action": "",
         "scene_chain": [],
         "vo_scene_number": None,
+        "vo_scene_ordinal": None,
         "vo_scene_size": 0,
         "shot_leftover": False,
     }
@@ -909,6 +910,21 @@ def _coverage_fields_for_frames(
             if vo_int <= 0 or (vo_int == int(fr.number) and vo_size <= 1):
                 row["vo_scene_number"] = parent_number
         out[fr.number] = row
+    # U-2: порядковый номер сцены для показа (по порядку на ленте); vo_scene_number остаётся внутренним ключом.
+    ordinals: dict[int, int] = {}
+    for fr in frames:
+        try:
+            key = int(out[fr.number].get("vo_scene_number") or 0)
+        except (TypeError, ValueError):
+            key = 0
+        if key > 0 and key not in ordinals:
+            ordinals[key] = len(ordinals) + 1
+    for fr in frames:
+        try:
+            key = int(out[fr.number].get("vo_scene_number") or 0)
+        except (TypeError, ValueError):
+            key = 0
+        out[fr.number]["vo_scene_ordinal"] = ordinals.get(key)
     return out
 
 

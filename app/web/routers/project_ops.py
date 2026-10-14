@@ -837,6 +837,41 @@ async def montage_board_merge_scenes(
     return result
 
 
+def _refuse_if_project_busy(p: Project) -> None:
+    """U-3: правка структуры сцен при идущем шаге (генерация, монтаж) отклоняется."""
+    from app.services.project_state import is_running_status
+
+    if is_running_status(p.status):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Сейчас идёт шаг ({p.status.value}): дождитесь окончания или остановите его, потом меняйте сцены.",
+        )
+
+
+@router.post("/{project_id}/montage-board/scenes/split-undo")
+async def montage_board_undo_split(
+    project_id: int,
+    body: dict = Body(default_factory=dict),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    """Отменить последнее деление сцены: вернуть сцены к состоянию до деления, ничего не удаляя."""
+    from app.services.montage_board_frames import undo_montage_split
+
+    p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
+    try:
+        result = await undo_montage_split(session, p, undo_id=(body or {}).get("undo_id"))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_scenes_split_undone": True, "refresh_board": True},
+    )
+    return result
+
+
 @router.post("/{project_id}/montage-board/scenes/split")
 async def montage_board_split_scenes(
     project_id: int,
@@ -850,6 +885,7 @@ async def montage_board_split_scenes(
     )
 
     p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
     try:
         frame_id = int(body["frame_id"])
     except (KeyError, TypeError, ValueError) as e:

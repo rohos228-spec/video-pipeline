@@ -270,3 +270,60 @@ async def test_approve_when_publish_disabled_records_but_does_not_queue(ctx, mon
     r = await ctx.client.post(ctx.url("/approve"), json={"sha256": ctx.sha, "caption_sha256": csha, "platforms": ["tiktok"]})
     assert r.status_code == 200 and r.json()["queued_for_publish_step"] is False and r.json()["publish_enabled"] is False
     assert (await ctx.project()).status is ProjectStatus.assembled
+
+
+# ── U-7: отзыв «да» ───────────────────────────────────────────────────────────
+
+
+async def _approve_tiktok(ctx):
+    r = await ctx.client.post(ctx.url("/tiktok/mark-failed"), json={"sha256": ctx.sha, "reason": "поста нет, повторить", "allow_republish": True})
+    assert r.status_code == 200, r.text
+    csha = step.caption_sha256("тема ролика")
+    r = await ctx.client.post(ctx.url("/approve"), json={"sha256": ctx.sha, "caption_sha256": csha, "platforms": ["tiktok"]})
+    assert r.status_code == 200 and r.json()["queued_for_publish_step"] is True
+
+
+async def test_revoke_before_step_runs_means_no_click(ctx):
+    await _approve_tiktok(ctx)
+    assert (await ctx.project()).status is ProjectStatus.publishing
+    r = await ctx.client.post(ctx.url("/tiktok/revoke"), json={"sha256": ctx.sha})
+    assert r.status_code == 200, r.text
+    assert r.json()["platform"] == "tiktok"
+    async with ctx.env.maker() as s:
+        facts = await step.publication_facts(s, await ctx.project())
+    assert {x["platform"]: x["approved"] for x in facts["platforms"]}["tiktok"] is False
+    before = len(ctx.clicks)
+    async with ctx.env.maker() as s:
+        from app.models import Project
+        proj = await s.get(Project, ctx.pid)
+        await step.run(s, proj, Bot())
+        await s.commit()
+    assert ctx.clicks[before:] == []  # после отзыва публикация не стартует
+    assert (await ctx.project()).status is not ProjectStatus.publishing
+    # повторный отзыв: разрешения уже нет
+    r = await ctx.client.post(ctx.url("/tiktok/revoke"), json={"sha256": ctx.sha})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "no_active_approval"
+    # новое «да» после отзыва снова работает
+    csha = step.caption_sha256("тема ролика")
+    r = await ctx.client.post(ctx.url("/approve"), json={"sha256": ctx.sha, "caption_sha256": csha, "platforms": ["tiktok"]})
+    assert r.status_code == 200
+    assert any(a["path"].endswith("/tiktok/revoke") for a in _audit(ctx.pid))
+
+
+async def test_revoke_refused_when_approval_already_spent(ctx):
+    await _approve_tiktok(ctx)
+    async with ctx.env.maker() as s:
+        from app.models import Project
+        proj = await s.get(Project, ctx.pid)
+        await step.run(s, proj, Bot())  # шаг тратит «да» и кликает
+        await s.commit()
+    assert "tiktok" in ctx.clicks
+    r = await ctx.client.post(ctx.url("/tiktok/revoke"), json={"sha256": ctx.sha})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "no_active_approval"
+
+
+async def test_revoke_requires_operator_token_and_known_platform(ctx):
+    r = await ctx.client.post(ctx.url("/myspace/revoke"), json={"sha256": ctx.sha})
+    assert r.status_code == 404
+    r = await ctx.client.post(ctx.url("/tiktok/revoke"), json={"sha256": ctx.sha}, headers={"X-VP-Operator": "wrong-token"})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "operator_token_required"

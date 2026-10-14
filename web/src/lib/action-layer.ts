@@ -742,3 +742,18 @@ export function buildMacroParams(m: MacroJson, values: Record<string, string | b
   }
   return { params, errors };
 }
+
+/** C-9: резерв потолка шага, не закрытый фактом (удерживается, пока человек не снимет его после сверки кабинета). */
+export interface UnresolvedReserve {
+  plan_id: string; step_index: number; action_id: string; status: string; held_credits: number; ended_at: string;
+}
+
+export const listUnresolvedReserves = () =>
+  http<{ items: UnresolvedReserve[]; total_held_credits: number }>(`${BASE}/reserves`);
+
+/** Снять резерв: сервер требует токен оператора (его добавляет http) и причину не короче 3 символов. */
+export const releaseReserve = (planId: string, stepIndex: number, reason: string) =>
+  http<{ plan_id: string; step_index: number; released_credits: number }>(`${BASE}/reserves/release`, {
+    method: "POST",
+    body: JSON.stringify({ plan_id: planId, step_index: stepIndex, reason }),
+  });

@@ -12,7 +12,7 @@ import re
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -322,13 +322,19 @@ def create_app() -> FastAPI:
 
     app.add_middleware(OperatorAuditMiddleware)
     # Изменяющие ручки Studio без веб-входа принимаются только с loopback (чтения не трогаем).
-    mut = [access_guard.MutationLocalOnlyDep]
+    # Фаза 6 (Q-01): при WEB_AUTH вход нужен на КАЖДОМ роутере /api, кроме /api/auth/*
+    # (login/status/logout; operator-token внутри сам требует AuthDep). Без WEB_AUTH require_web_user
+    # пропускает всех - поведение по умолчанию (loopback без входа) не меняется.
+    from app.web.auth_sessions import require_web_user
+
+    auth = Depends(require_web_user)
+    mut = [auth, access_guard.MutationLocalOnlyDep]
 
     app.include_router(workflows_router.router, prefix=API_PREFIX, dependencies=mut)
     app.include_router(projects_router.router, prefix=API_PREFIX, dependencies=mut)
     app.include_router(project_ops_router.router, prefix=API_PREFIX, dependencies=mut)
-    app.include_router(generation_options_router.router, prefix=API_PREFIX)
-    app.include_router(config_presets_router.router, prefix=API_PREFIX)
+    app.include_router(generation_options_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(config_presets_router.router, prefix=API_PREFIX, dependencies=[auth])
     app.include_router(outsee_create_router.router, prefix=API_PREFIX, dependencies=mut)
     app.include_router(outsee_http_router.router, prefix=API_PREFIX, dependencies=mut)
     app.include_router(create_queue_router.router, prefix=API_PREFIX, dependencies=mut)
@@ -336,40 +342,40 @@ def create_app() -> FastAPI:
     app.include_router(gpt_workspace_router.router, prefix=API_PREFIX, dependencies=mut)
     app.include_router(text_llm_router.router, prefix=API_PREFIX, dependencies=mut)
     app.include_router(gen_assistant_router.router, prefix=API_PREFIX, dependencies=mut)
-    app.include_router(sidebar_layout_router.router, prefix=API_PREFIX)
-    app.include_router(runtime_streams_router.router, prefix=API_PREFIX)
-    app.include_router(runs_router.router, prefix=API_PREFIX)
+    app.include_router(sidebar_layout_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(runtime_streams_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(runs_router.router, prefix=API_PREFIX, dependencies=[auth])
     from app.web.routers import observations
 
-    app.include_router(observations.router, prefix=API_PREFIX)
-    app.include_router(observations.timeline_router, prefix=API_PREFIX)
+    app.include_router(observations.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(observations.timeline_router, prefix=API_PREFIX, dependencies=[auth])
     from app.services.action_layer.router import router as action_layer_router
 
-    app.include_router(action_layer_router, prefix=API_PREFIX)
+    app.include_router(action_layer_router, prefix=API_PREFIX, dependencies=[auth])
     from app.services.change_control.router import router as change_control_router
 
-    app.include_router(change_control_router, prefix=API_PREFIX)
+    app.include_router(change_control_router, prefix=API_PREFIX, dependencies=[auth])
     from app.web.routers import media_recovery as media_recovery_router
 
-    app.include_router(media_recovery_router.router, prefix=API_PREFIX)
+    app.include_router(media_recovery_router.router, prefix=API_PREFIX, dependencies=[auth])
     from app.web.routers import publications as publications_router  # W6-1: E01/E02/E11
 
     app.include_router(publications_router.router, prefix=API_PREFIX, dependencies=mut)
-    app.include_router(prompts_router.router, prefix=API_PREFIX)
-    app.include_router(prompt_studio_router.router, prefix=API_PREFIX)
-    app.include_router(prompt_files_router.router, prefix=API_PREFIX)
-    app.include_router(library_router.router, prefix=API_PREFIX)
-    app.include_router(hitl_router.router, prefix=API_PREFIX)
-    app.include_router(knowledge_router.router, prefix=API_PREFIX)
-    app.include_router(frames_router.router, prefix=API_PREFIX)
-    app.include_router(artifacts_router.router, prefix=API_PREFIX)
-    app.include_router(artifacts_router.files_router, prefix=API_PREFIX)
-    app.include_router(bug_reports_router.router, prefix=API_PREFIX)
-    app.include_router(fleet_router.router, prefix=API_PREFIX)
+    app.include_router(prompts_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(prompt_studio_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(prompt_files_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(library_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(hitl_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(knowledge_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(frames_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(artifacts_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(artifacts_router.files_router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(bug_reports_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(fleet_router.router, prefix=API_PREFIX, dependencies=[auth])
     app.include_router(auth_router.router, prefix=API_PREFIX)
-    app.include_router(db_browser_router.router, prefix=API_PREFIX)
-    app.include_router(node_groups_router.router, prefix=API_PREFIX)
-    app.include_router(meta_agent_router.router, prefix=API_PREFIX)
+    app.include_router(db_browser_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(node_groups_router.router, prefix=API_PREFIX, dependencies=[auth])
+    app.include_router(meta_agent_router.router, prefix=API_PREFIX, dependencies=[auth])
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:

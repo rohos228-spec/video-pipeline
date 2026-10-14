@@ -646,6 +646,19 @@ def normalize_anchor_rows(raw: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def scene_display_ordinals(frames: list[Any]) -> dict[int, int]:
+    """U-2: показываемый порядковый номер сцены (1, 2, 3 ...) по порядку на ленте.
+
+    Ключ - id головного кадра сцены, значение - позиция по ``(sort_key, number)``. Внутренний ``number`` кадра
+    и ключи БД не меняются: после вставки кадра в середину или деления сцена показывается по своему месту,
+    а не по историческому номеру."""
+    heads = sorted(
+        (fr for fr in frames if not is_shot_child(fr)),
+        key=lambda fr: (float(getattr(fr, "sort_key", 0) or 0.0), int(fr.number or 0)),
+    )
+    return {int(fr.id): i + 1 for i, fr in enumerate(heads) if getattr(fr, "id", None) is not None}
+
+
 def scene_index(frames: list[Any]) -> dict[str, dict[str, Any]]:
     """Все VO-сцены проекта: uuid родителя → родитель, члены, закадр сцены."""
     out: dict[str, dict[str, Any]] = {}
