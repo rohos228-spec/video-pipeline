@@ -360,6 +360,8 @@ class Settings(BaseSettings):
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+    # C-22: флаг только пропускает вход в ``maybe_auto_advance`` для проектов без auto_mode. Сам он ничего не
+    # одобряет: без ``auto_mode`` решение должен принять человек (или оно уже принято). approve_publish он не создаёт.
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")
     # True — прямая запись NodeRun.status мимо машины состояний → RuntimeError (dev/tests)
     node_status_strict: bool = Field(False, alias="NODE_STATUS_STRICT")
@@ -431,6 +433,12 @@ class Settings(BaseSettings):
     action_layer_approval_ttl_s: int = Field(600, ge=1, alias="ACTION_LAYER_APPROVAL_TTL_S")
     action_layer_max_steps: int = Field(20, ge=1, le=100, alias="ACTION_LAYER_MAX_STEPS")
     action_layer_step_timeout_s: float = Field(900.0, gt=0, alias="ACTION_LAYER_STEP_TIMEOUT_S")
+    # F09-D2: сколько кредитов (1 кр = $0,005) закладывать на ОДНУ платную отправку картинки/видео через Outsee,
+    # у которого нет тарифа. 0 (по умолчанию) = оценка неизвестна и план на Outsee не подтверждается (fail-closed).
+    # 60 = $0,30, потолок отправки spend_guard.MEDIA_SUBMIT_ESTIMATE_USD; замер ~ $0,03 за картинку (LIVE_RUNS).
+    action_layer_outsee_submit_credits: float = Field(
+        0.0, ge=0, alias="ACTION_LAYER_OUTSEE_SUBMIT_CREDITS"
+    )
     # C-9: через сколько секунд после конца шага незакрытый резерв получает явную метку в журнале слоя.
     action_layer_reserve_stale_s: float = Field(3600.0, gt=0, alias="ACTION_LAYER_RESERVE_STALE_S")
     # Окно, в течение которого прерванный план можно продолжить по уже израсходованному

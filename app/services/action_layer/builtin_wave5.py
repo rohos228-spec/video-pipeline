@@ -469,13 +469,17 @@ def _specs() -> list[ActionSpec]:
                               "hero_mode": {"type": "string", "enum": _HERO_MODES}},
                              ["title"], project=False),
           executor=_create_project, risk=RISK_LOCAL_SAFE, idempotent=False, scope="global",
+          future_spend_note="Если на сервере включено «автопродвижение новых проектов», проект получит его "
+                            "сразу: дальнейшие шаги могут быть платными.",
           preconditions=(Precondition("title_nonblank", "Название не пустое", _title_nonblank),),
           tags=("project", "create")),
         S(id="project.create_child", title_ru="Создать дочерний проект",
           description_ru="Дочерний проект: настройки, промты и тексты родителя, без озвучки, Excel "
                          "и результатов. Ничего не запускает.",
           params_schema=_obj({}, []), executor=_create_child, risk=RISK_LOCAL_SAFE,
-          idempotent=False, preconditions=(_PRE_PROJECT,), tags=("project", "create")),
+          idempotent=False, preconditions=(_PRE_PROJECT,), tags=("project", "create"),
+          future_spend_note="Копирует настройки родителя (модель, разрешение), от них зависит цена "
+                            "будущих генераций дочернего проекта."),
         S(id="project.patch_settings", title_ru="Изменить настройки проекта",
           description_ru="Название, тема, режим героя, модель и разрешение картинок и видео, формат "
                          "кадра. Меняет цену будущих генераций, но сам ничего не запускает. Проверяет, "
@@ -488,6 +492,7 @@ def _specs() -> list[ActionSpec]:
               "video_generator": _GEN, "video_resolution": _VID_RES,
               "aspect_ratio": {"type": "string", "pattern": r"^\d{1,2}:\d{1,2}$"}}, []),
           executor=_patch_settings, risk=RISK_LOCAL_SAFE, idempotent=True,
+          future_spend_note="Меняет модель и разрешение, то есть цену будущих генераций проекта.",
           preconditions=(_PRE_PROJECT, _PRE_NOT_MANAGED, _PRE_IDLE,
                          Precondition("settings_given", "Указана хотя бы одна настройка",
                                       _settings_given)),

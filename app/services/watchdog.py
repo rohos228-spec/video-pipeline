@@ -279,6 +279,18 @@ class Watchdog:
                     "type": "observation_updated", "execution_id": item["execution_id"]})
         except Exception as exc:
             logger.warning("watchdog notification failed: {}", type(exc).__name__)
+        # C-18: тревога идёт и владельцу через единственную точку доставки (без Telegram строка
+        # журнала помечается «не доставлено», как везде), а не только в шину интерфейса.
+        try:
+            from app.services.supervisor_heartbeat import _send
+            for item in created:
+                kind = (item.get("stall") or {}).get("kind", "stalled")
+                node = item.get("node_key") or "выполнение группы"
+                await _send(f"Сторож: зависла работа в проекте #{item['project_id']} "
+                            f"({node}, {kind}). Нужно решение человека.", "watchdog_stalled",
+                            project_id=item.get("project_id"))
+        except Exception as exc:  # noqa: BLE001 - доставка тревоги не должна ронять сканирование
+            logger.warning("watchdog telegram alarm failed: {}", type(exc).__name__)
 
 
 def get_watchdog(observer) -> Watchdog:

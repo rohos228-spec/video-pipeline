@@ -52,9 +52,9 @@ def test_exactly_one_of_dry_and_live_is_required():
     assert script._args(["--work-dir", "w", "--live", "--env-file", "e"]).live is True
 
 
-def test_defaults_are_one_real_post_and_thirty_cents():
+def test_defaults_are_one_real_post_and_seventy_cents():
     args = script._args(["--work-dir", "w", "--dry"])
-    assert (args.max_real_posts, args.max_usd, args.dry_scenario) == (1, 0.30, "ok")
+    assert (args.max_real_posts, args.max_usd, args.dry_scenario) == (1, 0.70, "ok")
 
 
 def test_live_needs_an_env_file_and_no_dry_scenario():
@@ -65,7 +65,7 @@ def test_live_needs_an_env_file_and_no_dry_scenario():
 
 
 def test_the_authorisation_covers_the_real_post_the_price_and_the_hard_ceiling():
-    assert script.authorisation_problem(1, 0.30) is None and script.authorisation_problem(2, 1.0) is None
+    assert script.authorisation_problem(1, 0.70) is None and script.authorisation_problem(2, 1.0) is None
     assert "exceeds" in script.authorisation_problem(1, 0.05)
     assert "hard ceiling" in script.authorisation_problem(1, 1.01)
     assert script.authorisation_problem(0, 0.3) is not None and script.authorisation_problem(1, 0) is not None
@@ -73,7 +73,7 @@ def test_the_authorisation_covers_the_real_post_the_price_and_the_hard_ceiling()
         with pytest.raises(SystemExit):
             script._args(["--work-dir", "w", "--dry", *bad])
     assert script.worst_case_usd() == pytest.approx(script.CREDITS_PER_GENERATION_HINT * script.CREDIT_USD_HINT)
-    assert script.app_cap_usd(0.30) == 0.30 and script.app_cap_usd(5) == script.HARD_CEILING_USD
+    assert script.app_cap_usd(0.70) == 0.70 and script.app_cap_usd(5) == script.HARD_CEILING_USD
 
 
 def test_the_price_hints_are_the_catalogs_own_numbers():

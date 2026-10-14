@@ -746,8 +746,11 @@ class Observer:
         state = self._stages.get(name)
         if state and self._clock() < state["next_at"]:
             return
+        from app.services import supervisor_heartbeat
+        supervisor_heartbeat.beat()  # C-18: пульс и между стадиями, длинный виток не даёт ложной тревоги
         try:
             await call()
+            supervisor_heartbeat.beat()
         except Exception as exc:
             attempts = (state["attempts"] if state else 0) + 1
             new = {"error_type": type(exc).__name__, "attempts": attempts,

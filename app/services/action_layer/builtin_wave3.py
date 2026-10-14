@@ -621,6 +621,8 @@ def _specs() -> list[ActionSpec]:
                          "не выполняется; выключить можно всегда. Повтор безвреден.",
           params_schema=_obj({"enabled": {"type": "boolean"}}, ["enabled"]),
           executor=_set_auto_mode, risk=RISK_LOCAL_SAFE, idempotent=True,
+          future_spend_note="Меняет, будет ли воркер сам запускать следующие шаги, в том числе платные, "
+                            "после ручного запуска; цену плана это не показывает.",
           preconditions=(_PRE_PROJECT, _PRE_NOT_MANAGED, Precondition(
               "auto_mode_enable_safe", "Включение: в проекте ничего не выполняется",
               _auto_mode_enable_safe)),

@@ -104,6 +104,16 @@ async def build_preview(plan: Plan, registry: ActionRegistry, ctx) -> dict:
     low = high = 0.0
     unknown = 0
     destructive_effects: list[dict] = []
+    future_spend: list[dict] = []
+    # C-16: замок проекта, потолок проекта и измерение факта работают по одному проекту плана.
+    # План из шагов разных проектов их теряет (``Plan.project_id()`` = None), поэтому отклоняется.
+    pids = sorted({s.params.get("project_id") for s in plan.steps
+                   if isinstance(s.params.get("project_id"), int)
+                   and not isinstance(s.params.get("project_id"), bool)})
+    if len(pids) > 1:
+        errors.append("в плане шаги разных проектов (" + ", ".join(f"#{p}" for p in pids)
+                      + "): замок, потолок и учёт расходов работают по одному проекту, "
+                        "составьте отдельный план на каждый проект")
     for step in plan.steps:
         spec = registry.find(step.action_id)
         item: dict = {"index": step.index, "action_id": step.action_id,
@@ -121,6 +131,10 @@ async def build_preview(plan: Plan, registry: ActionRegistry, ctx) -> dict:
         item.update({"title_ru": spec.title_ru, "risk": spec.risk,
                      "spends_money": spec.spends_money, "destructive": spec.destructive,
                      "reversible": spec.reversible})
+        if spec.future_spend_note:
+            item["future_spend_note"] = spec.future_spend_note
+            future_spend.append({"index": step.index, "action_id": spec.id,
+                                 "text": spec.future_spend_note})
         risks.append(spec.risk)
         item["errors"].extend(validation_list_ru(registry.validate_params(spec.id, step.params)))
         if not item["errors"]:
@@ -165,4 +179,5 @@ async def build_preview(plan: Plan, registry: ActionRegistry, ctx) -> dict:
         "cost": {"low": low, "high": high, "unknown_steps": unknown,
                  "known": unknown == 0},
         "destructive_effects": destructive_effects,
+        "future_spend_effects": future_spend,
     }

@@ -14,7 +14,7 @@ import hashlib
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from loguru import logger
@@ -89,6 +89,50 @@ def orphan_busy(project_id: int | None) -> dict | None:
         _ORPHANS.pop(int(project_id), None)
         return None
     return info
+
+
+async def orphan_busy_db(session, project_id: int | None, plan_id: str = "") -> dict | None:
+    """C-10: то же, что ``orphan_busy``, но из журнала слоя: переживает рестарт процесса.
+
+    После рестарта память пуста, а серверная платная задача, остановку которой не подтвердили
+    (``job_stop_after_failure`` / ``unconfirmed``), могла продолжиться. Проект остаётся занятым
+    в пределах ``orphan_max_s`` от этой записи, пока нет записи ``job_orphan_released``
+    (задача завершилась и резерв сверен) для того же плана. Снять иначе нельзя: ждать окно
+    или остановить проект. Возвращает описание как ``orphan_busy`` либо None.
+    """
+    if project_id is None:
+        return None
+    since = _now() - timedelta(seconds=orphan_max_s())
+    rows = (await session.execute(
+        select(store.ActionHistory.plan_id, store.ActionHistory.action_id,
+               store.ActionHistory.created_at)
+        .join(store.ActionPlan, store.ActionPlan.id == store.ActionHistory.plan_id)
+        .where(store.ActionPlan.project_id == int(project_id),
+               store.ActionHistory.event == "job_stop_after_failure",
+               store.ActionHistory.outcome == "unconfirmed",
+               store.ActionHistory.created_at >= since)
+        .order_by(store.ActionHistory.created_at.desc()))).all()
+    for pid_, action_id, created in rows:
+        if pid_ == plan_id:
+            continue
+        released = await session.scalar(
+            select(store.ActionHistory.id).where(
+                store.ActionHistory.plan_id == pid_,
+                store.ActionHistory.event == "job_orphan_released",
+                store.ActionHistory.created_at >= created).limit(1))
+        if released is None:
+            return {"plan_id": pid_, "action_id": action_id, "from_journal": True}
+    return None
+
+
+async def _journal_orphan_released(plan_id: str, action_id: str) -> None:
+    try:
+        async with store.sessions()() as s:
+            store.append_history(s, event="job_orphan_released", plan_id=plan_id, action_id=action_id,
+                                 outcome="released", actor="system")
+            await s.commit()
+    except Exception:  # noqa: BLE001 - bookkeeping only
+        logger.exception("action layer orphan release journal failed plan={}", plan_id)
 
 
 class _Stopped(Exception):
@@ -358,6 +402,7 @@ def _hold_project(project_id: int | None, plan_id: str, spec: ActionSpec, cur: d
                     continue
                 if state.done:
                     await on_done(state)
+                    await _journal_orphan_released(plan_id, spec.id)
                     return
             while time.monotonic() < info["until"]:
                 await asyncio.sleep(0.5)

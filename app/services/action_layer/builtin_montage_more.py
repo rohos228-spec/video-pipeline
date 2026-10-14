@@ -6,7 +6,8 @@
 Деньги. Сама панель стоимость не считает, поэтому оценка строится здесь:
 - картинка/видео через Kie: цена из ``kie_catalog.estimate_credits`` по тем же
   значениям, что уходят в запрос (``bots/kie_http.generate_kie_*``);
-- Outsee и прочие модели без тарифа в репозитории: оценка ``unknown`` (fail-closed);
+- Outsee и прочие модели без тарифа в репозитории: оценка ``unknown`` (fail-closed), если не задано
+  ``ACTION_LAYER_OUTSEE_SUBMIT_CREDITS`` (явная консервативная цена отправки, по умолчанию выключено);
 - LLM: замеренные ставки из ``docs/KIE_COST_CALIBRATION.md`` на допущенном числе токенов.
 Число операций и модель оплаты заявляются параметрами плана (входят в хэш и
 подтверждение), а предусловия и исполнитель сверяют их с фактом: заявлено меньше
@@ -183,6 +184,11 @@ def _kie_unit(kind: str, gen_id: str | None, res_id: str | None) -> tuple[float 
     if choice is None or res is None:
         return None, f"неизвестный {kind}-генератор или разрешение: {gen_id}/{res_id}"
     if provider != "kie":
+        from app.settings import settings
+        outsee = float(settings.action_layer_outsee_submit_credits or 0.0)
+        if outsee > 0:
+            return outsee, (f"{gen_id}: оплата через Outsee, тарифа нет; заложено {outsee:g} кр на отправку "
+                            "(настройка ACTION_LAYER_OUTSEE_SUBMIT_CREDITS, консервативный потолок)")
         return None, f"{gen_id}: оплата через Outsee, тарифа в репозитории нет"
     from app.bots import kie_http
     table = kie_http.IMAGE_GENERATOR_TO_KIE_ID if kind == "image" else kie_http.VIDEO_GENERATOR_TO_KIE_ID

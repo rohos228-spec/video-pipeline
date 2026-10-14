@@ -525,6 +525,8 @@ def _specs() -> list[ActionSpec]:
                 "checkPromptSource": {"type": "string", "enum": ["upstream", "agent"]}},
                 ["project_id", "node_key"]),
             executor=_node_set_config, risk=RISK_LOCAL_SAFE, idempotent=True,
+            future_spend_note="Режим проверки (checkMode/checkFix) и выход ноды меняют число платных "
+                              "вызовов при следующем запуске.",
             preconditions=(_PRE_PROJECT, _PRE_IDLE, _PRE_NODE,
                            Precondition("has_changes", "Указано хотя бы одно поле",
                                         _config_has_changes),

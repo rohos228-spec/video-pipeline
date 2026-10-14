@@ -153,7 +153,7 @@ def _audit(path: str, outcome: str, status: int) -> None:
         logger.error("watchdog audit not written: {}: {}", type(exc).__name__, exc)
 
 
-async def _send(text: str, kind: str) -> None:
+async def _send(text: str, kind: str, project_id: int | None = None) -> None:
     from app.services.notification_log import notify
     from app.settings import settings
     real = None
@@ -162,7 +162,8 @@ async def _send(text: str, kind: str) -> None:
         real, _ = await build_bot()
     from app.telegram.noop_bot import get_worker_bot
     try:
-        await notify(get_worker_bot(real), "send_message", settings.telegram_owner_chat_id, text, kind=kind)
+        await notify(get_worker_bot(real), "send_message", settings.telegram_owner_chat_id, text, kind=kind,
+                     project_id=project_id)
     finally:
         if real is not None:
             await real.session.close()

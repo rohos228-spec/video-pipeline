@@ -64,7 +64,7 @@ def test_suno_flat_price() -> None:
     suno = kc.get_model("suno-music")
     assert suno is not None
     est = kc.estimate_credits(suno, {"prompt": "phonk"})
-    assert est["credits"] == 12 and est["usd"] == 0.06
+    assert est["credits"] == 122 and est["usd"] == 0.61
 
 
 def test_suno_sounds_payload_sends_v5_omits_any_key() -> None:

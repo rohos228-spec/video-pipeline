@@ -171,6 +171,13 @@ async def _prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
                     "project_busy",
                     "Серверная платная задача предыдущего плана ещё не подтверждённо остановлена: "
                     "дождитесь её конца или остановите проект.")
+            orphan_db = await executor.orphan_busy_db(s, row.project_id, plan_id)
+            if orphan_db is not None:
+                raise RunRefused(
+                    "project_busy",
+                    "Серверная платная задача предыдущего плана не была подтверждённо остановлена "
+                    "(запись в журнале, сервер мог перезапуститься): дождитесь окна наблюдения "
+                    "или остановите проект.")
             holder = executor.claim_project(row.project_id, plan_id)
             if holder is not None:
                 raise RunRefused("project_busy", "В этом проекте уже запускается другой план.")

@@ -21,7 +21,7 @@ Modes (exactly one of --dry / --live is required):
           --dry-scenario also exercises the stop / failure branches (low or missing balance, failed task, rejected submit).
   --live  PAID, capped: ONE real createTask (api.kie.ai or KIE_API_BASE_URL, https only). Needs --env-file; ONLY the names
           KIE_API_KEY and KIE_API_BASE_URL are read from it, nothing is printed. Caps: --max-real-posts (default 1),
-          --max-usd (default 0.30, hard ceiling 1.00; refused when the catalog price of the generation exceeds it).
+          --max-usd (default 0.70, hard ceiling 1.00; refused when the catalog price of the generation exceeds it).
           NOT RUN in live mode when written.
 
 What is real: the whole production code of the step's Kie branch, spend_guard (kill switch, disk guard, caps), media_spend
@@ -31,7 +31,7 @@ What is NOT real: the seeded project, the GPT prompt (fixed text), the provider 
 
 Usage (repository root, project venv):
     python scripts/e2e_music_kie.py --dry --work-dir <empty dir outside the repository>
-    python scripts/e2e_music_kie.py --live --work-dir <dir> --env-file <env file> --max-real-posts 1 --max-usd 0.30
+    python scripts/e2e_music_kie.py --live --work-dir <dir> --env-file <env file> --max-real-posts 1 --max-usd 0.70
 """
 from __future__ import annotations
 
@@ -70,16 +70,16 @@ SECRET_NAMES = ("KIE_API_KEY",)
 FAKE_KEY = "fake-kie-dry-key"
 
 # Catalog price of one Suno generation: the application's own UNCALIBRATED constants
-# (kie_catalog "suno-music": 12 credits, CREDIT_USD = 0.005; a test keeps them equal).
-CREDITS_PER_GENERATION_HINT = 12.0
+# (kie_catalog "suno-music": 122 credits = the 2026-10-12 live measurement, CREDIT_USD = 0.005; a test keeps them equal).
+CREDITS_PER_GENERATION_HINT = 122.0
 CREDIT_USD_HINT = 0.005
-MIN_BALANCE_CREDITS = 24.0     # twice the price of one generation: at or below this the run stops before any paid call
+MIN_BALANCE_CREDITS = 244.0    # twice the price of one generation: at or below this the run stops before any paid call
 MIN_DURATION_S = 5.0
 MUSIC_PROMPT = "Calm ambient instrumental, soft piano and warm pads, slow tempo, no vocals"
 MUSIC_PROMPT_MAX_CHARS = 200
 MUSIC_MODEL = "V5_5"
 DEFAULT_MAX_REAL_POSTS = 1
-DEFAULT_MAX_USD = 0.30
+DEFAULT_MAX_USD = 0.70
 HARD_CEILING_USD = 1.0
 MAX_BALANCE_READS = 3
 MAX_POLLS = 400                # free GETs; the step polls every 4 s for at most 900 s (~225 polls)

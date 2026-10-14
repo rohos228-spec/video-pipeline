@@ -676,6 +676,52 @@ async def _spend_gate(project_id: int | None) -> None:
         raise PlannerRefused(exc.code, spend_cap_ru(exc)) from exc
 
 
+# C-20: провайдер отклонил запрос до обработки (клиентская ошибка) или соединения не было вовсе:
+# счёта за него быть не может, резерв закрывается нулём. Остальные сбои (таймаут чтения, 5xx, обрыв)
+# оставляют резерв: запрос мог быть обработан и оплачен, исход неизвестен (консервативно).
+_NOT_BILLED_STATUS = frozenset({400, 401, 403, 404, 405, 413, 415, 422})
+
+
+def definitely_not_billed(exc: BaseException) -> bool:
+    import socket
+    try:
+        import httpx
+        pre_send = (httpx.ConnectError, httpx.ConnectTimeout, httpx.UnsupportedProtocol)
+    except Exception:  # noqa: BLE001
+        pre_send = ()
+    cur: BaseException | None = exc
+    for _ in range(4):  # причина может быть обёрнута
+        if cur is None:
+            break
+        if isinstance(cur, (socket.gaierror,) + pre_send):
+            return True
+        ctx = getattr(cur, "context", None)
+        if isinstance(ctx, dict):
+            status = ctx.get("status_code")
+            if isinstance(status, int) and status in _NOT_BILLED_STATUS:
+                return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+async def _close_failed_reserve(project_id: int | None, exc: BaseException) -> bool:
+    """Закрыть резерв упавшей попытки, если счёта быть не может. True: резерв закрыт нулём."""
+    from app.services import spend_guard
+    pending = spend_guard.take_pending()  # не оставляем висеть в контексте для чужого вызова
+    if pending is None or not definitely_not_billed(exc):
+        return False
+    try:
+        async with store.sessions()() as s:
+            await spend_guard.settle(s, project_id=pending.project_id, run_id=pending.run_id,
+                                     reserved_usd=pending.usd, actual_usd=0.0, source=pending.source,
+                                     provider=pending.provider, basis="estimate")
+            await s.commit()
+        return True
+    except Exception as err:  # noqa: BLE001 - резерв остаётся, это безопасная сторона
+        logger.warning("planner reserve close failed: {}", type(err).__name__)
+        return False
+
+
 _BYPASS_RE = re.compile(
     r"(?:отключ|выключ|сними|снять|убер|убрат|отмен|обойд|обход|игнор|пропуст|деактив)\w*\s+"
     r"(?:(?:все|всё|любые|эти|наши|мои|для\s+всех)\s+)?"
@@ -704,7 +750,11 @@ def approval_bypass_intent(text: str) -> bool:
     """Просьба отключить/обойти подтверждения, лимиты, защиту, проверку или аварийный стоп.
 
     Такого действия в каталоге нет и быть не должно, поэтому отказ даёт сервер, без обращения к модели
-    (бесплатно и всегда одинаково), а не зависит от того, заметит ли это модель."""
+    (бесплатно и всегда одинаково), а не зависит от того, заметит ли это модель.
+
+    C-19: это фильтр по тексту, он ловит не все формулировки (замеры LIVE_RUNS: 0,73-0,89 на новых наборах) и
+    НЕ является барьером. Барьер структурный: опасные действия (публикация, очистка, откаты, удаление)
+    требуют превью и подтверждения человека в самом каталоге (закон-тест w51_findings_closure_test)."""
     low = (text or "").lower().replace("ё", "е")
     if _BYPASS_RE.search(low):
         return True
@@ -845,6 +895,7 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
         except Exception as exc:  # noqa: BLE001 - исход неизвестен
             if real:
                 _track(model, None, started, exc)
+                await _close_failed_reserve(project_id, exc)
             await _record(operator, text, model=model, attempt=attempt, outcome="transport_error",
                           usage=(0, 0, 0), cost=None,
                           error=f"{describe_exception(exc)} (timeout_s={call_timeout}, "

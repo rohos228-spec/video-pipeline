@@ -246,6 +246,13 @@ class Pending:
 _pending: contextvars.ContextVar[Pending | None] = contextvars.ContextVar("spend_pending", default=None)
 
 
+def take_pending() -> Pending | None:
+    """Забрать (и обнулить) открытый резерв текущего контекста: тот, кто его закрывает, делает это сам."""
+    pending = _pending.get()
+    _pending.set(None)
+    return pending
+
+
 async def reserve(session, *, project_id: int | None, run_id: str, estimate_usd: float,
                   source: str, provider: str = "", credits: float = 0.0, note: str = "",
                   track: bool = True, request_id: str | None = None, ref: str = "") -> float:

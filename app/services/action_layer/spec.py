@@ -102,6 +102,9 @@ class ActionSpec:
     deferred_spend: bool = False
     scope: str = "project"
     tags: tuple[str, ...] = ()
+    # C-15: действие само денег не тратит, но меняет то, сколько и что потратят будущие запуски
+    # (модель, разрешение, автопродвижение, проверки). Непустая строка показывается в превью.
+    future_spend_note: str = ""
 
     @property
     def is_job(self) -> bool:
@@ -137,6 +140,7 @@ class ActionSpec:
             "needs_approval": self.needs_approval, "async_job": self.is_job,
             "supports_stop": self.stop is not None, "scope": self.scope,
             "tags": list(self.tags),
+            **({"future_spend_note": self.future_spend_note} if self.future_spend_note else {}),
             "preconditions": [{"id": p.id, "description_ru": p.description_ru}
                               for p in self.preconditions],
         }
