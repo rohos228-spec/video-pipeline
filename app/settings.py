@@ -409,6 +409,9 @@ class Settings(BaseSettings):
     spend_daily_cap_usd: float = Field(200.0, ge=0, alias="SPEND_DAILY_CAP_USD")
     spend_project_cap_usd: float = Field(100.0, ge=0, alias="SPEND_PROJECT_CAP_USD")
     spend_run_cap_usd: float = Field(50.0, ge=0, alias="SPEND_RUN_CAP_USD")
+    # Автосверка трат с балансом провайдера на границах платных шагов (B10). Пусто = авто: только при ключе
+    # провайдера и не под pytest; 1/0 принудительно. Сбой запроса баланса шаг не блокирует.
+    spend_reconcile_auto: bool | None = Field(None, alias="SPEND_RECONCILE_AUTO")
     # HTTP 402 / нет кредитов у провайдера: включить аварийный стоп надзорного слоя.
     spend_auto_kill_on_402: bool = Field(True, alias="SPEND_AUTO_KILL_ON_402")
     # Окно (сек): живая или не скачанная задача Kie возобновляется вместо нового createTask; 0 = выкл.

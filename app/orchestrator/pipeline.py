@@ -99,6 +99,7 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
         register_advance_task(project_id, task)
     ran_status: ProjectStatus | None = None
     _step_lock_cm = None
+    _recon = None
     try:
         abort_if_cancelled(project_id)
         status = project.status
@@ -131,6 +132,10 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
                 exc_info=True,
             )
 
+        # B10: снимок баланса провайдера до платного шага (сбой не блокирует шаг, см. balance_adapters).
+        from app.services import balance_adapters
+
+        _recon = await balance_adapters.open_auto_window(status.value, project_id)
         with bind_project_llm(project, status):
             if status is ProjectStatus.planning:
                 await make_plan.run(session, project, bot)
@@ -190,6 +195,10 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
         if ran_status is not None:
             await _sync_storage_after_advance(session, project, ran_status)
     finally:
+        if _recon is not None:
+            from app.services import balance_adapters as _ba
+
+            await _ba.close_auto_window(_recon)
         if _step_lock_cm is not None:
             try:
                 await _step_lock_cm.__aexit__(None, None, None)

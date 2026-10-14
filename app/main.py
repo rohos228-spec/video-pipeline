@@ -931,6 +931,12 @@ async def main() -> None:
             "проксируются через VPS-relay. Для прямого подключения к API очистите GPT_RELAY_TOKEN в .env"
         )
     await _init_db()
+    try:  # B10: колбэки баланса провайдеров (только регистрация, сеть не ходит)
+        from app.services.balance_adapters import register_default_adapters
+
+        register_default_adapters()
+    except Exception:  # noqa: BLE001
+        logger.exception("balance adapters registration failed (non-fatal)")
 
     from app.db import session_scope
     from app.services.startup_guard import block_pipeline_autorun_on_startup
