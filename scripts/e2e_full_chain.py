@@ -613,6 +613,7 @@ def install_child_seams(cfg: dict) -> None:
     put("gpt_base_url", base)
     put("outsee_api_key", FAKE_KEYS["outsee"])
     put("outsee_api_base_url", base)
+    put("outsee_allow_public_image_hosts", True)   # W68: боевой умолчательный запрет; в сухом стенде файлообменник - локальный фейк
     put("image_provider", "outsee")
     put("video_provider", "outsee")
     put("kie_api_key", FAKE_KEYS["kie"])

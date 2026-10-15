@@ -242,6 +242,8 @@ _TOKEN_PATHS = [re.compile(p) for p in (
     r"^/projects/[^/]+/media-recovery/",                 # release-unknown и др.
     r"^/projects/[^/]+/stop$",
     r"^/projects/[^/]+/steps/[^/]+/run$",
+    r"^/projects/[^/]+/(resume|continue)$",              # A9 (W71): продолжить/возобновить; UI шлёт токен, бот Telegram вызывает сервисы напрямую
+    r"^/hitl/[^/]+/decision$",                            # A9 (W71): решение человека (одобрить/отклонить/перегенерировать)
     r"^/projects/[^/]+/mass-lanes/start$",
     r"^/runs/[^/]+/cancel$",
     r"^/projects/[^/]+/publications/",                    # подтверждение «да», ручные действия по публикациям
