@@ -295,6 +295,7 @@ def live_settings_plan(cfg: dict, env: dict) -> dict[str, Any]:
         "outsee_api_key": env.get("OUTSEE_API_KEY", ""), "outsee_api_base_url": (env.get("OUTSEE_API_BASE_URL") or DEFAULTS["OUTSEE_API_BASE_URL"]).rstrip("/"),
         "elevenlabs_api_key": env.get("ELEVENLABS_API_KEY", ""), "elevenlabs_proxy_url": None,
         "sfx_enabled": bool(cfg["with_sfx"]), "social_publish_enabled": False, "media_spend_recording": True,
+        "images_allow_hollow_prompts": bool(cfg.get("allow_hollow")),
         "outsee_allow_public_image_hosts": True,   # синтетический проект стенда без Yandex S3; боевой умолчательный запрет не трогаем
         "browser_cdp_url": "http://127.0.0.1:9", "browser_cdp_auto_recover": False, "outsee_http_fallback_cdp": False,
         "spend_daily_cap_usd": float(cfg["app_cap_usd"]), "spend_project_cap_usd": float(cfg["app_cap_usd"]),
@@ -568,6 +569,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--owner-approved-frames", type=int, default=0, help=f"слово владельца: кадров больше 5, не больше {OWNER_FRAMES_LIMIT}")
     ap.add_argument("--adopt", action="store_true", help="продолжить проект в существующей work-dir прошлого живого прогона (расход журнала копится, потолки общие)")
     ap.add_argument("--adopt-step", default="anim_pr", help="шаг, который оператор нажимает для продолжения (с --adopt)")
+    ap.add_argument("--allow-hollow-prompts", action="store_true", help="проверка механики: платить за картинки даже с пустыми полями сцены (IMAGES_ALLOW_HOLLOW_PROMPTS); качество не доказывается")
     ap.add_argument("--no-human-text-gate", action="store_true", help="не одобрять план/сценарий за человека (проверять только встроенный Вердикт)")
     ap.add_argument("--with-music", action="store_true", help="настоящая музыка Kie Suno (≈ $0.6, съедает потолок медиа)")
     ap.add_argument("--with-sfx", action="store_true", help="настоящие звуки ElevenLabs (по умолчанию SFX_ENABLED=false)")
@@ -710,7 +712,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
         shutil.copytree(ROOT / "prompts", work / "prompts")
     cfg = {"work": str(work), "port": args.port, "fake_port": 0, "app_cap_usd": float(args.app_cap_usd), "seams": list(fc.SEAMS),
            "text_provider": args.text_provider, "image_provider": args.image_provider, "video_provider": args.video_provider,
-           "with_sfx": bool(args.with_sfx), "wire_caps": caps, "allowed_post_hosts": allowed_post_hosts(live_env)}
+           "with_sfx": bool(args.with_sfx), "allow_hollow": bool(args.allow_hollow_prompts), "wire_caps": caps, "allowed_post_hosts": allowed_post_hosts(live_env)}
     env = fc.server_env(work, args.port, cfg, args.asr_model)
     env.update({"FC_LIVE_CFG": json.dumps(cfg), "TEXT_LLM_PROVIDER": args.text_provider, "IMAGE_PROVIDER": args.image_provider,
                 "VIDEO_PROVIDER": args.video_provider, "GPT_MAX_RETRIES": "2", "SFX_ENABLED": "true" if args.with_sfx else "false",
