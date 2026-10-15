@@ -1,0 +1,27 @@
+{
+  "version": "2",
+  "max_attempts": 3,
+  "stagger_s": 5,
+  "outcomes": ["death", "escape", "transformation"],
+  "dull_themes": ["лес", "город", "комната", "подземелье", "океан", "пустыня", "мир"],
+  "checks": [
+    "interesting_theme",
+    "clear_law",
+    "logical_outcome",
+    "vivid_peak",
+    "visualizable",
+    "start_ne_end",
+    "not_stoplist",
+    "doors_differ"
+  ],
+  "check_labels": {
+    "interesting_theme": "мир необычный и конкретный, не одно общее слово",
+    "clear_law": "ровно один понятный закон",
+    "logical_outcome": "исход следует из закона и виден на теле или предмете",
+    "vivid_peak": "пик — самое яркое видимое действие",
+    "visualizable": "каждый кадр можно снять или сгенерировать",
+    "start_ne_end": "стартовый кадр не равен конечному",
+    "not_stoplist": "темы нет в стоп-листе и это не близкая копия",
+    "doors_differ": "миры Двери 1 и Двери 2 различаются"
+  }
+}
