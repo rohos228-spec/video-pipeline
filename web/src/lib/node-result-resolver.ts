@@ -147,8 +147,8 @@ function artifactItems(arts: ArtifactDTO[]): NodeResultItem[] {
       id: a.uuid,
       label: a.kind,
       kind: mediaKind(path, a.kind || ""),
-      previewUrl: api.artifactFileUrl(a.uuid),
-      downloadUrl: api.artifactFileUrl(a.uuid),
+      previewUrl: api.artifactFileUrl(a.uuid, a.project_id),
+      downloadUrl: api.artifactFileUrl(a.uuid, a.project_id),
       filePath: path || null,
     };
   });

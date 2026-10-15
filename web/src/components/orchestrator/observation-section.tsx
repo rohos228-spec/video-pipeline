@@ -77,10 +77,17 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
   const [actionError,setActionError]=useState('');
   const [controlsError,setControlsError]=useState('');
   const generation = useRef(0);
+  // Проект сменился, а выбранный запуск ещё от прежнего: до загрузки списка нового проекта не опрашиваем его.
+  const staleFor = useRef<number | null>(null);
+  // В первом кадре после смены проекта `execution` ещё от прежнего: дочерним разделам его не отдаём.
+  const shownProject = useRef(projectId);
+  const projectSwitched = shownProject.current !== projectId;
+  useEffect(() => { shownProject.current = projectId; });
   const key = `studio-observation-execution-${projectId}`;
 
   useEffect(() => {
     const epoch = ++generation.current;
+    staleFor.current = projectId;
     setGroups([]); setGroup(""); setScopes([]); setExecution(""); setContext(null); setEvents([]); setError("");
     if (projectId == null) return;
     let retry: ReturnType<typeof setTimeout> | undefined;
@@ -96,6 +103,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
       setGroups([...grouped.values()]); setGroup([...grouped.keys()][0] ?? ""); setScopes(list);
       let saved = "";
       try { saved = localStorage.getItem(key) ?? ""; } catch { /* History still available from API. */ }
+      staleFor.current = null;
       setExecution(list.some(s => s.execution_id === saved) ? saved : list[0]?.execution_id ?? "");
       setError("");
     }).catch(() => {
@@ -114,7 +122,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
 
   useEffect(() => {
     setEvents([]); setContext(null); setDiagnosis(null); setDiagnosisError(''); setActionState(null); setActionError(''); setControlsError('');
-    if (!execution || projectId == null) return;
+    if (!execution || projectId == null || staleFor.current === projectId) return;
     try { localStorage.setItem(key,execution); } catch { /* Server remains source of history. */ }
     let cancelled = false;
     let cursor = 0;
@@ -358,8 +366,8 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
         {events.map(e=><li key={e.event_id} id={`observation-event-${e.event_id}`} data-event-id={e.event_id} className="border-l border-white/15 pl-2 text-white/60">{e.created_at?.slice(11,19)} · {e.node_key ?? "весь запуск"} · {eventLabel(e)} · {e.db_scope ?? "источник неизвестен"}</li>)}
       </ol></div>
     </>}
-    {projectId!=null && execution && <ProfilesSection projectId={projectId} execution={execution} nodes={context?.node_keys??groups.find(g=>g.id===group)?.keys??[]} managed={Boolean(actionState?.enabled)}/>}
-    {projectId!=null && execution && <DecisionSection projectId={projectId} execution={execution} managed={Boolean(actionState?.enabled)}/>}
+    {projectId!=null && execution && !projectSwitched && <ProfilesSection projectId={projectId} execution={execution} nodes={context?.node_keys??groups.find(g=>g.id===group)?.keys??[]} managed={Boolean(actionState?.enabled)}/>}
+    {projectId!=null && execution && !projectSwitched && <DecisionSection projectId={projectId} execution={execution} managed={Boolean(actionState?.enabled)}/>}
     </details>
   </section>;
 }

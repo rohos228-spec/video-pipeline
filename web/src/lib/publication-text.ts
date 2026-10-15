@@ -41,6 +41,8 @@ export const PUBLICATION_CODE_RU: Record<string, string> = {
 export function publicationCodeText(code: string | null | undefined): string {
   const c = (code ?? "").trim();
   if (!c) return "";
+  // шаг публикации при выключенной автопубликации пишет причину текстом настройки, а не кодом
+  if (c === "SOCIAL_PUBLISH_ENABLED=false") return PUBLICATION_CODE_RU.publish_disabled;
   return PUBLICATION_CODE_RU[c] ?? "Причина записана в журнале (код не расшифрован).";
 }
 

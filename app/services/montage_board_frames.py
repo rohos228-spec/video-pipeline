@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Artifact, ArtifactKind, Frame, FrameEdge, FrameStatus, FrameText, Project, PromptVersion
 from app.services.db_v2 import insert_frame_after
+from app.services.frame_tombstones import remember_deleted
 from app.services.montage_coverage_ops import (
     _children_of,
     _clear_child_scene_chain,
@@ -234,6 +235,7 @@ async def delete_montage_frame(
         board = montage_meta(project)
         drop_pending_ops_for_frames(board, {number})
         set_montage_meta(project, board)
+        remember_deleted(project, number)
         logger.info("montage delete child #{} frame {}", project.id, number)
         return {"ok": True, "frame_id": frame_id, "number": number, "deleted": 1}
 
@@ -249,6 +251,7 @@ async def delete_montage_frame(
     board = montage_meta(project)
     drop_pending_ops_for_frames(board, {number})
     set_montage_meta(project, board)
+    remember_deleted(project, number)
     logger.info(
         "montage delete frame #{} number {} (сцена жива, шотов {})",
         project.id,

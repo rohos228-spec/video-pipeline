@@ -1801,7 +1801,9 @@ export const api = {
     if (params.kind) q.set("kind", params.kind);
     return http<ArtifactDTO[]>(`/api/artifacts?${q.toString()}`);
   },
-  artifactFileUrl: (uuid: string) => `/api/artifacts/${uuid}/file`,
+  // С project_id файл ищется в project.db проекта (там лежат артефакты); без него — только в общей базе.
+  artifactFileUrl: (uuid: string, projectId?: number | null) =>
+    projectId ? `/api/artifacts/${uuid}/file?project_id=${projectId}` : `/api/artifacts/${uuid}/file`,
 
   // ── Prompt studio (blocks v2) ────────────────────────────────────
   promptStudioCatalog: () =>

@@ -23,7 +23,7 @@ from app.services import hitl as hitl_service
 from app.services import publications_store as pstore
 from app.services.action_layer.context import normalize_operator
 from app.telegram import publish_texts as ptexts
-from app.web.deps import get_session
+from app.web.deps import get_project_session
 
 router = APIRouter(prefix="/projects/{project_id}/publications", tags=["publications"])
 
@@ -100,7 +100,7 @@ class MarkFailedIn(BaseModel):
 
 
 @router.get("")
-async def list_publications(project_id: int, session: AsyncSession = Depends(get_session)) -> dict:
+async def list_publications(project_id: int, session: AsyncSession = Depends(get_project_session)) -> dict:
     """Только чтение: файл, подпись, площадки со статусом, ссылкой на пост, ошибкой и ручными отметками."""
     project = await _project(session, project_id)
     return await publish_step.publication_facts(session, project)
@@ -121,7 +121,7 @@ def _approve_message(queued: bool, publish_enabled: bool) -> str:
 
 
 @router.post("/approve", dependencies=[Depends(require_operator_token)])
-async def approve_publication(project_id: int, body: ApproveIn, session: AsyncSession = Depends(get_session),
+async def approve_publication(project_id: int, body: ApproveIn, session: AsyncSession = Depends(get_project_session),
                               operator: str | None = Header(default=None, alias="X-Action-Layer-Operator")) -> dict:
     """Подтверждение человека: «да» на каждую площадку отдельно, для ЭТОГО файла и ЭТОЙ подписи, одноразово.
 
@@ -152,7 +152,7 @@ async def approve_publication(project_id: int, body: ApproveIn, session: AsyncSe
 
 @router.post("/{platform}/revoke", dependencies=[Depends(require_operator_token)])
 async def revoke_publication(project_id: int, platform: str, body: RevokeIn,
-                             session: AsyncSession = Depends(get_session),
+                             session: AsyncSession = Depends(get_project_session),
                              operator: str | None = Header(default=None, alias="X-Action-Layer-Operator")) -> dict:
     """U-7: отозвать выданное «да» до того, как шаг публикации его потратил. После отзыва клика не будет.
 
@@ -172,7 +172,7 @@ async def revoke_publication(project_id: int, platform: str, body: RevokeIn,
 
 @router.post("/{platform}/confirm-manual", dependencies=[Depends(require_operator_token)])
 async def confirm_manual(project_id: int, platform: str, body: ConfirmManualIn,
-                         session: AsyncSession = Depends(get_session),
+                         session: AsyncSession = Depends(get_project_session),
                          operator: str | None = Header(default=None, alias="X-Action-Layer-Operator")) -> dict:
     """Человек проверил площадку и подтверждает «опубликовано». Нужна ссылка на пост ИЛИ причина. Клик не повторяется."""
     project = await _project(session, project_id)
@@ -193,7 +193,7 @@ async def confirm_manual(project_id: int, platform: str, body: ConfirmManualIn,
 
 @router.post("/{platform}/mark-failed", dependencies=[Depends(require_operator_token)])
 async def mark_failed(project_id: int, platform: str, body: MarkFailedIn,
-                      session: AsyncSession = Depends(get_session),
+                      session: AsyncSession = Depends(get_project_session),
                       operator: str | None = Header(default=None, alias="X-Action-Layer-Operator")) -> dict:
     """Человек проверил площадку и помечает «не опубликовано». Причина обязательна. Клик не повторяется."""
     project = await _project(session, project_id)

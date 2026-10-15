@@ -1027,14 +1027,14 @@ export function NodeStudio({
                             <video
                               controls
                               className="mt-1 max-h-40 w-full rounded"
-                              src={api.artifactFileUrl(a.uuid)}
+                              src={api.artifactFileUrl(a.uuid, a.project_id)}
                             />
                           ) : a.path.match(/\.(mp3|wav|m4a|ogg|aac|flac)$/i) ? (
                             <div className="mt-2 flex flex-col gap-1 rounded bg-black/40 p-2">
                               <audio
                                 controls
                                 className="w-full"
-                                src={api.artifactFileUrl(a.uuid)}
+                                src={api.artifactFileUrl(a.uuid, a.project_id)}
                               />
                             </div>
                           ) : a.path.match(/\.(json|txt|tsv|md|csv)$/i) ? (
@@ -1048,11 +1048,11 @@ export function NodeStudio({
                             <img
                               alt=""
                               className="mt-1 max-h-40 w-full rounded object-contain"
-                              src={api.artifactFileUrl(a.uuid)}
+                              src={api.artifactFileUrl(a.uuid, a.project_id)}
                             />
                           )}
                           <a
-                            href={api.artifactFileUrl(a.uuid)}
+                            href={api.artifactFileUrl(a.uuid, a.project_id)}
                             download
                             className="mt-2 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
                           >

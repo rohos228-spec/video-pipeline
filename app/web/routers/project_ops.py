@@ -484,7 +484,10 @@ async def reload_xlsx(
     xlsx = p.data_dir / "project.xlsx"
     if not xlsx.exists():
         raise HTTPException(status_code=404, detail="Файл project.xlsx не найден")
-    await sync_project_xlsx(session, p, xlsx)
+    try:
+        await sync_project_xlsx(session, p, xlsx)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated", payload={"xlsx": "reloaded"})
@@ -516,6 +519,9 @@ async def upload_xlsx(
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=validation_err)
     tmp_path.replace(dest)
+    from app.services.frame_tombstones import forget_deleted
+
+    forget_deleted(p)  # новый xlsx загружен человеком: удалённые на доске кадры снова берутся из файла
     if node_key:
         from app.services.node_xlsx_snapshot import clear_bound_snapshot
 
@@ -933,6 +939,8 @@ async def montage_board_set_voiceover(
     from app.services.montage_board_frames import set_montage_voiceover
 
     p = _project_or_404(await session.get(Project, project_id))
+    if "text" not in body:
+        raise HTTPException(status_code=400, detail="нужно поле text (пустая строка очищает закадр)")
     try:
         fr = await set_montage_voiceover(
             session, p, frame_id, str(body.get("text") or "")

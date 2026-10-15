@@ -342,6 +342,8 @@ def publication_code_text(code: Any) -> str:
     c = str(code or "").strip()
     if not c:
         return ""
+    if c == "SOCIAL_PUBLISH_ENABLED=false":  # так шаг публикации пишет причину при выключенной автопубликации
+        c = "publish_disabled"
     return PUBLICATION_CODE_RU.get(c) or "Причина записана в журнале (код не расшифрован)."
 
 # --- уведомления (notification_log) ----------------------------------------------------------------------
