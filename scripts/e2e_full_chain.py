@@ -397,6 +397,10 @@ class FakeProviders:
                     with outer._lock:
                         outer.extra["balance"] += 1
                     return self._json(200, {"balance": 100.0})
+                if path == "/v1/user/subscription":  # автоснимок остатка ElevenLabs (W55)
+                    with outer._lock:
+                        outer.extra["balance"] += 1
+                    return self._json(200, {"character_limit": 100000, "character_count": 0})
                 if path == KIE_BALANCE:
                     if not self._auth("kie"):
                         return

@@ -218,3 +218,35 @@ def test_unavailable_store_falls_back_to_memory(monkeypatch, tmp_path):
 def test_validation_is_open_when_auth_disabled(monkeypatch):
     monkeypatch.setattr(settings, "web_auth_user", "")
     assert sessions.validate_session_token(None) is True
+
+
+# --- W63: сессия в куке (страница Studio токен сама не шлёт) ---------------------------------------
+
+async def test_login_sets_httponly_strict_session_cookie_and_cookie_authorizes():
+    async with _client() as c:
+        r = await _login(c)
+        assert r.status_code == 200
+        cookie = r.headers.get("set-cookie", "")
+        assert "vp_session=" in cookie and "HttpOnly" in cookie and "SameSite=strict" in cookie
+        token = r.json()["token"]
+        assert token and f"vp_session={token}" in cookie
+        # кука (без заголовка Authorization) пускает на защищённый путь
+        c.cookies.set("vp_session", token)
+        from fastapi import Request
+        req = Request({"type": "http", "headers": [(b"cookie", f"vp_session={token}".encode())]})
+        assert await sessions.require_web_user(req) == token
+
+
+async def test_logout_revokes_cookie_session():
+    async with _client() as c:
+        token = (await _login(c)).json()["token"]
+        out = await c.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"})
+        assert out.status_code == 200
+        assert "vp_session=" in out.headers.get("set-cookie", "")  # кука очищена
+        assert sessions.validate_session_token(token) is False
+
+
+async def test_failed_login_sets_no_cookie():
+    async with _client() as c:
+        r = await _login(c, pwd="bad")
+        assert r.status_code == 401 and "vp_session" not in r.headers.get("set-cookie", "")

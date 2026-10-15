@@ -4,6 +4,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import openpyxl
+import pytest
+from fastapi.testclient import TestClient
 
 from app.services.xlsx_versioning import validate_xlsx_sheets
 from app.storage.project_sheet import SHEET_FRAMES, SHEET_GENERAL
@@ -98,3 +100,24 @@ async def test_v8_import_skips_deleted_numbers(tmp_path):
         nums = sorted(f.number for f in (await session.execute(select(Frame))).scalars().all())
         assert nums == [1, 2]
     await engine.dispose()
+
+
+def test_websocket_requires_login_when_web_auth_enabled(monkeypatch):
+    """A3: при WEB_AUTH событие-стрим без входа закрывается (1008), с кукой сессии работает."""
+    from starlette.websockets import WebSocketDisconnect
+
+    from app.settings import settings
+    from app.web import auth_sessions
+    from app.web.api import create_app
+
+    monkeypatch.setattr(settings, "web_auth_user", "boss")
+    monkeypatch.setattr(settings, "web_auth_password", "s3cret-pass")
+    auth_sessions.forget_memory_sessions()
+    token = auth_sessions.issue_session_token("boss")
+    with TestClient(create_app()) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/ws/global") as ws:
+                ws.receive_text()
+        client.cookies.set("vp_session", token)
+        with client.websocket_connect("/ws/global") as ws:
+            assert '"subscribed"' in ws.receive_text()

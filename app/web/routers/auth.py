@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.services import access_guard
@@ -29,7 +29,7 @@ def _throttle_keys(request: Request, username: str) -> list[str]:
 
 
 @router.post("/login")
-async def login(body: LoginBody, request: Request) -> dict:
+async def login(body: LoginBody, request: Request, response: Response) -> dict:
     if not settings.web_auth_enabled:
         return {"ok": True, "token": None, "auth_required": False}
     keys = _throttle_keys(request, body.username)
@@ -46,13 +46,17 @@ async def login(body: LoginBody, request: Request) -> dict:
         raise HTTPException(status_code=401, detail="invalid credentials")
     auth_sessions.login_throttle.record_success(keys)
     token = issue_session_token(body.username)
+    # Страница Studio сама токен не шлёт: сессия едет в куке (без доступа из скриптов страницы, только свой сайт).
+    response.set_cookie("vp_session", token, max_age=auth_sessions._TOKEN_TTL_SEC, httponly=True,
+                        samesite="strict", secure=request.url.scheme == "https", path="/")
     return {"ok": True, "token": token, "auth_required": True}
 
 
 @router.post("/logout")
-async def logout(request: Request) -> dict:
+async def logout(request: Request, response: Response) -> dict:
     token = auth_sessions._extract_bearer(request)
     auth_sessions.revoke_session_token(token)
+    response.delete_cookie("vp_session", path="/")
     return {"ok": True}
 
 

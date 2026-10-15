@@ -183,6 +183,10 @@ export async function http<T>(
       } catch {
         // оставляем как text
       }
+      // Сессия входа истекла: форма входа (AuthGate) откроется поверх интерфейса.
+      if (res.status === 401 && typeof detail === "object" && (detail as { detail?: unknown }).detail === "login required") {
+        window.dispatchEvent(new Event("vp-auth-required"));
+      }
       throw new ApiError(res.status, detail);
     }
     if (res.status === 204) return undefined as T;

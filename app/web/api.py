@@ -398,6 +398,15 @@ def create_app() -> FastAPI:
         """Клиент подписывается на канал (например, `runs.42`, `global`,
         `hitl.7`). Сервер шлёт JSON-сообщения каждое полученное событие.
         """
+        from app.settings import settings as _s
+
+        if _s.web_auth_enabled:
+            from app.web.auth_sessions import validate_session_token
+
+            bearer = (ws.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+            if not validate_session_token(bearer or ws.cookies.get("vp_session")):
+                await ws.close(code=1008)  # без входа события проектов не отдаём
+                return
         if _ws_active["n"] >= _WS_MAX:
             await ws.accept()
             with suppress(Exception):
