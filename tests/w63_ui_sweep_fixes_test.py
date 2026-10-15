@@ -121,3 +121,58 @@ def test_websocket_requires_login_when_web_auth_enabled(monkeypatch):
         client.cookies.set("vp_session", token)
         with client.websocket_connect("/ws/global") as ws:
             assert '"subscribed"' in ws.receive_text()
+
+
+async def test_inspector_title_edit_reaches_master_list(tmp_path, monkeypatch):
+    """Правка названия в project.db видна в списке проектов (он читает master)."""
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    import app.db as app_db
+    from app import project_db
+    from app.models import Base, Project, ProjectStatus
+
+    master_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'master.db'}")
+    proj_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'project.db'}")
+    for eng in (master_engine, proj_engine):
+        async with eng.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    master_maker = async_sessionmaker(master_engine, expire_on_commit=False, class_=AsyncSession)
+    proj_maker = async_sessionmaker(proj_engine, expire_on_commit=False, class_=AsyncSession)
+
+    @asynccontextmanager
+    async def fake_scope():
+        async with master_maker() as s:
+            yield s
+
+    monkeypatch.setattr(app_db, "session_scope", fake_scope)
+    async with master_maker() as m:
+        m.add(Project(id=7, slug="p7", title="старое", topic="т", status=ProjectStatus.new, meta={}))
+        await m.commit()
+    async with proj_maker() as ps:
+        ps.add(Project(id=7, slug="p7", title="новое", topic="т", status=ProjectStatus.new, meta={}))
+        await ps.commit()
+        project = await ps.get(Project, 7)
+        await project_db.push_display_fields_to_master(ps, project, ["meta"])  # не отображаемое поле: без изменений
+        async with master_maker() as m:
+            assert (await m.get(Project, 7)).title == "старое"
+        await project_db.push_display_fields_to_master(ps, project, ["title"])
+    async with master_maker() as m:
+        assert (await m.get(Project, 7)).title == "новое"
+    await master_engine.dispose()
+    await proj_engine.dispose()
+
+
+def test_slug_of_leftover_project_folder_is_taken(tmp_path, monkeypatch):
+    """Папка удалённого проекта остаётся на диске: новый проект с тем же названием получает другой slug."""
+    from app.services.project_slug import slug_taken_on_disk
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    assert slug_taken_on_disk("doch-1") is False
+    folder = tmp_path / "videos" / "doch-1"
+    folder.mkdir(parents=True)
+    assert slug_taken_on_disk("doch-1") is False  # пустая папка не мешает
+    (folder / "project.db").write_bytes(b"x")
+    assert slug_taken_on_disk("doch-1") is True

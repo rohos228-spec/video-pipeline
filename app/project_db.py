@@ -818,6 +818,33 @@ async def push_runtime_to_master(
         )
 
 
+# Поля, которые человек правит в инспекторе: список проектов (боковая панель) читает master, правка идёт в project.db.
+_MASTER_MIRROR_FIELDS = (
+    "title", "topic", "hero_mode", "image_generator", "aspect_ratio", "image_resolution", "image_quality",
+    "image_relax", "video_generator", "video_resolution", "video_relax", "hero_count",
+)
+
+
+async def push_display_fields_to_master(session: AsyncSession, project: Project, keys) -> None:
+    """После правки в project.db перенести название, тему и настройки генерации в строку master."""
+    from app.db import commit_with_retry, session_scope
+
+    names = [k for k in keys if k in _MASTER_MIRROR_FIELDS]
+    if not names or "project.db" not in _bind_url(session):
+        return
+    try:
+        async with session_scope() as master:
+            existing = await master.get(Project, int(project.id))
+            if existing is None:
+                return
+            for name in names:
+                setattr(existing, name, getattr(project, name))
+            existing.updated_at = project.updated_at
+            await commit_with_retry(master)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("push_display_fields_to_master: #{} failed: {}", project.id, exc)
+
+
 async def sync_runtime_both_ways(
     session: AsyncSession,
     project: Project,

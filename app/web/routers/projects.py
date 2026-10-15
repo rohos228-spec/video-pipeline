@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.services.default_project import default_auto_mode_for_new_project
 from app.services.mass_factory import mass_parent_id
+from app.services.project_slug import slug_taken_on_disk
 from app.services.sidebar_layout import (
     ensure_project_layout,
     get_gen_queue,
@@ -288,7 +289,7 @@ async def create_project(
     suffix = 2
     while (
         await session.execute(select(Project).where(Project.slug == slug))
-    ).scalar_one_or_none() is not None:
+    ).scalar_one_or_none() is not None or slug_taken_on_disk(slug):
         slug = f"{base_slug}-{suffix}"
         suffix += 1
     auto_mode = body.auto_mode
@@ -644,9 +645,10 @@ async def patch_project(
     await commit_with_retry(session)
     await session.refresh(p)
     try:
-        from app.project_db import sync_runtime_both_ways
+        from app.project_db import push_display_fields_to_master, sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, p)
+        await push_display_fields_to_master(session, p, payload.keys())
     except Exception:  # noqa: BLE001
         pass
     await publish_project_event(project_id, event_type="project_updated")
