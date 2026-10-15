@@ -27,6 +27,16 @@ What is different (all of it is a SAFETY layer, none of it changes production be
     make them real and paid.
   * publication is never started (SOCIAL_PUBLISH_ENABLED=false; the stand only approves the final as a human).
 
+``--prompt-group script_frames_qc`` (default OFF; every number below stays as it was without it) puts the customer's node group
+Каркас -> Площадка -> Шоты -> QC кадров -> Отчёт into the project graph after the first generic node ``n_excel_gpt_1`` (production route
+``POST /api/projects/{id}/canvas/groups/script_frames_qc``, the dry stand does it the same way). The generic ``excel_gpt`` nodes of
+the default graph write no scene data, so the native ``image_prompts`` step got nothing to describe (live 15.10.2026: 5 of 8 prompts
+were the style template with «нет исходных данных»); the group writes the scene (`кадры`, `площадка`) the prompts are built from.
+What it changes for the money: + one text request per model node of the group (4 for a one-cell project, counted in
+``estimate`` / ``wire_caps``), and the FRAME COUNT now comes from the group (scene cells + shot children), not from the split:
+``--frames`` stays the hard cap (the gate stops the run BEFORE any paid media when the group made more frames than allowed), so give
+it room: the group cuts every scene into several shots.
+
 Exit codes: 0 PASS, 1 FAIL, 2 bad arguments / refused before start (no key, estimate above a ceiling, unsafe work dir).
 """
 from __future__ import annotations
@@ -153,7 +163,8 @@ def missing_keys(live_env: dict[str, str], need: dict[str, str]) -> list[str]:
 def estimate(args) -> dict:
     """Paid requests and a conservative USD estimate of THIS run, before anything starts."""
     n, lvl = int(args.frames), fc.level_index(args.until)
-    llm = fc.expected_llm_calls(args.until, n)
+    group = getattr(args, "prompt_group", None)
+    llm = fc.expected_llm_calls(args.until, n, 0, group)       # with a group n is the CAP of the final frame count (upper bound)
     if not args.with_music:
         llm.pop("music_prompt", None)           # music comes from disk: no prompt request, no Suno
     if not args.with_sfx:
@@ -169,10 +180,12 @@ def estimate(args) -> dict:
     text_usd = round(n_llm * PRICE["llm_request"], 4)
     media_usd = round(sum(media.values()), 4)
     worst_media = round(sum(media[k] * RETRY_FACTOR.get(k, 1) for k in media), 4)
+    # video start frames (level C) + with a group one reference upload per shot child image (at most frames - 1 children)
+    uploads = (n if lvl >= 2 else 0) + (max(0, n - 1) if group and lvl >= 1 else 0)
     return {"frames": n, "until": args.until, "requests": req, "llm_by_node": llm, "text_usd": text_usd,
             "media_usd": media_usd, "media_breakdown": media, "worst_case_text_usd": round(text_usd * RETRY_FACTOR["llm"], 4),
-            "worst_case_media_usd": worst_media, "prices": dict(PRICE),
-            "public_file_host_uploads": args.frames if lvl >= 2 else 0}
+            "worst_case_media_usd": worst_media, "prices": dict(PRICE), "prompt_group": group,
+            "public_file_host_uploads": uploads}
 
 
 def estimate_problem(est: dict, max_text: float, max_media: float) -> str | None:
@@ -361,6 +374,7 @@ def child_live_main() -> int:
         except Exception:  # noqa: BLE001
             object.__setattr__(settings, name, value)
     install_live_hook(cfg)
+    fc.keep_group_report_out_of_repo(Path(cfg["work"]))      # the group's report node would write <repo>/exports/*.html
     runpy.run_module("app.main", run_name="__main__", alter_sys=True)
     return 0
 
@@ -469,6 +483,22 @@ def run_checks_live(chain, ev, args, work: Path, R, human_final: bool, caps: dic
         if int(n.get("attempts") or 0) > 1:
             R.advise(f"нода {n['node_key']}: {n['attempts']} попыток (повтор после отказа)")
     R.check(f"кадров в проекте не больше --frames {args.frames}", 0 < ev.frames <= int(args.frames), ev.frames)
+    group = getattr(args, "prompt_group", None)
+    if fc.level_index(until) >= fc.level_index("B"):
+        prompts_info = fc.frames_prompt_report(ev.frame_rows)
+        problem = bool(not ev.frame_rows or prompts_info["empty"] or prompts_info["hollow"])
+        if args.allow_hollow_prompts and problem:
+            R.advise(f"промты картинок пустые/заглушки при --allow-hollow-prompts (механика, не качество): {prompts_info}")
+        else:
+            R.check("промты картинок: у каждого кадра промт не пуст и не заглушка «нет исходных данных» "
+                    "(родитель - свой, дочерний шот - свой или родителя)", not problem, prompts_info)
+    if group:
+        by_key = {n["node_key"]: n for n in ev.nodes}
+        R.check(f"группа {group}: все ноды выполнены (done)",
+                all((by_key.get(k) or {}).get("status") == "done" for k in fc.GROUP_NODE_KEYS[group]),
+                {k: (by_key.get(k) or {}).get("status") for k in fc.GROUP_NODE_KEYS[group]})
+        repo_html = ROOT / "exports" / f"{chain.slug}-shots-report.html"
+        R.check("отчёт группы не записан в exports/ репозитория", not repo_html.exists(), str(repo_html))
 
     # --- providers: ceilings, not exact numbers ---
     wc = fc.wire_counts(ev.wire)
@@ -573,6 +603,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--no-human-text-gate", action="store_true", help="не одобрять план/сценарий за человека (проверять только встроенный Вердикт)")
     ap.add_argument("--with-music", action="store_true", help="настоящая музыка Kie Suno (≈ $0.6, съедает потолок медиа)")
     ap.add_argument("--with-sfx", action="store_true", help="настоящие звуки ElevenLabs (по умолчанию SFX_ENABLED=false)")
+    ap.add_argument("--prompt-group", choices=fc.PROMPT_GROUPS, default=None,
+                    help="вшить группу нод в граф проекта после n_excel_gpt_1 (по умолчанию выкл.): промты картинок получают данные сцен; "
+                         "+ запросы текста по нодам группы; число кадров задаёт группа, --frames остаётся жёстким потолком")
     ap.add_argument("--sfx-max-events", type=int, default=3)
     ap.add_argument("--tts-chars-per-frame", type=int, default=160)
     ap.add_argument("--text-provider", choices=PROVIDER_CHOICES["text"], default="vibecode")
@@ -601,6 +634,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ap.error(f"потолки выше правила владельца (текст ${MAX_TEXT_CEILING}, медиа ${media_cap} на прогон) не принимаются")
     if args.sfx_max_events < 1 or args.tts_chars_per_frame < 1:
         ap.error("--sfx-max-events и --tts-chars-per-frame должны быть положительными")
+    try:
+        fc.check_group_args(args)
+    except ValueError as exc:
+        ap.error(str(exc))
     return args
 
 
@@ -608,7 +645,11 @@ def print_estimate(args, est: dict, need: dict[str, str], missing: list[str]) ->
     print("===== ЖИВОЙ ПРОГОН F10: оценка до старта =====")
     print(f"уровень: {args.until}; кадров: {args.frames}; текст: {args.text_provider}; картинки: {args.image_provider}; "
           f"видео: {args.video_provider} ({'veo-3-1-lite' if args.video_provider == 'outsee' else 'seedance-1-5-pro'}); "
-          f"музыка: {'Suno (платно)' if args.with_music else 'файл с диска (бесплатно)'}; звуки: {'ElevenLabs (платно)' if args.with_sfx else 'выкл.'}")
+          f"музыка: {'Suno (платно)' if args.with_music else 'файл с диска (бесплатно)'}; звуки: {'ElevenLabs (платно)' if args.with_sfx else 'выкл.'}; "
+          f"группа промтов: {est.get('prompt_group') or 'нет'}")
+    if est.get("prompt_group"):
+        print(f"ВНИМАНИЕ: число кадров задаёт группа {est['prompt_group']} (сцены + дочерние шоты); потолок --frames {args.frames}: "
+              "если группа сделает больше кадров, прогон остановится ДО платных медиа")
     print("запросов:", json.dumps(est["requests"], ensure_ascii=False), "| текстовые по узлам:", json.dumps(est["llm_by_node"], ensure_ascii=False))
     print(f"оценка: текст ${est['text_usd']} (худший случай ${est['worst_case_text_usd']}) при потолке ${args.max_text_usd}; "
           f"медиа ${est['media_usd']} (худший случай ${est['worst_case_media_usd']}) при потолке ${args.max_media_usd}")
@@ -667,6 +708,11 @@ def print_live_report(R, result: dict) -> None:
     print("result.json:", result["result_json"])
 
 
+GROUP_NOT_PROVEN = (
+    "группа нод: сколько кадров на самом деле нарежет настоящая модель (оценка и потолки считаются по --frames как верхней границе)",
+    "группа нод: смысловое качество сцен/шотов/промтов (проверено только что промты не пустые и не заглушки)",
+    "F10-D12: после цепочки группы оператор нажимает ▶ второй «Работы с GPT» (см. interventions в result.json)",
+)
 NOT_PROVEN = ("качество картинок, видео, голоса, текста (не оценивается)", "публикация (не запускалась)",
               "точные цены провайдеров: суммы — записи журнала и консервативные оценки, не счёт провайдера (сверить по кабинетам)",
               "сторонние библиотеки вне httpx (прямые сокеты) хук не видит; Chrome CDP заменён на мёртвый адрес",
@@ -732,7 +778,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     repo_data_before = fc.data_fingerprint(ROOT / "data")
     result: dict[str, Any] = {"mode": "live", "until": args.until, "port": args.port, "work_dir": str(work), "nodes": [],
                               "estimate": est, "ceilings": {"text_usd": ceilings[0], "media_usd": ceilings[1]},
-                              "wire_caps": caps, "not_proven": list(NOT_PROVEN)}
+                              "wire_caps": caps, "not_proven": list(NOT_PROVEN) + (list(GROUP_NOT_PROVEN) if args.prompt_group else []),
+                              "prompt_group": args.prompt_group}
     proc: subprocess.Popen | None = None
     log = None
     chain = None
@@ -850,6 +897,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
                        "level_reached": info.get("level_reached"), "final_probe": ev.final_probe, "audit_rows": len(ev.audit),
                        "incidents": [{k: i[k] for k in ("node_key", "type", "severity", "status")} for i in ev.incidents],
                        "seconds": round(time.time() - t_start, 1), "stand_mutations": chain.api.mutations, "human_text_gate": human_gate["log"],
+                       "interventions": chain.interventions,
                        "log_evidence": fc.log_evidence(work / "server.log")})
     result.update({"checks": R.checks, "failed": R.failed, "known_defects": R.known_defects, "advisories": R.advisories})
     result["args"] = {k: v for k, v in vars(args).items() if k != "env_file"}

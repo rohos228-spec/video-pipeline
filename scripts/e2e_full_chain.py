@@ -33,6 +33,17 @@ STAND SEAMS (``SEAMS``; each one is listed in the report as "not real" and tied 
 
 ``--keep-auto`` (level E) does not hand the final to a human: it only watches whether the automation approves it (F10-D6).
 
+``--prompt-group script_frames_qc`` (default OFF, the default graph and every number above stay as they were) makes the stand
+build the project the way the customer's real flow does: the production route
+``POST /api/projects/{id}/canvas/groups/script_frames_qc`` (``after=n_excel_gpt_1``) puts the node group Каркас -> Площадка ->
+Шоты -> QC кадров -> Отчёт into the project graph. Why there: the worker starts a node of the group only along an ``excel_gpt``
+arrow (in auto mode ``enriching_1`` always resolves the slot-1 node ``n_excel_gpt_1`` and wipes the pinned key), so the group
+hangs on the first generic node and the chain runs ``n_excel_gpt_1 -> Каркас -> ... -> Отчёт -> hero`` with no extra ▶. The group
+re-cuts the script into scene cells with shot children (its first node seeds ONE cell from the script text, the node «Шоты»
+rebuilds the cells), so the native ``image_prompts`` step works on frames that carry scene data (``attrs.кадры`` /
+``площадка``): that is what keeps the image prompts of a LIVE run from being hollow. The frame count then comes from the group
+(parents + shot children), not from the split; the stand reads it from the project and derives the expected counts from it.
+
 LIVE mode (``--live`` / ``--live-preflight``) is in scripts/e2e_full_chain_live.py (same Chain / Report / checks, real
 providers, hard spend ceilings); this file delegates to it. Run ``--live-preflight`` first: it pays nothing.
 
@@ -85,6 +96,20 @@ DEFAULT_FAKE_PORT = 18832
 DEFAULT_VOICE = os.environ.get("VP_STAND_VOICE_WAV", "")  # wav с русской речью (SAPI); путь задаёт вызывающий
 DEFAULT_ASR = "medium"
 LEVELS = ("A", "B", "C", "D", "E")
+# Node groups the stand can put into the project graph (``--prompt-group``). The node keys are the group's production ids
+# (app.services.node_groups._script_frames_qc_group; a drift test compares them), kept here as literals because the parent
+# process of the stand must not import ``app`` (settings / .env).
+PROMPT_GROUPS = ("script_frames_qc",)
+PROMPT_GROUP_ANCHOR = "n_excel_gpt_1"
+SECOND_GENERIC_NODE = "n_excel_gpt_2"       # the generic node behind hero / items: the group chain leaves a stale active key (F10-D12)
+GROUP_NODE_KEYS: dict[str, tuple[str, ...]] = {
+    "script_frames_qc": ("n_excel_gpt_fw_script", "n_excel_gpt_fw_action", "n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc",
+                         "n_excel_gpt_fw_report"),
+}
+# model-calling nodes of the group (the report node is code only) -> oracle kind; one request each for a one-cell project
+GROUP_LLM_KINDS: dict[str, tuple[str, ...]] = {
+    "script_frames_qc": ("group_skeleton", "group_action", "group_shots", "group_qc"),
+}
 EXIT_PASS, EXIT_FAIL, EXIT_ARGS = 0, 1, 2
 
 # fake credentials: short on purpose (scan_secrets looks for sk-/vk-/Bearer + 20 chars)
@@ -198,6 +223,49 @@ def expected_paid_counts(frames: int, *, hero: int = 0, items: int = 0, sfx_even
     frame, one music generation, one SFX per planned event. Used both as the dry expectation and as the live ceiling."""
     return {"outsee_image": frames + hero + items, "outsee_video": frames, "tts": frames * tts_per_frame,
             "kie_music": music, "sfx": sfx_events}
+
+
+HOLLOW_PHRASE = "нет исходных данных для заполнения"          # app.generation_options._PLACEHOLDER_PHRASES (a test compares)
+HOLLOW_MIN_PLACEHOLDERS = 3                                    # app.generation_options.is_scene_prompt_hollow(min_placeholders=3)
+
+
+def _attrs_of(row: dict) -> dict:
+    raw = row.get("attrs")
+    if isinstance(raw, dict):
+        return raw
+    try:
+        val = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return val if isinstance(val, dict) else {}
+
+
+def is_shot_child_row(row: dict) -> bool:
+    cs = _attrs_of(row).get("camera_subdivide")
+    return isinstance(cs, dict) and str(cs.get("role") or "") == "shot"
+
+
+def frames_prompt_report(rows: list[dict]) -> dict:
+    """What the image step would pay for. A VO parent must carry its OWN prompt; a shot child (a camera cut of the parent's
+    still) may have none of its own - the step composes it from the parent - so it counts as filled when its parent's is.
+    Hollow = the style template with the scene fields stubbed (app.generation_options.is_scene_prompt_hollow)."""
+    by_uuid = {str(r.get("uuid") or ""): r for r in rows}
+    empty: list[int] = []
+    hollow: list[int] = []
+    children = 0
+    for r in rows:
+        own = str(r.get("image_prompt") or "").strip()
+        child = is_shot_child_row(r)
+        children += 1 if child else 0
+        effective = own
+        if not effective and child:
+            cs = _attrs_of(r).get("camera_subdivide") or {}
+            effective = str((by_uuid.get(str(cs.get("parent_uuid") or "")) or {}).get("image_prompt") or "").strip()
+        if not effective:
+            empty.append(int(r.get("number") or 0))
+        elif effective.lower().count(HOLLOW_PHRASE) >= HOLLOW_MIN_PLACEHOLDERS:
+            hollow.append(int(r.get("number") or 0))
+    return {"frames": len(rows), "parents": len(rows) - children, "children": children, "empty": empty, "hollow": hollow}
 
 
 def verdict_of(failed: list[str], known: dict, level_reached: str | None, until: str) -> str:
@@ -623,6 +691,7 @@ def install_child_seams(cfg: dict) -> None:
         put(name, float(cfg["app_cap_usd"]))
     from app.services import elevenlabs_api
     elevenlabs_api.ELEVENLABS_API_BASE_URL = f"{base}/v1"
+    keep_group_report_out_of_repo(work)
 
     import httpx
     original_send = httpx.AsyncClient.send
@@ -658,6 +727,16 @@ def install_child_seams(cfg: dict) -> None:
     outsee_http._post_generate_via_curl = no_curl_post
 
 
+def keep_group_report_out_of_repo(work: Path) -> None:
+    """The group's report node (fw_report) also writes ``<repo>/exports/<slug>-shots-report.html``; the stand never writes
+    into the repository, so the report root of THIS process moves into the work dir (same trick as the vibecode stand)."""
+    try:
+        from app.services import shots_report
+        shots_report.find_project_root = lambda: Path(work)
+    except Exception:  # noqa: BLE001 - the module is absent only in a trimmed checkout; the group is then not used either
+        pass
+
+
 def read_wire(path: Path) -> list[dict]:
     out: list[dict] = []
     if not Path(path).is_file():
@@ -687,6 +766,11 @@ FRAME_TEXTS = (
     "Тогда он возвращает записку на прежнее место, чтобы её нашёл следующий.",
 )
 SCRIPT_TEXT = " ".join(FRAME_TEXTS)
+# ``--prompt-group script_frames_qc``: the group is fed the SAME synthetic story the group's own stand uses (its answers are shaped
+# for exactly this text and pass the production rule passes: VO coverage, shot grammar, scene plan); the story replaces the
+# one-line note only in that mode.
+GROUP_SCENE_VOS = tuple(sc["vo"] for sc in qc.SCENES)
+GROUP_VO = qc.FULL_VO
 PLAN_TEXT = ("Короткий ролик о человеке и старой записке. Вступление: комната, стол, пожелтевшая бумага. Развитие: "
              "человек читает строки и узнаёт собственный почерк из прошлого. Финал: он аккуратно кладёт записку "
              "обратно, чтобы её нашёл следующий. Тон спокойный, камера неторопливая, свет тёплый.")
@@ -707,13 +791,24 @@ ANIMATION_PROMPT_TEXT = ("Медленный наезд камеры на чел
 class TextOracle:
     """Classifies the LLM request by its text and answers with the shape that node's parser expects."""
 
-    def __init__(self, with_hero: bool = False) -> None:
+    def __init__(self, with_hero: bool = False, prompt_group: str | None = None) -> None:
         self.kinds: list[str] = []
         self.unknown: list[str] = []
         self.sfx_events = 0
         self.sfx_requests = 0
         self.with_hero = with_hero
+        self.prompt_group = prompt_group
         self.frames: list[dict] = []         # filled from the project's own frames when a later node asks about them
+        self.script_text = GROUP_VO if prompt_group else SCRIPT_TEXT
+        self.frame_texts = GROUP_SCENE_VOS if prompt_group else FRAME_TEXTS
+
+    # the group's master prompts open the request (the same way "# Доп. работа с Excel" opens the generic node's)
+    GROUP_MARKERS = (
+        ("# Агент: каркас сцены", "group_skeleton"),
+        ("# РАЗБОР СЦЕН / АГЕНТ ПЛОЩАДКИ", "group_action"),
+        ("# Агент: сцены → кадры RU", "group_shots"),
+        ("# Агент: QC полей кадров RU", "group_qc"),
+    )
 
     MARKERS = (
         ("# ЗАПИСЬ СЦЕНАРИЯ", "plan"),
@@ -734,6 +829,10 @@ class TextOracle:
 
     @classmethod
     def classify(cls, text: str) -> str:
+        head = text.lstrip()[:600]
+        for marker, kind in cls.GROUP_MARKERS:
+            if marker in head:
+                return kind
         for marker, kind in cls.MARKERS:
             if marker in text:
                 return kind
@@ -757,6 +856,32 @@ class TextOracle:
         Only the attachments part is read: the instructions above it quote example uuids."""
         tail = text.rsplit("## Приложенные файлы", 1)[-1]
         return list(dict.fromkeys(re.findall(r'"uuid":\s*"([0-9a-fA-F]{8,})"', tail)))
+
+    @staticmethod
+    def frame_numbers(text: str) -> dict[str, int]:
+        """uuid -> frame number of the cells of THIS batch (attachments part only)."""
+        tail = text.rsplit("## Приложенные файлы", 1)[-1]
+        found = re.findall(r'"number":\s*(\d+),\s*"uuid":\s*"([0-9a-fA-F]{8,})"', tail)
+        out = {u: int(n) for n, u in found}
+        for i, u in enumerate(TextOracle.frame_uuids(text), 1):
+            out.setdefault(u, i)
+        return out
+
+    def _group_ops(self, text: str, fields_of) -> str:
+        nums = self.frame_numbers(text)
+        return json.dumps({"ops": [{"frame_uuid": u, "fields": fields_of(n)} for u, n in nums.items()]}, ensure_ascii=False)
+
+    def answer_group_skeleton(self, text: str, ctx: dict) -> str:
+        return self._group_ops(text, lambda n: {"биты": qc.BITS})
+
+    def answer_group_action(self, text: str, ctx: dict) -> str:
+        return self._group_ops(text, lambda n: {"площадка": qc.PLAN})
+
+    def answer_group_shots(self, text: str, ctx: dict) -> str:
+        return self._group_ops(text, lambda n: {"кадры": qc._kadry(n)})
+
+    def answer_group_qc(self, text: str, ctx: dict) -> str:
+        return json.dumps({"ops": []}, ensure_ascii=False)         # nothing to fix: the checked fields are already valid
 
     def answer_image_prompts(self, text: str, ctx: dict) -> str:
         ops = [{"frame_uuid": u, "fields": {"промт_картинки": IMAGE_PROMPT_TEXT}} for u in self.frame_uuids(text)]
@@ -808,7 +933,7 @@ class TextOracle:
     def answer_verdict(text: str, ctx: dict) -> str:
         """A well-formed approving verdict; every criterion quotes the checked text literally (the prompt demands it)."""
         names = re.findall(r'"(\w+)":\s*\{\s*"verdict"', text) or ["overall"]
-        pool = [PLAN_TEXT, SCRIPT_TEXT, IMAGE_PROMPT_TEXT, ANIMATION_PROMPT_TEXT, *FRAME_TEXTS]
+        pool = [PLAN_TEXT, SCRIPT_TEXT, GROUP_VO, IMAGE_PROMPT_TEXT, ANIMATION_PROMPT_TEXT, *FRAME_TEXTS, *GROUP_SCENE_VOS]
         quote = ""
         for cand in pool:
             if cand[:60] in text:
@@ -822,14 +947,12 @@ class TextOracle:
     def answer_plan(text: str, ctx: dict) -> str:
         return json.dumps({"ops": [{"target": "project", "fields": {"общий_план": PLAN_TEXT}}]}, ensure_ascii=False)
 
-    @staticmethod
-    def answer_script(text: str, ctx: dict) -> str:
-        return json.dumps({"ops": [{"target": "project", "fields": {"закадровый_текст": SCRIPT_TEXT}}]}, ensure_ascii=False)
+    def answer_script(self, text: str, ctx: dict) -> str:
+        return json.dumps({"ops": [{"target": "project", "fields": {"закадровый_текст": self.script_text}}]}, ensure_ascii=False)
 
-    @staticmethod
-    def answer_split(text: str, ctx: dict) -> str:
+    def answer_split(self, text: str, ctx: dict) -> str:
         return json.dumps({"ops": [{"target": "replace_frames",
-                                    "frames": [{"закадр": t, "длительность": 6} for t in FRAME_TEXTS]}]}, ensure_ascii=False)
+                                    "frames": [{"закадр": t, "длительность": 6} for t in self.frame_texts]}]}, ensure_ascii=False)
 
 
 # ───────────────────────────── driver (parent process) ─────────────────────────────
@@ -878,6 +1001,7 @@ class Chain:
         self.human_final_detail: Any = "не выполнялось"
         self.auto_off = False
         self.auto_final: dict | None = None
+        self.interventions: list[dict] = []          # operator presses that work around a finding (never hidden: they go to result.json)
 
     def project(self) -> dict:
         """Full project through the API (used before/after the run: GET /api/projects/{id} also heals and commits)."""
@@ -911,7 +1035,43 @@ class Chain:
             return False
         self.pid, self.slug = int(body["id"]), str(body.get("slug") or "")
         R.check("проект создан в авто-режиме", bool(body.get("auto_mode")), body.get("auto_mode"))
+        group = getattr(self.args, "prompt_group", None)
+        if group:
+            return self.apply_prompt_group(group)
         return True
+
+    def save_default_canvas(self) -> bool:
+        """What the UI does when the operator opens the canvas of a new project: the default workflow graph is saved into
+        ``meta.canvas_graph`` (PATCH). The group route needs it: on a project without a saved canvas it answers 400
+        «нет ни canvas_graph, ни default workflow» (the route reads the project's own db, which has no default workflow)."""
+        code, rows = self.api.get("/api/workflows")
+        default = next((w for w in (rows if isinstance(rows, list) else []) if w.get("is_default")), None)
+        if not self.R.check("в каталоге есть шаблон графа по умолчанию (GET /api/workflows)", code == 200 and default is not None,
+                            (code, str(rows)[:200])):
+            return False
+        code, wf = self.api.get(f"/api/workflows/{default['id']}")
+        nodes, edges = (wf.get("nodes"), wf.get("edges")) if isinstance(wf, dict) else (None, None)
+        if not self.R.check("граф по умолчанию читается целиком (GET /api/workflows/{id})",
+                            code == 200 and bool(nodes) and isinstance(edges, list), (code, len(nodes or []))):
+            return False
+        graph = {"workflow_id": int(default["id"]), "nodes": nodes, "edges": edges,
+                 "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        code, body = self.api.req("PATCH", f"/api/projects/{self.pid}", json_body={"meta": {"canvas_graph": graph}})
+        return self.R.check("граф канваса проекта сохранён, как автосохранение интерфейса (PATCH meta.canvas_graph, 200)",
+                            code == 200, (code, str(body)[:200]))
+
+    def apply_prompt_group(self, group_id: str) -> bool:
+        """``--prompt-group``: the node group goes into the project graph through the production route the UI button
+        «+ Группа» uses (the call is an operator mutation: it must have its operator_audit row like every other one)."""
+        if not self.save_default_canvas():
+            return False
+        code, body = self.api.post(f"/api/projects/{self.pid}/canvas/groups/{group_id}", {"after": PROMPT_GROUP_ANCHOR})
+        want = set(GROUP_NODE_KEYS[group_id])
+        got = set((body or {}).get("nodes") or []) if isinstance(body, dict) else set()
+        return self.R.check(f"группа {group_id} вшита в граф проекта после {PROMPT_GROUP_ANCHOR} через production-ручку "
+                            "POST /canvas/groups (200, все ноды группы)",
+                            code == 200 and got == want and (body or {}).get("after") == PROMPT_GROUP_ANCHOR,
+                            (code, str(body)[:300]))
 
     def start(self) -> bool:
         code, body = self.api.post(f"/api/projects/{self.pid}/steps/plan/run")
@@ -934,6 +1094,43 @@ class Chain:
         code, body = self.api.post(f"/api/projects/{self.pid}/steps/{step}/run")
         self.R.check(f"оператор: ▶ шага {step} после {status} через ручку UI (200)", code == 200, (code, str(body)[:300]))
         print(f"  оператор нажал ▶ {step} (после {status})", flush=True)
+
+    UNSTICK_AFTER_S = 15.0
+
+    def operator_unstick_after_group(self, project: dict, status: str) -> None:
+        """F10-D12 (only with ``--prompt-group``): after the group's chain the project meta still points at the group's LAST node
+        (``active_excel_gpt_node_key = n_excel_gpt_fw_report``, which is in ``excel_gpt_completed_keys``); when the pipeline then
+        reaches the second generic node (``enriching_2``) the worker answers «node already in completed_keys» every 5 s and
+        flips the status to enrich_2_ready, the master rejects it as stale, and the project never moves. The condition is read
+        from the project's own meta (no guess); when it has held for ``UNSTICK_AFTER_S`` the OPERATOR presses ▶ on that node
+        through the production route the UI button uses (it sets the key). Recorded as an intervention, never hidden."""
+        if not getattr(self.args, "prompt_group", None) or status != "enriching_2":
+            self._stuck_since = None
+            return
+        key = (status, SECOND_GENERIC_NODE)
+        if key in self.operator_starts:
+            return
+        meta = project.get("meta") or {}
+        active = str(meta.get("active_excel_gpt_node_key") or "")
+        done = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+        if not (active and active in done and active != SECOND_GENERIC_NODE):
+            self._stuck_since = None
+            return
+        now = time.time()
+        if getattr(self, "_stuck_since", None) is None:
+            self._stuck_since = now
+            return
+        if now - self._stuck_since < self.UNSTICK_AFTER_S:
+            return
+        self.operator_starts.add(key)
+        code, body = self.api.post(f"/api/projects/{self.pid}/steps/excel_gpt/run", None, params={"node_key": SECOND_GENERIC_NODE})
+        self.interventions.append({"finding": "F10-D12", "status": status, "stale_active_key": active,
+                                   "pressed": f"▶ {SECOND_GENERIC_NODE}", "http": code})
+        self.R.check(f"оператор: ▶ ноды {SECOND_GENERIC_NODE} (F10-D12: ключ активной ноды остался на {active}) через ручку UI (200)",
+                     code == 200, (code, str(body)[:300]))
+        self.R.advise(f"F10-D12: после цепочки группы проект завис в enriching_2 (активный ключ {active} уже в completed_keys); "
+                      f"оператор нажал ▶ {SECOND_GENERIC_NODE}")
+        print(f"  оператор нажал ▶ {SECOND_GENERIC_NODE} (F10-D12, застрял в enriching_2)", flush=True)
 
     def hand_over_to_human(self, st: str) -> None:
         """Level E: the final approval is the HUMAN's. Auto mode would approve it itself (see finding F10-D6), so the
@@ -1039,6 +1236,7 @@ class Chain:
                 if status_rank(st) >= status_rank(STATUS_END[until]):
                     return ""
             self.operator_start_if_held(p, st)
+            self.operator_unstick_after_group(p, st)
             if st in ("paused", "failed"):
                 return f"проект остановился в статусе {st}"
             if time.time() - last_change > stall_s:
@@ -1241,6 +1439,7 @@ class Evidence:
         self.idem: list[dict] = []
         self.publications = 0
         self.frames = 0
+        self.frame_rows: list[dict] = []
         self.final_probe: dict = {}
         self.final_path = ""
         self.voice_seconds: float | None = None
@@ -1265,7 +1464,8 @@ def gather(chain: "Chain", work: Path) -> Evidence:
     ev.publications = len(db.q("SELECT id FROM publications WHERE project_id = ?", (pid,))) if db.has_table("publications") else 0
     pdb = loc.Db(Path(work) / "data" / "videos" / chain.slug / "project.db")
     try:
-        ev.frames = len(pdb.q("SELECT id FROM frames WHERE project_id = ?", (pid,)))
+        ev.frame_rows = pdb.q("SELECT number, uuid, image_prompt, attrs FROM frames WHERE project_id = ? ORDER BY number", (pid,))
+        ev.frames = len(ev.frame_rows)
         arts = pdb.q("SELECT kind, path FROM artifacts WHERE project_id = ? ORDER BY id", (pid,))
     except sqlite3.Error:
         arts = []
@@ -1287,18 +1487,27 @@ LEDGER_PROVIDER_OF = {"llm": "vibecode", "outsee_image": "outsee", "outsee_video
                       "sfx": "elevenlabs", "kie_music": "kie"}
 
 
-def uploads_expected(frames: int, hero: int = 0) -> int:
-    """Free uploads to the public file hosts: one start frame per video, and (with a hero) one reference per image."""
-    return frames + (frames if hero else 0)
+def uploads_expected(frames: int, hero: int = 0, children: int = 0) -> int:
+    """Free uploads to the public file hosts: one start frame per video, (with a hero) one reference per image, and (with a
+    node group) one reference per shot child: its image is built on the parent's still."""
+    return frames + (frames if hero else 0) + children
 
 
-def expected_llm_calls(until: str, frames: int, hero: int = 0) -> dict[str, int]:
+def expected_llm_calls(until: str, frames: int, hero: int = 0, prompt_group: str | None = None,
+                       split_frames: int | None = None, group_parents: int | None = None) -> dict[str, int]:
     """Text-model requests a CLEAN run to ``until`` sends: one per text node, one per frame for each excel_gpt node
-    (the default graph has two), two plan/script verdicts, animation prompts = one 'ready' + one batch of up to 5 frames."""
+    (the default graph has two), two plan/script verdicts, animation prompts = one 'ready' + one batch of up to 5 frames.
+    ``prompt_group``: + one request per model node of the group (one-cell project; ``frames`` is then the frame count AFTER
+    the group has cut the script). The first generic excel_gpt node runs BEFORE the group (on the split's frames), the second
+    one after it, on the group's VO PARENTS only (a shot child carries its own piece of the voice-over and is not sent): pass
+    ``split_frames`` and ``group_parents`` for the exact sum; without them ``frames`` is used for both, which is the upper
+    bound a live estimate needs (``--frames`` caps both counts)."""
     lvl = level_index(until)
     exp = {"plan": 1, "script": 1, "verdict": 2, "split": 1, "excel_gpt": frames}
+    for kind in GROUP_LLM_KINDS.get(prompt_group or "", ()):
+        exp[kind] = 1
     if lvl >= 1:
-        exp["excel_gpt"] = 2 * frames
+        exp["excel_gpt"] = ((split_frames or frames) + (group_parents or frames)) if prompt_group else 2 * frames
         exp["image_prompts"] = 1
         if hero:
             exp["hero_prompt"] = hero
@@ -1361,14 +1570,18 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
         elif got:
             R.advise(f"{bucket}: {got} запрос(ов) сверх уровня {until} (воркер успел начать следующий узел)")
     got_llm = count_by([{"k": k} for k in oracle.kinds], "k")
-    for kind, n in expected_llm_calls(until, ev.frames, hero_n).items():
+    group = getattr(chain.args, "prompt_group", None)
+    for kind, n in expected_llm_calls(until, ev.frames, hero_n, group, len(oracle.frame_texts),
+                                                    frames_prompt_report(ev.frame_rows)["parents"]).items():
         R.check(f"текстовая модель: запросов узла «{kind}» ровно {n} (без повторного запуска шага и без отказов контракта)",
                 got_llm.get(kind, 0) == n, {"получено": got_llm.get(kind, 0), "ожидалось": n})
     if level_index(until) >= level_index("C"):
-        want_up = uploads_expected(ev.frames, hero_n)
+        prompts_ = frames_prompt_report(ev.frame_rows)
+        want_up = uploads_expected(ev.frames, hero_n, prompts_["children"] if group else 0)
         R.check("видео и картинки по референсу: одна загрузка кадра на публичный файловый хост на каждый платный запрос "
                 "с картинкой на входе (без дублей)", fake.extra.get("upload", 0) == want_up,
-                {"загрузок": fake.extra.get("upload", 0), "ожидалось": want_up, "кадров": ev.frames, "героев": hero_n})
+                {"загрузок": fake.extra.get("upload", 0), "ожидалось": want_up, "кадров": ev.frames, "героев": hero_n,
+                 "дочерних шотов": prompts_["children"] if group else 0})
         R.advise(f"{fake.extra.get('upload', 0)} картинок(и) уходят на ПУБЛИЧНЫЕ файловые хосты (litterbox/catbox/uguu/0x0), "
                  "потому что Yandex S3 не настроен: стартовые кадры видео" + (" и референсы героя для картинок" if hero_n else "")
                  + "; в стенде это loopback-подмена, в живом прогоне кадры проекта окажутся на сторонних сайтах")
@@ -1380,6 +1593,26 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
     refused = [e for e in ev.wire if e.get("event") == "refused"]
     R.check("сеть: ни одного запроса за пределы loopback (хук отправки и сторож сокетов)",
             not refused and not ev.net_attempts, {"refused": refused[:3], "net_attempts": ev.net_attempts[:3]})
+
+    # --- image prompts: what the paid image step reads must be a real prompt on EVERY frame (the F10 live hollow-prompt defect) ---
+    prompts_info: dict = {}
+    if level_index(until) >= level_index("B"):
+        prompts_info = frames_prompt_report(ev.frame_rows)
+        R.check("промты картинок: у каждого кадра промт не пуст и не заглушка «нет исходных данных» "
+                "(родитель - свой, дочерний шот - свой или родителя)",
+                bool(ev.frame_rows) and not prompts_info["empty"] and not prompts_info["hollow"], prompts_info)
+    if group:
+        by_key = {n["node_key"]: n for n in ev.nodes}
+        missing = [k for k in GROUP_NODE_KEYS[group] if (by_key.get(k) or {}).get("status") != "done"]
+        R.check(f"группа {group}: все {len(GROUP_NODE_KEYS[group])} ноды выполнены на настоящих исполнителях (done)", not missing,
+                {k: (by_key.get(k) or {}).get("status") for k in GROUP_NODE_KEYS[group]})
+        R.check("группа: она разрезала закадр на ячейки сцен с дочерними шотами (кадров больше сцен)",
+                frames_prompt_report(ev.frame_rows)["children"] >= 1 and ev.frames > len(GROUP_SCENE_VOS),
+                frames_prompt_report(ev.frame_rows))
+        repo_html = ROOT / "exports" / f"{chain.slug}-shots-report.html"
+        work_html = Path(work) / "exports" / f"{chain.slug}-shots-report.html"
+        R.check("отчёт группы записан в рабочую папку стенда и не в exports/ репозитория",
+                work_html.is_file() and not repo_html.exists(), {"work": work_html.is_file(), "repo_exports": repo_html.exists()})
 
     # --- spend ledger ---
     led = summarize_ledger(ev.ledger, pid)
@@ -1491,7 +1724,7 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
             R.advise("файлы в data/ репозитория изменились за время прогона (стенд туда не пишет: рабочая папка и база "
                      "его сервера вне репозитория; вероятнее всего работал другой процесс, например чужие тесты)")
     return {"level_reached": reached, "ledger": led, "counts_wire": wc, "counts_fake": dict(fake.counts),
-            "timeline_kinds": kinds, "hitl": hitl_rows, "incidents_blocking": blocking}
+            "timeline_kinds": kinds, "hitl": hitl_rows, "incidents_blocking": blocking, "image_prompts": prompts_info}
 
 
 SEAMS = ("auto_on_project_db",)
@@ -1575,6 +1808,17 @@ FINDINGS: list[dict] = [
      "repro": "любой прогон уровня D/E стенда: observation_incidents, type=media_failure, node_key=n_sfx_gen; "
               "событие node_result_verification: errors=['Error'].",
      "masked_by": None, "stops_at": None},
+    {"id": "F10-D12", "level": "B", "node": "группа script_frames_qc -> вторая нода «Работа с GPT» (enriching_2)",
+     "title": "После цепочки группы (--prompt-group) активным ключом остаётся последняя нода группы (n_excel_gpt_fw_report, она в "
+              "excel_gpt_completed_keys). Дойдя до enriching_2, воркер каждые 5 с отвечает «node already in completed_keys» и "
+              "ставит enrich_2_ready, мастер отвергает это как устаревшее (skip stale master), проект не движется, ноду "
+              "n_excel_gpt_2 никто не запускает. Без группы такого нет.",
+     "where": ["app/main.py:597 (excel_gpt_already_completed_no_force(p) -> enrich_N_ready без запуска)",
+               "app/services/excel_gpt_node.py:706 (excel_gpt_already_completed_no_force читает active_excel_gpt_node_key)"],
+     "repro": "python scripts/e2e_full_chain.py --dry --until E --prompt-group script_frames_qc ...: статус enriching_2 не менялся "
+              "240 с, в server.log «enriching_2 node already in completed_keys — enrich_2_ready without GPT restart» каждые 5 с.",
+     "masked_by": "оператор нажимает ▶ n_excel_gpt_2 через ручку UI (только с --prompt-group, после 15 с зависания по meta проекта)",
+     "stops_at": "enriching_2"},
     {"id": "F10-D11", "level": "B", "node": "anim_pr_sidecar -> n_images (попытка наследуется)",
      "title": "Повторный платный вызов исправлен: результат sidecar для тех же входов не стирается при входе в шаг "
               "animation_prompts (step_replace). Остаётся: задача sidecar наследует попытку n_images, и вызов модели, не "
@@ -1587,10 +1831,12 @@ FINDINGS: list[dict] = [
 ]
 
 
-def reality_lists(until: str, seams: list[str], real_whisper: bool) -> dict[str, list[str]]:
+def reality_lists(until: str, seams: list[str], real_whisper: bool, prompt_group: str | None = None) -> dict[str, list[str]]:
     lvl = level_index(until)
     return {
         "real": [x for x in (
+            f"группа нод {prompt_group} вшита в граф production-ручкой, её ноды идут на настоящих исполнителях и правилах кода"
+            if prompt_group else None,
             "настоящий процесс python -m app.main (тонкий запуск: сторож сокетов, ключи обнулены), пустая база вне репозитория",
             "настоящий воркер, auto_advance, harness-гейты, исполнители нод, проверки результата, наблюдение, лента, аудит",
             "путь оператора по HTTP: создание проекта, ▶ шагов, PATCH проекта, решение по запросу подтверждения",
@@ -1602,6 +1848,8 @@ def reality_lists(until: str, seams: list[str], real_whisper: bool) -> dict[str,
             "все провайдеры: один loopback-сервер (чат LLM, Outsee картинки и видео, ElevenLabs TTS и SFX, Kie Suno, "
             "публичные файловые хосты для стартового кадра), ключи фиктивные",
             "ответы модели: заранее заданные тексты стенда, формы проверены продакшен-разборщиками, смысл не оценивается",
+            ("ответы нод группы: готовые ответы стенда группы (scripts/run_script_frames_qc_space_test.py, 5 сцен, 9 кадров); "
+             "настоящая модель режет закадр на другое число шотов") if prompt_group else None,
             "картинки и клипы: однотонные/тестовые файлы; озвучка: Windows SAPI (Irina), не TTS провайдера",
             f"заплатки стенда (не поведение продакшена): {', '.join(seams) if seams else 'нет (--no-seams)'}",
             "хост ElevenLabs api.elevenlabs.io в sfx_gen зашит литералом: стенд переадресует его на loopback в хуке отправки",
@@ -1616,9 +1864,11 @@ def reality_lists(until: str, seams: list[str], real_whisper: bool) -> dict[str,
     }
 
 
-def live_estimate(frames: int, sfx_events: int, hero: int = 0, items: int = 0, ledger_usd: float | None = None) -> dict:
+def live_estimate(frames: int, sfx_events: int, hero: int = 0, items: int = 0, ledger_usd: float | None = None,
+                  prompt_group: str | None = None, children: int = 0, split_frames: int | None = None,
+                  group_parents: int | None = None) -> dict:
     """Paid requests a LIVE run of the same chain would send (ceilings for the owner), from the dry counts."""
-    llm = expected_llm_calls("E", frames, hero)
+    llm = expected_llm_calls("E", frames, hero, prompt_group, split_frames, group_parents)
     return {
         "frames": frames,
         "outsee_image": frames + hero + items,
@@ -1628,7 +1878,8 @@ def live_estimate(frames: int, sfx_events: int, hero: int = 0, items: int = 0, l
         "kie_suno_music": 1,
         "text_llm": sum(llm.values()),
         "text_llm_by_node": llm,
-        "free_but_external": {"public_file_host_uploads": uploads_expected(frames, hero)},
+        "free_but_external": {"public_file_host_uploads": uploads_expected(frames, hero, children)},
+        "prompt_group": prompt_group,
         "dry_ledger_total_usd": ledger_usd,
         "worst_case_if_a_result_is_rejected": {
             "elevenlabs_sfx": sfx_events * 3,
@@ -1638,7 +1889,8 @@ def live_estimate(frames: int, sfx_events: int, hero: int = 0, items: int = 0, l
         },
         "note": "TTS - ОДИН запрос на весь закадр (frame_audio.synthesize_per_frame_audio), не по кадрам; героев и "
                 "предметов в малом проекте нет (hero/items пропущены); число запросов текстовой модели = 9 + 2*кадров + "
-                "ceil(кадров/5)",
+                "ceil(кадров/5)" + (" + 4 запроса на модельные ноды группы; «Работа с GPT» шлёт только VO-родителей, не дочерние шоты"
+                                    if prompt_group else ""),
     }
 
 
@@ -1724,6 +1976,14 @@ def preflight(args) -> tuple[Path | None, str]:
     return work, ""
 
 
+def check_group_args(args) -> None:
+    """Level A ends at the FIRST ``enrich_1_ready``, and every node of the group runs in the enrich_1 slot: with a group the
+    level would stop after its first node. Raised as ValueError -> the stand refuses before it starts anything."""
+    if getattr(args, "prompt_group", None) and args.until == "A":
+        raise ValueError("--prompt-group не определён для уровня A (все ноды группы идут в слоте enrich_1): "
+                         "нужен --until B или выше")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry", action="store_true", required=True, help="единственный режим: loopback-подмены, без денег и сети")
@@ -1746,8 +2006,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--keep-auto", action="store_true",
                     help="уровень E без передачи финала человеку: только наблюдать, закроет ли approve_final автоматика (F10-D6)")
     ap.add_argument("--strict", action="store_true", help="KNOWN-находки тоже считаются провалом")
+    ap.add_argument("--prompt-group", choices=PROMPT_GROUPS, default=None,
+                    help="вшить в граф проекта группу нод (по умолчанию выкл.): после n_excel_gpt_1 стоит Каркас -> Площадка -> Шоты -> QC -> "
+                         "Отчёт, как в настоящем потоке заказчика; промты картинок получают данные сцен (см. описание файла)")
     args = ap.parse_args(argv)
     args.until = parse_until(args.until)
+    check_group_args(args)
     return args
 
 
@@ -1775,8 +2039,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     repo_data = ROOT / "data"
     repo_data_before = data_fingerprint(repo_data)
     result: dict[str, Any] = {"mode": "dry", "until": args.until, "port": args.port, "work_dir": str(work),
-                              "seams": seams, "nodes": [], "counts_wire": {}, "counts_fake": {}}
-    oracle = TextOracle(with_hero=args.with_hero)
+                              "seams": seams, "nodes": [], "counts_wire": {}, "counts_fake": {},
+                              "prompt_group": args.prompt_group}
+    oracle = TextOracle(with_hero=args.with_hero, prompt_group=args.prompt_group)
     fake = FakeProviders(args.fake_port, work, oracle, voice_wav=Path(args.voice_wav))
     fake.start()
     proc: subprocess.Popen | None = None
@@ -1838,6 +2103,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
             "timeline_items": len(ev.timeline), "incidents": [{k: i[k] for k in ("node_key", "type", "severity", "status")}
                                                                for i in ev.incidents],
             "hitl": info.get("hitl"), "ledger": info.get("ledger"), "level_reached": info.get("level_reached"),
+            "image_prompts": info.get("image_prompts"), "interventions": chain.interventions,
             "final_probe": ev.final_probe, "final_path": ev.final_path, "voice_seconds": ev.voice_seconds,
             "counts_wire": info.get("counts_wire", {}), "counts_fake": info.get("counts_fake", {}),
             "timeline_kinds": info.get("timeline_kinds"), "frames": ev.frames,
@@ -1852,10 +2118,14 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     result["known_defects"] = R.known_defects
     result["advisories"] = R.advisories
     result["findings"] = FINDINGS
-    result["reality"] = reality_lists(args.until, seams, level_index(args.until) >= 3)
-    result["live_estimate"] = live_estimate(result.get("frames") or len(FRAME_TEXTS), oracle.sfx_events or (chain.sfx_events if chain else 0),
+    result["reality"] = reality_lists(args.until, seams, level_index(args.until) >= 3, args.prompt_group)
+    result["live_estimate"] = live_estimate(result.get("frames") or len(oracle.frame_texts), oracle.sfx_events or (chain.sfx_events if chain else 0),
                                             hero=1 if args.with_hero else 0,
-                                            ledger_usd=(result.get("ledger") or {}).get("usd"))
+                                            ledger_usd=(result.get("ledger") or {}).get("usd"),
+                                            prompt_group=args.prompt_group,
+                                            children=((result.get("image_prompts") or {}).get("children") or 0),
+                                            split_frames=len(oracle.frame_texts) if args.prompt_group else None,
+                                            group_parents=((result.get("image_prompts") or {}).get("parents") or None))
     result["verdict"] = verdict_of(R.failed, R.known_defects, result.get("level_reached"), args.until)
     result["result_json"] = str(work / "result.json")
     (work / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
