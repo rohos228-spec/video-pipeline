@@ -143,7 +143,9 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
             # before its master projection catches up. Only the untouched `new`
             # projection may be refreshed; active work/stops were rejected above,
             # and graph, every NodeRun and attempt must still agree exactly.
-            if project.status!=ProjectStatus.new:raise ValueError('master/project status disagreement requires review')
+            # Master projection ahead of the authoritative project DB (startup recompute races the replica) is the same
+            # stale-projection case: both sides are idle (checked above) and graph/NodeRuns agree exactly.
+            if project.status!=ProjectStatus.new and primary.status!=ProjectStatus.new:raise ValueError('master/project status disagreement requires review')
             initial_status_projection={'from':project.status.value,'to':primary.status.value,'source':'project_db',
                 'reason':'idle project readiness computed by original runtime'}
         cfg=runtime_config();check_route(cfg,cfg['endpoint'])
