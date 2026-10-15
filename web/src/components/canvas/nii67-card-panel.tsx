@@ -28,6 +28,8 @@ import {
   BLOCK_KINDS,
   CREATURE_TYPES,
   FINALE_LIMIT,
+  GENERATE_HINT,
+  GENERATE_PENDING,
   KIND_LABEL,
   KIND_MARK,
   TEMPERAMENTS,
@@ -43,6 +45,7 @@ import {
   moveBlock,
   reorderBlock,
   updateBlock,
+  updateDoor,
   updateFinale,
   updateIntroVideo,
   updatePortal,
@@ -574,15 +577,30 @@ function DoorColumn({
             <DoorOpen className="h-4 w-4 text-teal-300" />
             {door.title}
           </div>
-          <div className="text-[11px] text-zinc-400">
-            {door.branch}
-            {door.theme.trim() ? ` · ${door.theme.trim()}` : ""}
-          </div>
+          <div className="text-[11px] text-zinc-400">{door.branch}</div>
         </div>
         <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
           {door.id === "door1" ? "Путь 1" : "Путь 2"}
         </span>
       </header>
+      <div className="mb-2 flex flex-col gap-2">
+        <ShortField
+          label="Мир"
+          value={door.theme}
+          maxLength={240}
+          testId={`nii67-theme-${door.id}`}
+          placeholder="Появится после генерации"
+          onChange={(theme) => onChange((card) => updateDoor(card, door.id, { theme }))}
+        />
+        <Field
+          label="Закон мира"
+          value={door.theme_note}
+          rows={2}
+          testId={`nii67-law-${door.id}`}
+          placeholder="Один закон мира — появится после генерации"
+          onChange={(theme_note) => onChange((card) => updateDoor(card, door.id, { theme_note }))}
+        />
+      </div>
       <InsertMenu
         testId={`nii67-insert-${door.id}-0`}
         onInsert={(kind) => onChange((card) => insertBlock(card, door.id, 0, kind))}
@@ -850,6 +868,11 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
             {dirty ? (
               <p className="mb-2 text-[12px] text-amber-200/90">Есть несохранённые правки</p>
             ) : null}
+            {generate.isPending ? (
+              <p data-testid="nii67-generating" className="mb-2 text-[12px] text-teal-100">
+                {GENERATE_PENDING}
+              </p>
+            ) : null}
             {previewText !== null ? (
               <section className="mb-3 rounded-xl border border-teal-400/30 bg-black/40 p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -885,6 +908,7 @@ export function Nii67CardPanel({ projectId }: { projectId: number }) {
                   upload("intro_video", file, (name) => change((current) => updateIntroVideo(current, name)))
                 }
               />
+              <p className="mt-2 text-[11px] leading-snug text-zinc-500">{GENERATE_HINT}</p>
             </section>
 
             <section data-testid="nii67-portal-block" className="mb-3 rounded-2xl border border-white/10 bg-[#0c161e] p-3">

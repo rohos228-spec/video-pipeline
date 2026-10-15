@@ -13,6 +13,12 @@ from app.db import commit_with_retry
 from app.models import Project
 from app.services.content_locks import lock_ui_field
 from app.services.event_bus import publish_project_event
+from app.services.gpt_client import GptApiUnavailable
+from app.services.nii67_agent import (
+    fix_camera_sequence,
+    render_plan,
+    validate_frame,
+)
 from app.services.nii67_card import (
     GENERATED_LIMIT,
     META_KEY,
@@ -21,12 +27,7 @@ from app.services.nii67_card import (
     compile_scenario,
     default_card,
 )
-from app.services.nii67_agent import (
-    fix_camera_sequence,
-    generate as agent_generate,
-    render_plan,
-    validate_frame,
-)
+from app.services.nii67_scenario import ScenarioGenerationError, generate_scenarios
 from app.services.project_meta import apply_project_meta_patch
 from app.web.deps import get_project_session
 
@@ -128,10 +129,19 @@ async def generate_nii67(
     session: ProjectSession,
     payload: CardBody,
 ) -> dict[str, Any]:
-    """Собрать сценарий из карточки и записать его в general_plan."""
+    """Сгенерировать миры обеих дверей и записать сценарий в general_plan."""
     project = _project_or_404(await session.get(Project, project_id))
-    card = _stamp(_read_card(payload), "save")
-    agent = agent_generate(card)
+    card = _read_card(payload)
+    try:
+        card, agent = await generate_scenarios(card, project=project)
+    except ScenarioGenerationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except GptApiUnavailable as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Текстовая модель не настроена. Проверьте ключ vibecode у ноды «Сценарий».",
+        ) from exc
+    card = _stamp(card, "save")
     text = (compile_scenario(card).strip() + "\n\n" + render_plan(agent))[:GENERATED_LIMIT]
     card["generated_text"] = text
     project.general_plan = text
