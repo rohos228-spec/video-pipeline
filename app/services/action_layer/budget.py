@@ -297,14 +297,23 @@ async def release_reserve(session, *, plan_id: str, step_index: int, operator: s
     if not rows:
         raise BudgetError("not_releasable", "У этого шага нет незакрытого резерва (шаг не завершён или резерв уже снят).")
     held = float(rows[0]["held_credits"])
+    # W70/K10: atomic claim. The check above and the writes below are separate statements, so two parallel
+    # releases (double click, retry without Idempotency-Key) could both pass it. This single INSERT ... SELECT
+    # writes the negative settle only while the step still holds exactly ``held``; the loser inserts nothing.
+    claim = await session.execute(text(
+        "INSERT INTO action_layer_spend (session_key, plan_id, step_index, kind, credits, created_at) "
+        "SELECT :k, :p, :i, 'settle', :neg, :now WHERE "
+        "ABS(COALESCE((SELECT SUM(credits) FROM action_layer_spend WHERE plan_id = :p AND step_index = :i), 0) - :held) < 1e-9"),
+        {"k": session_key(plan_id), "p": plan_id, "i": int(step_index), "neg": -held, "held": held,
+         "now": datetime.utcnow()})
+    if claim.rowcount != 1:
+        raise BudgetError("not_releasable", "У этого шага нет незакрытого резерва (шаг не завершён или резерв уже снят).")
     from app.services import spend_guard
     from app.services.kie_catalog import CREDIT_USD
     await spend_guard.settle(session, project_id=await _plan_project(session, plan_id), run_id=f"plan:{plan_id}",
                              reserved_usd=held * CREDIT_USD, actual_usd=0.0, source="action_layer",
                              credits_delta=-held, basis="released_by_operator",
                              ref=f"plan:{plan_id}#{step_index}")
-    session.add(store.ActionSpend(session_key=session_key(plan_id), plan_id=plan_id, step_index=int(step_index),
-                                  kind="settle", credits=-held))
     store.append_history(session, event="reserve_released", plan_id=plan_id, step_index=int(step_index),
                          actor=operator, action_id=rows[0]["action_id"], outcome="released", error=reason[:500],
                          cost_recorded=held)

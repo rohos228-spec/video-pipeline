@@ -688,7 +688,17 @@ async def conservative_sums(session, *, project_id: int | None, run_id: str) -> 
     a fixed estimate for each recorded row of unknown cost (usd 0 and ``cost_unknown=true``), per window. A missing table reads as zero (nothing spent yet);
     any other database error propagates (the caller refuses the call)."""
     unit = unknown_row_estimate_usd()
-    sql = ("SELECT COALESCE(SUM(usd), 0.0), COALESCE(SUM(CASE WHEN kind IN ('actual', 'estimated') AND usd = 0 "
+    # W70/K9: a plan step is written twice to the ledger: the action layer's reserve (source action_layer,
+    # run ``plan:<id>``) and the native paid calls of the same step (same run). Counting both made the
+    # step look twice as expensive and refused its own native calls. Per plan run the larger of the two
+    # counts (still conservative: the open reserve is an upper bound, the native rows are the facts).
+    plan_pred = "run_id LIKE 'plan:%'"
+    sql = (f"SELECT COALESCE(SUM(CASE WHEN {plan_pred} THEN 0 ELSE usd END), 0.0) + COALESCE((SELECT SUM("
+           "CASE WHEN al > nat THEN al ELSE nat END) FROM (SELECT "
+           "SUM(CASE WHEN source = 'action_layer' THEN usd ELSE 0 END) AS al, "
+           "SUM(CASE WHEN source = 'action_layer' THEN 0 ELSE usd END) AS nat "
+           "FROM spend_ledger WHERE {sub} AND " + plan_pred + " GROUP BY run_id)), 0.0), "
+           "COALESCE(SUM(CASE WHEN kind IN ('actual', 'estimated') AND usd = 0 "
            "AND note LIKE '%cost_unknown=true%' THEN 1 ELSE 0 END), 0) FROM spend_ledger WHERE ")
     windows = (("daily", "day = :v", _today()),
                ("project", "project_id = :v", project_id),
@@ -699,7 +709,7 @@ async def conservative_sums(session, *, project_id: int | None, run_id: str) -> 
             out[name] = 0.0
             continue
         try:
-            row = (await session.execute(text(sql + clause), {"v": value})).one()
+            row = (await session.execute(text(sql.replace("{sub}", clause) + clause), {"v": value})).one()
         except (OperationalError, ProgrammingError) as exc:
             await session.rollback()
             if not _missing_table(exc):

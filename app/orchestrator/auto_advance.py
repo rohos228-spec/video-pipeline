@@ -841,7 +841,20 @@ async def _final_verified(session: AsyncSession, project: Project) -> bool:
     if isinstance(project.meta, dict) and project.meta.get("sfx_degraded") is True:
         return False
     recorded = (art.meta or {}).get("sha256")
-    return recorded is None or recorded == res.get("sha256")
+    if recorded is not None and recorded != res.get("sha256"):
+        return False
+    # W70 (M9): мягкая проверка финала (соотношение сторон, длительность против суммы сцен). Нарушение только
+    # отдаёт финал человеку: ничего не пересобирается и не генерируется заново.
+    try:
+        from app.services.media_soft_checks import final_soft_issues
+        from pathlib import Path as _Path
+        issues = await final_soft_issues(session, project, _Path(art.path), res)
+    except Exception:  # noqa: BLE001
+        issues = []
+    if issues:
+        logger.warning("auto_advance: #{} финал не автоодобрен, мягкая проверка: {}", project.id, ",".join(issues))
+        return False
+    return True
 
 
 UNCHECKED_AUTO_APPROVE_CHECK = "auto_approve_without_review"

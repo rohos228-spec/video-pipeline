@@ -134,6 +134,19 @@ async def _charge_manual_regen(session: AsyncSession, project: Project, node: Pr
     return False
 
 
+async def _return_to_pending(session: AsyncSession, req: HITLRequest) -> None:
+    """Потолок цепочки исчерпан (аудит W56 K7): решение «перегенерировать» не теряется, запрос снова ждёт человека.
+
+    После «Продолжить» (сброс счётчиков) человек увидит тот же запрос и сможет решить ещё раз."""
+    payload = dict(req.payload or {})
+    payload["blocked_decision"] = getattr(req.decision, "value", str(req.decision))
+    payload["blocked_reason"] = "restart_chain_ceiling"
+    req.decision = HITLDecision.pending
+    req.decided_at = None
+    req.payload = payload
+    await session.flush()
+
+
 async def request_hero_regen(session: AsyncSession, project: Project) -> bool:
     """Ручной 🔁 на hero-карточке (Telegram): платный перезапуск generating_hero идёт через общий потолок цепочки.
 
@@ -162,7 +175,8 @@ async def _apply_frame_visual_hitl(
         node = (ProjectStatus.generating_images if req.kind is HITLKind.approve_images
                 else ProjectStatus.generating_videos)
         if not await _charge_manual_regen(session, project, node):
-            return True  # потолок: кадр не возвращается в очередь, проект на паузе с причиной
+            await _return_to_pending(session, req)
+            return True  # потолок: кадр не возвращается в очередь, проект на паузе с причиной, запрос снова pending
     _mark_rejected(frame, decision is HITLDecision.rejected)
     if req.kind is HITLKind.approve_images:
         if decision is HITLDecision.approved:
@@ -210,6 +224,7 @@ async def apply_hitl_side_effects(
     if req.kind is HITLKind.approve_hero:
         if action == "regen":
             if not await _charge_manual_regen(session, project, ProjectStatus.generating_hero):
+                await _return_to_pending(session, req)
                 return
             project.status = ProjectStatus.generating_hero
             await session.flush()
@@ -249,6 +264,9 @@ async def apply_hitl_side_effects(
             bot=None,
             manual=True,
         )
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        if project.status == ProjectStatus.paused and meta.get("restart_chain_stop"):
+            await _return_to_pending(session, req)
     elif decision is HITLDecision.rejected:
         await _apply_reject(
             session,

@@ -93,9 +93,10 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
 
             await commit_with_retry(session)
             try:
-                from app.project_db import push_runtime_to_master
+                from app.project_db import push_runtime_to_master_recorded
 
-                await push_runtime_to_master(session, project)
+                # Сбой не молчаливый: маркер master_sync_pending в project.db, повтор на следующем такте (аудит W56 K5).
+                await push_runtime_to_master_recorded(session, project)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("advance_project_job: sync runtime to master failed: {}", exc)
             if new != prev:

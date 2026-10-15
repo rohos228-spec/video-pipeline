@@ -188,7 +188,7 @@ def wire_caps(args) -> dict[str, int]:
     """Per-bucket ceilings on PAID requests the child lets out (the request-count wall under the money walls)."""
     n, lvl = int(args.frames), fc.level_index(args.until)
     est_llm = estimate(args)["requests"]["llm"]
-    caps = {"llm": est_llm * 2 + 4, "outsee_image": 0, "outsee_video": 0, "kie_media": 0, "tts": 0, "sfx": 0, "kie_music": 0}
+    caps = {"llm": est_llm * 4 + 12, "outsee_image": 0, "outsee_video": 0, "kie_media": 0, "tts": 0, "sfx": 0, "kie_music": 0}
     if lvl >= 1:
         caps["outsee_image" if args.image_provider == "outsee" else "kie_media"] += n + 2
     if lvl >= 2:

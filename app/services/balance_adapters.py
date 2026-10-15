@@ -178,6 +178,7 @@ class AutoWindow:
     start: Any
     before: Any
     overlapped: bool = False
+    pre_mark: int | None = None   # W70/K11: max id of the ledger right after the "before" snapshot
     result: dict[str, Any] = field(default_factory=dict)
 
 
@@ -204,7 +205,9 @@ async def open_auto_window(status_value: str, project_id: int) -> AutoWindow | N
         async with spend_guard._sessions()() as session:
             start = await asyncio.wait_for(sr.mark(session), SNAPSHOT_TIMEOUT_S)
         before = await _snap(provider)
-        win = AutoWindow(provider, int(project_id), start, before)
+        async with spend_guard._sessions()() as session:
+            pre_mark = await sr._ledger_max_id(session)
+        win = AutoWindow(provider, int(project_id), start, before, pre_mark=pre_mark)
         others = _active.setdefault(provider, [])
         if others:  # шаги одного провайдера идут параллельно: баланс общий, окна не разделить
             win.overlapped = True
@@ -239,9 +242,16 @@ async def _finish(win: AutoWindow) -> dict[str, Any] | None:
     if win.overlapped:
         logger.info("auto reconcile {}: окна шагов пересеклись, сверка пропущена (баланс общий)", win.provider)
         return None
-    after = await _snap(win.provider)
     async with spend_guard._sessions()() as session:
-        sums = await sr.window_sums(session, win.start, provider=win.provider, project_id=win.project_id)
+        end_mark = await sr._ledger_max_id(session)
+    after = await _snap(win.provider)
+    # rows written between the window mark and the "before" snapshot, or after the point just before the "after"
+    # snapshot, may or may not be inside the balance delta: they only make a gap inconclusive (K11)
+    ambiguous = [(win.start.ledger_max_id, win.pre_mark if win.pre_mark is not None else win.start.ledger_max_id),
+                 (end_mark, None)]
+    async with spend_guard._sessions()() as session:
+        sums = await sr.window_sums(session, win.start, provider=win.provider, project_id=win.project_id,
+                                    ambiguous=ambiguous)
         result = sr.compare(provider=win.provider, before=win.before, after=after, **sums)
         if result["status"] == sr.STATUS_NO_SNAPSHOT:
             # нет снимка: только запись в журнал, без инцидента и без блокировки

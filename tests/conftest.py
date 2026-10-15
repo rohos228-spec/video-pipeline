@@ -22,6 +22,13 @@ import pytest
 # Tests never write into the real api-tracker/tracker.db (A08 stopped silencing test-time cost rows).
 os.environ.setdefault("API_TRACKER_DB", str(Path(tempfile.mkdtemp(prefix="vp-tracker-")) / "tracker.db"))
 
+# Системный прокси Windows (VPN-клиент в режиме system proxy) не должен перехватывать loopback-стенды тестов:
+# urllib/httpx читают его из реестра, и фейк-серверы 127.0.0.1 отвечали «Remote end closed connection». Берём прокси только из env.
+import urllib.request as _urllib_request  # noqa: E402
+
+_urllib_request.getproxies = _urllib_request.getproxies_environment
+_urllib_request.proxy_bypass = _urllib_request.proxy_bypass_environment
+
 # Соседние служебные модули tests/ (_pytest_guard, _stand_workdir) должны находиться и без PYTHONPATH=tests.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 

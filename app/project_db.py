@@ -576,7 +576,13 @@ async def run_on_replica_project(session: AsyncSession, project: Project, fn) ->
         await commit_with_retry(p_sess)
 
 
-def _apply_runtime_fields(src: Project, dest: Project) -> None:
+# Счётчики перезапусков живут в project.db (там идут платные шаги); в master их только отражают (аудит W56 K1).
+# Направление строго project.db -> master: обратное копирование могло бы вернуть старый счётчик и дать лишний запуск.
+_COUNTER_META_KEYS = ("restart_chain", "regen_budget", "restart_chain_stop", "regen_budget_stop")
+SYNC_PENDING_KEY = "master_sync_pending"
+
+
+def _apply_runtime_fields(src: Project, dest: Project, *, mirror_counters: bool = False) -> None:
     """Скопировать статус / auto_mode / runtime-meta (не весь контент проекта)."""
     from app.services.project_state import is_running_status
 
@@ -596,6 +602,12 @@ def _apply_runtime_fields(src: Project, dest: Project) -> None:
             and key in _CLEAR_WHEN_MASTER_RUNNING
         ):
             d_meta.pop(key, None)
+    if mirror_counters:
+        for key in _COUNTER_META_KEYS:
+            if key in s_meta:
+                d_meta[key] = s_meta[key]
+            else:
+                d_meta.pop(key, None)
     dest.meta = d_meta
 
 
@@ -662,6 +674,24 @@ async def push_runtime_to_project_db(
         )
 
 
+def _pick_completed_node(nodes):
+    """Защита от устаревшего master (аудит W56 K5): узел этого типа в project.db, завершённый ПОСЛЕДНИМ.
+
+    Раньше защита работала только при ровно одном узле. Теперь: если в project.db какой-то узел этого типа
+    сейчас выполняется - это настоящий перезапуск, защита не применяется (None); иначе берётся последний
+    завершённый узел с отметками начала и конца."""
+    nodes = list(nodes or [])
+    if any(n.status == NodeRunStatus.running for n in nodes):
+        return None
+    done = [
+        n for n in nodes
+        if n.status == NodeRunStatus.done and n.started_at is not None and n.finished_at is not None
+    ]
+    if not done:
+        return None
+    return max(done, key=lambda n: (n.started_at, n.finished_at))
+
+
 async def pull_master_runtime_into_project(
     session: AsyncSession,
     project: Project,
@@ -705,29 +735,24 @@ async def pull_master_runtime_into_project(
                         )
                     )
                 ).all()
-                if len(nodes) == 1:
-                    completed = nodes[0]
-                    if (
-                        completed.status == NodeRunStatus.done
-                        and completed.started_at is not None
-                        and completed.finished_at is not None
-                    ):
-                        command = await master.scalar(
-                            select(NodeRun).join(WorkflowRun).where(
-                                WorkflowRun.project_id == project.id,
-                                NodeRun.workflow_run_id == completed.workflow_run_id,
-                                NodeRun.node_key == completed.node_key,
-                                NodeRun.node_type == node_type,
-                            )
+                completed = _pick_completed_node(nodes)
+                if completed is not None:
+                    command = await master.scalar(
+                        select(NodeRun).join(WorkflowRun).where(
+                            WorkflowRun.project_id == project.id,
+                            NodeRun.workflow_run_id == completed.workflow_run_id,
+                            NodeRun.node_key == completed.node_key,
+                            NodeRun.node_type == node_type,
                         )
-                        if (
-                            command is not None
-                            and command.status == NodeRunStatus.running
-                            and command.started_at is not None
-                            and command.started_at <= completed.started_at
-                            and command.attempts <= completed.attempts
-                        ):
-                            take_master_status = False
+                    )
+                    if (
+                        command is not None
+                        and command.status == NodeRunStatus.running
+                        and command.started_at is not None
+                        and command.started_at <= completed.started_at
+                        and command.attempts <= completed.attempts
+                    ):
+                        take_master_status = False
             if not take_master_status:
                 take_master_status = master_park_overrides_running(m, project)
             if take_master_status:
@@ -778,7 +803,7 @@ async def pull_master_runtime_into_project(
 async def push_runtime_to_master(
     session: AsyncSession,
     project: Project,
-) -> None:
+) -> bool:
     """После работы в project.db: статус + runtime meta + NodeRuns → state.db.
 
     UI и воркер выбирают проекты по master; без этого копии нода остаётся
@@ -787,13 +812,13 @@ async def push_runtime_to_master(
     from app.db import commit_with_retry, session_scope
 
     if "project.db" not in _bind_url(session):
-        return
+        return True
     try:
         async with session_scope() as master:
             existing = await master.get(Project, int(project.id))
             if existing is None:
-                return
-            _apply_runtime_fields(project, existing)
+                return True
+            _apply_runtime_fields(project, existing, mirror_counters=True)
             try:
                 await _copy_noderuns_between_sessions(
                     session, master, int(project.id)
@@ -810,12 +835,60 @@ async def push_runtime_to_master(
             project.id,
             getattr(project.status, "value", project.status),
         )
+        return True
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "push_runtime_to_master: #{} failed: {}",
             project.id,
             exc,
         )
+        return False
+
+
+async def push_runtime_to_master_recorded(session: AsyncSession, project: Project) -> bool:
+    """push_runtime_to_master, но сбой не молчаливый (аудит W56 K5).
+
+    При сбое в project.meta ставится маркер ``master_sync_pending`` (с числом неудач) и пишется факт наблюдения;
+    маркер лежит в project.db и снимается при первой успешной отправке на следующей границе такта.
+    Возвращает True, если master актуален."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.db import commit_with_retry
+
+    ok = await push_runtime_to_master(session, project)
+    meta = dict(project.meta) if isinstance(project.meta, dict) else {}
+    try:
+        if ok:
+            if SYNC_PENDING_KEY in meta:
+                meta.pop(SYNC_PENDING_KEY, None)
+                project.meta = meta
+                flag_modified(project, "meta")
+                await commit_with_retry(session)
+            return True
+        prev = meta.get(SYNC_PENDING_KEY)
+        failures = int(prev.get("failures") or 0) + 1 if isinstance(prev, dict) else 1
+        meta[SYNC_PENDING_KEY] = {
+            "since": (prev.get("since") if isinstance(prev, dict) else None) or datetime.utcnow().isoformat(),
+            "failures": failures,
+            "status": getattr(project.status, "value", str(project.status)),
+        }
+        project.meta = meta
+        flag_modified(project, "meta")
+        await commit_with_retry(session)
+        logger.error(
+            "push_runtime_to_master: #{} master не обновлён (сбоев подряд: {}), повтор на следующей границе такта",
+            project.id, failures,
+        )
+        try:
+            from app.services.observation import record_fact
+            await record_fact("runtime_check", {
+                "check": "master_sync", "performed": True, "status": "failed", "failures": failures,
+                "summary": "статус и счётчики проекта не отправлены в master; повтор на следующем такте"})
+        except Exception:  # noqa: BLE001
+            logger.debug("master_sync: observation fact skipped", exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.warning("push_runtime_to_master_recorded: #{} marker update failed", project.id, exc_info=True)
+    return ok
 
 
 # Поля, которые человек правит в инспекторе: список проектов (боковая панель) читает master, правка идёт в project.db.

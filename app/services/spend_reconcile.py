@@ -37,11 +37,14 @@ INCIDENT_EXECUTION = "reconcile"  # у сверки нет запуска; по�
 STATUS_CONVERGED = "converged"
 STATUS_GAP = "gap"
 STATUS_NO_SNAPSHOT = "no_snapshot"
+STATUS_INCONCLUSIVE = "inconclusive"
+SOURCE_INCONCLUSIVE = "reconcile_inconclusive"
 
 STATUS_RU = {
     STATUS_CONVERGED: "сходится",
     STATUS_GAP: "расхождение",
     STATUS_NO_SNAPSHOT: "нет снимка баланса",
+    STATUS_INCONCLUSIVE: "не удалось сверить",
 }
 
 # Адаптер возвращает баланс провайдера в USD (число или awaitable числа).
@@ -104,12 +107,18 @@ async def take_snapshot(provider: str, adapter: BalanceAdapter | None = None) ->
 
 def compare(*, provider: str, before: Snapshot | None, after: Snapshot | None,
             ledger_usd: float, tracker_usd: float = 0.0, overlap_usd: float = 0.0,
-            tolerance: float = DEFAULT_TOLERANCE, abs_tolerance_usd: float = 0.0) -> dict[str, Any]:
+            tolerance: float = DEFAULT_TOLERANCE, abs_tolerance_usd: float = 0.0,
+            foreign_usd: float = 0.0, boundary_usd: float = 0.0) -> dict[str, Any]:
     """Сравнивает убыль баланса с суммой журналов.
 
     ``journal_usd = ledger_usd + tracker_usd - overlap_usd``: журналы покрывают разные швы (платные вызовы
     медиа против LLM-вызовов трекера); если вызывающий знает, что одну трату записали оба, он вычитает
     её в ``overlap_usd``. Допуск относительный (``tolerance`` от большего из двух чисел) и/или абсолютный.
+
+    W70/K11: баланс провайдера общий. ``foreign_usd`` - траты этого провайдера в окне вне сверяемого проекта,
+    ``boundary_usd`` - траты проекта, записанные между отметкой окна и снимком (или после снимка): их нет в
+    убыли баланса или они в неё не попали. Если без них сумма не сходится, это не доказанное расхождение, а
+    ``inconclusive`` (без инцидента). Сошедшаяся сверка остаётся сошедшейся.
     """
     if tolerance < 0 or abs_tolerance_usd < 0:
         raise ValueError("допуск не может быть отрицательным")
@@ -121,6 +130,7 @@ def compare(*, provider: str, before: Snapshot | None, after: Snapshot | None,
         "balance_before": before.balance_usd if before else None,
         "balance_after": after.balance_usd if after else None,
         "provider_spent_usd": None, "gap_usd": None, "gap_ratio": None,
+        "foreign_usd": round(float(foreign_usd), 6), "boundary_usd": round(float(boundary_usd), 6),
     }
     if before is None or after is None or not before.ok or not after.ok:
         reasons = [s.error for s in (before, after) if s is not None and not s.ok and s.error]
@@ -135,7 +145,12 @@ def compare(*, provider: str, before: Snapshot | None, after: Snapshot | None,
     out.update(provider_spent_usd=round(spent, 6), gap_usd=round(gap, 6), gap_ratio=round(ratio, 6),
                status=STATUS_CONVERGED if converged else STATUS_GAP,
                status_ru=STATUS_RU[STATUS_CONVERGED if converged else STATUS_GAP], converged=converged)
-    if not converged:
+    if not converged and (float(foreign_usd) > 1e-9 or float(boundary_usd) > 1e-9):
+        out.update(status=STATUS_INCONCLUSIVE, status_ru=STATUS_RU[STATUS_INCONCLUSIVE],
+                   reason_ru=("баланс общий: в окне были траты провайдера вне этого проекта или у границ снимков "
+                              f"(вне проекта ${float(foreign_usd):.4f}, у границ ${float(boundary_usd):.4f}), "
+                              "расхождение не доказано"))
+    elif not converged:
         if spent < 0:
             out["reason_ru"] = "баланс провайдера вырос: пополнение или возврат внутри окна, сверка невозможна"
         elif gap > 0:
@@ -150,6 +165,9 @@ def message_ru(result: dict[str, Any]) -> str:
     p = result.get("provider", "?")
     if result.get("status") == STATUS_NO_SNAPSHOT:
         return f"Сверка {p}: нет снимка баланса ({result.get('reason_ru', '')}). Сходимость не проверена."
+    if result.get("status") == STATUS_INCONCLUSIVE:
+        return (f"Сверка {p}: не удалось сверить, расхождение не доказано "
+                f"({result.get('reason_ru', '')}).")
     base = (f"Сверка {p}: провайдер списал ${result['provider_spent_usd']:.4f}, "
             f"в журналах ${result['journal_usd']:.4f}, разница ${result['gap_usd']:+.4f} "
             f"({result['gap_ratio'] * 100:.1f}% при допуске {result['tolerance'] * 100:.1f}%)")
@@ -210,23 +228,31 @@ async def mark(session, *, tracker_db=None) -> Mark:
 
 
 async def window_sums(session, start: Mark, *, provider: str, project_id: int | None = None,
-                      tracker_db=None) -> dict[str, float]:
-    """Суммы журналов за окно после ``start``. Сервисные строки сверки (kind=event, 0 USD) сумму не меняют."""
-    sql = "SELECT COALESCE(SUM(usd), 0.0), provider FROM spend_ledger WHERE id > :a"
+                      tracker_db=None,
+                      ambiguous: "list[tuple[int, int | None]] | None" = None) -> dict[str, float]:
+    """Суммы журналов за окно после ``start``. Сервисные строки сверки (kind=event, 0 USD) сумму не меняют.
+
+    Кроме ``ledger_usd`` / ``tracker_usd`` (строки проекта) отдаёт ``foreign_usd`` (строки этого провайдера в окне
+    у других проектов или без проекта) и ``boundary_usd`` (строки проекта с id внутри ``ambiguous`` - пар
+    ``(после_id, до_id включительно | None)``: записаны у границ снимков). Это для ``compare``: баланс общий."""
+    sql = "SELECT id, usd, provider, project_id FROM spend_ledger WHERE id > :a"
     params: dict[str, Any] = {"a": start.ledger_max_id}
-    if project_id is not None:
-        sql += " AND project_id = :p"
-        params["p"] = project_id
-    sql += " GROUP BY provider"
-    ledger = 0.0
+    ledger = foreign = boundary = 0.0
     try:
-        for usd, prov in (await session.execute(text(sql), params)).all():
-            if _norm(prov) == _norm(provider):
-                ledger += float(usd or 0.0)
+        for rid, usd, prov, pid in (await session.execute(text(sql), params)).all():
+            if _norm(prov) != _norm(provider):
+                continue
+            usd = float(usd or 0.0)
+            if project_id is not None and pid != project_id:
+                foreign += abs(usd)
+                continue
+            ledger += usd
+            if any(rid > lo and (hi is None or rid <= hi) for lo, hi in (ambiguous or ())):
+                boundary += abs(usd)
     except (OperationalError, ProgrammingError):
         await session.rollback()
     tracker, _ = await asyncio.to_thread(_tracker_sync, project_id, provider, start.tracker_max_id, tracker_db)
-    return {"ledger_usd": ledger, "tracker_usd": tracker}
+    return {"ledger_usd": ledger, "tracker_usd": tracker, "foreign_usd": foreign, "boundary_usd": boundary}
 
 
 # --------------------------------------------------------------------------- запись результата
@@ -234,7 +260,7 @@ async def window_sums(session, start: Mark, *, provider: str, project_id: int | 
 
 def _note(result: dict[str, Any]) -> str:
     keep = {k: result.get(k) for k in ("provider_spent_usd", "journal_usd", "ledger_usd", "tracker_usd",
-                                       "gap_usd", "gap_ratio", "tolerance", "status")}
+                                       "gap_usd", "gap_ratio", "tolerance", "status", "foreign_usd", "boundary_usd")}
     return json.dumps(keep, ensure_ascii=False, separators=(",", ":"))[:200]
 
 
@@ -244,9 +270,11 @@ async def record_result(session, result: dict[str, Any], *, project_id: int | No
     Возвращает id инцидента или None."""
     from app.services import spend_guard
     ok = result.get("status") == STATUS_CONVERGED
+    inconclusive = result.get("status") == STATUS_INCONCLUSIVE
     await spend_guard.record_event(session, project_id=project_id, provider=result["provider"],
-                                   source=SOURCE_OK if ok else SOURCE_GAP, note=_note(result))
-    if ok:
+                                   source=SOURCE_OK if ok else (SOURCE_INCONCLUSIVE if inconclusive else SOURCE_GAP),
+                                   note=_note(result))
+    if ok or inconclusive:  # inconclusive: no proof of a mismatch, so no incident
         return None
     return await _open_incident(session, result, project_id, window_key)
 
@@ -377,7 +405,7 @@ async def project_report(session, project_id: int, *, since: datetime | None = N
         elif kind == "settle":
             settle += usd
             settled_runs.add(run_id or "")
-        elif kind == "event" and source in (SOURCE_OK, SOURCE_GAP):
+        elif kind == "event" and source in (SOURCE_OK, SOURCE_GAP, SOURCE_INCONCLUSIVE):
             try:
                 detail = json.loads(note or "{}")
             except ValueError:
@@ -409,9 +437,10 @@ async def project_report(session, project_id: int, *, since: datetime | None = N
         "open_reserves_runs": len(open_by_run),
         "reconciliations": recs[-recent:],
         "reconciliations_total": len(recs),
-        "reconciliations_gap": sum(1 for r in recs if not r["converged"]),
+        "reconciliations_gap": sum(1 for r in recs if not r["converged"] and r["source"] != SOURCE_INCONCLUSIVE),
+        "reconciliations_inconclusive": sum(1 for r in recs if r["source"] == SOURCE_INCONCLUSIVE),
         "open_mismatch_incidents": open_incidents,
-        "balance_reconciled": bool(recs),
+        "balance_reconciled": any(r["source"] != SOURCE_INCONCLUSIVE for r in recs),
     }
 
 

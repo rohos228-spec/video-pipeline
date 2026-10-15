@@ -105,6 +105,15 @@ async def _probe(path: Path, *, root: Path, kind: str, expected: dict | None = N
     return {k: res[k] for k in keep if k in res}
 
 
+def _soften(probe: dict, issues: list[str]) -> dict:
+    """W70 (M7-M9): a content defect found by a soft check never becomes ``failed`` (nothing may start a repeat
+    paid generation from it): the item is ``unknown`` with ``soft_<code>``, which diagnosis types as media_failure
+    with action human_review, and the final is kept out of auto-approve."""
+    if not issues or probe.get("status") != "passed":
+        return probe
+    return {**probe, "status": "unknown", "reason": "soft_" + issues[0], "soft_warnings": list(issues)}
+
+
 def _item(key: str, path: Path | None, root: Path, probe: dict | None, prov: dict | None, **extra) -> dict:
     row = {"key": key, "path": _rel(path, root) if path else None, **(probe or {}), **extra}
     if "status" not in row:
@@ -211,6 +220,12 @@ async def _videos(reader, project, ledger, budget) -> tuple[list[dict], dict]:
             continue
         probe = await _probe(path, root=root, kind="video") if budget() else {"status": "unknown",
                                                                                "reason": "verify_budget"}
+        if probe.get("status") == "passed" and budget():
+            try:
+                from app.services import media_soft_checks as soft
+                probe = _soften(probe, await soft.clip_soft_issues(path, probe, soft.explicit_aspect(project)))
+            except Exception:  # noqa: BLE001 - a soft check that cannot run is not a verdict
+                pass
         items.append(_item(key, path, root, probe, provenance(ledger, key), frame_number=frame.number))
     return items, {"targets": len(targets), "frames": len(frames), "clips_total": len(arts)}
 
@@ -280,6 +295,12 @@ async def _music(reader, project, ledger, budget) -> tuple[list[dict], dict]:
         return [{"key": "music", "status": "failed", "reason": "missing_music", "path": None,
                  "provenance": provenance(ledger, "music")}], {"artifacts": len(arts)}
     probe = await _probe(path, root=root, kind="audio")
+    if probe.get("status") == "passed":
+        try:
+            from app.services import media_soft_checks as soft
+            probe = _soften(probe, await soft.music_soft_issues(path))
+        except Exception:  # noqa: BLE001
+            pass
     return [_item("music", path, root, probe, provenance(ledger, "music"))], {"artifacts": len(arts)}
 
 
@@ -352,6 +373,13 @@ async def _assemble(reader, project, ledger, budget) -> tuple[list[dict], dict]:
     recorded = (art.meta or {}).get("sha256")
     if probe.get("status") == "passed" and recorded and recorded != probe.get("sha256"):
         probe = {**probe, "status": "failed", "reason": "digest_differs_from_recorded"}
+    if probe.get("status") == "passed":
+        try:
+            from app.services import media_soft_checks as soft
+            probe = _soften(probe, soft.final_soft_issues_from(
+                probe, soft.explicit_aspect(project), await soft.project_scene_seconds(reader, project.id)))
+        except Exception:  # noqa: BLE001
+            pass
     requests = list((await reader.scalars(select(HITLRequest).where(
         HITLRequest.project_id == project.id, HITLRequest.kind == HITLKind.approve_final))).all())
     sha = probe.get("sha256")
@@ -397,6 +425,7 @@ async def build_proof(reader, project, node_type: str) -> dict[str, Any]:
     statuses = {i["status"] for i in items}
     status = "failed" if "failed" in statuses else ("unknown" if (not items or "unknown" in statuses) else "passed")
     reason = next((i.get("reason") for i in items if i["status"] != "passed"), None)
+    soft_warnings = sorted({w for i in items for w in (i.get("soft_warnings") or [])})
     if not items:
         if node_type == "items" and not counts.get("descriptions"):
             status, reason = "passed", "no_item_descriptions"  # the step had nothing to generate
@@ -408,6 +437,7 @@ async def build_proof(reader, project, node_type: str) -> dict[str, Any]:
             "reason": reason,
             "summary": _summary(node_type, status, items, unknown), "counts": counts,
             "items_total": len(items), "items_passed": sum(1 for i in items if i["status"] == "passed"),
+            "soft_warnings": soft_warnings,
             "ledger": ledger["state"], "outcome_unknown": unknown[:20],
             "keys": sorted(keys)[:FACT_ITEMS], "items": items[:FACT_ITEMS],
             "business_commit_claim": False, "semantic_quality_verified": False,

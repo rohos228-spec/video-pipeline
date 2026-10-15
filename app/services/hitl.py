@@ -315,22 +315,6 @@ async def send_hitl_video(
     return req
 
 
-async def wait_for_decision(hitl_id: int, *, poll_seconds: float = 2.0) -> HITLDecision:
-    """Блокирует текущую корутину, пока HITL не будет принят/отклонён/regen."""
-    logger.info("waiting for HITL {}", hitl_id)
-    while True:
-        async with session_scope() as s:
-            req = (
-                await s.execute(select(HITLRequest).where(HITLRequest.id == hitl_id))
-            ).scalar_one_or_none()
-            if req is None:
-                raise RuntimeError(f"HITL #{hitl_id} исчез из БД")
-            if req.decision is not HITLDecision.pending:
-                logger.info("HITL {} decided: {}", hitl_id, req.decision.value)
-                return req.decision
-        await asyncio.sleep(poll_seconds)
-
-
 # ---------------------------------------------------------------------------
 # W7: HITL approve_publish - «да» на публикацию одной площадки из Telegram.
 #
