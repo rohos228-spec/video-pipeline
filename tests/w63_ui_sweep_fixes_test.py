@@ -176,3 +176,35 @@ def test_slug_of_leftover_project_folder_is_taken(tmp_path, monkeypatch):
     assert slug_taken_on_disk("doch-1") is False  # пустая папка не мешает
     (folder / "project.db").write_bytes(b"x")
     assert slug_taken_on_disk("doch-1") is True
+
+
+def test_partial_hollow_image_prompts_also_block_paid_generation():
+    import inspect
+
+    from app.orchestrator.steps import generate_images
+
+    src = inspect.getsource(generate_images.run)
+    assert "if hollow:" in src and "len(hollow) == len(non_child)" not in src
+
+
+async def test_public_image_hosts_are_off_by_default(monkeypatch):
+    """Без Yandex S3 кадр клиента не уходит на публичные файлообменники, пока владелец не разрешил."""
+    import pytest
+
+    from app.bots import outsee_http
+    from app.settings import settings
+
+    monkeypatch.setattr("app.bots.yandex_storage.yandex_storage_configured", lambda: False)
+    monkeypatch.setattr(settings, "outsee_allow_public_image_hosts", False)
+    called = []
+
+    async def boom(*a, **k):
+        called.append(1)
+        raise AssertionError("public host must not be called")
+
+    for name in ("_host_via_litterbox", "_host_via_catbox", "_host_via_uguu", "_host_via_0x0"):
+        monkeypatch.setattr(outsee_http, name, boom)
+    png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    with pytest.raises(outsee_http.OutseeApiError):
+        await outsee_http.ensure_public_image_url(png)
+    assert called == []

@@ -427,6 +427,8 @@ class Settings(BaseSettings):
     assemble_allow_missing_clips: bool = Field(False, alias="ASSEMBLE_ALLOW_MISSING_CLIPS")
     # Платные картинки по промтам, где все поля сцены - заглушка «нет исходных данных», по умолчанию не запускаются.
     images_allow_hollow_prompts: bool = Field(False, alias="IMAGES_ALLOW_HOLLOW_PROMPTS")
+    # Кадры клиента для Outsee: без Yandex S3 уходят на публичные файлообменники (ссылка открыта всем), по умолчанию запрещено.
+    outsee_allow_public_image_hosts: bool = Field(False, alias="OUTSEE_ALLOW_PUBLIC_IMAGE_HOSTS")
     # F10-D1: автопродвижение воркера идёт на сессии project.db проекта, а не на строке master (там данных проекта нет,
     # и plan_ready откатывается в new). По умолчанию выключено: откат = убрать флаг.
     worker_use_project_db: bool = Field(False, alias="WORKER_USE_PROJECT_DB")

@@ -1103,20 +1103,27 @@ async def ensure_public_image_url(
     hosts: list[tuple[str, Any]] = []
     if yandex_storage_configured():
         hosts.append(("yandex", _host_via_yandex))
-        # Резервные хосты на случай временного сбоя S3
-        hosts.extend([
-            ("litterbox", _host_via_litterbox),
-            ("catbox", _host_via_catbox),
-        ])
-        logger.info("outsee_api.frame: upload host=yandex (с fallback на litterbox/catbox, {} bytes)", len(raw))
-    else:
-        logger.info("outsee_api.frame: Yandex S3 не настроен, использую fallback (litterbox/catbox/uguu/0x0, {} bytes)", len(raw))
+        if settings.outsee_allow_public_image_hosts:
+            # Резервные публичные хосты только по явному разрешению владельца
+            hosts.extend([
+                ("litterbox", _host_via_litterbox),
+                ("catbox", _host_via_catbox),
+            ])
+        logger.info("outsee_api.frame: upload host=yandex ({} bytes)", len(raw))
+    elif settings.outsee_allow_public_image_hosts:
+        logger.info("outsee_api.frame: Yandex S3 не настроен, публичные хосты разрешены (litterbox/catbox/uguu/0x0, {} bytes)", len(raw))
         hosts.extend([
             ("litterbox", _host_via_litterbox),
             ("catbox", _host_via_catbox),
             ("uguu", _host_via_uguu),
             ("0x0", _host_via_0x0),
         ])
+    else:
+        raise OutseeApiError(
+            "кадр нельзя выложить: Yandex S3 не настроен, а публичные файлообменники запрещены "
+            "(OUTSEE_ALLOW_PUBLIC_IMAGE_HOSTS=true разрешит их; ссылки на кадры тогда открыты всем)",
+            context={},
+        )
 
     variants = _upload_payload_variants(raw, mime)
     async with httpx.AsyncClient(

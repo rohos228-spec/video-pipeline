@@ -600,9 +600,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             if not is_shot_child(fr) and is_scene_prompt_hollow(frame_image_prompt_text(fr, frames))
         ]
         non_child = [fr for fr in frames if not is_shot_child(fr)]
-        if hollow and len(hollow) == len(non_child):
+        if hollow:
             raise RuntimeError(
-                f"промты картинок пустые у всех {len(hollow)} кадров: поля сцены заполнены заглушкой «нет исходных данных». "
+                f"промты картинок пустые у {len(hollow)} из {len(non_child)} кадров ({hollow[:12]}): поля сцены заполнены заглушкой «нет исходных данных». "
                 "Платная генерация не запускается. Заполните сцены шагом «Работа с GPT» (нужен промт для описания сцен) "
                 "или задайте IMAGES_ALLOW_HOLLOW_PROMPTS=true, если так и задумано."
             )

@@ -295,6 +295,7 @@ def live_settings_plan(cfg: dict, env: dict) -> dict[str, Any]:
         "outsee_api_key": env.get("OUTSEE_API_KEY", ""), "outsee_api_base_url": (env.get("OUTSEE_API_BASE_URL") or DEFAULTS["OUTSEE_API_BASE_URL"]).rstrip("/"),
         "elevenlabs_api_key": env.get("ELEVENLABS_API_KEY", ""), "elevenlabs_proxy_url": None,
         "sfx_enabled": bool(cfg["with_sfx"]), "social_publish_enabled": False, "media_spend_recording": True,
+        "outsee_allow_public_image_hosts": True,   # синтетический проект стенда без Yandex S3; боевой умолчательный запрет не трогаем
         "browser_cdp_url": "http://127.0.0.1:9", "browser_cdp_auto_recover": False, "outsee_http_fallback_cdp": False,
         "spend_daily_cap_usd": float(cfg["app_cap_usd"]), "spend_project_cap_usd": float(cfg["app_cap_usd"]),
         "spend_run_cap_usd": float(cfg["app_cap_usd"]),

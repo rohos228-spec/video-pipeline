@@ -80,9 +80,8 @@ async def test_ensure_public_requires_yandex_no_public_hosts() -> None:
         # 0x0 тоже мокаем: иначе тест ходит в реальную сеть (загрузка на 0x0.st)
         patch.object(oh, "_host_via_0x0", side_effect=AssertionError("no 0x0")),
     ):
-        # Без Yandex S3 используются публичные fallback-хосты (bf1c5355); когда все
-        # они падают — ошибка про недоступность хостов, а не «только через Yandex».
-        with pytest.raises(oh.OutseeApiError, match="frame upload failed"):
+        # W68: без Yandex S3 публичные хосты по умолчанию запрещены (кадры клиента не уходят в открытый доступ).
+        with pytest.raises(oh.OutseeApiError, match="публичные файлообменники запрещены"):
             await oh.ensure_public_image_url(data)
 
 

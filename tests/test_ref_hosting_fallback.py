@@ -15,6 +15,7 @@ async def test_ensure_public_image_url_uses_fallback_when_yandex_not_configured(
     monkeypatch.setattr(settings, "yandex_storage_bucket", "")
     monkeypatch.setattr(settings, "yandex_storage_access_key", "")
     monkeypatch.setattr(settings, "yandex_storage_secret_key", "")
+    monkeypatch.setattr(settings, "outsee_allow_public_image_hosts", True)  # W68: по умолчанию выключено
 
     data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
