@@ -16,6 +16,7 @@ from app.orchestrator.node_registry import (
     UI_MENU_NODE_TYPES,
     is_config_node_type,
     is_hitl_node_type,
+    is_style_agent_node_type,
     is_work_node_type,
     spec_for_node,
     spec_for_step_code,
@@ -52,7 +53,32 @@ def is_passthrough_node_type(node_type: str) -> bool:
         is_hitl_node_type(node_type)
         or is_config_node_type(node_type)
         or node_type in PASSTHROUGH_NODE_TYPES
+        # style_extract: прозрачен для цепочки (как excel_feed), но не root.
+        or is_style_agent_node_type(node_type)
     )
+
+
+def _style_agent_node_state(project: Project, node_type: str) -> NodeRunStatus:
+    """Статус нод агента стиля из meta.style_agent (ProjectStatus не участвует)."""
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    sa = meta.get("style_agent") if isinstance(meta.get("style_agent"), dict) else {}
+    job = sa.get("job") if isinstance(sa.get("job"), dict) else {}
+    passport = sa.get("passport") if isinstance(sa.get("passport"), dict) else {}
+    job_status = str(job.get("status") or "idle")
+    if node_type == "style_extract":
+        if job_status == "running":
+            return NodeRunStatus.running
+        if job_status == "failed":
+            return NodeRunStatus.failed
+        if job_status in ("done", "stopped") or passport.get("draftAt"):
+            return NodeRunStatus.done
+        return NodeRunStatus.pending
+    # hitl_style
+    if passport.get("approvedAt"):
+        return NodeRunStatus.done
+    if passport.get("draftAt") or job_status in ("done", "stopped"):
+        return NodeRunStatus.waiting_hitl
+    return NodeRunStatus.pending
 
 
 class WorkflowGraph:
@@ -569,6 +595,9 @@ class WorkflowGraph:
                 continue
             if is_work_node_type(typ) and nid not in flow:
                 out[nid] = NodeRunStatus.skipped
+                continue
+            if is_style_agent_node_type(typ):
+                out[nid] = _style_agent_node_state(project, typ)
                 continue
             if is_hitl_node_type(typ):
                 preds = self._effective_predecessors(nid, skipped)
