@@ -4,7 +4,7 @@
 Что именно смотрели:
 - наш репозиторий `video-pipeline-observe-v1` (ветки `origin/main`, `origin/housepc` = `23426a95` от 05.10);
 - локальная копия репозитория заказчика `C:\video-pipeline\_web` (WebVideoPipeline): рабочее дерево `poc-node-packages` на `1c1ddc1` (02.10) и уже скачанный коммит `a3e481e` (их `main` от 05.10) — все проверки ниже по их коду сделаны по `a3e481e`;
-- отчёты в `.claude\jobs\bad093d9\tmp\research\` (`web_studio_agent_analysis.md`, `web_node_packages_analysis.md`, `ui_actions_inventory.md`, `action_layer_design.md`).
+- отчёты в внутренних отчётах исследования (`web_studio_agent_analysis.md`, `web_node_packages_analysis.md`, `ui_actions_inventory.md`, `action_layer_design.md`).
 
 Важная оговорка: копия WebVideoPipeline была у нас без истории (shallow, один коммит). Поэтому есть ли ветка `second-mechanic` на сервере и в каком она состоянии — по копии не видно.
 
