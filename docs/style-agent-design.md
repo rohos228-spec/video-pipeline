@@ -1,8 +1,9 @@
 # Агент разбора стиля референсных роликов → воспроизведение в Studio
 
-> **Статус:** проектный документ (2026-10-16). Кода нет, платные API не
-> вызывались. Все имена нод, сервисов и файлов ниже — реальные, из текущего
-> дерева репозитория (`housepc`); новые сущности помечены **[новое]**.
+> **Статус:** дизайн одобрен, **первая реализация в ветке** (2026-10-16).
+> Платные API в тестах не вызываются (LLM замокан). Что реально сделано и
+> где лежит — §7 «Реализация»; расхождения с первоначальным планом там же.
+> Имена нод, сервисов и файлов — реальные, из дерева репозитория (`housepc`).
 
 Задача пользователя: взять ряд чужих роликов, разобрать их по трём осям —
 **рисовка**, **озвучка**, **анимация/монтаж** — и собрать цепочку нод, которая
@@ -424,10 +425,10 @@ flowchart LR
 
 По правилу репо «ничего не зашито в код» (`PROMPTS_BLOCKS.md` §1):
 
-- `prompts/style_agent/q_visual.md`, `q_voice.md`, `q_motion.md`,
-  `aggregate_synth.md`, `compile_blocks.md` **[новое]** — анкеты как системные
-  промты, редактируются через вкладку «Промты» (`prompt_files.py`, добавить
-  папку в `prompt_library.STEP_FOLDERS`).
+- `prompts/style_agent/orchestrator.md` (общие правила группы) +
+  `visual.md`, `voice.md`, `motion.md`, `narrative.md`, `synth.md` —
+  анкеты специалистов как системные промты (реализовано; системный промт
+  = orchestrator + роль, см. `style_agent/agents.py:system_prompt`).
 - Каждая анкета заканчивается блоком **«ФОРМАТ ВЫВОДА: строго JSON по
   схеме …»** и анти-сюжетным запретом (как `_NOTES_SYSTEM`).
 
@@ -667,3 +668,72 @@ music+sfx 0.1`, веса — в паспорте, правит оператор)
 5. `style_check` (kind=`style` в `vision_check_loop`) + L3-diff.
 6. Прогон на 3–6 реальных референсах → первый паспорт → проект с
    `style_profile` → сравнение L3 → правка анкет.
+
+---
+
+## 7. Реализация (что сделано в этой ветке)
+
+Группа агентов вместо одного промпта: **оркестратор** (общие правила,
+`prompts/style_agent/orchestrator.md`) + специалисты **рисовка** (vision,
+листы кадров), **анимация/монтаж** (vision, motion-листы start/mid/end),
+**озвучка/звук** и **повествование** (текст: транскрипт + метрики) +
+**агрегатор** (код: медиана/IQR, голосование, k-means палитры) и
+**синтез паспорта** (1 LLM-вызов → тексты блоков для промптов).
+
+### 7.1. Код
+
+| Что | Где |
+|---|---|
+| Схема паспорта v1, анкеты специалистов, валидация | `app/services/style_agent/schema.py` |
+| Жёсткий лимит LLM-вызовов, план по специалистам, оценка цены до запуска | `app/services/style_agent/budget.py` (`DEFAULT_MAX_LLM_CALLS=12`, 1…200) |
+| Единственная точка вызова модели (бюджет + журнал `llm_calls.jsonl`) | `app/services/style_agent/llm.py` (поверх `gpt_client.ask_with_files`) |
+| Детерминированное извлечение: ffprobe, scene-detect, кадры/листы (`image_strip.compose_grid_strip`), палитра, static ratio, аудио → голос/музыка (demucs или band-pass), ebur128, silencedetect, ASR (`asr.transcribe_words`), темп речи | `app/services/style_agent/extract.py` |
+| Специалисты + синтез (промпт-файл, анкета, 1 повтор при невалидном JSON, `scrub_style_topic` из `style_analyzer`) | `app/services/style_agent/agents.py` |
+| Агрегация по N роликам, уверенность/поддержка, fallback mapping без LLM, отчёт разброса | `app/services/style_agent/aggregate.py` |
+| Материализация: `prompts/blocks/<cat>/<id>.md`, `prompts/styles/<id>.json`, `templates/node_groups/script_frames_qc/styles/style_<id>.md`, патчи `prompt_overrides` / `meta.node_step_params`, бэкапы `.bak-<ts>` | `app/services/style_agent/apply.py` |
+| Состояние ноды (`meta.style_agent`), фоновый job, approve | `app/services/style_agent/job.py` |
+| REST `/api/projects/{id}/style-agent[/estimate|/run|/stop|/upload|/refs/{name}|/passport|/approve|/report|/sheet]` | `app/web/routers/style_agent.py` |
+| Ноды холста: `style_extract` (прозрачная, не шаг пайплайна) и `hitl_style` (`HITL_NODE_TYPES`), статусы из `meta.style_agent` | `app/orchestrator/node_registry.py`, `app/orchestrator/graph/planner.py` |
+| Studio: карточки в палитре, панели нод | `web/src/lib/node-catalog.ts`, `web/src/components/canvas/style-extract-panel.tsx`, `hitl-style-panel.tsx`, `pipeline-node.tsx`, `web/src/lib/api.ts` |
+| Тесты (LLM и ASR замоканы, ffmpeg — на синтетическом ролике) | `tests/test_style_agent.py` |
+
+Файлы проекта: `<project>/style/refs/*.mp4` (загрузки),
+`style/analysis/<vid>/{probe,shots,metrics,words,loudness,silence}.json`,
+`sheets/overview_NN.jpg`, `sheets/motion_NN.jpg`, `q_<role>.json`,
+`style/style_passport.draft.json`, `style/style_passport.json`,
+`style/variance_report.md`, `style/apply_report.json`, `style/llm_calls.jsonl`.
+
+### 7.2. Расхождения с §3.3 (сознательно)
+
+- Вместо четырёх work-нод (`style_extract`/`style_passport`/`style_apply` со
+  своими `ProjectStatus`) — **одна** нода `style_extract` с собственным фоновым
+  job (паттерн `audio_align_job`) и `hitl_style`, который делает approve +
+  материализацию. `ProjectStatus`, `pipeline.py`, `auto_advance` не тронуты —
+  существующие ноды не меняются.
+- Группа `style_clone` не добавлена (`insert_node_group` перевешивает рёбра
+  якоря); ноды добавляются из палитры: «Разбор стиля» (Планирование) и
+  «Проверка стиля» (Проверки).
+- `style_check` (§4) и параметризация хардкодов (`CHARS_PER_SEC`, xfade,
+  раздача `camera_vocab` по кадрам) — следующий этап; паспорт уже содержит
+  нужные поля.
+- Поле `voice.timbre` из текста выводится слабо (аудио модели не передаётся);
+  голос ElevenLabs выбирает оператор по `voice_name_hint`.
+
+### 7.3. Как запустить в Studio
+
+1. На холсте: «+ нода» → **Планирование → Разбор стиля**, рядом
+   **Проверки → Проверка стиля**; соединить `Разбор стиля → Проверка стиля`
+   (цепочка дальше к `plan` остаётся проходимой).
+2. В панели «Разбор стиля»: **Загрузить** 3–5 mp4 (или подключить ноду
+   «Хранилище» с видео стрелкой в `style_extract`), выставить **лимит
+   LLM-вызовов** (по умолчанию 12) и модель на ноде, нажать **Оценить** —
+   видно план вызовов и ≈ цену; затем **Разобрать**.
+3. Когда статус `done` — в «Проверке стиля» просмотреть поля по осям
+   (high/medium/low, поддержка k/N), поправить тексты промптов во вкладке
+   «Промпты», **Утвердить → в Studio**. Создаются блоки `prompts/blocks/*/<style_id>.md`,
+   пресет `prompts/styles/<style_id>.json`, `style_<style_id>.md` для
+   script_frames_qc; проекту ставится `prompt_overrides.style_profile=<style_id>`,
+   `use_blocks_v2=true`, патчится `meta.node_step_params` (длительность,
+   split, bgm_level, субтитры, TTS-параметры).
+4. На ноде «Стиль кадров» (script_frames_qc) выбрать `style_<style_id>`,
+   на «Озвучка» — голос по подсказке `voice_hint`; дальше обычный пайплайн.
