@@ -201,15 +201,19 @@ TTS stability {_num(passport, 'voice.tts_stability', 0.5, 2)}, similarity {_num(
     music_sfx = f"""Suno: {music_core or 'instrumental bed, no vocals'}. Уровень {music_level} dB к голосу, без пауз, без вокала.
 SFX по плану: {sfx_kinds or 'по действию в кадре'}; плотность {sfx_density or 'sparse'}; акцент на смену состояния в плане (удар/всплеск/щелчок)."""
 
+    def _tidy(text: str) -> str:
+        # пустые опциональные строки (нет данных в паспорте) не оставляем
+        return "\n".join(ln.rstrip() for ln in text.strip().splitlines() if ln.strip())
+
     return {
-        "script_writer": script_writer.strip(),
-        "storyboard": storyboard.strip(),
-        "image_prompt": image_prompt.strip(),
-        "video_prompt": video_prompt.strip(),
-        "vo_tts": vo_tts.strip(),
-        "subtitles": subtitles.strip(),
-        "edit": edit.strip(),
-        "music_sfx": music_sfx.strip(),
+        "script_writer": _tidy(script_writer),
+        "storyboard": _tidy(storyboard),
+        "image_prompt": _tidy(image_prompt),
+        "video_prompt": _tidy(video_prompt),
+        "vo_tts": _tidy(vo_tts),
+        "subtitles": _tidy(subtitles),
+        "edit": _tidy(edit),
+        "music_sfx": _tidy(music_sfx),
     }
 
 

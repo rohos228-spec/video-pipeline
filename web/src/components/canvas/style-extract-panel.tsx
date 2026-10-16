@@ -10,20 +10,35 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const AGENT_LABELS: Record<string, string> = {
+  shots: "планы/склейки",
   visual: "рисовка",
-  motion: "анимация/монтаж",
   voice: "озвучка/звук",
   narrative: "повествование",
+  patterns: "приёмы",
+  motion: "анимация/монтаж",
+  synth: "синтез",
+  blueprint: "blueprint",
 };
 
 const STAGE_LABELS: Record<string, string> = {
   start: "старт",
-  extract: "извлечение (ffmpeg/ASR)",
+  extract: "извлечение",
+  "extract:probe": "извлечение · ffprobe",
+  "extract:cuts": "извлечение · склейки",
+  "extract:frames": "извлечение · кадры (120/мин)",
+  "extract:ocr": "извлечение · OCR субтитров",
+  "extract:sheets": "извлечение · листы",
+  "extract:audio": "извлечение · аудио",
+  "extract:asr": "извлечение · ASR",
   agent: "специалист",
   aggregate: "агрегация",
   synth: "синтез паспорта",
+  blueprint: "blueprint цепочки",
+  report: "отчёт",
   done: "готово",
 };
+
+const AGENT_CHOICES = ["shots", "visual", "voice", "narrative", "patterns"];
 
 function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} КБ`;
@@ -56,7 +71,7 @@ export function StyleExtractPanel({ projectId, nodeKey }: { projectId: number; n
 
   useEffect(() => {
     setEstimate(null);
-  }, [videos.length, settings?.max_llm_calls, settings?.max_sheets_per_video, settings?.skip_llm]);
+  }, [videos.length, settings?.max_llm_calls, settings?.max_sheets_per_video, settings?.skip_llm, settings?.agents?.length]);
 
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadStyleRef(projectId, file),
@@ -231,9 +246,9 @@ export function StyleExtractPanel({ projectId, nodeKey }: { projectId: number; n
               <input
                 type="number"
                 min={1}
-                max={8}
+                max={12}
                 className="h-6 rounded-md border border-white/10 bg-black/30 px-1.5 text-[10px]"
-                value={eff.max_sheets_per_video ?? 4}
+                value={eff.max_sheets_per_video ?? 6}
                 disabled={running}
                 onChange={(e) => setDraft((d) => ({ ...d, max_sheets_per_video: parseInt(e.target.value, 10) || 1 }))}
                 onBlur={(e) => commitNumber("max_sheets_per_video", e.target.value)}
@@ -262,9 +277,24 @@ export function StyleExtractPanel({ projectId, nodeKey }: { projectId: number; n
                 onBlur={(e) => patch.mutate({ language: e.target.value })}
               />
             </label>
+            <label className="flex flex-col gap-0.5">
+              <span className="text-muted-foreground">Кадров в минуту (таймлайн)</span>
+              <input
+                type="number"
+                min={30}
+                max={600}
+                step={30}
+                className="h-6 rounded-md border border-white/10 bg-black/30 px-1.5 text-[10px]"
+                value={eff.frames_per_min ?? 120}
+                disabled={running}
+                title="Базовая выборка кадров; хук (первые 5 с) — вдвое плотнее, плюс кадры ±0.2 с у каждой склейки"
+                onChange={(e) => setDraft((d) => ({ ...d, frames_per_min: parseInt(e.target.value, 10) || 120 }))}
+                onBlur={(e) => commitNumber("frames_per_min", e.target.value)}
+              />
+            </label>
           </div>
           <div className="flex flex-wrap gap-1">
-            {Object.keys(AGENT_LABELS).map((a) => {
+            {AGENT_CHOICES.map((a) => {
               const on = (eff.agents ?? []).includes(a);
               return (
                 <button
@@ -301,6 +331,30 @@ export function StyleExtractPanel({ projectId, nodeKey }: { projectId: number; n
             >
               {eff.skip_llm ? "✓ " : ""}без LLM
             </button>
+            <button
+              type="button"
+              disabled={running}
+              onClick={() => patch.mutate({ skip_ocr: !eff.skip_ocr })}
+              className={cn(
+                "rounded-md border px-1.5 py-0.5 text-[9px] font-medium",
+                eff.skip_ocr ? "border-amber-400/70 bg-amber-500/25 text-amber-50" : "border-white/10 text-muted-foreground",
+              )}
+              title="Не читать вшитые субтитры (OCR); транскрипт только через ASR"
+            >
+              {eff.skip_ocr ? "✓ " : ""}без OCR
+            </button>
+            <button
+              type="button"
+              disabled={running}
+              onClick={() => patch.mutate({ skip_asr: !eff.skip_asr })}
+              className={cn(
+                "rounded-md border px-1.5 py-0.5 text-[9px] font-medium",
+                eff.skip_asr ? "border-amber-400/70 bg-amber-500/25 text-amber-50" : "border-white/10 text-muted-foreground",
+              )}
+              title="Без распознавания речи (если субтитров нет — транскрипта не будет)"
+            >
+              {eff.skip_asr ? "✓ " : ""}без ASR
+            </button>
           </div>
 
           {/* Оценка */}
@@ -318,6 +372,7 @@ export function StyleExtractPanel({ projectId, nodeKey }: { projectId: number; n
                   .map(([a, n]) => `${AGENT_LABELS[a] ?? a} ×${n}`)
                   .join(", ")}
                 {estimate.plan.with_synth ? " + синтез" : ""}
+                {estimate.plan.with_blueprint ? " + blueprint" : ""}
               </div>
               {estimate.plan.hint ? (
                 <div className={cn("mt-0.5", estimate.plan.fits ? "text-zinc-300" : "text-amber-300")}>{estimate.plan.hint}</div>
@@ -367,7 +422,7 @@ export function StyleExtractPanel({ projectId, nodeKey }: { projectId: number; n
                   {job.status === "running"
                     ? STAGE_LABELS[String(job.stage ?? "")] ?? job.stage
                     : job.status === "done"
-                      ? "Черновик паспорта готов → нода «Проверка стиля»"
+                      ? "Паспорт v2 и отчёт готовы → нода «Проверка стиля» (вкладка «Отчёт»)"
                       : job.status === "failed"
                         ? "Ошибка"
                         : job.status === "stopped"

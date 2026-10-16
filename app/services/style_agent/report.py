@@ -85,7 +85,7 @@ def render_summary(passport: dict[str, Any]) -> list[str]:
         ("Темп, слов/мин", "voice.pace_wpm"), ("Паузы медиана, с", "voice.pause_median_s"), ("Обращение", "voice.address"),
         ("Музыка", "music.genre"), ("Роль музыки", "music.role"), ("Уровень музыки к голосу, dB", "music.level_vs_voice_db"),
         ("SFX", "sfx.kinds"), ("Плотность SFX", "sfx.density"),
-        ("Длина плана медиана, с", "motion.shot_len_s"), ("Длина плана p10 / p90, с", "motion.shot_len_p10_s"), ("Склеек в минуту", "motion.cuts_per_min"),
+        ("Длина плана медиана, с", "motion.shot_len_s"), ("Длина плана p10, с", "motion.shot_len_p10_s"), ("Длина плана p90, с", "motion.shot_len_p90_s"), ("Склеек в минуту", "motion.cuts_per_min"),
         ("Камера", "motion.camera_vocab"), ("Переходы", "motion.transitions"), ("Движение объектов", "motion.subject_motion"),
         ("Построение плана", "motion.shot_construction"), ("Субтитры", "motion.subtitles_mode"), ("Позиция субтитров", "motion.subtitles_position"), ("Стиль субтитров", "motion.subtitles_style"),
         ("Структура", "narrative.structure"), ("Хук", "narrative.hook_type"), ("Тон", "narrative.tone_notes"),

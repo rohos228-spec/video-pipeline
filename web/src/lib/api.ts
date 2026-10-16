@@ -150,6 +150,8 @@ export interface StyleAgentSettings {
   label: string;
   skip_llm: boolean;
   skip_asr: boolean;
+  skip_ocr: boolean;
+  frames_per_min: number;
   agents: string[];
 }
 
@@ -197,7 +199,9 @@ export interface StyleAgentEstimate {
     sheets_per_video: number;
     max_calls: number;
     agents: string[];
+    global_agents?: string[];
     with_synth: boolean;
+    with_blueprint?: boolean;
     per_video: Record<string, number>;
     videos_covered: number;
     minimal_total: number;
@@ -229,6 +233,71 @@ export interface StylePassportField {
   p90?: number;
 }
 
+export interface StylePassportShot {
+  i: number;
+  start: number;
+  end: number;
+  len: number;
+  transition_in?: string;
+  uncertain?: boolean;
+  what?: string | null;
+  framing?: string | null;
+  camera?: string | null;
+  subject_anim?: string | null;
+  start_state?: string | null;
+  change?: string | null;
+  end_state?: string | null;
+  transition_out?: string | null;
+  transition_note?: string | null;
+  illustrates?: string | null;
+  vfx?: string | null;
+  vo_text?: string;
+}
+
+export interface StylePassportVideo {
+  video: string;
+  duration_s?: number | null;
+  transcript_source?: string | null;
+  shots: StylePassportShot[];
+  subtitles?: { start: number; end: number; text: string }[];
+  sentences?: { i: number; start: number; end: number; text: string; words: number }[];
+  linkage?: Record<string, unknown>;
+  script?: Record<string, unknown>;
+  problems?: Record<string, unknown>;
+}
+
+export interface StylePassportPattern {
+  name: string;
+  kind?: string;
+  description?: string;
+  how_to_reproduce?: string;
+  signature?: boolean;
+  support?: string;
+  confidence?: string;
+  frequency?: Record<string, string>;
+  examples?: { video: string; tc: string }[];
+}
+
+export interface StyleBlueprintNode {
+  node_type: string;
+  label?: string;
+  new?: boolean;
+  inputs?: string[];
+  outputs?: string[];
+  params?: Record<string, unknown>;
+  prompt_template?: string;
+  prompt_hint?: string;
+  fallback_existing?: string;
+}
+
+export interface StyleBlueprint {
+  chain: StyleBlueprintNode[];
+  prompt_templates: Record<string, string>;
+  new_nodes_needed: string[];
+  notes: string[];
+  source?: string;
+}
+
 export interface StylePassport {
   $schema: string;
   style_id: string;
@@ -243,7 +312,13 @@ export interface StylePassport {
   sfx?: Record<string, StylePassportField>;
   motion?: Record<string, StylePassportField>;
   narrative?: Record<string, StylePassportField>;
+  linkage?: Record<string, StylePassportField>;
+  script?: Record<string, StylePassportField>;
   mapping?: Record<string, unknown>;
+  videos?: StylePassportVideo[];
+  patterns?: StylePassportPattern[];
+  peculiarities?: string[];
+  blueprint?: StyleBlueprint;
   variance_notes?: string[];
   llm?: { calls_used: number; calls_limit: number; model: string };
   errors?: Record<string, unknown>;
@@ -1402,9 +1477,10 @@ export const api = {
       120_000,
     ),
   getStyleAgentReport: (projectId: number) =>
-    http<{ variance_report: string; apply_report: StyleApplyReport | null }>(
+    http<{ report: string; variance_report: string; apply_report: StyleApplyReport | null }>(
       `/api/projects/${projectId}/style-agent/report`,
     ),
+  styleReportMdUrl: (projectId: number) => `/api/projects/${projectId}/style-agent/report?fmt=md`,
   styleSheetUrl: (projectId: number, video: string, name: string) =>
     `/api/projects/${projectId}/style-agent/sheet?video=${encodeURIComponent(video)}&name=${encodeURIComponent(name)}`,
 

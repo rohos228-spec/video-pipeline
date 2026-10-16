@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckSquare, FileText, Loader2, Save } from "lucide-react";
+import { CheckSquare, Download, FileText, Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 import { api, type StylePassport, type StylePassportField } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { MarkdownRenderer } from "@/components/gpt/markdown-renderer";
 import { STYLE_AGENT_QUERY_KEY } from "./style-extract-panel";
 
 const AXES: { key: keyof StylePassport; label: string }[] = [
@@ -18,6 +19,8 @@ const AXES: { key: keyof StylePassport; label: string }[] = [
   { key: "music", label: "Музыка" },
   { key: "sfx", label: "SFX" },
   { key: "narrative", label: "Повествование" },
+  { key: "linkage", label: "Связка VO↔план" },
+  { key: "script", label: "Сценарий (метрики)" },
 ];
 
 const MAPPING_KEYS: { key: string; label: string; multiline?: boolean }[] = [
@@ -76,6 +79,7 @@ export function HitlStylePanel({ projectId }: { projectId: number }) {
   const [axis, setAxis] = useState<string>("visual");
   const [edited, setEdited] = useState<StylePassport | null>(null);
   const [showReport, setShowReport] = useState(false);
+  const [reportView, setReportView] = useState<"full" | "variance">("full");
 
   const snap = useQuery({
     queryKey: [STYLE_AGENT_QUERY_KEY, projectId, "hitl"],
@@ -297,7 +301,7 @@ export function HitlStylePanel({ projectId }: { projectId: number }) {
           ) : null}
 
           {tab === "report" ? (
-            <div className="max-h-64 space-y-1.5 overflow-auto pr-1 text-[9.5px]">
+            <div className="max-h-[32rem] space-y-1.5 overflow-auto pr-1 text-[9.5px]">
               {approvedAt ? (
                 <div className="rounded-md border border-emerald-400/30 bg-emerald-500/10 p-1.5 text-emerald-100">
                   <div className="font-semibold">Записано в Studio</div>
@@ -313,8 +317,46 @@ export function HitlStylePanel({ projectId }: { projectId: number }) {
                   ))}
                 </div>
               ) : null}
+              <div className="flex flex-wrap items-center gap-1">
+                {(["full", "variance"] as const).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setReportView(v)}
+                    className={cn(
+                      "rounded-md border px-1.5 py-0.5 text-[9px]",
+                      reportView === v ? "border-fuchsia-400/70 bg-fuchsia-500/25 text-fuchsia-50" : "border-white/10 text-muted-foreground",
+                    )}
+                  >
+                    {v === "full" ? "Полный разбор" : "Разброс"}
+                  </button>
+                ))}
+                <a
+                  className="ml-auto inline-flex items-center gap-1 text-[9px] text-fuchsia-200 underline-offset-2 hover:underline"
+                  href={api.styleReportMdUrl(projectId)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="style_report.md: планы с таймкодами, связка закадра, сценарий, приёмы, blueprint"
+                >
+                  <Download className="h-3 w-3" />
+                  .md
+                </a>
+                {p.blueprint?.chain?.length ? (
+                  <span className="text-[8.5px] text-muted-foreground" title={(p.blueprint.new_nodes_needed ?? []).join("; ")}>
+                    blueprint: {p.blueprint.chain.length} нод · новых {p.blueprint.chain.filter((n) => n.new).length}
+                  </span>
+                ) : null}
+              </div>
               {reportQ.isLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-              {reportQ.data?.variance_report ? (
+              {reportView === "full" ? (
+                reportQ.data?.report ? (
+                  <div className="rounded-md border border-white/10 bg-black/30 p-2 [&_table]:text-[9px] [&_td]:px-1.5 [&_td]:py-1 [&_th]:px-1.5 [&_th]:py-1">
+                    <MarkdownRenderer content={reportQ.data.report} />
+                  </div>
+                ) : reportQ.isSuccess ? (
+                  <div className="text-muted-foreground">Отчёт пуст — перезапустите «Разбор стиля».</div>
+                ) : null
+              ) : reportQ.data?.variance_report ? (
                 <pre className="whitespace-pre-wrap rounded-md border border-white/10 bg-black/30 p-1.5 font-mono text-[8.5px] text-zinc-300">
                   {reportQ.data.variance_report}
                 </pre>

@@ -179,6 +179,13 @@ def subtitle_band(raw: list[dict[str, Any]]) -> tuple[float, float] | None:
     return (max(0.0, center - 0.07), min(1.0, center + 0.07))
 
 
+def _looks_like_logo(text: str) -> bool:
+    letters = [c for c in text if c.isalpha()]
+    if not letters or len(text.split()) > 2:
+        return False
+    return sum(1 for c in letters if c.isupper()) / len(letters) >= 0.8
+
+
 def build_lines(raw: list[dict[str, Any]], *, band: tuple[float, float] | None = None, frame_step_s: float = 0.5) -> list[SubtitleLine]:
     """Сырые боксы → строки субтитров с таймкодами."""
     band = band or subtitle_band(raw)
@@ -194,6 +201,11 @@ def build_lines(raw: list[dict[str, Any]], *, band: tuple[float, float] | None =
             if band[0] <= cy <= band[1]:
                 picked.append((cy, text, conf))
         picked.sort()
+        if len(picked) > 1:
+            # Логотип/надпись на одежде, попавшая в полосу (КАПС, ≤ 2 слов), — не субтитр, если рядом есть обычный текст
+            normal = [p for p in picked if not _looks_like_logo(p[1])]
+            if normal:
+                picked = normal
         if picked:
             per_frame.append((float(fr["t"]), " ".join(p[1] for p in picked), statistics.mean(p[2] for p in picked)))
         else:
