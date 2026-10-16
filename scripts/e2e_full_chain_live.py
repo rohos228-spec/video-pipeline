@@ -140,6 +140,37 @@ FORBIDDEN_MODEL_RE = re.compile(r"seedance[-_ /.]?2[-_.]?5", re.I)
 TEXT_PROVIDERS = {"vibecode", "gpt", "llm"}
 
 
+
+LENIENT_NAME = "stand_lenient"
+_LENIENT_RULES = (
+    # (what the strict builtin template says, what the stand-only copy says instead)
+    (re.compile(r"Не одобряй автоматически\.[^\n]*"),
+     "Оценивай по существу и честно: придирки к стилю и мелкие недочёты не причина для отказа. Формат ответа не меняется."),
+    (re.compile(r"Любой критерий = fail → `regen`\."),
+     "`regen` — только если критерий = fail из-за явного нарушения (нет интервала, пустая или бессмысленная секция); `weak` не блокирует."),
+    (re.compile(r"Один или несколько критериев = fail → решение `regen`\."),
+     "`regen` — только если критерий = fail из-за явного нарушения (нет интервала, пустая или бессмысленная секция); `weak` не блокирует."),
+    (re.compile(r"confidence < 0\.7 → (?:решение )?`regen`\."), "confidence < 0.5 → `regen`."),
+    (re.compile(r"Все критерии = pass и"), "Нет критериев = fail (pass или weak) и"),
+    (re.compile(r"Все pass \+"), "Нет критериев = fail (pass или weak) +"),
+    (re.compile(r"confidence ≥ 0\.7"), "confidence ≥ 0.5"),
+)
+
+
+def write_lenient_verdicts(work: Path) -> dict[str, str]:
+    """``--lenient-verdict`` (STAND ONLY, owner OK 16.10.2026): soft copies of the builtin «Вердикт» templates for plan and script go
+    into the run's own work-dir prompts and are selected for the project via meta.gpt_verdict_templates (the same route the Studio
+    dropdown uses). Product templates in the repo stay strict. JSON format and the quote check are untouched."""
+    chosen: dict[str, str] = {}
+    for step, folder in (("plan", "check_plan"), ("script", "check_script")):
+        src = work / "prompts" / folder / "default.md"
+        text = src.read_text(encoding="utf-8")
+        for rx, repl in _LENIENT_RULES:
+            text = rx.sub(repl, text)
+        (work / "prompts" / folder / f"{LENIENT_NAME}.md").write_text(text, encoding="utf-8", newline="\n")
+        chosen[step] = LENIENT_NAME
+    return chosen
+
 def required_keys(args) -> dict[str, str]:
     """Key NAME -> why it is needed, for exactly the levels and providers this run uses."""
     lvl = fc.level_index(args.until)
@@ -600,6 +631,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--adopt", action="store_true", help="продолжить проект в существующей work-dir прошлого живого прогона (расход журнала копится, потолки общие)")
     ap.add_argument("--adopt-step", default="anim_pr", help="шаг, который оператор нажимает для продолжения (с --adopt)")
     ap.add_argument("--allow-hollow-prompts", action="store_true", help="проверка механики: платить за картинки даже с пустыми полями сцены (IMAGES_ALLOW_HOLLOW_PROMPTS); качество не доказывается")
+    ap.add_argument("--lenient-verdict", action="store_true", help="ТОЛЬКО СТЕНД: мягкие копии «Вердикта» плана и сценария в work-dir прогона (продуктовые шаблоны не трогаются); "
+                    "строгий Вердикт срывал живые прогоны паузами и переделками")
     ap.add_argument("--no-human-text-gate", action="store_true", help="не одобрять план/сценарий за человека (проверять только встроенный Вердикт)")
     ap.add_argument("--with-music", action="store_true", help="настоящая музыка Kie Suno (≈ $0.6, съедает потолок медиа)")
     ap.add_argument("--with-sfx", action="store_true", help="настоящие звуки ElevenLabs (по умолчанию SFX_ENABLED=false)")
@@ -809,6 +842,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
                 return chain.api.post(f"/api/projects/{chain.pid}/steps/{args.adopt_step}/run")[0] == 200
             chain.start = _adopt_start
         if args.adopt or chain.create():
+            if args.lenient_verdict:
+                tpl = write_lenient_verdicts(work)
+                c_len, b_len = chain.api.req("PATCH", f"/api/projects/{chain.pid}", json_body={"meta": {"gpt_verdict_templates": tpl}})
+                R.check("стенд: мягкий «Вердикт» выбран для проекта (PATCH meta.gpt_verdict_templates, 200)", c_len == 200, (c_len, str(b_len)[:200]))
+                result["lenient_verdict"] = tpl
             if fc.level_index(args.until) >= fc.level_index("D") and not args.with_music:
                 music_dir = work / "data" / "videos" / chain.slug / "music"
                 music_dir.mkdir(parents=True, exist_ok=True)
