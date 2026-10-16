@@ -17,7 +17,6 @@ PACK = ROOT / "ai-pack"
 
 # (источник относительно ROOT, назначение внутри ai-pack/)
 COPY_MAP: list[tuple[str, str]] = [
-    ("AGENTS.md", "00_core/AGENTS.md"),
     ("docs/AGENT_MAP.md", "00_core/AGENT_MAP.md"),
     (".cursor/rules/video-pipeline-ops.mdc", "00_core/video-pipeline-ops.md"),
     (".cursor/rules/video-pipeline-map.mdc", "00_core/video-pipeline-map.md"),

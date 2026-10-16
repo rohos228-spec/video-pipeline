@@ -37,29 +37,127 @@ from app.models import (
 
 _SORT_STEP = 10.0
 
-_FRAME_V2_COLS: list[tuple[str, str]] = [
-    ("uuid", "VARCHAR(64)"),
-    ("sort_key", "FLOAT"),
-    ("scene_id", "INTEGER"),
-]
+def _frame_v2_cols() -> list[tuple[str, str]]:
+    from app.services.schema_migrations import FRAMES_V2_COLUMNS
+
+    return list(FRAMES_V2_COLUMNS)
+
+
+_FRAME_V2_COLS: list[tuple[str, str]] = _frame_v2_cols()
 
 
 async def migrate_db_v2_schema(conn: Any) -> None:
-    """Добавить v2-колонки в frames (create_all не умеет ALTER)."""
-    rows = (await conn.exec_driver_sql("PRAGMA table_info(frames)")).fetchall()
-    existing = {r[1] for r in rows}
-    for col, ctype in _FRAME_V2_COLS:
-        if col in existing:
-            continue
-        try:
-            await conn.exec_driver_sql(f"ALTER TABLE frames ADD COLUMN {col} {ctype}")
-            logger.info("db_v2 migrate: frames.{} added", col)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("db_v2 migrate: add frames.{} failed: {}", col, e)
+    from app.services.schema_migrations import run_migration_ids
+
+    await run_migration_ids(conn, ("0007_frames_v2_columns",))
 
 
 def new_frame_uuid() -> str:
     return _uuid_mod.uuid4().hex[:24]
+
+
+def resolve_full_voiceover_text(project: Project) -> str:
+    text = (project.script_text or "").strip()
+    if text:
+        return " ".join(text.split())
+    try:
+        from app.services.chatgpt_xlsx import ensure_current_voiceover
+
+        path = ensure_current_voiceover(project)
+    except Exception:
+        path = None
+    if path is not None and path.is_file():
+        try:
+            body = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            body = ""
+        if body:
+            return " ".join(body.split())
+    return ""
+
+
+async def ensure_single_seed_vo_cell(
+    session: AsyncSession,
+    project: Project,
+    full_vo: str,
+) -> Frame:
+    from sqlalchemy import delete, update
+
+    vo = " ".join((full_vo or "").split())
+    if not vo:
+        raise ValueError("ensure_single_seed_vo_cell: пустой закадр")
+
+    existing = list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(existing) == 1:
+        cur = " ".join((existing[0].voiceover_text or "").split())
+        if cur == vo:
+            if not existing[0].uuid:
+                existing[0].uuid = new_frame_uuid()
+                await session.flush()
+            return existing[0]
+
+    await session.execute(
+        update(Artifact)
+        .where(Artifact.project_id == project.id)
+        .values(frame_id=None)
+    )
+    await session.execute(
+        delete(FrameEdge).where(FrameEdge.project_id == project.id)
+    )
+    old_ids = [f.id for f in existing if f.id is not None]
+    if old_ids:
+        await session.execute(
+            delete(PromptVersion).where(PromptVersion.frame_id.in_(old_ids))
+        )
+        await session.execute(
+            delete(FrameText).where(FrameText.frame_id.in_(old_ids))
+        )
+        await session.execute(delete(Frame).where(Frame.project_id == project.id))
+    await session.flush()
+
+    scene = (
+        await session.execute(
+            select(Scene).where(Scene.project_id == project.id).order_by(Scene.sort_key)
+        )
+    ).scalars().first()
+    if scene is None:
+        scene = Scene(project_id=project.id, sort_key=_SORT_STEP, title="main")
+        session.add(scene)
+        await session.flush()
+
+    dur = max(2.0, round(len(vo) / 14.0, 2))
+    fr = Frame(
+        project_id=project.id,
+        number=1,
+        voiceover_text=vo,
+        meaning=None,
+        duration_seconds=dur,
+        uuid=new_frame_uuid(),
+        sort_key=_SORT_STEP,
+        scene_id=scene.id,
+        status=FrameStatus.planned,
+        attrs={},
+    )
+    session.add(fr)
+    await session.flush()
+    await backfill_project_v2(session, project)
+    logger.info(
+        "[#{}] ensure_single_seed_vo_cell: 1 ячейка ({} симв, было {})",
+        project.id,
+        len(vo),
+        len(existing),
+    )
+    return fr
 
 
 async def replace_all_frames(
@@ -186,16 +284,25 @@ async def replace_all_frames(
     return created
 
 
+async def _fill_missing_sort_keys(session: AsyncSession, frames: list[Frame]) -> None:
+    missing = [fr for fr in frames if fr.sort_key is None]
+    if not missing:
+        return
+    for fr in missing:
+        fr.sort_key = float(fr.number or 0) * _SORT_STEP
+    await session.flush()
+
+
 def sort_key_between(before: float | None, after: float | None) -> float:
     """Дробный ключ между соседями; края — с шагом _SORT_STEP."""
     if before is None and after is None:
         return _SORT_STEP
     if before is None:
-        return float(after) - _SORT_STEP  # type: ignore[arg-type]
+        return float(after) - _SORT_STEP
     if after is None:
         return float(before) + _SORT_STEP
     mid = (float(before) + float(after)) / 2.0
-    if mid == float(before):  # ключи слиплись — редкий вырожденный случай
+    if mid == float(before):
         return float(before) + 1e-6
     return mid
 
@@ -335,22 +442,31 @@ async def insert_frame_after(
             )
         ).scalars()
     )
+    await _fill_missing_sort_keys(session, frames)
+    frames.sort(key=lambda fr: (float(fr.sort_key or 0.0), int(fr.number or 0)))
+
     before_key: float | None = None
     after_key: float | None = None
-    if after_frame_id is None:
-        after_key = frames[0].sort_key if frames else None
+    want = None if after_frame_id is None else int(after_frame_id)
+    if want is None:
+        after_key = float(frames[0].sort_key) if frames else None
     else:
         for i, fr in enumerate(frames):
-            if fr.id == after_frame_id:
-                before_key = fr.sort_key
-                after_key = frames[i + 1].sort_key if i + 1 < len(frames) else None
+            if int(fr.id) == want:
+                before_key = float(fr.sort_key) if fr.sort_key is not None else None
+                nxt = frames[i + 1] if i + 1 < len(frames) else None
+                after_key = (
+                    float(nxt.sort_key)
+                    if nxt is not None and nxt.sort_key is not None
+                    else None
+                )
                 break
         else:
             raise ValueError(f"frame {after_frame_id} не найден в проекте {project.id}")
 
     key = sort_key_between(before_key, after_key)
-    if scene_id is None and after_frame_id is not None:
-        src = next((f for f in frames if f.id == after_frame_id), None)
+    if scene_id is None and want is not None:
+        src = next((f for f in frames if int(f.id) == want), None)
         scene_id = src.scene_id if src else None
     if scene_id is None:
         stats = await backfill_project_v2(session, project)

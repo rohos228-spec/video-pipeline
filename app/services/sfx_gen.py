@@ -3,17 +3,23 @@
 Провайдеры (по порядку):
 1. ElevenLabs SFX API (``ELEVENLABS_API_KEY``) — ИИ-генерация по EN-промту.
 2. Локальный синтез (чистый Python, wave) — офлайн-фолбэк: whoosh/hit/
-   riser/ambience/transition/stinger/foley.
+   riser/ambience/transition/stinger/foley. Это ПОДМЕНА, а не норма: без ключа каждое событие
+   получает факт provider_fallback (reason=no_api_key, synthetic=true) и поле provider_fallback в записи.
 
-Приём результата: ``verify_audio_file`` (ffprobe + RMS) — брак не уходит
+Приём результата: ``verify_audio_file`` → ``audio_verification.verify_audio`` (ffprobe + амплитуда) — брак не уходит
 в монтаж. Файлы: ``data/videos/<slug>/sfx/sfx_NN_<kind>.wav|mp3``.
-Чекпоинты per-event в ``meta.ai_jobs["sfx_files"]`` — повтор без переделки.
+Чекпоинт per-event: ``meta.ai_jobs["sfx_progress"]`` (готовые события + метки «запрос
+отправлен, ответа нет») пишется и коммитится по мере работы; итог — ``ai_jobs["sfx_files"]``
+после всего цикла. Повтор переиспользует готовые события; событие с меткой «отправлено, ответа
+нет» (исход неизвестен) автоматически НЕ отправляется повторно.
 """
 
 from __future__ import annotations
 
+import copy
 import math
 import random
+import shutil
 import struct
 import wave
 from pathlib import Path
@@ -23,17 +29,29 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project
+from app.services import media_spend, spend_guard
 from app.services.ai_result_io import (
     ai_job_checkpoint,
+    drop_ai_job_checkpoint,
     save_ai_job_checkpoint,
-    verify_audio_file,
+)
+from app.services.audio_verification import verify_audio
+from app.services.elevenlabs_api import (
+    SFX_MAX_PROMPT_CHARS,
+    SFX_PROMPT_INFLUENCE,
+    sfx_find_cached,
+    sfx_request_key,
+    sfx_write_sidecar,
 )
 from app.services.sfx_plan import SfxEvent
 
 _SAMPLE_RATE = 44100
 
 
-# ── Локальный синтез (офлайн, детерминированный) ──────────────────────────
+def verify_audio_file(path: Path, *, expect_duration: float | None = None, duration_tol: float = 0.6) -> list[str]:
+    return verify_audio(path, expect_duration=expect_duration, duration_tol=duration_tol).problems
+
+
 
 
 def _write_wav(path: Path, samples: list[float]) -> None:
@@ -159,6 +177,16 @@ def _synth(kind: str, duration: float, *, seed: int = 42) -> list[float]:
 # ── ElevenLabs SFX API (опционально) ──────────────────────────────────────
 
 
+def _sfx_estimate(args: tuple, kwargs: dict) -> float:
+    duration = args[1] if len(args) > 1 else kwargs.get("duration", 1.0)
+    try:
+        return min(max(float(duration), 0.5), 22.0) * media_spend.ELEVENLABS_SFX_USD_PER_SEC
+    except (TypeError, ValueError):
+        return 0.5 * media_spend.ELEVENLABS_SFX_USD_PER_SEC
+
+
+@spend_guard.paid_seam("elevenlabs", "sfx post", estimate=_sfx_estimate)
+@media_spend.track_eleven_sfx
 async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
     import asyncio
     import time
@@ -175,95 +203,177 @@ async def _elevenlabs_sfx(prompt: str, duration: float, out_path: Path) -> Path:
 
     proxy_url = getattr(settings, "elevenlabs_proxy_url", None)
     proxy = str(proxy_url or "").strip() or None
+    client_kwargs: dict[str, Any] = {
+        "timeout": httpx.Timeout(90.0, connect=10.0),
+        "follow_redirects": True,
+    }
+    if proxy:
+        client_kwargs["proxy"] = proxy
 
     t0 = time.time()
     max_retries = 3
-    last_err: Exception | None = None
 
     for attempt in range(1, max_retries + 1):
         try:
-            client_kwargs: dict[str, Any] = {
-                "timeout": httpx.Timeout(90.0, connect=10.0),
-                "follow_redirects": True,
-            }
-            if proxy:
-                client_kwargs["proxy"] = proxy
-
             async with httpx.AsyncClient(**client_kwargs) as client:
                 resp = await client.post(
                     "https://api.elevenlabs.io/v1/sound-generation",
                     headers={"xi-api-key": key},
                     json={
-                        "text": prompt[:450],
+                        "text": prompt[:SFX_MAX_PROMPT_CHARS],
                         "duration_seconds": min(max(duration, 0.5), 22.0),
-                        "prompt_influence": 0.5,
+                        "prompt_influence": SFX_PROMPT_INFLUENCE,
                     },
                 )
-                dur = time.time() - t0
-                if resp.status_code != 200:
-                    if attempt < max_retries and resp.status_code in (500, 502, 503, 504, 429):
-                        logger.warning(
-                            "11labs sfx attempt {}/{} failed with {}: {}, retrying...",
-                            attempt,
-                            max_retries,
-                            resp.status_code,
-                            resp.text[:100],
-                        )
-                        await asyncio.sleep(2.0 * attempt)
-                        continue
-                    record_api_call(
-                        provider="ElevenLabs",
-                        model="eleven-sound-generation",
-                        call_type="audio",
-                        duration_sec=dur,
-                        status_code=resp.status_code,
-                        error_message=resp.text[:200],
-                        project_source="sfx_gen",
-                    )
-                    raise RuntimeError(f"11labs sfx {resp.status_code}: {resp.text[:200]}")
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_bytes(resp.content)
-                record_api_call(
-                    provider="ElevenLabs",
-                    model="eleven-sound-generation",
-                    call_type="audio",
-                    duration_sec=dur,
-                    cost_usd=0.01,
-                    media_count=1,
-                    status_code=200,
-                    project_source="sfx_gen",
-                    metadata={"prompt": prompt[:100], "duration": duration},
-                )
-                return out_path
-        except Exception as e:
-            last_err = e
-            if attempt < max_retries and not isinstance(e, RuntimeError):
-                logger.warning(
-                    "11labs sfx attempt {}/{} error: {}, retrying...",
-                    attempt,
-                    max_retries,
-                    e,
-                )
+        except httpx.ConnectError as e:
+            if attempt < max_retries:
+                logger.warning("11labs sfx attempt {}/{} connect error: {}, retrying...", attempt, max_retries, e)
                 await asyncio.sleep(2.0 * attempt)
                 continue
-            break
-
-    if last_err:
+            record_api_call(
+                provider="ElevenLabs",
+                model="eleven-sound-generation",
+                call_type="audio",
+                duration_sec=time.time() - t0,
+                status_code=500,
+                error_message=str(e)[:200],
+                project_source="sfx_gen",
+            )
+            raise
+        except Exception as e:
+            record_api_call(
+                provider="ElevenLabs",
+                model="eleven-sound-generation",
+                call_type="audio",
+                duration_sec=time.time() - t0,
+                status_code=500,
+                error_message=str(e)[:200],
+                project_source="sfx_gen",
+            )
+            raise
+        dur = time.time() - t0
+        if resp.status_code != 200:
+            record_api_call(
+                provider="ElevenLabs",
+                model="eleven-sound-generation",
+                call_type="audio",
+                duration_sec=dur,
+                status_code=resp.status_code,
+                error_message=resp.text[:200],
+                project_source="sfx_gen",
+            )
+            err = RuntimeError(f"11labs sfx {resp.status_code}: {resp.text[:200]}")
+            err.status_code = resp.status_code
+            raise err
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(resp.content)
         record_api_call(
             provider="ElevenLabs",
             model="eleven-sound-generation",
             call_type="audio",
-            duration_sec=time.time() - t0,
-            status_code=500,
-            error_message=str(last_err)[:200],
+            duration_sec=dur,
+            cost_usd=0.01,
+            media_count=1,
+            status_code=200,
             project_source="sfx_gen",
+            metadata={"prompt": prompt[:100], "duration": duration},
         )
-        raise last_err
+        return out_path
 
     return out_path
 
 
-# ── Генерация плана событий ───────────────────────────────────────────────
+def _record_provider_fallback(project: Project, idx: int, kind: str, exc: BaseException) -> dict[str, Any]:
+    import httpx
+
+    answered = isinstance(exc, RuntimeError) or isinstance(exc, httpx.ConnectError)
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    info = {
+        "idx": idx,
+        "kind": kind,
+        "provider": "elevenlabs",
+        "error_class": type(exc).__name__,
+        "http_status": int(status) if isinstance(status, int) else None,
+        "may_have_charged": "no" if answered else "uncertain",
+    }
+    logger.warning("[#{}] sfx_gen provider_fallback: {}", project.id, info)
+    try:
+        from app.services.observation import emit
+
+        emit("provider_fallback", info)
+    except Exception:
+        pass
+    return info
+
+
+
+
+_PROGRESS = "sfx_progress"
+
+
+def _load_progress(project: Project) -> dict[str, dict[str, Any]]:
+    cp = ai_job_checkpoint(project, _PROGRESS)
+    events = cp.get("events") if isinstance(cp, dict) else None
+    inflight = cp.get("inflight") if isinstance(cp, dict) else None
+    return {"events": dict(events) if isinstance(events, dict) else {},
+            "inflight": dict(inflight) if isinstance(inflight, dict) else {}}
+
+
+async def _save_progress(session: Any, project: Project, prog: dict[str, dict[str, Any]]) -> None:
+    save_ai_job_checkpoint(project, _PROGRESS, copy.deepcopy(prog))
+    await session.flush()
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        await commit()
+
+
+def _record_synthetic_substitute(project: Project, idx: int, kind: str) -> dict[str, Any]:
+    info = {"idx": idx, "kind": kind, "provider": "elevenlabs", "error_class": "NoApiKey",
+            "http_status": None, "may_have_charged": "no", "reason": "no_api_key", "synthetic": True}
+    logger.warning("[#{}] sfx_gen: нет ключа ElevenLabs, событие {} ({}) — процедурный синтез (подмена)",
+                   project.id, idx, kind)
+    try:
+        from app.services.observation import emit
+
+        emit("provider_fallback", info)
+    except Exception:
+        pass
+    return info
+
+
+def _record_verify_substitute(project: Project, idx: int, kind: str) -> dict[str, Any]:
+    info = {"idx": idx, "kind": kind, "provider": "elevenlabs", "error_class": "VerifyFailed",
+            "http_status": None, "may_have_charged": "yes", "reason": "verify_failed", "synthetic": True}
+    logger.warning("[#{}] sfx_gen: файл ElevenLabs события {} ({}) не прошёл приёмку — процедурный синтез (подмена)",
+                   project.id, idx, kind)
+    try:
+        from app.services.observation import emit
+
+        emit("provider_fallback", info)
+    except Exception:
+        pass
+    return info
+
+
+def _uncertain_fallback(project: Project, idx: int, kind: str) -> dict[str, Any]:
+    info = {"idx": idx, "kind": kind, "provider": "elevenlabs", "error_class": "InterruptedAfterSend",
+            "http_status": None, "may_have_charged": "uncertain"}
+    logger.warning("[#{}] sfx_gen provider_fallback (обрыв после отправки): {}", project.id, info)
+    try:
+        from app.services.observation import emit
+
+        emit("provider_fallback", info)
+    except Exception:
+        pass
+    return info
+
+
+def _retry_eligible(rec: dict[str, Any]) -> bool:
+    fb = rec.get("provider_fallback")
+    return (rec.get("provider") == "local_synth" and isinstance(fb, dict)
+            and fb.get("may_have_charged") == "no" and not rec.get("provider_retry"))
 
 
 async def generate_sfx_files(
@@ -272,8 +382,8 @@ async def generate_sfx_files(
     events: list[SfxEvent],
     *,
     force: bool = False,
+    retry_degraded: bool = False,
 ) -> list[dict[str, Any]]:
-    """Сгенерировать файлы для событий плана. Возвращает sfx_files-записи."""
     from app.settings import settings
 
     if not events:
@@ -289,41 +399,91 @@ async def generate_sfx_files(
             if isinstance(rec, dict) and isinstance(rec.get("idx"), int):
                 done_by_idx[rec["idx"]] = rec
 
+    prog = _load_progress(project)
+    if force:
+        prog = {"events": {}, "inflight": {}}
+    else:
+        for rec in prog["events"].values():
+            if isinstance(rec, dict) and isinstance(rec.get("idx"), int):
+                done_by_idx[rec["idx"]] = rec
+
     meta = project.meta or {}
     forced_provider = meta.get("sfx_provider")
     use_api = bool(settings.elevenlabs_api_key) and forced_provider != "local_synth"
     files: list[dict[str, Any]] = []
     problems: list[str] = []
+    fallbacks: list[dict[str, Any]] = []
 
     for idx, ev in enumerate(events):
+        retry_of: dict[str, Any] | None = None
+        sent_unknown = (not force) and str(idx) in prog["inflight"]
         if not force and idx in done_by_idx:
             rec = done_by_idx[idx]
             if Path(str(rec.get("path") or "")).is_file():
-                files.append(rec)
-                continue
+                if sent_unknown:
+                    rec = {**rec, "provider_retry": 1, "provider_retry_outcome": "uncertain"}
+                    prog["events"][str(idx)] = rec
+                    prog["inflight"].pop(str(idx), None)
+                    await _save_progress(session, project, prog)
+                    files.append(rec)
+                    continue
+                if not (retry_degraded and use_api and _retry_eligible(rec)):
+                    files.append(rec)
+                    continue
+                retry_of = rec
         ext = "mp3" if use_api else "wav"
         out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.{ext}"
         actual_provider = "elevenlabs" if use_api else "local_synth"
-        try:
-            if use_api:
-                await _elevenlabs_sfx(ev.prompt, ev.duration, out_path)
-            else:
+        fb_this: dict[str, Any] | None = None
+        if sent_unknown:
+            fb_this = _uncertain_fallback(project, idx, ev.kind)
+            fallbacks.append(fb_this)
+            out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
+            _write_wav(out_path, _synth(ev.kind, ev.duration, seed=1000 + idx))
+            actual_provider = "local_synth"
+        else:
+            try:
+                if use_api:
+                    req_key = sfx_request_key(ev.prompt, ev.duration)
+                    cached = None if (force or retry_of is not None) else sfx_find_cached(sfx_dir, req_key)
+                    if cached is not None:
+                        if cached != out_path:
+                            shutil.copy2(cached, out_path)
+                            sfx_write_sidecar(out_path, req_key)
+                        logger.info("[#{}] sfx_gen: событие {} с тем же запросом уже оплачено ({}), POST не нужен",
+                                    project.id, idx, cached.name)
+                    else:
+                        prog["inflight"][str(idx)] = {"kind": ev.kind}
+                        await _save_progress(session, project, prog)
+                        await _elevenlabs_sfx(ev.prompt, ev.duration, out_path)
+                        sfx_write_sidecar(out_path, req_key)
+                else:
+                    samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
+                    _write_wav(out_path, samples)
+            except media_spend.ResumeOnlyBlocked:
+                if prog["inflight"].pop(str(idx), None) is not None:
+                    await _save_progress(session, project, prog)
+                raise
+            except Exception as e:
+                logger.warning(
+                    "[#{}] sfx_gen: событие {} ({}) упало: {} — локальный синтез",
+                    project.id,
+                    idx,
+                    ev.kind,
+                    e,
+                )
+                if use_api:
+                    fb_this = _record_provider_fallback(project, idx, ev.kind, e)
+                    fallbacks.append(fb_this)
+                out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
                 samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
                 _write_wav(out_path, samples)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "[#{}] sfx_gen: событие {} ({}) упало: {} — локальный синтез",
-                project.id,
-                idx,
-                ev.kind,
-                e,
-            )
-            out_path = sfx_dir / f"sfx_{idx:02d}_{ev.kind}.wav"
-            samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
-            _write_wav(out_path, samples)
-            actual_provider = "local_synth"
+                actual_provider = "local_synth"
 
-        # Гибкий допуск по длительности для SFX: звуковые эффекты часто имеют естественные хвосты затухания
+        if actual_provider == "local_synth" and fb_this is None:
+            fb_this = _record_synthetic_substitute(project, idx, ev.kind)
+            fallbacks.append(fb_this)
+
         sfx_dur_tol = max(4.0, ev.duration * 2.0)
         errs = verify_audio_file(out_path, expect_duration=ev.duration, duration_tol=sfx_dur_tol)
         if errs:
@@ -333,44 +493,59 @@ async def generate_sfx_files(
                 samples = _synth(ev.kind, ev.duration, seed=1000 + idx)
                 _write_wav(out_path, samples)
                 actual_provider = "local_synth"
+                if fb_this is None:
+                    fb_this = _record_verify_substitute(project, idx, ev.kind)
+                    fallbacks.append(fb_this)
                 errs = verify_audio_file(out_path, expect_duration=ev.duration, duration_tol=0.6)
 
         if errs:
             problems.extend(errs)
             logger.warning("[#{}] sfx_gen verify still failed: {}", project.id, errs)
+            if prog["inflight"].pop(str(idx), None) is not None:
+                await _save_progress(session, project, prog)
             continue
-        files.append(
-            {
-                "idx": idx,
-                "path": str(out_path.resolve()),
-                "frame_number": ev.frame_number,
-                "t_start": ev.t_start,
-                "duration": ev.duration,
-                "kind": ev.kind,
-                "gain": ev.gain,
-                "duck": ev.duck,
-                "provider": actual_provider,
-                "prompt": ev.prompt,
-            }
-        )
+        rec_new = {
+            "idx": idx,
+            "path": str(out_path.resolve()),
+            "frame_number": ev.frame_number,
+            "t_start": ev.t_start,
+            "duration": ev.duration,
+            "kind": ev.kind,
+            "gain": ev.gain,
+            "duck": ev.duck,
+            "provider": actual_provider,
+            "prompt": ev.prompt,
+            **({"provider_fallback": fb_this, "synthetic": True} if actual_provider == "local_synth" else {}),
+            **({"provider_retry": 1} if retry_of is not None else {}),
+        }
+        files.append(rec_new)
+        prog["events"][str(idx)] = rec_new
+        prog["inflight"].pop(str(idx), None)
+        await _save_progress(session, project, prog)
 
     if not files:
         raise RuntimeError(f"sfx_gen: ни один файл не прошёл верификацию: {problems}")
 
-    save_ai_job_checkpoint(project, "sfx_files", {"files": files})
+    save_ai_job_checkpoint(
+        project, "sfx_files", {
+            "files": files, "provider_fallbacks": len(fallbacks),
+            "synthetic": sum(1 for f in files if f.get("provider") == "local_synth"),
+            "no_api_key": not use_api})
+    if not prog["inflight"]:
+        drop_ai_job_checkpoint(project, _PROGRESS)
     await session.flush()
     logger.info(
-        "[#{}] sfx_gen: {} файлов ({}), проблем {}",
+        "[#{}] sfx_gen: {} файлов ({}), проблем {}, откатов провайдера {}",
         project.id,
         len(files),
         "elevenlabs" if use_api else "local_synth",
         len(problems),
+        len(fallbacks),
     )
     return files
 
 
 def load_sfx_files(project: Project) -> list[dict[str, Any]]:
-    """Сгенерированные sfx-файлы из чекпоинта (только существующие на диске)."""
     cached = ai_job_checkpoint(project, "sfx_files")
     if not isinstance(cached, dict) or not isinstance(cached.get("files"), list):
         return []

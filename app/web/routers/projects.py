@@ -11,9 +11,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer, selectinload
 
-from app.models import Artifact, ArtifactKind, BatchProject, Frame, Project, ProjectStatus
+from app.models import (
+    Artifact,
+    ArtifactKind,
+    BatchProject,
+    Frame,
+    Project,
+    ProjectStatus,
+    WorkflowRun,
+)
 from app.services.default_project import default_auto_mode_for_new_project
 from app.services.mass_factory import mass_parent_id
+from app.services.project_slug import slug_taken_on_disk
 from app.services.sidebar_layout import (
     ensure_project_layout,
     get_gen_queue,
@@ -29,16 +38,47 @@ from app.storage import ProjectSheet
 from app.db import commit_with_retry
 from app.web.deps import get_project_session, get_session
 from app.web.project_dto import project_to_detail, project_to_summary
-from app.web.schemas import CreateProjectRequest, ProjectDetail, ProjectSummary
+from app.web.schemas import (
+    CreateProjectRequest,
+    ProjectDetail,
+    ProjectSummary,
+    WorkflowRunDetail,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+async def _heal_get_runtime_from_master(session: AsyncSession, p: Project) -> bool:
+    from app.project_db import pull_master_runtime_into_project
+    from app.services.run_sync import park_leftover_running_nodes
+    from app.services.step_cancel import is_generation_active
+
+    pulled = await pull_master_runtime_into_project(
+        session, p, copy_noderuns=False
+    )
+    if is_generation_active(p.id):
+        return pulled
+    meta = p.meta if isinstance(p.meta, dict) else {}
+    parked = p.status in (ProjectStatus.paused, ProjectStatus.failed)
+    stopped = bool(meta.get("user_stop") or meta.get("mass_lane_user_stop"))
+    if parked or stopped:
+        fs = meta.get("step_failure") if isinstance(meta.get("step_failure"), dict) else {}
+        as_failed = bool(
+            parked
+            and (
+                (fs or {}).get("sleep_until")
+                or (fs or {}).get("abandoned_at")
+                or p.status is ProjectStatus.failed
+            )
+        )
+        if await park_leftover_running_nodes(session, p, as_failed=as_failed):
+            pulled = True
+    return pulled
+
+
 def _slugify(s: str) -> str:
-    """Простой кириллица-латиница slugifier (как в app/services)."""
     base = re.sub(r"[^\w\s-]", "", s.lower(), flags=re.UNICODE).strip()
     base = re.sub(r"[\s_-]+", "-", base, flags=re.UNICODE)
-    # Транслит кириллицы — повторяем существующую логику из проекта.
     cyr = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
     lat = ["a", "b", "v", "g", "d", "e", "yo", "zh", "z", "i", "y", "k", "l", "m", "n",
            "o", "p", "r", "s", "t", "u", "f", "h", "c", "ch", "sh", "sch", "", "y", "",
@@ -139,23 +179,79 @@ async def steps_catalog() -> list[dict[str, str]]:
     return list_step_codes()
 
 
+@router.get("/{project_id}/shots-report")
+async def project_shots_report(
+    project_id: int, session: AsyncSession = Depends(get_project_session)
+):
+    from fastapi.responses import HTMLResponse
+
+    from app.services.shots_report import existing_shots_report_path
+
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    existing = existing_shots_report_path(p)
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail="отчёт пишет нода fw_report — сначала прогон группы script_frames_qc",
+        )
+    return HTMLResponse(existing.read_text(encoding="utf-8"))
+
+
+async def _sync_project_state(session: AsyncSession, p: Project) -> tuple[bool, bool]:
+    import copy
+
+    from app.services.project_state import apply_meta_diff, meta_diff
+
+    await session.refresh(p)
+    before = copy.deepcopy(p.meta) if isinstance(p.meta, dict) else {}
+    pulled = False
+    try:
+        pulled = await _heal_get_runtime_from_master(session, p)
+    except Exception:
+        logger.warning("sync_project: #{} pull parked runtime failed", p.id, exc_info=True)
+    _old, _new, recomputed = await recompute_status(
+        session, p, log_prefix="recompute(web_sync)"
+    )
+    after = dict(p.meta) if isinstance(p.meta, dict) else {}
+    set_keys, del_keys = meta_diff(before, after)
+    await apply_meta_diff(session, p, set_keys, del_keys)
+    return pulled, recomputed
+
+
 @router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> ProjectDetail:
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
-    # Свежий meta (user_stop) — иначе stale recompute затирает ⏹ и снова крутит ноду.
+        raise HTTPException(status_code=404, detail="Проект не найден")
     await session.refresh(p)
-    from app.services.node_groups import upgrade_script_frames_qc_on_project
+    try:
+        await _sync_project_state(session, p)
+        detail = project_to_detail(p)
+    finally:
+        await session.rollback()
+    return detail
 
-    if await upgrade_script_frames_qc_on_project(session, p):
+
+@router.post("/{project_id}/sync", response_model=ProjectDetail)
+async def sync_project(
+    project_id: int, session: AsyncSession = Depends(get_project_session)
+) -> ProjectDetail:
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    pulled, recomputed = await _sync_project_state(session, p)
+    if pulled or recomputed or session.dirty:
         await commit_with_retry(session)
         await session.refresh(p)
-    await recompute_status(session, p, log_prefix="recompute(web_get)")
-    await commit_with_retry(session)
-    await session.refresh(p)
+    else:
+        await session.rollback()
+        p = await session.get(Project, project_id)
+        if p is None:
+            raise HTTPException(status_code=404, detail="Проект не найден")
     return project_to_detail(p)
 
 
@@ -165,7 +261,7 @@ async def create_project(
     session: AsyncSession = Depends(get_session),
 ) -> Project:
     if not body.title or not body.title.strip():
-        raise HTTPException(status_code=400, detail="title is required")
+        raise HTTPException(status_code=400, detail="Нужно указать название проекта")
     display_title = body.title.strip()
     base_slug = _slugify(display_title)
     # Уникализируем slug.
@@ -173,7 +269,7 @@ async def create_project(
     suffix = 2
     while (
         await session.execute(select(Project).where(Project.slug == slug))
-    ).scalar_one_or_none() is not None:
+    ).scalar_one_or_none() is not None or slug_taken_on_disk(slug):
         slug = f"{base_slug}-{suffix}"
         suffix += 1
     auto_mode = body.auto_mode
@@ -188,6 +284,16 @@ async def create_project(
         auto_mode=auto_mode,
         meta={},
     )
+    from app.generation_options import IMAGE_GENERATORS_BY_ID, VIDEO_GENERATORS_BY_ID
+
+    if body.image_generator and body.image_generator not in IMAGE_GENERATORS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор изображений: {body.image_generator}")
+    if body.video_generator and body.video_generator not in VIDEO_GENERATORS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор видео: {body.video_generator}")
+    for _field in ("aspect_ratio", "image_resolution", "video_resolution", "image_generator", "video_generator"):
+        _val = getattr(body, _field, None)
+        if _val:
+            setattr(p, _field, _val)
     session.add(p)
     await session.flush()
     if auto_mode:
@@ -203,11 +309,15 @@ async def create_project(
         hero_mode=p.hero_mode,
         status=p.status.value,
     )
-    from app.project_db import init_project_db
+    from app.project_db import (
+        init_project_db,
+        register_project_data_dir,
+        sync_project_row_to_project_db,
+    )
     try:
-        await init_project_db(p.data_dir)
+        register_project_data_dir(p.id, p.data_dir)
+        await init_project_db(p.data_dir, project=p)
     except Exception as exc:
-        from loguru import logger
         logger.warning("create_project: init_project_db failed: {}", exc)
     await commit_with_retry(session)
     await session.refresh(p)
@@ -226,6 +336,11 @@ async def create_project(
     await recompute_status(session, p, log_prefix="recompute(create)")
     await commit_with_retry(session)
     await session.refresh(p)
+    try:
+        register_project_data_dir(p.id, p.data_dir)
+        await sync_project_row_to_project_db(p)
+    except Exception as exc:
+        logger.warning("create_project: sync project.db row failed: {}", exc)
     return project_to_detail(p)
 
 
@@ -244,7 +359,7 @@ async def create_child_project(
 
     parent = await session.get(Project, project_id)
     if parent is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
 
     try:
         child = await create_child_from_parent(session, parent, slugify=_slugify)
@@ -275,18 +390,65 @@ async def create_child_project(
 
 @router.post("/{project_id}/ensure-run")
 async def ensure_project_run(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict[str, int]:
     """Гарантирует WorkflowRun для проекта (связь с графом в БД)."""
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     wf_id = await _get_default_workflow_id(session)
     if wf_id is None:
-        raise HTTPException(status_code=404, detail="default workflow not found")
+        raise HTTPException(status_code=404, detail="Не найден основной сценарий (workflow) по умолчанию")
     run_id = await ensure_run_for_project(project_id, wf_id, session=session)
     await commit_with_retry(session)
     return {"run_id": run_id}
+
+
+@router.get("/{project_id}/run", response_model=WorkflowRunDetail)
+async def get_project_run(
+    project_id: int, session: AsyncSession = Depends(get_project_session)
+) -> WorkflowRun:
+    p = await session.get(Project, project_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    from app.services.canvas_graph import sync_run_snapshot_from_canvas_graph
+
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project_id)
+            .options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalar_one_or_none()
+    created = False
+    if run is None:
+        wf_id = await _get_default_workflow_id(session)
+        if wf_id is None:
+            raise HTTPException(status_code=404, detail="Запуск не найден")
+        await ensure_run_for_project(project_id, wf_id, session=session)
+        created = True
+    pulled = False
+    try:
+        pulled = await _heal_get_runtime_from_master(session, p)
+    except Exception:
+        logger.warning(
+            "get_project_run: #{} pull parked runtime failed",
+            project_id,
+            exc_info=True,
+        )
+    changed = await sync_run_snapshot_from_canvas_graph(session, p)
+    if created or changed or pulled:
+        await session.commit()
+    run = (
+        await session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project_id)
+            .options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Запуск не найден")
+    return run
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -295,12 +457,11 @@ async def delete_project(
 ) -> None:
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     data_dir = p.data_dir
     remove_project_from_layout(project_id)
     await session.delete(p)
     await commit_with_retry(session)
-    # Закрываем кэшированный engine для project.db
     from app.project_db import _ENGINES, _SESSION_MAKERS, _LOCK, resolve_project_db_path
     db_file = resolve_project_db_path(data_dir)
     db_key = str(db_file.resolve())
@@ -319,12 +480,12 @@ async def delete_project(
 async def patch_project(
     project_id: int,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> Project:
     """Частичное обновление полей проекта (для inspector-панели)."""
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     from app.generation_options import (
         IMAGE_GENERATORS_BY_ID,
         VIDEO_GENERATORS_BY_ID,
@@ -347,10 +508,10 @@ async def patch_project(
 
     img_gid = payload.get("image_generator")
     if "image_generator" in payload and img_gid and img_gid not in IMAGE_GENERATORS_BY_ID:
-        raise HTTPException(status_code=400, detail=f"unknown image_generator: {img_gid}")
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор изображений: {img_gid}")
     vid_gid = payload.get("video_generator")
     if "video_generator" in payload and vid_gid and vid_gid not in VIDEO_GENERATORS_BY_ID:
-        raise HTTPException(status_code=400, detail=f"unknown video_generator: {vid_gid}")
+        raise HTTPException(status_code=400, detail=f"Неизвестный генератор видео: {vid_gid}")
     ALLOWED = {
         "title", "topic", "hero_mode", "general_plan", "hero_description", "script_text",
         "image_generator", "aspect_ratio", "image_resolution", "image_quality", "image_relax",
@@ -463,15 +624,30 @@ async def patch_project(
         sync_global_active_from_overrides(
             p.prompt_overrides if isinstance(p.prompt_overrides, dict) else {}
         )
+    if "general_plan" in payload:
+        ov = p.prompt_overrides if isinstance(p.prompt_overrides, dict) else {}
+        slots = (p.meta or {}).get("prompt_slot_variants") if isinstance(p.meta, dict) else None
+        slot_script = None
+        if isinstance(slots, dict):
+            node = slots.get("n_script")
+            if isinstance(node, dict):
+                slot_script = node.get("main")
+        if ov.get("script") == "nii67" or slot_script == "nii67":
+            card = p.data_dir / "nii67-card.md"
+            try:
+                card.write_text(p.general_plan or "", encoding="utf-8")
+            except OSError as exc:
+                logger.warning("nii67-card write #{}: {}", project_id, exc)
     p.updated_at = datetime.utcnow()
     await commit_with_retry(session)
     await session.refresh(p)
-    from app.project_db import sync_project_row_to_project_db
-
     try:
-        await sync_project_row_to_project_db(p)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("patch_project #{}: sync to project.db failed: {}", project_id, exc)
+        from app.project_db import push_display_fields_to_master, sync_runtime_both_ways
+
+        await sync_runtime_both_ways(session, p)
+        await push_display_fields_to_master(session, p, payload.keys())
+    except Exception:
+        pass
     await publish_project_event(project_id, event_type="project_updated")
     return p
 
@@ -482,7 +658,6 @@ async def media_review(
     kind: str = Query("images", pattern="^(images|videos)$"),
     session: AsyncSession = Depends(get_project_session),
 ) -> list[dict]:
-    """Кадры с путями к последним scene_image / scene_video для визуального HITL."""
     artifact_kind = (
         ArtifactKind.scene_image if kind == "images" else ArtifactKind.scene_video
     )
@@ -523,17 +698,17 @@ async def run_project_step(
     step_code: str,
     dry_run: bool = False,
     node_key: str | None = None,
-    mode: str = Query("full", pattern="^(full|resume)$"),
+    mode: str = Query("resume", pattern="^(full|resume)$"),
     force_wipe: bool | None = None,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> Project:
     """Запустить шаг: статус → running, воркер выполнит advance_project.
-    mode='full' (по умолчанию) — полный чистый перезапуск шага с нуля (force_wipe=True).
-    mode='resume' — мягкое продолжение/доделка недостающих кадров (force_wipe=False).
+    Wipe только при явном force_wipe=true. mode=full без force_wipe — как resume
+    (старый UI слал full на каждый ▶ и сжигал выход).
     """
     p = await session.get(Project, project_id)
     if p is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     if dry_run:
         from app.web.studio_dry_run import validate_project_step_dry_run
 
@@ -547,7 +722,11 @@ async def run_project_step(
             payload=payload,
         )
         return p
-    resolved_force_wipe = force_wipe if force_wipe is not None else (mode != "resume")
+    from app.services.actions_v1 import managed_project_enabled
+    if await managed_project_enabled(project_id):
+        raise HTTPException(status_code=409,
+            detail="Управляемый запуск нужно начинать из панели «Действия v1»: так он попадает в журнал и не запускается дважды")
+    resolved_force_wipe = bool(force_wipe) if force_wipe is not None else False
     try:
         await start_step(
             session,
@@ -562,16 +741,16 @@ async def run_project_step(
         raise HTTPException(status_code=400, detail=str(e)) from e
     await commit_with_retry(session)
     await session.refresh(p)
-    from app.project_db import sync_project_row_to_project_db
-
+    await sync_run_for_project(project_id, session=session)
     try:
-        await sync_project_row_to_project_db(p)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("run_project_step #{}: sync to project.db failed: {}", project_id, exc)
-    await sync_run_for_project(project_id)
+        from app.project_db import push_runtime_to_master
+
+        await push_runtime_to_master(session, p)
+    except Exception:
+        pass
     await publish_project_event(
         project_id,
         event_type="project_updated",
         payload={"step": step_code, "status": p.status.value},
     )
-    return p
+    return project_to_detail(p)

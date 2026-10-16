@@ -87,6 +87,7 @@ async def test_montage_board_reads_excel_voiceover_and_characters(
     assert row["number"] == 1
     assert len(row["character_refs"]) == 2
     assert row["character_refs"][0]["id"] == "c01"
+    assert row["character_refs"][0]["code"] == "c01"
     assert row["character_refs"][0]["name"] == "Кот"
     assert row["character_refs"][0]["image_url"] is not None
     assert row["character_refs"][1]["id"] == "c02"
@@ -124,6 +125,170 @@ async def test_montage_board_prefers_db_characters_over_excel(
     row = board["frames"][0]
     assert row["characters"] == "c05"
     assert row["character_refs"][0]["id"] == "c05"
+
+
+@pytest.mark.asyncio
+async def test_montage_board_ships_scene_row_choices(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        status="planned",
+    )
+    session.add_all([montage_project, fr])
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert "ОБЩИЙ" in board["coverage_plan_choices"]
+    assert "3/4" in board["coverage_angle_choices"]
+    assert "панорама" in board["coverage_move_choices"]
+    assert "контровой" in board["coverage_light_choices"]
+    assert "Кинематографический реализм" in board["coverage_visual_type_choices"]
+    stitches = {row["id"]: row["label"] for row in board["coverage_stitch_choices"]}
+    assert stitches["cut_on_action"] == "по действию"
+    templates = {t["id"]: t for t in board["coverage_template_choices"]}
+    assert templates and all(t["name"] for t in templates.values())
+    assert templates["T5"]["plans"]
+    row = board["frames"][0]
+    assert [r["якорь"] for r in row["shot_anchor_rows"]] == ["vo"]
+    assert row["scene_anchor_rows"] == []
+    assert row["anchor_can_add"] is True
+    assert row["vo_cell_full"] == "vo"
+
+
+@pytest.mark.asyncio
+async def test_montage_board_hides_character_refs_on_shot_children(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    wb.save(xlsx)
+    chars_dir = montage_project.data_dir / "characters"
+    chars_dir.mkdir(parents=True, exist_ok=True)
+    (chars_dir / "c02.png").write_bytes(b"png2")
+
+    child = Frame(
+        project_id=montage_project.id,
+        number=2,
+        voiceover_text="vo",
+        status="planned",
+        attrs={
+            "characters": "c02,c03",
+            "персонажи": "c02,c03",
+            "camera_subdivide": {"role": "shot", "parent_uuid": "p1"},
+        },
+    )
+    session.add(montage_project)
+    session.add(child)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    row = board["frames"][0]
+    assert row["character_refs"] == []
+    assert row["characters"] == ""
+
+
+@pytest.mark.asyncio
+async def test_montage_board_group_refs_on_vo_cell(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    parent_uid = "aa" * 12
+    scenes = montage_project.data_dir / "scenes"
+    chars_dir = montage_project.data_dir / "characters"
+    items_dir = montage_project.data_dir / "items"
+    scenes.mkdir(parents=True, exist_ok=True)
+    chars_dir.mkdir(parents=True, exist_ok=True)
+    items_dir.mkdir(parents=True, exist_ok=True)
+    (scenes / "frame_001_shot1.png").write_bytes(b"png-shot1")
+    (scenes / "frame_001_parent.png").write_bytes(b"png-parent")
+    (scenes / "frame_002_child.png").write_bytes(b"png-child")
+    (chars_dir / "c02.png").write_bytes(b"png-c02")
+    (items_dir / "i01.png").write_bytes(b"png-i01")
+
+    parent = Frame(
+        project_id=montage_project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="вошёл в кабинет",
+        status="planned",
+        attrs={
+            "characters": "c02",
+            "персонажи": "c02",
+            "предметы": "i01",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K1",
+            },
+        },
+    )
+    child = Frame(
+        project_id=montage_project.id,
+        number=2,
+        uuid="bb" * 12,
+        voiceover_text="достал папку",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K2",
+                "coverage_parent_id": "1-K1",
+            },
+        },
+    )
+    stranger = Frame(
+        project_id=montage_project.id,
+        number=39,
+        uuid="cc" * 12,
+        voiceover_text="другая ячейка",
+        status="planned",
+        attrs={
+            "characters": "c09",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "cc" * 12,
+                "shot_id": "1-S13-K1",
+                "coverage_parent_id": "1-K1",
+            },
+        },
+    )
+    session.add(montage_project)
+    session.add_all([parent, child, stranger])
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    p_row, c_row, s_row = board["frames"]
+    assert p_row["ref_parent"] is None
+    assert p_row["image_shot1_url"]
+    assert p_row["image_parent_url"]
+    assert "parent" in (p_row["image_parent_url"] or "")
+    assert p_row["image_parent_url"] != p_row["image_shot1_url"]
+    assert p_row["group_character_refs"][0]["id"] == "c02"
+    assert p_row["group_character_refs"][0]["code"] == "c02"
+    assert p_row["item_refs"][0]["id"] == "i01"
+    assert c_row["ref_parent"]["number"] == 1
+    assert c_row["ref_parent"]["image_url"]
+    assert "parent" in (c_row["ref_parent"]["image_url"] or "")
+    assert c_row["image_shot1_url"]
+    assert c_row["image_shot1_url"] != c_row["ref_parent"]["image_url"]
+    assert [r["id"] for r in c_row["group_character_refs"]] == ["c02"]
+    assert [r["id"] for r in c_row["item_refs"]] == ["i01"]
+    assert "c09" not in [r["id"] for r in c_row["group_character_refs"]]
+    assert s_row["ref_parent"] is None
+    assert [r["id"] for r in s_row["group_character_refs"]] == ["c09"]
+    assert p_row["vo_scene_number"] == 1
+    assert c_row["vo_scene_number"] == 1
+    assert s_row["vo_scene_number"] == 39
+    assert p_row["vo_scene_size"] == 2
+    assert s_row["vo_scene_size"] == 1
 
 
 @pytest.mark.asyncio
@@ -197,6 +362,101 @@ async def test_montage_board_prompt_falls_back_to_frame_db(
     assert row["image_prompt_shot1"] == "DB IMAGE PROMPT"
     assert row["image_prompt_shot2"] == "DB IMAGE SHOT2"
     assert row["animation_prompt_shot1"] == "DB VIDEO PROMPT"
+
+
+@pytest.mark.asyncio
+async def test_montage_board_freeze_layout_exposes_end_still(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    wb.save(xlsx)
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        image_prompt="",
+        status="planned",
+        attrs={
+            "раскладка": (
+                "СТАРТ (первый кадр, до действия): рука над стопкой. "
+                "План СРЕДНИЙ. КОНЕЦ (последний кадр действия): ладонь на стопке."
+            )
+        },
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    row = board["frames"][0]
+    assert row["has_shot2"] is True
+    assert row["has_end_still"] is True
+    assert row["has_layout"] is True
+    assert "рука над стопкой" in (row.get("layout_start") or "")
+    assert "ладонь на стопке" in (row.get("layout_end") or row.get("image_prompt_shot2") or "")
+
+
+@pytest.mark.asyncio
+async def test_montage_board_process_layout_has_no_end_still(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    wb.save(xlsx)
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        image_prompt="",
+        status="planned",
+        attrs={
+            "раскладка": (
+                "ДЕЙСТВИЕ (процесс в одном кадре): идёт по коридору. План СРЕДНИЙ."
+            )
+        },
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+    board = await build_montage_board(session, montage_project)
+    row = board["frames"][0]
+    assert row["has_end_still"] is False
+    assert row["has_layout"] is True
+
+
+@pytest.mark.asyncio
+async def test_montage_board_empty_layout_marks_unknown_end(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    xlsx = montage_project.data_dir / "project.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_PLAN_V8
+    wb.save(xlsx)
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="vo",
+        image_prompt="",
+        status="planned",
+        attrs={},
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+    board = await build_montage_board(session, montage_project)
+    row = board["frames"][0]
+    assert row["has_end_still"] is False
+    assert row["has_layout"] is False
 
 
 @pytest.mark.asyncio
@@ -432,3 +692,488 @@ def test_load_montage_xlsx_bundle_survives_plan_open_failure(
     assert excel == {}
     assert prompts[1]["image_prompt_shot1"] == "DB IMG"
     assert shot2 == {}
+
+
+def test_load_montage_xlsx_bundle_keeps_db_prompts_over_stale_excel_cache(
+    montage_project: Project,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import montage_board as mb
+    from app.services.montage_board import (
+        _FrameBoardSnapshot,
+        _load_montage_xlsx_bundle,
+    )
+
+    xlsx = montage_project.data_dir / "project.xlsx"
+    xlsx.write_bytes(b"not-xlsx")
+    snaps = [
+        _FrameBoardSnapshot(id=1, number=1, image_prompt="REAL 1", attrs={}),
+        _FrameBoardSnapshot(id=2, number=2, image_prompt="", attrs={}),
+        _FrameBoardSnapshot(id=3, number=3, image_prompt="", attrs={}),
+    ]
+    stale = {
+        1: {**mb._empty_prompt_row(), "image_prompt_shot1": "STALE STUB"},
+        2: mb._empty_prompt_row(),
+        3: {**mb._empty_prompt_row(), "image_prompt_shot1": "EXCEL 3"},
+    }
+    monkeypatch.setattr(mb, "_read_plan_excel_cells", lambda *a, **k: {})
+    monkeypatch.setattr(mb, "get_cached_source_prompts", lambda *a, **k: stale)
+
+    _excel, prompts, _shot2 = _load_montage_xlsx_bundle(
+        xlsx,
+        chars_dir=montage_project.data_dir / "characters",
+        frames=snaps,
+    )
+    assert prompts[1]["image_prompt_shot1"] == "REAL 1"
+    assert prompts[2]["image_prompt_shot1"] == ""
+    assert prompts[3]["image_prompt_shot1"] == "EXCEL 3"
+
+
+def _script_frames_qc_meta() -> dict:
+    return {
+        "canvas_graph": {
+            "nodes": [
+                {
+                    "id": "n_excel_gpt_fw_shots",
+                    "data": {"groupId": "script_frames_qc"},
+                }
+            ],
+            "edges": [],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_montage_board_shows_scene_row_from_frame_data_without_group(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    parent_uid = "aa" * 12
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="сидит за столом в офисе",
+        status="planned",
+        attrs={
+            "shot01_action": "сидит за столом",
+            "крупность": "ОБЩИЙ",
+            "персонажи": "следователь",
+            "кадры": [
+                {
+                    "id": "1-K1",
+                    "план": "ОБЩИЙ",
+                    "действие": "сидит за столом",
+                    "шаблон": "T5",
+                    "место": "офис",
+                }
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "shot_id": "1-K1",
+                "план": "ОБЩИЙ",
+                "крупность": "ОБЩИЙ",
+            },
+        },
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert board["show_coverage_rows"] is True
+    row = board["frames"][0]
+    assert row["shot_kind"] == "parent"
+    assert row["shot_plan"] == "ОБЩИЙ"
+    assert row["shot_action"] == "сидит за столом"
+    assert row["shot_template"] == "T5"
+    assert row["scene_place"] == ""
+    assert row["scene_characters"] == "следователь"
+    assert "сидит за столом" in row["shot_anchor"]
+    assert row["shot_angle"] == ""
+    assert "shot_move" in row
+    assert "shot_stitch" in row
+    assert "coverage_angle_choices" in board
+
+
+@pytest.mark.asyncio
+async def test_montage_board_shows_plan_action_parent_child_with_group(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    montage_project.meta = _script_frames_qc_meta()
+    parent_uid = "bb" * 12
+    child_uid = "cc" * 12
+    parent = Frame(
+        project_id=montage_project.id,
+        number=1,
+        uuid=parent_uid,
+        voiceover_text="родительский закадр",
+        status="planned",
+        attrs={
+            "shot01_action": "сидит за столом",
+            "кадры": [
+                {
+                    "id": "1-K1",
+                    "план": "ОБЩИЙ",
+                    "действие": "сидит за столом",
+                    "шаблон": "T5",
+                    "место": "офис",
+                    "parent_id": None,
+                }
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K1",
+                "план": "ОБЩИЙ",
+                "крупность": "ОБЩИЙ",
+            },
+        },
+    )
+    child = Frame(
+        project_id=montage_project.id,
+        number=2,
+        uuid=child_uid,
+        voiceover_text="дочерний закадр",
+        status="planned",
+        attrs={
+            "shot01_action": "рука выводит строки",
+            "кадры": [
+                {
+                    "id": "1-K2",
+                    "план": "ДЕТАЛЬ",
+                    "действие": "рука выводит строки",
+                    "шаблон": "T5",
+                    "место": "офис",
+                    "parent_id": "1-K1",
+                }
+            ],
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_id": "1-K2",
+                "coverage_parent_id": "1-K1",
+                "план": "ДЕТАЛЬ",
+                "крупность": "ДЕТАЛЬ",
+            },
+        },
+    )
+    session.add(montage_project)
+    session.add_all([parent, child])
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert board["show_coverage_rows"] is True
+    assert board["frame_count"] == 2
+    p_row, c_row = board["frames"]
+    assert p_row["shot_kind"] == "parent"
+    assert p_row["shot_plan"] == "ОБЩИЙ"
+    assert p_row["shot_action"] == "сидит за столом"
+    assert p_row["shot_parent_number"] is None
+    assert c_row["shot_kind"] == "child"
+    assert c_row["shot_plan"] == "ДЕТАЛЬ"
+    assert c_row["shot_action"] == "рука выводит строки"
+    assert c_row["shot_parent_number"] == 1
+    assert c_row["shot_parent_id"] == "1-K1"
+    assert p_row["scene_place"] == ""
+    assert "родительский закадр" in p_row["shot_anchor"]
+    assert c_row["shot_anchor"]
+    assert p_row["shot_anchor"] != c_row["shot_anchor"]
+
+
+@pytest.mark.asyncio
+async def test_montage_board_frame_aspect_follows_project(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    session.add(montage_project)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert board["frame_aspect"] == "16:9"
+
+    montage_project.aspect_ratio = "9_16"
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert board["frame_aspect"] == "9:16"
+
+
+@pytest.mark.asyncio
+async def test_montage_board_frame_aspect_from_real_image(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    from PIL import Image
+
+    scenes = montage_project.data_dir / "scenes"
+    scenes.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (270, 480), "black").save(scenes / "frame_001_shot1.png")
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="текст кадра",
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    assert board["frame_aspect"] == "270:480"
+
+
+@pytest.mark.asyncio
+async def test_montage_board_manual_refs_roundtrip(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    from app.services.montage_frame_refs import (
+        add_manual_ref,
+        delete_manual_ref,
+        manual_ref_paths,
+        manual_ref_prompt_note,
+    )
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="текст кадра",
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    row = add_manual_ref(
+        fr,
+        data_dir=montage_project.data_dir,
+        kind="персонаж",
+        name="следователь Лавров",
+        content=b"png",
+        suffix=".png",
+    )
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    refs = board["frames"][0]["manual_refs"]
+    assert [r["kind"] for r in refs] == ["character"]
+    assert refs[0]["kind_label"] == "персонаж"
+    assert refs[0]["name"] == "следователь Лавров"
+    assert refs[0]["image_url"]
+    assert refs[0]["linked"] is False
+    assert [k["id"] for k in board["ref_kind_choices"]][0] == "character"
+
+    paths = manual_ref_paths(montage_project.data_dir, fr)
+    assert len(paths) == 1 and paths[0].is_file()
+    assert "следователь Лавров" in manual_ref_prompt_note(fr)
+
+    assert delete_manual_ref(fr, data_dir=montage_project.data_dir, ref_id=row["id"])
+    await session.flush()
+    assert not paths[0].exists()
+    board = await build_montage_board(session, montage_project)
+    assert board["frames"][0]["manual_refs"] == []
+
+
+@pytest.mark.asyncio
+async def test_montage_board_manual_ref_needs_name(
+    montage_project: Project,
+) -> None:
+    from app.services.montage_frame_refs import add_manual_ref
+
+    fr = Frame(project_id=montage_project.id, number=1, status="planned")
+    with pytest.raises(ValueError, match="имя"):
+        add_manual_ref(
+            fr,
+            data_dir=montage_project.data_dir,
+            kind="item",
+            name="   ",
+            content=b"png",
+            suffix=".png",
+        )
+
+
+@pytest.mark.asyncio
+async def test_montage_board_link_existing_asset(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    from app.models import Entity
+    from app.services.montage_frame_refs import (
+        delete_manual_ref,
+        link_ref_asset,
+        list_ref_assets,
+    )
+
+    chars = montage_project.data_dir / "characters"
+    chars.mkdir(parents=True, exist_ok=True)
+    png = chars / "c01.png"
+    png.write_bytes(b"png")
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="текст кадра",
+        status="planned",
+    )
+    session.add(montage_project)
+    session.add(fr)
+    session.add(
+        Entity(
+            project_id=montage_project.id,
+            type="character",
+            code="c01",
+            name="следователь",
+        )
+    )
+    await session.flush()
+
+    assets = list_ref_assets(
+        montage_project.data_dir, names={"character": {"c01": "следователь"}}
+    )
+    assert [(a["kind"], a["code"], a["name"]) for a in assets] == [
+        ("character", "c01", "следователь")
+    ]
+
+    row = link_ref_asset(
+        fr,
+        data_dir=montage_project.data_dir,
+        file=assets[0]["file"],
+        kind=assets[0]["kind"],
+        name=assets[0]["name"],
+    )
+    await session.flush()
+
+    board = await build_montage_board(session, montage_project)
+    ref = board["frames"][0]["manual_refs"][0]
+    assert ref["name"] == "следователь"
+    assert ref["linked"] is True
+
+    assert delete_manual_ref(fr, data_dir=montage_project.data_dir, ref_id=row["id"])
+    assert png.is_file()
+
+
+@pytest.mark.asyncio
+async def test_montage_board_link_ref_rejects_outside_file(
+    montage_project: Project,
+) -> None:
+    from app.services.montage_frame_refs import link_ref_asset
+
+    fr = Frame(project_id=montage_project.id, number=1, status="planned")
+    with pytest.raises(ValueError, match="нет такого рефа"):
+        link_ref_asset(fr, data_dir=montage_project.data_dir, file="../../etc/passwd")
+
+
+@pytest.mark.asyncio
+async def test_montage_board_unlink_hides_scene_character(
+    montage_project: Project,
+    session: AsyncSession,
+) -> None:
+    from app.services.montage_board import _group_refs_for_frames
+    from app.services.montage_frame_refs import hidden_ref_ids, unlink_scene_ref
+
+    chars = montage_project.data_dir / "characters"
+    chars.mkdir(parents=True, exist_ok=True)
+    (chars / "c01.png").write_bytes(b"png")
+
+    fr = Frame(
+        project_id=montage_project.id,
+        number=1,
+        voiceover_text="текст кадра",
+        status="planned",
+        attrs={"персонажи": "c01"},
+    )
+    session.add(montage_project)
+    session.add(fr)
+    await session.flush()
+
+    assert unlink_scene_ref(fr, [fr], kind="character", ref_id="c01")
+    assert "c01" in hidden_ref_ids(fr)
+
+    grouped = _group_refs_for_frames(
+        [fr],
+        scenes_dir=montage_project.data_dir / "scenes",
+        chars_dir=chars,
+        items_dir=montage_project.data_dir / "items",
+        excel_by_frame={},
+        char_names={"c01": "следователь"},
+        item_names={},
+    )
+    assert grouped[1]["group_character_refs"] == []
+
+
+def test_list_ref_assets_groups_backgrounds(montage_project: Project) -> None:
+    from app.services.montage_frame_refs import list_ref_assets
+
+    bgs = montage_project.data_dir / "backgrounds"
+    bgs.mkdir(parents=True, exist_ok=True)
+    (bgs / "loc01.png").write_bytes(b"png")
+    assets = list_ref_assets(montage_project.data_dir)
+    kinds = {a["kind"] for a in assets}
+    assert "background" in kinds
+    assert any(a["code"] == "loc01" for a in assets)
+
+
+def test_shot_kind_parent_from_explicit_coverage_kind() -> None:
+    from app.services.montage_board import _shot_kind_payload
+
+    fr = Frame(
+        project_id=1,
+        number=4,
+        uuid="aa" * 12,
+        voiceover_text="x",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "coverage_kind": "parent",
+                "use_parent_still": False,
+            }
+        },
+    )
+    kind, parent_n, _sid = _shot_kind_payload(fr, [fr])
+    assert kind == "parent"
+    assert parent_n is None
+
+
+def test_shot_kind_child_on_vo_head_with_plan() -> None:
+    from app.services.montage_board import _shot_kind_payload
+
+    parent = Frame(
+        project_id=1,
+        number=1,
+        uuid="aa" * 12,
+        voiceover_text="голова",
+        status="planned",
+        attrs={
+            "shot01_action": "сидит",
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "aa" * 12,
+                "shot_id": "1-K1",
+                "план": "ОБЩИЙ",
+                "coverage_kind": "child",
+                "use_parent_still": True,
+                "coverage_parent_id": "2-K1",
+            },
+        },
+    )
+    other = Frame(
+        project_id=1,
+        number=2,
+        uuid="bb" * 12,
+        voiceover_text="кусок",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": "aa" * 12,
+                "shot_id": "2-K1",
+                "coverage_kind": "parent",
+            }
+        },
+    )
+    kind, parent_n, _sid = _shot_kind_payload(parent, [parent, other])
+    assert kind == "child"
+    assert parent_n == 2

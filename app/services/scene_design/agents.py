@@ -99,6 +99,7 @@ LIST_KEY: dict[str, str] = {
     "camera": "shot_plan",
     "action": "scenes",
     ASSEMBLER: "scenes",
+    "style": "style_arc",
 }
 
 # Поля паспорта локации, которые world больше не пишет.

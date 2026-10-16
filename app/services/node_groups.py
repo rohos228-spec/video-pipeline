@@ -32,15 +32,93 @@ from app.services.canvas_graph import (
 )
 from app.services.excel_gpt_node import sd_agent_marker
 
-_STEP_X = 380.0  # просторный шаг (без наложения нод)
-_FAN_DY = 160.0
+_STEP_X = 290.0
+SCRIPT_FRAMES_QC_GROUP_ID = "script_frames_qc"
+_SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
+    "_fw_script",
+    "_fw_check_script",
+    "_fw_action",
+    "_fw_shots",
+    "_fw_frames",
+    "_fw_qc",
+    "_fw_report",
+)
+
+
+def canvas_has_script_frames_qc(project_or_meta: Any) -> bool:
+    meta = project_or_meta
+    if meta is not None and not isinstance(meta, dict):
+        meta = getattr(meta, "meta", None)
+    if not isinstance(meta, dict):
+        return False
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        gid = str((data or {}).get("groupId") or "").split("#", 1)[0].strip()
+        if gid == SCRIPT_FRAMES_QC_GROUP_ID:
+            return True
+        nid = str(node.get("id") or "")
+        if any(nid.endswith(suf) for suf in _SCRIPT_FRAMES_QC_NODE_SUFFIXES):
+            return True
+    return False
+
+
+_SCRIPT_FRAMES_QC_GPT_SUFFIXES = tuple(
+    s for s in _SCRIPT_FRAMES_QC_NODE_SUFFIXES if s != "_fw_report"
+)
+
+
+def _nid_is_script_frames_qc_gpt(nid: str) -> bool:
+    raw = str(nid or "").strip()
+    if not raw or raw.endswith("_fw_report") or "_fw_report_" in raw:
+        return False
+    for suf in _SCRIPT_FRAMES_QC_GPT_SUFFIXES:
+        if raw.endswith(suf) or f"{suf}_" in raw:
+            return True
+    return False
+
+
+def is_script_frames_qc_gpt_node(
+    project_or_meta: Any,
+    *,
+    node_key: str | None = None,
+) -> bool:
+    nk = str(node_key or "").strip()
+    if _nid_is_script_frames_qc_gpt(nk):
+        return True
+    if nk.endswith("_fw_report") or "_fw_report_" in nk:
+        return False
+    meta = project_or_meta
+    if meta is not None and not isinstance(meta, dict):
+        meta = getattr(meta, "meta", None)
+    if not isinstance(meta, dict):
+        return False
+    from app.services.vibecode_catalog import find_canvas_node
+
+    node = find_canvas_node(meta, node_key=nk or None)
+    if not isinstance(node, dict):
+        return False
+    nid = str(node.get("id") or "")
+    if _nid_is_script_frames_qc_gpt(nid):
+        return True
+    if nid.endswith("_fw_report") or "_fw_report_" in nid:
+        return False
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    gid = str((data or {}).get("groupId") or "").split("#", 1)[0].strip()
+    return gid == SCRIPT_FRAMES_QC_GROUP_ID
+
+
+_FAN_DY = 145.0
 
 
 @dataclass(frozen=True)
 class GroupNodeSpec:
-    """Нода внутри группы (локальный ключ → параметры)."""
 
-    local_key: str  # "characters" / "assemble" — локальный id в группе
+    local_key: str
     node_type: str  # тип ноды на канвасе (excel_gpt и т.п.)
     label: str
     description: str
@@ -48,7 +126,7 @@ class GroupNodeSpec:
     dx: float  # смещение от якоря вставки (колонка)
     dy: float  # смещение по вертикали относительно центра группы
     marker: str | None = None  # data.sd_agent
-    prompt_variant: str | None = None  # файл в 05_excel_gpt (sd_<агент>)
+    prompt_variant: str | None = None
     slot_overflow: bool = False  # data.slotOverflow — вне enrich-слотов 1..5
     # Конфиг «Работы с GPT» → meta.excel_gpt_nodes[node_id] (проверки и т.п.)
     operator_config: dict[str, Any] | None = None
@@ -292,62 +370,87 @@ def _work_spec(
     )
 
 
+SCRIPT_FRAMES_QC_CHAIN_PROMPTS: dict[str, str] = {
+    "script": "scene_skeleton_agent",
+    "action": "action",
+    "shots": "scenes_to_frames_ru",
+    "qc": "shots_qc_ru",
+}
+_SCRIPT_FRAMES_QC_LEGACY_PROMPTS: dict[str, frozenset[str]] = {
+    "script": frozenset({"script_writer_ru"}),
+    "action": frozenset({"main_action_from_bits_ru"}),
+}
+
+
 def _script_frames_qc_group() -> NodeGroupDef:
-    """Сценарий (биты) → действие → сцены в кадры → промты → QC."""
     script = _work_spec(
         "script",
-        "GPT: сценарий · биты",
-        "Готовый закадр → биты по числу изменений, не 1 на ячейку",
+        "Каркас",
+        "Закадр целиком → сцены (закадр, место, персонажи, предметы, речь, сцена) "
+        "+ база персонажей и предметов",
         _STEP_X,
-        "script_writer_ru",
+        SCRIPT_FRAMES_QC_CHAIN_PROMPTS["script"],
     )
     action = _work_spec(
         "action",
-        "GPT: главное действие · по битам",
-        "Биты + закадр → нумерованная цепь сцен; текст НЕ генерирует",
+        "Площадка",
+        "Закадр сцен → стартовая площадка (зоны, предметы, проходы, люди) + меняет; "
+        "без главного действия, кадров и камеры",
         _STEP_X * 2,
-        "main_action_from_bits_ru",
+        SCRIPT_FRAMES_QC_CHAIN_PROMPTS["action"],
     )
     shots = _work_spec(
         "shots",
-        "GPT: сцены → кадры",
-        "Цепь сцен → покрытие (master + дочерние); текст НЕ генерирует",
+        "Шоты",
+        "Действие + площадка → кадры: план, ракурс, высота, старт/конец, "
+        "промт / промт_старт / промт_конец по заготовкам родителя, конца и ребёнка",
         _STEP_X * 3,
-        "scenes_to_frames_ru",
-    )
-    frames = _work_spec(
-        "frames",
-        "GPT: промты кадров · continuity",
-        "Разбивка → промт_картинки + промт_видео; сцена = цепь, не слайд-шоу",
-        _STEP_X * 4,
-        "frame_prompts_continuity_ru",
+        SCRIPT_FRAMES_QC_CHAIN_PROMPTS["shots"],
     )
     qc = _work_spec(
         "qc",
-        "GPT: QC промптов",
-        "Проверка промптов по блоку и правилам; чинит только нарушения (apply-ops)",
-        _STEP_X * 5,
-        "prompts_qc_continuity_ru",
+        "GPT: QC кадров",
+        "Проверка кадров (смысл закадра, длина куска по шагу, точный жест vs процесс)",
+        _STEP_X * 4,
+        SCRIPT_FRAMES_QC_CHAIN_PROMPTS["qc"],
+    )
+    report = GroupNodeSpec(
+        local_key="report",
+        node_type="excel_gpt",
+        label="Отчёт: кадры",
+        description=(
+            "После группы: HTML-отчёт сцен и кадров. Без GPT. "
+            "Промты картинок — шаг img_pr, не эта группа."
+        ),
+        preferred_id="n_excel_gpt_fw_report",
+        dx=_STEP_X * 5,
+        dy=0.0,
+        slot_overflow=True,
+        operator_config={
+            "outputMode": "artifact",
+            "transport": "code",
+        },
     )
     return NodeGroupDef(
         group_id="script_frames_qc",
-        title="Сценарий → промпты кадров + QC",
+        title="Каркас → площадка → шоты + QC",
         description=(
-            "Сценарий · биты → главное действие по битам → нарезка сцен "
-            "на кадры → конвертер промптов continuity → QC промптов. "
-            "Промты *_ru из 05_excel_gpt."
+            "Каркас сцен → площадка → шоты → QC полей кадров → HTML-отчёт. "
+            "Каркас и площадка — промты prompts/scene_design/ "
+            "(scene_skeleton_agent.md, action.md), шоты и QC — "
+            "templates/node_groups/script_frames_qc/."
         ),
         category="planning",
         default_after_type="plan",
-        nodes=(script, action, shots, frames, qc),
+        nodes=(script, action, shots, qc, report),
         internal_edges=(
             ("script", "action", "after"),
             ("action", "shots", "after"),
-            ("shots", "frames", "after"),
-            ("frames", "qc", "after"),
+            ("shots", "qc", "after"),
+            ("qc", "report", "after"),
         ),
         entry_keys=("script",),
-        exit_key="qc",
+        exit_key="report",
         project_meta={},
         exit_edge_kind="after",
     )
@@ -957,136 +1060,331 @@ def _wire_to_storage(nodes: list[dict], edges: list[dict], new_ids: list[str]) -
 
 
 def upgrade_script_frames_qc_graph(meta: dict[str, Any]) -> bool:
-    """Вставить action+shots в старую цепь script→frames→qc. True если изменили."""
-    group = _script_frames_qc_group()
     graph = canvas_graph_from_meta(meta)
     if graph is None:
         return False
-    nodes = [dict(n) for n in (graph.get("nodes") or []) if isinstance(n, dict)]
-    edges = [dict(e) for e in (graph.get("edges") or []) if isinstance(e, dict)]
-    by_id = {str(n.get("id") or ""): n for n in nodes if n.get("id")}
-    instances: dict[str, list[dict[str, Any]]] = {}
-    for n in nodes:
-        gid = str(((n.get("data") or {}) if isinstance(n.get("data"), dict) else {}).get("groupId") or "")
-        if gid.split("#")[0] == group.group_id:
-            instances.setdefault(gid or group.group_id, []).append(n)
-    if not instances and "n_excel_gpt_fw_script" in by_id and "n_excel_gpt_fw_frames" in by_id:
-        instances[group.group_id] = [
-            n
-            for n in nodes
-            if str(n.get("id") or "").startswith("n_excel_gpt_fw_")
-        ]
-    if not instances:
+    nodes = [dict(n) for n in graph["nodes"]]
+    edges = [dict(e) for e in graph["edges"]]
+    by_id = {str(n.get("id")): n for n in nodes}
+    check_id = "n_excel_gpt_fw_check_script"
+    shots_id = "n_excel_gpt_fw_shots"
+    frames_id = "n_excel_gpt_fw_frames"
+    qc_id = "n_excel_gpt_fw_qc"
+    if check_id not in by_id:
         return False
+    after_shots = qc_id if qc_id in by_id else frames_id
+    if after_shots not in by_id:
+        return False
+    if shots_id in by_id:
+        return False
+    direct = [
+        e
+        for e in edges
+        if str(e.get("source")) == check_id
+        and str(e.get("target")) in {frames_id, qc_id, after_shots}
+    ]
+    if not direct:
+        return False
+    check = by_id[check_id]
+    tail = by_id[after_shots]
+    cx = float((check.get("position") or {}).get("x") or 0)
+    cy = float((check.get("position") or {}).get("y") or 0)
+    fx = float((tail.get("position") or {}).get("x") or (cx + _STEP_X * 3))
+    group = _script_frames_qc_group()
+    shots_spec = next(s for s in group.nodes if s.local_key == "shots")
+    gid = str((check.get("data") or {}).get("groupId") or "script_frames_qc")
+    gtitle = str(
+        (check.get("data") or {}).get("groupTitle") or group.title
+    )
+    nodes.append(
+        {
+            "id": shots_spec.preferred_id,
+            "type": shots_spec.node_type,
+            "position": {"x": cx + (fx - cx) / 2, "y": cy},
+            "data": {
+                "label": shots_spec.label,
+                "description": shots_spec.description,
+                "slotOverflow": True,
+                "groupId": gid,
+                "groupTitle": gtitle,
+            },
+        }
+    )
+    skip_tgt = {frames_id, qc_id, after_shots}
+    edges = [
+        e
+        for e in edges
+        if not (
+            str(e.get("source")) == check_id and str(e.get("target")) in skip_tgt
+        )
+    ]
+    need = [
+        (check_id, shots_id, "pass"),
+        (shots_id, after_shots, "after"),
+    ]
+    have = {(str(e.get("source")), str(e.get("target"))) for e in edges}
+    for src, tgt, kind in need:
+        if (src, tgt) in have:
+            continue
+        e: dict[str, Any] = {
+            "id": f"e_{src}_{tgt}",
+            "source": src,
+            "target": tgt,
+            "sourceHandle": "out",
+            "targetHandle": "in",
+            "data": {"kind": kind},
+        }
+        if kind == "pass":
+            e["label"] = "Ок"
+            e["data"]["label"] = "Ок"
+        edges.append(e)
+    variants = meta.get("prompt_slot_variants")
+    variants = dict(variants) if isinstance(variants, dict) else {}
+    variants[shots_id] = {"main": "scenes_to_frames_ru"}
+    variants.pop(check_id, None)
+    meta["prompt_slot_variants"] = variants
+    egn = meta.get("excel_gpt_nodes")
+    egn = dict(egn) if isinstance(egn, dict) else {}
+    egn[shots_id] = dict(_WORK_OPERATOR_CONFIG)
+    meta["excel_gpt_nodes"] = egn
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=edges,
+    )
+    return True
 
-    specs = {s.local_key: s for s in group.nodes}
-    variants = dict(meta.get("prompt_slot_variants") or {})
-    egn = dict(meta.get("excel_gpt_nodes") or {})
+
+def drop_script_frames_qc_action_graph(meta: dict[str, Any]) -> bool:
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    action_id = "n_excel_gpt_fw_action"
+    shots_id = "n_excel_gpt_fw_shots"
+    nodes = [dict(n) for n in graph["nodes"] if str(n.get("id")) != action_id]
+    if len(nodes) == len(graph["nodes"]):
+        return False
+    by_id = {str(n.get("id")): n for n in nodes}
+    fallback = shots_id if shots_id in by_id else ""
+    edges: list[dict[str, Any]] = []
+    incoming: list[dict[str, Any]] = []
+    outgoing_targets: list[tuple[str, str]] = []
+    for e in graph["edges"]:
+        src = str(e.get("source") or "")
+        tgt = str(e.get("target") or "")
+        if src == action_id:
+            kind = str((e.get("data") or {}).get("kind") or "after")
+            if tgt and tgt != action_id:
+                outgoing_targets.append((tgt, kind))
+            continue
+        if tgt == action_id:
+            incoming.append(dict(e))
+            continue
+        edges.append(dict(e))
+    have = {(str(e.get("source")), str(e.get("target"))) for e in edges}
+    default_tgt = outgoing_targets[0][0] if outgoing_targets else fallback
+    default_kind = outgoing_targets[0][1] if outgoing_targets else "after"
+    for e in incoming:
+        src = str(e.get("source") or "")
+        tgt = default_tgt
+        if not src or not tgt or src == tgt or (src, tgt) in have:
+            continue
+        kind = str((e.get("data") or {}).get("kind") or default_kind)
+        edge: dict[str, Any] = {
+            "id": f"e_{src}_{tgt}",
+            "source": src,
+            "target": tgt,
+            "sourceHandle": "out",
+            "targetHandle": "in",
+            "data": {"kind": kind},
+        }
+        if kind == "pass":
+            edge["label"] = e.get("label") or "Ок"
+            edge["data"]["label"] = edge["label"]
+        edges.append(edge)
+        have.add((src, tgt))
+    variants = meta.get("prompt_slot_variants")
+    variants = dict(variants) if isinstance(variants, dict) else {}
+    variants.pop(action_id, None)
+    meta["prompt_slot_variants"] = variants
+    egn = meta.get("excel_gpt_nodes")
+    egn = dict(egn) if isinstance(egn, dict) else {}
+    egn.pop(action_id, None)
+    meta["excel_gpt_nodes"] = egn
+    _forget_dropped_excel_gpt_key(meta, action_id)
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=edges,
+    )
+    return True
+
+
+def drop_script_frames_qc_check_graph(meta: dict[str, Any]) -> bool:
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    check_id = "n_excel_gpt_fw_check_script"
+    shots_id = "n_excel_gpt_fw_shots"
+    script_id = "n_excel_gpt_fw_script"
+    nodes = [dict(n) for n in graph["nodes"] if str(n.get("id")) != check_id]
+    if len(nodes) == len(graph["nodes"]):
+        return False
+    fallback = shots_id if shots_id in {str(n.get("id")) for n in nodes} else ""
+    edges: list[dict[str, Any]] = []
+    incoming: list[dict[str, Any]] = []
+    for e in graph["edges"]:
+        src = str(e.get("source") or "")
+        tgt = str(e.get("target") or "")
+        if src == check_id:
+            continue
+        if tgt == check_id:
+            incoming.append(dict(e))
+            continue
+        edges.append(dict(e))
+    have = {(str(e.get("source")), str(e.get("target"))) for e in edges}
+    for e in incoming:
+        src = str(e.get("source") or "")
+        tgt = fallback
+        if not src or not tgt or src == tgt or (src, tgt) in have:
+            continue
+        if src == script_id and tgt == script_id:
+            continue
+        edges.append(
+            {
+                "id": f"e_{src}_{tgt}",
+                "source": src,
+                "target": tgt,
+                "sourceHandle": "out",
+                "targetHandle": "in",
+                "data": {"kind": "after"},
+            }
+        )
+        have.add((src, tgt))
+    variants = meta.get("prompt_slot_variants")
+    variants = dict(variants) if isinstance(variants, dict) else {}
+    variants.pop(check_id, None)
+    meta["prompt_slot_variants"] = variants
+    egn = meta.get("excel_gpt_nodes")
+    egn = dict(egn) if isinstance(egn, dict) else {}
+    egn.pop(check_id, None)
+    meta["excel_gpt_nodes"] = egn
+    _forget_dropped_excel_gpt_key(meta, check_id)
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=edges,
+    )
+    return True
+
+
+def _forget_dropped_excel_gpt_key(meta: dict[str, Any], node_id: str) -> None:
+    if str(meta.get("active_excel_gpt_node_key") or "").strip() == node_id:
+        meta.pop("active_excel_gpt_node_key", None)
+    keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
+    if node_id in keys:
+        meta["excel_gpt_completed_keys"] = [k for k in keys if k != node_id]
+
+
+def _fw_pipeline_edge(src: str, tgt: str, kind: str = "after") -> dict[str, Any]:
+    edge: dict[str, Any] = {
+        "id": f"e_{src}_{tgt}",
+        "source": src,
+        "target": tgt,
+        "sourceHandle": "out",
+        "targetHandle": "in",
+        "data": {"kind": kind},
+    }
+    if kind == "pass":
+        edge["label"] = "Ок"
+        edge["data"]["label"] = "Ок"
+    elif kind == "fail":
+        edge["label"] = "Не ок"
+        edge["data"]["label"] = "Не ок"
+    return edge
+
+
+def restore_script_frames_qc_check_and_action_graph(meta: dict[str, Any]) -> bool:
+    graph = canvas_graph_from_meta(meta)
+    if graph is None or not canvas_has_script_frames_qc(meta):
+        return False
+    script_id = "n_excel_gpt_fw_script"
+    check_id = "n_excel_gpt_fw_check_script"
+    action_id = "n_excel_gpt_fw_action"
+    shots_id = "n_excel_gpt_fw_shots"
+    nodes = [dict(n) for n in graph["nodes"]]
+    by_id = {str(n.get("id")): n for n in nodes}
+    if script_id not in by_id or shots_id not in by_id:
+        return False
+    group = _script_frames_qc_group()
+    script = by_id[script_id]
+    shots = by_id[shots_id]
+    sx = float((script.get("position") or {}).get("x") or 0)
+    sy = float((script.get("position") or {}).get("y") or 0)
+    tx = float((shots.get("position") or {}).get("x") or (sx + _STEP_X * 2))
+    gid = str((script.get("data") or {}).get("groupId") or "script_frames_qc")
+    gtitle = str((script.get("data") or {}).get("groupTitle") or group.title)
+    has_check = check_id in by_id
     changed = False
 
-    for instance_id, members in instances.items():
-        member_ids = {str(n.get("id") or "") for n in members if n.get("id")}
-        have: dict[str, str] = {}
-        for spec in group.nodes:
-            found = next(
-                (
-                    nid
-                    for nid in member_ids
-                    if nid == spec.preferred_id or nid.startswith(spec.preferred_id + "_")
-                ),
-                None,
-            )
-            if found:
-                have[spec.local_key] = found
-        if "script" not in have or "frames" not in have:
-            continue
-        if "action" in have and "shots" in have:
-            continue
-
-        script_n = by_id[have["script"]]
-        sx = float((script_n.get("position") or {}).get("x", 0.0))
-        sy = float((script_n.get("position") or {}).get("y", 0.0))
-        script_dx = specs["script"].dx
-
-        for key in ("action", "shots"):
-            if key in have:
-                continue
-            spec = specs[key]
-            nid = spec.preferred_id
-            k = 2
-            while nid in by_id:
-                nid = f"{spec.preferred_id}_{k}"
-                k += 1
-            node = {
-                "id": nid,
+    if action_id not in by_id:
+        spec = next(s for s in group.nodes if s.local_key == "action")
+        nodes.append(
+            {
+                "id": action_id,
                 "type": spec.node_type,
-                "position": {
-                    "x": sx + (spec.dx - script_dx),
-                    "y": sy + spec.dy,
-                },
+                "position": {"x": sx + (tx - sx) / 2, "y": sy},
                 "data": {
                     "label": spec.label,
                     "description": spec.description,
-                    "groupId": instance_id,
-                    "groupTitle": group.title,
                     "slotOverflow": True,
+                    "groupId": gid,
+                    "groupTitle": gtitle,
                 },
             }
-            nodes.append(node)
-            by_id[nid] = node
-            member_ids.add(nid)
-            have[key] = nid
-            if spec.prompt_variant:
-                variants[nid] = {"main": spec.prompt_variant}
-            if spec.operator_config:
-                egn[nid] = dict(spec.operator_config)
-            changed = True
-
-        for key in ("frames", "qc"):
-            if key not in have:
-                continue
-            node = by_id[have[key]]
-            spec = specs[key]
-            pos = dict(node.get("position") or {})
-            pos["x"] = sx + (spec.dx - script_dx)
-            node["position"] = pos
-
-        skip_ids = {
-            have.get("script"),
-            have.get("action"),
-            have.get("shots"),
-        }
-        frames_id = have["frames"]
-        edges = [
-            e
-            for e in edges
-            if not (
-                str(e.get("source")) in skip_ids
-                and str(e.get("target")) == frames_id
-            )
-        ]
-        wanted = (
-            (have["script"], have["action"]),
-            (have["action"], have["shots"]),
-            (have["shots"], have["frames"]),
         )
-        existing = {(str(e.get("source")), str(e.get("target"))) for e in edges}
-        for src, tgt in wanted:
-            if (src, tgt) in existing:
-                continue
-            edges.append(
-                {
-                    "id": f"e_{src}_{tgt}",
-                    "source": src,
-                    "target": tgt,
-                    "sourceHandle": "out",
-                    "targetHandle": "in",
-                    "data": {"kind": "after"},
-                }
-            )
-            existing.add((src, tgt))
-            changed = True
+        changed = True
 
+    edges = [dict(e) for e in graph["edges"]]
+    before_n = len(edges)
+    direct = {(script_id, shots_id), (check_id, shots_id)}
+    edges = [
+        e
+        for e in edges
+        if (str(e.get("source")), str(e.get("target"))) not in direct
+    ]
+    if len(edges) != before_n:
+        changed = True
+    have = {(str(e.get("source")), str(e.get("target"))) for e in edges}
+    if has_check:
+        needed: tuple[tuple[str, str, str], ...] = (
+            (script_id, check_id, "after"),
+            (check_id, action_id, "pass"),
+            (check_id, script_id, "fail"),
+            (action_id, shots_id, "after"),
+        )
+    else:
+        needed = (
+            (script_id, action_id, "after"),
+            (action_id, shots_id, "after"),
+        )
+    for src, tgt, kind in needed:
+        if (src, tgt) in have:
+            continue
+        edges.append(_fw_pipeline_edge(src, tgt, kind))
+        have.add((src, tgt))
+        changed = True
+
+    variants = dict(meta.get("prompt_slot_variants") or {})
+    egn = dict(meta.get("excel_gpt_nodes") or {})
+    spec = next(s for s in group.nodes if s.local_key == "action")
+    nid = spec.preferred_id
+    if spec.prompt_variant and nid not in variants:
+        variants[nid] = {"main": spec.prompt_variant}
+        changed = True
+    if spec.operator_config and nid not in egn:
+        egn[nid] = dict(spec.operator_config)
+        changed = True
     if not changed:
         return False
     meta["prompt_slot_variants"] = variants
@@ -1099,12 +1397,303 @@ def upgrade_script_frames_qc_graph(meta: dict[str, Any]) -> bool:
     return True
 
 
+_SCRIPT_FRAMES_QC_LEGACY_LABELS: dict[str, frozenset[str]] = {
+    "script": frozenset({"GPT: сценарий · биты"}),
+    "action": frozenset({"GPT: действие сцены"}),
+    "shots": frozenset({"GPT: сцены → кадры"}),
+}
+
+
+def relabel_script_frames_qc_chain(meta: dict[str, Any]) -> bool:
+    graph = canvas_graph_from_meta(meta)
+    if graph is None or not canvas_has_script_frames_qc(meta):
+        return False
+    group = _script_frames_qc_group()
+    specs = {
+        s.preferred_id: s
+        for s in group.nodes
+        if s.local_key in _SCRIPT_FRAMES_QC_LEGACY_LABELS
+    }
+    nodes = [dict(n) for n in graph["nodes"]]
+    variants = dict(meta.get("prompt_slot_variants") or {})
+    changed = False
+    for node in nodes:
+        spec = specs.get(str(node.get("id") or ""))
+        if spec is None:
+            continue
+        data = dict(node.get("data") or {})
+        label = str(data.get("label") or "").strip()
+        old_labels = _SCRIPT_FRAMES_QC_LEGACY_LABELS[spec.local_key]
+        if label != spec.label and (not label or label in old_labels):
+            data["label"] = spec.label
+            data["description"] = spec.description
+            node["data"] = data
+            changed = True
+        if not spec.prompt_variant:
+            continue
+        cur = variants.get(spec.preferred_id)
+        main = str(cur.get("main") or "") if isinstance(cur, dict) else ""
+        legacy = _SCRIPT_FRAMES_QC_LEGACY_PROMPTS.get(spec.local_key, frozenset())
+        if main == spec.prompt_variant or (main and main not in legacy):
+            continue
+        upd = dict(cur) if isinstance(cur, dict) else {}
+        upd["main"] = spec.prompt_variant
+        variants[spec.preferred_id] = upd
+        changed = True
+    if not changed:
+        return False
+    meta["prompt_slot_variants"] = variants
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=[dict(e) for e in graph["edges"]],
+    )
+    return True
+
+
+def script_frames_qc_needs_upgrade(meta: dict[str, Any] | None) -> bool:
+    if not isinstance(meta, dict) or not canvas_has_script_frames_qc(meta):
+        return False
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    ids = {str(n.get("id")) for n in (graph.get("nodes") or []) if isinstance(n, dict)}
+    if "n_excel_gpt_fw_script" in ids and "n_excel_gpt_fw_shots" in ids:
+        if "n_excel_gpt_fw_action" not in ids:
+            return True
+    pairs = {
+        (str(e.get("source") or ""), str(e.get("target") or ""))
+        for e in (graph.get("edges") or [])
+        if isinstance(e, dict)
+    }
+    if "n_excel_gpt_fw_shots" in ids and "n_excel_gpt_fw_qc" in ids:
+        if ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc") not in pairs:
+            return True
+    if "n_excel_gpt_fw_qc" in ids and "n_excel_gpt_fw_report" not in ids:
+        return True
+    return False
+
+
+def rewire_script_frames_qc_shots_to_qc(meta: dict[str, Any]) -> bool:
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    nodes = [dict(n) for n in graph["nodes"]]
+    edges = [dict(e) for e in graph["edges"]]
+    by_id = {str(n.get("id")): n for n in nodes}
+    shots_id = "n_excel_gpt_fw_shots"
+    frames_id = "n_excel_gpt_fw_frames"
+    qc_id = "n_excel_gpt_fw_qc"
+    if shots_id not in by_id or qc_id not in by_id:
+        return False
+    changed = False
+    drop = {(shots_id, frames_id), (frames_id, qc_id)}
+    kept: list[dict[str, Any]] = []
+    for e in edges:
+        pair = (str(e.get("source") or ""), str(e.get("target") or ""))
+        if pair in drop:
+            changed = True
+            continue
+        kept.append(e)
+    edges = kept
+    have = {(str(e.get("source")), str(e.get("target"))) for e in edges}
+    if (shots_id, qc_id) not in have:
+        edges.append(
+            {
+                "id": f"e_{shots_id}_{qc_id}",
+                "source": shots_id,
+                "target": qc_id,
+                "sourceHandle": "out",
+                "targetHandle": "in",
+                "data": {"kind": "after"},
+            }
+        )
+        changed = True
+    group = _script_frames_qc_group()
+    qc_spec = next(s for s in group.nodes if s.local_key == "qc")
+    qc = by_id[qc_id]
+    data = dict(qc.get("data") or {})
+    if data.get("label") != qc_spec.label:
+        data["label"] = qc_spec.label
+        data["description"] = qc_spec.description
+        data["groupTitle"] = group.title
+        qc["data"] = data
+        changed = True
+    variants = meta.get("prompt_slot_variants")
+    variants = dict(variants) if isinstance(variants, dict) else {}
+    cur = variants.get(qc_id)
+    if not isinstance(cur, dict) or str(cur.get("main") or "") != "shots_qc_ru":
+        variants[qc_id] = {"main": "shots_qc_ru"}
+        changed = True
+    shots_spec = next(s for s in group.nodes if s.local_key == "shots")
+    shots_n = by_id[shots_id]
+    sdata = dict(shots_n.get("data") or {})
+    if sdata.get("label") != shots_spec.label:
+        sdata["label"] = shots_spec.label
+        sdata["description"] = shots_spec.description
+        shots_n["data"] = sdata
+        changed = True
+    if not changed:
+        return False
+    meta["prompt_slot_variants"] = variants
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=edges,
+    )
+    return True
+
+
+def restore_script_frames_qc_four_node_graph(meta: dict[str, Any]) -> bool:
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    action_id = "n_excel_gpt_fw_action"
+    shots_id = "n_excel_gpt_fw_shots"
+    check_id = "n_excel_gpt_fw_check_script"
+    frames_id = "n_excel_gpt_fw_frames"
+    drop = {action_id, shots_id}
+    nodes = [n for n in graph["nodes"] if str(n.get("id")) not in drop]
+    by_id = {str(n.get("id")): n for n in nodes}
+    if action_id not in {str(n.get("id")) for n in graph["nodes"]} and (
+        shots_id not in {str(n.get("id")) for n in graph["nodes"]}
+    ):
+        return False
+    if check_id not in by_id or frames_id not in by_id:
+        return False
+    edges = [
+        e
+        for e in graph["edges"]
+        if str(e.get("source")) not in drop and str(e.get("target")) not in drop
+    ]
+    have = {(str(e.get("source")), str(e.get("target"))) for e in edges}
+    if (check_id, frames_id) not in have:
+        edges.append(
+            {
+                "id": f"e_{check_id}_{frames_id}",
+                "source": check_id,
+                "target": frames_id,
+                "sourceHandle": "out",
+                "targetHandle": "in",
+                "label": "Ок",
+                "data": {"kind": "pass", "label": "Ок"},
+            }
+        )
+    variants = meta.get("prompt_slot_variants")
+    variants = dict(variants) if isinstance(variants, dict) else {}
+    variants.pop(action_id, None)
+    variants.pop(shots_id, None)
+    meta["prompt_slot_variants"] = variants
+    egn = meta.get("excel_gpt_nodes")
+    egn = dict(egn) if isinstance(egn, dict) else {}
+    egn.pop(action_id, None)
+    egn.pop(shots_id, None)
+    meta["excel_gpt_nodes"] = egn
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=edges,
+    )
+    return True
+
+
+def upgrade_script_frames_qc_report_graph(meta: dict[str, Any]) -> bool:
+    graph = canvas_graph_from_meta(meta)
+    if graph is None:
+        return False
+    nodes = [dict(n) for n in graph["nodes"]]
+    edges = [dict(e) for e in graph["edges"]]
+    by_id = {str(n.get("id")): n for n in nodes}
+    qc_id = "n_excel_gpt_fw_qc"
+    report_id = "n_excel_gpt_fw_report"
+    if qc_id not in by_id or report_id in by_id:
+        return False
+    if not canvas_has_script_frames_qc(meta):
+        return False
+    qc = by_id[qc_id]
+    qx = float((qc.get("position") or {}).get("x") or 0)
+    qy = float((qc.get("position") or {}).get("y") or 0)
+    group = _script_frames_qc_group()
+    spec = next(s for s in group.nodes if s.local_key == "report")
+    gid = str((qc.get("data") or {}).get("groupId") or "script_frames_qc")
+    gtitle = str((qc.get("data") or {}).get("groupTitle") or group.title)
+    nodes.append(
+        {
+            "id": report_id,
+            "type": spec.node_type,
+            "position": {"x": qx + _STEP_X, "y": qy},
+            "data": {
+                "label": spec.label,
+                "description": spec.description,
+                "slotOverflow": True,
+                "groupId": gid,
+                "groupTitle": gtitle,
+            },
+        }
+    )
+    outgoing = [
+        e
+        for e in edges
+        if str(e.get("source")) == qc_id and str(e.get("target")) != report_id
+    ]
+    keep = [e for e in edges if e not in outgoing]
+    keep.append(
+        {
+            "id": f"e_{qc_id}_{report_id}",
+            "source": qc_id,
+            "target": report_id,
+            "sourceHandle": "out",
+            "targetHandle": "in",
+            "data": {"kind": "after"},
+        }
+    )
+    have = {(str(e.get("source")), str(e.get("target"))) for e in keep}
+    for old in outgoing:
+        tgt = str(old.get("target") or "")
+        if not tgt or (report_id, tgt) in have:
+            continue
+        kind = str((old.get("data") or {}).get("kind") or "after")
+        edge: dict[str, Any] = {
+            "id": f"e_{report_id}_{tgt}",
+            "source": report_id,
+            "target": tgt,
+            "sourceHandle": "out",
+            "targetHandle": "in",
+            "data": {"kind": kind},
+        }
+        if old.get("label"):
+            edge["label"] = old.get("label")
+            edge["data"]["label"] = old.get("label")
+        keep.append(edge)
+        have.add((report_id, tgt))
+    egn = meta.get("excel_gpt_nodes")
+    egn = dict(egn) if isinstance(egn, dict) else {}
+    egn[report_id] = dict(spec.operator_config or {})
+    meta["excel_gpt_nodes"] = egn
+    meta["canvas_graph"] = build_canvas_graph_payload(
+        workflow_id=int(graph.get("workflow_id") or 0),
+        nodes=nodes,
+        edges=keep,
+    )
+    return True
+
+
 async def upgrade_script_frames_qc_on_project(
     session: AsyncSession, project: Project
 ) -> bool:
-    """Обновить старую 3-нодную группу на канвасе проекта. True если писали."""
     meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
-    if not upgrade_script_frames_qc_graph(meta):
+    changed = False
+    if upgrade_script_frames_qc_graph(meta):
+        changed = True
+    if restore_script_frames_qc_check_and_action_graph(meta):
+        changed = True
+    if rewire_script_frames_qc_shots_to_qc(meta):
+        changed = True
+    if upgrade_script_frames_qc_report_graph(meta):
+        changed = True
+    if relabel_script_frames_qc_chain(meta):
+        changed = True
+    if not changed:
         return False
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1112,7 +1701,9 @@ async def upgrade_script_frames_qc_on_project(
     flag_modified(project, "meta")
     await session.flush()
     await sync_run_snapshot_from_canvas_graph(session, project, force=True)
-    logger.info("[#{}] upgrade script_frames_qc: +action +shots", project.id)
+    logger.info(
+        "[#{}] upgrade script_frames_qc: каркас → площадка → шоты → qc/report", project.id
+    )
     return True
 
 
@@ -1123,56 +1714,16 @@ async def insert_node_group(
     *,
     after: str | None = None,
 ) -> dict[str, Any]:
-    """Вшить группу нод в канвас проекта: позиции, связи, промты, флаги.
-
-    Якорь: явный ``after`` (node_key) → иначе первая нода типа
-    ``default_after_type`` → иначе хвост цепочки. Исходящие pipeline-рёбра
-    якоря перешиваются: якорь → входы группы → выход → старые цели.
-    """
     group = get_node_group(group_id)
     if group is None:
         raise ValueError(
             f"неизвестная группа {group_id!r}; есть: {sorted(all_groups())}"
         )
-
     from sqlalchemy import select
 
     from app.models import Workflow
 
     meta = dict(project.meta or {})
-    if group.group_id == "script_frames_qc" and upgrade_script_frames_qc_graph(meta):
-        from sqlalchemy.orm.attributes import flag_modified
-
-        project.meta = meta
-        flag_modified(project, "meta")
-        await session.flush()
-        await sync_run_snapshot_from_canvas_graph(session, project, force=True)
-        await session.commit()
-        added = [
-            nid
-            for nid in (
-                "n_excel_gpt_fw_action",
-                "n_excel_gpt_fw_shots",
-            )
-            if nid in {
-                str(n.get("id") or "")
-                for n in ((meta.get("canvas_graph") or {}).get("nodes") or [])
-            }
-        ]
-        logger.info(
-            "[#{}] insert_group {}: upgrade stale script_frames_qc +{}",
-            project.id,
-            group.group_id,
-            added,
-        )
-        return {
-            "group": group.group_id,
-            "after": "n_excel_gpt_fw_script",
-            "nodes": added,
-            "replaced_nodes": [],
-            "upgraded": True,
-            "edges_added": 3,
-        }
     graph = canvas_graph_from_meta(meta)
     workflow_id: int | None = None
     if graph is None:

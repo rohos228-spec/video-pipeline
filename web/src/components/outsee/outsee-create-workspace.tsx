@@ -32,6 +32,7 @@ import {
   Play,
   Search,
   Send,
+  Sparkles,
   Square,
   Trash2,
   Video,
@@ -42,6 +43,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import type { KieField, KieModelSpec } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
+import { isUnfilledAssistantPrompt } from "@/lib/gen-assistant-styles";
 import { cn } from "@/lib/utils";
 import {
   OUTSEE_ACCENT,
@@ -64,6 +66,7 @@ import {
   type OutseeMediaType,
 } from "@/lib/outsee-catalog";
 import { estimateCreatePrice } from "@/lib/create-pricing";
+import { GenAssistantPanel } from "@/components/outsee/gen-assistant-panel";
 import {
   estimateKie,
   kieChipFields,
@@ -76,6 +79,20 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   /** Опционально: «применить к проекту» — не источник настроек. */
   projectId: number | null;
+};
+
+type RefImage = { id: string; url: string; name: string; file?: File };
+
+type DraftJob = {
+  job_id: string;
+  history_id: string;
+  status: "processing";
+  media: "image";
+  model: string;
+  prompt_preview: string;
+  provider: "draft";
+  created_at: string;
+  started_at: string;
 };
 
 type HistoryItem = {
@@ -102,6 +119,28 @@ type HistoryItem = {
   reference_images?: string[] | null;
   first_frame_url?: string | null;
 };
+
+function makeRefFromFile(file: File): RefImage {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    url: URL.createObjectURL(file),
+    name: file.name,
+    file,
+  };
+}
+
+function revokeRefUrl(url: string) {
+  if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
+async function resolveReferenceUrls(refs: RefImage[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const r of refs) {
+    if (r.file) out.push(await readFileAsDataUrl(r.file));
+    else out.push(r.url);
+  }
+  return out;
+}
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -267,19 +306,23 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [lastFrameDataUrl, setLastFrameDataUrl] = useState<string | null>(null);
   const [firstFrameName, setFirstFrameName] = useState<string | null>(null);
   const [lastFrameName, setLastFrameName] = useState<string | null>(null);
-  const [referenceImages, setReferenceImages] = useState<
-    { id: string; url: string; name: string }[]
-  >([]);
+  const [referenceImages, setReferenceImages] = useState<RefImage[]>([]);
+  const [draftJobs, setDraftJobs] = useState<DraftJob[]>([]);
   const [modelOpen, setModelOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantExpanded, setAssistantExpanded] = useState(true);
+  const [appliedPrompt, setAppliedPrompt] = useState<{ text: string; ts: number } | null>(null);
   const [openChip, setOpenChip] = useState<string | null>(null);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [kieValues, setKieValues] = useState<Record<string, unknown>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const modelRef = useRef<HTMLDivElement>(null);
+  const modelRef2 = useRef<HTMLDivElement>(null);
   const firstFrameInputRef = useRef<HTMLInputElement>(null);
   const lastFrameInputRef = useRef<HTMLInputElement>(null);
   const multiRefInputRef = useRef<HTMLInputElement>(null);
+  const referenceImagesRef = useRef<RefImage[]>([]);
 
   const settingsQ = useQuery({
     queryKey: ["outsee-create-settings"],
@@ -314,12 +357,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     refetchInterval: open ? 60_000 : false,
   });
 
-  const runningJobs = createQueueQ.data?.running ?? [];
+  const runningJobs = [...draftJobs, ...(createQueueQ.data?.running ?? [])];
   const waitingJobs = createQueueQ.data?.waiting ?? [];
   const queueCount =
     (createQueueQ.data?.total_active ?? 0) ||
     runningJobs.length + waitingJobs.length;
-  const historyBusy = queueCount > 0;
+  const historyBusy = queueCount > 0 || draftJobs.length > 0;
 
   const historyQ = useQuery({
     queryKey: ["outsee-create-history", feedKind],
@@ -374,9 +417,20 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   }, [open]);
 
   useEffect(() => {
+    referenceImagesRef.current = referenceImages;
+  }, [referenceImages]);
+  useEffect(() => {
+    return () => {
+      referenceImagesRef.current.forEach((r) => revokeRefUrl(r.url));
+    };
+  }, []);
+
+  useEffect(() => {
     if (!modelOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (modelRef.current && !modelRef.current.contains(e.target as Node)) setModelOpen(false);
+      const t = e.target as Node;
+      if (modelRef.current?.contains(t) || modelRef2.current?.contains(t)) return;
+      setModelOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setModelOpen(false);
@@ -677,19 +731,27 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       const res = await fetch(item.preview_url);
       const blob = await res.blob();
       const file = new File([blob], `${item.id}.png`, { type: blob.type || "image/png" });
-      const dataUrl = await readFileAsDataUrl(file);
-      setReferenceImages((prev) => [
-        ...prev,
-        {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          url: dataUrl,
-          name: item.label || item.id,
-        },
-      ]);
+      setReferenceImages((prev) => [...prev, makeRefFromFile(file)]);
       toast.success("Референс добавлен из истории");
     } catch {
       toast.error("Не удалось взять референс из истории");
     }
+  };
+
+  const addReferenceFiles = (files: File[]) => {
+    if (maxReferences <= 0) {
+      toast.error("Эта модель не принимает референсы");
+      return;
+    }
+    const remaining = maxReferences - referenceImages.length;
+    if (remaining <= 0) {
+      toast.error(`Достигнут лимит референсов (${maxReferences})`);
+      return;
+    }
+    const newRefs = files.slice(0, remaining).map(makeRefFromFile);
+    if (!newRefs.length) return;
+    setReferenceImages((prev) => [...prev, ...newRefs]);
+    toast.success(`Добавлено ${newRefs.length} референс(ов)`);
   };
 
   const applyModelDefaults = (slug: string, kind: OutseeMediaType) => {
@@ -870,6 +932,32 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     toast.success("Случайный промпт подставлен 🎲");
   };
 
+  const applyHistoryConfig = (item: HistoryItem) => {
+    if (item.kind !== "image") return;
+    const p = (item.params ?? {}) as Record<string, unknown>;
+    const rawModel = item.model ? String(item.model) : "";
+    const candidates = [rawModel, slugToStudioId(rawModel, "image") ?? ""];
+    const slug = candidates.find((c) => c && chipOptions(c, "aspect").length > 0);
+    const effSlug = slug ?? imageSlug;
+    if (slug && slug !== imageSlug) setImageSlug(slug);
+    if (typeof p.aspect === "string" && p.aspect) {
+      setAspect(clampToOptions(p.aspect, chipOptions(effSlug, "aspect"), aspect));
+    }
+    if (typeof p.resolution === "string" && p.resolution) {
+      setResolution(clampToOptions(p.resolution, chipOptions(effSlug, "resolution"), resolution));
+    }
+    if (typeof p.detail_level === "string" && p.detail_level) {
+      const dOpts = chipOptions(effSlug, "detail");
+      if (dOpts.length) setDetail(clampToOptions(p.detail_level, dOpts, detail));
+    }
+    if (item.prompt) {
+      setPrompt(item.prompt);
+      setAppliedPrompt({ text: item.prompt, ts: Date.now() });
+    }
+    setAssistantOpen(true);
+    toast.success("Конфигурация изображения применена к панели снизу");
+  };
+
   const handleEnhancePrompt = async () => {
     const text = prompt.trim();
     if (!text) {
@@ -894,15 +982,23 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   };
 
   const createGenerate = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (arg?: string | { prompt?: string; forceSingle?: boolean; draftId?: string }) => {
+      const promptOverride = typeof arg === "string" ? arg : arg?.prompt;
+      const forceSingle = typeof arg === "object" && arg?.forceSingle === true;
+      const draftId = typeof arg === "object" ? arg?.draftId : undefined;
       const preset = STYLE_PRESETS.find((p) => p.id === stylePreset);
-      let text = prompt.trim();
+      let text = (promptOverride ?? prompt).trim();
+      if (!text) throw new Error("Введите промпт");
+      if (text.toLowerCase().includes("not example objects from the style guide")) {
+        throw new Error("Промпт не собран агентом — генерация не запущена");
+      }
       if (text && mediaType === "image" && preset?.suffix) {
         text += preset.suffix;
       }
       if (text && mediaType === "image" && negativePrompt.trim()) {
         text += `\nAvoid: ${negativePrompt.trim()}`;
       }
+      const refUrls = await resolveReferenceUrls(referenceImages);
 
       const executeSingle = async (index: number) => {
         const nonce = `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
@@ -918,13 +1014,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             if (negField) vals[negField.name] = negativePrompt.trim();
           }
           // Автоматическая передача референсов и стартовых кадров в поля модели KIE
-          const refUrls =
-            referenceImages.length > 0
-              ? referenceImages.map((r) => r.url)
-              : firstFrameDataUrl
-                ? [firstFrameDataUrl]
-                : [];
-          if (refUrls.length > 0) {
+          const kieRefUrls =
+            refUrls.length > 0 ? refUrls : firstFrameDataUrl ? [firstFrameDataUrl] : [];
+          if (kieRefUrls.length > 0) {
             const imageField = kieModel.fields.find(
               (f) =>
                 f.kind === "images" ||
@@ -937,9 +1029,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 imageField.name === "image_input" ||
                 (imageField.max_items && imageField.max_items > 1)
               ) {
-                vals[imageField.name] = refUrls.slice(0, imageField.max_items || 8);
+                vals[imageField.name] = kieRefUrls.slice(0, imageField.max_items || 8);
               } else {
-                vals[imageField.name] = refUrls[0];
+                vals[imageField.name] = kieRefUrls[0];
               }
             }
           }
@@ -962,6 +1054,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             status: res.job.status,
             queue_position: res.job.queue_position,
             provider: "kie" as const,
+            draftId,
           };
         }
         if (!text) throw new Error("Введите промпт");
@@ -1005,30 +1098,39 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 aspect,
                 resolution,
                 detail_level: imageModel.chips.includes("detail") ? detail : undefined,
-                first_frame_url: referenceImages.length > 0 ? referenceImages[0].url : firstFrameDataUrl,
+                first_frame_url: firstFrameDataUrl,
                 reference_images:
-                  referenceImages.length > 0
-                    ? referenceImages.map((r) => r.url)
-                    : firstFrameDataUrl
-                      ? [firstFrameDataUrl]
-                      : undefined,
+                  refUrls.length > 0
+                    ? refUrls
+                    : undefined,
                 project_id: projectId,
                 nonce,
                 batch_index: index,
               });
-        return { ...enqueued, provider: "outsee" as const };
+        return { ...enqueued, provider: "outsee" as const, draftId };
       };
 
-      const count = (mediaType === "image" || mediaType === "video") ? batchCount : 1;
+      const count = forceSingle
+        ? 1
+        : (mediaType === "image" || mediaType === "video")
+          ? batchCount
+          : 1;
       if (count > 1) {
         const results = await Promise.all(
           Array.from({ length: count }, (_, i) => executeSingle(i))
         );
-        return { batch: true, count, results };
+        return { batch: true, count, results, draftId };
       }
       return executeSingle(0);
     },
     onSuccess: (res) => {
+      const doneDraft =
+        res && typeof res === "object" && "draftId" in res
+          ? (res as { draftId?: string }).draftId
+          : undefined;
+      if (doneDraft) {
+        setDraftJobs((prev) => prev.filter((d) => d.job_id !== doneDraft));
+      }
       if (res && typeof res === "object" && "batch" in res && Array.isArray((res as any).results)) {
         const batchRes = (res as any).results as any[];
         const newTrackers: { provider: "outsee" | "kie"; jobId: string; historyId: string }[] = [];
@@ -1081,15 +1183,35 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
       toast.success("Шаг запущен");
       qc.invalidateQueries({ queryKey: ["outsee-create-history"] });
     },
-    onError: (e) => {
+    onError: (e, arg) => {
+      const draftId = typeof arg === "object" ? arg?.draftId : undefined;
+      if (draftId) {
+        setDraftJobs((prev) => prev.filter((d) => d.job_id !== draftId));
+      }
       toast.error(errorMessageFromUnknown(e));
     },
   });
 
-  const historyItems: HistoryItem[] = useMemo(
-    () => (historyQ.data as HistoryItem[] | undefined) ?? [],
-    [historyQ.data],
-  );
+  const historyItems: HistoryItem[] = useMemo(() => {
+    const real = (historyQ.data as HistoryItem[] | undefined) ?? [];
+    const drafts =
+      feedKind === "all" || feedKind === "image"
+        ? draftJobs.map((d) => ({
+            id: d.history_id,
+            kind: "image",
+            preview_url: null,
+            label: d.prompt_preview || "генерация",
+            project_id: null,
+            project_slug: null,
+            prompt: null,
+            status: "processing",
+            job_id: d.job_id,
+            created_at: d.created_at,
+            started_at: d.started_at,
+          }))
+        : [];
+    return [...drafts, ...real];
+  }, [historyQ.data, draftJobs, feedKind]);
 
   const selected = useMemo(() => {
     let item: HistoryItem | null = null;
@@ -1151,6 +1273,22 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
             <span className="rounded-full border border-[#22d3ee]/30 bg-[#22d3ee]/10 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-[#22d3ee]">
               проект #{projectId}
             </span>
+          )}
+          {mediaType === "image" && (
+            <button
+              type="button"
+              onClick={() => setAssistantOpen((v) => !v)}
+              title="Помощник промпта: стиль → запрос → собранный промпт"
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition",
+                assistantOpen
+                  ? "border-[#22d3ee]/50 bg-[#22d3ee]/15 text-[#22d3ee]"
+                  : "border-white/10 bg-white/[0.03] text-white/60 hover:border-[#22d3ee]/40 hover:bg-[#22d3ee]/10 hover:text-white",
+              )}
+            >
+              <Sparkles className="h-3 w-3" />
+              Помощник
+            </button>
           )}
           <a
             href={outseeCreateUrl(mediaType, activeSlug)}
@@ -1317,13 +1455,14 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       key={item.id}
                       type="button"
                       onClick={() => setSelectedId(item.id)}
+                      onDoubleClick={() => applyHistoryConfig(item)}
                       className={cn(
                         "group relative aspect-square overflow-hidden rounded-xl border bg-[#121216] transition-all duration-200",
                         active
                           ? "border-[#22d3ee] ring-2 ring-[#22d3ee]/40 shadow-[0_0_20px_rgba(34,211,238,0.25)]"
                           : "border-white/[0.08] hover:border-white/25 hover:bg-[#18181f]",
                       )}
-                      title={`${item.label}${item.project_slug ? ` · ${item.project_slug}` : ""}`}
+                      title={`${item.label}${item.project_slug ? ` · ${item.project_slug}` : ""} · двойной клик — применить конфигурацию`}
                     >
                       {item.preview_url && !pending ? (
                         isVideo ? (
@@ -1383,7 +1522,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           <div className="truncate text-[8px] text-white/45">{item.project_slug}</div>
                         )}
                       </div>
-                      {pending && (item.job_id || item.id) && (
+                      {pending && (item.job_id || item.id) && !String(item.job_id || item.id).startsWith("draft-") && (
                         <div className="absolute top-1.5 right-1.5 z-20 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
                           <button
                             type="button"
@@ -1644,8 +1783,132 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                 })}
               </div>
 
+              {/* Помощник промпта: заменяет док генерации (те же размеры) */}
+              {assistantOpen && mediaType === "image" && (
+                <GenAssistantPanel
+                  onClose={() => setAssistantOpen(false)}
+                  appliedPrompt={appliedPrompt}
+                  imageSlug={imageSlug}
+                  modelName={currentName}
+                  aspect={aspect}
+                  resolution={resolution}
+                  detail={detail}
+                  generating={createGenerate.isPending}
+                  onAspectChange={setAspect}
+                  onResolutionChange={setResolution}
+                  onDetailChange={setDetail}
+                  onOpenModelPicker={() => {
+                    setModelOpen(true);
+                    setOpenChip(null);
+                  }}
+                  onApplyPrompt={(t) => setPrompt(t)}
+                  onGenerate={(t) => {
+                    if (isUnfilledAssistantPrompt(t)) {
+                      toast.error("Промпт не собран агентом — генерация не запущена", {
+                        duration: 12_000,
+                        position: "top-center",
+                      });
+                      return;
+                    }
+                    createGenerate.mutate({ prompt: t, forceSingle: true });
+                    setPrompt("");
+                  }}
+                  onPrepareGenerate={(preview, n) => {
+                    setPrompt("");
+                    const now = new Date().toISOString();
+                    const ids: string[] = [];
+                    const extra: DraftJob[] = [];
+                    for (let i = 0; i < Math.max(1, n); i += 1) {
+                      const id = `draft-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`;
+                      ids.push(id);
+                      extra.push({
+                        job_id: id,
+                        history_id: id,
+                        status: "processing",
+                        media: "image",
+                        model: imageSlug,
+                        prompt_preview: preview.slice(0, 80) || "собираю промпт…",
+                        provider: "draft",
+                        created_at: now,
+                        started_at: now,
+                      });
+                    }
+                    setDraftJobs((prev) => [...extra, ...prev]);
+                    setSelectedId(ids[0] ?? null);
+                    return ids;
+                  }}
+                  onFailGenerate={(ids) => {
+                    if (!ids.length) return;
+                    setDraftJobs((prev) => prev.filter((d) => !ids.includes(d.job_id)));
+                  }}
+                  onGenerateAll={(texts, draftIds) => {
+                    const ready = texts
+                      .map((x) => x.trim())
+                      .filter((t) => !isUnfilledAssistantPrompt(t));
+                    const unused = (draftIds || []).slice(ready.length);
+                    if (unused.length) {
+                      setDraftJobs((prev) => prev.filter((d) => !unused.includes(d.job_id)));
+                    }
+                    if (!ready.length) {
+                      if (draftIds?.length) {
+                        setDraftJobs((prev) => prev.filter((d) => !draftIds.includes(d.job_id)));
+                      }
+                      toast.error("Промпт не собран агентом — генерация не запущена", {
+                        duration: 12_000,
+                        position: "top-center",
+                      });
+                      return;
+                    }
+                    ready.forEach((t, i) => {
+                      createGenerate.mutate({
+                        prompt: t,
+                        forceSingle: true,
+                        draftId: draftIds?.[i],
+                      });
+                    });
+                    setPrompt("");
+                  }}
+                  expanded={assistantExpanded}
+                  onExpandedChange={setAssistantExpanded}
+                  modelIcon={currentIcon}
+                  references={referenceImages}
+                  maxReferences={maxReferences}
+                  onAddReferenceFiles={(files) => addReferenceFiles(files)}
+                  onRemoveReference={(id) =>
+                    setReferenceImages((prev) => {
+                      const hit = prev.find((r) => r.id === id);
+                      if (hit) revokeRefUrl(hit.url);
+                      return prev.filter((r) => r.id !== id);
+                    })
+                  }
+                />
+              )}
+              {/* выбор модели при открытом помощнике: док скрыт, поэтому отдельный якорь у правой панели */}
+              {assistantOpen && mediaType === "image" && modelOpen && (
+                <div
+                  className="absolute bottom-full right-3 z-50 mb-2 w-[520px] lg:right-5"
+                  ref={modelRef2}
+                >
+                  <ModelPickerPopover
+                    mediaType={mediaType}
+                    selectedSlug={activeSlug}
+                    kieModels={kieModels}
+                    creditUsd={kieCatalogQ.data?.credit_usd ?? 0.005}
+                    onSelect={(slug) => {
+                      if (mediaType === "image") setImageSlug(slug);
+                      else if (mediaType === "video") setVideoSlug(slug);
+                      else setAudioSlug(slug);
+                      if (!slug.startsWith("kie:")) applyModelDefaults(slug, mediaType);
+                      setModelOpen(false);
+                    }}
+                  />
+                </div>
+              )}
               <div
-                className="min-w-0 flex-1 rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] ring-1 ring-white/10"
+                className={cn(
+                  "min-w-0 flex-1 rounded-2xl border border-white/15 bg-[#121216]/95 backdrop-blur-2xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] ring-1 ring-white/10",
+                  assistantOpen && mediaType === "image" && "hidden",
+                )}
               >
                 {/* KIE: вложения для аудио/видео (голос, донор движения, аудиофайл) */}
                 {kieActive &&
@@ -1688,26 +1951,9 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                           multiple
                           accept="image/png,image/jpeg,image/webp"
                           className="hidden"
-                          onChange={async (e) => {
+                          onChange={(e) => {
                             const files = Array.from(e.target.files || []);
-                            if (!files.length) return;
-                            const remaining = maxReferences - referenceImages.length;
-                            if (remaining <= 0) {
-                              toast.error(`Достигнут лимит референсов (${maxReferences})`);
-                              return;
-                            }
-                            const toAdd = files.slice(0, remaining);
-                            const newRefs: { id: string; url: string; name: string }[] = [];
-                            for (const f of toAdd) {
-                              const dataUrl = await readFileAsDataUrl(f);
-                              newRefs.push({
-                                id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                                url: dataUrl,
-                                name: f.name,
-                              });
-                            }
-                            setReferenceImages((prev) => [...prev, ...newRefs]);
-                            toast.success(`Добавлено ${newRefs.length} референс(ов)`);
+                            if (files.length) addReferenceFiles(files);
                             e.target.value = "";
                           }}
                         />
@@ -1744,7 +1990,12 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                             </span>
                             <button
                               type="button"
-                              onClick={() => setReferenceImages((prev) => prev.filter((r) => r.id !== ref.id))}
+                              onClick={() =>
+                                setReferenceImages((prev) => {
+                                  revokeRefUrl(ref.url);
+                                  return prev.filter((r) => r.id !== ref.id);
+                                })
+                              }
                               className="ml-0.5 text-white/40 transition hover:text-red-400"
                               title="Удалить"
                             >
@@ -2314,7 +2565,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
                       }
                       onClick={() => {
                         if (createGenerate.isPending) return;
-                        createGenerate.mutate();
+                        createGenerate.mutate(undefined);
                       }}
                       className={cn(
                         "inline-flex min-w-[145px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#22d3ee] to-[#0ea5e9] px-4 py-2 text-[12px] font-extrabold uppercase tracking-wider text-black shadow-[0_0_20px_rgba(34,211,238,0.3)] transition-all duration-200 hover:brightness-110 hover:shadow-[0_0_25px_rgba(34,211,238,0.45)] disabled:opacity-40 disabled:pointer-events-none",
@@ -2545,6 +2796,7 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
           </div>
         </div>
       )}
+
     </div>
   );
 }

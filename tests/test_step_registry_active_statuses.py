@@ -3,7 +3,6 @@
 import pytest
 from app.models import ProjectStatus
 from app.services.step_registry import running_statuses, running_statuses_list
-import app.worker as worker_module
 
 
 def test_running_statuses_contains_all_critical_stages():
@@ -42,11 +41,6 @@ def test_running_statuses_contains_all_critical_stages():
     # Сборка и публикация
     assert ProjectStatus.assembling in statuses
     assert ProjectStatus.publishing in statuses
-
-
-def test_worker_active_statuses_matches_registry():
-    """Проверяет, что воркер app/worker.py использует единый реестр."""
-    assert set(worker_module.ACTIVE_STATUSES) == running_statuses()
 
 
 def test_running_statuses_list_is_sorted():

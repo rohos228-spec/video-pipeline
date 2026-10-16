@@ -30,6 +30,26 @@ def test_detect_character_registry_prompt() -> None:
     assert _is_scene_grammar_prompt("scene_grammar_unified_agent_v1", None)
 
 
+def test_detect_character_registry_personaji_db_and_07_07() -> None:
+    header = (
+        "ПРОМТ ДЛЯ АГЕНТА РЕЕСТРА ПЕРСОНАЖЕЙ (DB / apply-ops)\n\n"
+        "Ты — агент реестра персонажей проекта.\n"
+    )
+    assert _is_character_registry_prompt("personajiDB", header)
+    assert _is_character_registry_prompt(
+        "агент по созданию персонажей 07.07.txt", header
+    )
+    long_tail = ("правило.\n" * 120) + (
+        "Агент: character_registry_db_agent_v2_web_verified\n"
+    )
+    assert len(long_tail) > 800
+    assert _is_character_registry_prompt("personajiDB", long_tail)
+    assert not _is_character_registry_prompt(
+        "заполнение эксель строк 3 этап (3).txt",
+        "Создать внутренний character_registry.\n",
+    )
+
+
 def test_detect_script_writer_prompt() -> None:
     assert _is_script_writer_prompt("script_writer_ru.md", None)
     assert _is_script_writer_prompt(None, "Ты — сценарист закадра.\n")
@@ -50,15 +70,16 @@ def test_script_frames_qc_group_batches_of_30() -> None:
         _is_script_frames_qc_group_node,
         _script_frames_qc_footer_kind,
     )
-    from app.services.apply_ops_batches import SCRIPT_FRAMES_QC_UNITS_PER_BATCH
+    from app.services.apply_ops_batches import SCRIPT_FRAMES_QC_PARALLEL_BATCHES
 
-    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 30
+    assert SCRIPT_FRAMES_QC_PARALLEL_BATCHES == 10
     for key, kind in (
         ("n_excel_gpt_fw_script", "bits"),
         ("n_excel_gpt_fw_action", "action_chain"),
         ("n_excel_gpt_fw_shots", "shots_coverage"),
         ("n_excel_gpt_fw_frames", "prompts"),
-        ("n_excel_gpt_fw_qc", "prompts"),
+        ("n_excel_gpt_fw_qc", "shots_qc"),
+        ("n_excel_gpt_fw_report", "report"),
     ):
         assert _is_script_frames_qc_group_node(None, None, key)
         assert _script_frames_qc_footer_kind(None, None, key) == kind
@@ -100,6 +121,13 @@ def test_detect_frame_and_qc_prompt() -> None:
     assert not _is_frame_prompts_prompt("script_writer_ru.md", None)
     assert not _is_frame_prompts_prompt("scenes_to_frames_ru.md", None)
     assert not _is_qc_prompts_prompt("scenes_to_frames_ru.md", None)
+    assert not _is_qc_prompts_prompt("shots_qc_ru.md", None)
+    from app.orchestrator.steps.enrich_xlsx import _is_shots_qc_node
+
+    assert _is_shots_qc_node("shots_qc_ru.md", None, "n_excel_gpt_fw_qc")
+    assert not _is_shots_qc_node(
+        "prompts_qc_continuity_ru.md", None, "n_excel_gpt_fw_qc"
+    )
     qc_body = (
         "Нода: excel_gpt. ПОСЛЕ агента-конвертера\n"
         "(frame_prompts_continuity) и ДО генерации картинок.\n"
@@ -262,3 +290,109 @@ async def test_hero_falls_back_to_xlsx_when_entity_empty(
     assert cfg is not None
     assert cfg["source"] == "xlsx"
     assert cfg["characters"][0]["name"] == "ИзExcel"
+
+
+def test_character_registry_payload_uses_action_not_old_ids() -> None:
+    from app.services.db_frames_context import (
+        build_character_registry_db_context,
+        character_registry_missing_visual_roles,
+    )
+
+    frames = [
+        SimpleNamespace(
+            number=1,
+            uuid="aa" * 12,
+            voiceover_text="Сергей Ткач самый страшный парадокс",
+            attrs={
+                "main_action": "следователь садится к рабочему столу",
+                "place": "кабинет следователя",
+                "characters": "c01",
+            },
+        ),
+        SimpleNamespace(
+            number=2,
+            uuid="bb" * 12,
+            voiceover_text="ДНК-экспертиза",
+            attrs={"shot01_action": "эксперт-криминалист открывает конверт"},
+        ),
+        SimpleNamespace(
+            number=3,
+            uuid="cc" * 12,
+            voiceover_text="дети указали на Ткача",
+            attrs={"main_action": "дети остановились у ограды"},
+        ),
+    ]
+    ctx = build_character_registry_db_context(
+        project_id=63, slug="tkach", frames=frames
+    )
+    assert ctx["characters"] == []
+    assert ctx["frames"][0]["действие"] == "следователь садится к рабочему столу"
+    assert ctx["frames"][0]["персонажи"] == ""
+    assert ctx["frames"][0]["место"] == "кабинет следователя"
+    assert ctx["frames"][1]["действие"].startswith("эксперт-криминалист")
+
+    echo_cards = [{"id": "c01", "имя": "Сергей Ткач"}]
+    missing = character_registry_missing_visual_roles(frames, echo_cards)
+    assert "следователь" in missing
+    assert "эксперт" in missing
+
+    full_cards = [
+        {"id": "c01", "имя": "Сергей Ткач"},
+        {"id": "c05", "имя": "следователь"},
+        {"id": "c06", "имя": "эксперт-криминалист"},
+    ]
+    assert character_registry_missing_visual_roles(frames, full_cards) == []
+
+
+def test_character_registry_roles_ignore_vo_inflection_and_named_people() -> None:
+    from app.services.db_frames_context import character_registry_missing_visual_roles
+
+    frames = [
+        SimpleNamespace(
+            number=65,
+            uuid="aa" * 12,
+            attrs={
+                "main_action": (
+                    "следователь раскладывает фотографии. "
+                    "(Эти разговоры не превращали Банди в эксперта.)"
+                )
+            },
+        ),
+        SimpleNamespace(
+            number=89,
+            uuid="bb" * 12,
+            attrs={"main_action": "судья Эдвард Коуарт занимает место"},
+        ),
+        SimpleNamespace(
+            number=93,
+            uuid="cc" * 12,
+            attrs={"main_action": "журналист включает камеру"},
+        ),
+        SimpleNamespace(
+            number=47,
+            uuid="dd" * 12,
+            attrs={"main_action": "журналисты и фотографы собираются у входа"},
+        ),
+    ]
+    named_cards = [
+        {"id": "c01", "имя": "Тед Банди"},
+        {"id": "c09", "имя": "следователь"},
+        {
+            "id": "c12",
+            "имя": "Эдвард Коуарт",
+            "одежда": "черная судейская мантия",
+        },
+        {
+            "id": "c02",
+            "имя": "Энн Рул",
+            "одежда": "одежда писательницы и журналистки",
+        },
+    ]
+    assert character_registry_missing_visual_roles(frames, named_cards) == []
+
+    only_hero = [{"id": "c01", "имя": "Тед Банди"}]
+    missing = character_registry_missing_visual_roles(frames, only_hero)
+    assert "эксперт" not in missing
+    assert "следователь" in missing
+    assert "судья" in missing
+    assert "журналист" in missing

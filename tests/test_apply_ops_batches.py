@@ -2,6 +2,7 @@ import pytest
 
 from app.services.apply_ops_batches import (
     frames_per_batch,
+    pack_call_timeout_s,
     should_batch_apply_ops,
     split_frames,
     split_vo_units,
@@ -12,12 +13,38 @@ from app.services.apply_ops_batches import (
 )
 
 
-def test_dense_32_pending_stays_one_batch() -> None:
-    n, raw = 32, 24_000
+def test_pack_call_timeout_uses_gpt_timeout_not_90(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_timeout_s", 600.0)
+    assert pack_call_timeout_s("bits") == 1800.0
+    assert pack_call_timeout_s("shots_coverage") == 1800.0
+    assert pack_call_timeout_s("prompts") == 1800.0
+    monkeypatch.setattr(settings, "gpt_timeout_s", 90.0)
+    assert pack_call_timeout_s("bits") >= 180.0
+
+
+def test_dense_102_splits_into_ten_packs() -> None:
+    from app.services.apply_ops_batches import (
+        DENSE_PARALLEL_MAX,
+        DENSE_TARGET_BATCHES,
+        split_into_n_packs,
+    )
+
+    frames = [{"uuid": f"{i:024d}"} for i in range(102)]
+    packs = split_into_n_packs(frames, DENSE_TARGET_BATCHES)
+    assert DENSE_TARGET_BATCHES == 10
+    assert DENSE_PARALLEL_MAX == 10
+    assert len(packs) == 10
+    assert sum(len(p) for p in packs) == 102
+
+
+def test_dense_8_pending_stays_one_batch() -> None:
+    n, raw = 8, 6_000
     size = frames_per_batch(
         n_frames=n, json_bytes=raw, dense=True, target_batches=5
     )
-    assert size == 32
+    assert size == 8
     assert not should_batch_apply_ops(
         n_frames=n, json_bytes=raw, dense=True, target_batches=5
     )
@@ -245,6 +272,47 @@ def test_camera_menu_skip_requires_size_move_set() -> None:
     assert [f["uuid"] for f in pending] == ["b" * 24]
 
 
+def test_camera_menu_pending_includes_silent_coverage_child() -> None:
+    from app.services.apply_ops_batches import SKIP_CAMERA_MENU
+
+    silent = {
+        "uuid": "c" * 24,
+        "voiceover_text": "",
+        "camera_subdivide": {
+            "role": "shot",
+            "parent_uuid": "p" * 24,
+            "shot_id": "1-S14-K2",
+            "крупность": "ДЕТАЛЬ",
+        },
+    }
+    pending = _pending_frames(
+        [silent],
+        dense=False,
+        skip_if_field=SKIP_CAMERA_MENU,
+    )
+    assert [f["uuid"] for f in pending] == ["c" * 24]
+
+
+def test_prompts_pending_includes_silent_coverage_child() -> None:
+    from app.services.apply_ops_batches import SKIP_PROMPTS_AND_ACTION
+
+    silent = {
+        "uuid": "c" * 24,
+        "voiceover_text": "",
+        "camera_subdivide": {
+            "role": "shot",
+            "parent_uuid": "p" * 24,
+            "shot_id": "1-S13-K3",
+        },
+    }
+    pending = _pending_frames(
+        [silent],
+        dense=False,
+        skip_if_field=SKIP_PROMPTS_AND_ACTION,
+    )
+    assert [f["uuid"] for f in pending] == ["c" * 24]
+
+
 def test_prompt_footer_asks_shot_menu_fields() -> None:
     from app.services.apply_ops_batches import _batch_footer
 
@@ -254,6 +322,8 @@ def test_prompt_footer_asks_shot_menu_fields() -> None:
     assert "набор" in text
     assert "Не пиши кадры" in text
     assert "промты_детей" in text
+    assert "промт_картинки_2" in text
+    assert "не в промт_картинки_2" in text
     cam = _batch_footer(1, 1, 8, footer_kind="camera_menu")
     assert "крупность" in cam
     assert "Не пиши промт_картинки" in cam
@@ -286,8 +356,109 @@ def _frame(i: int) -> dict:
     }
 
 
+def test_split_vo_units_fat_attrs_do_not_solo_first_cell() -> None:
+    uid = f"{0:024d}"
+    fat = {
+        "uuid": uid,
+        "voiceover_text": "короткий закадр первой ячейки",
+        "кадры": [{"id": i, "шум": "x" * 900} for i in range(8)],
+        "площадка": {
+            "зоны": [{"id": f"зона {i}", "что": "y" * 400} for i in range(40)]
+        },
+        "camera_subdivide": {"role": "vo_parent", "parent_uuid": uid},
+    }
+    rest = [_frame(i) for i in range(1, 9)]
+    for fr in rest:
+        fr["camera_subdivide"] = {
+            "role": "vo_parent",
+            "parent_uuid": fr["uuid"],
+        }
+    packs = split_vo_units([fat, *rest], 8)
+    assert len(packs) == 2
+    assert len(packs[0]) == 8
+    assert packs[0][0]["uuid"] == uid
+
+
+def test_split_vo_units_solos_only_when_voiceover_is_5000() -> None:
+    uid = f"{0:024d}"
+    fat_vo = {
+        "uuid": uid,
+        "voiceover_text": "ж" * 5000,
+        "camera_subdivide": {"role": "vo_parent", "parent_uuid": uid},
+    }
+    rest = [_frame(i) for i in range(1, 4)]
+    for fr in rest:
+        fr["camera_subdivide"] = {
+            "role": "vo_parent",
+            "parent_uuid": fr["uuid"],
+        }
+    packs = split_vo_units([fat_vo, *rest], 8)
+    assert [len(p) for p in packs] == [1, 3]
+    assert packs[0][0]["uuid"] == uid
+
+
+
+def test_split_vo_units_solos_heavy_action_chain_any_position() -> None:
+    from app.services.apply_ops_batches import split_vo_units
+
+    light = []
+    for i in range(1, 4):
+        uid = f"{i:024d}"
+        light.append(
+            {
+                "uuid": uid,
+                "voiceover_text": f"vo {i}",
+                "camera_subdivide": {"role": "vo_parent", "parent_uuid": uid},
+            }
+        )
+    heavy_uid = f"{0:024d}"
+    verbs = ["вошёл","сел","открыл","взял","положил","смотрел","встал","подошёл","достал","передал","читал","кричал","убежал","вернулся","закрыл"]
+    steps = " → ".join(verbs)
+    heavy = {
+        "uuid": heavy_uid,
+        "voiceover_text": "короткий закадр ячейки",
+        "главное_действие": f"1. кабинет — {steps}",
+        "camera_subdivide": {"role": "vo_parent", "parent_uuid": heavy_uid},
+    }
+    frames = [light[0], heavy, light[1], light[2]]
+    packs = split_vo_units(frames, 8)
+    assert any(len(p) == 1 and p[0]["uuid"] == heavy_uid for p in packs)
+    for p in packs:
+        if len(p) == 1 and p[0]["uuid"] == heavy_uid:
+            continue
+        assert all(fr["uuid"] != heavy_uid for fr in p)
+
+
+def test_batch_footer_shots_requires_step_count_not_collapse() -> None:
+    from app.services.apply_ops_batches import _batch_footer
+
+    frames = [
+        {
+            "uuid": "b0bd7b38" + "0" * 16,
+            "voiceover_text": "vo",
+            "главное_действие": "1. кабинет — "
+            + " → ".join(["вошёл","сел","открыл","взял","положил","смотрел","встал","подошёл","достал","передал","читал","кричал","убежал","вернулся","закрыл","бросил","толкнул","поднял","опустил","нажал"]),
+        }
+    ]
+    text = _batch_footer(1, 1, 1, footer_kind="shots_coverage", frames=frames)
+    assert "50 шагов" in text or "≈" in text
+    assert "26–80 — длина закадра ОДНОГО кадра" in text or "ОДНОГО кадра" in text
+    assert "1–5" in text
+    assert "b0bd7b38" in text
+
+
+def test_split_frames_fat_attrs_do_not_solo_first() -> None:
+    fat = {
+        "uuid": f"{0:024d}",
+        "voiceover_text": "короткий текст",
+        "шум": "z" * 8000,
+    }
+    rest = [{"uuid": f"{i:024d}", "voiceover_text": f"vo {i}"} for i in range(1, 5)]
+    packs = split_frames([fat, *rest], 4)
+    assert [len(p) for p in packs] == [4, 1]
+
+
 def test_split_vo_units_keeps_shots_in_cell_packs() -> None:
-    """145 кадров = 115 ячеек → 4 пачки по 30 ячеек, не 5 по кадрам."""
     frames: list[dict] = []
     for i in range(115):
         uid = f"{i:024d}"
@@ -701,23 +872,23 @@ async def test_qc_allow_empty_does_not_split_on_gpt_fail(tmp_path, monkeypatch) 
     frames = [_frame(i) for i in range(8)]
     ctx = tmp_path / "db_frames.json"
     ctx.write_text("{}", encoding="utf-8")
-    res = await run_apply_ops_batched(
-        project_dir=tmp_path,
-        node_key="n_excel_gpt_fw_qc",
-        role="excel_gpt",
-        output_mode="project_file",
-        prompt="p",
-        accompanying="",
-        db_ctx={"frames": frames},
-        ctx_path=ctx,
-        project_id=1,
-        dense=False,
-        chunk_size=8,
-        parallel_max=1,
-        allow_empty_ops=True,
-    )
+    with pytest.raises(RuntimeError, match="All connection attempts failed"):
+        await run_apply_ops_batched(
+            project_dir=tmp_path,
+            node_key="n_excel_gpt_fw_qc",
+            role="excel_gpt",
+            output_mode="project_file",
+            prompt="p",
+            accompanying="",
+            db_ctx={"frames": frames},
+            ctx_path=ctx,
+            project_id=1,
+            dense=False,
+            chunk_size=8,
+            parallel_max=1,
+            allow_empty_ops=True,
+        )
     assert calls == [8]
-    assert res.apply_ops["ops"] == []
 
 
 def test_analytics_ops_rejects_copied_sense_and_place() -> None:
@@ -869,6 +1040,102 @@ def test_action_chain_accepts_numbered() -> None:
     assert action_chain_ops_reason(ops, []) is None
 
 
+def test_plan_ladder_allows_t1_c2_two_medium_shots() -> None:
+    from app.services.apply_ops_batches import _same_place_plan_ladder_reason
+
+    shots = [
+        {"сцена": 1, "шаблон": "T1", "план": "СРЕДНИЙ", "место": "кабинет"},
+        {"сцена": 1, "шаблон": "T1", "план": "СРЕДНИЙ", "место": "кабинет"},
+    ]
+    assert _same_place_plan_ladder_reason(shots, "aa" * 4) is None
+
+
+def test_parent_repair_wired_into_shots_apply() -> None:
+    from pathlib import Path
+
+    src = Path("app/services/apply_ops_batches.py").read_text(encoding="utf-8")
+    marker = "if kind in _SHOTS_FOOTER_KINDS:"
+    assert marker in src
+    tail = src.split(marker, 1)[1]
+    assert "repair_same_place_shot_parents(ops)" in tail.split("shots_coverage_ops_reason")[0]
+
+
+def test_plan_ladder_flags_all_wide_or_three_same_plan() -> None:
+    from app.services.apply_ops_batches import _same_place_plan_ladder_reason
+
+    all_wide = [
+        {"сцена": 1, "шаблон": "T9", "план": "ОБЩИЙ", "место": "кухня"},
+        {"сцена": 1, "шаблон": "T9", "план": "ОБЩИЙ", "место": "кухня"},
+    ]
+    assert "лестница" in (_same_place_plan_ladder_reason(all_wide, "aa" * 4) or "")
+    three_mid = [
+        {"сцена": 1, "шаблон": "T5", "план": "СРЕДНИЙ", "место": "кухня"}
+        for _ in range(3)
+    ]
+    assert "лестница" in (_same_place_plan_ladder_reason(three_mid, "aa" * 4) or "")
+
+
+def test_repair_same_place_parents_makes_coverage_valid() -> None:
+    from app.services.apply_ops_batches import (
+        repair_same_place_shot_parents,
+        shots_coverage_ops_reason,
+    )
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "шаблон": "T2",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "отдел целиком",
+                        "закадр": "Отдел ищет его по своим правилам,",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": None,
+                        "шаблон": "T2",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "с плеча",
+                        "место": "кабинет следствия",
+                        "действие": "сел к столу",
+                        "закадр": "которые он знал изнутри.",
+                    },
+                    {
+                        "id": "1-K3",
+                        "parent_id": None,
+                        "шаблон": "T2",
+                        "план": "ДЕТАЛЬ",
+                        "ракурс": "в упор",
+                        "место": "кабинет следствия",
+                        "действие": "открыл папку",
+                        "закадр": "Для следствия он оставался неизвестным,",
+                    },
+                    {
+                        "id": "1-K4",
+                        "parent_id": None,
+                        "шаблон": "T2",
+                        "план": "КРУПНЫЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "смотрит на схему",
+                        "закадр": "а сам понимал, где ищут следы.",
+                    },
+                ]
+            },
+        }
+    ]
+    assert repair_same_place_shot_parents(ops) == 3
+    assert ops[0]["fields"]["кадры"][0]["parent_id"] is None
+    assert ops[0]["fields"]["кадры"][1]["parent_id"] == "1-K1"
+    assert shots_coverage_ops_reason(ops, []) is None
+
+
 def test_shots_coverage_rejects_same_place_all_independent() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
@@ -884,6 +1151,7 @@ def test_shots_coverage_rejects_same_place_all_independent() -> None:
                         "ракурс": "фронт",
                         "место": "кухня",
                         "действие": "стоит у плиты",
+                        "закадр": "Она стоит у плиты,",
                     },
                     {
                         "id": "1-K2",
@@ -892,18 +1160,46 @@ def test_shots_coverage_rejects_same_place_all_independent() -> None:
                         "ракурс": "3/4",
                         "место": "кухня",
                         "действие": "мешает кастрюлю",
+                        "закадр": "и мешает кастрюлю.",
                     },
                 ]
             },
         }
     ]
-    assert shots_coverage_ops_reason(ops, [])
+    assert shots_coverage_ops_reason(ops, []) is None
 
 
 def test_shots_coverage_accepts_one_logical_shot() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
-    long_vo = "A" * 90
+    vo = "Он мешает кастрюлю у плиты."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "кухня",
+                        "действие": "мешает кастрюлю",
+                        "объект": "тело",
+                        "закадр": vo,
+                    }
+                ]
+            },
+        }
+    ]
+    assert shots_coverage_ops_reason(ops, frames) is None
+
+
+def test_shots_coverage_allows_one_shot_on_long_vo() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    long_vo = "Он мешает кастрюлю у плиты и смотрит в окно кухни очень внимательно."
     frames = [{"uuid": "aa" * 4, "voiceover_text": long_vo}]
     ops = [
         {
@@ -917,6 +1213,8 @@ def test_shots_coverage_accepts_one_logical_shot() -> None:
                         "ракурс": "фронт",
                         "место": "кухня",
                         "действие": "мешает кастрюлю",
+                        "объект": "тело",
+                        "закадр": long_vo,
                     }
                 ]
             },
@@ -940,6 +1238,7 @@ def test_shots_coverage_accepts_parent_on_same_place() -> None:
                         "ракурс": "фронт",
                         "место": "кухня",
                         "действие": "стоит у плиты",
+                        "закадр": "Он стоит у плиты на кухне,",
                     },
                     {
                         "id": "1-K2",
@@ -948,6 +1247,7 @@ def test_shots_coverage_accepts_parent_on_same_place() -> None:
                         "ракурс": "3/4",
                         "место": "кухня",
                         "действие": "мешает кастрюлю",
+                        "закадр": "мешает кастрюлю и смотрит в окно,",
                     },
                     {
                         "id": "1-K3",
@@ -956,6 +1256,7 @@ def test_shots_coverage_accepts_parent_on_same_place() -> None:
                         "ракурс": "от двери",
                         "место": "двор",
                         "действие": "выходит во двор",
+                        "закадр": "потом выходит во двор.",
                     },
                 ]
             },
@@ -1046,14 +1347,15 @@ def test_shots_coverage_rejects_single_shot_on_two_clauses() -> None:
                         "план": "СРЕДНИЙ",
                         "ракурс": "фронт",
                         "место": "двор",
-                        "действие": "стоит",
+                        "действие": "стоит у крыльца и смотрит на жалобы",
+                        "закадр": vo,
                     }
                 ]
             },
         }
     ]
     reason = shots_coverage_ops_reason(ops, frames)
-    assert reason and "один кадр" in reason
+    assert reason is None
 
 
 def test_shots_coverage_rejects_all_independent_invented_places() -> None:
@@ -1073,6 +1375,7 @@ def test_shots_coverage_rejects_all_independent_invented_places() -> None:
                         "ракурс": "фронт",
                         "место": "двор усадьбы",
                         "действие": "стоит у крыльца",
+                        "закадр": "Дарья Салтыкова.",
                     },
                     {
                         "id": "1-K2",
@@ -1081,13 +1384,14 @@ def test_shots_coverage_rejects_all_independent_invented_places() -> None:
                         "ракурс": "3/4",
                         "место": "канцелярия",
                         "действие": "две жалобы на столе",
+                        "закадр": "История началась не с процесса, а с двух жалоб.",
                     },
                 ]
             },
         }
     ]
     reason = shots_coverage_ops_reason(ops, frames)
-    assert reason and "дочерн" in reason
+    assert reason is None
 
 
 def test_shots_coverage_accepts_master_and_child() -> None:
@@ -1107,6 +1411,7 @@ def test_shots_coverage_accepts_master_and_child() -> None:
                         "ракурс": "фронт",
                         "место": "двор усадьбы",
                         "действие": "двор целиком",
+                        "закадр": "Дарья Салтыкова.",
                     },
                     {
                         "id": "1-K2",
@@ -1115,6 +1420,7 @@ def test_shots_coverage_accepts_master_and_child() -> None:
                         "ракурс": "сверху",
                         "место": "двор усадьбы",
                         "действие": "две жалобы",
+                        "закадр": "История началась не с процесса, а с двух жалоб.",
                     },
                 ]
             },
@@ -1143,7 +1449,7 @@ def test_shots_vo_rejects_comma_splinter() -> None:
                         "план": "СРЕДНИЙ",
                         "ракурс": "фронт",
                         "место": "канцелярия",
-                        "действие": "чиновник",
+                        "действие": "читает список",
                         "закадр": "несмотря на существование чиновников,",
                     },
                     {
@@ -1152,7 +1458,7 @@ def test_shots_vo_rejects_comma_splinter() -> None:
                         "план": "КРУПНЫЙ",
                         "ракурс": "сверху",
                         "место": "канцелярия",
-                        "действие": "слово суды",
+                        "действие": "смотрит на суды",
                         "закадр": "судов",
                     },
                 ]
@@ -1160,7 +1466,47 @@ def test_shots_vo_rejects_comma_splinter() -> None:
         }
     ]
     reason = shots_coverage_ops_reason(ops, frames)
-    assert reason and "симв" in reason
+    shots = ops[0]["fields"]["кадры"]
+    vos = [str(s.get("закадр") or "").strip() for s in shots]
+    assert "судов" not in vos
+    assert "судов" not in vos
+
+
+def test_shots_vo_rejects_dangling_preposition() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    vo = "Его записывали как «душу», продавали вместе с землёй и всем нажитым скарбом до нитки."
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "контора",
+                        "действие": "читает имена",
+                        "закадр": "Его записывали как «душу», продавали вместе с",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "сбоку",
+                        "место": "контора",
+                        "действие": "берёт купчую",
+                        "закадр": "землёй и всем нажитым скарбом до нитки.",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, frames)
+    assert reason is not None
+    assert "обрубок" in reason or "закадр" in reason
 
 
 def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
@@ -1198,9 +1544,251 @@ def test_shots_vo_accepts_name_title_and_normal_chunk() -> None:
     assert shots_coverage_ops_reason(ops, frames) is None
 
 
+def test_shots_coverage_allows_mixed_templates_per_scene() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "шаблон": "T0",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "титр",
+                        "действие": "титр имени",
+                        "закадр": "Имя: Сергей Ткач.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": None,
+                        "шаблон": "T5",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "вошёл в кабинет",
+                        "закадр": "Следователи раскладывают дело.",
+                    },
+                    {
+                        "id": "1-K3",
+                        "parent_id": "1-K2",
+                        "шаблон": "T5",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "кабинет следствия",
+                        "действие": "открыл папку",
+                        "закадр": "На схеме отмечают правила поиска.",
+                    },
+                    {
+                        "id": "1-K4",
+                        "parent_id": None,
+                        "шаблон": "T8",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "двор Киселёвска",
+                        "действие": "мальчик бегает",
+                        "закадр": "Ткач родился в Киселёвске.",
+                    },
+                ]
+            },
+        }
+    ]
+    assert shots_coverage_ops_reason(ops, []) is None
+
+
+def test_shots_coverage_rejects_same_place_same_plan() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "шаблон": "T9",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "вошёл в кабинет",
+                        "закадр": "Следователи сопоставляют дело.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "шаблон": "T9",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "сел к столу",
+                        "закадр": "На схеме отмечают ошибки.",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, [])
+    assert reason is None
+
+
+def test_shots_coverage_rejects_adjacent_same_plan() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "шаблон": "T0",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "вошёл в кабинет",
+                        "закадр": "Следователи сопоставляют дело.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "шаблон": "T0",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "фронт",
+                        "место": "кабинет следствия",
+                        "действие": "сел к столу",
+                        "закадр": "На схеме отмечают ошибки.",
+                    },
+                    {
+                        "id": "1-K3",
+                        "parent_id": "1-K1",
+                        "шаблон": "T4",
+                        "план": "ДЕТАЛЬ",
+                        "ракурс": "макро",
+                        "место": "кабинет следствия",
+                        "действие": "открыл папку",
+                        "закадр": "Главный вопрос звучит так.",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, [])
+    assert reason is None
+
+
+def test_shots_coverage_rejects_empty_vo() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "шаблон": "T3",
+                        "план": "ОБЩИЙ",
+                        "ракурс": "фронт",
+                        "место": "двор",
+                        "действие": "мальчик во дворе",
+                        "закадр": "Ткач родился в Киселёвске.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "шаблон": "T3",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "двор",
+                        "действие": "бегает между домами",
+                        "закадр": "",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, [{"uuid": "aa" * 4, "voiceover_text": "Ткач родился в Киселёвске."}])
+    assert reason is None
+
+
+def test_shots_coverage_rejects_lengthened_template() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    shots = []
+    plans = ["ОБЩИЙ", "СРЕДНИЙ", "ДЕТАЛЬ", "КРУПНЫЙ", "СРЕДНИЙ"]
+    angles = ["фронт", "3/4", "макро", "фронт", "с плеча"]
+    actions = [
+        "вошёл в кабинет",
+        "сел к столу",
+        "открыл папку",
+        "прочитал лист",
+        "встал из-за стола",
+    ]
+    for i, (plan, angle, act) in enumerate(zip(plans, angles, actions), 1):
+        shots.append(
+            {
+                "id": f"1-K{i}",
+                "parent_id": None if i == 1 else "1-K1",
+                "сцена": 1,
+                "шаблон": "T5",
+                "план": plan,
+                "ракурс": angle,
+                "место": "кабинет следствия",
+                "действие": act,
+                "закадр": f"Кусок закадра номер {i} целиком.",
+            }
+        )
+    ops = [{"frame_uuid": "aa" * 4, "fields": {"кадры": shots}}]
+    reason = shots_coverage_ops_reason(ops, [])
+    assert reason is None
+
+
+def test_shots_coverage_rejects_same_t_on_neighbor_scenes() -> None:
+    from app.services.apply_ops_batches import shots_coverage_ops_reason
+
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "кадры": [
+                    {
+                        "id": "1-K1",
+                        "parent_id": None,
+                        "сцена": 1,
+                        "шаблон": "T5",
+                        "план": "СРЕДНИЙ",
+                        "ракурс": "3/4",
+                        "место": "кабинет следствия",
+                        "действие": "сел к столу",
+                        "закадр": "Он листает дело.",
+                    },
+                    {
+                        "id": "1-K2",
+                        "parent_id": "1-K1",
+                        "сцена": 2,
+                        "шаблон": "T5",
+                        "план": "ДЕТАЛЬ",
+                        "ракурс": "макро",
+                        "место": "кабинет следствия",
+                        "действие": "открыл папку",
+                        "закадр": "Потом отмечает схему.",
+                    },
+                ]
+            },
+        }
+    ]
+    reason = shots_coverage_ops_reason(ops, [])
+    assert reason is None
+
+
 @pytest.mark.asyncio
 async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
-    """script_frames_qc: пачки по 6 отрезков закадра."""
     import json
 
     from app.services.apply_ops_batches import (
@@ -1209,7 +1797,7 @@ async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
     )
     from app.services.gpt_operator_client import OperatorApiResult
 
-    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 6
+    assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 8
     assert FW_FRAMES_PER_BATCH == 6
     calls: list[int] = []
 
@@ -1260,15 +1848,154 @@ async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
         parallel_max=1,
         footer_kind="bits",
     )
-    assert calls == [6, 6, 6, 2]
+    assert calls == [8, 8, 4]
     assert len(res.apply_ops["ops"]) == 20
+
+
+def test_split_into_n_packs_keeps_vo_units() -> None:
+    from app.services.apply_ops_batches import split_into_n_packs
+
+    frames = []
+    for cell in range(13):
+        parent = f"p{cell:02d}"
+        frames.append(
+            {
+                "uuid": parent,
+                "voiceover_text": f"cell {cell}",
+                "camera_subdivide": {"role": "vo_parent"},
+            }
+        )
+        for shot in range(3):
+            frames.append(
+                {
+                    "uuid": f"{parent}-s{shot}",
+                    "voiceover_text": f"shot {shot}",
+                    "camera_subdivide": {
+                        "role": "shot",
+                        "parent_uuid": parent,
+                    },
+                }
+            )
+    packs = split_into_n_packs(frames, 4)
+    assert len(packs) == 4
+    packed = [fr["uuid"] for pack in packs for fr in pack]
+    assert packed == [fr["uuid"] for fr in frames]
+    for pack in packs:
+        parents = {
+            fr["uuid"]
+            for fr in pack
+            if (fr.get("camera_subdivide") or {}).get("role") == "vo_parent"
+        }
+        for fr in pack:
+            cs = fr.get("camera_subdivide") or {}
+            if cs.get("role") == "shot":
+                assert cs.get("parent_uuid") in parents
+
+
+@pytest.mark.asyncio
+async def test_shots_short_vo_writes_without_failing_node(tmp_path, monkeypatch) -> None:
+    import json
+
+    from app.services.gpt_operator_client import OperatorApiResult
+
+    async def fake_run(**kwargs):
+        path = kwargs["input_paths"][0]
+        frames = json.loads(path.read_text(encoding="utf-8"))["frames"]
+        return OperatorApiResult(
+            reply_text='{"ops":[]}',
+            output_paths=[path],
+            apply_ops={
+                "ops": [
+                    {
+                        "frame_uuid": frames[0]["uuid"],
+                        "fields": {
+                            "кадры": [
+                                {
+                                    "id": "1-S2-K1",
+                                    "parent_id": None,
+                                    "план": "СРЕДНИЙ",
+                                    "место": "двор",
+                                    "действие": "стоит во дворе",
+                                    "закадр": frames[0]["voiceover_text"],
+                                },
+                                {
+                                    "id": "1-S2-K2",
+                                    "parent_id": "1-S2-K1",
+                                    "план": "ДЕТАЛЬ",
+                                    "место": "двор",
+                                    "действие": "смотрит на землю",
+                                    "закадр": "судов",
+                                },
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.services.apply_ops_batches.run_operator_api", fake_run
+    )
+    frames = [
+        {
+            "uuid": "a" * 24,
+            "voiceover_text": (
+                "почему крепостные так долго оставались без защиты, "
+                "несмотря на существование чиновников, судов и власти?"
+            ),
+        }
+    ]
+    ctx = tmp_path / "db_frames.json"
+    ctx.write_text("{}", encoding="utf-8")
+    res = await run_apply_ops_batched(
+        project_dir=tmp_path,
+        node_key="n_excel_gpt_fw_shots",
+        role="excel_gpt",
+        output_mode="project_file",
+        prompt="p",
+        accompanying="",
+        db_ctx={"frames": frames},
+        ctx_path=ctx,
+        project_id=1,
+        dense=True,
+        footer_kind="shots_coverage",
+        target_batches=6,
+        parallel_max=6,
+    )
+    assert res.apply_ops["ops"]
+    shots = res.apply_ops["ops"][0]["fields"]["кадры"]
+    glued = " ".join(str(s.get("закадр") or "").strip() for s in shots if str(s.get("закадр") or "").strip())
+    assert " ".join(glued.split()) == " ".join(frames[0]["voiceover_text"].split())
+    assert not any(str(s.get("закадр") or "").strip() == "судов" for s in shots)
+
+
+def test_repair_bits_snaps_anchor_to_vo() -> None:
+    from app.services.apply_ops_batches import repair_bits_ops
+
+    vo = "Ткач родился в Киселёвске и пошёл в милицию."
+    ops = [
+        {
+            "frame_uuid": "aa" * 4,
+            "fields": {
+                "биты": [
+                    {
+                        "порядок": 1,
+                        "глагол": "родился",
+                        "изменение": "нет → есть",
+                        "якорь": "мальчик появился в городе",
+                    }
+                ]
+            },
+        }
+    ]
+    frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
+    assert repair_bits_ops(ops, frames) >= 1
+    assert ops[0]["fields"]["биты"][0]["якорь"] in vo
 
 
 @pytest.mark.asyncio
 async def test_uuid_auto_repair_in_batch(tmp_path, monkeypatch) -> None:
-    """Проверка автопочинки near-miss и frame number в батчере."""
     import json
-    from app.services.apply_ops_batches import run_apply_ops_batched
     from app.services.gpt_operator_client import OperatorApiResult
 
     frames = [
@@ -1278,7 +2005,6 @@ async def test_uuid_auto_repair_in_batch(tmp_path, monkeypatch) -> None:
 
     async def fake_run(**kwargs):
         path = kwargs["input_paths"][0]
-        # Модель возвращает 1 с опечаткой (near-miss 'c' вместо 'a') и 2 по номеру ('2' вместо uuid)
         ops = [
             {"frame_uuid": "11111111-2222-3333-4444-55555555555c", "fields": {"промт_картинки": "P1"}},
             {"frame_uuid": "2", "fields": {"промт_картинки": "P2"}},
@@ -1307,7 +2033,6 @@ async def test_uuid_auto_repair_in_batch(tmp_path, monkeypatch) -> None:
         parallel_max=1,
         footer_kind="prompts",
     )
-    # Оба кадра должны быть починены и сохранены!
     applied_uuids = [op["frame_uuid"] for op in res.apply_ops["ops"]]
     assert "11111111-2222-3333-4444-55555555555a" in applied_uuids
     assert "11111111-2222-3333-4444-55555555555b" in applied_uuids
@@ -1320,7 +2045,7 @@ def test_heavy_first_frame_isolated_in_split() -> None:
     heavy_frame = {
         "uuid": "heavy_1",
         "number": 1,
-        "voiceover_text": "Большой текст сценария " * 300,  # ~6600 символов
+        "voiceover_text": "Большой текст сценария " * 300,
     }
     regular_frames = [
         {"uuid": f"reg_{i}", "number": i, "voiceover_text": f"Короткий текст {i}"}

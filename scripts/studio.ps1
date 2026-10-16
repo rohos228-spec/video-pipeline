@@ -430,16 +430,24 @@ function Invoke-StudioRestorePromptsAside {
 }
 
 function Invoke-StudioRecoverPromptsFromAllStashes {
-    # Безопасный возврат prompts/*: aside + studio stash (идемпотентно).
+    # Не блокировать [1]: в репо могут быть сотни stash, обход минутный.
+    # Полный recover всё равно идёт в фоне в app.main._startup_maintenance.
     $helperPy = Join-Path $Root "scripts\return_prompts_from_stash.py"
-    if (Test-Path -LiteralPath $helperPy) {
-        $pyArgs = @(Get-StudioPython)
-        if ($pyArgs -and $pyArgs.Count -ge 1) {
-            $exe = $pyArgs[0]
-            $prefix = if ($pyArgs.Count -gt 1) { $pyArgs[1..($pyArgs.Count - 1)] } else { @() }
-            & $exe @prefix $helperPy --repo $Root --startup-once --json 2>&1 | Out-Null
+    if (-not (Test-Path -LiteralPath $helperPy)) { return }
+    $pyArgs = @(Get-StudioPython)
+    if (-not $pyArgs -or $pyArgs.Count -lt 1) { return }
+    $exe = $pyArgs[0]
+    $argList = @()
+    if ($pyArgs.Count -gt 1) { $argList += $pyArgs[1..($pyArgs.Count - 1)] }
+    $argList += @("`"$helperPy`"", "--repo", "`"$Root`"", "--startup-once", "--json")
+    try {
+        $p = Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+        if ($null -eq $p) { return }
+        if (-not $p.WaitForExit(8000)) {
+            Write-StudioMsg "Возврат prompts из stash пропущен (долго) - запускаю студию." "DarkGray"
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         }
-    }
+    } catch { }
 }
 
 function Invoke-StudioStart {
@@ -466,6 +474,54 @@ function Test-StudioPromptsDirty {
     return ($porcelain.Count -gt 0)
 }
 
+function Invoke-StudioGitLogged {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string[]]$GitArgs
+    )
+    Write-StudioMsg "==> $Label" "Cyan"
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $out = & git -C $Root @GitArgs 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    foreach ($line in @($out)) {
+        if ($null -ne $line -and "$line".Length -gt 0) {
+            Write-StudioMsg "  $line"
+        }
+    }
+    if ($null -eq $code) { $code = 1 }
+    if ([int]$code -ne 0) {
+        Write-StudioMsg "ОШИБКА: $Label (git exit $code)." "Red"
+        return $false
+    }
+    return $true
+}
+
+function Invoke-StudioGitFetch {
+    $env:GIT_TERMINAL_PROMPT = "0"
+    $branch = $script:StudioBranch
+    $attempts = 4
+    $delaySec = 4
+    for ($n = 1; $n -le $attempts; $n++) {
+        $gitArgs = @("fetch", "origin", $branch)
+        if ($n -gt 1) {
+            Write-StudioMsg "Повтор git fetch ($n/$attempts) через $delaySec с..." "Yellow"
+            Start-Sleep -Seconds $delaySec
+            $delaySec = $delaySec * 2
+            $gitArgs = @("-c", "http.version=HTTP/1.1") + $gitArgs
+        }
+        if (Invoke-StudioGitLogged "git fetch origin $branch" $gitArgs) {
+            return $true
+        }
+    }
+    Write-StudioMsg "ОШИБКА: git fetch не удался. Проверьте интернет и доступ к GitHub." "Red"
+    return $false
+}
+
 function Invoke-StudioGitStash {
     # Returns stash ref (e.g. stash@{0}) when a stash was created; otherwise $null.
     # On failure returns the string "FAILED" so caller can abort if prompts are dirty.
@@ -481,8 +537,7 @@ function Invoke-StudioGitStash {
     $msg = "studio: автосохранение перед обновлением $stamp"
     Write-StudioMsg "==> Сохраняю локальные изменения в git stash..." "Cyan"
     Write-StudioMsg "    (data/, logs/, .env, prompts/ в .gitignore - не затрагиваются reset)" "DarkGray"
-    git -C $Root stash push -u -m $msg 2>&1 | ForEach-Object { Write-StudioMsg $_ }
-    if ($LASTEXITCODE -ne 0) {
+    if (-not (Invoke-StudioGitLogged "git stash push -u" @("stash", "push", "-u", "-m", $msg))) {
         Write-StudioMsg "ОШИБКА: git stash не удался." "Red"
         return "FAILED"
     }
@@ -517,19 +572,21 @@ function Invoke-StudioGitUpdate {
         return $false
     }
     Write-StudioMsg "==> обновление с сохранённой ветки: origin/$StudioBranch" "Cyan"
-    Write-StudioMsg "==> git fetch origin $StudioBranch" "Cyan"
-    git -C $Root fetch origin $StudioBranch 2>&1 | ForEach-Object { Write-StudioMsg $_ }
-    if ($LASTEXITCODE -ne 0) {
-        Write-StudioMsg "ОШИБКА: git fetch не удался. Проверьте интернет и доступ к GitHub." "Red"
+    if (-not (Invoke-StudioGitFetch)) {
         return $false
     }
-    Write-StudioMsg "==> git reset --hard origin/$StudioBranch" "Cyan"
-    git -C $Root reset --hard "origin/$StudioBranch" 2>&1 | ForEach-Object { Write-StudioMsg $_ }
-    if ($LASTEXITCODE -ne 0) {
+    if ($env:VP_HARD_RESET_ALLOWED -eq "0") {
+        Write-StudioMsg "СТОП: локальные правки не сохранены (STUDIO.cmd), жёсткий сброс git запрещён. Обновление пропущено." "Red"
+        return $false
+    }
+    if (-not (Invoke-StudioGitLogged "git reset --hard origin/$StudioBranch" @("reset", "--hard", "origin/$StudioBranch"))) {
         Write-StudioMsg "ОШИБКА: git reset не удался." "Red"
         return $false
     }
-    git -C $Root checkout -B $StudioBranch "origin/$StudioBranch" 2>&1 | ForEach-Object { Write-StudioMsg $_ }
+    if (-not (Invoke-StudioGitLogged "git checkout -B $StudioBranch" @("checkout", "-B", $StudioBranch, "origin/$StudioBranch"))) {
+        Write-StudioMsg "ОШИБКА: git checkout не удался." "Red"
+        return $false
+    }
     $head = (git -C $Root rev-parse --short HEAD 2>$null).Trim()
     Write-StudioMsg "OK: код обновлён до $head (origin/$StudioBranch)" "Green"
     return $true
@@ -843,7 +900,7 @@ function Invoke-StudioUpdateAndStart {
         if (-not (Invoke-StudioRepairWeb)) { return $false }
     }
     Stop-StudioBackend
-    # После git reset в памяти может остаться старый studio.ps1 — стартуем файл с диска.
+    # После git reset в памяти может остаться старый studio.ps1 - стартуем файл с диска.
     $ps1 = if ($PSCommandPath) { $PSCommandPath } else { Join-Path $Root "scripts\studio.ps1" }
     $exe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell.exe" }
     Write-StudioMsg "Запуск с диска (не из памяти старого лаунчера)" "DarkGray"
@@ -1063,7 +1120,7 @@ function Show-StudioMenu {
     Write-Host ""
     Write-Host "  [1] Запустить студию (бэкенд API + веб-интерфейс http://127.0.0.1:8765)"
     Write-Host "  [2] Остановить всё (бэкенд :8765)"
-    Write-Host "  [3] Открыть внешний браузер с ИИ (Chrome CDP :29229 — опционально)"
+    Write-Host "  [3] Открыть внешний браузер с ИИ (Chrome CDP :29229 - опционально)"
     Write-Host "  [4] Обновить и запустить (ветка $brLabel + зависимости + запуск)"
     Write-Host "  [5] Ветка ПК ($brLabel): сменить"
     Write-Host "  [6] Починить установку (pip, web, Playwright, FFmpeg)"

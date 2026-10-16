@@ -9,7 +9,6 @@ from pathlib import Path
 # Корень api-tracker
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Дефолтные настройки Supabase (зашиты как fallback для автономного .exe)
 DEFAULT_SUPABASE_URL = "https://jubhhajwknvhlntmwpoj.supabase.co"
 DEFAULT_SUPABASE_KEY = "sb_publishable_qxcebL4M8lXRj0s2qF4ZLA_VkHhp3a-"
 
@@ -38,16 +37,23 @@ def _load_env_file() -> None:
 _load_env_file()
 
 
+def cloud_enabled() -> bool:
+    return os.environ.get("API_TRACKER_CLOUD_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
 def get_supabase_url() -> str:
+    if not cloud_enabled():
+        return ""
     return os.environ.get("SUPABASE_URL", "").strip() or DEFAULT_SUPABASE_URL
 
 
 def get_supabase_key() -> str:
+    if not cloud_enabled():
+        return ""
     return os.environ.get("SUPABASE_KEY", "").strip() or os.environ.get("SUPABASE_ANON_KEY", "").strip() or DEFAULT_SUPABASE_KEY
 
 
 def get_appdata_dir() -> Path:
-    """Получить надежный глобальный путь к папке настроек пользователя."""
     if sys.platform == "win32":
         app_data = os.environ.get("APPDATA")
         if app_data:

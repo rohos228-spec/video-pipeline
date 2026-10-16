@@ -26,6 +26,7 @@ from app.services.plan_shot2 import (
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     disk_has_shot2_video,
     find_shot2_image,
+    is_parent_still_filename,
     read_shot2_columns,
 )
 
@@ -44,7 +45,11 @@ def newest_frame_image_path(scenes_dir: Path, frame_number: int) -> Path | None:
     candidates = [
         p
         for p in scenes_dir.glob(f"frame_{frame_number:03d}_*.*")
-        if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} and "_s2_" not in p.name
+        if (
+            p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+            and "_s2_" not in p.name
+            and not is_parent_still_filename(p.name)
+        )
     ]
     if not candidates:
         return None
@@ -80,13 +85,22 @@ def disk_has_valid_shot2_image(scenes_dir: Path, frame_number: int) -> bool:
     return path is not None and is_valid_scene_image(path)
 
 
-def frame_needs_shot1_image(fr: Frame, scenes_dir: Path) -> bool:
-    """Кадр должен пройти outsee: есть промт, нет валидного PNG на диске."""
-    from app.services.vo_shot_expand import is_shot_child
+def frame_image_prompt_text(
+    fr: Frame, frames: list[Frame] | None = None
+) -> str:
+    from app.services.vo_shot_expand import effective_image_prompt
 
-    if is_shot_child(fr):
+    return effective_image_prompt(fr, frames)
+
+
+def frame_needs_shot1_image(
+    fr: Frame, scenes_dir: Path, frames: list[Frame] | None = None
+) -> bool:
+    if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
         return False
-    if is_skippable_empty_prompt(fr.image_prompt or ""):
+    from app.services.vo_shot_expand import is_coverage_leftover
+
+    if is_coverage_leftover(fr):
         return False
     if fr.status is FrameStatus.image_approved:
         return False
@@ -123,12 +137,12 @@ async def scan_missing_frames(
     scenes_dir = project.data_dir / "scenes"
     missing: list[int] = []
     total_with_prompt = 0
-    from app.services.vo_shot_expand import is_shot_child
+    from app.services.vo_shot_expand import is_coverage_leftover
 
     for fr in frames:
-        if is_shot_child(fr):
+        if is_coverage_leftover(fr):
             continue
-        if is_skippable_empty_prompt(fr.image_prompt or ""):
+        if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
             continue
         total_with_prompt += 1
         if not disk_has_valid_frame_image(scenes_dir, fr.number):

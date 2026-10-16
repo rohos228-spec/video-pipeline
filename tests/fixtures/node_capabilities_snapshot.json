@@ -1,0 +1,1801 @@
+{
+ "animation_prompts": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "project_database"
+   ],
+   "executor": "make_animation_prompts.run → animation_prompt_gpt.parse_animation_reply",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "animation_prompts",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "frame_prompts",
+   "volatile_attachment_names": true
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "project_database"
+   ],
+   "executor": "make_animation_prompts.run → animation_prompt_gpt.parse_animation_reply",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "animation_prompts",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "frame_prompts",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": true,
+   "write_authority": "existing worker only"
+  }
+ },
+ "assemble": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "assemble.run → assembly.assemble",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "assemble",
+   "phases": [
+    "inputs",
+    "processing",
+    "subtitles",
+    "verifying",
+    "verified",
+    "failed",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "assembly",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "assemble.run → assembly.assemble",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "assemble",
+   "phases": [
+    "inputs",
+    "processing",
+    "subtitles",
+    "verifying",
+    "verified",
+    "failed",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "assembly",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "audio": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "provider_generation",
+    "local_file",
+    "frame_timing",
+    "artifact_row"
+   ],
+   "executor": "generate_audio.run → elevenlabs_api",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "audio",
+   "phases": [
+    "reserved",
+    "submitted",
+    "verifying",
+    "verified",
+    "alignment",
+    "failed",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "audio",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "provider_generation",
+    "local_file",
+    "frame_timing",
+    "artifact_row"
+   ],
+   "executor": "generate_audio.run → elevenlabs_api",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "audio",
+   "phases": [
+    "reserved",
+    "submitted",
+    "verifying",
+    "verified",
+    "alignment",
+    "failed",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "audio",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "enrich_1": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "enrich_1",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "enrich_1",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "enrich_2": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "enrich_2",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "enrich_2",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "enrich_3": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "enrich_3",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "enrich_3",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "enrich_4": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "enrich_4",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "enrich_4",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "enrich_5": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "enrich_5",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "enrich_5",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "excel_gpt": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "project_database"
+   ],
+   "executor": "enrich_xlsx.run",
+   "managed": true,
+   "native_json_retry": true,
+   "node_type": "excel_gpt",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "structured",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "project_database"
+   ],
+   "executor": "enrich_xlsx.run",
+   "managed": true,
+   "native_json_retry": true,
+   "node_type": "excel_gpt",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "structured",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "hero": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_hero.run → generate_image_with_retries (Outsee / Kie)",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "hero",
+   "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "image",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_hero.run → generate_image_with_retries (Outsee / Kie)",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "hero",
+   "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "image",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "image_prompts": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "project_database",
+    "local_xlsx",
+    "local_checkpoint"
+   ],
+   "executor": "generate_image_prompts.run → xlsx_step_runners.run_img_pr_xlsx",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "image_prompts",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "frame_prompts",
+   "volatile_attachment_names": true
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "project_database",
+    "local_xlsx",
+    "local_checkpoint"
+   ],
+   "executor": "generate_image_prompts.run → xlsx_step_runners.run_img_pr_xlsx",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "image_prompts",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "frame_prompts",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": true,
+   "write_authority": "existing worker only"
+  }
+ },
+ "images": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_images.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "images",
+   "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "image",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_images.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "images",
+   "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "image",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "items": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_items.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "items",
+   "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "image",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_items.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "items",
+   "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "image",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "music": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_music.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "music",
+   "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "audio",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_music.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "music",
+   "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "audio",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "not_a_node": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "not_a_node",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "not_a_node",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "plan": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "project_database",
+    "local_xlsx",
+    "hitl_request"
+   ],
+   "executor": "make_plan.run → xlsx_step_runners.run_plan_xlsx",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "plan",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "human_approval"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "project_text",
+   "volatile_attachment_names": true
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "project_database",
+    "local_xlsx",
+    "hitl_request"
+   ],
+   "executor": "make_plan.run → xlsx_step_runners.run_plan_xlsx",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "plan",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "human_approval"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "project_text",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": true,
+   "write_authority": "existing worker only"
+  }
+ },
+ "publish": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "external_accounts"
+   ],
+   "executor": "publish.run",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "publish",
+   "phases": [
+    "input_validation",
+    "dry_run",
+    "blocked"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "publication",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "external_accounts"
+   ],
+   "executor": "publish.run",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "publish",
+   "phases": [
+    "input_validation",
+    "dry_run",
+    "blocked"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "publication",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "scene_design": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "scene_design",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "human_review"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [],
+   "executor": "",
+   "managed": false,
+   "native_json_retry": true,
+   "node_type": "scene_design",
+   "phases": [
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "excel_gpt_chain",
+   "result_kind": "unsupported",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "script": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "project_database",
+    "local_xlsx",
+    "hitl_request"
+   ],
+   "executor": "make_script.run → xlsx_step_runners.run_script_xlsx",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "script",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "human_approval"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "project_text",
+   "volatile_attachment_names": true
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "project_database",
+    "local_xlsx",
+    "hitl_request"
+   ],
+   "executor": "make_script.run → xlsx_step_runners.run_script_xlsx",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "script",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "human_approval"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "project_text",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": true,
+   "write_authority": "existing worker only"
+  }
+ },
+ "sd_agent": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "project_database",
+    "local_checkpoint",
+    "local_file"
+   ],
+   "executor": "scene_design.run → scene_contracts.verify_scene_agent → pkg:scene_design",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "sd_agent",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "structured",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "project_database",
+    "local_checkpoint",
+    "local_file"
+   ],
+   "executor": "scene_design.run → scene_contracts.verify_scene_agent → pkg:scene_design",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "sd_agent",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "structured",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "sd_assemble": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "project_database",
+    "local_checkpoint",
+    "local_file"
+   ],
+   "executor": "scene_design.run_assemble → scene_contracts.verify_scene_assembly → pkg:scene_design",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "sd_assemble",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "structured",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "project_database",
+    "local_checkpoint",
+    "local_file"
+   ],
+   "executor": "scene_design.run_assemble → scene_contracts.verify_scene_assembly → pkg:scene_design",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "sd_assemble",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "structured",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "sfx_gen": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "local_file",
+    "project_database"
+   ],
+   "executor": "generate_sfx.run → sfx_gen.generate_sfx_files → elevenlabs_api/local_synth",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "sfx_gen",
+   "phases": [
+    "running",
+    "generating",
+    "writing",
+    "verifying",
+    "verified",
+    "failed",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "audio",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "local_file",
+    "project_database"
+   ],
+   "executor": "generate_sfx.run → sfx_gen.generate_sfx_files → elevenlabs_api/local_synth",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "sfx_gen",
+   "phases": [
+    "running",
+    "generating",
+    "writing",
+    "verifying",
+    "verified",
+    "failed",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "audio",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "sfx_plan": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "project_database",
+    "local_file",
+    "local_checkpoint"
+   ],
+   "executor": "plan_sfx.run → sfx_plan.plan_sfx_events → ai_result_io.text_job",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "sfx_plan",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "structured",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "project_database",
+    "local_file",
+    "local_checkpoint"
+   ],
+   "executor": "plan_sfx.run → sfx_plan.plan_sfx_events → ai_result_io.text_job",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "sfx_plan",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "structured",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ },
+ "split": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "project_database",
+    "local_xlsx"
+   ],
+   "executor": "split_frames.run → xlsx_step_runners.run_split_xlsx",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "split",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "frame_set",
+   "volatile_attachment_names": true
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "retry_profile",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "project_database",
+    "local_xlsx"
+   ],
+   "executor": "split_frames.run → xlsx_step_runners.run_split_xlsx",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "split",
+   "phases": [
+    "running",
+    "parse",
+    "validate",
+    "apply",
+    "commit",
+    "verify"
+   ],
+   "profile_compatible": true,
+   "recovery_continuation": "none",
+   "result_kind": "frame_set",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": true,
+   "write_authority": "existing worker only"
+  }
+ },
+ "videos": {
+  "asdict": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_videos.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "videos",
+   "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "video",
+   "volatile_attachment_names": false
+  },
+  "contract": {
+   "actions": [
+    "read_events",
+    "read_contract",
+    "wait",
+    "human_review",
+    "retry_same",
+    "finish"
+   ],
+   "approval": [
+    "scope",
+    "budget",
+    "provider_profile"
+   ],
+   "arbitrary_shell_code_paths": false,
+   "effects": [
+    "provider_job",
+    "local_file",
+    "artifact_row"
+   ],
+   "executor": "generate_videos.run → kie_http",
+   "managed": true,
+   "native_json_retry": false,
+   "node_type": "videos",
+   "phases": [
+    "reserved",
+    "submitted",
+    "queued",
+    "running",
+    "completed",
+    "downloading",
+    "verifying",
+    "verified",
+    "failed",
+    "cancelled",
+    "unknown"
+   ],
+   "profile_compatible": false,
+   "recovery_continuation": "none",
+   "result_kind": "video",
+   "semantic_quality_verified": false,
+   "volatile_attachment_names": false,
+   "write_authority": "existing worker only"
+  }
+ }
+}

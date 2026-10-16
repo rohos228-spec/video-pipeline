@@ -4,12 +4,17 @@
  * сам отдаёт фронт + API из одного origin.
  */
 
+import "./api-operator-token";
 import type {
   ArtifactDTO,
   ExcelHeroCharacter,
   FrameDTO,
   MontageBoardDTO,
+  MontageBoardFrame,
   MontageBoardMeta,
+  MontageBoardParentRef,
+  MontageImproveReport,
+  MontageRefAsset,
   GenerationConfigPreset,
   GenerationConfigPresetSettings,
   HITLDTO,
@@ -143,7 +148,7 @@ export interface LibraryConfigDTO {
   created_at: string;
 }
 
-async function http<T>(
+export async function http<T>(
   path: string,
   options: RequestInit = {},
   timeoutMs = 30_000,
@@ -176,6 +181,9 @@ async function http<T>(
         detail = JSON.parse(detail as string);
       } catch {
         // оставляем как text
+      }
+      if (res.status === 401 && typeof detail === "object" && (detail as { detail?: unknown }).detail === "login required") {
+        window.dispatchEvent(new Event("vp-auth-required"));
       }
       throw new ApiError(res.status, detail);
     }
@@ -215,11 +223,198 @@ export interface MontagePendingOp {
     | "image_ai_change"
     | "video_regen"
     | "video_regen_prompt"
-    | "video_ai_change";
+    | "video_ai_change"
+    | "coverage_plan"
+    | "coverage_action"
+    | "coverage_kind"
+    | "coverage_delete"
+    | "coverage_template"
+    | "coverage_anchors"
+    | "coverage_vo_span"
+    | "coverage_angle"
+    | "coverage_move"
+    | "coverage_stitch"
+    | "coverage_light"
+    | "coverage_set"
+    | "coverage_sense"
+    | "coverage_visual_type"
+    | "coverage_place"
+    | "coverage_characters"
+    | "coverage_props"
+    | "coverage_bg"
+    | "coverage_accent"
+    | "coverage_feature"
+    | "coverage_scene_action";
   frame_number: number;
   shot: 1 | 2;
+  slot?: "parent";
   prompt?: string;
   correction?: string;
+  instruction?: string;
+  plan?: string;
+  action?: string;
+  angle?: string;
+  move?: string;
+  stitch?: string;
+  light?: string;
+  set?: string;
+  sense?: string;
+  visual_type?: string;
+  place?: string;
+  characters?: string;
+  props?: string;
+  bg?: string;
+  accent?: string;
+  feature?: string;
+  kind?: "parent" | "child";
+  parent_number?: number;
+  template?: string;
+  anchors?: SceneAnchorRow[];
+  start?: number;
+  end?: number;
+  text?: string;
+  full?: string;
+  vo_cell_full?: string;
+  vo_span?: { start: number; end: number; text: string } | null;
+  clear?: boolean;
+}
+
+export interface SceneAnchorRow {
+  "порядок"?: number;
+  "якорь": string;
+  "изменение"?: string;
+  "главный"?: boolean;
+  offset?: number;
+  found?: boolean;
+  cell_index?: number;
+  frame_number?: number | null;
+  derived?: boolean;
+}
+
+export interface SceneTemplateChoice {
+  id: string;
+  name: string;
+  when: string;
+  axis: string;
+  ladder: string;
+  example: string;
+  shots: number;
+  required: number;
+  plans: string[];
+  roles: string[];
+}
+
+export interface SceneTemplateLadderRow {
+  shot_id: string;
+  n: number;
+  plan: string;
+  angle: string;
+  role: string;
+  action: string;
+  required: number;
+}
+
+export interface SceneShotRow {
+  id: string;
+  "порядок": number;
+  parent_id: string;
+  "шаблон": string;
+  "план": string;
+  "ракурс": string;
+  "движение"?: string;
+  "место": string;
+  "действие": string;
+  "закадр": string;
+  "якорь"?: string;
+  frame_number: number | null;
+}
+
+export interface SceneEditorState {
+  frame: {
+    frame_id: number;
+    number: number;
+    uuid: string;
+    role: "parent" | "child";
+    shot_id: string;
+    shot_index: number | null;
+    shots_in_beat: number | null;
+    place: string;
+    angle?: string;
+    move?: string;
+    set?: string;
+    meaning?: string;
+    duration?: number | null;
+  };
+  parent: { number: number; frame_id: number; shot_id: string };
+  parent_choices: Array<{ number: number; role: string; vo: string }>;
+  group: number[];
+  vo: { frame_text: string; cell_full: string };
+  plan: { current: string; choices: string[] };
+  angle: { current: string; choices: string[] };
+  move: { current: string; choices: string[] };
+  stitch: {
+    current: string;
+    label?: string;
+    choices: Array<{ id: string; label: string }>;
+  };
+  light: { current: string; choices: string[] };
+  set: { current: string };
+  action: { current: string };
+  scene_action: {
+    current: string;
+    chain: Array<{ n: number; place: string; action: string; vo: string }>;
+  };
+  template: {
+    current: string;
+    auto: string;
+    ladder: SceneTemplateLadderRow[];
+    choices: SceneTemplateChoice[];
+    group_len: number;
+  };
+  anchors: {
+    text: string;
+    bits: SceneAnchorRow[];
+    preview: string[];
+    covers_text: boolean;
+    can_add?: boolean;
+  };
+  scene: {
+    id_scene: string;
+    scene_no?: string;
+    place: string;
+    places: string[];
+    set?: string;
+    characters: string;
+    lighting: string;
+    props: string;
+    accent: string;
+    sense: string;
+    visual_type: string;
+    bg: string;
+    feature: string;
+    action: string;
+    chain: Array<{ n: number; place: string; action: string; vo: string }>;
+    anchors: {
+      text: string;
+      bits: SceneAnchorRow[];
+      preview: string[];
+      covers_text: boolean;
+    };
+  };
+  shots: SceneShotRow[];
+}
+
+export type SceneVariantKind = "action" | "template" | "anchors";
+
+export interface SceneVariant {
+  "действие"?: string;
+  "план"?: string;
+  "шаблон"?: string;
+  "лестница"?: string;
+  "биты"?: SceneAnchorRow[];
+  preview?: string[];
+  dropped?: number;
+  "почему"?: string;
 }
 
 export interface XlsxPreview {
@@ -663,6 +858,10 @@ export const api = {
   // ── Projects ─────────────────────────────────────────────────────
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
+  syncProject: (id: number) =>
+    http<ProjectDetail>(`/api/projects/${id}/sync`, { method: "POST" }),
+  getProjectRun: (projectId: number) =>
+    http<WorkflowRunDetail>(`/api/projects/${projectId}/run`),
   createProject: (body: {
     title: string;
     topic?: string;
@@ -762,7 +961,7 @@ export const api = {
     const params = new URLSearchParams();
     if (opts?.dryRun) params.set("dry_run", "true");
     if (opts?.nodeKey) params.set("node_key", opts.nodeKey);
-    if (opts?.mode) params.set("mode", opts.mode);
+    params.set("mode", opts?.mode ?? "resume");
     if (opts?.forceWipe != null) params.set("force_wipe", String(opts.forceWipe));
     const q = params.toString() ? `?${params.toString()}` : "";
     return http<ProjectDetail>(`/api/projects/${projectId}/steps/${stepCode}/run${q}`, {
@@ -1014,11 +1213,223 @@ export const api = {
       120_000,
     ),
 
+  mergeMontageScenes: (
+    projectId: number,
+    leftFrameId: number,
+    rightFrameId: number,
+  ) =>
+    http<{
+      ok: boolean;
+      parent_id: number;
+      parent_number: number;
+      parent_ordinal?: number | null;
+      merged_frames: number;
+      vo_scene_size: number;
+    }>(`/api/projects/${projectId}/montage-board/scenes/merge`, {
+      method: "POST",
+      body: JSON.stringify({
+        left_frame_id: leftFrameId,
+        right_frame_id: rightFrameId,
+      }),
+    }),
+
+  splitMontageScene: (
+    projectId: number,
+    frameId: number,
+    explode = false,
+    frameIds?: number[],
+  ) =>
+    http<{
+      ok: boolean;
+      scenes?: number;
+      parent_number?: number;
+      parent_ordinal?: number | null;
+      left_number?: number;
+      right_number?: number;
+      left_ordinal?: number | null;
+      right_ordinal?: number | null;
+      left_size?: number;
+      right_size?: number;
+      undo_id?: string | null;
+    }>(`/api/projects/${projectId}/montage-board/scenes/split`, {
+      method: "POST",
+      body: JSON.stringify({
+        frame_id: frameId,
+        all: explode,
+        ...(frameIds?.length ? { frame_ids: frameIds } : {}),
+      }),
+    }),
+
+  undoSplitMontageScene: (projectId: number, undoId?: string | null) =>
+    http<{
+      ok: boolean;
+      undo_id: string;
+      restored_frames: number;
+      paid_media_kept: { images: number; videos: number; total: number };
+      can_undo_more: boolean;
+    }>(`/api/projects/${projectId}/montage-board/scenes/split-undo`, {
+      method: "POST",
+      body: JSON.stringify(undoId ? { undo_id: undoId } : {}),
+    }),
+
+  insertMontageFrame: (
+    projectId: number,
+    afterFrameId: number | null,
+    voiceover = "",
+    kind: "parent" | "child" = "parent",
+  ) =>
+    http<{
+      ok: boolean;
+      id: number;
+      uuid: string;
+      number: number;
+      sort_key: number | null;
+      voiceover_text: string;
+    }>(`/api/projects/${projectId}/montage-board/frames/insert`, {
+      method: "POST",
+      body: JSON.stringify({ after_frame_id: afterFrameId, voiceover, kind }),
+    }),
+
+  setMontageVoiceover: (projectId: number, frameId: number, text: string) =>
+    http<{ ok: boolean; id: number; number: number; voiceover_text: string }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/voiceover`,
+      { method: "PATCH", body: JSON.stringify({ text }) },
+    ),
+
+  getSceneEditor: (projectId: number, frameId: number) =>
+    http<SceneEditorState>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-editor`,
+      {},
+      60_000,
+    ),
+
+  getSceneVariants: (
+    projectId: number,
+    frameId: number,
+    body: { kind: SceneVariantKind; desc?: string; count?: number },
+  ) =>
+    http<{ ok: boolean; kind: SceneVariantKind; variants: SceneVariant[] }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-variants`,
+      { method: "POST", body: JSON.stringify(body) },
+      240_000,
+    ),
+
+  generateSceneAction: (
+    projectId: number,
+    frameId: number,
+    body: {
+      prompt?: string;
+      replace_ns?: number[];
+      passport?: Record<string, string>;
+    },
+  ) =>
+    http<{
+      ok: boolean;
+      frame_id: number;
+      frame_number: number;
+      replace_ns: number[];
+      chain: string;
+      shots?: number;
+      skipped_shots?: number;
+      inserted_frames?: number;
+      frame_numbers?: number[];
+    }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-action-generate`,
+      { method: "POST", body: JSON.stringify(body) },
+      240_000,
+    ),
+
+  generateSceneWithImages: (
+    projectId: number,
+    frameId: number,
+    body: {
+      prompt?: string;
+      passport?: Record<string, string>;
+      frame_ids?: number[];
+      mode?: string;
+    },
+  ) =>
+    http<{
+      ok: boolean;
+      started?: boolean;
+      already_running?: boolean;
+      frame_id?: number;
+      frame_number?: number;
+      chain?: string;
+      shots?: number;
+      skipped_shots?: number;
+      inserted_frames?: number;
+      images?: number;
+      fallback?: boolean;
+      generate_error?: string;
+      message?: string;
+      mode?: string;
+      job?: { status?: string; total_ops?: number };
+    }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-generate-with-images`,
+      { method: "POST", body: JSON.stringify(body) },
+      300_000,
+    ),
+
+  improveScene: (
+    projectId: number,
+    frameId: number,
+    body: {
+      prompt?: string;
+      passport?: Record<string, string>;
+      frame_ids?: number[];
+      anchors?: { "якорь": string; "изменение"?: string; "главный"?: boolean }[];
+    },
+  ) =>
+    http<{
+      ok: boolean;
+      started?: boolean;
+      already_running?: boolean;
+      frame_id?: number;
+      frame_number?: number;
+      chain?: string;
+      shots?: number;
+      skipped_shots?: number;
+      inserted_frames?: number;
+      images?: number;
+      fallback?: boolean;
+      generate_error?: string;
+      message?: string;
+      mode?: string;
+      job?: { status?: string; total_ops?: number };
+      improve_report?: MontageImproveReport;
+      image_ops?: MontagePendingOp[];
+    }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}/scene-improve`,
+      { method: "POST", body: JSON.stringify(body) },
+      900_000,
+    ),
+
+  deleteMontageFrame: (projectId: number, frameId: number) =>
+    http<{ ok: boolean; frame_id: number; number: number; deleted: number }>(
+      `/api/projects/${projectId}/montage-board/frames/${frameId}`,
+      { method: "DELETE" },
+    ),
+
+  applyMontageCoverage: (projectId: number, body: MontagePendingOp) =>
+    http<{
+      ok: boolean;
+      highlight?: string | null;
+      shot_kind?: "parent" | "child" | "";
+      shot_parent_number?: number | null;
+      ref_parent?: MontageBoardParentRef | null;
+      frame?: MontageBoardFrame | null;
+    }>(`/api/projects/${projectId}/montage-board/coverage`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   saveMontageQueue: (
     projectId: number,
     body: {
       pending_ops: MontagePendingOp[];
       video_trims?: Record<string, { start: number; end: number }>;
+      force_clear?: boolean;
     },
   ) =>
     http<{
@@ -1035,6 +1446,7 @@ export const api = {
     body: {
       video_trims: Record<string, { start: number; end: number }>;
       pending_ops: MontagePendingOp[];
+      frame_numbers?: number[];
     },
   ) =>
     http<{
@@ -1202,6 +1614,8 @@ export const api = {
     fromShot: 1 | 2,
     toFrame: number,
     toShot: 1 | 2,
+    fromSlot?: "parent" | "",
+    toSlot?: "parent" | "",
   ) =>
     http<{
       ok: boolean;
@@ -1213,13 +1627,21 @@ export const api = {
     }>(
       `/api/projects/${projectId}/montage-board/move-image` +
         `?from_frame=${fromFrame}&from_shot=${fromShot}` +
-        `&to_frame=${toFrame}&to_shot=${toShot}`,
+        `&to_frame=${toFrame}&to_shot=${toShot}` +
+        `${fromSlot ? `&from_slot=${fromSlot}` : ""}` +
+        `${toSlot ? `&to_slot=${toSlot}` : ""}`,
       { method: "POST" },
     ),
 
-  deleteMontageImage: (projectId: number, frameNumber: number, shot: 1 | 2) =>
+  deleteMontageImage: (
+    projectId: number,
+    frameNumber: number,
+    shot: 1 | 2,
+    slot?: "parent" | "",
+  ) =>
     http<{ ok: boolean }>(
-      `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}`,
+      `/api/projects/${projectId}/montage-board/delete-image?frame_number=${frameNumber}&shot=${shot}` +
+        `${slot ? `&slot=${slot}` : ""}`,
       { method: "POST" },
     ),
 
@@ -1229,16 +1651,78 @@ export const api = {
       { method: "POST" },
     ),
 
-  uploadMontageImage: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {
+  uploadMontageImage: async (
+    projectId: number,
+    frameNumber: number,
+    shot: 1 | 2,
+    file: File,
+    slot?: "parent" | "",
+  ) => {
     const fd = new FormData();
     fd.append("file", file);
     const res = await fetch(
-      `/api/projects/${projectId}/montage-board/upload-image?frame_number=${frameNumber}&shot=${shot}`,
+      `/api/projects/${projectId}/montage-board/upload-image?frame_number=${frameNumber}&shot=${shot}` +
+        `${slot ? `&slot=${slot}` : ""}`,
       { method: "POST", body: fd },
     );
     if (!res.ok) throw new ApiError(res.status, await res.text());
     return res.json() as Promise<{ ok: boolean; preview_url: string }>;
   },
+
+  montageRefAssets: (projectId: number) =>
+    http<{ assets: MontageRefAsset[] }>(
+      `/api/projects/${projectId}/montage-board/ref-assets`,
+    ),
+
+  linkMontageFrameRef: (
+    projectId: number,
+    frameNumber: number,
+    payload: { file: string; kind?: string; name?: string },
+  ) => {
+    const q = new URLSearchParams({
+      frame_number: String(frameNumber),
+      file: payload.file,
+      kind: payload.kind ?? "",
+      name: payload.name ?? "",
+    });
+    return http<{ ok: boolean }>(
+      `/api/projects/${projectId}/montage-board/link-ref?${q}`,
+      { method: "POST" },
+    );
+  },
+
+  addMontageFrameRef: async (
+    projectId: number,
+    frameNumber: number,
+    payload: { kind: string; name: string; file: File },
+  ) => {
+    const fd = new FormData();
+    fd.append("file", payload.file);
+    const q = new URLSearchParams({
+      frame_number: String(frameNumber),
+      kind: payload.kind,
+      name: payload.name,
+    });
+    const res = await fetch(`/api/projects/${projectId}/montage-board/refs?${q}`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new ApiError(res.status, await res.text());
+    return res.json() as Promise<{ ok: boolean }>;
+  },
+
+  deleteMontageFrameRef: (
+    projectId: number,
+    frameNumber: number,
+    refId: string,
+    kind = "manual",
+  ) =>
+    http<{ ok: boolean }>(
+      `/api/projects/${projectId}/montage-board/delete-ref` +
+        `?frame_number=${frameNumber}&ref_id=${encodeURIComponent(refId)}` +
+        `&kind=${encodeURIComponent(kind)}`,
+      { method: "POST" },
+    ),
 
   uploadMontageVideo: async (projectId: number, frameNumber: number, shot: 1 | 2, file: File) => {
     const fd = new FormData();
@@ -1313,7 +1797,8 @@ export const api = {
     if (params.kind) q.set("kind", params.kind);
     return http<ArtifactDTO[]>(`/api/artifacts?${q.toString()}`);
   },
-  artifactFileUrl: (uuid: string) => `/api/artifacts/${uuid}/file`,
+  artifactFileUrl: (uuid: string, projectId?: number | null) =>
+    projectId ? `/api/artifacts/${uuid}/file?project_id=${projectId}` : `/api/artifacts/${uuid}/file`,
 
   // ── Prompt studio (blocks v2) ────────────────────────────────────
   promptStudioCatalog: () =>
@@ -1906,6 +2391,8 @@ export const api = {
       : "";
     return `/api/projects/${projectId}/xlsx${q}`;
   },
+  projectShotsReportUrl: (projectId: number) =>
+    `/api/projects/${projectId}/shots-report`,
   reloadProjectXlsx: (projectId: number) =>
     http<ProjectDetail>(`/api/projects/${projectId}/xlsx/reload`, { method: "POST" }),
   uploadProjectXlsx: async (
@@ -2242,6 +2729,9 @@ export const api = {
         return;
       }
       throw err;
+    }
+    if (!doneReceived && !signal?.aborted) {
+      callbacks?.onError?.("Стрим оборвался без ответа от модели");
     }
   },
   gptSaveToProject: (

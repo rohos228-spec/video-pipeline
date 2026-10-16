@@ -47,10 +47,14 @@ async def _get_default_workflow_id(
 ) -> int | None:
     """Id default Workflow. Optional session — для тестов/вызовов с уже открытой сессией.
 
+    Каталог шаблонов живёт в state.db. Изолированная project.db часто без
+    ``workflows`` — тогда смотрим master, иначе ▶ падает с
+    «workflow по умолчанию не найден».
+
     Самовосстанавливающийся поиск:
     1. Ищет Workflow с is_default == True.
     2. Если не найден — берет любой существующий Workflow и делает его дефолтным.
-    3. Если воркфлоу нет вообще — авто-засевает дефолтный шаблон через seed_default_workflow().
+    3. Если воркфлоу нет вообще — авто-засевает дефолтный шаблон в master через seed_default_workflow().
     """
 
     async def _lookup(s: AsyncSession) -> int | None:
@@ -82,27 +86,20 @@ async def _get_default_workflow_id(
         return None
 
     if session is not None:
-        res = await _lookup(session)
-        if res is not None:
-            return res
-
+        found = await _lookup(session)
+        if found is not None:
+            return found
     async with session_scope() as s:
-        res = await _lookup(s)
-    if res is not None:
-        return res
+        found = await _lookup(s)
+    if found is not None:
+        return found
 
-    # Фолбэк 2: база пуста, вызываем авто-засев
     try:
         from app.web.settings_default import seed_default_workflow
 
-        await seed_default_workflow(session)
+        await seed_default_workflow()
     except Exception:  # noqa: BLE001
         logger.warning("auto seed_default_workflow failed", exc_info=True)
-
-    if session is not None:
-        res = await _lookup(session)
-        if res is not None:
-            return res
 
     async with session_scope() as s:
         return await _lookup(s)
@@ -129,7 +126,15 @@ async def ensure_run_for_project(
             return existing.id
         wf = await s.get(Workflow, workflow_id)
         if wf is None:
-            raise ValueError(f"workflow {workflow_id} not found")
+            from app.project_db import _clone_model_instance
+
+            async with session_scope() as master:
+                src = await master.get(Workflow, workflow_id)
+                if src is None:
+                    raise ValueError(f"workflow {workflow_id} not found")
+                wf = _clone_model_instance(Workflow, src)
+            s.add(wf)
+            await s.flush()
         project = await s.get(Project, project_id)
         nodes = list(wf.nodes or [])
         edges = list(wf.edges or [])
@@ -374,7 +379,6 @@ async def sync_run_for_project(
 
         # Heal: excel_gpt в completed_keys, но NodeRun ещё running/queued —
         # (auto-chain раньше помечал next done и оставлял prev running).
-        # pending + completed_keys = stale meta → снимаем «готово», не прыгаем в done.
         active_key = active_excel_gpt_node_key(project)
         done_keys = completed_node_keys(project)
         for nr in run.node_runs:
@@ -388,6 +392,35 @@ async def sync_run_for_project(
                 continue
             slot = slot_for_excel_gpt_node_key(project, nr.node_key)
             if nr.status == NodeRunStatus.pending:
+                if slot == 0:
+                    old = nr.status.value
+                    queue_node_for_start(
+                        nr, project_id=project_id, initiator="worker"
+                    )
+                    start_node_running(
+                        nr, project_id=project_id, initiator="worker"
+                    )
+                    if complete_node(
+                        nr, project_id=project_id, initiator="worker"
+                    ):
+                        await publish_node_event(
+                            run.id,
+                            event_type="node_status_changed",
+                            node_key=nr.node_key,
+                            payload={
+                                "node_type": nr.node_type,
+                                "from": old,
+                                "to": nr.status.value,
+                                "project_id": project_id,
+                            },
+                        )
+                        logger.info(
+                            "[#{}] heal: overflow completed_key {} → done "
+                            "(slot 0, meta не трогаем)",
+                            project_id,
+                            nr.node_key,
+                        )
+                    continue
                 if slot is not None:
                     await clear_slot_completion_meta(
                         s, project, slot, node_key=nr.node_key
@@ -601,7 +634,7 @@ async def prepare_node_for_step_start(
         return False
     # ensure_run пишет в свою session_scope — только если default workflow известен.
     try:
-        await ensure_run_for_project(project.id, default_wf)
+        await ensure_run_for_project(project.id, default_wf, session=session)
     except Exception:  # noqa: BLE001
         if strict:
             raise
@@ -663,9 +696,17 @@ async def prepare_node_for_step_start(
             step_code,
         )
         return False
+    if nr.status == NodeRunStatus.failed:
+        reset_node_to_pending(nr, project_id=project.id, initiator="auto_unstick")
+        logger.info(
+            "[#{}] prepare_node_for_step_start: failed → pending {}/{}",
+            project.id,
+            nr.node_type,
+            nr.node_key,
+        )
+
     if nr.status == NodeRunStatus.skipped:
         if explicit_ui_start:
-            # Ручной старт: включаем ноду обратно и продолжаем.
             meta = dict(project.meta or {})
             disabled = [str(x) for x in (meta.get("disabled_nodes") or [])]
             if nr.node_key in disabled:
@@ -837,6 +878,27 @@ async def complete_excel_gpt_node_by_key(
             continue
         if nr.status == NodeRunStatus.done:
             return True
+        if nr.status == NodeRunStatus.failed:
+            if heal_failed_node_done(nr, project_id=project.id):
+                await session.flush()
+                await publish_node_event(
+                    run.id,
+                    event_type="node_status_changed",
+                    node_key=nr.node_key,
+                    payload={
+                        "node_type": nr.node_type,
+                        "from": "failed",
+                        "to": nr.status.value,
+                        "project_id": project.id,
+                    },
+                )
+                logger.info(
+                    "[#{}] excel_gpt NodeRun {} failed → done (slot complete before chain)",
+                    project.id,
+                    key,
+                )
+                return True
+            return False
         if nr.status == NodeRunStatus.pending:
             queue_node_for_start(nr, project_id=project.id, initiator="worker")
             start_node_running(nr, project_id=project.id, initiator="worker")
@@ -939,7 +1001,6 @@ async def complete_active_node_for_step(
     # excel_gpt auto-chain УЖЕ ставит active_excel_gpt_node_key на СЛЕДУЮЩУЮ
     # ноду до вызова complete (enriching_N → enriching_N+1). Брать active_key
     # первым = пометить next done и оставить prev running — UI врёт, xlsx
-    # следующего слота «применён» без работы. Всегда слот из prev_status.
     finished_key: str | None = None
     if only_agent and node_type == "sd_agent":
         try:
@@ -952,10 +1013,30 @@ async def complete_active_node_for_step(
         slot = slot_from_running_status(prev_status)
         if slot is None:
             slot = slot_from_ready_status(new_status)
-        if slot is not None:
-            finished_key = resolve_excel_gpt_node_key_for_slot(project, slot)
+        slot_key = (
+            resolve_excel_gpt_node_key_for_slot(project, slot)
+            if slot is not None
+            else None
+        )
+        active_key = active_excel_gpt_node_key(project)
+        chaining = slot_from_running_status(new_status) is not None
+        last_done: str | None = None
+        meta = project.meta if isinstance(project.meta, dict) else {}
+        for raw in reversed(list(meta.get("excel_gpt_completed_keys") or [])):
+            key = str(raw or "").strip()
+            if key:
+                last_done = key
+                break
+        if chaining:
+            finished_key = slot_key
+        elif active_key:
+            finished_key = active_key
+        elif last_done:
+            finished_key = last_done
+        else:
+            finished_key = slot_key
         if not finished_key:
-            finished_key = active_excel_gpt_node_key(project)
+            finished_key = active_key or slot_key
             if finished_key:
                 logger.warning(
                     "[#{}] complete_active_node: excel_gpt fallback active_key={} "
@@ -1337,7 +1418,43 @@ async def stop_active_running_node(
             return
 
 
-# Линейный порядок типов нод (legacy — reset_nodes_from_step, тесты).
+async def park_leftover_running_nodes(
+    session: AsyncSession,
+    project: Project,
+    *,
+    as_failed: bool = True,
+    error: str | None = None,
+) -> bool:
+    parked = project.status in (ProjectStatus.paused, ProjectStatus.failed)
+    meta = project.meta if isinstance(project.meta, dict) else {}
+    stopped = bool(meta.get("user_stop") or meta.get("mass_lane_user_stop"))
+    if not parked and not stopped:
+        return False
+    run = await _workflow_run_with_nodes(session, project.id)
+    if run is None:
+        return False
+    fs = (project.meta or {}).get("step_failure") or {}
+    err = str(error or fs.get("last_error") or "paused")[:2000]
+    changed = False
+    for nr in run.node_runs:
+        if nr.status not in (
+            NodeRunStatus.running,
+            NodeRunStatus.queued,
+            NodeRunStatus.waiting_hitl,
+        ):
+            continue
+        if as_failed:
+            if fail_node(nr, err, project_id=project.id, initiator="worker"):
+                changed = True
+        elif reset_node_to_pending(
+            nr, project_id=project.id, initiator="api_stop"
+        ):
+            changed = True
+    if changed:
+        await session.flush()
+    return changed
+
+
 NODE_TYPE_ORDER: list[str] = [
     "topic",
     "plan",
@@ -1440,26 +1557,24 @@ def _node_already_succeeded_for_project(project: Project, nr: NodeRun) -> bool:
     return False
 
 
-async def _reconcile_stale_node_runs(
+async def _reconcile_stale_in_session(
+    session: AsyncSession,
     *,
     initiator: str,
-    require_no_live_task: bool = False,
-    grace_sec: float = _STALE_GRACE_SEC,
-) -> int:
-    """NodeRun running/queued без живого воркера → failed (или heal → done)."""
+    require_no_live_task: bool,
+    now: datetime,
+    grace: timedelta,
+) -> tuple[int, int]:
     from app.services.step_cancel import is_generation_active
 
     fixed = 0
     healed = 0
-    now = datetime.utcnow()
-    grace = timedelta(seconds=grace_sec)
-    async with session_scope() as session:
-        runs = (
-            await session.execute(
-                select(WorkflowRun).options(selectinload(WorkflowRun.node_runs))
-            )
-        ).scalars().all()
-        for run in runs:
+    runs = (
+        await session.execute(
+            select(WorkflowRun).options(selectinload(WorkflowRun.node_runs))
+        )
+    ).scalars().all()
+    for run in runs:
             if run.project_id is None:
                 continue
             project = await session.get(Project, run.project_id)
@@ -1602,6 +1717,29 @@ async def _reconcile_stale_node_runs(
                         in ("scene_designing", "scene_assembling")
                     )
                 ):
+                    if (
+                        eff == EXCEL_GPT_NODE_TYPE
+                        and str(status_val).startswith("enriching_")
+                    ):
+                        active_key = active_excel_gpt_node_key(project)
+                        if active_key and str(nr.node_key or "") != str(active_key):
+                            if reset_node_to_pending(
+                                nr,
+                                project_id=run.project_id,
+                                initiator="inactive_excel_gpt",
+                            ):
+                                fixed += 1
+                                logger.info(
+                                    "[#{}] NodeRun {}/{}: {} → pending "
+                                    "(active={}, {})",
+                                    run.project_id,
+                                    nr.node_type,
+                                    nr.node_key,
+                                    old.value,
+                                    active_key,
+                                    initiator,
+                                )
+                            continue
                     logger.info(
                         "[#{}] NodeRun {}/{}: keep {} (project still {}, {})",
                         run.project_id,
@@ -1627,28 +1765,120 @@ async def _reconcile_stale_node_runs(
                         old.value,
                         initiator,
                     )
+    return fixed, healed
+
+
+async def _reconcile_isolated_project_dbs(
+    pids: list[int],
+    *,
+    initiator: str,
+    require_no_live_task: bool,
+    now: datetime,
+    grace: timedelta,
+) -> int:
+    from pathlib import Path
+
+    from app.project_db import (
+        get_project_data_dir,
+        project_session_scope,
+        push_runtime_to_master,
+        resolve_project_db_path,
+    )
+    from app.settings import settings
+
+    extra = 0
+    try:
+        master = Path(settings.sqlite_path).resolve()
+    except Exception:
+        master = None
+    for pid in pids:
+        try:
+            data_dir = await get_project_data_dir(pid)
+            if data_dir is None:
+                continue
+            db_path = resolve_project_db_path(data_dir)
+            if not db_path.is_file():
+                continue
+            if master is not None and db_path.resolve() == master:
+                continue
+            async with project_session_scope(data_dir) as ps:
+                fixed, healed = await _reconcile_stale_in_session(
+                    ps,
+                    initiator=initiator,
+                    require_no_live_task=require_no_live_task,
+                    now=now,
+                    grace=grace,
+                )
+                if fixed or healed:
+                    extra += fixed + healed
+                    pp = await ps.get(Project, pid)
+                    if pp is not None:
+                        await push_runtime_to_master(ps, pp)
+        except Exception:
+            logger.warning(
+                "reconcile isolated #{} failed ({})",
+                pid,
+                initiator,
+                exc_info=True,
+            )
+    return extra
+
+
+async def _reconcile_stale_node_runs(
+    *,
+    initiator: str,
+    require_no_live_task: bool = False,
+    grace_sec: float = _STALE_GRACE_SEC,
+) -> int:
+    now = datetime.utcnow()
+    grace = timedelta(seconds=grace_sec)
+    async with session_scope() as session:
+        fixed, healed = await _reconcile_stale_in_session(
+            session,
+            initiator=initiator,
+            require_no_live_task=require_no_live_task,
+            now=now,
+            grace=grace,
+        )
         if fixed or healed:
             await session.commit()
+        pids = [
+            int(i)
+            for i in (await session.execute(select(Project.id))).scalars().all()
+        ]
+    isolated = 0
+    try:
+        isolated = await _reconcile_isolated_project_dbs(
+            pids,
+            initiator=initiator,
+            require_no_live_task=require_no_live_task,
+            now=now,
+            grace=grace,
+        )
+    except Exception:
+        logger.exception("reconcile isolated project.db failed ({})", initiator)
     if fixed:
         logger.info("reconcile stale NodeRun: {} → failed ({})", fixed, initiator)
     if healed:
         logger.info("reconcile stale NodeRun: {} → done heal ({})", healed, initiator)
-    return fixed + healed
+    if isolated:
+        logger.info(
+            "reconcile stale NodeRun isolated: {} ({})", isolated, initiator
+        )
+    return fixed + healed + isolated
 
 
 async def reconcile_stale_node_runs_on_startup() -> int:
-    """NodeRun running/queued без живого воркера после перезапуска → failed."""
     return await _reconcile_stale_node_runs(initiator="startup_reconcile")
 
 
 async def background_node_run_reconcile_loop(*, interval_sec: float = 60.0) -> None:
-    """Фон: running/queued без живой задачи дольше N сек → failed."""
     while True:
         try:
             await _reconcile_stale_node_runs(
                 initiator="background_reconcile",
                 require_no_live_task=True,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("background_node_run_reconcile_loop failed")
         await asyncio.sleep(interval_sec)

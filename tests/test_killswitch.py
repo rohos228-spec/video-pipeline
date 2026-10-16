@@ -12,7 +12,7 @@ from app.services.api_tracker_hook import (
 )
 
 
-def test_killswitch_lifecycle(monkeypatch: pytest.MonkeyPatch):
+def test_killswitch_lifecycle(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """Проверка полного цикла аварийного рубильника: нормальный режим -> блокировка -> разблокировка."""
     # Состояние для имитации облака
     cloud_state = {"is_blocked": False, "updated_by": "Админ", "updated_at": "2026-09-08T12:00:00Z", "reason": ""}
@@ -29,6 +29,9 @@ def test_killswitch_lifecycle(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("app.services.api_tracker_hook._push_to_supabase", mock_push)
     monkeypatch.setattr("app.services.api_tracker_hook._fetch_cloud_killswitch", mock_fetch)
+    monkeypatch.setattr("app.services.api_tracker_hook._cloud_enabled", lambda: True)
+    monkeypatch.setattr("app.services.api_tracker_hook._cloud_identity", lambda user, device: (user, device))
+    monkeypatch.setattr("app.services.api_tracker_hook._TRACKER_DB", tmp_path / "tracker.db")
 
     # 1. Принудительно разблокируем перед тестом
     toggle_killswitch("unblock", user_name="Админ", reason="Инициализация теста")

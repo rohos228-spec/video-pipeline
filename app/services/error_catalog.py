@@ -30,6 +30,12 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
         "Текст LLM: нет ключа",
         "Нода: VIBECODE_API_KEY. Шапка kie: GPT_API_KEY.",
     ),
+    "gpt_truncated": ErrorSpec(
+        "gpt_truncated",
+        "Текст LLM: ответ обрезан по лимиту",
+        "Модель не уложилась в лимит ответа (в том числе после одного повтора с большим лимитом). "
+        "Сократите вход или поднимите лимит; платный запрос сам не дублируется.",
+    ),
     "gpt_no_base": ErrorSpec(
         "gpt_no_base",
         "Текст LLM: нет базы",
@@ -49,6 +55,11 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
         "gpt_model_unsupported",
         "Текст LLM: модель не поддерживается",
         "Проверь конфигурацию модели или GPT_MODEL.",
+    ),
+    "gpt_credits": ErrorSpec(
+        "gpt_credits",
+        "Текст LLM: нет кредитов у провайдера (402)",
+        "Пополни баланс провайдера (Vibecode: vibecode.moe, Kie: kie.ai) и запусти шаг заново.",
     ),
     "gpt_rate_limit": ErrorSpec("gpt_rate_limit", "GPT: лимит запросов (429)", "Снизь параллельность/подожди."),
     "gpt_server": ErrorSpec("gpt_server", "GPT: сбой шлюза (5xx)", "Временная ошибка провайдера, повтор."),
@@ -136,7 +147,15 @@ def _is_media_error(exc: Exception, ctx: dict) -> bool:
     return provider in {"outsee", "kie"}
 
 
-def _match_code(exc: Exception) -> str:  # noqa: C901
+_CREDIT_WORDS = ("insufficient credit", "insufficient_quota", "insufficient balance", "payment required",
+                 "нет кредит", "credits insufficient")
+
+
+def _is_credits(ctx: dict, status, pcode) -> bool:
+    return bool(ctx.get("credits_exhausted")) or status == 402 or str(pcode).strip() == "402"
+
+
+def _match_code(exc: Exception) -> str:
     """Определить код ошибки по типу/тексту исключения."""
     name = type(exc).__name__
     msg = str(exc)
@@ -153,11 +172,19 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
             return "media_no_key" if media else "gpt_no_key"
         if kind == "no_base":
             return "gpt_no_base"
+        if kind == "truncated":
+            return "gpt_truncated"
         if kind == "timeout":
             return "media_timeout" if media else "gpt_timeout"
         if kind == "network":
             return "gpt_network"
+        if _is_credits(ctx, status, pcode):
+            return "media_credits" if media else "gpt_credits"
+        if kind == "empty_stream" and ctx.get("stream_error"):
+            return "gpt_timeout" if "Timeout" in str(ctx["stream_error"]) else "gpt_network"
         code_num = pcode if pcode is not None else status
+        if code_num == 408:
+            return "media_timeout" if media else "gpt_timeout"
         if code_num in (401, 403):
             return "media_auth" if media else "gpt_auth"
         if code_num == 429:
@@ -181,15 +208,16 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
         return "media_moderation"
     if "download" in low or "скач" in low:
         return "media_download"
-    if "insufficient credit" in low or "нет кредит" in low:
-        return "media_credits"
+    if any(w in low for w in _CREDIT_WORDS):
+        return "gpt_credits" if name == "GptApiError" else "media_credits"
     if "rate limit" in low or "429" in low:
         return "media_rate_limit"
     if "database is locked" in low or "database locked" in low:
         return "infra_db_locked"
     if name in ("FileNotFoundError",) or "нет файл" in low or "не найден" in low:
         return "file_missing"
-    if "xlsx-sync" in low or "xlsx" in low:
+    xlsx_probe = low.replace("enrich_xlsx", "")
+    if "xlsx-sync" in low or ".xlsx" in xlsx_probe or "некорректный xlsx" in xlsx_probe:
         if "corrupt" in low or "не открыв" in low:
             return "xlsx_corrupt"
         return "xlsx_invalid"
@@ -202,10 +230,16 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
     return "unknown"
 
 
+_PROVIDER_TOPUP = {"vibecode": "Vibecode (vibecode.moe)", "kie": "Kie (kie.ai)"}
+
+
 def describe_error(exc: Exception) -> tuple[str, str]:
-    """(code, короткое сообщение для ноды) для любого исключения."""
     code = _match_code(exc)
     spec = ERROR_CATALOG.get(code, ERROR_CATALOG["unknown"])
+    if code == "gpt_credits":
+        ctx = getattr(exc, "context", None)
+        name = _PROVIDER_TOPUP.get(str(ctx.get("llm_provider") or "").lower() if isinstance(ctx, dict) else "")
+        return code, f"{spec.title}. " + (f"Пополни баланс {name} и запусти шаг заново." if name else spec.hint)
     detail = str(exc).replace("\n", " ").strip()
     if code == "unknown":
         return code, (detail[:300] or spec.title)

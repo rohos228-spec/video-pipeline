@@ -22,6 +22,26 @@ def test_batch_constants_standardized():
     assert SCRIPT_FRAMES_QC_UNITS_PER_BATCH == 8
 
 
+def test_fw_frames_108_packs_by_6():
+    from app.services.apply_ops_batches import (
+        FW_FRAMES_PER_BATCH,
+        SCRIPT_FRAMES_QC_PARALLEL_BATCHES,
+        split_frames,
+        split_into_n_packs,
+    )
+
+    frames = [{"uuid": f"u{i:03d}"} for i in range(108)]
+    ten_way = split_into_n_packs(frames, SCRIPT_FRAMES_QC_PARALLEL_BATCHES)
+    assert SCRIPT_FRAMES_QC_PARALLEL_BATCHES == 10
+    assert len(ten_way) == 10
+    assert max(len(p) for p in ten_way) == 11
+    packs = split_frames(frames, FW_FRAMES_PER_BATCH)
+    assert FW_FRAMES_PER_BATCH == 6
+    assert len(packs) == 18
+    assert max(len(p) for p in packs) == 6
+
+
+
 def test_pack_frames_img_pr_slices():
     frames = [{'uuid': f'u{i}'} for i in range(24)]
     batches = pack_frames_img_pr(frames)

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 # Поля постановки кадра после scene_grammar v1.6 (whitelist — не тащим весь attrs).
@@ -38,28 +40,71 @@ _IMG_PR_ATTR_KEYS: tuple[str, ...] = (
     "shot02_transition",
     "биты",
     "кадры",
+    "площадка",
+    "раскладка",
+    "зона",
     "промты_детей",
     "image_prompt_shot2",
 )
 
 
-def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
-    import json as _json
 
+
+def _action_chain_score(text: str) -> tuple[int, int, int, int, int]:
+    s = (text or "").strip()
+    if not s:
+        return (0, 0, 0, 0, 0)
+    arrows = s.count("→") + s.count("->")
+    scenes = len(re.findall(r"(?m)^\s*\d+\.\s", s))
+    numbered = 1 if re.match(r"^\s*\d+\.", s) else 0
+    multi_pen = scenes if scenes > 1 else 0
+    return (1 if arrows else 0, -multi_pen, arrows, numbered, len(s))
+
+
+def _prefer_full_action(*candidates: str) -> str:
+    best = ""
+    best_score = (0, -999, 0, 0, 0)
+    for raw in candidates:
+        s = (raw or "").strip()
+        if not s:
+            continue
+        sc = _action_chain_score(s)
+        if sc > best_score:
+            best, best_score = s, sc
+    return best
+
+
+def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
     src = attrs if isinstance(attrs, dict) else {}
-    out: dict[str, str] = {}
+    out: dict[str, Any] = {}
     for key in _IMG_PR_ATTR_KEYS:
         val = src.get(key)
         if val is None:
             continue
-        # Биты и прочие структуры — компактным JSON, не repr.
         if isinstance(val, (list, dict)):
-            text = _json.dumps(val, ensure_ascii=False, separators=(",", ":"))
-        else:
-            text = str(val).strip()
-        if text:
-            out[key] = text
-    # Русский алиас для персонажей кадра (агенты часто ждут «персонажи»).
+            out[key] = val
+            continue
+        text = str(val).strip()
+        if not text:
+            continue
+        if key in _NO_CLIP_ATTRS and text[:1] in "[{":
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, (list, dict)):
+                out[key] = parsed
+                continue
+        out[key] = text
+    best = _prefer_full_action(
+        str(out.get("main_action") or ""),
+        str(src.get("main_action") or ""),
+        str(src.get("главное_действие") or ""),
+        str(out.get("главное_действие") or ""),
+    )
+    if best:
+        out["main_action"] = best
+        out["главное_действие"] = best
     if "characters" in out and "персонажи" not in out:
         out["персонажи"] = out["characters"]
     elif not out.get("characters"):
@@ -69,12 +114,43 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, str]:
                 out["characters"] = str(raw).strip()
                 out["персонажи"] = out["characters"]
                 break
+    if "shot01_action" not in out:
+        for alt in ("действие", "action"):
+            raw = src.get(alt)
+            if raw is not None and str(raw).strip():
+                out["shot01_action"] = str(raw).strip()
+                break
+    if "shot01_action" in out and "действие" not in out:
+        out["действие"] = out["shot01_action"]
     return out
 
 
 _EXCEL_GPT_VO_MAX = 400
 _ATTR_MAX = 500
-_NO_CLIP_ATTRS = frozenset({"биты", "кадры", "main_action", "промты_детей"})
+_PARENT_PROMPT_HEAD = 800
+_NO_CLIP_ATTRS = frozenset(
+    {
+        "биты",
+        "кадры",
+        "площадка",
+        "раскладка",
+        "main_action",
+        "главное_действие",
+        "промты_детей",
+    }
+)
+_PARENT_SNAP_KEYS = (
+    "place",
+    "shot01_bg",
+    "shot01_action",
+    "shot01_description",
+    "shot01_props",
+    "lighting",
+    "scene_lighting",
+    "персонажи",
+    "characters",
+    "accent",
+)
 
 
 def _clip(text: str, n: int) -> str:
@@ -82,12 +158,15 @@ def _clip(text: str, n: int) -> str:
     return t if len(t) <= n else t[: n - 1] + "…"
 
 
-def slim_attrs_for_excel_gpt(attrs: dict[str, Any] | None) -> dict[str, str]:
+def slim_attrs_for_excel_gpt(attrs: dict[str, Any] | None) -> dict[str, Any]:
     picked = _pick_attrs(attrs)
-    return {
-        k: v if k in _NO_CLIP_ATTRS else _clip(v, _ATTR_MAX)
-        for k, v in picked.items()
-    }
+    out: dict[str, Any] = {}
+    for k, v in picked.items():
+        if k in _NO_CLIP_ATTRS or not isinstance(v, str):
+            out[k] = v
+        else:
+            out[k] = _clip(v, _ATTR_MAX)
+    return out
 
 
 def _camera_subdivide_from(obj: Any) -> dict[str, Any]:
@@ -172,6 +251,44 @@ def collapse_script_writer_frames(
     return out
 
 
+def force_full_strip_output_keys(
+    node_key: str | None = None,
+    *,
+    footer_kind: str | None = None,
+) -> tuple[str, ...]:
+    kind = str(footer_kind or "").strip()
+    if kind == "bits":
+        return (
+            "биты",
+            "main_action",
+            "главное_действие",
+            "площадка",
+            "кадры",
+        )
+    if kind == "action_chain":
+        return ("main_action", "главное_действие", "площадка", "кадры")
+    if kind in {"shots_coverage", "shots"}:
+        return ("кадры",)
+    if kind in {"shots_qc", "qc_shots"}:
+        return ()
+    nk = str(node_key or "")
+    if nk.endswith("_fw_script"):
+        return (
+            "биты",
+            "main_action",
+            "главное_действие",
+            "площадка",
+            "кадры",
+        )
+    if nk.endswith("_fw_action"):
+        return ("main_action", "главное_действие", "площадка", "кадры")
+    if nk.endswith("_fw_shots"):
+        return ("кадры",)
+    if nk.endswith("_fw_qc"):
+        return ()
+    return ()
+
+
 def build_excel_gpt_db_context(
     *,
     project_id: int,
@@ -180,12 +297,17 @@ def build_excel_gpt_db_context(
     characters: list[dict[str, str]],
     strip_prompts: bool = False,
     full_vo: bool = False,
+    strip_output_keys: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
     """Снимок для excel_gpt: whitelist attrs + короткий закадр, без сырого attrs.
 
-    ``strip_prompts``: не отдавать уже заполненные image/anim/действие.
+    ``strip_prompts``: не отдавать уже заполненные image/anim/shot01.
     Нужен на ручном ▶ (force_full), иначе модель копирует старые промты
     и «результат тот же», хотя GPT формально отработал.
+
+    ``strip_output_keys``: дополнительно выкинуть выход самой ноды
+    (биты / главное_действие / кадры), чтобы ▶ fw_action не копировал
+    старую цепь сцен.
     """
     rows: list[dict[str, Any]] = []
     for fr in frames:
@@ -198,9 +320,9 @@ def build_excel_gpt_db_context(
             row["voiceover_text"] = vo.strip() if full_vo else _clip(vo, _EXCEL_GPT_VO_MAX)
         vo_shot = str(_camera_subdivide_from(fr).get("vo_shot") or "").strip()
         if vo_shot:
-            clipped_shot = _clip(vo_shot, _EXCEL_GPT_VO_MAX)
-            row["vo_shot"] = clipped_shot
-            row["закадр_шота"] = clipped_shot
+            shot_text = vo_shot if full_vo else _clip(vo_shot, _EXCEL_GPT_VO_MAX)
+            row["vo_shot"] = shot_text
+            row["закадр_шота"] = shot_text
         meaning = str(getattr(fr, "meaning", None) or "").strip()
         if meaning:
             row["meaning"] = _clip(meaning, _ATTR_MAX)
@@ -224,12 +346,21 @@ def build_excel_gpt_db_context(
                 "биты",
                 "main_action",
                 "кадры",
+                "площадка",
             ):
                 val = slim.get(key)
                 if val:
                     keep[key] = val
             slim = keep
+        drop = tuple(strip_output_keys or ())
+        if drop:
+            for key in drop:
+                slim.pop(key, None)
+                row.pop(key, None)
         row.update(slim)
+        if drop:
+            for key in drop:
+                row.pop(key, None)
         cs = _camera_subdivide_from(fr)
         if cs:
             row["camera_subdivide"] = {
@@ -262,16 +393,176 @@ def build_excel_gpt_check_context(
     frames: list[Any],
     characters: list[dict[str, Any]],
     scene_registry: list[Any] | None = None,
+    full_vo: bool = False,
 ) -> dict[str, Any]:
-    """Снимок для checkMode db_check.json: slim attrs + scene_registry."""
     ctx = build_excel_gpt_db_context(
         project_id=project_id,
         slug=slug,
         frames=frames,
         characters=characters,
+        full_vo=full_vo,
     )
     ctx["scene_registry"] = list(scene_registry or [])
     return ctx
+
+
+def camera_chips_from_frame(frame: Any) -> dict[str, str]:
+    cs = _camera_subdivide_from(frame)
+    attrs = getattr(frame, "attrs", None)
+    src = attrs if isinstance(attrs, dict) else {}
+    item: dict[str, Any] = {}
+    kadry = src.get("кадры")
+    if isinstance(kadry, list):
+        sid = str(cs.get("shot_id") or "").strip()
+        for raw in kadry:
+            if not isinstance(raw, dict):
+                continue
+            if sid and str(raw.get("id") or "").strip() == sid:
+                item = raw
+                break
+        if not item and len(kadry) == 1 and isinstance(kadry[0], dict):
+            item = kadry[0]
+
+    def _pick(*vals: Any) -> str:
+        for val in vals:
+            text = str(val or "").strip()
+            if text:
+                return text
+        return ""
+
+    return {
+        "план": _pick(
+            src.get("крупность"),
+            cs.get("крупность"),
+            cs.get("план"),
+            src.get("план"),
+            item.get("план"),
+            item.get("крупность"),
+        ),
+        "ракурс": _pick(
+            cs.get("ракурс"),
+            cs.get("angle"),
+            src.get("ракурс"),
+            item.get("ракурс"),
+            item.get("angle"),
+        ),
+        "движение": _pick(
+            cs.get("движение"),
+            cs.get("move"),
+            src.get("движение"),
+            item.get("движение"),
+        ),
+    }
+
+
+def _camera_description_from_chips(chips: dict[str, str]) -> str:
+    parts: list[str] = []
+    if chips.get("план"):
+        parts.append(chips["план"])
+    if chips.get("ракурс"):
+        parts.append(f"ракурс {chips['ракурс']}")
+    if chips.get("движение"):
+        parts.append(f"движение {chips['движение']}")
+    return ", ".join(parts)
+
+
+def apply_camera_chips_to_row(row: dict[str, Any], frame: Any) -> None:
+    chips = camera_chips_from_frame(frame)
+    plan = chips.get("план") or ""
+    angle = chips.get("ракурс") or ""
+    move = chips.get("движение") or ""
+    if plan:
+        row["крупность"] = plan
+        row["план"] = plan
+        if not str(row.get("scene_feature") or "").strip():
+            row["scene_feature"] = plan
+    if angle:
+        row["ракурс"] = angle
+    if move:
+        row["движение"] = move
+    if not str(row.get("shot01_description") or "").strip():
+        desc = _camera_description_from_chips(chips)
+        if desc:
+            row["shot01_description"] = desc
+
+
+def _coverage_parent_snapshot(parent: Any) -> dict[str, Any]:
+    from app.services.vo_shot_expand import coverage_shot_id
+
+    picked = _pick_attrs(getattr(parent, "attrs", None))
+    snap: dict[str, Any] = {
+        "number": getattr(parent, "number", None),
+        "parent_uuid": _frame_uuid(parent),
+    }
+    sid = coverage_shot_id(parent)
+    if sid:
+        snap["shot_id"] = sid
+    for key in _PARENT_SNAP_KEYS:
+        val = picked.get(key)
+        if val:
+            snap[key] = val
+    img = str(getattr(parent, "image_prompt", None) or "").strip()
+    if img:
+        snap["image_prompt_head"] = _clip(img, _PARENT_PROMPT_HEAD)
+    apply_camera_chips_to_row(snap, parent)
+    return snap
+
+
+def _slim_img_pr_frame_row(row: dict[str, Any]) -> None:
+    row.pop("биты", None)
+    shot_id = str(row.get("shot_id") or "").strip()
+    kadry = row.get("кадры")
+    if isinstance(kadry, list):
+        match: dict[str, Any] | None = None
+        if shot_id:
+            match = next(
+                (
+                    shot
+                    for shot in kadry
+                    if isinstance(shot, dict) and str(shot.get("id") or "") == shot_id
+                ),
+                None,
+            )
+        if match is None:
+            first = kadry[0] if kadry else None
+            match = first if isinstance(first, dict) else None
+        if match is not None:
+            keep = (
+                "id",
+                "план",
+                "действие",
+                "объект",
+                "зона",
+                "камера",
+                "раскладка",
+            )
+            row["кадры"] = [{k: match[k] for k in keep if k in match}]
+        else:
+            row.pop("кадры", None)
+    zone = str(row.get("зона") or row.get("place") or "").strip()
+    plan = row.get("площадка")
+    if isinstance(plan, dict):
+        zones_in = [z for z in (plan.get("зоны") or []) if isinstance(z, dict)]
+        if zone:
+            zones_in = [z for z in zones_in if str(z.get("id") or "") == zone]
+        elif zones_in:
+            zones_in = zones_in[:1]
+        people_in = [p for p in (plan.get("люди") or []) if isinstance(p, dict)]
+        if zone:
+            people_in = [
+                p
+                for p in people_in
+                if str(p.get("зона") or "") in {zone, ""}
+            ]
+        slim_plan: dict[str, Any] = {"зоны": zones_in}
+        if people_in:
+            slim_plan["люди"] = people_in
+        row["площадка"] = slim_plan
+    chain = str(row.get("main_action") or row.get("главное_действие") or "")
+    first = chain.split("\n", 1)[0].strip()
+    if first:
+        row["main_action"] = first
+        row["главное_действие"] = first
 
 
 def build_img_pr_db_context(
@@ -283,12 +574,16 @@ def build_img_pr_db_context(
     general_plan: str = "",
     include_characters: bool = True,
     include_field_map: bool = False,
+    all_frames: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """Полный снимок кадра из DB для агента промтов картинок.
+    from app.services.vo_shot_expand import (
+        coverage_shot_id,
+        find_coverage_parent_frame,
+        is_shot_child,
+        parse_coverage_shot,
+    )
 
-    SoT = База: uuid + закадр + meaning + scene_grammar attrs + animation_prompt
-    (если уже есть). Батчинг режет по числу кадров — VO не выкидываем.
-    """
+    universe = list(all_frames) if all_frames is not None else list(frames)
     frame_rows: list[dict[str, Any]] = []
     for fr in frames:
         uuid = getattr(fr, "uuid", None) or ""
@@ -313,6 +608,23 @@ def build_img_pr_db_context(
             row["animation_prompt"] = anim
         picked = _pick_attrs(getattr(fr, "attrs", None))
         row.update(picked)
+        apply_camera_chips_to_row(row, fr)
+        sid = coverage_shot_id(fr)
+        if sid:
+            row["shot_id"] = sid
+        if is_shot_child(fr):
+            row["coverage_role"] = "child"
+            parent = find_coverage_parent_frame(universe, fr)
+            if parent is not None:
+                row["coverage_parent"] = _coverage_parent_snapshot(parent)
+        else:
+            parsed = parse_coverage_shot(sid)
+            if parsed is not None and parsed[1] == 1:
+                row["coverage_role"] = "parent"
+            cs_kind = str(_camera_subdivide_from(fr).get("coverage_kind") or "").strip().lower()
+            if cs_kind == "parent":
+                row["coverage_role"] = "parent"
+        _slim_img_pr_frame_row(row)
         frame_rows.append(row)
     out: dict[str, Any] = {
         "source": "db_v2",
@@ -322,7 +634,6 @@ def build_img_pr_db_context(
     }
     gp = (general_plan or "").strip()
     if gp:
-        # Короткий кусок — эпоха, не простыня.
         out["general_plan"] = gp[:800]
     if include_characters:
         out["characters"] = list(characters or [])
@@ -333,8 +644,124 @@ def build_img_pr_db_context(
             "shot01_bg": "BG",
             "shot01_action": "ACTION",
             "shot01_description": "CAMERA",
+            "крупность|план": "shot scale chip",
+            "ракурс": "angle chip",
+            "движение": "move chip",
             "accent": "FOCAL",
             "scene_sense": "visible facts",
             "scene_feature": "shot scale",
+            "coverage_parent": "K1 still of the SAME scene (Preserve/Change)",
         }
     return out
+
+
+def frame_visual_action(fr: Any) -> str:
+    attrs = getattr(fr, "attrs", None)
+    if not isinstance(attrs, dict):
+        return ""
+    for key in ("main_action", "shot01_action", "главное_действие"):
+        val = str(attrs.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def frame_visual_place(fr: Any) -> str:
+    attrs = getattr(fr, "attrs", None)
+    if not isinstance(attrs, dict):
+        return ""
+    for key in ("place", "место"):
+        val = str(attrs.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+CHARACTER_REGISTRY_ROLE_MARKERS: tuple[str, ...] = (
+    "следователь",
+    "дежурный",
+    "эксперт",
+    "преподаватель",
+    "журналист",
+    "судья",
+    "архивист",
+    "начальник милиции",
+    "судебный служащий",
+    "медработник",
+)
+_CHARACTER_REGISTRY_ROLE_ALIASES: dict[str, tuple[str, ...]] = {
+    "эксперт": ("эксперт", "криминалист", "профайлер"),
+    "архивист": ("архивист", "архивариус"),
+    "начальник милиции": ("начальник милиции", "начальник"),
+    "журналист": ("журналист", "репортёр", "репортер"),
+    "судья": ("судья", "судейск"),
+}
+_CYR_LETTER = "а-яё"
+
+
+def build_character_registry_db_context(
+    *,
+    project_id: int,
+    slug: str,
+    frames: list[Any],
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for fr in frames:
+        uuid = str(getattr(fr, "uuid", None) or "").strip()
+        if not uuid:
+            continue
+        row: dict[str, Any] = {
+            "number": getattr(fr, "number", None),
+            "uuid": uuid,
+            "voiceover_text": str(getattr(fr, "voiceover_text", None) or ""),
+            "действие": frame_visual_action(fr),
+            "персонажи": "",
+        }
+        place = frame_visual_place(fr)
+        if place:
+            row["место"] = place
+        rows.append(row)
+    return {
+        "source": "db_v2",
+        "project_id": project_id,
+        "slug": slug,
+        "frames": rows,
+        "characters": [],
+    }
+
+
+def _role_token_in_action(text: str, token: str) -> bool:
+    if not token or not text:
+        return False
+    pat = rf"(?<![{_CYR_LETTER}]){re.escape(token)}(?![{_CYR_LETTER}])"
+    return re.search(pat, text.lower()) is not None
+
+
+def _character_registry_card_blob(cards: list[Any] | None) -> str:
+    parts: list[str] = []
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        for key in ("имя", "name", "внешность", "одежда", "характер", "правила"):
+            val = str(card.get(key) or "").strip()
+            if val:
+                parts.append(val.lower())
+    return " ".join(parts)
+
+
+def character_registry_missing_visual_roles(
+    frames: list[Any],
+    cards: list[Any] | None,
+) -> list[str]:
+    cards_blob = _character_registry_card_blob(cards)
+    missing: list[str] = []
+    for role in CHARACTER_REGISTRY_ROLE_MARKERS:
+        seen = any(
+            _role_token_in_action(frame_visual_action(fr), role) for fr in frames
+        )
+        if not seen:
+            continue
+        aliases = _CHARACTER_REGISTRY_ROLE_ALIASES.get(role, (role,))
+        if not any(a in cards_blob for a in aliases):
+            missing.append(role)
+    return missing

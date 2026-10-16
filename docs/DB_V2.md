@@ -83,9 +83,9 @@ Backfill из legacy: `sort_key = number * 10` (10, 20, 30…).
 1. `app/main.py::_init_db()` — после `create_all`;
 2. `app/web/api.py::_lifespan` — после `create_all`.
 
-`migrate_db_v2_schema(conn)` — `PRAGMA table_info(frames)` + ALTER ADD
-COLUMN для отсутствующих (идемпотентно, паттерн скопирован с миграции
-`projects`).
+`migrate_db_v2_schema(conn)` — тонкая обёртка: запускает версионную миграцию
+`0007_frames_v2_columns` (`app/services/schema_migrations.py`): `PRAGMA table_info(frames)` +
+ALTER ADD COLUMN для отсутствующих (идемпотентно, с записью и контрольной суммой).
 
 `backfill_project_v2(session, project)` — идемпотентно заполняет v2 из
 legacy-данных проекта:

@@ -7,13 +7,19 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import hashlib
+import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
 import httpx
 from loguru import logger
 
+from app.services import media_spend, spend_guard
 from app.services.elevenlabs_voices import DEFAULT_ELEVENLABS_VOICE_ID
 from app.settings import settings
 
@@ -24,8 +30,111 @@ class ElevenLabsApiError(RuntimeError):
     """Ошибка вызова ElevenLabs API."""
 
 
+class ElevenLabsUncertainError(ElevenLabsApiError):
+    pass
+
+
+def _blocked_as_eleven(blocked: spend_guard.PaidCallBlocked) -> "ElevenLabsApiError":
+    err = ElevenLabsApiError(blocked.message_ru)
+    err.context = dict(blocked.context)
+    return err
+
+
+_UNCERTAIN_CAUSES = (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError)
+_PRE_SEND_CAUSES = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError, httpx.PoolTimeout)
+
+MAX_POSTS_PER_SEGMENT = 2
+_UNCERTAIN_PREFIX = ".tts_uncertain_"
+_SIDECAR_SUFFIX = ".tts.json"
+_run_budget: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "elevenlabs_tts_run_budget", default=None)
+
+
+@contextlib.contextmanager
+def tts_run_budget(limit: int | None = None):
+    if limit is None:
+        limit = int(getattr(settings, "audio_max_tts_posts_per_run", 60) or 0)
+    token = _run_budget.set([0, int(limit)])
+    try:
+        yield _run_budget.get()
+    finally:
+        _run_budget.reset(token)
+
+
+def _reserve_post() -> None:
+    budget = _run_budget.get()
+    if budget is None:
+        return
+    if 0 < budget[1] <= budget[0]:
+        raise ElevenLabsApiError(
+            f"11Labs API: достигнут потолок TTS POST за запуск ({budget[1]}, AUDIO_MAX_TTS_POSTS_PER_RUN)"
+        )
+    budget[0] += 1
+
+
+def _request_key(voice_id: str, model: str, payload: dict[str, Any], clean_text: str) -> str:
+    raw = json.dumps([voice_id, model, payload.get("voice_settings"), clean_text], ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _write_sidecar(mp3: Path, key: str) -> None:
+    try:
+        mp3.with_name(mp3.name + _SIDECAR_SUFFIX).write_text(json.dumps({"key": key}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _find_cached(directory: Path, key: str) -> Path | None:
+    try:
+        for side in directory.glob("*" + _SIDECAR_SUFFIX):
+            try:
+                if json.loads(side.read_text(encoding="utf-8")).get("key") != key:
+                    continue
+            except (OSError, ValueError, AttributeError):
+                continue
+            mp3 = side.with_name(side.name[: -len(_SIDECAR_SUFFIX)])
+            if mp3.is_file() and mp3.stat().st_size >= 1000:
+                return mp3
+    except OSError:
+        pass
+    return None
+
+
+_SFX_SIDECAR_SUFFIX = ".sfx.json"
+SFX_PROMPT_INFLUENCE = 0.5
+SFX_MAX_PROMPT_CHARS = 450
+
+
+def sfx_request_key(prompt: str, duration: float) -> str:
+    raw = json.dumps(["sfx", (prompt or "")[:SFX_MAX_PROMPT_CHARS],
+                      round(min(max(float(duration), 0.5), 22.0), 3), SFX_PROMPT_INFLUENCE], ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def sfx_write_sidecar(sound: Path, key: str) -> None:
+    try:
+        sound.with_name(sound.name + _SFX_SIDECAR_SUFFIX).write_text(json.dumps({"key": key}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def sfx_find_cached(directory: Path, key: str) -> Path | None:
+    try:
+        for side in directory.glob("*" + _SFX_SIDECAR_SUFFIX):
+            try:
+                if json.loads(side.read_text(encoding="utf-8")).get("key") != key:
+                    continue
+            except (OSError, ValueError, AttributeError):
+                continue
+            sound = side.with_name(side.name[: -len(_SFX_SIDECAR_SUFFIX)])
+            if sound.is_file() and sound.stat().st_size > 0:
+                return sound
+    except OSError:
+        pass
+    return None
+
+
 def elevenlabs_api_configured() -> bool:
-    """Проверяет наличие API-ключа ElevenLabs в настройках или переменных окружения."""
     key = getattr(settings, "elevenlabs_api_key", None) or os.environ.get("ELEVENLABS_API_KEY", "")
     return bool(key and str(key).strip())
 
@@ -187,58 +296,70 @@ async def synthesize_speech(
         }
         if active_proxy:
             client_kwargs["proxy"] = active_proxy
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            return await client.post(url, headers=headers, json=payload)
+        async with spend_guard.paid_call(
+            "elevenlabs", "tts post",
+            estimate_usd=len(clean_text) * media_spend.ELEVENLABS_USD_PER_CHAR,
+            wrap_error=_blocked_as_eleven,
+        ):
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                return await media_spend.track_eleven_post(
+                    client.post(url, headers=headers, json=payload),
+                    chars=len(clean_text), model=effective_model)
 
     import asyncio
 
+    key = _request_key(effective_voice_id, effective_model, payload, clean_text)
+    cached = _find_cached(out_path.parent, key)
+    if cached is not None:
+        if cached != out_path:
+            shutil.copy2(cached, out_path)
+            _write_sidecar(out_path, key)
+        logger.info("11Labs API: озвучка с тем же хэшем текста уже есть ({}), POST не нужен", cached.name)
+        return out_path
+    marker = out_path.parent / f"{_UNCERTAIN_PREFIX}{key[:16]}"
+    if marker.exists():
+        raise ElevenLabsUncertainError(
+            "11Labs API: предыдущий запрос с этим текстом оборвался после отправки, "
+            f"результат неизвестен; повторный POST запрещён (удалите {marker.name} или положите файл озвучки)"
+        )
+
     resp: httpx.Response | None = None
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
+    route_proxy = proxy_url
+    posts = 0
+    while True:
+        _reserve_post()
+        posts += 1
         try:
-            resp = await _do_post(proxy_url)
-        except (httpx.TimeoutException, httpx.RequestError, httpx.RemoteProtocolError) as exc:
-            if proxy_url:
-                logger.warning(
-                    "11Labs API: ошибка через прокси ({}), выполняем прямой запрос без прокси (попытка {}/{})...",
-                    exc,
-                    attempt,
-                    max_retries,
-                )
-                try:
-                    resp = await _do_post(None)
-                except Exception as direct_exc:  # noqa: BLE001
-                    if attempt < max_retries:
-                        await asyncio.sleep(2.0 * attempt)
-                        continue
-                    raise ElevenLabsApiError(
-                        f"11Labs API: ошибка сетевого соединения: {direct_exc}"
-                    ) from direct_exc
-            else:
-                if attempt < max_retries:
-                    await asyncio.sleep(2.0 * attempt)
-                    continue
+            resp = await _do_post(route_proxy)
+        except _PRE_SEND_CAUSES as exc:
+            if posts >= MAX_POSTS_PER_SEGMENT:
                 raise ElevenLabsApiError(
                     f"11Labs API: ошибка сетевого соединения: {exc}"
                 ) from exc
+            if route_proxy:
+                logger.warning("11Labs API: соединение через прокси не удалось ({}), прямой запрос", exc)
+                route_proxy = None
+            else:
+                await asyncio.sleep(2.0 * posts)
+            continue
+        except httpx.RequestError as exc:
+            try:
+                marker.write_text(type(exc).__name__, encoding="utf-8")
+            except OSError:
+                pass
+            raise ElevenLabsUncertainError(
+                f"11Labs API: ошибка сетевого соединения после отправки, повтор не выполняется: {exc}"
+            ) from exc
 
-        if resp is not None and resp.status_code in {429, 502, 503, 504}:
-            if attempt < max_retries:
-                wait_sec = 2.5 * attempt
-                logger.warning(
-                    "11Labs API: HTTP {} (Rate limit / upstream) — повтор через {:.1f}с ({}/{})",
-                    resp.status_code,
-                    wait_sec,
-                    attempt,
-                    max_retries,
-                )
-                await asyncio.sleep(wait_sec)
-                continue
-
+        if resp.status_code in {429, 502, 503, 504} and posts < MAX_POSTS_PER_SEGMENT:
+            wait_sec = 2.5 * posts
+            logger.warning(
+                "11Labs API: HTTP {} (Rate limit / upstream) — повтор через {:.1f}с ({}/{})",
+                resp.status_code, wait_sec, posts, MAX_POSTS_PER_SEGMENT,
+            )
+            await asyncio.sleep(wait_sec)
+            continue
         break
-
-    if resp is None:
-        raise ElevenLabsApiError("11Labs API: не получен ответ от сервера.")
 
     if resp.status_code != 200:
         err_msg = f"HTTP {resp.status_code}"
@@ -281,7 +402,7 @@ async def synthesize_speech(
             )
         if resp.status_code == 429:
             raise ElevenLabsApiError(
-                f"11Labs API: превышен лимит запросов Rate Limit (429) после {max_retries} попыток — {err_msg}"
+                f"11Labs API: превышен лимит запросов Rate Limit (429) после {posts} попыток — {err_msg}"
             )
 
         raise ElevenLabsApiError(f"11Labs API ошибка генерации: {err_msg}")
@@ -292,7 +413,14 @@ async def synthesize_speech(
             f"11Labs API вернул слишком короткий файл ({len(audio_bytes)} байт) — возможно повреждение данных."
         )
 
-    out_path.write_bytes(audio_bytes)
+    tmp_path = out_path.with_name(out_path.name + ".part")
+    tmp_path.write_bytes(audio_bytes)
+    os.replace(tmp_path, out_path)
+    _write_sidecar(out_path, key)
+    try:
+        marker.unlink()
+    except OSError:
+        pass
     logger.info(
         "11Labs API: озвучка успешно сгенерирована → {} ({} байт)",
         out_path.name,

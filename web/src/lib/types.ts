@@ -275,8 +275,76 @@ export interface FrameDTO {
 
 export interface MontageBoardCharacterRef {
   id: string;
+  code?: string;
   name: string;
   image_url: string | null;
+}
+
+export interface MontageBoardParentRef {
+  number: number;
+  label: string;
+  image_url: string | null;
+}
+
+export interface MontageManualRef {
+  id: string;
+  kind: string;
+  kind_label: string;
+  name: string;
+  linked?: boolean;
+  image_url: string | null;
+}
+
+export interface MontageRefAsset {
+  kind: string;
+  kind_label: string;
+  code: string;
+  name: string;
+  file: string;
+  image_url: string | null;
+}
+
+export interface MontageRefKindChoice {
+  id: string;
+  label: string;
+}
+
+export interface MontageAnchorRow {
+  "якорь": string;
+  "изменение"?: string;
+  "главный"?: boolean;
+  found?: boolean;
+  cell_index?: number | null;
+  frame_number?: number | null;
+}
+
+export interface MontageSceneChainRow {
+  n: number;
+  place?: string;
+  action?: string;
+  vo?: string;
+}
+
+export interface MontageImproveReport {
+  nodes: { node: string; label: string; status: string; note: string }[];
+  budget?: number;
+  anchors?: { n: number; "якорь": string; "закадр": string; "бюджет"?: number }[];
+  shots: {
+    "порядок"?: number;
+    "якорь_n"?: number;
+    "зона"?: string;
+    "роль"?: string;
+    "действие"?: string;
+    "объект"?: string;
+    "план"?: string;
+    "ракурс"?: string;
+    "движение"?: string;
+    "стык"?: string;
+    "закадр"?: string;
+  }[];
+  passport?: Record<string, string>;
+  passport_changed?: string[];
+  warnings?: string[];
 }
 
 export interface MontageBoardFrame {
@@ -286,10 +354,18 @@ export interface MontageBoardFrame {
   voiceover_excel: string;
   characters: string;
   character_refs: MontageBoardCharacterRef[];
+  ref_parent?: MontageBoardParentRef | null;
+  group_character_refs?: MontageBoardCharacterRef[];
+  item_refs?: MontageBoardCharacterRef[];
+  manual_refs?: MontageManualRef[];
   start_ts: number | null;
   end_ts: number | null;
   duration_seconds: number | null;
   has_shot2: boolean;
+  has_end_still?: boolean;
+  has_layout?: boolean;
+  layout_start?: string;
+  layout_end?: string;
   shot1_use_seconds: number | null;
   shot2_use_seconds: number | null;
   shot1_timeline_start: number | null;
@@ -300,6 +376,7 @@ export interface MontageBoardFrame {
   video_shot2_duration: number | null;
   image_shot1_url: string | null;
   image_shot2_url: string | null;
+  image_parent_url?: string | null;
   video_shot1_url: string | null;
   video_shot2_url: string | null;
   /** Промт исходного изображения / видео (Excel → Frame), для модалки редактирования. */
@@ -308,6 +385,49 @@ export interface MontageBoardFrame {
   animation_prompt_shot1?: string;
   animation_prompt_shot2?: string;
   plan_column: number;
+  shot_plan?: string;
+  shot_action?: string;
+  shot_kind?: "parent" | "child" | "";
+  shot_parent_number?: number | null;
+  shot_parent_id?: string;
+  shot_template?: string;
+  shot_anchors?: number;
+  shot_anchor?: string;
+  shot_anchor_change?: string;
+  shot_anchor_main?: boolean;
+  shot_anchor_found?: boolean;
+  shot_anchor_rows?: MontageAnchorRow[];
+  anchor_can_add?: boolean;
+  scene_anchor_rows?: MontageAnchorRow[];
+  vo_cell_full?: string;
+  vo_span?: { start: number; end: number; text: string } | null;
+  vo_unused_before?: string;
+  vo_unused_after?: string;
+  vo_unused_between?: string[];
+  vo_unused_after_number?: number | null;
+  shot_angle?: string;
+  shot_move?: string;
+  shot_stitch?: string;
+  shot_stitch_label?: string;
+  scene_place?: string;
+  scene_set?: string;
+  scene_characters?: string;
+  scene_lighting?: string;
+  scene_id?: string;
+  scene_no?: string;
+  scene_props?: string;
+  scene_accent?: string;
+  scene_bg?: string;
+  scene_sense?: string;
+  scene_visual_type?: string;
+  scene_feature?: string;
+  scene_template_auto?: string;
+  scene_action?: string;
+  scene_chain?: MontageSceneChainRow[];
+  vo_scene_number?: number | null;
+  vo_scene_ordinal?: number | null;
+  vo_scene_size?: number;
+  shot_leftover?: boolean;
 }
 
 export interface MontageBoardMeta {
@@ -323,14 +443,42 @@ export interface MontageBoardMeta {
     shot?: number;
     prompt?: string;
     correction?: string;
+    plan?: string;
+    action?: string;
+    kind?: string;
+    parent_number?: number;
   }>;
   applied_at: string | null;
+  split_undo?: { can_undo: boolean; undo_id: string | null; kind: string | null; depth: number };
 }
 
 export interface MontageBoardDTO {
   frames: MontageBoardFrame[];
   frame_count: number;
   meta: MontageBoardMeta;
+  frame_aspect?: string | null;
+  show_coverage_rows?: boolean;
+  coverage_plan_choices?: string[];
+  coverage_angle_choices?: string[];
+  coverage_move_choices?: string[];
+  coverage_light_choices?: string[];
+  coverage_visual_type_choices?: string[];
+  coverage_stitch_choices?: Array<{ id: string; label: string }>;
+  coverage_template_choices?: MontageTemplateChoice[];
+  ref_kind_choices?: MontageRefKindChoice[];
+}
+
+export interface MontageTemplateChoice {
+  id: string;
+  name: string;
+  when: string;
+  axis?: string;
+  ladder?: string;
+  example?: string;
+  shots?: number;
+  required?: number;
+  plans: string[];
+  roles: string[];
 }
 
 export interface PromptDTO {

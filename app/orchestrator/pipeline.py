@@ -1,6 +1,8 @@
-"""Главный pipeline в ручном режиме (управляется из Telegram-меню).
+"""Главный pipeline: запуск шагов воркером (в ручном режиме управляется из Telegram-меню).
 
-Никаких авто-переходов между шагами. Воркер видит только «running»-статусы и
+Сам этот модуль авто-переходов не делает. Переходы «*_ready -> следующий running» при ``auto_mode`` проекта
+выполняет ``app.orchestrator.auto_advance.maybe_auto_advance`` (его зовёт воркер); без ``auto_mode`` шаг
+запускает человек (C-28). Воркер видит только «running»-статусы и
 запускает соответствующий шаг. После шага статус становится «*_ready», и
 проект ждёт действия пользователя из бота. Все «ready»-статусы воркером
 пропускаются.
@@ -89,7 +91,6 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
     from app.services.step_cancel import (
         abort_if_cancelled,
         register_advance_task,
-        unregister_advance_task,
     )
 
     project_id = int(project.id)
@@ -98,6 +99,7 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
         register_advance_task(project_id, task)
     ran_status: ProjectStatus | None = None
     _step_lock_cm = None
+    _recon = None
     try:
         abort_if_cancelled(project_id)
         status = project.status
@@ -130,6 +132,9 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
                 exc_info=True,
             )
 
+        from app.services import balance_adapters
+
+        _recon = await balance_adapters.open_auto_window(status.value, project_id)
         with bind_project_llm(project, status):
             if status is ProjectStatus.planning:
                 await make_plan.run(session, project, bot)
@@ -189,9 +194,12 @@ async def advance_project(session: AsyncSession, project: Project, bot: Bot) -> 
         if ran_status is not None:
             await _sync_storage_after_advance(session, project, ran_status)
     finally:
+        if _recon is not None:
+            from app.services import balance_adapters as _ba
+
+            await _ba.close_auto_window(_recon)
         if _step_lock_cm is not None:
             try:
                 await _step_lock_cm.__aexit__(None, None, None)
             except Exception:  # noqa: BLE001
                 pass
-        unregister_advance_task(project_id)

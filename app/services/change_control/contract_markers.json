@@ -1,0 +1,6 @@
+{
+  "_comment": "Обязательные маркеры контракта ответа. Ключ \"*\" действует на все промпты: маркер обязателен, если он есть в текущем тексте. Ключ \"<шаг>/<имя>\" обязателен всегда.",
+  "*": ["apply-ops", "\"ops\"", "\"fields\"", "frame_uuid", "# Лист:"],
+  "excel_gpt/shots_qc_ru": ["apply-ops", "\"ops\"", "frame_uuid"],
+  "excel_gpt/scenes_to_frames_ru": ["apply-ops", "\"ops\"", "frame_uuid"]
+}

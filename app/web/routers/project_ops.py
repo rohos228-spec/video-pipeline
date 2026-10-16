@@ -12,7 +12,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Artifact, ArtifactKind, Project, ProjectStatus
+from app.models import Artifact, ArtifactKind, Frame, Project, ProjectStatus
 from app.services.event_bus import publish_project_event
 from app.services.project_control import pause_project as pause_project_svc
 from app.services.project_control import resume_project as resume_project_svc
@@ -37,18 +37,30 @@ router = APIRouter(prefix="/projects", tags=["project-ops"])
 
 def _project_or_404(project: Project | None) -> Project:
     if project is None:
-        raise HTTPException(status_code=404, detail="project not found")
+        raise HTTPException(status_code=404, detail="Проект не найден")
     return project
+
+
+async def _with_master_project(project_id: int, fallback: Project, fn):
+    from app.db import session_scope
+
+    try:
+        async with session_scope() as master:
+            mp = await master.get(Project, project_id)
+            return fn(mp if mp is not None else fallback)
+    except Exception:
+        return fn(fallback)
+
 
 
 @router.post("/{project_id}/pause", response_model=ProjectDetail)
 async def pause_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     await pause_project_svc(session, p)
     await session.commit()
-    await sync_run_for_project(project_id)
+    await sync_run_for_project(project_id, session=session)
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated", payload={"paused": True})
     return p
@@ -56,7 +68,7 @@ async def pause_project(
 
 @router.post("/{project_id}/resume", response_model=ProjectDetail)
 async def resume_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     await resume_project_svc(session, p)
@@ -68,7 +80,7 @@ async def resume_project(
 
 @router.post("/{project_id}/continue")
 async def continue_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Снять stop/паузу и продвинуть проект на следующий шаг (если *_ready)."""
     from app.orchestrator.auto_advance import continue_project_pipeline
@@ -87,7 +99,7 @@ async def continue_project(
 
 @router.post("/{project_id}/stop")
 async def stop_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     # Сразу cancel advance/GPT — до любого ожидания SQLite (первый клик ⏹).
     from app.services.step_cancel import request_stop
@@ -98,7 +110,7 @@ async def stop_project(
     if not info["ok"]:
         raise HTTPException(status_code=400, detail=info["message"])
     await session.commit()
-    await sync_run_for_project(project_id)
+    await sync_run_for_project(project_id, session=session)
     await session.refresh(p)
     await publish_project_event(
         project_id,
@@ -115,7 +127,7 @@ async def stop_project(
 
 @router.post("/{project_id}/finish/images")
 async def finish_missing_images(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Доделка картинок: frame_NNN_*.png без файла → generating_images."""
     from app.services.finish_missing import trigger_finish_missing_images
@@ -135,7 +147,7 @@ async def finish_missing_images(
 
 @router.post("/{project_id}/finish/animation-prompts")
 async def resume_animation_prompts(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Догонка промтов анимации: plan R48 → БД → generating_animation_prompts."""
     from app.services.finish_missing import trigger_resume_animation_prompts
@@ -155,7 +167,7 @@ async def resume_animation_prompts(
 
 @router.post("/{project_id}/finish/videos")
 async def finish_missing_videos(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Доделка видео: clip_NNN_*.mp4 без файла → generating_videos."""
     from app.services.finish_missing import trigger_finish_missing_videos
@@ -177,7 +189,7 @@ async def finish_missing_videos(
 async def parse_mass_topics_xlsx(
     project_id: int,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Парсит любой xlsx (построчно темы) и сохраняет очередь на родителе (правило B)."""
     import tempfile
@@ -237,7 +249,7 @@ async def parse_mass_topics_xlsx(
 @router.get("/{project_id}/mass-factory/status")
 async def mass_factory_status_endpoint(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.mass_factory import mass_factory_status
 
@@ -249,7 +261,7 @@ async def mass_factory_status_endpoint(
 async def start_mass_lanes(
     project_id: int,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Очередь видео: родитель-шаблон, генерация в дочерних проектах."""
     from app.services.mass_factory import start_mass_queue
@@ -295,40 +307,33 @@ async def start_mass_lanes(
 async def reset_project_step(
     project_id: int,
     step_code: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     try:
         summary = await reset_step(session, p, step_code)
-        if p.data_dir:
-            from app.project_db import resolve_project_db_path, project_session_scope
-            db_path = resolve_project_db_path(p.data_dir)
-            if db_path.exists():
-                try:
-                    async with project_session_scope(p.data_dir) as p_sess:
-                        p_in_proj = await p_sess.get(Project, project_id)
-                        if p_in_proj:
-                            await reset_step(p_sess, p_in_proj, step_code)
-                            await p_sess.commit()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("reset_project_step #{}: reset project.db failed: {}", project_id, exc)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if summary.get("error"):
         raise HTTPException(status_code=400, detail=str(summary["error"]))
     wf_id = await _get_default_workflow_id()
     if wf_id is not None:
-        await ensure_run_for_project(project_id, wf_id)
+        await ensure_run_for_project(project_id, wf_id, session=session)
     await reset_nodes_from_step(session, project_id, step_code)
     await session.flush()
     await session.commit()
     await session.refresh(p)
-    from app.project_db import sync_project_row_to_project_db
+    await sync_run_for_project(project_id, session=session)
     try:
-        await sync_project_row_to_project_db(p)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("reset_project_step #{}: sync to project.db failed: {}", project_id, exc)
-    await sync_run_for_project(project_id)
+        from app.project_db import sync_runtime_both_ways
+
+        await sync_runtime_both_ways(session, p)
+    except Exception:
+        logger.warning(
+            "reset_step #{}: runtime sync master↔project.db failed",
+            project_id,
+            exc_info=True,
+        )
     await session.refresh(p)
     await publish_project_event(
         project_id,
@@ -340,7 +345,7 @@ async def reset_project_step(
 
 @router.get("/{project_id}/excel-hero")
 async def get_excel_hero(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Текущее состояние excel-hero в project.meta (если есть)."""
     p = _project_or_404(await session.get(Project, project_id))
@@ -352,7 +357,7 @@ async def get_excel_hero(
 
 @router.post("/{project_id}/excel-hero/load")
 async def load_excel_hero(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> dict:
     """Загрузить персонажей в meta['excel_hero']: Entity (SoT) → fallback Excel.
 
@@ -428,7 +433,7 @@ async def load_excel_hero(
 
 @router.delete("/{project_id}/excel-hero", status_code=204)
 async def clear_excel_hero(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> None:
     """Убрать excel_hero — hero пойдёт по обычной ветке (hero_descriptions)."""
     p = _project_or_404(await session.get(Project, project_id))
@@ -447,7 +452,7 @@ async def clear_excel_hero(
 async def download_xlsx(
     project_id: int,
     node_key: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> FileResponse:
     p = _project_or_404(await session.get(Project, project_id))
     from app.services.node_xlsx_snapshot import resolve_display_xlsx_path
@@ -457,7 +462,7 @@ async def download_xlsx(
         sheet = ProjectSheet(file_path=xlsx)
         sheet.ensure_initialized(project_id=p.id, slug=p.slug)
     if not xlsx.exists():
-        raise HTTPException(status_code=404, detail="project.xlsx not found")
+        raise HTTPException(status_code=404, detail="Файл project.xlsx не найден")
     if snapshot_name and str(snapshot_name).startswith("upload:"):
         fname = Path(str(snapshot_name).split(":", 1)[-1]).name
     elif snapshot_name:
@@ -473,13 +478,16 @@ async def download_xlsx(
 
 @router.post("/{project_id}/xlsx/reload", response_model=ProjectDetail)
 async def reload_xlsx(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int, session: AsyncSession = Depends(get_project_session)
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     xlsx = p.data_dir / "project.xlsx"
     if not xlsx.exists():
-        raise HTTPException(status_code=404, detail="project.xlsx not found")
-    await sync_project_xlsx(session, p, xlsx)
+        raise HTTPException(status_code=404, detail="Файл project.xlsx не найден")
+    try:
+        await sync_project_xlsx(session, p, xlsx)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
     await session.refresh(p)
     await publish_project_event(project_id, event_type="project_updated", payload={"xlsx": "reloaded"})
@@ -491,11 +499,11 @@ async def upload_xlsx(
     project_id: int,
     file: UploadFile = File(...),
     node_key: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> Project:
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
-        raise HTTPException(status_code=400, detail="need .xlsx file")
+        raise HTTPException(status_code=400, detail="Нужен файл .xlsx")
     dest = p.data_dir / "project.xlsx"
     dest.parent.mkdir(parents=True, exist_ok=True)
     content = await file.read()
@@ -511,6 +519,9 @@ async def upload_xlsx(
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=validation_err)
     tmp_path.replace(dest)
+    from app.services.frame_tombstones import forget_deleted
+
+    forget_deleted(p)
     if node_key:
         from app.services.node_xlsx_snapshot import clear_bound_snapshot
 
@@ -573,7 +584,7 @@ async def preview_xlsx(
     row: int | None = Query(None, ge=1, le=5000),
     raw: bool = Query(False),
     node_key: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     p = _project_or_404(await session.get(Project, project_id))
     from app.services.node_xlsx_snapshot import resolve_display_xlsx_path
@@ -762,47 +773,487 @@ async def montage_board(
         ) from e
 
 
+@router.post("/{project_id}/montage-board/frames/insert")
+async def montage_board_insert_frame(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board_frames import insert_montage_frame
+
+    p = _project_or_404(await session.get(Project, project_id))
+    after_raw = body.get("after_frame_id")
+    after_id = int(after_raw) if after_raw not in (None, "") else None
+    voiceover = str(body.get("voiceover") or "")
+    kind = str(body.get("kind") or "parent")
+    try:
+        fr = await insert_montage_frame(
+            session,
+            p,
+            after_frame_id=after_id,
+            voiceover=voiceover,
+            kind=kind,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_frame_inserted": True, "frame_id": fr.id},
+    )
+    return {
+        "ok": True,
+        "id": fr.id,
+        "uuid": fr.uuid,
+        "number": fr.number,
+        "sort_key": fr.sort_key,
+        "voiceover_text": fr.voiceover_text or "",
+    }
+
+
+@router.post("/{project_id}/montage-board/scenes/merge")
+async def montage_board_merge_scenes(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board_frames import merge_montage_scenes
+
+    p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
+    try:
+        result = await merge_montage_scenes(
+            session,
+            p,
+            left_frame_id=int(body["left_frame_id"]),
+            right_frame_id=int(body["right_frame_id"]),
+        )
+    except (KeyError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail="нужны left_frame_id и right_frame_id") from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_scenes_merged": True, "parent_id": result.get("parent_id")},
+    )
+    return result
+
+
+def _refuse_if_project_busy(p: Project) -> None:
+    from app.services.project_state import is_running_status
+
+    if is_running_status(p.status):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Сейчас идёт шаг ({p.status.value}): дождитесь окончания или остановите его, потом меняйте сцены.",
+        )
+
+
+@router.post("/{project_id}/montage-board/scenes/split-undo")
+async def montage_board_undo_split(
+    project_id: int,
+    body: dict = Body(default_factory=dict),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board_frames import undo_montage_split
+
+    p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
+    try:
+        result = await undo_montage_split(session, p, undo_id=(body or {}).get("undo_id"))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_scenes_split_undone": True, "refresh_board": True},
+    )
+    return result
+
+
+@router.post("/{project_id}/montage-board/scenes/split")
+async def montage_board_split_scenes(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board_frames import (
+        split_montage_scene_at,
+        split_montage_scene_frames,
+    )
+
+    p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
+    try:
+        frame_id = int(body["frame_id"])
+    except (KeyError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail="нужен frame_id") from e
+    explode = bool(body.get("all") or body.get("explode"))
+    raw_ids = body.get("frame_ids") or body.get("ids")
+    frame_ids: list[int] | None = None
+    if raw_ids:
+        try:
+            frame_ids = [int(x) for x in raw_ids]
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail="frame_ids — список id") from e
+    try:
+        if explode:
+            result = await split_montage_scene_frames(
+                session, p, frame_id=frame_id, frame_ids=frame_ids
+            )
+        else:
+            result = await split_montage_scene_at(
+                session, p, at_frame_id=frame_id, frame_ids=frame_ids
+            )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "montage_scenes_split": True,
+            "refresh_board": True,
+            "frame_id": frame_id,
+        },
+    )
+    return result
+
+
+@router.patch("/{project_id}/montage-board/frames/{frame_id}/voiceover")
+async def montage_board_set_voiceover(
+    project_id: int,
+    frame_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board_frames import set_montage_voiceover
+
+    p = _project_or_404(await session.get(Project, project_id))
+    if "text" not in body:
+        raise HTTPException(status_code=400, detail="нужно поле text (пустая строка очищает закадр)")
+    try:
+        fr = await set_montage_voiceover(
+            session, p, frame_id, str(body.get("text") or "")
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    await session.commit()
+    return {
+        "ok": True,
+        "id": fr.id,
+        "number": fr.number,
+        "voiceover_text": fr.voiceover_text or "",
+    }
+
+
+@router.delete("/{project_id}/montage-board/frames/{frame_id}")
+async def montage_board_delete_frame(
+    project_id: int,
+    frame_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board_frames import delete_montage_frame
+
+    p = _project_or_404(await session.get(Project, project_id))
+    _refuse_if_project_busy(p)
+    try:
+        result = await delete_montage_frame(session, p, frame_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_frame_deleted": True, "frame_id": frame_id},
+    )
+    return result
+
+
+async def _scene_editor_state(session: AsyncSession, project: Project, frame_id: int) -> dict:
+    from sqlalchemy import select as _select
+
+    from app.services.montage_scene_editor import build_scene_editor_state
+
+    frames = list(
+        (
+            await session.execute(
+                _select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    frame = next((fr for fr in frames if int(fr.id) == int(frame_id)), None)
+    if frame is None:
+        raise HTTPException(status_code=404, detail=f"кадр {frame_id} не найден")
+    state = build_scene_editor_state(frames, frame)
+    try:
+        from app.models import Entity
+
+        ents = list(
+            (
+                await session.execute(
+                    _select(Entity).where(Entity.project_id == project.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        names = {
+            str(getattr(e, "code", "") or "").strip(): str(getattr(e, "name", "") or "").strip()
+            for e in ents
+            if str(getattr(e, "type", "") or "") == "character"
+            and str(getattr(e, "code", "") or "").strip()
+        }
+        raw = str((state.get("scene") or {}).get("characters") or "")
+        if raw and names:
+            parts = [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
+            mapped: list[str] = []
+            for part in parts:
+                name = names.get(part) or names.get(part.lower())
+                mapped.append(f"{part} · {name}" if name and name != part else part)
+            state["scene"]["characters"] = ", ".join(mapped)
+    except Exception:
+        pass
+    return state
+
+
+@router.get("/{project_id}/montage-board/frames/{frame_id}/scene-editor")
+async def montage_board_scene_editor(
+    project_id: int,
+    frame_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    p = _project_or_404(await session.get(Project, project_id))
+    return await _scene_editor_state(session, p, frame_id)
+
+
+@router.post("/{project_id}/montage-board/frames/{frame_id}/scene-action-generate")
+async def montage_board_scene_action_generate(
+    project_id: int,
+    frame_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_action_gpt import generate_cell_scene_action, parse_replace_ns
+
+    p = _project_or_404(await session.get(Project, project_id))
+    passport = body.get("passport") if isinstance(body.get("passport"), dict) else {}
+    try:
+        result = await generate_cell_scene_action(
+            session,
+            p,
+            frame_id,
+            operator_prompt=str(body.get("prompt") or body.get("operator_prompt") or ""),
+            replace_ns=parse_replace_ns(body.get("replace_ns")),
+            passport=passport,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception(
+            "scene-action-generate failed project={} frame={}", project_id, frame_id
+        )
+        raise HTTPException(
+            status_code=502, detail=f"GPT не ответил: {type(e).__name__}: {e}"
+        ) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "montage_scene_action_generate": True,
+            "refresh_board": True,
+            "frame_id": frame_id,
+            "replace_ns": result.get("replace_ns") or [],
+        },
+    )
+    return result
+
+
+@router.post("/{project_id}/montage-board/frames/{frame_id}/scene-generate-with-images")
+async def montage_board_scene_generate_with_images(
+    project_id: int,
+    frame_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_action_gpt import generate_cell_scene_with_images
+
+    p = _project_or_404(await session.get(Project, project_id))
+    passport = body.get("passport") if isinstance(body.get("passport"), dict) else {}
+    raw_ids = body.get("frame_ids") or body.get("ids")
+    frame_ids: list[int] | None = None
+    if raw_ids:
+        try:
+            frame_ids = [int(x) for x in raw_ids]
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail="frame_ids — список id") from e
+    try:
+        result = await generate_cell_scene_with_images(
+            session,
+            p,
+            frame_id,
+            operator_prompt=str(body.get("prompt") or body.get("operator_prompt") or ""),
+            passport=passport,
+            frame_ids=frame_ids,
+            mode=str(body.get("mode") or ""),
+            anchors=body.get("anchors") if isinstance(body.get("anchors"), list) else None,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception(
+            "scene-generate-with-images failed project={} frame={}", project_id, frame_id
+        )
+        raise HTTPException(
+            status_code=502, detail=f"GPT не ответил: {type(e).__name__}: {e}"
+        ) from e
+
+    image_ops = result.get("image_ops") or []
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={
+            "montage_scene_action_generate": True,
+            "refresh_board": True,
+            "frame_id": frame_id,
+            "with_images": bool(image_ops),
+        },
+    )
+    return {
+        "ok": True,
+        **{k: v for k, v in result.items() if k != "report"},
+        "report": result.get("report"),
+        "image_ops": image_ops,
+        "started": False,
+        "already_running": False,
+        "images": len(image_ops),
+        "message": (
+            "сцены записаны · очередь: сцена → кадры"
+            if image_ops
+            else "сцены записаны"
+        ),
+    }
+
+
+@router.post("/{project_id}/montage-board/frames/{frame_id}/scene-improve")
+async def montage_board_scene_improve(
+    project_id: int,
+    frame_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    payload = dict(body or {})
+    payload["mode"] = "improve"
+    return await montage_board_scene_generate_with_images(
+        project_id, frame_id, payload, session
+    )
+
+
+@router.post("/{project_id}/montage-board/frames/{frame_id}/scene-variants")
+async def montage_board_scene_variants(
+    project_id: int,
+    frame_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_scene_editor import VARIANT_KINDS, generate_scene_variants
+
+    p = _project_or_404(await session.get(Project, project_id))
+    kind = str(body.get("kind") or "action").strip()
+    if kind not in VARIANT_KINDS:
+        raise HTTPException(status_code=400, detail=f"неизвестный вид вариантов: {kind}")
+    state = await _scene_editor_state(session, p, frame_id)
+    try:
+        return await generate_scene_variants(
+            state,
+            kind=kind,
+            desc=str(body.get("desc") or ""),
+            count=int(body.get("count") or 3),
+            project_id=project_id,
+        )
+    except Exception as e:
+        logger.exception(
+            "scene-variants failed project={} frame={} kind={}", project_id, frame_id, kind
+        )
+        raise HTTPException(
+            status_code=502, detail=f"GPT не ответил: {type(e).__name__}: {e}"
+        ) from e
+
+
+@router.post("/{project_id}/montage-board/coverage")
+async def montage_board_apply_coverage(
+    project_id: int,
+    body: dict = Body(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board import build_montage_board
+    from app.services.montage_board_meta import normalize_queue_ops
+    from app.services.montage_coverage_ops import COVERAGE_OP_TYPES, apply_coverage_op
+
+    p = _project_or_404(await session.get(Project, project_id))
+    cleaned = normalize_queue_ops([body])
+    if len(cleaned) != 1:
+        raise HTTPException(status_code=400, detail="нужна одна coverage-операция")
+    op = cleaned[0]
+    if str(op.get("type") or "") not in COVERAGE_OP_TYPES:
+        raise HTTPException(status_code=400, detail="это не coverage-операция")
+    try:
+        result = await apply_coverage_op(session, p, op)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    await publish_project_event(
+        project_id,
+        event_type="project_updated",
+        payload={"montage_coverage": True, "type": op.get("type")},
+    )
+    board = await build_montage_board(session, p)
+    frame_number = int(op["frame_number"])
+    row = next(
+        (fr for fr in (board.get("frames") or []) if int(fr.get("number") or 0) == frame_number),
+        None,
+    )
+    return {
+        "ok": True,
+        "highlight": result.get("highlight"),
+        "shot_kind": (row or {}).get("shot_kind"),
+        "shot_parent_number": (row or {}).get("shot_parent_number"),
+        "ref_parent": (row or {}).get("ref_parent"),
+        "frame": row,
+    }
+
+
 @router.post("/{project_id}/montage-board/queue")
 async def montage_board_save_queue(
     project_id: int,
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Сохранить очередь pending_ops на сервер (без запуска apply).
-
-    Иначе очередь живёт только в React state и слетает при refresh/рестарте.
-    """
     from app.services.montage_board_apply_job import get_apply_job
     from app.services.montage_board_meta import (
         montage_meta,
+        normalize_queue_ops,
         public_board_meta,
         set_montage_meta,
         should_accept_queue_save,
     )
 
     p = _project_or_404(await session.get(Project, project_id))
-    ops = list(body.get("pending_ops") or [])
-    # Нормализуем: только известные типы + валидный frame.
-    cleaned: list[dict] = []
-    for raw in ops:
-        if not isinstance(raw, dict):
-            continue
-        t = str(raw.get("type") or "")
-        if not t.startswith(("image_", "video_")):
-            continue
-        try:
-            fr = int(raw.get("frame_number"))
-        except (TypeError, ValueError):
-            continue
-        if fr < 1:
-            continue
-        shot = 2 if raw.get("shot") == 2 else 1
-        item: dict = {"type": t, "frame_number": fr, "shot": shot}
-        if isinstance(raw.get("prompt"), str) and raw["prompt"].strip():
-            item["prompt"] = raw["prompt"]
-        if isinstance(raw.get("correction"), str) and raw["correction"].strip():
-            item["correction"] = raw["correction"]
-        cleaned.append(item)
+    cleaned = normalize_queue_ops(body.get("pending_ops"))
 
     board = montage_meta(p)
     existing = list(board.get("pending_ops") or [])
@@ -850,7 +1301,12 @@ async def montage_board_apply(
     from app.services.montage_board_apply_job import get_apply_job, spawn_apply_job
 
     p = _project_or_404(await session.get(Project, project_id))
-    ops = list(body.get("pending_ops") or [])
+    from app.services.montage_board_apply import parse_apply_frame_numbers, split_apply_ops
+
+    ops, keep_ops = split_apply_ops(
+        list(body.get("pending_ops") or []),
+        parse_apply_frame_numbers(body.get("frame_numbers")),
+    )
     trims = body.get("video_trims")
 
     if ops:
@@ -888,7 +1344,9 @@ async def montage_board_apply(
             await sync_project_row_to_master_db(p)
         except Exception as exc:  # noqa: BLE001
             logger.debug("sync_project_row_to_master_db failed: {}", exc)
-        spawn_apply_job(project_id, video_trims=trims, pending_ops=ops)
+        spawn_apply_job(
+            project_id, video_trims=trims, pending_ops=ops, keep_ops=keep_ops
+        )
         return {
             "started": True,
             "ok": True,
@@ -901,6 +1359,7 @@ async def montage_board_apply(
         p,
         video_trims=trims,
         pending_ops=ops,
+        keep_ops=keep_ops,
     )
     await session.commit()
     try:
@@ -963,7 +1422,7 @@ async def montage_board_montage_status(
     from app.services.montage_board_montage_job import get_montage_job
 
     p = _project_or_404(await session.get(Project, project_id))
-    return {"job": get_montage_job(p)}
+    return {"job": await _with_master_project(project_id, p, get_montage_job)}
 
 
 @router.post("/{project_id}/montage-board/recover-outsee")
@@ -1090,6 +1549,8 @@ async def montage_board_move_image(
     from_shot: int = Query(..., ge=1, le=2),
     to_frame: int = Query(..., ge=1),
     to_shot: int = Query(..., ge=1, le=2),
+    from_slot: str = Query(""),
+    to_slot: str = Query(""),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Перенести картинку в другой слот (в т.ч. пустой); если цель занята — swap."""
@@ -1103,6 +1564,8 @@ async def montage_board_move_image(
         from_shot=from_shot,
         to_frame=to_frame,
         to_shot=to_shot,
+        from_slot=from_slot,
+        to_slot=to_slot,
     )
     await session.commit()
     try:
@@ -1122,13 +1585,14 @@ async def montage_board_delete_image(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
+    slot: str = Query(""),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.montage_board_assets import delete_scene_image
     from app.services.montage_board_meta import mark_stale_videos, montage_meta, set_montage_meta
 
     p = _project_or_404(await session.get(Project, project_id))
-    deleted = await delete_scene_image(session, p, frame_number, shot=shot)
+    deleted = await delete_scene_image(session, p, frame_number, shot=shot, slot=slot)
     board = montage_meta(p)
     mark_stale_videos(board, frame_number, shot=shot)
     set_montage_meta(p, board)
@@ -1159,11 +1623,141 @@ async def montage_board_delete_video(
     return {"ok": deleted, "frame_number": frame_number, "shot": shot}
 
 
+async def _board_frame_or_404(
+    session: AsyncSession, project: Project, frame_number: int
+) -> Frame:
+    from sqlalchemy import select as _select
+
+    frame = (
+        await session.execute(
+            _select(Frame).where(
+                Frame.project_id == project.id, Frame.number == frame_number
+            )
+        )
+    ).scalar_one_or_none()
+    if frame is None:
+        raise HTTPException(status_code=404, detail=f"кадр {frame_number} не найден")
+    return frame
+
+
+@router.get("/{project_id}/montage-board/ref-assets")
+async def montage_board_ref_assets(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_board import _entity_name_maps
+    from app.services.montage_frame_refs import list_ref_assets
+
+    p = _project_or_404(await session.get(Project, project_id))
+    char_names, item_names = await _entity_name_maps(session, project_id)
+    assets = list_ref_assets(
+        p.data_dir, names={"character": char_names, "item": item_names}
+    )
+    return {"assets": assets}
+
+
+@router.post("/{project_id}/montage-board/refs")
+async def montage_board_add_ref(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    kind: str = Query("other"),
+    name: str = Query(""),
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_frame_refs import add_manual_ref, manual_refs_for_board
+
+    p = _project_or_404(await session.get(Project, project_id))
+    frame = await _board_frame_or_404(session, p, frame_number)
+    content = await file.read()
+    suffix = Path(file.filename or "ref.png").suffix or ".png"
+    try:
+        add_manual_ref(
+            frame,
+            data_dir=p.data_dir,
+            kind=kind,
+            name=name,
+            content=content,
+            suffix=suffix,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    return {
+        "ok": True,
+        "frame_number": frame_number,
+        "refs": manual_refs_for_board(p.data_dir, frame),
+    }
+
+
+@router.post("/{project_id}/montage-board/link-ref")
+async def montage_board_link_ref(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    file: str = Query(...),
+    kind: str = Query(""),
+    name: str = Query(""),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from app.services.montage_frame_refs import link_ref_asset, manual_refs_for_board
+
+    p = _project_or_404(await session.get(Project, project_id))
+    frame = await _board_frame_or_404(session, p, frame_number)
+    try:
+        link_ref_asset(frame, data_dir=p.data_dir, file=file, kind=kind, name=name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    await session.commit()
+    return {
+        "ok": True,
+        "frame_number": frame_number,
+        "refs": manual_refs_for_board(p.data_dir, frame),
+    }
+
+
+@router.post("/{project_id}/montage-board/delete-ref")
+async def montage_board_delete_ref(
+    project_id: int,
+    frame_number: int = Query(..., ge=1),
+    ref_id: str = Query(...),
+    kind: str = Query("manual"),
+    session: AsyncSession = Depends(get_project_session),
+) -> dict:
+    from sqlalchemy import select as _select
+
+    from app.models import Frame
+    from app.services.montage_frame_refs import (
+        delete_manual_ref,
+        manual_refs_for_board,
+        unlink_scene_ref,
+    )
+
+    p = _project_or_404(await session.get(Project, project_id))
+    frame = await _board_frame_or_404(session, p, frame_number)
+    kind_n = (kind or "manual").strip().lower()
+    if kind_n in {"character", "item", "персонаж", "предмет"}:
+        frames = list(
+            (
+                await session.execute(_select(Frame).where(Frame.project_id == p.id))
+            ).scalars().all()
+        )
+        deleted = unlink_scene_ref(frame, frames, kind=kind_n, ref_id=ref_id)
+    else:
+        deleted = delete_manual_ref(frame, data_dir=p.data_dir, ref_id=ref_id)
+    await session.commit()
+    return {
+        "ok": deleted,
+        "frame_number": frame_number,
+        "refs": manual_refs_for_board(p.data_dir, frame),
+    }
+
+
 @router.post("/{project_id}/montage-board/upload-image")
 async def montage_board_upload_image(
     project_id: int,
     frame_number: int = Query(..., ge=1),
     shot: int = Query(1, ge=1, le=2),
+    slot: str = Query(""),
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
@@ -1176,7 +1770,7 @@ async def montage_board_upload_image(
         raise HTTPException(status_code=400, detail="пустой файл")
     suffix = Path(file.filename or "upload.png").suffix or ".png"
     path = await save_scene_image_upload(
-        session, p, frame_number, shot=shot, content=content, suffix=suffix
+        session, p, frame_number, shot=shot, content=content, suffix=suffix, slot=slot
     )
     board = montage_meta(p)
     mark_stale_videos(board, frame_number, shot=shot)
@@ -1300,7 +1894,7 @@ async def montage_board_upload_music(
 async def list_project_assets(
     project_id: int,
     kind: str = Query("all", pattern="^(all|hero|items|images|videos|audio|final|text)$"),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> list[dict]:
     p = _project_or_404(await session.get(Project, project_id))
     out: list[dict] = []
@@ -1406,19 +2000,19 @@ async def replace_hero_image(
     project_id: int,
     file: UploadFile = File(...),
     replace_path: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Заменить reference-картинку персонажа (файл в data/.../characters/)."""
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename:
-        raise HTTPException(status_code=400, detail="empty filename")
+        raise HTTPException(status_code=400, detail="Пустое имя файла")
     ext = Path(file.filename).suffix.lower()
     if ext not in {".png", ".jpg", ".jpeg", ".webp"}:
-        raise HTTPException(status_code=400, detail="need image file (.png, .jpg, .webp)")
+        raise HTTPException(status_code=400, detail="Нужен файл изображения (.png, .jpg, .webp)")
 
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="empty file")
+        raise HTTPException(status_code=400, detail="Пустой файл")
 
     chars_dir = p.data_dir / "characters"
     chars_dir.mkdir(parents=True, exist_ok=True)
@@ -1431,7 +2025,7 @@ async def replace_hero_image(
         try:
             candidate.resolve().relative_to(p.data_dir.resolve())
         except ValueError as e:
-            raise HTTPException(status_code=400, detail="replace_path outside project") from e
+            raise HTTPException(status_code=400, detail="Путь замены (replace_path) выходит за пределы проекта") from e
         dest = candidate
         dest.parent.mkdir(parents=True, exist_ok=True)
     else:
@@ -1468,7 +2062,7 @@ async def patch_excel_gpt_config(
     project_id: int,
     node_key: str,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1606,7 +2200,7 @@ async def patch_canvas_edge_kind(
     project_id: int,
     edge_id: str,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1616,7 +2210,7 @@ async def patch_canvas_edge_kind(
     kind = normalize_edge_kind((payload or {}).get("kind"))
     updated = set_edge_kind_in_canvas(p, edge_id, kind)
     if updated is None:
-        raise HTTPException(status_code=404, detail="edge not found in canvas_graph")
+        raise HTTPException(status_code=404, detail="Связь не найдена в графе холста")
     flag_modified(p, "meta")
     await session.commit()
     return {"ok": True, "edge": updated}
@@ -1627,7 +2221,7 @@ async def upload_excel_gpt_file(
     project_id: int,
     node_key: str,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1641,7 +2235,7 @@ async def upload_excel_gpt_file(
 
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename:
-        raise HTTPException(status_code=400, detail="need filename")
+        raise HTTPException(status_code=400, detail="Нужно указать имя файла")
     safe_name = Path(file.filename).name
     if not is_allowed_upload_filename(safe_name):
         raise HTTPException(
@@ -1650,7 +2244,7 @@ async def upload_excel_gpt_file(
         )
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="empty file")
+        raise HTTPException(status_code=400, detail="Пустой файл")
 
     ext = Path(safe_name).suffix.lower()
     cfg_before = node_config(p, node_key)
@@ -1776,7 +2370,7 @@ async def upload_check_agent_file(
 
     p = _project_or_404(await session.get(Project, project_id))
     if not file.filename:
-        raise HTTPException(status_code=400, detail="need filename")
+        raise HTTPException(status_code=400, detail="Нужно указать имя файла")
     content = await file.read()
     try:
         result = save_check_agent_file(
@@ -1944,7 +2538,7 @@ async def get_gpt_operator_source_prompt(
 async def remap_excel_gpt_keys(
     project_id: int,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1953,7 +2547,7 @@ async def remap_excel_gpt_keys(
     p = _project_or_404(await session.get(Project, project_id))
     raw = payload.get("mapping")
     if not isinstance(raw, dict):
-        raise HTTPException(status_code=400, detail="mapping dict required")
+        raise HTTPException(status_code=400, detail="Нужен словарь соответствий (mapping)")
     mapping = {str(k): str(v) for k, v in raw.items() if k and v}
     remapped = remap_node_keys_in_meta(p, mapping)
     flag_modified(p, "meta")
@@ -1965,7 +2559,7 @@ async def remap_excel_gpt_keys(
 async def storage_resolve(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Прочитать/досинковать файлы хранилища без UPDATE projects (anti-lock)."""
     from app.services.storage_node import resolve_storage
@@ -1980,7 +2574,7 @@ async def storage_patch(
     project_id: int,
     node_key: str,
     payload: dict,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1998,7 +2592,7 @@ async def storage_patch(
 async def storage_sync(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Забрать файлы с входящих стрелок в папку этой ноды."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -2017,7 +2611,7 @@ async def storage_upload(
     project_id: int,
     node_key: str,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.storage_node import resolve_storage, save_upload
 
@@ -2038,7 +2632,7 @@ async def storage_upload(
 async def storage_clear_files(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.storage_node import clear_storage, resolve_storage
 
@@ -2051,7 +2645,7 @@ async def storage_clear_files(
 async def storage_download_zip(
     project_id: int,
     node_key: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ):
     """Скачать все файлы хранилища одним zip."""
     from fastapi.responses import FileResponse
@@ -2106,14 +2700,24 @@ async def audio_align_methods_list() -> dict:
 @router.get("/{project_id}/asr-words")
 async def project_asr_words(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Word-level транскрибация из БД (таблица asr_words)."""
     from app.services.asr_words_store import asr_words_to_dicts, load_project_asr_words
 
     _project_or_404(await session.get(Project, project_id))
     rows = await load_project_asr_words(session, project_id)
-    words = asr_words_to_dicts(rows)
+    if not rows:
+        from app.db import session_scope
+
+        try:
+            async with session_scope() as master:
+                rows = await load_project_asr_words(master, project_id)
+                words = asr_words_to_dicts(rows)
+        except Exception:
+            words = []
+    else:
+        words = asr_words_to_dicts(rows)
     run_uuid = words[0]["run_uuid"] if words else None
     backend = words[0]["backend"] if words else None
     return {
@@ -2131,7 +2735,7 @@ async def audio_align_start(
     method: str = Query("auto"),
     force_asr: bool = Query(False),
     run_assemble: bool = Query(True),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Кнопка «Разбор аудио» — выбранная методика → R15 → assemble в фоне."""
     from app.services.audio_align_job import get_audio_align_job, spawn_audio_align_job
@@ -2167,22 +2771,24 @@ async def audio_align_start(
 @router.get("/{project_id}/audio-align/status")
 async def audio_align_status(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     from app.services.audio_align_job import get_audio_align_job
 
     p = _project_or_404(await session.get(Project, project_id))
-    last = None
-    if isinstance(p.meta, dict):
-        last = p.meta.get("audio_align_last")
-    return {"job": get_audio_align_job(p), "last": last}
+
+    def _read(proj: Project) -> dict:
+        meta = proj.meta if isinstance(proj.meta, dict) else {}
+        return {"job": get_audio_align_job(proj), "last": meta.get("audio_align_last")}
+
+    return await _with_master_project(project_id, p, _read)
 
 
 @router.post("/{project_id}/remount-video")
 async def remount_project_video(
     project_id: int,
     audio_only: bool = Query(False),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Перемонтаж: синхрон xlsx→кадры, Whisper по озвучке, новая сборка (видеоклипы не трогаем)."""
     from app.services.remount_video import remount_video
@@ -2233,7 +2839,7 @@ async def restore_project_voiceover(
     project_id: int,
     dry_run: bool = Query(False),
     force: bool = Query(False),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Восстановить исходный voiceover одного проекта."""
     from app.services.voiceover_recovery import restore_original_voiceover
@@ -2267,7 +2873,7 @@ async def restore_project_voiceover(
 @router.get("/{project_id}/original-voiceover-preview")
 async def preview_original_voiceover(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Показать, откуда будет взят исходный voiceover (без записи)."""
     from app.services.voiceover_recovery import find_original_voiceover
@@ -2278,7 +2884,7 @@ async def preview_original_voiceover(
     if not is_parent_project(p):
         raise HTTPException(
             status_code=400,
-            detail="preview только для родительских проектов",
+            detail="Предпросмотр доступен только для родительских проектов",
         )
     cand = await find_original_voiceover(session, p)
     if cand is None:
@@ -2301,7 +2907,7 @@ async def preview_original_voiceover(
 @router.get("/{project_id}/harness/status")
 async def harness_status(
     project_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Агентский снимок ops_telemetry + хвост events.jsonl."""
     from app.services.agent_harness import harness_status_payload
@@ -2315,7 +2921,7 @@ async def harness_verify(
     project_id: int,
     allow_repair: bool = Query(False),
     include_http: bool = Query(True),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_project_session),
 ) -> dict:
     """Проверить disk/R48/node_runs + HTTP artifacts/assets/xlsx; опц. soft-start одного шага."""
     from app.services.agent_harness import HARNESS_FORBIDDEN_STEPS, run_harness_verify

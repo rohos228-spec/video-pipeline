@@ -10,15 +10,20 @@ GPT → ``sfx_events`` JSON → валидация (границы таймла�
 from __future__ import annotations
 
 import json
+import sys
+from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
+import math
 from pathlib import Path
 from typing import Any
+import wave
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, Project
-from app.services.ai_result_io import parse_json_object, text_job
+from app.services.ai_result_io import TextJobFailed, parse_json_object, text_job
 
 # Каталог видов звуков сопровождения (понятен и GPT, и локальному синтезу).
 SFX_KINDS: tuple[str, ...] = (
@@ -256,20 +261,80 @@ async def plan_sfx_events(
         total=total,
     )
 
-    result = await text_job(
-        project,
-        name="sfx_plan",
-        prompt=prompt,
-        parse=parse_json_object,
-        validate=lambda p: validate_events(
-            _parse_events(p), total_duration=total
-        ),
-        max_attempts=max_attempts,
+    await record_sfx_plan_input(
+        project, frames, timeline=timeline, total_duration=total,
+        scenes=scenes, prompt=prompt,
     )
-    events = _parse_events(result.payload)
+    await _reset_invalid_checkpoint_for_recovery(project, total_duration=total)
+
+    seen: dict[str, Any] = {"reply": None, "payload": None, "parse_failed": False, "shape_error": None}
+
+    def _parse(reply: str) -> dict[str, Any]:
+        seen["reply"] = reply
+        try:
+            payload = parse_json_object(reply)
+        except ValueError:
+            seen["payload"], seen["parse_failed"] = None, True
+            raise
+        seen["parse_failed"] = False
+        return payload
+
+    def _validate(payload: dict[str, Any]) -> list[str]:
+        seen["payload"] = payload
+        try:
+            return validate_events(_parse_events(payload), total_duration=total)
+        except ValueError as error:
+            seen["shape_error"] = error
+            raise
+
+    try:
+        result = await text_job(
+            project,
+            name="sfx_plan",
+            prompt=prompt,
+            parse=_parse,
+            validate=_validate,
+            max_attempts=max_attempts,
+        )
+    except TextJobFailed as error:
+        events: list[SfxEvent] = []
+        if seen["payload"] is not None:
+            try:
+                events = _parse_events(seen["payload"])
+            except ValueError:
+                events = []
+        await record_sfx_parse(
+            seen["payload"], events, [str(error)], source="model", reply=seen["reply"],
+            parse_error=error, parsed=not seen["parse_failed"] and bool(events),
+        )
+        raise
+    except ValueError as error:
+        if error is seen["shape_error"]:
+            await record_sfx_parse(
+                seen["payload"], [], [str(error)], source="model", reply=seen["reply"],
+                parse_error=error,
+            )
+        raise
+    source = "checkpoint" if result.attempts == 0 else "model"
+    reply = seen["reply"] if source == "model" else None
+    try:
+        events = _parse_events(result.payload)
+    except ValueError as error:
+        await record_sfx_parse(
+            result.payload, [], [], source=source, parse_error=error, reply=reply,
+        )
+        raise
+    problems = validate_events(events, total_duration=total)
+    if problems:
+        error = RuntimeError(f"sfx_plan: не прошло валидацию: {problems}")
+        await record_sfx_parse(
+            result.payload, events, problems, source=source, parse_error=error,
+            reply=reply,
+        )
+        raise error
+    await record_sfx_parse(result.payload, events, problems, source=source, reply=reply)
 
     frame_starts = {int(row["frame_number"]): float(row.get("start", 0.0)) for row in timeline}
-    # Артефакт на диск.
     out_path = project.data_dir / "sfx_plan.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
@@ -307,7 +372,9 @@ def load_sfx_plan(project: Project) -> list[SfxEvent] | None:
     cached = ai_job_checkpoint(project, "sfx_plan")
     if isinstance(cached, dict) and isinstance(cached.get("events"), list):
         try:
-            return _parse_events(cached)
+            events = _parse_events(cached)
+            _annotate_selected_sfx_plan(project, "checkpoint", cached)
+            return events
         except ValueError:
             pass
     data_dir = getattr(project, "data_dir", None)
@@ -317,7 +384,389 @@ def load_sfx_plan(project: Project) -> list[SfxEvent] | None:
     if path.is_file():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return _parse_events(data)
+            events = _parse_events(data)
+            _annotate_selected_sfx_plan(project, "file", data)
+            return events
         except (ValueError, json.JSONDecodeError):
             return None
     return None
+
+
+_SFX_FRAME_FIELDS = ("id", "project_id", "uuid", "number", "sort_key",
+                     "voiceover_text", "meaning", "duration_seconds", "attrs")
+
+
+def _sfx_project_id(project):
+    if project is None:
+        return None
+    from sqlalchemy import inspect
+    state = inspect(project, raiseerr=False)
+    return state.identity[0] if state is not None and state.identity else vars(project).get("id")
+
+
+def _sfx_context(project=None, *, node_type=None):
+    from app.services.observation import _attempt
+    ctx = _attempt.get()
+    if (ctx is None or ctx.scope.observer_state not in {"active", "degraded"}
+            or getattr(ctx, "native_attempt_closed", False) or not ctx.attempt_id
+            or ctx.node_key not in ctx.scope.node_keys):
+        return None
+    if project is not None and _sfx_project_id(project) != ctx.scope.project_id:
+        return None
+    if node_type is not None and getattr(ctx, "native_node_type", None) != node_type:
+        return None
+    return ctx
+
+
+def _sfx_entry(ctx):
+    entries = getattr(ctx, "sfx_journal", None)
+    if entries is None:
+        entries = {}
+        ctx.sfx_journal = entries
+    return entries.setdefault((ctx.scope.execution_id, ctx.node_key, ctx.attempt_id), {})
+
+
+async def _sfx_fact(ctx, kind, payload, *, body=None, request_id=None):
+    from app.services.observation import _request, record_fact
+    details = dict(payload)
+    if body is not None:
+        try:
+            details["body"] = ctx.observer.save_body(ctx.scope.execution_id, body)
+        except Exception as error:
+            ctx.observer.mark_gap(ctx.scope.execution_id, error)
+            details["body"] = {"gap": "sfx_body_unavailable", "error_type": type(error).__name__}
+    token = _request.set(request_id)
+    try:
+        await record_fact(kind, details, request_id=request_id)
+    finally:
+        _request.reset(token)
+    return details.get("body")
+
+
+def _frame_snapshot(frame):
+    return {field: deepcopy(getattr(frame, field)) for field in _SFX_FRAME_FIELDS}
+
+
+def _annotate_selected_sfx_plan(project, source, payload):
+    ctx = _sfx_context(project, node_type="sfx_gen")
+    if ctx is not None:
+        ctx.sfx_selected_plan_source = source
+        ctx.sfx_selected_plan_payload = deepcopy(payload)
+
+
+async def record_sfx_plan_input(project, frames, *, timeline, total_duration, scenes, prompt):
+    ctx = _sfx_context(project, node_type="sfx_plan")
+    if ctx is None or frames is None:
+        return
+    frames = list(frames)
+    if any(getattr(frame, "project_id", None) != ctx.scope.project_id for frame in frames):
+        return
+    cached = deepcopy(((getattr(project, "meta", None) or {}).get("ai_jobs", {})
+                       .get("sfx_plan")))
+    snapshot = {"project_id": ctx.scope.project_id, "frames": [_frame_snapshot(frame) for frame in frames],
+                "timeline": deepcopy(timeline), "total_duration": total_duration,
+                "scenes": deepcopy(scenes), "prompt": prompt, "cached_payload": cached}
+    from app.services.observation import digest
+    entry = _sfx_entry(ctx)
+    if entry.get("input") is not None:
+        return
+    ref = await _sfx_fact(ctx, "node_input", {"contract": "native_sfx_plan",
+                          "input_sha256": digest(snapshot)}, body=snapshot)
+    entry.update(input=deepcopy(snapshot), input_sha256=digest(snapshot), input_body=ref)
+
+
+async def record_sfx_generation_input(project, frames, *, source, payload, events, provider):
+    ctx = _sfx_context(project, node_type="sfx_gen")
+    if ctx is None or frames is None:
+        return
+    frames = list(frames)
+    if any(getattr(frame, "project_id", None) != ctx.scope.project_id for frame in frames):
+        return
+    normalized = [event.to_dict() for event in list(events or ())]
+    snapshot = {"project_id": ctx.scope.project_id, "frames": [_frame_snapshot(frame) for frame in frames],
+                "source": source, "payload": deepcopy(payload), "events": normalized,
+                "provider": provider}
+    from app.services.observation import digest
+    entry = _sfx_entry(ctx)
+    if entry.get("input") is not None:
+        return
+    ref = await _sfx_fact(ctx, "node_input", {"contract": "native_sfx_gen",
+                          "input_sha256": digest(snapshot)}, body=snapshot)
+    entry.update(input=deepcopy(snapshot), input_sha256=digest(snapshot), input_body=ref)
+
+
+async def record_sfx_parse(payload, events, problems, *, source, reply=None, parse_error=None,
+                           request_id=None, parsed=None):
+    ctx = _sfx_context()
+    if ctx is None or getattr(ctx, "native_node_type", None) != "sfx_plan":
+        return
+    from app.services.observation import completed_model_request_id, digest
+    normalized = [event.to_dict() for event in list(events or ())]
+    raw_reply = reply is not None and source == "model"
+    syntax_valid = None
+    if raw_reply:
+        try:
+            json.loads(reply)
+            syntax_valid = True
+        except (TypeError, ValueError):
+            syntax_valid = False
+    performed = parse_error is None
+    schema_valid = False if parse_error is not None else bool(normalized and not problems)
+    bound_request = request_id or (completed_model_request_id() if raw_reply else None)
+    if parsed is None:
+        parsed = bool(normalized) or isinstance(parse_error, RuntimeError)
+    payload_present = bool(normalized) or (
+        isinstance(payload, dict) and isinstance(payload.get("events"), list) and bool(payload["events"]))
+    detail = {"contract": "native_sfx_plan", "source": source,
+              "syntax_valid": syntax_valid, "parsed": parsed,
+              "schema_valid": schema_valid, "error_type": type(parse_error).__name__ if parse_error else None,
+              "payload_required": source == "model", "payload_present": payload_present,
+              "nonempty_payload_required": source == "model",
+              "problems": deepcopy(list(problems or ())), "sha256": digest(normalized)}
+    _sfx_entry(ctx)["parse_request_id"] = bound_request
+    await _sfx_fact(ctx, "parse_result", detail,
+                    body={"payload": deepcopy(payload), "events": normalized}, request_id=bound_request)
+    await _sfx_fact(ctx, "runtime_check", {"check": "native_sfx_events_validation", "performed": performed,
+                    "status": "passed" if schema_valid else "failed", "business_commit_claim": False},
+                    request_id=bound_request)
+
+
+async def _reset_invalid_checkpoint_for_recovery(project, *, total_duration):
+    ctx = _sfx_context(project, node_type="sfx_plan")
+    if ctx is None or ctx.session.info.get("recovery_attempt_id") != ctx.attempt_id:
+        return False
+    from app.services.ai_result_io import ai_job_checkpoint, drop_ai_job_checkpoint
+    cached = ai_job_checkpoint(project, "sfx_plan")
+    if cached is None:
+        return False
+    try:
+        problems = validate_events(_parse_events(cached), total_duration=total_duration)
+    except ValueError as error:
+        problems = [str(error)]
+    if not problems:
+        return False
+    drop_ai_job_checkpoint(project, "sfx_plan")
+    await _sfx_fact(ctx, "runtime_check", {
+        "check": "sfx_plan_checkpoint_reset", "performed": True, "status": "passed",
+        "reason": "persisted checkpoint failed validation and was dropped before the supervisor retry",
+        "problems": problems[:5], "business_commit_claim": False})
+    return True
+
+
+def record_sfx_plan_applied(project, events):
+    ctx = _sfx_context(project, node_type="sfx_plan")
+    if ctx is None:
+        return
+    from app.services.observation import emit
+    entry = _sfx_entry(ctx)
+    entry["step_finished"] = True
+    emit("data_applied", {"result": {"ok": True, "node_kind": "sfx_plan", "events": len(events or ()),
+                                     "file": "sfx_plan.json", "checkpoint": "meta.ai_jobs.sfx_plan"},
+                          "transactional": True}, request_id=entry.get("parse_request_id"))
+
+
+def record_sfx_plan_pass_through(project):
+    ctx = _sfx_context(project, node_type="sfx_plan")
+    if ctx is not None:
+        _sfx_entry(ctx)["step_finished"] = True
+
+
+def _sfx_provider_record(record, by_number, path):
+    from app.services.audio_verification import verify_audio
+    verdict = verify_audio(path)
+    codes = [c for c in verdict.codes
+             if not (c in {"unreadable", "level_unknown"} and __import__("shutil").which("ffprobe") is None)]
+    if codes:
+        raise ValueError("provider sfx audio verification failed: " + ",".join(codes))
+    frame = by_number.get(record.get("frame_number"))
+    if frame is None:
+        raise ValueError("native sfx source frame unavailable")
+    return {"idx": record.get("idx"), "path": str(path),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "duration_seconds": verdict.duration,
+            "rms_db": verdict.rms_db,
+            "provider": record.get("provider"),
+            "source_frame": {field: getattr(frame, field) for field in ("id", "project_id", "uuid", "number")},
+            "artifact_row": None}
+
+
+def _sfx_wav_record(record, by_number):
+    path = Path(str(record.get("path") or "")).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+    if path.suffix.lower() != ".wav":
+        return _sfx_provider_record(record, by_number, path)
+    with wave.open(str(path), "rb") as reader:
+        if (reader.getnchannels(), reader.getsampwidth(), reader.getframerate()) != (1, 2, 44100):
+            raise ValueError("unsupported native sfx wav")
+        count = reader.getnframes()
+        pcm = reader.readframes(count)
+    if not count:
+        raise ValueError("empty native sfx wav")
+    from app.services.audio_verification import verify_audio
+    verdict = verify_audio(path, expect_duration=count / 44100, duration_tol=0.25)
+    codes = [c for c in verdict.codes
+             if not (c in {"unreadable", "level_unknown"} and __import__("shutil").which("ffprobe") is None)]
+    if codes:
+        raise ValueError("native sfx audio verification failed: " + ",".join(codes))
+    power = sum(sample[0] ** 2 for sample in __import__("struct").iter_unpack("<h", pcm)) / count
+    if power <= 0:
+        raise ValueError("silent native sfx wav")
+    frame = by_number.get(record.get("frame_number"))
+    if frame is None:
+        raise ValueError("native sfx source frame unavailable")
+    return {"idx": record.get("idx"), "path": str(path),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "duration_seconds": count / 44100,
+            "rms_db": 20 * math.log10(math.sqrt(power) / 32768),
+            "provider": record.get("provider"),
+            "source_frame": {field: getattr(frame, field) for field in ("id", "project_id", "uuid", "number")},
+            "artifact_row": None}
+
+
+def _type_sfx_gen_as_media(proof: dict, failure: BaseException | None) -> dict:
+    typed = {**proof, "contract": "native_media", "node_type": "sfx_gen", "items_total": len(proof.get("files") or [])}
+    if failure is not None:
+        error_type = type(failure).__name__
+        typed.update(status="failed", reason=f"attempt_failed:{error_type}",
+                     attempt_failure={"error_type": error_type, "retryable_by_node": False,
+                                      "new_verified_artifact": False})
+    status = typed["status"]
+    if status == "passed":
+        typed["summary"] = f"Звуки: проверено файлов {typed['items_total']}, структура в порядке (качество не оценивалось)."
+    elif status == "failed":
+        typed["summary"] = ("Звуки: попытка завершилась ошибкой (" + str(typed.get("error_type") or typed.get("reason"))
+                            + "); нового проверенного результата нет.")
+    else:
+        typed["summary"] = "Звуки: результат не подтверждён (нет записанного входа или результата)."
+    return typed
+
+
+async def observe_sfx_result(session, project, node_type="sfx_plan"):
+    ctx = _sfx_context(project, node_type=node_type)
+    if ctx is None or session is None or session.bind is not getattr(ctx.session, "bind", None):
+        return
+    entry = _sfx_entry(ctx)
+    if entry.get("result_started"):
+        return
+    entry["result_started"] = True
+    proof = {"status": "unknown", "reason": "captured native sfx input/body unavailable", "errors": [],
+             "input_sha256": entry.get("input_sha256"), "files": [], "managed_eligible": False,
+             "business_commit_claim": False, "semantic_quality_verified": False, "mix_verified": False}
+    output = {"project_id": ctx.scope.project_id, "node_type": node_type}
+    try:
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+        from app.models import Frame, Project as ProjectModel
+        from sqlalchemy import select
+        async with async_sessionmaker(session.bind, expire_on_commit=False, autoflush=False)() as reader:
+            native = await reader.get(ProjectModel, ctx.scope.project_id)
+            if native is None:
+                raise LookupError("native sfx project unavailable")
+            frames = list((await reader.scalars(select(Frame).where(Frame.project_id == native.id)
+                         .order_by(Frame.sort_key, Frame.number))).all())
+            jobs = deepcopy(((native.meta or {}).get("ai_jobs", {})))
+            if node_type == "sfx_plan":
+                payload = jobs.get("sfx_plan")
+                plan_file = native.data_dir / "sfx_plan.json"
+                output.update(plan_payload=payload,
+                              plan_file=json.loads(plan_file.read_text(encoding="utf-8")) if plan_file.is_file() else None)
+                passed = entry.get("input") is not None and isinstance(payload, dict) and output["plan_file"] is not None
+            else:
+                records = jobs.get("sfx_files", {}).get("files", []) if isinstance(jobs.get("sfx_files"), dict) else []
+                by_number = {frame.number: frame for frame in frames}
+                expected_events = (entry.get("input") or {}).get("events")
+                if not isinstance(expected_events, list) or len(records) != len(expected_events):
+                    raise ValueError("native sfx file coverage differs from captured plan")
+                root = (native.data_dir / "sfx").resolve()
+                for record in records:
+                    candidate = Path(str(record.get("path") or "")).resolve()
+                    if not candidate.is_relative_to(root):
+                        raise ValueError("native sfx checkpoint references a foreign file")
+                files = [_sfx_wav_record(record, by_number) for record in records]
+                output.update(files=files)
+                proof["files"] = files
+                passed = entry.get("input") is not None and bool(files)
+            if passed:
+                proof.update(status="passed", reason=None)
+    except Exception as error:
+        proof.update(status="failed" if entry.get("input") is not None else "unknown",
+                     reason="committed native sfx result unavailable", errors=[type(error).__name__],
+                     error_type=type(error).__name__)
+    if node_type == "sfx_gen":
+        proof = _type_sfx_gen_as_media(proof, getattr(ctx, "attempt_exception", None))
+    await _sfx_fact(ctx, "node_output", {"contract": "native_" + node_type,
+                    "sha256": hashlib.sha256(json.dumps(output, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest(),
+                    "source": "committed original executor rows; independent read session"}, body=output)
+    await _sfx_fact(ctx, "node_result_verification", proof, body=proof)
+    return proof
+
+
+async def observe_sfx_plan_result(session, project, node_type="sfx_plan"):
+    ctx = _sfx_context(project, node_type=node_type)
+    try:
+        proof = await observe_sfx_result(session, project, node_type)
+    except Exception as error:
+        if ctx is not None:
+            ctx.observer.mark_gap(ctx.scope.execution_id, error)
+        if ctx is not None and ctx.scope.mode == "managed":
+            raise
+        return
+    if (proof is None or ctx is None or ctx.scope.mode != "managed"
+            or not _sfx_entry(ctx).get("step_finished") or proof["status"] == "passed"):
+        return
+    from app.services.actions_v1 import ActionSupervisor
+    await ActionSupervisor(ctx.observer.master).set_held(
+        project_id=ctx.scope.project_id, execution_id=ctx.scope.execution_id, held=True,
+        initiator="native_sfx_plan_verifier", rationale=str(proof.get("reason") or proof["status"]),
+        idempotency_key="sfx-plan-verify:" + ctx.attempt_id, operator_request=False)
+    raise RuntimeError("native sfx plan verification not confirmed: " + str(proof.get("reason")))
+
+
+def sfx_plan_contract():
+    return {
+        "node_type": "sfx_plan",
+        "executor": "plan_sfx.run -> sfx_plan.plan_sfx_events -> ai_result_io.text_job",
+        "input": "Frame rows ordered by sort_key/number (duration_seconds, scene attrs) and the "
+                 "_PLAN_PROMPT constant of app/services/sfx_plan.py; no attachments, no images",
+        "output": {"checkpoint": "Project.meta.ai_jobs.sfx_plan", "file": "sfx_plan.json",
+                   "flag": "Project.meta.sfx_plan", "frames_written": False},
+        "format": '{"events": [{"frame_number", "t_start", "duration", "kind", "prompt", "gain", "duck"}]}',
+        "kinds": list(SFX_KINDS),
+        "rules": {"max_events_per_frame": MAX_EVENTS_PER_FRAME, "min_gap_s": MIN_GAP_S,
+                  "duration_s": [MIN_DUR_S, MAX_DUR_S], "gain": [0.05, 1.0],
+                  "t_start": "inside the frame timeline", "prompt": "non-empty"},
+        "payload_required": True,
+        "payload_required_note": "of a model reply only; a replayed checkpoint is not a model answer",
+        "data_applied": "staged by plan_sfx.run in the same transaction as the plan commit "
+                        "(record_sfx_plan_applied); absent for a pass-through",
+        "checkpoint_reset": "inside a supervisor recovery attempt a persisted checkpoint that fails "
+                            "the current timeline rules is dropped before the model call",
+        "native_attempts_per_run": 2,
+        "native_json_retry_fact": False,
+        "verification": "node_result_verification: independent re-read of the plan checkpoint "
+                        "and sfx_plan.json; managed scope holds the execution when it is not 'passed'",
+        "retry_policy": "ONE supervisor retry_same per node and execution, only for invalid_json / "
+                        "missing_payload of a model reply with no data applied; never starts sfx_gen "
+                        "and never changes frames",
+        "human_approval_preserved": True,
+        "semantic_quality_verified": False,
+        "arbitrary_shell_code_paths": False,
+        "write_authority": "existing worker only",
+    }
+
+
+def sfx_plan_current_output(project, frames):
+    from app.services.ai_result_io import ai_job_checkpoint
+    meta = project.meta if isinstance(getattr(project, "meta", None), dict) else {}
+    cached = ai_job_checkpoint(project, "sfx_plan")
+    out = {"checkpoint_present": cached is not None, "plan_flag": bool(meta.get("sfx_plan")),
+           "frame_count": len(frames), "events": None, "problems": []}
+    if cached is None:
+        return out
+    try:
+        events = _parse_events(cached)
+        out["events"] = len(events)
+        out["problems"] = validate_events(events, total_duration=frame_timeline(frames)[-1]["end"])             if frames else ["нет кадров"]
+    except ValueError as error:
+        out["problems"] = [str(error)]
+    return out

@@ -1,0 +1,51 @@
+{
+  "step_code": "hero",
+  "compose_step_id": "04_hero",
+  "label": "Character Sheet",
+  "presets": {
+    "default": {
+      "label": "default",
+      "aliases": [
+        "default",
+        "reworked_default_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта default.md",
+      "blocks": {
+        "world": "cats_anthropomorphic",
+        "visual_style": "epic_pixel_cats_default",
+        "character_anatomy": "anthro_cat_sheet",
+        "composition": "vertical_9_16_character",
+        "lighting": "cinematic_chiaroscuro",
+        "background_density": "isolated_no_background",
+        "negative": "no_humans_no_text"
+      },
+      "extra_blocks": {
+        "hero_source_full": "default_full"
+      }
+    },
+    "norm": {
+      "label": "norm",
+      "aliases": [
+        "norm",
+        "reworked_norm_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта norm.md",
+      "blocks": {
+        "world": "cats_anthropomorphic",
+        "visual_style": "epic_pixel_cats_default",
+        "character_anatomy": "anthro_cat_sheet",
+        "composition": "vertical_9_16_character",
+        "lighting": "cinematic_chiaroscuro",
+        "background_density": "isolated_no_background",
+        "negative": "no_humans_no_text"
+      },
+      "extra_blocks": {
+        "hero_source_full": "norm_full"
+      }
+    }
+  },
+  "preset_order": [
+    "default",
+    "norm"
+  ]
+}

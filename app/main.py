@@ -22,6 +22,7 @@ from loguru import logger
 from app.db import engine
 from app.models import Base, Project, ProjectStatus
 from app.prompts_loader import sync_prompts_from_files
+from app.services.notification_log import notify
 from app.settings import settings
 from app.telegram.bot import build_bot, dp
 
@@ -32,64 +33,21 @@ if (settings.asr_backend or "").strip().lower() == "nvidia":
 
 
 async def _init_db() -> None:
-    from sqlalchemy import text
-
     async with engine.begin() as conn:
+        from app.services.scene_space import models as _scene_space_models
+
         await conn.run_sync(Base.metadata.create_all)
 
         from app.services.db_v2 import migrate_db_v2_schema
+        from app.services.scene_space.migrate import migrate_scene_space_schema
 
         await migrate_db_v2_schema(conn)
+        await migrate_scene_space_schema(conn)
+        from app.services.schema_migrations import migrate_orchestrator_schema
 
-        # Лёгкая миграция: добавляем новые колонки в projects, если их ещё
-        # нет (create_all не умеет ALTER). SQLite поддерживает IF NOT EXISTS
-        # через PRAGMA table_info, но проще — try/except на ADD COLUMN.
-        _new_cols = [
-            ("image_generator", "VARCHAR(40)"),
-            ("aspect_ratio", "VARCHAR(10)"),
-            ("image_resolution", "VARCHAR(10)"),
-            ("image_quality", "VARCHAR(10)"),
-            ("image_relax", "BOOLEAN DEFAULT 0"),
-            ("video_generator", "VARCHAR(40)"),
-            ("video_resolution", "VARCHAR(10)"),
-            ("video_relax", "BOOLEAN DEFAULT 0"),
-            ("hero_count", "INTEGER"),
-            ("hero_descriptions", "JSON"),
-            ("hero_variations", "JSON"),
-            ("hero_variation_modifiers", "JSON"),
-            ("prompt_overrides", "JSON"),
-            ("gpt_text_overrides", "JSON"),
-            # Pipeline-redesign: «Объекты» (Персонажи+Предметы) и слоты
-            # «Доп работа с EXCEL».
-            ("enrich_slots_count", "INTEGER DEFAULT 3"),
-            ("item_descriptions", "JSON"),
-            ("item_variations", "JSON"),
-            # Массовое создание: каждая запись projects может принадлежать
-            # массовому проекту (BatchProject). batch_slug дублирован для
-            # быстрого построения data_dir без join к batch_projects.
-            ("batch_id", "INTEGER"),
-            ("batch_position", "INTEGER"),
-            ("batch_slug", "VARCHAR(120)"),
-            ("auto_mode", "BOOLEAN DEFAULT 0"),
-            ("title", "VARCHAR(240)"),
-        ]
-        cols_rows = (
-            await conn.exec_driver_sql("PRAGMA table_info(projects)")
-        ).fetchall()
-        existing = {row[1] for row in cols_rows}
-        for col, ctype in _new_cols:
-            if col in existing:
-                continue
-            try:
-                await conn.exec_driver_sql(
-                    f"ALTER TABLE projects ADD COLUMN {col} {ctype}"
-                )
-                logger.info("migrate: projects.{} added", col)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("migrate: add column {} failed: {}", col, e)
-        _ = text  # keep import usage neutral
+        await migrate_orchestrator_schema(conn)
 
-        # Миграция со статуса `failed` (его больше не используем): просто
+
         # сбрасываем в `new`, дальше recompute_all поднимет до правильного
         # уровня по данным.
         try:
@@ -108,6 +66,15 @@ async def _init_db() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("auto_migrate_legacy_projects failed in main (non-fatal)")
 
+    try:
+        from app.services.project_db_guard import migrate_existing_project_dbs
+
+        schema_report = await migrate_existing_project_dbs()
+        if schema_report["failed"]:
+            logger.error("main init_db: project.db schema migration failed for {}", schema_report["failed"])
+    except Exception:
+        logger.exception("migrate_existing_project_dbs failed in main (non-fatal)")
+
 
 async def _backfill_from_disk() -> None:
     """ROOT FIX: подтягиваем project.xlsx и voiceover.txt в БД для всех
@@ -122,6 +89,8 @@ async def _backfill_from_disk() -> None:
     """
     from sqlalchemy import func, select
     from sqlalchemy.orm.attributes import flag_modified
+
+    from pathlib import Path
 
     from app.db import session_scope
     from app.models import Frame, Project
@@ -351,6 +320,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
             if db_locked_err is not None:
                 raise db_locked_err
             assert result is not None
+            if not result.prev_status:
+                return
             async with session_scope() as s:
                 p = await s.get(Project, project_id)
                 if p is not None:
@@ -430,42 +401,76 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                     f"⚠️ #{p.id} ({p.status.value}): "
                                     f"{type(e).__name__}: {e}"
                                 )
-                            await bot.send_message(
-                                settings.telegram_owner_chat_id, msg[:3800]
+                            await notify(
+                                bot, "send_message",
+                                settings.telegram_owner_chat_id, msg[:3800],
+                                kind="step_failure_retry", project_id=p.id,
                             )
                         elif action == "sleep":
-                            await bot.send_message(
+                            await notify(
+                                bot, "send_message",
                                 settings.telegram_owner_chat_id,
                                 (
                                     f"😴 #{p.id}: 3 ошибки — reset, "
                                     f"пауза 30 мин (макс. 9 попыток)"
                                 )[:3800],
+                                kind="step_failure_sleep",
+                                project_id=p.id,
                             )
                         elif action == "abandon":
-                            await bot.send_message(
+                            await notify(
+                                bot, "send_message",
                                 settings.telegram_owner_chat_id,
                                 (
                                     f"🛑 #{p.id}: 3 цикла отказов — "
                                     f"paused, следующий в очереди"
                                 )[:3800],
+                                kind="step_failure_abandon",
+                                project_id=p.id,
                             )
                             from app.services.gen_queue import gen_queue_tick
 
                             await gen_queue_tick(s)
                             await s.commit()
                         elif action == "pause_infra":
-                            await bot.send_message(
+                            await notify(
+                                bot, "send_message",
                                 settings.telegram_owner_chat_id,
                                 (
                                     f"🌐 #{p.id}: Chrome не восстановился — "
                                     f"paused. Start-Chrome.cmd + ▶"
                                 )[:3800],
+                                kind="step_failure_pause_infra",
+                                project_id=p.id,
                             )
                 fail_counts.pop(key, None)
-            except Exception:  # noqa: BLE001
-                logger.warning(
+            except Exception:
+                logger.exception(
                     "step_failure_policy failed for #{}", project_id
                 )
+                try:
+                    from app.project_db import project_db_session_scope
+                    from app.services.project_state import is_running_status
+                    from app.services.run_sync import prepare_node_for_step_start
+                    from app.telegram.menu import step_by_running_status
+
+                    async with project_db_session_scope(project_id) as ps:
+                        rp = await ps.get(Project, project_id)
+                        if rp is not None and is_running_status(rp.status):
+                            st = step_by_running_status(rp.status)
+                            meta = rp.meta if isinstance(rp.meta, dict) else {}
+                            await prepare_node_for_step_start(
+                                ps,
+                                rp,
+                                st.code if st else rp.status.value,
+                                node_key=meta.get("active_excel_gpt_node_key"),
+                                explicit_ui_start=True,
+                            )
+                            await ps.commit()
+                except Exception:
+                    logger.exception(
+                        "fallback unstick after policy fail #{}", project_id
+                    )
         finally:
             unregister_advance_task(project_id)
 
@@ -527,6 +532,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
 
                 for p in projects:
                     if is_user_stopped(p):
+                        from app.services.observation import stage_project_fact
+                        stage_project_fact(s, p, "runtime_wait", {"reason": "user_stop", "initiator": "worker", "human_identity": None})
                         logger.debug(
                             "worker: #{} {} — user_stop, пропуск тика",
                             p.id,
@@ -534,19 +541,17 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         )
                         continue
                     if project_gated_by_gen_queue(p.id):
-                        logger.debug(
-                            "worker: #{} {} — не в gen_queue, пропуск тика",
+                        logger.info(
+                            "worker: #{} {} — не в gen_queue, но шаг уже running — берём",
                             p.id,
                             p.status.value,
                         )
-                        continue
                     if should_hold_queue_auto_advance(p):
-                        logger.debug(
-                            "worker: #{} {} — gen_queue target reached/passed, пропуск тика",
+                        logger.info(
+                            "worker: #{} {} — until_node пройден, но шаг уже running — берём",
                             p.id,
                             p.status.value,
                         )
-                        continue
                     if is_stop_requested(p.id):
                         from app.services.step_cancel import stop_flag_path
 
@@ -575,8 +580,32 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.status.value,
                         )
                         continue
+                    from app.services.excel_gpt_node import (
+                        excel_gpt_already_completed_no_force,
+                        slot_from_running_status,
+                    )
+                    from app.telegram.menu import step_by_running_status
+
+                    if (
+                        slot_from_running_status(p.status) is not None
+                        and excel_gpt_already_completed_no_force(p)
+                    ):
+                        st = step_by_running_status(p.status)
+                        if st is not None:
+                            logger.info(
+                                "worker: #{} {} node already in completed_keys "
+                                "— {} without GPT restart",
+                                p.id,
+                                p.status.value,
+                                st.ready_status.value,
+                            )
+                            p.status = st.ready_status
+                            await s.commit()
+                        continue
                     queue_blocker = await gen_queue_blocks_project(s, p.id)
                     if queue_blocker is not None:
+                        from app.services.observation import stage_project_fact
+                        stage_project_fact(s, p, "runtime_wait", {"reason": "queue_predecessor", "blocking_project_id": queue_blocker, "initiator": "worker"})
                         logger.debug(
                             "worker: #{} {} — ждём очередь, блокирует #{}",
                             p.id,
@@ -585,6 +614,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         )
                         continue
                     if is_sleeping(p):
+                        from app.services.observation import stage_project_fact
+                        stage_project_fact(s, p, "runtime_wait", {"reason": "failure_sleep", "until": str(failure_sleep_until(p)), "initiator": "worker"})
                         logger.info(
                             "worker: #{} {} — пауза после ошибок до {}, пропуск тика",
                             p.id,
@@ -595,6 +626,8 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                         if is_sleeping(p):
                             continue
                     if slots_free <= 0:
+                        from app.services.observation import stage_project_fact
+                        stage_project_fact(s, p, "runtime_wait", {"reason": "parallel_slots_full", "max_parallel": max_parallel, "initiator": "worker"})
                         logger.debug(
                             "worker: #{} {} — нет свободных слотов "
                             "(max_parallel={})",
@@ -643,7 +676,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                 try:
                     from app.orchestrator.auto_advance import (
                         TRANSITIONS,
-                        maybe_auto_advance,
+                        maybe_auto_advance_for_worker,
                         serial_tick_batches,
                         serial_tick_mass_lanes,
                     )
@@ -687,7 +720,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 continue
                         prev = ap.status.value
                         try:
-                            advanced = await maybe_auto_advance(s, ap, bot)
+                            advanced = await maybe_auto_advance_for_worker(s, ap, bot)
                         except Exception:  # noqa: BLE001
                             logger.exception(
                                 "auto_advance failed for #{}", ap.id
@@ -800,7 +833,7 @@ async def _startup_maintenance() -> None:
             if _spec and _spec.loader:
                 _mod = importlib.util.module_from_spec(_spec)
                 _spec.loader.exec_module(_mod)
-                stash_report = _mod.recover_prompts_on_startup()
+                stash_report = await asyncio.to_thread(_mod.recover_prompts_on_startup)
                 n = len(stash_report.get("restored") or [])
                 if n:
                     logger.warning("prompts recovered on startup: {} file(s)", n)
@@ -906,9 +939,22 @@ async def main() -> None:
             "проксируются через VPS-relay. Для прямого подключения к API очистите GPT_RELAY_TOKEN в .env"
         )
     await _init_db()
+    try:
+        from app.services.balance_adapters import register_default_adapters
+
+        register_default_adapters()
+    except Exception:
+        logger.exception("balance adapters registration failed (non-fatal)")
 
     from app.db import session_scope
     from app.services.startup_guard import block_pipeline_autorun_on_startup
+
+    try:
+        from app.services.media_resume import reconcile_on_startup as _media_reconcile
+
+        await _media_reconcile()
+    except Exception:
+        logger.exception("media resume reconcile failed (non-fatal)")
 
     async with session_scope() as s:
         guard_stats = await block_pipeline_autorun_on_startup(s)

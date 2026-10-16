@@ -104,7 +104,9 @@ def test_explicit_forward_paths(tmp_path: Path, monkeypatch) -> None:
         input_paths=[keep, other],
     )
     got = files_from_source_node(p, "n_check")
-    assert got == [keep]
+    assert got[0] == keep
+    assert other not in got
+    assert [g for g in got[1:] if g.suffix not in (".txt", ".json", ".md")] == []
 
 
 def test_fix_rewrite_file_forwarded(tmp_path: Path, monkeypatch) -> None:

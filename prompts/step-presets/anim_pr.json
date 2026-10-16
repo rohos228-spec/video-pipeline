@@ -1,0 +1,49 @@
+{
+  "step_code": "anim_pr",
+  "compose_step_id": "07_animation",
+  "label": "Animation",
+  "presets": {
+    "default": {
+      "label": "default",
+      "aliases": [
+        "default",
+        "reworked_default_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта default.md",
+      "blocks": {
+        "visual_style": "epic_pixel_cats_default",
+        "camera_motion": "slow_push_in",
+        "anim_motion_layers": "three_plane_motion",
+        "lighting": "cinematic_chiaroscuro",
+        "anim_output_contract": "veo_single_prompt",
+        "anim_negative": "no_style_shift"
+      },
+      "extra_blocks": {
+        "anim_source_full": "default_full"
+      }
+    },
+    "norm": {
+      "label": "норм",
+      "aliases": [
+        "норм",
+        "reworked_norm_blocks_v2"
+      ],
+      "description": "Структурированный вариант legacy-промта норм.md",
+      "blocks": {
+        "visual_style": "epic_pixel_cats_default",
+        "camera_motion": "slow_push_in",
+        "anim_motion_layers": "three_plane_motion",
+        "lighting": "cinematic_chiaroscuro",
+        "anim_output_contract": "veo_single_prompt",
+        "anim_negative": "no_style_shift"
+      },
+      "extra_blocks": {
+        "anim_source_full": "norm_full"
+      }
+    }
+  },
+  "preset_order": [
+    "default",
+    "norm"
+  ]
+}

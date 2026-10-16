@@ -1,0 +1,376 @@
+import asyncio
+import importlib
+import json
+
+import httpx
+import pytest
+from fastapi import FastAPI
+
+import app.services.decision_v1
+from app.orchestrator import node_registry, node_spec
+from app.orchestrator.node_spec import (
+    COVERAGE_FIELDS, COVERAGE_LEVELS, KNOWN_FORBIDDEN_CODES, CapabilitySpec, capability_from_manifest,
+    coverage_evidence, coverage_level, registered_capability_specs,
+)
+from app.services import node_capabilities, node_coverage
+from app.services.node_capabilities import MEDIA_RECOVERY_DECISIONS, READ_ACTIONS, capability_for
+
+RETRY = {"retry_same", "retry_profile"}
+SPECS = registered_capability_specs()
+REGISTRY_TYPES = node_coverage.registry_node_types()
+
+RECOVERING = {"plan", "script", "excel_gpt", "sfx_plan", "animation_prompts", "videos", "items", "music", "assemble",
+              "sd_agent", "sd_assemble", "split", "image_prompts", "images", "hero", "audio", "sfx_gen"}
+RECOVERY_ONLY = {"videos", "items", "music", "hero", "audio", "sfx_gen"}
+LOCAL_RESUME = {"images", "hero", "audio", "sfx_gen"}
+LOCAL_RECOVERY = {"assemble"}
+EXPECTED_LEVELS = {
+    "managed": {"plan", "script", "split", "image_prompts", "excel_gpt", "images", "sfx_plan",
+                "animation_prompts", "videos", "items", "music", "assemble", "sd_agent", "sd_assemble",
+                "hero", "audio", "sfx_gen"},
+    "observed": {"scene_design", "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5"},
+    "human_only": {"publish"},
+}
+
+
+
+def test_every_registered_node_type_has_a_capability_spec():
+    assert node_coverage.uncovered_node_types() == []
+    assert set(REGISTRY_TYPES) <= set(SPECS)
+
+
+def test_the_guard_fires_for_a_node_type_added_without_a_spec():
+    probe = "coverage_probe_node"
+    node_registry.WORK_NODES[probe] = node_registry.WorkNodeSpec(
+        probe, probe, next(iter(node_registry.WORK_NODES.values())).running_status,
+        next(iter(node_registry.WORK_NODES.values())).ready_status)
+    try:
+        assert probe in node_coverage.uncovered_node_types()
+        assert probe not in {row["node_type"] for row in node_coverage.node_coverage()["nodes"]}
+        assert node_coverage.node_coverage()["uncovered"] == [probe]
+    finally:
+        del node_registry.WORK_NODES[probe]
+    assert node_coverage.uncovered_node_types() == []
+
+
+def test_registry_lists_all_23_work_nodes_and_the_virtual_excel_gpt():
+    assert len(node_registry.WORK_NODES) == 23
+    assert set(REGISTRY_TYPES) == set(node_registry.WORK_NODES) | {"excel_gpt"}
+    assert len(REGISTRY_TYPES) == len(set(REGISTRY_TYPES))
+
+
+
+def test_levels_are_exactly_the_expected_partition():
+    actual = {level: {t for t in REGISTRY_TYPES if coverage_level(SPECS[t]) == level} for level in COVERAGE_LEVELS}
+    assert actual == EXPECTED_LEVELS
+    assert set().union(*actual.values()) == set(REGISTRY_TYPES)
+
+
+@pytest.mark.parametrize("node_type", REGISTRY_TYPES)
+def test_level_matches_its_evidence(node_type):
+    spec = SPECS[node_type]
+    level = coverage_level(spec)
+    assert level in COVERAGE_LEVELS
+    evidence = coverage_evidence(spec)
+    if level == "managed":
+        assert spec.effective_managed and spec.acceptance
+    elif level == "observed":
+        assert not spec.effective_managed and evidence, "observed needs a result check or a description"
+    else:
+        assert not spec.effective_managed and not evidence
+        assert not spec.recovery_actions
+    for name in evidence:
+        assert name.split(":", 1)[0] in {"verifier", "hook", "descriptive_contract"}
+
+
+@pytest.mark.parametrize("node_type", [t for t in REGISTRY_TYPES if SPECS[t].observation_hook])
+def test_observation_hooks_resolve_to_real_callables(node_type):
+    module, _, attr = SPECS[node_type].observation_hook.partition(":")
+    assert callable(getattr(importlib.import_module(module), attr))
+
+
+
+@pytest.mark.parametrize("node_type", REGISTRY_TYPES)
+def test_no_recovery_means_a_coded_reason_and_recovery_means_a_cap(node_type):
+    spec = SPECS[node_type]
+    if spec.recovery_actions:
+        assert spec.forbidden_code is None and spec.forbidden_reason is None
+        assert spec.recovery_cap == 1, "the supervisor recovers a node once per execution"
+        assert spec.limits, "a recovering node must state what stays forbidden"
+        assert spec.verifies, "a recovering node must state what is verified"
+    else:
+        assert spec.forbidden_code in KNOWN_FORBIDDEN_CODES, node_type
+        assert spec.recovery_cap == 0
+        assert len(spec.forbidden_reason.split()) >= 10, node_type
+        assert not RETRY & set(spec.actions)
+
+
+def test_only_the_expected_nodes_recover():
+    assert {t for t in REGISTRY_TYPES if SPECS[t].recovery_actions} == RECOVERING
+    for node_type in RECOVERING:
+        assert SPECS[node_type].effective_managed
+
+
+def test_every_media_decision_node_is_resume_only_local_retry_or_has_a_coded_human_only_reason():
+    for node_type, decision in MEDIA_RECOVERY_DECISIONS.items():
+        spec = SPECS[node_type]
+        if node_type in LOCAL_RECOVERY:
+            assert decision["decision"] == "local_retry", node_type
+            assert spec.local_recovery and not spec.recovery_only and spec.effective_managed, node_type
+            assert spec.forbidden_code is None and spec.recovery_actions == ("retry_same",), node_type
+        elif node_type in LOCAL_RESUME:
+            assert decision["decision"] == "resume_local", node_type
+            assert spec.effective_managed and spec.forbidden_code is None, node_type
+            assert spec.recovery_actions == ("retry_same",) and spec.recovery_only is (node_type in RECOVERY_ONLY), node_type
+        elif node_type in RECOVERY_ONLY:
+            assert decision["decision"] == "resume_only", node_type
+            assert spec.recovery_only and spec.effective_managed and spec.forbidden_code is None, node_type
+            assert spec.recovery_actions == ("retry_same",), node_type
+        else:
+            assert decision["decision"] == "human_only", node_type
+            assert spec.forbidden_code and not spec.recovery_actions and not spec.recovery_only, node_type
+
+
+def test_recovery_only_nodes_can_never_be_started_by_the_supervisor():
+    for node_type in RECOVERY_ONLY:
+        with pytest.raises(ValueError, match="recovery only"):
+            node_capabilities.require_managed_capability(node_type)
+    for node_type in LOCAL_RECOVERY:
+        with pytest.raises(ValueError, match="recovery only"):
+            node_capabilities.require_managed_capability(node_type)
+        assert node_capabilities.require_managed_capability(node_type, recovery_claim=True).managed
+    for node_type in RECOVERING - RECOVERY_ONLY - LOCAL_RECOVERY:
+        assert node_capabilities.require_managed_capability(node_type).managed
+
+
+def test_only_recovery_only_nodes_carry_the_flag():
+    assert {t for t, s in SPECS.items() if s.recovery_only} == RECOVERY_ONLY
+    assert {t for t, s in SPECS.items() if s.local_recovery} == LOCAL_RECOVERY
+    assert not COVERAGE_FIELDS - {"verifies", "limits", "observation_hook", "forbidden_code",
+                                  "forbidden_reason", "recovery_cap", "recovery_only", "local_recovery"}
+
+
+def test_coverage_only_entries_change_no_behaviour():
+    for node_type in ("scene_design", "enrich_3"):
+        cap = capability_for(node_type)
+        unknown = capability_for("future-unsupported")
+        assert (cap.result_kind, cap.executor, cap.phases, cap.effects, cap.actions, cap.managed) == (
+            unknown.result_kind, unknown.executor, unknown.phases, unknown.effects, unknown.actions, unknown.managed)
+        assert cap.node_type == node_type
+
+
+def test_forbidden_code_table_has_no_unused_or_unexplained_codes():
+    used = {s.forbidden_code for s in SPECS.values() if s.forbidden_code}
+    assert used <= set(KNOWN_FORBIDDEN_CODES)
+    assert set(KNOWN_FORBIDDEN_CODES) <= used, "remove codes nothing uses"
+    assert all(len(text.split()) >= 5 for text in KNOWN_FORBIDDEN_CODES.values())
+
+
+
+def test_coverage_notes_do_not_enter_the_recovery_revision():
+    from app.services import revisions
+    cap = capability_for("sfx_plan")
+    data = revisions.capability_data("sfx_plan", cap)
+    assert not COVERAGE_FIELDS & set(data["spec"])
+    original = SPECS["sfx_plan"]
+    from dataclasses import replace
+    try:
+        node_spec._CAPABILITY_SPECS["sfx_plan"] = replace(original, limits=("edited note",), verifies=())
+        assert revisions.capability_data("sfx_plan", cap) == data
+    finally:
+        node_spec._CAPABILITY_SPECS["sfx_plan"] = original
+
+
+def test_capability_payload_has_no_coverage_fields():
+    keys = set(capability_for("sfx_plan").contract())
+    assert not (COVERAGE_FIELDS | {"forbidden", "level"}) & keys
+
+
+
+def _manifest(**block):
+    return {"nodeapi": 1, "type": "manifest_text",
+            "orchestrator": {"result_kind": "structured", "executor": "text_job.run", **block}}
+
+
+def test_manifest_carries_coverage_data():
+    spec = capability_from_manifest(_manifest(
+        verifies=["Результат перечитывается"], limits=["Один повтор"], forbidden_code="legacy_node_type",
+        forbidden_reason="Устаревший тип узла: переносим граф на новый тип прежде чем включать", recovery_cap=1,
+        observation_hook="app.services.observation:observe_attempt"))
+    assert spec.forbidden_code == "legacy_node_type" and spec.recovery_cap == 1
+    assert spec.verifies == ("Результат перечитывается",)
+
+
+@pytest.mark.parametrize("bad", [
+    {"forbidden_code": "because_i_said_so"},
+    {"recovery_cap": 2},
+    {"recovery_cap": True},
+    {"verifies": "not a list"},
+])
+def test_manifest_rejects_bad_coverage_data(bad):
+    with pytest.raises(ValueError):
+        capability_from_manifest(_manifest(**bad))
+
+
+
+def test_panel_data_is_complete_serializable_and_honest():
+    data = node_coverage.node_coverage()
+    json.dumps(data, ensure_ascii=False)
+    rows = {row["node_type"]: row for row in data["nodes"]}
+    assert set(rows) == set(REGISTRY_TYPES) and data["uncovered"] == []
+    assert data["summary"]["total"] == len(REGISTRY_TYPES) == 24
+    assert data["summary"]["with_automatic_recovery"] == len(RECOVERING)
+    assert sum(data["summary"][level] for level in COVERAGE_LEVELS) == 24
+    assert data["automatic_actions"] is False and data["semantic_quality_verified"] is False
+    for node_type, row in rows.items():
+        assert row["level"] in COVERAGE_LEVELS and row["level_label"] and row["title"]
+        if node_type in RECOVERING:
+            assert row["forbidden"] is None and set(row["recovery"]["actions"]) <= RETRY
+            assert row["recovery"]["cap_per_node"] == 1
+        else:
+            assert row["recovery"]["actions"] == []
+            assert row["forbidden"]["code"] in KNOWN_FORBIDDEN_CODES
+            assert row["forbidden"]["reason"] and row["forbidden"]["meaning"]
+    assert rows["sfx_plan"]["recovery"]["actions"] == ["retry_same", "retry_profile"]
+    assert rows["split"]["recovery"]["actions"] == ["retry_same", "retry_profile"]
+    assert rows["image_prompts"]["recovery"]["actions"] == ["retry_same", "retry_profile"]
+    for node_type in RECOVERING:
+        assert rows[node_type]["recovery"]["resume_only"] is (node_type in RECOVERY_ONLY), node_type
+    assert rows["videos"]["level"] == "managed" and rows["videos"]["recovery"]["profile_compatible"] is False
+    assert rows["hero"]["forbidden"] is None and rows["hero"]["level"] == "managed"
+    assert rows["hero"]["recovery"]["actions"] == ["retry_same"] and rows["hero"]["recovery"]["resume_only"] is True
+    assert rows["assemble"]["forbidden"] is None and rows["assemble"]["level"] == "managed"
+    assert rows["assemble"]["recovery"]["actions"] == ["retry_same"] and rows["assemble"]["recovery"]["resume_only"] is False
+    assert rows["sfx_plan"]["recovery"]["profile_compatible"] is True
+    assert rows["animation_prompts"]["recovery"]["profile_compatible"] is False
+    assert rows["plan"]["recovery"]["profile_compatible"] is True
+    assert rows["publish"]["level"] == "human_only"
+
+
+def test_endpoint_serves_the_same_data():
+    from app.web.routers import observations as api
+
+    async def call():
+        app = FastAPI()
+        app.include_router(api.router, prefix="/api")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+            return await client.get("/api/projects/7/observations/node-coverage")
+
+    response = asyncio.run(call())
+    assert response.status_code == 200
+    body = response.json()
+    assert {row["node_type"] for row in body["nodes"]} == set(REGISTRY_TYPES)
+    assert body["uncovered"] == [] and body["summary"]["total"] == 24
+    assert next(r for r in body["nodes"] if r["node_type"] == "hero")["forbidden"] is None
+
+
+def test_new_specs_are_visible_in_capability_registry_and_verifiers_resolve():
+    for name in ("sfx_plan_result", "sfx_result", "animation_result"):
+        assert callable(node_spec.registered_verifiers()[name].resolve())
+    assert node_spec.verifier_spec_for("animation_prompts").name == "animation_result"
+    assert node_spec.verifier_spec_for("sfx_plan").name == "sfx_plan_result"
+    assert node_spec.verifier_spec_for("sfx_gen").name == "sfx_result"
+    assert node_spec.contract_name_for(capability_for("sfx_plan")) == "sfx_plan"
+    assert node_spec.contract_name_for(capability_for("animation_prompts")) == "animation_prompts"
+    assert node_capabilities.capability_for("sfx_plan").actions == READ_ACTIONS + ("retry_same", "retry_profile", "finish")
+
+
+
+SCENE_NODES = {"scene_design": "legacy_node_type"}
+
+
+def test_sd_agent_is_managed_per_type_but_admitted_per_agent():
+    from app.orchestrator.node_spec import node_admission_problem
+    from app.services.scene_contracts import RETRY_ADMITTED_AGENTS, SLICE_AGENTS
+    spec = SPECS["sd_agent"]
+    assert coverage_level(spec) == "managed" and spec.recovery_actions == ("retry_same", "retry_profile")
+    assert spec.recovery_cap == 1 and spec.profile_compatible is True
+    assert spec.forbidden_code is None and not spec.recovery_only and not spec.local_recovery
+    assert spec.verifier == "scene_agent_result" and spec.contract == "scene_agent"
+    assert any("skeleton" in line and "camera" in line and "action" in line for line in spec.limits)
+    for agent in SLICE_AGENTS:
+        node = {"id": "n", "type": "excel_gpt", "data": {"sd_agent": agent}}
+        assert (node_admission_problem(node) is None) == (agent in RETRY_ADMITTED_AGENTS), agent
+        if agent in RETRY_ADMITTED_AGENTS:
+            assert node_capabilities.require_managed_node(node).managed
+        else:
+            with pytest.raises(ValueError, match="not admitted"):
+                node_capabilities.require_managed_node(node)
+    legacy = {"id": "n", "type": "scene_design", "data": {}}
+    assert "legacy_union" in node_admission_problem(legacy)
+
+
+@pytest.mark.parametrize("node_type", sorted(SCENE_NODES))
+def test_scene_nodes_are_observed_through_the_result_hook_and_recovery_stays_forbidden(node_type):
+    spec = SPECS[node_type]
+    assert coverage_level(spec) == "observed" and "hook:" + spec.observation_hook in coverage_evidence(spec)
+    assert spec.observation_hook == "app.services.scene_contracts:observe_scene_result"
+    assert spec.forbidden_code == SCENE_NODES[node_type] and not spec.recovery_actions
+    assert any("invalid_json" in line and "contract_rejected" in line for line in spec.verifies), node_type
+
+
+def test_sd_assemble_is_managed_with_one_retry_proven_by_the_dry_run():
+    from app.orchestrator.node_spec import node_admission_problem
+    spec = SPECS["sd_assemble"]
+    assert coverage_level(spec) == "managed" and spec.recovery_actions == ("retry_same", "retry_profile")
+    assert spec.recovery_cap == 1 and spec.profile_compatible is True
+    assert spec.forbidden_code is None and not spec.recovery_only and not spec.local_recovery
+    assert spec.verifier == "scene_agent_result" and spec.contract == "scene_agent"
+    assert spec.acceptance == "native_scene_assembly"
+    assert any("invalid_json" in line and "contract_rejected" in line for line in spec.verifies)
+    assert any("chrono_dyn" in line for line in spec.limits)
+    node = {"id": "n", "type": "sd_assemble", "data": {"sd_agent": "assemble"}}
+    assert node_admission_problem(node) is None and node_capabilities.require_managed_node(node).managed
+
+
+def test_scene_contracts_describe_every_agent_marker_and_never_offer_a_retry():
+    from app.services.scene_contracts import SLICE_AGENTS, scene_contract
+    for agent in SLICE_AGENTS:
+        contract = scene_contract({"id": "n", "type": "sd_agent", "data": {"sd_agent": agent}})
+        assert contract["supported"] and contract["agent"] == agent, agent
+        assert set(contract["actions"]) == {"read_events", "read_contract", "wait", "human_review"}
+    legacy = scene_contract({"id": "n", "type": "scene_design", "data": {}})
+    assert legacy["supported"] and legacy["agent"] == "legacy" and "retry_same" not in legacy["actions"]
+
+
+def test_animation_prompts_names_its_degradation_fact_and_it_is_not_a_recovery_incident():
+    from app.services.decision_v1 import RECOVERY_INCIDENTS
+    from app.services.diagnosis import TITLES
+    from app.services.native_animation_contracts import animation_prompts_contract
+    assert any("animation_degraded" in line for line in SPECS["animation_prompts"].limits)
+    assert "animation_degraded" in TITLES and "animation_degraded" not in RECOVERY_INCIDENTS
+    assert animation_prompts_contract()["degradation_facts"]["fact_kind"] == "animation_degraded"
+
+
+
+@pytest.mark.parametrize("node_type", ["audio", "sfx_gen", "hero", "images"])
+def test_local_resume_nodes_offer_retry_same_for_a_recorded_result_only(node_type):
+    spec = SPECS[node_type]
+    assert coverage_level(spec) == "managed" and spec.forbidden_code is None
+    assert spec.recovery_actions == ("retry_same",) and "retry_profile" not in spec.actions
+    assert not spec.local_recovery and spec.recovery_cap == 1
+    assert node_type in RECOVERING and capability_for(node_type).managed
+    assert MEDIA_RECOVERY_DECISIONS[node_type]["decision"] == "resume_local"
+    text = " ".join(spec.limits)
+    assert "resume_local" in text and "retry_same_not_admitted" in text
+    assert "ТОЛЬКО локальное возобновление" in text
+
+
+def test_assemble_is_managed_for_a_local_rerun_and_its_text_names_what_the_dry_run_proved():
+    from pathlib import Path
+    spec = SPECS["assemble"]
+    assert coverage_level(spec) == "managed" and spec.local_recovery and spec.forbidden_code is None
+    assert spec.recovery_cap == 1 and spec.acceptance == "local_assemble_dry_run"
+    text = " ".join(spec.verifies + spec.limits).lower()
+    for proven in ("verify_artifact", "approve_final", "журнал платных задач не вырос", "один билет",
+                   "платный запрос недостижим", "ошибки входа"):
+        assert proven in text, proven
+    assert any("test_media_dry_run_local_nodes.py" in line for line in spec.limits)
+    assert (Path(__file__).parent / "test_media_dry_run_local_nodes.py").is_file()
+    assert "approve_final" in MEDIA_RECOVERY_DECISIONS["assemble"]["reason"]
+
+
+def test_audio_and_sfx_gen_say_that_only_a_finished_file_is_resumed_by_the_supervisor():
+    assert any("resume_local" in line and "надзор" in line.lower() for line in SPECS["audio"].limits)
+    assert any("resume_local" in line for line in SPECS["sfx_gen"].limits)

@@ -15,7 +15,7 @@ import { NodeStudio } from "@/components/studio/node-studio";
 import { api } from "@/lib/api";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { gptTextSlotForNode, resolvePromptSlots, resolvePromptSlotsForNode, type NodePromptSlot } from "@/lib/node-prompts";
-import { isExcelGptNode, EXCEL_GPT_STEP_CODE } from "@/lib/excel-gpt-config";
+import { isExcelGptNode, isShotsReportNode, EXCEL_GPT_STEP_CODE } from "@/lib/excel-gpt-config";
 import { withSlotVariant } from "@/lib/prompt-slot-storage";
 import { stepCodeForNodeType } from "@/lib/node-step-map";
 import { getNodeSpec } from "@/lib/node-catalog";
@@ -146,8 +146,9 @@ export function StudioWorkspace({
           slots[0] ??
           null;
       }
-      const focusTab =
-        slot?.kind === "excel" && isExcelGptNode(nodeType)
+      const focusTab = isShotsReportNode(nodeKey)
+        ? "results"
+        : slot?.kind === "excel" && isExcelGptNode(nodeType)
           ? "settings"
           : focus?.kind === "excel"
             ? "excel"
@@ -435,7 +436,7 @@ export function StudioWorkspace({
         await persistMeta({ custom_prompts: custom });
         toast.success("Промт удалён");
       },
-      onRunNode: async (nodeKey: string, nodeType: string, mode: "full" | "resume" = "full") => {
+      onRunNode: async (nodeKey: string, nodeType: string, mode: "full" | "resume" = "resume") => {
         if (!projectId) return;
         if (disabledNodes.has(nodeKey)) {
           toast.error("Нода отключена — включите её в меню V");
@@ -453,9 +454,9 @@ export function StudioWorkspace({
           }
           await api.runProjectStep(projectId, step, { nodeKey, mode });
           toast.success(
-            mode === "resume"
-              ? `Доделка: ${getNodeSpec(nodeType).label}`
-              : `Запущен начисто: ${getNodeSpec(nodeType).label}`,
+            mode === "full"
+              ? `Запущен начисто: ${getNodeSpec(nodeType).label}`
+              : `Запущен: ${getNodeSpec(nodeType).label}`,
           );
           qc.invalidateQueries({ queryKey: ["project", projectId] });
           qc.invalidateQueries({ queryKey: ["project-run", projectId] });

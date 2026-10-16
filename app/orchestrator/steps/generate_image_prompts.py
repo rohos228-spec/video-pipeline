@@ -26,22 +26,26 @@ def is_parent_grid_frame(fr: Frame) -> bool:
 
 
 def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
+    from app.services.vo_shot_expand import is_img_pr_vo_parent
+
     return [
         fr
         for fr in frames
-        if (fr.voiceover_text or "").strip()
-        and not (fr.image_prompt or "").strip()
+        if is_img_pr_vo_parent(fr)
         and is_parent_grid_frame(fr)
+        and not (fr.image_prompt or "").strip()
     ]
 
 
 def _frames_with_image_prompt(frames: list[Frame]) -> list[Frame]:
+    from app.services.vo_shot_expand import is_img_pr_vo_parent
+
     return [
         fr
         for fr in frames
-        if (fr.voiceover_text or "").strip()
-        and (fr.image_prompt or "").strip()
+        if is_img_pr_vo_parent(fr)
         and is_parent_grid_frame(fr)
+        and (fr.image_prompt or "").strip()
     ]
 
 
@@ -75,6 +79,22 @@ async def _finish_success(
 
     await harness_gate_or_raise(session, project, step="img_pr")
 
+    from app.services.vo_shot_expand import (
+        is_shot_child,
+        write_coverage_child_prompts,
+    )
+
+    n_kids = write_coverage_child_prompts(frames)
+    for fr in frames:
+        if is_shot_child(fr) and (fr.image_prompt or "").strip():
+            fr.status = FrameStatus.image_prompt_ready
+    if n_kids:
+        logger.info(
+            "[#{}] generate_image_prompts: wrote {} coverage child prompts",
+            project.id,
+            n_kids,
+        )
+
     for fr in filled:
         fr.status = FrameStatus.image_prompt_ready
     project.status = ProjectStatus.image_prompts_ready
@@ -89,7 +109,7 @@ async def _finish_success(
         logger.warning("[#{}] clear img_pr checkpoint: {}", project.id, e)
 
     logger.info(
-        "[#{}] generate_image_prompts complete: {} промтов (DB)",
+        "[#{}] generate_image_prompts complete: {} промтов VO-родителей (DB)",
         project.id,
         len(filled),
     )
@@ -107,6 +127,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     frames = await _reload_frames(session, project.id)
     if not frames:
         raise RuntimeError("нет кадров — нечего составлять промты")
+
+    from app.services.node_capabilities import record_image_prompt_input
+    await record_image_prompt_input(frames,project)
 
     need = _frames_needing_image_prompt(frames)
     if len(need) > 30:
@@ -153,9 +176,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             cancelled = True
             break
         try:
-            from app.db import SessionLocal
-            from app.services import db_apply, xlsx_step_runners as xsr
+            if attempt > 1:
+                await session.commit()
+            from app.services import xlsx_step_runners as xsr
+            from app.services.node_capabilities import clear_image_prompt_unusable
 
+            clear_image_prompt_unusable()
             result = await xsr.run_img_pr_xlsx(
                 project,
                 n_frames=len(need),
@@ -169,36 +195,21 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 ops = filter_ops_for_node(ops, node_kind="img_pr")
             if not ops and not result.ops_applied_inline:
                 raise RuntimeError("пустой apply-ops после GPT")
-            # Один apply в конце (не по батчам) — отдельная короткая сессия.
             if ops and not result.ops_applied_inline:
                 import asyncio
 
                 last_apply_err: Exception | None = None
                 for apply_try in range(1, 6):
                     try:
-                        from app.project_db import (
-                            project_db_session_scope,
-                            sync_project_row_to_master_db,
+                        await xsr._apply_img_pr_ops_now(
+                            project,
+                            ops,
+                            export_xlsx=False,
+                            label="final",
                         )
-
-                        async with project_db_session_scope(project.id) as apply_session:
-                            proj = await apply_session.get(Project, project.id)
-                            if proj is None:
-                                raise RuntimeError(
-                                    "project gone during img_pr apply"
-                                )
-                            await db_apply.apply_ops(
-                                apply_session,
-                                proj,
-                                ops,
-                                export_xlsx=False,
-                                node_kind="img_pr",
-                            )
-                            await apply_session.commit()
-                            await sync_project_row_to_master_db(proj)
                         last_apply_err = None
                         break
-                    except Exception as apply_err:  # noqa: BLE001
+                    except Exception as apply_err:
                         last_apply_err = apply_err
                         msg = str(apply_err).lower()
                         locked = (
@@ -265,6 +276,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 e,
             )
             if attempt >= 2:
+                try:
+                    from app.services.node_capabilities import record_image_prompt_unusable
+
+                    await record_image_prompt_unusable()
+                except Exception as note_err:
+                    logger.warning("[#{}] image_prompts typed failure not recorded: {}", project.id, note_err)
                 raise RuntimeError(
                     f"generate_image_prompts: не удалось получить промты: {e}"
                 ) from e

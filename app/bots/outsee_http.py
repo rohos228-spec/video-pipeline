@@ -14,15 +14,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import contextvars
+import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import httpx
 from loguru import logger
 
-from app.bots.outsee import GenerationResult, OutseeImageError
+from app.bots.outsee import GenerationResult, OutseeDownloadError, OutseeImageError
 from app.generation_options import prepend_gen_id
+from app.services import spend_guard
 from app.settings import settings
 
 _DATA_URL_RE = re.compile(
@@ -60,6 +65,56 @@ OutseeHttpError = OutseeApiError
 OutseeHttpAuthError = OutseeApiError
 
 
+class OutseeSubmitUnknownError(OutseeApiError):
+
+    def __init__(self, reason: str, *, context: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            reason,
+            context={**(context or {}), "uncertain": True, "no_resubmit": True, "submit_unknown": True},
+        )
+
+
+submit_probe: contextvars.ContextVar[dict | None] = contextvars.ContextVar("outsee_submit_probe", default=None)
+_SENT_ERRORS = (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError)
+_CURL_SENT_CODES = frozenset({18, 28, 52, 55, 56})
+
+
+def _probe_mark(**fields: Any) -> None:
+    probe = submit_probe.get()
+    if probe is not None:
+        probe.update(fields)
+
+
+@contextlib.contextmanager
+def ensure_probe():
+    probe = submit_probe.get()
+    if probe is not None:
+        yield probe
+        return
+    probe = {"maybe_sent": False, "task_id": None, "done": False}
+    token = submit_probe.set(probe)
+    try:
+        yield probe
+    finally:
+        submit_probe.reset(token)
+
+
+def reset_probe(probe: dict) -> None:
+    probe.update(maybe_sent=False, task_id=None, done=False)
+    probe.pop("rejected", None)
+
+
+def api_failure_needs_hold(probe: dict, exc: BaseException) -> str | None:
+    ctx = getattr(exc, "context", None)
+    if isinstance(ctx, dict) and isinstance(ctx.get("status"), dict):
+        return None
+    if probe.get("done"):
+        return "done"
+    if probe.get("maybe_sent") or probe.get("task_id") is not None:
+        return "unknown"
+    return None
+
+
 def outsee_api_key() -> str:
     return (settings.outsee_api_key or "").strip()
 
@@ -69,7 +124,6 @@ def outsee_api_configured() -> bool:
 
 
 def outsee_api_enabled_for_image() -> bool:
-    """IMAGE_PROVIDER=outsee + ключ."""
     return outsee_api_configured() and (
         (settings.image_provider or "").lower() == "outsee"
     )
@@ -239,6 +293,8 @@ _CONCURRENCY_MARKERS = (
 )
 _CONCURRENCY_MAX_WAITS = 3
 _CONCURRENCY_BACKOFF_S = (15.0, 30.0, 45.0)
+_GENERATE_CONNECT_S = 60.0
+_GENERATE_TOTAL_S = 180.0
 
 
 def _is_concurrency_api_error(err: BaseException) -> bool:
@@ -256,21 +312,146 @@ def _concurrency_backoff_s(wait_n: int) -> float:
     return _CONCURRENCY_BACKOFF_S[idx]
 
 
+def _generate_timeout() -> httpx.Timeout:
+    return httpx.Timeout(_GENERATE_TOTAL_S, connect=_GENERATE_CONNECT_S)
+
+
+def _curl_tls_args() -> list[str]:
+    if sys.platform == "win32":
+        return ["--ssl-no-revoke"]
+    return []
+
+
+def _prefer_curl_download(url: str) -> bool:
+    low = (url or "").lower()
+    return any(h in low for h in ("yandexcloud.net", "outseehistory"))
+
+
+async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, Any] | None:
+    import os
+    import shutil
+    import tempfile
+
+    curl = shutil.which("curl")
+    if not curl:
+        return None
+    url = f"{_base_url()}{path}"
+    headers = _headers()
+    fd, tmp_name = tempfile.mkstemp(prefix="outsee_gen_", suffix=".json")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        tmp.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        proc = await asyncio.create_subprocess_exec(
+            curl,
+            "-sS",
+            "-X",
+            "POST",
+            "--connect-timeout",
+            str(int(_GENERATE_CONNECT_S)),
+            "--max-time",
+            str(int(_GENERATE_TOTAL_S)),
+            *_curl_tls_args(),
+            "-H",
+            f"Authorization: {headers['Authorization']}",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "Accept: application/json",
+            "--data-binary",
+            f"@{tmp}",
+            url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.warning(
+                "outsee_api.generate curl failed code={} err={}",
+                proc.returncode,
+                (stderr or b"")[:200],
+            )
+            if proc.returncode in _CURL_SENT_CODES:
+                _probe_mark(maybe_sent=True)
+                raise OutseeSubmitUnknownError(
+                    f"Outsee API {path}: curl оборвался после отправки (код {proc.returncode}); "
+                    "задача могла быть принята и оплачена, повторный submit не делаю",
+                    context={"path": path, "network": True, "curl_code": proc.returncode},
+                )
+            return None
+        try:
+            data = json.loads((stdout or b"").decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            logger.warning("outsee_api.generate curl: ответ не JSON")
+            _probe_mark(maybe_sent=True)
+            raise OutseeSubmitUnknownError(
+                f"Outsee API {path}: ответ на submit не разобран; задача могла быть принята и оплачена, "
+                "повторный submit не делаю",
+                context={"path": path},
+            )
+        if not isinstance(data, dict):
+            return None
+        err = data.get("error")
+        if isinstance(err, dict):
+            raise OutseeApiError(
+                f"Outsee generate curl: {err.get('message') or err}",
+                context={"path": path, "code": str(err.get("code") or "")},
+            )
+        if data.get("id") is None:
+            _probe_mark(maybe_sent=True)
+            raise OutseeSubmitUnknownError(
+                f"Outsee API {path}: ответ без id; задача могла быть принята и оплачена, "
+                "повторный submit не делаю",
+                context={"path": path, "body": data},
+            )
+        logger.info(
+            "outsee_api.submitted via curl path={} id={} status={}",
+            path,
+            data.get("id"),
+            data.get("status"),
+        )
+        return data
+    except OutseeApiError:
+        raise
+    except OSError as e:
+        logger.warning("outsee_api.generate curl spawn failed: {}", e)
+        return None
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _generate_estimate(args: tuple, kwargs: dict) -> float:
+    path = str(args[0] if args else kwargs.get("path", ""))
+    return spend_guard.OUTSEE_VIDEO_ESTIMATE_USD if "/videos/" in path else spend_guard.MEDIA_SUBMIT_ESTIMATE_USD
+
+
+@spend_guard.paid_seam("outsee", "generate submit", estimate=_generate_estimate)
 async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
     waits = 0
+    net_tries = 0
     last_err: BaseException | None = None
     while True:
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post(
-                    f"{_base_url()}{path}", headers=_headers(), json=body
-                )
+            async with httpx.AsyncClient(timeout=_generate_timeout()) as client:
+                _probe_mark(in_flight=True)
+                try:
+                    r = await client.post(
+                        f"{_base_url()}{path}", headers=_headers(), json=body
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except BaseException:
+                    _probe_mark(in_flight=False)
+                    raise
+                _probe_mark(in_flight=False)
                 if r.status_code >= 400:
                     _raise_api(r, where=path)
                 data = r.json()
                 if not isinstance(data, dict) or data.get("id") is None:
-                    raise OutseeApiError(
-                        "Outsee generate: нет id",
+                    _probe_mark(maybe_sent=True)
+                    raise OutseeSubmitUnknownError(
+                        "Outsee generate: ответ на submit без id; задача могла быть принята и оплачена, "
+                        "повторный submit не делаю",
                         context={"path": path, "body": data},
                     )
                 logger.info(
@@ -279,6 +460,7 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
                     data.get("id"),
                     data.get("status"),
                 )
+                _probe_mark(task_id=str(data["id"]))
                 return data
         except OutseeApiError as e:
             if not _is_concurrency_api_error(e):
@@ -298,9 +480,54 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
             await asyncio.sleep(delay)
             continue
         except (httpx.HTTPError, OSError) as e:
+            detail = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
+            if isinstance(e, _SENT_ERRORS):
+                _probe_mark(maybe_sent=True)
+                raise OutseeSubmitUnknownError(
+                    f"Outsee API {path}: ответа нет после отправки ({type(e).__name__}); "
+                    "задача могла быть принята и оплачена, повторный submit не делаю",
+                    context={"path": path, "network": True, "exc_type": type(e).__name__},
+                ) from e
+            if isinstance(e, (httpx.ConnectTimeout, httpx.ConnectError, httpx.TimeoutException)):
+                try:
+                    via_curl = await _post_generate_via_curl(path, body)
+                except OutseeApiError as curl_err:
+                    if _is_concurrency_api_error(curl_err):
+                        last_err = curl_err
+                        waits += 1
+                        if waits > _CONCURRENCY_MAX_WAITS:
+                            raise
+                        delay = _concurrency_backoff_s(waits)
+                        logger.warning(
+                            "outsee_api: concurrency_limit {} — жду {:.0f}с (wait {}/{})",
+                            path,
+                            delay,
+                            waits,
+                            _CONCURRENCY_MAX_WAITS,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+                if via_curl is not None:
+                    return via_curl
+                net_tries += 1
+                if net_tries < 3:
+                    delay = 2.0 * net_tries
+                    logger.warning(
+                        "outsee_api.generate network {} — повтор через {:.0f}с ({}/3)",
+                        type(e).__name__,
+                        delay,
+                        net_tries,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
             raise OutseeApiError(
-                f"Outsee API network {path}: {e}",
-                context={"path": path, "network": True},
+                f"Outsee API network {path}: {detail}",
+                context={
+                    "path": path,
+                    "network": True,
+                    "exc_type": type(e).__name__,
+                },
             ) from e
     raise last_err or OutseeApiError("Outsee generate: concurrency exhausted")
 
@@ -380,13 +607,68 @@ async def _poll_generation(
     )
 
 
+def _curl_download_args(url: str, out_path: Path) -> list[str]:
+    return [
+        "-fsSL",
+        "--retry",
+        "4",
+        "--retry-delay",
+        "2",
+        "--connect-timeout",
+        "45",
+        "--max-time",
+        "180",
+        *_curl_tls_args(),
+        "-o",
+        str(out_path),
+        url,
+    ]
+
+
+async def _download_via_curl(url: str, out_path: Path) -> bool:
+    import shutil
+
+    curl = shutil.which("curl")
+    if not curl:
+        return False
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            curl,
+            *_curl_download_args(url, out_path),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr = await proc.communicate()
+        ok = (
+            proc.returncode == 0
+            and out_path.is_file()
+            and out_path.stat().st_size >= 64
+        )
+        if not ok:
+            logger.warning(
+                "outsee_api.download curl failed code={} err={}",
+                proc.returncode,
+                (stderr or b"")[:200],
+            )
+        return ok
+    except OSError as e:
+        logger.warning("outsee_api.download curl spawn failed: {}", e)
+        return False
+
+
 async def _download(url: str, out_path: Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     last_err: Exception | None = None
-    for attempt in range(1, 4):
+    prefer_curl = _prefer_curl_download(url)
+    for attempt in range(1, 9):
+        if prefer_curl or attempt > 1:
+            if await _download_via_curl(url, out_path):
+                logger.info("outsee_api.download via curl ok url={}", url[:120])
+                return out_path
         try:
             async with httpx.AsyncClient(
-                timeout=180.0, follow_redirects=True
+                timeout=httpx.Timeout(180.0, connect=45.0),
+                follow_redirects=True,
             ) as client:
                 r = await client.get(url)
                 if r.status_code >= 400 or len(r.content) < 64:
@@ -399,12 +681,15 @@ async def _download(url: str, out_path: Path) -> Path:
         except (httpx.HTTPError, OSError, OutseeApiError) as e:
             last_err = e
             logger.warning(
-                "outsee_api.download retry {}/3 url={} err={}",
+                "outsee_api.download retry {}/8 url={} err={}",
                 attempt,
                 url[:120],
                 e,
             )
-            await asyncio.sleep(1.5 * attempt)
+            if not prefer_curl and await _download_via_curl(url, out_path):
+                logger.info("outsee_api.download via curl ok url={}", url[:120])
+                return out_path
+            await asyncio.sleep(min(2.0 * attempt, 12.0))
     raise OutseeApiError(
         f"Outsee download failed after retries: {last_err}",
         context={"url": url[:160]},
@@ -788,11 +1073,11 @@ async def ensure_public_image_url(
 ) -> str | None:
     """Outsee image_url принимает только http(s); data: молча игнорит.
 
-    data: → публичный URL через Yandex Object Storage (основной).
-    Публичные хосты (telegraph/tmpfiles/uguu/litterbox/catbox/0x0) используются как резервные
-    (fallback) при временном сбое или отсутствии Yandex S3.
+    data: → публичный URL только через Yandex Object Storage.
     http(s) → как есть (кроме localhost), либо force_rehost=True → скачать и
-    залить заново. ``yandex`` в skip_hosts игнорируется: новый PUT = новый URL.
+    залить в Yandex. Публичные хосты (telegraph/tmpfiles/uguu/litterbox/catbox/0x0)
+    отключены, если не включён OUTSEE_ALLOW_PUBLIC_IMAGE_HOSTS.
+    ``yandex`` в skip_hosts игнорируется: новый PUT = новый URL.
     """
     if not url or not str(url).strip():
         return None
@@ -840,7 +1125,18 @@ async def ensure_public_image_url(
     hosts: list[tuple[str, Any]] = []
     if yandex_storage_configured():
         hosts.append(("yandex", _host_via_yandex))
-        # Резервные хосты на случай временного сбоя S3
+        if settings.outsee_allow_public_image_hosts:
+            hosts.extend([
+                ("telegraph", _host_via_telegraph),
+                ("tmpfiles", _host_via_tmpfiles),
+                ("uguu", _host_via_uguu),
+                ("litterbox", _host_via_litterbox),
+                ("catbox", _host_via_catbox),
+                ("0x0", _host_via_0x0),
+            ])
+        logger.info("outsee_api.frame: upload host=yandex ({} bytes)", len(raw))
+    elif settings.outsee_allow_public_image_hosts:
+        logger.info("outsee_api.frame: Yandex S3 не настроен, публичные хосты разрешены (telegraph/tmpfiles/uguu/litterbox/catbox/0x0, {} bytes)", len(raw))
         hosts.extend([
             ("telegraph", _host_via_telegraph),
             ("tmpfiles", _host_via_tmpfiles),
@@ -849,17 +1145,12 @@ async def ensure_public_image_url(
             ("catbox", _host_via_catbox),
             ("0x0", _host_via_0x0),
         ])
-        logger.info("outsee_api.frame: upload host=yandex (с fallback на telegraph/tmpfiles/uguu/litterbox, {} bytes)", len(raw))
     else:
-        logger.info("outsee_api.frame: Yandex S3 не настроен, использую fallback (telegraph/tmpfiles/uguu/litterbox, {} bytes)", len(raw))
-        hosts.extend([
-            ("telegraph", _host_via_telegraph),
-            ("tmpfiles", _host_via_tmpfiles),
-            ("uguu", _host_via_uguu),
-            ("litterbox", _host_via_litterbox),
-            ("catbox", _host_via_catbox),
-            ("0x0", _host_via_0x0),
-        ])
+        raise OutseeApiError(
+            "кадр нельзя выложить: Yandex S3 не настроен, а публичные файлообменники запрещены "
+            "(OUTSEE_ALLOW_PUBLIC_IMAGE_HOSTS=true разрешит их; ссылки на кадры тогда открыты всем)",
+            context={},
+        )
 
     variants = _upload_payload_variants(raw, mime)
     async with httpx.AsyncClient(
@@ -1155,11 +1446,22 @@ async def generate_image(
         raise last_submit_err or OutseeApiError("image generate: no submit")
     task_id = submitted["id"]
     done = await _poll_generation(task_id, timeout=timeout)
+    _probe_mark(done=True)
     url = _pick_result_url(done)
     suf = Path(url.split("?")[0]).suffix.lower()
     if suf in {".png", ".jpg", ".jpeg", ".webp"} and out_path.suffix.lower() != suf:
         out_path = out_path.with_suffix(suf if suf != ".jpeg" else ".jpg")
-    await _download(url, out_path)
+    try:
+        await _download(url, out_path)
+    except OutseeApiError as e:
+        raise OutseeDownloadError(
+            str(e.reason if hasattr(e, "reason") else e),
+            context={
+                "img_url": url,
+                "gen_id": str(gen_id or task_id),
+                "task_id": task_id,
+            },
+        ) from e
     return GenerationResult(
         file_path=out_path,
         raw_url=url,
@@ -1388,6 +1690,7 @@ async def generate_video(
         raise last_submit_err or OutseeApiError("video generate: no submit")
     task_id = submitted["id"]
     done = await _poll_generation(task_id, timeout=timeout)
+    _probe_mark(done=True)
     url = _pick_result_url(done)
     suf = Path(url.split("?")[0]).suffix.lower()
     if suf in {".mp4", ".webm"} and out_path.suffix.lower() != suf:
@@ -1411,7 +1714,6 @@ async def generate_image_http(
     page: Any = None,
     **kwargs: Any,
 ) -> GenerationResult:
-    """Совместимость с OutseeBot._try_http_image(page, …) — page игнорируется."""
     del page
     prompt = kwargs.pop("prompt")
     out_path = kwargs.pop("out_path")

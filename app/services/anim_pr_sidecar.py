@@ -18,8 +18,47 @@ from sqlalchemy.orm import selectinload
 from app.models import Frame, NodeRunStatus, Project, ProjectStatus, WorkflowRun
 
 
+_RESULTS: dict[int, dict[int, tuple[str, str]]] = {}
+
 _LOCKS: dict[int, asyncio.Lock] = {}
 _TASKS: dict[int, asyncio.Task[Any]] = {}
+
+
+def _h(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def sidecar_source_hash(frame: Frame) -> str:
+    return _h(f"{(frame.image_prompt or '').strip()}\x1f{(frame.voiceover_text or '').strip()}")
+
+
+def stamp_sidecar_results(project_id: int, frames: list[Frame]) -> int:
+    from app.services.animation_prompt_gpt import (
+        frame_has_usable_image_prompt,
+        has_animation_prompt_for_frame,
+    )
+
+    got = _RESULTS.setdefault(project_id, {})
+    n = 0
+    for fr in frames:
+        if not frame_has_usable_image_prompt(fr) or not has_animation_prompt_for_frame(None, fr):
+            continue
+        rec = (sidecar_source_hash(fr), _h((fr.animation_prompt or "").strip()))
+        if got.get(fr.number) != rec:
+            got[fr.number] = rec
+            n += 1
+    return n
+
+
+def take_fresh_sidecar_frames(project_id: int, frames: list[Frame]) -> set[int]:
+    got = _RESULTS.pop(project_id, {})
+    return {
+        fr.number for fr in frames
+        if got.get(fr.number) == (sidecar_source_hash(fr), _h((fr.animation_prompt or "").strip()))
+        and (fr.animation_prompt or "").strip()
+    }
 
 
 def _lock_for(project_id: int) -> asyncio.Lock:
@@ -98,12 +137,13 @@ async def drain_anim_pr_from_image_prompts(
     max_batches: int | None = 4,
 ) -> dict[str, int]:
     """Один проход: до max_batches пачек GPT → R48/DB, статус проекта не трогаем."""
-    from app.db import SessionLocal
     from app.orchestrator.steps.make_animation_prompts import fill_animation_prompts
     from app.services import animation_prompt_gpt as apg
+    from app.services.frame_store import session_factory_for
 
     async with _lock_for(project_id):
-        async with SessionLocal() as session:
+        factory = await session_factory_for(project_id)
+        async with factory() as session:
             project = await session.get(Project, project_id)
             if project is None:
                 return {"batches": 0, "pending": 0}
@@ -131,6 +171,7 @@ async def drain_anim_pr_from_image_prompts(
                 finalize_status=False,
                 max_batches=max_batches,
             )
+            stamp_sidecar_results(project_id, list(frames))
             left = len(apg.collect_batch_items(project, list(frames)))
             if left == 0:
                 await sync_anim_pr_noderun_done(session, project)
@@ -139,7 +180,7 @@ async def drain_anim_pr_from_image_prompts(
 
 
 async def _sidecar_loop(project_id: int) -> None:
-    from app.db import SessionLocal
+    from app.services.frame_store import IdCollisionError, session_factory_for
 
     idle_rounds = 0
     try:
@@ -150,6 +191,9 @@ async def _sidecar_loop(project_id: int) -> None:
                 )
             except asyncio.CancelledError:
                 raise
+            except IdCollisionError:
+                logger.exception("[#{}] anim_pr_sidecar: id-коллизия master/project.db — stop", project_id)
+                break
             except Exception:  # noqa: BLE001
                 logger.exception("[#{}] anim_pr_sidecar: drain failed", project_id)
                 await asyncio.sleep(20)
@@ -162,14 +206,14 @@ async def _sidecar_loop(project_id: int) -> None:
                 await asyncio.sleep(2)
                 continue
 
-            async with SessionLocal() as session:
+            factory = await session_factory_for(project_id)
+            async with factory() as session:
                 project = await session.get(Project, project_id)
                 status = project.status if project is not None else None
                 if project is not None and pending == 0:
                     if await sync_anim_pr_noderun_done(session, project):
                         await session.commit()
 
-            # Пока img льёт картинки — ждём новые image_prompt/пропуски и крутимся.
             if status is ProjectStatus.generating_images:
                 idle_rounds = 0 if pending else idle_rounds + 1
                 await asyncio.sleep(12 if pending == 0 else 4)
@@ -199,6 +243,12 @@ async def _sidecar_loop(project_id: int) -> None:
 
 def ensure_anim_pr_sidecar(project_id: int) -> bool:
     """Запустить sidecar-task, если ещё не крутится. True = стартовали сейчас."""
+    from app.services.actions_v1 import get_permission
+    if get_permission(project_id) is not None:
+        from app.services.observation import emit
+        emit("media_auxiliary_denied", {"operation": "anim_pr_sidecar",
+            "reason": "managed nodes execute only through observed worker"})
+        return False
     t = _TASKS.get(project_id)
     if t is not None and not t.done():
         return False

@@ -100,7 +100,7 @@ async def test_run_empty_descriptions_instant_ready():
 
 
 @pytest.mark.asyncio
-async def test_run_with_item_generates_and_syncs_master(tmp_path: Path):
+async def test_run_with_item_generates_and_syncs_master(tmp_path: Path, fake_provider_keys):
     session = AsyncMock()
     project = Project(id=42, status=ProjectStatus.generating_items, slug="warhammer", item_descriptions=["Силовой меч"])
     bot = AsyncMock()

@@ -1,0 +1,1140 @@
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.models import Base, Frame, Project
+from app.services.montage_board_apply import order_montage_pending_ops
+from app.services.montage_board_meta import slot_key_from_op
+from app.services.montage_coverage_ops import apply_coverage_op
+from app.services.montage_scene_editor import (
+    VO_SPAN_ATTR,
+    build_scene_editor_state,
+    build_variant_prompt,
+    cell_vo_skipped,
+    frame_board_scene_cell,
+    normalize_anchor_rows,
+    parse_variants,
+    preview_template_ladder,
+    scene_group,
+    scene_vo_unused,
+    shot_sequence_text,
+    split_vo_by_anchors,
+)
+
+VO_CELL = (
+    "Он вошёл в кабинет следователя. Достал из портфеля папку. "
+    "Открыл её на первой странице."
+)
+
+
+@pytest.fixture
+async def session(tmp_path: Path) -> AsyncSession:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'scene.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as s:
+        yield s
+    await engine.dispose()
+
+
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Project:
+    data_root = tmp_path / "data"
+    data_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("app.settings.settings.data_dir", str(data_root))
+    return Project(id=41, slug="scene-edit", topic="t", hero_mode="auto")
+
+
+def _group(project_id: int) -> tuple[Frame, Frame]:
+    parent_uid = "aa" * 12
+    child_uid = "bb" * 12
+    parent = Frame(
+        project_id=project_id,
+        number=1,
+        uuid=parent_uid,
+        sort_key=1.0,
+        voiceover_text="Он вошёл в кабинет следователя.",
+        status="planned",
+        attrs={
+            "vo_cell_full": VO_CELL,
+            "shot01_action": "кабинет следователя. вошёл, снял пальто, сел к столу",
+            "главное_действие": (
+                "1. кабинет следователя — приносит папку и открывает дело\n"
+                f"({VO_CELL})"
+            ),
+            "персонажи": "следователь",
+            "освещение": "холодный верхний свет",
+            "предметы": "папка, портфель",
+            "shot01_id_scene": "scene_01",
+            "смысл_сцены": "вход в кабинет и первое дело",
+            "биты": [
+                {"порядок": 1, "якорь": "Он вошёл в кабинет", "главный": True},
+                {"порядок": 2, "якорь": "Достал из портфеля папку"},
+            ],
+            "кадры": [
+                {
+                    "id": "1-S1-K1",
+                    "порядок": 1,
+                    "parent_id": None,
+                    "шаблон": "T2",
+                    "план": "ОБЩИЙ",
+                    "место": "кабинет следователя",
+                    "действие": "кабинет следователя. вошёл, снял пальто, сел к столу",
+                    "закадр": "Он вошёл в кабинет следователя.",
+                },
+                {
+                    "id": "1-S1-K2",
+                    "порядок": 2,
+                    "parent_id": "1-S1-K1",
+                    "шаблон": "T2",
+                    "план": "ДЕТАЛЬ",
+                    "место": "кабинет следователя",
+                    "действие": "руки достают папку из портфеля, видна тесьма и номер дела",
+                    "закадр": "Достал из портфеля папку. Открыл её на первой странице.",
+                },
+            ],
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "shot_index": 1,
+                "shots_in_beat": 2,
+                "шаблон": "T2",
+                "план": "ОБЩИЙ",
+                "место": "кабинет следователя",
+                "набор": "кабинет следователя",
+                "сцена": "1",
+                "shot_id": "1-S1-K1",
+            },
+        },
+    )
+    child = Frame(
+        project_id=project_id,
+        number=2,
+        uuid=child_uid,
+        sort_key=2.0,
+        voiceover_text="Достал из портфеля папку. Открыл её на первой странице.",
+        status="planned",
+        attrs={
+            "shot01_action": "руки достают папку из портфеля, видна тесьма и номер дела",
+            "кадры": [
+                {
+                    "id": "1-S1-K2",
+                    "порядок": 1,
+                    "parent_id": "1-S1-K1",
+                    "шаблон": "T2",
+                    "план": "ДЕТАЛЬ",
+                    "место": "кабинет следователя",
+                    "действие": "руки достают папку из портфеля, видна тесьма и номер дела",
+                }
+            ],
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "coverage_parent_id": "1-S1-K1",
+                "shot_index": 2,
+                "shots_in_beat": 2,
+                "шаблон": "T2",
+                "план": "ДЕТАЛЬ",
+                "место": "кабинет следователя",
+                "shot_id": "1-S1-K2",
+            },
+        },
+    )
+    return parent, child
+
+
+async def _frames(session: AsyncSession, project: Project) -> list[Frame]:
+    return list(
+        (
+            await session.execute(
+                select(Frame)
+                .where(Frame.project_id == project.id)
+                .order_by(Frame.sort_key, Frame.number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+
+
+def test_split_vo_by_anchors_keeps_whole_text() -> None:
+    parts = split_vo_by_anchors(
+        VO_CELL, ["Он вошёл в кабинет", "Достал из портфеля папку", "Открыл её"]
+    )
+    assert len(parts) == 3
+    assert " ".join(" ".join(parts).split()) == VO_CELL
+    assert parts[1].startswith("Достал из портфеля папку")
+
+
+def test_split_vo_by_anchors_first_part_starts_at_text_start() -> None:
+    parts = split_vo_by_anchors(VO_CELL, ["Достал из портфеля папку", "Открыл её"])
+    assert parts[0].startswith("Он вошёл")
+    assert " ".join(" ".join(parts).split()) == VO_CELL
+
+
+def test_split_vo_by_anchors_ignores_missing_anchor() -> None:
+    parts = split_vo_by_anchors(VO_CELL, ["Он вошёл", "такого текста нет", "Открыл её"])
+    assert len(parts) == 2
+    assert " ".join(" ".join(parts).split()) == VO_CELL
+
+
+def test_normalize_anchor_rows_single_main() -> None:
+    rows = normalize_anchor_rows(
+        [
+            {"якорь": " Он вошёл ", "главный": True},
+            {"якорь": "Достал папку", "главный": True},
+            {"якорь": "   "},
+        ]
+    )
+    assert [r["порядок"] for r in rows] == [1, 2]
+    assert rows[0]["якорь"] == "Он вошёл"
+    assert [r["главный"] for r in rows] == [True, False]
+
+
+
+
+@pytest.mark.asyncio
+async def test_state_for_parent_frame(session: AsyncSession, project: Project) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+    frames = await _frames(session, project)
+
+    state = build_scene_editor_state(frames, frames[0])
+    assert state["frame"]["role"] == "parent"
+    assert state["frame"]["number"] == 1
+    assert state["group"] == [1, 2]
+    assert state["vo"]["cell_full"] == VO_CELL
+    assert state["plan"]["current"] == "ОБЩИЙ"
+    assert "ДЕТАЛЬ" in state["plan"]["choices"]
+    assert state["template"]["current"] == "T2"
+    assert state["template"]["group_len"] == 2
+    assert state["template"]["ladder"], "лестница шаблона обязана прийти в UI"
+    assert {c["id"] for c in state["template"]["choices"]} >= {"T0", "T1", "T2", "X1"}
+    assert state["scene_action"]["chain"][0]["place"] == "кабинет следователя"
+    assert [b["якорь"] for b in state["anchors"]["bits"]] == ["Он вошёл в кабинет"]
+    assert all(b["found"] for b in state["anchors"]["bits"])
+    assert state["anchors"]["bits"][0]["frame_number"] == 1
+    assert [b["якорь"] for b in state["scene"]["anchors"]["bits"]] == [
+        "Он вошёл в кабинет",
+        "Достал из портфеля папку",
+    ]
+    assert state["scene"]["anchors"]["covers_text"] is True
+    assert state["scene"]["characters"] == "следователь"
+    assert "фронт" in state["angle"]["choices"]
+    assert "статика" in state["move"]["choices"]
+    assert {c["id"] for c in state["stitch"]["choices"]} >= {"cut", "cut_on_action"}
+    assert "ночной" in state["light"]["choices"]
+    assert state["set"]["current"] == "кабинет следователя"
+    assert state["light"]["current"] == "холодный верхний свет"
+    assert state["scene"]["lighting"] == "холодный верхний свет"
+    assert state["scene"]["props"] == "папка, портфель"
+    assert state["scene"]["id_scene"] == "scene_01"
+    assert state["scene"]["set"] == "кабинет следователя"
+    assert state["scene"]["scene_no"] == "1"
+    assert state["scene"]["action"]
+    assert [s["план"] for s in state["shots"]] == ["ОБЩИЙ", "ДЕТАЛЬ"]
+    assert [s["frame_number"] for s in state["shots"]] == [1, 2]
+    assert [s["якорь"] for s in state["shots"]] == [
+        "Он вошёл в кабинет",
+        "Достал из портфеля папку",
+    ]
+    assert [p["number"] for p in state["parent_choices"]] == [2]
+
+
+@pytest.mark.asyncio
+async def test_state_for_child_points_to_parent(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+    frames = await _frames(session, project)
+
+    state = build_scene_editor_state(frames, frames[1])
+    assert state["frame"]["role"] == "child"
+    assert state["parent"]["number"] == 1
+    assert state["plan"]["current"] == "ДЕТАЛЬ"
+    assert state["vo"]["cell_full"] == VO_CELL
+    assert [b["якорь"] for b in state["anchors"]["bits"]] == ["Достал из портфеля папку"]
+    assert state["anchors"]["bits"][0]["frame_number"] == 2
+    assert len(state["scene"]["anchors"]["bits"]) == 2
+    assert state["scene"]["characters"] == "следователь"
+    assert state["group"] == [1, 2]
+
+
+def test_scene_group_ignores_x1_coverage_parent() -> None:
+    parent, child = _group(41)
+    stranger = Frame(
+        project_id=41,
+        number=39,
+        uuid="cc" * 12,
+        sort_key=39.0,
+        voiceover_text="другая ячейка",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": "cc" * 12,
+                "shot_id": "1-S13-K1",
+                "coverage_parent_id": "1-S1-K1",
+                "shot_index": 1,
+            }
+        },
+    )
+    frames = [parent, child, stranger]
+    vo_parent, members = scene_group(frames, parent)
+    assert int(vo_parent.number) == 1
+    assert [int(m.number) for m in members] == [1, 2]
+    stranger_parent, stranger_members = scene_group(frames, stranger)
+    assert int(stranger_parent.number) == 39
+    assert [int(m.number) for m in stranger_members] == [39]
+    state = build_scene_editor_state(frames, parent)
+    assert state["group"] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_state_frame_anchors_ignore_foreign_bits(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    attrs = dict(parent.attrs or {})
+    attrs["биты"] = [
+        {"порядок": 1, "якорь": "Он вошёл в кабинет", "главный": True},
+        {"порядок": 2, "якорь": "фраза которой нет ни в одном кадре"},
+        {"порядок": 3, "якорь": "ещё один чужой бит скелета"},
+    ]
+    parent.attrs = attrs
+    session.add_all([project, parent, child])
+    await session.flush()
+    frames = await _frames(session, project)
+
+    parent_state = build_scene_editor_state(frames, frames[0])
+    assert [b["якорь"] for b in parent_state["anchors"]["bits"]] == ["Он вошёл в кабинет"]
+    assert len(parent_state["scene"]["anchors"]["bits"]) == 3
+
+    child_state = build_scene_editor_state(frames, frames[1])
+    child_bits = child_state["anchors"]["bits"]
+    assert len(child_bits) == 1
+    assert child_bits[0].get("derived") is True
+    assert child_bits[0]["якорь"] in child.voiceover_text
+    assert "чужой" not in child_bits[0]["якорь"]
+
+
+def test_frame_board_scene_cell_is_this_shot_not_whole_cell() -> None:
+    parent, child = _group(41)
+    cell = frame_board_scene_cell([parent, child], child)
+    assert cell["shot_anchors"] == 1
+    assert cell["shot_anchor"] == "Достал из портфеля папку"
+    assert cell["scene_place"] == ""
+    assert cell["scene_set"] == ""
+    assert cell["scene_characters"] == "следователь"
+    parent_cell = frame_board_scene_cell([parent, child], parent)
+    assert parent_cell["shot_anchor"] == "Он вошёл в кабинет"
+    assert parent_cell["shot_anchor"] != cell["shot_anchor"]
+    assert cell["vo_scene_number"] == 1
+    assert parent_cell["vo_scene_number"] == 1
+    assert cell["vo_scene_size"] == 2
+
+
+def test_frame_board_scene_cell_carries_inline_row_payload() -> None:
+    parent, child = _group(41)
+    frames = [parent, child]
+    cell = frame_board_scene_cell(frames, child)
+
+    assert [row["якорь"] for row in cell["shot_anchor_rows"]] == [
+        "Достал из портфеля папку"
+    ]
+    assert cell["shot_anchor_change"] == cell["shot_anchor_rows"][0]["изменение"]
+    assert cell["shot_anchor_found"] is True
+    assert cell["anchor_can_add"] is False
+    assert [row["якорь"] for row in cell["scene_anchor_rows"]] == [
+        "Он вошёл в кабинет",
+        "Достал из портфеля папку",
+    ]
+    assert cell["scene_anchor_rows"][0]["cell_index"] == 0
+    assert cell["vo_cell_full"] == VO_CELL
+
+    assert cell["scene_lighting"] == ""
+    assert cell["scene_sense"] == ""
+    assert cell["scene_props"] == ""
+    assert cell["scene_id"] == "scene_01"
+    assert cell["scene_template_auto"]
+    assert "вошёл, снял пальто" in cell["scene_action"]
+    assert " → " in cell["scene_action"]
+    assert "достают папку" in cell["scene_action"]
+
+    parent_cell = frame_board_scene_cell(frames, parent)
+    assert parent_cell["scene_anchor_rows"] == cell["scene_anchor_rows"]
+    assert parent_cell["scene_template_auto"] == cell["scene_template_auto"]
+    assert parent_cell["scene_action"] == cell["scene_action"]
+    assert cell["scene_chain"][0]["n"] == 1
+    assert cell["scene_chain"][0]["place"] == "кабинет следователя"
+    assert "приносит папку" in cell["scene_chain"][0]["action"]
+    assert cell["vo_unused_before"] == ""
+    assert cell["vo_unused_after"] == ""
+    assert cell["vo_unused_between"] == []
+    assert parent_cell["vo_unused_before"] == ""
+    assert parent_cell["vo_unused_after"] == ""
+    assert parent_cell["vo_unused_between"] == []
+
+
+def test_shot_sequence_text_joins_frame_actions() -> None:
+    parent, child = _group(41)
+    seq = shot_sequence_text(parent, [parent, child])
+    assert " → " in seq
+    assert seq.startswith("кабинет следователя. вошёл")
+    assert "достают папку" in seq
+    assert "1." not in seq
+
+
+def test_shot_sequence_text_ignores_stale_extra_shots() -> None:
+    parent, child = _group(41)
+    extra = Frame(
+        project_id=41,
+        number=3,
+        uuid="cc" * 12,
+        sort_key=3.0,
+        voiceover_text="хвост",
+        status="planned",
+        attrs={
+            "shot01_action": "следователь перелистывает материалы дела",
+            "действие": "следователь перелистывает материалы дела",
+            "главное_действие": "следователь перелистывает материалы дела",
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent.uuid,
+                "действие": "следователь перелистывает материалы дела",
+            },
+        },
+    )
+    seq = shot_sequence_text(parent, [parent, child, extra])
+    assert "достают папку" in seq
+    assert "следователь перелистывает" not in seq
+
+
+
+
+@pytest.mark.asyncio
+async def test_coverage_template_rewrites_ladder(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {"type": "coverage_template", "frame_number": 1, "template": "T1"},
+    )
+    assert result["ok"] is True
+    assert result["highlight"] == "1:template"
+    report = result["report"]
+    assert report["шаблон"] == "T1"
+    assert report["frames"] == 2
+    assert report["ladder"] == 5
+    assert report["missing_frames"] == 3
+
+    frames = await _frames(session, project)
+    cs_parent = (frames[0].attrs or {})["camera_subdivide"]
+    cs_child = (frames[1].attrs or {})["camera_subdivide"]
+    assert cs_parent["шаблон"] == "T1"
+    assert cs_child["шаблон"] == "T1"
+    assert cs_parent["план"] == "ОБЩИЙ"
+    assert cs_child["план"] == "СРЕДНИЙ"
+    assert (frames[1].attrs or {})["крупность"] == "СРЕДНИЙ"
+    ladder = (frames[0].attrs or {})["кадры"]
+    assert [row["план"] for row in ladder] == ["ОБЩИЙ", "СРЕДНИЙ"]
+    assert all(row["шаблон"] == "T1" for row in ladder)
+    assert "папку из портфеля" in (frames[1].attrs or {})["shot01_action"]
+
+
+@pytest.mark.asyncio
+async def test_coverage_template_unknown_rejected(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+    with pytest.raises(RuntimeError, match="каталоге"):
+        await apply_coverage_op(
+            session,
+            project,
+            {"type": "coverage_template", "frame_number": 1, "template": "T99"},
+        )
+
+
+def test_preview_template_ladder_marks_missing_frames() -> None:
+    state = {
+        "frame": {"place": "кабинет"},
+        "scene_action": {"chain": [{"action": "открывает дело"}]},
+        "template": {"group_len": 2},
+    }
+    preview = preview_template_ladder(state, "T1")
+    assert preview["шаблон"] == "T1"
+    assert len(preview["rows"]) == 5
+    assert [r["has_frame"] for r in preview["rows"]] == [True, True, False, False, False]
+    assert preview["rows"][0]["план"] == "ОБЩИЙ"
+    assert preview["rows"][0]["действие"], "превью действия не должно быть пустым"
+
+
+
+
+@pytest.mark.asyncio
+async def test_coverage_anchors_recut_voiceover(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_anchors",
+            "frame_number": 1,
+            "anchors": [
+                {"якорь": "Он вошёл в кабинет", "изменение": "снаружи → внутри"},
+                {"якорь": "Открыл её на первой странице", "изменение": "папка → дело"},
+            ],
+        },
+    )
+    assert result["highlight"] == "1:anchors"
+    assert result["regen_image"] is False
+    assert result["report"]["assigned"] == 2
+
+    frames = await _frames(session, project)
+    assert frames[0].voiceover_text.startswith("Он вошёл в кабинет следователя.")
+    assert frames[1].voiceover_text.startswith("Открыл её")
+    joined = " ".join(
+        " ".join(f"{fr.voiceover_text}" for fr in frames).split()
+    )
+    assert joined == VO_CELL
+    bits = (frames[0].attrs or {})["биты"]
+    assert [b["якорь"] for b in bits] == [
+        "Он вошёл в кабинет",
+        "Открыл её на первой странице",
+    ]
+    assert bits[0]["изменение"] == "снаружи → внутри"
+
+
+@pytest.mark.asyncio
+async def test_coverage_anchors_extra_anchor_creates_shot(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_anchors",
+            "frame_number": 2,
+            "anchors": [
+                {"якорь": "Он вошёл в кабинет", "cell_index": 0},
+                {"якорь": "Достал из портфеля папку", "cell_index": 1},
+                {"якорь": "Открыл её на первой странице"},
+            ],
+        },
+    )
+    report = result["report"]
+    assert report["parts"] == 3
+    assert report["inserted_frames"] == 1
+    assert report["frames"] == 3
+    assert report["missing_frames"] == 0
+    assert result["refresh_board"] is True
+
+    frames = await _frames(session, project)
+    assert [fr.number for fr in frames] == [1, 2, 3]
+    joined = " ".join(" ".join(fr.voiceover_text for fr in frames).split())
+    assert joined == VO_CELL
+    assert frames[0].voiceover_text.startswith("Он вошёл в кабинет")
+    assert frames[1].voiceover_text.startswith("Достал из портфеля папку")
+    assert frames[2].voiceover_text.startswith("Открыл её")
+    new_cs = (frames[2].attrs or {})["camera_subdivide"]
+    assert new_cs["role"] == "shot"
+    assert new_cs["parent_uuid"] == parent.uuid
+    assert new_cs["shots_in_beat"] == 3
+    assert frames[2].start_ts is None
+
+
+@pytest.mark.asyncio
+async def test_coverage_anchors_insert_shifts_queue_numbers(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_anchors",
+            "frame_number": 1,
+            "anchors": [
+                {"якорь": "Он вошёл в кабинет", "cell_index": 0},
+                {"якорь": "Достал из портфеля папку"},
+                {"якорь": "Открыл её на первой странице", "cell_index": 1},
+            ],
+        },
+    )
+    assert result["report"]["inserted_frames"] == 1
+    assert result["renumber"] == {2: 3}
+    frames = await _frames(session, project)
+    joined = " ".join(" ".join(fr.voiceover_text for fr in frames).split())
+    assert joined == VO_CELL
+
+
+@pytest.mark.asyncio
+async def test_coverage_anchors_out_of_order_rejected(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+
+    with pytest.raises(RuntimeError, match="не найден по порядку"):
+        await apply_coverage_op(
+            session,
+            project,
+            {
+                "type": "coverage_anchors",
+                "frame_number": 1,
+                "anchors": [
+                    {"якорь": "Открыл её на первой странице"},
+                    {"якорь": "Он вошёл в кабинет"},
+                ],
+            },
+        )
+    frames = await _frames(session, project)
+    assert frames[0].voiceover_text == "Он вошёл в кабинет следователя."
+    assert [b["якорь"] for b in (frames[0].attrs or {})["биты"]] == [
+        "Он вошёл в кабинет",
+        "Достал из портфеля папку",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_coverage_anchors_fewer_parts_keeps_frame_texts(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+    before = [child.voiceover_text, parent.voiceover_text]
+
+    result = await apply_coverage_op(
+        session,
+        project,
+        {
+            "type": "coverage_anchors",
+            "frame_number": 1,
+            "anchors": [{"якорь": "Он вошёл в кабинет", "изменение": "снаружи → внутри"}],
+        },
+    )
+    report = result["report"]
+    assert report["recut"] is False
+    assert report["assigned"] == 0
+    assert report["missing_anchors"] == 1
+
+    frames = await _frames(session, project)
+    assert [frames[1].voiceover_text, frames[0].voiceover_text] == before
+    bits = (frames[0].attrs or {})["биты"]
+    assert [b["якорь"] for b in bits] == ["Он вошёл в кабинет"]
+    assert bits[0]["изменение"] == "снаружи → внутри"
+
+
+@pytest.mark.asyncio
+async def test_coverage_anchors_empty_clears_bits(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+    result = await apply_coverage_op(
+        session,
+        project,
+        {"type": "coverage_anchors", "frame_number": 1, "anchors": []},
+    )
+    assert result["ok"] is True
+    assert result["regen_image"] is False
+    assert int(result["report"]["anchors"]) == 0
+    await session.refresh(parent)
+    await session.refresh(child)
+    assert not (parent.attrs or {}).get("биты")
+    assert not (child.attrs or {}).get("биты")
+
+
+
+
+def test_new_ops_are_coverage_phase() -> None:
+    assert slot_key_from_op({"type": "coverage_template", "frame_number": 3}) == "3:template"
+    assert slot_key_from_op({"type": "coverage_anchors", "frame_number": 3}) == "3:anchors"
+    ordered = order_montage_pending_ops(
+        [
+            {"type": "image_regen", "frame_number": 1, "shot": 1},
+            {"type": "coverage_anchors", "frame_number": 1, "anchors": [{"якорь": "a"}]},
+            {"type": "coverage_template", "frame_number": 1, "template": "T1"},
+        ]
+    )
+    assert [o["type"] for o in ordered][:2] == ["coverage_anchors", "coverage_template"]
+    assert ordered[-1]["type"] == "image_regen"
+
+
+
+
+@pytest.mark.asyncio
+async def test_variant_prompts_carry_context(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+    frames = await _frames(session, project)
+    state = build_scene_editor_state(frames, frames[1])
+
+    action_prompt = build_variant_prompt(
+        state, kind="action", desc="руки крупно на тесьме папки", count=3
+    )
+    assert "руки крупно на тесьме папки" in action_prompt
+    assert VO_CELL in action_prompt
+    assert "дочерний шот" in action_prompt
+    assert "варианты" in action_prompt
+
+    tpl_prompt = build_variant_prompt(state, kind="template", count=2)
+    assert "ШАБЛОНЫ СЦЕНА" in tpl_prompt
+    assert "T1 — только речь" in tpl_prompt
+
+    anchor_prompt = build_variant_prompt(state, kind="anchors", count=2)
+    assert "Достал из портфеля папку" in anchor_prompt
+    assert "только этого шота" in anchor_prompt
+    assert "ДОСЛОВНАЯ подстрока" in anchor_prompt
+
+
+@pytest.mark.asyncio
+async def test_parse_variants_filters_garbage(
+    session: AsyncSession, project: Project
+) -> None:
+    parent, child = _group(project.id)
+    session.add_all([project, parent, child])
+    await session.flush()
+    frames = await _frames(session, project)
+    state = build_scene_editor_state(frames, frames[0])
+
+    reply = "```json\n" + json.dumps(
+        {
+            "варианты": [
+                {"действие": "кабинет. кладёт папку на стол", "план": "СРЕДНИЙ"},
+                {"действие": "кабинет. кладёт папку на стол", "план": "СРЕДНИЙ"},
+                {"действие": "лицо после удара", "план": "НЕТ ТАКОГО"},
+                {"план": "КРУПНЫЙ"},
+            ]
+        },
+        ensure_ascii=False,
+    ) + "\n```"
+    got = parse_variants(reply, kind="action", state=state)
+    assert len(got) == 2
+    assert got[0]["план"] == "СРЕДНИЙ"
+    assert got[1]["план"] == ""
+
+    tpl = parse_variants(
+        json.dumps({"варианты": [{"шаблон": "T5"}, {"шаблон": "Z9"}]}),
+        kind="template",
+        state=state,
+    )
+    assert [v["шаблон"] for v in tpl] == ["T5"]
+
+    anchors = parse_variants(
+        json.dumps(
+            {
+                "варианты": [
+                    {
+                        "биты": [
+                            {"якорь": "Он вошёл в кабинет"},
+                            {"якорь": "выдуманная фраза"},
+                            {"якорь": "Открыл её"},
+                        ]
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        kind="anchors",
+        state=state,
+    )
+    assert len(anchors) == 1
+    assert [b["якорь"] for b in anchors[0]["биты"]] == ["Он вошёл в кабинет"]
+    assert anchors[0]["dropped"] == 2
+
+
+def test_parse_variants_survives_non_json() -> None:
+    state = {
+        "plan": {"choices": ["ОБЩИЙ"]},
+        "anchors": {"text": VO_CELL},
+    }
+    assert parse_variants("извини, не могу", kind="action", state=state) == []
+
+
+def _vo_parent(project_id: int, number: int, uid: str, full: str, **attrs: object) -> Frame:
+    return Frame(
+        project_id=project_id,
+        number=number,
+        uuid=uid,
+        sort_key=float(number),
+        voiceover_text=full,
+        status="planned",
+        attrs={"vo_cell_full": full, **attrs},
+    )
+
+
+def test_cell_vo_skipped_between_shots() -> None:
+    full = "Он вошёл в архив. Сел за стол. Открыл папку."
+    parent_uid = "aa" * 12
+    child_uid = "bb" * 12
+    parent = Frame(
+        project_id=41,
+        number=1,
+        uuid=parent_uid,
+        sort_key=1.0,
+        voiceover_text="Он вошёл в архив.",
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=2,
+        uuid=child_uid,
+        sort_key=2.0,
+        voiceover_text="Открыл папку.",
+        status="planned",
+        attrs={
+            "camera_subdivide": {"role": "shot", "parent_uuid": parent_uid},
+        },
+    )
+    assert cell_vo_skipped(parent, [parent, child]) == ["Сел за стол."]
+    cell = frame_board_scene_cell([parent, child], parent)
+    assert cell["vo_unused_between"] == ["Сел за стол."]
+    assert cell["vo_unused_after_number"] == parent.number
+
+
+def test_cell_vo_skipped_empty_when_parent_holds_full() -> None:
+    full = "Он вошёл в архив. Сел за стол. Открыл папку."
+    parent_uid = "aa" * 12
+    parent = _vo_parent(41, 1, parent_uid, full)
+    child = Frame(
+        project_id=41,
+        number=2,
+        uuid="bb" * 12,
+        sort_key=2.0,
+        voiceover_text="Открыл папку.",
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": parent_uid}},
+    )
+    assert cell_vo_skipped(parent, [parent, child]) == []
+
+
+def test_cell_vo_skipped_uses_excel_when_cell_was_rewritten() -> None:
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=41,
+        number=1,
+        uuid=parent_uid,
+        sort_key=1.0,
+        voiceover_text="Он вошёл в архив.",
+        status="planned",
+        attrs={
+            "vo_cell_full": "Он вошёл в архив. Открыл папку.",
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    leftover = Frame(
+        project_id=41,
+        number=2,
+        uuid="cc" * 12,
+        sort_key=2.0,
+        voiceover_text="Сел.",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "leftover": True,
+            },
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=3,
+        uuid="bb" * 12,
+        sort_key=3.0,
+        voiceover_text="Открыл папку.",
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": parent_uid}},
+    )
+    excel = {
+        1: "Он вошёл в архив.",
+        2: "Сел за стол и зажёг лампу.",
+        3: "Открыл папку.",
+    }
+    assert cell_vo_skipped(parent, [parent, leftover, child], excel) == [
+        "Сел за стол и зажёг лампу."
+    ]
+    cell = frame_board_scene_cell(
+        [parent, leftover, child], parent, excel_by_frame=excel
+    )
+    assert cell["vo_unused_between"] == ["Сел за стол и зажёг лампу."]
+    assert cell["vo_unused_after_number"] == parent.number
+
+
+def test_cell_vo_skipped_ignores_giant_excel_dump() -> None:
+    full = "Он вошёл в архив. Открыл папку."
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=41,
+        number=1,
+        uuid=parent_uid,
+        sort_key=1.0,
+        voiceover_text="Он вошёл в архив.",
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=2,
+        uuid="bb" * 12,
+        sort_key=2.0,
+        voiceover_text="Открыл папку.",
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": parent_uid}},
+    )
+    excel = {1: full + " " + ("чужой абзац всего ролика. " * 40), 2: "Открыл папку."}
+    assert cell_vo_skipped(parent, [parent, child], excel) == []
+
+
+def test_cell_vo_skipped_ignores_leftover_cover() -> None:
+    full = "Он вошёл в архив. Сел за стол. Открыл папку."
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=41,
+        number=1,
+        uuid=parent_uid,
+        sort_key=1.0,
+        voiceover_text="Он вошёл в архив.",
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    leftover = Frame(
+        project_id=41,
+        number=2,
+        uuid="cc" * 12,
+        sort_key=2.0,
+        voiceover_text="Сел за стол.",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "leftover": True,
+            },
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=3,
+        uuid="bb" * 12,
+        sort_key=3.0,
+        voiceover_text="Открыл папку.",
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": parent_uid}},
+    )
+    assert cell_vo_skipped(parent, [parent, leftover, child]) == ["Сел за стол."]
+
+
+def test_scene_vo_unused_gap_is_shared_by_adjacent_scenes() -> None:
+    a_uid = "aa" * 12
+    b_uid = "bb" * 12
+    a_full = "Он вошёл в архив."
+    b_full = "Сел за стол. Открыл папку. Прочитал имя."
+    owned_b = "Прочитал имя."
+    unused = "Сел за стол. Открыл папку."
+    start = b_full.find(owned_b)
+    a = _vo_parent(41, 1, a_uid, a_full)
+    b = _vo_parent(41, 2, b_uid, b_full)
+    b.attrs[VO_SPAN_ATTR] = {
+        "start": start,
+        "end": start + len(owned_b),
+        "text": owned_b,
+    }
+    frames = [a, b]
+    gaps = scene_vo_unused(frames)
+    assert gaps[a_uid]["after"] == unused
+    assert gaps[b_uid]["before"] == unused
+    assert gaps[a_uid]["before"] == ""
+    assert gaps[b_uid]["after"] == ""
+    assert frame_board_scene_cell(frames, a)["vo_unused_after"] == unused
+    assert frame_board_scene_cell(frames, b)["vo_unused_before"] == unused
+
+
+def test_scene_vo_unused_empty_when_each_scene_owns_its_cell() -> None:
+    a = _vo_parent(41, 1, "aa" * 12, "Первая сцена целиком.")
+    b = _vo_parent(41, 2, "bb" * 12, "Вторая сцена целиком.")
+    gaps = scene_vo_unused([a, b])
+    assert gaps[a.uuid] == {"before": "", "after": ""}
+    assert gaps[b.uuid] == {"before": "", "after": ""}
+
+
+def test_scene_vo_unused_leftover_between_scenes_is_the_same_piece() -> None:
+    unused = "Пропущенный кусок закадра."
+    a = _vo_parent(41, 1, "aa" * 12, "Он вошёл в архив.")
+    leftover = _vo_parent(
+        41,
+        2,
+        "cc" * 12,
+        unused,
+        camera_subdivide={"leftover": True, "role": "vo_parent"},
+    )
+    b = _vo_parent(41, 3, "bb" * 12, "Прочитал имя.")
+    gaps = scene_vo_unused([a, leftover, b])
+    assert leftover.uuid not in gaps
+    assert gaps[a.uuid]["after"] == unused
+    assert gaps[b.uuid]["before"] == unused
+
+
+def test_cell_vo_skipped_matches_piece_without_space_after_colon() -> None:
+    full = (
+        ": аккуратно одетый молодой мужчина с уверенной улыбкой, "
+        "спокойной речью и внешностью человека."
+    )
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=41,
+        number=153,
+        uuid=parent_uid,
+        sort_key=153.0,
+        voiceover_text=":аккуратно одетый молодой мужчина с уверенной улыбкой,",
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": parent_uid},
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=154,
+        uuid="bb" * 12,
+        sort_key=154.0,
+        voiceover_text="спокойной речью и внешностью человека.",
+        status="planned",
+        attrs={"camera_subdivide": {"role": "shot", "parent_uuid": parent_uid}},
+    )
+    assert cell_vo_skipped(parent, [parent, child]) == []
+
+
+def test_cell_vo_skipped_parent_excel_is_not_the_whole_cell_again() -> None:
+    full = "Банди учился в университете, интересовался психологией, строил юридическую карьеру,"
+    parent_uid = "aa" * 12
+    parent = Frame(
+        project_id=41,
+        number=8,
+        uuid=parent_uid,
+        sort_key=8.0,
+        voiceover_text="Банди учился в университете,",
+        status="planned",
+        attrs={
+            "vo_cell_full": full,
+            "camera_subdivide": {
+                "role": "vo_parent",
+                "parent_uuid": parent_uid,
+                "shot_index": 1,
+            },
+        },
+    )
+    child = Frame(
+        project_id=41,
+        number=159,
+        uuid="bb" * 12,
+        sort_key=159.0,
+        voiceover_text="интересовался психологией, строил юридическую карьеру,",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": parent_uid,
+                "shot_index": 2,
+            },
+        },
+    )
+    excel = {8: full}
+    assert cell_vo_skipped(parent, [parent, child], excel) == []
+    cell = frame_board_scene_cell(
+        [parent, child], parent, excel_by_frame=excel
+    )
+    assert cell["vo_unused_between"] == []
+    assert cell["vo_unused_after_number"] is None
+
+
+def test_cell_vo_skipped_drops_gap_already_owned_by_next_cell() -> None:
+    first_full = "Тед Банди Когда люди вспоминают Теда Банди."
+    next_full = (
+        "аккуратно одетый молодой мужчина с уверенной улыбкой, "
+        "спокойной речью и внешностью человека."
+    )
+    a_uid = "aa" * 12
+    b_uid = "bb" * 12
+    first = Frame(
+        project_id=41,
+        number=1,
+        uuid=a_uid,
+        sort_key=1.0,
+        voiceover_text=first_full,
+        status="planned",
+        attrs={
+            "vo_cell_full": first_full,
+            "camera_subdivide": {"role": "vo_parent", "parent_uuid": a_uid},
+        },
+    )
+    leftover = Frame(
+        project_id=41,
+        number=2,
+        uuid="cc" * 12,
+        sort_key=2.0,
+        voiceover_text="хвост",
+        status="planned",
+        attrs={
+            "camera_subdivide": {
+                "role": "shot",
+                "parent_uuid": a_uid,
+                "leftover": True,
+            },
+        },
+    )
+    nxt = _vo_parent(41, 153, b_uid, next_full)
+    excel = {1: first_full, 2: next_full}
+    assert cell_vo_skipped(first, [first, leftover], excel, [next_full]) == []
+    cell = frame_board_scene_cell(
+        [first, leftover, nxt], first, excel_by_frame=excel
+    )
+    assert cell["vo_unused_between"] == []

@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.bots import outsee_http as oh
+from app.services import media_spend, spend_guard
 from app.services.create_jobs import enqueue_generation, get_job, queue_snapshot
 from app.settings import settings
 
@@ -112,6 +114,14 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
             detail="Outsee Developer API не поддерживает audio",
         )
 
+    verdict = await spend_guard.paid_precheck(
+        "outsee", f"create {media}",
+        estimate_usd=(spend_guard.OUTSEE_VIDEO_ESTIMATE_USD if media == "video"
+                      else spend_guard.MEDIA_SUBMIT_ESTIMATE_USD),
+        project_id=body.project_id)
+    if not verdict.get("allowed"):
+        raise HTTPException(status_code=423, detail=verdict.get("message_ru") or "Платный вызов заблокирован.")
+
     params = {
         "aspect": body.aspect,
         "resolution": body.resolution,
@@ -127,8 +137,10 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
     if media == "video":
         model = oh.studio_id_to_outsee_video_slug(body.model)
 
+        tracked_generate_video = media_spend.outsee_tracked(oh.generate_video, "video")
+
         async def run(out_path):
-            return await oh.generate_video(
+            return await tracked_generate_video(
                 text,
                 out_path,
                 model_slug=model,
@@ -159,15 +171,29 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(e.reason)) from e
 
         async def run(out_path):
-            return await oh.generate_image(
-                text,
-                out_path,
+            from app.services.gpt_client import get_gpt_client
+            from app.services.outsee_retry import generate_image_with_retries
+
+            gpt = None
+            try:
+                gpt = get_gpt_client()
+            except Exception as e:
+                logger.warning("outsee generate: GPT недоступен для rewrite: {}", e)
+            refs = body.reference_images or (
+                [body.first_frame_url] if body.first_frame_url else None
+            )
+            return await generate_image_with_retries(
+                None,
+                gpt,
+                prompt=text,
+                out_path=out_path,
+                max_attempts_per_prompt=3,
+                gpt_rewrite=True,
                 model_slug=model,
                 aspect_ratio=(body.aspect or "9:16").replace("_", ":"),
                 resolution=body.resolution or "2K",
-                detail_level=body.detail_level,
-                reference_images=body.reference_images
-                or ([body.first_frame_url] if body.first_frame_url else None),
+                quality=body.detail_level,
+                reference_image=refs,
                 project_id=body.project_id,
                 timeout=600,
             )

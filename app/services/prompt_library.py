@@ -127,10 +127,142 @@ def excel_gpt_template_dir() -> Path:
     return find_project_root() / "templates" / "excel_gpt_agents"
 
 
+SCRIPT_FRAMES_QC_SHARED_PROMPTS: dict[str, str] = {
+    "scene_skeleton_agent": "prompts/scene_design/scene_skeleton_agent.md",
+    "action": "prompts/scene_design/action.md",
+}
+
+SCRIPT_FRAMES_QC_PROMPT_NAMES: frozenset[str] = frozenset(
+    {
+        "script_writer_ru",
+        "main_action_from_bits_ru",
+        "scenes_to_frames_ru",
+        "shots_qc_ru",
+        "frame_prompts_continuity_ru",
+        "prompts_qc_continuity_ru",
+        *SCRIPT_FRAMES_QC_SHARED_PROMPTS,
+    }
+)
+
+
+def node_group_prompts_dir(group_id: str) -> Path:
+    from app.project_root import find_project_root
+
+    return find_project_root() / "templates" / "node_groups" / group_id
+
+
+def is_script_frames_qc_prompt(name: str) -> bool:
+    clean = (name or "").strip()
+    if clean.lower().endswith(".md"):
+        clean = clean[:-3].rstrip()
+    return clean in SCRIPT_FRAMES_QC_PROMPT_NAMES
+
+
+def script_frames_qc_group_id(group_id: str | None) -> str | None:
+    if not group_id:
+        return None
+    base = str(group_id).split("#", 1)[0].strip()
+    return base if base == "script_frames_qc" else None
+
+
+_SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
+    "_fw_script",
+    "_fw_check_script",
+    "_fw_action",
+    "_fw_shots",
+    "_fw_frames",
+    "_fw_qc",
+    "_fw_report",
+)
+
+
+def _group_id_from_canvas_node(project: Any, node_key: str | None) -> str | None:
+    if not node_key:
+        return None
+    meta = getattr(project, "meta", None) if project is not None else None
+    if not isinstance(meta, dict):
+        return None
+    graph = meta.get("canvas_graph") or {}
+    if not isinstance(graph, dict):
+        return None
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("id") or "") != str(node_key):
+            continue
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        raw = str((data or {}).get("groupId") or "").strip()
+        return raw.split("#", 1)[0] or None
+    return None
+
+
+def uses_script_frames_qc_prompts(
+    *,
+    group_id: str | None = None,
+    project: Any = None,
+    node_key: str | None = None,
+) -> bool:
+    if script_frames_qc_group_id(group_id) is not None:
+        return True
+    if script_frames_qc_group_id(_group_id_from_canvas_node(project, node_key)):
+        return True
+    nk = str(node_key or "")
+    if any(nk.endswith(s) for s in _SCRIPT_FRAMES_QC_NODE_SUFFIXES):
+        return True
+    if project is not None:
+        from app.services.node_groups import canvas_has_script_frames_qc
+
+        return canvas_has_script_frames_qc(project)
+    return False
+
+
+def list_group_owned_prompts(group_id: str | None) -> list[str] | None:
+    if script_frames_qc_group_id(group_id) is None:
+        return None
+    return sorted(
+        n
+        for n in SCRIPT_FRAMES_QC_PROMPT_NAMES
+        if resolve_script_frames_qc_prompt_path(n).is_file()
+    )
+
+
+def script_frames_qc_prompt_relpath(name: str) -> str:
+    clean = (name or "").strip()
+    if clean.lower().endswith(".md"):
+        clean = clean[:-3].rstrip()
+    shared = SCRIPT_FRAMES_QC_SHARED_PROMPTS.get(clean)
+    if shared:
+        return shared
+    return f"templates/node_groups/script_frames_qc/{clean}.md"
+
+
+def resolve_script_frames_qc_prompt_path(name: str) -> Path:
+    from app.project_root import find_project_root
+
+    clean = (name or "").strip()
+    if clean.lower().endswith(".md"):
+        clean = clean[:-3].rstrip()
+    shared = SCRIPT_FRAMES_QC_SHARED_PROMPTS.get(clean)
+    if shared:
+        return find_project_root() / shared
+    return node_group_prompts_dir("script_frames_qc") / f"{clean}.md"
+
+
+def _group_prompt_path(name: str) -> Path | None:
+    clean = name.strip()
+    if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+        p = resolve_script_frames_qc_prompt_path(clean)
+        if p.is_file():
+            return p
+    return None
+
+
 def excel_gpt_prompt_exists(name: str) -> bool:
     clean = _clean_variant_name(name) if name else ""
     if not clean:
         return False
+    if _group_prompt_path(clean) is not None:
+        return True
     for code in excel_gpt_source_steps():
         try:
             if prompt_path(code, clean).exists():
@@ -140,8 +272,6 @@ def excel_gpt_prompt_exists(name: str) -> bool:
     return (excel_gpt_template_dir() / f"{clean}.md").is_file()
 
 
-# Локальная копия 05_excel_gpt иногда остаётся v1 (пишет закадр) или
-# «1 сцена = 1 кадр». Git-шаблон — SoT для цепочки script_frames_qc.
 _STALE_EXCEL_GPT_MARKERS: dict[str, tuple[str, ...]] = {
     "script_writer_ru": (
         "Агент: сценарист закадра",
@@ -152,6 +282,8 @@ _STALE_EXCEL_GPT_MARKERS: dict[str, tuple[str, ...]] = {
     ),
     "frame_prompts_continuity_ru": (
         '"frame_uuid": "u002"',
+        "дубль первого",
+        "промт_картинки_2` / `промты_детей",
     ),
 }
 
@@ -167,11 +299,26 @@ def _excel_gpt_local_is_stale(name: str, path: Path) -> bool:
     return any(m in head for m in markers)
 
 
-def resolve_excel_gpt_prompt_path(name: str) -> Path:
-    """Читать из 05_excel_gpt, legacy enrich_* или templates/excel_gpt_agents."""
+def resolve_excel_gpt_prompt_path(
+    name: str,
+    *,
+    group_id: str | None = None,
+    project: Any = None,
+    node_key: str | None = None,
+) -> Path:
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
+    if (
+        uses_script_frames_qc_prompts(
+            group_id=group_id, project=project, node_key=node_key
+        )
+        and clean in SCRIPT_FRAMES_QC_PROMPT_NAMES
+    ):
+        group = _group_prompt_path(clean)
+        if group is not None:
+            return group
+        return resolve_script_frames_qc_prompt_path(clean)
     primary = step_dir(EXCEL_GPT_UNIFIED_STEP) / f"{clean}.md"
     tmpl = excel_gpt_template_dir() / f"{clean}.md"
     if primary.is_file() and not (
@@ -194,8 +341,6 @@ def resolve_excel_gpt_prompt_path(name: str) -> Path:
         return tmpl
     return primary
 
-# Макс. длина имени варианта на диске (UTF-8 байты). Раньше было 40 из‑за TG callback_data;
-# в веб-студии нужны длинные осмысленные имена файлов.
 MAX_PROMPT_NAME_BYTES = 255
 
 # Для inline-кнопок Telegram (callback_data ≤ 64 байта с префиксом).
@@ -319,15 +464,17 @@ def list_prompts(step_code: str) -> list[str]:
 
 
 def list_excel_gpt_prompts() -> list[str]:
-    """Список «Работа с GPT»: 05_excel_gpt + git-шаблоны excel_gpt_agents."""
     names = _list_prompts_in_dir(EXCEL_GPT_UNIFIED_STEP)
     seen = set(names)
     tmpl = excel_gpt_template_dir()
     if tmpl.is_dir():
         for extra in sorted(p.stem for p in tmpl.glob("*.md")):
+            if extra in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+                continue
             if extra not in seen:
                 names.append(extra)
                 seen.add(extra)
+    names = [n for n in names if n not in SCRIPT_FRAMES_QC_PROMPT_NAMES]
     if DEFAULT_NAME in names:
         names.remove(DEFAULT_NAME)
         names.insert(0, DEFAULT_NAME)
@@ -344,16 +491,24 @@ def _list_prompts_in_dir(step_code: str) -> list[str]:
 
 
 def prompt_path(step_code: str, name: str) -> Path:
-    """Путь к файлу `<step_dir>/<name>.md`. Не проверяет существование."""
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
     return step_dir(step_code) / f"{clean}.md"
 
 
-def read_prompt(step_code: str, name: str) -> str:
+def read_prompt(
+    step_code: str,
+    name: str,
+    *,
+    group_id: str | None = None,
+    project: Any = None,
+    node_key: str | None = None,
+) -> str:
     if is_excel_gpt_prompt_step(step_code):
-        p = resolve_excel_gpt_prompt_path(name)
+        p = resolve_excel_gpt_prompt_path(
+            name, group_id=group_id, project=project, node_key=node_key
+        )
         if not p.is_file():
             raise FileNotFoundError(f"prompt file not found: {p}")
         return p.read_text(encoding="utf-8")
@@ -375,6 +530,12 @@ def read_prompt(step_code: str, name: str) -> str:
 
 def write_prompt(step_code: str, name: str, content: str) -> Path:
     if is_excel_gpt_prompt_step(step_code):
+        clean = _clean_variant_name(name) if name else ""
+        if clean in SCRIPT_FRAMES_QC_PROMPT_NAMES:
+            p = resolve_script_frames_qc_prompt_path(clean)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            return p
         step_code = EXCEL_GPT_UNIFIED_STEP
     p = prompt_path(step_code, name)
     p.write_text(content, encoding="utf-8")
@@ -425,15 +586,48 @@ def _clean_variant_name(raw: str) -> str:
 _STEP_PREFERRED_SLOT: dict[str, str] = {
     "hero_style": "style",
 }
+_HERO_SHEET_FALLBACKS = (
+    "character_model_sheet_16x9",
+    "агент_лист_персонажа_со_всех_сторон.txt",
+)
+
+
+def _node_key_belongs_to_step(node_key: str, step_code: str) -> bool:
+    key = str(node_key or "").strip().lower()
+    if not key:
+        return False
+    sc = str(step_code or "").strip().lower()
+    if is_excel_gpt_prompt_step(step_code):
+        if "excel_gpt" in key:
+            return True
+    if sc == "hero_style":
+        return key == "n_hero" or key.startswith("n_hero_")
+    prefixes = [f"n_{sc}", sc]
+    if sc == "img_pr":
+        prefixes.extend(["n_image_prompts", "image_prompts"])
+    elif sc == "anim_pr":
+        prefixes.extend(["n_animation_prompts", "animation_prompts"])
+    elif sc == "img":
+        prefixes.extend(["n_images", "images"])
+    elif sc == "video":
+        prefixes.extend(["n_videos", "videos"])
+    try:
+        from app.orchestrator.node_registry import WORK_NODES
+
+        for spec in WORK_NODES.values():
+            if spec.step_code.lower() == sc or spec.node_type.lower() == sc:
+                prefixes.append(f"n_{spec.node_type}")
+                prefixes.append(spec.node_type)
+    except Exception:
+        pass
+    for prefix in prefixes:
+        pl = str(prefix).lower()
+        if key == pl or key.startswith(pl + "_"):
+            return True
+    return False
 
 
 def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
-    """Вариант из Node Studio: `meta.prompt_slot_variants[node][slot]`.
-
-    Зеркало `web/src/lib/prompt-slot-storage.ts` → `activeVariantForSlot`:
-    для hero_style — слот `style`; иначе сначала `main`, потом любой
-    существующий файл шага.
-    """
     if not meta or step_code not in STEP_FOLDERS:
         return None
     slot_variants = meta.get("prompt_slot_variants")
@@ -443,8 +637,10 @@ def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
     found_preferred: str | None = None
     found_main: str | None = None
     found_other: str | None = None
-    for slots in slot_variants.values():
+    for node_key, slots in slot_variants.items():
         if not isinstance(slots, dict):
+            continue
+        if not _node_key_belongs_to_step(str(node_key), step_code):
             continue
         for slot_id, variant in slots.items():
             clean = _clean_variant_name(str(variant or ""))
@@ -466,13 +662,82 @@ def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
     return found_preferred or found_main or found_other
 
 
+def _coerce_hero_sheet_variant(name: str, source: str) -> tuple[str, str]:
+    from app.services.hero_prompt_contract import (
+        hero_master_looks_like_registry_agent,
+        hero_master_looks_like_sheet,
+    )
+
+    def _ok(variant: str) -> bool:
+        path = prompt_path("hero", variant)
+        if not path.is_file():
+            return False
+        text = path.read_text(encoding="utf-8")
+        if hero_master_looks_like_registry_agent(text):
+            return False
+        return hero_master_looks_like_sheet(text)
+
+    clean = _clean_variant_name(name)
+    if clean and _ok(clean):
+        return clean, source
+    for fallback in _HERO_SHEET_FALLBACKS:
+        if _ok(fallback):
+            if clean and clean != fallback:
+                logger.warning(
+                    "hero: вариант {!r} (source={}) не лист генерации — {}",
+                    clean,
+                    source,
+                    fallback,
+                )
+            return fallback, "default"
+    return (clean or DEFAULT_NAME), source
+
+
+def _hero_style_file_ok(variant: str) -> bool:
+    from app.services.hero_prompt_contract import (
+        hero_style_looks_like_character_lock,
+        hero_style_looks_like_img_pr_template,
+    )
+
+    path = prompt_path("hero_style", variant)
+    if not path.is_file():
+        return False
+    text = path.read_text(encoding="utf-8")
+    if hero_style_looks_like_img_pr_template(text):
+        return False
+    return hero_style_looks_like_character_lock(text) or len(text.strip()) >= 80
+
+
+def _hero_style_fallback_names() -> list[str]:
+    names = _list_prompts_in_dir("hero_style")
+    preferred = [n for n in names if "персонаж" in n.lower()]
+    rest = [n for n in names if n not in preferred and n != DEFAULT_NAME]
+    return [*preferred, *rest]
+
+
+def _coerce_hero_style_variant(name: str, source: str) -> tuple[str, str]:
+    clean = _clean_variant_name(name)
+    if clean and _hero_style_file_ok(clean):
+        return clean, source
+    for fallback in _hero_style_fallback_names():
+        if _hero_style_file_ok(fallback):
+            if clean and clean != fallback:
+                logger.warning(
+                    "hero_style: вариант {!r} (source={}) не лок персонажа — {}",
+                    clean,
+                    source,
+                    fallback,
+                )
+            return fallback, "default"
+    return (clean or DEFAULT_NAME), source
+
+
 def resolve_project_prompt_name(
     overrides: dict | None,
     step_code: str,
     *,
     meta: dict | None = None,
 ) -> str:
-    """Какой вариант .md использовать для шага."""
     return resolve_project_prompt_with_source(overrides, step_code, meta=meta)[0]
 
 
@@ -494,12 +759,28 @@ def resolve_project_prompt_with_source(
     node_key: str | None = None,
     slot_id: str | None = None,
 ) -> tuple[str, str]:
-    """(имя варианта, источник: slot|preferred|override|global|default).
+    name, source = _resolve_prompt_variant_raw(
+        overrides,
+        step_code,
+        meta=meta,
+        node_key=node_key,
+        slot_id=slot_id,
+    )
+    if str(step_code) == "hero":
+        return _coerce_hero_sheet_variant(name, source)
+    if str(step_code) == "hero_style":
+        return _coerce_hero_style_variant(name, source)
+    return name, source
 
-    Для excel_gpt при нескольких нодах обязателен node_key: иначе все слоты
-    получают один prompt_overrides["excel_gpt"]. Node Studio пишет выбор в
-    meta.prompt_slot_variants[node_key]["main"].
-    """
+
+def _resolve_prompt_variant_raw(
+    overrides: dict | None,
+    step_code: str,
+    *,
+    meta: dict | None = None,
+    node_key: str | None = None,
+    slot_id: str | None = None,
+) -> tuple[str, str]:
     overrides = overrides or {}
     # Node Studio gpt-слот по умолчанию id=main.
     effective_slot = (slot_id or "").strip() or ("main" if node_key else None)
@@ -595,12 +876,43 @@ def read_resolved_project_prompt(
     name, source = resolve_project_prompt_with_source(
         overrides, step_code, meta=meta, node_key=node_key, slot_id=slot_id
     )
-    path = prompt_path(step_code, name)
-    text = read_prompt(step_code, name)
+    gid = _group_id_from_canvas_node(project, node_key)
+    if is_excel_gpt_prompt_step(step_code):
+        path = resolve_excel_gpt_prompt_path(
+            name, group_id=gid, project=project, node_key=node_key
+        )
+        text = read_prompt(
+            step_code, name, group_id=gid, project=project, node_key=node_key
+        )
+    else:
+        path = prompt_path(step_code, name)
+        text = read_prompt(step_code, name)
     from app.services.gpt_text_builder import inject_topic_placeholders
 
     topic = str(getattr(project, "topic", None) or "")
+    if step_code in ENRICH_STEP_CODES:
+        text = _render_enrich_template(project, step_code, text, topic)
     return name, path, inject_topic_placeholders(text, topic), source
+
+
+def _render_enrich_template(project, step_code: str, text: str, topic: str) -> str:
+    from app.services.prompt_composer import (
+        assert_prompt_resolved,
+        merge_project_prompt_config,
+        render_template_text,
+    )
+
+    if "{{" not in text:
+        return text
+    heroes = getattr(project, "hero_descriptions", None)
+    blocks, vars_ = merge_project_prompt_config(
+        getattr(project, "prompt_overrides", None) or {},
+        hero_description=heroes[0] if isinstance(heroes, list) and heroes else None,
+        topic=topic or None,
+    )
+    rendered = render_template_text(text, blocks, vars_)
+    assert_prompt_resolved(rendered, label=step_code)
+    return rendered
 
 
 def get_project_prompt(project, step_code: str) -> str:
@@ -620,8 +932,23 @@ def get_project_prompt(project, step_code: str) -> str:
         project_uses_blocks_v2,
     )
 
-    # enrich_* всегда из выбранного .md в Studio — не из blocks/steps template.
+    full_file = False
     if step_code not in ENRICH_STEP_CODES and project_uses_blocks_v2(overrides):
+        meta = getattr(project, "meta", None) or {}
+        variant_name, _variant_source = resolve_project_prompt_with_source(
+            overrides,
+            step_code,
+            meta=meta if isinstance(meta, dict) else None,
+        )
+        from app.services.prompt_step_presets import resolve_prompt_preset
+
+        preset = resolve_prompt_preset(step_code, variant_name)
+        full_file = isinstance(preset, dict) and preset.get("compose") == "file"
+    if (
+        step_code not in ENRICH_STEP_CODES
+        and project_uses_blocks_v2(overrides)
+        and not full_file
+    ):
         step_id = STEP_CODE_TO_COMPOSE.get(step_code)
         if step_id:
             blocks, vars_ = merge_project_prompt_config(
@@ -654,7 +981,6 @@ def get_project_prompt(project, step_code: str) -> str:
 
 
 def make_template_for_new(step_code: str, name: str) -> str:
-    """Стартовый шаблон для нового файла, чтобы юзеру было что заполнять."""
     folder = STEP_FOLDERS.get(step_code, "?")
     return (
         f"# Master-prompt для шага «{step_code}» (вариант: {name})\n"
@@ -667,3 +993,16 @@ def make_template_for_new(step_code: str, name: str) -> str:
         "\n"
         "Опиши задачу для модели здесь...\n"
     )
+
+
+APPROVED_PROFILE_PROMPTS={
+    'original-contract-v1':'',
+    'repair-json-only-v1':'\n\n[Approved profile: repair-json-only-v1] Repair formatting only. Return one JSON value conforming to the ORIGINAL node schema. Preserve source facts and identifiers; do not invent missing information or bypass validation.',
+    'require-apply-ops-v1':'\n\n[Approved synthetic profile: require-apply-ops-v1] Return the mandatory apply-ops JSON specified by the original node contract.',
+}
+
+def apply_approved_profile_prompt(resolved: str, variant: str) -> str:
+    if variant not in APPROVED_PROFILE_PROMPTS:
+        raise ValueError("unknown approved profile prompt variant")
+    suffix=APPROVED_PROFILE_PROMPTS[variant]
+    return resolved if not suffix or resolved.endswith(suffix) else resolved+suffix

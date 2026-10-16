@@ -624,6 +624,13 @@ async def run_verdict_review(
                 history=history,
             )
 
+        logger.info(
+            "[#{}] gpt_verdict {} round {}: причина отказа: {}",
+            project.id,
+            step_code,
+            round_idx,
+            " ".join((last_raw or "").split())[:3000],
+        )
         fix_text = verdict.fix_text
         # JSON/TXT check-отчёт — это вердикт, не исправленный файл.
         # Попытка materialize raw → voiceover/xlsx давала мусор и ложный regen.

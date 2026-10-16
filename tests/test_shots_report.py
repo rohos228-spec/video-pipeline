@@ -1,0 +1,458 @@
+
+from types import SimpleNamespace
+
+from app.services.shots_report import build_shots_report_model, render_shots_report_html
+
+
+def _frame(
+    *,
+    number: int,
+    vo: str,
+    action_chain: str = "",
+    kadry: list | None = None,
+    shot_id: str = "",
+    scene: int = 1,
+    image: str = "",
+    video: str = "",
+    size: str = "",
+    move: str = "",
+    nab: str = "",
+    uuid: str = "e8ca9ac60d0e4c659e2610b4",
+) -> SimpleNamespace:
+    attrs = {
+        "главное_действие": action_chain,
+        "кадры": kadry or [],
+        "camera_subdivide": {
+            "shot_id": shot_id,
+            "сцена": scene,
+            "role": "vo_parent",
+            "shot_index": 1,
+            "shots_in_beat": 2,
+            "крупность": size,
+            "движение": move,
+            "набор": nab,
+        },
+    }
+    return SimpleNamespace(
+        number=number,
+        uuid=uuid,
+        voiceover_text=vo,
+        image_prompt=image,
+        animation_prompt=video,
+        attrs=attrs,
+        sort_key=float(number),
+    )
+
+
+def test_report_hides_uuid_role_shot_index() -> None:
+    chain = (
+        "1. архив — раскрывает папки\n"
+        "(Самые странные преступления в истории)\n"
+    )
+    kadry = [
+        {
+            "id": "1-S1-K1",
+            "parent_id": None,
+            "порядок": 1,
+            "сцена": 1,
+            "шаблон": "T2",
+            "план": "ОБЩИЙ",
+            "ракурс": "фронт",
+            "место": "архив",
+            "действие": "Пыльный архив, следователь у стола.",
+            "закадр": "Самые странные преступления в истории",
+        }
+    ]
+    fr = _frame(
+        number=1,
+        vo="Самые странные преступления в истории",
+        action_chain=chain,
+        kadry=kadry,
+        shot_id="1-S1-K1",
+        image="wide archive still",
+        video="slow push in",
+        size="ОБЩИЙ",
+        move="наезд",
+        nab="архив",
+    )
+    html = render_shots_report_html(
+        build_shots_report_model([fr]), slug="tester", project_id=32
+    )
+    assert "Пыльный архив" in html
+    assert "wide archive still" in html
+    assert "slow push in" in html
+    assert "наезд" in html
+    assert "Кадры" in html
+    assert "QC:" in html
+    assert "картинка:" in html
+    assert "e8ca9ac60d0e4c659e2610b4" not in html
+    assert "vo_parent" not in html
+    assert "shot_index" not in html
+    assert "shots_in_beat" not in html
+    assert "background:#000" in html
+    assert "background:#fff" in html
+
+
+def test_report_aligns_prompt_and_qc_per_shot() -> None:
+    chain = (
+        "1. кухня — моет пол\n(моет пол на кухне)\n"
+    )
+    kadry = [
+        {
+            "id": "1-K1",
+            "parent_id": None,
+            "порядок": 1,
+            "сцена": 1,
+            "шаблон": "T9",
+            "план": "ОБЩИЙ",
+            "ракурс": "фронт",
+            "место": "кухня",
+            "действие": "Кухня целиком.",
+            "закадр": "моет",
+        },
+        {
+            "id": "1-K2",
+            "parent_id": "1-K1",
+            "порядок": 2,
+            "сцена": 1,
+            "шаблон": "T9",
+            "план": "СРЕДНИЙ",
+            "ракурс": "3/4",
+            "место": "кухня",
+            "действие": "Руки с тряпкой.",
+            "закадр": "пол на кухне",
+        },
+    ]
+    parent = _frame(
+        number=1,
+        vo="моет",
+        action_chain=chain,
+        kadry=kadry,
+        shot_id="1-K1",
+        image="kitchen wide",
+        video="static hold",
+        size="ОБЩИЙ",
+        move="статика",
+        nab="кухня",
+    )
+    child = _frame(
+        number=2,
+        vo="пол на кухне",
+        kadry=[],
+        shot_id="1-K2",
+        scene=1,
+        image="hands close",
+        video="wipe motion",
+        size="СРЕДНИЙ",
+        move="панорама",
+        nab="кухня",
+        uuid="bddcb068f5ee4d6293777302",
+    )
+    model = build_shots_report_model([parent, child])
+    shots = model["scenes"][0]["shots"]
+    assert len(shots) == 2
+    assert shots[0]["prompts"]["картинка"] == "kitchen wide"
+    assert shots[1]["prompts"]["картинка"] == "hands close"
+    assert shots[1]["qc"]["движение"] == "панорама"
+    html = render_shots_report_html(model, slug="x")
+    assert html.find("kitchen wide") < html.find("hands close")
+    assert "bddcb068f5ee4d6293777302" not in html
+
+
+def test_report_keeps_every_kadry_scene() -> None:
+    fr1 = _frame(
+        number=1,
+        vo="первая",
+        action_chain="1. архив — открывает папку\n(первая)\n",
+        kadry=[
+            {
+                "id": "1-S1-K1",
+                "порядок": 1,
+                "сцена": 1,
+                "шаблон": "T2",
+                "план": "ОБЩИЙ",
+                "ракурс": "фронт",
+                "место": "архив",
+                "действие": "Открывает папку.",
+                "закадр": "первая",
+            }
+        ],
+        shot_id="1-S1-K1",
+        image="a",
+        video="va",
+    )
+    fr2 = _frame(
+        number=3,
+        vo="вторая",
+        action_chain="2. кабинет — раскладывает улики\n(вторая)\n",
+        kadry=[
+            {
+                "id": "1-S2-K1",
+                "порядок": 1,
+                "сцена": 2,
+                "шаблон": "T5",
+                "план": "СРЕДНИЙ",
+                "ракурс": "3/4",
+                "место": "кабинет",
+                "действие": "Раскладывает улики.",
+                "закадр": "вторая",
+            }
+        ],
+        shot_id="1-S2-K1",
+        scene=2,
+        image="b",
+        video="vb",
+        uuid="aaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    model = build_shots_report_model([fr1, fr2])
+    assert [s["n"] for s in model["scenes"]] == [1, 2]
+    html = render_shots_report_html(model, slug="x")
+    assert "1-S1-K1" in html
+    assert "1-S2-K1" in html
+    assert "Открывает папку" in html
+    assert "Раскладывает улики" in html
+    assert "Шаблонов T нет" in html
+    assert "when из таблицы" not in html
+    assert "Листы xlsx" not in html
+
+
+def test_report_lists_every_kadry_row() -> None:
+    current = _frame(
+        number=7,
+        vo="Лимонный сок,",
+        action_chain="3. стол следствия — выкладывает улики\n(лимонный сок)\n",
+        kadry=[
+            {
+                "id": "1-S3-K1",
+                "parent_id": None,
+                "порядок": 1,
+                "сцена": 3,
+                "шаблон": "T9",
+                "план": "ОБЩИЙ",
+                "ракурс": "фронт",
+                "место": "стол следствия",
+                "действие": "Ставит сок.",
+                "закадр": "Лимонный сок,",
+            },
+            {
+                "id": "1-S3-K2",
+                "parent_id": "1-S3-K1",
+                "порядок": 2,
+                "сцена": 3,
+                "шаблон": "T9",
+                "план": "СРЕДНИЙ",
+                "ракурс": "3",
+                "место": "стол следствия",
+                "действие": "Двигает очки.",
+                "закадр": "забытые очки,",
+            },
+        ],
+        shot_id="1-S3-K1",
+        scene=3,
+        image="now",
+        video="vnow",
+    )
+    stale = _frame(
+        number=24,
+        vo="Лимонный сок,",
+        kadry=[
+            {
+                "id": "1-K7",
+                "parent_id": "1-K4",
+                "порядок": 1,
+                "сцена": 3,
+                "шаблон": "T9",
+                "план": "ОБЩИЙ",
+                "ракурс": "фронт",
+                "место": "стол следствия",
+                "действие": "Старый expand.",
+                "закадр": "Лимонный сок,",
+            }
+        ],
+        shot_id="1-K7",
+        scene=3,
+        image="old",
+        video="vold",
+        uuid="bbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    model = build_shots_report_model([current, stale])
+    shots = model["scenes"][0]["shots"]
+    ids = [s["id"] for s in shots]
+    assert set(ids) == {"1-S3-K1", "1-S3-K2", "1-K7"}
+    html = render_shots_report_html(model, slug="x")
+    assert "1-K7" in html
+    assert "1-S3-K1" in html
+
+
+def test_report_shows_scene_card_with_action_and_vo() -> None:
+    fr = _frame(
+        number=1,
+        vo="Самые странные преступления в истории",
+        action_chain="1. архив — раскрывает папки\n(Самые странные преступления в истории)\n",
+        kadry=[
+            {
+                "id": "1-S1-K1",
+                "порядок": 1,
+                "сцена": 1,
+                "план": "ОБЩИЙ",
+                "место": "архив",
+                "действие": "Пыльный архив, следователь у стола.",
+                "закадр": "Самые странные преступления в истории",
+            }
+        ],
+        shot_id="1-S1-K1",
+    )
+    html = render_shots_report_html(build_shots_report_model([fr]), slug="x")
+    assert "Сцена 1 · архив" in html
+    assert "Сценарий сцены" in html
+    assert "раскрывает папки" in html
+    assert "Закадр." in html
+    assert "Самые странные преступления в истории" in html
+    assert 'id="scene-1"' in html
+    assert "родительский" in html
+
+
+def test_report_scene_action_ignores_child_shot_main_action() -> None:
+    parent = _frame(
+        number=1,
+        vo="читает",
+        action_chain="1. кабинет — вошёл → сел к столу → открыл папку\n(читает)\n",
+        kadry=[
+            {
+                "id": "1-S1-K1",
+                "зона": "кабинет",
+                "сцена": 1,
+                "действие": "вошёл",
+                "закадр": "читает",
+            },
+            {
+                "id": "1-S1-K2",
+                "parent_id": "1-S1-K1",
+                "сцена": 1,
+                "действие": "сел к столу",
+                "закадр": "дальше",
+            },
+        ],
+        shot_id="1-S1-K1",
+    )
+    child = _frame(number=2, vo="дальше", kadry=[], shot_id="1-S1-K2")
+    child.attrs["camera_subdivide"]["role"] = "shot"
+    child.attrs["camera_subdivide"]["сцена"] = 1
+    child.attrs["main_action"] = "папка уже лежит на столе, архивист открывает папку"
+    html = render_shots_report_html(
+        build_shots_report_model([parent, child]), slug="x"
+    )
+    assert "вошёл → сел к столу → открыл папку" in html
+    assert "папка уже лежит на столе" not in html.split("Кадры")[0]
+    assert "родительский" in html
+    assert "дочерний" in html
+
+
+def test_plan_section_legend_and_skips_shot_child() -> None:
+    plan = {
+        "зоны": [
+            {"id": "архив", "предметы": [{"id": "папка", "где": "центр"}]},
+            {"id": "двор", "предметы": []},
+            *[{"id": f"z{i}", "предметы": []} for i in range(10)],
+        ],
+        "проходы": [],
+        "выведено_кодом": ["зона из места"],
+        "исправлено_кодом": ["камера 90"],
+    }
+    kadry = [
+        {
+            "id": "1-S1-K1",
+            "зона": "архив",
+            "камера": {"где": "юг", "смотрит": "север"},
+            "действие": "читает",
+            "сцена": 1,
+            "закадр": "читает",
+        },
+        {
+            "id": "1-S1-K2",
+            "parent_id": "1-S1-K1",
+            "зона": "архив",
+            "камера": {"где": "юг", "смотрит": "север"},
+            "действие": "закрывает",
+            "сцена": 1,
+            "закадр": "закрывает",
+        },
+    ]
+    parent = _frame(number=1, vo="читает", kadry=kadry, shot_id="1-S1-K1")
+    parent.attrs["площадка"] = plan
+    child = _frame(number=2, vo="закрывает", kadry=[], shot_id="1-S1-K2")
+    child.attrs["площадка"] = plan
+    child.attrs["camera_subdivide"]["role"] = "shot"
+    model = build_shots_report_model([parent, child])
+    assert len(model["plans"]) == 1
+    svg = model["plans"][0]["svg"]
+    assert "z0" not in svg
+    assert "архив" in svg
+    assert "двор" not in svg
+    html = render_shots_report_html(model, slug="x")
+    assert "Север сверху" in html
+    assert "overflow-x:auto" in html
+    assert "К1↑" in html
+    assert "К2↑" in html
+    assert html.count("Ячейка 1") == 1
+    assert "Ячейка 2" not in html
+
+
+def test_existing_report_is_left_as_fw_report_wrote_it(tmp_path, monkeypatch) -> None:
+    from app.services import shots_report as sr
+
+    monkeypatch.setattr(sr, "find_project_root", lambda: tmp_path)
+    proj = SimpleNamespace(slug="tkach", data_dir=tmp_path / "tkach", id=63)
+    reports = proj.data_dir / "reports"
+    reports.mkdir(parents=True)
+    html = reports / "shots-report.html"
+    html.write_text("SENTINEL-FROM-FW-REPORT", encoding="utf-8")
+    got = sr.existing_shots_report_path(proj)
+    assert got == html
+    assert html.read_text(encoding="utf-8") == "SENTINEL-FROM-FW-REPORT"
+
+
+def test_diary_follows_shot_id_across_cells() -> None:
+    parent = _frame(
+        number=1,
+        vo="начало",
+        uuid="parent-uuid",
+        kadry=[{"id": "1-S1-K1", "сцена": 1, "действие": "первый", "закадр": "начало"}],
+        shot_id="1-S1-K1",
+    )
+    other = _frame(
+        number=55,
+        vo="конец",
+        uuid="other-uuid",
+        scene=15,
+        kadry=[{"id": "1-S15-K1", "сцена": 15, "действие": "подпись", "закадр": "конец"}],
+        shot_id="1-S15-K1",
+    )
+    diary = [{
+        "frame_uuid": "parent-uuid",
+        "shot": 55,
+        "shot_id": "1-S15-K1",
+        "field": "раскладка",
+        "before": None,
+        "after": "План СРЕДНИЙ",
+        "rule": "R-LAYOUT",
+        "pass": "scene_plan",
+        "kind": "fix",
+        "note": "",
+        "node_key": "n_excel_gpt_fw_shots",
+    }]
+    model = build_shots_report_model([parent, other], diary=diary)
+    by_id = {sh["id"]: sh for sh in model["shots"]}
+    assert by_id["1-S15-K1"]["diary"]
+    assert not by_id["1-S1-K1"]["diary"]
+    html = render_shots_report_html(model, slug="t")
+    assert html.count("Дневник кадра") == 1
+
+
+def test_plan_uses_overlay_camera_when_kadry_empty() -> None:
+    parent = _frame(number=5, vo="моет", kadry=[], shot_id="2-S1-K3")
+    parent.attrs["площадка"] = {"зоны": [{"id": "кухня", "предметы": []}]}
+    parent.attrs["зона"] = "кухня"
+    parent.attrs["камера"] = {"где": "запад", "смотрит": "восток"}
+    model = build_shots_report_model([parent])
+    assert "К3→" in model["plans"][0]["svg"]

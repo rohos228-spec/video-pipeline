@@ -18,6 +18,7 @@ class NodeLlmOverride:
     kind: str  # text | image
     provider: str
     label: str
+    reasoning_effort: str | None = None
 
 
 _current: ContextVar[NodeLlmOverride | None] = ContextVar(
@@ -72,15 +73,33 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
 
             node_key = sd_runner.resolve_sd_node_key(project, "assemble")
 
-    choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
+    from app.services.node_groups import is_script_frames_qc_gpt_node
+    from app.services.text_llm_catalog import (
+        catalog_api_model,
+        catalog_item,
+        resolve_active_model_id,
+    )
+    from app.settings import settings
+
     ov: NodeLlmOverride | None = None
-    if choice_raw and choice_raw.get("kind") == "text":
+    if is_script_frames_qc_gpt_node(meta, node_key=node_key):
+        active_id = resolve_active_model_id(settings)
+        item = catalog_item(active_id) or {}
+        if str(item.get("provider") or "").strip().lower() != "vibecode":
+            active_id = "gpt-5.6-sol-vibecode"
+            item = catalog_item(active_id) or {
+                "id": active_id,
+                "label": "GPT 5.6 Sol",
+                "provider": "vibecode",
+            }
+        api_model = catalog_api_model(active_id, default="gpt-5.6-sol")
         ov = NodeLlmOverride(
-            model_id=str(choice_raw["id"]),
-            channel=str(choice_raw.get("channel") or "stable"),
+            model_id=api_model,
+            channel="stable",
             kind="text",
-            provider=str(choice_raw.get("provider") or "vibecode"),
-            label=str(choice_raw.get("label") or choice_raw["id"]),
+            provider="vibecode",
+            label=f"{(item.get('label') or 'GPT 5.6 Sol')} (vibecode)",
+            reasoning_effort=None,
         )
         logger.info(
             "node_llm: #{} {} → {} ({})",
@@ -89,6 +108,23 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
             ov.label,
             ov.model_id,
         )
+    else:
+        choice_raw = resolve_node_choice(meta, node_key=node_key, node_type=node_type)
+        if choice_raw and choice_raw.get("kind") == "text":
+            ov = NodeLlmOverride(
+                model_id=str(choice_raw.get('api_model') or choice_raw["id"]),
+                channel=str(choice_raw.get("channel") or "stable"),
+                kind="text",
+                provider=str(choice_raw.get("provider") or "vibecode"),
+                label=str(choice_raw.get("label") or choice_raw["id"]),
+            )
+            logger.info(
+                "node_llm: #{} {} → {} ({})",
+                getattr(project, "id", "?"),
+                node_key or node_type or "?",
+                ov.label,
+                ov.model_id,
+            )
     with use_override(ov) as bound:
         yield bound
 

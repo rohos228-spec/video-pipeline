@@ -51,6 +51,7 @@ def test_img_pr_db_context_picks_scene_grammar_keys() -> None:
     assert row["voiceover_text"].startswith("закадр")
     assert "камера неподвижна" in row["animation_prompt"]
     assert row["place"] == "метро вагон"
+    assert row["shot01_action"] == "пассажир читает газету"
     assert row["shot01_bg"].startswith("серый")
     assert row["lighting"] == "fluorescent overhead"
     assert row["персонажи"] == "c01"
@@ -58,6 +59,225 @@ def test_img_pr_db_context_picks_scene_grammar_keys() -> None:
     assert "noise" not in row
     assert ctx["characters"][0]["id"] == "c01"
     assert "shot01_bg" in ctx["field_map"]
+
+
+def test_img_pr_db_context_aliases_russian_action() -> None:
+    fr = SimpleNamespace(
+        number=2,
+        uuid="def456",
+        voiceover_text="кусок",
+        meaning="",
+        animation_prompt="",
+        attrs={"действие": "рука выводит строки", "place": "кабинет"},
+    )
+    ctx = build_img_pr_db_context(
+        project_id=53, slug="aum", frames=[fr], characters=[]
+    )
+    row = ctx["frames"][0]
+    assert row["shot01_action"] == "рука выводит строки"
+    assert row["действие"] == "рука выводит строки"
+
+
+def test_img_pr_db_context_fills_camera_chips_and_parent() -> None:
+    parent = SimpleNamespace(
+        number=153,
+        uuid="p" * 24,
+        voiceover_text="идут",
+        meaning="",
+        animation_prompt="",
+        image_prompt="street still",
+        attrs={
+            "place": "улица у дома",
+            "shot01_bg": "открытая дверь",
+            "действие": "идут по тротуару",
+            "camera_subdivide": {
+                "coverage_kind": "parent",
+                "shot_id": "153-K1",
+                "крупность": "ОБЩИЙ",
+                "ракурс": "3/4",
+            },
+        },
+    )
+    child = SimpleNamespace(
+        number=156,
+        uuid="c" * 24,
+        voiceover_text="ручка",
+        meaning="",
+        animation_prompt="",
+        attrs={
+            "действие": "тянет ручку",
+            "camera_subdivide": {
+                "role": "shot",
+                "coverage_kind": "child",
+                "shot_id": "153-K4",
+                "coverage_parent_id": "153-K1",
+                "coverage_parent_number": 153,
+                "крупность": "ДЕТАЛЬ",
+                "ракурс": "3/4",
+                "движение": "панорама",
+            },
+        },
+    )
+    ctx = build_img_pr_db_context(
+        project_id=36,
+        slug="ted",
+        frames=[child],
+        characters=[{"id": "c01", "имя": "Ted"}],
+        all_frames=[parent, child],
+    )
+    row = ctx["frames"][0]
+    assert row["план"] == "ДЕТАЛЬ"
+    assert row["ракурс"] == "3/4"
+    assert row["shot01_description"] == "ДЕТАЛЬ, ракурс 3/4, движение панорама"
+    assert row["scene_feature"] == "ДЕТАЛЬ"
+    assert row["coverage_role"] == "child"
+    assert row["coverage_parent"]["number"] == 153
+    assert row["coverage_parent"]["план"] == "ОБЩИЙ"
+    assert "uuid" not in row["coverage_parent"]
+    assert row["coverage_parent"]["parent_uuid"] == "p" * 24
+
+
+def test_img_pr_vo_parent_leftover_coverage_parent_id_is_not_child() -> None:
+    scene1 = SimpleNamespace(
+        number=1,
+        uuid="s" * 24,
+        voiceover_text="архив",
+        meaning="",
+        animation_prompt="",
+        image_prompt="archivist still STYLE LOCK " * 20,
+        attrs={
+            "place": "архивный стол",
+            "действие": "кладёт папку",
+            "camera_subdivide": {
+                "coverage_kind": "parent",
+                "shot_id": "1-S1-K1",
+            },
+        },
+    )
+    vo_parent = SimpleNamespace(
+        number=83,
+        uuid="e4302ede74304ef28743ab9a",
+        voiceover_text="Сам Ткач говорил о десятках жертв.",
+        meaning="",
+        animation_prompt="",
+        image_prompt="",
+        attrs={
+            "place": "кабинет для фотороботов",
+            "действие": "свидетель указывает на планшет",
+            "camera_subdivide": {
+                "shot_id": "70-S13-K1",
+                "coverage_parent_id": "1-S1-K1",
+                "крупность": "ОБЩИЙ",
+            },
+        },
+    )
+    ctx = build_img_pr_db_context(
+        project_id=63,
+        slug="tkach",
+        frames=[vo_parent],
+        characters=[],
+        all_frames=[scene1, vo_parent],
+    )
+    row = ctx["frames"][0]
+    assert row["uuid"] == vo_parent.uuid
+    assert row.get("coverage_role") != "child"
+    assert "coverage_parent" not in row
+
+
+def test_img_pr_db_context_slims_bits_kadry_and_set() -> None:
+    kadry = [
+        {"id": "1-S1-K1", "план": "ОБЩИЙ", "действие": "кладёт папку"},
+        {"id": "1-S1-K2", "план": "СРЕДНИЙ", "действие": "открывает"},
+    ]
+    zones = [
+        {"id": "архивный стол", "что": "стол"},
+        {"id": "зал суда", "что": "зал"},
+    ]
+    fr = SimpleNamespace(
+        number=1,
+        uuid="a" * 24,
+        voiceover_text="закадр " * 40,
+        meaning="",
+        animation_prompt="",
+        attrs={
+            "shot01_action": "кладёт папку",
+            "place": "архивный стол",
+            "зона": "архивный стол",
+            "биты": [{"порядок": i, "закадр": "кусок " * 20} for i in range(1, 40)],
+            "кадры": kadry,
+            "площадка": {"зоны": zones, "люди": [{"кто": "Архивист"}]},
+            "main_action": (
+                "1. архивный стол — кладёт папку\n"
+                "2. зал суда — судья читает\n"
+            ),
+            "camera_subdivide": {
+                "coverage_kind": "parent",
+                "shot_id": "1-S1-K1",
+                "крупность": "ОБЩИЙ",
+            },
+        },
+    )
+    ctx = build_img_pr_db_context(
+        project_id=63, slug="tkach", frames=[fr], characters=[]
+    )
+    row = ctx["frames"][0]
+    assert "биты" not in row
+    stored = row["кадры"]
+    assert len(stored) == 1
+    assert stored[0]["id"] == "1-S1-K1"
+    zones_out = (row.get("площадка") or {}).get("зоны") or []
+    assert [z["id"] for z in zones_out] == ["архивный стол"]
+    assert "зал суда" not in str(row.get("main_action") or "")
+    blob = json.dumps(ctx, ensure_ascii=False)
+    assert len(blob) < 8_000
+
+
+def test_img_pr_db_context_slims_bits_kadry_and_set() -> None:
+    kadry = [
+        {"id": "1-S1-K1", "план": "ОБЩИЙ", "действие": "кладёт папку"},
+        {"id": "1-S1-K2", "план": "СРЕДНИЙ", "действие": "открывает"},
+    ]
+    zones = [
+        {"id": "архивный стол", "что": "стол"},
+        {"id": "зал суда", "что": "зал"},
+    ]
+    fr = SimpleNamespace(
+        number=1,
+        uuid="a" * 24,
+        voiceover_text="закадр " * 40,
+        meaning="",
+        animation_prompt="",
+        attrs={
+            "shot01_action": "кладёт папку",
+            "place": "архивный стол",
+            "зона": "архивный стол",
+            "биты": [{"порядок": i, "закадр": "кусок " * 20} for i in range(1, 40)],
+            "кадры": kadry,
+            "площадка": {"зоны": zones, "люди": [{"кто": "Архивист"}]},
+            "main_action": (
+                "1. архивный стол — кладёт папку\n"
+                "2. зал суда — судья читает\n"
+            ),
+            "camera_subdivide": {
+                "coverage_kind": "parent",
+                "shot_id": "1-S1-K1",
+                "крупность": "ОБЩИЙ",
+            },
+        },
+    )
+    ctx = build_img_pr_db_context(
+        project_id=63, slug="tkach", frames=[fr], characters=[]
+    )
+    row = ctx["frames"][0]
+    assert "биты" not in row
+    stored = row["кадры"]
+    assert len(stored) == 1
+    assert stored[0]["id"] == "1-S1-K1"
+    zones_out = (row.get("площадка") or {}).get("зоны") or []
+    assert [z["id"] for z in zones_out] == ["архивный стол"]
+    assert "зал суда" not in str(row.get("main_action") or "")
+    blob = json.dumps(ctx, ensure_ascii=False)
+    assert len(blob) < 8_000
 
 
 def test_img_pr_db_context_skips_frames_without_uuid() -> None:
@@ -269,11 +489,164 @@ def test_excel_gpt_keeps_bits_action_shots_and_full_vo() -> None:
     assert row["voiceover_text"] == long_vo
     assert "image_prompt" not in row
     assert "place" not in row
-    bits = json.loads(row["биты"])
+    bits = row["биты"]
+    if isinstance(bits, str):
+        bits = json.loads(bits)
     assert bits[0]["глагол"] == "бегает"
     assert row["main_action"] == chain
-    stored = json.loads(row["кадры"])
+    stored = row["кадры"]
+    if isinstance(stored, str):
+        stored = json.loads(stored)
     assert stored[1]["id"] == "1-K2"
+
+
+def test_force_full_action_strips_old_main_action_keeps_bits() -> None:
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    fr = SimpleNamespace(
+        number=1,
+        uuid="e" * 24,
+        voiceover_text="После брака с Глебом Салтыковым",
+        meaning="",
+        image_prompt="",
+        animation_prompt="",
+        attrs={
+            "биты": [{"порядок": 1, "глагол": "женится"}],
+            "main_action": "1. двор — бегает\n(старая цепь,)",
+            "кадры": [{"id": "1-K1", "порядок": 1}],
+        },
+    )
+    keys = force_full_strip_output_keys("n_excel_gpt_fw_action")
+    ctx = build_excel_gpt_db_context(
+        project_id=60,
+        slug="x",
+        frames=[fr],
+        characters=[],
+        strip_prompts=True,
+        strip_output_keys=keys,
+        full_vo=True,
+    )
+    row = ctx["frames"][0]
+    assert "main_action" not in row
+    assert "главное_действие" not in row
+    assert "кадры" not in row
+    bits = row["биты"]
+    if isinstance(bits, str):
+        bits = json.loads(bits)
+    assert bits[0]["глагол"] == "женится"
+
+
+def test_force_full_shots_strips_old_kadry_keeps_action() -> None:
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    fr = SimpleNamespace(
+        number=1,
+        uuid="f" * 24,
+        voiceover_text="После брака с Глебом Салтыковым",
+        meaning="",
+        image_prompt="",
+        animation_prompt="",
+        attrs={
+            "биты": [{"порядок": 1, "глагол": "женится"}],
+            "main_action": "1. церковь — венчание с Глебом\n(После брака)",
+            "кадры": [{"id": "1-K1", "порядок": 1, "шаблон": "T0"}],
+        },
+    )
+    keys = force_full_strip_output_keys("n_excel_gpt_fw_shots")
+    ctx = build_excel_gpt_db_context(
+        project_id=60,
+        slug="x",
+        frames=[fr],
+        characters=[],
+        strip_prompts=True,
+        strip_output_keys=keys,
+        full_vo=True,
+    )
+    row = ctx["frames"][0]
+    assert "кадры" not in row
+    assert row["main_action"].startswith("1. церковь")
+    bits = row["биты"]
+    if isinstance(bits, str):
+        bits = json.loads(bits)
+    assert bits[0]["глагол"] == "женится"
+
+
+def test_force_full_script_strips_old_bits() -> None:
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    fr = SimpleNamespace(
+        number=1,
+        uuid="g" * 24,
+        voiceover_text="После брака с Глебом",
+        meaning="",
+        image_prompt="",
+        animation_prompt="",
+        attrs={
+            "биты": [{"порядок": 1, "глагол": "старый"}],
+            "main_action": "1. двор — старое",
+            "кадры": [{"id": "1-K1"}],
+        },
+    )
+    keys = force_full_strip_output_keys("n_excel_gpt_fw_script")
+    ctx = build_excel_gpt_db_context(
+        project_id=60,
+        slug="x",
+        frames=[fr],
+        characters=[],
+        strip_prompts=True,
+        strip_output_keys=keys,
+        full_vo=True,
+    )
+    row = ctx["frames"][0]
+    assert "биты" not in row
+    assert "main_action" not in row
+    assert "кадры" not in row
+    assert row["voiceover_text"] == "После брака с Глебом"
+
+
+def test_qc_keeps_current_kadry_for_review() -> None:
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    shots = [{"id": "1-K1", "порядок": 1, "действие": "новое с shots"}]
+    fr = SimpleNamespace(
+        number=1,
+        uuid="h" * 24,
+        voiceover_text="После брака с Глебом",
+        meaning="",
+        image_prompt="",
+        animation_prompt="",
+        attrs={
+            "биты": [{"порядок": 1, "глагол": "женится"}],
+            "main_action": "1. церковь — венчание",
+            "кадры": shots,
+        },
+    )
+    keys = force_full_strip_output_keys("n_excel_gpt_fw_qc")
+    ctx = build_excel_gpt_db_context(
+        project_id=60,
+        slug="x",
+        frames=[fr],
+        characters=[],
+        strip_prompts=True,
+        strip_output_keys=keys,
+        full_vo=True,
+    )
+    row = ctx["frames"][0]
+    stored = row["кадры"]
+    if isinstance(stored, str):
+        stored = json.loads(stored)
+    assert stored[0]["действие"] == "новое с shots"
+    assert row["main_action"].startswith("1. церковь")
+
+
+def test_force_full_frames_keeps_shots_strips_prompts() -> None:
+    from app.services.db_frames_context import force_full_strip_output_keys
+
+    assert force_full_strip_output_keys("n_excel_gpt_fw_frames") == ()
+    assert force_full_strip_output_keys("n_excel_gpt_fw_qc") == ()
+    assert force_full_strip_output_keys(
+        "n_excel_gpt_fw_qc", footer_kind="shots_qc"
+    ) == ()
 
 
 def test_excel_gpt_exposes_vo_shot_copy_not_as_voiceover() -> None:

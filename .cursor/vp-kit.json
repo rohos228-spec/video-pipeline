@@ -1,0 +1,23 @@
+{
+  "files": [
+    ".cursor/agents/vp-contract-reviewer.md",
+    ".cursor/agents/vp-debugger.md",
+    ".cursor/agents/vp-verifier.md",
+    ".cursor/hooks/.gitattributes",
+    ".cursor/hooks/file_guard.py",
+    ".cursor/hooks/guard.py",
+    ".cursor/hooks/post_edit.py",
+    ".cursor/hooks/run.cmd",
+    ".cursor/hooks/verify_gate.py",
+    ".cursor/hooks/vp_common.py",
+    ".cursor/hooks.json",
+    ".cursor/rules/00-autonomy.mdc",
+    ".cursor/skills/vp-auto/SKILL.md",
+    ".cursor/skills/vp-fix/SKILL.md",
+    ".cursor/skills/vp-resume/SKILL.md",
+    ".cursor/skills/vp-verify/SKILL.md"
+  ],
+  "ops_patched": true,
+  "installed_at": "20260926-151544",
+  "backup": ".cursor/vp-kit-backup/20260926-151544"
+}

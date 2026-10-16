@@ -38,6 +38,7 @@ import {
   excelGptAttachmentChipTitle,
   excelGptSlotIndex,
   isExcelGptNode,
+  isShotsReportNode,
   EXCEL_GPT_STEP_CODE,
   workModeLabel,
   type ExcelGptNodeConfig,
@@ -189,11 +190,13 @@ export function NodeStudio({
     return resolvePromptSlots(nodeType, null);
   }, [project.data?.meta, nodeKey, nodeType, promptSlotsProp]);
 
+  const isReportNode = isShotsReportNode(nodeKey);
   const showExcel =
-    nodeTypeRequiresExcel(nodeType) ||
-    allSlots.some((s) => s.kind === "excel") ||
-    tab === "excel" ||
-    isExcelGptNode(nodeType);
+    !isReportNode &&
+    (nodeTypeRequiresExcel(nodeType) ||
+      allSlots.some((s) => s.kind === "excel") ||
+      tab === "excel" ||
+      isExcelGptNode(nodeType));
 
   const xlsxSheetsMeta = useQuery({
     queryKey: ["xlsx-sheets", projectId, nodeKey ?? "live"],
@@ -241,12 +244,16 @@ export function NodeStudio({
 
   useEffect(() => {
     if (!open) return;
+    if (isShotsReportNode(nodeKey)) {
+      setTab(initialTab === "settings" ? "settings" : "results");
+      return;
+    }
     if (promptFocus) {
       setTab(promptFocus.kind === "excel" ? "excel" : "prompts");
       return;
     }
     setTab(initialTab);
-  }, [open, initialTab, promptFocus]);
+  }, [open, initialTab, promptFocus, nodeKey]);
 
   useEffect(() => {
     if (!open) return;
@@ -376,14 +383,14 @@ export function NodeStudio({
     mutationFn: (variables?: { mode?: "full" | "resume" }) =>
       api.runProjectStep(projectId!, stepCode!, {
         nodeKey: nodeKey ?? undefined,
-        mode: variables?.mode ?? "full",
+        mode: variables?.mode ?? "resume",
       }),
     onSuccess: (_, vars) => {
-      const isResume = vars?.mode === "resume";
+      const isFull = vars?.mode === "full";
       toast.success(
-        isResume
-          ? `Доделка шага «${spec.label}» запущена`
-          : `Шаг «${spec.label}» запущен начисто`,
+        isFull
+          ? `Шаг «${spec.label}» запущен начисто`
+          : `Шаг «${spec.label}» запущен`,
       );
       qc.invalidateQueries({ queryKey: ["project", projectId] });
       qc.invalidateQueries({ queryKey: ["project-run", projectId] });
@@ -679,7 +686,7 @@ export function NodeStudio({
                   <>
                     <Button
                       size="sm"
-                      onClick={() => runStep.mutate({ mode: "full" })}
+                      onClick={() => runStep.mutate({ mode: "resume" })}
                       disabled={!projectId || isThisNodeRunning || nodeDisabled}
                       className={cn(
                         "transition-all duration-200 gap-2 h-9 px-4 font-semibold text-xs text-white bg-gradient-to-r from-emerald-500 via-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.98] shadow-lg shadow-emerald-500/35 border border-emerald-300/40 rounded-xl backdrop-blur-md",
@@ -691,7 +698,7 @@ export function NodeStudio({
                           ? "Нода отключена в графе"
                           : isThisNodeRunning
                             ? "Шаг сейчас выполняется..."
-                            : "Запустить шаг начисто с 1-го кадра (полный перезапуск с очисткой)"
+                            : "Запустить шаг: готовое не трогаем, дальше по цепочке"
                       }
                     >
                       {isThisNodeRunning ? (
@@ -801,7 +808,22 @@ export function NodeStudio({
             )}
           </header>
 
-          {tab === "excel" && projectId ? (
+          {isReportNode && tab === "results" && projectId ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-black">
+              {resultSnapshot && (resultSnapshot.hasResult || resultSnapshot.items.length > 0) ? (
+                <NodeResultViewBody
+                  projectId={projectId}
+                  nodeKey={nodeKey}
+                  nodeType={nodeType}
+                  snapshot={resultSnapshot}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Отчёт ещё не собран. Запусти ноду «Отчёт: кадры + промты».
+                </p>
+              )}
+            </div>
+          ) : tab === "excel" && projectId ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-5">
                   <div className="flex shrink-0 flex-wrap gap-2">
                     <Button size="sm" variant="outline" asChild>
@@ -1059,14 +1081,14 @@ export function NodeStudio({
                             <video
                               controls
                               className="mt-1 max-h-40 w-full rounded"
-                              src={api.artifactFileUrl(a.uuid)}
+                              src={api.artifactFileUrl(a.uuid, a.project_id)}
                             />
                           ) : a.path.match(/\.(mp3|wav|m4a|ogg|aac|flac)$/i) ? (
                             <div className="mt-2 flex flex-col gap-1 rounded bg-black/40 p-2">
                               <audio
                                 controls
                                 className="w-full"
-                                src={api.artifactFileUrl(a.uuid)}
+                                src={api.artifactFileUrl(a.uuid, a.project_id)}
                               />
                             </div>
                           ) : a.path.match(/\.(json|txt|tsv|md|csv)$/i) ? (
@@ -1080,11 +1102,11 @@ export function NodeStudio({
                             <img
                               alt=""
                               className="mt-1 max-h-40 w-full rounded object-contain"
-                              src={api.artifactFileUrl(a.uuid)}
+                              src={api.artifactFileUrl(a.uuid, a.project_id)}
                             />
                           )}
                           <a
-                            href={api.artifactFileUrl(a.uuid)}
+                            href={api.artifactFileUrl(a.uuid, a.project_id)}
                             download
                             className="mt-2 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
                           >
