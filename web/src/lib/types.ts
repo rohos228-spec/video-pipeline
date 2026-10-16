@@ -25,6 +25,7 @@ export type NodeType =
   | "animation_prompts" | "videos"
   | "audio" | "music" | "assemble" | "publish"
   | "hitl_gate" | "hitl_hero" | "hitl_images" | "hitl_videos" | "hitl_final"
+  | "style_extract" | "hitl_style"
   | string; // допускаем кастомные типы
 
 /** Один персонаж с листа «Персонажи» в project.xlsx. */

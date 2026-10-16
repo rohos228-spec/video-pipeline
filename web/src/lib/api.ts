@@ -139,6 +139,131 @@ export interface BlockActivityEntry {
   created_at: string;
 }
 
+// ── Style agent DTO ─────────────────────────────────────────────────
+export interface StyleAgentSettings {
+  max_llm_calls: number;
+  min_support: number;
+  iqr_threshold: number;
+  max_sheets_per_video: number;
+  language: string;
+  style_id: string;
+  label: string;
+  skip_llm: boolean;
+  skip_asr: boolean;
+  agents: string[];
+}
+
+export interface StyleAgentJob {
+  status: "idle" | "running" | "done" | "failed" | "stopped";
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  stage?: string;
+  progress?: Record<string, unknown>;
+  error?: string | null;
+  llm?: { used: number; limit: number; remaining?: number };
+  videos?: string[];
+}
+
+export interface StyleAgentVideo {
+  name: string;
+  size: number;
+  uploaded: boolean;
+  analyzed: boolean;
+  sheets: string[];
+}
+
+export interface StyleAgentSnapshot {
+  settings: StyleAgentSettings;
+  job: StyleAgentJob;
+  videos: StyleAgentVideo[];
+  passport: {
+    hasDraft: boolean;
+    hasApproved: boolean;
+    draftAt?: string | null;
+    approvedAt?: string | null;
+    style_id: string;
+    label: string;
+    problems: string[];
+  };
+  report: string;
+  apply: Record<string, unknown>;
+}
+
+export interface StyleAgentEstimate {
+  settings: StyleAgentSettings;
+  videos: string[];
+  plan: {
+    n_videos: number;
+    sheets_per_video: number;
+    max_calls: number;
+    agents: string[];
+    with_synth: boolean;
+    per_video: Record<string, number>;
+    videos_covered: number;
+    minimal_total: number;
+    ideal_total: number;
+    planned_total: number;
+    fits: boolean;
+    hint: string;
+    skip_plan: string[];
+  };
+  cost: {
+    model_id: string;
+    usd_per_m_in: number;
+    usd_per_m_out: number;
+    tokens_in: number;
+    tokens_out: number;
+    usd: number;
+    usd_hi: number;
+    calls: number;
+  };
+  model: { id?: string | null; label?: string | null };
+}
+
+export interface StylePassportField {
+  value: unknown;
+  confidence: "high" | "medium" | "low";
+  support: string;
+  note?: string;
+  p10?: number;
+  p90?: number;
+}
+
+export interface StylePassport {
+  $schema: string;
+  style_id: string;
+  label: string;
+  created_at?: string;
+  approved_at?: string;
+  sources?: { count: number; videos: string[] };
+  format?: Record<string, StylePassportField>;
+  visual?: Record<string, StylePassportField>;
+  voice?: Record<string, StylePassportField>;
+  music?: Record<string, StylePassportField>;
+  sfx?: Record<string, StylePassportField>;
+  motion?: Record<string, StylePassportField>;
+  narrative?: Record<string, StylePassportField>;
+  mapping?: Record<string, unknown>;
+  variance_notes?: string[];
+  llm?: { calls_used: number; calls_limit: number; model: string };
+  errors?: Record<string, unknown>;
+}
+
+export interface StyleApplyReport {
+  style_id: string;
+  materialized?: boolean;
+  blocks?: string[];
+  preset?: string;
+  frame_style?: string;
+  written?: string[];
+  backed_up?: string[];
+  skipped?: string[];
+  prompt_overrides_patch?: Record<string, unknown>;
+  node_step_params_patch?: Record<string, unknown>;
+  next_steps?: string[];
+  at?: string;
+}
+
 export interface LibraryConfigDTO {
   id: number;
   name: string;
@@ -1224,6 +1349,64 @@ export const api = {
       `/api/projects/${projectId}/storage/${encodeURIComponent(nodeKey)}/files`,
       { method: "DELETE" },
     ),
+
+  // ── Style agent (ноды «Разбор стиля» / «Проверка стиля») ─────────
+  getStyleAgent: (projectId: number, nodeKey?: string | null) =>
+    http<StyleAgentSnapshot>(
+      `/api/projects/${projectId}/style-agent${nodeKey ? `?node_key=${encodeURIComponent(nodeKey)}` : ""}`,
+    ),
+  patchStyleAgentSettings: (projectId: number, patch: Partial<StyleAgentSettings>) =>
+    http<{ settings: StyleAgentSettings }>(`/api/projects/${projectId}/style-agent`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  estimateStyleAgent: (projectId: number, nodeKey: string | null, patch?: Partial<StyleAgentSettings>) =>
+    http<StyleAgentEstimate>(
+      `/api/projects/${projectId}/style-agent/estimate${nodeKey ? `?node_key=${encodeURIComponent(nodeKey)}` : ""}`,
+      { method: "POST", body: JSON.stringify(patch ?? {}) },
+    ),
+  runStyleAgent: (projectId: number, nodeKey: string | null, patch?: Partial<StyleAgentSettings>) =>
+    http<{ started: boolean; estimate: StyleAgentEstimate }>(
+      `/api/projects/${projectId}/style-agent/run${nodeKey ? `?node_key=${encodeURIComponent(nodeKey)}` : ""}`,
+      { method: "POST", body: JSON.stringify(patch ?? {}) },
+    ),
+  stopStyleAgent: (projectId: number) =>
+    http<{ stopped: boolean }>(`/api/projects/${projectId}/style-agent/stop`, { method: "POST" }),
+  uploadStyleRef: (projectId: number, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return http<{ name: string; size: number; videos: string[] }>(
+      `/api/projects/${projectId}/style-agent/upload`,
+      { method: "POST", body: fd },
+      600_000,
+    );
+  },
+  deleteStyleRef: (projectId: number, name: string) =>
+    http<{ videos: string[] }>(
+      `/api/projects/${projectId}/style-agent/refs/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+  getStylePassport: (projectId: number, approved = false) =>
+    http<{ passport: StylePassport; problems: string[] }>(
+      `/api/projects/${projectId}/style-agent/passport${approved ? "?approved=true" : ""}`,
+    ),
+  putStylePassport: (projectId: number, passport: StylePassport) =>
+    http<{ ok: boolean; problems: string[] }>(`/api/projects/${projectId}/style-agent/passport`, {
+      method: "PUT",
+      body: JSON.stringify({ passport }),
+    }),
+  approveStylePassport: (projectId: number, passport?: StylePassport | null, materialize = true) =>
+    http<{ report: StyleApplyReport; snapshot: StyleAgentSnapshot }>(
+      `/api/projects/${projectId}/style-agent/approve`,
+      { method: "POST", body: JSON.stringify({ passport: passport ?? undefined, materialize }) },
+      120_000,
+    ),
+  getStyleAgentReport: (projectId: number) =>
+    http<{ variance_report: string; apply_report: StyleApplyReport | null }>(
+      `/api/projects/${projectId}/style-agent/report`,
+    ),
+  styleSheetUrl: (projectId: number, video: string, name: string) =>
+    `/api/projects/${projectId}/style-agent/sheet?video=${encodeURIComponent(video)}&name=${encodeURIComponent(name)}`,
 
   // ── Frames ───────────────────────────────────────────────────────
   listFrames: (projectId: number) =>
