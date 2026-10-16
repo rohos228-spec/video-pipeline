@@ -1,4 +1,3 @@
-"""Journal facts for text requests on either provider (stub transports, no network)."""
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,7 +16,6 @@ def kie_override():
 
 
 def chat_result(*, finish="stop", raw=None):
-    # What gpt_api._chat_completions_stream returns for a normal chat/completions answer.
     return SimpleNamespace(text="ok", model="gpt-5.6-sol", response_id="chatcmpl-1", finish_reason=finish,
         usage={"prompt_tokens": 3, "completion_tokens": 2},
         raw=raw if raw is not None else ({"id": "chatcmpl-1", "finish_reason": finish} if finish else {"id": "chatcmpl-1"}))
@@ -30,7 +28,6 @@ class JournalProviderFacts(unittest.IsolatedAsyncioTestCase):
             observer=SimpleNamespace(failures={}, commit_uncertainty={}, master=None))
 
     async def run_request(self, override, outcome, *, mode="observe", url="https://vibecode.moe/v1/chat/completions"):
-        """Returns ({kind: payload}, raised exception | None, hold mock)."""
         async def transport(**_kwargs):
             if isinstance(outcome, BaseException):
                 raise outcome
@@ -48,7 +45,7 @@ class JournalProviderFacts(unittest.IsolatedAsyncioTestCase):
                 with use_override(override):
                     try:
                         await observation.observe_model(transport)(url=url, body={"model": "m", "messages": []}, use_model="gpt-5.6-sol")
-                    except BaseException as exc:  # noqa: BLE001
+                    except BaseException as exc:
                         raised = exc
             facts = {c.args[0]: c.args[1] for c in fact.call_args_list}
             return facts, raised, hold, cost

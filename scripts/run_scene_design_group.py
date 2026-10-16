@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""Прогон группы scene_design (агенты → сборка → scene_space) и один отчёт.
-
-  python scripts/run_scene_design_group.py --project 57
-"""
 
 from __future__ import annotations
 
@@ -65,7 +61,7 @@ async def _run(project_id: int, out_path: Path) -> dict:
     logger.add(log_dir / "run.log", encoding="utf-8", level="INFO")
 
     settings.harness_gate_disabled = True
-    agent_harness.harness_gate_or_raise = _noop_harness  # type: ignore[method-assign]
+    agent_harness.harness_gate_or_raise = _noop_harness
 
     orig_apply = sd_apply.apply_scene_design
 
@@ -73,7 +69,7 @@ async def _run(project_id: int, out_path: Path) -> dict:
         _dump_json(project.data_dir / "scene_design" / "assemble.json", payload)
         return await orig_apply(session, project, payload)
 
-    sd_apply.apply_scene_design = _apply_and_dump  # type: ignore[method-assign]
+    sd_apply.apply_scene_design = _apply_and_dump
 
     log: list[str] = []
     result: dict = {
@@ -121,7 +117,7 @@ async def _run(project_id: int, out_path: Path) -> dict:
                 "status": project.status.value,
             }
             log.append(f"agents done status={project.status.value}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             result["phases"]["agents"] = {
                 "ok": False,
                 "error": f"{type(exc).__name__}: {exc}",
@@ -141,7 +137,7 @@ async def _run(project_id: int, out_path: Path) -> dict:
                 "status": project.status.value,
             }
             log.append(f"assemble done status={project.status.value}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             result["phases"]["assemble"] = {
                 "ok": False,
                 "error": f"{type(exc).__name__}: {exc}",
@@ -155,7 +151,7 @@ async def _run(project_id: int, out_path: Path) -> dict:
                 await session.commit()
                 result["phases"]["space_fallback_ingest"] = space_rep
                 log.append("space ingest fallback after assemble fail")
-            except Exception as exc2:  # noqa: BLE001
+            except Exception as exc2:
                 log.append(f"space fallback FAIL {exc2}")
 
         project = await session.get(Project, project_id)
@@ -290,7 +286,7 @@ async def _run(project_id: int, out_path: Path) -> dict:
                 write_board(dest / "board.html", sid, space, rows, violations)
                 dest.joinpath("VALIDATION.md").write_text(val_md, encoding="utf-8")
                 result.setdefault("boards", []).append(str(dest / "board.html"))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["board_error"] = f"{type(exc).__name__}: {exc}"
         logger.exception("board write failed")
 

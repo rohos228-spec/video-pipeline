@@ -1,11 +1,9 @@
-"""Throw-away real server for the command-line card AND the media recovery panel smoke (seeded provider task ledger): empty data dir, seeded project 1, fake planner
-model, fake paid/destructive test.* actions (no network, no real spend), kill switch usable from the UI."""
 import asyncio, json, os, sys, tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent  # A19: no hard-coded checkout path
+ROOT = Path(__file__).resolve().parent.parent
 PORT = int(os.environ.get("E2E_PORT", "8802"))
-SEED_MEDIA = os.environ.get("E2E_SEED_MEDIA", "1") == "1"  # seed an open Kie task, a failed one and two unknown-outcome keys
+SEED_MEDIA = os.environ.get("E2E_SEED_MEDIA", "1") == "1"
 work = Path(tempfile.mkdtemp(prefix="ui_media_"))
 (work / "data").mkdir()
 os.environ.update(
@@ -60,7 +58,6 @@ async def fake_model(**kw):
 
 
 async def seed_media(pid):
-    """Ledger rows as the real submit path writes them (append-only table: old rows are INSERTED with their time)."""
     from datetime import datetime, timedelta
     from app.db import SessionLocal
     from app.services import spend_guard
@@ -70,11 +67,11 @@ async def seed_media(pid):
             s.add(spend_guard.ProviderTaskLedger(
                 project_id=pid, key=key, task_id=task_id, provider=provider, api=api, model="m-1", event=event,
                 status=status, note="ph=0123456789abcdef", created_at=datetime.utcnow() - timedelta(seconds=ago_s)))
-        row("clip_001", "kie_task_0001abcd", "kie", "jobs", "submit", "pending", 600)          # open task -> resume_poll
-        row("clip_002", "kie_task_0002efgh", "kie", "jobs", "submit", "failed", 900)           # failed -> retry_same (human)
+        row("clip_001", "kie_task_0001abcd", "kie", "jobs", "submit", "pending", 600)
+        row("clip_002", "kie_task_0002efgh", "kie", "jobs", "submit", "failed", 900)
         row("clip_005", spend_guard.intent_task_id("aaaa1111"), "kie", "jobs", "intent", "submit_unknown", 2520)
         row("frame_012", spend_guard.intent_task_id("bbbb2222"), "outsee", "outsee", "intent", "submit_unknown", 3000)
-        row("predmet3", "kie_task_0003ijkl", "kie", "jobs", "submit", "pending", 300)         # only an open task -> resumable
+        row("predmet3", "kie_task_0003ijkl", "kie", "jobs", "submit", "pending", 300)
         await s.commit()
     print("seeded media ledger", flush=True)
 
@@ -88,7 +85,7 @@ async def main():
     print("registered", fp.register_fake_actions(), flush=True)
     import eval_seed
     info = await eval_seed.seed_realistic(1, prompts_dir=work / "prompts")
-    for clip in (info.data_dir / "videos").glob("clip_004*.mp4"):   # the swap check wants clips >= 1 KB
+    for clip in (info.data_dir / "videos").glob("clip_004*.mp4"):
         clip.write_bytes(clip.read_bytes() + bytes(2048))
     if SEED_MEDIA:
         await seed_media(1)

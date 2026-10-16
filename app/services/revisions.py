@@ -1,29 +1,3 @@
-"""Revisions that gate managed recovery: graph structure and per-node input.
-
-Two questions are answered separately, each with its own hash:
-
-* structure_hash(nodes, edges): WHICH nodes run in what order. Node ids, node
-  types, edges (with their kind), group membership, slot indices, scene-agent
-  markers and disabled flags. Cosmetic data (labels, positions, ids of edges)
-  and node configuration are not part of it. The same value is stored as the
-  execution graph_version.
-* node_config_revision(node, meta): the configuration that influences the
-  execution of ONE node (its data, per-node project settings). Recorded per
-  node, so a permission or ticket follows structure + that node's config and
-  not the configuration of every other node.
-
-input_revision (computed by compute_input_revision) combines, for one node:
-the data inputs it reads, its resolved prompt files (content), the node's
-capability/contract data, the settings that shape the model request, its
-config revision and a bounded list of code modules (executor, verifier, apply
-and request modules). Nothing else: not the whole prompts tree, not the whole
-settings object, not unrelated code.
-
-Fail-closed: whatever cannot be determined is replaced by a fresh random
-nonce, so two computations never agree on it. Stored values carry a scheme
-number; a value produced under another scheme is recognised and rejected with
-a stated reason instead of being compared as a hash.
-"""
 from __future__ import annotations
 
 import dataclasses
@@ -34,36 +8,27 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-# Scheme of the input revision / ticket parts. 1 was the whole-tree hash
-# (no scheme recorded at all); 2 is this module.
 REVISION_SCHEME = 2
-# Scheme of the structural graph hash. 1 was a hash of the whole snapshot.
 GRAPH_SCHEME = 2
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Cosmetic canvas data: never part of any revision.
 COSMETIC_NODE_KEYS = frozenset({
     "position", "positionAbsolute", "measured", "width", "height", "selected",
     "dragging", "style", "className", "zIndex", "resizing", "draggable",
     "selectable", "connectable", "deletable", "focusable"})
 COSMETIC_DATA_KEYS = frozenset({
     "label", "description", "title", "note", "comment", "color", "icon", "collapsed"})
-# Data keys that decide which nodes run in what order (structure, not config).
 STRUCTURAL_DATA_KEYS = frozenset({
     "groupId", "slotIndex", "slotOverflow", "sd_agent", "agent", "disabled"})
 COSMETIC_EDGE_KEYS = frozenset({
     "id", "sourceHandle", "targetHandle", "label", "animated", "style", "type",
     "markerEnd", "markerStart", "selected", "zIndex", "className"})
-# Per-node buckets in project.meta that hold node configuration.
 PER_NODE_META_KEYS = ("excel_gpt_nodes", "prompt_slot_variants")
-# Bounded list of modules whose change must invalidate a node's tickets, besides
-# the executor/verifier modules resolved from capability data.
 APPLY_MODULES = ("app/services/db_apply.py", "app/services/node_write_contract.py")
 TEXT_REQUEST_MODULES = ("app/services/gpt_client.py", "app/services/gpt_text_builder.py")
 MEDIA_MODULES = ("app/services/media_jobs.py", "app/services/artifact_verifier.py")
 TEXT_RESULT_KINDS = frozenset({"project_text", "frame_set", "frame_prompts", "structured"})
-# Settings that influence a model request (provider, model, route, limits).
 TEXT_ROUTE_SETTINGS = (
     "text_llm_provider", "gpt_model", "gpt_reasoning_effort", "gpt_api_mode", "gpt_base_url",
     "gpt_chat_path", "gpt_timeout_s", "gpt_max_retries", "gpt_stream_read_timeout_s",
@@ -71,27 +36,13 @@ TEXT_ROUTE_SETTINGS = (
 MEDIA_ROUTE_SETTINGS = (
     "image_provider", "outsee_default_image_model", "outsee_api_base_url",
     "kie_api_base_url", "kie_upload_base_url", "outsee_http_api")
-# Nodes whose supervised recovery is a resume of a provider task (media_admission). Their input revision
-# covers the paid request inputs only (see compute_input_revision).
 MEDIA_RESUME_NODES = frozenset({"videos", "items", "music"})
-# Nodes without a model request or a provider job that the supervisor re-runs once through the original worker
-# (app/services/local_node_recovery.py). Their input revision covers the TRUE inputs of the local work only.
 LOCAL_RECOVERY_NODES = frozenset({"assemble"})
-# D06: media nodes without a provider task id (Outsee request key, finished voice / effect files). Their supervised
-# recovery is a LOCAL resume of the recorded result only (media_local_resume), never a paid resend, so they are
-# kept apart from MEDIA_RESUME_NODES (media_admission.RESUME_NODES = provider task resume). Their input revision
-# covers the paid request inputs only, like the task-resume nodes.
 MEDIA_LOCAL_RESUME_NODES = frozenset({"images", "hero", "audio", "sfx_gen"})
-# Everything that records a request-input baseline at attempt start (observation.observe_attempt).
 BASELINE_NODES = MEDIA_RESUME_NODES | MEDIA_LOCAL_RESUME_NODES | LOCAL_RECOVERY_NODES
 MEDIA_FRAME_COLUMNS = ("id", "number", "uuid", "animation_prompt")
-# images / hero / audio / sfx_gen: the request is the image prompt (images, hero), the voiceover text (audio) and
-# the frame set the sound-effect plan is cut from; statuses, counters and files written by the attempt are progress.
 MEDIA_LOCAL_FRAME_COLUMNS = ("id", "number", "uuid", "image_prompt", "animation_prompt", "voiceover_text")
-# assemble: the frame columns that are INPUT. start_ts / end_ts / duration_seconds are written by the assembly
-# itself (progress of the attempt) and never enter the revision.
 ASSEMBLE_FRAME_COLUMNS = ("id", "number", "uuid", "voiceover_text")
-# Settings that shape the assembled file (subtitles, background music, ASR for subtitle timing).
 ASSEMBLE_SETTINGS = ("subtitle_max_words", "subtitle_lead_seconds", "subtitle_chars_per_second",
                      "subtitle_rewhisper_on_assemble", "bgm_default_level", "bgm_path", "whisper_model", "asr_backend")
 DATA_COLUMNS = ("topic", "general_plan", "hero_description", "script_text", "hero_mode",
@@ -104,7 +55,6 @@ def _h(value: Any) -> str:
 
 
 def _unresolved(name: str, exc: BaseException | str) -> dict:
-    """Never equal to any other computation (fail-closed)."""
     return {"unresolved": name, "error": type(exc).__name__ if isinstance(exc, BaseException) else str(exc),
             "nonce": uuid.uuid4().hex}
 
@@ -112,13 +62,10 @@ def _unresolved(name: str, exc: BaseException | str) -> dict:
 def _safe(name: str, fn):
     try:
         return fn()
-    except Exception as exc:  # noqa: BLE001 - every failure must make the revision unequal
+    except Exception as exc:
         return _unresolved(name, exc)
 
 
-# ---------------------------------------------------------------------------
-# Graph structure
-# ---------------------------------------------------------------------------
 
 def _data(node: dict) -> dict:
     data = node.get("data")
@@ -131,7 +78,6 @@ def _edge_kind(edge: dict) -> str:
 
 
 def structure_projection(nodes, edges) -> dict:
-    """What decides which nodes run in what order; nothing cosmetic, nothing configurable."""
     node_rows, edge_rows = [], []
     for node in nodes or []:
         if not isinstance(node, dict) or node.get("id") in (None, ""):
@@ -159,18 +105,15 @@ def structure_hash(nodes, edges) -> str:
     return _h(structure_projection(nodes, edges))
 
 
-# The stored execution graph_version is the structural hash.
 graph_version = structure_hash
 
 
 def legacy_graph_version(nodes, edges) -> str:
-    """Scheme 1 value (hash of the whole snapshot). Only for recognising old records."""
     from app.services.observation import digest
     return digest({"nodes": nodes, "edges": edges})
 
 
 def graph_version_status(nodes, edges, stored) -> str:
-    """'ok', 'legacy_scheme' (stored under scheme 1) or 'changed'."""
     if stored and stored == structure_hash(nodes, edges):
         return "ok"
     if stored and stored == legacy_graph_version(nodes, edges):
@@ -188,12 +131,8 @@ def graph_mismatch_reason(nodes, edges, stored) -> str | None:
     return "graph revision changed (graph structure differs)"
 
 
-# ---------------------------------------------------------------------------
-# Node configuration
-# ---------------------------------------------------------------------------
 
 def node_config_projection(node: dict, meta: dict | None = None) -> dict:
-    """Configuration that influences the execution of this node only."""
     data = _data(node)
     key = str(node.get("id") or "")
     meta = meta if isinstance(meta, dict) else {}
@@ -219,9 +158,6 @@ def node_config_revision(node: dict, meta: dict | None = None) -> str:
                "config": node_config_projection(node, meta)})
 
 
-# ---------------------------------------------------------------------------
-# Code, prompts, settings
-# ---------------------------------------------------------------------------
 
 def _file_hash(rel: str) -> str:
     path = PROJECT_ROOT / rel
@@ -240,10 +176,6 @@ PACKAGE_MARK = "pkg:"
 
 
 def _package_files(name: str) -> list[str]:
-    """Every .py file of one package directory, as sorted posix paths relative to the project root.
-
-    Deterministic (sorted, no dependence on directory order), recursive, bytecode caches excluded.
-    A package that is not a directory, or holds no source file, is unresolvable (fail-closed)."""
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         raise LookupError(f"executor package {name!r} is not a plain package name")
     for base in ("app/services", "app/orchestrator/steps", "app/bots", "app"):
@@ -257,18 +189,10 @@ def _package_files(name: str) -> list[str]:
     raise LookupError(f"executor package {name!r} not found")
 
 
-# Names that appear in an executor description but are not module files: the code lives in the named module.
-# Without this the description of `hero` ('... generate_image_with_retries ...') and of `sfx_gen` ('... local_synth')
-# was unresolvable, so the node_code part of the input revision carried a random nonce and was NEVER equal to itself:
-# every Decision context of those nodes was stale and ended in human_review.
 EXECUTOR_NAME_MODULES = {"generate_image_with_retries": "outsee_retry", "local_synth": "sfx_gen"}
 
 
 def executor_modules(capability) -> list[str]:
-    """Module files named by the capability's executor description, e.g.
-    'make_plan.run -> xlsx_step_runners.run_plan_xlsx'. A 'pkg:<name>' chunk names a whole package
-    directory (every .py file under it, sorted). A bracketed note ('(Outsee / Kie)') is not a module.
-    Raises if one is unresolvable."""
     files = []
     for part in re.split(r"→|->", capability.executor or ""):
         part = re.sub(r"\([^)]*\)", "", part)
@@ -329,8 +253,6 @@ def _file_entry(path: Path | None) -> dict:
 
 
 def resolved_prompt_inputs(project, node_key: str, node_type: str) -> dict:
-    """The prompt FILE(S) this node actually reads, by content, plus the scoped
-    overrides that select or replace them. Nothing about other nodes' prompts."""
     from app.orchestrator.node_registry import NODE_TYPE_TO_STEP_CODE
     from app.services import prompt_library as pl
     step = NODE_TYPE_TO_STEP_CODE.get(node_type)
@@ -361,8 +283,6 @@ def resolved_prompt_inputs(project, node_key: str, node_type: str) -> dict:
     if not excel:
         from app.services.prompt_composer import project_uses_blocks_v2
         if project_uses_blocks_v2(overrides):
-            # Composed from blocks/steps/styles: the used pieces are not enumerable here,
-            # so the composition inputs as a whole stand in (bounded, fail-closed).
             root = pl.PROMPTS_ROOT
             out["composition"] = {"overrides": overrides,
                 "trees": {d: _tree_hash(root / d) for d in ("blocks", "steps", "styles", "step-presets")}}
@@ -388,7 +308,6 @@ def resolved_prompt_inputs(project, node_key: str, node_type: str) -> dict:
 
 
 def model_route(project, node_key: str, node_type: str, capability) -> dict:
-    """Settings and per-node choices that shape the model request. Not the whole settings."""
     from app.settings import settings
     names = TEXT_ROUTE_SETTINGS if capability.result_kind in TEXT_RESULT_KINDS else MEDIA_ROUTE_SETTINGS
     route = {name: getattr(settings, name) for name in names}
@@ -405,16 +324,11 @@ def model_route(project, node_key: str, node_type: str, capability) -> dict:
 def capability_data(node_type: str, capability) -> dict:
     from app.orchestrator.node_spec import COVERAGE_FIELDS, capability_spec_for
     spec = capability_spec_for(node_type)
-    # Coverage notes (panel text, forbidden-reason codes) are documentation: editing one must
-    # not invalidate recovery tickets, so they stay out of the revision.
     return {"capability": capability.contract(),
             "spec": ({k: v for k, v in dataclasses.asdict(spec).items() if k not in COVERAGE_FIELDS}
                      if spec is not None else None)}
 
 
-# ---------------------------------------------------------------------------
-# Input revision
-# ---------------------------------------------------------------------------
 
 def _stat_row(path: Path) -> dict:
     try:
@@ -425,7 +339,6 @@ def _stat_row(path: Path) -> dict:
 
 
 def _content_row(path: Path) -> dict:
-    """Size and sha256 of a (small) file: stable when the same bytes are written again."""
     try:
         digest, size = hashlib.sha256(), 0
         with path.open("rb") as stream:
@@ -438,8 +351,6 @@ def _content_row(path: Path) -> dict:
 
 
 def _files_under(root: Path, suffixes: tuple[str, ...], *, prefix: str | None = None, content: bool = False) -> dict:
-    """Relative path -> size and mtime (``content``: size and sha256) of the input files of one folder.
-    Absent folder = empty listing."""
     out: dict[str, dict] = {}
     if not root.is_dir():
         return out
@@ -450,9 +361,6 @@ def _files_under(root: Path, suffixes: tuple[str, ...], *, prefix: str | None = 
 
 
 def assemble_inputs(project) -> dict:
-    """True inputs of the local assembly that are not database rows: media files and assembly parameters.
-
-    Fail-closed through _safe at the call site. Stat only (size, mtime): no file is read."""
     from app.settings import settings
     root = Path(project.data_dir)
     meta = project.meta if isinstance(getattr(project, "meta", None), dict) else {}
@@ -462,11 +370,6 @@ def assemble_inputs(project) -> dict:
     return {
         "videos": _files_under(root / "videos", (".mp4", ".mov", ".webm", ".mkv")),
         "scenes": _files_under(root / "scenes", (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov")),
-        # the voice FILES (voice*.mp3/wav): words_*.json and sidecars are written by the attempt itself
-        # by CONTENT, not by mtime: the assembly itself rewrites voice_full.mp3 (build_assembly_timeline re-concatenates
-        # it from frame_*.mp3 whenever the container durations differ by more than 0.05 s, which is the normal case:
-        # every concatenated mp3 adds a silent header frame). The same bytes written again are not a changed input;
-        # with the mtime every supervised re-run of assemble was refused as "assemble_inputs changed".
         "voice": _files_under(root / "audio", (".mp3", ".wav", ".m4a"), prefix="voice", content=True),
         "music": _files_under(root / "music", (".mp3", ".wav", ".m4a")),
         "sfx": _files_under(root / "sfx", (".wav", ".mp3")),
@@ -495,7 +398,6 @@ async def _find_node(session, project, node_key: str) -> dict | None:
 
 
 async def compute_input_revision(session, project, node_key, *, parts=None) -> str:
-    """Revision of everything that can change the outcome of THIS node's recovery."""
     from sqlalchemy import select
     from app.models import Frame, FrameText, Scene, SceneDesignCell
     from app.services.canvas_graph import canvas_graph_from_meta
@@ -512,16 +414,11 @@ async def compute_input_revision(session, project, node_key, *, parts=None) -> s
 
     state: dict[str, Any] = {k: getattr(project, k, None) for k in DATA_COLUMNS}
     if node_type in MEDIA_RESUME_NODES or node_type in MEDIA_LOCAL_RESUME_NODES:
-        # A supervised media resume depends on the REQUEST inputs of the paid task (prompts), not on the
-        # progress the failed attempt itself writes (frame status, fail counters, in-flight markers).
         rows = (await session.scalars(select(Frame).where(Frame.project_id == project.id)
                                       .order_by(Frame.id))).all()
         columns = MEDIA_FRAME_COLUMNS if node_type in MEDIA_RESUME_NODES else MEDIA_LOCAL_FRAME_COLUMNS
         state[Frame.__tablename__] = [{c: getattr(row, c, None) for c in columns} for row in rows]
     elif node_type in LOCAL_RECOVERY_NODES:
-        # A supervised local re-run depends on what the local work READS: the voiceover text, the set of frames,
-        # the clip / image / voice / music / sound-effect files and the assembly parameters. Everything the
-        # attempt itself writes (frame timings, subtitle and ASR artifacts, the final file, counters) is progress.
         rows = (await session.scalars(select(Frame).where(Frame.project_id == project.id)
                                       .order_by(Frame.id))).all()
         state[Frame.__tablename__] = [{c: getattr(row, c, None) for c in ASSEMBLE_FRAME_COLUMNS} for row in rows]
@@ -533,7 +430,6 @@ async def compute_input_revision(session, project, node_key, *, parts=None) -> s
             state[model.__tablename__] = [
                 {c.name: getattr(row, c.name) for c in model.__table__.columns
                  if c.name not in {"created_at", "updated_at"}} for row in rows]
-    # Runtime canvas structure plus project-level disable switches.
     state["structure"] = _safe("structure", lambda: {
         "canvas": structure_hash((canvas or {}).get("nodes"), (canvas or {}).get("edges")) if canvas else None,
         "disabled_nodes": sorted(str(x) for x in (meta.get("disabled_nodes") or []))})
@@ -547,8 +443,6 @@ async def compute_input_revision(session, project, node_key, *, parts=None) -> s
         state["prompts"] = _safe("prompts", lambda: resolved_prompt_inputs(project, str(node_key), node_type))
         state["model_route"] = _safe("model_route", lambda: model_route(project, str(node_key), node_type, capability))
         state["contract"] = _safe("contract", lambda: capability_data(node_type, capability))
-        # An unmanaged node type has no executor description and recovery is denied for it by
-        # capability alone; its code is not part of any recovery decision.
         state["node_code"] = ({"unmanaged": node_type} if not capability.managed else _safe(
             "node_code", lambda: {rel: _file_hash(rel) for rel in code_files(node_type, capability)}))
     state["revision_scheme"] = REVISION_SCHEME
@@ -560,9 +454,6 @@ async def compute_input_revision(session, project, node_key, *, parts=None) -> s
     return _h(state)
 
 
-# ---------------------------------------------------------------------------
-# Stored values
-# ---------------------------------------------------------------------------
 
 def parts_scheme(parts) -> int | None:
     value = (parts or {}).get("revision_scheme") if isinstance(parts, dict) else None
@@ -570,7 +461,6 @@ def parts_scheme(parts) -> int | None:
 
 
 def stored_revision_problem(parts) -> str | None:
-    """None when the stored parts were produced under the current scheme."""
     scheme = parts_scheme(parts)
     if scheme == REVISION_SCHEME:
         return None

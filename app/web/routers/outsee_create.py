@@ -501,7 +501,6 @@ def _clean_llm_prompt_response(raw: str) -> str:
 
 
 class _KieAnswered(RuntimeError):
-    """A Kie HTTP answer that is not success; ``context`` lets media_spend recognise HTTP 402."""
 
     def __init__(self, status: int):
         super().__init__(f"kie chat HTTP {status}")
@@ -510,7 +509,6 @@ class _KieAnswered(RuntimeError):
 
 
 def _paid_blocked_info(exc: BaseException) -> dict | None:
-    """The gate's refusal (raw or wrapped in a provider error), as a small dict for the operator."""
     if isinstance(exc, spend_guard.PaidCallBlocked):
         return {"code": exc.code, "message_ru": exc.message_ru}
     ctx = getattr(exc, "context", None)
@@ -520,19 +518,12 @@ def _paid_blocked_info(exc: BaseException) -> dict | None:
 
 
 def _record_kie_chat(*, usd: float, note: str, exc: BaseException | None = None) -> None:
-    """A09: one ledger row for the paid Kie chat completion (estimate, not a measured price)."""
     from app.services import media_spend
     media_spend.record("kie", usd=usd, note=f"enhance-prompt {note}"[:190], exc=exc)
 
 
 @router.post("/enhance-prompt")
 async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
-    """Улучшить промпт с помощью LLM (GPT / Kimi / Vibecode / Kie.ai) или интеллектуального расширителя.
-
-    Платные шаги (LLM, Kie chat) идут через рубильник, диск и денежный потолок. Если проверка не
-    пропустила, запрос к провайдеру не уходит, а промпт улучшает бесплатный локальный синтезатор;
-    в ответе поле ``paid_blocked`` с причиной по-русски.
-    """
     import httpx
 
     text = (req.prompt or "").strip()
@@ -555,7 +546,7 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
     if not pre.get("allowed"):
         blocked = {"code": pre.get("code", ""), "message_ru": pre.get("message_ru", "")}
 
-    # 1. Попытка через основной текстовый LLM (OpenAI / TokenRouter Kimi / Vibecode)
+    # 1. Попытка через основной текстовый LLM (OpenAI / Vibecode)
     try:
         if blocked is not None:
             raise spend_guard.PaidCallBlocked(blocked["code"], blocked["message_ru"], provider="llm",
@@ -602,13 +593,12 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
             est = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD
             async with spend_guard.paid_call("kie", "enhance-prompt chat", estimate_usd=est):
                 try:
-                    async with httpx.AsyncClient(timeout=20.0) as client:
+                    async with httpx.AsyncClient(timeout=7.0) as client:
                         r = await client.post(url, headers={"Authorization": f"Bearer {key}"}, json=payload)
                 except httpx.ConnectError as exc:
                     _record_kie_chat(usd=0.0, note=f"connect failed {type(exc).__name__}")
                     raise
                 except BaseException as exc:
-                    # Timeout or drop after the request left: it may have been accepted and billed.
                     _record_kie_chat(usd=est, note=f"uncertain {type(exc).__name__} uncalibrated")
                     raise
             if r.status_code == 200:
@@ -628,7 +618,6 @@ async def enhance_prompt_endpoint(req: EnhancePromptRequest) -> dict[str, Any]:
         blocked = blocked or _paid_blocked_info(e)
         logger.warning("Kie LLM prompt enhance fallback: {}", e)
 
-    # 3. Умный локальный генератор (если ключи LLM не заданы, при сбое или отказе рубильника/потолка)
     fallback_prompt = _smart_enhance_prompt(text, req.style)
     out: dict[str, Any] = {"ok": True, "enhanced_prompt": fallback_prompt, "provider": "synthesizer"}
     if blocked is not None:

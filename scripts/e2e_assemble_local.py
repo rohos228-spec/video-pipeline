@@ -69,7 +69,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 
 def _load_script(name: str, alias: str):
@@ -80,7 +80,7 @@ def _load_script(name: str, alias: str):
     return mod
 
 
-base = _load_script("e2e_media_production_route", "e2e_media_production_route_for_assemble")  # imported, not edited
+base = _load_script("e2e_media_production_route", "e2e_media_production_route_for_assemble")
 qc = base.qc
 
 PORT = 18808
@@ -93,31 +93,29 @@ FRAME_SECONDS = 1.5
 CLIP_SECONDS = 2
 COLORS = ("red", "green", "blue")
 VOICEOVERS = ("Первый кадр: папка лежит на столе.", "Второй кадр: рядом стоит чашка.", "Третий кадр: раскрыт блокнот.")
-FAULT = "ffmpeg exited with 1"      # what a failed ffmpeg run looks like to the node (retryable by the node itself)
+FAULT = "ffmpeg exited with 1"
 REQUIRED_TICKET_CHECKS = ("artifact_row", "file_inside_project", "claimed_at_known", "produced_after_claim",
                           "verify_artifact_passed", "digest_matches_artifact", "approve_final_pending",
                           "journal_proof_matches", "ledger_unchanged", "no_paid_seam_hit", "no_model_requests",
                           "no_part_files")
 
-# --- real speech mode (F07) ---
 REAL_FRAME_TEXTS = ("Привет.", "Это проверка сборки видео.", "Сегодня мы покажем, как работает субтитр.")
-REAL_VOICE_TEXT = " ".join(REAL_FRAME_TEXTS)          # what the SAPI wav says (11 words)
+REAL_VOICE_TEXT = " ".join(REAL_FRAME_TEXTS)
 REAL_EXPECTED_WORDS = ("привет", "это", "проверка", "сборки", "видео", "сегодня", "мы", "покажем", "как", "работает", "субтитр")
 REAL_MIN_WORDS = 8
-REAL_COLORS = ("navy", "darkgreen", "maroon")        # dark flat colours: white subtitles with a black outline show clearly
-REAL_CLIP_SIZE = "540x960"                           # vertical, big enough for the ASS font (PlayRes = clip size)
+REAL_COLORS = ("navy", "darkgreen", "maroon")
+REAL_CLIP_SIZE = "540x960"
 REAL_CLIP_SECONDS = 5
 REAL_DURATION_TOLERANCE_S = 0.5
-REAL_SUB_TOLERANCE_S = 0.6                           # a cue starts within this of the ASR word it was aligned to
-LOWER_BAND = (0.55, 0.88)                            # rows (share of the height) where the subtitles are placed
-UPPER_BAND = (0.05, 0.35)                            # rows that must NOT change (noise baseline of the re-encode)
-PIXEL_THRESHOLD = 40                                 # a pixel "differs" when the gray values differ by more than this
-MIN_LOWER_FRACTION = 0.01                            # >= 1% of the lower band must differ where a word is spoken
-MAX_NOISE_FRACTION = 0.002                           # <= 0.2% may differ in the untouched upper band / in silence
+REAL_SUB_TOLERANCE_S = 0.6
+LOWER_BAND = (0.55, 0.88)
+UPPER_BAND = (0.05, 0.35)
+PIXEL_THRESHOLD = 40
+MIN_LOWER_FRACTION = 0.01
+MAX_NOISE_FRACTION = 0.002
 DEFAULT_ASR_MODEL = "medium"
 
 
-# ───────────────────────────── local media made by ffmpeg (lavfi), free ─────────────────────────────
 
 def _ffmpeg() -> str:
     exe = shutil.which("ffmpeg")
@@ -164,7 +162,6 @@ def asr_probe(real_speech: bool = False) -> dict:
 
 
 
-# ───────────────────────────── real speech: pure helpers (unit-tested) ─────────────────────────────
 
 def normalize_word(text: str) -> str:
     """Case, punctuation and yo/ye insensitive form of a word."""
@@ -449,7 +446,6 @@ def frame_pair_difference(final: Path, control: Path, t: float) -> dict:
         raise RuntimeError(f"final and control differ in size: {a.shape} vs {b.shape}")
     return {"t": t, "lower": band_difference(a, b, band=LOWER_BAND), "upper": band_difference(a, b, band=UPPER_BAND)}
 
-# ───────────────────────────── checks (pure, unit-tested) ─────────────────────────────
 
 def check(name: str, ok: bool, detail: Any = None, *, needs: str | None = None) -> dict:
     return qc.check(name, ok, detail, needs=needs)
@@ -643,7 +639,6 @@ def final_verdict(ok: bool, real_speech: bool = False) -> str:
             "ASR/subtitles NOT exercised)" if ok else "NOT PASSED")
 
 
-# ───────────────────────────── runtime ─────────────────────────────
 
 def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -687,7 +682,9 @@ async def _seed(args: argparse.Namespace) -> tuple[int, str, Path]:
     if real:
         return await _seed_real_speech(args, node, slug)
     text = " ".join(VOICEOVERS)
+    from app.web.settings_default import seed_default_workflow
     async with session_scope() as session:
+        await seed_default_workflow(session)
         wf = Workflow(name=f"wf-{slug}", is_default=False, nodes=nodes, edges=edges)
         session.add(wf)
         await session.flush()
@@ -742,7 +739,9 @@ async def _seed_real_speech(args: argparse.Namespace, node: dict, slug: str) -> 
     wav_info = validate_voice_wav(Path(args.voice_wav))
     nodes, edges = [node], []
     text = REAL_VOICE_TEXT
+    from app.web.settings_default import seed_default_workflow
     async with session_scope() as session:
+        await seed_default_workflow(session)
         wf = Workflow(name=f"wf-{slug}", is_default=False, nodes=nodes, edges=edges)
         session.add(wf)
         await session.flush()
@@ -814,7 +813,7 @@ async def main(argv: list[str] | None = None) -> int:
               "(they would point at the live data folder); run the stand in its own process; nothing was started")
         return 3
     work = Path(args.work_dir).resolve()
-    data = guard.reset_scratch_data(work)  # A19: refuses live data
+    data = guard.reset_scratch_data(work)
     os.chdir(ROOT)
     runtime_path = work / "runtime.json"
     runtime_path.write_text(json.dumps(base._runtime_config(args.port, args.request_limit, None), indent=2), encoding="utf-8")
@@ -828,7 +827,7 @@ async def main(argv: list[str] | None = None) -> int:
         except (FileNotFoundError, OSError) as exc:
             print(f"refused: {exc}; nothing was started", flush=True)
             return 3
-    if real_speech:     # offline ASR: the cached model only, CPU int8, no provider; set BEFORE the settings are loaded
+    if real_speech:
         os.environ.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "ASR_BACKEND": "whisper",
                            "WHISPER_MODEL": args.asr_model, "WHISPER_DEVICE": "cpu", "WHISPER_COMPUTE_TYPE": "int8"})
 
@@ -866,7 +865,7 @@ async def main(argv: list[str] | None = None) -> int:
     restore_net = install_network_guard(rec["net"]) if real_speech else (lambda: None)
     try:
         pid, slug, project_root = await _seed(args)
-    except ValueError as exc:       # a wav that is not 16-bit PCM etc.
+    except ValueError as exc:
         restore_net()
         print(f"refused: {exc}; nothing was started", flush=True)
         return 3
@@ -951,7 +950,7 @@ async def main(argv: list[str] | None = None) -> int:
             r.raise_for_status()
             await base._wait_exhausted(args, project_db, counters, gate, None)
             result["state_at_exhaustion"] = _final_state(project_root, project_db)
-            inject["on"] = False            # the cause is gone: the supervised re-run may now succeed
+            inject["on"] = False
             incident = await base._wait_incident(client, prefix + f"/{execution}", args.timeout_s)
             result["incident_id"] = incident["incident_id"] if incident else None
             if not incident:
@@ -1125,7 +1124,7 @@ def _collect_real_speech(args, rec: dict, project_root: Path, work: Path, projec
                   "word_frame": word_frame, "silent_frame": silent_frame, "control": rec["control"]}
     try:
         r15 = read_r15_labels(project_root / "project.xlsx", len(REAL_FRAME_TEXTS))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         r15 = [f"unreadable: {type(exc).__name__}"]
     audio_mode = None
     if project_db is not None:
@@ -1158,7 +1157,7 @@ def _finish(args, result, gate, counters, probes, decision_contexts, state_db, p
         "counters": {**counters, "paid_posts": gate.paid_posts, "unexpected_model": gate.unexpected_model,
                      "refused_foreign": len([r for r in gate.refused if r["kind"] in ("dry_foreign", "foreign")])},
         "probes": probes, "ledger_rows": records["ledger_rows"],
-        "spend_rows_paid": [r for r in records["spend_rows"] if str(r.get("provider")).lower() in MEDIA_PROVIDERS],  # not the (stub) Decision request rows
+        "spend_rows_paid": [r for r in records["spend_rows"] if str(r.get("provider")).lower() in MEDIA_PROVIDERS],
         "node_status": base._node_status(project_db), "node_attempts": attempts, "step_failure": qc._step_failure(project_db),
         "decision_contexts": decision_contexts, "approvals": _approvals(project_db),
         "part_files": _final_state(project_root, project_db)["part_files"],

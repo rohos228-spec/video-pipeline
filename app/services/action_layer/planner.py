@@ -1,22 +1,3 @@
-"""Планировщик: запрос на русском -> проверенный план над реестром действий.
-
-Модель только ВЫБИРАЕТ id из каталога и заполняет параметры. Риск, цена и
-подтверждение определяются кодом действий. Планировщик не вызывает approve/run:
-результат - список шагов для обычного preview (``service.create_plan``).
-
-Транспорт: один непотоковый POST на утверждённый маршрут Vibecode
-(``decision_v1.vibecode_post``), JSON-режим. Ключ берётся только из настроек.
-Повторы POST ограничены тремя независимыми правами, каждое используется не более одного раза:
-1. ошибка формата ответа (обрезан, не JSON, неверный каркас) или неверные параметры шага
-   (bad_params, bad_step, bad_depends_on): ошибка проверки возвращается модели один раз;
-2. сбой транспорта или таймаут: один автоматический повтор (запись attempt=2 в журнале; запрос
-   планировщика ничего не меняет и не платит за ассеты, поэтому повтор безопасен). Отказ провайдера
-   без шанса на успех (401/402/400) и любые отказы проверки/безопасности не повторяются;
-3. вопрос модели о параметре, значение которого сервер уже знает (умолчание проекта или выбор в
-   интерфейсе): один повтор с подставленным значением. Никогда для удалений, причин, подтверждений,
-   сумм и лимитов (``planner_rules.resolve_clarification``).
-Неизвестное/непоказанное действие, чужой проект и запрещённые поля повтором не лечатся.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -38,18 +19,17 @@ from app.services.action_layer.spec import ActionRegistry, ensure_builtin_action
 from app.services.action_layer.spec import registry as default_registry
 
 PLANNER_CATALOG_ID = "gpt-5.6-sol-vibecode"
-MAX_ATTEMPTS = 2  # первый POST + не более одного повтора формата/параметров
+MAX_ATTEMPTS = 2
 MAX_TRANSPORT_RETRIES = 1
 MAX_CLARIFY_REPAIRS = 1
-TIMEOUT_RETRY_S = 120  # повтор после таймаута: не-потоковый ответ с долгим рассуждением модели
-RETRY_DELAY_S = 0.5  # короткая пауза перед повтором после сбоя сети
+TIMEOUT_RETRY_S = 120
+RETRY_DELAY_S = 0.5
 NETWORK_RETRY_MESSAGE = "сеть/модель недоступны, повторите"
 MAX_TEXT_LEN = 2000
 TIMEOUT_S = 60
-_OUTPUT_TOKENS = 4096  # параметр принимается, но провайдер лимит не применяет
+_OUTPUT_TOKENS = 4096
 _DESC_LIMIT = 160
 
-# Ключи, которых в ответе планировщика быть не может ни на каком уровне.
 FORBIDDEN_KEYS = frozenset({
     "approval", "approval_id", "approvals", "approved", "approve", "approved_by",
     "operator", "plan_hash", "confirm", "confirmed", "confirmation", "run",
@@ -58,8 +38,6 @@ FORBIDDEN_KEYS = frozenset({
 })
 _REPLY_KEYS = {"steps", "needs_clarification", "explanation_ru"}
 _OPTIONAL_REPLY_KEYS = {"clarification_options"}
-# Ошибки проверки шагов, которые лечатся одним повтором с текстом ошибки. Небезопасные отказы
-# (forbidden_field, unknown_action, action_not_offered, foreign_project) сюда не входят.
 REPAIRABLE_CODES = frozenset({"bad_params", "bad_step", "bad_depends_on"})
 _STEP_KEYS = {"action_id", "params", "depends_on"}
 
@@ -71,28 +49,27 @@ class PlannerError(Exception):
 
 
 class PlannerRefused(PlannerError):
-    """Запрос не отправлялся: нет ключа, маршрут не утверждён, стоп-кран."""
+    pass
 
 
 class PlannerRejected(PlannerError):
-    """Ответ модели отклонён целиком (без починки и угадывания)."""
+    pass
 
 
 class PlannerRateLimited(PlannerRefused):
-    """Исчерпан часовой лимит обращений к модели для оператора (запрос не отправлялся)."""
+    pass
 
 
 class PlannerFailed(PlannerError):
-    """Транспортная ошибка и после автоматического повтора. ``retryable``: человеку имеет смысл повторить."""
 
     def __init__(self, code: str, message: str = "", *, retryable: bool = False, detail: str = ""):
         super().__init__(code, message)
         self.retryable = retryable
-        self.detail = detail  # тип и текст исходного исключения после redact (для отчёта и истории)
+        self.detail = detail
 
 
 class _FormatError(Exception):
-    """Ошибка формата ответа: единственный случай, когда допустим повтор."""
+    pass
 
 
 class StalePlan(Exception):
@@ -104,9 +81,6 @@ _CONTEXT_KEYS = ("status_code", "status", "retryable", "finish_reason", "provide
 
 
 def describe_exception(exc: BaseException) -> str:
-    """``Тип: текст`` исходного исключения (и причины), без секретов и не длиннее ~300 знаков.
-
-    Пустой текст у таймаутов httpx/asyncio заменяется пометкой ``timeout``."""
     from app.services.redact import redact_text
     parts: list[str] = []
     seen: set[int] = set()
@@ -131,14 +105,12 @@ def _is_timeout(exc: BaseException) -> bool:
     return isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timeout" in type(exc).__name__.lower()
 
 
-# --- транспорт --------------------------------------------------------------
 
 Transport = Callable[..., Awaitable[Any]]
 _transport: Transport | None = None
 
 
 def set_transport(fn: Transport | None) -> None:
-    """Подмена транспорта (только тесты); None возвращает ``vibecode_post``."""
     global _transport
     _transport = fn
 
@@ -150,7 +122,6 @@ def _resolve_transport() -> Transport:
     return vibecode_post
 
 
-# --- маршрут ----------------------------------------------------------------
 
 def _route() -> dict:
     from app.services import decision_config
@@ -158,7 +129,6 @@ def _route() -> dict:
 
 
 def check_url(url: str) -> None:
-    """Тот же набор проверок, что у решателя: хост, схема, путь, без учётных данных."""
     from app.services import decision_config
     route = _route()
     parts = urlsplit(url or "")
@@ -184,7 +154,6 @@ def _model_id() -> str:
 
 
 def preflight() -> tuple[str, dict, str]:
-    """(url, headers, model_id). Бросает PlannerRefused до любых запросов."""
     from app.services import gpt_api
     from app.services.llm_override import NodeLlmOverride, use_override
     from app.settings import settings
@@ -194,16 +163,15 @@ def preflight() -> tuple[str, dict, str]:
     try:
         with use_override(NodeLlmOverride(model, "stable", "text", "vibecode", model, None)):
             url = gpt_api._chat_url(model)
-            headers = gpt_api._headers()  # ключ только из настроек
-    except Exception as exc:  # noqa: BLE001
+            headers = gpt_api._headers()
+    except Exception as exc:
         raise PlannerRefused("route_unavailable", f"Маршрут планировщика недоступен ({type(exc).__name__}).") from exc
     check_url(url)
     return url, headers, model
 
 
-# --- лимит обращений --------------------------------------------------------
 
-_pending: dict[str, int] = {}  # POST в полёте: журнал пишется после ответа
+_pending: dict[str, int] = {}
 
 
 async def _check_rate(operator: str) -> None:
@@ -221,14 +189,12 @@ async def _check_rate(operator: str) -> None:
             "rate_limited", f"Лимит обращений к планировщику исчерпан ({limit} в час на оператора). Подождите немного.")
 
 
-# --- контекст проекта -------------------------------------------------------
 
 _VOLATILE_FACTS = ("queue", "proposals", "versions", "frame_uuids", "prompt_overrides", "frames_note",
                    "publish_server")
 
 
 def _version_basis(facts: dict) -> dict:
-    """Факты для хэша версии: структура проекта без быстро меняющихся (файлы, очередь, предложения)."""
     basis = {k: v for k, v in facts.items() if k not in _VOLATILE_FACTS}
     if isinstance(basis.get("frames"), list):
         basis["frames"] = [list(r[:4]) for r in basis["frames"]]
@@ -242,8 +208,6 @@ def _version(facts: dict) -> str:
 
 async def load_context(project_id: int | None, selected_scene: int | None = None,
                        selected_frame: int | None = None) -> dict:
-    """Структурные факты о проекте и их хэш. Текстов кадров и темы здесь нет (кроме publish_server:
-    подпись для шага публикации, она остаётся на сервере и в промпт не попадает)."""
     facts: dict = {"project_id": project_id, "selected_scene": selected_scene,
                    "selected_frame": selected_frame}
     if project_id is not None:
@@ -267,7 +231,6 @@ async def save_plan_context(plan_id: str, *, source: str, ctx: dict, macro_id: s
 
 
 async def check_plan_fresh(plan_id: str) -> None:
-    """Устаревший proposed-план нельзя подтверждать и запускать (StalePlan)."""
     async with store.sessions()() as s:
         row = await s.get(store.ActionPlanContext, plan_id)
         plan = await s.get(store.ActionPlan, plan_id)
@@ -281,7 +244,6 @@ async def check_plan_fresh(plan_id: str) -> None:
         raise StalePlan("Проект изменился после составления плана: составьте план заново.")
 
 
-# --- промпт -----------------------------------------------------------------
 
 SYSTEM = """Ты планировщик действий видеостудии. Верни ТОЛЬКО один JSON-объект:
 {"steps":[{"action_id":"...","params":{...},"depends_on":[индексы ранних шагов]}],
@@ -326,16 +288,12 @@ def _compact_schema(schema: Any) -> Any:
 
 
 def catalog_for_prompt(registry: ActionRegistry, ids: list[str] | None = None) -> list[dict]:
-    """Компактные записи каталога (id, короткое название, риск, параметры); весь реестр или ids."""
     return planner_catalog.catalog_entries(registry, ids)
 
 
 def build_prompt(text: str, ctx: dict, registry: ActionRegistry, max_steps: int,
                  max_catalog: int | None = None, macros: Any = None,
                  attachments: list | None = None) -> tuple[list[dict], dict]:
-    """(messages, info): info = {offered, total, filtered, no_match, chars}.
-
-    ``attachments``: вложения запроса; модель видит только {id, name, kind, size}, путей нет."""
     if max_catalog is None:
         from app.settings import settings
         max_catalog = int(settings.action_layer_planner_max_catalog)
@@ -367,7 +325,6 @@ def build_messages(text: str, ctx: dict, registry: ActionRegistry, max_steps: in
     return build_prompt(text, ctx, registry, max_steps, max_catalog)[0]
 
 
-# --- проверка ответа --------------------------------------------------------
 
 def _scan_forbidden(node: Any, path: str = "$") -> None:
     if isinstance(node, dict):
@@ -387,18 +344,17 @@ class PlannerReply:
     needs_clarification: str | None
     explanation_ru: str
     clarification_options: list[str] = field(default_factory=list)
-    attachment: dict | None = None           # какое действие ждёт файл (загрузки)
+    attachment: dict | None = None
     applied_defaults: list[str] = field(default_factory=list)
     dropped_steps: list[str] = field(default_factory=list)
-    attachments_used: list[str] = field(default_factory=list)  # id вложений, подставленных в шаги
-    model_question: bool = False  # вопрос задала модель (а не правило сервера): его можно снять повтором
-    catalog_steps: list[dict] = field(default_factory=list)  # шаги дословно из каталога (planner_guard)
-    guard_question: bool = False  # вопрос защиты: все шаги не названы в запросе, ждём «Да, подготовить»
+    attachments_used: list[str] = field(default_factory=list)
+    model_question: bool = False
+    catalog_steps: list[dict] = field(default_factory=list)
+    guard_question: bool = False
 
 
 def _upload_with_attachments(act: str, expl: str, *, text: str, registry: ActionRegistry,
                              attachments: list, facts: dict | None) -> PlannerReply:
-    """Модель задала вопрос о загрузке, а файл уже прикреплён: шаг строится из слов запроса и вложения."""
     spec = registry.get(act)
     params = planner_rules.upload_params_from_text(act, text)
     filled = planner_rules.fill_defaults(act, params, facts, spec.params_schema)
@@ -421,8 +377,6 @@ def _upload_with_attachments(act: str, expl: str, *, text: str, registry: Action
 def _clarification(question: str, expl: str, options: list[str], *, text: str,
                    registry: ActionRegistry, offered: frozenset[str] | None,
                    attachments: list | None = None, facts: dict | None = None) -> PlannerReply:
-    """Вопрос модели; для запроса на загрузку файла - стандартное уточнение «прикрепите файл»
-    (с вложением - шаг загрузки или понятный вопрос, чего не хватает)."""
     ids = offered if offered is not None else frozenset(s.id for s in registry.list())
     act = planner_rules.upload_intent_action(text, ids)
     if act and attachments:
@@ -434,7 +388,7 @@ def _clarification(question: str, expl: str, options: list[str], *, text: str,
             act, planner_rules.upload_params_from_text(act, text), spec.title_ru)
         return PlannerReply([], up["question"], expl.strip()[:1000], up["options"], up["attachment"])
     if not attachments:
-        ask = planner_rules.deictic_file_request(text)  # вид «поставь это в кадр N» без файла
+        ask = planner_rules.deictic_file_request(text)
         if ask:
             return PlannerReply([], ask[:500], expl.strip()[:1000], ["Прикрепить файл"])
     return PlannerReply([], question.strip()[:500], expl.strip()[:1000], options, model_question=True)
@@ -444,13 +398,6 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
                    project_id: int | None, offered: frozenset[str] | None = None,
                    facts: dict | None = None, request_text: str = "",
                    attachments: list | None = None) -> PlannerReply:
-    """Строгая проверка по полному реестру. _FormatError - можно повторить, PlannerRejected - нельзя.
-
-    ``offered``: id, показанные модели в промпте; любой другой id отклоняется.
-    ``facts`` и ``request_text`` включают правила planner_rules: значения по умолчанию, защиту
-    от лишних шагов, загрузки файлов; без них проверка чисто структурная.
-    ``attachments``: проверенные вложения запроса; шаги загрузки получают source_path от сервера
-    (``planner_uploads``), а не от модели."""
     try:
         data = json.loads(text)
     except (TypeError, ValueError) as exc:
@@ -516,7 +463,7 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
             before = dict(params)
             params = planner_rules.apply_request_values(action_id, params, request_text)
             changed = [k for k in params if params.get(k) != before.get(k)]
-            if changed:  # значение теперь из слов человека: заметка «подставлено по умолчанию» устарела
+            if changed:
                 notes = [n for n in notes if not any(n.startswith(k + "=") for k in changed)]
             if action_id == "project.patch_settings":
                 params, gone = planner_rules.drop_unnamed_settings(params, request_text)
@@ -559,8 +506,6 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
         confirmed = planner_rules.guard_confirmed(request_text)
         clean, dropped = planner_rules.drop_unrequested(clean, request_text, registry, confirmed=confirmed)
         if not clean:
-            # Защита убрала ВСЕ шаги: не отказ, а вопрос, который называет предложенное. Шагов нет, пока
-            # человек не ответит «Да, подготовить»; массовые и необратимые просьбы остаются вопросом.
             asked = (planner_rules.bare_publish_question(proposed, request_text)
                      or planner_rules.mass_destructive_question(proposed, request_text, registry))
             if asked:
@@ -620,7 +565,6 @@ def validate_reply(text: str, registry: ActionRegistry, *, max_steps: int,
                         attachments_used=used, catalog_steps=planner_guard.verbatim_steps(clean, registry))
 
 
-# --- вызов модели -----------------------------------------------------------
 
 @dataclass
 class PlannerOutcome:
@@ -638,7 +582,7 @@ def _est_cost(model: str, p: int, c: int, cached: int) -> float | None:
     try:
         from app.services import api_tracker_hook
         return api_tracker_hook.vibecode_cost(model, p, c, cached)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -660,12 +604,11 @@ async def _record(operator: str, text: str, *, model: str, attempt: int, outcome
                     "catalog_no_match": info.get("no_match"),
                     "prompt_chars": info.get("chars")})
             await s.commit()
-    except Exception as exc:  # noqa: BLE001 - журнал не должен ломать ответ
+    except Exception as exc:
         logger.warning("planner history write failed: {}", type(exc).__name__)
 
 
 async def _spend_gate(project_id: int | None) -> None:
-    """Local money caps before the planner POST (reserve is atomic with the cap check)."""
     from app.services import spend_guard
     try:
         async with store.sessions()() as s:
@@ -676,9 +619,6 @@ async def _spend_gate(project_id: int | None) -> None:
         raise PlannerRefused(exc.code, spend_cap_ru(exc)) from exc
 
 
-# C-20: провайдер отклонил запрос до обработки (клиентская ошибка) или соединения не было вовсе:
-# счёта за него быть не может, резерв закрывается нулём. Остальные сбои (таймаут чтения, 5xx, обрыв)
-# оставляют резерв: запрос мог быть обработан и оплачен, исход неизвестен (консервативно).
 _NOT_BILLED_STATUS = frozenset({400, 401, 403, 404, 405, 413, 415, 422})
 
 
@@ -687,10 +627,10 @@ def definitely_not_billed(exc: BaseException) -> bool:
     try:
         import httpx
         pre_send = (httpx.ConnectError, httpx.ConnectTimeout, httpx.UnsupportedProtocol)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pre_send = ()
     cur: BaseException | None = exc
-    for _ in range(4):  # причина может быть обёрнута
+    for _ in range(4):
         if cur is None:
             break
         if isinstance(cur, (socket.gaierror,) + pre_send):
@@ -705,9 +645,8 @@ def definitely_not_billed(exc: BaseException) -> bool:
 
 
 async def _close_failed_reserve(project_id: int | None, exc: BaseException) -> bool:
-    """Закрыть резерв упавшей попытки, если счёта быть не может. True: резерв закрыт нулём."""
     from app.services import spend_guard
-    pending = spend_guard.take_pending()  # не оставляем висеть в контексте для чужого вызова
+    pending = spend_guard.take_pending()
     if pending is None or not definitely_not_billed(exc):
         return False
     try:
@@ -717,7 +656,7 @@ async def _close_failed_reserve(project_id: int | None, exc: BaseException) -> b
                                      provider=pending.provider, basis="estimate")
             await s.commit()
         return True
-    except Exception as err:  # noqa: BLE001 - резерв остаётся, это безопасная сторона
+    except Exception as err:
         logger.warning("planner reserve close failed: {}", type(err).__name__)
         return False
 
@@ -734,8 +673,6 @@ _BYPASS_RE = re.compile(
     r"|без\s+кнопк\w*\s+[«\"“']?\s*(?:подтверд|одобр|согласова|аппрув|апрув)"
     r"|(?:в\s+обход|минуя|мимо)\s+(?:(?:всех|любых|обычн\w+|нашей|вашей|ручной)\s+)?"
     r"(?:подтвержден|одобрен|защит|лимит|ограничен|согласован|проверк|модерац|ревью|контрол)")
-# «Без проверки» отключает контроль качества или человека, только если при этом что-то выполняется или публикуется
-# (иначе это обычная фраза вроде «покажи кадры без проверки»); проверка агентом ноды - настройка ноды, не обход.
 _UNCHECKED_RE = re.compile(
     r"без\s+(?:(?:мо[ейя]\w*|нашей|вашей|твоей|любой|какой[\s-]?либо|лишней|ручной|человеческой|"
     r"предварительного|предварительной|дополнительной|всякой)\s+)?"
@@ -747,29 +684,17 @@ _NODE_CHECK_RE = re.compile(r"агент|checkmode|checkfix|автоисправ
 
 
 def approval_bypass_intent(text: str) -> bool:
-    """Просьба отключить/обойти подтверждения, лимиты, защиту, проверку или аварийный стоп.
-
-    Такого действия в каталоге нет и быть не должно, поэтому отказ даёт сервер, без обращения к модели
-    (бесплатно и всегда одинаково), а не зависит от того, заметит ли это модель.
-
-    C-19: это фильтр по тексту, он ловит не все формулировки (замеры LIVE_RUNS: 0,73-0,89 на новых наборах) и
-    НЕ является барьером. Барьер структурный: опасные действия (публикация, очистка, откаты, удаление)
-    требуют превью и подтверждения человека в самом каталоге (закон-тест w51_findings_closure_test)."""
     low = (text or "").lower().replace("ё", "е")
     if _BYPASS_RE.search(low):
         return True
     return bool(_UNCHECKED_RE.search(low) and _DOING_RE.search(low) and not _NODE_CHECK_RE.search(low))
 
 
-# Другие люди и роли: аккаунт, канал, страница или имя заказчика/подрядчика/админа/родственника - не наши.
-# Перед ролью и родственником допустимы 0-2 прилагательных/причастий: «главного редактора», «двоюродного брата»,
-# приставки «супер/мега» к админу: «суперадмина».
 _ADJ = r"(?:[а-я]+(?:ого|его|ому|ему|ой|ей|ую|юю|ых|их|ым|им|ый|ий)\s+){0,2}"
 _FOREIGN_ROLE = (r"(?:" + _ADJ + r"(?:супер|мега|гипер|топ|вице)?(?:заказчик\w*|подрядчик\w*|админ\w*|администратор\w*|"
                  r"редактор\w*|менеджер\w*|владельц\w*|хозяин\w*|хозяйк\w*|директор\w*|руководител\w*|"
                  r"начальник\w*|партнер\w*|сотрудник\w*|исполнител\w*|фрилансер\w*|модератор\w*|куратор\w*|"
                  r"основател\w*|root|superuser|суперпользовател\w*))")
-# Родственники: «моего отца», «жены», «сестры» (точные формы, чтобы не цеплять «материал», «мужской», «папка»).
 _KINSHIP = (r"(?:(?:мо(?:его|ей|ю|их|им|ему)|наш(?:его|ей|у|их)|сво(?:его|ей|ю|их)|ее|его|их)\s+)?" + _ADJ +
             r"(?:отц\w*|отец|мать|матер(?:и|ью)|мам\w*|пап(?:а|ы|е|у|ой|ин\w*)|жен(?:а|ы|е|у|ой)|"
             r"муж(?:а|у|ем|е)?|сестр\w*|брат(?:а|у|ом|е|ья|ьев|ьям|ьями)?|дед(?:а|у|ом|е|ушк\w*)?|бабушк\w*|"
@@ -777,7 +702,6 @@ _KINSHIP = (r"(?:(?:мо(?:его|ей|ю|их|им|ему)|наш(?:его|ей
             r"девушк\w*)(?![а-я])")
 _FOREIGN_OWNER = (r"(?:чуж\w*|друг\w*|коллег\w*|знаком\w*|приятел\w*|подруг\w*|сосед\w*|клиент\w*|не\s+наш\w*|"
                   r"не\s+мо\w*|" + _FOREIGN_ROLE + r"|" + _KINSHIP + r")")
-# Страница или сообщество принадлежит не нам (слова «другой/друг» здесь не берутся: «другая страница» нейтрально).
 _COMMUNITY = r"(?:страниц\w*|страничк\w*|сообществ\w*|паблик\w*|стен(?:а|е|у|ы)(?![а-я]))"
 _NOT_OURS = r"(?:чуж\w*|не\s+наш\w*|не\s+мо(?:й|я|е|и|его|ей|их)(?![а-я])|" + _FOREIGN_ROLE + r"|" + _KINSHIP + r")"
 _FOREIGN_ACCOUNT_RE = re.compile(
@@ -801,7 +725,6 @@ _FOREIGN_ACCOUNT_RE = re.compile(
     r"|(?:его|ее|их|чуж\w*|друг\w*)\s+парол\w*")
 
 
-# Человек назван по имени: «аккаунтом Марины», «от имени Ивана». Платформы и свои сущности (Студия, Ютуб) не считаются.
 _NAMED_PERSON_RE = re.compile(
     r"(?:аккаунт|канал|профил|страниц|логин|учетн|учётн|соцсет)\w*\s+(?P<n1>[А-ЯЁ][а-яё]{2,}(?:а|ы|и|ой|ом|ем|ю|у|я|е))(?![а-яё])"
     r"|(?:от\s+имени|от\s+лица|под\s+именем)\s+(?P<n2>[А-ЯЁ][а-яё]{2,}(?:а|ы|и|ой|ом|ем|ю|у|я|е))(?![а-яё])")
@@ -811,7 +734,6 @@ _NOT_A_PERSON = ("инстаграм", "ютуб", "тикток", "телегр
 
 
 def named_person_intent(text: str) -> bool:
-    """Аккаунт или имя названы личным именем с заглавной буквы («под аккаунтом Марины»): чужой человек."""
     for m in _NAMED_PERSON_RE.finditer(text or ""):
         word = (m.group("n1") or m.group("n2") or "").lower().replace("ё", "е")
         if word and not word.startswith(_NOT_A_PERSON):
@@ -820,9 +742,6 @@ def named_person_intent(text: str) -> bool:
 
 
 def foreign_account_intent(text: str) -> bool:
-    """Просьба действовать от имени или в аккаунте другого человека (публикация, вход).
-
-    Публиковать можно только в настроенные площадки владельца, поэтому отказ даёт сервер до обращения к модели."""
     return bool(_FOREIGN_ACCOUNT_RE.search((text or "").lower().replace("ё", "е"))) or named_person_intent(text)
 
 
@@ -830,10 +749,6 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
                          selected_scene: int | None = None, selected_frame: int | None = None,
                          registry: ActionRegistry | None = None,
                          attachments: list | None = None) -> PlannerOutcome:
-    """Один-два POST к модели, строгая проверка. Не создаёт план и не подтверждает.
-
-    ``attachments``: уже проверенные вложения (``attachments.resolve``); модель видит только их
-    id, имя, вид и размер, путь в шаг загрузки подставляет сервер."""
     from app.services import decision_v1
     from app.settings import settings
     registry = registry or default_registry
@@ -853,12 +768,12 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
             "Действовать от имени чужого аккаунта нельзя. Публикация возможна только в настроенные "
             "площадки владельца и только после подтверждения человека.")
     max_steps = int(settings.action_layer_max_steps)
-    url, headers, model = preflight()  # до любых запросов
+    url, headers, model = preflight()
     from app.services.action_layer import executor
     if await executor._kill_switch_on():
         raise PlannerRefused("kill_switch_active", "Аварийная остановка включена оператором: планы не составляются.")
     ctx = await load_context(project_id, selected_scene, selected_frame)
-    if planner_rules.guard_declined(text):  # «Нет, другое» на вопрос защиты: модель не нужна
+    if planner_rules.guard_declined(text):
         return PlannerOutcome(
             PlannerReply([], "Опишите, какое действие нужно вместо этого: что сделать и с чем (кадр, нода, шаг).",
                          "Предложенное действие отклонено вами; ничего не планируется.", []),
@@ -892,7 +807,7 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
                     call_timeout + 15)
             finally:
                 _pending[operator] = max(0, _pending.get(operator, 1) - 1)
-        except Exception as exc:  # noqa: BLE001 - исход неизвестен
+        except Exception as exc:
             if real:
                 _track(model, None, started, exc)
                 await _close_failed_reserve(project_id, exc)
@@ -995,14 +910,13 @@ async def plan_from_text(text: str, *, operator: str, project_id: int | None = N
                 "explanation_source": planner_guard.EXPLANATION_SOURCE,
                 "transport_retries": transport_retries, "clarify_repairs": clarify_repairs}
         return PlannerOutcome(reply, ctx, meta)
-    raise PlannerRejected("planner_bad_output", last_error)  # недостижимо
+    raise PlannerRejected("planner_bad_output", last_error)
 
 
 _PROGRAMMING_ERRORS = (TypeError, AttributeError, KeyError, AssertionError, NameError)
 
 
 def _is_transient(exc: BaseException) -> bool:
-    """Сбой сети/таймаут/5xx/429 - имеет смысл повторить; 400/401/402/403 и ошибки кода - нет."""
     from app.services.gpt_api import GptApiError
     if isinstance(exc, GptApiError):
         return exc.retryable
@@ -1015,12 +929,11 @@ def _track(model: str, usage: Any, started: float, exc: Exception | None) -> Non
         _track_api_cost(model=model, usage=usage, duration_sec=time.monotonic() - started,
                         provider="vibecode", status_code=0 if exc else 200,
                         error_message=describe_exception(exc) if exc else "")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
 async def link_plan(plan_id: str, operator: str, outcome: PlannerOutcome) -> None:
-    """Сохраняет версию контекста плана и связь с вызовом планировщика в журнале."""
     await save_plan_context(plan_id, source="planner", ctx=outcome.context)
     async with store.sessions()() as s:
         store.append_history(s, event="planner_plan_linked", plan_id=plan_id, actor=operator,

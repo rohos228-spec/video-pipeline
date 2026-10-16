@@ -1,9 +1,3 @@
-"""postToolUse(Write): мгновенная обратная связь после правки файла.
-
-- .py: ruff E9/F63/F7/F82 (синтаксис, неопределённые имена) + py_compile;
-- web/src/**: одноразовое напоминание про scripts/bump_studio_version.py.
-Ошибки возвращаются агенту через additional_context; действие не блокируется.
-"""
 from __future__ import annotations
 
 import json
@@ -11,9 +5,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from vp_common import lint_errors, log, project_python, project_root, read_input, respond, state_dir, toplevel  # noqa: E402
+from vp_common import lint_errors, log, project_python, project_root, read_input, respond, state_dir, toplevel
 
-from file_guard import paths_from  # noqa: E402
+from file_guard import paths_from
 
 
 def check_python(path: Path) -> str:

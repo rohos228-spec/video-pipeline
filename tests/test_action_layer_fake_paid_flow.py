@@ -1,8 +1,3 @@
-"""Полный платный/разрушающий поток на фейковых test.* действиях (без денег и сети).
-
-Фейки живут в scripts/e2e_action_layer_fake_paid.py (тестовый запускатор) и
-регистрируются только в отдельный реестр теста либо при ACTION_LAYER_TEST_ACTIONS=1.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +13,7 @@ from sqlalchemy import update
 from app.services import kill_switch
 from app.services.action_layer import approval, executor, service, store
 from app.services.action_layer.spec import ActionRegistry, registry as default_registry
-from tests.action_layer_support import env, fresh_registry  # noqa: F401
+from tests.action_layer_support import env, fresh_registry
 
 OP = approval.OperatorIdentity("web_operator:fakepaid")
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "e2e_action_layer_fake_paid.py"
@@ -38,7 +33,6 @@ def fake(monkeypatch, tmp_path):
     mod = _load_launcher()
     mod.JOBS.clear()
 
-    # Быстрый опрос вместо 1 с, поведение действий прежнее.
     specs = [dataclasses.replace(s, poll_interval_s=0.02) for s in mod.build_fake_specs()]
     reg = ActionRegistry()
     for s in specs:
@@ -52,7 +46,6 @@ def fake(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def _explicit_plan_cap(monkeypatch):
-    """The default plan cap is a high fuse (C-17); these tests assert exact budget numbers, so pin 200 credits."""
     from app.settings import settings
     monkeypatch.setattr(settings, "action_layer_session_cap_credits", 200.0)
 
@@ -102,7 +95,6 @@ async def _wait_progress(pid, minimum=0.05, timeout=5.0):
     raise AssertionError("no progress")
 
 
-# --- реестр и защита --------------------------------------------------------
 
 def test_launcher_refuses_without_flag(monkeypatch) -> None:
     monkeypatch.delenv("ACTION_LAYER_TEST_ACTIONS", raising=False)
@@ -128,7 +120,6 @@ def test_fake_actions_are_namespaced_and_flagged_correctly(fake) -> None:
     assert all(not s.idempotent for s in by_id.values())
 
 
-# --- A: мгновенное платное --------------------------------------------------
 
 async def test_paid_instant_needs_approval_then_spends_42(env, fake) -> None:
     pid, preview = await _plan(env, fake, {"action_id": "test.fake_paid_instant"})
@@ -137,7 +128,7 @@ async def test_paid_instant_needs_approval_then_spends_42(env, fake) -> None:
     with pytest.raises(approval.ApprovalError) as e:
         await service.prepare_run(pid, OP, registry=fake.reg)
     assert e.value.code == "approval_required"
-    assert fake.events() == []  # ничего не исполнено
+    assert fake.events() == []
 
     await _approve_run(env, fake, pid)
     view = await _wait_status(pid, {"succeeded"})
@@ -148,7 +139,6 @@ async def test_paid_instant_needs_approval_then_spends_42(env, fake) -> None:
                       "plan_started", "step_started", "step_succeeded", "plan_finished"]
     assert [e["event"] for e in fake.events()] == ["instant_paid"]
 
-    # Повторы: запуск и новое подтверждение завершённого плана отвергаются.
     with pytest.raises(service.RunRefused) as e1:
         await service.prepare_run(pid, OP, registry=fake.reg)
     assert e1.value.code == "plan_finished"
@@ -168,7 +158,6 @@ async def test_fake_destructive_free_but_needs_approval(env, fake) -> None:
     assert view["spent_credits"] == 0.0
 
 
-# --- B: фоновая задача, стоп, повторный запуск ------------------------------
 
 async def test_job_stop_midrun_stops_fake_job_and_reuse_needs_new_approval(env, fake) -> None:
     pid, _ = await _plan(env, fake, {"action_id": "test.fake_paid_job", "params": {"seconds": 60}})
@@ -176,7 +165,7 @@ async def test_job_stop_midrun_stops_fake_job_and_reuse_needs_new_approval(env, 
     v = await _wait_progress(pid)
     assert v["status"] == "running" and v["steps"][0]["status"] == "running"
     assert "тестовая задача" in v["steps"][0]["progress_note"]
-    assert v["spent_credits"] == 60.0  # резерв верхней оценки
+    assert v["spent_credits"] == 60.0
 
     out = await executor.request_stop(pid, OP.id)
     assert out["stop_requested"] is True
@@ -186,16 +175,14 @@ async def test_job_stop_midrun_stops_fake_job_and_reuse_needs_new_approval(env, 
     job = next(iter(fake.JOBS.values()))
     assert job["stopped"] is True and not job["finished"]
     assert [e["event"] for e in fake.events()] == ["started", "stopped"]
-    # Резерв остаётся (факт неизвестен): консервативно, не 0 и не оценка по прогрессу.
     assert view["spent_credits"] == 60.0
     events = [h["event"] for h in (await service.history(plan_id=pid))["items"]]
     assert {"stop_requested", "step_cancelled", "plan_finished"} <= set(events)
 
-    # Тот же план: подтверждение прежнего запуска израсходовано, нужен НОВЫЙ approve.
     with pytest.raises(approval.ApprovalError) as e:
         await service.prepare_run(pid, OP, registry=fake.reg)
     assert e.value.code == "approval_required"
-    assert len(fake.events()) == 2  # ничего не стартовало
+    assert len(fake.events()) == 2
 
 
 async def test_job_runs_to_completion_and_reports_credits(env, fake) -> None:
@@ -203,17 +190,15 @@ async def test_job_runs_to_completion_and_reports_credits(env, fake) -> None:
     await _approve_run(env, fake, pid)
     view = await _wait_status(pid, {"succeeded"})
     assert view["steps"][0]["cost"]["actual"] == 47.5
-    # резерв 60 сверен с фактом 47.5
     assert view["spent_credits"] == pytest.approx(47.5)
     assert view["steps"][0]["progress"] == 1.0
     assert [e["event"] for e in fake.events()] == ["started", "finished"]
 
 
-# --- C: одноразовость, срок, хэш, потолок -----------------------------------
 
 async def test_over_session_cap_cannot_be_approved(env, fake, monkeypatch) -> None:
     from app.settings import settings
-    monkeypatch.setattr(settings, "action_layer_session_cap_credits", 200.0)  # потолок задан явно (по умолчанию он высокий)
+    monkeypatch.setattr(settings, "action_layer_session_cap_credits", 200.0)
     pid, preview = await _plan(env, fake, *[{"action_id": "test.fake_paid_instant"}] * 5)
     assert preview["cost"]["high"] == 250.0 and preview["budget"]["fits"] is False
     with pytest.raises(approval.ApprovalError) as e:
@@ -271,7 +256,7 @@ async def _approve_run_noapprove(env, fake, pid):
 async def test_changed_plan_hash_refused_at_approve_and_run(env, fake) -> None:
     pid, _ = await _plan(env, fake, {"action_id": "test.fake_paid_instant"})
     await service.approve_plan(env.app, pid, OP, registry=fake.reg)
-    async with env.factory() as s:  # подмена шага после подтверждения
+    async with env.factory() as s:
         await s.execute(update(store.ActionPlanStep).where(
             store.ActionPlanStep.plan_id == pid).values(action_id="test.fake_destructive"))
         await s.commit()
@@ -304,10 +289,8 @@ async def test_machine_identities_cannot_approve(env, fake) -> None:
         assert e.value.code == "operator_required"
 
 
-# --- D: рестарт -------------------------------------------------------------
 
 async def _simulate_restart_midrun(env, fake, pid):
-    """approve+prepare_run (расход подтверждения), шаг 0 помечен running, живой задачи нет."""
     await service.approve_plan(env.app, pid, OP, registry=fake.reg)
     await service.prepare_run(pid, OP, registry=fake.reg)
     async with env.factory() as s:
@@ -324,12 +307,12 @@ async def test_restart_inflight_nonidempotent_step_is_not_rerun(env, fake) -> No
     view = await service.plan_view(pid)
     assert view["status"] == "running" and view["interrupted"] and not view["live"]
 
-    await service.prepare_run(pid, OP, registry=fake.reg)  # возобновление без нового подтверждения
+    await service.prepare_run(pid, OP, registry=fake.reg)
     executor.launch(env.app, pid, OP.id, registry=fake.reg)
     view = await _wait_status(pid, {"failed", "stopped"})
     assert [s["status"] for s in view["steps"]] == ["unknown", "skipped"]
     assert "ручной разбор" in view["error"]
-    assert fake.events() == [] and not fake.JOBS  # ни задача, ни следующий шаг не запускались
+    assert fake.events() == [] and not fake.JOBS
     items = (await service.history(plan_id=pid))["items"]
     assert "step_unknown" in [h["event"] for h in items]
     assert next(h for h in items if h["event"] == "run_requested")["outcome"] == "resume"
@@ -341,13 +324,11 @@ async def test_stop_of_interrupted_plan_closes_it_immediately(env, fake) -> None
     out = await executor.request_stop(pid, OP.id)
     assert out["status"] == "stopped"
     assert fake.events() == []
-    # Новый запуск того же плана снова требует подтверждения.
     with pytest.raises(approval.ApprovalError) as e:
         await service.prepare_run(pid, OP, registry=fake.reg)
     assert e.value.code == "approval_required"
 
 
-# --- E: аварийный стоп во время фоновой задачи ------------------------------
 
 async def test_kill_switch_during_running_job_stops_the_job(env, fake) -> None:
     pid, _ = await _plan(env, fake, {"action_id": "test.fake_paid_job", "params": {"seconds": 60}},
@@ -359,11 +340,10 @@ async def test_kill_switch_during_running_job_stops_the_job(env, fake) -> None:
     assert view["stop_reason"] == kill_switch.REASON
     assert [s["status"] for s in view["steps"]] == ["cancelled", "skipped"]
     assert "аварийным стопом" in view["steps"][0]["error"]
-    # Фейковая задача реально получила stop и не дошла до конца.
     job = next(iter(fake.JOBS.values()))
     assert job["stopped"] is True and not job["finished"]
     assert [e["event"] for e in fake.events()] == ["started", "stopped"]
-    assert view["spent_credits"] == 60.0  # резерв сохраняется
+    assert view["spent_credits"] == 60.0
     events = [h["event"] for h in (await service.history(plan_id=pid))["items"]]
     assert "kill_switch_block" in events and "step_cancelled" in events
     with pytest.raises(service.RunRefused) as e:
@@ -381,7 +361,6 @@ async def test_kill_switch_does_not_touch_finished_job(env, fake) -> None:
     assert view["actual_credits"] == 47.5 and view["reserved_credits"] == pytest.approx(47.5)
 
 
-# --- окно возобновления ------------------------------------------------------
 
 async def _age(env, pid, seconds):
     from datetime import datetime, timedelta
@@ -410,10 +389,8 @@ async def test_resume_after_window_needs_fresh_approval(env, fake, monkeypatch) 
     view = await service.plan_view(pid)
     assert view["status"] == "stopped" and view["stop_reason"] == "resume_window_expired"
     assert fake.events() == []
-    # Без нового подтверждения запуск по-прежнему закрыт ...
     with pytest.raises(approval.ApprovalError):
         await service.prepare_run(pid, OP, registry=fake.reg)
-    # ... с новым - идёт, но шаг, начатый до рестарта, повторно не запускается.
     await _approve_run(env, fake, pid)
     view = await _wait_status(pid, {"failed"})
     assert [s["status"] for s in view["steps"]] == ["unknown", "skipped"]

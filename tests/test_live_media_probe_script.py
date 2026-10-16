@@ -27,7 +27,6 @@ def _env_file(tmp_path, extra=""):
 
 
 class Fake:
-    """Fake app seams: counts calls, never touches network, DB or the app."""
 
     def __init__(self, tmp_path, leak=False, resume_ok=True):
         self.calls = []
@@ -82,7 +81,7 @@ def test_refuses_unknown_step_and_empty_steps(tmp_path, capsys):
     env = _env_file(tmp_path)
     assert probe.main(["--live", "--env-file", env, "--steps", "tts,music"], deps=fake.deps()) == 2
     assert "unknown step" in capsys.readouterr().out
-    assert probe.main(["--live", "--env-file", env], deps=fake.deps()) == 2  # default: no steps
+    assert probe.main(["--live", "--env-file", env], deps=fake.deps()) == 2
     assert fake.calls == []
 
 
@@ -100,12 +99,12 @@ def test_never_prints_env_values(tmp_path, capsys):
     rc = probe.main(["--live", "--env-file", _env_file(tmp_path), "--steps", "tts,sfx,image", "--out", str(out_json)],
                     deps=fake.deps())
     out, rows = _rows(capsys)
-    assert rc == 1  # the fake reports an error
+    assert rc == 1
     assert rows and fake.calls == ["tts", "sfx", "image"]
     for value in SENTINELS.values():
         assert value not in out
         assert value not in out_json.read_text(encoding="utf-8")
-    assert "***" in out  # the leaked key inside the error text was scrubbed
+    assert "***" in out
 
 
 def test_happy_path_row_fields(tmp_path, capsys):
@@ -122,7 +121,6 @@ def test_happy_path_row_fields(tmp_path, capsys):
 
 def test_total_usd_cap_enforced_before_step(tmp_path, capsys):
     fake = Fake(tmp_path)
-    # tts est 0.036 + sfx est 0.006 fit into 0.05; image est 0.10 does not
     rc = probe.main(["--live", "--env-file", _env_file(tmp_path), "--steps", "tts,sfx,image", "--total-usd", "0.05"],
                     deps=fake.deps(usd=0.0))
     _out, rows = _rows(capsys)
@@ -146,7 +144,7 @@ def test_extra_recorded_submit_halts_run(tmp_path, capsys):
     rc = probe.main(["--live", "--env-file", _env_file(tmp_path), "--steps", "tts,sfx"],
                     deps=fake.deps(usd=0.0, submits=2))
     _out, rows = _rows(capsys)
-    assert fake.calls == ["tts"]  # a double submit stops everything after it
+    assert fake.calls == ["tts"]
     assert rows[0]["violations"] and rows[1]["refused"] is True
     assert rc == 1
 

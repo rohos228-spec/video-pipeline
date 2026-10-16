@@ -8,10 +8,6 @@ import {
   type DerivedState,
 } from "@/lib/publication-text";
 
-// «Публикации»: что записано в журнале по каждой площадке и как человеку выйти из состояния «ждёт проверки».
-// Сервер: app/web/routers/publications.py. Кнопки не кликают по площадкам: «Подтвердить вручную» и «Не опубликовано»
-// только записывают решение человека (ссылка или причина обязательны), «Разрешить публикацию» выдаёт одноразовое «да»
-// на эту площадку для этого файла и этой подписи.
 interface PublicationManual {action: string; actor: string; reason: string | null; post_url: string | null; created_at: number}
 interface PublicationItem {
   platform: string; state: string; state_label: string; status: string | null;
@@ -41,11 +37,9 @@ export function PublicationsSection({projectId}: {projectId: number | null}) {
   const [busy, setBusy] = useState("");
   const [text, setText] = useState<Record<string, string>>({});
   const base = `/api/projects/${project}/publications`;
-  // Какой проект открыт сейчас: ответ, пришедший после переключения, чужим проектом не показывается.
   const activeProject = useRef(project);
   activeProject.current = project;
 
-  // Смена проекта: сообщение, ошибка, факты и введённый текст прошлого проекта не переезжают в новый.
   useEffect(() => {
     setFacts(null); setNote(""); setError(""); setBusy(""); setText({});
   }, [project]);

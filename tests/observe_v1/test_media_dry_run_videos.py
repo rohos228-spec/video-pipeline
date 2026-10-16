@@ -1,12 +1,3 @@
-"""Dry run of the supervised resume of `videos` (Kie task of one clip): see media_dry_run_base.
-
-C07 (W4-5): the node body is the REAL step ``generate_videos.run`` (claim loop, shot1 job with its own
-sessions, the paid ladder ``generate_video_with_retries``, ``kie_http``, post-step validation). Only the
-provider boundary is substituted: the Kie HTTP (createTask / status / download, from the base), the public
-upload of the start frame and the Telegram send of the step. The Outsee browser of the step is not opened
-(the video generator of the fixture is a Kie one, ``seedance_1_5_pro``); see w4_5_real_step_stand for the
-honest limits (mirror of the master rows, ProcessDied modelling).
-"""
 import unittest
 from unittest.mock import patch
 
@@ -22,7 +13,7 @@ from sqlalchemy import select
 pytestmark = pytest.mark.skipif(not base.HAVE_FFMPEG, reason="ffmpeg/ffprobe are required")
 
 
-from app.bots.outsee import OutseeImageError  # noqa: E402
+from app.bots.outsee import OutseeImageError
 
 
 class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
@@ -40,7 +31,6 @@ class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
         self.uploads, self.ids_at_first_poll, self.swallowed = 0, None, []
         scenes = self.data / "scenes"
         scenes.mkdir(parents=True, exist_ok=True)
-        # a valid shot_01 scene image (>= 200 KB, PNG magic) as the step expects on disk
         (scenes / "frame_001_ab12cd34.png").write_bytes(base.media_bytes("image", self.data / "scratch") + bytes(210_000))
 
         async def upload(*_a, **_k):
@@ -50,7 +40,6 @@ class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
         for patcher in (patch("app.bots.outsee_http.ensure_public_image_url", upload),
                         patch.object(generate_videos, "get_gpt_client", lambda: base.FakeGpt()),
                         patch.object(generate_videos, "_video_http_primary", lambda: True),
-                        # the Kling 2.6 fallback rung of the ladder has its own HTTP seam: same provider substitute
                         patch.object(kie_kling, "kie_post_json", self.fake_post),
                         patch.object(kie_kling, "kie_api_configured", lambda: True),
                         patch.object(kie_kling, "kie_api_base_url", lambda: "https://kie.invalid"),
@@ -81,10 +70,6 @@ class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
             await session.commit()
 
     async def test_provably_failed_task_gets_no_paid_retry_from_the_supervisor(self):
-        """The whole real ladder failed (every task provably failed at the provider). The service no longer calls
-        the node retryable: seven failed tasks hit the retry cap, the verdict is a typed denial, and the
-        supervisor submits nothing (the old one-task case "retry_same, not admitted" cannot arise from the real
-        ladder, which never stops after one failed task)."""
         from app.generation_options import VIDEO_FALLBACK_ATTEMPTS, VIDEO_PRIMARY_TOTAL_ATTEMPTS
         from app.services.video_error_policy import VideoLadderExhaustedError
         ladder_total = VIDEO_PRIMARY_TOTAL_ATTEMPTS + VIDEO_FALLBACK_ATTEMPTS
@@ -121,8 +106,6 @@ class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
         self.assertEqual(len(list(self.result_files())), 1)
 
     async def test_the_failed_attempt_may_edit_frame_progress_without_invalidating_the_baseline(self):
-        """The real videos step writes per-frame bookkeeping (fail counter, in-flight marker) while it
-        fails. That is not a change of the REQUEST inputs and must not block the resume."""
         await self.killed_then_native_poll_timeout()
         async with self.business() as session:
             frame = await session.scalar(select(Frame).where(Frame.number == 1))
@@ -136,7 +119,6 @@ class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
         self.assertEqual(result["status"], "verified", result["verification_result"])
 
     async def test_outsee_intent_without_a_task_id_is_never_resumed(self):
-        """Outsee leaves only an intent row: unknown outcome, no id to poll, nothing to resume."""
         from app.services import spend_guard
         await self.killed_then_native_poll_timeout()
         async with self.ledger() as session:
@@ -153,11 +135,7 @@ class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
         self.assertIn("unknown_outcome_outsee", str(caught.exception))
         self.assertEqual((self.downloads, await self.tickets()), (0, []))
 
-    # ---------------------------------------------------------------- C07: what only the real step can show
     async def test_real_step_one_submit_task_id_recorded_before_the_first_poll_clip_arrives(self):
-        """D: the real step, one frame, the provider answers on the second poll. Exactly one createTask, the task
-        id is already in the ledger when the first status request goes out, the clip is downloaded once, the
-        step advances the project and hands over to the human check."""
         self.poll_script = ["waiting", "success"]
         await self.worker()
         self.assertEqual((self.creates, self.polls, self.downloads), (1, 2, 1))
@@ -172,9 +150,6 @@ class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
         self.assertEqual(statuses[-1], "downloaded")
 
     async def test_real_step_success_is_verified_by_the_attempt_session_not_failed_too_early(self):
-        """D (fixed in W4 integration): the clip row is only flushed when the step returns. The verification of
-        the same attempt reads the flushed rows through the attempt's own session, so a successful step is judged
-        passed (it used to be failed/missing_clip from the committed-only read)."""
         from app.services import media_verification
         self.poll_script = ["success"]
         await self.worker()
@@ -187,9 +162,6 @@ class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
         self.assertEqual((fresh["status"], fresh["items_passed"]), ("passed", 1), fresh)
 
     async def test_real_step_ladder_submits_at_most_seven_tasks_then_skips_the_frame(self):
-        """D: every task fails at the provider. The real ladder (primary rungs, then the Kling fallback rungs)
-        makes at most primary + fallback submits, each with its own task id; the step marks the frame as skipped
-        and returns without a clip. No submit beyond the ladder."""
         from app.generation_options import VIDEO_FALLBACK_ATTEMPTS, VIDEO_PRIMARY_TOTAL_ATTEMPTS
         from app.services.video_error_policy import VideoLadderExhaustedError
         ladder_total = VIDEO_PRIMARY_TOTAL_ATTEMPTS + VIDEO_FALLBACK_ATTEMPTS
@@ -206,8 +178,6 @@ class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
         self.assertGreaterEqual(int(frame.attrs.get("video_gen_fail_count") or 0), 5)
 
     async def test_default_video_generator_is_outsee_so_the_real_step_makes_no_kie_request(self):
-        """D (route fact): with the default generator (veo_3_fast) the real step goes to Outsee, not to Kie.
-        Without an Outsee key and a browser it fails before any request: zero Kie submits, zero polls."""
         from app.models import Project
         for factory in (self.business, self.ledger):
             async with factory() as session:
@@ -223,10 +193,6 @@ class VideosDryRun(stand.RealStepStand, base.MediaDryRun):
         self.assertEqual(type(self.swallowed[-1]).__name__, "OutseeImageError")
 
     async def test_frame_failure_is_not_swallowed_so_the_attempt_ends_with_node_error_and_recovery_is_allowed(self):
-        """D (fixed in W4 integration): the step used to swallow the frame failure and return; the attempt ended
-        with node_end and the supervised recovery was refused as an unfinished attempt. Now the step raises the
-        typed failure after the frame loop (no extra paid call: only the recorded error is re-raised), the attempt
-        ends with node_error and the resume of the SAME provider task is not refused."""
         await self.killed_then_native_poll_timeout()
         facts = await self.facts()
         last_attempt = [f for f in facts if f.kind in {"node_start", "node_end", "node_error"}]

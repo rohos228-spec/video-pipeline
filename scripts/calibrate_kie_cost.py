@@ -72,7 +72,6 @@ async def main() -> int:
     import random
     import string
     rnd = random.Random(7)
-    # Probe different cost drivers; each call is followed by its own balance read.
     long_text = " ".join("".join(rnd.choice(string.ascii_lowercase) for _ in range(rnd.randint(3, 9)))
                          for _ in range(a.long_words))
     probes = [("tiny_cached", PROMPT),

@@ -1,8 +1,3 @@
-"""Таблицы контура изменений (только новые) и канонический хэш.
-
-``config_versions`` append-only (триггеры SQLite). Указатель ``config_pointers``
-меняется только сравнением с ожидаемой версией (CAS).
-"""
 from __future__ import annotations
 
 import hashlib
@@ -41,7 +36,6 @@ def canonical(value: Any) -> str:
 
 
 def sha(value: Any) -> str:
-    """Хэш содержимого без редактирования секретов: он должен отражать реальный текст."""
     return hashlib.sha256(canonical(value).encode("utf-8")).hexdigest()
 
 
@@ -115,17 +109,13 @@ _TRIGGERS = (
 
 
 async def ensure_change_control_schema(conn) -> None:
-    """Идемпотентно создаёт таблицы контура (вызывается из стартового пути)."""
     await conn.run_sync(lambda sync_conn: Base.metadata.create_all(
         sync_conn, tables=_TABLES, checkfirst=True))
-    # Колонки, добавленные позже в уже существующую change_proposals, догоняет версионная
-    # миграция 0010 (schema_migrations.py); здесь ALTER больше нет.
     if conn.dialect.name == "sqlite":
         for ddl in _TRIGGERS:
             await conn.exec_driver_sql(ddl)
 
 
 def sessions():
-    """Те же сессии мастер-БД, что у слоя действий (тесты подменяют их там же)."""
     from app.services.action_layer import store as al_store
     return al_store.sessions()

@@ -37,7 +37,7 @@ from app.telegram.menu import step_by_running_status
 FAILS_PER_CYCLE = 3
 MAX_CYCLES = 3
 MAX_TOTAL_FAILS = FAILS_PER_CYCLE * MAX_CYCLES  # 9
-INFRA_LOCK_MAX_STREAK = 20  # подряд «БД занята» без прогресса -> пауза
+INFRA_LOCK_MAX_STREAK = 20
 SLEEP_MINUTES = 30
 # Лишние листы GPT / hotfix normalize — не морозить на полчаса.
 XLSX_SHEET_FORMAT_SLEEP_MINUTES = 2
@@ -51,8 +51,6 @@ FAST_FAILS_PER_CYCLE = 2
 FAST_MAX_CYCLES = 2
 FAST_SLEEP_MINUTES = 3
 FAST_QUICK_SLEEP_MINUTES = 1
-# Ошибки настройки: ключа/доступа/модели нет, повтор через минуты их не лечит. Только профиль fast
-# закрывает шаг на первом таком отказе; в safe поведение прежнее.
 FATAL_CONFIG_ERROR_CODES = frozenset({
     "gpt_no_key", "gpt_no_base", "gpt_auth", "gpt_model_unauthorized", "gpt_model_unsupported",
     "media_no_key", "media_auth",
@@ -74,7 +72,6 @@ class WaitProfile:
 
 
 def wait_profile(project: Project | None = None) -> WaitProfile:
-    """Профиль ожидания. Значения safe читаются из модуля в момент вызова (их подменяют стенды)."""
     name = ""
     if project is not None:
         meta = project.meta if isinstance(project.meta, dict) else {}
@@ -89,12 +86,10 @@ def wait_profile(project: Project | None = None) -> WaitProfile:
 
 
 def abandon_threshold(project: Project | None = None) -> int:
-    """Сколько отказов шага закрывают его для проекта (9 в safe, 4 в fast)."""
     return wait_profile(project).max_total_fails
 
 
 def exhausted_threshold(project: Project | None) -> int:
-    """Порог, при котором шаг был закрыт: записанный при закрытии, иначе порог текущего профиля."""
     if project is not None:
         recorded = _failure_state(project).get("abandoned_threshold")
         if isinstance(recorded, int) and not isinstance(recorded, bool) and recorded > 0:
@@ -103,10 +98,6 @@ def exhausted_threshold(project: Project | None) -> int:
 
 
 def is_retry_exhausted(project: Project | None, running_key: str | None = None) -> bool:
-    """Нативные повторы исчерпаны: шаг закрыт (abandoned_at) и счётчик дошёл до порога.
-
-    ``running_key`` - счётчик именно этого running-статуса; без него берётся наибольший.
-    Закрытие из-за ошибки настройки (abandoned_reason=fatal_config) сюда не относится: повтор её не лечит."""
     if project is None:
         return False
     fs = _failure_state(project)
@@ -126,7 +117,6 @@ def sleep_minutes_for_error(error: Exception, profile: WaitProfile | None = None
     quick_sleep = profile.quick_sleep_minutes if profile is not None else XLSX_SHEET_FORMAT_SLEEP_MINUTES
     if "скачанный xlsx невалиден" in msg and "листы" in msg:
         return quick_sleep
-    # Неполный TSV / prose без TSV / ошибки валидации LLM-ответов — не морозить 30 мин.
     if (
         "всё ещё неполный" in msg
         or "CONTINUE_XLSX" in msg
@@ -330,7 +320,7 @@ async def _fail_active_on_both(
             )
 
         await run_on_replica_project(session, project, _fail)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] fail active NodeRun on replica failed",
             project.id,
@@ -339,12 +329,11 @@ async def _fail_active_on_both(
 
 
 async def _push_parked_runtime(session: AsyncSession, project: Project) -> None:
-    """paused/failed + leftover NodeRun → вторая БД (сайдбар и канвас одно)."""
     try:
         from app.services.run_sync import park_leftover_running_nodes
 
         await park_leftover_running_nodes(session, project, as_failed=True)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] park leftover NodeRuns on worker session failed",
             project.id,
@@ -354,7 +343,7 @@ async def _push_parked_runtime(session: AsyncSession, project: Project) -> None:
         from app.project_db import sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, project)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] parked runtime sync master↔project.db failed",
             project.id,
@@ -372,7 +361,7 @@ async def _push_parked_runtime(session: AsyncSession, project: Project) -> None:
             )
 
         await run_on_replica_project(session, project, _park)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] park leftover NodeRuns on replica failed",
             project.id,
@@ -386,10 +375,6 @@ async def record_step_failure(
     *,
     error: Exception,
 ) -> str:
-    """Обработать ошибку advance_project.
-
-    Returns: retry | sleep | abandon | pause_infra | stopped
-    """
     if is_chrome_infra_error(error):
         return await handle_chrome_step_failure(session, project, error)
 
@@ -407,11 +392,11 @@ async def record_step_failure(
         is_credits_failure = lambda _e: False  # noqa: E731
 
     def _credits_exhausted() -> bool:
-        if err_code_early == "gpt_credits":  # Vibecode/Kie text 402, see error_catalog
+        if err_code_early == "gpt_credits":
             return True
         try:
             return is_credits_failure(error) or "credits insufficient" in (err_msg_early or "").lower()
-        except Exception:  # noqa: BLE001  e.g. a non-numeric provider_code
+        except Exception:
             return False
 
     if _credits_exhausted():
@@ -422,7 +407,6 @@ async def record_step_failure(
         step = step_by_running_status(running)
         fs = _failure_state(project)
         fs["last_error"] = err_msg_early
-        # describe_error never returns an empty code; keep a credits-specific one in the state.
         credits_code = err_code_early if err_code_early in {"gpt_credits", "media_credits"} else "gpt_credits"
         fs["last_error_code"] = credits_code
         fs["last_running"] = running.value
@@ -458,7 +442,6 @@ async def record_step_failure(
         _save_failure_state(project, _fs0)
         if _streak > INFRA_LOCK_MAX_STREAK:
             from app.services.project_control import pause_project as pause_project_svc
-            # вечная блокировка БД: не крутить шаг бесконечно, пауза с причиной (человек снимает «Продолжить»)
             _fs0["infra_lock_streak"] = 0
             _save_failure_state(project, _fs0)
             await pause_project_svc(session, project)
@@ -544,7 +527,6 @@ async def record_step_failure(
     await _soft_retry_without_wipe(session, project, step_code)
 
     fatal_config = profile.abandon_on_fatal_config and err_code in FATAL_CONFIG_ERROR_CODES
-    # C-12: каждый повтор после ошибки - платный перезапуск узла в общей цепочке; успех соседнего счётчика её не сбрасывает
     from app.services import restart_chain
     chain_ok, chain_n, chain_cap = restart_chain.charge(project, running.value, "step_failure")
     chain_stop = not chain_ok and total < max_total and not fatal_config
@@ -560,8 +542,6 @@ async def record_step_failure(
                                         "source": "step_failure"}
             project.meta = _m
         elif fatal_config and total < max_total:
-            # Ошибка настройки: повтор её не вылечит, поэтому автоматическое восстановление не открывается
-            # (счётчик ниже порога) и человеку сразу показывается причина.
             fs["abandoned_reason"] = "fatal_config"
             fs.pop("abandoned_threshold", None)
         else:
@@ -589,12 +569,8 @@ async def record_step_failure(
         fs["sleep_until"] = until.isoformat()
         fs["recovery_cycles"] = total // per_cycle
         _save_failure_state(project, fs)
-        # Сначала failed по NodeRun в обеих БД (пока status ещё running-шаг).
-        # state.db часто без fw_* — канвас читает project.db.
         await _fail_active_on_both(session, project, error, err_code)
         # Не откатывать в step.requires (часто enrich_N_ready): при auto_mode
-        # auto_advance сразу уводит проект «назад» (например img_pr → enrich_3_ready → scripting).
-        # Во время сна держим paused; ручной run_step снимает sleep.
         project.status = ProjectStatus.paused
         await session.flush()
         await _push_parked_runtime(session, project)
@@ -642,7 +618,7 @@ async def record_step_failure(
                     node_key=r_meta.get("active_excel_gpt_node_key"),
                     explicit_ui_start=True,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug(
                     "[#{}] soft retry: prepare replica NodeRun failed",
                     project.id,
@@ -653,7 +629,7 @@ async def record_step_failure(
             )
 
         await run_on_replica_project(session, project, _retry_ui)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] soft retry: replica NodeRun/progress sync failed",
             project.id,

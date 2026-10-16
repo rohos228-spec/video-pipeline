@@ -262,10 +262,6 @@ def test_build_assembly_input_chronology() -> None:
     assert [s["id_scene"] for s in scenes] == ["scene_01", "scene_02"]
     assert [f["uuid"] for f in scenes[0]["кадры"]] == ["u1", "u2"]
     assert [f["uuid"] for f in scenes[1]["кадры"]] == ["u3", "u4"]
-    # Хронометраж: SoT = len(закадр)/14 сим/сек, а не duration_seconds из БД
-    # (3.0 в _frame игнорируется) - коммит 2de8f0b0 "SoT timing = VO/14cps";
-    # соседние тесты frame_seconds обновлены там же, этот был пропущен.
-    # Сцена - сумма её кадров: 1.5 + 1.4 (21 и 19 сим.), 1.5 + 1.4 (21 и 20 сим.).
     assert scenes[0]["кадры"][0]["время_сек"] == 1.5
     assert scenes[0]["время_сек"] == 2.9
     assert scenes[0]["кадров"] == 2

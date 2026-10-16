@@ -66,8 +66,8 @@ def _load_sibling(name: str):
     return mod
 
 
-loc = _load_sibling("e2e_action_layer_local_exec")   # Api, Db, Report, scrub_env, server_env, helpers: imported, not edited
-prod = _load_sibling("e2e_media_production_route")   # Gate, FakeOutsee, make_png, env whitelist loader, base checks
+loc = _load_sibling("e2e_action_layer_local_exec")
+prod = _load_sibling("e2e_media_production_route")
 qc = prod.qc
 
 DEFAULT_PORT = 18821
@@ -75,18 +75,18 @@ DEFAULT_FAKE_PORT = 18822
 HARD_CEILING_USD = 1.00
 DEFAULT_MAX_USD = 0.30
 DEFAULT_MAX_REAL_POSTS = 3
-DEFAULT_TARIFF_CREDITS = 10.0          # stand-injected, dry only by default: $0.05 per image attempt (> the real ~$0.03)
-CREDIT_USD = 0.005                     # kie_catalog.CREDIT_USD
-MEDIA_SUBMIT_ESTIMATE_USD = 0.30       # spend_guard.MEDIA_SUBMIT_ESTIMATE_USD (the app's own per-submit estimate)
-LLM_OP_CALL_HIGH_CREDITS = 2.96        # builtin_montage_more.LLM_OP_CALL_HIGH (checked against the code in the tests)
+DEFAULT_TARIFF_CREDITS = 10.0
+CREDIT_USD = 0.005
+MEDIA_SUBMIT_ESTIMATE_USD = 0.30
+LLM_OP_CALL_HIGH_CREDITS = 2.96
 IMAGE_BILLED_ATTEMPTS = 3
 CAP_MARGIN_USD = 0.05
-S2_CEILING_CREDITS = 20.0              # $0.10: an operator ceiling for ONE Outsee image (real price about $0.03)
-S3_CEILING_CREDITS = 40.0              # $0.20 for two frames; only the first one may ever be paid
+S2_CEILING_CREDITS = 20.0
+S3_CEILING_CREDITS = 40.0
 FAKE_DELAY_S3 = 8.0
 SCENARIO_IDS = ("S1", "S2", "S3")
 DRY_SCENARIOS = ("none", "second_submit", "no_stop_on_kill")
-IMAGE_GENERATORS = prod.IMAGE_GENERATORS            # ("gpt_image_2_vip", "nano_banana_2")
+IMAGE_GENERATORS = prod.IMAGE_GENERATORS
 EXIT_PASS, EXIT_FAIL, EXIT_ARGS, EXIT_REFUSED = 0, 1, 2, 3
 VERDICT_PASS_LIVE = "PASS (live: real Outsee requests through the action layer; see the not-proven list)"
 VERDICT_DRY = "DRY OK (loopback fake provider: machinery proven offline, NOT a live proof)"
@@ -97,7 +97,6 @@ HISTORY_FULL = ("plan_created", "approval_created", "approval_consumed", "run_re
                 "step_started", "step_succeeded", "plan_finished")
 
 
-# ───────────────────────────── pure helpers (unit-tested) ─────────────────────────────
 
 def authorisation_problem(max_real_posts: int, max_usd: float) -> str | None:
     """Stand authorisation: a hard ceiling of $1.00 and the production-route rule (posts x $0.10 <= max-usd)."""
@@ -224,7 +223,6 @@ def reality_lists(mode: str, snap: dict) -> dict[str, list[str]]:
     }
 
 
-# ───────────────────────────── fake provider with a delay (parent process) ─────────────────────────────
 
 class SlowFake:
     """prod.FakeOutsee with a per-POST delay so a paid request stays 'in flight' long enough to act on."""
@@ -235,13 +233,13 @@ class SlowFake:
         base_handler = self.inner.httpd.RequestHandlerClass
         outer = self
 
-        class Handler(base_handler):          # type: ignore[misc, valid-type]
-            def do_POST(self):               # noqa: N802
+        class Handler(base_handler):
+            def do_POST(self):
                 if outer.delay_s > 0:
                     time.sleep(outer.delay_s)
                 try:
                     return super().do_POST()
-                except (ConnectionError, OSError):   # the app cancelled its waiting request (stop): not a stand error
+                except (ConnectionError, OSError):
                     return None
 
         self.inner.httpd.RequestHandlerClass = Handler
@@ -254,9 +252,8 @@ class SlowFake:
         return self
 
 
-# ───────────────────────────── seed (child process) ─────────────────────────────
 
-MODEL_IDS = {"nano_banana_2": "nano-banana-2", "gpt_image_2_vip": "gpt-image-2-vip"}   # node modelId (the node overrides the project)
+MODEL_IDS = {"nano_banana_2": "nano-banana-2", "gpt_image_2_vip": "gpt-image-2-vip"}
 IMAGE_PROMPT = prod.IMAGE_PROMPT
 VOICEOVER = prod.VOICEOVER
 
@@ -276,7 +273,9 @@ async def seed_projects(work: Path, scenario: str, generator: str) -> dict:
                      "imageResolution": "1k"}}
     nodes, edges = [node], []
     slug = f"al-paid-{scenario.lower()}-{_uuid.uuid4().hex[:6]}"
+    from app.web.settings_default import seed_default_workflow
     async with session_scope() as session:
+        await seed_default_workflow(session)
         wf = Workflow(name=f"wf-{slug}", is_default=False, nodes=nodes, edges=edges)
         session.add(wf)
         await session.flush()
@@ -316,7 +315,6 @@ def seed_main(argv: list[str]) -> int:
     return 0
 
 
-# ───────────────────────────── server launcher (child process) ─────────────────────────────
 
 def wire_append(path: Path, event: dict) -> None:
     """One durable line (open, write, fsync, close): it must be on disk before the request bytes leave."""
@@ -339,10 +337,10 @@ def serve_main() -> int:
                      fake_port=int(cfg["fake_port"]), phase="main")
     own = socket.gethostname().lower()
     orig = {"connect": socket.socket.connect, "connect_ex": socket.socket.connect_ex, "gai": socket.getaddrinfo}
-    learned_ips: set[str] = set()  # адреса, в которые разрешились РАЗРЕШЁННЫЕ имена (прокси/fake-IP отдают 198.18.x.x)
+    learned_ips: set[str] = set()
 
     def allowed(host) -> bool:
-        if isinstance(host, (bytes, bytearray)):  # anyio/httpx передают имя хоста байтами
+        if isinstance(host, (bytes, bytearray)):
             host = bytes(host).decode("ascii", "ignore")
         h = str(host or "").strip("[]").lower()
         if loc.is_loopback_host(host) or h == own:
@@ -394,7 +392,7 @@ def serve_main() -> int:
     def put(name: str, value) -> None:
         try:
             setattr(settings, name, value)
-        except Exception:  # noqa: BLE001
+        except Exception:
             object.__setattr__(settings, name, value)
 
     blanked = []
@@ -404,10 +402,10 @@ def serve_main() -> int:
                 blanked.append(name)
             put(name, "")
     port = int(cfg["port"])
-    put("vibecode_api_key", qc.SYNTHETIC_KEY)                   # the step builds a text client even for the HTTP image path;
-    put("vibecode_base_url", f"http://127.0.0.1:{port}/v1")     # a chat request would be refused (and counted) by the Gate
+    put("vibecode_api_key", qc.SYNTHETIC_KEY)
+    put("vibecode_base_url", f"http://127.0.0.1:{port}/v1")
     put("gpt_base_url", f"http://127.0.0.1:{port}")
-    key = os.environ.get("AL_PAID_OUTSEE_KEY") or ""            # the ONLY real key the server may hold
+    key = os.environ.get("AL_PAID_OUTSEE_KEY") or ""
     put("outsee_api_key", key)
     put("outsee_api_base_url", cfg["outsee_base"])
     put("image_provider", "outsee")
@@ -422,7 +420,7 @@ def serve_main() -> int:
 
     async def send(client, request, **kwargs):
         if isinstance(getattr(client, "_transport", None), httpx.ASGITransport):
-            return await original_send(client, request, **kwargs)        # in-process ASGI call, no socket
+            return await original_send(client, request, **kwargs)
         host, port, path = request.url.host, request.url.port, request.url.path
         judged = gate.judge(request.method, host, port, path, is_decision=False)
         if judged.action != "pass":
@@ -443,12 +441,12 @@ def serve_main() -> int:
         if judged.kind in ("outsee_get", "paid_post_real"):
             try:
                 gate.learn(response.text)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         return response
 
     async def no_curl_post(*_a, **_k):
-        return None        # the curl submit fallback is a second transport the hook can not count: never used
+        return None
 
     original_download_curl = outsee_http._download_via_curl
 
@@ -472,7 +470,7 @@ def serve_main() -> int:
             result = await real_post(path, body)
             if state["n"] == 0 and "/images/" in str(path):
                 state["n"] = 1
-                await real_post(path, body)         # the extra production-side submit the control must catch
+                await real_post(path, body)
             return result
 
         outsee_http._post_generate = twice
@@ -509,7 +507,7 @@ def server_env(work: Path, port: int, cfg: dict, key: str, dry: bool) -> dict[st
     for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "ASR_BACKEND", "WHISPER_MODEL", "WHISPER_DEVICE",
               "WHISPER_COMPUTE_TYPE", "AL_STAND_PROMPTS"):
         env.pop(k, None)
-    env.update(qc.env_overrides(work / "data", port))       # synthetic text-LLM key + loopback bases (never called)
+    env.update(qc.env_overrides(work / "data", port))
     env.update({
         "AL_PAID_CFG": json.dumps(cfg),
         "SPEND_DAILY_CAP_USD": str(cfg["app_cap_usd"]), "SPEND_PROJECT_CAP_USD": str(cfg["app_cap_usd"]),
@@ -524,7 +522,6 @@ def server_env(work: Path, port: int, cfg: dict, key: str, dry: bool) -> dict[st
     return env
 
 
-# ───────────────────────────── stand (parent process) ─────────────────────────────
 
 class PaidReport(loc.Report):
     def skip(self, name: str, why: str) -> None:
@@ -545,7 +542,6 @@ class Stand:
         self.operator = ""
         self.timeline_sample: list = []
 
-    # --- reads ---
     def wire(self) -> list[dict]:
         return read_wire(self.work / WIRE)
 
@@ -578,7 +574,6 @@ class Stand:
     def ledger_rows(self) -> list[dict]:
         return self.db.q("SELECT id,kind,provider,project_id,run_id,source,usd,credits,note,ref,request_id FROM spend_ledger ORDER BY id")
 
-    # --- plans ---
     def preview(self, steps: list[dict], text: str):
         return self.api.post("/api/action-layer/plans/preview", {"steps": steps, "request_text": text})
 
@@ -631,7 +626,7 @@ class Stand:
         tasks = self.db.q("SELECT event,key,status,run_id FROM provider_task_ledger ORDER BY id") if self.db.has_table("provider_task_ledger") else []
         R.check(f"{sc} {label}: журнал задач провайдера: ровно одно намерение (intent) на платный запрос",
                 sum(1 for r in tasks if r["event"] == "intent") == expect_posts, [(r["event"], r["key"], r["status"]) for r in tasks])
-        if sc != "S1":      # the montage regen path does not use the request-key (idempotency) records
+        if sc != "S1":
             R.check(f"{sc} {label}: запись идемпотентности: ровно одно намерение (intent)",
                     sum(1 for r in idem if r["event"] == "intent") == expect_posts, [(r["event"], r["key"]) for r in idem])
         files = self.scene_files()
@@ -642,17 +637,16 @@ class Stand:
                 with Image.open(p) as im:
                     im.verify()
                 good.append(p)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         R.check(f"{sc} {label}: файл картинки лёг на диск и читается как картинка",
                 len(good) >= 1 and all(p.stat().st_size > 0 for p in good), [(p.name, p.stat().st_size) for p in files])
-        # money
         R.check(f"{sc} {label}: журнал трат содержит резерв слоя (plan:<id>) и строку платного вызова проекта",
                 led["layer_rows"] >= 1 and led["native_rows"] >= 1, led)
         R.check(f"{sc} {label}: B02 строки платного вызова помечены run_id=plan:<id> (а не тиком воркера)",
                 led["native_rows"] >= 1 and led["native_tagged_with_plan"] == led["native_rows"],
                 {"native_run_ids": led["native_run_ids"], "plan": f"plan:{plan_id}"}, known="F09-D4")
-        unknown_priced = bool(led["native_unknown_rows"]) and not led["open_reserve"]  # Outsee: факт честно неизвестен, резерв закрыт
+        unknown_priced = bool(led["native_unknown_rows"]) and not led["open_reserve"]
         R.check(f"{sc} {label}: A11 факт трат слоя записан (cost_actual шага и actual_credits плана не null) "
                 "либо цена провайдера неизвестна и резерв закрыт",
                 (actual_step is not None and view.get("actual_credits") is not None) or unknown_priced,
@@ -668,7 +662,6 @@ class Stand:
         R.check(f"{sc} {label}: потолок плана (action_layer_spend) сходится с журналом слоя",
                 abs(float(view.get("spent_credits") or 0) - led["layer_net_credits"]) <= 0.01,
                 {"spent_credits": view.get("spent_credits"), "ledger_layer_credits": led["layer_net_credits"]})
-        # history
         hist = self.history(plan_id)
         events = [h["event"] for h in hist]
         want = HISTORY_FULL if expect_status == "succeeded" else ("plan_created", "approval_created", "approval_consumed",
@@ -716,7 +709,6 @@ class Stand:
         refused = wire_refused(self.wire())
         R.check(f"{sc} сеть: Gate сервера не отказал ни одному запросу (никаких чужих хостов, LLM, лишних путей)", not refused, refused[:5])
 
-    # --- scenarios ---
     def basis(self) -> dict:
         """montage.get_cost_basis through the API (read plan): effective generator/resolution and whether the layer prices them."""
         code, pv = self.preview([st("montage.get_cost_basis", project_id=self.pid)], f"F09 {self.scenario} cost basis")
@@ -751,7 +743,6 @@ def run_s1(S: Stand) -> dict:
             eff.get("image_generator") == args.image_generator and eff.get("image_resolution") == "1k", eff)
     R.check("S1 базис стоимости: слой честно говорит, что картинка Outsee НЕ оценена (image_priced=false)",
             basis.get("image_priced") is False, {k: basis.get(k) for k in ("image_priced", "image_price_basis")})
-    # queue exactly ONE op for ONE frame (free, local_safe)
     code, pv = S.preview([st("montage.queue_ops", project_id=S.pid, ops=[{"type": "image_regen", "frame_number": 1}])], "F09 S1 queue")
     R.check("S1 очередь: превью queue_ops принято", code == 200 and "plan_id" in (pv or {}), (code, str(pv)[:300]))
     if code == 200:
@@ -765,7 +756,6 @@ def run_s1(S: Stand) -> dict:
             and queue[0].get("frame_number") == 1, queue)
     apply_params = dict(project_id=S.pid, frame_numbers=[1], max_image_ops=1, max_video_ops=0,
                         image_generator=eff.get("image_generator") or args.image_generator, image_resolution="1k")
-    # S1a: as shipped
     tariff_path(work).unlink(missing_ok=True)
     code, pv = S.preview([st("montage.apply_queue", **apply_params)], "F09 S1a as shipped")
     prev = (pv or {}).get("preview") or {}
@@ -789,7 +779,6 @@ def run_s1(S: Stand) -> dict:
     if tariff <= 0:
         R.skip("S1b apply_queue с платным запросом", "тариф не внесён (--inject-tariff-credits 0): платный запуск apply_queue не делается")
         return out
-    # S1b: injected tariff (stand-level), the same plan really runs
     tariff_path(work).write_text(json.dumps({"credits": tariff}), encoding="utf-8")
     out["tariff_credits"] = tariff
     started = S.start_paid("S1b apply_queue (внесённый тариф)", [st("montage.apply_queue", **apply_params)])
@@ -866,7 +855,6 @@ def run_s3(S: Stand) -> dict:
         return out
     plan_id = started["plan_id"]
     out["plan_id"] = plan_id
-    # wait for the first paid request to be IN FLIGHT (sent, no answer yet)
     deadline, in_flight = time.time() + 120, False
     while time.time() < deadline:
         w = S.wire()
@@ -885,8 +873,8 @@ def run_s3(S: Stand) -> dict:
     out["posts_at_kill"] = wire_posts(w_kill)
     view = S.wait_plan(plan_id, float(args.timeout_s))
     out["seconds_to_plan_end"] = round(time.time() - t_kill, 1)
-    time.sleep(4.0)                                        # a late second request would show up now
-    if args.dry:                                           # the fake counts a POST when its delay ends
+    time.sleep(4.0)
+    if args.dry:
         time.sleep(max(0.0, FAKE_DELAY_S3 + 1.0 - (time.time() - t_kill)))
     wire = S.wire()
     R.check("S3 НОВЫХ платных запросов после рубильника нет (счётчик на проводе не вырос)",
@@ -934,7 +922,6 @@ def run_s3(S: Stand) -> dict:
     R.check("S3 резерв закрыт или освобождён после остановки (нет открытого резерва слоя)", not led["open_reserve"],
             {k: led[k] for k in ("reserve_usd", "layer_net_usd", "settle_rows", "native_unknown_rows")})
     S.net_checks()
-    # release + later approved plan
     code, ks = engage_kill(S, False, "F09 stand: снять рубильник после проверки")
     code, st_ks = S.api.get(f"/api/projects/{S.pid}/observations/kill-switch")
     R.check("S3 рубильник снят (active=false)", code == 200 and (st_ks or {}).get("active") is False, (code, st_ks))
@@ -969,7 +956,6 @@ def run_s3(S: Stand) -> dict:
     return out
 
 
-# ───────────────────────────── orchestration ─────────────────────────────
 
 def wait_ready(base: str, proc: subprocess.Popen, seconds: float = 180.0) -> bool:
     return loc.wait_ready(base, proc, seconds)
@@ -1040,7 +1026,7 @@ def run_one(args, scenario: str, root_work: Path, report: PaidReport, result: di
         info["timeline_sample"] = S.timeline_sample
         info["ledger_rows"] = S.ledger_rows()
         info["fake_counts"] = fake.counts() if fake is not None else None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         report.check(f"{scenario}: сценарий дошёл до конца без исключений", False, f"{type(exc).__name__}: {exc}")
         import traceback
         traceback.print_exc()

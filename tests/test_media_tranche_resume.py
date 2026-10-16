@@ -1,10 +1,3 @@
-"""Media tranche: resume-only recovery for paid Kie media, never a second paid submit.
-
-Only the provider boundary is faked (createTask POST, status GET, file download), exactly as in
-test_media_resume_scenarios. Everything else is the real code: kie_http.run_generation, media_resume,
-the retry ladders, the provider_task_ledger, media_recovery.assess / resume_poll and the
-resume-only guard in media_spend. No network, no paid call.
-"""
 import inspect
 import unittest
 from datetime import datetime
@@ -23,14 +16,13 @@ from tests.test_media_resume_scenarios import PID, Env, ProcessDied
 
 
 class ResumeOnlyGuard(Env):
-    """Inside resume_only() no seam may send a new paid request; known tasks still resume."""
 
     async def test_create_task_is_refused_before_any_ledger_row_or_post(self):
         with media_spend.resume_only():
             with self.assertRaises(media_spend.ResumeOnlyBlocked) as cm:
                 await self.gen_image()
         self.assertEqual(self.creates, 0)
-        self.assertEqual(await self.task_rows(), [])  # not even an intent row
+        self.assertEqual(await self.task_rows(), [])
         self.assertTrue(cm.exception.context["no_resubmit"] and cm.exception.context["resume_only"])
         self.assertFalse(cm.exception.context["request_sent"])
 
@@ -75,7 +67,7 @@ class ResumeOnlyGuard(Env):
         with media_spend.resume_only():
             with self.assertRaises(media_spend.ResumeOnlyBlocked):
                 await self.ladder_video()
-        self.assertEqual((self.creates, self.polls), (0, 0))  # no burned attempt, no retry, no rewrite
+        self.assertEqual((self.creates, self.polls), (0, 0))
         self.assertEqual(await self.task_rows(), [])
 
     async def test_ladder_resumes_a_known_task_inside_the_scope(self):
@@ -97,7 +89,7 @@ class ResumeOnlyGuard(Env):
             p.start()
         try:
             with media_spend.resume_only():
-                with self.assertRaises(kie_http.KieTaskPending):  # not ResumeOnlyBlocked: the task is known
+                with self.assertRaises(kie_http.KieTaskPending):
                     await self.ladder_video("clip_001_dd12cd34.mp4")
         finally:
             for p in patches:
@@ -109,13 +101,12 @@ class ResumeOnlyGuard(Env):
         with self.assertRaises(kie_http.KieSubmitUnknownError):
             await self.gen_image()
         with media_spend.resume_only():
-            with self.assertRaises(kie_http.KieSubmitUnknownError):  # begin() answers before any submit
+            with self.assertRaises(kie_http.KieSubmitUnknownError):
                 await self.gen_image(out=self.out("frame_012_66666666.png"))
         self.assertEqual(self.creates, 1)
 
 
 class RestartKeepsTheSameTaskForEveryPaidMediaKey(Env):
-    """Regression: restart during generating_* never creates a second task (hero, items, music, clips)."""
 
     CASES = (("hero_1_v1_ab12cd34.png", "hero_1_v1_99999999.png"),
              ("predmet2_ab12cd34.png", "predmet2_99999999.png"),
@@ -130,7 +121,7 @@ class RestartKeepsTheSameTaskForEveryPaidMediaKey(Env):
                 with self.assertRaises(ProcessDied):
                     await self.gen_image(out=self.out(first))
                 res = await self.gen_image(out=self.out(second))
-                self.assertEqual(self.creates, before + 1)  # one createTask across the restart
+                self.assertEqual(self.creates, before + 1)
                 self.assertEqual(res.gen_id, f"T-{before + 1}")
 
     async def test_polling_timeout_never_creates_a_new_task_for_items_and_music(self):
@@ -185,7 +176,6 @@ class ProjectEnv(Env):
 
 
 class VideosResumeDryRun(ProjectEnv):
-    """videos: restart -> the supervisor resumes the SAME task, downloads, and submits nothing."""
 
     async def test_resume_poll_downloads_the_finished_clip_with_zero_new_requests(self):
         pr = await self.make_project()
@@ -202,9 +192,9 @@ class VideosResumeDryRun(ProjectEnv):
         self.assertEqual(report["new_paid_requests"], 0)
         self.assertEqual(report["resumed"], [{"key": "clip_001", "task_id": "T-1", "outcome": "downloaded",
                                               "error": None}])
-        self.assertEqual(self.creates, 1)  # the only createTask is the original one
+        self.assertEqual(self.creates, 1)
         clips = list((pr.data_dir / "videos").glob("clip_001_*.png"))
-        self.assertEqual(len(clips), 1)  # the fake provider returns image bytes for any download
+        self.assertEqual(len(clips), 1)
         rows = [(r.task_id, r.status) for r in await self.task_rows() if r.task_id == "T-1"]
         self.assertEqual(rows[-1], ("T-1", "downloaded"))
         after = await media_recovery.assess(pr, "videos")
@@ -221,7 +211,7 @@ class VideosResumeDryRun(ProjectEnv):
         report = await media_recovery.resume_poll(pr, "videos")
         self.assertEqual(report["resumed"][0]["outcome"], "pending")
         self.assertEqual(self.creates, 1)
-        res = await self.ladder_video("clip_001_cc12cd34.mp4")  # the native ladder resumes the same task
+        res = await self.ladder_video("clip_001_cc12cd34.mp4")
         self.assertEqual((self.creates, res.gen_id), (1, "T-1"))
 
     async def test_poll_error_during_resume_is_reported_and_never_becomes_a_submit(self):
@@ -271,7 +261,7 @@ class VideosResumeDryRun(ProjectEnv):
                 await self.gen_for("clip_004_ab12cd34.mp4")
             first = await media_recovery.assess(pr, "videos")
             self.assertEqual((first["verdict"]["mode"], first["verdict"]["code"]), ("retry_same", "provably_failed"))
-            with self.assertRaises(kie_http.KieHttpError):  # the one allowed retry also failed
+            with self.assertRaises(kie_http.KieHttpError):
                 await self.gen_for("clip_004_bb12cd34.mp4")
             second = await media_recovery.assess(pr, "videos")
         self.assertEqual((second["verdict"]["mode"], second["verdict"]["code"]), ("denied", "retry_cap_reached"))
@@ -303,7 +293,6 @@ class VideosResumeDryRun(ProjectEnv):
 
 
 class StartupReconcileCoversMediaNodes(ProjectEnv):
-    """Regression: a restart during generating_hero / items / music resumes through the ledger too."""
 
     async def test_reconcile_downloads_into_the_node_folder_without_a_create(self):
         for n, (status, name, folder) in enumerate((

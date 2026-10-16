@@ -1,4 +1,3 @@
-"""Макросы: проверка, подстановка, хранение, видимость, недоступные действия."""
 from __future__ import annotations
 
 import pytest
@@ -6,7 +5,7 @@ import pytest_asyncio
 
 from app.services.action_layer import macros
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env, make_spec  # noqa: F401
+from tests.action_layer_support import env, make_spec
 
 SCHEMA = {"type": "object", "properties": {
     "project_id": {"type": "integer", "minimum": 1}, "n": {"type": "integer", "minimum": 0},
@@ -18,7 +17,7 @@ PARAMS = {"type": "object", "properties": {
 
 
 @pytest_asyncio.fixture
-async def reg(env):  # noqa: F811
+async def reg(env):
     ensure_builtin_actions()
 
     async def noop(ctx, params):
@@ -46,7 +45,6 @@ def errs(steps=None, params=PARAMS, title="Тест", require=True):
 
 def test_valid_macro_passes() -> None:
     ensure_builtin_actions()
-    # Только реальные montage.*: zz.* регистрирует фикстура.
     steps = [{"action_id": "montage.get_board", "params": {"project_id": "{{project_id}}"}}]
     assert errs(steps) == []
 
@@ -93,7 +91,7 @@ def test_expand_substitutes_typed_values_and_omits_optional() -> None:
     assert params["project_id"] == 5 and isinstance(params["project_id"], int)
     op = params["ops"][0]
     assert op["frame_number"] == 3
-    assert op["prompt"] == "кадр 3: {{project_id}}"  # значения повторно не разворачиваются
+    assert op["prompt"] == "кадр 3: {{project_id}}"
     with pytest.raises(macros.MacroError):
         macros.expand(macro, {"project_id": 5}, registry)
     with pytest.raises(macros.MacroError):
@@ -131,12 +129,10 @@ def test_every_builtin_macro_validates_against_real_registry() -> None:
             description_ru=m.description_ru) == [], m.id
         info = m.to_json(registry)
         assert info["available"] is True and info["missing_action_ids"] == [], m.id
-        # Полный набор параметров макроса даёт шаги, валидные по схемам действий.
         params = {k: SAMPLE[k] for k in m.params_schema["properties"]}
         for st in macros.expand(m, params, registry):
             assert registry.validate_params(st["action_id"], st["params"]) == [], (
                 m.id, st["action_id"])
-        # Только обязательные: необязательные поля опускаются и план всё ещё валиден.
         req = {k: SAMPLE[k] for k in m.params_schema.get("required", [])}
         for st in macros.expand(m, req, registry):
             assert registry.validate_params(st["action_id"], st["params"]) == [], (
@@ -175,7 +171,7 @@ async def test_save_get_list_roundtrip_and_visibility(reg) -> None:
     assert saved.id.startswith("user.") and saved.owner == "alice" and saved.shared is False
     assert (await macros.get_macro(saved.id, "alice")).steps[0]["action_id"] == "zz.read"
     with pytest.raises(LookupError):
-        await macros.get_macro(saved.id, "bob")  # по умолчанию виден только владельцу
+        await macros.get_macro(saved.id, "bob")
     assert saved.id in {m.id for m in await macros.list_macros("alice")}
     assert saved.id not in {m.id for m in await macros.list_macros("bob")}
     assert any(m.builtin for m in await macros.list_macros("bob"))
@@ -184,7 +180,6 @@ async def test_save_get_list_roundtrip_and_visibility(reg) -> None:
                                      steps=good_steps(), params_schema=PARAMS, shared=True,
                                      macro_id="user.common")
     assert (await macros.get_macro("user.common", "bob")).shared is True
-    # Обновление только владельцем.
     with pytest.raises(macros.MacroForbidden):
         await macros.save_macro("bob", title_ru="x", description_ru="", steps=good_steps(),
                                 params_schema=PARAMS, macro_id=shared.id)
@@ -222,7 +217,7 @@ async def test_delete_rules(reg) -> None:
     p = await macros.save_macro("alice", title_ru="x", description_ru="", steps=good_steps(),
                                 params_schema=PARAMS)
     with pytest.raises(LookupError):
-        await macros.delete_macro(p.id, "bob")  # чужой приватный: существование не раскрывается
+        await macros.delete_macro(p.id, "bob")
 
 
 async def test_saved_macro_becomes_unavailable_when_action_disappears(reg) -> None:

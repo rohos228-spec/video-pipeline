@@ -1,17 +1,3 @@
-"""Референсы кадра, которые оператор приложил прямо на доске монтажа.
-
-Автоматические рефы (персонажи ячейки, предметы, still VO-родителя) приходят из
-листов и папок проекта — их считает `montage_board._group_refs_for_frames`.
-Здесь — рефы, приложенные руками, двумя путями:
-
-* **приложить готовый** — файл персонажа / предмета, который уже есть в проекте
-  (`characters/`, `items/`): ссылаемся на него, файл не копируем и при
-  отвязке не удаляем;
-* **загрузить новый** — файл + **имя**, которое дальше видно на доске.
-
-Хранение: запись в ``Frame.attrs["ref_manual"]`` (SoT — БД проекта), новый файл
-кладём в ``data/<project>/refs/``.
-"""
 
 from __future__ import annotations
 
@@ -31,7 +17,6 @@ REF_KINDS: dict[str, str] = {
 
 _ATTR_KEY = "ref_manual"
 _IMG_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
-#: Где искать уже готовые рефы проекта: папка → вид рефа.
 _ASSET_DIRS: dict[str, str] = {
     "characters": "character",
     "items": "item",
@@ -62,7 +47,6 @@ def refs_dir(data_dir: Path) -> Path:
 
 
 def manual_refs(frame: Any) -> list[dict[str, Any]]:
-    """Записи рефов кадра как есть (без проверки файлов)."""
     raw = (getattr(frame, "attrs", None) or {}).get(_ATTR_KEY)
     if not isinstance(raw, list):
         return []
@@ -70,7 +54,6 @@ def manual_refs(frame: Any) -> list[dict[str, Any]]:
 
 
 def ref_name(row: dict[str, Any]) -> str:
-    """Имя рефа для доски и промта."""
     for key in ("имя", "name", "описание", "description"):
         text = str(row.get(key) or "").strip()
         if text:
@@ -79,7 +62,6 @@ def ref_name(row: dict[str, Any]) -> str:
 
 
 def manual_ref_paths(data_dir: Path, frame: Any) -> list[Path]:
-    """Файлы рефов кадра для генерации — в порядке добавления."""
     out: list[Path] = []
     for row in manual_refs(frame):
         path = _ref_path(data_dir, row)
@@ -89,7 +71,6 @@ def manual_ref_paths(data_dir: Path, frame: Any) -> list[Path]:
 
 
 def manual_refs_for_board(data_dir: Path, frame: Any) -> list[dict[str, Any]]:
-    """DTO для доски: вид, имя и превью-URL."""
     from app.services.montage_board import _preview_url
 
     out: list[dict[str, Any]] = []
@@ -110,7 +91,6 @@ def manual_refs_for_board(data_dir: Path, frame: Any) -> list[dict[str, Any]]:
 
 
 def hidden_ref_ids(frame: Any) -> list[str]:
-    """Id персонажей/предметов, которые оператор снял с кадра на доске."""
     from app.orchestrator.steps.generate_images import _parse_ref_ids
 
     attrs = getattr(frame, "attrs", None)
@@ -125,11 +105,6 @@ def unlink_scene_ref(
     kind: str,
     ref_id: str,
 ) -> bool:
-    """Убрать авто-реф VO-ячейки (персонаж / предмет) с доски.
-
-    Пишем ``ref_hidden`` на родителя ячейки — так пропадают и id из Excel,
-    не только те, что лежат в attrs кадра. Файлы проекта не трогаем.
-    """
     from app.orchestrator.steps.generate_images import _parse_ref_ids
     from app.services.montage_board import _vo_parent_and_members
     from app.services.vo_shot_expand import _flag_attrs
@@ -213,11 +188,6 @@ def list_ref_assets(
     *,
     names: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Готовые рефы проекта: что лежит в ``characters/`` и ``items/``.
-
-    ``names`` — карта вид → {код: имя} из `Entity`, чтобы на доске был не «c02»,
-    а имя персонажа.
-    """
     from app.services.montage_board import _preview_url
 
     out: list[dict[str, Any]] = []
@@ -244,7 +214,6 @@ def list_ref_assets(
 
 
 def manual_ref_prompt_note(frame: Any) -> str:
-    """Имена ручных рефов для промта: генератор должен знать, что это за файлы."""
     parts: list[str] = []
     for row in manual_refs(frame):
         name = ref_name(row)
@@ -274,7 +243,6 @@ def add_manual_ref(
     content: bytes,
     suffix: str,
 ) -> dict[str, Any]:
-    """Загрузить новый реф кадру: файл + имя, которое видно на доске."""
     text = (name or "").strip()
     if not text:
         raise ValueError("нужно имя рефа: под ним он будет виден на доске")
@@ -311,7 +279,6 @@ def link_ref_asset(
     kind: str = "",
     name: str = "",
 ) -> dict[str, Any]:
-    """Приложить кадру готовый реф проекта — файл остаётся на месте."""
     assets = {a["file"]: a for a in list_ref_assets(data_dir)}
     asset = assets.get((file or "").strip())
     if asset is None:
@@ -332,7 +299,6 @@ def link_ref_asset(
 
 
 def delete_manual_ref(frame: Any, *, data_dir: Path, ref_id: str) -> bool:
-    """Убрать реф кадра. Загруженный файл удаляем, готовый ассет — нет."""
     wanted = (ref_id or "").strip()
     if not wanted:
         return False
@@ -348,7 +314,7 @@ def delete_manual_ref(frame: Any, *, data_dir: Path, ref_id: str) -> bool:
         if path is not None and path.is_file():
             try:
                 path.unlink()
-            except OSError as e:  # noqa: PERF203 — удаление не должно ронять запрос
+            except OSError as e:
                 logger.warning("montage refs: не удалил {}: {}", path, e)
     attrs[_ATTR_KEY] = keep
     frame.attrs = attrs
@@ -398,7 +364,6 @@ def _ref_path(data_dir: Path, row: dict[str, Any]) -> Path | None:
     raw = str(row.get("file") or "").strip()
     if not raw:
         return None
-    # Путь пришёл из БД проекта: не даём вылезти за data_dir.
     if re.match(r"^[a-zA-Z]:[\\/]|^/", raw):
         path = Path(raw)
         try:

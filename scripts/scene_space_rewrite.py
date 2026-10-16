@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""Rewrite scene meaning and rebuild bits/shots.
-
-  python scripts/scene_space_rewrite.py --scene fix:dialogue --meaning "A wins then loses the folder"
-  python scripts/scene_space_rewrite.py --scene p13:s4 --meaning "A wins then loses"
-
-`pN:sM` goes to live `data/state.db`. `fix:*` uses isolated sqlite.
-"""
 
 from __future__ import annotations
 

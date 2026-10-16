@@ -1,9 +1,3 @@
-"""media.list_unknown_outcomes и media.release_unknown: человек снимает блокировку неизвестного исхода.
-
-Без сети и без платных вызовов: журнал задач провайдера - временная БД, ни один провайдер не вызывается.
-Проверяется настоящий путь: схема действия, предпросмотр, разовое серверное подтверждение, исполнитель,
-эндпоинт, сервис, журнал задач и журнал действий (запись до и после).
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -17,7 +11,7 @@ from app.services import kill_switch, media_resume, media_spend, media_unknown, 
 from app.services.action_layer import executor, store
 from app.services.action_layer import planner_rules as rules
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 REASON = "Сверил историю задач и баланс в кабинете: списания по этому ключу не было"
@@ -29,8 +23,7 @@ def _builtin():
 
 
 @pytest.fixture
-def ledger(env, monkeypatch):  # noqa: F811
-    """Журнал задач провайдера живёт в той же временной БД, что и слой действий."""
+def ledger(env, monkeypatch):
     monkeypatch.setattr("app.db.SessionLocal", env.factory)
     monkeypatch.setattr(media_spend, "_enabled", lambda provider: True)
     monkeypatch.setattr(media_spend, "_managed", lambda: False)
@@ -39,10 +32,8 @@ def ledger(env, monkeypatch):  # noqa: F811
 
 async def _intent(env, pid, key, provider="kie", intent_id="aaaa1111", status="submit_unknown", ago_s=0,
                   model="m-1", event="intent"):
-    """Строка журнала так, как её пишут resume (Kie) и outsee_guard (Outsee) перед отправкой."""
     async with env.factory() as s:
         await spend_guard.ensure_task_schema(s)
-        # the ledger is append-only (trigger): an old row is INSERTED with its time, never moved afterwards
         s.add(spend_guard.ProviderTaskLedger(
             project_id=pid, key=key, task_id=spend_guard.intent_task_id(intent_id), provider=provider,
             api="outsee" if provider == "outsee" else "jobs", model=model, event=event, status=status,
@@ -83,13 +74,11 @@ def _release_step(pid, key="clip_005", provider="kie", reason=REASON):
             "params": {"project_id": pid, "key": key, "provider": provider, "reason": reason}}
 
 
-# ------------------------------------------------------------------------------------ каталог
 
 def test_both_actions_are_registered_with_honest_tiers_and_guard_hints() -> None:
     listing, release = registry.get("media.list_unknown_outcomes"), registry.get("media.release_unknown")
     assert (listing.risk, listing.spends_money, listing.destructive) == ("read", False, False)
     assert listing.idempotent and not listing.needs_approval
-    # снятие блокировки открывает платную отправку: самый строгий уровень, подтверждение, не идемпотентно
     assert (release.risk, release.destructive, release.reversible, release.idempotent) == (
         "destructive", True, False, False)
     assert release.needs_approval and release.destructive_effects is not None
@@ -116,17 +105,16 @@ def test_guard_hints_keep_release_only_for_requests_that_name_a_block() -> None:
     assert kept == [] and dropped == ["Снять блокировку неизвестного исхода отправки"]
 
 
-# ------------------------------------------------------------------------------------ чтение
 
 async def test_list_shows_provider_age_window_and_hides_resolved_and_expired(ledger) -> None:
     env = ledger
     pid = await env.add_project(frames=1)
     await _intent(env, pid, "clip_005", "kie", "k1k1k1k1", ago_s=120)
     await _intent(env, pid, "frame_012", "outsee", "o1o1o1o1", ago_s=30)
-    await _intent(env, pid, "clip_006", "kie", "k2k2k2k2")                      # будет разрешён
+    await _intent(env, pid, "clip_006", "kie", "k2k2k2k2")
     await _intent(env, pid, "clip_006", "kie", "k2k2k2k2", status="bound", event="intent_done")
-    await _intent(env, pid, "clip_007", "kie", "k3k3k3k3", ago_s=media_resume.window_s() + 600)  # окно прошло
-    await _intent(env, pid + 99, "clip_005", "kie", "k4k4k4k4")                 # чужой проект
+    await _intent(env, pid, "clip_007", "kie", "k3k3k3k3", ago_s=media_resume.window_s() + 600)
+    await _intent(env, pid + 99, "clip_005", "kie", "k4k4k4k4")
     r = await env.client.get(f"/api/projects/{pid}/media-recovery/unknown-outcomes")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -137,7 +125,6 @@ async def test_list_shows_provider_age_window_and_hides_resolved_and_expired(led
     assert 100 <= kie["age_s"] <= 400 and kie["window_s"] == media_resume.window_s() and kie["may_be_billed"] is True
     assert kie["intent_ids"] == ["intent:k1k1k1k1"] and kie["blocked_until"] > kie["first_at"]
     assert (await env.client.get(f"/api/projects/{pid + 500}/media-recovery/unknown-outcomes")).status_code == 404
-    # путь не читается как тип ноды
     assert (await env.client.get(f"/api/projects/{pid}/media-recovery/publish")).status_code == 404
 
 
@@ -161,7 +148,6 @@ async def test_list_is_empty_when_the_resume_window_is_off(ledger, monkeypatch) 
     assert body["blocked"] == [] and body["window_enabled"] is False
 
 
-# ------------------------------------------------------------------------------------ снятие
 
 async def test_release_needs_the_one_time_server_approval_and_shows_the_second_charge_warning(ledger) -> None:
     env = ledger
@@ -172,12 +158,10 @@ async def test_release_needs_the_one_time_server_approval_and_shows_the_second_c
     assert preview["needs_approval"] is True and preview["risk_max"] == "destructive"
     effect = preview["destructive_effects"][0]["text"]
     assert "ВТОРОЕ СПИСАНИЕ" in effect and "Outsee" in effect and "сверки" in effect
-    # без подтверждения не запускается и ничего не меняет
     refused = await env.client.post(f"{BASE}/plans/{plan_id}/run")
     assert refused.status_code == 403 and refused.json()["detail"]["code"] == "approval_required"
     assert [b["key"] for b in (await media_unknown.list_unknown(pid))["blocked"]] == ["frame_012"]
     assert await _history(env) == []
-    # подтверждение разовое
     plan = await _run(env, plan_id)
     assert plan["status"] == "succeeded", plan
     result = plan["steps"][0]["result"]
@@ -203,7 +187,6 @@ async def test_the_audit_rows_carry_reason_actor_plan_before_and_after(ledger) -
         assert row.actor == "local_web_operator"
         assert row.params["reason"] == REASON and row.params["key"] == "clip_005" and row.params["provider"] == "kie"
     assert rows[1].params["released"] == 1 and rows[1].params["second_charge_possible"] is True
-    # запись журнала действий неизменяема (триггер)
     from sqlalchemy.exc import DatabaseError
     async with env.factory() as s:
         row = (await s.scalars(select(store.ActionHistory).where(store.ActionHistory.event == "media_release_unknown"))).one()
@@ -221,13 +204,12 @@ async def test_kie_release_resolves_only_kie_intents_and_the_outsee_block_of_the
     assert out["released"] == 1 and out["provider"] == "kie"
     left = (await media_unknown.list_unknown(pid))["blocked"]
     assert [(r["key"], r["provider"]) for r in left] == [("clip_005", "outsee")]
-    # живой защитник Outsee по-прежнему блокирует тот же ключ
     ctx = outsee_guard.Ctx(pid, "clip_005", "m", "video", "ph")
     with pytest.raises(OutseeSubmitUnknownError):
         await outsee_guard.begin(ctx)
     out = await media_unknown.release(pid, "clip_005", "outsee", reason=REASON, actor="op")
     assert out["released"] == 1
-    await outsee_guard.begin(ctx)  # блокировки больше нет: повторная отправка допускается
+    await outsee_guard.begin(ctx)
     assert (await media_unknown.list_unknown(pid))["blocked"] == []
 
 
@@ -289,7 +271,7 @@ async def test_endpoint_refuses_under_the_kill_switch_and_for_a_busy_project_and
     await kill_switch.set_state(env.factory, active=False, actor="operator", rationale="emergency stop off")
     missing = await env.client.post(url, json={**body, "key": "clip_099"})
     assert missing.status_code == 409 and missing.json()["detail"]["code"] == "not_blocked"
-    assert (await _history(env))[-1].outcome == "refused"  # отказ тоже в журнале
+    assert (await _history(env))[-1].outcome == "refused"
     ok = await env.client.post(url, json=body, headers={"X-Action-Layer-Operator": "web_operator:abc"})
     assert ok.status_code == 200 and ok.json()["released"] == 1 and ok.json()["approved_by"] == "web_operator:abc"
     again = await env.client.post(url, json=body)
@@ -305,7 +287,7 @@ async def test_the_approver_in_the_audit_is_the_operator_of_the_approval_not_a_p
     await _status(env, pid, "paused")
     await _intent(env, pid, "clip_005", "kie")
     step = _release_step(pid)
-    step["params"]["approved_by"] = "someone-else"  # такого параметра нет: схема его не принимает
+    step["params"]["approved_by"] = "someone-else"
     assert (await env.client.post(f"{BASE}/plans/preview", json={"steps": [step]})).status_code == 422
     plan_id, _ = await _plan(env, [_release_step(pid)])
     approved = await env.client.post(f"{BASE}/plans/{plan_id}/approve",

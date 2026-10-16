@@ -1,10 +1,3 @@
-"""beforeReadFile + preToolUse(Write|Delete): защита секретов и артефактов.
-
-- чтение/запись .env*, ключей, browser_profile — deny;
-- запись в web/out/** — deny (собирается scripts/bump_studio_version.py);
-- запись в .git/ — deny;
-- удаление внутри data/ — deny (там state.db и медиа проекта).
-"""
 from __future__ import annotations
 
 import json
@@ -12,7 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from vp_common import is_secret_path, log, project_root, read_input, respond  # noqa: E402
+from vp_common import is_secret_path, log, project_root, read_input, respond
 
 PATH_KEYS = ("file_path", "path", "target_file", "filePath", "target", "file")
 

@@ -1,7 +1,3 @@
-"""W1-1 (A01, A03): диск и логи. Юнит и сухой прогон, без сети и без реальных данных.
-
-Файл назван ``*_test.py``, чтобы pytest его собирал при префиксе ``w1_1_``.
-"""
 
 from __future__ import annotations
 
@@ -59,7 +55,6 @@ def _mkdir_aged(root: Path, name: str, age_h: float, payload: int = 100) -> Path
     return d
 
 
-# ----------------------------------------------------------------- check()
 
 
 def test_check_ok_low_critical_paid_and_free(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -88,15 +83,12 @@ def test_check_thresholds_from_env_and_args(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setenv("DISK_GUARD_LOW_FREE_GB", "25")
     res = disk_guard.check(tmp_path)
     assert not res.allowed and res.level == "low"
-    monkeypatch.setenv("DISK_GUARD_CRITICAL_FREE_GB", "21,5")  # запятая допустима
+    monkeypatch.setenv("DISK_GUARD_CRITICAL_FREE_GB", "21,5")
     assert disk_guard.check(tmp_path).level == "critical"
-    # явные аргументы сильнее окружения
     assert disk_guard.check(tmp_path, low_free_gb=5, critical_free_gb=1).allowed
-    # мусор в окружении: значения по умолчанию
     monkeypatch.setenv("DISK_GUARD_LOW_FREE_GB", "abc")
     monkeypatch.delenv("DISK_GUARD_CRITICAL_FREE_GB")
     assert disk_guard.thresholds_bytes() == (10 * GB, 3 * GB)
-    # критичный не может быть выше низкого
     assert disk_guard.thresholds_bytes(2, 9) == (2 * GB, 2 * GB)
 
 
@@ -107,7 +99,7 @@ def test_check_unknown_when_usage_fails(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setattr(shutil, "disk_usage", boom)
     res = disk_guard.check(tmp_path / "ещё" / "нет")
     assert (not res.allowed) and res.level == "unknown" and "не удалось измерить" in res.reason
-    assert disk_guard.check(tmp_path / "ещё" / "нет", paid=False).allowed  # бесплатный запуск проходит
+    assert disk_guard.check(tmp_path / "ещё" / "нет", paid=False).allowed
     assert disk_guard.debug_allowed(tmp_path) is True
 
 
@@ -123,7 +115,6 @@ def test_check_uses_nearest_existing_parent(monkeypatch: pytest.MonkeyPatch, tmp
     assert seen == [str(tmp_path)]
 
 
-# --------------------------------------------------------- pid-* (A01, U)
 
 
 def test_cleanup_three_old_dead_dirs_removed_fresh_stays(tmp_path: Path) -> None:
@@ -152,7 +143,6 @@ def test_cleanup_never_touches_alive_own_or_foreign_names(tmp_path: Path) -> Non
 
 
 def test_cleanup_real_dead_pid_and_real_alive_pid(tmp_path: Path) -> None:
-    """Без подмены alive_fn: настоящий мёртвый PID удаляется, живой (этот процесс-родитель) нет."""
     temp = tmp_path / "temp"
     dead = _dead_pid()
     d_dead = _mkdir_aged(temp, f"pid-{dead}", age_h=50)
@@ -160,7 +150,7 @@ def test_cleanup_real_dead_pid_and_real_alive_pid(tmp_path: Path) -> None:
     assert disk_guard.pid_alive(os.getpid()) is True
     res = disk_guard.cleanup_stale_pid_temp(temp, max_age_h=6)
     assert not d_dead.exists()
-    assert d_alive.exists() or os.getppid() == dead  # родитель жив, пока идёт тест
+    assert d_alive.exists() or os.getppid() == dead
     assert res.removed >= 1
 
 
@@ -189,7 +179,6 @@ def test_cleanup_missing_root_is_noop(tmp_path: Path) -> None:
     assert disk_guard.cleanup_pytest_temp(tmp_path / "нет").removed == 0
 
 
-# ------------------------------------------------------------ pytest-of-*
 
 
 def test_cleanup_pytest_of_removes_old_runs_keeps_fresh_and_protected(tmp_path: Path) -> None:
@@ -213,7 +202,6 @@ def test_cleanup_pytest_of_drops_empty_root(tmp_path: Path) -> None:
     assert not (temp / "pytest-of-user").exists()
 
 
-# ----------------------------------------------------------------- ротация
 
 
 def test_rotate_file_shifts_and_caps_backups(tmp_path: Path) -> None:
@@ -237,8 +225,7 @@ def test_rotate_file_zero_backups_truncates(tmp_path: Path) -> None:
 
 
 def test_append_rotating_sum_below_ceiling(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """U A03: малый лимит, сумма всех файлов не выше (копии + 1) * (лимит + строка)."""
-    monkeypatch.setenv("LOG_FILE_MAX_MB", "0.002")  # ~2 КБ
+    monkeypatch.setenv("LOG_FILE_MAX_MB", "0.002")
     monkeypatch.setenv("LOG_FILE_BACKUPS", "2")
     log = tmp_path / "logs" / "status.log"
     line = "строка-лога " + "z" * 80
@@ -249,7 +236,7 @@ def test_append_rotating_sum_below_ceiling(monkeypatch: pytest.MonkeyPatch, tmp_
     assert {f.name for f in files} <= {"status.log", "status.log.1", "status.log.2"}
     total = sum(f.stat().st_size for f in files)
     assert total <= (backups + 1) * (limit + len(line.encode()) + 2)
-    assert total < 500 * len(line.encode()) / 5  # фактически срезано
+    assert total < 500 * len(line.encode()) / 5
 
 
 def test_append_rotating_adds_newline_and_utf8(tmp_path: Path) -> None:
@@ -270,7 +257,7 @@ def test_enforce_total_cap_deletes_oldest_first_and_respects_protect(tmp_path: P
         tmp_path, max_total_bytes=250, patterns=("*.log",), protect=[tmp_path / "old.log"]
     )
     left = sorted(p.name for p in tmp_path.iterdir())
-    assert "old.log" in left  # защищён
+    assert "old.log" in left
     assert res.removed == 2 and sum(p.stat().st_size for p in tmp_path.iterdir()) <= 200 + 100
     assert "new.log" in left or "live.log" in left
 
@@ -286,7 +273,6 @@ def test_enforce_total_cap_age_limit(tmp_path: Path) -> None:
     assert res.removed == 1 and not a.exists() and b.exists()
 
 
-# ------------------------------------------------------------------ VACUUM
 
 
 def test_vacuum_sqlite_shrinks_file(tmp_path: Path) -> None:
@@ -317,7 +303,6 @@ def test_vacuum_refused_without_free_space(monkeypatch: pytest.MonkeyPatch, tmp_
     assert not ok and "Не хватает места" in msg
 
 
-# ------------------------------------------------------------ housekeeping
 
 
 def test_housekeeping_dry_run_on_data_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -329,7 +314,6 @@ def test_housekeeping_dry_run_on_data_tree(tmp_path: Path, monkeypatch: pytest.M
     old_pid = _mkdir_aged(temp, f"pid-{dead}", age_h=24, payload=300)
     fresh_pid = _mkdir_aged(temp, "pid-930001", age_h=0.1)
     old_py = _mkdir_aged(temp / "pytest-of-u", "pytest-1", age_h=48, payload=300)
-    # backend логи: общий остаётся всегда, старые сессионные уходят по сроку
     data.mkdir(exist_ok=True)
     (data / "backend.log").write_bytes(b"s" * 100)
     old_sess = data / "backend-111.log"
@@ -337,11 +321,9 @@ def test_housekeeping_dry_run_on_data_tree(tmp_path: Path, monkeypatch: pytest.M
     os.utime(old_sess, (time.time() - 30 * 86400,) * 2)
     new_sess = data / "backend-222.log"
     new_sess.write_bytes(b"n" * 100)
-    # logs/ ротация
     monkeypatch.setenv("LOG_FILE_MAX_MB", "0.002")
     monkeypatch.setenv("LOG_FILE_BACKUPS", "1")
     (logs / "errors.log").write_bytes(b"e" * 5000)
-    # монитор: суммарный потолок
     monkeypatch.setenv("MONITOR_TOTAL_CAP_MB", "0")
     mon = data / "monitor" / "logs"
     mon.mkdir(parents=True)
@@ -388,12 +370,10 @@ def test_housekeeping_timer_starts_once_and_runs(monkeypatch: pytest.MonkeyPatch
         disk_guard.stop_housekeeping_timer()
 
 
-# ------------------------------------------------------------ bootstrap_env
 
 
 @pytest.fixture
 def isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """apply_nvidia_env меняет os.environ и tempfile глобально: возвращаем всё как было."""
     snapshot = dict(os.environ)
     old_tempdir = tempfile.tempdir
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
@@ -413,10 +393,10 @@ def test_bootstrap_temp_root_outside_data_under_pytest(isolated_env, tmp_path: P
     temp = Path(os.environ["TEMP"])
     assert temp.name == f"pid-{os.getpid()}"
     assert Path(tempfile.gettempdir()) == temp
-    assert data.resolve() not in temp.resolve().parents  # pytest basetemp вне data/.cache
+    assert data.resolve() not in temp.resolve().parents
     assert (tmp_path / "localappdata" / "video-pipeline-temp") == temp.parent
     assert not (cache / "temp" / f"pid-{os.getpid()}").exists()
-    assert (cache / "huggingface" / "hub").is_dir()  # HF/NeMo кэш остался в data/.cache
+    assert (cache / "huggingface" / "hub").is_dir()
 
 
 def test_bootstrap_vp_temp_root_override(isolated_env, tmp_path: Path, monkeypatch) -> None:
@@ -465,10 +445,9 @@ def test_bootstrap_startup_cleanup_swallows_errors(isolated_env, tmp_path: Path,
     monkeypatch.setattr(disk_guard, "cleanup_stale_pid_temp", boom)
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("VP_TEMP_ROOT", str(tmp_path / "ext"))
-    bootstrap.apply_nvidia_env(force=True)  # не падает
+    bootstrap.apply_nvidia_env(force=True)
 
 
-# --------------------------------------------------------- nvidia_asr_env
 
 
 def test_nvidia_env_clear_stale_pid_temp_dirs(tmp_path: Path) -> None:
@@ -499,7 +478,6 @@ def test_nvidia_env_configure_runs_pid_cleanup(tmp_path: Path, monkeypatch: pyte
         tempfile.tempdir = old_tempdir
 
 
-# ------------------------------------------------------- логи ботов и статусов
 
 
 def test_status_log_rotation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -525,7 +503,7 @@ def test_status_log_write_error_does_not_raise(monkeypatch: pytest.MonkeyPatch, 
         raise OSError("диск полон")
 
     monkeypatch.setattr(nsm, "append_rotating", deny)
-    nsm._write_status_log("x")  # логирует предупреждение, не падает
+    nsm._write_status_log("x")
 
 
 @pytest.mark.parametrize(
@@ -555,7 +533,6 @@ def test_bot_errors_log_rotates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     assert f"bot={bot}" in last and "kind=timeout" in last and "ошибка номер 299" in last
 
 
-# ----------------------------------------------------------------- log_sink
 
 
 @pytest.fixture
@@ -597,7 +574,7 @@ def test_log_sink_debug_off_when_disk_low(sink_env, monkeypatch: pytest.MonkeyPa
 
 
 def test_log_sink_events_rotate_by_size_and_day(sink_env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("MONITOR_EVENTS_MAX_MB", "1")  # минимум 1 МБ: подменим предел напрямую
+    monkeypatch.setenv("MONITOR_EVENTS_MAX_MB", "1")
     monkeypatch.setattr(
         sink_env, "sink_limits", lambda: {
             "rotation_bytes": disk_guard.MB, "retention": "3 days", "retention_days": 3,
@@ -612,7 +589,6 @@ def test_log_sink_events_rotate_by_size_and_day(sink_env, monkeypatch: pytest.Mo
     events = sorted(p.name for p in (mon / "events").iterdir())
     today = [n for n in events if n.endswith(".jsonl") or ".jsonl." in n]
     assert any(".jsonl.1" in n for n in today) and len(today) <= 3
-    # смена суток: новая запись идёт в файл новой даты, старый не трогается
     old_day_file = mon / "events" / "events_2000-01-01.jsonl"
     old_day_file.write_text('{"event":"old"}\n', encoding="utf-8")
     sink_env._events_day = "2000-01-01"
@@ -642,7 +618,7 @@ def test_log_sink_total_cap_keeps_sum_below_ceiling(sink_env, monkeypatch: pytes
     removed = sink_env.enforce_monitor_cap(mon)
     left = [p for p in mon.rglob("*") if p.is_file()]
     assert removed == 7 and sum(p.stat().st_size for p in left) <= 3500
-    assert {p.name for p in left} == {"f7.jsonl", "f8.jsonl", "f9.jsonl"}  # новые остались
+    assert {p.name for p in left} == {"f7.jsonl", "f8.jsonl", "f9.jsonl"}
 
 
 def test_log_sink_write_error_does_not_raise(sink_env, tmp_path: Path) -> None:
@@ -659,10 +635,9 @@ def test_log_sink_write_error_does_not_raise(sink_env, tmp_path: Path) -> None:
             pass
 
     sink_env._events_file = Broken()
-    sink_env.emit_event("x")  # событие теряется, процесс жив
+    sink_env.emit_event("x")
 
 
-# ------------------------------------------------------------ run-backend.ps1
 
 _PS1 = Path(__file__).resolve().parent.parent / "scripts" / "run-backend.ps1"
 
@@ -687,7 +662,6 @@ def test_run_backend_ps1_has_rotation_and_cap() -> None:
 
 @pytest.mark.skipif(_powershell() is None, reason="нет PowerShell")
 def test_run_backend_ps1_rotation_block_runs_in_powershell(tmp_path: Path) -> None:
-    """D: настоящий блок ротации из скрипта на файлах в tmp_path."""
     d = tmp_path / "data"
     d.mkdir()
     shared = d / "backend.log"
@@ -716,10 +690,10 @@ def test_run_backend_ps1_rotation_block_runs_in_powershell(tmp_path: Path) -> No
         capture_output=True, text=True, timeout=120,
     )
     assert proc.returncode == 0, proc.stderr
-    assert (d / "backend.log.1").exists() and not shared.exists()  # общий лог ротирован
-    assert cur.exists() and not old.exists()  # текущий цел, просроченный удалён
+    assert (d / "backend.log.1").exists() and not shared.exists()
+    assert cur.exists() and not old.exists()
     remaining = [f for f in d.iterdir() if f.is_file()]
     total_deletable = sum(f.stat().st_size for f in remaining if f.name not in ("backend.log", cur.name))
-    assert total_deletable + cur.stat().st_size <= 5600  # суммарный потолок соблюдён
-    assert not mids[0].exists() and mids[2].exists()  # старые удалены первыми
+    assert total_deletable + cur.stat().st_size <= 5600
+    assert not mids[0].exists() and mids[2].exists()
     assert "REMOVED=" in proc.stdout

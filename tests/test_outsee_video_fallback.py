@@ -214,5 +214,4 @@ async def test_generate_video_sanitizes_triggers_during_primary_rewrites(
     assert "зарин" not in prompts[-1].lower()
 
 
-# Env: нужен хотя бы фиктивный ключ провайдера (см. tests/conftest.py::fake_provider_keys).
 pytestmark = pytest.mark.usefixtures("fake_provider_keys")

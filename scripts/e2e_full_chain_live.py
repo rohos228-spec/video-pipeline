@@ -73,7 +73,7 @@ def _load_sibling(name: str):
     return mod
 
 
-fc = _load_sibling("e2e_full_chain")      # Chain, Report, gather, helpers, status tables
+fc = _load_sibling("e2e_full_chain")
 loc = fc.loc
 scan = fc.scan
 
@@ -81,7 +81,6 @@ EXIT_PASS, EXIT_FAIL, EXIT_ARGS = fc.EXIT_PASS, fc.EXIT_FAIL, fc.EXIT_ARGS
 DEFAULT_PORT = 18851
 DEFAULT_ASR = "medium"
 
-# ───────────────────────────── keys: whitelisted loader, nothing printed ─────────────────────────────
 
 ENV_NAMES = ("VIBECODE_API_KEY", "VIBECODE_BASE_URL", "GPT_API_KEY", "GPT_BASE_URL", "GPT_RELAY_TOKEN", "GPT_PROXY_URL",
              "KIE_API_KEY", "KIE_API_BASE_URL", "OUTSEE_API_KEY", "OUTSEE_API_BASE_URL", "ELEVENLABS_API_KEY")
@@ -123,18 +122,13 @@ def url_problem(name: str, value: str) -> str | None:
     return None
 
 
-# ───────────────────────────── what a run needs and what it costs ─────────────────────────────
 
 PROVIDER_CHOICES = {"text": ("vibecode", "kie"), "image": ("outsee", "kie"), "video": ("outsee", "kie")}
-# image 0.25 = замер Outsee (LIVE_RUNS 10.10); llm_request 0.05 = замеры 14.10 (0.02-0.09 за запуск из 2-3 запросов); потолок текста $2 на прогоне остаётся жёстким.
-# Conservative per-request prices of THIS stand (owner-unconfirmed estimates, same spirit as the application's own
-# uncalibrated constants); they are used for the pre-start estimate and for rows of unknown cost in the ledger check.
 PRICE = {"llm_request": 0.05, "image": 0.25, "video": 0.40, "tts_per_char": 0.0003, "sfx_per_sec": 0.012, "sfx_seconds": 4.0,
          "music": 0.60}
-UNKNOWN_ROW_USD = {"text": 0.05, "media": 0.30}      # = spend_guard.DEFAULT_REQUEST_ESTIMATE_USD / UNKNOWN_ROW_ESTIMATE_USD
+UNKNOWN_ROW_USD = {"text": 0.05, "media": 0.30}
 RETRY_FACTOR = {"image": 2, "video": 2, "sfx": 3, "tts": 2, "llm": 2}
 MAX_TEXT_CEILING, MAX_MEDIA_CEILING, MAX_FRAMES = 2.0, 1.0, 5
-# Выше этих пределов только по явному слову владельца в командной строке (владелец 14.10.2026: до $6 медиа и 10 кадров на живой F10).
 OWNER_MEDIA_CEILING_LIMIT, OWNER_FRAMES_LIMIT = 6.0, 10
 FORBIDDEN_MODEL_RE = re.compile(r"seedance[-_ /.]?2[-_.]?5", re.I)
 TEXT_PROVIDERS = {"vibecode", "gpt", "llm"}
@@ -143,7 +137,6 @@ TEXT_PROVIDERS = {"vibecode", "gpt", "llm"}
 
 LENIENT_NAME = "stand_lenient"
 _LENIENT_RULES = (
-    # (what the strict builtin template says, what the stand-only copy says instead)
     (re.compile(r"Не одобряй автоматически\.[^\n]*"),
      "Оценивай по существу и честно: придирки к стилю и мелкие недочёты не причина для отказа. Формат ответа не меняется."),
     (re.compile(r"Любой критерий = fail → `regen`\."),
@@ -208,11 +201,11 @@ def estimate(args) -> dict:
     """Paid requests and a conservative USD estimate of THIS run, before anything starts."""
     n, lvl = int(args.frames), fc.level_index(args.until)
     group = getattr(args, "prompt_group", None)
-    llm = fc.expected_llm_calls(args.until, n, 0, group)       # with a group n is the CAP of the final frame count (upper bound)
+    llm = fc.expected_llm_calls(args.until, n, 0, group)
     if not args.with_music:
-        llm.pop("music_prompt", None)           # music comes from disk: no prompt request, no Suno
+        llm.pop("music_prompt", None)
     if not args.with_sfx:
-        llm.pop("sfx_plan", None)               # SFX_ENABLED=false: sfx_plan is a pass-through
+        llm.pop("sfx_plan", None)
     n_llm = sum(llm.values())
     sfx_events = int(args.sfx_max_events) if (args.with_sfx and lvl >= 3) else 0
     req = {"llm": n_llm, "image": n if lvl >= 1 else 0, "video": n if lvl >= 2 else 0, "tts": 1 if lvl >= 3 else 0,
@@ -224,7 +217,6 @@ def estimate(args) -> dict:
     text_usd = round(n_llm * PRICE["llm_request"], 4)
     media_usd = round(sum(media.values()), 4)
     worst_media = round(sum(media[k] * RETRY_FACTOR.get(k, 1) for k in media), 4)
-    # video start frames (level C) + with a group one reference upload per shot child image (at most frames - 1 children)
     uploads = (n if lvl >= 2 else 0) + (max(0, n - 1) if group and lvl >= 1 else 0)
     return {"frames": n, "until": args.until, "requests": req, "llm_by_node": llm, "text_usd": text_usd,
             "media_usd": media_usd, "media_breakdown": media, "worst_case_text_usd": round(text_usd * RETRY_FACTOR["llm"], 4),
@@ -275,7 +267,6 @@ def video_extra(args) -> dict:
     return extra
 
 
-# ───────────────────────────── the child's send hook (pure judgement, unit-tested) ─────────────────────────────
 
 PAID_BUCKETS = ("llm", "outsee_image", "outsee_video", "tts", "sfx", "kie_music", "kie_media")
 
@@ -353,12 +344,12 @@ def live_settings_plan(cfg: dict, env: dict) -> dict[str, Any]:
         "elevenlabs_api_key": "stand-local-tts" if cfg.get("local_tts_port") else env.get("ELEVENLABS_API_KEY", ""), "elevenlabs_proxy_url": None,
         "sfx_enabled": bool(cfg["with_sfx"]), "social_publish_enabled": False, "media_spend_recording": True,
         "images_allow_hollow_prompts": bool(cfg.get("allow_hollow")),
-        "outsee_allow_public_image_hosts": True,   # синтетический проект стенда без Yandex S3; боевой умолчательный запрет не трогаем
+        "outsee_allow_public_image_hosts": True,
         "browser_cdp_url": "http://127.0.0.1:9", "browser_cdp_auto_recover": False, "outsee_http_fallback_cdp": False,
         "spend_daily_cap_usd": float(cfg["app_cap_usd"]), "spend_project_cap_usd": float(cfg["app_cap_usd"]),
         "spend_run_cap_usd": float(cfg["app_cap_usd"]),
     }
-    if text == "vibecode":           # parity with the dry stand: the shared gpt_* route points at the same service
+    if text == "vibecode":
         plan["gpt_api_key"] = env.get("VIBECODE_API_KEY", "")
         plan["gpt_base_url"] = re.sub(r"/v1$", "", vb)
     else:
@@ -382,7 +373,7 @@ def install_live_hook(cfg: dict) -> None:
         host = (request.url.host or "").lower()
         try:
             body = request.content
-        except Exception:  # noqa: BLE001 - a streamed body is unknown to the model check
+        except Exception:
             body = None
         with lock:
             action, bucket, reason = judge_request(request.method, host, request.url.scheme, request.url.path, body, counts,
@@ -391,7 +382,7 @@ def install_live_hook(cfg: dict) -> None:
             fc.wire_append(wire, {"event": "refused", "host": host, "method": request.method, "path": request.url.path,
                                   "bucket": bucket, "reason": reason})
             raise RuntimeError(f"stand: request refused ({reason}, {bucket})")
-        if bucket not in ("download", "outsee_free", "kie_free", "other") and not (bucket == "tts" and loc.is_loopback_host(host)):   # --local-tts: not a paid request
+        if bucket not in ("download", "outsee_free", "kie_free", "other") and not (bucket == "tts" and loc.is_loopback_host(host)):
             fc.wire_append(wire, {"event": "request", "bucket": bucket, "method": request.method, "host": host,
                                   "path": request.url.path, "model": model_of(body) if bucket in PAID_BUCKETS else ""})
         return await original_send(client, request, **kwargs)
@@ -400,7 +391,7 @@ def install_live_hook(cfg: dict) -> None:
     from app.bots import outsee_http
 
     async def no_curl_post(*_a, **_k):
-        return None        # the curl submit fallback is a second transport the hook could not count
+        return None
 
     outsee_http._post_generate_via_curl = no_curl_post
 
@@ -448,18 +439,17 @@ def child_live_main() -> int:
     for name, value in live_settings_plan(cfg, os.environ).items():
         try:
             setattr(settings, name, value)
-        except Exception:  # noqa: BLE001
+        except Exception:
             object.__setattr__(settings, name, value)
     if cfg.get("local_tts_port"):
         from app.services import elevenlabs_api
         elevenlabs_api.ELEVENLABS_API_BASE_URL = f"http://127.0.0.1:{int(cfg['local_tts_port'])}/v1"
     install_live_hook(cfg)
-    fc.keep_group_report_out_of_repo(Path(cfg["work"]))      # the group's report node would write <repo>/exports/*.html
+    fc.keep_group_report_out_of_repo(Path(cfg["work"]))
     runpy.run_module("app.main", run_name="__main__", alter_sys=True)
     return 0
 
 
-# ───────────────────────────── ledger: the fact of the spend ─────────────────────────────
 
 def row_class(r: dict) -> str:
     prov = str(r.get("provider") or "").lower()
@@ -518,7 +508,6 @@ class DeadApi:
     get = post = req
 
 
-# ───────────────────────────── checks ─────────────────────────────
 
 FILE_KINDS_BY_LEVEL = {"scene_image": "B", "scene_video": "C", "audio": "D", "final_video": "E"}
 
@@ -546,7 +535,7 @@ def artifact_problems(arts: list[dict], until: str) -> list[str]:
 
 
 def run_checks_live(chain, ev, args, work: Path, R, human_final: bool, caps: dict, ceilings: tuple[float, float],
-                    repo_data_before) -> dict:  # noqa: C901
+                    repo_data_before) -> dict:
     until, pid = args.until, chain.pid
     seen = [e["status"] for e in chain.status_log]
     final_ok = bool(ev.final_probe.get("has_video") and ev.final_probe.get("has_audio"))
@@ -580,7 +569,6 @@ def run_checks_live(chain, ev, args, work: Path, R, human_final: bool, caps: dic
         repo_html = ROOT / "exports" / f"{chain.slug}-shots-report.html"
         R.check("отчёт группы не записан в exports/ репозитория", not repo_html.exists(), str(repo_html))
 
-    # --- providers: ceilings, not exact numbers ---
     wc = fc.wire_counts(ev.wire)
     for bucket in fc.wire_counts(ev.wire):
         if bucket in caps:
@@ -592,7 +580,6 @@ def run_checks_live(chain, ev, args, work: Path, R, human_final: bool, caps: dic
     forbidden = [e for e in ev.wire if e.get("event") == "request" and FORBIDDEN_MODEL_RE.search(str(e.get("model") or ""))]
     R.check("Seedance 2.5 не вызывался", not forbidden, len(forbidden))
 
-    # --- no second payment for the same request key ---
     intents = [r for r in ev.idem if r["event"] == "intent"]
     keys = [r["key"] for r in intents]
     R.check("Outsee: ключи намерений (intent) не повторяются", len(keys) == len(set(keys)), len(keys) - len(set(keys)))
@@ -613,7 +600,6 @@ def run_checks_live(chain, ev, args, work: Path, R, human_final: bool, caps: dic
     R.check("spend_ledger: нет строк чужого проекта", led["other_project"] == 0, led["other_project"])
     R.check("spend_ledger: нет событий потери записи (write_failed)", not any(r.get("source") == "write_failed" for r in ev.ledger), "")
 
-    # --- files on disk ---
     pdb = loc.Db(Path(work) / "data" / "videos" / chain.slug / "project.db")
     try:
         arts = pdb.q("SELECT kind, path FROM artifacts WHERE project_id = ? ORDER BY id", (pid,))
@@ -627,7 +613,6 @@ def run_checks_live(chain, ev, args, work: Path, R, human_final: bool, caps: dic
         R.check("клипы: ffprobe видит видео ненулевой длительности", bool(probes) and all(p.get("has_video") and float(p.get("duration") or 0) > 0 for p in probes),
                 [(p.get("has_video"), p.get("duration")) for p in probes])
 
-    # --- operator audit, journal, incidents ---
     gaps = fc.audit_gaps(chain.api.mutations, ev.audit)
     R.check(f"operator_audit: каждое из {len(chain.api.mutations)} изменяющих обращений стенда записано", not gaps, gaps[:5])
     R.check("operator_audit: у каждой записи есть автор и исход", not fc.audit_unattributed(ev.audit), fc.audit_unattributed(ev.audit)[:3])
@@ -648,7 +633,6 @@ def run_checks_live(chain, ev, args, work: Path, R, human_final: bool, caps: dic
     if blocking and not other:
         R.advise(f"блокирующие инциденты из списка известных находок: {[(b[0], b[1]) for b in blocking]}")
 
-    # --- final, publication, repository ---
     if fc.level_index(until) >= fc.level_index("E"):
         R.check("final.mp4 существует, в нём есть видео и звук (ffprobe)", final_ok, ev.final_probe or ev.final_path)
         R.check("approve_final принят человеком через production-ручку", human_final, chain.human_final_detail)
@@ -662,7 +646,6 @@ def run_checks_live(chain, ev, args, work: Path, R, human_final: bool, caps: dic
     return {"level_reached": reached, "ledger": led, "spend": spend, "counts_wire": wc, "blocking": blocking}
 
 
-# ───────────────────────────── arguments, preflight ─────────────────────────────
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -802,7 +785,7 @@ NOT_PROVEN = ("качество картинок, видео, голоса, те
               "длинный проект, перезапуск сервера посреди цепочки, параллельная работа человека")
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: C901
+def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "--serve-live":
         return child_live_main()
@@ -854,7 +837,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     need = required_keys(args)
     if args.text_provider == "vibecode":
         need.setdefault("VIBECODE_API_KEY", "")
-    for name in ENV_NAMES:      # only what the chosen providers use travels to the child
+    for name in ENV_NAMES:
         if live_env.get(name) and (name in need or name.endswith("_BASE_URL") or name in ("GPT_RELAY_TOKEN", "GPT_PROXY_URL", "GPT_API_KEY")):
             env[name] = live_env[name]
     if env.get("WORKER_USE_PROJECT_DB") != "true":
@@ -894,7 +877,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
             row = db.q("SELECT id, slug FROM projects ORDER BY id DESC LIMIT 1")
             chain.pid, chain.slug = int(row[0]["id"]), str(row[0]["slug"])
             def _adopt_start() -> bool:
-                chain.api.req("PATCH", f"/api/projects/{chain.pid}", json_body={"auto_mode": True})   # прошлый прогон мог выключить
+                chain.api.req("PATCH", f"/api/projects/{chain.pid}", json_body={"auto_mode": True})
                 return chain.api.post(f"/api/projects/{chain.pid}/steps/{args.adopt_step}/run")[0] == 200
             chain.start = _adopt_start
         if args.adopt or chain.create():
@@ -963,7 +946,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
         pass
     except KeyboardInterrupt:
         R.check("прогон не прерван оператором", False, "KeyboardInterrupt")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         R.check("сценарий дошёл до конца без исключений", False, f"{type(exc).__name__}: {exc}")
         import traceback
         traceback.print_exc()
@@ -983,7 +966,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     if chain is not None and ev is not None:
         try:
             info = run_checks_live(chain, ev, args, work, R, chain.human_final, caps, ceilings, repo_data_before)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             R.check("проверки результата выполнены без исключений", False, f"{type(exc).__name__}: {exc}")
         rep = scan.scan_tree([work], needles)
         R.check("секреты: в рабочей папке нет ключей и токенов (scan_secrets.scan_tree, синтаксис и значения ключей этого прогона)",

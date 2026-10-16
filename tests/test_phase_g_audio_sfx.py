@@ -1,4 +1,3 @@
-"""Фаза G: безопасные повторы TTS и видимый откат SFX. Только заглушки, без сети."""
 
 from __future__ import annotations
 
@@ -21,7 +20,6 @@ _MP3 = b"ID3" + b"\x00" * 2000
 
 
 class _Net:
-    """Скриптованный транспорт: список действий на каждый POST."""
 
     def __init__(self):
         self.script: list = []
@@ -81,7 +79,6 @@ def test_post_send_timeout_never_reposted(tmp_path, net, monkeypatch, proxy):
     with pytest.raises(ElevenLabsUncertainError):
         _run(synthesize_speech("Текст с таймаутом.", out))
     assert net.posts == 1
-    # Повторный запуск ноды с тем же текстом тоже не шлёт POST.
     with pytest.raises(ElevenLabsUncertainError):
         _run(synthesize_speech("Текст с таймаутом.", tmp_path / "v2.mp3"))
     assert net.posts == 1
@@ -150,7 +147,6 @@ def test_same_text_hash_skips_post(tmp_path, net):
     res = _run(synthesize_speech("Одинаковый текст.", tmp_path / "b.mp3"))
     assert net.posts == 1
     assert res.read_bytes() == _MP3
-    # Другой текст или голос не считается тем же сегментом.
     _run(synthesize_speech("Другой текст.", tmp_path / "c.mp3"))
     _run(synthesize_speech("Одинаковый текст.", tmp_path / "d.mp3", voice_id="other"))
     assert net.posts == 3
@@ -161,7 +157,6 @@ def test_generate_audio_wraps_tts_in_run_budget():
     assert "with tts_run_budget():" in src
 
 
-# ── sfx_gen: откат провайдера виден ──────────────────────────────────────────
 
 
 def _sfx_setup(monkeypatch, tmp_path, errors):
@@ -202,7 +197,7 @@ def test_sfx_fallback_recorded_with_charge_uncertainty(monkeypatch, tmp_path):
     errors = [httpx.ReadTimeout("t"), RuntimeError("11labs sfx 500: x"), None]
     sfx_gen, project, events, calls, facts = _sfx_setup(monkeypatch, tmp_path, errors)
     files = _run(sfx_gen.generate_sfx_files(_Sess(), project, events))
-    assert len(calls) == 3  # fallback itself unchanged: one provider call per event
+    assert len(calls) == 3
     assert [f["provider"] for f in files] == ["local_synth", "local_synth", "elevenlabs"]
     assert files[0]["provider_fallback"]["error_class"] == "ReadTimeout"
     assert files[0]["provider_fallback"]["may_have_charged"] == "uncertain"

@@ -1,11 +1,3 @@
-"""Пакетный анализ референсов стилей.
-
-Раскладка папки:  data/style-lab/<имя-стиля>/*.png|jpg|webp  (подпапка = один стиль)
-Результат:        data/style-lab/out/styles.json + categories.json
-
-Запуск из корня репо:
-    .venv\\Scripts\\python.exe scripts\\analyze_style_folder.py data/style-lab
-"""
 
 from __future__ import annotations
 
@@ -35,7 +27,7 @@ async def main(root: Path) -> int:
         print(f"… {sub.name}: {len(images)} изображений, анализ")
         try:
             entry = await analyze_style_images(images, name_hint=sub.name)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"✗ {sub.name}: {e}")
             continue
         entries.append(entry)

@@ -318,7 +318,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const modelRef = useRef<HTMLDivElement>(null);
-  // Якорь выбора модели, когда открыт помощник промпта (док скрыт)
   const modelRef2 = useRef<HTMLDivElement>(null);
   const firstFrameInputRef = useRef<HTMLInputElement>(null);
   const lastFrameInputRef = useRef<HTMLInputElement>(null);
@@ -933,11 +932,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
     toast.success("Случайный промпт подставлен 🎲");
   };
 
-  /**
-   * Двойной клик по картинке в истории: применить её конфигурацию
-   * (модель / формат / разрешение / детализация из sidecar-params + промпт)
-   * к окну и открыть панель «Помощник» с этим промптом.
-   */
   const applyHistoryConfig = (item: HistoryItem) => {
     if (item.kind !== "image") return;
     const p = (item.params ?? {}) as Record<string, unknown>;
@@ -989,8 +983,6 @@ export function OutseeCreateWorkspace({ open, onOpenChange, projectId }: Props) 
 
   const createGenerate = useMutation({
     mutationFn: async (arg?: string | { prompt?: string; forceSingle?: boolean; draftId?: string }) => {
-      // forceSingle — помощник промптов: ровно 1 картинка на каждый промпт агента,
-      // без умножения на batchCount.
       const promptOverride = typeof arg === "string" ? arg : arg?.prompt;
       const forceSingle = typeof arg === "object" && arg?.forceSingle === true;
       const draftId = typeof arg === "object" ? arg?.draftId : undefined;

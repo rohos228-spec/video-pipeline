@@ -1,4 +1,3 @@
-"""Watchdog: stuck request / idle execution are marked, never retried; decision steps are isolated."""
 import asyncio
 import importlib
 import unittest
@@ -94,7 +93,6 @@ class WatchdogDetection(WatchdogBase):
         await self.event('model_end', at=self.t0 + timedelta(seconds=5), request_id='req-ok')
         await self.event('model_start', at=self.t0, request_id='req-err')
         await self.event('model_error', at=self.t0 + timedelta(seconds=5), request_id='req-err')
-        # Ended attempt: diagnosis already derives uncertain_request for it.
         await self.event('model_start', at=self.t0, request_id='req-ended', attempt='att-2')
         await self.event('node_error', at=self.t0 + timedelta(seconds=7), attempt='att-2')
         await self.event('model_start', at=self.t0 + timedelta(seconds=2000), request_id='req-fresh', attempt='att-3')
@@ -122,7 +120,7 @@ class WatchdogDetection(WatchdogBase):
         (incident,) = await self.stalled()
         self.assertEqual((incident.node_key, incident.attempt_id), ('n1', 'att-1'))
         self.assertEqual(incident.details['stall']['running_nodes'], ['n1'])
-        self.assertEqual(await self.dog.scan(now=self.t0 + timedelta(seconds=9000)), [])  # same period, no duplicate
+        self.assertEqual(await self.dog.scan(now=self.t0 + timedelta(seconds=9000)), [])
         await self.assert_nothing_dispatched()
 
     async def test_running_node_without_any_event_uses_its_start_time(self):
@@ -132,7 +130,7 @@ class WatchdogDetection(WatchdogBase):
 
     async def test_idle_not_marked_without_running_node_and_resolves_on_activity(self):
         await self.event('node_start', at=self.t0)
-        self.assertEqual(await self.dog.scan(now=self.t0 + timedelta(seconds=99999)), [])  # nothing running
+        self.assertEqual(await self.dog.scan(now=self.t0 + timedelta(seconds=99999)), [])
         await self.set_node(NodeRunStatus.running, started_at=self.t0)
         await self.dog.scan(now=self.t0 + timedelta(seconds=2000))
         self.assertEqual(len(await self.stalled()), 1)
@@ -250,15 +248,12 @@ class DecisionIsolation(WatchdogBase):
         record = await self.loop.begin(project_id=7, execution_id='exec-durable', incident_id='source-incident')
         with patch.object(self.service.DecisionSupervisor, 'step', slow_step), \
                 patch.object(self.service.DecisionSupervisor, 'drain', self.service.DecisionSupervisor.drain):
-            # A blocking tick would wait on `release` forever and trip the 20 s guard.
             await asyncio.wait_for(self.loop.tick(), 20)
             self.assertFalse(release.is_set())
             await asyncio.wait_for(started.wait(), 5)
-            # The loop keeps cycling: further ticks neither block nor start a second step.
             await self.loop.tick()
             await self.loop.tick()
             self.assertEqual(len(self.loop._step_tasks), 1)
-            # ... and the other loop duties (journal delivery, diagnosis) run meanwhile.
             observer = observation._observer
             await observer.catch_up()
             from app.services.diagnosis import get_diagnoser
@@ -293,7 +288,7 @@ class DecisionIsolation(WatchdogBase):
         await inline.begin(project_id=7, execution_id='exec-durable', incident_id='source-incident')
         with patch.object(self.service.DecisionSupervisor, 'step', step):
             await inline.tick()
-        self.assertEqual(step.await_count, 1)  # awaited inline, no task
+        self.assertEqual(step.await_count, 1)
         self.assertEqual(inline._step_tasks, {})
 
     async def test_production_decider_is_background_and_runs_the_watchdog_hook(self):
@@ -322,7 +317,7 @@ class DecisionIsolation(WatchdogBase):
     async def test_a_failing_watchdog_never_breaks_the_decision_tick(self):
         decider = self.service.get_decider(observation._observer)
         with patch.object(Watchdog, 'tick', new=AsyncMock(side_effect=RuntimeError('boom'))):
-            await decider.tick()  # must not raise
+            await decider.tick()
 
 
 if __name__ == '__main__':

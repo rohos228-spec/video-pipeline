@@ -1,18 +1,3 @@
-"""Dry run of animation_prompts: observation -> diagnosis -> decision -> action -> verification.
-
-No network, no provider, no paid call. What is REAL: make_animation_prompts.run (batches, the PNG
-strip builder, the shot_02 queue, the local fallback, the original harness gate),
-animation_prompt_gpt parsing, db_apply.apply_ops, the observe_model wrapper (request identity,
-budget charge, first-body check), observe_attempt, the journal and outbox delivery, the
-Diagnoser, the DecisionSupervisor and its policy, ActionSupervisor.recover_node, the claim, the
-reconcile verification and the recovery cap. What is SCRIPTED: the model boundary only
-(ApiGptClient.ask_with_files hands a request to the observed low-level POST, which returns a
-canned reply or raises a canned provider error) and the Decision model (canned proposals).
-What is SEEDED by hand: the native step-failure counter that proves "native retries exhausted"
-(a runtime policy outside the observation scope) and the master/project runtime copy, which uses
-the application's own copy functions on the test databases. The provider backoff delay is set to
-zero (time policy only).
-"""
 import hashlib
 import json
 import unittest
@@ -44,7 +29,7 @@ SCRIPT = {"replies": [], "bodies": [], "attachments": []}
 UUID1, UUID2 = "af" * 16, "bf" * 16
 ANIM = "The camera slowly tracks the person opening the blue book, a single continuous take."
 ANIM2 = "A second camera angle shows the same person turning a page, a single continuous take."
-OUTAGE = lambda: GptApiError("GPT: server exception, try again later", context={"retryable": True})  # noqa: E731
+OUTAGE = lambda: GptApiError("GPT: server exception, try again later", context={"retryable": True})
 
 
 def ops_reply(*uuids, field="промт_видео", text=ANIM):
@@ -60,7 +45,6 @@ def write_png(path, color):
 
 @observe_model
 async def fake_http_post(*, url, headers, body, timeout, use_model):
-    """The model boundary: the real observe_model wrapper records and gates every call."""
     SCRIPT["bodies"].append(body)
     if not SCRIPT["replies"]:
         raise AssertionError("unscripted model request: the dry run allows exactly the scripted ones")
@@ -75,7 +59,6 @@ async def fake_http_post(*, url, headers, body, timeout, use_model):
 async def fake_ask_with_files(self, text, files, *, timeout=600, project_id=None, expect_file_download=False,
                               history=None, treat_txt_as_prompt=True, system=None, max_retries=None,
                               auto_pack=True, on_delta=None):
-    """ApiGptClient.ask_with_files with the HTTP POST replaced; attached files are read for real."""
     master, data = "", []
     for item in files:
         path = Path(item)
@@ -118,7 +101,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         self.stack.enter_context(patch.object(decision_config, "runtime_config", return_value=cfg))
         self.observer = observation._observer
 
-        # Scene images on disk: the real batch loop builds the PNG strip from them (vision input).
         write_png(self.data / "scenes" / "frame_001_a1b2c3d4.png", (200, 30, 30))
         write_png(self.data / "scenes" / "frame_002_e5f6a7b8.png", (30, 30, 200))
 
@@ -176,7 +158,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         finally:
             await base_tests.DurableActions.asyncTearDown(self)
 
-    # ---- runtime bookkeeping (the application's own copy functions) --------------------
     async def copy_runtime(self, session, project):
         from app.project_db import _apply_runtime_fields, _copy_noderuns_between_sessions
         async with self.sessions() as master:
@@ -215,9 +196,7 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
             return list((await session.scalars(select(Frame).where(Frame.project_id == 7)
                                                .order_by(Frame.number))).all())
 
-    # ---- the worker, as the runtime drives it -------------------------------------------
     async def worker(self, replies, *, start=True):
-        """One native attempt of the original step under observe_attempt (what advance does)."""
         SCRIPT["replies"] = list(replies)
         async with self.business() as session:
             project = await session.get(Project, 7)
@@ -236,7 +215,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
             await session.commit()
 
     async def exhaust_native_retries(self, error="native step retries exhausted"):
-        """The runtime's step-failure policy after 9 failed native attempts (outside observation)."""
         async with self.business() as session:
             project = await session.get(Project, 7)
             node = await session.scalar(select(NodeRun).where(NodeRun.node_key == "n1"))
@@ -260,7 +238,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         return found[0]
 
     def decision_model(self, actions):
-        """The Decision model: canned proposals, validated by the real policy."""
         queue = list(actions)
 
         async def reply(**kwargs):
@@ -274,7 +251,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         return patch("app.services.gpt_api.chat", side_effect=reply)
 
     def declare_native_second_shot(self):
-        """Native plan/disk inputs of the original second-shot rule (unit inputs, not executor output)."""
         from openpyxl import Workbook
         from app.services.xlsx_v8_import import ROW_IMAGE_PROMPT_V8, ROW_VOICEOVER_V8
         workbook = Workbook()
@@ -289,9 +265,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         workbook.close()
         write_png(self.data / "scenes" / "frame_001_s2_native.png", (30, 200, 30))
 
-    # ======================================================================================
-    # observation + diagnosis, with the real image strip
-    # ======================================================================================
     async def test_batch_request_carries_the_png_strip_and_a_bad_reply_is_typed_invalid_json(self):
         await self.failed_attempt(["phase one reply", "no pairs here at all"])
         self.assertEqual(len(SCRIPT["attachments"]), 2)
@@ -327,9 +300,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         await self.diagnose()
         self.assertEqual(await self.incidents(), [], "a clean run raises no incident")
 
-    # ======================================================================================
-    # degradation facts: nothing is silent any more
-    # ======================================================================================
     async def test_local_fallback_after_a_provider_outage_is_a_visible_degradation(self):
         await self.worker(["phase one reply", OUTAGE(), OUTAGE(), OUTAGE()])
         self.assertEqual([len(f.animation_prompt or "") > 10 for f in await self.frames()], [True, True])
@@ -348,7 +318,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         self.assertIn("локальным шаблоном", item.details["fact"])
         self.assertIn("1, 2", item.details["fact"])
         self.assertFalse(any(i.type in {"invalid_json", "missing_payload"} for i in await self.incidents()))
-        # The step itself finished: the fallback is a degradation, not a failure of the attempt.
         async with self.business() as session:
             self.assertEqual((await session.get(Project, 7)).status, ProjectStatus.animation_prompts_ready)
 
@@ -382,19 +351,13 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             self.assertIsNone(await session.scalar(select(RecoveryAction)))
 
-    # ======================================================================================
-    # the whole path
-    # ======================================================================================
     async def test_failed_attempt_to_decision_to_one_verified_retry_with_images(self):
         from app.services import decision_v1
-        # 1. observation: the original step fails on an unusable batch reply (nothing applied).
         await self.failed_attempt(["phase one reply", "no pairs here at all"])
         first_bodies = list(SCRIPT["bodies"])
         self.assertEqual(len(first_bodies), 2)
-        # 2. diagnosis: one typed, current, complete incident.
         incident = await self.typed_incident()
         self.assertEqual(incident.type, "invalid_json")
-        # 3. decision: read the contract, then ask for retry_same.
         loop = decision_v1.DecisionSupervisor(self.observer)
         await loop.configure(project_id=7, execution_id=EXECUTION, enabled=True,
                              initiator="dry-run", rationale="animation_prompts dry run decision")
@@ -410,7 +373,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         with self.decision_model(["read_contract", "retry_same"]):
             await loop.step(record["decision_id"])
             await loop.step(record["decision_id"])
-        # 4. action: exactly one recovery ticket, queued for the ORIGINAL worker.
         async with self.sessions() as session:
             ticket = await session.scalar(select(RecoveryAction))
             self.assertEqual(ticket.status, "queued")
@@ -418,7 +380,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ticket.preconditions["effective_node_type"], "animation_prompts")
             self.assertEqual(ticket.preconditions["first_body_normalization"], "attachment_timestamps")
             self.assertEqual(ticket.budget_state["recovery_limit"], 1)
-        # 5. the original worker runs the retry: the SAME first request, now a usable reply.
         before = len(SCRIPT["bodies"])
         await self.worker(["phase one reply", ops_reply(UUID1, UUID2)], start=False)
         finish_job_tracking(7)
@@ -429,7 +390,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
                          body_identity(first_bodies[0], normalize_names=True),
                          "recovery's first request equals the source's, modulo the attachment-name stamp")
         self.assertEqual(len(SCRIPT["attachments"][-1]), 1, "the retry's batch carries the strip again")
-        # 6. verification of the attempt, from the journal.
         await self.sync()
         await self.deliver()
         await reconcile(self.observer)
@@ -444,7 +404,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([len(f.animation_prompt or "") > 10 for f in await self.frames()], [True, True])
         async with self.business() as session:
             self.assertEqual((await session.get(Project, 7)).status, ProjectStatus.animation_prompts_ready)
-        # 7. cap: a second recovery is refused by the decision owner and by the database.
         with self.assertRaisesRegex(ValueError, "decision owner"):
             await self.supervisor.recover_node(project_id=7, execution_id=EXECUTION,
                 incident_id=incident.incident_id, node_key="n1", idempotency_key="second-retry-0001",
@@ -459,9 +418,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(SCRIPT["bodies"]), 4, "two failed requests plus two recovery requests, nothing else")
 
     async def test_retry_is_refused_after_a_batch_was_applied_partial_apply(self):
-        # Batch 1 answers for frame 1 only: that part is applied and committed (native partial
-        # extraction), the loop asks again for frame 2 and gets an unusable reply: the attempt fails
-        # with applied data behind it. A retry would repeat requests over changed rows.
         await self.failed_attempt(["phase one reply", ops_reply(UUID1), "no pairs here at all"])
         frames = await self.frames()
         self.assertGreater(len((frames[0].animation_prompt or "")), 10, "frame 1 was applied")

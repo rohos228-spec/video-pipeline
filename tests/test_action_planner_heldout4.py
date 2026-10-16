@@ -1,9 +1,3 @@
-"""Отложенный набор №4 планировщика: валидность, изоляция от других наборов и правил, офлайн-проверка оракулом.
-
-Все проверки офлайн, без сети. Набор написан до запуска планировщика на нём и не подгоняется под правила:
-тесты проверяют только форму, эталоны по схеме каталога, то, что фразы не просочились в другие наборы и в
-код правил, и что «идеальная» модель-заглушка проходит через серверные правила (каталог, защита от лишнего).
-"""
 from __future__ import annotations
 
 import json
@@ -13,9 +7,9 @@ from pathlib import Path
 from app.services.action_layer import planner
 from app.services.action_layer import schema as schema_mod
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 from tests.test_action_layer_planner import res
-from tests.test_action_planner_oracle import OP, PID, Const, oracle_env, oracle_reply  # noqa: F401
+from tests.test_action_planner_oracle import OP, PID, Const, oracle_env, oracle_reply
 from tests.test_action_planner_eval_script import script
 from tests.test_action_planner_seed_context import load_seed
 
@@ -26,7 +20,7 @@ RULE_FILES = ("app/services/action_layer/planner_rules.py", "app/services/action
               "app/services/action_layer/planner_autofill.py", "app/services/action_layer/planner_uploads.py",
               "app/services/action_layer/planner.py")
 _QUOTED = "[\"'«]([^\"'»\n]{6,})[\"'»]"
-SHINGLE = 6  # слов подряд: совпадение такой длины с отложенной фразой считается просочившимся текстом
+SHINGLE = 6
 
 
 def _cases(name: str) -> list[dict]:
@@ -59,7 +53,6 @@ def _vars() -> dict:
     return mod.expected_vars(2)
 
 
-# --- валидность набора №4 -----------------------------------------------------------------------
 
 def test_heldout4_is_big_and_diverse() -> None:
     assert len(HELD4) >= 120
@@ -81,7 +74,6 @@ def test_heldout4_is_big_and_diverse() -> None:
 
 
 def test_heldout4_style_mix() -> None:
-    """Стили набора: короткие команды, длинные разговорные просьбы, составные запросы."""
     plans = [c for c in HELD4 if c["outcome"] == "plan"]
     words = [len(_norm(c["text"]).split()) for c in plans]
     assert sum(1 for n in words if n <= 2) >= 12, "мало коротких команд"
@@ -105,7 +97,7 @@ def test_heldout4_expectations_follow_the_catalog_schema() -> None:
             props = (spec.params_schema or {}).get("properties", {})
             unknown = set(step["params"]) - set(props)
             assert not unknown, (case["id"], aid, sorted(unknown))
-            loose = {k: v for k, v in spec.params_schema.items() if k != "required"}  # сервер добавит недостающее
+            loose = {k: v for k, v in spec.params_schema.items() if k != "required"}
             errors = schema_mod.validate(loose, {k: v for k, v in step["params"].items() if k != "source_path"})
             assert not errors, (case["id"], aid, errors)
 
@@ -120,7 +112,6 @@ def test_heldout4_clarify_and_attachment_cases_are_well_formed() -> None:
             assert case["steps"] == [], case["id"]
 
 
-# --- изоляция: фразы не пересекаются с другими наборами и не попадают в правила -------------------
 
 def test_no_text_is_shared_between_all_sets() -> None:
     sets = {"main": MAIN, "held1": HELD1, "held2": HELD2, "held3": HELD3, "held4": HELD4}
@@ -164,9 +155,8 @@ def test_eval_script_knows_heldout4() -> None:
         [{"id": "x", "outcome": "plan", "set": "heldout4", "ok": True}])) == {"heldout4"}
 
 
-# --- офлайн: «идеальная» модель через настоящий планировщик и серверные правила -------------------
 
-async def test_every_heldout4_case_passes_the_server_with_a_perfect_model(oracle_env) -> None:  # noqa: F811
+async def test_every_heldout4_case_passes_the_server_with_a_perfect_model(oracle_env) -> None:
     m = script()
     variables = load_seed().expected_vars(PID)
     failed: list[str] = []
@@ -180,7 +170,7 @@ async def test_every_heldout4_case_passes_the_server_with_a_perfect_model(oracle
                 selected_frame=ctx.get("selected_frame"),
                 attachments=load_seed().fake_attachments(PID, ctx.get("attachments")))
             steps, clar, expl = out.reply.steps, out.reply.needs_clarification, out.reply.explanation_ru
-        except planner.PlannerError as exc:  # отказ сервера (обход подтверждений, чужой аккаунт) засчитывается
+        except planner.PlannerError as exc:
             code = f"{exc.code}: {exc}"
         row = m.score_case(case, steps, clar, code, expl, variables)
         if case["outcome"] == "refuse" and code:

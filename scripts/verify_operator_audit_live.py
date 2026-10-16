@@ -26,7 +26,6 @@ import httpx
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-# (метод, путь с {p} = id проекта, тело или None). Все ручки не запускают шаги и не платят.
 CALLS: list[tuple[str, str, dict | None]] = [
     ("PATCH", "/api/projects/{p}", {"title": "audit live check 2"}),
     ("POST", "/api/projects/{p}/pause", None),
@@ -98,7 +97,6 @@ def run(port: int, work: Path) -> int:
             for method, tpl, body in CALLS:
                 path = tpl.replace("{p}", str(pid))
                 if method == "DELETE" and tpl == "/api/projects/{p}":
-                    # удаление проекта - последним; лента читается ДО него по уже накопленным строкам
                     snap = c.get(f"{base}/api/projects/{pid}/timeline", params={"limit": 500}, headers=h)
                     report["snapshot_before_delete"] = snap.status_code
                 kwargs = {"json": body} if body is not None else {}
@@ -127,7 +125,7 @@ def run(port: int, work: Path) -> int:
                   sorted(phrases)[:5])
             exp = c.get(f"{base}/api/projects/{pid}/timeline/export", params={"format": "json"}, headers=h)
             check("export_readable", exp.status_code == 200, exp.status_code)
-            from scripts.scan_secrets import scan_file  # noqa: PLC0415
+            from scripts.scan_secrets import scan_file
             (work / "export.json").write_bytes(exp.content)
             check("export_has_no_secrets", not scan_file(work / "export.json"), None)
     finally:

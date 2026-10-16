@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.services import schema_migrations as sm  # noqa: E402
+from app.services import schema_migrations as sm
 
 
 def default_targets(root: Path = ROOT, env: dict | None = None) -> list[Path]:

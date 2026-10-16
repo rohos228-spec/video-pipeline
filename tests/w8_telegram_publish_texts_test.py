@@ -1,7 +1,3 @@
-"""Тексты Telegram о публикации честны и согласованы с панелью (publications.py::_approve_message) и PUBLISH_SETUP.md.
-
-Чистые функции, без сети и бота. Класс доказательства: U.
-"""
 from __future__ import annotations
 
 import pytest
@@ -24,7 +20,6 @@ def test_done_text_says_exactly_one_true_thing(queued, enabled, must, must_not):
 
 
 def test_done_text_agrees_with_panel_message_on_each_case():
-    """Telegram и панель дают один и тот же вывод по трём случаям (очередь / выключено настройкой / шаг идёт)."""
     cases = [(True, True), (False, False), (False, True)]
     for queued, enabled in cases:
         tg = pt.publish_approval_done_text(1, "vk_clips", "yes", "a", queued=queued, publish_enabled=enabled)

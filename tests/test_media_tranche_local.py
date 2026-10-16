@@ -1,11 +1,3 @@
-"""Media tranche, audio / sfx_gen / assemble / music / items / hero: dry runs with only the boundary faked.
-
-audio: the real TTS client over an httpx MockTransport (the provider boundary).
-sfx_gen: the real generate_sfx_files; only the single ElevenLabs POST function is scripted.
-assemble: the real _assemble_body and the real verify_artifact (ffprobe) on real ffmpeg files; only the
-          montage engine _assemble_core (local ffmpeg/ASR, no provider) is replaced by a file writer.
-No network, no paid call.
-"""
 from __future__ import annotations
 
 import ast
@@ -38,7 +30,6 @@ _REAL_CLIENT = httpx.AsyncClient
 _MP3 = b"ID3" + b"\x00" * 2000
 
 
-# ── audio (TTS) ──────────────────────────────────────────────────────────────────
 
 class _Net:
     def __init__(self):
@@ -89,7 +80,7 @@ def test_audio_timeout_after_send_is_typed_held_and_never_reposted(tmp_path, net
     verdict = asyncio.run(media_recovery.assess(_project(tmp_path), "audio"))
     assert (verdict["verdict"]["mode"], verdict["verdict"]["code"]) == ("denied", "unknown_outcome_elevenlabs")
     assert verdict["keys"][0]["markers"] and not verdict["submits_new_paid_request"]
-    for _ in range(2):  # the next passes and a restart: the marker blocks the paid POST
+    for _ in range(2):
         with pytest.raises(ElevenLabsUncertainError):
             asyncio.run(synthesize_speech("Закадровый текст.", audio / "frame_001.mp3"))
     assert net.posts == 1
@@ -117,7 +108,7 @@ def test_audio_finished_file_is_resumed_locally_even_in_the_resume_only_scope(tm
             return await synthesize_speech("Готовая реплика.", audio / "frame_009.mp3")
 
     out = asyncio.run(again())
-    assert net.posts == 1 and out.read_bytes() == _MP3  # copied from the finished file, nothing sent
+    assert net.posts == 1 and out.read_bytes() == _MP3
 
 
 def test_audio_a_stale_marker_does_not_deny_when_the_finished_file_exists(tmp_path, net):
@@ -125,21 +116,21 @@ def test_audio_a_stale_marker_does_not_deny_when_the_finished_file_exists(tmp_pa
     audio = tmp_path / "audio"
     with pytest.raises(ElevenLabsUncertainError):
         asyncio.run(synthesize_speech("Первая.", audio / "frame_001.mp3"))
-    (audio / "voice_full.mp3").write_bytes(_MP3)  # a human puts the finished voice file
+    (audio / "voice_full.mp3").write_bytes(_MP3)
     verdict = asyncio.run(media_recovery.assess(_project(tmp_path), "audio"))
     assert verdict["verdict"]["mode"] == "resume_local" and verdict["keys"][0]["stale_markers"]
 
 
 def test_audio_retry_is_allowed_only_without_job_and_marker_and_stays_bounded(tmp_path, net):
     audio = tmp_path / "audio"
-    net.script = [httpx.ConnectError("refused"), httpx.ConnectError("refused")]  # never reached the provider
+    net.script = [httpx.ConnectError("refused"), httpx.ConnectError("refused")]
     with pytest.raises(ElevenLabsApiError):
         asyncio.run(synthesize_speech("Нет связи.", audio / "frame_001.mp3"))
-    assert net.posts == 2  # per-call cap
+    assert net.posts == 2
     verdict = asyncio.run(media_recovery.assess(_project(tmp_path), "audio"))
     assert (verdict["verdict"]["mode"], verdict["verdict"]["code"]) == ("retry_same", "no_paid_job_and_no_marker")
     assert verdict["retry_same_max"] == 1
-    asyncio.run(synthesize_speech("Нет связи.", audio / "frame_001.mp3"))  # the one retry
+    asyncio.run(synthesize_speech("Нет связи.", audio / "frame_001.mp3"))
     assert net.posts == 3
     assert not list(audio.glob(".tts_uncertain_*"))
 
@@ -163,7 +154,6 @@ def test_audio_run_budget_still_caps_posts(tmp_path, net):
     assert net.posts == 1
 
 
-# ── sfx_gen ────────────────────────────────────────────────────────────────────────
 
 def _sfx_setup(monkeypatch, tmp_path, n_events, script):
     from app.models import Project as P
@@ -205,31 +195,27 @@ def _gen(sfx_gen, project, events, **kw):
 
 def test_sfx_retry_by_event_at_most_once_and_never_after_an_uncertain_fallback(monkeypatch, tmp_path):
     answered = RuntimeError("11labs sfx 500: x")
-    script = [answered, httpx.ReadTimeout("t"), None]  # event 0 answered, event 1 timed out, event 2 fine
+    script = [answered, httpx.ReadTimeout("t"), None]
     sfx_gen, project, events, calls, facts = _sfx_setup(monkeypatch, tmp_path, 3, script)
     first = _gen(sfx_gen, project, events)
     assert [f["provider"] for f in first] == ["local_synth", "local_synth", "elevenlabs"] and len(calls) == 3
     assert [(k, p["idx"]) for k, p in facts] == [("provider_fallback", 0), ("provider_fallback", 1)]
 
-    # the supervisor-side view of the same checkpoint
     assess = asyncio.run(media_recovery.assess(project, "sfx_gen"))
     verdicts = {i["key"]: (i["mode"], i["code"]) for i in assess["keys"]}
     assert verdicts == {"sfx_0": ("retry_same", "fallback_after_provider_answer"),
                         "sfx_1": ("denied", "unknown_outcome_elevenlabs")}
 
-    # default run: behaviour unchanged, no provider call at all
     _gen(sfx_gen, project, events)
     assert len(calls) == 3
 
-    # the retry pass: exactly one new paid call, for the answered event only
     second = _gen(sfx_gen, project, events, retry_degraded=True)
     assert len(calls) == 4
     by_idx = {f["idx"]: f for f in second}
     assert by_idx[0]["provider"] == "elevenlabs" and by_idx[0]["provider_retry"] == 1
-    assert by_idx[1]["provider"] == "local_synth" and "provider_retry" not in by_idx[1]  # uncertain: never
+    assert by_idx[1]["provider"] == "local_synth" and "provider_retry" not in by_idx[1]
     assert by_idx[2]["provider"] == "elevenlabs"
 
-    # nothing is eligible any more
     _gen(sfx_gen, project, events, retry_degraded=True)
     assert len(calls) == 4
 
@@ -242,9 +228,9 @@ def test_sfx_a_failed_retry_is_recorded_again_and_is_the_last_one(monkeypatch, t
     assert len(calls) == 2
     assert again[0]["provider"] == "local_synth" and again[0]["provider_retry"] == 1
     assert again[0]["provider_fallback"]["may_have_charged"] == "no"
-    assert [k for k, _ in facts] == ["provider_fallback", "provider_fallback"]  # the degradation stays visible
+    assert [k for k, _ in facts] == ["provider_fallback", "provider_fallback"]
     _gen(sfx_gen, project, events, retry_degraded=True)
-    assert len(calls) == 2  # the cap holds
+    assert len(calls) == 2
     assess = asyncio.run(media_recovery.assess(project, "sfx_gen"))
     assert assess["verdict"]["mode"] == "denied" and assess["verdict"]["code"] == "retry_cap_reached"
 
@@ -265,7 +251,7 @@ def test_sfx_resume_only_scope_raises_instead_of_silently_falling_back(monkeypat
 
     with pytest.raises(media_spend.ResumeOnlyBlocked):
         asyncio.run(go())
-    assert list((project.data_dir / "sfx").glob("*")) == []  # nothing was written, nothing was faked
+    assert list((project.data_dir / "sfx").glob("*")) == []
 
 
 def test_sfx_step_asks_for_the_bounded_retry():
@@ -273,7 +259,6 @@ def test_sfx_step_asks_for_the_bounded_retry():
     assert "retry_degraded=True" in src
 
 
-# ── assemble ─────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture
 async def db():
@@ -294,7 +279,6 @@ async def _new_project(session, slug="tr-asm"):
 
 
 class Core:
-    """Scripted montage engine: one entry per call, bytes (write the file) or an exception."""
 
     def __init__(self, *steps):
         self.steps = list(steps)
@@ -357,7 +341,7 @@ async def test_assemble_a_failed_build_gets_exactly_one_retry_and_then_succeeds(
     await asm._assemble_body(db, p, None)
     assert core.calls == 2
     assert (p.data_dir / "final" / f"{p.slug}.mp4").read_bytes() == b"GOOD"
-    assert len(sent) == 1 and len(await _approvals(db, p)) == 1  # the barrier request is created once
+    assert len(sent) == 1 and len(await _approvals(db, p)) == 1
     assert emitted == [("assemble_retry", {"attempt": 1, "error_type": "RuntimeError", "retry_cap": 1})]
     assert [f.name for f in (p.data_dir / "final").iterdir()] == [f"{p.slug}.mp4"]
 
@@ -371,7 +355,7 @@ async def test_assemble_a_failed_verification_is_retried_once_and_a_second_failu
     sent, emitted = _wire(monkeypatch, core, verdicts=["failed", "unknown"])
     with pytest.raises(RuntimeError, match="проверка итогового видео"):
         await asm._assemble_body(db, p, None)
-    assert core.calls == 2  # exactly one retry, never a third build
+    assert core.calls == 2
     assert final.read_bytes() == b"OLD" and sent == [] and await _approvals(db, p) == []
     assert p.status is ProjectStatus.assembling and len(emitted) == 1
     assert [f.name for f in final.parent.iterdir()] == [final.name]
@@ -409,7 +393,6 @@ async def test_assemble_dry_run_with_the_real_verifier(db, monkeypatch, tmp_path
     final.parent.mkdir(parents=True)
     final.write_bytes(b"OLDVIDEO")
 
-    # 1) a build without an audio track fails the REAL verify_artifact twice: old final and barrier untouched
     core = Core(silent, silent)
     sent, _ = _wire(monkeypatch, core, real_verifier=True)
     with pytest.raises(RuntimeError, match="проверка итогового видео"):
@@ -417,7 +400,6 @@ async def test_assemble_dry_run_with_the_real_verifier(db, monkeypatch, tmp_path
     assert core.calls == 2 and final.read_bytes() == b"OLDVIDEO" and sent == []
     assert not [f for f in final.parent.iterdir() if f.name != final.name]
 
-    # 2) first build is bad, the retry is good: atomic replace, one approve_final bound to the digest
     core = Core(silent, good)
     sent, _ = _wire(monkeypatch, core, real_verifier=True)
     await asm._assemble_body(db, p, None)
@@ -428,7 +410,6 @@ async def test_assemble_dry_run_with_the_real_verifier(db, monkeypatch, tmp_path
     assert art.meta["sha256"] == sha and art.meta["verification"]["status"] == "passed"
     assert art.meta["verification"]["streams"] == ["audio", "video"]
 
-    # 3) rerun with the same output: nothing new for the human barrier
     core = Core(good)
     sent, _ = _wire(monkeypatch, core, real_verifier=True)
     await asm._assemble_body(db, p, None)
@@ -451,7 +432,6 @@ async def test_approve_final_barrier_cannot_be_bypassed_by_auto_mode_or_a_tamper
     await db.flush()
     transition = aa.TRANSITIONS[ProjectStatus.assembled]
 
-    # tampered: the file is no longer the recorded one -> auto-approval refuses, human gate stays
     final.write_bytes(silent)
     assert await aa._final_verified(db, p) is False
     await aa._apply_approve(db, p, None, transition)
@@ -462,11 +442,9 @@ async def test_approve_final_barrier_cannot_be_bypassed_by_auto_mode_or_a_tamper
     await aa._apply_approve(db, p, pending, transition)
     assert p.status is ProjectStatus.assembled and pending.decision is HITLDecision.pending
 
-    # restored and verified: auto-approval is allowed to continue
     final.write_bytes(good)
     assert await aa._final_verified(db, p) is True
 
-    # a human decision is not second-guessed here (the human is the barrier)
     p.status = ProjectStatus.assembled
     final.write_bytes(silent)
     human = HITLRequest(project_id=p.id, kind=HITLKind.approve_final, payload={"sha256": sha},
@@ -481,10 +459,9 @@ async def test_approve_final_barrier_cannot_be_bypassed_by_auto_mode_or_a_tamper
         await aa._apply_approve(db, p, human, transition)
     finally:
         logger.remove(sink)
-    assert not any("verification not passed" in m for m in logs)  # the guard does not second-guess a human
+    assert not any("verification not passed" in m for m in logs)
 
 
-# ── hero / items / music: the project id reaches the paid-request guard ──────────────
 
 def _calls_named(path: str, name: str) -> list[ast.Call]:
     tree = ast.parse(Path(path).read_text(encoding="utf-8"))
@@ -551,7 +528,7 @@ async def test_items_step_passes_its_project_to_the_generation_guard(monkeypatch
     monkeypatch.setattr(vc, "resolve_node_media_settings", lambda project, node_type: {
         "image_generator_id": None, "resolution_id": None, "quality_slug": None, "aspect_slug": None})
     project = SimpleNamespace(id=42, status=ProjectStatus.generating_items, item_descriptions=["кубок"],
-                              data_dir=tmp_path, meta={})
+                              slug="items-guard", data_dir=tmp_path, meta={})
     await gi.run(_Db(), project, None)
     assert [kw["project_id"] for kw in seen] == [42]
     assert project.status is ProjectStatus.items_ready
@@ -604,7 +581,7 @@ async def _run_music(monkeypatch, tmp_path, *, pending: bool):
 async def test_music_with_an_unfinished_paid_task_reuses_the_saved_prompt_and_calls_no_gpt(monkeypatch, tmp_path):
     gpt_calls, generation, _, cached = await _run_music(monkeypatch, tmp_path, pending=True)
     assert gpt_calls == [] and generation[0]["project_id"] == 11
-    assert cached.strip()[:20] in str(generation[0]["payload"])  # the very same request as before the crash
+    assert cached.strip()[:20] in str(generation[0]["payload"])
 
 
 async def test_music_normal_run_asks_gpt_once_saves_the_prompt_and_guards_the_submit(monkeypatch, tmp_path):
@@ -613,7 +590,6 @@ async def test_music_normal_run_asks_gpt_once_saves_the_prompt_and_guards_the_su
     assert (music_dir / ".suno_prompt.txt").read_text(encoding="utf-8").startswith("свежий промт")
 
 
-# ── spend ledger gaps (G1): Suno is priced and keyed like every other Kie task ──────────
 
 def test_suno_music_is_priced_and_keyed_in_the_spend_and_task_ledgers():
     from app.services import kie_catalog

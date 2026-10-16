@@ -22,14 +22,15 @@ Set-Location -LiteralPath $Root
 # Ветки (выбор при первом запуске / [5] -> только data/studio-pc-branch).
 # Лаунчер никогда не пишет .env.
 # [4] всегда тянет origin/<сохранённая>, не хардкод main.
-$script:PcBranches = @("housepc", "tompc", "strangepc", "workpc", "main")
+$script:PcBranches = @("housepc", "tompc", "strangepc", "workpc", "main", "Kir-updates")
 $script:PcBranchFile = Join-Path $Root "data\studio-pc-branch"
 $EnvFile = Join-Path $Root ".env"
 $StudioBranch = ""
 
 function Test-StudioPcBranchName {
     param([string]$Name)
-    return ($script:PcBranches -contains $Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+    return ($script:PcBranches -contains $Name -or $Name -match '^[a-zA-Z0-9_\-\./]+$')
 }
 
 function Read-StudioPcBranchFromEnv {
@@ -90,6 +91,7 @@ function Show-StudioBranchPicker {
         $n = $i + 1
         Write-Host ("  [{0}] {1}" -f $n, $script:PcBranches[$i])
     }
+    Write-Host "  [C] Ввести другое имя ветки вручную"
     if ($AllowCancel) {
         Write-Host "  [0] Отмена"
     }
@@ -97,15 +99,30 @@ function Show-StudioBranchPicker {
     while ($true) {
         $choice = Read-Host "Номер ветки"
         if ($AllowCancel -and $choice -eq "0") { return "" }
-        if ($choice -match '^[1-5]$') {
-            $idx = [int]$choice - 1
-            $br = $script:PcBranches[$idx]
-            if (Save-StudioPcBranch -Branch $br) {
-                Write-StudioMsg "OK: ветка сохранена - $br ([4] будет тянуть origin/$br)" "Green"
-                return $br
+        if ($choice -match '^[cCсС]$') {
+            $custom = Read-Host "Введите точное имя ветки в Git (например, main или Kir-updates)"
+            $custom = "$custom".Trim()
+            if ($custom -and (Test-StudioPcBranchName $custom)) {
+                if (Save-StudioPcBranch -Branch $custom) {
+                    Write-StudioMsg "OK: ветка сохранена - $custom ([4] будет тянуть origin/$custom)" "Green"
+                    return $custom
+                }
+            }
+            Write-StudioMsg "Некорректное имя ветки." "Yellow"
+            continue
+        }
+        if ($choice -match '^\d+$') {
+            $val = [int]$choice
+            if ($val -ge 1 -and $val -le $script:PcBranches.Count) {
+                $idx = $val - 1
+                $br = $script:PcBranches[$idx]
+                if (Save-StudioPcBranch -Branch $br) {
+                    Write-StudioMsg "OK: ветка сохранена - $br ([4] будет тянуть origin/$br)" "Green"
+                    return $br
+                }
             }
         }
-        Write-StudioMsg "Выберите 1-5 (housepc / tompc / strangepc / workpc / main)." "Yellow"
+        Write-StudioMsg "Выберите номер из списка (1-$($script:PcBranches.Count)) или C для ввода вручную." "Yellow"
     }
 }
 
@@ -452,6 +469,7 @@ function Invoke-StudioStart {
 }
 
 function Test-StudioPromptsDirty {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $false }
     $porcelain = @(git -C $Root status --porcelain -- prompts 2>$null)
     return ($porcelain.Count -gt 0)
 }
@@ -508,8 +526,7 @@ function Invoke-StudioGitStash {
     # Returns stash ref (e.g. stash@{0}) when a stash was created; otherwise $null.
     # On failure returns the string "FAILED" so caller can abort if prompts are dirty.
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Write-StudioMsg "ОШИБКА: git не найден в PATH." "Red"
-        return "FAILED"
+        return $null
     }
     $status = git -C $Root status --porcelain 2>&1
     if (-not $status) {
@@ -714,14 +731,135 @@ function Invoke-StudioPipInstall {
     return $true
 }
 
+function Invoke-StudioZipUpdateAndStart {
+    param([string]$Branch = "main")
+    if (-not $Branch) { $Branch = "main" }
+    Write-StudioMsg "==> Git не установлен. Запуск прямого обновления через ZIP (ветка: $Branch)..." "Cyan"
+
+    # 1) Резервная копия prompts/ вне репо
+    Invoke-StudioBackupPromptsAside | Out-Null
+
+    # 2) Скачивание архива ветки
+    $zip = Join-Path $env:TEMP "vp_studio_update.zip"
+    $extractDir = Join-Path $env:TEMP "vp_studio_extract"
+    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $extractDir) { Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+    $urls = @(
+        "https://github.com/rohos228-spec/video-pipeline/archive/refs/heads/$Branch.zip",
+        "https://codeload.github.com/rohos228-spec/video-pipeline/zip/refs/heads/$Branch",
+        "https://ghproxy.net/https://github.com/rohos228-spec/video-pipeline/archive/refs/heads/$Branch.zip"
+    )
+
+    $downloaded = $false
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+    foreach ($u in $urls) {
+        Write-StudioMsg "Попытка загрузки: $u ..." "DarkGray"
+        if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+            try {
+                & curl.exe -L -k -s --connect-timeout 15 --max-time 180 --retry 1 -o $zip $u 2>$null
+                if ((Test-Path -LiteralPath $zip) -and (Get-Item -LiteralPath $zip).Length -gt 100000) {
+                    $downloaded = $true
+                    break
+                }
+            } catch { }
+        }
+        try {
+            $wc = New-Object System.Net.WebClient
+            $wc.Headers.Add('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+            $wc.DownloadFile($u, $zip)
+            if ((Test-Path -LiteralPath $zip) -and (Get-Item -LiteralPath $zip).Length -gt 100000) {
+                $downloaded = $true
+                break
+            }
+        } catch { }
+        try {
+            Invoke-WebRequest -Uri $u -OutFile $zip -UseBasicParsing -TimeoutSec 90 -Headers @{'User-Agent'='Mozilla/5.0'} -ErrorAction Stop
+            if ((Test-Path -LiteralPath $zip) -and (Get-Item -LiteralPath $zip).Length -gt 100000) {
+                $downloaded = $true
+                break
+            }
+        } catch { }
+    }
+
+    if (-not $downloaded -or -not (Test-Path -LiteralPath $zip)) {
+        Write-StudioMsg "ОШИБКА: не удалось скачать архив обновления с GitHub." "Red"
+        return $false
+    }
+
+    $mb = [math]::Round((Get-Item -LiteralPath $zip).Length / 1MB, 2)
+    Write-StudioMsg "Архив успешно скачан ($mb MB). Распаковка..." "Green"
+    try {
+        Expand-Archive -LiteralPath $zip -DestinationPath $extractDir -Force
+        Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-StudioMsg "ОШИБКА при распаковке архива: $($_.Exception.Message)" "Red"
+        return $false
+    }
+
+    $inner = Get-ChildItem -LiteralPath $extractDir | Where-Object { $_.PSIsContainer } | Select-Object -First 1
+    $sourceDir = if ($inner) { $inner.FullName } else { $extractDir }
+
+    # 3) Безопасное обновление файлов кода (НИКОГДА не трогаем .env, data/, .venv/, logs/, tools/)
+    Write-StudioMsg "Обновление файлов приложения..." "Cyan"
+    $updateDirs = @("app", "web", "scripts", "prompts")
+    foreach ($d in $updateDirs) {
+        $srcPath = Join-Path $sourceDir $d
+        if (Test-Path -LiteralPath $srcPath) {
+            $destPath = Join-Path $Root $d
+            if (-not (Test-Path -LiteralPath $destPath)) {
+                New-Item -ItemType Directory -Path $destPath -Force | Out-Null
+            }
+            Copy-Item -Path "$srcPath\*" -Destination $destPath -Recurse -Force
+        }
+    }
+
+    $rootFiles = @("SETUP.cmd", "STUDIO.cmd", "pyproject.toml", "README.md")
+    foreach ($f in $rootFiles) {
+        $sf = Join-Path $sourceDir $f
+        if (Test-Path -LiteralPath $sf) {
+            Copy-Item -LiteralPath $sf -Destination (Join-Path $Root $f) -Force
+        }
+    }
+
+    Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+
+    # 4) Восстановление пользовательских промтов
+    Invoke-StudioRestorePromptsAside | Out-Null
+    Invoke-StudioRecoverPromptsFromAllStashes
+
+    Write-StudioMsg "Файлы приложения успешно обновлены." "Green"
+
+    # 5) Проверка зависимостей Python
+    $py = Join-Path $Root ".venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $py) {
+        Write-StudioMsg "Проверка Python-зависимостей..." "DarkGray"
+        & $py -m pip install --quiet -e $Root
+    }
+
+    Stop-StudioBackend
+    $ps1 = if ($PSCommandPath) { $PSCommandPath } else { Join-Path $Root "scripts\studio.ps1" }
+    $exe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell.exe" }
+    Write-StudioMsg "Перезапуск Студии..." "Green"
+    & $exe -NoProfile -ExecutionPolicy Bypass -File $ps1 -Action 1
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Invoke-StudioUpdateAndStart {
     if (-not (Ensure-StudioPcBranchSelected -InteractiveRequired)) {
         return $false
     }
     $StudioBranch = Get-StudioPcBranch
     if (-not $StudioBranch) { $StudioBranch = $script:StudioBranch }
+    if (-not $StudioBranch) { $StudioBranch = "main" }
     $script:StudioBranch = $StudioBranch
-    Write-StudioMsg "=== [4] Обновить и запустить (origin/$StudioBranch) ===" "Cyan"
+    Write-StudioMsg "=== [4] Обновить и запустить ($StudioBranch) ===" "Cyan"
+
+    $hasGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
+    if (-not $hasGit) {
+        return (Invoke-StudioZipUpdateAndStart -Branch $StudioBranch)
+    }
+
     # 1) Снимок prompts/ ВНЕ репо - главный предохранитель (stash может сдохнуть).
     Invoke-StudioBackupPromptsAside | Out-Null
     $promptsDirty = Test-StudioPromptsDirty
@@ -956,10 +1094,18 @@ function Invoke-StudioDoctor {
 
 function Get-StudioLauncherStamp {
     try {
-        return (git -C $Root rev-parse --short HEAD 2>$null).Trim()
-    } catch {
-        return "?"
+        if (Get-Command git -ErrorAction SilentlyContinue) {
+            $h = (git -C $Root rev-parse --short HEAD 2>$null).Trim()
+            if ($h) { return $h }
+        }
+    } catch { }
+    $vf = Join-Path $Root "web\STUDIO_VERSION"
+    if (Test-Path $vf) {
+        $vl = @(Get-Content -LiteralPath $vf -Encoding UTF8 | Select-Object -First 2)
+        if ($vl.Count -ge 2 -and $vl[1]) { return $vl[1].Trim() }
+        if ($vl.Count -ge 1 -and $vl[0]) { return "v$($vl[0].Trim())" }
     }
+    return "standalone"
 }
 
 function Show-StudioMenu {
@@ -969,13 +1115,13 @@ function Show-StudioMenu {
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "  Video Pipeline Studio" -ForegroundColor Cyan
     Write-Host "  $Root" -ForegroundColor DarkGray
-    Write-Host "  launcher $stamp | ветка ПК: $brLabel" -ForegroundColor Yellow
+    Write-Host "  launcher $stamp | ветка: $brLabel" -ForegroundColor Yellow
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  [1] Запустить студию (бэкенд API + веб-интерфейс http://127.0.0.1:8765)"
     Write-Host "  [2] Остановить всё (бэкенд :8765)"
     Write-Host "  [3] Открыть внешний браузер с ИИ (Chrome CDP :29229 - опционально)"
-    Write-Host "  [4] Обновить и запустить (git origin/$brLabel + зависимости + запуск)"
+    Write-Host "  [4] Обновить и запустить (ветка $brLabel + зависимости + запуск)"
     Write-Host "  [5] Ветка ПК ($brLabel): сменить"
     Write-Host "  [6] Починить установку (pip, web, Playwright, FFmpeg)"
     Write-Host "  [7] Диагностика (версия, git, порты, logs/doctor.log)"

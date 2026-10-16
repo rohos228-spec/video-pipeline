@@ -1,4 +1,3 @@
-"""Structural local verification. A readable file never proves artistic quality."""
 from __future__ import annotations
 
 import asyncio

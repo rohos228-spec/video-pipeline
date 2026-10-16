@@ -1,4 +1,3 @@
-"""Graph migration enrich_N -> excel_gpt: pure rules, dry run, idempotency, rollback, stored graphs."""
 from __future__ import annotations
 
 import copy
@@ -16,7 +15,6 @@ from app.services.excel_gpt_node import slot_index_from_node
 
 
 def _legacy_graph():
-    """Old canvas: enrich nodes of the legacy types, one with an explicit slot and params, one overflow."""
     nodes = [
         {"id": "n_split", "type": "split", "position": {"x": 0, "y": 0}, "data": {}},
         {"id": "n_e1", "type": "enrich_1", "position": {"x": 100, "y": 0},
@@ -46,16 +44,14 @@ def test_pure_migration_changes_type_keeps_slot_and_params():
     assert [n["id"] for n in res.nodes] == [n["id"] for n in nodes]
     assert all(n["type"] == "excel_gpt" for n in res.nodes if n["id"].startswith("n_e"))
     assert by_id["n_split"] == nodes[0] and by_id["n_hero"] == nodes[-1]
-    # slot resolution is identical before and after, including the explicit slot and the overflow node
     for old in nodes:
         assert slot_index_from_node(old) == slot_index_from_node(by_id[old["id"]]), old["id"]
     assert by_id["n_e1"]["data"]["slotIndex"] == 1 and by_id["n_e3"]["data"]["slotIndex"] == 3
     assert by_id["n_e2"]["data"]["slotIndex"] == 4, "an explicit slot is not overridden by the type"
     assert "slotIndex" not in by_id["n_eo"]["data"] and by_id["n_eo"]["data"]["slotOverflow"] is True
-    # every parameter survives, a user label is not rewritten, an empty one gets the default
     assert by_id["n_e1"]["data"]["inputSource"] == "voiceover" and by_id["n_e1"]["data"]["custom"] == {"a": [1, 2]}
     assert by_id["n_e1"]["data"]["label"] == "Проверка закадра"
-    assert by_id["n_e3"]["data"]["label"] == "Работа с GPT"
+    assert by_id["n_e3"]["data"]["label"] == "ИИ-редактор сцен"
     assert by_id["n_e1"]["position"] == nodes[1]["position"]
     assert [c.node_id for c in res.changes] == ["n_e1", "n_e3", "n_e2", "n_eo"]
     assert res.rollback == [n for n in before if n["type"].startswith("enrich_")]
@@ -101,7 +97,7 @@ def test_scene_marker_and_unrelated_types_are_not_touched():
 def test_rollback_restores_the_original_nodes_and_skips_edited_ones():
     nodes, _ = _legacy_graph()
     res = gm.migrate_enrich_graph(nodes)
-    edited = [dict(n, type="hero") if n["id"] == "n_e3" else n for n in res.nodes]  # user retyped one node later
+    edited = [dict(n, type="hero") if n["id"] == "n_e3" else n for n in res.nodes]
     restored, ids = gm.rollback_enrich_graph(edited, res.rollback)
     assert ids == ["n_e1", "n_e2", "n_eo"]
     by_id = {n["id"]: n for n in restored}

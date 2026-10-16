@@ -1,9 +1,3 @@
-"""Guards for scripts/e2e_media_kill_after_submit.py (plan step F05: hard kill right after the paid submit).
-
-Nothing here sends anything outside this machine and nothing here runs --live: the live-only paths are covered by the
-argument / env-file refusals (they return before anything starts) and by the shared request Gate. The dry runs start
-two child pythons each (the first one is hard-killed on purpose), so run this file alone: one pytest at a time.
-"""
 import importlib.util
 import json
 import os
@@ -21,12 +15,11 @@ sys.modules[_spec.name] = script
 _spec.loader.exec_module(script)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _stand_workdir import make_workdir, remove_workdir  # noqa: E402
+from _stand_workdir import make_workdir, remove_workdir
 
 
 @pytest.fixture
 def tmp_path():
-    """Outside the repository: the e2e guard refuses a work folder inside live data."""
     path = make_workdir()
     try:
         yield path
@@ -34,7 +27,6 @@ def tmp_path():
         remove_workdir(path)
 
 
-# ---------- arguments and authorisation ----------
 
 def test_exactly_one_of_dry_and_live_is_required():
     for bad in (["--work-dir", "w"], ["--work-dir", "w", "--dry", "--live", "--env-file", "e"], ["--dry"]):
@@ -96,7 +88,7 @@ def test_live_refuses_before_starting_anything(tmp_path, capsys):
     assert script.main(["--work-dir", str(work), "--live", "--env-file", str(bad_base)]) == 3
     out = capsys.readouterr().out
     assert "nothing sent" in out and "abcdefgh" not in out
-    assert not work.exists()  # nothing was created: the refusal came first
+    assert not work.exists()
 
 
 def test_bad_arguments_exit_with_code_two():
@@ -105,11 +97,10 @@ def test_bad_arguments_exit_with_code_two():
     assert exc.value.code == 2
 
 
-# ---------- the shared Gate: one paid post across BOTH phases ----------
 
 def test_the_gate_preloaded_from_the_wire_refuses_a_second_paid_post_after_the_restart():
     gate = script.prod.Gate(mode="dry", fake_port=script.FAKE_PORT, phase="main", max_paid_posts=1)
-    gate.paid_posts = 1  # what child 2 does: the counter comes from wire.jsonl
+    gate.paid_posts = 1
     second = gate.judge("POST", "127.0.0.1", script.FAKE_PORT, script.prod.GENERATE_PATH, is_decision=False)
     assert second.action == "refuse" and second.kind == "paid_cap" and gate.refused_cap == 1
     assert gate.judge("POST", "outsee.io", 443, "/api/v1/images/generate", is_decision=False).action == "refuse"
@@ -123,7 +114,6 @@ def test_the_live_gate_allows_one_paid_post_to_the_outsee_host_only():
     assert gate.judge("POST", "127.0.0.1", script.FAKE_PORT, script.prod.GENERATE_PATH, is_decision=False).action == "refuse"
 
 
-# ---------- the wire file ----------
 
 def test_wire_lines_are_durable_and_counted_per_phase(tmp_path):
     wire = tmp_path / "wire.jsonl"
@@ -136,7 +126,6 @@ def test_wire_lines_are_durable_and_counted_per_phase(tmp_path):
     assert script.wire_posts(events) == 1 and script.wire_posts(events, 1) == 1 and script.wire_posts(events, 2) == 0
 
 
-# ---------- the report ----------
 
 def test_reality_report_never_claims_a_live_proof_for_a_dry_run():
     dry = script.reality_report("dry", {"wire_posts": 1})
@@ -152,7 +141,6 @@ def test_reality_report_never_claims_a_live_proof_for_a_dry_run():
     assert "secret" not in json.dumps(script.reality_report("live", {"wire_posts": 1})).lower()
 
 
-# ---------- checks (pure) ----------
 
 def _wire(*phases_events):
     return [{"phase": p, "event": e} for p, e in phases_events]
@@ -256,7 +244,6 @@ def test_the_missing_spend_row_of_the_killed_submit_is_reported_as_a_gap():
     assert not any(n.startswith("GAP") for n in script.advisories(with_row))
 
 
-# ---------- real dry runs: two child pythons, the first one hard-killed (nothing leaves the machine) ----------
 
 def _run(tmp_path: Path, port: int, *extra: str) -> tuple[int, dict, str]:
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}
@@ -281,7 +268,6 @@ def test_a_real_dry_run_kills_after_the_submit_and_the_restart_pays_nothing(tmp_
     assert result["phase1_returncode"] == 137 and result["phase2_returncode"] == 0
     assert result["wire_posts"] == 1 and result["fake_posts"] == 1
     assert [e["event"] for e in result["wire"]] == ["post_sent", "response_received"]
-    # what the production code actually did on the restart (recorded, not assumed)
     assert summary["production_did_on_restart"] == "refused_unknown_outcome"
     assert result["phase2"]["error_code"] == "outsee_uncertain_submit" and result["phase2"]["new_post_attempted"] is False
     assert result["phase2"]["project_images_ready"] is False and result["phase2"]["valid_image_on_disk"] is False
@@ -300,7 +286,7 @@ def test_the_negative_control_makes_the_stands_own_production_code_pay_twice_and
     assert {"exactly_one_paid_post_across_both_phases", "restart_sent_no_paid_request",
             "provider_independently_saw_one_submit"} <= set(result["failed"])
     assert result["summary"]["production_did_on_restart"] == "sent_second_request"
-    assert result["phase1_returncode"] == 137  # the kill itself still worked: only the second POST makes it fail
+    assert result["phase1_returncode"] == 137
 
 
 @pytest.mark.slow

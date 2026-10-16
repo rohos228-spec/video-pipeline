@@ -1,4 +1,3 @@
-"""Original Kie HTTP functions; only the remote HTTP server is a fixture."""
 import asyncio
 import io
 import json
@@ -72,7 +71,6 @@ class MediaHTTP(MediaJobs):
         from app.settings import settings
         self.settings_patch = patch.object(settings, "kie_api_base_url", self.origin)
         self.settings_patch.start()
-        # Safety at actual HTTP boundary even before implementation (RED).
         import httpx
         original = httpx.AsyncClient.send
         async def confined(client, request, **kwargs):
@@ -245,7 +243,6 @@ class MediaHTTP(MediaJobs):
             await s.commit()
             response = await download_artifact(art.uuid, session=s)
             self.assertEqual(str(response.path), str(result.file_path))
-            # Still a decodable PNG, but not the previously verified content.
             Image.new("RGB", (64, 96), "red").save(result.file_path, "PNG")
             with self.assertRaises(HTTPException) as changed:
                 await download_artifact(art.uuid, session=s)
@@ -280,7 +277,6 @@ class MediaHTTP(MediaJobs):
             await s.commit()
             self.assertEqual(len((await s.scalars(select(Artifact))).all()), 1)
             self.assertEqual(self.posts, 1, "disk recovery must not submit another generation")
-            # A plausible local file alone does not authorize application.
             other = result.file_path.with_name("frame_002_abcdef12.png")
             other.write_bytes(self.image)
             s.add(Frame(project_id=7, number=2, voiceover_text="synthetic",
@@ -320,12 +316,6 @@ class MediaHTTP(MediaJobs):
         self.assertEqual(self.posts, 1)
 
 class ProjectArtifactHTTP(unittest.IsolatedAsyncioTestCase):
-    """Exercise real FastAPI dependencies with separate master/project databases.
-
-    Direct calls to download_artifact(session=...) do not cover DB routing.
-    No dependency_overrides: they deliberately alias project and master sessions
-    in get_project_session and would hide the regression.
-    """
 
     async def asyncSetUp(self):
         import tempfile
@@ -409,7 +399,6 @@ class ProjectArtifactHTTP(unittest.IsolatedAsyncioTestCase):
             session.add(Artifact(project_id=7, kind=ArtifactKind.scene_image,
                                  uuid=self.uuid, path=str(self.path), meta={}))
             await session.commit()
-        # Preserve the original unscoped endpoint for legacy master artifacts.
         self.assertEqual((await self.client.get(self.url)).status_code, 200)
         for pid in (8, 777):
             with self.subTest(project_id=pid):
@@ -449,7 +438,6 @@ class ProjectArtifactHTTP(unittest.IsolatedAsyncioTestCase):
 
 
 if __name__ == "__main__":
-    # Inherited state tests are run separately, once.
     suite = unittest.TestSuite(MediaHTTP(name) for name in unittest.defaultTestLoader.getTestCaseNames(MediaHTTP)
                                if name.startswith("test_http_"))
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(ProjectArtifactHTTP))

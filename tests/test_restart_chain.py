@@ -1,4 +1,3 @@
-"""W40 фаза 4: единый потолок цепочки «брак -> перезапуск» (C-12), ручные решения (C-11, N-16, N-17), слой действий (C-4, C-14)."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -21,7 +20,7 @@ def _caps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(s, "regen_max_per_run", 12)
     monkeypatch.setattr(s, "regen_max_usd_per_run", 0.0)
     monkeypatch.setattr(s, "regen_estimate_usd_per_item", 0.0)
-    monkeypatch.setattr(s, "restart_chain_max_per_node", 0)  # по умолчанию выключен: измерение «как было»
+    monkeypatch.setattr(s, "restart_chain_max_per_node", 0)
 
 
 @pytest.fixture
@@ -50,26 +49,24 @@ def _project(status: ProjectStatus = ProjectStatus.generating_images, **meta) ->
 
 
 def _simulate_no_human_loop(p: Project) -> int:
-    """Худший сценарий без человека для узла images: платные перезапуски через три слоя. Возвращает их число."""
     paid = 0
-    for _cycle in range(aa.MAX_AUTO_REGEN_PER_STEP + 1):          # авто-ревью: попытка + 2 регена, сбрасывается только одобрением
-        for rnd in range(11):                                     # regen_budget: 11 раундов (12-й остановил бы)
+    for _cycle in range(aa.MAX_AUTO_REGEN_PER_STEP + 1):
+        for rnd in range(11):
             if not regen_budget.charge(p, "images", [rnd % 4 + 1]).ok:
                 return paid
             paid += 1
-        regen_budget.clear(p, "images")                           # проверка файлов прошла -> счётчики стёрты
-        regen_budget.charge(p, "vision:scenes", [1])              # соседний слой
+        regen_budget.clear(p, "images")
+        regen_budget.charge(p, "vision:scenes", [1])
         regen_budget.clear(p, "vision:scenes")
         if aa._bump_retry_count(p, ProjectStatus.images_ready) > aa.MAX_AUTO_REGEN_PER_STEP:
             return paid
-        paid += 1                                                 # сам реген авто-ревью
+        paid += 1
     return paid
 
 
 def test_c12_measurement_without_chain_cap_restarts_exceed_every_single_layer_cap() -> None:
     p = _project()
     paid = _simulate_no_human_loop(p)
-    # ни per_run (12), ни per_frame (3), ни авто-ревью (2) не остановили цепочку: суммарно больше любого из них
     assert paid > 12 * 2, paid
     assert paid == 11 * 3 + 2
 
@@ -80,7 +77,6 @@ def test_c12_chain_cap_bounds_the_same_loop(monkeypatch) -> None:
     paid = _simulate_no_human_loop(p)
     assert paid == 20
     assert restart_chain.count(p, "generating_images") == 20
-    # успех проверки счётчик цепочки не сбросил
     regen_budget.clear(p)
     assert restart_chain.count(p, "generating_images") == 20
     v = regen_budget.charge(p, "images", [1])
@@ -99,10 +95,10 @@ def test_c12_two_layers_share_one_node(monkeypatch) -> None:
     monkeypatch.setattr(app_settings.settings, "restart_chain_max_per_node", 3)
     p = _project()
     assert regen_budget.charge(p, "images", [1]).ok
-    assert regen_budget.charge(p, "vision:scenes", [2]).ok       # другой вид, тот же узел
+    assert regen_budget.charge(p, "vision:scenes", [2]).ok
     assert restart_chain.charge(p, "generating_images", "step_failure")[0]
     assert not regen_budget.charge(p, "images", [3]).ok
-    assert restart_chain.count(p, "generating_videos") == 0       # соседний узел не затронут
+    assert restart_chain.count(p, "generating_videos") == 0
 
 
 @pytest.mark.asyncio
@@ -137,10 +133,9 @@ async def test_c12_step_failure_counts_in_chain_and_stops(monkeypatch, session) 
     assert p.status is ProjectStatus.paused
     assert p.meta["step_failure"]["abandoned_reason"] == "restart_chain"
     assert "общий потолок" in p.meta["auto_paused_reason"]
-    assert restart_chain.count(p, "generating_images") == 2        # отказ счётчик не растит
+    assert restart_chain.count(p, "generating_images") == 2
 
 
-# --- C-11 / N-16 -------------------------------------------------------------------------------------
 
 def _regen_transition():
     return aa.TRANSITIONS[ProjectStatus.images_ready]
@@ -187,7 +182,7 @@ async def test_n16_manual_regen_respects_the_chain_cap(monkeypatch, session) -> 
         for _ in range(3):
             p.status = ProjectStatus.images_ready
             await aa._apply_regen(session, p, None, _regen_transition(), res, bot=None, manual=True)
-    assert prep.await_count == 2                                   # третий запуск не сделан
+    assert prep.await_count == 2
     assert p.status is ProjectStatus.paused and "общий потолок" in p.meta["auto_paused_reason"]
 
 
@@ -210,7 +205,6 @@ async def test_c11_resume_releases_all_counters(session) -> None:
 
 
 def test_automatic_paths_do_not_release_the_chain(monkeypatch) -> None:
-    """Сон после ошибок и успех шага автоматикой счётчик цепочки не трогают (release только у человека)."""
     from app.services.step_failure_policy import clear_failure_on_success
 
     p = _project(restart_chain={"generating_images": {"count": 5, "by": {}}})
@@ -218,7 +212,6 @@ def test_automatic_paths_do_not_release_the_chain(monkeypatch) -> None:
     assert restart_chain.count(p, "generating_images") == 5
 
 
-# --- N-17 / C-14 -------------------------------------------------------------------------------------
 
 async def _frame_hitl(session, kind=HITLKind.approve_images, status=ProjectStatus.images_ready):
     p = _project(status)
@@ -241,10 +234,9 @@ async def test_n17_rejected_frame_is_not_requeued_automatically(session, tmp_pat
     p, fr, req = await _frame_hitl(session)
     await apply_hitl_side_effects(session, req, HITLDecision.rejected)
     assert fr.status is FrameStatus.failed and fr.attrs.get("rejected_by_human") is True
-    n = requeue_failed_frames_without_png([fr], tmp_path, project_id=p.id)    # PNG на диске нет
+    n = requeue_failed_frames_without_png([fr], tmp_path, project_id=p.id)
     assert fr.status is FrameStatus.failed and not n
     assert p.status is ProjectStatus.images_ready and restart_chain.count(p, "generating_images") == 0
-    # сбойный кадр (не отклонённый человеком) по-прежнему возвращается в очередь
     other = Frame(project_id=p.id, number=2, voiceover_text="v", status=FrameStatus.failed, attrs={})
     assert requeue_failed_frames_without_png([other], tmp_path, project_id=p.id) == 1
 
@@ -259,7 +251,7 @@ async def test_n16_manual_frame_regen_counts_and_respects_cap(monkeypatch, sessi
     assert fr.status is FrameStatus.image_prompt_ready and restart_chain.count(p, "generating_images") == 1
     fr.status = FrameStatus.image_generated
     await apply_hitl_side_effects(session, req, HITLDecision.regenerate)
-    assert fr.status is FrameStatus.image_generated               # не возвращён в очередь
+    assert fr.status is FrameStatus.image_generated
     assert p.status is ProjectStatus.paused and "общий потолок" in p.meta["auto_paused_reason"]
 
 
@@ -270,7 +262,6 @@ async def test_c14_approve_without_advance_does_not_start_the_next_paid_step(ses
     p, fr, req = await _frame_hitl(session)
     await apply_hitl_side_effects(session, req, HITLDecision.approved, advance=False)
     assert fr.status is FrameStatus.image_approved and p.status is ProjectStatus.images_ready
-    # при advance по умолчанию (кнопка веб/TG) прежнее поведение: проект идёт дальше
     p2, fr2, req2 = await _frame_hitl(session)
     with patch("app.services.hitl_apply._maybe_advance_visual_ready", new=AsyncMock()) as adv:
         await apply_hitl_side_effects(session, req2, HITLDecision.approved)
@@ -284,7 +275,6 @@ def test_c14_hitl_approve_action_sends_advance_false() -> None:
     assert '"advance"' in inspect.getsource(w5._decide)
 
 
-# --- C-4 ---------------------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_c4_deferred_spend_action_keeps_its_reserve() -> None:
@@ -299,12 +289,11 @@ async def test_c4_deferred_spend_action_keeps_its_reserve() -> None:
             patch.object(executor.budget, "settle", new=AsyncMock()) as settle:
         got = await executor._settle_step("p1", step, registry.get("hitl.regenerate"), 30.0, None, None)
     assert got is None
-    settle.assert_not_awaited()                                    # резерв не закрыт нулём
+    settle.assert_not_awaited()
     measure.assert_not_awaited()
 
 @pytest.mark.asyncio
 async def test_telegram_hero_regen_goes_through_the_chain_cap(monkeypatch, session) -> None:
-    """Ручной 🔁 на hero-карточке (Telegram) - платный перезапуск generating_hero в общем потолке."""
     from app.services.hitl_apply import request_hero_regen
 
     monkeypatch.setattr(app_settings.settings, "restart_chain_max_per_node", 2)
@@ -318,12 +307,11 @@ async def test_telegram_hero_regen_goes_through_the_chain_cap(monkeypatch, sessi
     assert restart_chain.count(p, "generating_hero") == 2
     assert p.meta["restart_chain"]["generating_hero"]["by"] == {"manual": 2}
     p.status = ProjectStatus.hero_ready
-    assert await request_hero_regen(session, p) is False             # третий запуск не сделан
+    assert await request_hero_regen(session, p) is False
     assert p.status is ProjectStatus.paused and "общий потолок" in p.meta["auto_paused_reason"]
 
 
 def test_telegram_hero_regen_branches_use_the_helper() -> None:
-    """Обе ветки 🔁 в app/telegram/bot.py (excel_id и вариации) не ставят generating_hero напрямую."""
     import re
     from pathlib import Path
 

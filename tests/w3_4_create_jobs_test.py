@@ -1,8 +1,3 @@
-"""W3-4 / B08: состояние Create-задач (`_JOBS`) в БД и пережитый перезапуск.
-
-Класс доказательства U и D: настоящий create_jobs, SQLite во временной папке, «генератор» - заменитель.
-Перезапуск моделируется сбросом памяти и сменой токена процесса; настоящего рестарта Studio не было.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +28,6 @@ def _clean(monkeypatch):
 
 
 def _restart(monkeypatch, owner="new-process"):
-    """Перезапуск процесса: память пуста, токен процесса другой, БД та же."""
     monkeypatch.setattr(cj, "_OWNER", owner)
     cj._JOBS.clear()
     cj._RECENT_FP.clear()
@@ -52,7 +46,7 @@ def _db_rows():
 async def _finish(job):
     task = cj._TASKS_BY_JOB.get(job.id)
     if task is not None:
-        await asyncio.wait_for(asyncio.shield(task), 5)  # включая запись состояния в БД
+        await asyncio.wait_for(asyncio.shield(task), 5)
     assert job.status in ("done", "failed"), job.status
 
 
@@ -99,7 +93,7 @@ async def test_done_job_survives_restart(monkeypatch):
     old_path, old_url = job.path, job.preview_url
     _restart(monkeypatch)
     assert cj._JOBS == {}
-    got = cj.get_job(job.id)  # ленивое восстановление
+    got = cj.get_job(job.id)
     assert got is not None and got.status == "done" and got.path == old_path and got.preview_url == old_url
     assert got.to_dict()["ok"] is True and got.to_dict()["bytes"] >= 32
 
@@ -139,8 +133,7 @@ async def test_unfinished_job_is_marked_interrupted_not_rerun(monkeypatch):
     assert got.id not in {j.id for j in cj.list_active_jobs()}
     assert _db_rows()[job.id]["status"] == "interrupted"
     assert json.loads(side.read_text(encoding="utf-8"))["status"] == "failed"
-    assert calls == [1]  # повторного платного запуска нет
-    # повторное чтение не меняет результат
+    assert calls == [1]
     _restart(monkeypatch, owner="third-process")
     assert cj.get_job(job.id).status == "failed"
     assert _db_rows()[job.id]["status"] == "interrupted"
@@ -191,7 +184,7 @@ async def test_old_snapshot_does_not_overwrite_newer_state():
 
 
 async def test_db_failure_does_not_break_generation(monkeypatch, tmp_path):
-    monkeypatch.setattr(cj, "_db_path", lambda: tmp_path)  # каталог вместо файла БД
+    monkeypatch.setattr(cj, "_db_path", lambda: tmp_path)
     job = await _enqueue(_ok_run())
     await _finish(job)
     assert job.status == "done"
@@ -228,5 +221,4 @@ async def test_old_terminal_rows_are_pruned_on_restore(monkeypatch):
 
 
 def test_update_sidecar_import_kept():
-    # create_jobs использует update_sidecar из generation_storage (не меняли)
     assert update_sidecar is cj.update_sidecar

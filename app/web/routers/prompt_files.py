@@ -181,7 +181,6 @@ async def list_prompt_files(
     step_code: str,
     group_id: str | None = Query(None),
 ) -> list[PromptFileInfo]:
-    """Список .md. Для group_id=script_frames_qc — только промты группы."""
     _ensure_step(step_code)
     bootstrap_saved_at_from_history(step_code)
     folder = step_dir(step_code)

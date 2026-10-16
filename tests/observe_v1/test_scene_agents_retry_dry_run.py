@@ -1,19 +1,3 @@
-"""Dry run of the sd_agent supervised retry: observation -> diagnosis -> decision -> action -> verification.
-
-No network, no provider, no paid call. What is REAL: scene_design.run (agent waves, checkpoints,
-slice_to_cells, the transactional store_cells + data_applied commit, the original harness gate),
-parse_agent_slice, the runner journal hooks, the observe_model wrapper (request identity, budget charge,
-first-body check), observe_attempt, the managed result gate, the journal and outbox delivery, the
-Diagnoser, the DecisionSupervisor and its policy, ActionSupervisor.enable / recover_node, the claim, the
-reconcile verification and the recovery cap. What is SCRIPTED: the model boundary only (the low-level
-POST returns canned replies) and the Decision model (canned proposals). What is SEEDED by hand: the native
-step-failure counter that proves "native retries exhausted" (a runtime policy outside the observation
-scope) and the master/project runtime copy, which uses the application's own copy functions.
-
-Admitted agents: characters and world (one model request, one transaction for the cells and the
-`data_applied` fact). Refused agents (skeleton, camera, action, the legacy node) never enter a managed
-scope, so they never reach a retry; each refusal carries its exact reason.
-"""
 import json
 import unittest
 from contextlib import ExitStack
@@ -39,7 +23,6 @@ GOOD_WORLD = {"locations": [{"id": "loc01", "name": "Читальный зал",
 
 
 class ManagedSceneFixture(sd.SceneAgentFixture):
-    """The real-step fixture plus a managed execution and the Decision layer (no tests of its own)."""
     enable_scope = True
 
     async def asyncSetUp(self):
@@ -50,8 +33,6 @@ class ManagedSceneFixture(sd.SceneAgentFixture):
                          'max_output_tokens': 1024, 'timeout_s': 30},
             'profiles': {}, 'allowed_actions': sorted(decision_config.ALL_ACTIONS)})
         self.stack.enter_context(patch.object(decision_config, "runtime_config", return_value=cfg))
-        # A real project reaches this step with frames already carrying their v2 rows (every earlier
-        # step backfills): the step's own idempotent backfill must not be the thing that changes the input.
         from app.services import db_v2
         async with self.business() as session:
             await db_v2.backfill_project_v2(session, await session.get(Project, 7))
@@ -66,7 +47,6 @@ class ManagedSceneFixture(sd.SceneAgentFixture):
         await self.observer.reload()
         return result
 
-    # ---- the worker, as the runtime drives it (start=False: the recovery attempt) ------------
     async def worker(self, replies, *, start=True):
         sd.SCRIPT["replies"] = list(replies)
         async with self.business() as session:
@@ -86,7 +66,6 @@ class ManagedSceneFixture(sd.SceneAgentFixture):
             await session.commit()
 
     async def exhaust_native_retries(self, error="native step retries exhausted"):
-        """The runtime's step-failure policy after 9 failed native attempts (outside observation)."""
         async with self.business() as session:
             project = await session.get(Project, 7)
             node = await session.scalar(select(NodeRun).where(NodeRun.node_key == "n1"))
@@ -110,7 +89,6 @@ class ManagedSceneFixture(sd.SceneAgentFixture):
         return found[0]
 
     def decision_model(self, actions):
-        """The Decision model: canned proposals, validated by the real policy."""
         queue = list(actions)
 
         async def reply(**kwargs):
@@ -152,27 +130,22 @@ class ManagedSceneFixture(sd.SceneAgentFixture):
 
 
 class AdmittedAgentRetry:
-    """Shared tests of an admitted agent; the concrete class names the agent and its replies."""
     bad_reply = "I cannot produce JSON for this."
     no_list_reply = '{"report": "no list here"}'
     good_reply = ""
 
     async def test_failed_attempt_to_decision_to_one_verified_retry(self):
         from app.services import decision_v1
-        # 1. observation: the original step fails (one request, an unusable reply).
         await self.failed_native_attempts([self.bad_reply])
         first_bodies = list(sd.SCRIPT["bodies"])
         self.assertEqual(len(first_bodies), 1)
         self.assertEqual(await self.cells(), [])
         self.assertEqual(await self.facts("data_applied"), [], "nothing was applied by the failed attempt")
-        # 2. diagnosis: one typed, current, complete incident.
         incident = await self.typed_incident()
         self.assertEqual(incident.type, "invalid_json")
         self.assertFalse(incident.details["evidence_incomplete"])
         self.assertTrue(incident.details["currently_relevant"])
-        # 3. decision: read the contract, then ask for retry_same.
         record = await self.decide_retry(incident)
-        # 4. action: exactly one recovery ticket, queued for the ORIGINAL worker.
         ticket = await self.ticket()
         self.assertEqual(ticket.status, "queued")
         self.assertEqual(ticket.preconditions["action_type"], "retry_same")
@@ -181,13 +154,11 @@ class AdmittedAgentRetry:
         async with self.sessions() as session:
             row = await session.get(decision_v1.DecisionRecord, record["decision_id"])
             self.assertEqual((row.status, row.action_id), ("waiting_worker", ticket.action_id))
-        # 5. the original worker runs the retry: the SAME first request, now a valid reply.
         await self.worker([self.good_reply], start=False)
         finish_job_tracking(7)
         second_bodies = sd.SCRIPT["bodies"][len(first_bodies):]
         self.assertEqual(len(second_bodies), 1)
         self.assertEqual(second_bodies[0], first_bodies[0], "recovery's first request equals the source's")
-        # 6. the cells and the application fact were committed together, linked to the accepted request.
         stored = await self.cells()
         self.assertTrue(stored and all(c.status == "ok" and c.agent == self.agent for c in stored))
         applied = await self.facts("data_applied")
@@ -201,7 +172,6 @@ class AdmittedAgentRetry:
         self.assertEqual(applied[0].request_id, parse.request_id)
         proof = (await self.facts("node_result_verification"))[-1].payload
         self.assertEqual((proof["status"], proof["failure_class"], proof["agent"]), ("passed", None, self.agent))
-        # 7. verification of the attempt from the journal.
         await self.sync()
         await self.deliver()
         await reconcile(self.observer)
@@ -215,7 +185,6 @@ class AdmittedAgentRetry:
         async with self.business() as session:
             self.assertEqual((await session.get(Project, 7)).status, ProjectStatus.frames_ready,
                              "the fan-out is not complete: the original step hands back to the planner")
-        # 8. cap: the decision owner refuses a competing recovery, and the database refuses a second ticket.
         with self.assertRaisesRegex(ValueError, "decision owner"):
             await self.supervisor.recover_node(project_id=7, execution_id=EXECUTION,
                 incident_id=incident.incident_id, node_key="n1", idempotency_key="second-retry-0001",
@@ -261,7 +230,6 @@ class AdmittedAgentRetry:
         self.assertIsNone(await self.ticket())
 
     async def test_profile_retry_with_an_unapproved_overlay_is_refused_without_a_ticket(self):
-        # W5 D05: sd_agent (characters/world) is profile compatible, so the capability no longer denies a profile retry; an unapproved overlay is still refused and no ticket is issued
         await self.failed_native_attempts([self.bad_reply])
         incident = await self.typed_incident()
         with self.assertRaisesRegex(ValueError, "execution grant|profile outside|unknown or incompatible"):
@@ -271,7 +239,6 @@ class AdmittedAgentRetry:
                 profile_overlay_id="no-such-overlay")
         self.assertIsNone(await self.ticket())
 
-    # ---- the cells and the application fact are one transaction ---------------------------------
     async def test_a_failure_inside_the_cell_transaction_keeps_the_old_cells_and_stages_no_fact(self):
         await self.worker([self.good_reply])
         before = [(c.kind, c.target_key, c.field, c.value) for c in await self.cells()]
@@ -287,7 +254,6 @@ class AdmittedAgentRetry:
         self.assertEqual(len(await self.facts("data_applied")), applied_before, "no fact for an unapplied result")
 
     async def test_the_transactional_store_writes_exactly_what_the_chunked_store_writes(self):
-        """The change must not alter generated results: same rows, same order, same statuses."""
         from app.services.scene_design import cells as sd_cells
         await self.worker([self.good_reply])
         transactional = [(c.kind, c.target_key, c.field, c.value, c.seq, c.vo_offset, c.status, c.error)
@@ -313,14 +279,13 @@ class WorldRetry(AdmittedAgentRetry, ManagedSceneFixture):
 
 
 class RefusedAgents(ManagedSceneFixture):
-    """skeleton, camera and action never enter a managed scope; each refusal names its exact reason."""
     enable_scope = False
     agent = "camera"
 
     async def refuse(self, agent, code):
         from app.models import Workflow, WorkflowRun
         nodes = [{"id": "n1", "type": "sd_agent", "data": {"groupId": "g1", "sd_agent": agent}}, self.nodes[1]]
-        graph = scene_contracts  # noqa: F841 (documentation: the rule lives in scene_contracts)
+        graph = scene_contracts
         from app.services import revisions
         version = revisions.graph_version(nodes, [])
         async with self.sessions() as master:
@@ -363,17 +328,10 @@ class RefusedAgents(ManagedSceneFixture):
 
 
 class RecoveryNodeAdmission(ManagedSceneFixture):
-    """Defence in depth: node admission is enforced INSIDE recovery too, not only at enable / launch.
-
-    The scope is enabled for an admitted agent (characters) and the node is then turned into a refused one in the
-    execution's graph (recover_node), or the admission rule is made to refuse it after the ticket was queued
-    (claim): the capability of the TYPE (sd_agent, managed, retry_same) alone must never issue or run a ticket."""
     agent = "characters"
     bad_reply = "I cannot produce JSON for this."
 
     async def turn_node_into(self, agent, node_type="sd_agent"):
-        """Rewrite node n1 in the master graph and keep the scope's graph version equal to it, so that only the
-        per-node admission can stop the ticket (the graph check passes)."""
         from app.models import Workflow, WorkflowRun
         from app.services import revisions
         nodes = [{"id": "n1", "type": node_type, "data": {"groupId": "g1", "sd_agent": agent}}, self.nodes[1]]
@@ -415,8 +373,6 @@ class RecoveryNodeAdmission(ManagedSceneFixture):
         await self.refused_at_recover("characters", "legacy_union", node_type="scene_design")
 
     async def refused_at_claim(self, agent, code):
-        """A ticket queued for an admitted node; the admission rule then refuses the node: the claim must stop
-        before the retry runs, leave the ticket queued and send no request."""
         from app.orchestrator import node_spec
         from app.services.actions_recovery import NodeNotAdmitted
         await self.failed_native_attempts([self.bad_reply])
@@ -455,8 +411,6 @@ class RecoveryNodeAdmission(ManagedSceneFixture):
         await self.refused_at_claim("action", "chunked_requests")
 
     async def test_admitted_agent_still_passes_both_checks(self):
-        """Control: the same flow for an admitted agent issues the ticket and claims it (the full path is proven by
-        CharactersRetry / WorldRetry; here the two new checks are shown not to refuse it)."""
         from app.services.actions_recovery import NodeNotAdmitted
         await self.failed_native_attempts([self.bad_reply])
         incident = await self.typed_incident()
@@ -471,7 +425,6 @@ class RecoveryNodeAdmission(ManagedSceneFixture):
 
 
 class ManagedResultGate(ManagedSceneFixture):
-    """In a managed scope a result that fails the independent check holds the execution."""
     agent = "characters"
 
     async def test_a_contract_rejected_slice_holds_the_managed_execution_and_fails_the_attempt(self):
@@ -496,8 +449,6 @@ class ManagedResultGate(ManagedSceneFixture):
 
 
 class LegacyNodeStaysUnmanaged(sd.SceneAgentFixture):
-    """The legacy single node (type scene_design) never enters a managed scope: it runs in the agents' step,
-    which observe_attempt resolves from the project status as sd_agent, so the scope itself must refuse it."""
     node_type = "scene_design"
     fixture_node_type = "scene_design"
     agent = "characters"
@@ -510,7 +461,6 @@ class LegacyNodeStaysUnmanaged(sd.SceneAgentFixture):
         async with self.sessions() as session:
             self.assertIsNone(await session.get(base_tests.ActionExecutionControl, EXECUTION))
         self.assertEqual(sd.SCRIPT["bodies"], [])
-        # observation (not managed) still works for it, exactly as before
         await self.worker([json.dumps(sd.GOOD_CHARACTERS, ensure_ascii=False)])
         self.assertTrue(await self.cells())
 

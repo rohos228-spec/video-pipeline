@@ -55,7 +55,6 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path | str | None = None) -> None:
-    """Применить версионные миграции схемы (``app.db_schema``): таблицы, колонки, индексы, custom_pricing."""
     from app.db_schema import migrate_tracker_db
 
     conn = get_connection(db_path)

@@ -1,9 +1,3 @@
-"""N-7: у платной отправки клипа Outsee есть ключ запроса (проект, клип, sha модели и промта).
-
-Класс доказательства: U/D на заменителе провайдера. Заменитель вместо ``outsee_http.generate_video``, настоящая
-лестница ``generate_video_with_retries`` и настоящая таблица ``outsee_idempotency`` на временной SQLite. Сети,
-платных вызовов и боевой базы нет. Живого доказательства нет.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -83,13 +77,12 @@ def test_clip_key_drops_the_per_attempt_hex_and_keeps_the_shot(tmp_path):
 
 
 async def test_answer_lost_after_send_blocks_every_next_paid_request(env):
-    """Раньше лестница из 4+3 попыток могла послать платный запрос заново после потери ответа."""
     env.provider.script = [OutseeSubmitUnknownError("no answer")]
     with pytest.raises(OutseeSubmitUnknownError):
         await env.gen()
     assert env.provider.calls == 1
     with pytest.raises(idem.OutseeIdempotencyUncertainError) as caught:
-        await env.gen()  # тот же клип после рестарта
+        await env.gen()
     assert env.provider.calls == 1, "второй платный запрос не должен уйти"
     assert is_no_resubmit(caught.value)
 
@@ -97,20 +90,19 @@ async def test_answer_lost_after_send_blocks_every_next_paid_request(env):
 async def test_recorded_result_is_adopted_instead_of_paying_again(env):
     first = await env.gen()
     assert env.provider.calls == 1 and Path(first.file_path).is_file()
-    again = await env.gen(out_path=env.out())  # тот же ключ, результат записан и ещё не принят в Artifact
+    again = await env.gen(out_path=env.out())
     assert env.provider.calls == 1, "платный результат уже есть"
     assert Path(again.file_path) == Path(first.file_path)
 
 
 async def test_consumed_request_allows_a_new_paid_regeneration(env):
     await env.gen()
-    await idem.mark_consumed(PID, "clip_003")  # клип принят: человек может заказать новый
+    await idem.mark_consumed(PID, "clip_003")
     await env.gen(out_path=env.out())
     assert env.provider.calls == 2
 
 
 async def test_without_the_flag_nothing_is_recorded(env):
-    """Старое поведение сохранено для вызовов без флага (ручные и вспомогательные пути)."""
     env.provider.script = [OutseeSubmitUnknownError("no answer")]
     with pytest.raises(OutseeSubmitUnknownError):
         await env.gen(idempotent=False)

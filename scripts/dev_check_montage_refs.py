@@ -1,10 +1,3 @@
-"""Dev-проверка референсов кадра: полоса под картинкой и окно «приложить».
-
-Не часть пайплайна. Нужен бэкенд на :8765 и сид
-``scripts/dev_seed_montage_scene.py`` (он же кладёт готовых персонажей).
-
-    python3 scripts/dev_check_montage_refs.py [project_id] [out_dir]
-"""
 
 from __future__ import annotations
 
@@ -57,7 +50,6 @@ async def main(project_id: int, out_dir: Path) -> None:
         )
         await page.screenshot(path=str(out_dir / "refs-window.png"))
 
-        # 1) приложить готового персонажа проекта
         await page.get_by_title("Приложить персонаж: следователь Лавров").first.click()
         await page.wait_for_timeout(2500)
         print(
@@ -65,7 +57,6 @@ async def main(project_id: int, out_dir: Path) -> None:
             await page.get_by_text("следователь Лавров", exact=False).first.is_visible(),
         )
 
-        # 2) загрузить новый файл под своим именем
         async with page.expect_file_chooser() as fc:
             await page.get_by_role("button", name="выбрать файл").first.click()
         chooser = await fc.value
@@ -80,7 +71,6 @@ async def main(project_id: int, out_dir: Path) -> None:
         )
         await page.screenshot(path=str(out_dir / "refs-attached.png"))
 
-        # 3) убрать оба
         for _ in range(2):
             await page.get_by_role("button", name="Убрать реф").first.click()
             await page.wait_for_timeout(2000)

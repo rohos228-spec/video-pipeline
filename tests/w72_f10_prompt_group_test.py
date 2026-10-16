@@ -1,8 +1,3 @@
-"""F10 option ``--prompt-group script_frames_qc`` of BOTH stands (``scripts/e2e_full_chain.py`` dry, ``scripts/e2e_full_chain_live.py``).
-
-Offline: no server process, no network, nothing paid. The default behaviour of both stands (option off) is covered by the
-w5o_full_chain* tests and must not move: the first tests here only pin that the option is off by default.
-"""
 from __future__ import annotations
 
 import importlib.util
@@ -44,13 +39,11 @@ def _group_def():
     return g
 
 
-# ───────── the option is OFF by default and only knows the real group ─────────
 
 def test_option_is_off_by_default_in_both_stands(dry, live):
     assert dry.parse_args(["--dry", "--work-dir", "x"]).prompt_group is None
     assert live.parse_args(["--live-preflight"]).prompt_group is None
     assert dry.PROMPT_GROUPS == live.fc.PROMPT_GROUPS == (GROUP,)
-    # without the option every number is the one the w5o tests pin
     assert dry.expected_llm_calls("E", 3) == dry.expected_llm_calls("E", 3, 0, None)
     assert dry.expected_llm_calls("E", 3)["excel_gpt"] == 6 and not any(k.startswith("group_") for k in dry.expected_llm_calls("E", 3))
     est = live.estimate(live.parse_args(["--live-preflight", "--until", "E"]))
@@ -65,11 +58,10 @@ def test_option_accepts_only_known_groups(dry, live):
     with pytest.raises(SystemExit):
         dry.parse_args(["--dry", "--work-dir", "x", "--prompt-group", "no_such_group"])
     with pytest.raises(SystemExit):
-        live.parse_args(["--live-preflight", "--prompt-group", "scene_design_fanout"])      # a real group, but not this option's
+        live.parse_args(["--live-preflight", "--prompt-group", "scene_design_fanout"])
 
 
 def test_level_a_is_refused_with_a_group(dry, live):
-    # level A ends at the first enrich_1_ready; every node of the group runs in the enrich_1 slot -> A would stop after its first node
     with pytest.raises(ValueError, match="уровня A"):
         dry.parse_args(["--dry", "--work-dir", "x", "--until", "A", "--prompt-group", GROUP])
     assert dry.main(["--dry", "--work-dir", "x", "--until", "A", "--prompt-group", GROUP]) == dry.EXIT_ARGS
@@ -77,19 +69,17 @@ def test_level_a_is_refused_with_a_group(dry, live):
         live.parse_args(["--live-preflight", "--until", "A", "--prompt-group", GROUP])
 
 
-# ───────── the stand's literals are bound to the production group ─────────
 
 def test_stand_literals_match_the_production_group(dry):
     g = _group_def()
     assert tuple(n.preferred_id for n in g.nodes) == dry.GROUP_NODE_KEYS[GROUP]
     model_nodes = [n for n in g.nodes if (n.operator_config or {}).get("transport") != "code"]
-    assert len(model_nodes) == len(dry.GROUP_LLM_KINDS[GROUP]) == 4          # skeleton, site, shots, QC; the report is code
+    assert len(model_nodes) == len(dry.GROUP_LLM_KINDS[GROUP]) == 4
     assert [m for m in dry.GROUP_NODE_KEYS[GROUP] if m.endswith("_fw_report")] == [g.nodes[-1].preferred_id]
     assert (g.nodes[-1].operator_config or {}).get("transport") == "code"
 
 
 def test_anchor_is_the_first_generic_node_and_the_chain_hangs_on_it(dry):
-    """The worker starts a group node only along an excel_gpt arrow, so the stand hangs the group on n_excel_gpt_1."""
     from app.orchestrator.default_graph import default_graph
     nodes, edges = default_graph()
     by_id = {n["id"]: n for n in nodes}
@@ -126,7 +116,6 @@ async def mem_db(monkeypatch, tmp_path):
 
 
 async def test_group_wires_into_the_real_default_graph_at_the_anchor(mem_db):
-    """The production insert on the REAL default graph: n_excel_gpt_1 -> Каркас -> ... -> Отчёт -> n_hero."""
     from app.models import Project, ProjectStatus, Workflow, WorkflowRun, WorkflowRunStatus
     from app.orchestrator.default_graph import default_graph
     from app.services.node_groups import insert_node_group
@@ -150,14 +139,12 @@ async def test_group_wires_into_the_real_default_graph_at_the_anchor(mem_db):
     chain = ["n_excel_gpt_1", *stand.GROUP_NODE_KEYS[GROUP], "n_hero"]
     for a, b in zip(chain, chain[1:], strict=False):
         assert (a, b) in pairs, (a, b)
-    assert ("n_excel_gpt_1", "n_hero") not in pairs                      # the old arrow is re-hung behind the group
+    assert ("n_excel_gpt_1", "n_hero") not in pairs
     by_id = {n["id"]: n for n in cg["nodes"]}
-    # every node of the group is an excel_gpt node outside the five enrich slots (they run in the enrich_1 status)
     for key in stand.GROUP_NODE_KEYS[GROUP]:
         assert by_id[key]["type"] == "excel_gpt" and by_id[key]["data"]["slotOverflow"] is True
 
 
-# ───────── the oracle answers the group in the shape its executors parse ─────────
 
 def _attach(*uuids_numbers):
     items = ",".join(f'{{"number":{n},"uuid":"{u}","voiceover_text":"x"}}' for u, n in uuids_numbers)
@@ -165,15 +152,13 @@ def _attach(*uuids_numbers):
 
 
 def test_oracle_markers_open_the_real_group_prompts(dry):
-    """The oracle tells the group's requests apart by the first line of each master prompt; a rewritten prompt must fail here."""
     from app.services.prompt_library import resolve_script_frames_qc_prompt_path
     g = _group_def()
     model_nodes = [n for n in g.nodes if (n.operator_config or {}).get("transport") != "code"]
     for node, kind in zip(model_nodes, dry.GROUP_LLM_KINDS[GROUP], strict=True):
         text = resolve_script_frames_qc_prompt_path(node.prompt_variant).read_text(encoding="utf-8")
         assert dry.TextOracle.classify(text) == kind, (node.prompt_variant, dry.TextOracle.classify(text))
-        assert dry.TextOracle.classify("служебное вступление\n\n" + text) == kind                # tolerant to a short preamble
-    # and they do not steal the generic / native requests
+        assert dry.TextOracle.classify("служебное вступление\n\n" + text) == kind
     assert dry.TextOracle.classify("# Доп. работа с Excel #\n\nx") == "excel_gpt"
     assert dry.TextOracle.classify("# Агент: промты анимации Veo 3.1 Fast (Relax) → DB\nx") == "animation_prompts"
 
@@ -188,17 +173,16 @@ def test_oracle_group_answers_are_ops_for_the_cells_of_the_batch(dry):
     shots = json.loads(o.answer_group_shots(text, {}))["ops"]
     assert shots[0]["fields"]["кадры"][0]["id"].startswith("1-S1-") and shots[1]["fields"]["кадры"][0]["id"].startswith("2-S1-")
     assert json.loads(o.answer_group_qc(text, {})) == {"ops": []}
-    # the answers are the validated ones of the group's own stand (same objects, not a copy)
     assert dry.GROUP_VO == dry.qc.FULL_VO and dry.qc.valid_answer
 
 
 def test_group_story_is_the_script_and_the_split_covers_it(dry):
     plain = dry.TextOracle()
-    assert plain.script_text == dry.SCRIPT_TEXT and plain.frame_texts == dry.FRAME_TEXTS            # default untouched
+    assert plain.script_text == dry.SCRIPT_TEXT and plain.frame_texts == dry.FRAME_TEXTS
     o = dry.TextOracle(prompt_group=GROUP)
     script = json.loads(o.answer_script("", {}))["ops"][0]["fields"]["закадровый_текст"]
     frames = json.loads(o.answer_split("", {}))["ops"][0]["frames"]
-    assert script == dry.GROUP_VO and len(script) >= 200                                           # make_script refuses shorter
+    assert script == dry.GROUP_VO and len(script) >= 200
     assert " ".join(f["закадр"] for f in frames) == script and len(frames) == len(dry.GROUP_SCENE_VOS) == 5
 
 
@@ -209,21 +193,17 @@ def test_group_story_text_passes_the_production_checks(dry):
     assert all(c["evidence_quote"] and c["evidence_quote"] in dry.GROUP_VO for c in v["criteria"].values())
 
 
-# ───────── numbers: the group adds requests, the frame count comes from the group ─────────
 
 def test_expected_llm_calls_with_a_group(dry):
     base = dry.expected_llm_calls("E", 9, 0)
     withg = dry.expected_llm_calls("E", 9, 0, GROUP, 5, 5)
     extra = {k: v for k, v in withg.items() if k not in base}
     assert extra == {"group_skeleton": 1, "group_action": 1, "group_shots": 1, "group_qc": 1}
-    # measured in the dry run: n_excel_gpt_1 runs on the split's 5 frames, n_excel_gpt_2 on the group's 5 VO parents (the 4 shot
-    # children are not sent), 25 requests in all
     assert withg["excel_gpt"] == 5 + 5
     assert {k: v for k, v in withg.items() if k not in extra and k != "excel_gpt"} == {k: v for k, v in base.items() if k != "excel_gpt"}
     assert sum(withg.values()) == 25
-    # without the measured counts the estimate is the upper bound (both generic nodes at the cap), and it never undershoots
     assert dry.expected_llm_calls("E", 9, 0, GROUP)["excel_gpt"] == 18 >= withg["excel_gpt"]
-    assert dry.expected_llm_calls("E", 9, 0)["excel_gpt"] == 18                    # option off: 2 * frames, as before
+    assert dry.expected_llm_calls("E", 9, 0)["excel_gpt"] == 18
     assert dry.uploads_expected(9, 0, children=4) == 13
     est = dry.live_estimate(9, 9, prompt_group=GROUP, children=4, split_frames=5, group_parents=5)
     assert est["prompt_group"] == GROUP and est["free_but_external"]["public_file_host_uploads"] == 13
@@ -239,11 +219,10 @@ def test_live_estimate_and_caps_count_the_group(live):
     assert {k: v for k, v in b["llm_by_node"].items() if k.startswith("group_")} == {
         "group_skeleton": 1, "group_action": 1, "group_shots": 1, "group_qc": 1}
     assert b["text_usd"] == pytest.approx(a["text_usd"] + 4 * live.PRICE["llm_request"])
-    assert b["media_usd"] == a["media_usd"] and b["requests"]["image"] == a["requests"]["image"] == 5      # frames stay capped by --frames
-    assert a["public_file_host_uploads"] == 5 and b["public_file_host_uploads"] == 5 + 4              # + one reference per shot child (< frames)
-    assert live.wire_caps(grp)["llm"] == live.wire_caps(plain)["llm"] + 4 * 4                          # est * 4 + 12: the 4 requests raise it
+    assert b["media_usd"] == a["media_usd"] and b["requests"]["image"] == a["requests"]["image"] == 5
+    assert a["public_file_host_uploads"] == 5 and b["public_file_host_uploads"] == 5 + 4
+    assert live.wire_caps(grp)["llm"] == live.wire_caps(plain)["llm"] + 4 * 4
     assert live.wire_caps(grp)["outsee_image"] == live.wire_caps(plain)["outsee_image"] == 7
-    # the owner's ceilings are not touched by the option: the group costs a few cents of text, no media
     assert live.estimate_problem(b, 2.0, 6.0) is None and live.estimate_problem(a, 2.0, 6.0) is None
     eight = live.estimate(live.parse_args(["--live-preflight", "--until", "E", "--frames", "8", "--owner-approved-frames", "8",
                                            "--prompt-group", GROUP]))
@@ -253,10 +232,9 @@ def test_live_estimate_and_caps_count_the_group(live):
 
 
 def test_live_preflight_with_the_group_pays_nothing_and_prints_the_group(live, tmp_path, capsys, monkeypatch):
-    """The owner's command line, dry-checked: keys by NAME only (synthetic file), no network, no child process."""
     import socket
     import subprocess
-    key = "k" + "_" + "SECRETVALUE1234567890"            # built from parts: no secret-shaped literal in the source
+    key = "k" + "_" + "SECRETVALUE1234567890"
     env = tmp_path / "keys.env"
     env.write_text("\n".join(f"{n}={key}{n}" for n in ("VIBECODE_API_KEY", "OUTSEE_API_KEY", "ELEVENLABS_API_KEY")) + "\n", encoding="utf-8")
 
@@ -272,13 +250,11 @@ def test_live_preflight_with_the_group_pays_nothing_and_prints_the_group(live, t
     out = capsys.readouterr()
     assert "группа промтов: script_frames_qc" in out.out and "число кадров задаёт группа" in out.out and "group_shots" in out.out
     assert key not in out.out + out.err
-    # and without the option the same command line is the old one
     assert live.main([a for a in argv if a not in ("--prompt-group", GROUP)]) == live.EXIT_PASS
     plain = capsys.readouterr().out
     assert "группа промтов: нет" in plain and "group_shots" not in plain and "число кадров задаёт группа" not in plain
 
 
-# ───────── the check that would have caught the live defect ─────────
 
 HOLLOW = ("Фон: нет исходных данных для заполнения; Действие: нет исходных данных для заполнения; "
           "Свет: нет исходных данных для заполнения; STYLE: Archival Noir Watercolor")
@@ -298,7 +274,7 @@ def test_frames_prompt_report(dry):
     assert r == {"frames": 3, "parents": 2, "children": 1, "empty": [], "hollow": []}
     bad = [_row(1, "", "p1"), _row(2, HOLLOW, "p2"), _row(3, "", "c3", "shot", "p2"), _row(4, "", "c4", "shot", "p1")]
     r = dry.frames_prompt_report(bad)
-    assert r["empty"] == [1, 4] and r["hollow"] == [2, 3]                  # a child of a hollow / empty parent is no better than it
+    assert r["empty"] == [1, 4] and r["hollow"] == [2, 3]
     assert dry.frames_prompt_report([])["frames"] == 0
     assert dry.frames_prompt_report([{"number": 1, "uuid": "u", "image_prompt": None, "attrs": None}])["empty"] == [1]
 
@@ -314,7 +290,6 @@ def test_hollow_rule_is_the_production_one(dry):
         assert (mine["empty"] == [1]) == (not text.strip()), text[:40]
 
 
-# ───────── the stand drives the production routes in the order the UI uses ─────────
 
 class _Api:
     def __init__(self, workflows, post_code=200, post_body=None):
@@ -402,10 +377,9 @@ def test_create_touches_the_graph_only_when_the_option_is_set(dry):
         paths = [p for _, p, _ in api.calls]
         assert paths[0] == "/api/projects"
         assert any("/canvas/groups/" in p for p in paths) is bool(group)
-        assert (len(paths) == 1) is (group is None)                       # without the option: the creation call and nothing else
+        assert (len(paths) == 1) is (group is None)
 
 
-# ───────── F10-D12: the livelock behind the group's chain, and the operator press that gets round it ─────────
 
 STALE = {"meta": {"active_excel_gpt_node_key": "n_excel_gpt_fw_report",
                   "excel_gpt_completed_keys": ["n_excel_gpt_1", "n_excel_gpt_fw_report"]}}
@@ -414,7 +388,7 @@ STALE = {"meta": {"active_excel_gpt_node_key": "n_excel_gpt_fw_report",
 def _press(dry, project, status, group=GROUP, times=2):
     api = _Api({"nodes": [], "edges": []})
     c = _chain(dry, api, group)
-    c.UNSTICK_AFTER_S = 0.0                               # the real wait is 15 s; the condition is what matters here
+    c.UNSTICK_AFTER_S = 0.0
     for _ in range(times):
         c.operator_unstick_after_group(project, status)
     pressed = [x for x in api.calls if x[1].endswith("/steps/excel_gpt/run")]
@@ -426,19 +400,18 @@ def test_unstick_presses_play_on_the_second_generic_node_once_and_only_on_the_st
     assert len(pressed) == 1 and pressed[0][1] == "/api/projects/5/steps/excel_gpt/run" and api.params == {"node_key": "n_excel_gpt_2"}
     assert c.interventions == [{"finding": "F10-D12", "status": "enriching_2", "stale_active_key": "n_excel_gpt_fw_report",
                                 "pressed": "▶ n_excel_gpt_2", "http": 200}]
-    assert c.R.advice and "F10-D12" in c.R.advice[0]                # never silent: advisory + result.json interventions
-    # the first poll only starts the clock: nothing is pressed on an instant transition
+    assert c.R.advice and "F10-D12" in c.R.advice[0]
     _, api2, early = _press(dry, STALE, "enriching_2", times=1)
     assert early == []
 
 
 @pytest.mark.parametrize("project,status,group", [
-    (STALE, "enriching_2", None),                                                                   # option off: never
-    (STALE, "enriching_1", GROUP),                                                                  # other statuses: never
+    (STALE, "enriching_2", None),
+    (STALE, "enriching_1", GROUP),
     (STALE, "generating_images", GROUP),
     ({"meta": {"active_excel_gpt_node_key": "n_excel_gpt_2", "excel_gpt_completed_keys": ["n_excel_gpt_2"]}}, "enriching_2", GROUP),
     ({"meta": {"active_excel_gpt_node_key": "n_excel_gpt_fw_report", "excel_gpt_completed_keys": ["n_excel_gpt_1"]}}, "enriching_2", GROUP),
-    ({"meta": {}}, "enriching_2", GROUP),                                                           # a healthy project: no stale key
+    ({"meta": {}}, "enriching_2", GROUP),
     ({}, "enriching_2", GROUP),
 ])
 def test_unstick_leaves_a_healthy_project_alone(dry, project, status, group):
@@ -459,13 +432,12 @@ def test_f10_d12_finding_points_at_living_code(dry):
         assert cited and any(abs(h - c) <= 30 for h in hits for c in cited), (rel, hits, cited)
 
 
-# ───────── the group's report never leaves the work dir ─────────
 
 def test_group_report_root_moves_into_the_work_dir(dry, tmp_path, monkeypatch):
     from app.services import shots_report
-    monkeypatch.setattr(shots_report, "find_project_root", shots_report.find_project_root)      # restore the original afterwards
+    monkeypatch.setattr(shots_report, "find_project_root", shots_report.find_project_root)
     before = shots_report.report_paths(type("P", (), {"slug": "s1", "data_dir": tmp_path / "d"})())
-    assert before[-1] == ROOT / "exports" / "s1-shots-report.html"                                   # the production default: INSIDE the repository
+    assert before[-1] == ROOT / "exports" / "s1-shots-report.html"
     dry.keep_group_report_out_of_repo(tmp_path / "work")
     after = shots_report.report_paths(type("P", (), {"slug": "s1", "data_dir": tmp_path / "d"})())
     assert after[-1] == tmp_path / "work" / "exports" / "s1-shots-report.html"
@@ -477,7 +449,7 @@ def test_both_child_processes_apply_the_report_fix():
     live_src = LIVE.read_text(encoding="utf-8")
     seams = dry_src[dry_src.index("def install_child_seams"):dry_src.index("def keep_group_report_out_of_repo")]
     assert "keep_group_report_out_of_repo(work)" in seams
-    child = live_src[live_src.index("def child_live_main"):live_src.index("# ───────────────────────────── ledger")]
+    child = live_src[live_src.index("def child_live_main"):live_src.index("def row_class")]
     assert "fc.keep_group_report_out_of_repo(Path(cfg[\"work\"]))" in child
 
 

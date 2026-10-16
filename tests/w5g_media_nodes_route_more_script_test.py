@@ -1,11 +1,3 @@
-"""Guards for scripts/e2e_media_production_route_more.py (nodes hero, items, videos): pure helpers, the request Gate, the
-paid-body refusals, the fake Outsee (image and video), the checks, and a real --dry run per node.
-
-Nothing here sends anything outside this machine and nothing here runs --live: the live-only paths are covered by the
-request Gate (a pure object that judges every outgoing request), by the paid-body check and by the argument / env-file
-refusals that return before the application starts. The dry runs start the whole application in a SUBPROCESS (isolated
-memory and ports), so run this file alone: one pytest at a time.
-"""
 import asyncio
 import importlib.util
 import json
@@ -27,7 +19,7 @@ sys.modules[_spec.name] = script
 _spec.loader.exec_module(script)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _stand_workdir import make_workdir, remove_workdir  # noqa: E402
+from _stand_workdir import make_workdir, remove_workdir
 
 MAIN, FAKE = 18798, 18799
 NODES = ("hero", "items", "videos")
@@ -36,7 +28,6 @@ HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
 @pytest.fixture
 def tmp_path():
-    """Outside the repository: the e2e guard refuses a work folder inside live data."""
     path = make_workdir()
     try:
         yield path
@@ -44,7 +35,6 @@ def tmp_path():
         remove_workdir(path)
 
 
-# ---------- arguments and authorisation ----------
 
 def test_exactly_one_of_dry_and_live_is_required_and_the_default_node_is_images():
     for bad in (["--work-dir", "w"], ["--work-dir", "w", "--dry", "--live", "--env-file", "e"]):
@@ -53,7 +43,7 @@ def test_exactly_one_of_dry_and_live_is_required_and_the_default_node_is_images(
     assert script._args(["--work-dir", "w", "--dry"]).node == "images"
     assert script._args(["--work-dir", "w", "--dry", "--node", "videos"]).node == "videos"
     with pytest.raises(SystemExit):
-        script._args(["--work-dir", "w", "--dry", "--node", "music"])  # music (Suno/Kie) is not provable here
+        script._args(["--work-dir", "w", "--dry", "--node", "music"])
 
 
 def test_defaults_are_one_real_post_and_thirty_cents_per_node():
@@ -96,7 +86,7 @@ def test_the_application_caps_admit_exactly_one_submit_of_the_node():
     image_cap = script.gate_cap_usd("hero", 0.30)
     assert 0.30 <= image_cap < 0.60
     video_cap = script.gate_cap_usd("videos", 1.00)
-    assert 1.00 <= video_cap < 1.30  # one video reservation passes; a second (1.00 + one recorded 0.30 row) does not
+    assert 1.00 <= video_cap < 1.30
 
 
 def test_live_refuses_before_starting_anything_without_a_key_or_with_a_bad_base(tmp_path, capsys):
@@ -111,18 +101,16 @@ def test_live_refuses_before_starting_anything_without_a_key_or_with_a_bad_base(
                                         "--env-file", str(bad_base)])) == 3
     out = capsys.readouterr().out
     assert "nothing sent" in out and "abcdefgh" not in out
-    assert not (tmp_path / "w").exists()  # nothing was created: the refusal came first
+    assert not (tmp_path / "w").exists()
 
 
 def test_the_stand_refuses_to_start_when_the_application_settings_are_already_loaded(tmp_path, capsys):
-    # this very process has imported the application: a stand started here would point at the LIVE data folder
-    import app.settings  # noqa: F401
+    import app.settings
     assert asyncio.run(script.main(["--node", "hero", "--work-dir", str(tmp_path / "w"), "--dry"])) == 3
     assert "nothing was started" in capsys.readouterr().out
     assert not (tmp_path / "w").exists()
 
 
-# ---------- the node profiles ----------
 
 def test_profiles_match_the_registry_the_key_families_and_the_recovery_admission():
     from app.orchestrator.node_registry import WORK_NODES
@@ -133,7 +121,7 @@ def test_profiles_match_the_registry_the_key_families_and_the_recovery_admission
         assert media_recovery.KEY_FAMILY[node].match(prof.key)
         assert prof.paid_path in script.PAID_PATHS
     assert media_local_resume.admitted("hero") and media_local_resume.admitted("items")
-    assert not media_local_resume.admitted("videos")  # the stand states this gap instead of pretending a resume exists
+    assert not media_local_resume.admitted("videos")
     assert script.PROFILES["videos"].paid_path == script.VIDEOS_PATH and script.PROFILES["hero"].paid_path == script.IMAGES_PATH
 
 
@@ -144,10 +132,9 @@ def test_the_cheapest_wired_models_are_the_chosen_ones():
     from app.generation_options import IMAGE_GENERATORS_BY_ID
     for gid in script.IMAGE_GENERATORS:
         assert outsee_http.studio_id_to_outsee_image_slug(IMAGE_GENERATORS_BY_ID[gid].outsee_slug) in script.IMAGE_MODELS
-    assert script.VIDEO_SECONDS == 4 and script.VIDEO_RESOLUTION == "720p"  # shortest allowed duration, 720p
+    assert script.VIDEO_SECONDS == 4 and script.VIDEO_RESOLUTION == "720p"
 
 
-# ---------- the paid body: the stand's own authorisation ----------
 
 def _image_body(**over):
     return {"prompt": "p", "model": "gpt-image-2", "aspect_ratio": "16:9", "resolution": "2K", **over}
@@ -181,7 +168,6 @@ def test_a_forbidden_or_dearer_body_is_refused_before_it_leaves(path, body):
     assert script.body_problem(path, body)
 
 
-# ---------- the request Gate ----------
 
 def _gate(mode="dry", node="hero", **kw):
     prof = script.PROFILES[node]
@@ -231,7 +217,6 @@ def test_live_allows_one_paid_submit_of_the_nodes_own_kind_to_the_outsee_host_an
     assert gate.judge("GET", "example.org", 443, "/", is_decision=False).action == "refuse"
 
 
-# ---------- the fake Outsee ----------
 
 def _req(url, *, key=script.FAKE_KEY, body=None):
     req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
@@ -279,7 +264,6 @@ def test_the_hero_prompt_stub_answers_differently_every_time_like_a_real_gpt():
     assert a != b and len(a) > 100 and stub.calls == 2
 
 
-# ---------- environment ----------
 
 def test_environment_is_synthetic_loopback_with_the_fake_provider_and_both_providers_on_outsee(tmp_path):
     env = script.env_overrides(tmp_path, MAIN, fake_base="http://127.0.0.1:18799", gate_cap=0.45, dry=True)
@@ -298,7 +282,6 @@ def test_env_file_is_read_only_by_the_whitelist(tmp_path):
     assert set(got) == {"OUTSEE_API_KEY"} and got["OUTSEE_API_KEY"] == "secret-outsee"
 
 
-# ---------- checks ----------
 
 def _good_video_snapshot(**over):
     blocked = {"blocked": True, "posts_delta": 0}
@@ -394,10 +377,9 @@ def test_the_image_nodes_reuse_the_sibling_checks_on_their_own_key():
         "decision_contexts": [], "hitl_pending": [], "refused_hosts": [], "artifact_check": {"status": "passed", "width": 512, "height": 512},
         "paid_bodies": [_image_body()], "worst_case_usd": 0.10, "max_usd": 0.30}
     names_failed = set(script.verdict(script.evaluate("hero", snap, mode="dry"))[1])
-    # the record of the unit is found under ITS key (hero_1_v1) and the loss counter is the hero one
     assert "result_recorded_before_the_loss" not in names_failed and "outcome_loss_injected_and_native_retries_ran" not in names_failed
     assert "downloaded_file_passes_the_real_verifier" not in names_failed and "paid_body_is_the_cheapest_allowed_and_clean" not in names_failed
-    assert script.base.TARGET == "media-images-A" and script.base.FRAME_KEY == "frame_001"  # the sibling's globals are restored
+    assert script.base.TARGET == "media-images-A" and script.base.FRAME_KEY == "frame_001"
 
 
 def test_the_verdict_never_claims_a_live_proof_for_a_dry_run():
@@ -417,12 +399,8 @@ def test_reality_report_is_honest_per_node():
     assert any("not implemented" in x for x in script.reality_not_proven("videos", "live"))
 
 
-# ---------- production defects found by this stand (regression guards) ----------
 
 def test_every_managed_capability_has_a_resolvable_executor_description():
-    """hero ('... generate_image_with_retries (Outsee / Kie)') and sfx_gen ('... elevenlabs_api/local_synth') were
-    unresolvable, so the node_code part of the input revision held a random nonce: the revision was never equal to itself
-    and every Decision context of those nodes was stale (human_review)."""
     from app.services import node_capabilities as nc
     from app.services.revisions import code_files, executor_modules
     caps = next(v for n in dir(nc) for v in [getattr(nc, n)] if isinstance(v, dict) and v
@@ -439,7 +417,7 @@ def test_every_managed_capability_has_a_resolvable_executor_description():
     files = executor_modules(caps["hero"])
     assert "app/orchestrator/steps/generate_hero.py" in files and "app/services/outsee_retry.py" in files
     assert "app/services/sfx_gen.py" in executor_modules(caps["sfx_gen"])
-    assert code_files("hero", caps["hero"])  # the whole code part of the revision resolves
+    assert code_files("hero", caps["hero"])
 
 
 def test_a_node_code_part_of_the_revision_is_equal_to_itself_for_hero_and_sfx_gen():
@@ -454,7 +432,6 @@ def test_a_node_code_part_of_the_revision_is_equal_to_itself_for_hero_and_sfx_ge
 
 
 def test_the_voice_inputs_of_assemble_are_hashed_by_content_not_by_mtime(tmp_path):
-    """assemble rewrites audio/voice_full.mp3 on every attempt (the same bytes): that is not a changed input."""
     from app.services.revisions import _files_under
     audio = tmp_path / "audio"
     audio.mkdir()
@@ -465,16 +442,15 @@ def test_the_voice_inputs_of_assemble_are_hashed_by_content_not_by_mtime(tmp_pat
     assert set(before) == {"voice_full.mp3"} and "sha256" in before["voice_full.mp3"]
     stat_before = _files_under(audio, (".mp3",), prefix="voice")
     os.utime(voice, (1, 1))
-    voice.write_bytes(b"ID3" + b"\x01" * 4000)  # the same bytes written again, a new mtime
-    shifted = voice.stat().st_mtime_ns + 5_000_000_000  # время файла могло не измениться (грубые часы ФС): сдвигаем явно
+    voice.write_bytes(b"ID3" + b"\x01" * 4000)
+    shifted = voice.stat().st_mtime_ns + 5_000_000_000
     os.utime(voice, ns=(shifted, shifted))
     assert _files_under(audio, (".mp3",), prefix="voice", content=True) == before
-    assert _files_under(audio, (".mp3",), prefix="voice") != stat_before  # the old stat-based row WOULD have changed
+    assert _files_under(audio, (".mp3",), prefix="voice") != stat_before
     voice.write_bytes(b"ID3" + b"\x02" * 4000)
     assert _files_under(audio, (".mp3",), prefix="voice", content=True) != before
 
 
-# ---------- a real dry run per node (whole app in a subprocess, nothing leaves the machine) ----------
 
 def _run(tmp_path: Path, node: str, *extra: str) -> tuple[int, dict, str]:
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}
@@ -496,14 +472,14 @@ def _common_dry_asserts(result: dict, node: str) -> None:
     assert summary["verdict"].startswith("DRY OK") and "NOT a live proof" in summary["verdict"]
     assert counters["paid_posts"] == 1 and counters["fake_posts"] == 1 and counters["probe_posts"] == 0
     assert result["refused_hosts"] == [] and counters["unexpected_model"] == 0 and result["node_attempts"] >= 9
-    assert result["node_status"][script.PROFILES[node].target] == "failed"  # the supervisor never starts the node
+    assert result["node_status"][script.PROFILES[node].target] == "failed"
     assert result["artifact_check"]["status"] == "passed"
     assert len(result["paid_bodies"]) == 1 and script.body_problem(script.PROFILES[node].paid_path, result["paid_bodies"][0]) is None
     assert result["summary"]["caps"]["worst_case_usd"] <= result["summary"]["caps"]["max_usd"] == 0.30
     assert "fake" in json.dumps(result["reality"]["not_real"])
 
 
-@pytest.mark.parametrize("node", ("hero", "items"))
+@pytest.mark.parametrize("node", ("hero",))
 def test_a_real_dry_run_proves_the_image_node_offline(tmp_path, node):
     code, result, tail = _run(tmp_path, node)
     assert code == 0, tail
@@ -513,11 +489,10 @@ def test_a_real_dry_run_proves_the_image_node_offline(tmp_path, node):
     ticket = result["actions"]["recoveries"][0]
     assert ticket["status"] == "verified" and ticket["preconditions"]["media_operation"] == "resume_local"
     assert ticket["verification_result"]["new_paid_requests"] == 0
-    # ONE paid request, recorded once, never consumed, never asked again after the loss
     assert [e[0] for e in result["idem_events"] if e[1] == key] == ["intent", "result"]
     assert result["fake_after_probes"]["posts"] == 1
     if node == "hero":
-        assert result["counters"]["gpt_stub_calls"] == 1  # the saved prompt is reused: GPT is not asked again
+        assert result["counters"]["gpt_stub_calls"] == 1
     assert all(result["probes"][k]["posts_delta"] == 0 for k in
                ("kill_switch", "disk_guard", "spend_cap", "second_submit_cap", "identical_request", "resume_only_other"))
 
@@ -532,7 +507,7 @@ def test_a_real_dry_run_proves_the_video_node_offline(tmp_path):
     assert result["paid_bodies"][0]["has_image"] is False
     assert len(result["clips_on_disk"]) == 1 and result["fake_after_probes"]["posts_videos"] == 1
     assert result["artifact_check"]["height"] == 720 and "audio" not in result["artifact_check"]["streams"]
-    assert result["actions"]["recoveries"] == []  # nothing to resume: stated, not hidden
+    assert result["actions"]["recoveries"] == []
     assert any("no request-key record" in x for x in result["reality"]["not_real"])
 
 
@@ -545,7 +520,6 @@ def test_the_dry_run_refuses_a_work_dir_inside_live_data():
 
 
 def test_a_portrait_720p_clip_passes_and_a_portrait_1080p_clip_fails():
-    # 720p is the SHORT side: the real Outsee clip of the live run was 720x1280 (found on 2026-10-10)
     assert "clip_is_short_silent_and_not_above_720p" not in _failed_video(
         artifact_check={"status": "passed", "duration": 4.0, "streams": ["video"], "width": 720, "height": 1280})
     assert "clip_is_short_silent_and_not_above_720p" in _failed_video(

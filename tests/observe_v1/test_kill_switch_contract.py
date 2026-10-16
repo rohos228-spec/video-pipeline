@@ -1,4 +1,3 @@
-"""Operator emergency stop: persisted flag, refusal before any charge/network, audit, read-only paths."""
 import hashlib
 import importlib
 import unittest
@@ -47,7 +46,6 @@ class KillSwitchState(KillSwitchBase):
         result = await self.switch(True)
         self.assertTrue(result['changed'])
         self.assertTrue(kill_switch.cached_active())
-        # Simulated restart: volatile cache and permissions gone, durable state reloaded.
         kill_switch.reset_cache()
         clear_permission(7)
         self.assertFalse(kill_switch.cached_active())
@@ -145,7 +143,6 @@ class KillSwitchChokePoints(KillSwitchBase):
             node = await s.scalar(select(NodeRun).where(NodeRun.node_key == 'n1'))
             self.assertEqual(node.status, NodeRunStatus.failed)
             self.assertEqual((await s.get(ActionExecutionControl, 'exec-durable')).requests_used, 0)
-        # Not a latent denial: the very same request succeeds once the stop is lifted.
         await self.switch(False)
         ticket = await self.retry()
         self.assertEqual(ticket['status'], 'queued')
@@ -200,7 +197,6 @@ class KillSwitchEndpoints(KillSwitchBase):
         self.assertEqual(listed[0]['execution_id'], 'exec-durable')
         diagnosis = await router.diagnoses(7, 'exec-durable')
         self.assertIn('incidents', diagnosis)
-        # The observer journal keeps being delivered under the stop.
         observer = observation._observer
         self.assertEqual(await observer.consume('exec-durable', 'master', observer.master), 0)
 

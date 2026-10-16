@@ -1,4 +1,3 @@
-"""A18: сторож сторожа. Чистая логика окна, проверка в процессе (отмена цикла), живой стенд."""
 from __future__ import annotations
 
 import asyncio
@@ -20,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
     (None, False, 100, "no_heartbeat"),
     ({"ts": 95}, False, 100, "ok"),
     ({"ts": 95}, True, 100, "resolve"),
-    ({"ts": 100 - 10}, False, 100, "ok"),            # ровно на границе окна 10 - ещё жив
+    ({"ts": 100 - 10}, False, 100, "ok"),
     ({"ts": 100 - 10.5}, False, 100, "silent_new"),
     ({"ts": 50}, True, 100, "silent_known"),
     ({"ts": 50, "stopped": True}, False, 100, "stopped"),
@@ -38,14 +37,14 @@ def test_settings_from_own_env(monkeypatch):
     monkeypatch.setenv("VP_WATCHDOG_HEARTBEAT_WINDOW_S", "мусор")
     assert hb.window_s() == 300.0
     monkeypatch.setenv("VP_WATCHDOG_HEARTBEAT_WINDOW_S", "0")
-    assert hb.window_s() == 2.0  # нижняя граница: нулевое окно не должно превращать каждую проверку в тревогу
+    assert hb.window_s() == 2.0
 
 
 def test_beat_is_one_small_file_and_throttled(tmp_path, monkeypatch):
     monkeypatch.setenv("VP_HEARTBEAT_INTERVAL_S", "60")
     hb._last_beat = 0.0
     assert hb.beat(directory=tmp_path, now=1000.0)
-    assert not hb.beat(directory=tmp_path, now=1001.0)         # дроссель
+    assert not hb.beat(directory=tmp_path, now=1001.0)
     assert hb.beat(directory=tmp_path, now=1002.0, force=True)
     assert [p.name for p in tmp_path.iterdir()] == [hb.HEARTBEAT_FILE]
     assert hb.read_heartbeat(tmp_path)["ts"] == 1002.0
@@ -60,7 +59,6 @@ def test_unreadable_heartbeat_is_not_an_alarm(tmp_path):
 
 
 def test_cancelled_loop_task_raises_one_alarm_then_resolves(tmp_path, monkeypatch):
-    """Цикл в процессе отменяется; отдельная проверка видит молчание, тревога одна, возврат пульса снимает её."""
     sent: list[tuple[str, str]] = []
 
     async def fake_send(text, kind):
@@ -82,7 +80,7 @@ def test_cancelled_loop_task_raises_one_alarm_then_resolves(tmp_path, monkeypatc
         assert (await hb.check_once(directory=tmp_path, window=2))["decision"] == "ok"
         task.cancel()
         await asyncio.sleep(0)
-        t0 = time.time() + 5  # время «после окна»
+        t0 = time.time() + 5
         first = await hb.check_once(directory=tmp_path, window=2, now=t0)
         second = await hb.check_once(directory=tmp_path, window=2, now=t0 + 1)
         hb.beat(directory=tmp_path, force=True, now=t0 + 2)
@@ -121,7 +119,6 @@ def _free_port() -> int:
 
 @pytest.mark.slow
 def test_live_stand_kill_alarm_dedup_resolve(outside_tmp):
-    """Рабочая папка стенда вне репозитория (фикстура outside_tmp), порт свободный: не зависит от диска C: и занятого порта."""
     work = outside_tmp / f"pytest_{int(time.time())}"
     r = subprocess.run([sys.executable, "-X", "utf8", str(ROOT / "scripts" / "e2e_watchdog_alarm.py"),
                         "--port", str(_free_port()), "--work-dir", str(work)], cwd=str(ROOT), capture_output=True, text=True,

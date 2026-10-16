@@ -1,4 +1,3 @@
-"""Каталог builtin_group: флаги риска, схемы, оценка стоимости, защита от дублей."""
 from __future__ import annotations
 
 import pytest
@@ -28,7 +27,7 @@ def reg() -> ActionRegistry:
 def test_all_actions_registered_with_expected_tiers(reg) -> None:
     assert {s.id: s.risk for s in reg.list()} == EXPECTED
     with pytest.raises(Exception):
-        register_group_actions(reg)  # дубликаты запрещены
+        register_group_actions(reg)
 
 
 def test_node_run_is_paid_destructive_job_with_stop_and_unknown_cost(reg) -> None:
@@ -39,7 +38,7 @@ def test_node_run_is_paid_destructive_job_with_stop_and_unknown_cost(reg) -> Non
     pre = {p.id for p in spec.preconditions}
     assert {"not_managed", "project_idle", "no_montage_jobs", "node_runnable"} <= pre
     est = spec.estimate({"project_id": 1, "node_key": "n_excel_gpt_fw_shots"})
-    assert est.known is False  # fail-closed: цена Vibecode не откалибрована
+    assert est.known is False
     free = spec.estimate({"project_id": 1, "node_key": "n_excel_gpt_fw_report"})
     assert free.known and free.high == 0.0
 

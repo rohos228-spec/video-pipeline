@@ -1,4 +1,3 @@
-"""Versioned migrations of orchestrator-owned tables: fresh DB, existing DB, rerun, rollback, drift (no network)."""
 from __future__ import annotations
 
 import pytest
@@ -75,8 +74,6 @@ async def test_legacy_tables_are_not_touched(engine):
 
 async def test_project_scope_creates_only_observation_tables(engine):
     report = await _run(engine, scope=sm.SCOPE_PROJECT)
-    # 0007/0008 (frames columns) and 0009 (projects columns) also run per project database (S-1); on a bare DB
-    # they are no-ops
     assert report.applied == ["0001_observation_core", "0007_frames_v2_columns", "0008_frames_space_manual",
                               "0009_projects_columns"]
     tables = await _tables(engine)

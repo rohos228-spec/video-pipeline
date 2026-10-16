@@ -1,8 +1,3 @@
-"""Доступ к проекту только через существующие эндпоинты (GET/PATCH /projects/{id}).
-
-Так сохраняются валидация, защита от затирания meta и события; свои записи в
-проект контур не делает. В тестах подставляется любой объект с теми же методами.
-"""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -19,7 +14,6 @@ class ProjectGateway(Protocol):
 
 
 class CtxGateway:
-    """Шлюз поверх ActionContext (in-process ASGI, без сети)."""
 
     def __init__(self, ctx: Any):
         self.ctx = ctx
@@ -50,7 +44,6 @@ def project_state(data: dict) -> dict:
 
 
 def project_ns(state: dict) -> SimpleNamespace:
-    """Объект, достаточный для prompt_library / gpt_operator (читают только эти поля)."""
     return SimpleNamespace(id=state.get("id"), meta=state.get("meta") or {},
                            prompt_overrides=state.get("prompt_overrides") or {},
                            gpt_text_overrides=state.get("gpt_text_overrides") or {},

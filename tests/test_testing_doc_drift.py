@@ -1,7 +1,3 @@
-"""docs/TESTING.md: the numbers block must be in the format scripts/test_report.py produces.
-
-No concrete counts are asserted (they change every run): only structure and that the rows add up.
-"""
 from __future__ import annotations
 
 import importlib.util
@@ -33,7 +29,7 @@ def test_doc_has_exactly_one_marker_pair():
 
 def test_numbers_block_has_generated_format():
     rep = _report()
-    parsed = rep.parse_block(DOC.read_text(encoding="utf-8"))  # raises ValueError on drift
+    parsed = rep.parse_block(DOC.read_text(encoding="utf-8"))
     names = [r[0] for r in parsed["rows"]]
     assert len(names) == len(set(names)), "duplicate suite rows"
 
@@ -65,7 +61,6 @@ def test_hand_edited_block_is_rejected():
         rep.parse_block(bad)
 
 
-# --- Q-10 / Q-16: наборы, цифры и CI не расходятся -----------------------------------------------------------------
 
 def _suites():
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -81,7 +76,6 @@ def _outside_block(text: str) -> str:
 
 
 def test_every_test_file_belongs_to_an_automatic_suite():
-    """Q-10: раньше около 60 модулей tests/observe_v1 не входили ни в один набор. Новый файл или папка без набора - ошибка."""
     ts = _suites()
     assert ts.uncovered() == []
     names = ts.suites()
@@ -96,7 +90,6 @@ def test_doc_describes_every_suite():
 
 
 def test_no_hand_typed_counts_outside_the_numbers_block():
-    """Q-16: числа живут только в сгенерированном блоке. Любое «127 тестов» или «7 красных» руками рядом с блоком устаревает."""
     text = _outside_block(DOC.read_text(encoding="utf-8"))
     hits = re.findall(r"\b\d{2,}\s*(?:passed|failed|тест\w*|красн\w*)", text, flags=re.IGNORECASE)
     assert hits == [], f"числа руками вне блока: {hits}"
@@ -119,7 +112,6 @@ def test_ci_workflow_runs_every_suite_and_is_not_windows_bound():
     ts = _suites()
     for token in ("run_orchestrator_tests.py", "--suite observe", "--suite legacy", "schedule:", "VP_STRICT_SKIPS", "VP_RUN_DOCKER_ONLY"):
         assert token in wf, f"CI не содержит: {token}"
-    # test_readonly_pilot ждёт архивные файлы пилота вне репозитория (см. docs/TESTING.md) и в CI не идёт
     not_in_ci = {"tests/observe_v1/test_readonly_pilot.py"}
     for path in ts.DOCKER_ONLY:
         if path in not_in_ci:

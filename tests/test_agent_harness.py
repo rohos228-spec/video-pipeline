@@ -289,7 +289,6 @@ async def test_img_pr_finish_does_not_set_ready_when_gate_fails(harness_db) -> N
 async def test_excel_gpt_gate_skips_img_coverage_when_status_already_ready(
     harness_db,
 ) -> None:
-    """fw_script / excel_gpt must not inherit img_pr_vo_coverage from status."""
     session, tmp_path = harness_db
     _write_plan_xlsx(tmp_path / "project.xlsx")
     session.add(
@@ -374,7 +373,6 @@ async def test_img_pr_gate_skips_shot_child_and_leftover(harness_db) -> None:
 def test_img_pr_gate_reads_isolated_project_db_not_master(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Кадры tkach живут в data_dir/project.db; master часто пустой по промтам."""
     data_dir = tmp_path / "tkach"
     data_dir.mkdir()
     master = tmp_path / "state.db"

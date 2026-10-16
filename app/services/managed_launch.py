@@ -1,8 +1,3 @@
-"""Durable, opt-in entry to the existing observer/worker runtime.
-
-This coordinates permission records, not node execution. A dispatch interrupted
-between the control DB and project DB is held, never automatically reissued.
-"""
 from datetime import datetime
 import uuid
 
@@ -41,7 +36,7 @@ def launch_json(row, *, replay=False):
 def require_idle_project(project):
     from app.services.step_cancel import is_generation_active,stop_flag_path
     from app.services.step_failure_policy import is_sleeping
-    from app.telegram.menu import is_running_status
+    from app.services.project_state import is_running_status
     if project is None:raise ValueError('project unavailable')
     meta=project.meta or {}
     if meta.get('user_stop') or meta.get('mass_lane_user_stop') or stop_flag_path(project.id).exists():
@@ -53,7 +48,6 @@ def require_idle_project(project):
 
 
 def _node_config_revisions(run, project, node_keys):
-    """Per-node configuration revision recorded with the launch (audit; permissions follow structure)."""
     meta=project.meta if isinstance(project.meta,dict) else {}
     nodes={str(n.get('id')):n for n in (run.nodes_snapshot or []) if isinstance(n,dict)}
     return {k:revisions.node_config_revision(nodes[k],meta) for k in node_keys if k in nodes}
@@ -98,7 +92,6 @@ def validate_scope(run, project, rows, selected):
 
 
 async def prepare(observer, project_session, *, project_id, request, initiator):
-    """Caller holds observer._enable_lock through dispatch, including API replays."""
     from app.services.actions_v1 import ActionExecutionControl,ActionRecord,ExecutionPermission,install_permission
     from app.services.decision_state import DecisionControl
     from app.services.decision_config import runtime_config,check_route,DecisionRuntimeBinding
@@ -109,7 +102,6 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
         if prior:
             if prior.request_hash!=identity:raise ValueError('idempotency payload conflict')
             return prior,True
-        # A different execution/key cannot restart this run's allowance.
         prior_run=await s.scalar(select(ManagedLaunch.launch_id).where(ManagedLaunch.project_id==project_id,
             ManagedLaunch.workflow_run_id==request['workflow_run_id']))
         if prior_run:raise ValueError('workflow already has a managed launch; use its persisted execution')
@@ -139,12 +131,6 @@ async def prepare(observer, project_session, *, project_id, request, initiator):
             raise ValueError('master/project state disagreement')
         initial_status_projection=None
         if project.status!=primary.status:
-            # GET can derive an idle ready status in the authoritative project DB
-            # before its master projection catches up. Only the untouched `new`
-            # projection may be refreshed; active work/stops were rejected above,
-            # and graph, every NodeRun and attempt must still agree exactly.
-            # Master projection ahead of the authoritative project DB (startup recompute races the replica) is the same
-            # stale-projection case: both sides are idle (checked above) and graph/NodeRuns agree exactly.
             if project.status!=ProjectStatus.new and primary.status!=ProjectStatus.new:raise ValueError('master/project status disagreement requires review')
             initial_status_projection={'from':project.status.value,'to':primary.status.value,'source':'project_db',
                 'reason':'idle project readiness computed by original runtime'}
@@ -249,7 +235,6 @@ async def allowed_actions(session, execution_id, configured):
 
 
 async def native_entry(session,project,step_code,node_key):
-    """Initial launch only: original queue and FSM, no manual reset/backoff clearing."""
     from app.services.actions_v1 import get_permission,evaluate_start
     from app.services.gen_queue import assert_can_start_in_queue
     from app.services.node_capabilities import require_managed_node

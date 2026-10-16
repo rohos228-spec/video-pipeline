@@ -1,4 +1,3 @@
-"""W1-2 / A06: подтверждение только с токеном оператора; вложения привязаны к sha256 при запуске."""
 from __future__ import annotations
 
 import hashlib
@@ -15,7 +14,7 @@ from app.services.action_layer.context import (
     validate_source_params)
 from app.services.action_layer.spec import ensure_builtin_actions, registry
 from app.settings import settings
-from tests.action_layer_support import env, make_spec  # noqa: F401
+from tests.action_layer_support import env, make_spec
 
 BASE = "/api/action-layer"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -52,7 +51,6 @@ async def _plan(env) -> str:
     return r.json()["plan_id"]
 
 
-# --- approve / run ------------------------------------------------------------------------------------
 
 async def test_script_without_token_cannot_create_approve_or_run(env, paid_stub):
     r = await env.client.post(f"{BASE}/plans/preview",
@@ -69,7 +67,7 @@ async def test_script_without_token_cannot_create_approve_or_run(env, paid_stub)
         from sqlalchemy import select
 
         from app.services.action_layer import store
-        assert await s.scalar(select(store.ActionApproval)) is None   # подтверждения не создано
+        assert await s.scalar(select(store.ActionApproval)) is None
     assert paid_stub == []
 
 
@@ -78,15 +76,14 @@ async def test_ui_with_token_approves_and_runs_once(env, paid_stub):
     pid = await _plan(env)
     r = await env.client.post(f"{BASE}/plans/{pid}/approve", headers=_tok())
     assert r.status_code == 200 and r.json()["operator"] == "local_web_operator"
-    assert (await env.client.post(f"{BASE}/plans/{pid}/run")).status_code == 403   # без токена нельзя
+    assert (await env.client.post(f"{BASE}/plans/{pid}/run")).status_code == 403
     assert (await env.client.post(f"{BASE}/plans/{pid}/run", headers=_tok())).status_code == 200
     await executor.wait(pid)
     assert paid_stub == ["local_web_operator"]
 
 
 async def test_foreign_page_cannot_run_approve_run_chain(env, paid_stub):
-    """Страница с чужого порта делает from-text/preview -> approve -> run: каждый шаг отказ."""
-    evil = {"Origin": "http://localhost:9999", **_tok()}   # даже украденный токен не спасает
+    evil = {"Origin": "http://localhost:9999", **_tok()}
     for url, body in ((f"{BASE}/plans/preview", {"steps": [{"action_id": "zz.w12paid"}]}),
                       (f"{BASE}/plans/abc/approve", None), (f"{BASE}/plans/abc/run", None)):
         r = await env.client.post(url, headers=evil, **({"json": body} if body else {}))
@@ -94,7 +91,6 @@ async def test_foreign_page_cannot_run_approve_run_chain(env, paid_stub):
     assert paid_stub == []
 
 
-# --- защита в глубину внутри approval --------------------------------------------------------------------
 
 async def test_http_identity_needs_verified_token_inside_approval_layer(env, paid_stub):
     pid = await _plan(env)
@@ -113,7 +109,7 @@ async def test_http_identity_needs_verified_token_inside_approval_layer(env, pai
 
 async def test_in_code_identity_and_disabled_switch(env, paid_stub, monkeypatch):
     pid = await _plan(env)
-    direct = approval.OperatorIdentity("web_operator:abc123")      # не из HTTP
+    direct = approval.OperatorIdentity("web_operator:abc123")
     assert direct.via_http is False
     assert (await service.approve_plan(env.app, pid, direct))["operator"] == "web_operator:abc123"
     pid2 = await _plan(env)
@@ -135,14 +131,12 @@ async def test_model_identities_still_refused_even_with_token(env, paid_stub):
 
 
 async def test_internal_action_calls_carry_the_operator_token(env):
-    """Внутренний ASGI-вызов слоя действий проходит защитный слой (токен подставляется сам)."""
     ctx = ActionContext(app=env.app, operator="local_web_operator")
     with pytest.raises(ActionCallError) as e:
         await ctx.call("POST", "/action-layer/plans/no-such-plan/stop")
-    assert e.value.status == 404            # дошёл до обработчика, не 403 operator_token_required
+    assert e.value.status == 404
 
 
-# --- вложения и sha256 ---------------------------------------------------------------------------------------
 
 async def _register(env, rel: str, data: bytes, *, sha: str | None = None) -> None:
     async with env.factory() as s:
@@ -174,11 +168,11 @@ async def test_swapped_file_between_approval_and_run_is_refused(env):
     path = _write(rel, PNG)
     await _register(env, rel, PNG)
     params = {"source_path": rel}
-    assert validate_source_params(params, "scene_image") is None       # момент подтверждения
-    path.write_bytes(PNG[:-1] + b"\x01")                                # тот же размер, другой файл
+    assert validate_source_params(params, "scene_image") is None
+    path.write_bytes(PNG[:-1] + b"\x01")
     with pytest.raises(UploadRejected, match="sha256"):
-        source_to_upload("scene_image", params)                        # момент запуска
-    path.write_bytes(PNG + b"extra")                                    # другой размер: видно уже в проверке
+        source_to_upload("scene_image", params)
+    path.write_bytes(PNG + b"extra")
     assert "размер" in (validate_source_params(params, "scene_image") or "")
     with pytest.raises(UploadRejected):
         FileUpload.from_data_path("scene_image", rel)
@@ -186,7 +180,7 @@ async def test_swapped_file_between_approval_and_run_is_refused(env):
 
 async def test_unregistered_file_in_attachments_dir_is_refused(env):
     rel = "attachments/1/ccc_planted.png"
-    _write(rel, PNG)                                                    # подброшен мимо загрузки
+    _write(rel, PNG)
     with pytest.raises(UploadRejected, match="реестре"):
         source_to_upload("scene_image", {"source_path": rel})
     assert "реестре" in (validate_source_params({"source_path": rel}, "scene_image") or "")
@@ -201,7 +195,6 @@ async def test_wrong_registered_hash_is_refused(env):
 
 
 async def test_other_data_files_are_not_bound(env):
-    """Файлы вне attachments/ (результаты проекта) проверяются как раньше, без реестра."""
     rel = "videos/p1/frame_001_x.png"
     _write(rel, PNG)
     assert source_to_upload("scene_image", {"source_path": rel}).content == PNG

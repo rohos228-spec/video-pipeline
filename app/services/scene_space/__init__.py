@@ -1,4 +1,3 @@
-"""Cinematic scene space: geometry, schema, and DB access."""
 
 from app.services.scene_space.errors import DegenerateAxisError
 from app.services.scene_space.geom import apply_deltas, axis_side, normalize_pair

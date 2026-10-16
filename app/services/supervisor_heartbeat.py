@@ -1,18 +1,3 @@
-"""Сторож сторожа (A18): пульс цикла надзора и независимая проверка его молчания.
-
-Цикл надзора (`Observer.loop`) раз в `VP_HEARTBEAT_INTERVAL_S` (по умолчанию 5 с) перезаписывает ОДИН маленький
-файл `observer_heartbeat.json` (атомарно, без роста базы). Проверяющий читает только этот файл:
-  * `check_once()` - отдельная asyncio-задача в веб-процессе (`run_checker`) и автономный
-    `scripts/watchdog_check.py` (Планировщик заданий / cron): второй переживает смерть самого процесса.
-Если пульс старше окна `VP_WATCHDOG_HEARTBEAT_WINDOW_S` (по умолчанию 300 с), поднимается тревога ОДИН раз за
-эпизод молчания: файл-метка `observer_alarm.json` создаётся атомарно (O_EXCL), поэтому две проверки
-(задача и скрипт) не отправят дубль. Тревога = строка в `operator_audit` (actor `watchdog`) + сообщение через
-единственную точку `notification_log.notify` (без Telegram строка помечена «не доставлено», как везде).
-Когда пульс вернулся, метка снимается, пишется строка «восстановлено» и сообщение об этом.
-Чистая остановка приложения помечает пульс `stopped`: это не тревога.
-
-Каталог: `VP_HEARTBEAT_DIR` или папка базы `SQLITE_PATH`. Живую доставку в Telegram модуль не проверял.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +18,6 @@ DEFAULT_BEAT_S = 5.0
 _last_beat = 0.0
 
 
-# ------------------------------------------------------------------ настройки (свои env)
 
 def _float_env(name: str, default: float, minimum: float) -> float:
     try:
@@ -70,7 +54,6 @@ def store_dir() -> Path:
     return (p if p.is_absolute() else Path.cwd() / p).parent
 
 
-# ------------------------------------------------------------------ пульс (запись)
 
 def _atomic_write(path: Path, payload: dict) -> bool:
     try:
@@ -79,13 +62,12 @@ def _atomic_write(path: Path, payload: dict) -> bool:
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
         return True
-    except OSError as exc:  # пульс не должен ронять цикл
+    except OSError as exc:
         logger.warning("heartbeat: запись не удалась: {}", type(exc).__name__)
         return False
 
 
 def beat(*, force: bool = False, now: float | None = None, directory: Path | None = None) -> bool:
-    """Записать пульс (не чаще раза в `beat_interval_s`). Возвращает True, если запись выполнена."""
     global _last_beat
     if not enabled():
         return False
@@ -98,14 +80,12 @@ def beat(*, force: bool = False, now: float | None = None, directory: Path | Non
 
 
 def mark_stopped(directory: Path | None = None) -> None:
-    """Чистая остановка: молчание после неё не тревога."""
     if enabled():
         _atomic_write((directory or store_dir()) / HEARTBEAT_FILE,
                       {"ts": time.time(), "pid": os.getpid(), "stopped": True})
 
 
 def read_heartbeat(directory: Path | None = None) -> dict | None:
-    """None - файла нет или он временно нечитаем (решение не принимается)."""
     try:
         data = json.loads(((directory or store_dir()) / HEARTBEAT_FILE).read_text(encoding="utf-8"))
         return data if isinstance(data, dict) and isinstance(data.get("ts"), (int, float)) else None
@@ -113,23 +93,19 @@ def read_heartbeat(directory: Path | None = None) -> dict | None:
         return None
 
 
-# ------------------------------------------------------------------ чистая логика окна
 
 def evaluate(heartbeat: dict | None, alarm_open: bool, now: float, window: float) -> str:
-    """Решение одной проверки: no_heartbeat | stopped | ok | silent_new | silent_known | resolve."""
     if not heartbeat:
         return "no_heartbeat"
-    if heartbeat.get("stopped"):  # чистая остановка: не тревога, а открытый эпизод закрывается
+    if heartbeat.get("stopped"):
         return "resolve" if alarm_open else "stopped"
     if (now - float(heartbeat["ts"])) <= window:
         return "resolve" if alarm_open else "ok"
     return "silent_known" if alarm_open else "silent_new"
 
 
-# ------------------------------------------------------------------ тревога
 
 def _claim_alarm(directory: Path, info: dict) -> bool:
-    """Атомарно занять эпизод: True только у первого."""
     path = directory / ALARM_FILE
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -149,7 +125,7 @@ def _audit(path: str, outcome: str, status: int) -> None:
             "ts": datetime.utcnow(), "request_id": "wd-" + uuid.uuid4().hex[:16], "method": "WATCHDOG",
             "path": path, "route_template": path, "project_id": None, "actor": "watchdog",
             "status_code": status, "duration_ms": 0, "body_sha256": None, "outcome": outcome})
-    except Exception as exc:  # noqa: BLE001 - аудит не должен скрыть саму тревогу
+    except Exception as exc:
         logger.error("watchdog audit not written: {}: {}", type(exc).__name__, exc)
 
 
@@ -171,7 +147,6 @@ async def _send(text: str, kind: str, project_id: int | None = None) -> None:
 
 async def check_once(*, directory: Path | None = None, now: float | None = None,
                      window: float | None = None) -> dict:
-    """Одна независимая проверка. Возвращает {'decision', 'age_s', 'sent'}."""
     d = directory or store_dir()
     t = time.time() if now is None else now
     w = window if window is not None else window_s()
@@ -188,7 +163,7 @@ async def check_once(*, directory: Path | None = None, now: float | None = None,
             try:
                 await _send(text, KIND_ALARM)
                 sent = True
-            except Exception as exc:  # noqa: BLE001 - строка ok=0 уже записана notify
+            except Exception as exc:
                 logger.error("watchdog alarm delivery failed: {}", type(exc).__name__)
         else:
             decision = "silent_known"
@@ -201,16 +176,15 @@ async def check_once(*, directory: Path | None = None, now: float | None = None,
         try:
             await _send("Сторож: цикл надзора снова подаёт признаки жизни.", KIND_RESOLVED)
             sent = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error("watchdog resolve delivery failed: {}", type(exc).__name__)
     return {"decision": decision, "age_s": age, "sent": sent}
 
 
 async def run_checker() -> None:
-    """Независимая задача веб-процесса: живёт отдельно от цикла надзора."""
     while True:
         try:
             await check_once()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("heartbeat checker error: {}", type(exc).__name__)
         await asyncio.sleep(check_interval_s())

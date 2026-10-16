@@ -19,7 +19,6 @@ interface Props {
 
 let counter = 0;
 
-/** Кнопка выбора файла для командной строки: проверка типа и размера, прогресс загрузки, «убрать». */
 export function AttachmentPicker({projectId, items, onItems, disabled}: Props) {
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -66,7 +65,7 @@ export function AttachmentPicker({projectId, items, onItems, disabled}: Props) {
   function remove(item: AttachmentItem) {
     aborts.current.get(item.key)?.abort();
     if (item.status === "ready" && item.attachmentId && projectId != null) {
-      void deleteAttachment(item.attachmentId, projectId).catch(() => undefined); // не вышло - сервер уберёт по сроку хранения
+      void deleteAttachment(item.attachmentId, projectId).catch(() => undefined);
     }
     onItems((prev) => prev.filter((i) => i.key !== item.key));
     setNote("");

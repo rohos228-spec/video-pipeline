@@ -1,5 +1,3 @@
-"""The planner refuses requests to switch off / bypass approvals, limits, protection or the kill switch,
-on the server, before any model call (free, deterministic)."""
 from __future__ import annotations
 
 import asyncio

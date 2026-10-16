@@ -17,12 +17,9 @@ export type FlowMode = "apply" | "rollback";
 interface Props {
   mode: FlowMode;
   proposal: Proposal;
-  /** Для отката: текущая версия цели (expected_version). */
   currentVersion?: number;
-  /** Строки «что изменится» для окна подтверждения (по-русски, из карточки). */
   changeLines: string[];
   onClose: () => void;
-  /** Вызывается один раз, когда план дошёл до конца (успех или ошибка): обновить карточку и список. */
   onFinished: () => void;
 }
 
@@ -36,10 +33,6 @@ type Phase =
 
 const TITLE: Record<FlowMode, string> = { apply: "Применение изменения", rollback: "Откат изменения" };
 
-/**
- * Поток применения/отката: preview плана -> окно подтверждения -> approve (только по клику) -> run -> опрос.
- * Подтверждение создаётся единственным местом: кнопкой «Да, подтверждаю…» в окне подтверждения.
- */
 export function ChangeFlow({ mode, proposal, currentVersion, changeLines, onClose, onFinished }: Props) {
   const [phase, setPhase] = useState<Phase>(mode === "rollback" ? { name: "setup" } : { name: "previewing" });
   const [reason, setReason] = useState("");
@@ -145,7 +138,7 @@ function ReadyBlock({ mode, proposal, planId, preview, changeLines, onBack, onSt
     setBusy(true);
     setError("");
     try {
-      await approvePlan(planId); // единственное место, где создаётся подтверждение: клик оператора
+      await approvePlan(planId);
       await runPlan(planId);
       onStarted(planId);
     } catch (e) {

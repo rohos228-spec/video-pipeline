@@ -14,6 +14,7 @@ export type VibecodeSnapshotModel = {
     cache_read_usd_per_m?: number | null;
     cache_create_usd_per_m?: number | null;
     usd_per_image?: number | null;
+    [key: string]: any;
   };
 };
 
@@ -68,24 +69,10 @@ export const VIBECODE_MODELS_SNAPSHOT: VibecodeSnapshotModel[] = [
     "owned_by": "vibecode",
     "pricing": {
       "cache_create_usd_per_m": 0.0,
-      "cache_read_usd_per_m": 0.002624,
+      "cache_read_usd_per_m": 0.013122,
       "currency": "usd",
-      "input_usd_per_m": 0.026244,
-      "output_usd_per_m": 0.157463
-    }
-  },
-  {
-    "display_name": "Claude Fable 5",
-    "id": "claude-fable-5",
-    "is_image": false,
-    "object": "model",
-    "owned_by": "vibecode",
-    "pricing": {
-      "cache_create_usd_per_m": 5.881919,
-      "cache_read_usd_per_m": 0.470554,
-      "currency": "usd",
-      "input_usd_per_m": 4.705535,
-      "output_usd_per_m": 23.527676
+      "input_usd_per_m": 0.131219,
+      "output_usd_per_m": 0.787315
     }
   },
   {
@@ -95,25 +82,11 @@ export const VIBECODE_MODELS_SNAPSHOT: VibecodeSnapshotModel[] = [
     "object": "model",
     "owned_by": "vibecode",
     "pricing": {
-      "cache_create_usd_per_m": 0.123018,
-      "cache_read_usd_per_m": 0.009841,
+      "cache_create_usd_per_m": 0.246036,
+      "cache_read_usd_per_m": 0.019683,
       "currency": "usd",
-      "input_usd_per_m": 0.098414,
-      "output_usd_per_m": 0.492072
-    }
-  },
-  {
-    "display_name": "Claude Sonnet 4.6",
-    "id": "claude-sonnet-4-6",
-    "is_image": false,
-    "object": "model",
-    "owned_by": "vibecode",
-    "pricing": {
-      "cache_create_usd_per_m": 0.369054,
-      "cache_read_usd_per_m": 0.029524,
-      "currency": "usd",
-      "input_usd_per_m": 0.295243,
-      "output_usd_per_m": 1.476216
+      "input_usd_per_m": 0.196829,
+      "output_usd_per_m": 0.984144
     }
   },
   {
@@ -180,7 +153,7 @@ export const VIBECODE_MODELS_SNAPSHOT: VibecodeSnapshotModel[] = [
     "owned_by": "vibecode",
     "pricing": {
       "cache_create_usd_per_m": 0.0,
-      "cache_read_usd_per_m": 0.0,
+      "cache_read_usd_per_m": 0.009841,
       "currency": "usd",
       "input_usd_per_m": 0.098414,
       "output_usd_per_m": 0.590486
@@ -194,14 +167,14 @@ export const VIBECODE_MODELS_SNAPSHOT: VibecodeSnapshotModel[] = [
     "owned_by": "vibecode",
     "pricing": {
       "cache_create_usd_per_m": 0.0,
-      "cache_read_usd_per_m": 0.0,
+      "cache_read_usd_per_m": 0.039366,
       "currency": "usd",
       "input_usd_per_m": 0.393658,
       "output_usd_per_m": 2.361946
     }
   },
   {
-    "display_name": "GPT Image 2",
+    "display_name": "GPT Image 2 (1K/2K/4K)",
     "id": "gpt-image-2-vip",
     "is_image": true,
     "object": "model",
@@ -284,6 +257,62 @@ export const VIBECODE_MODELS_SNAPSHOT: VibecodeSnapshotModel[] = [
       "currency": "usd",
       "input_usd_per_m": 0.875687,
       "output_usd_per_m": 2.627061
+    }
+  },
+  {
+    "display_name": "GPT 6 Astra",
+    "id": "gpt-6-astra",
+    "is_image": false,
+    "object": "model",
+    "owned_by": "vibecode",
+    "pricing": {
+      "cache_create_usd_per_m": 0.0,
+      "cache_read_usd_per_m": 0.085292,
+      "currency": "usd",
+      "input_usd_per_m": 0.852925,
+      "output_usd_per_m": 4.264624
+    }
+  },
+  {
+    "display_name": "Claude Opus 4.8",
+    "id": "claude-opus-4-8",
+    "is_image": false,
+    "object": "model",
+    "owned_by": "vibecode",
+    "pricing": {
+      "cache_create_usd_per_m": 0.61509,
+      "cache_read_usd_per_m": 0.049207,
+      "currency": "usd",
+      "input_usd_per_m": 0.492072,
+      "output_usd_per_m": 2.46036
+    }
+  },
+  {
+    "display_name": "Claude Fable 5.1",
+    "id": "claude-fable-5-1",
+    "is_image": false,
+    "object": "model",
+    "owned_by": "vibecode",
+    "pricing": {
+      "cache_create_usd_per_m": 2.46036,
+      "cache_read_usd_per_m": 0.049207,
+      "currency": "usd",
+      "input_usd_per_m": 1.968288,
+      "output_usd_per_m": 9.84144
+    }
+  },
+  {
+    "display_name": "Gemini 3.8 Flash",
+    "id": "gemini-3.8-flash",
+    "is_image": false,
+    "object": "model",
+    "owned_by": "vibecode",
+    "pricing": {
+      "cache_create_usd_per_m": 0.0,
+      "cache_read_usd_per_m": 0.014762,
+      "currency": "usd",
+      "input_usd_per_m": 0.147622,
+      "output_usd_per_m": 0.738108
     }
   }
 ];

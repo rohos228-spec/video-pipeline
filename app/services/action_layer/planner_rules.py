@@ -1,14 +1,3 @@
-"""Детерминированные правила вокруг ответа модели-планировщика (без сети и без модели).
-
-1. Значения по умолчанию: пропущенные обязательные параметры подставляются из фактов проекта
-   (генератор и разрешение, шот, лимиты очереди, шаг и вариант мастер-промта); о каждом
-   подставленном значении человек читает в explanation_ru до подтверждения.
-2. Защита от лишнего: платный/разрушающий/фоновый шаг из таблицы GUARD_HINTS, о котором нет ни
-   одного слова в запросе, убирается из плана (макросы идут другим путём и сюда не попадают).
-3. Загрузки файлов: файл из текста не получить, поэтому вместо шага возвращается уточнение
-   «прикрепите файл кнопкой загрузки» и действие, для которого он нужен.
-4. Неоднозначный шот у разрушающего удаления превращается в вопрос с вариантами.
-"""
 from __future__ import annotations
 
 import re
@@ -42,7 +31,6 @@ def _has_stem(words: list[str], stems: tuple[str, ...]) -> bool:
     return any(w.startswith(s) for w in words for s in stems)
 
 
-# --- значения по умолчанию ----------------------------------------------------------------
 
 @dataclass
 class Filled:
@@ -67,9 +55,6 @@ def _row_by_id(facts: dict, fid: Any) -> list | None:
 
 
 def _single_shot(row: list | None, mask_index: int) -> int | None:
-    """Шот, о котором идёт речь, если он один: у кадра один шот или файл есть только в одном.
-
-    mask_index: 4 - картинки, 5 - видео. None - неоднозначно (файлы в обоих шотах)."""
     if row is None:
         return None
     mask = str(row[mask_index])
@@ -77,16 +62,15 @@ def _single_shot(row: list | None, mask_index: int) -> int | None:
         return int(mask)
     if mask == "12":
         return None
-    return 1  # файлов нет: шот 1 (у кадра с одним шотом он и есть, иначе действие бессмысленно)
+    return 1
 
 
 def fill_defaults(action_id: str, params: dict, facts: dict | None, schema: dict) -> Filled:
-    """Подставляет недостающие параметры. Заданное моделью не перезаписывается."""
     out = dict(params)
     notes: list[str] = []
     props = (schema or {}).get("properties") or {}
     required = set((schema or {}).get("required") or [])
-    for key in required:  # обязательное поле с единственным значением (const): спрашивать нечего
+    for key in required:
         prop = props.get(key)
         if key not in out and isinstance(prop, dict) and "const" in prop:
             out[key] = prop["const"]
@@ -132,12 +116,6 @@ def fill_defaults(action_id: str, params: dict, facts: dict | None, schema: dict
 
 
 def _fill_publish(out: dict, facts: dict, notes: list[str]) -> None:
-    """Подпись публикации задаёт СЕРВЕР, а не модель: значение модели отбрасывается.
-
-    Подпись - тема проекта (недоверенный текст) и в промпт не идёт, поэтому модель не может её знать,
-    а подмена подписи через инъекцию не пройдёт. Площадки подставляются сервером, если модель их не
-    назвала; названные моделью остаются как есть, чтобы расхождение с тем, что опубликует шаг,
-    отказало в предусловии публикации и было видно в превью (молча заменять выбор человека нельзя)."""
     server = facts.get("publish_server") or {}
     out.pop("caption", None)
     if server.get("caption"):
@@ -152,10 +130,6 @@ _NUMBER_KEYS = ("frame_number", "a_frame", "b_frame", "from_frame", "to_frame", 
 
 
 def _frame_ids_to_numbers(out: dict, props: dict, facts: dict, notes: list[str]) -> None:
-    """Номер кадра, который модель подменила идентификатором из БД (1205 вместо 5), возвращается к номеру.
-
-    Значение трогается, только если оно больше максимального номера кадра проекта и в точности равно
-    известному идентификатору: настоящий номер (он не больше максимального) не заменяется никогда."""
     rows = facts.get("frames") or []
     if not rows:
         return
@@ -176,7 +150,6 @@ def _frame_ids_to_numbers(out: dict, props: dict, facts: dict, notes: list[str])
 
 
 def _fill_shots(action_id: str, out: dict, facts: dict, notes: list[str]) -> None:
-    """Обязательный шот подставляется, только когда он однозначен."""
     pairs: list[tuple[str, str, int]] = []
     if action_id == "montage.swap_slots":
         idx = 5 if out.get("kind") == "video" else 4
@@ -195,9 +168,6 @@ def _fill_shots(action_id: str, out: dict, facts: dict, notes: list[str]) -> Non
 
 
 def shot_ambiguity(action_id: str, params: dict, facts: dict | None) -> tuple[str, list[str]] | None:
-    """Шот не назван, а файлы есть в обоих шотах: вопрос, а не угадывание.
-
-    Удаление картинки/видео и постановка перегенерации в очередь."""
     if not facts:
         return None
     if action_id in ("montage.delete_image", "montage.delete_video") and "shot" not in params:
@@ -220,7 +190,6 @@ def shot_ambiguity(action_id: str, params: dict, facts: dict | None) -> tuple[st
 
 
 def defaults_used(action_id: str, params: dict, facts: dict | None, text: str) -> list[str]:
-    """Значения, равные умолчаниям проекта и не названные в запросе (для строки в explanation_ru)."""
     if not facts:
         return []
     defaults = facts.get("defaults") or {}
@@ -242,15 +211,14 @@ _COVERAGE_CHOICES = {
 
 
 def _normalize_values(action_id: str, out: dict, notes: list[str]) -> None:
-    """Детерминированные поправки значений: шкала громкости и поля покрытия кадра."""
     if action_id == "montage.set_assemble_params":
         level = out.get("bgm_level")
-        if isinstance(level, float) and 0 < level < 1:  # «0.2» = доля, шкала сервера 0..100
+        if isinstance(level, float) and 0 < level < 1:
             out["bgm_level"] = round(level * 100)
             notes.append(f"bgm_level={out['bgm_level']} (доля {level} на шкале 0..100)")
     elif action_id == "montage.set_coverage":
         if out.get("type") != "coverage_kind":
-            out.pop("parent_number", None)  # поле только для coverage_kind (дочерний кадр)
+            out.pop("parent_number", None)
         choices = _COVERAGE_CHOICES.get(out.get("type"))
         value = out.get("value")
         if choices and isinstance(value, str):
@@ -261,7 +229,6 @@ def _normalize_values(action_id: str, out: dict, notes: list[str]) -> None:
                     break
 
 
-# --- значения, названные в запросе: сервер берёт их из слов, а не из догадок модели -----------------
 
 _PLATFORM_WORDS: dict[str, tuple[str, ...]] = {
     "tiktok": ("тикток", "тик-ток", "tiktok", "тиктоке", "тик"),
@@ -274,7 +241,6 @@ _PLATFORM_EXCLUDE = ("кроме", "исключ", "без", "минус")
 
 
 def named_platforms(text: str) -> list[str]:
-    """Площадки публикации, названные в запросе (порядок каталога); пусто - не названы или есть «кроме»."""
     words = _words(text)
     if _has_stem(words, _PLATFORM_EXCLUDE):
         return []
@@ -293,13 +259,11 @@ _OPS_LIMIT = re.compile(
 _LIMIT_CUE = r"(?:не\s+(?:больше|более|свыше|выше)|максимум|макс\.?|лимит\w*|до|только)"
 _OPS_NOUN = r"(?:операц\w*|действ\w*|правок|штук\w*|генерац\w*|обработ\w*)"
 _MEDIA = r"(картин\w*|изображен\w*|фото\w*|видео\w*|клип\w*|ролик\w*)"
-# Тип назван до числа («на изображения не больше трёх операций») или после («не больше двух операций на видео»).
 _OPS_LIMIT_AFTER = re.compile(_MEDIA + r"\s+(?:[а-я]+\s+){0,2}?" + _LIMIT_CUE + r"\s+(\d{1,3}|[а-я]+)\s+" + _OPS_NOUN)
 _OPS_LIMIT_BEFORE = re.compile(_LIMIT_CUE + r"\s+(\d{1,3}|[а-я]+)\s+" + _OPS_NOUN + r"\s+(?:на|для|по|с)\s+" + _MEDIA)
 
 
 def named_ops_limits(text: str) -> dict[str, int]:
-    """«Не больше пяти картиночных операций» -> {max_image_ops: 5}; видео - max_video_ops."""
     out: dict[str, int] = {}
     low = _norm(text)
     found = [(m.group(1), m.group(2)) for m in _OPS_LIMIT.finditer(low)]
@@ -338,7 +302,6 @@ _SMALL_NUMBERS = _small_numbers()
 
 
 def ru_number(words: list[str]) -> int | None:
-    """«пятьдесят тысяч», «50 тысяч», «50к», «двадцать пять» -> число; не число - None."""
     total = cur = 0
     seen = False
     for w in words:
@@ -371,10 +334,6 @@ _OUTPUT_WORDS = ("выход", "выходн", "ответ", "вывод")
 
 
 def named_token_limits(text: str) -> dict[str, int]:
-    """«Не больше сорока тысяч токенов на входе» -> {max_input_tokens: 40000}; «на выходе» - max_output_tokens.
-
-    Нужны число перед словом «токен», слово-предел (не больше, максимум, до, лимит) и указание, входные
-    токены или выходные: без направления ничего не берётся (какой из лимитов - решает человек)."""
     words = _words(text)
     out: dict[str, int] = {}
     for i, w in enumerate(words):
@@ -405,10 +364,6 @@ _CAP_CUES = ("больше", "более", "максим", "макс", "лими
 
 
 def named_llm_limit(text: str) -> dict[str, int]:
-    """«Запросов к модели не больше двух» -> {max_llm_requests: 2}.
-
-    Нужны слово запросов/вызовов, слово о модели рядом, слово-предел (не больше, максимум, до, лимит) и число
-    после предела; без любого из них ничего не берётся (запрос на одобрение «запрос 33» сюда не попадает)."""
     words = _words(text)
     out: dict[str, int] = {}
     for i, w in enumerate(words):
@@ -446,10 +401,6 @@ _AFTER_NODE_RE = re.compile(r"(?:после|сразу\s+за|вслед\s+за|
 
 
 def apply_request_values(action_id: str, params: dict, text: str) -> dict:
-    """Значения, которые человек назвал словами, а модель опустила (по подсказке «опусти необязательное»).
-
-    publish.send: площадки из запроса (иначе сервер подставил бы все). montage.apply_queue: названный
-    предел операций. project.create / patch_settings: режим героя «с героем» / «без героя»."""
     out = dict(params)
     if not text:
         return out
@@ -473,7 +424,7 @@ def apply_request_values(action_id: str, params: dict, text: str) -> dict:
             out["hero_mode"] = mode
     if action_id in _CEILING_ACTIONS and "ceiling_credits" not in out:
         credits = _CREDITS_RE.findall(_norm(text))
-        if len(set(credits)) == 1:  # сумма названа цифрами и одна: потолок расхода нельзя терять
+        if len(set(credits)) == 1:
             out["ceiling_credits"] = float(credits[0].replace(",", "."))
             if out["ceiling_credits"].is_integer():
                 out["ceiling_credits"] = int(out["ceiling_credits"])
@@ -483,12 +434,11 @@ def apply_request_values(action_id: str, params: dict, text: str) -> dict:
             out["after"] = after[0]
     if "image_resolution" in out and action_id.startswith("montage."):
         named = _IMG_RES_TIGHT.findall(_norm(text))
-        if len(set(named)) == 1:  # разрешение названо слитно («4к», «3k») и одно: модель подставила своё по умолчанию
+        if len(set(named)) == 1:
             out["image_resolution"] = f"{named[0]}k"
     return out
 
 
-# --- настройки проекта: значения должны быть в запросе ----------------------------------------------
 
 _SETTING_KEYS = ("image_generator", "video_generator", "image_resolution", "video_resolution")
 _LATIN = {"a": "а", "b": "б", "c": "к", "d": "д", "e": "е", "f": "ф", "g": "г", "h": "х", "i": "и", "j": "дж",
@@ -506,7 +456,7 @@ def _translit(word: str) -> str:
 def _resolution_named(value: str, low: str) -> bool:
     m = re.fullmatch(r"(\d+)([kp])", str(value))
     if not m:
-        return True  # неизвестный вид значения: не судим
+        return True
     num, unit = m.groups()
     if unit == "k":
         return bool(re.search(rf"(?<![\d.]){num}\s*[kк](?![a-zа-я])", low))
@@ -518,7 +468,6 @@ def _resolution_named(value: str, low: str) -> bool:
 
 
 def _generator_named(value: str, text: str) -> bool:
-    """Имя генератора есть в запросе: латиницей (части id) или русской транслитерацией («нано банана»)."""
     parts = [t for t in re.split(r"[_\-]", str(value).lower())
              if t and not t.isdigit() and len(t) >= 3 and t not in _GENERIC_PARTS]
     if not parts:
@@ -534,10 +483,6 @@ def _generator_named(value: str, text: str) -> bool:
 
 
 def drop_unnamed_settings(params: dict, text: str) -> tuple[dict, list[str]]:
-    """(параметры без выдуманных значений, убранные ключи) для project.patch_settings.
-
-    Генератор и разрешение меняют цену будущих генераций, поэтому значение должно быть названо в
-    запросе: просьба сменить генератор без названия - вопрос, а не значения, которые модель взяла сама."""
     out = dict(params)
     low = _norm(text)
     dropped: list[str] = []
@@ -553,7 +498,6 @@ def drop_unnamed_settings(params: dict, text: str) -> tuple[dict, list[str]]:
 
 
 def settings_question(dropped: list[str]) -> tuple[str, list[str]]:
-    """Вопрос и варианты, когда в запросе нет значения настройки."""
     gen = any(k.endswith("generator") for k in dropped)
     res = any(k.endswith("resolution") for k in dropped)
     if gen and res:
@@ -572,7 +516,6 @@ _CLEAR_ALL_WORDS = ("все", "всю", "всё", "всей", "вся", "цел�
 
 
 def queue_clear_question(action_id: str, params: dict, text: str) -> tuple[str, list[str]] | None:
-    """Очистка всей очереди без слов «всю/все/целиком»: вопрос, что именно убрать (команда без цели)."""
     if action_id != "montage.cancel_queue_ops" or not params.get("clear_all") or params.get("ops"):
         return None
     if _has_stem(_words(text), _CLEAR_ALL_WORDS):
@@ -581,23 +524,16 @@ def queue_clear_question(action_id: str, params: dict, text: str) -> tuple[str, 
             ["Всю очередь", "Правки кадра", "Не убирать"])
 
 
-# --- публикация и массовые удаления: вопрос вместо молчаливого плана ---------------------------------
 
 _CAPTION_RE = re.compile(r"(?:подпис\w*|caption|описани\w*)\s*[:=\-–—]?\s*[«\"“'](.{1,300}?)[»\"”']")
 
 
 def named_caption(text: str) -> str:
-    """Подпись, которую человек назвал в кавычках («с подписью «...»»); пусто - не названа."""
     m = _CAPTION_RE.search(text or "")
     return m.group(1).strip() if m else ""
 
 
 def caption_override_note(action_id: str, params: dict, text: str) -> str:
-    """Пояснение, когда назван свой текст подписи, а публикация идёт с подписью темы проекта.
-
-    Подпись публикации задаёт сервер (предусловие caption_matches требует тему проекта), поэтому
-    названную подпись применить нельзя: человек должен прочитать это до подтверждения, а не узнать
-    из превью, что пояснение модели («с подписью ...») не совпало с шагом."""
     if action_id != "publish.send":
         return ""
     named = named_caption(text)
@@ -617,8 +553,6 @@ _PLATFORM_ASK = ("Что и куда опубликовать? Назовите 
 
 
 def bare_publish_question(steps: list[dict], text: str) -> tuple[str, list[str]] | None:
-    """Запрос из одного голого глагола публикации («выложи»): ни ролика, ни площадки. Публикация
-    нельзя отозвать, поэтому вместо плана с площадками «по умолчанию» - вопрос."""
     if not any(st.get("action_id") == "publish.send" for st in steps):
         return None
     words = [w for w in _words(text) if w not in _FILLER_WORDS]
@@ -634,9 +568,6 @@ _MASS_MIN_STEPS = 2
 
 
 def mass_destructive_question(steps: list[dict], text: str, registry: Any) -> tuple[str, list[str]] | None:
-    """Разрушающие шаги сразу по всем нодам или проектам («сбрось файлы у каждой ноды»): вместо
-    пачки необратимых шагов - вопрос, что именно затронуть. Нужны все признаки: «все/каждый» + нод/хранилищ/
-    проект/групп, два и более одинаковых разрушающих шага (список с конкретными номерами сюда не попадает)."""
     if not _MASS_SCOPE.search(_norm(text)):
         return None
     destructive = [st for st in steps
@@ -651,7 +582,6 @@ def mass_destructive_question(steps: list[dict], text: str, registry: Any) -> tu
             ["Назову конкретные", "Отмена"])
 
 
-# --- расплывчатые просьбы: вопрос вместо молчаливого плана --------------------------------------------
 
 _UNDO_RE = re.compile(
     r"(?<![а-я])(?:отмен|откат|откач|отмот|верн|убер|сними)\w*\s+(?:(?:мо[еёюй]\w*|послед\w+|предыдущ\w+|прошл\w+|"
@@ -665,8 +595,6 @@ _UNDO_ACTIONS = frozenset({"montage.cancel_queue_ops", "history.rollback", "chan
 
 
 def undo_question(steps: list[dict], text: str) -> tuple[str, list[str]] | None:
-    """Отмена «последнего действия» без названной цели: журнала «последнего действия» у планировщика нет, а
-    шаг-догадка (убрать правку очереди, откат по журналу) отменил бы не то. Вместо плана - вопрос."""
     if not any(st.get("action_id") in _UNDO_ACTIONS for st in steps):
         return None
     low = _norm(text)
@@ -685,8 +613,6 @@ _ALL_PLATFORMS = re.compile(r"(?<![а-я])(?:все|всех|всем|всюду
 
 
 def vague_publish_question(steps: list[dict], text: str) -> tuple[str, list[str]] | None:
-    """Публикацию нельзя отозвать: «в соцсетях», «в интернете» без названной площадки - вопрос, а не план
-    с площадками «по умолчанию». «На все площадки» и названная площадка остаются планом."""
     if not any(st.get("action_id") == "publish.send" for st in steps):
         return None
     low = _norm(text)
@@ -700,8 +626,6 @@ _CREATE_WORDS = ("созда", "нов", "завед", "сдела", "начн",
 
 def create_instead_of_settings(action_id: str, params: dict, text: str, facts: dict | None,
                                offered: Any, registry: Any) -> tuple[str, dict, str] | None:
-    """project.create без слов о создании, когда проект открыт: «название - X, тема - Y» меняет настройки
-    открытого проекта (project.patch_settings), а не заводит ещё один."""
     if action_id != "project.create" or not facts or facts.get("project_id") is None:
         return None
     if _has_stem(_words(text), _CREATE_WORDS):
@@ -718,7 +642,6 @@ def create_instead_of_settings(action_id: str, params: dict, text: str, facts: d
     return target, out, "настройки открытого проекта вместо нового проекта (слов о создании в запросе нет)"
 
 
-# --- защита от лишнего: вопрос с подтверждением вместо отказа -------------------------------------------
 
 CONFIRM_YES = "Да, подготовить"
 CONFIRM_NO = "Нет, другое"
@@ -727,14 +650,10 @@ _DECLINE_RE = re.compile(r"уточнени[ея]\s*:\s*нет\s*,?\s*друг\w
 
 
 def guard_confirmed(text: str) -> bool:
-    """Запрос закончен ответом «Да, подготовить» на вопрос защиты (интерфейс присылает исходную просьбу и
-    «Уточнение: Да, подготовить»). Это слова человека: шаг только готовится в превью, подтверждение и запуск
-    остаются отдельными действиями; запреты сервера (обход подтверждений, чужой аккаунт) проверяются раньше."""
     return bool(_CONFIRM_RE.search(_norm(text)))
 
 
 def guard_declined(text: str) -> bool:
-    """Запрос закончен ответом «Нет, другое»: модель не нужна, человек опишет другое действие."""
     return bool(_DECLINE_RE.search(_norm(text)))
 
 
@@ -778,7 +697,6 @@ def _param_text(key: str, value: Any, facts: dict | None) -> str:
 
 
 def describe_step_ru(step: dict, registry: Any, facts: dict | None = None) -> str:
-    """«удалить кадр 24», «запустить шаг конвейера проекта (шаг anim_pr)»: название действия и главные параметры."""
     from app.services.action_layer.planner_guard import sanitize_text
     spec = registry.find(step.get("action_id"))
     if spec is None:
@@ -801,8 +719,6 @@ def describe_step_ru(step: dict, registry: Any, facts: dict | None = None) -> st
 
 
 def guard_confirm_question(steps: list[dict], registry: Any, facts: dict | None) -> tuple[str, list[str]]:
-    """Защита убрала ВСЕ шаги плана (в запросе нет слова об этих действиях): вместо отказа - вопрос, который
-    называет предложенное простыми словами. Ничего не планируется и не выполняется, пока человек не ответит."""
     said = "; ".join(describe_step_ru(st, registry, facts) for st in steps[:3])
     if len(steps) > 3:
         said += f" и ещё {len(steps) - 3}"
@@ -812,7 +728,6 @@ def guard_confirm_question(steps: list[dict], registry: Any, facts: dict | None)
     return question[:500], [CONFIRM_YES, CONFIRM_NO]
 
 
-# --- мастер-промты: шаг и вариант -----------------------------------------------------------
 
 PROMPT_ACTIONS = frozenset({"prompt.get_master", "prompt.save_master", "prompt.delete_master",
                             "prompt.create_master"})
@@ -822,20 +737,16 @@ def _variant_names(step: str) -> list[str]:
     from app.services import prompt_library as pl
     try:
         return list(pl.list_prompts(step))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
 def _real_steps(pl) -> list[str]:
-    """Шаги с собственными промтами: слоты enrich_N используют общий список excel_gpt."""
     return [s for s in pl.STEP_FOLDERS if s not in pl.ENRICH_STEP_CODES or s == pl.EXCEL_GPT_UNIFIED_STEP]
 
 
 def resolve_prompt_target(action_id: str, params: dict, facts: dict | None,
                           text: str) -> tuple[dict, list[str], tuple[str, list[str]] | None]:
-    """(params, заметки, вопрос). Шаг мастер-промта берётся из слов запроса, затем оттуда, где есть
-    названный вариант; неясно - вопрос. Шаг по статусу проекта только при слове «текущий».
-    Удалять вариант, выбранный в проекте, и default нельзя: вместо плана вопрос."""
     if not facts or action_id not in PROMPT_ACTIONS:
         return params, [], None
     from app.services import prompt_library as pl
@@ -876,7 +787,6 @@ def resolve_prompt_target(action_id: str, params: dict, facts: dict | None,
     return out, notes, None
 
 
-# --- подсказки по действиям (идут в промпт только для показанных действий) ------------------------
 
 _UPLOAD_NOTE = "Шаг без source_path, data_base64, filename: файл прикрепит человек, сервер спросит сам."
 ACTION_NOTES: dict[str, str] = {
@@ -962,7 +872,6 @@ for _aid in UPLOAD_ACTIONS:
 
 
 def notes_for(offered) -> dict[str, str]:
-    """Подсказки только для показанных действий; одинаковый текст загрузок не повторяется."""
     out: dict[str, str] = {}
     for aid in sorted(offered):
         note = ACTION_NOTES.get(aid)
@@ -983,7 +892,6 @@ def with_defaults_note(explanation: str, notes: list[str]) -> str:
     return (explanation.strip() + " " + tail).strip()[:1000]
 
 
-# --- защита от лишнего --------------------------------------------------------------------
 
 _DELETE = ("удал", "убер", "убра", "сотр", "снес", "снос", "выкин", "очист", "delete", "remove",
            "стер", "стир", "выбрас", "выброс", "вычист", "затр",
@@ -991,7 +899,6 @@ _DELETE = ("удал", "убер", "убра", "сотр", "снес", "снос
            "дроп", "избав", "выпил", "ликвидир", "прибер", "прибр", "уничтож", "вымар",
            "вычерк", "вырез", "выреж", "утиль", "утилиз", "оставляй", "зачист")
 
-# Слова запроса (начала слов), без которых платный/разрушающий/фоновый шаг не нужен.
 GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "montage.run_montage": ("смонтир", "монтир", "монтаж", "собер", "собери", "собра", "сборк",
                             "рендер", "финальн", "собират", "пересобер", "пересобр"),
@@ -1034,7 +941,6 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "media.get_recovery_assessment": ("провер", "задач", "kie", "киэ", "кие", "состоян", "статус", "восстанов",
                                       "зависл", "завис", "докач", "возобнов", "узна", "посмотр", "покаж", "оцен", "стряс", "случил",
                                       "вытян", "вытащ", "реальн", "возможн"),
-    # Снятие блокировки открывает платную повторную отправку: только если запрос говорит именно об этом.
     "media.release_unknown": ("блок", "разблок", "неизвестн", "исход", "release", "unknown", "отпуст",
                               "освобод", "ключ", "списан"),
     "media.list_unknown_outcomes": ("блок", "заблок", "неизвестн", "неясн", "неопредел", "исход", "потерян",
@@ -1043,7 +949,6 @@ GUARD_HINTS: dict[str, tuple[str, ...]] = {
     "change.rollback": ("откат", "откач", "верни", "вернуть", "назад", "отмен", "прежн"),
     "project.set_auto_mode": ("автопродвиж", "автореж", "автомат", "auto", "само", "самост", "автопил",
                               "автоход", "автозапуск", "автопрогон"),
-    # Действия W5-4: платное, разрушающее или необратимое выполняется только по прямой просьбе.
     "step.run_step": ("запуст", "прогон", "прогна", "старт", "run", "выполн", "гони", "пуск", "сгенер",
                       "генерир", "запусти", "погон"),
     "hitl.approve": ("одобр", "подтверд", "принят", "принять", "утверд", "согласу", "approve", "аппрув", "апрув",
@@ -1074,21 +979,18 @@ for _aid in UPLOAD_ACTIONS:
 
 
 def is_guarded(spec: Any) -> bool:
-    """Только действия из явной таблицы GUARD_HINTS: незнакомое действие никогда не убирается."""
     return spec.id in GUARD_HINTS
 
 
 def unguarded_risky(registry: Any) -> list[str]:
-    """Платные, разрушающие и фоновые действия реестра без записи в GUARD_HINTS (для теста)."""
     return [s.id for s in registry.list()
             if (s.risk in ("paid", "destructive") or s.is_job) and s.id not in GUARD_HINTS]
 
 
-_TYPO_EQUAL_MIN = 5  # слово ровно такой же длины, как основа («мантаж» - «монтаж»), считается опечаткой от 5 букв
+_TYPO_EQUAL_MIN = 5
 
 
 def _typo_stem(word: str, stem: str) -> bool:
-    """Слово отличается от начала слова-признака одной буквой (опечатка «удоли» вместо «удали»)."""
     n = len(stem)
     if n < 4 or len(word) < n or (len(word) == n and n < _TYPO_EQUAL_MIN) or word[0] != stem[0]:
         return False
@@ -1105,23 +1007,16 @@ _READ_WORDS = ("покаж", "посмотр", "открой", "прочит", "
 
 
 _NOT_WORDS = frozenset({"не", "нет", "ни"})
-# Слова согласия: «запрос 5 не принимаю» просит отклонить, а не одобрить.
 _AGREE_STEMS = ("приним", "принят", "принял", "прими", "одобр", "утверд", "подтверд", "согласу", "согласен",
                 "согласн", "устраив", "годит", "годен", "подходит", "подойд")
 _FILE_SOURCE = re.compile(r"(?<![а-я])(?:из|с|от)\s+(?:файл|компьютер|диск|пк|флешк)\w*|(?<![а-я])файл(?:ом|а|у)(?![а-я])")
 
 
 def _negated_words(words: list[str]) -> list[str]:
-    """Слова, стоящие сразу после «не/нет/ни»."""
     return [w for prev, w in zip(words, words[1:]) if prev in _NOT_WORDS]
 
 
 def request_hints_action(text: str, spec: Any) -> bool:
-    """Есть ли в запросе хоть одно слово, указывающее на это действие.
-
-    Загрузка файла названа и без глагола: указание «это/вот» плюс цель «в/для кадр…», либо существительное
-    файла плюс источник «из файла / с компьютера». Одобрение и отклонение запроса различаются отрицанием:
-    «не принимаю» просит отклонить, поэтому слова после «не» одобрению не засчитываются."""
     words = _words(text)
     if spec.id == "hitl.approve":
         words = [w for i, w in enumerate(words) if i == 0 or words[i - 1] not in _NOT_WORDS]
@@ -1136,13 +1031,10 @@ def request_hints_action(text: str, spec: Any) -> bool:
         return True
     if _has_stem(words, _DEICTIC_OBJECT):
         return bool(_PLACE_TARGET.search(_norm(text))) or _has_stem(words, nouns)
-    # существительное файла плюс цель «в/на кадр, слот, шот» без глагола («картинка в шот 3»).
-    # Просьбу показать или узнать это не покрывает.
     return (_has_stem(words, nouns) and bool(_PLACE_TARGET.search(_norm(text)))
             and not _has_stem(words, _READ_WORDS))
 
 
-# --- выбор между близкими действиями по словам запроса ---------------------------------------------
 
 _EMERGENCY = re.compile(r"аварийн|рубильник|\bkill\b|экстренн|авари|стоп-?кран|утечк|взлом|компромет"
                         r"|все\s+платн|платн\w+\s+(?:вызов|запрос|трат|генерац)|сжига|двойн\w+\s+списан"
@@ -1159,15 +1051,6 @@ _RUN_KEYS = frozenset({"project_id", "step_code", "image_resolution", "video_res
 
 def pick_similar_action(action_id: str, params: dict, text: str, facts: dict | None,
                         offered: Any, registry: Any) -> tuple[str, dict, str] | None:
-    """(action_id, params, заметка), если модель взяла не то из двух близких действий.
-
-    1. kill_switch.engage без слов об аварии («останови всё», «стоп») - это project.stop: рубильник
-       всех платных вызовов человек должен назвать явно.
-    2. shot.edit_field (поле меню съёмки) без слов «меню съёмки»/«ячейка»: крупность, движение и стык
-       кадра меняет montage.set_coverage (та же запись, другое действие каталога).
-    3. step.run_step картинок/видео без слов о запуске, но с разрешением («кадры рисуй в 4k»):
-       это настройка проекта (project.patch_settings), а не платный запуск шага.
-    4. project.create без слов о создании при открытом проекте: название и тема - настройки открытого проекта."""
     low = _norm(text)
     if action_id == "step.run_step" and params.get("step_code") in ("img", "video")             and set(params) <= _RUN_KEYS and not _RUN_WORDS.search(low):
         image = params["step_code"] == "img"
@@ -1199,25 +1082,19 @@ def pick_similar_action(action_id: str, params: dict, text: str, facts: dict | N
     return create_instead_of_settings(action_id, params, text, facts, offered, registry)
 
 
-# Парные действия: второе добавляет модель «для надёжности», хотя человек просил только первое.
-# (лишнее действие, действие-основание, слова, которые делают лишнее запрошенным)
 _SHOW_WORDS = ("покаж", "посмотр", "открой", "открыт", "выведи", "вывед", "прочит", "глян", "взгляни", "загляни",
                "какие", "какой", "список", "дай")
 _COMPANIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("project.continue_pipeline", "project.set_auto_mode",
      ("продолж", "запуст", "конвейер", "пайплайн", "возобнов", "стартуй", "поехали", "жми", "нажм")),
-    # Чтение «для надёжности» перед шагом, которому оно не нужно (имя файла и номер кадра названы в просьбе;
-    # цену шага считает сама оценка). Показать список или доску человек должен попросить словами.
     ("montage.list_ref_assets", "montage.link_ref", _SHOW_WORDS),
     ("montage.get_board", "step.get_run_cost_basis", _SHOW_WORDS),
     ("montage.get_board", "node.get_run_cost_basis", _SHOW_WORDS),
-    # Загрузка таблицы сама перечитывает её в базу: отдельное необратимое перечитывание не нужно.
     ("project.reload_xlsx", "project.upload_xlsx", ("перечит", "перезагруз", "reload", "импорт", "прочита")),
 )
 
 
 def _companion_drops(steps: list[dict], text: str) -> set[int]:
-    """Индексы лишних парных шагов: «включи автопродвижение» не запускает продолжение конвейера."""
     words = _words(text)
     out: set[int] = set()
     for extra, base, wanted in _COMPANIONS:
@@ -1227,7 +1104,6 @@ def _companion_drops(steps: list[dict], text: str) -> set[int]:
 
 
 def unhinted_titles(steps: list[dict], text: str, registry: Any) -> list[str]:
-    """Названия охраняемых действий, о которых в запросе нет ни одного слова (для пояснения после «Да, подготовить»)."""
     out: list[str] = []
     for st in steps:
         spec = registry.find(st["action_id"])
@@ -1238,10 +1114,6 @@ def unhinted_titles(steps: list[dict], text: str, registry: Any) -> list[str]:
 
 def drop_unrequested(steps: list[dict], text: str, registry: Any,
                      confirmed: bool = False) -> tuple[list[dict], list[str]]:
-    """(оставшиеся шаги с пересчитанными depends_on, названия убранных действий).
-
-    ``confirmed``: человек ответил «Да, подготовить» на вопрос защиты, поэтому отсутствие слов о самом
-    действии больше не повод его убирать; парные лишние шаги (``_COMPANIONS``) убираются по-прежнему."""
     dropped: set[int] = set()
     for i, st in enumerate(steps):
         spec = registry.find(st["action_id"])
@@ -1249,11 +1121,11 @@ def drop_unrequested(steps: list[dict], text: str, registry: Any,
             continue
         if not confirmed and not request_hints_action(text, spec):
             dropped.add(i)
-    companions = _companion_drops(steps, text) - dropped  # убираются без каскада: зависимые остаются
+    companions = _companion_drops(steps, text) - dropped
     if not (dropped or companions):
         return steps, []
     changed = True
-    while changed:  # зависимые от убранного тоже убираются
+    while changed:
         changed = False
         for i, st in enumerate(steps):
             if i not in dropped and i not in companions and any(d in dropped for d in st["depends_on"]):
@@ -1271,7 +1143,6 @@ def drop_unrequested(steps: list[dict], text: str, registry: Any,
     return kept, names
 
 
-# --- загрузки файлов ----------------------------------------------------------------------
 
 _FORMATS = {
     "montage.upload_image": "PNG", "montage.upload_video": "MP4", "montage.upload_voice": "аудио",
@@ -1301,7 +1172,6 @@ def _target_text(action_id: str, p: dict) -> str:
 
 
 def upload_clarification(action_id: str, params: dict, title: str) -> dict:
-    """Структурное уточнение вместо шага загрузки: файл прикрепляется кнопкой, а не текстом."""
     clean = {k: v for k, v in params.items() if k not in FILE_PARAMS and k != "project_id"}
     question = (f"Прикрепите файл кнопкой загрузки. Он нужен для действия «{title}» "
                 f"({_target_text(action_id, clean)}; формат: {_FORMATS.get(action_id, 'файл')}).")
@@ -1312,7 +1182,6 @@ def upload_clarification(action_id: str, params: dict, title: str) -> dict:
 
 _UPLOAD_INTENT = ("загруз", "загруж", "залей", "залить", "залив", "upload", "прикреп", "подгруз", "положи",
                   "подмен", "закач")
-# (действие, слова-признаки, слова-исключения): ноды и хранилище вытесняют «таблицу проекта».
 _NODE_WORDS = ("нод", "n_", "хранилищ")
 _UPLOAD_NOUNS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("montage.upload_ref", ("реф", "референс"), ()),
@@ -1329,7 +1198,6 @@ _UPLOAD_NOUNS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
 
 
 def upload_intent_action(text: str, offered: frozenset[str] | set[str]) -> str | None:
-    """Какое действие загрузки имел в виду запрос (по словам), если оно показано модели."""
     words = _words(text)
     if not _has_stem(words, _UPLOAD_INTENT):
         return None
@@ -1345,10 +1213,6 @@ _PLACE_TARGET = re.compile(r"\b(?:в|во|на|для)\s+(?:кадр|слот|ш
 
 
 def deictic_file_request(text: str) -> str:
-    """Вопрос «какой файл», если в запросе «поставь ЭТО в кадр N» без существительного и без файла.
-
-    Пустая строка - запрос не такой. Сервер не знает вида файла (картинка, видео, аудио), поэтому просит
-    прикрепить файл, а вид определит по вложению."""
     norm = _norm(text)
     words = _words(norm)
     if not (_has_stem(words, _DEICTIC_OBJECT) and _has_stem(words, _PLACE_VERBS)
@@ -1374,7 +1238,6 @@ def upload_params_from_text(action_id: str, text: str) -> dict:
 
 
 def clean_options(raw: Any) -> list[str]:
-    """Короткие варианты ответа для кнопок: только непустые строки, не больше MAX_OPTIONS."""
     if not isinstance(raw, list):
         return []
     out: list[str] = []
@@ -1388,10 +1251,7 @@ def clean_options(raw: Any) -> list[str]:
     return out
 
 
-# --- вопрос о параметре с умолчанием: один автоматический повтор ----------------------------
 
-# Вопрос или запрос с такими словами никогда не снимается автоматически: цели удаления, причины,
-# подтверждения, суммы и лимиты решает человек.
 _SAFETY_STEMS = ("удал", "убер", "убра", "сотр", "снес", "снос", "выкин", "очист", "сброс", "сбрас",
                  "обнул", "перезапис", "причин", "подтверд", "согласи", "увер", "точно", "сумм",
                  "сколько", "кредит", "бюджет", "лимит", "стоим", "цен", "оплат", "плат", "баланс",
@@ -1401,9 +1261,6 @@ _DEICTIC = ("этот", "эт", "текущ", "выбран", "выделен", 
 
 
 def _publish_known(qw: list[str], facts: dict) -> list[dict]:
-    """Вопрос о подписи/площадках публикации: их подставляет сервер (``_fill_publish``).
-
-    Текст подписи в промпт не отдаётся (это недоверенная тема проекта), поэтому значение условное."""
     server = facts.get("publish_server") or {}
     if _has_stem(qw, ("удал", "убер", "delete", "remove")):
         return []
@@ -1416,10 +1273,6 @@ def _publish_known(qw: list[str], facts: dict) -> list[dict]:
 
 
 def resolve_clarification(question: str, request_text: str, facts: dict | None) -> list[dict]:
-    """Какие значения сервер уже знает для параметров, о которых спросила модель.
-
-    [{param, value, source}] с source default (настройки проекта) или context (выбор в интерфейсе).
-    Пусто, если вопрос не о таком параметре или затрагивает безопасность."""
     if not facts or facts.get("project_id") is None:
         return []
     qw, rw = _words(question), _words(request_text)

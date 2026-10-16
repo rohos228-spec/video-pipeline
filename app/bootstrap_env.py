@@ -29,19 +29,12 @@ def _under_pytest() -> bool:
 
 
 def _external_temp_root() -> Path:
-    """Корень временных папок ВНЕ data/.cache (для pytest и по VP_TEMP_ROOT)."""
     base = (os.environ.get("LOCALAPPDATA") or "").strip()
     root = Path(base) if base else Path.home() / ".cache"
     return root / "video-pipeline-temp"
 
 
 def _temp_root(cache: Path) -> Path:
-    """Где живут ``pid-<PID>``.
-
-    Рабочий процесс: ``data/.cache/temp`` (NeMo/HF нужен путь без AppData).
-    Тесты (pytest в sys.modules) и ``VP_TEMP_ROOT``: вне рабочих данных, чтобы
-    ``pytest-of-*`` и файлы тестов не копились в ``data/.cache``.
-    """
     override = (os.environ.get("VP_TEMP_ROOT") or "").strip()
     if override:
         return Path(override).resolve()
@@ -51,7 +44,6 @@ def _temp_root(cache: Path) -> Path:
 
 
 def _run_startup_cleanup(cache: Path, temp_root: Path) -> None:
-    """Чистка устаревших pid-* мёртвых процессов; ошибки не мешают старту."""
     if (os.environ.get("DISK_GUARD_DISABLE") or "").strip() in {"1", "true", "yes"}:
         return
     try:
@@ -69,7 +61,7 @@ def _run_startup_cleanup(cache: Path, temp_root: Path) -> None:
             disk_guard.housekeeping(cache.parent, max_dirs=200, min_interval_s=600.0)
             disk_guard.start_housekeeping_timer(data_dir=cache.parent)
         disk_guard._touch(stamp)
-    except Exception:  # noqa: BLE001 — bootstrap не должен падать из-за чистки
+    except Exception:
         pass
 
 
@@ -79,7 +71,7 @@ def _patch_mkdtemp(pid_temp: str) -> None:
         return
     original = tempfile.mkdtemp
 
-    def mkdtemp(suffix=None, prefix=None, dir=None):  # noqa: ANN001
+    def mkdtemp(suffix=None, prefix=None, dir=None):
         return original(suffix=suffix, prefix=prefix or "t", dir=dir or pid_temp)
 
     tempfile.mkdtemp = mkdtemp  # type: ignore[assignment]

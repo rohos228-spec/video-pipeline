@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""Validate cinematic scene space (CANON §6).
-
-  python scripts/scene_space_validate.py --fixtures
-  python scripts/scene_space_validate.py --scene SCENE_ID
-
-Writes tasks/VALIDATION.md. Exit 2 on any error, 1 if only warnings, 0 clean.
-"""
 
 from __future__ import annotations
 
@@ -18,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.services.scene_space.validate import (  # noqa: E402
+from app.services.scene_space.validate import (
     format_validation_md,
     issues_exit_code,
     load_fixture,

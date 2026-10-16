@@ -7,7 +7,6 @@ import {
 } from "@/lib/node-coverage-view";
 import {cn} from "@/lib/utils";
 
-// «Покрытие нод»: read-only table from the capability registry. It never starts or changes anything.
 export function NodeCoverageSection({projectId}: {projectId: number | null}) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<NodeCoverage | null>(null);

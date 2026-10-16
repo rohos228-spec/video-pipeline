@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import is_sqlite_locked as _is_sqlite_locked
 from app.models import Entity, Frame, Project
 from app.project_db import project_db_session_scope as _isolated_project_scope
+from app.project_db import sync_project_row_to_master_db
 from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_ai_change import (
     character_ids_from_prompt,
@@ -80,10 +81,6 @@ _VIDEO_OP_TYPES = frozenset(
 
 @asynccontextmanager
 async def session_scope(project_id: int | None = None) -> AsyncIterator[AsyncSession]:
-    """Короткие сессии apply: изолированная project.db.
-
-    Тесты подменяют этот CM (игнор аргумента) на in-memory сессию.
-    """
     if project_id is None:
         from app.db import session_scope as _master_scope
 
@@ -161,7 +158,6 @@ def _op_frame_shot(op: dict[str, Any]) -> tuple[int, int]:
 
 
 def parse_apply_frame_numbers(raw: Any) -> list[int]:
-    """Номера кадров для точечного apply. Пусто = вся очередь."""
     if raw in (None, "", [], ()):
         return []
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
@@ -185,7 +181,6 @@ def split_apply_ops(
     ops: list[dict[str, Any]],
     frame_numbers: list[int] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Оставить в apply только выбранные кадры, остальные вернуть в очередь."""
     wanted = {int(n) for n in (frame_numbers or []) if int(n) >= 1}
     if not wanted:
         return list(ops), []
@@ -204,7 +199,6 @@ def split_apply_ops(
 
 
 def order_montage_pending_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Покрытие → картинки → видео. Чужие типы — в конец."""
     coverage: list[dict[str, Any]] = []
     images: list[dict[str, Any]] = []
     videos: list[dict[str, Any]] = []
@@ -229,7 +223,6 @@ def failed_parent_skip_reason(
     parent_of: dict[int, int | None] | None,
     failed_frames: set[int],
 ) -> str | None:
-    """Если предок в этой пачке уже упал — ребёнка не гоняем."""
     if not parent_of or not failed_frames:
         return None
     seen: set[int] = set()
@@ -248,11 +241,6 @@ def waves_parent_then_child(
     frame_numbers: list[int],
     parent_of: dict[int, int | None],
 ) -> list[list[int]]:
-    """Сначала кадры без родителя в этой пачке, потом их дети.
-
-    Если родитель уже есть и его нет в очереди — ребёнок идёт сразу.
-    Если родитель тоже генерируется в этой пачке — ждём волну родителя.
-    """
     remaining = list(dict.fromkeys(int(n) for n in frame_numbers))
     in_batch = set(remaining)
     waves: list[list[int]] = []
@@ -280,7 +268,6 @@ def waves_parent_then_child(
 
 
 async def coverage_parent_map(project_id: int) -> dict[int, int | None]:
-    """frame_number → still-родитель, если кадр вешает PNG родителя."""
     from app.services.vo_shot_expand import find_coverage_parent_frame, uses_parent_still
 
     async with session_scope(project_id) as session:
@@ -310,7 +297,6 @@ async def coverage_parent_map(project_id: int) -> dict[int, int | None]:
 def group_ops_by_frame(
     ops: list[dict[str, Any]],
 ) -> list[tuple[int, list[dict[str, Any]]]]:
-    """Кадры по возрастанию; внутри кадра ops уже отсортированы shot1→shot2."""
     by_frame: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for op in ops:
         fr, _ = _op_frame_shot(op)
@@ -635,10 +621,6 @@ async def _run_ops_phase(
     phase_label: str,
     parent_of: dict[int, int | None] | None = None,
 ) -> None:
-    """Одна фаза: кадры параллельно до N; внутри кадра shot1 → shot2 строго.
-
-    Картинки/видео: волна родителей, затем дети — если родитель в этой же пачке.
-    """
     if not phase_indices:
         return
 
@@ -676,8 +658,6 @@ async def _run_ops_phase(
             op_status[idx] = "ok" if ok else "fail"
             mapping = result.get("renumber") if ok else None
             if isinstance(mapping, dict) and mapping:
-                # Якорь создал шот → номера кадров сдвинулись: чиним ещё не
-                # применённые операции, иначе правка уедет на соседний кадр.
                 rest = [o for i, o in enumerate(all_ops) if op_status[i] != "ok"]
                 moved = remap_frame_numbers(rest, mapping)
                 remap_board_slot_keys(board, mapping)
@@ -706,6 +686,10 @@ async def _run_ops_phase(
                 if project is not None:
                     set_montage_meta(project, board)
                     await session.commit()
+                    try:
+                        await sync_project_row_to_master_db(project)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug("sync_project_row_to_master_db failed: {}", e)
             if on_progress is not None:
                 await on_progress(len(results), max(total, 1), result)
 
@@ -732,7 +716,6 @@ async def _run_ops_phase(
                     idx, False, {"ok": False, "error": skip, "op": all_ops[idx]}
                 )
             return
-        # Shot1 → shot2 строго подряд внутри кадра.
         for idx in by_frame[frame]:
             op = all_ops[idx]
             try:
@@ -775,7 +758,6 @@ async def apply_montage_board(
         list(pending_ops or board.get("pending_ops") or [])
     )
     held = [op for op in list(keep_ops or []) if isinstance(op, dict)]
-    # Не стираем прошлые зелёные слоты — иначе после следующего apply
     # «слетают» все ранее применённые правки в UI. Чистим только failed
     # у слотов этой очереди (их снова добавят при ошибке).
     for op in ops:
@@ -821,6 +803,10 @@ async def apply_montage_board(
     set_montage_meta(project, board)
     await session.flush()
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(project)
+    except Exception as e:
+        logger.debug("sync_project_row_to_master_db failed: {}", e)
 
     op_status: list[str | None] = [None] * len(ops)
 
@@ -836,8 +822,6 @@ async def apply_montage_board(
         on_progress=on_progress,
         phase_label="coverage",
     )
-    # После coverage роли актуальны: ребёнок ждёт родителя только если тот
-    # тоже в этой пачке. Уже готовый родитель на диске детей не блокирует.
     parent_of = (
         await coverage_parent_map(project_id)
         if image_indices or video_indices
@@ -888,6 +872,10 @@ async def apply_montage_board(
     set_montage_meta(project, board)
     await session.flush()
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(project)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", e)
 
     return {
         "ok": not errors,

@@ -83,9 +83,9 @@ class Settings(BaseSettings):
     # outsee | kie — кто генерит video в Create / пайплайн
     video_provider: str = Field("outsee", alias="VIDEO_PROVIDER")
 
-    # Текстовый LLM: kie (GPT) по умолчанию, vibecode - по явному выбору.
-    # Переключение: Studio UI / data/text_llm_choice.json / TEXT_LLM_PROVIDER=kie|vibecode.
-    # TokenRouter/Kimi удалён; старые TOKENROUTER_* в .env игнорируются (extra="ignore").
+    # Текстовый LLM: GPT (kie) по умолчанию. Vibecode — доп. модель.
+    # Переключение: Studio UI / data/text_llm_choice.json / TEXT_LLM_PROVIDER.
+    # TEXT_LLM_PROVIDER=kie|vibecode — default kie.
     text_llm_provider: str = Field("kie", alias="TEXT_LLM_PROVIDER")
 
     # vibecode.moe — OpenAI-совместимый chat/completions (GPT 5.5 / 5.6 Sol).
@@ -231,7 +231,6 @@ class Settings(BaseSettings):
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )
-    # API-ключ ElevenLabs — синтез речи TTS и SFX (POST /v1/text-to-speech, POST /v1/sound-generation).
     elevenlabs_api_key: str = Field("", alias="ELEVENLABS_API_KEY")
     elevenlabs_proxy_url: str | None = Field(None, alias="ELEVENLABS_PROXY_URL")
     elevenlabs_model_id: str = Field("eleven_multilingual_v2", alias="ELEVENLABS_MODEL_ID")
@@ -266,26 +265,18 @@ class Settings(BaseSettings):
     audio_use_elevenlabs_fallback: bool = Field(
         False, alias="AUDIO_USE_ELEVENLABS_FALLBACK"
     )
-    # Потолок платных TTS POST за один запуск ноды audio (0 = без потолка).
     audio_max_tts_posts_per_run: int = Field(60, alias="AUDIO_MAX_TTS_POSTS_PER_RUN")
 
-    # Ветка для commit/push оркестратора с этого ПК (housepc|tompc|strangepc|workpc).
     # Пусто = main. На каждом ПК своё значение в локальном .env.
     orchestrator_git_branch: str = Field("main", alias="ORCHESTRATOR_GIT_BRANCH")
 
-    # Сторож оркестратора (A4): только помечает зависшую работу, ничего не повторяет.
     watchdog_enabled: bool = Field(True, alias="WATCHDOG_ENABLED")
     watchdog_interval_s: float = Field(30.0, alias="WATCHDOG_INTERVAL_S")
-    # Запрос модели начался (model_start), а model_end/model_error нет дольше этого времени.
     watchdog_model_request_timeout_s: float = Field(900.0, alias="WATCHDOG_MODEL_REQUEST_TIMEOUT_S")
-    # Нода running, а в журнале выполнения нет событий дольше этого времени.
     watchdog_execution_idle_s: float = Field(1800.0, alias="WATCHDOG_EXECUTION_IDLE_S")
-    # По умолчанию выключено: сторож включает аварийный стоп только если оператор разрешил.
     watchdog_kill_switch_on_stall: bool = Field(False, alias="WATCHDOG_KILL_SWITCH_ON_STALL")
-    # Запас сверх таймаута модели решений до отмены шага в отдельной задаче.
     decision_task_timeout_margin_s: float = Field(30.0, alias="DECISION_TASK_TIMEOUT_MARGIN_S")
 
-    # Fleet — сеть рабочих станций (hub = этот ПК, agent = удалённый)
     fleet_enabled: bool = Field(True, alias="FLEET_ENABLED")
     fleet_role: str = Field("hub", alias="FLEET_ROLE")
     fleet_hub_url: str = Field("http://127.0.0.1:8765", alias="FLEET_HUB_URL")
@@ -360,8 +351,6 @@ class Settings(BaseSettings):
 
     # Logic
     log_level: str = Field("INFO", alias="LOG_LEVEL")
-    # C-22: флаг только пропускает вход в ``maybe_auto_advance`` для проектов без auto_mode. Сам он ничего не
-    # одобряет: без ``auto_mode`` решение должен принять человек (или оно уже принято). approve_publish он не создаёт.
     hitl_auto_approve: bool = Field(False, alias="HITL_AUTO_APPROVE")
     # True — прямая запись NodeRun.status мимо машины состояний → RuntimeError (dev/tests)
     node_status_strict: bool = Field(False, alias="NODE_STATUS_STRICT")
@@ -370,100 +359,51 @@ class Settings(BaseSettings):
     web_enabled: bool = Field(True, alias="WEB_ENABLED")
     web_host: str = Field("127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(8765, alias="WEB_PORT")
-    # Безопасные умолчания (docs/SECURITY_DEFAULTS.md)
-    # Без веб-авторизации изменяющие ручки управления принимаются только с loopback;
-    # true снимает это ограничение.
     orchestrator_allow_remote_without_auth: bool = Field(
         False, alias="ORCHESTRATOR_ALLOW_REMOTE_WITHOUT_AUTH")
-    # По умолчанию false (A17): строки вызовов API НЕ отправляются в облачный трекер и облачный
-    # рубильник не опрашивается: ни одного исходящего соединения. Локальная запись остаётся.
-    # Включать только осознанно, задав ещё URL и ключ ниже (в исходниках их больше нет).
     api_tracker_cloud_enabled: bool = Field(False, alias="API_TRACKER_CLOUD_ENABLED")
     api_tracker_supabase_url: str = Field("", alias="SUPABASE_URL")
     api_tracker_supabase_key: str = Field(
         "", validation_alias=AliasChoices("SUPABASE_KEY", "SUPABASE_ANON_KEY"))
-    # false: в облачные строки имя пользователя ОС и имя устройства уходят только как
-    # необратимый хэш с локальной солью; true: как есть (явное решение владельца).
     api_tracker_cloud_send_identity: bool = Field(False, alias="API_TRACKER_CLOUD_SEND_IDENTITY")
-    # Запись трат нативных платных вызовов (spend_ledger). Выключение явное и видимое
-    # (счётчик пропусков и строка в журнале), а не по признаку pytest или ключа synthetic*.
     media_spend_recording: bool = Field(True, alias="MEDIA_SPEND_RECORDING")
-    # По умолчанию false: чат-оркестратор отказывает в edit_files / git_commit_push
-    # (и в confirm-git-push). true включает правку кода и push из чата явно.
     chat_code_actions_enabled: bool = Field(False, alias="CHAT_CODE_ACTIONS_ENABLED")
 
-    # Журнал наблюдателя: квота тел запросов/ответов на ПРОЕКТ и срок хранения
-    # тел закрытых выполнений (живые и связанные с открытым инцидентом не трогаются).
     observer_body_quota_bytes: int = Field(32 * 1024 * 1024, ge=0, alias="OBSERVER_BODY_QUOTA_BYTES")
     observer_body_retention_seconds: int = Field(7 * 24 * 3600, ge=0, alias="OBSERVER_BODY_RETENTION_SECONDS")
 
-    # Слой действий: потолок трат на один план (кредиты), срок жизни одноразового
-    # подтверждения, лимит шагов в плане, таймаут одного шага.
-    # C-17: решение заказчика «лимита нет, важно не зацикливание». Денежные потолки ниже стоят как ВЫСОКИЕ ПРЕДОХРАНИТЕЛИ
-    # (защита от ошибки и утечки, а не рабочий лимит): обычный ролик в них не упирается. От зацикливания «брак ->
-    # перезапуск» защищают счётчики regen_budget (REGEN_MAX_PER_FRAME / REGEN_MAX_PER_RUN), а не эти суммы.
     action_layer_session_cap_credits: float = Field(
         10000.0, ge=0, alias="ACTION_LAYER_SESSION_CAP_CREDITS"
     )
-    # Локальные денежные потолки надзорного слоя (USD, 0 = без ограничения); docs/SPEND_LIMITS.md.
     spend_daily_cap_usd: float = Field(200.0, ge=0, alias="SPEND_DAILY_CAP_USD")
     spend_project_cap_usd: float = Field(100.0, ge=0, alias="SPEND_PROJECT_CAP_USD")
     spend_run_cap_usd: float = Field(50.0, ge=0, alias="SPEND_RUN_CAP_USD")
-    # Автосверка трат с балансом провайдера на границах платных шагов (B10). Пусто = авто: только при ключе
-    # провайдера и не под pytest; 1/0 принудительно. Сбой запроса баланса шаг не блокирует.
     spend_reconcile_auto: bool | None = Field(None, alias="SPEND_RECONCILE_AUTO")
-    # HTTP 402 / нет кредитов у провайдера: включить аварийный стоп надзорного слоя.
     spend_auto_kill_on_402: bool = Field(True, alias="SPEND_AUTO_KILL_ON_402")
-    # Окно (сек): живая или не скачанная задача Kie возобновляется вместо нового createTask; 0 = выкл.
     media_resume_window_s: int = Field(3600, ge=0, alias="MEDIA_RESUME_WINDOW_S")
-    # Потолок перегенераций: на один кадр/героя и на один прогон шага (проверка → переделка → проверка).
-    # После потолка проект встаёт на паузу с причиной; 0 = без ограничения.
     regen_max_per_frame: int = Field(3, ge=0, alias="REGEN_MAX_PER_FRAME")
     regen_max_per_run: int = Field(12, ge=0, alias="REGEN_MAX_PER_RUN")
-    # Денежный потолок тех же перегенераций: оценка USD (число кадров x цена платного запроса) на прогон шага.
-    # Счётчики попыток не знают цены; этот потолок останавливает дорогие повторы. 0 = без ограничения.
     regen_max_usd_per_run: float = Field(25.0, ge=0, alias="REGEN_MAX_USD_PER_RUN")
-    # Сборка по умолчанию не пропускает кадры с озвучкой без клипа (иначе ролик короче голоса).
     assemble_allow_missing_clips: bool = Field(False, alias="ASSEMBLE_ALLOW_MISSING_CLIPS")
-    # Платные картинки по промтам, где все поля сцены - заглушка «нет исходных данных», по умолчанию не запускаются.
     images_allow_hollow_prompts: bool = Field(False, alias="IMAGES_ALLOW_HOLLOW_PROMPTS")
-    # Кадры клиента для Outsee: без Yandex S3 уходят на публичные файлообменники (ссылка открыта всем), по умолчанию запрещено.
     outsee_allow_public_image_hosts: bool = Field(False, alias="OUTSEE_ALLOW_PUBLIC_IMAGE_HOSTS")
-    # F10-D1: автопродвижение воркера идёт на сессии project.db проекта, а не на строке master (там данных проекта нет,
-    # и plan_ready откатывается в new). По умолчанию выключено: откат = убрать флаг.
     worker_use_project_db: bool = Field(False, alias="WORKER_USE_PROJECT_DB")
-    # Оценка одной перегенерации кадра/героя; 0 = взять MEDIA_SUBMIT_ESTIMATE_USD из spend_guard.
     regen_estimate_usd_per_item: float = Field(0.0, ge=0, alias="REGEN_ESTIMATE_USD_PER_ITEM")
-    # C-12: единый потолок платных перезапусков ОДНОГО узла проекта поверх трёх счётчиков (regen_budget, авто-ревью,
-    # повторы после ошибки), которые сбрасывают друг друга успехом. Сбрасывается одобрением шага или решением человека
-    # снять паузу; на потолке проект встаёт на паузу с инцидентом «нужен человек». 0 = без ограничения. Значение
-    # по умолчанию - безопасная оценка, итоговое число выбирает владелец (docs/audit/W40_PHASE4_OWNER_QUESTIONS.md).
     restart_chain_max_per_node: int = Field(60, ge=0, alias="RESTART_CHAIN_MAX_PER_NODE")
     action_layer_approval_ttl_s: int = Field(600, ge=1, alias="ACTION_LAYER_APPROVAL_TTL_S")
     action_layer_max_steps: int = Field(20, ge=1, le=100, alias="ACTION_LAYER_MAX_STEPS")
     action_layer_step_timeout_s: float = Field(900.0, gt=0, alias="ACTION_LAYER_STEP_TIMEOUT_S")
-    # F09-D2: сколько кредитов (1 кр = $0,005) закладывать на ОДНУ платную отправку картинки/видео через Outsee,
-    # у которого нет тарифа. 0 (по умолчанию) = оценка неизвестна и план на Outsee не подтверждается (fail-closed).
-    # 60 = $0,30, потолок отправки spend_guard.MEDIA_SUBMIT_ESTIMATE_USD; замер ~ $0,03 за картинку (LIVE_RUNS).
     action_layer_outsee_submit_credits: float = Field(
         0.0, ge=0, alias="ACTION_LAYER_OUTSEE_SUBMIT_CREDITS"
     )
-    # C-9: через сколько секунд после конца шага незакрытый резерв получает явную метку в журнале слоя.
     action_layer_reserve_stale_s: float = Field(3600.0, gt=0, alias="ACTION_LAYER_RESERVE_STALE_S")
-    # Окно, в течение которого прерванный план можно продолжить по уже израсходованному
-    # подтверждению; позже нужно новое подтверждение оператора.
     action_layer_resume_window_s: int = Field(3600, ge=1, alias="ACTION_LAYER_RESUME_WINDOW_S")
-    # Лимит обращений планировщика к модели на оператора в час (каждый POST считается).
     action_layer_planner_calls_per_hour: int = Field(
         30, ge=1, le=10000, alias="ACTION_LAYER_PLANNER_CALLS_PER_HOUR"
     )
-    # Сколько действий каталога видит модель-планировщик в одном запросе (предфильтр по запросу).
     action_layer_planner_max_catalog: int = Field(
         24, ge=1, le=500, alias="ACTION_LAYER_PLANNER_MAX_CATALOG"
     )
-    # Файлы, прикреплённые к командной строке слоя действий (DATA_DIR/attachments/<проект>/): общий
-    # потолок размера одного файла (МБ; у каждого вида есть и свой, меньший) и срок хранения
-    # неиспользованных файлов (дни; 0 = не удалять).
     action_layer_attachment_max_mb: int = Field(200, ge=1, le=2048, alias="ACTION_LAYER_ATTACHMENT_MAX_MB")
     action_layer_attachment_retention_days: int = Field(
         7, ge=0, le=3650, alias="ACTION_LAYER_ATTACHMENT_RETENTION_DAYS"
@@ -491,7 +431,6 @@ class Settings(BaseSettings):
 
     @property
     def fleet_local_web_url(self) -> str:
-        """Локальный URL API (heartbeat hub+worker на этом же ПК)."""
         host = self.web_host
         if host in ("0.0.0.0", "::"):
             host = "127.0.0.1"
@@ -499,14 +438,12 @@ class Settings(BaseSettings):
 
     @property
     def fleet_agent_base_url(self) -> str:
-        """URL, который agent сообщает hub (Tailscale или локальный)."""
         if self.fleet_public_url.strip():
             return self.fleet_public_url.strip().rstrip("/")
         return self.fleet_local_web_url
 
     @property
     def fleet_heartbeat_hub_url(self) -> str:
-        """Куда слать heartbeat: hub на этой машине → localhost, иначе FLEET_HUB_URL."""
         role = (self.fleet_role or "hub").strip().lower()
         if role == "hub":
             return self.fleet_local_web_url
@@ -519,7 +456,6 @@ class Settings(BaseSettings):
 
     @property
     def telegram_active(self) -> bool:
-        """Нужен ли живой Telegram-бот (поллинг + уведомления)."""
         if not self.telegram_enabled:
             return False
         return bool((self.telegram_bot_token or "").strip())

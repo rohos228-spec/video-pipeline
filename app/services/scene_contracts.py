@@ -1,13 +1,3 @@
-"""Read-only contracts for native camera staging and scene assembly rows.
-
-Callers supply already loaded native rows and captured input/payload evidence.
-Journal callbacks use the existing observer and an independent read session;
-they never flush, commit or repair the native business session. Checkpoints,
-providers, workers, FSM state and approvals are never changed here.
-``passed`` describes only the stated structural checks. Transaction provenance,
-managed execution, artistic quality, Entity writes and scene-space effects are
-not proved by this helper. Missing evidence remains explicitly unknown.
-"""
 
 from __future__ import annotations
 
@@ -44,16 +34,10 @@ _REFERENCES = (
 )
 
 
-# Agents whose result is a JSON slice checked against the converter that stores it
-# (cells.slice_to_cells) and against the parser (agents.parse_agent_slice).
 SLICE_AGENTS = ("skeleton", "characters", "world", "camera", "action")
 LEGACY_AGENT = "legacy"
-# Typed failure classes of a slice, the same names the diagnosis types incidents by.
 INVALID_JSON, MISSING_PAYLOAD, CONTRACT_REJECTED = "invalid_json", "missing_payload", "contract_rejected"
 
-# What each agent's stored JSON must look like. Derived from parse_agent_slice (LIST_KEY and the
-# empty-list rule) and slice_to_cells (the id every row is stored under and the id patterns whose
-# violation the converter itself marks as rejected); not from the prompts.
 SLICE_SHAPES = {
     "skeleton": {"list_key": "scenes", "empty_allowed": False, "id_field": "id_scene", "id_pattern": None,
                  "item_required": ("id_scene", "кадры"),
@@ -69,13 +53,6 @@ SLICE_SHAPES = {
 }
 
 
-# Supervised retry (recover_node) is admitted per AGENT, not per node type: the node type sd_agent is one
-# capability, the agents differ in how much of the step a failed attempt leaves behind.
-#   characters, world: ONE model request (runner._run_one_agent, not splittable), the slice is converted and
-#     stored in ONE transaction (cells.store_cells(transactional=True)) together with the staged `data_applied`
-#     fact, so a failed attempt either applied nothing (retry is safe, the first request is identical) or left
-#     a `data_applied` fact (the generic partial-apply refusal of recover_node forbids the retry).
-#   the others stay human-only, each for its own exact reason.
 RETRY_ADMITTED_AGENTS = ("characters", "world")
 RETRY_REFUSED_AGENTS = {
     "skeleton": ("two_stage_state",
@@ -98,23 +75,17 @@ RETRY_REFUSED_AGENTS = {
 
 
 def scene_retry_admission_problem(node: Any) -> str | None:
-    """Why the node may NOT enter a managed execution (and so never reaches a supervised retry), or None.
-
-    Only sd_agent nodes of an admitted agent pass; everything else that runs in the agents' step (the other
-    agents, the legacy scene_design node) gets the exact reason of its agent. Needed for the legacy node
-    too: observe_attempt resolves the capability from the project STATUS (scene_designing -> sd_agent), so a
-    legacy node in a managed scope would otherwise borrow the managed capability of sd_agent."""
     from app.services.excel_gpt_node import effective_node_type, sd_agent_marker
 
     if not isinstance(node, dict):
         return "scene node unavailable"
     node_type = effective_node_type(node)
     if node_type == "scene_design":
-        agent = LEGACY_AGENT  # the legacy node runs in the same step (status scene_designing) as the agents
+        agent = LEGACY_AGENT
     elif node_type == "sd_agent":
         agent = sd_agent_marker(node)
     else:
-        return None  # not a scene agent: judged by its own capability
+        return None
     if agent in RETRY_ADMITTED_AGENTS:
         return None
     code, reason = RETRY_REFUSED_AGENTS.get(agent, ("unknown_agent", "the agent of this node is unknown"))
@@ -122,7 +93,6 @@ def scene_retry_admission_problem(node: Any) -> str | None:
 
 
 def slice_contract(agent: str) -> dict | None:
-    """Plain description of the shape a verified agent slice must have (read-only)."""
     shape = SLICE_SHAPES.get(agent)
     if shape is None:
         return None
@@ -137,7 +107,6 @@ def slice_contract(agent: str) -> dict | None:
 
 
 def slice_shape_failure(agent: str, data: Any) -> tuple[str | None, list[str]]:
-    """Shape check of one parsed slice: (failure class or None, error codes). Pure, no I/O."""
     import re
 
     shape = SLICE_SHAPES.get(agent)
@@ -180,11 +149,6 @@ def slice_shape_failure(agent: str, data: Any) -> tuple[str | None, list[str]]:
 
 
 def classify_slice_failure(agent: str, reply: Any, error: BaseException | None = None) -> str | None:
-    """Failure class of a model reply an agent could not turn into a slice (None: no failure).
-
-    invalid_json: no JSON object can be extracted; missing_payload: an object without the
-    required list (or an agent error); contract_rejected: the shape is fine and a native
-    validator refused it."""
     if error is None:
         return None
     from app.services.scene_design import agents as ag
@@ -196,7 +160,7 @@ def classify_slice_failure(agent: str, reply: Any, error: BaseException | None =
                else (shape["list_key"], "error"))
     try:
         data = ag.extract_json_object(reply if isinstance(reply, str) else "", marker_keys=markers)
-    except Exception:  # noqa: BLE001
+    except Exception:
         data = None
     if data is None:
         data = _loose_object(reply)
@@ -207,12 +171,11 @@ def classify_slice_failure(agent: str, reply: Any, error: BaseException | None =
 
 
 def _loose_object(reply: Any) -> dict | None:
-    """The whole reply as a JSON object (the native loose loader), for a payload-free object."""
     from app.services.scene_design import agents as ag
 
     try:
         data = ag.loads_json_loose(reply if isinstance(reply, str) else "")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     return data if isinstance(data, dict) else None
 
@@ -224,7 +187,6 @@ def _assembly_payload_present(data: Any) -> bool:
 
 def classify_assembly_failure(reply: Any, parsed: Any, error: BaseException | None = None,
                               problems: Any = ()) -> str | None:
-    """Same classes for the assembler: no JSON / no scenes and ops / the rules refused it."""
     if _assembly_payload_present(parsed):
         return CONTRACT_REJECTED if (error is not None or problems) else None
     if isinstance(parsed, dict):
@@ -236,7 +198,7 @@ def classify_assembly_failure(reply: Any, parsed: Any, error: BaseException | No
     try:
         data = ag.extract_json_object(reply if isinstance(reply, str) else "",
                                       marker_keys=("scenes", "ops", "characters", "error"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         data = None
     if data is None:
         data = _loose_object(reply)
@@ -273,12 +235,6 @@ def _cell_state(cell: Any) -> dict:
 
 
 def legacy_scene_design_contract() -> dict:
-    """Read-only description of the legacy single-node scene_design type; grants nothing.
-
-    Old canvases kept one node for the whole phase. It shares the step with the sd_agent
-    fan-out and the assembler, so it cannot be told which agent it is. Its output is therefore
-    only READ as the union: every agent slice that ran is checked against ``slice_contracts`` and
-    the assembly payload against the assembler's own validator; recovery stays forbidden."""
     return {
         "node_type": "scene_design", "legacy": True, "supported": False,
         "executor": "app.orchestrator.steps.scene_design.run",
@@ -293,7 +249,6 @@ def legacy_scene_design_contract() -> dict:
 
 
 def scene_contract(node: dict) -> dict:
-    """Describe only actual registered camera/assembler routes; grant no actions."""
     from app.orchestrator.node_registry import SD_AGENT_STEP_CODES, spec_for_node
     from app.services.excel_gpt_node import effective_node_type, sd_agent_marker
 
@@ -320,8 +275,6 @@ def scene_contract(node: dict) -> dict:
     if spec is None or (not legacy and spec.step_code != step_code):
         return {**common, "reason": "native registry route unavailable"}
     if legacy:
-        # One legacy node stands for the whole phase: it cannot be told which agent it "is", so it is
-        # observed as the union (every agent slice that ran, then the assembly payload) and only read.
         return {
             **common, "agent": LEGACY_AGENT, "legacy": True, "supported": True, "status": "known",
             "step_code": "scene_d / scene_asm",
@@ -373,7 +326,6 @@ def scene_contract(node: dict) -> dict:
 
 
 def scene_input_snapshot(project: Any, frames: Any, *, cells: Any = ()) -> dict:
-    """Copy loaded scalar fields only. Caller chooses the native capture boundary."""
     from app.services.scene_design.runner import scene_design_enabled
 
     return {
@@ -419,7 +371,6 @@ def _result(proof: dict, errors: Any = (), *, unknown: str | None = None) -> dic
     return {
         **proof, "status": "failed" if errors else "unknown" if unknown else "passed",
         "reason": errors[0] if errors else unknown, "errors": errors,
-        # Typed like the diagnosis types incidents: invalid_json / missing_payload / contract_rejected.
         "failure_class": (proof.get("failure_class") or CONTRACT_REJECTED) if errors else None,
     }
 
@@ -455,11 +406,8 @@ def _frame_errors(project_id: Any, rows: list, snapshot: dict, *, camera: bool) 
 
 def _verify_agent_slice(project: Any, agent: str, agent_slice: Any, facts: list, snapshot: dict,
                         full_vo: str, errors: list, *, prefix: str = "") -> str | None:
-    """Checks of ONE agent: the slice shape, then the stored cells against what the native converter
-    derives from it. Appends error codes to ``errors``, returns the typed failure class or None."""
     from app.services.scene_design import cells as native_cells
 
-    # 1. the slice itself (its failure class outranks any cell-level finding)
     if agent == "camera":
         if (not isinstance(agent_slice, dict) or not isinstance(agent_slice.get("shot_plan"), list)
                 or not agent_slice["shot_plan"] or any(not isinstance(r, dict) for r in agent_slice["shot_plan"])):
@@ -470,10 +418,9 @@ def _verify_agent_slice(project: Any, agent: str, agent_slice: Any, facts: list,
         if shape_failure is not None:
             errors.extend(prefix + "invalid_" + agent + "_slice:" + code for code in shape_errors)
             return shape_failure
-    # 2. the stored cells
     failure = None
     expected_rows = [_cell_state(cell) for cell in native_cells.slice_to_cells(project, agent, agent_slice, full_vo)]
-    empty_ok = not expected_rows and SLICE_SHAPES[agent]["empty_allowed"]  # e.g. a world without places
+    empty_ok = not expected_rows and SLICE_SHAPES[agent]["empty_allowed"]
     target = [row for row in facts if row["agent"] == agent]
     if not target and not empty_ok:
         errors.append(prefix + "missing_" + agent + "_cells")
@@ -499,14 +446,6 @@ def _verify_agent_slice(project: Any, agent: str, agent_slice: Any, facts: list,
 
 def verify_scene_agent(project: Any, node: dict, cells: Any, *, frames: Any,
                        snapshot: Any, agent_slice: Any) -> dict:
-    """Match one agent's facts to the native converter, without writing its cells.
-
-    camera, skeleton, characters, world and action are checked the same way: the stored cells of
-    that agent must equal what ``cells.slice_to_cells`` derives from the captured slice, no cell may
-    be rejected, the slice must have the shape in ``SLICE_SHAPES``, and nothing else (frames, other
-    agents' cells, production registry) may change. A legacy scene_design node is checked for every
-    agent present in ``agent_slice`` (a dict agent -> slice). The result carries a typed
-    ``failure_class`` (invalid_json / missing_payload / contract_rejected) when it failed."""
     from app.services.scene_design import context_builder
     from app.services.scene_design.runner import scene_design_enabled
 
@@ -556,16 +495,10 @@ def verify_scene_agent(project: Any, node: dict, cells: Any, *, frames: Any,
     return _result(proof, errors)
 
 
-# Fields the assembler prompt/product emit but db_apply never writes to frame attrs (lighting lives in scenes[]).
 _IGNORED_ASSEMBLY_FIELDS = frozenset({"lighting", "scene_lighting"})
 
 
 def verify_scene_assembly(project: Any, frames: Any, *, snapshot: Any, payload: Any) -> dict:
-    """Check native coverage, registry and supported attrs, after camera_expand.
-
-    Native registry expansion operates only on detached scalar copies to resolve
-    scene/shot overrides. No writer, SQL, commit, export or checkpoint is called.
-    """
     from app.services import db_apply
     from app.services.scene_design import assembler, context_builder
     from app.services.scene_design.runner import scene_design_enabled
@@ -635,11 +568,10 @@ def verify_scene_assembly(project: Any, frames: Any, *, snapshot: Any, payload: 
                         attrs[key] = str(value or "").strip()
                         checks.add(key)
                 elif field in _IGNORED_ASSEMBLY_FIELDS:
-                    continue  # apply does not write these; nothing to verify
+                    continue
                 else:
                     unsupported.add(field)
             expected_by_uuid[uid].attrs = attrs
-        # The original apply path expands scenes in Frame.number order.
         db_apply.expand_scene_registry_onto_frames(
             sorted(expected, key=lambda frame: frame.number), expected_registry, overwrite=True)
         actual = {frame.uuid: frame for frame in frames}
@@ -661,7 +593,6 @@ def verify_scene_assembly(project: Any, frames: Any, *, snapshot: Any, payload: 
 
 
 def _scene_gap(ctx, error):
-    """A diagnostic callback failure must not replace the native exception."""
     if ctx is not None:
         try:
             ctx.observer.mark_gap(ctx.scope.execution_id, error)
@@ -685,7 +616,6 @@ def _scene_callback(function):
 
 
 def _loaded_project_id(project):
-    """Read ORM identity without refreshing expired/failed executor state."""
     if project is None:
         return None
     from sqlalchemy import inspect
@@ -711,8 +641,6 @@ async def _scene_context(node, *, project=None):
         return None
     if node is not None and (not isinstance(node, dict) or node.get("id") != ctx.node_key):
         return None
-    # Always check the original run, not a canvas guess, stale marker or Excel
-    # capability. This is a fresh read session; no executor state is refreshed.
     async with ctx.observer.master() as reader:
         with reader.no_autoflush:
             control = await reader.get(ExecutionControl, ctx.scope.execution_id)
@@ -765,7 +693,6 @@ def _scene_contract_name(contract, agent=None):
 
 
 async def _scene_fact(ctx, kind, payload, *, body=None, request_id=None):
-    """Store through the original journal, retaining body-gap evidence."""
     from app.services.observation import _request, record_fact
 
     details = dict(payload)
@@ -779,7 +706,6 @@ async def _scene_fact(ctx, kind, payload, *, body=None, request_id=None):
         details["body"] = reference
     if kind == "node_result_verification" and isinstance(reference, dict) and reference.get("gap"):
         details.update(status="unknown", reason="native scene verification body unavailable", errors=[])
-    # Bind explicitly. Local assembly must not inherit another task's request.
     token = _request.set(request_id)
     try:
         await record_fact(kind, details, request_id=request_id)
@@ -789,7 +715,6 @@ async def _scene_fact(ctx, kind, payload, *, body=None, request_id=None):
 
 
 def _scene_input_evidence(ctx, entry):
-    """Lost, truncated or altered durable input is never reconstructed from output."""
     from app.services.observation import redact
 
     snapshot = entry.get("snapshot")
@@ -814,11 +739,6 @@ def _scene_input_evidence(ctx, entry):
 
 @_scene_callback
 async def record_scene_input(project, node, frames, *, cells=()):
-    """Capture loaded native inputs at the caller's actual pre-write boundary.
-
-    Pass node=None to resolve only the current original WorkflowRun node.
-    Default-off/stopped/foreign contexts touch no input rows, bodies or SQL.
-    """
     resolved = await _scene_context(node, project=project)
     if resolved is None:
         return
@@ -832,7 +752,7 @@ async def record_scene_input(project, node, frames, *, cells=()):
         return
     entry = _scene_entry(ctx, key)
     if "snapshot" in entry:
-        return  # A later output or chunk cannot overwrite input provenance.
+        return
     snapshot = scene_input_snapshot(project, frames, cells=cells)
     entry["snapshot"] = snapshot
     entry["recorded"] = False
@@ -852,12 +772,6 @@ async def record_scene_input(project, node, frames, *, cells=()):
 @_scene_callback
 async def record_scene_parse(reply, parsed, *, node, validation_performed,
                              problems=(), error=None, origin="model", agent=None):
-    """Journal actual native parser/check outcomes; never parse, repair or apply.
-
-    Unvalidated adaptive chunks have schema_valid=None. A merged candidate with
-    no raw reply has unknown syntax and no single model request identity. Local
-    assembly warnings remain failed checks even when the executor applies them.
-    """
     resolved = await _scene_context(node)
     if resolved is None:
         return
@@ -878,11 +792,7 @@ async def record_scene_parse(reply, parsed, *, node, validation_performed,
     problems = copy.deepcopy(list(problems or ()))
     extracted = isinstance(parsed, dict)
     performed = validation_performed is True
-    # A legacy scene_design node stands for the whole phase: the caller names the agent; without
-    # a name the assembly phase is meant (its parse calls carry none).
     effective = agent or (contract["agent"] if contract["agent"] != LEGACY_AGENT else "assemble")
-    # Typed failure of a FINAL parse (an exception, or a validated result): same names the
-    # diagnosis types incidents by. An unvalidated adaptive chunk without an error stays untyped.
     failure = payload_present = None
     typed = error is not None or performed
     if typed:
@@ -898,7 +808,7 @@ async def record_scene_parse(reply, parsed, *, node, validation_performed,
                 failure = classify_slice_failure(effective, reply, error)
         payload_present = failure not in {INVALID_JSON, MISSING_PAYLOAD}
         if raw_model_reply and failure == MISSING_PAYLOAD:
-            syntax_valid = True  # an object was found: only the payload is missing
+            syntax_valid = True
         elif raw_model_reply and failure == INVALID_JSON:
             syntax_valid = False
     schema_valid = (False if error is not None else
@@ -929,12 +839,6 @@ async def record_scene_parse(reply, parsed, *, node, validation_performed,
 
 @_scene_callback
 async def observe_scene_result(session, project, node, *, agent_slice=None, payload=None):
-    """Independently read committed native effects, including after SQL failure.
-
-    The caller's session supplies a bind only. Its transaction, pending changes,
-    failed state and expired attributes are never refreshed or repaired. A passed
-    proof describes bounded row integrity; it grants no execution authority.
-    """
     resolved = await _scene_context(node, project=project)
     if resolved is None or project is None:
         return
@@ -947,7 +851,6 @@ async def observe_scene_result(session, project, node, *, agent_slice=None, payl
     entry["verification_started"] = True
     snapshot = _scene_input_evidence(ctx, entry)
     project_id = ctx.scope.project_id
-    # The legacy node covers both phases: a payload means the assembly phase, slices the agents.
     effective = contract["agent"]
     if effective == LEGACY_AGENT:
         effective = "assemble" if payload is not None else LEGACY_AGENT
@@ -999,20 +902,13 @@ async def observe_scene_result(session, project, node, *, agent_slice=None, payl
             or ctx.scope.execution_id in ctx.observer.commit_uncertainty):
         proof.update(status="unknown", reason="native scene journal/body unavailable", errors=[],
                      failure_class=None)
-    ctx.scene_result_proof = copy.deepcopy(proof)  # read by the managed gate (observe_scene_agent_gate)
+    ctx.scene_result_proof = copy.deepcopy(proof)
     await _scene_fact(ctx, "node_result_verification", proof, body=proof)
     if read_error is not None:
         _scene_gap(ctx, read_error)
 
 
 def record_scene_applied(session: Any, agent: str, stats: dict) -> bool:
-    """Stage the honest application fact of ONE agent's cells (characters, world).
-
-    scene_design.run calls this right before the commit that also carries the cell rows
-    (cells.store_cells(transactional=True) only flushes): the fact is staged on the business session, so it
-    becomes visible only together with the cells (a rollback drops both). It makes the step recoverable: a
-    failed attempt WITH this fact applied something (recover_node refuses the retry), one WITHOUT it applied
-    nothing. Returns True when a fact was staged."""
     from app.services.observation import _attempt, emit
 
     ctx = _attempt.get()
@@ -1029,7 +925,6 @@ def record_scene_applied(session: Any, agent: str, stats: dict) -> bool:
 
 
 def managed_scene_attempt() -> bool:
-    """True inside an attempt of a node that belongs to a managed (observed, supervised) execution."""
     from app.services.observation import _attempt
 
     ctx = _attempt.get()
@@ -1038,11 +933,6 @@ def managed_scene_attempt() -> bool:
 
 
 async def observe_scene_agent_gate(session, project, node_type="sd_agent"):
-    """Managed scope only, after a SUCCESSFUL step (verifier registry, success_errors='raise').
-
-    Runs the independent result check itself (the generic call later is then a no-op) and refuses to let the
-    execution go on without a passed proof: the execution is held and the attempt fails, like split and
-    sfx_plan. A failed ATTEMPT never reaches here, so the typed incident of a failed agent stays recoverable."""
     from app.services.observation import _attempt
 
     ctx = _attempt.get()
@@ -1069,7 +959,6 @@ async def observe_scene_agent_gate(session, project, node_type="sd_agent"):
 
 
 async def scene_agent_contract(c) -> dict:
-    """Contract builder 'scene_agent' for a managed sd_agent node (DecisionSupervisor.read_contract)."""
     from app.services.observation import panel_safe
 
     native = scene_contract(c.node)

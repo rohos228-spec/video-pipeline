@@ -1,4 +1,4 @@
-"""TEXT_LLM: GPT (kie) default + optional Kimi/TokenRouter."""
+"""TEXT_LLM: GPT (kie) default + Vibecode."""
 
 from __future__ import annotations
 
@@ -9,9 +9,8 @@ import pytest
 from app.settings import Settings
 
 
-def test_default_is_kie_gpt_not_tokenrouter(monkeypatch, tmp_path: Path) -> None:
+def test_default_is_kie_gpt(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TEXT_LLM_PROVIDER", "kie")
-    monkeypatch.setenv("TOKENROUTER_API_KEY", "tr-present-but-ignored")
     monkeypatch.setenv("GPT_API_KEY", "kie-key")
     monkeypatch.setenv("GPT_BASE_URL", "https://api.kie.ai")
     monkeypatch.setenv("GPT_MODEL", "gpt-5-6-sol")
@@ -24,7 +23,6 @@ def test_default_is_kie_gpt_not_tokenrouter(monkeypatch, tmp_path: Path) -> None
 
 
 def test_tokenrouter_is_not_selectable(monkeypatch, tmp_path: Path) -> None:
-    """tokenrouter/Kimi удалён из каталога: env не включает его, выбор отклоняется."""
     from app.services import text_llm_catalog as cat
 
     monkeypatch.setenv("TEXT_LLM_PROVIDER", "tokenrouter")
@@ -46,10 +44,10 @@ def test_choice_file_switches_without_touching_gpt_env(
     from app.services import text_llm_catalog as cat
 
     monkeypatch.setenv("TEXT_LLM_PROVIDER", "kie")
-    monkeypatch.setenv("VIBECODE_API_KEY", "vk-key")
     monkeypatch.setenv("GPT_API_KEY", "kie-key")
     monkeypatch.setenv("GPT_BASE_URL", "https://api.kie.ai")
     monkeypatch.setenv("GPT_MODEL", "gpt-5-6-sol")
+    monkeypatch.setenv("VIBECODE_API_KEY", "vk-key")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     s = Settings()
 
@@ -79,7 +77,7 @@ def test_vibecode_models_switch_url_and_key(monkeypatch, tmp_path: Path) -> None
 
     cat.write_choice(provider="vibecode", model_id="gpt-5.5-vibecode", cfg=s)
     assert s.resolved_text_llm_provider() == "vibecode"
-    assert s.gpt_model_effective == "gpt-5.5"
+    assert s.gpt_model_effective == "gpt-5.6-sol"
     assert s.gpt_api_effective_key == "vk-test"
     assert s.gpt_chat_path_effective == "/chat/completions"
     assert gpt_api.is_responses_mode() is False
@@ -100,7 +98,6 @@ def test_vibecode_models_switch_url_and_key(monkeypatch, tmp_path: Path) -> None
 def test_vibecode_uses_vps_relay_when_set(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """VPS /v1/* → vibecode.moe; ключ vk- + X-VP-Relay-Token. kie остаётся /codex."""
     from app.services import text_llm_catalog as cat
     import app.settings as settings_mod
     import app.services.gpt_api as gpt_api

@@ -1,4 +1,3 @@
-"""W2-1 / A16: секреты не сохраняются ни в тексте, ни в плане, ни в истории, ни в логах."""
 from __future__ import annotations
 
 import io
@@ -14,7 +13,6 @@ from app.services import observation
 from app.services.action_layer import store
 from app.services.redact import install_log_redaction, redact, redact_text
 
-# Значения собираются из частей, чтобы тест сам не был «утечкой» для сканеров.
 SECRETS = {
     "telegram": "123456789" + ":" + "AAEhBOweik6ad9r" + "_QXBkHjCgyZRoBvKcT5s",
     "supabase_jwt": "eyJ" + "hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" + "." + "eyJyb2xlIjoic2VydmljZV9yb2xlIn0" + "." + "abcDEF123_-xyz",
@@ -32,7 +30,6 @@ SECRETS = {
 
 
 def _core(name: str, value: str) -> str:
-    """Часть значения, которая не должна пережить redact."""
     if name == "bearer":
         return value.split()[1]
     if name in {"token_eq", "signature_eq", "amz"}:
@@ -71,7 +68,6 @@ def test_credential_keys_and_plain_text_preserved():
     assert out["note"] == "see vk-test and vk-1, model gpt-5"
 
 
-# --- слой действий -----------------------------------------------------------
 
 @pytest.fixture()
 def db(tmp_path):
@@ -140,14 +136,13 @@ def test_ensure_columns_adds_to_old_table_idempotently(tmp_path):
         c.exec_driver_sql("CREATE TABLE action_layer_history (id INTEGER PRIMARY KEY, event TEXT)")
         c.exec_driver_sql("INSERT INTO action_layer_history (event) VALUES ('old')")
         store._ensure_history_columns(c)
-        store._ensure_history_columns(c)  # повтор безопасен
+        store._ensure_history_columns(c)
         names = [r[1] for r in c.exec_driver_sql("PRAGMA table_info(action_layer_history)")]
         assert {"project_id", "execution_id", "request_id"} <= set(names)
         assert c.execute(text("SELECT count(*) FROM action_layer_history")).scalar() == 1
     eng.dispose()
 
 
-# --- loguru и файлы монитора ---------------------------------------------------
 
 @pytest.fixture()
 def clean_loguru():

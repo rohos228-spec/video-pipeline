@@ -32,7 +32,7 @@ from app.services.canvas_graph import (
 )
 from app.services.excel_gpt_node import sd_agent_marker
 
-_STEP_X = 290.0  # как в default_graph
+_STEP_X = 290.0
 SCRIPT_FRAMES_QC_GROUP_ID = "script_frames_qc"
 _SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
     "_fw_script",
@@ -46,11 +46,6 @@ _SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
 
 
 def canvas_has_script_frames_qc(project_or_meta: Any) -> bool:
-    """Группа script_frames_qc вставлена на канвас проекта.
-
-    Глобальный пайплайн (без группы) не включает кадры-шаги, lock K1
-    и промты ``templates/node_groups/script_frames_qc/``.
-    """
     meta = project_or_meta
     if meta is not None and not isinstance(meta, dict):
         meta = getattr(meta, "meta", None)
@@ -78,7 +73,6 @@ _SCRIPT_FRAMES_QC_GPT_SUFFIXES = tuple(
 
 
 def _nid_is_script_frames_qc_gpt(nid: str) -> bool:
-    """GPT-ноды группы (без HTML-отчёта). Учитывает суффикс ``_2`` при коллизии id."""
     raw = str(nid or "").strip()
     if not raw or raw.endswith("_fw_report") or "_fw_report_" in raw:
         return False
@@ -93,7 +87,6 @@ def is_script_frames_qc_gpt_node(
     *,
     node_key: str | None = None,
 ) -> bool:
-    """Текущая нода — GPT-шаг группы ``script_frames_qc`` (не отчёт)."""
     nk = str(node_key or "").strip()
     if _nid_is_script_frames_qc_gpt(nk):
         return True
@@ -124,9 +117,8 @@ _FAN_DY = 145.0
 
 @dataclass(frozen=True)
 class GroupNodeSpec:
-    """Нода внутри группы (локальный ключ → параметры)."""
 
-    local_key: str  # "characters" / "assemble" — локальный id в группе
+    local_key: str
     node_type: str  # тип ноды на канвасе (excel_gpt и т.п.)
     label: str
     description: str
@@ -134,7 +126,7 @@ class GroupNodeSpec:
     dx: float  # смещение от якоря вставки (колонка)
     dy: float  # смещение по вертикали относительно центра группы
     marker: str | None = None  # data.sd_agent
-    prompt_variant: str | None = None  # группа: node_groups/<id>/; иначе 05_excel_gpt
+    prompt_variant: str | None = None
     slot_overflow: bool = False  # data.slotOverflow — вне enrich-слотов 1..5
     # Конфиг «Работы с GPT» → meta.excel_gpt_nodes[node_id] (проверки и т.п.)
     operator_config: dict[str, Any] | None = None
@@ -378,18 +370,12 @@ def _work_spec(
     )
 
 
-# Цепочка группы script_frames_qc: каркас → площадка → шоты → QC → отчёт.
-# id нод (``n_excel_gpt_fw_*``) не меняем — на суффиксы завязан раннер
-# (enrich_xlsx / db_frames_context / apply_ops_batches). Меняются подписи
-# и промты. Каркас и площадка берут промты агентов scene_design
-# (prompts/scene_design/), см. ``prompt_library.SCRIPT_FRAMES_QC_SHARED_PROMPTS``.
 SCRIPT_FRAMES_QC_CHAIN_PROMPTS: dict[str, str] = {
     "script": "scene_skeleton_agent",
     "action": "action",
     "shots": "scenes_to_frames_ru",
     "qc": "shots_qc_ru",
 }
-# Старые промты по умолчанию этих нод — их можно заменить на новые без спроса.
 _SCRIPT_FRAMES_QC_LEGACY_PROMPTS: dict[str, frozenset[str]] = {
     "script": frozenset({"script_writer_ru"}),
     "action": frozenset({"main_action_from_bits_ru"}),
@@ -397,13 +383,6 @@ _SCRIPT_FRAMES_QC_LEGACY_PROMPTS: dict[str, frozenset[str]] = {
 
 
 def _script_frames_qc_group() -> NodeGroupDef:
-    """Каркас → площадка → шоты → QC кадров → отчёт.
-
-    Каркас — ``prompts/scene_design/scene_skeleton_agent.md``;
-    площадка — ``prompts/scene_design/action.md`` (только площадка + меняет,
-    без главного_действия и кадров); шоты —
-    ``templates/node_groups/script_frames_qc/scenes_to_frames_ru.md``.
-    """
     script = _work_spec(
         "script",
         "Каркас",
@@ -1081,7 +1060,6 @@ def _wire_to_storage(nodes: list[dict], edges: list[dict], new_ids: list[str]) -
 
 
 def upgrade_script_frames_qc_graph(meta: dict[str, Any]) -> bool:
-    """Старая цепочка check→frames: вставить shots между ними. Без fw_action."""
     graph = canvas_graph_from_meta(meta)
     if graph is None:
         return False
@@ -1178,7 +1156,6 @@ def upgrade_script_frames_qc_graph(meta: dict[str, Any]) -> bool:
 
 
 def drop_script_frames_qc_action_graph(meta: dict[str, Any]) -> bool:
-    """Снять fw_action: главное действие больше не нода группы."""
     graph = canvas_graph_from_meta(meta)
     if graph is None:
         return False
@@ -1244,7 +1221,6 @@ def drop_script_frames_qc_action_graph(meta: dict[str, Any]) -> bool:
 
 
 def drop_script_frames_qc_check_graph(meta: dict[str, Any]) -> bool:
-    """Снять fw_check_script: проверка сценария в группе не нужна."""
     graph = canvas_graph_from_meta(meta)
     if graph is None:
         return False
@@ -1261,7 +1237,6 @@ def drop_script_frames_qc_check_graph(meta: dict[str, Any]) -> bool:
         src = str(e.get("source") or "")
         tgt = str(e.get("target") or "")
         if src == check_id:
-            # pass/fail с проверки не оставляем: fail на script зацикливал бы.
             continue
         if tgt == check_id:
             incoming.append(dict(e))
@@ -1304,7 +1279,6 @@ def drop_script_frames_qc_check_graph(meta: dict[str, Any]) -> bool:
 
 
 def _forget_dropped_excel_gpt_key(meta: dict[str, Any], node_id: str) -> None:
-    """Снятая нода не должна оставаться active — иначе ▶ крутит призрак и висит."""
     if str(meta.get("active_excel_gpt_node_key") or "").strip() == node_id:
         meta.pop("active_excel_gpt_node_key", None)
     keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
@@ -1331,12 +1305,6 @@ def _fw_pipeline_edge(src: str, tgt: str, kind: str = "after") -> dict[str, Any]
 
 
 def restore_script_frames_qc_check_and_action_graph(meta: dict[str, Any]) -> bool:
-    """Вернуть площадку (fw_action) между каркасом (fw_script) и шотами.
-
-    Имя историческое. Проверку (fw_check_script) больше не добавляем:
-    цепочка группы — каркас → площадка → шоты. Если проверка уже стоит
-    на старом канвасе, её рёбра сохраняем (проверка «Ок» → площадка).
-    """
     graph = canvas_graph_from_meta(meta)
     if graph is None or not canvas_has_script_frames_qc(meta):
         return False
@@ -1429,7 +1397,6 @@ def restore_script_frames_qc_check_and_action_graph(meta: dict[str, Any]) -> boo
     return True
 
 
-# Подписи нод до переименования в Каркас / Площадка / Шоты.
 _SCRIPT_FRAMES_QC_LEGACY_LABELS: dict[str, frozenset[str]] = {
     "script": frozenset({"GPT: сценарий · биты"}),
     "action": frozenset({"GPT: действие сцены"}),
@@ -1438,12 +1405,6 @@ _SCRIPT_FRAMES_QC_LEGACY_LABELS: dict[str, frozenset[str]] = {
 
 
 def relabel_script_frames_qc_chain(meta: dict[str, Any]) -> bool:
-    """Каркас / Площадка / Шоты на старом канвасе: подпись и промт ноды.
-
-    Подпись меняем, только если стоит старая по умолчанию (или пусто);
-    промт — только если стоит старый по умолчанию (script_writer_ru,
-    main_action_from_bits_ru) или пусто. Свой выбор пользователя не трогаем.
-    """
     graph = canvas_graph_from_meta(meta)
     if graph is None or not canvas_has_script_frames_qc(meta):
         return False
@@ -1491,7 +1452,6 @@ def relabel_script_frames_qc_chain(meta: dict[str, Any]) -> bool:
 
 
 def script_frames_qc_needs_upgrade(meta: dict[str, Any] | None) -> bool:
-    """True если нет площадки (fw_action) или нет shots→qc / report."""
     if not isinstance(meta, dict) or not canvas_has_script_frames_qc(meta):
         return False
     graph = canvas_graph_from_meta(meta)
@@ -1515,7 +1475,6 @@ def script_frames_qc_needs_upgrade(meta: dict[str, Any] | None) -> bool:
 
 
 def rewire_script_frames_qc_shots_to_qc(meta: dict[str, Any]) -> bool:
-    """shots → QC, минуя ноду промтов кадров. Ноду frames не удаляем."""
     graph = canvas_graph_from_meta(meta)
     if graph is None:
         return False
@@ -1586,7 +1545,6 @@ def rewire_script_frames_qc_shots_to_qc(meta: dict[str, Any]) -> bool:
 
 
 def restore_script_frames_qc_four_node_graph(meta: dict[str, Any]) -> bool:
-    """Убрать автодобавленные action+shots, вернуть check → frames."""
     graph = canvas_graph_from_meta(meta)
     if graph is None:
         return False
@@ -1640,7 +1598,6 @@ def restore_script_frames_qc_four_node_graph(meta: dict[str, Any]) -> bool:
 
 
 def upgrade_script_frames_qc_report_graph(meta: dict[str, Any]) -> bool:
-    """После QC вставить ноду HTML-отчёта; выход группы → report."""
     graph = canvas_graph_from_meta(meta)
     if graph is None:
         return False
@@ -1724,7 +1681,6 @@ def upgrade_script_frames_qc_report_graph(meta: dict[str, Any]) -> bool:
 async def upgrade_script_frames_qc_on_project(
     session: AsyncSession, project: Project
 ) -> bool:
-    """Обновить старую цепочку группы на канвасе проекта. True если писали."""
     meta = dict(project.meta or {}) if isinstance(project.meta, dict) else {}
     changed = False
     if upgrade_script_frames_qc_graph(meta):
@@ -1758,12 +1714,6 @@ async def insert_node_group(
     *,
     after: str | None = None,
 ) -> dict[str, Any]:
-    """Вшить группу нод в канвас проекта: позиции, связи, промты, флаги.
-
-    Якорь: явный ``after`` (node_key) → иначе первая нода типа
-    ``default_after_type`` → иначе хвост цепочки. Исходящие pipeline-рёбра
-    якоря перешиваются: якорь → входы группы → выход → старые цели.
-    """
     group = get_node_group(group_id)
     if group is None:
         raise ValueError(

@@ -289,7 +289,6 @@ async def test_cancel_advance_closes_registered_page() -> None:
 
 @pytest.mark.asyncio
 async def test_wrapper_stays_generation_active_until_outer_unregister() -> None:
-    """pipeline.advance_project больше не unregister — иначе leftover excel_gpt."""
     from app.services.step_cancel import is_generation_active
 
     started = asyncio.Event()

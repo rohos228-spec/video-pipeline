@@ -275,9 +275,7 @@ export interface FrameDTO {
 
 export interface MontageBoardCharacterRef {
   id: string;
-  /** Код рефа в проекте: c02 / i01. */
   code?: string;
-  /** Кто это: имя персонажа или предмета. */
   name: string;
   image_url: string | null;
 }
@@ -288,18 +286,15 @@ export interface MontageBoardParentRef {
   image_url: string | null;
 }
 
-/** Реф, приложенный кадру на доске: вид + имя, видное в монтаже. */
 export interface MontageManualRef {
   id: string;
   kind: string;
   kind_label: string;
   name: string;
-  /** Готовый реф проекта: при отвязке файл остаётся на месте. */
   linked?: boolean;
   image_url: string | null;
 }
 
-/** Готовый реф проекта (`characters/`, `items/`) для окна «приложить». */
 export interface MontageRefAsset {
   kind: string;
   kind_label: string;
@@ -309,7 +304,6 @@ export interface MontageRefAsset {
   image_url: string | null;
 }
 
-/** Виды рефов для загрузки нового (id + подпись). */
 export interface MontageRefKindChoice {
   id: string;
   label: string;
@@ -331,7 +325,6 @@ export interface MontageSceneChainRow {
   vo?: string;
 }
 
-/** Отчёт «Улучшить сцену»: ячейка прошла 3 ноды группы script_frames_qc. */
 export interface MontageImproveReport {
   nodes: { node: string; label: string; status: string; note: string }[];
   budget?: number;
@@ -361,20 +354,15 @@ export interface MontageBoardFrame {
   voiceover_excel: string;
   characters: string;
   character_refs: MontageBoardCharacterRef[];
-  /** Still VO-родителя ячейки — реф покрытия для всех шотов группы. */
   ref_parent?: MontageBoardParentRef | null;
-  /** Персонажи всей VO-ячейки, не только этой колонки. */
   group_character_refs?: MontageBoardCharacterRef[];
   item_refs?: MontageBoardCharacterRef[];
-  /** Рефы кадра, добавленные вручную с доски. */
   manual_refs?: MontageManualRef[];
   start_ts: number | null;
   end_ts: number | null;
   duration_seconds: number | null;
   has_shot2: boolean;
-  /** Freeze СТАРТ/КОНЕЦ: колонка конечного still, даже без PNG. */
   has_end_still?: boolean;
-  /** В кадре есть текст раскладки — иначе конечный кадр не угадываем. */
   has_layout?: boolean;
   layout_start?: string;
   layout_end?: string;
@@ -388,7 +376,6 @@ export interface MontageBoardFrame {
   video_shot2_duration: number | null;
   image_shot1_url: string | null;
   image_shot2_url: string | null;
-  /** Отдельный still общего плана, не исходный shot1. */
   image_parent_url?: string | null;
   video_shot1_url: string | null;
   video_shot2_url: string | null;
@@ -398,40 +385,25 @@ export interface MontageBoardFrame {
   animation_prompt_shot1?: string;
   animation_prompt_shot2?: string;
   plan_column: number;
-  /** Покрытие script_frames_qc: крупность / действие / родитель-дочерний. */
   shot_plan?: string;
   shot_action?: string;
   shot_kind?: "parent" | "child" | "";
   shot_parent_number?: number | null;
   shot_parent_id?: string;
-  /** Формат сцены: шаблон T0…T10 / X1 / X2. */
   shot_template?: string;
-  /** Сколько якорей принадлежит ЭТОМУ кадру. */
   shot_anchors?: number;
-  /** Якорь закадра этого кадра (не всей ячейки). */
   shot_anchor?: string;
-  /** «было → стало» первого якоря кадра. */
   shot_anchor_change?: string;
   shot_anchor_main?: boolean;
-  /** Якорь найден в закадре этого кадра (иначе строка красная). */
   shot_anchor_found?: boolean;
-  /** Якоря ЭТОГО кадра — правятся строкой «Якорь» на доске. */
   shot_anchor_rows?: MontageAnchorRow[];
-  /** У ячейки один кадр — якоря можно добавлять / удалять. */
   anchor_can_add?: boolean;
-  /** Все биты VO-ячейки: нужны, чтобы правка одного шота не стёрла соседей. */
   scene_anchor_rows?: MontageAnchorRow[];
-  /** Полный закадр VO-ячейки (сцены). */
   vo_cell_full?: string;
-  /** Сохранённый кусок закадра — полный текст сцены при перегенерации. */
   vo_span?: { start: number; end: number; text: string } | null;
-  /** Неиспользованный закадр до этой сцены (общий с «после» предыдущей). */
   vo_unused_before?: string;
-  /** Неиспользованный закадр после этой сцены (общий с «до» следующей). */
   vo_unused_after?: string;
-  /** Куски закадра ячейки, пропущенные между кадрами. */
   vo_unused_between?: string[];
-  /** Номер последнего живого кадра с закадром до обрыва. */
   vo_unused_after_number?: number | null;
   shot_angle?: string;
   shot_move?: string;
@@ -449,18 +421,12 @@ export interface MontageBoardFrame {
   scene_sense?: string;
   scene_visual_type?: string;
   scene_feature?: string;
-  /** Что предлагает дерево «Выбор» для формата сцены. */
   scene_template_auto?: string;
-  /** Последовательность кадров сцены (действие → действие) — на всю VO-ячейку. */
   scene_action?: string;
-  /** Нумерованные сцены ``N.`` внутри VO-ячейки (куски для пересборки). */
   scene_chain?: MontageSceneChainRow[];
-  /** Номер VO-родителя ячейки (сцена). Не coverage_parent_id / X1. */
   vo_scene_number?: number | null;
-  /** U-2: порядковый номер сцены по порядку на ленте (1, 2, 3 ...). Показываем его, а не vo_scene_number. */
   vo_scene_ordinal?: number | null;
   vo_scene_size?: number;
-  /** leftover-клей (не живой шот). Живых детей не режем по scene_chain.length. */
   shot_leftover?: boolean;
 }
 
@@ -483,7 +449,6 @@ export interface MontageBoardMeta {
     parent_number?: number;
   }>;
   applied_at: string | null;
-  /** U-3: можно ли отменить последнее деление сцены. */
   split_undo?: { can_undo: boolean; undo_id: string | null; kind: string | null; depth: number };
 }
 
@@ -491,9 +456,7 @@ export interface MontageBoardDTO {
   frames: MontageBoardFrame[];
   frame_count: number;
   meta: MontageBoardMeta;
-  /** Формат кадра проекта («9:16», «16:9», …) для картинки на доске. */
   frame_aspect?: string | null;
-  /** Строки План / Действие / Кадр — только если на канвасе script_frames_qc. */
   show_coverage_rows?: boolean;
   coverage_plan_choices?: string[];
   coverage_angle_choices?: string[];
@@ -505,7 +468,6 @@ export interface MontageBoardDTO {
   ref_kind_choices?: MontageRefKindChoice[];
 }
 
-/** Формат сцены из каталога `templates/shot_templates/shot_templates.json`. */
 export interface MontageTemplateChoice {
   id: string;
   name: string;

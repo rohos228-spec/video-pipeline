@@ -1,4 +1,3 @@
-"""Dump VO parent кадры[] / action vs QC for mixed groups."""
 from __future__ import annotations
 
 import json

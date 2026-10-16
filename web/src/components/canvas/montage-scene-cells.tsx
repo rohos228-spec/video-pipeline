@@ -19,7 +19,6 @@ import type {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-/** Строки сцены живут прямо в клетках доски — никаких всплывающих окон. */
 const ACCENT = "rgba(209,254,23,1)";
 const HINT = "text-[10px] leading-snug text-white/40";
 const FIELD =
@@ -73,11 +72,6 @@ function Chip({
   );
 }
 
-/**
- * Метка «в очереди» — точка поверх клетки, а не строка текста: строка добавляла
- * клетке высоту в тот момент, когда правка уходила в очередь, и кнопка под
- * курсором уезжала из-под mouseup. Счётчик очереди есть в шапке доски.
- */
 function PendingMark({ show }: { show: boolean }) {
   if (!show) return null;
   return (
@@ -85,7 +79,6 @@ function PendingMark({ show }: { show: boolean }) {
   );
 }
 
-/** Ячейка-набор чипов: крупность / ракурс / движение / стык / свет. */
 export function ChipsCell({
   value,
   choices,
@@ -139,14 +132,6 @@ export type CoverageMenuGroup = {
 const MENU_W = 420;
 const MENU_H = 230;
 
-/**
- * Покрытие кадра под его картинкой: в доске видны только текущие значения,
- * варианты живут во всплывающем меню и показываются по одной группе — той,
- * на которую наведён курсор.
- *
- * Слева список групп (его высота не меняется), справа чипы выбранной группы:
- * в раскрывающемся аккордеоне пункты уезжали из-под курсора.
- */
 export function CoverageMenu({
   title,
   groups,
@@ -171,8 +156,6 @@ export function CoverageMenu({
       setBox({ left: fit(r.left - 6), top: Math.round(r.bottom + 6) });
       return;
     }
-    // Снизу не хватает места: уводим меню в сторону, а не наверх — иначе оно
-    // закрывает сам кадр, для которого его и открыли.
     const toRight = r.right + 8 + MENU_W + 8 <= window.innerWidth;
     setBox({
       left: fit(toRight ? r.right + 8 : r.left - 8 - MENU_W),
@@ -187,7 +170,6 @@ export function CoverageMenu({
 
   const hide = useCallback(() => {
     if (hideRef.current) clearTimeout(hideRef.current);
-    // Пауза, чтобы курсор успел дойти от строки значений до самого меню.
     hideRef.current = setTimeout(() => setBox(null), 140);
   }, []);
 
@@ -340,7 +322,6 @@ export function CoverageMenu({
   );
 }
 
-/** Роль в покрытии: родитель / дочерний + выбор родителя + удаление шота. */
 export function RoleCell({
   kind,
   parentNumber,
@@ -357,11 +338,9 @@ export function RoleCell({
   parentNumber: number | null;
   frameNumber: number;
   parentChoices: Array<{ number: number; kind: string; vo: string }>;
-  /** Still-родитель по умолчанию: голова этой же VO-сцены, не кадр #1 проекта. */
   fallbackParentNumber?: number | null;
   pending?: boolean;
   disabled?: boolean;
-  /** Компактная полоска поверх картинки кадра. */
   compact?: boolean;
   onKind: (kind: "parent" | "child", parentNumber: number | null) => void;
   onDeleteChild: () => void;
@@ -431,7 +410,6 @@ export function RoleCell({
   );
 }
 
-/** Подбор вариантов нодами сцен — рисуем внутри клетки, без модалок. */
 function useSceneVariants(projectId: number | null, frameId: number) {
   const [busy, setBusy] = useState<SceneVariantKind | null>(null);
   const [variants, setVariants] = useState<SceneVariant[]>([]);
@@ -540,7 +518,6 @@ function VariantBox({
   );
 }
 
-/** Действие кадра — своя строка доски: правка текстом + подбор вариантов. */
 export function ActionCell({
   projectId,
   frameId,
@@ -626,11 +603,6 @@ function anchorRowsToOps(rows: MontageAnchorRow[]): SceneAnchorRow[] {
     }));
 }
 
-/**
- * Якоря ЭТОГО кадра. Правка одного шота не должна стирать биты соседей:
- * в мультишоте кладём строку кадра обратно в список ячейки по `cell_index`,
- * а дописанный якорь встаёт сразу за якорями кадра — он режет именно его.
- */
 export function mergeAnchorRows(
   frameRows: MontageAnchorRow[],
   cellRows: MontageAnchorRow[],
@@ -662,7 +634,6 @@ export function mergeAnchorRows(
   return anchorRowsToOps(next);
 }
 
-/** Якоря VO-ячейки: где сцена режется на кадры. */
 export type MontageVoSpan = {
   start: number;
   end: number;
@@ -934,9 +905,6 @@ export function AnchorCell({
   const { ask, busy, clear, kind, variants } = useSceneVariants(projectId, frameId);
   const savedRef = useRef(JSON.stringify(rows));
 
-  // Сравнение по значению, а не по ссылке: `rows` — новый массив на каждый
-  // ре-рендер доски, и по ссылке дописанная строка якоря тут же стиралась.
-  // Пустую строку очередь вернуть не может — её и держим сами.
   const rowsKey = JSON.stringify(rows);
   useEffect(() => {
     const next = JSON.parse(rowsKey) as MontageAnchorRow[];
@@ -958,8 +926,6 @@ export function AnchorCell({
   const patch = (i: number, field: "якорь" | "изменение", val: string) =>
     setDraft((prev) => prev.map((r, j) => (j === i ? { ...r, [field]: val } : r)));
 
-  // Дописанный якорь режет ячейку, а не текущий кадр: красным — только то,
-  // чего нет в закадре ЯЧЕЙКИ (apply на таком якоре и падает).
   const cellLower = (cellText || frameText || "").toLowerCase();
   const frameLower = (frameText || "").toLowerCase();
 
@@ -1080,7 +1046,6 @@ export function AnchorCell({
           onTake={(v) => {
             const bits = v["биты"] || [];
             if (!bits.length) return;
-            // Биты сверх якорей кадра — не выбрасываем: станут шотами ячейки.
             const next: MontageAnchorRow[] = bits.map((b, i) => ({
               ...draft[i],
               "якорь": b["якорь"],
@@ -1099,10 +1064,6 @@ export function AnchorCell({
   );
 }
 
-/**
- * Промт оператора + генерация сцен ячейки / пересборка кусков ``N.``.
- * GPT берёт промт action группы, не гоняет всю ноду fw_action.
- */
 export function SceneGenerateBlock({
   projectId,
   frameId,
@@ -1353,7 +1314,6 @@ function ImproveReportView({
   );
 }
 
-/** Цепь «A → B» или нумерованные строки → шаги для картинок кадров. */
 export function splitSceneActionBeats(text: string): string[] {
   const raw = (text || "").trim();
   if (!raw) return [];
@@ -1395,10 +1355,6 @@ export function sceneImageInstruction(opts: {
   return parts.join(" ");
 }
 
-/**
- * Последовательность кадров сцены. Большая кнопка кладёт разбор
- * в очередь и сразу запускает «Применить правки». Без картинок.
- */
 export function SceneActionBlock({
   value,
   pending,
@@ -1480,10 +1436,6 @@ export function SceneActionBlock({
   );
 }
 
-/**
- * Сцена = одна ячейка закадра. В полосе «Сцены» — последовательность кадров,
- * якоря ячейки и данные ячейки.
- */
 export function SceneCell({
   action,
   anchors,

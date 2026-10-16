@@ -53,7 +53,7 @@ from app.services.plan_shot2 import (
     plan_column_for_frame,
     shot2_video_file_pattern,
 )
-from app.services.montage_board_assets import _find_shot1_video, _find_shot2_video  # noqa: F401 - единая реализация
+from app.services.montage_board_assets import _find_shot1_video, _find_shot2_video
 from app.services.shot2_timeline import split_voiceover_duration
 from app.services.vo_shot_expand import (
     coverage_parent_shot_id,
@@ -123,7 +123,6 @@ def _character_refs_for_ids(
 def _vo_parent_and_members(
     frames: list[Any], frame: Any
 ) -> tuple[Any, list[Any]]:
-    """VO-ячейка: родитель + шоты с тем же parent_uuid. Без coverage_parent_id."""
     from app.services.montage_scene_editor import scene_group
 
     return scene_group(frames, frame)
@@ -143,7 +142,6 @@ def _merge_ref_ids(*batches: list[str]) -> list[str]:
 
 
 def _item_ids_from_attrs(attrs: dict[str, Any] | None) -> tuple[list[str], dict[str, str]]:
-    """Id предметов из attrs + имена, если items_seed — список карточек."""
     src = attrs if isinstance(attrs, dict) else {}
     names: dict[str, str] = {}
     ids: list[str] = []
@@ -184,7 +182,6 @@ def _group_refs_for_frames(
     char_names: dict[str, str],
     item_names: dict[str, str],
 ) -> dict[int, dict[str, Any]]:
-    """Рефы VO-ячейки: still родителя, персонажи группы, предметы."""
     by_parent: dict[int, dict[str, Any]] = {}
     out: dict[int, dict[str, Any]] = {}
     for fr in frames:
@@ -276,7 +273,7 @@ async def _entity_name_maps(
             .scalars()
             .all()
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return chars, items
     for ent in ents:
         code = str(getattr(ent, "code", "") or "").strip()
@@ -450,7 +447,6 @@ def _merge_prompt_rows(
     db_rows: dict[int, dict[str, str]],
     excel_rows: dict[int, dict[str, str]],
 ) -> dict[int, dict[str, str]]:
-    """БД перекрывает Excel/кэш по каждому слоту — кэш не затирает живые промты."""
     keys = (
         "image_prompt_shot1",
         "image_prompt_shot2",
@@ -742,14 +738,9 @@ def _shot_kind_payload(
     frame: Any,
     frames: list[Any],
 ) -> tuple[str, int | None, str]:
-    """parent | child | "" + номер родителя + id шота родителя."""
-    # Только role=shot — дочерний. leftover parent_id / K2-id / X1
-    # у VO-родителя не делают кадр ребёнком и не вешают still родителя.
     cs = getattr(frame, "attrs", None) or {}
     cs = cs.get("camera_subdivide") if isinstance(cs, dict) else {}
     coverage_kind = str((cs or {}).get("coverage_kind") or "").strip().lower()
-    # Явная роль на доске главнее VO-головы и плана: любой кадр может быть
-    # и родителем, и ребёнком.
     if coverage_kind == "child":
         parent = find_coverage_parent_frame(frames, frame)
         parent_number = (
@@ -906,11 +897,9 @@ def _coverage_fields_for_frames(
                 vo_size = int(row.get("vo_scene_size") or 0)
             except (TypeError, ValueError):
                 vo_size = 0
-            # A child that opens a multi-shot VO scene stays in it; only a lone cell joins its parent.
             if vo_int <= 0 or (vo_int == int(fr.number) and vo_size <= 1):
                 row["vo_scene_number"] = parent_number
         out[fr.number] = row
-    # U-2: порядковый номер сцены для показа (по порядку на ленте); vo_scene_number остаётся внутренним ключом.
     ordinals: dict[int, int] = {}
     for fr in frames:
         try:
@@ -929,8 +918,6 @@ def _coverage_fields_for_frames(
 
 
 def _real_frame_aspect(scenes_dir: Path, rows: list[dict[str, Any]]) -> str | None:
-    """Формат по первой готовой картинке: настройка проекта врёт после ручных
-    загрузок, а доска рисует именно файл с диска."""
     from PIL import Image
 
     for row in rows:
@@ -942,7 +929,7 @@ def _real_frame_aspect(scenes_dir: Path, rows: list[dict[str, Any]]) -> str | No
         try:
             with Image.open(png) as im:
                 w, h = im.size
-        except Exception as e:  # noqa: BLE001 — битый файл не должен ронять доску
+        except Exception as e:
             logger.warning("montage_board: размер {}: {}", png, e)
             return None
         if w > 0 and h > 0:
@@ -954,18 +941,15 @@ async def build_montage_board(
     session: AsyncSession,
     project: Project,
 ) -> dict[str, Any]:
-    # Project scalars / data_dir — до любого await, пока ORM ещё hot в запросе.
     project_id = int(project.id)
     data_dir = project.data_dir
-    # Пропорции кадра: доска рисует картинку по формату проекта (9:16 / 16:9),
-    # чтобы вокруг горизонтального кадра не оставалось пустого поля.
     try:
         from app.services.vibecode_catalog import resolve_node_media_settings
 
         frame_aspect = str(
             resolve_node_media_settings(project, node_type="images")["aspect_slug"] or "9:16"
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("montage_board: aspect project {}: {}", project_id, e)
         frame_aspect = "9:16"
     try:
@@ -1077,7 +1061,6 @@ async def build_montage_board(
     entity_char_names, entity_item_names = await _entity_name_maps(session, project_id)
     xlsx_path = data_dir / "project.xlsx"
     chars_dir = data_dir / "characters"
-    # Excel нужен до покрытия: исходный закадр ячейки, не урезанный vo_cell_full.
     excel_by_frame, prompts_by_frame, shot2_by = await asyncio.to_thread(
         _load_montage_xlsx_bundle,
         xlsx_path,
@@ -1129,7 +1112,7 @@ async def build_montage_board(
 
     try:
         durations = await probe_video_durations_parallel(all_vid_paths)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("montage_board: ffprobe project {}: {}", project_id, e)
         durations = [None] * len(all_vid_paths)
     dur_iter = iter(durations)

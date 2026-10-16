@@ -1,4 +1,3 @@
-"""REST /api/action-layer через ASGI-клиент (без сети, заглушки действий)."""
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +8,7 @@ import pytest_asyncio
 from app.services import kill_switch
 from app.services.action_layer import executor
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env, make_spec  # noqa: F401
+from tests.action_layer_support import env, make_spec
 
 BASE = "/api/action-layer"
 
@@ -64,7 +63,6 @@ async def test_preview_rejects_invalid_and_unknown_fields(env, stubs) -> None:
     assert r.status_code == 422 and r.json()["detail"]["code"] == "plan_invalid"
     r = await _preview(env, {"action_id": "zz.read", "params": {"n": -5}})
     assert r.status_code == 422
-    # Поля подтверждения в плане не принимаются.
     r = await _preview(env, {"action_id": "zz.paid", "approved": True})
     assert r.status_code == 422
     r = await env.client.post(f"{BASE}/plans/preview", json={
@@ -90,7 +88,6 @@ async def test_paid_flow_needs_operator_approval_then_runs_once(env, stubs) -> N
     pid = (await _preview(env, {"action_id": "zz.paid"})).json()["plan_id"]
     r = await env.client.post(f"{BASE}/plans/{pid}/run")
     assert r.status_code == 403 and r.json()["detail"]["code"] == "approval_required"
-    # Вызывающий не может передать подтверждение сам.
     r = await env.client.post(f"{BASE}/plans/{pid}/run", json={"approval_id": "forged"})
     assert r.status_code == 422
     assert stubs["calls"] == []
@@ -102,7 +99,6 @@ async def test_paid_flow_needs_operator_approval_then_runs_once(env, stubs) -> N
     view = (await env.client.get(f"{BASE}/plans/{pid}")).json()
     assert view["status"] == "succeeded" and view["spent_credits"] == 3.0
     assert stubs["calls"] == [("paid", "local_web_operator", f"{pid}:0")]
-    # Одноразово: повтор запрещён, подтверждение израсходовано.
     assert (await env.client.post(f"{BASE}/plans/{pid}/run")).status_code == 409
     assert (await env.client.post(f"{BASE}/plans/{pid}/approve")).status_code == 409
 

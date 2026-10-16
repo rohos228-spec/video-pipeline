@@ -87,7 +87,6 @@ async def test_list_workflows(client) -> None:
 
 @pytest.mark.asyncio
 async def test_get_project_recompute_no_hero(client) -> None:
-    """no_hero + кадр с промтами: GET не прыгает вперёд с *_ready (sequential)."""
     c, pid, factory = client
     async with factory() as session:
         from app.models import Artifact, ArtifactKind
@@ -153,7 +152,6 @@ async def test_studio_version_endpoint(client) -> None:
 
 
 def test_get_project_poll_does_not_write_runtime_to_master() -> None:
-    """Poll GET не должен push/commit stale *_ready поверх ▶."""
     import inspect
 
     from app.web.routers import projects as projects_mod

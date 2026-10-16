@@ -1,5 +1,3 @@
-"""Волна 3: пауза/продолжение, xlsx, отправка на основной ПК, мастер-промты (общие файлы).
-Реальные эндпоинты на временной БД и временных папках. Платные шаги в этом файле не запускаются."""
 from __future__ import annotations
 
 import hashlib
@@ -10,7 +8,7 @@ from app.models import Project, ProjectStatus
 from app.services.action_layer import executor
 from app.services.action_layer.context import ActionCallError
 from app.services.action_layer.spec import ActionRegistry, ensure_builtin_actions, registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 
@@ -68,10 +66,9 @@ async def _status(env, pid, status, **meta):
         await s.commit()
 
 
-# --- каталог ------------------------------------------------------------------------------------
 
 def test_new_actions_registered_with_expected_tier_and_money_flags() -> None:
-    assert len(registry) == 102  # 84 (74 + 5 change.* + 4 media.* + project.set_auto_mode) + 17 (W5) + 1 publish.send (D15)
+    assert len(registry) == 102
     for aid, (tier, spends) in NEW_IDS.items():
         spec = registry.get(aid)
         assert (spec.risk, spec.spends_money) == (tier, spends), aid
@@ -95,7 +92,6 @@ def test_project_start_actions_have_explicit_unknown_cost() -> None:
         assert est.known is False and "воркер" in est.basis, aid
 
 
-# --- пауза / продолжение -----------------------------------------------------------------------------
 
 async def test_resume_and_continue_cannot_be_approved_unknown_cost(env, not_managed) -> None:
     pid = await env.add_project(frames=1)
@@ -118,11 +114,11 @@ async def test_resume_and_continue_cannot_be_approved_unknown_cost(env, not_mana
 async def test_resume_continue_preconditions(env, not_managed, monkeypatch) -> None:
     pid = await env.add_project(frames=1)
     r = await _preview(env, [{"action_id": "project.resume", "params": {"project_id": pid}}])
-    assert r.status_code == 422 and "project_paused" in str(r.json())       # не на паузе
+    assert r.status_code == 422 and "project_paused" in str(r.json())
     await _status(env, pid, "splitting")
     for aid in ("project.continue_pipeline",):
         r = await _preview(env, [{"action_id": aid, "params": {"project_id": pid}}])
-        assert r.status_code == 422 and "project_idle" in str(r.json())     # шаг выполняется
+        assert r.status_code == 422 and "project_idle" in str(r.json())
     await _status(env, pid, "paused")
     from app.services import montage_board_apply_job as job_mod
     _orig_apply_job = job_mod.get_apply_job
@@ -197,7 +193,6 @@ async def test_real_resume_endpoint_restores_status_without_starting_anything(en
     assert "paused_from_status" not in det["meta"]
 
 
-# --- xlsx и отправка на основной ПК ----------------------------------------------------------------------
 
 async def test_reload_xlsx_needs_approval_and_fails_cleanly_without_file(env) -> None:
     pid = await env.add_project(frames=1)
@@ -239,10 +234,9 @@ async def test_send_to_main_pc_flag_and_fleet_guard(env, monkeypatch) -> None:
     assert r.status_code == 422 and "fleet_enabled" in str(r.json())
     r = await _preview(env, [{"action_id": "montage.set_send_to_main_pc",
                               "params": {"project_id": pid, "enabled": False}}])
-    assert r.status_code == 200                      # выключить можно всегда
+    assert r.status_code == 200
 
 
-# --- мастер-промты --------------------------------------------------------------------------------------------
 
 @pytest.fixture
 def prompts_root(tmp_path, monkeypatch):
@@ -347,7 +341,7 @@ async def test_set_auto_mode_toggles_without_approval_and_refuses_enable_while_r
         env, not_managed) -> None:
     pid = await env.add_project(frames=1)
     await _status(env, pid, "frames_ready")
-    step = lambda on: [{"action_id": "project.set_auto_mode",  # noqa: E731
+    step = lambda on: [{"action_id": "project.set_auto_mode",
                         "params": {"project_id": pid, "enabled": on}}]
     pre = await _preview(env, step(True))
     assert pre.status_code == 200 and pre.json()["preview"]["needs_approval"] is False
@@ -357,7 +351,6 @@ async def test_set_auto_mode_toggles_without_approval_and_refuses_enable_while_r
     async with env.factory() as s:
         row = await s.get(Project, pid)
         assert row.auto_mode is True and (row.meta or {}).get("auto_await_manual_start") is True
-    # повтор безвреден; выключение разрешено и при идущем шаге, включение при идущем - нет
     assert (await _run(env, step(True), approve=False))["status"] == "succeeded"
     await _status(env, pid, "generating_images")
     r = await _preview(env, step(True))
@@ -372,7 +365,6 @@ async def test_set_auto_mode_toggles_without_approval_and_refuses_enable_while_r
 
 
 def test_every_action_and_macro_param_has_a_russian_label_in_the_ui() -> None:
-    """Карточка плана показывает параметры по-русски: новое имя параметра без подписи - английская утечка."""
     import re
     from pathlib import Path
 

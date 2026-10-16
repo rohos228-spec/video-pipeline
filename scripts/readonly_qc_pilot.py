@@ -1,9 +1,3 @@
-"""One frozen diagnostic example through the existing gpt_api adapter.
-
-Separate local ledger; no observer, worker, project database or action dispatch.
-No command-line online entry point. Real transport requires later authorization,
-an isolated container and a Unix-socket gateway; production settings stay off.
-"""
 import hashlib
 import json
 import os
@@ -36,7 +30,7 @@ This is a read-only recommendation; no action will be executed.'''
 
 
 class GuardStop(BaseException):
-    """Escape runtime Exception retry/retrieval handlers without another send."""
+    pass
 
 
 def encoded(value):
@@ -109,7 +103,6 @@ class GuardTransport(httpx.AsyncBaseTransport):
         body = json.loads(request.content)
         if len(request.content) > MAX_BYTES or body.get('model') != MODEL or body.get('max_output_tokens') != MAX_OUTPUT or body.get('tools'):
             raise GuardStop('model_tools_or_size_blocked')
-        # Mandatory local write and atomic reservation immediately before wire.
         self.ledger.event('request', {'method': 'POST', 'route': ENDPOINT}, body)
         self.ledger.reserve()
         if self.gateway:
@@ -174,7 +167,6 @@ def validate_assessment(text, context):
 
 async def evaluate_once(context, results, execution_id, *, synthetic_transport=None,
                         online_enabled=False, gateway_socket=None, bearer=None):
-    # This check precedes importing settings; never read a customer dotenv.
     synthetic = type(synthetic_transport) is httpx.MockTransport
     if not synthetic and not online_enabled:
         return {'status': 'blocked', 'reason': 'online_not_authorized', 'executed': False}
@@ -217,7 +209,6 @@ async def evaluate_once(context, results, execution_id, *, synthetic_transport=N
         decision_transport.current.reset(token)
         result['status'] = status
         try:
-            # A repeated blocked invocation must not erase the first outcome.
             if status != 'blocked':
                 ledger.status(status)
             ledger.event('local_evaluation', {'status': status, 'executed': False}, result)

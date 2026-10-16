@@ -1,8 +1,3 @@
-"""One-shot recovery tickets for the existing worker, never manual run_step.
-
-Reservation precedes dispatch; claim precedes HTTP. Ambiguous dispatch/claim is
-held for a human, never replayed. Continuation uses the original graph planner.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -69,24 +64,15 @@ class RecoveryAction(Base):
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 
-# W4-4 (C08): which incidents can be offered ONE supervised retry ticket. Every class still needs a current
-# human/Decision authorization, the single-ticket rule (UNIQUE per execution+node), the request budget and the
-# kill switch; the class only decides what the facts must look like. Nothing here retries by itself.
-RECOVERY_FORMAT = "format"            # invalid_json / missing_payload: the answer arrived but is unusable
-RECOVERY_TRANSIENT_API = "transient_api"  # api_error where the gateway ANSWERED 5xx: the request was refused, never processed
-RECOVERY_LOCAL_FIX = "local_fix"      # contract_rejected after a recorded local correction of the node input/config
+RECOVERY_FORMAT = "format"
+RECOVERY_TRANSIENT_API = "transient_api"
+RECOVERY_LOCAL_FIX = "local_fix"
 FORMAT_INCIDENTS = frozenset({"invalid_json", "missing_payload"})
 RECOVERABLE_INCIDENT_TYPES = FORMAT_INCIDENTS | {"api_error", "contract_rejected"}
-# Never retried by this module, whatever the facts say: the outcome of the external request is unknown
-# (uncertain_request), a watchdog flagged a hang (stalled; diagnosis + notification only), the user stopped,
-# the journal is incomplete or the two databases disagree.
 NEVER_RETRIED_INCIDENTS = frozenset({"uncertain_request", "stalled", "user_stop", "journal_gap", "db_disagreement"})
 
 
 def recovery_class(incident_type, details):
-    """The retry class an incident MAY use, from its recorded details; None means no supervised retry.
-
-    This is only a pre-filter: recover_node re-checks the journal facts of the class itself."""
     details = details if isinstance(details, dict) else {}
     if incident_type in FORMAT_INCIDENTS:
         return RECOVERY_FORMAT
@@ -98,9 +84,6 @@ def recovery_class(incident_type, details):
 
 
 def server_rejected_requests(facts):
-    """Request ids the gateway refused with a 5xx answer (known outcome, not accepted, not uncertain).
-
-    A timeout, a dropped connection or a cancelled task is NOT in this set: the provider may have accepted it."""
     out = set()
     for e in facts:
         if e.kind != "model_error" or not e.request_id:
@@ -119,11 +102,6 @@ def ticket_json(row):
         "verification_result", "status", "created_at")}
 
 
-# Native text nodes name their attached prompt files with a wall-clock stamp
-# (prompt_plan_20261001_205923.txt) that appears inside the request text. Only a node
-# whose capability declares volatile_attachment_names compares first request bodies with
-# these stamps masked; every other byte of the body (including all attached contents,
-# which are inlined) must still be identical.
 _ATTACHMENT_STAMP = re.compile(r"(?<=_)\d{8}_\d{6}(?=\.[A-Za-z0-9]{1,5})")
 STAMP_NORMALIZATION = "attachment_timestamps"
 
@@ -137,7 +115,6 @@ def body_identity(body, *, normalize_names=False):
 
 
 def load_source_body(observer, event):
-    """The recorded source request body, only if its stored bytes and hashes still agree."""
     from app.services.observation import digest
     ref = event.payload.get("body") or {}
     root = observer.body_root.resolve()
@@ -154,29 +131,16 @@ def load_source_body(observer, event):
 
 
 async def input_revision(session, project, node_key, *, parts=None):
-    """Only hashes leave the process. Runtime bookkeeping is not node input.
-
-    Scoped to the node: its data inputs, resolved prompt files, capability data,
-    model-request settings, own configuration and a bounded list of code
-    modules (see app.services.revisions). Unrelated prompts, settings and code
-    do not enter it. In addition, the first recovery HTTP body must equal the
-    source body hash, which catches file-derived inputs not represented here.
-    """
     from app.services.revisions import compute_input_revision
     return await compute_input_revision(session, project, node_key, parts=parts)
 
 
 def _media_gate(node_type):
-    """The admission module of a media node (D06): ``media_local_resume`` for the nodes without a provider task id
-    (images, hero, items, audio, sfx_gen: request-key record and finished files), ``media_admission`` for the rest."""
     from app.services import media_admission, media_local_resume
     return media_local_resume if media_local_resume.admitted(node_type) else media_admission
 
 
 class NodeNotAdmitted(ValueError, RuntimeError):
-    """Typed refusal: this graph node (not just its type) is outside the managed-retry set. ``code`` is machine
-    readable, the message is for people. A ValueError at ticket issue and a RuntimeError at claim, so every
-    existing handler of either stage keeps catching it."""
     code = "node_not_admitted"
 
     def __init__(self, problem: str, stage: str):
@@ -186,9 +150,6 @@ class NodeNotAdmitted(ValueError, RuntimeError):
 
 
 def _require_node_admitted(graph_node, stage: str) -> None:
-    """Per-NODE admission inside recovery: a node type's capability is shared by nodes that differ in what a failed
-    attempt leaves behind (sd_agent: five agents), so the type check alone must never issue or run a ticket for a
-    node that node_admission_problem refuses, whatever path put it in the execution grant."""
     from app.orchestrator.node_spec import node_admission_problem
     problem = node_admission_problem(graph_node)
     if problem:
@@ -265,7 +226,6 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             raise ValueError("audit/diagnosis unavailable")
         blockers = (await master.scalars(select(Incident).where(Incident.execution_id == execution_id,
             Incident.type.in_(["user_stop", "uncertain_request", "journal_gap", "stalled"])))).all()
-        # A media uncertain_request is judged by media_recovery.assess (ledger facts), not as a blanket stop.
         if any(i.status != "resolved_confirmed" and i.details.get("currently_relevant")
                and not (media and media_admission.is_media_incident(i)) for i in blockers):
             raise ValueError("uncertain request, user_stop or audit/state blocker")
@@ -283,8 +243,6 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             raise ValueError(graph_problem)
         from app.services.excel_gpt_node import effective_node_type
         from app.services.node_capabilities import capability_for
-        # Execution grants may cover mixed families. The immutable graph retains
-        # scene markers that a runtime NodeRun projection can normalize away.
         graph_node = next((n for n in (run.nodes_snapshot or [])
                            if isinstance(n, dict) and str(n.get("id")) == node_key), None)
         if graph_node is None:
@@ -296,8 +254,6 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             raise media_admission.MediaAdmissionDenied("node_not_admitted", node_type)
         if not media and (node_type in media_admission.ADMITTED_NODES or _media_gate(node_type).admitted(node_type)):
             raise ValueError(f"recovery of {node_type} is admitted for media incidents only")
-        # A local node (assemble) has no provider task to resume: its ticket re-dispatches the original worker once
-        # (below), inside the resume-only scope, and is verified from independent facts (local_node_recovery).
         local = bool(media and media_admission.local_worker(node_type))
         if not capability.managed or action_type not in capability.actions:
             raise ValueError(f"recovery strategy {action_type} denied by node capability: {node_type}")
@@ -309,8 +265,6 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
         starts = [e for e in facts if e.kind == "model_start"]
         ends = {e.request_id for e in facts if e.kind == "model_end" and e.payload.get("complete")}
         if media:
-            # No model request exists for a media node: the failed attempt itself is the evidence; the
-            # provider-side facts come from the ledger (media_recovery.assess) before the ticket is reserved.
             if not any(e.kind == "node_error" for e in facts):
                 raise ValueError("uncertain request, unfinished attempt or unconfirmed partial apply")
         elif (not starts or any(e.request_id not in (server_rejected_requests(facts)
@@ -318,9 +272,6 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 or not any(e.kind == "node_error" for e in facts)
                 or any(e.kind in {"data_applied", "apply_input", "apply_error"} for e in facts)):
             raise ValueError("uncertain request, unfinished attempt or unconfirmed partial apply")
-        # Only executors that emit an inner `json_retry` fact must show it. Native text
-        # nodes have no inner JSON retry; their exhaustion is proven by the runtime
-        # failure counter and abandonment check further below (all native retries).
         if not media and rclass == RECOVERY_FORMAT and capability.native_json_retry and not any(
                 e.kind == "json_retry" for e in facts):
             raise ValueError("native JSON retries not exhausted")
@@ -369,9 +320,6 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
             revision_changed = not parts_match and source.payload.get("recovery_input_revision") != revision
             changed = [k for k,v in current_parts.items() if previous_parts.get(k) != v]
             if rclass == RECOVERY_LOCAL_FIX:
-                # contract_rejected is retried only AFTER a local correction: the answer was refused by a local
-                # check, so repeating the same request would buy the same refusal again. Both revisions must be
-                # recorded and different, otherwise nothing proves that anything was corrected.
                 if not source.payload.get("recovery_input_revision") or not revision_changed:
                     raise ValueError("contract_rejected retry needs a recorded local correction: "
                                      "node input/config revision is unchanged or was not recorded")
@@ -381,7 +329,6 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                                  + ": " + ",".join(changed))
             admission = None
             if media:
-                # Read-only ledger/file assessment BEFORE any ticket exists: a refusal leaves no trace to consume.
                 gate = _media_gate(node_type)
                 admission = (await gate.admit(project, node_type) if gate is not media_admission
                              else await media_admission.admit(project, node_type,
@@ -430,8 +377,6 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 profile.history=[*profile.history,{"kind":"recovery_reserved","action_id":action.action_id,
                     "attempt_id":action.new_attempt_id,"at":datetime.utcnow().isoformat()}]
             if capability.volatile_attachment_names and rclass != RECOVERY_LOCAL_FIX:
-                # Compare the first recovery request with the source request modulo the
-                # attachment file-name stamps (profile: the approved transformation of it).
                 source_body = load_source_body(observer, starts[0])
                 if profile:
                     from app.services.profiles_v1 import effective_body
@@ -446,22 +391,19 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
                 initiator=initiator, rationale=rationale, evidence_ids=incident.details.get("event_ids", []),
                 preconditions=action.preconditions, idempotency_key=idempotency_key, status="reserved", verification={}))
             try:
-                await master.commit()  # Durable before dispatch; UNIQUE prevents races.
+                await master.commit()
             except IntegrityError as exc:
-                # Lost a race: another recovery of this node/execution (or the same key) committed first.
                 await master.rollback()
                 raise ValueError("another recovery of this node already holds the ticket; "
                                  "this one is refused (nothing dispatched)") from exc
             _active_nodes[project_id] = node_key
             record = await master.get(ActionRecord, action.action_id)
             if media and not local:
-                # Never a worker dispatch: the resume runs here, inside resume_only, and the ticket is final.
                 return await _execute_media(master, scope, control, action, record, project, node_type,
                                             admission, project_id)
             action.status = "queued"
             record.status = "queued"
             await master.commit()
-            # Preserve attempts, stop, sleep and native failure counters. No start_step.
             if not start_node_running(node, project_id=project_id, initiator="supervisor_recovery"):
                 action.status = "human_review"
                 action.result = {"dispatch_refused": True, "new_attempt_started": False}
@@ -479,9 +421,6 @@ async def recover_node(supervisor, *, project_id, execution_id, incident_id, nod
 
 
 async def _execute_media(master, scope, control, action, record, project, node_type, admission, project_id):
-    """Run the admitted resume operation and settle the ticket from independently re-read facts.
-
-    claimed -> verified | human_review. Not repeated on restart (reconcile holds an interrupted one)."""
     from app.services import media_admission
     from app.services.observation import get_observer
     action.status = "claimed"
@@ -503,7 +442,7 @@ async def _execute_media(master, scope, control, action, record, project, node_t
         get_observer().stage(master, scope, "recovery_verification", db_scope="master", node_key=action.node_key,
                              attempt_id=action.new_attempt_id,
                              payload={"action_id": action.action_id, "media": True, **action.verification_result})
-    except Exception:  # noqa: BLE001 - the ticket row itself is the durable verdict
+    except Exception:
         pass
     await master.commit()
     if verified:
@@ -514,7 +453,6 @@ async def _execute_media(master, scope, control, action, record, project, node_t
 
 
 async def claim(observer, session, project, node_key, attempt_id, *, execution_id):
-    """CAS consumes the ticket before the original worker executes the node."""
     from app.services.observation import digest
     from app.services.step_cancel import stop_flag_path
     async with observer.master() as master:
@@ -546,8 +484,6 @@ async def claim(observer, session, project, node_key, attempt_id, *, execution_i
                 or revisions.graph_version(master_run.nodes_snapshot, master_run.edges_snapshot) != row.preconditions["graph_version"]
                 or await input_revision(session, project, node_key) != row.preconditions["input_revision"]):
             raise RuntimeError("recovery revisions changed before claim")
-        # Historical same tickets lack action_type; profile tickets retain both
-        # their strategy and overlay marker. Capability proof is never authority.
         action_type = row.preconditions.get("action_type")
         has_profile_marker = "profile_overlay_id" in row.preconditions
         if action_type is None and not has_profile_marker:
@@ -573,19 +509,15 @@ async def claim(observer, session, project, node_key, attempt_id, *, execution_i
             raise RuntimeError(f"recovery strategy {action_type} denied by node capability before claim: {node_type}")
         from app.services import media_admission as _ma
         if _media_gate(node_type).admitted(node_type) and not _ma.local_worker(node_type):
-            # Media nodes (videos, items, music, images, hero, audio, sfx_gen) are resumed ONLY inside the supervisor
-            # process (_execute_media); a queued worker ticket for one is a stale or forged text-style retry.
             raise RuntimeError(f"recovery strategy {action_type} denied by node capability before claim: "
                                f"{node_type} is resumed by the supervisor only, never by a worker attempt")
         if row.preconditions.get("local_worker"):
-            # A local re-run (assemble): the node must still be a declared local_recovery node and the provider
-            # ledger must be exactly as it was when the ticket was reserved. Fail-closed on any doubt.
             from app.services import local_node_recovery, media_admission
             if not media_admission.local_worker(node_type):
                 raise RuntimeError("local recovery ticket for a node outside the local recovery set before claim")
             try:
                 ledger_now = await local_node_recovery.ledger_summary(project.id)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise RuntimeError("provider ledger unreadable before claim: " + type(exc).__name__) from exc
             if ledger_now != row.preconditions.get("ledger_before"):
                 raise RuntimeError("recovery ticket rejected before claim: provider ledger changed since reservation")
@@ -614,8 +546,6 @@ async def check_body(ctx, body_hash, body=None):
                 row.preconditions.get("recovery_class") == RECOVERY_LOCAL_FIX
                 and row.preconditions.get("same_body_required") is False
                 and row.preconditions.get("first_body_hash") is None):
-            # After a recorded local correction the first request body legitimately differs from the source
-            # body; the input revision was already pinned at reservation and is re-checked at claim.
             pass
         elif row and ctx.last_request_id is None:
             if row.preconditions.get("first_body_normalization") == STAMP_NORMALIZATION:
@@ -636,8 +566,6 @@ async def worker_finished(ctx, error=False):
         row.status = "human_review" if error else "await_verify"
         row.result = {**row.result, "worker_returned": not error, "worker_error": error,
                       "worker_returned_at": datetime.utcnow().isoformat(),
-                      # Retain the configuration captured at attempt entry. Reading
-                      # runtime_config here would silently authorize a later change.
                       "runtime_config_hash": ctx.runtime_config_hash}
         control = await session.get(ActionExecutionControl, row.execution_id)
         row.budget_state = {**row.budget_state, "requests_used_after_attempt": control.requests_used}
@@ -661,11 +589,6 @@ def defer_continuation(project_id, node_key):
 
 
 async def reconcile(observer):
-    """After business commit, verify matching attempt then use original continuation.
-
-    A claimed ticket without a confirmed end after worker exit is uncertain;
-    recovery itself is never re-enqueued on restart.
-    """
     from app.services.observation import ObservationEvent, ExecutionControl, digest, AttemptContext, _attempt, emit
     from app.services.step_cancel import is_generation_active, stop_flag_path
     from app.project_db import project_db_session_scope, push_runtime_to_master, pull_master_runtime_into_project
@@ -725,11 +648,6 @@ async def reconcile(observer):
                     own_start = min((e.id for e in facts if e.kind == "node_start"), default=None)
                     if (boundary_node is not None and own_start is not None
                             and capability_for(effective_node_type(boundary_node)).recovery_continuation == "none"):
-                        # Native text nodes: the runtime commits the NodeRun done transition right
-                        # after the executor returns, outside the attempt context (no attempt id).
-                        # Accept that committed project-scope transition only when it follows THIS
-                        # attempt's start and no other attempt of the node started in between. The
-                        # mandatory HITL request stays pending; nothing here approves it.
                         later = (await master.scalars(select(ObservationEvent).where(
                             ObservationEvent.execution_id == row.execution_id,
                             ObservationEvent.node_key == row.node_key, ObservationEvent.id > own_start,
@@ -759,12 +677,10 @@ async def reconcile(observer):
                         and 'done' in ((e.payload.get('changes') or {}).get('status') or {}).get('after', []) for e in facts)
                     and any(confirmed_qc_noop(events, e.request_id) for e in facts if e.kind == 'parse_result'))
                 if (row.preconditions or {}).get("local_worker"):
-                    # No model request and no applied data exist for a local node: the result is confirmed by
-                    # facts the supervisor re-reads itself (file, verify_artifact, approval barrier, ledger, guard).
                     from app.services import local_node_recovery
                     try:
                         local_checks = await local_node_recovery.verify(session, project, row, facts)
-                    except Exception as exc:  # noqa: BLE001 - any doubt is "not confirmed"
+                    except Exception as exc:
                         local_checks = {"result_confirmed": False, "local_verify_error": type(exc).__name__}
                     verification.update(local_checks)
                     verification['result_confirmed'] = bool(local_checks.get('result_confirmed'))
@@ -804,7 +720,6 @@ async def reconcile(observer):
                     update_permission(row.project_id, held=True)
                 observer.stage(master, scope, 'recovery_verification', db_scope='master',node_key=row.node_key,
                     attempt_id=row.new_attempt_id,payload={'action_id':row.action_id,**row.verification_result})
-                # Persist decision BEFORE continuation. No retry if continuation fails.
                 await master.commit()
                 if verified:
                     _active_nodes.pop(row.project_id, None)
@@ -813,18 +728,11 @@ async def reconcile(observer):
                     from app.orchestrator.steps.enrich_xlsx import _after_excel_gpt_done
                     graph_node = next(n for n in run.nodes_snapshot if str(n.get("id")) == row.node_key)
                     if capability_for(effective_node_type(graph_node)).recovery_continuation != "excel_gpt_chain":
-                        # Native text nodes: the executor already ran its own post-step
-                        # (storage sync, mandatory HITL request). The supervisor adds no
-                        # continuation and never approves a HITL; the original runtime
-                        # proceeds only after the human decision.
                         await push_runtime_to_master(session, project)
                         row.result = {**row.result, "continuation_submitted": False,
                                       "continuation": "original runtime; mandatory HITL untouched"}
                         await master.commit()
                         continue
-                    # Reconcile can run after the worker context/process is gone.
-                    # Old tickets without proof remain blocked by the media gate;
-                    # never backfill a missing hash from the current configuration.
                     token = _attempt.set(AttemptContext(observer,scope,session,'project',row.node_key,row.new_attempt_id,
                         runtime_config_hash=row.result.get("runtime_config_hash")))
                     try:

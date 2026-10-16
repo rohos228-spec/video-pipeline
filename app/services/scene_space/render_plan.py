@@ -1,8 +1,3 @@
-"""Top-down scene plan: deterministic SVG (and optional PNG) per frame.
-
-Does not own store/validate. Replay uses store.apply_deltas when importable,
-otherwise a local delta fold that matches CONTRACTS §1.2.
-"""
 
 from __future__ import annotations
 
@@ -73,7 +68,6 @@ def _as_list(raw: Any) -> list[Any]:
 
 
 def parse_scene_dump(data: dict[str, Any]) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
-    """Accept a scene dump JSON object. Returns (scene_id, space_json, frames)."""
     scene_id = str(data.get("scene_id") or "")
     space = data.get("space_json")
     if space is None:
@@ -87,7 +81,6 @@ def parse_scene_dump(data: dict[str, Any]) -> tuple[str, dict[str, Any], list[di
 
 
 def load_json_dump(path: Path) -> tuple[str, dict[str, Any], list[dict[str, Any]], list[Any]]:
-    """Load --from-json dump. Fourth item is optional violations list."""
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"scene dump must be a JSON object: {path}")
@@ -149,7 +142,6 @@ def normalize_frames(frames: list[Any]) -> list[dict[str, Any]]:
 
 
 def apply_deltas_local(plan: list[dict[str, Any]], deltas_in_order: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Fold deltas onto a copy of plan. Matches CONTRACTS delta shape."""
     order = [str(p.get("id")) for p in plan if p.get("id") is not None]
     by_id: dict[str, dict[str, Any]] = {}
     for item in plan:
@@ -206,7 +198,6 @@ def _plan_from_state_obj(st: Any) -> list[dict[str, Any]] | None:
 
 
 def replay_states(space: dict[str, Any], frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One state dict per frame: plan after deltas with shot_order <= this frame."""
     space = normalize_space(space)
     frames = normalize_frames(frames)
     initial = [dict(p) for p in space.get("plan") or []]
@@ -253,7 +244,6 @@ def _by_id(plan: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def _facing_vec(deg: Any) -> tuple[float, float]:
-    """0 → +Y (depth), clockwise: 90 → +X."""
     try:
         ang = float(deg)
     except (TypeError, ValueError):
@@ -344,7 +334,6 @@ def world_bounds(states: list[dict[str, Any]]) -> tuple[float, float, float, flo
 
 
 def scene_viewbox(states: list[dict[str, Any]]) -> tuple[float, float, float, float]:
-    """SVG viewBox (x, y, w, h). y is SVG-down after world Y flip. Pad 2 m."""
     xmin, ymin, xmax, ymax = world_bounds(states)
     if xmax <= xmin:
         xmax = xmin + 0.001
@@ -411,7 +400,6 @@ def _clip_halfplane(
 
 def _view_rect_world(vb: tuple[float, float, float, float]) -> list[tuple[float, float]]:
     vb_x, vb_y, vb_w, vb_h = vb
-    # SVG y = -world_y, so world y runs from -(vb_y+vb_h) to -vb_y
     xmin = vb_x
     xmax = vb_x + vb_w
     ymax = -vb_y
@@ -424,7 +412,6 @@ def _axis_line_clipped(
     b: tuple[float, float],
     vb: tuple[float, float, float, float],
 ) -> tuple[tuple[float, float], tuple[float, float]] | None:
-    """Infinite axis through a→b, clipped to the view rectangle (Liang–Barsky)."""
     rect = _view_rect_world(vb)
     xmin = min(p[0] for p in rect)
     xmax = max(p[0] for p in rect)
@@ -475,7 +462,6 @@ def _screen_right(a: tuple[float, float], b: tuple[float, float]) -> tuple[float
 
 
 def _motion_world(state: dict[str, Any]) -> tuple[tuple[float, float], tuple[float, float]] | None:
-    """Return (start, end) in world for the motion arrow, if any."""
     frame = state.get("frame") or {}
     plan = _by_id(state.get("plan") or [])
     prev = _by_id(state.get("prev_plan") or [])
@@ -805,7 +791,6 @@ def write_plans(
     *,
     png: bool = True,
 ) -> list[Path]:
-    """Write plan_NN.svg (and optional PNG) for each frame. Shared viewBox. Returns SVG paths."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     states = replay_states(space, frames)

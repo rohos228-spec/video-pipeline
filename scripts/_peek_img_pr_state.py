@@ -1,4 +1,3 @@
-"""Count img_pr targets in tkach project.db."""
 from __future__ import annotations
 
 import json

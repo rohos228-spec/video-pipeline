@@ -1,12 +1,3 @@
-"""Фоновое исполнение плана: шаг за шагом, с остановкой и возобновлением.
-
-Исполнители вызывают существующий backend внутри процесса через
-``ActionContext.call`` (ASGI без сети), поэтому валидация эндпоинтов, сессии
-проектов и события сохраняются. Состояние (статусы шагов, прогресс, резерв)
-лежит в БД, поэтому после рестарта план можно продолжить: завершённые шаги
-пропускаются, шаг с неизвестным исходом платного/непереключаемого действия
-повторно не запускается.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -27,12 +18,9 @@ from app.services.action_layer.messages_ru import validation_list_ru
 from app.services.action_layer.spec import ActionRegistry, ActionSpec, registry as default_registry
 
 _TASKS: dict[str, asyncio.Task] = {}
-# Текущий шаг плана: нужен, чтобы stop мог вызвать stop-эндпоинт действия.
 _CURRENT: dict[str, dict] = {}
 _RESULT_LIMIT = 20000
-# Аварийный стоп не должен блокировать само действие остановки проекта.
 KILL_EXEMPT_ACTIONS = frozenset({"project.stop"})
-# Серверные платные задачи, которые не удалось подтверждённо остановить: проект остаётся занятым.
 _ORPHANS: dict[int, dict] = {}
 
 
@@ -44,12 +32,10 @@ def _env_float(name: str, default: float) -> float:
 
 
 def stop_grace_s() -> float:
-    """Сколько ждём подтверждения остановки серверной задачи после таймаута/сбоя опроса."""
     return _env_float("ACTION_LAYER_STOP_GRACE_S", 30.0)
 
 
 def orphan_max_s() -> float:
-    """Предел наблюдения за не остановленной серверной задачей (затем проект освобождается)."""
     return _env_float("ACTION_LAYER_ORPHAN_MAX_S", 3600.0)
 
 
@@ -58,11 +44,6 @@ _CLAIM_TTL_S = 60.0
 
 
 def claim_project(project_id: int | None, plan_id: str) -> str | None:
-    """Занимает проект за планом между ``prepare_run`` и ``launch`` (окно гонки project_busy).
-
-    Возвращает id другого плана, который держит проект, либо None (проект занят нами).
-    Заявка снимается в конце задачи плана, а если запуск так и не состоялся, истекает по TTL.
-    """
     if project_id is None:
         return None
     pid = int(project_id)
@@ -79,7 +60,6 @@ def release_claim(plan_id: str) -> None:
 
 
 def orphan_busy(project_id: int | None) -> dict | None:
-    """Описание не завершённой серверной задачи проекта, оставшейся после плана (или None)."""
     if project_id is None:
         return None
     info = _ORPHANS.get(int(project_id))
@@ -92,14 +72,6 @@ def orphan_busy(project_id: int | None) -> dict | None:
 
 
 async def orphan_busy_db(session, project_id: int | None, plan_id: str = "") -> dict | None:
-    """C-10: то же, что ``orphan_busy``, но из журнала слоя: переживает рестарт процесса.
-
-    После рестарта память пуста, а серверная платная задача, остановку которой не подтвердили
-    (``job_stop_after_failure`` / ``unconfirmed``), могла продолжиться. Проект остаётся занятым
-    в пределах ``orphan_max_s`` от этой записи, пока нет записи ``job_orphan_released``
-    (задача завершилась и резерв сверен) для того же плана. Снять иначе нельзя: ждать окно
-    или остановить проект. Возвращает описание как ``orphan_busy`` либо None.
-    """
     if project_id is None:
         return None
     since = _now() - timedelta(seconds=orphan_max_s())
@@ -131,7 +103,7 @@ async def _journal_orphan_released(plan_id: str, action_id: str) -> None:
             store.append_history(s, event="job_orphan_released", plan_id=plan_id, action_id=action_id,
                                  outcome="released", actor="system")
             await s.commit()
-    except Exception:  # noqa: BLE001 - bookkeeping only
+    except Exception:
         logger.exception("action layer orphan release journal failed plan={}", plan_id)
 
 
@@ -140,7 +112,7 @@ class _Stopped(Exception):
 
 
 class _KillSwitchStopped(Exception):
-    """Глобальный аварийный стоп включили во время выполнения фонового шага."""
+    pass
 
 
 def is_live(plan_id: str) -> bool:
@@ -168,7 +140,6 @@ def _now() -> datetime:
 
 def launch(app: Any, plan_id: str, operator: str, *,
            registry: ActionRegistry | None = None) -> asyncio.Task:
-    """Стартует фоновую задачу плана (план уже переведён в running)."""
     if is_live(plan_id):
         return _TASKS[plan_id]
     task = asyncio.create_task(
@@ -177,12 +148,11 @@ def launch(app: Any, plan_id: str, operator: str, *,
     _TASKS[plan_id] = task
     for info in _CLAIMS.values():
         if info["plan_id"] == plan_id:
-            info["until"] = float("inf")  # дальше проект держит живая задача
+            info["until"] = float("inf")
     return task
 
 
 async def wait(plan_id: str) -> None:
-    """Дождаться завершения задачи плана (для тестов и скриптов)."""
     task = _TASKS.get(plan_id)
     if task is not None:
         await asyncio.shield(task)
@@ -214,7 +184,6 @@ async def _stop_requested(plan_id: str) -> bool:
 
 
 async def _kill_switch_on() -> bool:
-    # Отдельная сессия: is_active делает rollback при отсутствии таблицы.
     async with store.sessions()() as ks:
         return await kill_switch.is_active(ks)
 
@@ -248,9 +217,8 @@ async def _run_plan(app: Any, plan_id: str, operator: str, registry: ActionRegis
             return
         await _finish(plan_id, store.PLAN_SUCCEEDED)
     except asyncio.CancelledError:
-        # Процесс останавливается: статус running остаётся, план можно продолжить.
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("action layer plan {} crashed", plan_id)
         await _finish(plan_id, store.PLAN_FAILED, error=f"внутренняя ошибка: {type(exc).__name__}: {exc}")
     finally:
@@ -284,11 +252,6 @@ async def _close_step(plan_id: str, step: "store.ActionPlanStep", status: str, e
 
 
 async def verify_attachments(params: dict) -> str | None:
-    """sha256 вложения из реестра против файла на диске прямо перед использованием.
-
-    Только пути ``attachments/...``: путь должен быть в реестре, файл - совпасть по размеру и
-    sha256 с записанными при загрузке. Подмена файла между подтверждением и запуском даёт отказ.
-    """
     from app.services.action_layer import attachments as att
     path = params.get("source_path")
     if not isinstance(path, str) or not path.replace("\\", "/").startswith(att.ATTACH_DIR + "/"):
@@ -323,15 +286,9 @@ async def verify_attachments(params: dict) -> str | None:
 
 async def _settle_step(plan_id: str, step: "store.ActionPlanStep", spec: ActionSpec,
                        reserved: float, t0: datetime, reported: float | None) -> float | None:
-    """Закрывает резерв шага фактом: заявленным действием либо замеренным по журналу трат.
-
-    Возвращает факт (кредиты) или None, если он неизвестен и резерв остаётся. Никогда не
-    бросает: сбой сверки не должен ронять план, резерв при этом остаётся консервативным.
-    """
     if not spec.spends_money and reported is None:
         return None
     if spec.deferred_spend:
-        # C-4: работа пойдёт в воркере позже и в plan:<id> не попадёт; закрыть резерв нулём значило бы «ничего не стоило».
         logger.info("action layer: reserve of plan={} step={} ({}) is held, spend happens in the worker",
                     plan_id, step.idx, spec.id)
         return None
@@ -343,8 +300,6 @@ async def _settle_step(plan_id: str, step: "store.ActionPlanStep", spec: ActionS
                 actual = await budget.measure_native_credits(s, project_id=pid, since=t0)
                 native = actual is not None
                 if actual is None and reserved:
-                    # Цена неизвестна, но трата записана строкой cost_unknown (её потолки считают оценкой): резерв
-                    # закрываем, иначе он копится поверх строки (F09-D1). Факт плана остаётся неизвестным (None).
                     unknown, gap = await budget.native_unknown_cost_rows(s, project_id=pid, since=t0)
                     if unknown and not gap:
                         await budget.settle(s, key=budget.session_key(plan_id), plan_id=plan_id,
@@ -357,13 +312,12 @@ async def _settle_step(plan_id: str, step: "store.ActionPlanStep", spec: ActionS
                                 native_counted=native)
             await s.commit()
         return actual
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("action layer settle failed plan={} step={}", plan_id, step.idx)
         return None
 
 
 async def _abort_job(plan_id: str, spec: ActionSpec, cur: dict) -> bool:
-    """Остановить серверную задачу и дождаться конца. True: подтверждено, что задача завершена."""
     await _call_stop(plan_id, cur)
     if cur.get("start") is None:
         return False
@@ -373,7 +327,7 @@ async def _abort_job(plan_id: str, spec: ActionSpec, cur: dict) -> bool:
             state = await spec.poll(cur["ctx"], cur["params"], cur["start"])
             if state.done:
                 return True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("action layer poll after stop failed plan={}: {}", plan_id, exc)
         if time.monotonic() >= deadline:
             return False
@@ -382,7 +336,6 @@ async def _abort_job(plan_id: str, spec: ActionSpec, cur: dict) -> bool:
 
 def _hold_project(project_id: int | None, plan_id: str, spec: ActionSpec, cur: dict,
                   on_done) -> None:
-    """Проект остаётся занятым, пока серверная задача жива (или до предела наблюдения)."""
     if project_id is None:
         return
     pid = int(project_id)
@@ -397,7 +350,7 @@ def _hold_project(project_id: int | None, plan_id: str, spec: ActionSpec, cur: d
                 await asyncio.sleep(max(0.2, min(float(spec.poll_interval_s), 5.0)))
                 try:
                     state = await spec.poll(cur["ctx"], cur["params"], cur["start"])
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.warning("orphan poll failed plan={}: {}", plan_id, exc)
                     continue
                 if state.done:
@@ -416,7 +369,6 @@ def _hold_project(project_id: int | None, plan_id: str, spec: ActionSpec, cur: d
 
 async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
                     registry: ActionRegistry) -> str:
-    """Возвращает 'ok' | 'blocked' | 'stopped' | текст причины провала."""
     async with store.sessions()() as s:
         step = await s.get(store.ActionPlanStep, step_id)
         plan = await s.get(store.ActionPlan, plan_id)
@@ -431,7 +383,6 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
                           "step_failed", operator)
         return "неизвестное действие"
 
-    # Шаг, начатый до рестарта: исход неизвестен.
     if step.status == store.STEP_RUNNING:
         if spec.idempotent or spec.risk == "read":
             await _step_update(step.id, status=store.STEP_PENDING)
@@ -467,7 +418,7 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
     for pre in spec.preconditions:
         try:
             reason = await pre.check(ctx.readonly_copy(), step.params)
-        except Exception as exc:  # noqa: BLE001 - неизвестное = не выполнено
+        except Exception as exc:
             reason = f"проверка не выполнена: {type(exc).__name__}: {exc}"
         if reason:
             await _close_step(plan_id, step, store.STEP_FAILED,
@@ -528,8 +479,6 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
             _execute(plan_id, spec, ctx, step.params, cur),
             timeout=float(settings.action_layer_step_timeout_s))
     except asyncio.TimeoutError:
-        # Платная серверная задача не должна жить без наблюдения: стоп, ожидание, при
-        # неподтверждённой остановке проект остаётся занятым до конца задачи.
         confirmed = await _abort_after_failure(plan_id, step, spec, cur, project_id,
                                                reserved, t0, operator, est_pair, force=True)
         actual = await _settle_if_done(plan_id, step, spec, reserved, t0, confirmed)
@@ -553,10 +502,9 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
         return "blocked"
     except asyncio.CancelledError:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         confirmed = True
         if spec.is_job and cur.get("start") is not None and not cur.get("job_finished"):
-            # Сбой опроса (например 5xx): задача на сервере могла идти дальше.
             confirmed = await _abort_after_failure(plan_id, step, spec, cur, project_id,
                                                    reserved, t0, operator, est_pair, force=False)
         actual = await _settle_if_done(plan_id, step, spec, reserved, t0, confirmed)
@@ -581,8 +529,6 @@ async def _run_step(app: Any, plan_id: str, step_id: int, operator: str,
 
 
 async def mark_stale_reserves() -> list[dict]:
-    """C-9: незакрытые резервы завершённых шагов получают явную метку в журнале слоя (по одной на шаг).
-    Резерв при этом не снимается; снять его может только оператор. Никогда не бросает."""
     from app.settings import settings
     try:
         async with store.sessions()() as s:
@@ -592,7 +538,7 @@ async def mark_stale_reserves() -> list[dict]:
             fresh = await budget.mark_unresolved_reserves(s, rows)
             await s.commit()
         return fresh
-    except Exception:  # noqa: BLE001 - the sweep is bookkeeping, never a reason to fail a step
+    except Exception:
         logger.exception("action layer stale reserve sweep failed")
         return []
 
@@ -603,7 +549,6 @@ async def _plan_project(plan_id: str) -> int | None:
 
 
 async def _settle_if_done(plan_id, step, spec, reserved, t0, confirmed: bool) -> float | None:
-    """Пока серверная задача жива, факт ещё растёт: сверку сделает наблюдатель, резерв держим."""
     if not confirmed:
         return None
     return await _settle_step(plan_id, step, spec, reserved, t0, None)
@@ -611,14 +556,13 @@ async def _settle_if_done(plan_id, step, spec, reserved, t0, confirmed: bool) ->
 
 async def _abort_after_failure(plan_id, step, spec, cur, project_id, reserved, t0, operator,
                                est_pair, *, force: bool) -> bool:
-    """Остановка серверной задачи; при неподтверждённой остановке проект удерживается занятым."""
     if not spec.is_job:
         return True
     if not (force or cur.get("start") is not None):
         return True
     try:
         confirmed = await _abort_job(plan_id, spec, cur)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("action layer abort failed plan={}", plan_id)
         confirmed = False
     async with store.sessions()() as s:
@@ -647,7 +591,7 @@ async def _call_stop(plan_id: str, cur: dict) -> None:
     cur["stop_sent"] = True
     try:
         await cur["spec"].stop(cur["ctx"], cur["params"])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("action layer stop call failed plan={}: {}", plan_id, exc)
 
 
@@ -672,7 +616,6 @@ async def _execute(plan_id: str, spec: ActionSpec, ctx: ActionContext, params: d
         if await _stop_requested(plan_id):
             await _call_stop(plan_id, cur)
         if await _kill_switch_on():
-            # Аварийный стоп действует и на уже идущую задачу: останавливаем её и закрываем шаг.
             await _call_stop(plan_id, cur)
             async with store.sessions()() as s:
                 store.append_history(s, event="kill_switch_block", plan_id=plan_id,
@@ -685,7 +628,6 @@ async def _execute(plan_id: str, spec: ActionSpec, ctx: ActionContext, params: d
 
 
 async def request_stop(plan_id: str, operator: str) -> dict:
-    """Помечает остановку; вызывает stop-эндпоинт текущего шага, если он есть."""
     async with store.sessions()() as s:
         plan = await s.get(store.ActionPlan, plan_id)
         if plan is None:
@@ -701,7 +643,6 @@ async def request_stop(plan_id: str, operator: str) -> dict:
     if cur is not None:
         await _call_stop(plan_id, cur)
     if not is_live(plan_id):
-        # Нет живой задачи (план не стартовал или прерван рестартом): закрываем сразу.
         await _finish(plan_id, store.PLAN_STOPPED, reason="operator_stop")
         return {"status": store.PLAN_STOPPED, "stop_requested": True}
     return {"status": store.PLAN_RUNNING, "stop_requested": True}

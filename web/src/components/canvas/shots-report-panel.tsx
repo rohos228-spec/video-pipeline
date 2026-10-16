@@ -12,7 +12,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-/** Панель ноды отчёта — как «Хранилище»: файл на карточке, клик открывает внутри Студии. */
 export function ShotsReportPanel({
   projectId,
 }: {

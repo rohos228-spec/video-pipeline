@@ -1,11 +1,3 @@
-"""Первый срез каталога: безопасные действия монтажной панели.
-
-Только ``read`` и ``local_safe``. Платные (apply, montage, scene-improve) и
-разрушающие (удаление кадров/медиа, merge/split) здесь намеренно не заводятся:
-их добавляет полный каталог через тот же ``registry.register``.
-
-Все исполнители зовут существующие эндпоинты монтажа через ``ctx.call``.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -20,9 +12,6 @@ from app.services.action_layer.spec import (
 _PID = {"type": "integer", "minimum": 1, "description": "ID проекта"}
 _MAX_FRAMES_IN_RESULT = 300
 
-# Типы coverage-операций, которые только пишут текстовое поле в БД.
-# Исключены: coverage_delete (удаляет кадр), coverage_scene_action (перезаписывает
-# цепочку шотов), coverage_anchors / coverage_vo_span (структурные поля).
 _COVERAGE_TYPES = ("coverage_kind", "coverage_plan", "coverage_angle", "coverage_move",
                    "coverage_stitch", "coverage_light", "coverage_action")
 
@@ -34,14 +23,6 @@ def _base(pid: int) -> str:
     return f"/projects/{pid}/montage-board"
 
 
-# --- очередь pending_ops: защита от потери чужих правок (A12) ----------------------------------
-# Сервер сохраняет очередь целиком (POST /queue), поэтому слой делает read-modify-write. Здесь:
-# (1) замок на проект против двух действий слоя; (2) повторное чтение прямо перед записью и
-# сравнение отпечатка: если очередь изменили (человек в интерфейсе) между чтением и записью,
-# слияние делается заново поверх свежей очереди; (3) если сервер отдаёт ``meta.queue_rev``,
-# версия уходит в ``expected_rev`` и несовпадение (``queue_rev_mismatch``) тоже даёт повтор.
-# Чего слой не может: интерфейс человека со старым состоянием, сохранённый ПОСЛЕ нашей записи,
-# затрёт её (нужна серверная версия очереди; см. отчёт интегратору).
 
 QUEUE_ATTEMPTS = 4
 _QUEUE_LOCKS: dict[tuple[int, int], asyncio.Lock] = {}
@@ -63,16 +44,14 @@ def queue_fingerprint(board: dict) -> str:
 
 @dataclass
 class QueueChange:
-    """Результат слияния: что сохранить и что вернуть из действия."""
     ops: list[dict]
     extra: dict[str, Any] = field(default_factory=dict)
     payload: dict[str, Any] = field(default_factory=dict)
-    skip: bool = False  # ничего не писать (отказ по состоянию очереди)
+    skip: bool = False
 
 
 async def queue_update(ctx: ActionContext, pid: int,
                        build: Callable[[dict], QueueChange]) -> tuple[QueueChange, dict]:
-    """Сохраняет очередь без потери параллельных правок. Возвращает (изменение, ответ сервера)."""
     base = _base(pid)
     async with _queue_lock(pid):
         for _ in range(QUEUE_ATTEMPTS):
@@ -81,7 +60,7 @@ async def queue_update(ctx: ActionContext, pid: int,
             if change.skip:
                 return change, {}
             if queue_fingerprint(await ctx.call("GET", base)) != queue_fingerprint(board):
-                continue  # очередь изменили между чтением и записью: слить заново
+                continue
             body: dict[str, Any] = {"pending_ops": change.ops, **change.extra}
             rev = ((board.get("meta") or {}).get("queue_rev"))
             if rev is not None:
@@ -114,7 +93,6 @@ _PRE_NO_APPLY = Precondition("no_apply_running", "Сейчас не идёт п�
                              _no_apply_running)
 
 
-# --- read -------------------------------------------------------------------
 
 async def _get_board(ctx: ActionContext, params: dict) -> dict:
     board = await ctx.call("GET", _base(params["project_id"]))
@@ -149,7 +127,6 @@ async def _recover_status(ctx, params):
     return await _status(ctx, params, "recover-outsee-status")
 
 
-# --- local_safe -------------------------------------------------------------
 
 async def _set_voiceover(ctx: ActionContext, params: dict) -> dict:
     data = await ctx.call(
@@ -177,7 +154,6 @@ def _op_key(op: dict) -> tuple:
 
 
 async def _queue_ops(ctx: ActionContext, params: dict) -> dict:
-    """Дописывает правки в очередь (замена одноимённой). Apply не запускается."""
     new_ops = list(params["ops"])
     new_keys = {_op_key(o) for o in new_ops}
 

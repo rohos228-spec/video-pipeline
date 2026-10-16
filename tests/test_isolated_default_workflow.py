@@ -1,4 +1,3 @@
-"""▶ на project.db не должен требовать workflow-каталог внутри project.db."""
 
 from __future__ import annotations
 

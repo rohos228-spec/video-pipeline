@@ -1,16 +1,3 @@
-"""Dry run of the sd_assemble phase through the REAL step: the failure handler and the unchanged input.
-
-No network, no provider, no paid call. REAL: scene_design.run_assemble (cell backfill, chronology, camera_expand.
-subdivide_vo_frames_by_camera, chunked assembler, validation, apply_scene_design through db_apply.apply_ops, the
-failure handler), observe_attempt, the journal, the Diagnoser. SCRIPTED: the model boundary only. SEEDED: the
-agents' checkpoints and cells (what the earlier agents steps leave), by the application's own writers.
-
-History: sd_assemble used to be observed only (`pre_request_commit`): the step wrote child frames (camera
-subdivision) BEFORE the first model request and the failure handler committed them (2 frames before, 4 after a
-failed attempt), so the recorded input revision no longer matched and recover_node refused. The handler now
-rolls the attempt's uncommitted work back; this file keeps the shared fixture and pins that fact. The
-supervised retry itself is proven in test_scene_assemble_retry_dry_run.py.
-"""
 import json
 import unittest
 from contextlib import ExitStack, asynccontextmanager
@@ -122,7 +109,6 @@ class AssembleFixture(unittest.IsolatedAsyncioTestCase):
         self.stack.enter_context(patch("app.project_db.project_db_session_scope", project_scope))
         self.stack.enter_context(patch("app.project_db.push_runtime_to_master", push))
         self.stack.enter_context(patch("app.project_db.pull_master_runtime_into_project", no_pull))
-        # What the earlier steps leave: backfilled frames, every agent's checkpoint and cells.
         from app.services import db_v2
         full_vo = "\n".join(VO)
         async with self.business() as session:

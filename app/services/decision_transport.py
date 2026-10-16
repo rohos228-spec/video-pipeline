@@ -1,4 +1,3 @@
-"""Scoped transport accounting hook, not a new model client or executor."""
 from contextvars import ContextVar
 
 current=ContextVar('decision_http_context',default=None)

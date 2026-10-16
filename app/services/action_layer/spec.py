@@ -1,8 +1,3 @@
-"""Каталог действий: ActionSpec, CostEstimate и глобальный ActionRegistry.
-
-Модель/планировщик только ВЫБИРАЕТ id и заполняет параметры. Риск, стоимость и
-предусловия задаёт код действия, а не запрос.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -25,12 +20,11 @@ _ID_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
 
 
 class ActionRegistryError(ValueError):
-    """Некорректная регистрация действия (дубликат, неверные флаги, схема)."""
+    pass
 
 
 @dataclass(frozen=True)
 class CostEstimate:
-    """Оценка в кредитах. low/high = None означает «неизвестно», а не 0."""
     low: float | None
     high: float | None
     basis: str = ""
@@ -53,7 +47,6 @@ class CostEstimate:
 
 @dataclass(frozen=True)
 class Precondition:
-    """check(ctx, params) -> None если выполнено, иначе причина (строка)."""
     id: str
     description_ru: str
     check: Callable[[Any, dict], Awaitable[str | None]]
@@ -61,7 +54,6 @@ class Precondition:
 
 @dataclass
 class JobState:
-    """Состояние фоновой задачи действия (для async-исполнителей)."""
     done: bool
     ok: bool = True
     progress: float | None = None
@@ -88,22 +80,16 @@ class ActionSpec:
     spends_money: bool = False
     destructive: bool = False
     reversible: bool = False
-    # Повтор после сбоя безвреден (значение выставляется, а не переключается).
     idempotent: bool = False
     preconditions: tuple[Precondition, ...] = ()
     estimator: Estimator | None = None
     destructive_effects: Callable[[dict], str] | None = None
-    # Фоновое действие: executor стартует задачу, poll опрашивает, stop останавливает.
     poll: Poller | None = None
     stop: Stopper | None = None
     poll_interval_s: float = 2.0
-    # C-4: платную работу после ответа действия делает воркер (не job: опросить нечем). Резерв потолка не закрывается
-    # по журналу трат (пустой журнал = «0» было бы ложью): он остаётся до решения человека.
     deferred_spend: bool = False
     scope: str = "project"
     tags: tuple[str, ...] = ()
-    # C-15: действие само денег не тратит, но меняет то, сколько и что потратят будущие запуски
-    # (модель, разрешение, автопродвижение, проверки). Непустая строка показывается в превью.
     future_spend_note: str = ""
 
     @property
@@ -115,7 +101,6 @@ class ActionSpec:
         return self.spends_money or self.destructive
 
     def fingerprint(self) -> str:
-        """Хэш свойств, влияющих на безопасность (входит в хэш плана)."""
         raw = json.dumps(
             {"id": self.id, "risk": self.risk, "spends": self.spends_money,
              "destructive": self.destructive, "schema": self.params_schema},
@@ -127,7 +112,7 @@ class ActionSpec:
             return CostEstimate.free()
         try:
             est = self.estimator(params) if self.estimator else None
-        except Exception as exc:  # noqa: BLE001 - оценка не должна ронять preview
+        except Exception as exc:
             return CostEstimate.unknown(f"estimator error: {type(exc).__name__}")
         return est if isinstance(est, CostEstimate) else CostEstimate.unknown()
 
@@ -194,7 +179,6 @@ class ActionRegistry:
         return spec
 
     def register_many(self, specs: list[ActionSpec]) -> None:
-        """Все или ничего: при ошибке ни одно действие пачки не остаётся."""
         added: list[str] = []
         try:
             for spec in specs:
@@ -258,16 +242,12 @@ def _builtin_spec_list() -> list:
         register_change_actions(staging)
         register_media_recovery_actions(staging)
         register_wave5(staging)
-        # D15: publication is destructive + irreversible: every plan with it needs a one-time human approval of that
-        # exact plan, the managed (agent) mode is refused by a precondition, and SOCIAL_PUBLISH_ENABLED=false (the
-        # default) makes the step publish nothing. No auto-start: a person approves EACH publication.
         register_publish_actions(staging)
         _builtin_specs = staging.list()
     return _builtin_specs
 
 
 def ensure_builtin_actions() -> None:
-    """Идемпотентная регистрация встроенных действий: добавляет только те, которых ещё нет."""
     for spec in _builtin_spec_list():
         if registry.find(spec.id) is None:
             registry.register(spec)

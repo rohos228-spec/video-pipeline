@@ -1,26 +1,3 @@
-"""Caps on regeneration loops: a failed result may be regenerated a bounded number of times.
-
-Two loops redo work without a human: the post-step validation (``finalize_or_retry``: missing video/image
-files, music, audio) and the vision check loop (check -> db_patch -> regen -> check). Each regeneration
-of a frame/hero is a paid provider call, so both loops charge this budget before they requeue anything:
-
-* ``REGEN_MAX_PER_FRAME`` (default 3): regenerations of one frame (or hero) before it needs a person;
-* ``REGEN_MAX_PER_RUN`` (default 12): regeneration rounds of one step until it succeeds or a person releases it.
-* ``REGEN_MAX_USD_PER_RUN`` (default 5.0): estimated USD of the regeneration rounds of one step. The attempt caps
-  do not know the price of a round (a round of 12 frames costs far more than a round of one), so every round
-  adds ``items x unit`` to the step bucket, where ``unit`` is ``REGEN_ESTIMATE_USD_PER_ITEM`` or, when that is
-  0, ``spend_guard.MEDIA_SUBMIT_ESTIMATE_USD`` (the same per-submit estimate the spend guard reserves; text-only
-  vision checks add ``spend_guard.DEFAULT_REQUEST_ESTIMATE_USD`` per round). A round that would push a bucket
-  that has already spent something over the cap is refused; the very first round of a bucket is never refused
-  by money (nothing to compare with, and refusing it would deadlock the step).
-  ``0`` disables the corresponding cap.
-
-When a cap is reached the loop does not requeue and does not pass the result on: the project is parked
-(``paused``) with ``auto_paused_reason`` (the same field the auto-advance regen limit uses), an
-observation fact ``runtime_check``/``regen_budget`` (status ``rejected``) is written for the diagnosis layer,
-and the counters stay in ``project.meta['regen_budget']`` until ``reset`` (a human release) or until the step
-finishes successfully (``clear``).
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -81,17 +58,16 @@ def limits() -> tuple[int, int]:
     try:
         from app.settings import settings
         return int(settings.regen_max_per_frame), int(settings.regen_max_per_run)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 3, 12
 
 
 def usd_limits() -> tuple[float, float]:
-    """(cap, unit): the money cap per step run (0 = off) and the estimated USD of one regenerated item."""
     cap, unit = 5.0, 0.0
     try:
         from app.settings import settings
         cap, unit = float(settings.regen_max_usd_per_run), float(settings.regen_estimate_usd_per_item)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     if unit <= 0:
         from app.services import spend_guard
@@ -100,14 +76,13 @@ def usd_limits() -> tuple[float, float]:
 
 
 def estimate_round_usd(kind: str, item_count: int) -> float:
-    """Estimated USD of one regeneration round: paid submits for the items, plus one request for vision checks."""
     _cap, unit = usd_limits()
     usd = unit * max(0, int(item_count))
     if kind.startswith("vision"):
         from app.services import spend_guard
         usd += float(spend_guard.DEFAULT_REQUEST_ESTIMATE_USD)
     elif item_count <= 0:
-        usd = unit  # a whole-step round without frame numbers (music, audio) is one paid submit
+        usd = unit
     return round(usd, 4)
 
 
@@ -128,11 +103,6 @@ def _save(project, state: dict) -> None:
 
 
 def charge(project, kind: str, items: Iterable[object] = ()) -> Verdict:
-    """Count one regeneration round of ``kind`` for ``items`` (frame numbers, hero ids, tokens).
-
-    Items already at the per-frame cap are returned in ``blocked``; a spent run budget blocks the round.
-    The counters are only advanced when the whole round is allowed.
-    """
     per_frame, per_run = limits()
     names = [str(i) for i in items]
     state = {k: dict(v) if isinstance(v, dict) else v for k, v in _state(project).items()}
@@ -159,7 +129,6 @@ def charge(project, kind: str, items: Iterable[object] = ()) -> Verdict:
             verdict.allowed.append(name)
     if verdict.blocked:
         return verdict
-    # C-12: общий потолок цепочки перезапусков узла; успех проверки его не сбрасывает
     from app.services import restart_chain
     chain_ok, chain_n, chain_cap = restart_chain.charge(project, restart_chain.node_for_kind(kind), "regen_budget")
     if not chain_ok:
@@ -178,9 +147,8 @@ def charge(project, kind: str, items: Iterable[object] = ()) -> Verdict:
 
 
 def clear(project, kind_prefix: str | None = None) -> bool:
-    """Forget the counters of a step that finished (or all kinds when no prefix is given)."""
     state = dict(_state(project))
-    gone = [k for k in state if kind_prefix is None or k == kind_prefix or k.startswith(kind_prefix + ":")]  # exact kind: clear(p, "vision:videos")
+    gone = [k for k in state if kind_prefix is None or k == kind_prefix or k.startswith(kind_prefix + ":")]
     if not gone:
         return False
     for k in gone:
@@ -190,7 +158,6 @@ def clear(project, kind_prefix: str | None = None) -> bool:
 
 
 def reset(project, kind_prefix: str | None = None) -> bool:
-    """Human release: counters and the pause reason set by this module are dropped, so the loop may run again."""
     changed = clear(project, kind_prefix)
     meta = dict(project.meta or {})
     if meta.get("regen_budget_stop"):
@@ -203,7 +170,6 @@ def reset(project, kind_prefix: str | None = None) -> bool:
 
 
 async def stop(session, project, verdict: Verdict) -> None:
-    """Park the project and record why. Never raises into the caller."""
     from app.models import ProjectStatus
 
     text = verdict.summary()
@@ -214,13 +180,13 @@ async def stop(session, project, verdict: Verdict) -> None:
                                  "usd_exhausted": verdict.usd_exhausted, "usd_spent": verdict.usd_spent,
                                  "usd_cap": verdict.usd_cap, "chain_exhausted": verdict.chain_exhausted}
     if project.status != ProjectStatus.paused:
-        meta["paused_from_status"] = project.status.value  # «Продолжить» вернёт проект в этот шаг, а не в new
+        meta["paused_from_status"] = project.status.value
     project.meta = meta
     flag_modified(project, "meta")
     project.status = ProjectStatus.paused
     try:
         await session.flush()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("[#{}] regen_budget: flush failed", getattr(project, "id", "?"))
     logger.warning("[#{}] regen_budget: {}", getattr(project, "id", "?"), text)
     try:
@@ -232,5 +198,5 @@ async def stop(session, project, verdict: Verdict) -> None:
             "usd_exhausted": verdict.usd_exhausted, "usd_spent": verdict.usd_spent,
             "usd_round": verdict.usd_round, "usd_cap": verdict.usd_cap,
             "restart_chain": verdict.chain_exhausted, "summary": text})
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("regen_budget: observation fact skipped", exc_info=True)

@@ -1,7 +1,3 @@
-"""W50 фаза «Интерфейс оператора»: кнопка «снять резерв» (C-9) со стороны API и автообновление журнала (U-10).
-
-Сети и денег нет: исполнитель слоя действий подменён (как в w40_money_gates_test), база временная.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from app.services.action_layer import budget, service
-from tests.action_layer_support import env  # noqa: F401
-from tests.w40_money_gates_test import (  # noqa: F401  (autouse-фикстура чистки глобалов исполнителя)
+from tests.action_layer_support import env
+from tests.w40_money_gates_test import (
     _clean_executor_globals,
     _end_orphan_watch,
     _unresolved_step,
@@ -28,7 +24,7 @@ async def test_release_reserve_endpoint_refuses_without_operator_token(env, monk
     assert r.status_code == 403 and r.json()["detail"]["code"] == "operator_token_required"
     r = await env.client.post(URL, json=body, headers={"X-VP-Operator": "wrong-token"})
     assert r.status_code == 403
-    async with env.factory() as s:  # резерв по-прежнему удержан
+    async with env.factory() as s:
         rows = await budget.unresolved_reserves(s)
     assert [(x["plan_id"], x["held_credits"]) for x in rows] == [(plan_id, 5.0)]
 
@@ -41,7 +37,7 @@ async def test_release_reserve_endpoint_needs_a_reason_and_releases_once(env, mo
     assert [(x["plan_id"], x["step_index"]) for x in listed["items"]] == [(plan_id, 0)]
 
     r = await env.client.post(URL, json={"plan_id": plan_id, "step_index": 0, "reason": " "})
-    assert r.status_code == 422  # без причины снять нельзя
+    assert r.status_code == 422
     r = await env.client.post(URL, json={"plan_id": plan_id, "step_index": 7, "reason": "сверил кабинет"})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "not_releasable"
 
@@ -51,12 +47,10 @@ async def test_release_reserve_endpoint_needs_a_reason_and_releases_once(env, mo
     assert (await env.client.get("/api/action-layer/reserves")).json()["items"] == []
     events = [h["event"] for h in (await service.history(plan_id=plan_id))["items"]]
     assert "reserve_released" in events
-    # повтор: снимать уже нечего
     r = await env.client.post(URL, json={"plan_id": plan_id, "step_index": 0, "reason": "сверил кабинет Kie"})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "not_releasable"
 
 
-# --- web: контракт интерфейса (текстовые проверки исходников; браузер и сеть не нужны) -----------------
 
 WEB = Path(__file__).resolve().parents[1] / "web" / "src"
 
@@ -68,14 +62,14 @@ def _src(rel: str) -> str:
 def test_journal_section_polls_while_open_and_pauses_when_hidden() -> None:
     src = _src("components/orchestrator/journal-section.tsx")
     assert "JOURNAL_REFRESH_MS" in src and "setInterval" in src
-    assert 'document.visibilityState === "hidden"' in src  # скрытая вкладка не опрашивает сервер
-    assert "clearInterval" in src and "abort()" in src  # при смене проекта и закрытии цикл останавливается
+    assert 'document.visibilityState === "hidden"' in src
+    assert "clearInterval" in src and "abort()" in src
 
 
 def test_publications_panel_has_revoke_button_calling_revoke_route() -> None:
     src = _src("components/orchestrator/publications-section.tsx")
     assert '"revoke"' in src and "Отозвать разрешение" in src
-    assert "${base}/${platform}/${kind}" in src  # POST .../publications/{platform}/revoke
+    assert "${base}/${platform}/${kind}" in src
 
 
 def test_reserve_button_calls_release_with_a_reason_and_confirmation() -> None:
@@ -88,7 +82,7 @@ def test_reserve_button_calls_release_with_a_reason_and_confirmation() -> None:
 def test_orchestrator_panel_starts_collapsed_on_phone_and_rows_wrap() -> None:
     src = _src("components/orchestrator/orchestrator-panel.tsx")
     assert "NARROW_QUERY" in src and "narrow && !touched" in src
-    assert src.count("flex flex-wrap items-center gap-2 rounded-md") == 3  # строки подтверждения не выходят за экран
+    assert src.count("flex flex-wrap items-center gap-2 rounded-md") == 3
 
 
 def test_board_shows_scene_ordinal_and_undo_split_button() -> None:

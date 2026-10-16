@@ -1,8 +1,3 @@
-"""D04 п.5: управляемый `json_request` обязан нести Authorization, а журнал фактов не должен видеть заголовки.
-
-Класс: U на заменителе (httpx.send подменён, loopback-адрес, ключ синтетический). Сети нет.
-До правки: json_request не принимал headers, createTask и опрос уходили без Authorization (боевой Kie ответил бы 401).
-"""
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -69,8 +64,6 @@ class ManagedAuth(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][1], {"Authorization": "Bearer " + KEY})
 
     async def test_create_task_passes_auth_headers_to_managed_transport(self):
-        """Поведение вместо поиска строки в исходнике: в управляемом режиме createTask отдаёт транспорту
-        Authorization (платный шов снят через unwrap: нужен именно вызывающий код create_task)."""
         import inspect
         calls = []
 

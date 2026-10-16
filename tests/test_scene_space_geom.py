@@ -1,4 +1,3 @@
-"""CANON §7 property tests 1–8: geometry (random.Random, 200 runs, no hypothesis)."""
 
 from __future__ import annotations
 

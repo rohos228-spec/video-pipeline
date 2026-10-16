@@ -214,8 +214,6 @@ def test_every_pipeline_node_type_resolves() -> None:
     node_types.update({"excel_gpt", "excel_feed"})
     # hitl_gate — ручной гейт без своего артефакта, промт не обязателен.
     node_types.discard("hitl_gate")
-    # Для этих типов встроенного агента нет (в ветках заказчика тоже): оператор грузит свой .txt,
-    # gpt_operator отвечает «нет builtin-агента для «<тип>» — загрузите свой».
     no_builtin = {"scene_design", "sd_agent", "sd_assemble", "sfx_gen", "sfx_plan"}
     for nt in sorted(no_builtin & node_types):
         assert load_check_operator_prompt(nt) is None, nt
@@ -238,8 +236,6 @@ def test_prompts_declare_stable_check_ids() -> None:
     expected: dict[str, tuple[str, ...]] = {
         "plan": ("hook_present", "arc_clear", "topic_covered"),
         "images": ("files_present", "no_artifacts", "aspect_matches_target"),
-        # videos: промт переписан заказчиком под TXT-отчёт по сеткам 3x2 (report_only, scores),
-        # стабильных check-id в нём нет и рантайм их не читает; проверяем только схему и вердикт.
         "excel_gpt": ("xlsx_valid", "task_applied", "no_data_loss"),
         "items": ("items_present",),
         "storage": ("files_present", "sorted_by_format"),

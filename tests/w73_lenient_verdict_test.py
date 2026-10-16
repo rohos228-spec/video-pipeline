@@ -1,7 +1,3 @@
-"""Stand-only option ``--lenient-verdict`` of ``scripts/e2e_full_chain_live.py``.
-
-Offline, nothing paid. Product templates in ``prompts/`` must stay strict; the soft copies are written into the run's own work dir.
-"""
 from __future__ import annotations
 
 import importlib.util

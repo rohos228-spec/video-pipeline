@@ -1,7 +1,3 @@
-"""Outsee browser (UI) path: no blind second Generate click after a submit with an unknown outcome.
-
-Fake page / session / bot objects only; the ledger is a temporary sqlite file. No network, no paid calls.
-"""
 import asyncio
 import tempfile
 import unittest
@@ -49,17 +45,17 @@ class Env(unittest.IsolatedAsyncioTestCase):
             patch("app.db.SessionLocal", self.sessions),
             patch.object(media_spend, "TEST_FORCE", True),
             patch.object(media_spend, "_managed", lambda: False),
-            patch.object(media_spend, "_enabled", lambda p: False),  # no API key: the browser guard must not need it
+            patch.object(media_spend, "_enabled", lambda p: False),
         ]
         for p in self.patches:
             p.start()
-        self.bot = OutseeBot(FakeSession())  # type: ignore[arg-type]
+        self.bot = OutseeBot(FakeSession())
 
         async def no_http(**kw):
             return None
 
-        self.bot._try_http_image = no_http  # type: ignore[method-assign]
-        self.bot._try_http_video = no_http  # type: ignore[method-assign]
+        self.bot._try_http_image = no_http
+        self.bot._try_http_video = no_http
 
     async def asyncTearDown(self):
         await media_spend.drain()
@@ -72,10 +68,9 @@ class Env(unittest.IsolatedAsyncioTestCase):
         return Path(self.tmp.name) / name
 
     def page_flow(self, behave):
-        """Replace the on-page part; ``behave`` runs after the (fake) click like the real flow would."""
         async def on_page(page, **kw):
             return await behave()
-        self.bot._generate_image_on_page = on_page  # type: ignore[method-assign]
+        self.bot._generate_image_on_page = on_page
 
     async def gen(self, **kw):
         kw.setdefault("model_slug", "nano-banana-2")
@@ -89,7 +84,6 @@ class Env(unittest.IsolatedAsyncioTestCase):
                                     .order_by(spend_guard.ProviderTaskLedger.id))).all()
 
     async def clicking(self, then):
-        """Behavior: click Generate (marks the probe like the real code), then ``then``."""
         self.clicks += 1
         _mark_submit(maybe_sent=True)
         return await then()
@@ -113,7 +107,7 @@ class BrowserGuard(Env):
         self.assertEqual(self.clicks, 1)
         with self.assertRaises(OutseeSubmitUnknownError) as again:
             await self.gen()
-        self.assertEqual(self.clicks, 1)  # the page was never driven again: no second paid click
+        self.assertEqual(self.clicks, 1)
         self.assertIn("без известного исхода", str(again.exception))
         self.assertTrue(is_no_resubmit(again.exception))
         intents = [r for r in await self.rows() if r.task_id.startswith(spend_guard.INTENT_PREFIX)]
@@ -164,9 +158,9 @@ class BrowserGuard(Env):
 
         self.page_flow(lambda: self.clicking(moderated))
         with self.assertRaises(OutseeContentRejectedError):
-            await self.gen()  # the original error reaches the rewrite ladder untouched
+            await self.gen()
         self.page_flow(lambda: self.clicking(ok_result))
-        await self.gen()  # the rewritten prompt may be submitted
+        await self.gen()
         self.assertEqual(self.clicks, 2)
 
     async def test_download_failure_after_the_result_is_known_does_not_block(self):
@@ -258,7 +252,6 @@ class BrowserGuard(Env):
 
 
 class ClickMarksTheProbe(Env):
-    """The real click helpers mark ``maybe_sent`` before they touch the page."""
 
     async def test_trigger_generate_video_marks_before_the_first_click(self):
         seen: list[dict] = []
@@ -291,7 +284,7 @@ class ClickMarksTheProbe(Env):
         async def started(page):
             return True
 
-        self.bot._generation_started = started  # type: ignore[method-assign]
+        self.bot._generation_started = started
         probe = {"maybe_sent": False, "task_id": None, "done": False}
         token = outsee_http.submit_probe.set(probe)
         try:
@@ -336,20 +329,19 @@ async def _no_sleep(*a, **k):
 
 
 class ApiFallbackIsHeldWhenAPaidTaskMayExist(Env):
-    """OutseeBot used to fall back from the Developer API to the browser on any API error: a second paid submit."""
 
     def setUp(self):
         super().setUp()
         self.ran_browser = 0
 
     async def _bot_with_api(self, api_behave):
-        bot = OutseeBot(FakeSession())  # type: ignore[arg-type]
+        bot = OutseeBot(FakeSession())
 
         async def on_page(page, **kw):
             self.ran_browser += 1
             return await ok_result()
 
-        bot._generate_image_on_page = on_page  # type: ignore[method-assign]
+        bot._generate_image_on_page = on_page
 
         async def fake_api(**kw):
             return await api_behave()
@@ -408,10 +400,10 @@ class ApiFallbackIsHeldWhenAPaidTaskMayExist(Env):
             seen.update(outsee_http.submit_probe.get() or {})
             return await ok_result()
 
-        bot._generate_image_on_page = on_page  # type: ignore[method-assign]
+        bot._generate_image_on_page = on_page
         await bot.generate_image("p", self.out(), model_slug="nano-banana-2", project_id=PID)
         self.assertEqual(self.ran_browser, 1)
-        self.assertIsNone(seen["task_id"])  # the failed API task is not mistaken for the browser submit
+        self.assertIsNone(seen["task_id"])
 
     async def test_finished_api_generation_with_a_failed_download_is_not_regenerated_in_the_browser(self):
         async def api():
@@ -430,7 +422,7 @@ class ApiFallbackIsHeldWhenAPaidTaskMayExist(Env):
 
         bot = await self._bot_with_api(api)
         with self.assertRaises(OutseeSubmitUnknownError):
-            await bot.generate_image("p", self.out(), model_slug="nano-banana-2")  # no project id: no ledger
+            await bot.generate_image("p", self.out(), model_slug="nano-banana-2")
         self.assertEqual(self.ran_browser, 0)
         self.assertEqual(await self.rows(), [])
 

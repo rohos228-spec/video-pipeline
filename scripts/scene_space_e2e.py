@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""Seed three scene_space fixtures, rewrite/rebuild twice, try validate/plan/board.
-
-  python scripts/scene_space_e2e.py
-
-Isolated sqlite: tasks/out/scene_space_e2e.db (not data/state.db).
-If store/blocking/validate/render are missing, still seeds + rewrite API and
-prints a request list for streams 1–4.
-"""
 
 from __future__ import annotations
 
@@ -22,7 +14,6 @@ if str(ROOT) not in sys.path:
 
 
 async def _try_cli_helpers(db: Path) -> dict:
-    """Call stream 3/4 CLIs if present; document the request otherwise."""
     import subprocess
 
     out: dict = {}

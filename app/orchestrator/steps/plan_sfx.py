@@ -52,7 +52,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     meta["sfx_plan"] = True
     project.meta = meta
     project.status = ProjectStatus.sfx_plan_ready
-    record_sfx_plan_applied(project, events)  # journal fact, committed with the line below
+    record_sfx_plan_applied(project, events)
     await session.flush()
     await session.commit()
     logger.info("[#{}] sfx_plan done: {} событий", project.id, len(events))

@@ -106,13 +106,6 @@ _DEDUP_WINDOW_S = 2.5
 _MAX_PARALLEL_CAP = 16
 
 
-# --- устойчивость к перезапуску (B08) -------------------------------------------------------------------
-# Состояние задач (id, статус, ошибка, пути, время) дублируется в таблицу `create_jobs` основной БД.
-# Сама работа (корутина `run` и её замыкание) в БД не хранится, поэтому после рестарта задача НЕ
-# возобновляется: незавершённые (queued/processing) помечаются «прервана перезапуском» (статус в БД
-# `interrupted`, в памяти `failed`) и автоматически не перезапускаются - повтор платный.
-# Предполагается один процесс сервера на БД (`owner` = pid + случайный токен процесса).
-# Миграцию таблицы регистрирует интегратор по `CREATE_JOBS_DDL`; модуль создаёт её и сам (IF NOT EXISTS).
 
 CREATE_JOBS_DDL = """
 CREATE TABLE IF NOT EXISTS create_jobs (
@@ -142,7 +135,6 @@ CREATE INDEX IF NOT EXISTS ix_create_jobs_created_at ON create_jobs (created_at)
 _JOB_COLUMNS = ("job_id", "owner", "seq", "media", "model", "provider", "path", "prompt", "status",
                 "preview_url", "raw_url", "error", "created_at", "started_at", "finished_at",
                 "elapsed_sec", "history_id", "updated_at")
-# Словарь статусов в БД совпадает со словарём ленты (timeline_ru.JOB_STATUS_RU).
 _STORE_STATUS = {"processing": "running"}
 _LOAD_STATUS = {"running": "processing", "cancelled": "failed", "interrupted": "failed", "error": "failed"}
 INTERRUPTED_ERROR_RU = (
@@ -211,7 +203,6 @@ def _snapshot(job: "CreateJob", store_status: str | None = None) -> dict[str, An
 
 
 def _persist_sync(snap: dict[str, Any]) -> bool:
-    """Запись одной задачи (upsert; более старый снимок не затирает более новый). Не бросает исключений."""
     if not persistence_enabled():
         return False
     try:
@@ -232,7 +223,7 @@ def _persist_sync(snap: dict[str, Any]) -> bool:
                 con.close()
             _PERSIST_STATS["written"] += 1
         return True
-    except Exception as exc:  # noqa: BLE001 - БД не должна ломать генерацию
+    except Exception as exc:
         with _DB_LOCK:
             _PERSIST_STATS["skipped"] += 1
             _PERSIST_STATS["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -242,19 +233,14 @@ def _persist_sync(snap: dict[str, Any]) -> bool:
 
 
 async def _persist(job: "CreateJob", store_status: str | None = None) -> bool:
-    """Запись состояния задачи. Намеренно без передачи в поток: одна короткая вставка, как и соседние
-    записи sidecar, и без лишних точек переключения (порядок статусов в цикле событий не меняется)."""
     try:
         return _persist_sync(_snapshot(job, store_status))
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("create_jobs: сбой записи состояния {}", job.id)
         return False
 
 
 def restore_jobs() -> int:
-    """Поднять задачи из БД в `_JOBS` (один раз на путь БД). Возвращает число подгруженных.
-
-    Незавершённые задачи другого процесса помечаются прерванными (БД, sidecar, память)."""
     if not persistence_enabled():
         return 0
     key = str(_db_path())
@@ -308,11 +294,11 @@ def restore_jobs() -> int:
         for d in interrupted:
             try:
                 update_sidecar(Path(d["path"]), status="failed", error=INTERRUPTED_ERROR_RU)
-            except Exception:  # noqa: BLE001 - sidecar мог не появиться
+            except Exception:
                 logger.debug("create_jobs: sidecar прерванной задачи {} не обновлён", d["job_id"], exc_info=True)
         if interrupted:
             logger.warning("create_jobs: после перезапуска помечено прерванными задач: {}", len(interrupted))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _RESTORED.discard(key)
         with _DB_LOCK:
             _PERSIST_STATS["last_error"] = f"restore: {type(exc).__name__}: {exc}"[:300]
@@ -617,6 +603,9 @@ async def _run_job(
             max_parallel(job.provider),
         )
         try:
+            from app.services.api_tracker_hook import check_api_allowed
+            check_api_allowed(provider=job.provider, model=job.model)
+
             result = await run(job.path)
             final_path = Path(getattr(result, "file_path", job.path))
             if not final_path.is_file() or final_path.stat().st_size < 32:
@@ -684,6 +673,28 @@ async def _run_job(
                 job.path.stat().st_size,
                 format_elapsed_min_sec(job.elapsed_sec),
             )
+            # Запись в API Tracker
+            try:
+                from app.services.api_tracker_hook import record_api_call
+                cost_usd = None
+                if quote and isinstance(quote, dict) and "usd" in quote:
+                    try:
+                        cost_usd = float(quote["usd"])
+                    except (ValueError, TypeError):
+                        pass
+                record_api_call(
+                    provider=job.provider,
+                    model=job.model,
+                    call_type=job.media,
+                    media_count=1,
+                    duration_sec=float(job.elapsed_sec or 0),
+                    cost_usd=cost_usd,
+                    status_code=200,
+                    project_source="create_workspace",
+                    metadata={"prompt": (job.prompt or "")[:500], "job_id": job.id},
+                )
+            except Exception as e:
+                logger.debug("api_tracker record failed: {}", e)
         except asyncio.CancelledError:
             job.status = "failed"
             job.error = "Генерация отменена пользователем"
@@ -699,7 +710,6 @@ async def _run_job(
                 finished_at=job.finished_at,
                 elapsed_sec=job.elapsed_sec,
             )
-            # Синхронно: задача уже отменяется, лишний await в потоке мог бы не дождаться.
             _persist_sync(_snapshot(job, "cancelled"))
             logger.info("create_job.cancelled_handled id={}", job.id)
             raise
@@ -720,5 +730,21 @@ async def _run_job(
             )
             await _persist(job)
             logger.exception("create_job.failed id={}", job.id)
+            # Запись ошибки в API Tracker
+            try:
+                from app.services.api_tracker_hook import record_api_call
+                record_api_call(
+                    provider=job.provider,
+                    model=job.model,
+                    call_type=job.media,
+                    media_count=1,
+                    duration_sec=float(job.elapsed_sec or 0),
+                    status_code=500,
+                    error_message=str(job.error or "")[:300],
+                    project_source="create_workspace",
+                    metadata={"prompt": (job.prompt or "")[:500], "job_id": job.id},
+                )
+            except Exception:
+                pass
         finally:
             _refresh_queue_positions()

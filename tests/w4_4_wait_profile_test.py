@@ -1,7 +1,3 @@
-"""W4-4 (C08): профиль ожидания отказов шага. Юнит и сухой прогон на SQLite в памяти, без сети.
-
-Файл назван ``*_test.py``, чтобы pytest его собирал при префиксе ``w4_4_``.
-"""
 
 from __future__ import annotations
 
@@ -48,16 +44,13 @@ def test_fast_profile_from_env_and_the_project_overrides_it(monkeypatch: pytest.
     fast = sfp.wait_profile(_project())
     assert fast.name == "fast" and fast.max_total_fails == 4 and fast.sleep_minutes == 3
     assert sfp.abandon_threshold(_project()) == 4
-    # проект сильнее окружения
     assert sfp.wait_profile(_project({"step_failure_profile": "safe"})).name == "safe"
     monkeypatch.delenv(sfp.WAIT_PROFILE_ENV)
     assert sfp.wait_profile(_project({"step_failure_profile": "fast"})).name == "fast"
-    # неизвестное имя - безопасный профиль
     assert sfp.wait_profile(_project({"step_failure_profile": "turbo"})).name == "safe"
 
 
 def test_stand_overrides_of_safe_constants_are_still_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """scripts/e2e_vibecode_script_frames_qc.py подменяет SLEEP_MINUTES в модуле: профиль читает его на лету."""
     monkeypatch.setattr(sfp, "SLEEP_MINUTES", 1)
     monkeypatch.setattr(sfp, "XLSX_SHEET_FORMAT_SLEEP_MINUTES", 1)
     profile = sfp.wait_profile(_project())
@@ -81,7 +74,7 @@ async def test_safe_profile_still_needs_nine_failures(session: AsyncSession) -> 
     await session.flush()
     with patch("app.services.run_sync.mark_running_node_failed", new_callable=AsyncMock):
         action = await sfp.record_step_failure(session, p, error=RuntimeError("Некорректный xlsx: пустой план"))
-    assert action == "retry"  # 8-й отказ: ещё не порог
+    assert action == "retry"
     assert p.meta["step_failure"]["total_fails"]["planning"] == 8
 
 
@@ -94,7 +87,7 @@ async def test_fast_profile_abandons_after_four_failures_with_short_sleeps(sessi
     with patch("app.services.run_sync.mark_running_node_failed", new_callable=AsyncMock):
         for _ in range(4):
             if p.status is ProjectStatus.paused:
-                p.status = ProjectStatus.planning  # как делает рабочий цикл после сна
+                p.status = ProjectStatus.planning
             actions.append(await sfp.record_step_failure(session, p, error=RuntimeError("Некорректный xlsx: пустой план")))
             if actions[-1] == "sleep":
                 fs = p.meta["step_failure"]
@@ -135,7 +128,6 @@ async def test_fast_profile_closes_a_configuration_error_at_once_and_opens_no_re
     assert action == "abandon"
     fs = p.meta["step_failure"]
     assert fs["total_fails"]["planning"] == 1 and fs["abandoned_reason"] == "fatal_config"
-    # повтор ключ не вылечит: автоматическое восстановление по этому закрытию не открывается
     assert sfp.is_retry_exhausted(p, "planning") is False
 
 
@@ -156,7 +148,7 @@ def test_is_retry_exhausted_for_a_legacy_safe_state_without_the_recorded_thresho
     legacy = _project({"step_failure": {"abandoned_at": "x", "total_fails": {"planning": 9}}})
     assert sfp.is_retry_exhausted(legacy, "planning") is True
     short = _project({"step_failure": {"abandoned_at": "x", "total_fails": {"planning": 4}}})
-    assert sfp.is_retry_exhausted(short, "planning") is False  # 4 отказов safe-профиля - ещё не порог
+    assert sfp.is_retry_exhausted(short, "planning") is False
     assert sfp.is_retry_exhausted(None) is False
 
 

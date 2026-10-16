@@ -1,14 +1,3 @@
-"""Proves a new node type can be registered through node_spec.register_node
-without touching DecisionSupervisor, ActionSupervisor, or the FSM dispatch
-in pipeline.py — only registry/capability wiring, per docs/ADDING_NEW_AGENT.md.
-
-The running/ready statuses used here are plain sentinel strings, not real
-ProjectStatus enum members: this test only exercises the registration and
-lookup mechanics (node_registry.WORK_NODES, node_capabilities._CAPABILITIES),
-not a real dispatchable pipeline node (which would additionally need a
-ProjectStatus enum change and a pipeline.py::advance() branch, deliberately
-out of scope for this unit test).
-"""
 from __future__ import annotations
 
 import pytest
@@ -82,12 +71,12 @@ def test_register_node_wires_registry_and_capability_from_one_call():
     assert capability.actions == node_capabilities.READ_ACTIONS
 
     assert verifier_for(TEST_NODE_ID) is _verifier
-    assert verifier_for("plan") is None  # pre-existing nodes are unmigrated, by design
+    assert verifier_for("plan") is None
 
 
 def test_register_node_rejects_duplicate_node_id():
     spec = NodeSpec(
-        node_id="plan",  # already registered by hand in node_registry.WORK_NODES
+        node_id="plan",
         version="1",
         step_code="dup",
         running_status=TEST_RUNNING,

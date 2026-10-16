@@ -1,4 +1,3 @@
-"""Генерация главное_действие одной VO-ячейки промтом action с доски монтажа."""
 
 from __future__ import annotations
 
@@ -30,7 +29,6 @@ ACTION_PROMPT_GROUP = "script_frames_qc"
 
 
 def parse_replace_ns(raw: Any) -> list[int]:
-    """Номера сцен ``N.`` внутри ячейки. Пусто = переписать всю цепь."""
     if raw is None or raw is False:
         return []
     items: list[Any]
@@ -59,7 +57,6 @@ def merge_scene_chain(
     patch: list[dict[str, Any]],
     replace_ns: list[int] | None,
 ) -> list[dict[str, Any]]:
-    """Склеить цепь ячейки: пустой replace_ns заменяет всё, иначе только ``N.``."""
     patch_rows = [dict(row) for row in patch if isinstance(row, dict)]
     wanted = parse_replace_ns(replace_ns)
     if not wanted:
@@ -116,7 +113,6 @@ def merge_scene_chain(
 
 
 def extract_main_action_from_reply(reply: str, frame_uuid: str = "") -> str:
-    """Достать ``главное_действие`` из apply-ops или из цепи ``N.`` в тексте."""
     text = (reply or "").strip()
     if not text:
         raise ValueError("GPT не вернул главное_действие")
@@ -161,7 +157,6 @@ def apply_cell_passport(
     frames: list[Frame],
     passport: dict[str, Any] | None,
 ) -> list[str]:
-    """Паспорт сцены в монтаже не пишем."""
     del frame, frames, passport
     return []
 
@@ -174,7 +169,6 @@ def load_action_prompt() -> str:
 
 
 def _bits_payload(parent: Frame) -> list[dict[str, Any]]:
-    """Только сохранённые биты родителя — удалённые якоря сюда не возвращаем."""
     out: list[dict[str, Any]] = []
     for item in bits_from_attrs(parent):
         out.append(
@@ -213,7 +207,6 @@ def build_action_generate_prompt(
     character_labels: str = "",
     mode: str = "",
 ) -> str:
-    """Промт action v7 + одна ячейка монтажа (не весь проект)."""
     rules = load_action_prompt()
     full = cell_scene_text(parent, members)
     span = cell_vo_span(parent)
@@ -298,7 +291,7 @@ async def _map_character_labels(
             .scalars()
             .all()
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return text
     names = {
         str(getattr(e, "code", "") or "").strip(): str(getattr(e, "name", "") or "").strip()
@@ -327,7 +320,6 @@ async def generate_cell_scene_action(
     timeout: float = 180.0,
     mode: str = "",
 ) -> dict[str, Any]:
-    """GPT action на одну ячейку → merge кусков → apply_coverage_scene_action."""
     from app.services.gpt_client import gpt_ask_fresh
 
     frames = list(
@@ -439,7 +431,6 @@ async def generate_cell_scene_action(
     chain_text = format_scene_chain(merged)
     if not chain_text.strip():
         raise RuntimeError("после склейки цепь пустая")
-    # Заготовки под лишние N. Картинки не пишем.
     report = await apply_coverage_scene_action(
         session,
         project,
@@ -494,7 +485,6 @@ def scene_image_instruction(
     shot: dict[str, Any] | None = None,
     master: bool = False,
 ) -> str:
-    """Заметка оператора для ИИзменения: действие и камера этого кадра."""
     _ = passport
     parts: list[str] = []
     act = " ".join((beat or "").split())
@@ -525,7 +515,6 @@ def build_scene_image_ops(
     frame_ids: list[int] | None = None,
     kadry: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """ИИзменение на видимые кадры ячейки. leftover и лишние id пропускаем."""
     from app.services.montage_board import _action_for_frame
     from app.services.montage_board_frames import _visible_and_extras
     from app.services.shot_templates import split_scene_action_beats
@@ -588,7 +577,6 @@ def scene_then_frame_image_ops(
     chain: str = "",
     kadry: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Сначала still сцены (промт + рефы), затем кадры: старт, при freeze — конец."""
     from app.services.montage_frame_refs import append_manual_ref_note
 
     shot0 = kadry[0] if kadry else None
@@ -631,11 +619,6 @@ async def generate_cell_scene_with_images(
     mode: str = "",
     anchors: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """GPT-сцены ячейки (мягкий fallback на текст цепи). Без картинок.
-
-    ``mode="improve"`` — fw_action → fw_shots → fw_qc на одну ячейку.
-    В GPT только заказ и реестр; якоря и закадр как сюжет не входят.
-    """
     if mode == "improve":
         from app.services.montage_scene_improve import improve_cell_scene
 

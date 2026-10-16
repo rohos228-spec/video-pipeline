@@ -1,4 +1,3 @@
-"""Owner policy and one durable allowance per workflow run; no HTTP transport."""
 import asyncio
 import unittest
 import uuid

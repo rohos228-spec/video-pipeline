@@ -52,7 +52,6 @@ def test_resolve_uses_meta_when_no_override() -> None:
 
 
 def test_excel_gpt_registry_agent_is_not_stolen_as_hero() -> None:
-    """Копия агента реестра в 04_hero + слот excel_gpt не должна ломать Hero."""
     from app.services.hero_prompt_contract import hero_master_looks_like_registry_agent
     from app.services.prompt_library import (
         resolve_project_prompt_with_source,
@@ -84,7 +83,6 @@ def test_excel_gpt_registry_agent_is_not_stolen_as_hero() -> None:
 
 
 def test_img_pr_trash_polka_is_not_used_as_hero_style() -> None:
-    """Глобальный шаблон кадров не должен становиться стилем листа персонажа."""
     from app.services.hero_prompt_contract import (
         hero_style_looks_like_character_lock,
         hero_style_looks_like_img_pr_template,

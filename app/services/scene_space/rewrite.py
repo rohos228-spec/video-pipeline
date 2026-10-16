@@ -1,12 +1,3 @@
-"""Scene-space rewrite / rebuild / fixture seed (stream 5).
-
-rewrite(meaning) rebuilds bits + shot breakdown. Rows with manual=1 keep
-frames_space fields. Idempotent via scenes_space.space_json.input_hash.
-
-If store / blocking / validate are missing in this worktree, schema is created
-with raw SQL matching CONTRACTS, and rebuild keeps a valid fixture skeleton.
-Does not create store.py.
-"""
 
 from __future__ import annotations
 
@@ -27,10 +18,10 @@ from app.services.db_v2 import insert_frame_after, new_frame_uuid
 
 try:
     from app.services.scene_space.errors import DegenerateAxisError
-except ImportError:  # stream 1 may not be merged yet
+except ImportError:
 
     class DegenerateAxisError(ValueError):
-        """cross == 0 — camera on the axis line."""
+        pass
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -89,9 +80,6 @@ _EMPTY_CHANGED = {"inserted": [], "updated": [], "skipped": []}
 
 _PROMPT_NEG = "extra limbs, watermark, readable lettering"
 
-# ---------------------------------------------------------------------------
-# Geometry (CONTRACTS / CANON §2.3–2.5) — used when store.geom is absent
-# ---------------------------------------------------------------------------
 
 
 def normalize_pair(a: str, b: str) -> tuple[str, str]:
@@ -169,7 +157,6 @@ def _cam(plan: Sequence[Mapping]) -> dict:
 
 
 def camera_right_xy(facing_deg: float) -> tuple[float, float]:
-    """Facing 0 = +Y; clockwise. Camera-right = facing + 90° = +X at facing 0."""
     rad = math.radians(float(facing_deg))
     return math.cos(rad), -math.sin(rad)
 
@@ -205,7 +192,6 @@ def screen_pos_for(
 
 
 def south_cam(az_deg: float, mid: tuple[float, float] = (2.0, 2.0), r: float = 4.2) -> dict:
-    """Camera on the south arc (y < mid.y). az 0 = due south, + = toward +X."""
     rad = math.radians(float(az_deg))
     x = mid[0] + r * math.sin(rad)
     y = mid[1] - r * math.cos(rad)
@@ -229,9 +215,6 @@ def action_class(beat_role: str) -> str:
     return "action"
 
 
-# ---------------------------------------------------------------------------
-# Canonical hash
-# ---------------------------------------------------------------------------
 
 
 def canonical_dumps(obj: Any) -> str:
@@ -310,9 +293,6 @@ def derive_bits(meaning: str, rows: Sequence[Mapping[str, Any]]) -> list[dict]:
     return bits
 
 
-# ---------------------------------------------------------------------------
-# Schema + store fallback (raw SQL, not store.py)
-# ---------------------------------------------------------------------------
 
 
 async def ensure_scene_space_schema(conn) -> None:
@@ -474,7 +454,6 @@ def _row_sql_params(row: Mapping[str, Any]) -> dict:
 
 
 def _space_json_core(space: Mapping[str, Any], *, meaning_hash_bits: dict) -> dict:
-    """Keep frozen CONTRACTS keys; extra hash bookkeeping stays inside input_hash."""
     return {
         "axes": space.get("axes") or [],
         "input_hash": meaning_hash_bits["input_hash"],
@@ -485,9 +464,6 @@ def _space_json_core(space: Mapping[str, Any], *, meaning_hash_bits: dict) -> di
     }
 
 
-# ---------------------------------------------------------------------------
-# Isolated DB (never production data/state.db)
-# ---------------------------------------------------------------------------
 
 
 def default_sandbox_db() -> Path:
@@ -531,9 +507,6 @@ async def memory_session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 def _fid(kind: str, n: int) -> str:
@@ -629,7 +602,6 @@ def _assemble_frames(
 
 
 def build_dialogue_fixture() -> dict:
-    """Two-shot coverage: master + single each + reaction; 3+ sizes; unique accents."""
     az = [-70, 70, -50, 50, -30, 30, -10, 10, -60, 55]
     cams = [south_cam(a) for a in az]
     plan0 = _base_plan(cams[0])
@@ -770,7 +742,6 @@ def build_dialogue_fixture() -> dict:
 
 
 def build_cross_fixture() -> dict:
-    """Walk across axis + reestablish + crossing_method (camera to far bank)."""
     az = [-70, 65, -48, 48, -28, 28, -8, 12]
     cams = [south_cam(a) for a in az]
     north = north_cam()
@@ -905,7 +876,6 @@ def build_cross_fixture() -> dict:
             delta={"cam": {k: north[k] for k in ("x", "y", "facing")}},
         ),
     ]
-    # last cam must stay on the NEW side (north). south_cam would silently recross.
     shots[-1]["delta"] = {
         "cam": {
             "x": round(north["x"] + 1.4, 3),
@@ -936,7 +906,6 @@ def build_cross_fixture() -> dict:
 
 
 def build_turn_fixture() -> dict:
-    """Physical turn shot + smash insert (MS→ECU)."""
     az = [-70, 68, -52, 52, -32, 32, -12, 12, -58, 50]
     cams = [south_cam(a) for a in az]
     plan0 = _base_plan(cams[0])
@@ -1133,9 +1102,6 @@ def fixture_frame_counts(fx: dict | None = None) -> dict[str, int]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Seed
-# ---------------------------------------------------------------------------
 
 
 def _space_from_fixture(data: dict, *, meaning: str, rows: list[dict]) -> dict:
@@ -1152,7 +1118,6 @@ def _space_from_fixture(data: dict, *, meaning: str, rows: list[dict]) -> dict:
 
 
 async def seed_fixture(session: AsyncSession, data: dict | str | Path) -> dict:
-    """Insert Project/Scene/Frame + scenes_space/frames_space. Isolated DB only."""
     if not isinstance(data, dict):
         data = json.loads(Path(data).read_text(encoding="utf-8"))
     scene_id = str(data["scene_id"])
@@ -1253,9 +1218,6 @@ async def seed_all_fixtures(session: AsyncSession) -> dict[str, dict]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# rewrite / rebuild
-# ---------------------------------------------------------------------------
 
 
 async def _pipeline_project_for(session: AsyncSession, scene_id: str) -> tuple[Project, Scene]:
@@ -1288,7 +1250,7 @@ def _desired_via_blocking(
         payload["scene_id"] = rows[0].get("scene_id")
     try:
         out = assign_blocking(payload, bits, [dict(r) for r in rows])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("assign_blocking failed ({}): {}", type(exc).__name__, exc)
         return None
     if not out:
@@ -1334,7 +1296,6 @@ async def _insert_service_frame(
 
 
 async def rewrite(session: AsyncSession, scene_id: str, meaning: str) -> dict:
-    """Rebuild bits + shots for a new meaning. Preserves manual=1 rows."""
     space = await _get_scene_space(session, scene_id)
     rows = await _list_frame_spaces(session, scene_id)
     if space is None or not rows:
@@ -1358,7 +1319,6 @@ async def rewrite(session: AsyncSession, scene_id: str, meaning: str) -> dict:
     content_rows = [r for r in rows if not _is_service_row(r)]
     bits = derive_bits(meaning, content_rows)
     desired = _desired_via_blocking(space, bits, content_rows) or [dict(r) for r in content_rows]
-    # align uuids / scene_id
     by_order = {int(r["shot_order"]): r for r in rows}
     aligned: list[dict] = []
     for i, d in enumerate(desired, start=1):
@@ -1414,7 +1374,6 @@ async def rewrite(session: AsyncSession, scene_id: str, meaning: str) -> dict:
     space_doc["input_hash"] = new_hash
     space_doc["value_charge"] = space.get("value_charge") or {"start": "+", "end": "-"}
     await _upsert_scene_space(session, scene_id, _space_json_core(space_doc, meaning_hash_bits={"input_hash": new_hash}))
-    # keep plan/axes from original space_json_core — _space_json_core copies them
     _ = fresh_rows
     logger.info(
         "scene_space rewrite {}: inserted={} updated={} skipped={}",
@@ -1430,7 +1389,6 @@ async def rewrite(session: AsyncSession, scene_id: str, meaning: str) -> dict:
 
 
 async def rebuild(session: AsyncSession, scene_id: str) -> dict:
-    """Rebuild shot breakdown from current meaning. Same idempotency as rewrite."""
     space = await _get_scene_space(session, scene_id)
     rows = await _list_frame_spaces(session, scene_id)
     if space is None or not rows:
@@ -1447,9 +1405,6 @@ async def rebuild(session: AsyncSession, scene_id: str) -> dict:
     return await rewrite(session, scene_id, meaning)
 
 
-# ---------------------------------------------------------------------------
-# Coverage (2.9) — used by tests/e2e without validate.py
-# ---------------------------------------------------------------------------
 
 _MASTER_SIZES = {"EWS", "WS", "FS"}
 _SIZE_INDEX = ["EWS", "WS", "FS", "MWS", "MS", "MCU", "CU", "ECU"]
@@ -1547,7 +1502,6 @@ def missing_modules() -> dict[str, str]:
 
 
 async def run_e2e(session: AsyncSession, *, meaning: str = "A wins then loses the folder") -> dict:
-    """Seed three fixtures, rewrite/rebuild twice, report missing stream 1–4 modules."""
     seeds = await seed_all_fixtures(session)
     counts = {sid: seeds[sid]["frames"] for sid in FIXTURE_IDS}
     dialogue_rows = await _list_frame_spaces(session, "fix:dialogue")
@@ -1585,7 +1539,7 @@ async def run_e2e(session: AsyncSession, *, meaning: str = "A wins then loses th
             "stream 4: app/services/scene_space/validate.py and "
             "scripts/scene_space_validate.py --fixtures"
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         validate_result["error"] = f"{type(exc).__name__}: {exc}"
 
     return {

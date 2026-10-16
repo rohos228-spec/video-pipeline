@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 
 type GateState = "checking" | "open" | "login";
 
-/** При включённом WEB_AUTH показывает форму входа: сессия едет в куке vp_session (её ставит /api/auth/login). */
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<GateState>("checking");
   const [user, setUser] = useState("");
@@ -23,11 +22,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           if (!cancelled) setState("open");
           return;
         }
-        // Защищённый пробный запрос: уже есть живая сессия (кука) или нужен вход.
         const probe = await fetch("/api/projects");
         if (!cancelled) setState(probe.status === 401 ? "login" : "open");
       } catch {
-        // Бэкенд недоступен: пусть интерфейс покажет собственное сообщение.
         if (!cancelled) setState("open");
       }
     })();

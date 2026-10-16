@@ -1,4 +1,3 @@
-"""W1-2 / A05: вход - constant-time сравнение, лимит попыток, хэш пароля, постоянные сессии."""
 from __future__ import annotations
 
 import hmac
@@ -41,7 +40,6 @@ async def _login(c, user="boss", pwd="s3cret-pass"):
     return await c.post("/api/auth/login", json={"username": user, "password": pwd})
 
 
-# --- сравнение ---------------------------------------------------------------------------------
 
 def test_credentials_use_compare_digest(monkeypatch):
     calls: list[tuple] = []
@@ -54,7 +52,6 @@ def test_credentials_use_compare_digest(monkeypatch):
     assert sessions.verify_credentials("boss", "s3cret-pass") is True
     assert len(calls) == 2 and all(t == (bytes, bytes) for t in calls)
     calls.clear()
-    # Неверное имя не обрывает проверку: пароль всё равно сравнивается.
     assert sessions.verify_credentials("nobody", "s3cret-pass") is False
     assert len(calls) == 2
     calls.clear()
@@ -64,8 +61,6 @@ def test_credentials_use_compare_digest(monkeypatch):
 
 
 async def test_login_endpoint_goes_through_constant_time_check_and_does_not_leak_which_part_is_wrong(monkeypatch):
-    """Поведение вместо поиска «==» в тексте функции: ручка входа сравнивает через compare_digest (оба поля
-    при любом вводе) и отвечает одинаково на неверное имя и неверный пароль."""
     calls: list[int] = []
     real = hmac.compare_digest
 
@@ -83,7 +78,7 @@ async def test_login_endpoint_goes_through_constant_time_check_and_does_not_leak
         ok = await _login(c)
     assert bad_user.status_code == bad_pwd.status_code == 401
     assert bad_user.json() == bad_pwd.json()
-    assert n_bad_user == n_bad_pwd == len(calls) == 2  # имя и пароль сравниваются всегда, без раннего выхода
+    assert n_bad_user == n_bad_pwd == len(calls) == 2
     assert ok.status_code == 200 and ok.json()["token"]
 
 
@@ -92,7 +87,7 @@ def test_password_hash_roundtrip_and_formats():
     assert stored.startswith("pbkdf2_sha256$1000$") and "пароль" not in stored
     assert sessions.verify_password(stored, "пароль-123") is True
     assert sessions.verify_password(stored, "пароль-124") is False
-    assert sessions.hash_password("x", iterations=1000) != sessions.hash_password("x", iterations=1000)  # соль
+    assert sessions.hash_password("x", iterations=1000) != sessions.hash_password("x", iterations=1000)
     for broken in ("pbkdf2_sha256$abc$AA$BB", "pbkdf2_sha256$1000$!!$!!", "pbkdf2_sha256$"):
         assert sessions.verify_password(broken, "x") is False
     assert sessions.verify_password("plain", "plain") and not sessions.verify_password("plain", "Plain")
@@ -105,7 +100,6 @@ async def test_login_with_hashed_password_in_settings(monkeypatch):
         assert (await _login(c, pwd="s3cret-pass")).status_code == 401
 
 
-# --- ограничение попыток -----------------------------------------------------------------------------
 
 async def test_wrong_password_401_then_lockout_429_with_retry_after():
     async with _client() as c:
@@ -114,7 +108,6 @@ async def test_wrong_password_401_then_lockout_429_with_retry_after():
         r = await _login(c, pwd="bad")
         assert r.status_code == 429 and r.json()["detail"]["code"] == "too_many_attempts"
         assert int(r.headers["retry-after"]) > 0
-        # Даже правильный пароль во время блокировки не принимается.
         assert (await _login(c)).status_code == 429
 
 
@@ -123,10 +116,8 @@ async def test_lockout_is_per_address_and_per_user():
         for _ in range(5):
             await _login(attacker, pwd="bad")
         assert (await _login(attacker)).status_code == 429
-    # Другой адрес, но то же имя: имя тоже заблокировано.
     async with _client(peer=("203.0.113.8", 1)) as other:
         assert (await _login(other)).status_code == 429
-        # Другое имя с другого адреса не затронуто (оно просто неверное).
         assert (await _login(other, user="someone")).status_code == 401
 
 
@@ -136,7 +127,7 @@ async def test_success_resets_failure_counter():
             assert (await _login(c, pwd="bad")).status_code == 401
         assert (await _login(c)).status_code == 200
         for _ in range(4):
-            assert (await _login(c, pwd="bad")).status_code == 401   # счёт начался заново
+            assert (await _login(c, pwd="bad")).status_code == 401
         assert (await _login(c)).status_code == 200
 
 
@@ -148,11 +139,11 @@ def test_throttle_window_and_unlock_with_fake_clock():
     assert th.retry_after(k, now=11) == 0
     th.record_failure(k, now=20)
     assert 99 <= th.retry_after(k, now=21) <= 121
-    assert th.retry_after(k, now=141) == 0                        # блокировка кончилась
+    assert th.retry_after(k, now=141) == 0
     th2 = sessions.LoginThrottle(max_failures=3, window_s=60, lockout_s=120)
     th2.record_failure(k, now=0)
     th2.record_failure(k, now=10)
-    th2.record_failure(k, now=100)                                 # первые две вышли из окна
+    th2.record_failure(k, now=100)
     assert th2.retry_after(k, now=101) == 0
 
 
@@ -171,18 +162,17 @@ async def test_login_disabled_when_auth_off(monkeypatch):
         assert r.status_code == 200 and r.json() == {"ok": True, "token": None, "auth_required": False}
 
 
-# --- сессии ---------------------------------------------------------------------------------------------
 
 async def test_session_survives_restart_and_is_stored_hashed(tmp_path):
     async with _client() as c:
         token = (await _login(c)).json()["token"]
     assert sessions.validate_session_token(token) is True
-    sessions.forget_memory_sessions()                              # «перезапуск процесса»
+    sessions.forget_memory_sessions()
     assert sessions.validate_session_token(token) is True
     assert sessions.validate_session_token(token + "x") is False
     assert sessions.validate_session_token(None) is False
     raw = sessions._db_path().read_bytes()
-    assert token.encode() not in raw                               # в файле только хэш
+    assert token.encode() not in raw
     assert sessions._hash_token(token).encode() in raw
 
 
@@ -202,17 +192,17 @@ def test_expired_session_is_rejected_and_purged(monkeypatch):
     assert sessions.validate_session_token(token) is False
     monkeypatch.setattr(sessions.time, "time", real_time)
     sessions.forget_memory_sessions()
-    assert sessions.validate_session_token(token) is False         # удалена и из файла
+    assert sessions.validate_session_token(token) is False
 
 
 def test_unavailable_store_falls_back_to_memory(monkeypatch, tmp_path):
     blocker = tmp_path / "file-not-dir"
     blocker.write_text("x")
     monkeypatch.setattr(sessions, "_db_path", lambda: blocker / "sessions.sqlite3")
-    token = sessions.issue_session_token("boss")                   # не падает
-    assert sessions.validate_session_token(token) is True          # живёт в памяти
+    token = sessions.issue_session_token("boss")
+    assert sessions.validate_session_token(token) is True
     sessions.forget_memory_sessions()
-    assert sessions.validate_session_token(token) is False         # после «рестарта» файла нет
+    assert sessions.validate_session_token(token) is False
 
 
 def test_validation_is_open_when_auth_disabled(monkeypatch):
@@ -220,7 +210,6 @@ def test_validation_is_open_when_auth_disabled(monkeypatch):
     assert sessions.validate_session_token(None) is True
 
 
-# --- W63: сессия в куке (страница Studio токен сама не шлёт) ---------------------------------------
 
 async def test_login_sets_httponly_strict_session_cookie_and_cookie_authorizes():
     async with _client() as c:
@@ -230,7 +219,6 @@ async def test_login_sets_httponly_strict_session_cookie_and_cookie_authorizes()
         assert "vp_session=" in cookie and "HttpOnly" in cookie and "SameSite=strict" in cookie
         token = r.json()["token"]
         assert token and f"vp_session={token}" in cookie
-        # кука (без заголовка Authorization) пускает на защищённый путь
         c.cookies.set("vp_session", token)
         from fastapi import Request
         req = Request({"type": "http", "headers": [(b"cookie", f"vp_session={token}".encode())]})
@@ -242,7 +230,7 @@ async def test_logout_revokes_cookie_session():
         token = (await _login(c)).json()["token"]
         out = await c.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"})
         assert out.status_code == 200
-        assert "vp_session=" in out.headers.get("set-cookie", "")  # кука очищена
+        assert "vp_session=" in out.headers.get("set-cookie", "")
         assert sessions.validate_session_token(token) is False
 
 

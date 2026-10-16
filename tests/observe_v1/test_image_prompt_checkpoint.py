@@ -1,4 +1,3 @@
-"""Actual SQLite/native retry transaction regression; no external transport."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -42,9 +41,6 @@ class NativeCheckpointTransactions(unittest.IsolatedAsyncioTestCase):
                     async def partial_then_complete(*args,**kwargs):
                         calls.append(len(calls)+1)
                         uid=uid1 if len(calls)==1 else uid2
-                        # Only the response/runner boundary is scripted in this
-                        # focused transaction unit. Actual sibling SQLite write
-                        # and native snapshot/reload/retry/finish remain real.
                         async with sessions() as writer:
                             frame=await writer.scalar(select(Frame).where(Frame.uuid==uid))
                             frame.image_prompt=prompt

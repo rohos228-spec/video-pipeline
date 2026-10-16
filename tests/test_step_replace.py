@@ -79,7 +79,6 @@ async def _anim_project(session, n=2):
 
 @pytest.mark.asyncio
 async def test_enter_anim_pr_keeps_fresh_sidecar_result(session):
-    """F10-D11: результат sidecar для тех же входов не стирается при входе в шаг (нет второго платного вызова)."""
     from app.services.anim_pr_sidecar import stamp_sidecar_results
 
     p, frs = await _anim_project(session)
@@ -89,7 +88,6 @@ async def test_enter_anim_pr_keeps_fresh_sidecar_result(session):
     for fr in frs:
         await session.refresh(fr)
         assert fr.animation_prompt == ANIM
-    # метки сняты: следующий явный вход в шаг пересобирает с нуля
     await replace_step_outputs_on_enter(session, p, ProjectStatus.generating_animation_prompts)
     for fr in frs:
         await session.refresh(fr)
@@ -101,13 +99,11 @@ async def test_enter_anim_pr_without_stamp_or_stale_input_still_wipes(session):
     from app.services.anim_pr_sidecar import stamp_sidecar_results
 
     p, frs = await _anim_project(session)
-    # без метки (ручной промт / старый прогон) - стирается, как раньше
     await replace_step_outputs_on_enter(session, p, ProjectStatus.generating_animation_prompts)
     for fr in frs:
         await session.refresh(fr)
         assert not (fr.animation_prompt or "").strip()
 
-    # метка есть, но image_prompt кадра 2 изменился после sidecar: он стирается, кадр 1 остаётся
     for fr in frs:
         fr.animation_prompt = ANIM
     stamp_sidecar_results(p.id, frs)

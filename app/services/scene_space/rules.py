@@ -1,13 +1,3 @@
-"""Blocking rules CANON §2.2–2.8 (angles, axis side, screen, reestablish, drama).
-
-Prefers ``app.services.scene_space.geom`` for ``normalize_pair`` / ``axis_side``.
-geom.py is owned by stream 1 and is not created here. If the import is missing,
-a private CANON §2.3 fallback (same cross-product formula) lives at the bottom
-of this file only.
-
-Request to stream 1: export ``normalize_pair``, ``axis_side``, and
-``DegenerateAxisError`` from ``geom`` (CONTRACTS §2). ``store`` may re-export.
-"""
 
 from __future__ import annotations
 
@@ -117,7 +107,7 @@ _GEOM_SOURCE = "fallback"
 
 
 class DegenerateAxisError(ValueError):
-    """cross == 0: camera is on the axis line (CANON §2.3 / CONTRACTS)."""
+    pass
 
 
 def _xy(point: Any) -> tuple[float, float]:
@@ -139,7 +129,6 @@ def _fallback_normalize_pair(a: str, b: str) -> tuple[str, str]:
 
 
 def _fallback_axis_side(a_xy: Any, b_xy: Any, cam_xy: Any) -> str:
-    """CANON §2.3 exact formula. Caller must pass already-normalized pair order."""
     ax, ay = _xy(a_xy)
     bx, by = _xy(b_xy)
     cx, cy = _xy(cam_xy)
@@ -324,7 +313,6 @@ def angle_h_step(current: str, steps: int = 2) -> str:
 
 
 def names_under_30(prev_h: str, prev_v: str, cur_h: str, cur_v: str) -> bool:
-    """True when named angles are a <30° equivalent (CANON §2.2, no coords)."""
     dh = _circ_dist(_h_index(prev_h), _h_index(cur_h), len(ANGLE_H))
     dv = abs(_v_index(prev_v) - _v_index(cur_v))
     if dh == 0 and dv == 0:
@@ -383,7 +371,6 @@ def angle_jump(
     cur_cam: Any = None,
     look: tuple[float, float] | None = None,
 ) -> bool:
-    """True = error «скачок» (point moved < 30°)."""
     if prev_cam is not None and cur_cam is not None and look is not None:
         deg = cam_world_angle_deg(prev_cam, cur_cam, look)
         if deg is not None:
@@ -413,7 +400,6 @@ def cam_on_locked_side(
     degrees_list: Sequence[float] = (0.0, 35.0, -35.0, 50.0, -50.0, 90.0, -90.0),
     look: tuple[float, float] | None = None,
 ) -> tuple[float, float]:
-    """Rotate camera around the pair midpoint until it sits on ``locked`` side."""
     cam = _xy(cam_xy)
     origin = look or (
         (_xy(a_xy)[0] + _xy(b_xy)[0]) / 2.0,
@@ -433,7 +419,6 @@ def cam_on_locked_side(
 def _side_nudge(a_xy: Any, b_xy: Any, locked: str) -> tuple[float, float]:
     ax, ay = _xy(a_xy)
     bx, by = _xy(b_xy)
-    # Left of a→b is (-ay_axis, ax_axis); side A is cross>0 = left.
     left = (ay - by, bx - ax)
     n = math.hypot(*left) or 1.0
     sign = 1.0 if locked == "A" else -1.0
@@ -445,13 +430,6 @@ def compute_screen_pos(
     pair: tuple[str, str],
     on_screen: Iterable[str] | None = None,
 ) -> str:
-    """JSON string of L/R/C for axis participants (CANON §2.5 / CONTRACTS).
-
-    CONTRACTS: smaller screen-x is L. Camera-right is a 90° clockwise rotation
-    of the look vector (cam → pair midpoint). The literal axis-perpendicular
-    ``(axis.y, -axis.x)`` is used only when the look vector is degenerate;
-    on a standard two-shot that vector is depth, so both subjects would be C.
-    """
     lo, hi = normalize_pair(pair[0], pair[1])
     a = _as_plan_item(plan, lo)
     b = _as_plan_item(plan, hi)
@@ -522,7 +500,6 @@ def compute_screen_dir(
     *,
     threshold: float = 0.05,
 ) -> str:
-    """Canonical screen_dir of the active-axis subject with a nonzero delta."""
     if pair is None:
         return "none"
     lo, hi = normalize_pair(pair[0], pair[1])

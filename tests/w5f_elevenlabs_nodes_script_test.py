@@ -1,11 +1,3 @@
-"""Guards for scripts/e2e_elevenlabs_nodes.py (pure helpers, the request Gate, argument / env-file refusals, and a real
---dry run), plus the regression test of the production defect the stand found in sfx_gen's per-event checkpoint.
-
-Nothing here sends anything outside this machine and nothing here runs --live: the live-only paths are covered by the
-request Gate (a pure object that judges every outgoing request) and by the argument / env-file refusals that return
-before the application starts. The dry run starts the stand in a SUBPROCESS (isolated memory and settings), so run this
-file with the other stand test in ONE pytest process.
-"""
 import asyncio
 import importlib.util
 import json
@@ -26,7 +18,7 @@ sys.modules[_spec.name] = script
 _spec.loader.exec_module(script)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _stand_workdir import make_workdir, remove_workdir  # noqa: E402
+from _stand_workdir import make_workdir, remove_workdir
 
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 TTS = "/v1/text-to-speech/pNInz6obpgDQGcFmaJgB"
@@ -35,7 +27,6 @@ SFX = "/v1/sound-generation"
 
 @pytest.fixture
 def tmp_path():
-    """Outside the repository: the e2e guard refuses a work folder inside live data."""
     path = make_workdir()
     try:
         yield path
@@ -43,7 +34,6 @@ def tmp_path():
         remove_workdir(path)
 
 
-# ---------- arguments and authorisation ----------
 
 def test_exactly_one_of_dry_and_live_is_required():
     for bad in (["--work-dir", "w"], ["--work-dir", "w", "--dry", "--live", "--env-file", "e"], ["--dry"]):
@@ -91,10 +81,9 @@ def test_the_live_phrases_fit_the_caps():
     assert len(script.TTS_TEXT) <= script.TTS_MAX_CHARS and len(script.TTS_TEXT_UNCERTAIN) <= script.TTS_MAX_CHARS
     assert script.SFX_EVENT_SECONDS <= script.SFX_MAX_SECONDS and script.SFX_PROMPT == "short soft click"
     assert script.worst_case_usd("both") < script.DEFAULT_MAX_USD
-    assert script.app_cap_usd("both") > script.worst_case_usd("both")  # room for the simulated losses' estimate rows
+    assert script.app_cap_usd("both") > script.worst_case_usd("both")
 
 
-# ---------- the env file: whitelist only, never echoed ----------
 
 def test_env_file_is_read_only_by_the_whitelist(tmp_path):
     env_file = tmp_path / "e.env"
@@ -120,10 +109,9 @@ def test_live_refuses_before_starting_anything_without_a_key_or_with_a_bad_proxy
     assert asyncio.run(script.main(["--work-dir", str(tmp_path / "w"), "--live", "--env-file", str(bad_proxy)])) == 3
     out = capsys.readouterr().out
     assert "nothing sent" in out and "abcdefgh" not in out
-    assert not (tmp_path / "w").exists()  # nothing was created: the refusal came first
+    assert not (tmp_path / "w").exists()
 
 
-# ---------- the request Gate ----------
 
 def _gate(**kw):
     return script.Gate(mode=kw.pop("mode", "dry"), **kw)
@@ -176,14 +164,13 @@ def test_a_simulated_loss_is_delivered_instead_of_the_request_and_never_counts_a
     judged = _sfx(gate)
     assert (judged.action, judged.fault) == ("fault", "kill") and gate.wire == [] and gate.fault is None
     assert gate.attempts("sfx") == 1 and gate.attempts("tts") == 0 and gate.total_attempts == 1
-    assert _sfx(gate).action == "pass"  # the real cap is still free: the loss did not use it
+    assert _sfx(gate).action == "pass"
     gate.arm("timeout")
     assert _tts(gate).fault == "timeout" and gate.attempts("tts") == 1 and gate.count("tts") == 0
     gate.arm("timeout")
-    assert gate.judge("GET", "https", "example.com", "/", {}).action == "refuse" and gate.fault == "timeout"  # not consumed
+    assert gate.judge("GET", "https", "example.com", "/", {}).action == "refuse" and gate.fault == "timeout"
 
 
-# ---------- fixtures and environment ----------
 
 @pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe are required")
 def test_the_fake_audio_passes_the_applications_real_verification(tmp_path):
@@ -211,16 +198,12 @@ def test_the_verdict_never_claims_a_live_proof_for_a_dry_run():
     assert script.final_verdict("live", True).startswith("PASS") and script.final_verdict("dry", False) == "NOT PASSED"
     assert any("NOT a live proof" in x for x in script.reality_not_proven("dry"))
     assert not any("NOT a live proof" in x for x in script.reality_not_proven("live"))
-    assert any("no request-key sidecar" in x for x in script.reality_not_proven("live"))  # said, not hidden
+    assert any("no request-key sidecar" in x for x in script.reality_not_proven("live"))
     assert script.verdict([script.check("a", True), script.check("b", False)]) == (False, ["b"])
 
 
-# ---------- production defect found by the stand: sfx per-event checkpoint was not persisted ----------
 
 def test_sfx_progress_checkpoint_reaches_the_database_on_every_save(tmp_path, monkeypatch):
-    """generate_sfx_files mutates ONE ``prog`` dict in place and saves it after every event. Storing that very object in
-    the JSON column made SQLAlchemy see "no change" (the committed value is the same, already mutated, object), so only the
-    first mark ("sent, no answer") was written and a crash lost every finished paid event."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from app.models import Base, Project, ProjectStatus
     from app.services import sfx_gen
@@ -241,13 +224,13 @@ def test_sfx_progress_checkpoint_reaches_the_database_on_every_save(tmp_path, mo
             pid = project.id
             prog = {"events": {}, "inflight": {}}
             prog["inflight"]["0"] = {"kind": "hit"}
-            await sfx_gen._save_progress(session, project, prog)          # the mark, before the POST
+            await sfx_gen._save_progress(session, project, prog)
             prog["events"]["0"] = {"idx": 0, "provider": "elevenlabs", "path": "x"}
             prog["inflight"].pop("0")
-            await sfx_gen._save_progress(session, project, prog)          # the paid result, after the POST
+            await sfx_gen._save_progress(session, project, prog)
             prog["inflight"]["1"] = {"kind": "hit"}
-            await sfx_gen._save_progress(session, project, prog)          # the next mark
-        async with sessions() as fresh:                                   # what a restarted process would read
+            await sfx_gen._save_progress(session, project, prog)
+        async with sessions() as fresh:
             stored = ai_job_checkpoint(await fresh.get(Project, pid), "sfx_progress")
         await engine.dispose()
         return stored
@@ -257,7 +240,6 @@ def test_sfx_progress_checkpoint_reaches_the_database_on_every_save(tmp_path, mo
     assert list(stored["inflight"]) == ["1"]
 
 
-# ---------- a real dry run (the stand in a subprocess, nothing leaves the machine) ----------
 
 def _run(tmp_path: Path, *extra: str) -> tuple[int, dict, str]:
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}

@@ -1,4 +1,3 @@
-"""Master state.db vs project.db: ▶ не должен крутить ноду вхолостую."""
 
 from __future__ import annotations
 
@@ -177,7 +176,6 @@ async def test_pull_master_runtime_skips_stale_paused(
 async def test_pull_master_runtime_takes_parked_sleep_pause(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Master paused после 30-мин сна — канвас должен взять паузу, не крутить ноду."""
     master_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with master_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -239,7 +237,6 @@ async def test_pull_master_runtime_takes_parked_sleep_pause(
 async def test_record_step_failure_sleep_parks_project_db_noderun(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Сон 30 мин на state.db не должен оставлять fw-ноду running в project.db."""
     master_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with master_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -491,7 +488,6 @@ async def test_push_runtime_to_master_copies_running_status(
 
 @pytest.mark.asyncio
 async def test_copy_noderuns_creates_missing_group_nodes() -> None:
-    """state.db без fw_* не должен глотать running-ноду группы из project.db."""
     src_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     dest_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with src_engine.begin() as conn:
@@ -627,7 +623,6 @@ async def test_copy_noderuns_does_not_overwrite_running_with_failed() -> None:
 async def test_pull_master_does_not_copy_failed_noderun(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """GET/advance poll не должен красить живую fw-ноду вчерашним failed."""
     master_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with master_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -731,7 +726,6 @@ async def test_pull_master_does_not_copy_failed_noderun(
 async def test_pull_master_takes_user_stop_rollback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """⏹ на master (script_ready) должен снять leftover enriching_1 с канваса."""
     master_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with master_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -1,9 +1,3 @@
-"""Фаза 6 (W40, Q-01/Q-03/Q-14): при включённом WEB_AUTH каждая ручка /api требует вход.
-
-Страховка от регресса: тест обходит ВСЕ маршруты настоящего приложения (``create_app()``), а не
-список из головы. Новый роутер, подключённый без входа, ронит тест. Платные POST без токена
-оператора получают отказ и при действующей сессии.
-"""
 from __future__ import annotations
 
 import re
@@ -18,7 +12,6 @@ from app.web.api import create_app
 
 pytestmark = pytest.mark.raw_client
 
-# Белый список: (метод или "*", шаблон пути) -> причина. Короткий и обоснованный.
 PUBLIC: dict[tuple[str, str], str] = {
     ("GET", "/api/health"): "проверка живости для скриптов запуска, данных не отдаёт",
     ("GET", "/api/studio-version"): "метка версии UI для страницы входа, данных проекта нет",
@@ -32,10 +25,9 @@ PUBLIC: dict[tuple[str, str], str] = {
 
 
 def _walk(app):
-    """(метод, шаблон пути) для всех HTTP-маршрутов приложения, включая вложенные include_router."""
     out: list[tuple[str, str]] = []
     for r in app.routes:
-        if hasattr(r, "effective_route_contexts"):  # FastAPI с ленивыми include_router
+        if hasattr(r, "effective_route_contexts"):
             items = [(c.path, c.methods) for c in r.effective_route_contexts()]
         else:
             items = [(getattr(r, "path", ""), getattr(r, "methods", None))]
@@ -65,7 +57,6 @@ def auth_on(monkeypatch):
 
 @pytest.fixture
 def client(auth_on):
-    # без `with`: lifespan (фоновые задачи, БД) не нужен, проверяются только зависимости
     return TestClient(create_app(), raise_server_exceptions=False)
 
 
@@ -80,7 +71,6 @@ def test_route_enumeration_is_not_empty(client):
 
 
 def test_every_api_route_requires_login_when_web_auth_on(client):
-    """Без cookie/токена: каждый маршрут /api, кроме белого списка, отвечает 401/403."""
     open_routes = []
     for method, path in _api_routes(client.app):
         if _is_public(method, path):
@@ -102,7 +92,6 @@ def test_whitelist_entries_exist_and_are_few(client):
 
 
 def test_login_flow_opens_a_route(client):
-    """Контроль: с действующей сессией ручка отвечает не 401 (иначе тест выше пустой)."""
     assert client.get("/api/workflows").status_code == 401
     token = sessions.issue_session_token("boss")
     r = client.get("/api/workflows", headers={"Authorization": f"Bearer {token}"})
@@ -116,7 +105,6 @@ def test_bad_token_is_rejected(client):
     assert r.status_code == 401
 
 
-# Платные/опасные POST: обязаны требовать токен оператора поверх входа.
 PAID_POSTS = [
     "/api/projects/{project_id}/steps/{step_code}/run",
     "/api/projects/{project_id}/stop",
@@ -153,7 +141,7 @@ def test_paid_posts_exist_and_need_operator_token(client):
     session = {"Authorization": f"Bearer {sessions.issue_session_token('boss')}"}
     bad = []
     for p in PAID_POSTS:
-        r = client.post(_concrete(p), headers=session)  # сессия есть, токена оператора нет
+        r = client.post(_concrete(p), headers=session)
         ctype = r.headers.get("content-type", "")
         body = r.json() if ctype.startswith("application/json") else {}
         detail = body.get("detail") if isinstance(body, dict) else None
@@ -167,11 +155,10 @@ def test_paid_post_with_token_passes_the_guard(client):
     hdr = {"Authorization": f"Bearer {sessions.issue_session_token('boss')}",
            ag.OPERATOR_HEADER: ag.get_operator_token()}
     r = client.post("/api/outsee/generate", headers=hdr, json={})
-    assert r.status_code not in (401, 403)  # дальше упрётся в 422/валидацию, но не в защиту
+    assert r.status_code not in (401, 403)
 
 
 def test_web_auth_off_keeps_loopback_default(monkeypatch):
-    """Без WEB_AUTH поведение прежнее: чтения и изменения с loopback идут без входа."""
     monkeypatch.setattr(settings, "web_auth_user", "")
     monkeypatch.setattr(settings, "web_auth_password", "")
     c = TestClient(create_app(), raise_server_exceptions=False)
@@ -180,7 +167,6 @@ def test_web_auth_off_keeps_loopback_default(monkeypatch):
     r = c.post("/api/projects/1/mass-lanes/parse-topics",
                headers={ag.OPERATOR_HEADER: ag.get_operator_token()})
     assert r.status_code not in (401, 403)
-    # чужой адрес без входа по-прежнему получает local_only на изменяющей ручке
     remote = TestClient(create_app(), client=("203.0.113.9", 5000), raise_server_exceptions=False)
     rr = remote.post("/api/projects/1/mass-lanes/parse-topics",
                      headers={ag.OPERATOR_HEADER: ag.get_operator_token()})

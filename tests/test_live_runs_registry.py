@@ -1,4 +1,3 @@
-"""docs/LIVE_RUNS.md: every row is complete, and every PASS says what is NOT proven."""
 from __future__ import annotations
 
 import re
@@ -34,7 +33,7 @@ def test_registry_is_not_empty():
 def test_every_row_has_five_columns_and_a_date():
     for no, cells in _rows():
         if len(cells) == 2 and re.match(r"\d{4}-\d{2}-\d{2}$", cells[0]) and cells[1]:
-            continue  # dated free-text correction note (a "Поправка" row), not a run
+            continue
         assert len(cells) == 5, f"LIVE_RUNS.md:{no}: expected 5 columns, got {len(cells)}"
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", cells[0]), f"LIVE_RUNS.md:{no}: bad date {cells[0]!r}"
         for name, value in zip(COLUMNS, cells, strict=True):

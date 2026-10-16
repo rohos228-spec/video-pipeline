@@ -1,4 +1,3 @@
-"""Сверка персонажей сцены с реестром Entity."""
 
 from __future__ import annotations
 

@@ -1,10 +1,3 @@
-"""Native video selection through the original retry ladder and HTTP clients.
-
-Application imports are deferred until the parent's offline test runtime.
-Only external HTTP is substituted. No provider, retry, sleep, planner, FSM,
-verification or business-state method is replaced; no managed grant is made.
-This target covers routing, not native observation or production readiness.
-"""
 
 from __future__ import annotations
 
@@ -49,7 +42,6 @@ class NativeVideoRouting(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("external MP4 fixture must satisfy the original native download threshold")
 
     async def asyncSetUp(self):
-        # Standard-library configuration is established before application imports.
         folder = tempfile.TemporaryDirectory(prefix="native-video-routing-case-")
         self.addCleanup(folder.cleanup)
         self.output = Path(folder.name) / "clip_001_routing.mp4"
@@ -97,7 +89,6 @@ class NativeVideoRouting(unittest.IsolatedAsyncioTestCase):
         stack.enter_context(patch.object(httpx.AsyncClient, "send", send))
 
     def _external_request(self, request):
-        """Provider transport fixture; original clients own parsing and retries."""
         httpx = self.httpx
         record = {"method": request.method, "path": request.url.path}
         self.requests.append(record)
@@ -170,9 +161,6 @@ class NativeVideoRouting(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.file_path, self.output)
         self.assertEqual(self.output.read_bytes(), self.video)
-        # The original KIE client uses a locally generated ``gen_id``; taskId
-        # remains provider transport state.  The returned URL must still be one
-        # of the accepted provider-job URLs.
         self.assertIn(result.raw_url, {job["url"] for job in self.jobs.values()})
         self.assertEqual(len([r for r in self.requests if r["path"].startswith("/video/")]), 1)
 
@@ -202,8 +190,6 @@ class NativeVideoRouting(unittest.IsolatedAsyncioTestCase):
         self.assert_downloaded(result, error)
 
     async def test_seedance_reference_remains_bound_to_the_selected_primary(self):
-        # The original public-URL path passes this provider input through without
-        # fetching it. Any real HTTP to this .invalid host is rejected above.
         result, error = await self.generate(start_frame=REFERENCE_URL)
         self.assertEqual(self.models, [SEEDANCE_MODEL])
         self.assertEqual(self.submits[0]["body"]["input"]["image_urls"], [REFERENCE_URL])
@@ -238,8 +224,6 @@ class NativeVideoRouting(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.output.exists())
 
     async def test_seedance_terminal_failures_use_primary_allowance_before_kling(self):
-        # The declared ladder allows four primary burns, then a distinct fallback.
-        # Provider failures are actual parsed job responses, not injected errors.
         self.failed_submissions = 4
         result, error = await self.generate()
         self.assertEqual(self.models, [SEEDANCE_MODEL] * 4 + [KLING_MODEL])

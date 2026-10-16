@@ -161,7 +161,6 @@ DEFAULT_VARS: dict[str, str | int] = {
     "ENRICH_3_SHEET": "план",
     "ENRICH_4_SHEET": "план",
     "ENRICH_5_SHEET": "план",
-    # Шаблон 05_excel_gpt (доп. работа с Excel): как ENRICH_n - по умолчанию пусто/«план».
     "EXCEL_GPT_SHEET": "план",
     "EXCEL_GPT_TASK": "",
 }
@@ -521,7 +520,7 @@ UNRESOLVED_RE = re.compile(
 
 
 class UnresolvedPlaceholdersError(ValueError):
-    """В итоговом тексте промта остались неподставленные {{VAR:..}} / {{BLOCK:..}}."""
+    pass
 
 
 def find_unresolved_placeholders(text: str) -> list[str]:
@@ -529,7 +528,6 @@ def find_unresolved_placeholders(text: str) -> list[str]:
 
 
 def assert_prompt_resolved(text: str, *, label: str) -> None:
-    """Падает ДО платного вызова, если в промте остались шаблонные метки."""
     left = find_unresolved_placeholders(text)
     if left:
         shown = ", ".join(dict.fromkeys(left))[:300]
@@ -544,7 +542,6 @@ def render_template_text(
     blocks: dict[str, BlockValue],
     vars_: dict[str, Any],
 ) -> str:
-    """Подставить {{BLOCK:..}} и {{VAR:..}} в произвольный текст шаблона."""
 
     def repl_block(m: re.Match[str]) -> str:
         cat = m.group(1)

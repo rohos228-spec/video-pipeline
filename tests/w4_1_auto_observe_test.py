@@ -1,8 +1,3 @@
-"""W4-1 / C01, C06: автонаблюдение за каждой нодой, проверка результата вне managed, честное «автоодобрение без проверки».
-
-Только tmp-базы и локальный код, без сети и провайдеров. Класс доказательства: U (юнит/интеграция на реальных
-observe_attempt и журнале; живого прогона нет).
-"""
 from __future__ import annotations
 
 import os
@@ -65,7 +60,6 @@ async def _kinds(maker, project_id):
         return [(r.kind, r.node_key, r.payload) for r in rows]
 
 
-# ---- настройка включения -------------------------------------------------------------------------------
 
 def test_default_is_on_outside_pytest_and_switches_work(monkeypatch):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -85,7 +79,6 @@ def test_default_is_off_under_pytest_by_conftest_env():
     assert auto_observe_enabled(None) is False
 
 
-# ---- создание области -----------------------------------------------------------------------------------
 
 async def test_auto_scope_covers_every_node_without_explicit_enable(env):
     observer, maker = env
@@ -97,7 +90,6 @@ async def test_auto_scope_covers_every_node_without_explicit_enable(env):
     assert scope is not None and scope.mode == "observe" and scope.observer_state == "active"
     assert scope.node_keys == ["n1", "n2"] and scope.workflow_run_id == run_id
     assert observer.scopes[run_id] is scope
-    # второй вызов - та же область, без дублей
     assert await observer.ensure_auto_scope(project) is scope
     async with maker() as s:
         assert len((await s.scalars(select(ExecutionControl))).all()) == 1
@@ -113,8 +105,7 @@ async def test_stopped_scope_is_not_re_enabled_and_off_switches_hold(env, monkey
     scope = await observer.ensure_auto_scope(project)
     await observer.stop(scope.execution_id, initiator="operator")
     observer.scopes.clear()
-    assert await observer.ensure_auto_scope(project) is None  # оператор остановил: сами не включаем
-    # выключатели
+    assert await observer.ensure_auto_scope(project) is None
     pid2, _ = await _project(maker, meta={"observer_auto": False})
     async with maker() as s:
         off_project = await s.get(Project, pid2)
@@ -153,9 +144,7 @@ async def test_explicit_scope_is_kept_and_not_duplicated(env):
         assert len((await s.scalars(select(ExecutionControl))).all()) == 1
 
 
-# ---- U: все типы нод дают node_start / node_end --------------------------------------------------------
 
-# enrich_1..5 are the excel_gpt nodes (resolved by the active canvas key): covered by their own test below.
 RUNNING_TYPES = sorted((spec.running_status.value, typ) for typ, spec in node_registry.WORK_NODES.items()
                        if not typ.startswith("enrich_"))
 
@@ -202,28 +191,27 @@ async def test_switch_off_gives_no_events_and_native_work_still_runs(env, monkey
     assert ran == [1] and await _kinds(maker, pid) == []
 
 
-# ---- C02-часть: проверка результата вне managed, без права запрета ---------------------------------------
 
 async def _run_plan(maker, text):
     pid, _ = await _project(maker, general_plan=text)
     async with maker() as s:
         project = await s.get(Project, pid)
         async with observe_attempt(s, project):
-            pass  # исполнитель «отработал» и вернул управление
+            pass
         await s.commit()
     return pid
 
 
 async def test_broken_plan_in_observe_mode_gives_incident_and_does_not_block(env):
     observer, maker = env
-    pid = await _run_plan(maker, "коротко")  # исполнитель не бросил исключение: запуск не заблокирован
+    pid = await _run_plan(maker, "коротко")
     events = await _kinds(maker, pid)
     verification = [p for k, n, p in events if k == "node_result_verification"]
     assert verification and verification[0]["status"] == "failed" and verification[0]["observe_only"] is True
     assert verification[0]["run_held"] is False
     checks = [p for k, n, p in events if k == "runtime_check" and p.get("check") == "observe_only_plan_result"]
     assert checks and checks[0]["status"] == "failed" and checks[0]["performed"] is True
-    assert "node_end" in [k for k, n, p in events]  # шаг завершился штатно
+    assert "node_end" in [k for k, n, p in events]
     assert "node_error" not in [k for k, n, p in events]
 
 
@@ -237,11 +225,10 @@ async def test_good_plan_passes_without_incident_event(env):
 
 
 async def test_incident_is_derived_from_observe_only_failure(env):
-    from app.services.diagnosis import Diagnoser  # noqa: F401  (имя проверяет, что модуль доступен)
+    from app.services.diagnosis import Diagnoser
     observer, maker = env
     pid = await _run_plan(maker, "коротко")
     events = await _kinds(maker, pid)
-    # diagnosis.py (W4-4) превращает runtime_check failed + performed в инцидент contract_rejected
     failed = [p for k, n, p in events if k == "runtime_check" and p.get("performed") is True
               and p.get("status") in {"failed", "rejected"}]
     assert failed and failed[0].get("failure_class") not in {"invalid_json", "missing_payload"}
@@ -253,7 +240,7 @@ async def test_split_and_image_prompts_checks_observe_only(env):
     pid, _ = await _project(maker, status=ProjectStatus.splitting, nodes=nodes)
     async with maker() as s:
         s.add(Frame(project_id=pid, number=1, uuid="a" * 32, voiceover_text="Один."))
-        s.add(Frame(project_id=pid, number=3, uuid="b" * 32, voiceover_text=""))  # порядок и пустой закадр
+        s.add(Frame(project_id=pid, number=3, uuid="b" * 32, voiceover_text=""))
         await s.commit()
     async with maker() as s:
         project = await s.get(Project, pid)
@@ -288,7 +275,6 @@ async def test_check_never_raises_and_skips_managed_and_other_types(env):
         project = await s.get(Project, pid)
     scope = await observer.ensure_auto_scope(project)
     ctx = observation.AttemptContext(observer, scope, None, "master", "n1", "attempt")
-    # сессия None: чтение кадров падает -> разрыв журнала, но не исключение
     assert await observe_only_result_check(ctx, None, project, "split") is None
     assert await observe_only_result_check(ctx, None, project, "hero") is None
     scope.mode = "managed"
@@ -307,7 +293,6 @@ async def test_native_failure_still_propagates_with_auto_observation(env):
     assert "node_error" in [k for k, n, p in await _kinds(maker, pid)]
 
 
-# ---- лимит размера тел -----------------------------------------------------------------------------------
 
 async def test_body_size_limit_is_a_visible_gap_not_a_silent_drop(env):
     observer, maker = env
@@ -319,7 +304,6 @@ async def test_body_size_limit_is_a_visible_gap_not_a_silent_drop(env):
     assert saved["gap"] == "body_size_limit" and saved["bytes"] > Observer.MAX_BODY
 
 
-# ---- C06: проектное событие -----------------------------------------------------------------------------
 
 async def test_record_project_event_stages_in_callers_transaction(env):
     observer, maker = env
@@ -327,7 +311,7 @@ async def test_record_project_event_stages_in_callers_transaction(env):
     async with maker() as s:
         project = await s.get(Project, pid)
         assert await record_project_event(s, project, "runtime_check", {"check": "x", "performed": False}) is True
-        await s.rollback()  # откат бизнес-транзакции откатывает и событие
+        await s.rollback()
     assert [k for k, n, p in await _kinds(maker, pid) if k == "runtime_check"] == []
     async with maker() as s:
         project = await s.get(Project, pid)

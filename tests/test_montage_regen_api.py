@@ -374,5 +374,4 @@ async def test_prepare_grafts_style_on_vo_parent_without_lock(
     assert prep.refs == []
 
 
-# Env: нужен хотя бы фиктивный ключ провайдера (см. tests/conftest.py::fake_provider_keys).
 pytestmark = pytest.mark.usefixtures("fake_provider_keys")

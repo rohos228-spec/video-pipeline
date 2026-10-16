@@ -1,4 +1,3 @@
-"""8 реальных действий монтажной панели на временной БД (через роутер и исполнитель)."""
 from __future__ import annotations
 
 import pytest
@@ -6,7 +5,7 @@ from sqlalchemy import select
 
 from app.models import Frame, Project
 from app.services.action_layer import executor
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 
@@ -51,7 +50,7 @@ async def test_write_actions_change_db_and_never_spend(env) -> None:
             {"type": "image_regen", "frame_number": 1, "shot": 1},
             {"type": "video_regen_prompt", "frame_number": 2, "prompt": "плавный наезд"}]}},
         {"action_id": "montage.queue_ops", "params": {"project_id": project, "ops": [
-            {"type": "image_regen", "frame_number": 1, "shot": 1},   # дубль заменяется
+            {"type": "image_regen", "frame_number": 1, "shot": 1},
             {"type": "image_ai_change", "frame_number": 2, "instruction": "теплее"}]}},
         {"action_id": "montage.swap_shots",
          "params": {"project_id": project, "frame_number": 1, "kind": "both"}},
@@ -63,7 +62,7 @@ async def test_write_actions_change_db_and_never_spend(env) -> None:
     assert results[0]["voiceover_text"] == "новый закадр"
     assert results[1]["ok"] is True
     assert results[2]["queued"] == 2 and results[2]["applied"] is False
-    assert results[3]["total_in_queue"] == 3  # image_regen(1) заменён, +2 других
+    assert results[3]["total_in_queue"] == 3
     assert results[4]["prompts_swapped"] is True
     board = results[5]
     assert board["frames"][0]["voiceover_text"] == "новый закадр"
@@ -75,8 +74,7 @@ async def test_write_actions_change_db_and_never_spend(env) -> None:
             Frame.project_id == project))).all()}
         assert frames[1].voiceover_text == "новый закадр"
         assert frames[2].attrs.get("крупность") == "КРУПНЫЙ"
-        assert frames[1].image_prompt != "img 1"  # промты шотов поменялись
-    # Ничего платного не запускалось: apply-job не создавался.
+        assert frames[1].image_prompt != "img 1"
     async with env.factory() as s:
         meta = (await s.get(Project, project)).meta or {}
     assert "apply_job" not in (meta.get("montage_board") or meta)
@@ -98,7 +96,7 @@ async def test_invalid_montage_params_fail_preview_not_run(env) -> None:
         assert r.status_code == 422, bad
     r = await env.client.post(f"{BASE}/plans/preview", json={"steps": [
         {"action_id": "montage.get_board", "params": {"project_id": 9999}}]})
-    assert r.status_code == 422  # предусловие/чтение: проекта нет
+    assert r.status_code == 422
 
 
 async def test_backend_error_becomes_failed_step(env) -> None:
@@ -109,7 +107,6 @@ async def test_backend_error_becomes_failed_step(env) -> None:
         {"action_id": "montage.get_board", "params": {"project_id": project}}])
     assert view["status"] == "failed"
     assert view["steps"][0]["status"] == "failed" and (
-        # D11: the previous value is read BEFORE the edit; a missing frame stops the step there ("edit not started")
         "HTTP 404" in view["steps"][0]["error"] or "правка не начата" in view["steps"][0]["error"])
     assert view["steps"][1]["status"] == "skipped"
 

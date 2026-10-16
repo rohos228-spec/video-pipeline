@@ -67,7 +67,6 @@ const FIX_BUGS_PREFIX =
   "Проекты/ноды Studio — через actions (delete_projects / create_project / add_node…), " +
   "не через edit_files. Кратко по-русски: причина + что исправил.\n\nПОРУЧЕНИЕ:\n";
 
-/** Правка кода и git push из чата по умолчанию выключены (CHAT_CODE_ACTIONS_ENABLED=false); статуса настройки API не отдаёт. */
 export const BUG_MODE_LABEL = "Диагностика багов";
 export const BUG_MODE_CODE_NOTE =
   "Правка кода и git push из чата по умолчанию выключены (CHAT_CODE_ACTIONS_ENABLED=false): " +
@@ -75,7 +74,6 @@ export const BUG_MODE_CODE_NOTE =
 
 export function OrchestratorPanel({ projectId }: Props) {
   const [openStored, setOpenStored] = usePersistedState("vp-orchestrator-open", true);
-  // U-6: на телефоне панель открывается свёрнутой (иначе она закрывает холст сразу), пока человек сам её не раскрыл.
   const narrow = useMediaQuery(NARROW_QUERY);
   const [touched, setTouched] = useState(false);
   const open = openStored && !(narrow && !touched);

@@ -1,4 +1,3 @@
-"""Тесты чистой части стенда F08 ``scripts/e2e_action_layer_local_exec.py`` (сервер и ffmpeg здесь не запускаются)."""
 from __future__ import annotations
 
 import importlib.util
@@ -66,7 +65,7 @@ def test_main_refuses_non_empty_work_dir(mod, outside_tmp, capsys):
 def test_report_known_defects_do_not_fail_unless_strict(mod):
     r = mod.Report()
     assert r.check("a", True) is True
-    assert r.check("b", False, "why", known="D-9") is True      # известный дефект: стенд не падает
+    assert r.check("b", False, "why", known="D-9") is True
     assert r.failed == [] and r.known_defects == {"D-9": ["b"]}
     assert mod.final_verdict(r).startswith(mod.VERDICT_OK) and "D-9" in mod.final_verdict(r)
     assert r.check("c", False, "real failure") is False
@@ -168,7 +167,6 @@ def test_script_source_stays_free_and_local():
 
 
 def test_scenario_actions_exist_in_real_catalog_with_expected_tiers(mod):
-    """Стенд опирается на список действий и уровней; если каталог разошёлся - тест красный раньше живого прогона."""
     from app.services.action_layer.spec import ensure_builtin_actions, registry
     ensure_builtin_actions()
     expected = {
@@ -183,7 +181,6 @@ def test_scenario_actions_exist_in_real_catalog_with_expected_tiers(mod):
         assert spec is not None, aid
         assert spec.risk == tier and spec.spends_money is False, aid
         assert spec.needs_approval == (tier == "destructive"), aid
-    # все D11-обёртки, которые трогает стенд, отдают снимок
     from app.services.action_layer.builtin_wave5_history import HANDLERS
     for aid in ("montage.set_voiceover", "montage.set_coverage", "shot.edit_field", "prompt.save_master"):
         assert aid in HANDLERS

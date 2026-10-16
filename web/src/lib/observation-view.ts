@@ -5,7 +5,6 @@ export interface ObservationEvent {
   payload: Record<string, unknown>;
 }
 
-/** Restore the exact saved scope; never silently choose the first graph group. */
 export function groupForScope(groups: {id:string;keys:string[]}[], nodeKeys: string[]): string {
   if (!nodeKeys.length) return '';
   const keys = new Set(nodeKeys);
@@ -22,12 +21,9 @@ export function usageLabel(usage: Record<string, unknown> | null | undefined): s
 export function mergeEvents(old: ObservationEvent[], incoming: ObservationEvent[], projectId: number): ObservationEvent[] {
   const unique = new Map<string, ObservationEvent>();
   for (const event of [...old, ...incoming]) if (event.project_id === projectId) unique.set(event.event_id, event);
-  // Master and project outboxes can be drained in different batches. The API
-  // cursor remains the durable journal ID; display uses the recorded time.
   return [...unique.values()].sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? "") || a.id - b.id);
 }
 
-/** Равно EVENT_LABELS_RU в app/services/timeline_ru.py (сверяет tests/w3_1_timeline_ru_test.py): сервер, лента и панель говорят одно. */
 export const EVENT_KIND_LABELS: Record<string, string> = {
   node_start: "Исполнитель начал ноду",
   node_end: "Исполнитель вернулся (запись данных не подтверждена)",
@@ -107,7 +103,6 @@ export const EVENT_KIND_LABELS: Record<string, string> = {
   operator_stub_output: "Ответ оператора подменён заглушкой: нет ключа GPT-провайдера",
 };
 
-/** Равно CHECK_NAMES_RU в timeline_ru.py. */
 export const CHECK_NAMES_RU: Record<string, string> = {
   apply_ops_validation: "проверка операций перед записью в БД",
   native_animation_prompt_batch: "проверка пачки промтов анимации",
@@ -129,7 +124,6 @@ export const CHECK_NAMES_RU: Record<string, string> = {
   observe_only_image_prompts_result: "проверка промтов изображений (режим наблюдения)",
 };
 
-/** Равно WAIT_REASONS_RU в timeline_ru.py. */
 export const WAIT_REASONS_RU: Record<string, string> = {
   user_stop: "остановка пользователем",
   queue_predecessor: "очередь: впереди другой проект",
@@ -138,7 +132,6 @@ export const WAIT_REASONS_RU: Record<string, string> = {
   recovery_verification_pending: "ждёт проверки результата восстановления",
 };
 
-/** Равно STATUS_WORDS_RU в timeline_ru.py. */
 export const STATUS_WORDS_RU: Record<string, string> = {
   passed: "пройдена",
   failed: "не пройдена",

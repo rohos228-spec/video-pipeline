@@ -1,10 +1,3 @@
-"""Shot-size ladder, Russian/legacy mapping, and adjacent-frame junction (CANON §2.1).
-
-Public API (frozen):
-    size_index(code) -> int
-    size_from_ru(text) -> str
-    junction_verdict(prev, cur) -> str  # ok|warn_adj|error_same|warn_smash
-"""
 
 from __future__ import annotations
 
@@ -22,8 +15,6 @@ SIZE_LADDER: tuple[str, ...] = (
 )
 SIZE_INDEX: dict[str, int] = {code: i for i, code in enumerate(SIZE_LADDER)}
 
-# Named "норма" pairs from the §2.1 table, plus the two adjacent-step exceptions.
-# Table CU↔MWS / MS↔WS / MCU↔FS are Δ=3 on the 8-rung ladder; still ok.
 _JUNCTION_OK_PAIRS: frozenset[frozenset[str]] = frozenset(
     {
         frozenset({"CU", "ECU"}),
@@ -34,7 +25,6 @@ _JUNCTION_OK_PAIRS: frozenset[frozenset[str]] = frozenset(
     }
 )
 
-# Legacy camera codes — never stored in frames_space; mapped on read.
 _LEGACY_SIZE: dict[str, str] = {
     "VLS": "EWS",
     "ELS": "EWS",
@@ -67,7 +57,6 @@ _SIDE_WORD_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Longest / most specific Russian phrases first (CANON §2.1 + pipeline aliases).
 _RU_PHRASES: tuple[tuple[str, str], ...] = (
     ("голова и плечи", "MCU"),
     ("головы и плеч", "MCU"),
@@ -108,10 +97,6 @@ _RU_PHRASES: tuple[tuple[str, str], ...] = (
 
 
 def size_from_ru(text: str) -> str:
-    """Map a Russian name, English code, or legacy token to EWS..ECU.
-
-    Raises ValueError on empty or unknown input (no silent skip).
-    """
     raw = " ".join(str(text or "").split())
     if not raw:
         raise ValueError("unknown shot size: empty")
@@ -146,20 +131,10 @@ def size_from_ru(text: str) -> str:
 
 
 def size_index(code: str) -> int:
-    """Ladder index 0..7 for EWS..ECU (legacy/RU accepted on read)."""
     return SIZE_INDEX[size_from_ru(code)]
 
 
 def junction_verdict(prev: str, cur: str) -> str:
-    """Verdict for two adjacent sizes of the same object.
-
-    Returns one of: ok, warn_adj, error_same, warn_smash.
-
-    CU↔ECU and EWS↔WS are allowed adjacent exceptions (ok).
-    Index Δ=2 is ok («через план»). Named table pairs CU↔MWS, MS↔WS,
-    MCU↔FS are ok even though they are Δ=3 on the 8-rung ladder.
-    Other Δ≥3 is warn_smash.
-    """
     a = size_from_ru(prev)
     b = size_from_ru(cur)
     if a == b:
@@ -176,12 +151,10 @@ def junction_verdict(prev: str, cur: str) -> str:
 
 
 def size_at(index: int) -> str:
-    """Clamp an index onto the ladder and return the code."""
     return SIZE_LADDER[max(0, min(len(SIZE_LADDER) - 1, int(index)))]
 
 
 def size_step(code: str, delta: int) -> str:
-    """Move ``delta`` rungs; if that lands on the same code, step the other way."""
     i = size_index(code)
     j = max(0, min(len(SIZE_LADDER) - 1, i + int(delta)))
     if j == i:

@@ -1,4 +1,3 @@
-"""Ledger: append-only, race-safe reservation, persistence across restart, settle/native recording."""
 import asyncio
 from pathlib import Path
 from unittest.mock import patch
@@ -52,7 +51,7 @@ class Ledger(actions_tests.DurableActions):
         async with self.sessions() as s:
             await spend_guard.reserve(s, project_id=7, run_id="persist", estimate_usd=2.0, source="test", track=False)
             await s.commit()
-        spend_guard._ensured.clear()  # simulated process restart: new engine, empty in-memory state
+        spend_guard._ensured.clear()
         engine = create_async_engine(f"sqlite+aiosqlite:///{Path(self.tmp.name) / 'master.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
@@ -71,7 +70,7 @@ class Ledger(actions_tests.DurableActions):
             await spend_guard.reserve(s, project_id=7, run_id="r", estimate_usd=0.5, source="test", track=False)
             await spend_guard.settle(s, project_id=7, run_id="r", reserved_usd=0.5, actual_usd=0.1, source="test")
             await spend_guard.settle(s, project_id=7, run_id="r", reserved_usd=0.5, actual_usd=None, source="test")
-            await spend_guard.record_actual(s, project_id=7, usd=0.25, provider="kie")  # native, never refused
+            await spend_guard.record_actual(s, project_id=7, usd=0.25, provider="kie")
             await s.commit()
             t = await spend_guard.totals(s, 7, "r")
         self.assertAlmostEqual(t["run_spent"], 0.1)

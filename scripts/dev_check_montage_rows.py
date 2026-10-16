@@ -1,10 +1,3 @@
-"""Dev-проверка строк сцены на доске: клик по чипу = правка в очереди.
-
-Не часть пайплайна. Нужен бэкенд на :8765 и сид
-``scripts/dev_seed_montage_scene.py``.
-
-    python3 scripts/dev_check_montage_rows.py [project_id] [out_dir]
-"""
 
 from __future__ import annotations
 
@@ -41,27 +34,22 @@ async def main(project_id: int, out_dir: Path) -> None:
             await head.scroll_into_view_if_needed()
             return head.locator("xpath=ancestor::tr[1]")
 
-        # Крупность кадра #1: ДАЛЬНИЙ вместо ОБЩИЙ.
         plan_row = await row_cells("Крупность")
         await plan_row.get_by_role("button", name="ДАЛЬНИЙ").first.click()
         await page.wait_for_timeout(400)
 
-        # Ракурс кадра #2.
         angle_row = await row_cells("Ракурс")
         await angle_row.get_by_role("button", name="с плеча").nth(1).click()
         await page.wait_for_timeout(400)
 
-        # Стык кадра #1.
         stitch_row = await row_cells("Стык / переход")
         await stitch_row.get_by_role("button", name="по действию").first.click()
         await page.wait_for_timeout(400)
 
-        # Свет — общий на ячейку.
         light_row = await row_cells("Свет")
         await light_row.get_by_role("button", name="контровой").first.click()
         await page.wait_for_timeout(400)
 
-        # Действие кадра #1 — правка текстом (коммит по blur).
         action_row = await row_cells("Действие кадра")
         area = action_row.locator("textarea").first
         await area.click()
@@ -69,7 +57,6 @@ async def main(project_id: int, out_dir: Path) -> None:
         await action_row.locator("textarea").nth(1).click()
         await page.wait_for_timeout(500)
 
-        # Якорь кадра #2 — правка «было → стало».
         anchor_row = await row_cells("Якорь кадра")
         change = anchor_row.locator("input").nth(3)
         await change.click()
@@ -81,7 +68,6 @@ async def main(project_id: int, out_dir: Path) -> None:
         apply_btn = page.get_by_role("button", name="Применить правки")
         print("apply button:", (await apply_btn.first.inner_text()).strip())
 
-        # Очередь долетает до сервера (debounce 400 мс + сохранение).
         await page.wait_for_timeout(2500)
         ops = queue_from_api(project_id)
         print("ops in queue:", len(ops))

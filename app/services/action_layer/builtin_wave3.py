@@ -1,16 +1,3 @@
-"""Каталог, волна 3: загрузки файлов, пауза/продолжение, мастер-промты, оценка прогона ноды.
-
-Загрузки идут через ``ctx.call(files=...)``: файл берётся из пути внутри DATA_DIR или из
-base64 в параметрах, размер и тип проверяются (см. ``context.FileUpload``).
-
-Продолжение проекта (``project.resume``, ``project.continue_pipeline``) может запустить
-платный шаг воркера: стоимость такого запуска из параметров не вычислить, поэтому оценка
-явно неизвестна и план нельзя подтвердить (fail-closed).
-
-``node.run_step`` здесь пересоздаётся с оценкой для текстовых нод script_frames_qc
-(``node_run_cost``): исходное определение в ``builtin_group`` остаётся для остальных нод
-без изменений и заменяется при регистрации волны.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -58,7 +45,6 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-# --- загрузки ------------------------------------------------------------------
 
 def _pre_source(kind: str) -> Precondition:
     async def check(ctx, params):
@@ -153,7 +139,6 @@ async def _clear_check_agent(ctx, params):
     return {"ok": bool((data or {}).get("ok"))}
 
 
-# --- пауза, продолжение, перезагрузка xlsx ----------------------------------------
 
 async def _project_paused(ctx, params):
     proj = await _get_project(ctx, params["project_id"])
@@ -180,9 +165,6 @@ async def _continue(ctx, params):
 
 
 async def _auto_mode_enable_safe(ctx, params):
-    """Включать автопродвижение можно только когда ничего не идёт: код PATCH ставит флаг
-    «ждать ручной ▶» (``arm_auto_await_manual_start``) лишь вне running-статуса, а при идущем
-    шаге воркер после его конца пошёл бы по цепочке сам. Выключение разрешено всегда."""
     if not params.get("enabled"):
         return None
     from app.services.action_layer.builtin_group import _is_running
@@ -195,7 +177,6 @@ async def _auto_mode_enable_safe(ctx, params):
 
 async def _set_auto_mode(ctx, params):
     pid, want = params["project_id"], bool(params["enabled"])
-    # Ответ PATCH - это уже записанный проект; повторный GET может прочитать устаревшую копию с master.
     data = await ctx.call("PATCH", f"/projects/{pid}", json={"auto_mode": want})
     got = bool((data or {}).get("auto_mode"))
     if got != want:
@@ -245,7 +226,6 @@ async def _fleet_enabled_for_flag(ctx, params):
     return None
 
 
-# --- мастер-промты (общие файлы всех проектов) ---------------------------------------
 
 def _prompt_path(params: dict) -> str:
     return f"/prompt-files/{params['step_code']}/{params['name']}"
@@ -260,7 +240,6 @@ def _name_ok(params: dict) -> str | None:
 
 
 def _group_query(params: dict) -> dict | None:
-    """Промты ноды группы пишутся в шаблон группы, а не в общий excel_gpt: читать оттуда же."""
     from app.services.prompt_library import is_excel_gpt_prompt_step, is_script_frames_qc_prompt
 
     if is_excel_gpt_prompt_step(params["step_code"]) and is_script_frames_qc_prompt(params["name"]):
@@ -350,13 +329,11 @@ async def _delete_master(ctx, params):
             "scope": "global"}
 
 
-# --- стоимость прогона ноды ----------------------------------------------------------
 
 _DECL_KEYS = ("min_llm_requests", "max_llm_requests", "max_input_tokens", "max_output_tokens")
 
 
 async def _load_basis(ctx: ActionContext, params: dict):
-    """RunBasis по реальным данным проекта или текст причины, почему оценить нельзя."""
     from app.services.prompt_library import (
         resolve_project_prompt_with_source, resolve_script_frames_qc_prompt_path)
 
@@ -481,7 +458,6 @@ async def _run_node_step(ctx, params):
     return {"started": True, "node_key": params["node_key"]}
 
 
-# --- каталог ----------------------------------------------------------------------------
 
 def _specs() -> list[ActionSpec]:
     S = ActionSpec
@@ -491,7 +467,6 @@ def _specs() -> list[ActionSpec]:
     img_effects = ("Картинка слота будет заменена загруженной; прежний файл уходит в old/, "
                    "программного отката нет; видео кадра помечается устаревшим.")
     return [
-        # --- загрузки
         S(id="montage.upload_voice", title_ru="Загрузить озвучку",
           description_ru="Сохраняет файл как audio/voice_full.<расширение> и запоминает путь в "
                          "настройках проекта. Источник: source_path внутри DATA_DIR или "
@@ -581,7 +556,6 @@ def _specs() -> list[ActionSpec]:
                                          "будет удалён с диска."),
           preconditions=(_PRE_PROJECT, _PRE_IDLE, _PRE_NODE, _PRE_NODE_KEY_SAFE),
           tags=("node", "check")),
-        # --- пауза и продолжение
         S(id="project.pause", title_ru="Поставить проект на паузу",
           description_ru="Останавливает выполняющуюся ноду и ставит статус paused (прежний "
                          "статус запоминается). Незавершённая работа ноды теряется. Повтор на "
@@ -627,7 +601,6 @@ def _specs() -> list[ActionSpec]:
               "auto_mode_enable_safe", "Включение: в проекте ничего не выполняется",
               _auto_mode_enable_safe)),
           tags=("project", "auto")),
-        # --- xlsx и отправка на основной ПК
         S(id="project.reload_xlsx", title_ru="Перечитать project.xlsx в базу",
           description_ru="Импортирует project.xlsx в БД: поля проекта, закадр, промты и атрибуты "
                          "кадров перезаписываются значениями из файла, недостающие кадры "
@@ -650,7 +623,6 @@ def _specs() -> list[ActionSpec]:
               "fleet_enabled", "Fleet включён (иначе флаг не действует)",
               _fleet_enabled_for_flag)),
           tags=("montage", "assemble", "fleet")),
-        # --- мастер-промты
         S(id="prompt.get_master", title_ru="Прочитать мастер-промт",
           description_ru="Текст общего промта шага (первые 20000 символов), длина и sha256.",
           params_schema=_obj({"step_code": _STEP_CODE, "name": _PROMPT_NAME},
@@ -699,7 +671,6 @@ def _specs() -> list[ActionSpec]:
           preconditions=(Precondition("not_default", "Это не default", _pre_not_default),
                          Precondition("prompt_exists", "Промт существует", _pre_prompt_exists)),
           tags=("prompt", "global")),
-        # --- стоимость и запуск ноды
         S(id="node.get_run_cost_basis", title_ru="Верхняя оценка прогона текстовой ноды",
           description_ru="Для нод Каркас, Площадка, Шоты, QC: пачки, худшее число запросов к "
                          "модели и токены на запрос по реальным данным проекта и файлам промтов. "
@@ -730,6 +701,5 @@ def _specs() -> list[ActionSpec]:
 
 
 def register_wave3(registry: ActionRegistry) -> None:
-    # node.run_step из builtin_group заменяется версией с оценкой.
     registry.unregister("node.run_step")
     registry.register_many(_specs())

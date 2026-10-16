@@ -1,20 +1,3 @@
-"""Dry run of the hero step: is its paid request reproducible after a restart, and can it be resumed?
-
-No network, no provider, no paid call. REAL: generate_hero.run (the v=1 path: GPT prompt, saved prompt,
-paid call), outsee_retry.generate_image_with_retries, media_spend.outsee_tracked, outsee_guard and
-media_resume (the provider_task_ledger in its own database, as in production), media_admission,
-node capabilities. SCRIPTED: the GPT client (a different prompt on EVERY call, as a real model writes), and
-the provider HTTP boundary (outsee_http.generate_image: a lost answer after the POST).
-
-What it proves (the former `nondeterministic_paid_request` blocker (now `no_resumable_task`) and why hero still is not a recovery node):
-  1. the hero prompt is saved BEFORE the paid call (music/.suno_prompt.txt pattern);
-  2. after a restart with an unfinished paid generation the SAME prompt is used and GPT is not asked again;
-  3. nothing is submitted a second time (the Outsee guard stops the repeat by the hero key);
-  4. a normal repeat (no unfinished generation) still builds a NEW prompt: regeneration is unchanged;
-  5. there is nothing to RESUME: the default hero generator (GPT Image 2 VIP, Outsee) has no task id, and a
-     Kie model slug is routed by generate_image_with_retries to the Outsee seam, never to Kie, in the native
-     route. So a supervised resume has no task to poll and hero stays observed.
-"""
 import unittest
 from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
@@ -68,7 +51,6 @@ class HeroDryRun(unittest.IsolatedAsyncioTestCase):
         self.bot = SimpleNamespace(send_message=AsyncMock())
 
         async def lost_answer_after_post(prompt, out_path, **kwargs):
-            """The provider boundary: the POST went out, the answer was lost (a paid generation may exist)."""
             self.posts += 1
             self.prompts_at_post.append(prompt)
             self.prompt_file_existed_at_post.append(
@@ -119,7 +101,6 @@ class HeroDryRun(unittest.IsolatedAsyncioTestCase):
         path = self.data / "characters" / ".hero_prompt_1_v1.txt"
         return path.read_text(encoding="utf-8") if path.is_file() else None
 
-    # ---------------------------------------------------------------------------------------
     async def test_the_prompt_is_saved_before_the_paid_call_and_reused_after_a_restart(self):
         await self.attempt()
         self.assertEqual((self.gpt.asks, self.posts), (1, 1))
@@ -130,7 +111,6 @@ class HeroDryRun(unittest.IsolatedAsyncioTestCase):
         rows = await self.ledger_rows()
         self.assertTrue(rows and all(r.api == "outsee" for r in rows), "an Outsee submit: no Kie task id exists")
         self.assertTrue(any(r.status == "submit_unknown" for r in rows), "the lost answer left an unresolved intent")
-        # restart: the same step again, an unfinished paid generation exists
         await self.attempt()
         self.assertEqual(self.gpt.asks, 1, "GPT was not asked again: the saved prompt is reused")
         self.assertEqual(self.saved(), first_prompt)
@@ -139,13 +119,12 @@ class HeroDryRun(unittest.IsolatedAsyncioTestCase):
     async def test_a_normal_repeat_without_an_unfinished_generation_builds_a_new_prompt_as_before(self):
         async with self.sessions() as session:
             pass
-        # a finished/rejected earlier generation: no unresolved intent in the ledger
         await self.attempt()
         async with self.ledger() as session:
             await spend_guard.ensure_task_schema(session)
         await media_spend.drain()
         from app.services import outsee_guard
-        await outsee_guard.release_unknown(PID, KEY)  # the human checked the provider: no charge
+        await outsee_guard.release_unknown(PID, KEY)
         await self.attempt()
         self.assertEqual(self.gpt.asks, 2, "no unfinished generation: regeneration writes a fresh prompt")
         self.assertIn("version 2", self.saved())
@@ -154,14 +133,13 @@ class HeroDryRun(unittest.IsolatedAsyncioTestCase):
     async def test_without_the_fix_the_second_prompt_would_differ_which_is_what_the_cache_prevents(self):
         await self.attempt()
         first = self.saved()
-        (self.data / "characters" / ".hero_prompt_1_v1.txt").unlink()  # what the step did before the change
+        (self.data / "characters" / ".hero_prompt_1_v1.txt").unlink()
         await self.attempt()
         self.assertEqual(self.gpt.asks, 2)
         self.assertNotEqual(self.saved(), first, "a model never writes the same prompt twice")
         self.assertEqual(self.posts, 1, "even then the Outsee guard (keyed by hero, not by prompt) held the submit")
 
     async def test_a_kie_model_slug_never_reaches_the_kie_seam_in_the_native_route(self):
-        """Documents the routing: use_outsee_api is only true for backend outsee, so the Kie branch is not reached."""
         from pathlib import Path as P
         kie = AsyncMock(side_effect=AssertionError("kie seam reached"))
         seen = []
@@ -180,15 +158,14 @@ class HeroDryRun(unittest.IsolatedAsyncioTestCase):
         kie.assert_not_called()
 
     async def test_hero_admits_only_a_local_resume_of_a_recorded_result(self):
-        """D06: hero is managed for supervised recovery only, and the recovery is resume_local (request key)."""
         from app.orchestrator.node_spec import capability_spec_for, coverage_level
         from app.services import media_local_resume
         from app.services.node_capabilities import capability_for, require_managed_capability
-        self.assertFalse(media_admission.admitted("hero"))        # no provider task resume
+        self.assertFalse(media_admission.admitted("hero"))
         self.assertTrue(media_local_resume.admitted("hero"))
         self.assertTrue(capability_for("hero").managed)
         with self.assertRaises(ValueError):
-            require_managed_capability("hero")                      # the supervisor never starts it
+            require_managed_capability("hero")
         spec = capability_spec_for("hero")
         self.assertEqual(coverage_level(spec), "managed")
         self.assertIsNone(spec.forbidden_code)

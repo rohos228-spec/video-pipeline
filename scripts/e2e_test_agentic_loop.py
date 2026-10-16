@@ -67,7 +67,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8")  # Windows console defaults to cp1251/cp866; incident titles are Russian
+    sys.stdout.reconfigure(encoding="utf-8")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -86,43 +86,36 @@ _env_dry_run = os.environ.get("DRY_RUN", "").strip().lower()
 _live = _args.live or (_env_dry_run in {"false", "0", "no"} and not _args.dry_run)
 DRY_RUN = not _live
 
-# CRITICAL: app.settings.Settings() is instantiated once at import time and
-# reads GPT_API_KEY/GPT_BASE_URL from the environment right then -- setting
-# them later has no effect. For DRY_RUN, default them to the same loopback/
-# synthetic values tests/observe_v1/container_test_entry.py uses, so this
-# script needs no manual env setup to run safely. Only set as *defaults*
-# (os.environ.setdefault) so an operator's real .env / shell env always wins
-# if already present -- this never overrides an explicitly configured value.
 if DRY_RUN:
     os.environ.setdefault("GPT_API_KEY", "synthetic-e2e-script-key")
     os.environ.setdefault("GPT_BASE_URL", "http://127.0.0.1:18799")
 
-import asyncio  # noqa: E402
-import json  # noqa: E402
-import tempfile  # noqa: E402
-import uuid  # noqa: E402
-from datetime import datetime  # noqa: E402
-from unittest.mock import patch  # noqa: E402
+import asyncio
+import json
+import tempfile
+import uuid
+from datetime import datetime
+from unittest.mock import patch
 
-from sqlalchemy import select  # noqa: E402
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker  # noqa: E402
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
-from app.models import (  # noqa: E402
+from app.models import (
     Base, Project, Workflow, WorkflowRun, NodeRun, NodeRunStatus, ProjectStatus,
 )
-from app.services import observation  # noqa: E402
-from app.services.observation import ExecutionControl, ObservationEvent, digest  # noqa: E402
-from app.services.diagnosis import Incident, DiagnosisState  # noqa: E402
-from app.services.actions_v1 import ActionSupervisor, clear_permission  # noqa: E402
-from app.services.actions_recovery import RecoveryAction, input_revision  # noqa: E402
-from app.services.decision_v1 import DecisionSupervisor  # noqa: E402
-from app.services.managed_launch import ManagedLaunch  # noqa: E402
-from app.services import profiles_v1  # noqa: E402
-from app.services import gpt_api  # noqa: E402
-from app.services.gpt_api import GptChatResult  # noqa: E402
+from app.services import observation
+from app.services.observation import ExecutionControl, ObservationEvent, digest
+from app.services.diagnosis import Incident, DiagnosisState
+from app.services.actions_v1 import ActionSupervisor, clear_permission
+from app.services.actions_recovery import RecoveryAction, input_revision
+from app.services.decision_v1 import DecisionSupervisor
+from app.services.managed_launch import ManagedLaunch
+from app.services import profiles_v1
+from app.services import gpt_api
+from app.services.gpt_api import GptChatResult
 
 NODE_KEY = "n1"
-EXECUTION_ID = "00000000-0000-0000-0000-000000e2e001"  # Observer.save_body() requires a real UUID
+EXECUTION_ID = "00000000-0000-0000-0000-000000e2e001"
 PROJECT_ID = 70100
 WORKFLOW_RUN_ID = 70102
 
@@ -160,11 +153,6 @@ class Harness:
         observation._observer = observation.Observer(self.sessions, body_root=Path(self.tmp.name) / "bodies")
         self.supervisor = ActionSupervisor(self.sessions)
         self.decisions = DecisionSupervisor(observation._observer)
-        # Same redirect tests/observe_v1/test_decision_v1.py::DecisionDurability
-        # uses: Project.data_dir is truthy (derived from slug) even though no
-        # real per-project SQLite file exists here, so anything that opens a
-        # "project DB" session must be pointed back at this one disposable
-        # master session instead of trying to open a nonexistent file.
         import app.project_db as project_db
         self._project_sessions_patch = patch.object(
             project_db, "project_db_session_scope", lambda _id: self.sessions())
@@ -190,7 +178,7 @@ class Harness:
         await self.supervisor.enable(project_id=PROJECT_ID, execution_id=EXECUTION_ID, group_id="g1",
             node_keys=[NODE_KEY], graph_version=self.graph, initiator="e2e-script",
             rationale="scripted agentic-loop e2e run",
-            request_limit=20 if DRY_RUN else 4)  # --live: hard cap on real paid model requests
+            request_limit=20 if DRY_RUN else 4)
         async with self.sessions() as s:
             project = await s.get(Project, PROJECT_ID)
             project.status = ProjectStatus.paused
@@ -203,13 +191,6 @@ class Harness:
             revision_parts: dict = {}
             revision = await input_revision(s, project, NODE_KEY, parts=revision_parts)
             is_timeout = incident_type == "uncertain_request"
-            # ProfilesSupervisor.approve() independently re-reads the exact
-            # request body that produced this incident (never trusts a
-            # summary) -- it must be saved through Observer.save_body() and
-            # referenced from the model_start event, the same way
-            # tests/observe_v1/test_profiles_v1.py::Profiles.asyncSetUp()
-            # does, or approve() correctly refuses with "source body audit
-            # unavailable".
             source_body = {"model": "gpt-5-6-sol",
                 "input": "Original node prompt that produced a malformed response.",
                 "stream": True, "reasoning": {"effort": "high"}}
@@ -304,10 +285,6 @@ async def run_scenario_invalid_json(dry_run: bool) -> dict:
                 print(f"  (unexpected escalation reason: {row.policy_result.get('reason')})")
             if row.status == "waiting_worker":
                 ticket = await s.get(RecoveryAction, row.action_id)
-                # Simulate the native worker's real verifier marking this ticket
-                # verified -- same mechanism tests/observe_v1 fixtures use;
-                # running the real excel_gpt executor is out of scope here
-                # (see module docstring).
                 ticket.result = {"simulated": True, "note": "script-simulated worker success"}
                 ticket.verification_result = {"verified": True, "source": "e2e-script simulated verifier"}
                 ticket.status = "verified"
@@ -371,8 +348,6 @@ async def main(dry_run: bool) -> int:
           and results["timeout_escalation"]["summary"] is not None
           and results["timeout_escalation"]["summary"]["status_label"] == "REQUIRES_HUMAN_INTERVENTION")
     if not dry_run:
-        # A real model makes its own choice; only require the loop reached a
-        # terminal, non-stuck state rather than the exact scripted action.
         ok = (results["invalid_json"]["final_status"] in {"done", "human_review"}
               and results["timeout_escalation"]["final_status"] == "human_review")
 

@@ -1,30 +1,3 @@
-"""Supervisory admission of media incidents: a resume-only recovery ticket, never a new paid request.
-
-Text nodes are recovered by restarting the native node once (``actions_recovery.recover_node``). A paid
-media node cannot be treated that way: a restart can submit again and pay twice, and a managed worker
-attempt of a media node runs through a different transport (media_jobs, synthetic profile only). So the
-media admission is narrower on purpose:
-
-* the incident is ``media_failure`` or a media ``uncertain_request`` of an admitted node
-  (``revisions.MEDIA_RESUME_NODES``: videos, items, music; plus the local node assemble, see below);
-* ``media_recovery.assess`` decides. Only ``resume_poll`` (poll a known provider task, download a finished
-  result) and ``resume_local`` (a finished file already lies on disk) are executed;
-* the operation runs IN the supervisor process inside ``media_spend.resume_only()``: every seam that would
-  send a new paid request (Kie createTask, Kling, Outsee, ElevenLabs) refuses before a byte leaves;
-* ``retry_same`` (a provably failed task) is NOT dispatched: it is typed ``retry_same_not_admitted`` and left
-  to the native layer or a human. A restart of the node would pay again and its managed transport is not
-  the ledger path that proved the verdict;
-* the result is verified independently: files re-read and probed, and the provider-task ledger must not
-  hold a single new task id or submit intent compared with before the operation;
-* the supervisor never starts or restarts the node. After a verified resume the human continues it.
-
-A LOCAL node (``revisions.LOCAL_RECOVERY_NODES``: assemble) has no provider task. It is the one exception to
-"never starts the node": the supervisor re-runs it ONCE through the original worker under a recovery ticket, inside
-the resume-only scope, and the ticket is verified from independent facts (``local_node_recovery``).
-
-Everything unknown (unknown outcome, retry cap, ledger disabled or unreadable, a node outside the admitted
-set, nothing to do) is a typed refusal and ends with the human.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -37,12 +10,12 @@ from loguru import logger
 
 from app.services import media_recovery, media_resume, media_spend, revisions
 
-RESUME_NODES = revisions.MEDIA_RESUME_NODES          # provider task resume, in the supervisor process
-LOCAL_NODES = revisions.LOCAL_RECOVERY_NODES         # one re-run through the original worker (local_node_recovery)
+RESUME_NODES = revisions.MEDIA_RESUME_NODES
+LOCAL_NODES = revisions.LOCAL_RECOVERY_NODES
 ADMITTED_NODES = RESUME_NODES | LOCAL_NODES
 MEDIA_INCIDENT_TYPES = frozenset({"media_failure", "uncertain_request"})
 OPERATIONS = ("resume_poll", "resume_local")
-RESUME_BUDGET_S = 100.0  # one decision step owns a 120 s lease; partial progress is written to the ledger
+RESUME_BUDGET_S = 100.0
 _FILE_KIND = {"clip_": "video", "music": "audio", "predmet": "image", "hero_": "image", "frame_": "image"}
 
 DENIAL_TEXT = {
@@ -62,7 +35,6 @@ DENIAL_TEXT = {
 
 
 class MediaAdmissionDenied(ValueError):
-    """Typed refusal of a media recovery ticket. ``code`` is machine readable, the message is for people."""
 
     def __init__(self, code: str, detail: str = ""):
         self.code = code
@@ -76,12 +48,10 @@ def is_media_incident(incident) -> bool:
 
 
 def resumable(node_type: str | None) -> bool:
-    """A paid media node whose recovery is a resume of a known provider task (runs in the supervisor process)."""
     return node_type in RESUME_NODES
 
 
 def local_worker(node_type: str | None) -> bool:
-    """A local node re-run once through the original worker (a ticket that is verified from independent facts)."""
     from app.services import local_node_recovery
     return node_type in LOCAL_NODES and local_node_recovery.spec_ok(node_type)
 
@@ -91,10 +61,6 @@ def admitted(node_type: str | None) -> bool:
 
 
 async def admit(project, node_type: str, *, source_facts=None) -> dict[str, Any]:
-    """Read-only. The admitted operation and the full assessment, or a typed refusal. Never submits.
-
-    A local node needs ``source_facts`` (the events of the failed attempt): without them there is nothing that
-    types its own failure, and no operation is offered."""
     if local_worker(node_type):
         from app.services import local_node_recovery
         return await local_node_recovery.admit(project, node_type, source_facts=source_facts)
@@ -113,8 +79,6 @@ async def admit(project, node_type: str, *, source_facts=None) -> dict[str, Any]
 
 
 async def task_fingerprint(project_id: int) -> frozenset[str]:
-    """Every provider task id AND submit intent the ledger holds for the project. A new paid request, however
-    it ends, always adds one of them before the request leaves, so growth means a submit happened."""
     from sqlalchemy import select
     from app.db import SessionLocal
     from app.services import spend_guard
@@ -141,8 +105,6 @@ def _result_files(project, key: str) -> list[Path]:
 
 
 async def verify_files(project, keys: list[str]) -> list[dict[str, Any]]:
-    """Independent re-read of the result files of the resumed keys: exists, not empty, inside the project,
-    decodes (image) or ffprobe sees the stream and duration (video, audio)."""
     from app.services.media_verification import _probe
     out = []
     root = Path(project.data_dir)
@@ -158,20 +120,18 @@ async def verify_files(project, keys: list[str]) -> list[dict[str, Any]]:
 
 
 async def _run_operation(project, node_type: str, operation: str) -> tuple[dict[str, Any], str | None]:
-    """The only place a provider is contacted: one status request per open task, inside resume_only()."""
     if operation == "resume_local":
-        return {"resumed": [], "stats": {}, "new_paid_requests": 0}, None  # nothing to ask: files are on disk
+        return {"resumed": [], "stats": {}, "new_paid_requests": 0}, None
     try:
         return await asyncio.wait_for(media_recovery.resume_poll(project, node_type), RESUME_BUDGET_S), None
     except asyncio.TimeoutError:
         return {"resumed": [], "stats": {}, "new_paid_requests": 0}, "resume_budget_exceeded"
-    except Exception as exc:  # noqa: BLE001 - a poll error never turns into a submit
+    except Exception as exc:
         logger.warning("media_admission: resume failed: {}", type(exc).__name__)
         return {"resumed": [], "stats": {}, "new_paid_requests": 0}, type(exc).__name__
 
 
 async def run_and_verify(project, node_type: str, admission: dict[str, Any]) -> dict[str, Any]:
-    """Execute the admitted operation and verify it from facts outside the executor. Never submits."""
     if node_type in LOCAL_NODES:
         raise ValueError("a local node is re-run by the original worker under a recovery ticket, never here")
     operation = admission["operation"]
@@ -207,8 +167,6 @@ async def run_and_verify(project, node_type: str, admission: dict[str, Any]) -> 
 
 
 async def settle_interrupted(master, row, control, observer, update_permission) -> bool:
-    """A media ticket is executed inside the recover call and is never re-run. One found in a transient
-    state long after (process died mid-resume) is held for a human: the provider outcome was not recorded."""
     from app.services.actions_v1 import ActionRecord
     if row.status not in {"reserved", "queued", "claimed", "await_verify"}:
         return False

@@ -1,14 +1,3 @@
-"""Тестовый прогон группы script_frames_qc с планом площадки (без сети).
-
-Настоящий раннер нод (``enrich_xlsx.run``) на sqlite в памяти:
-fw_action → fw_shots → fw_qc → fw_report. GPT заменён сценарием, который
-делает типичные ошибки модели (дверь «уже открыта», идёт на месте,
-камера перепрыгнула ось). Код группы должен их починить.
-
-    python scripts/run_script_frames_qc_space_test.py [--out DIR]
-
-Печатает кадры после каждой ноды и путь к HTML-отчёту.
-"""
 
 from __future__ import annotations
 
@@ -30,7 +19,6 @@ SCENES: list[dict[str, Any]] = [
     {
         "place": "улица у дома",
         "steps": "бежит по улице → бежит к открытой двери дома",
-        # VO-норма кадра 26-80: порог режет закадр предыдущего кадра надвое, обе половины >= 26
         "vo": "Он бежал по улице, не разбирая дороги, к своему дому, и сердце колотилось так, что отдавало в висках.",
         "shots": [
             {"действие": "Иван бежит по улице", "объект": "тело",
@@ -148,7 +136,6 @@ def _kadry(n: int) -> list[dict[str, Any]]:
 
 
 class FakeGpt:
-    """Сценарный GPT: отвечает по виду пачки из footer'а."""
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -181,7 +168,6 @@ class FakeGpt:
             elif kind == "shots" and vo == FULL_VO:
                 ops.append({"frame_uuid": uid, "fields": {"кадры": _kadry(n)}})
             elif kind == "qc" and vo.startswith("Он бежал"):
-                # QC вернул сцену улицы с «открытой дверью» и без кадра на пороге.
                 kadry = [dict(k) for k in (fr.get("кадры") or []) if isinstance(k, dict)]
                 if kadry:
                     kadry = [kadry[0]]
@@ -310,7 +296,6 @@ def make_scope(factory):
 
 
 async def run_group(factory, fake: FakeGpt, out_dir: Path | None = None) -> dict[str, Any]:
-    """Прогон 4 нод группы; ``session_scope`` и GPT уже подменены вызывающим."""
     from app.models import Project
 
     pid = await _setup(factory, Path(tempfile.gettempdir()))

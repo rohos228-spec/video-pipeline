@@ -1,14 +1,3 @@
-"""Чтение состояния и возобновление медиа-задач провайдера по уже известному task id.
-
-Эндпоинты не отправляют ни одного нового платного запроса: чтение только смотрит журнал задач и
-файлы; возобновление спрашивает провайдера про известную задачу и скачивает готовый результат внутри
-режима «только возобновление» (``media_spend.resume_only``). Повторная платная отправка здесь невозможна.
-Тот же сервис (``media_admission``) использует надзор (билет восстановления); эти эндпоинты - для человека
-и для действий слоя действий ``media.get_recovery_assessment`` и ``media.resume_poll``.
-
-Человеческое снятие блокировки «неизвестный исход отправки» (``unknown-outcomes``, ``release-unknown``,
-сервис ``media_unknown``) - для действий ``media.list_unknown_outcomes`` и ``media.release_unknown``.
-"""
 from __future__ import annotations
 
 from typing import Literal
@@ -59,10 +48,8 @@ class ReleaseUnknownIn(BaseModel):
         return " ".join(str(value).split()) if isinstance(value, str) else value
 
 
-# The two fixed paths are declared BEFORE ``/{node_type}`` so that they are never read as a node type.
 @router.get("/unknown-outcomes")
 async def list_unknown_outcomes(project_id: int, session: AsyncSession = Depends(get_session)) -> dict:
-    """Ключи с блокировкой «неизвестный исход отправки»: провайдер, возраст, окно. Только чтение."""
     await _project(session, project_id)
     return await media_unknown.list_unknown(project_id)
 
@@ -70,12 +57,8 @@ async def list_unknown_outcomes(project_id: int, session: AsyncSession = Depends
 @router.post("/release-unknown")
 async def release_unknown(project_id: int, body: ReleaseUnknownIn, session: AsyncSession = Depends(get_session),
                           operator: str = Header(default="local_web_operator", alias="X-Action-Layer-Operator")) -> dict:
-    """Снять блокировку неизвестного исхода ОДНОГО провайдера по ОДНОМУ ключу после сверки кабинета провайдера.
-
-    Это снова открывает платную повторную отправку: второе списание возможно. Нужна письменная причина,
-    пишется запись в журнал действий до и после. Ничего не отправляет."""
     project = await _project(session, project_id)
-    operator = normalize_operator(operator)  # D12: only safe characters reach the ledger and the event journal
+    operator = normalize_operator(operator)
     if await kill_switch.is_active(session):
         raise HTTPException(status_code=409, detail={"code": "kill_switch_active"})
     if is_running_status(project.status):
@@ -89,7 +72,6 @@ async def release_unknown(project_id: int, body: ReleaseUnknownIn, session: Asyn
 
 @router.get("/{node_type}")
 async def get_assessment(project_id: int, node_type: str, session: AsyncSession = Depends(get_session)) -> dict:
-    """Что можно безопасно сделать с медиа-нодой без новой оплаты. Только чтение."""
     project = await _project(session, project_id)
     node_type = _node(node_type)
     report = await media_recovery.assess(project, node_type)
@@ -109,12 +91,10 @@ async def get_assessment(project_id: int, node_type: str, session: AsyncSession 
 @router.post("/{node_type}/resume-poll")
 async def resume_poll(project_id: int, node_type: str, session: AsyncSession = Depends(get_session),
                       operator: str = Header(default="local_web_operator", alias="X-Action-Layer-Operator")) -> dict:
-    """Опросить известную задачу Kie и скачать готовое. Новых платных запросов нет (проверяется по журналу)."""
     project = await _project(session, project_id)
     node_type = _node(node_type)
     gate = _media_gate(node_type)
     if not media_admission.resumable(node_type):
-        # a local node (assemble) is re-run by the original worker under a supervisor ticket, never from here
         raise HTTPException(status_code=409, detail={"code": "node_not_admitted", "node_type": node_type})
     if await kill_switch.is_active(session):
         raise HTTPException(status_code=409, detail={"code": "kill_switch_active"})

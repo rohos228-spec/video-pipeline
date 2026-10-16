@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.node_replay import replay_run, resolve_run_dir  # noqa: E402
+from app.services.node_replay import replay_run, resolve_run_dir
 
 
 def _entry_line(e: dict) -> str:

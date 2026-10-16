@@ -1,16 +1,3 @@
-"""Единая лента проекта (B05, W3-2): только чтение поверх существующих таблиц основной БД.
-
-Контракт зафиксирован интегратором (docs/REGISTRAR_FULL_PLAN.md, W3):
-  элемент ленты: id "<source>:<rowid>", ts (ISO UTC), kind, source, severity (info|warn|error),
-  title_ru, detail_ru, project_id, run_id, request_id, ref, amount_usd.
-Порядок: ts по убыванию, при равенстве (source, rowid) по убыванию. Курсор - ключ последней отданной
-строки, поэтому он стабилен, пока в ленту добавляются только новые (более поздние) строки.
-
-Побочных эффектов нет: только SELECT и PRAGMA table_info, ничего не создаётся и не меняется.
-Отсутствующая таблица попадает в `sources_missing`, а не роняет запрос. Тексты проходят через `redact`.
-Русские тексты: мягкий импорт `timeline_ru.describe` (W3-1); без него (или при любой его ошибке)
-используются собственные запасные формулировки этого модуля.
-"""
 from __future__ import annotations
 
 import base64
@@ -30,20 +17,18 @@ DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 EXPORT_MAX_ROWS = 50000
 _BATCH = 500
-_SCAN_CAP = 200000  # потолок просмотренных строк одного источника за запрос
+_SCAN_CAP = 200000
 _DETAIL_MAX = 400
 EXPORT_COLUMNS = ("id", "ts", "kind", "source", "severity", "title_ru", "detail_ru",
                   "project_id", "run_id", "request_id", "ref", "amount_usd")
 
 
 class TimelineError(ValueError):
-    """Некорректный параметр запроса (роутер превращает в 422)."""
+    pass
 
 
-# --- время и курсор ---------------------------------------------------------------------------------
 
 def to_dt(value) -> datetime | None:
-    """Строка БД / epoch / datetime -> aware UTC. Наивное время считается UTC."""
     if value is None or value == "":
         return None
     try:
@@ -89,11 +74,10 @@ def decode_cursor(cursor: str) -> tuple[datetime, str, int]:
         if dt is None:
             raise ValueError
         return dt, source, int(rid)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise TimelineError("Параметр cursor: неверное значение") from exc
 
 
-# --- русские тексты ---------------------------------------------------------------------------------
 
 def _clip(s: str, n: int = _DETAIL_MAX) -> str:
     s = " ".join(str(s).split())
@@ -128,13 +112,12 @@ _NODE_STATUS_RU = {"pending": "ожидает", "queued": "в очереди", "
 _SPEND_KIND_RU = {"reserve": "резерв суммы", "settle": "уточнение суммы", "actual": "фактическая трата",
                   "event": "событие учёта"}
 
-try:  # мягкий импорт W3-1: интегратор свяжет
-    from app.services import timeline_ru as _ru  # type: ignore
-except Exception:  # noqa: BLE001
+try:
+    from app.services import timeline_ru as _ru
+except Exception:
     _ru = None
 
 
-# Источники, для которых у timeline_ru.describe есть собственные фразы (остальные остаются на запасном тексте).
 _RU_SOURCES = frozenset({
     "node_runs", "observation_events", "observation_incidents", "decision_records", "action_v1_records",
     "action_layer_history", "spend_ledger", "provider_task_ledger", "operator_audit", "publications",
@@ -142,7 +125,6 @@ _RU_SOURCES = frozenset({
 
 
 def _describe_row(source: str, row: dict) -> dict:
-    """Строка источника в формат `timeline_ru.describe(row)`: словарь с `source_table` и колонками."""
     out = dict(row)
     out["source_table"] = source
     for key in ("proposal", "details", "payload"):
@@ -164,13 +146,12 @@ def _describe_row(source: str, row: dict) -> dict:
 
 def _describe(source: str, kind: str, row: dict, title: str, detail: str,
               severity: str = "info") -> tuple[str, str, str]:
-    """Спросить `timeline_ru.describe(row)` -> (title_ru, detail_ru, severity); при отсутствии/ошибке оставить запасное."""
     fn = getattr(_ru, "describe", None) if _ru is not None else None
     if not callable(fn) or source not in _RU_SOURCES:
         return title, detail, severity
     try:
         res = fn(_describe_row(source, redact(row)))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return title, detail, severity
     if isinstance(res, (tuple, list)) and res and isinstance(res[0], str) and res[0].strip():
         t = res[0]
@@ -180,22 +161,19 @@ def _describe(source: str, kind: str, row: dict, title: str, detail: str,
     return title, detail, severity
 
 
-# --- описание источников ----------------------------------------------------------------------------
 
 @dataclass
 class _Plan:
-    """Как читать один источник: фрагменты SQL и функция превращения строки в поля элемента."""
     from_sql: str
     ts_expr: str
     rid_expr: str
     select_sql: str
     where_sql: str
-    ts_type: str  # "text" | "epoch"
+    ts_type: str
     build: Callable[[dict], dict]
 
 
 def _o(alias: str, cols: set[str], name: str) -> str:
-    """Колонка, которой может не быть в старой базе: иначе NULL."""
     return f"{alias}.{name} AS {name}" if name in cols else f"NULL AS {name}"
 
 
@@ -259,7 +237,7 @@ def _plan_incidents(cols, have):
 def _b_incident(r):
     try:
         from app.services.diagnosis import TITLES
-    except Exception:  # noqa: BLE001
+    except Exception:
         TITLES = {}
     typ = str(r.get("type") or "")
     title = TITLES.get(typ) or f"Инцидент «{typ}»"
@@ -346,7 +324,6 @@ def _plan_layer(cols, have):
                        "(h.project_id IS NULL AND h.plan_id IN "
                        "(SELECT plan_id FROM action_layer_plan_context WHERE project_id = :p))"))
     if "action_layer_plans" in have:
-        # План, созданный через /plans/preview, не имеет контекста и строк истории с project_id: проект берём из самого плана.
         scoped.append("(h.project_id IS NULL AND h.plan_id IN (SELECT id FROM action_layer_plans WHERE project_id = :p))")
     where = "(" + " OR ".join(scoped) + ")" if scoped else "0"
     sel = ("h.plan_id AS plan_id, h.step_index AS step_index, h.event AS event, h.actor AS actor, "
@@ -417,7 +394,6 @@ def _plan_operator(cols, have):
 def _b_operator(r):
     code = int(r.get("status_code") or 0)
     sev = "error" if code >= 500 else ("warn" if code >= 400 else "info")
-    # Настоящий путь (не шаблон маршрута с {project_id}) и код ответа: человеку видно, что именно и чем кончилось.
     where = _safe(r.get("path") or r.get("route_template"))
     return dict(kind="operator", severity=sev,
                 title_ru=f"Оператор: {r.get('method')} {where} → код ответа {code}",
@@ -437,7 +413,7 @@ def _plan_publications(cols, have):
 def _b_publication(r):
     st = str(r.get("status") or "")
     code = str(r.get("error_code") or "")
-    manual = code in ("manual_not_published", "manual_confirmed")  # решения человека, не сбои
+    manual = code in ("manual_not_published", "manual_confirmed")
     detail = " · ".join(x for x in (f"ошибка: {r['error_code']}" if code and not manual else "",
                                     _safe(r.get("post_url")),
                                     f"попыток: {r['attempts']}" if r.get("attempts") else "") if x)
@@ -470,7 +446,6 @@ def _b_notification(r):
                 run_id=r.get("run_id"), request_id=r.get("request_id"), ref=r.get("ref"))
 
 
-# (имя источника в ленте, таблица-основа для проверки наличия, построитель плана)
 _SOURCES: tuple[tuple[str, str, Callable], ...] = (
     ("node_runs", "node_runs", _plan_node_runs),
     ("observation_events", "observation_events", _plan_events),
@@ -489,14 +464,12 @@ _SOURCES: tuple[tuple[str, str, Callable], ...] = (
 SOURCE_NAMES = tuple(s[0] for s in _SOURCES)
 
 
-# --- чтение источника -------------------------------------------------------------------------------
 
 def _bound(dt: datetime, ts_type: str):
     return dt.timestamp() if ts_type == "epoch" else dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
 class _Reader:
-    """Читает один источник пачками (keyset по сырому (ts, rowid)) и отдаёт отфильтрованные элементы по убыванию."""
 
     def __init__(self, session, name: str, plan: _Plan, project_id: int, flt: "_Filter"):
         self.session, self.name, self.plan, self.project_id, self.flt = session, name, plan, project_id, flt
@@ -543,7 +516,7 @@ class _Reader:
             return None
         try:
             fields = self.plan.build(row)
-        except Exception:  # noqa: BLE001 - одна плохая строка не должна ронять ленту
+        except Exception:
             fields = dict(kind=self.name, severity="info", title_ru=f"Запись источника «{self.name}»",
                           detail_ru="")
         title, detail, severity = _describe(self.name, fields["kind"], row, fields["title_ru"],
@@ -622,7 +595,6 @@ async def _schema(session) -> tuple[set[str], dict[str, set[str]]]:
 
 
 async def collect(session, project_id: int, flt: _Filter, limit: int) -> dict:
-    """Собрать до `limit` элементов ленты и курсор следующей страницы."""
     have, cols = await _schema(session)
     missing: list[str] = []
     readers: list[_Reader] = []
@@ -667,7 +639,7 @@ async def timeline(session, project_id: int, *, since=None, until=None, kinds=No
     return await collect(session, project_id, flt, int(limit))
 
 
-COUNT_CAP = MAX_LIMIT  # считаем до потолка одной страницы; больше - «N+»
+COUNT_CAP = MAX_LIMIT
 
 
 async def _count(session, project_id: int, **flt) -> dict:
@@ -676,19 +648,17 @@ async def _count(session, project_id: int, **flt) -> dict:
 
 
 async def journal_counts(session, project_id: int) -> dict:
-    """Итоги журнала по ВСЕМУ проекту, а не по загруженной странице: ошибки, предупреждения, пробелы записи."""
     return {"errors": await _count(session, project_id, severity="error"),
             "warnings": await _count(session, project_id, severity="warn"),
             "gaps": await _count(session, project_id, kinds="gap")}
 
 
-# --- экспорт ----------------------------------------------------------------------------------------
 
 def _csv_cell(v):
     if v is None:
         return ""
     s = str(v)
-    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s  # защита от формул в Excel
+    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
 
 
 def render_csv(items: list[dict]) -> bytes:
@@ -707,7 +677,6 @@ def render_json(result: dict, truncated: bool) -> bytes:
 
 async def export(session, project_id: int, fmt: str, *, since=None, until=None, kinds=None, q=None,
                  severity=None) -> tuple[bytes, str, str]:
-    """-> (тело, media_type, расширение файла). Не больше EXPORT_MAX_ROWS строк."""
     if fmt not in ("csv", "json"):
         raise TimelineError("Параметр format: csv или json")
     flt = make_filter(since=since, until=until, kinds=kinds, q=q, severity=severity)

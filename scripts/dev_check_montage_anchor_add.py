@@ -1,10 +1,3 @@
-"""Dev-проверка: якорь дописывается в клетке кадра и создаёт шот.
-
-Не часть пайплайна. Нужен бэкенд на :8765 и сид
-``scripts/dev_seed_montage_scene.py``.
-
-    python3 scripts/dev_check_montage_anchor_add.py [project_id] [out_dir]
-"""
 
 from __future__ import annotations
 
@@ -41,8 +34,6 @@ async def main(project_id: int, out_dir: Path) -> None:
         add = anchor_row.get_by_role("button", name="Дописать якорь", exact=True)
         print("кнопок «+ якорь» в строке якорей:", await add.count())
 
-        # Кадр #3 — последний шот первой ячейки. Оператор укорачивает свой
-        # якорь и дописывает второй: по нему и родится новый шот.
         cell = anchor_row.locator("td").filter(has=page.locator("input")).nth(2)
         add_here = cell.get_by_role("button", name="Дописать якорь", exact=True)
         await cell.locator("input").first.fill("На первой странице")
@@ -50,7 +41,6 @@ async def main(project_id: int, out_dir: Path) -> None:
         await page.wait_for_timeout(400)
         inputs = cell.locator("input")
         n = await inputs.count()
-        # Последняя пара инпутов — новая строка якоря.
         await inputs.nth(n - 2).fill("стояло чужое имя")
         await inputs.nth(n - 1).fill("чужое имя → узнал")
         await cell.locator("input").first.click()
@@ -72,7 +62,6 @@ async def main(project_id: int, out_dir: Path) -> None:
                     for r in op["anchors"]
                 ])
 
-        # Применяем и смотрим, что доска не мигает пустой, а кадр появился.
         await apply_btn.click()
         await page.wait_for_timeout(1200)
         await page.screenshot(path=str(out_dir / "apply-running.png"))

@@ -108,7 +108,7 @@ def is_legacy_enrich_label(label: str | None) -> bool:
 
 
 def default_excel_gpt_label(_slot: int) -> str:
-    return "Работа с GPT"
+    return "ИИ-редактор сцен"
 
 
 def legacy_enrich_slot_from_type(node_type: str) -> int | None:
@@ -434,8 +434,6 @@ def prepare_enrich_chain_for_auto_advance(
     meta = dict(project.meta or {})
     if nxt_slot < 1:
         # overflow → overflow: слот общий (enriching_1), различаем по id.
-        # Хвост группы (action/shots/QC) снимаем целиком — иначе heal
-        # помечает старые ключи done и новые биты не доходят до записи.
         if from_key:
             clear_overflow_excel_gpt_successors(project, from_key)
             meta = dict(project.meta or {})
@@ -704,12 +702,6 @@ def completed_node_keys(project: Project) -> set[str]:
 
 
 def excel_gpt_already_completed_no_force(project: Project) -> bool:
-    """True — активная excel_gpt уже в completed_keys и это не явный ▶.
-
-    Leftover worker tick (enriching_N + generation_active=false) не должен
-    снова вызывать GPT. start_step с explicit_ui_start снимает ключ и/или
-    ставит excel_gpt_ui_force_full.
-    """
     key = active_node_key(project)
     if not key or key not in completed_node_keys(project):
         return False
@@ -720,7 +712,6 @@ def excel_gpt_already_completed_no_force(project: Project) -> bool:
 
 
 def excel_gpt_artifact_exists(project: Project, node_key: str) -> bool:
-    """Есть gpt_reply / отчёт на диске — нода уже отработала."""
     key = (node_key or "").strip()
     if not key:
         return False
@@ -736,7 +727,6 @@ def excel_gpt_artifact_exists(project: Project, node_key: str) -> bool:
 
 
 def overflow_excel_gpt_successors(project: Project, node_key: str) -> list[str]:
-    """excel_gpt-потомки по стрелкам канваса, ближние первыми."""
     from app.services.canvas_graph import canvas_graph_from_meta
 
     want = (node_key or "").strip()
@@ -779,7 +769,6 @@ def overflow_excel_gpt_successors(project: Project, node_key: str) -> list[str]:
 def clear_overflow_excel_gpt_successors(
     project: Project, node_key: str
 ) -> list[str]:
-    """Снять completed_keys у потомков overflow-ноды — хвост пишется заново."""
     succ = overflow_excel_gpt_successors(project, node_key)
     if not succ:
         return []
@@ -795,7 +784,6 @@ def clear_overflow_excel_gpt_successors(
 
 
 def overflow_excel_gpt_predecessors(project: Project, node_key: str) -> list[str]:
-    """excel_gpt-предки по стрелкам канваса, ближние первыми."""
     from app.services.canvas_graph import canvas_graph_from_meta
 
     want = (node_key or "").strip()
@@ -838,7 +826,6 @@ def overflow_excel_gpt_predecessors(project: Project, node_key: str) -> list[str
 def backfill_overflow_completed_predecessors(
     project: Project, node_key: str
 ) -> list[str]:
-    """Вернуть в completed_keys предков с артефактом (сценарист после ⏹)."""
     preds = overflow_excel_gpt_predecessors(project, node_key)
     if not preds:
         return []
@@ -860,7 +847,6 @@ def backfill_overflow_completed_predecessors(
 
 
 def max_excel_gpt_slot(project: Project) -> int:
-    """Максимальный slotIndex среди excel_gpt на канвасе (1..5)."""
     nodes = excel_gpt_nodes_from_project(project)
     if not nodes:
         return 1

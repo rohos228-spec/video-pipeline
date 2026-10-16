@@ -1,5 +1,3 @@
-"""W70: K9 (двойной учёт резерва слоя и нативных строк), K10 (атомарное снятие резерва), K11 (автосверка баланса
-не выдаёт траты вне окна за расхождение). Сети и денег нет: базы временные, адаптеры подменены."""
 from __future__ import annotations
 
 import pytest
@@ -12,14 +10,14 @@ from app.services import balance_adapters as ba, spend_guard, spend_reconcile as
 from app.services.action_layer import budget
 from app.services.diagnosis import Incident
 from app.settings import settings
-from tests.action_layer_support import env  # noqa: F401
-from tests.w40_money_gates_test import (OP, _clean_executor_globals, _end_orphan_watch,  # noqa: F401
+from tests.action_layer_support import env
+from tests.w40_money_gates_test import (OP, _clean_executor_globals, _end_orphan_watch,
                                         _unresolved_step)
 
 
 @pytest.fixture
 async def sessions(tmp_path, monkeypatch):
-    from app.services import actions_v1  # noqa: F401
+    from app.services import actions_v1
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'w70.db'}", poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -36,7 +34,6 @@ async def sessions(tmp_path, monkeypatch):
     await engine.dispose()
 
 
-# ------------------------------------------------------------------ K9
 
 
 async def _rows(s, rows):
@@ -60,9 +57,9 @@ async def test_k9_plan_reserve_and_native_rows_are_counted_once(sessions):
 async def test_k9_native_above_reserve_and_other_runs_still_add_up(sessions):
     async with sessions() as s:
         await _rows(s, [("reserve", "action_layer", "plan:p1", 1.0, 5),
-                        ("actual", "native_call", "plan:p1", 1.4, 5),       # факт выше резерва: считается факт
+                        ("actual", "native_call", "plan:p1", 1.4, 5),
                         ("reserve", "action_layer", "plan:p2", 2.0, 5),
-                        ("actual", "native_call", "native:t1", 0.5, 5),     # не план: суммируется как раньше
+                        ("actual", "native_call", "native:t1", 0.5, 5),
                         ("reserve", "managed", "exec-1", 0.25, 5)])
         sums = await spend_guard.conservative_sums(s, project_id=5, run_id="plan:p1")
     assert sums["run"] == pytest.approx(1.4)
@@ -72,7 +69,7 @@ async def test_k9_native_above_reserve_and_other_runs_still_add_up(sessions):
 async def test_k9_closed_reserve_with_native_counted_stays_exact(sessions):
     async with sessions() as s:
         await _rows(s, [("reserve", "action_layer", "plan:p1", 1.0, 5),
-                        ("settle", "action_layer", "plan:p1", -1.0, 5),     # native_counted: резерв закрыт нулём
+                        ("settle", "action_layer", "plan:p1", -1.0, 5),
                         ("actual", "native_call", "plan:p1", 0.9, 5)])
         sums = await spend_guard.conservative_sums(s, project_id=5, run_id="plan:p1")
     assert sums["run"] == pytest.approx(0.9)
@@ -93,19 +90,17 @@ async def test_k9_paid_gate_no_false_refusal_for_own_plan(sessions, monkeypatch)
                         ("actual", "native_call", "plan:p1", 0.9, 5)])
     ticket = await spend_guard.paid_gate(provider="kie", what="t", estimate_usd=0.3, project_id=5,
                                          run_id="plan:p1", register=False)
-    assert ticket.estimate_usd == pytest.approx(0.3)           # было 1.9 + 0.3 > 1.5: ложный отказ
-    with pytest.raises(spend_guard.PaidCallBlocked):            # настоящий потолок по-прежнему держится
+    assert ticket.estimate_usd == pytest.approx(0.3)
+    with pytest.raises(spend_guard.PaidCallBlocked):
         await spend_guard.paid_gate(provider="kie", what="t", estimate_usd=0.6, project_id=5,
                                     run_id="plan:p1", register=False)
 
 
-# ------------------------------------------------------------------ K10
 
 
-async def test_k10_second_release_cannot_double_release(env, monkeypatch):  # noqa: F811
+async def test_k10_second_release_cannot_double_release(env, monkeypatch):
     plan_id, _pid = await _unresolved_step(env, monkeypatch)
     await _end_orphan_watch()
-    # Оба вызова прошли проверку «резерв есть» до записи (двойной клик / повтор без ключа): подсовываем устаревший ответ.
     async with env.factory() as s:
         stale = await budget.unresolved_reserves(s)
     assert len(stale) == 1
@@ -124,14 +119,13 @@ async def test_k10_second_release_cannot_double_release(env, monkeypatch):  # no
         await s.rollback()
     monkeypatch.undo()
     async with env.factory() as s:
-        assert await budget.spent(s, budget.session_key(plan_id)) == pytest.approx(0.0)  # не ушло в минус
+        assert await budget.spent(s, budget.session_key(plan_id)) == pytest.approx(0.0)
         rows = (await s.scalars(select(spend_guard.SpendLedger).where(
             spend_guard.SpendLedger.run_id == f"plan:{plan_id}"))).all()
         assert sum(float(r.usd or 0.0) for r in rows) == pytest.approx(0.0)
         assert sum(1 for r in rows if "released_by_operator" in (r.note or "")) == 1
 
 
-# ------------------------------------------------------------------ K11
 
 
 def _snap(v):
@@ -187,7 +181,7 @@ async def _window(monkeypatch, sessions, values, *, during=None, hook=None):
 async def test_k11_spend_of_another_project_in_window_is_inconclusive_no_incident(monkeypatch, sessions):
     async def during():
         await _record(sessions, 7, 0.5)
-        await _record(sessions, 99, 0.5)       # тот же провайдер, чужой проект: баланс упал на 1.0
+        await _record(sessions, 99, 0.5)
     res = await _window(monkeypatch, sessions, [10.0, 9.0], during=during)
     assert res["status"] == sr.STATUS_INCONCLUSIVE and res["foreign_usd"] == pytest.approx(0.5)
     async with sessions() as s:
@@ -201,7 +195,7 @@ async def test_k11_spend_of_another_project_in_window_is_inconclusive_no_inciden
 
 async def test_k11_spend_between_window_mark_and_before_snapshot_is_inconclusive(monkeypatch, sessions):
     async def hook(n):
-        if n == 1:                              # внутри снимка «до»: запись уже в окне, а в балансе её нет
+        if n == 1:
             await _record(sessions, 7, 0.5)
     res = await _window(monkeypatch, sessions, [10.0, 10.0], hook=hook)
     assert res["status"] == sr.STATUS_INCONCLUSIVE and res["boundary_usd"] == pytest.approx(0.5)

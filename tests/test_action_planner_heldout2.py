@@ -1,8 +1,3 @@
-"""Отложенный набор №2 планировщика: валидность, изоляция от основного набора и правил, диагностика транспорта.
-
-Все проверки офлайн, без сети. Набор ни разу не прогонялся на правилах: тесты проверяют только форму,
-эталоны по схеме каталога и то, что фразы отложенных наборов не просочились в основной набор и в код правил.
-"""
 from __future__ import annotations
 
 import json
@@ -13,9 +8,9 @@ import pytest
 
 from app.services.action_layer import planner
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 from tests.test_action_layer_planner import OP, history_rows, res, use
-from tests.test_action_planner_flow import PID, live, st  # noqa: F401
+from tests.test_action_planner_flow import PID, live, st
 
 ROOT = Path(__file__).resolve().parent.parent
 FIX = ROOT / "tests" / "fixtures"
@@ -24,7 +19,7 @@ RULE_FILES = ("app/services/action_layer/planner_rules.py", "app/services/action
               "app/services/action_layer/planner_autofill.py", "app/services/action_layer/planner_uploads.py",
               "app/services/action_layer/planner.py")
 _QUOTED = "[\"'«]([^\"'»\n]{6,})[\"'»]"
-SHINGLE = 6  # слов подряд: совпадение такой длины с отложенной фразой считается просочившимся текстом
+SHINGLE = 6
 
 
 def _cases(name: str) -> list[dict]:
@@ -55,7 +50,6 @@ def _vars() -> dict:
     return mod.expected_vars(2)
 
 
-# --- валидность набора №2 -----------------------------------------------------------------------
 
 def test_heldout2_is_big_and_diverse() -> None:
     assert len(HELD2) >= 100
@@ -91,7 +85,7 @@ def test_heldout2_expectations_follow_the_catalog_schema() -> None:
             props = (spec.params_schema or {}).get("properties", {})
             unknown = set(step["params"]) - set(props)
             assert not unknown, (case["id"], aid, sorted(unknown))
-            loose = {k: v for k, v in spec.params_schema.items() if k != "required"}  # сервер добавит недостающее
+            loose = {k: v for k, v in spec.params_schema.items() if k != "required"}
             errors = schema_mod.validate(loose, {k: v for k, v in step["params"].items() if k != "source_path"})
             assert not errors, (case["id"], aid, errors)
 
@@ -104,7 +98,6 @@ def test_heldout2_clarify_and_attachment_cases_are_well_formed() -> None:
             assert case["steps"] == [] and all(x == x.lower() for x in case.get("clarify_contains", [])), case["id"]
 
 
-# --- изоляция: отложенные фразы не попадают в основной набор и в правила --------------------------
 
 def test_no_text_is_shared_between_main_heldout1_and_heldout2() -> None:
     sets = {"main": MAIN, "held1": HELD1, "held2": HELD2}
@@ -129,7 +122,7 @@ def test_heldout_phrases_do_not_leak_into_main_fixture_or_rules() -> None:
         haystacks[rel] = re.findall(_QUOTED, src) + [src]
     leaks: list[str] = []
     for where, chunks in haystacks.items():
-        padded = [" " + _norm(ch) + " " for ch in chunks]  # по границам слов и внутри одной строки
+        padded = [" " + _norm(ch) + " " for ch in chunks]
         grams = set()
         for chunk in chunks:
             grams |= _shingles(chunk)
@@ -160,7 +153,6 @@ def test_eval_script_knows_heldout2() -> None:
         [{"id": "x", "outcome": "plan", "set": "heldout2", "ok": True}])) == {"heldout2"}
 
 
-# --- диагностика transport_error ----------------------------------------------------------------
 
 def test_describe_exception_has_type_text_and_hides_secrets() -> None:
     assert planner.describe_exception(TimeoutError()).startswith("TimeoutError: timeout")

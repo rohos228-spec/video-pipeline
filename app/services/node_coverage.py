@@ -1,11 +1,3 @@
-"""Data behind the Studio panel «Покрытие нод»: one honest row per registered node type.
-
-Pure read of the capability registry; no database, no provider, no write. A row says how far
-the supervisor goes for the node (level), what it checks, what automatic recovery exists and,
-when there is none, WHY (a machine-readable code plus plain Russian text). The panel and the
-tests read the same data, so a node cannot be covered in the panel without being covered in
-the registry.
-"""
 from __future__ import annotations
 
 LEVEL_LABELS = {
@@ -27,20 +19,17 @@ TITLES = {
 
 
 def _ensure_registered() -> None:
-    # Importing these modules fills the capability, verifier and contract registries.
-    import app.services.node_capabilities  # noqa: F401
-    import app.services.decision_v1  # noqa: F401
+    import app.services.node_capabilities
+    import app.services.decision_v1
 
 
 def registry_node_types() -> list[str]:
-    """Every node type the pipeline can run: the work-node registry plus the virtual excel_gpt."""
     _ensure_registered()
     from app.orchestrator.node_registry import WORK_NODES
     return ["excel_gpt", *[t for t in WORK_NODES if t != "excel_gpt"]]
 
 
 def uncovered_node_types() -> list[str]:
-    """Registered node types with no CapabilitySpec: the 'add a node' guard expects this empty."""
     _ensure_registered()
     from app.orchestrator.node_spec import registered_capability_specs
     specs = registered_capability_specs()
@@ -69,7 +58,6 @@ def node_coverage_row(spec) -> dict:
         "verifies": list(spec.verifies),
         "recovery": {"actions": recovery, "cap_per_node": spec.recovery_cap if recovery else 0,
                      "profile_compatible": spec.profile_compatible if recovery else False,
-                     # True: the "recovery" is a resume of a known provider task, never a start or a paid re-submit
                      "resume_only": bool(recovery and spec.recovery_only)},
         "limits": list(spec.limits),
         "forbidden": forbidden,
@@ -77,7 +65,7 @@ def node_coverage_row(spec) -> dict:
 
 
 def node_coverage() -> dict:
-    _ensure_registered()  # a fresh server process has no specs until these modules are imported
+    _ensure_registered()
     from app.orchestrator.node_spec import registered_capability_specs
     specs = registered_capability_specs()
     rows = [node_coverage_row(specs[t]) for t in registry_node_types() if t in specs]

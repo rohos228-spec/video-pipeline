@@ -18,8 +18,6 @@ export function usePersistedState<T>(
   key: string,
   defaultValue: T,
 ): [T, (next: T | ((prev: T) => T)) => void] {
-  // SSR and the first client render must match. Load persisted state only
-  // after mount; reading storage in the initializer caused React #418.
   const defaultRef = useRef(defaultValue);
   const [value, setValueState] = useState<T>(() => defaultValue);
   useEffect(() => {

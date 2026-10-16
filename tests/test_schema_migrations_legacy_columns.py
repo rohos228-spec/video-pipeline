@@ -1,4 +1,3 @@
-"""Migrations 0007-0009: the old startup ALTER TABLE column additions, now versioned (no network)."""
 from __future__ import annotations
 
 import pytest
@@ -19,7 +18,6 @@ async def engine(tmp_path):
 
 
 async def _old_schema(eng) -> None:
-    """A database from before those columns existed, with rows."""
     async with eng.begin() as conn:
         await conn.exec_driver_sql(
             "CREATE TABLE projects (id INTEGER PRIMARY KEY, slug VARCHAR(120) NOT NULL, status VARCHAR(20))")
@@ -50,7 +48,6 @@ def test_legacy_migrations_are_registered_after_0006():
     ids = [m.id for m in sm.MIGRATIONS]
     assert ids[6:9] == LEGACY_IDS and ids == sorted(ids)
     by_id = {m.id: m for m in sm.MIGRATIONS}
-    # S-1: the projects columns are also added to already existing project.db files
     assert by_id["0009_projects_columns"].scopes == (sm.SCOPE_MASTER, sm.SCOPE_PROJECT)
     assert sm.SCOPE_PROJECT in by_id["0007_frames_v2_columns"].scopes
 
@@ -79,7 +76,7 @@ async def test_added_column_defaults_match_the_legacy_ddl(engine):
             "SELECT enrich_slots_count, image_relax, auto_mode FROM projects WHERE id = 8")).fetchone()
         assert tuple(row) == (3, 0, 0)
         assert (await conn.exec_driver_sql("SELECT manual FROM frames_space WHERE uuid = 'u2'")).scalar() == 0
-    with pytest.raises(Exception, match="CHECK"):  # the CHECK on manual survives
+    with pytest.raises(Exception, match="CHECK"):
         async with engine.begin() as conn:
             await conn.exec_driver_sql("UPDATE frames_space SET manual = 5")
 

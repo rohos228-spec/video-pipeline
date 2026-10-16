@@ -39,18 +39,14 @@ class PublishResult:
     ok: bool
     url: str | None = None
     error: str | None = None
-    # confirmed: признак успеха найден; unconfirmed: кнопка нажата, итог не подтверждён;
-    # failed: ошибка до или во время публикации; rejected: площадка отклонила; skipped: перенесено (лимит/окно).
     status: str = ""
-    # clicked: клик Post/Publish был (или мог быть) выполнен. По нему решается, можно ли автоповтор.
     clicked: bool = False
     post_id: str | None = None
     error_code: str | None = None
-    # W6-2: относительный путь скриншота внутри data (publications/<проект>/<площадка>.png)
     screenshot: str | None = None
-    account_label: str | None = None  # подпись аккаунта без секретов
-    needs_human: bool = False  # captcha / 2fa / not_logged_in: остановить и сообщить человеку, без ретрая
-    retry_after: float | None = None  # unix-время, раньше которого повтор бессмыслен (лимит, окно)
+    account_label: str | None = None
+    needs_human: bool = False
+    retry_after: float | None = None
     caption_truncated: bool = False
 
 
@@ -60,7 +56,7 @@ class PreflightResult:
     ok: bool
     code: str | None = None
     message: str = ""
-    page_url: str = ""  # только схема+хост+путь, без query/fragment
+    page_url: str = ""
     account_label: str = ""
 
     @property
@@ -69,25 +65,20 @@ class PreflightResult:
 
 
 class PublishGate:
-    """Порт к журналу публикаций (app/services/publications_store). Нужен, чтобы
-    publishers.py не знал про БД: намерение пишется ДО клика, итог сразу после платформы."""
 
-    async def claim(self, platform: str) -> bool:  # взять платформу; False — не публиковать
+    async def claim(self, platform: str) -> bool:
         return True
 
-    async def before_click(self, platform: str) -> bool:  # зафиксировать клик ДО клика
+    async def before_click(self, platform: str) -> bool:
         return True
 
-    async def record(self, result: PublishResult) -> None:  # записать итог немедленно
+    async def record(self, result: PublishResult) -> None:
         return None
 
     async def recent_clicks(self, platform: str) -> list[float] | None:
-        """Времена нажатий по платформе за сутки (publish_accounts.recent_click_times). None - лимит не проверять."""
         return None
 
 
-# Общие признаки состояний. Это ДОГАДКИ без калибровки на живом UI; настоящие селекторы
-# задаёт заказчик в конфиге аккаунтов (publish_accounts.json), конфиг приоритетнее.
 GENERIC_CAPTCHA = [
     "iframe[src*='captcha' i]", "iframe[src*='recaptcha' i]", "iframe[title*='captcha' i]",
     "[id*='captcha' i]",
@@ -112,7 +103,7 @@ def _clean_url(url: str | None) -> str:
     try:
         u = urlparse(url or "")
         return urlunparse((u.scheme, u.netloc, u.path, "", "", ""))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return ""
 
 
@@ -131,28 +122,23 @@ class Publisher:
     file_input_selectors: list[str] = ["input[type='file']"]
     caption_selectors: list[str] = ["textarea", "div[contenteditable='true']"]
     publish_button_selectors: list[str] = ["button:has-text('Post')", "button:has-text('Publish')"]
-    # Признаки успешной публикации (селекторы тоста/страницы, фрагменты URL).
-    # Пока не откалиброваны на живом UI: пустые списки дают только `unconfirmed`.
     success_selectors: list[str] = []
     success_url_markers: list[str] = []
     login_url_markers: list[str] = []
     confirm_timeout_s: float = 8.0
-    processing_timeout_s: float = 300.0  # ожидание конца загрузки/обработки до кнопки «Опубликовать»
+    processing_timeout_s: float = 300.0
     poll_s: float = 0.5
-    settle_s: float = 1.5  # пауза после открытия страницы перед проверкой состояния
-    find_timeout_ms: int = 30_000  # ожидание поля файла и поля подписи
-    login_wait_s: float = 4.0  # сколько ждать logged_in_selectors, если они заданы
+    settle_s: float = 1.5
+    find_timeout_ms: int = 30_000
+    login_wait_s: float = 4.0
 
-    # Настройки аккаунта (W6-2). None - старый режим без новых проверок (только прямые вызовы в тестах);
-    # publish_everywhere всегда задаёт аккаунт, даже пустой.
     account: PlatformAccount | None = None
-    project_label: str | int | None = None  # для имени скриншота
-    data_dir: str | Path | None = None  # где лежит data/ (по умолчанию DATA_DIR или ./data)
+    project_label: str | int | None = None
+    data_dir: str | Path | None = None
 
     def __init__(self, browser: Browser) -> None:
         self.browser = browser
 
-    # ── настройки с учётом конфига ───────────────────────────────────────────────
 
     def _acct(self) -> PlatformAccount:
         return self.account or PlatformAccount(platform=self.platform)
@@ -183,32 +169,30 @@ class Publisher:
         host = urlparse(self._upload_url()).netloc
         return [h for h in [host, *self.extra_hosts] if h]
 
-    # ── открытие страницы ────────────────────────────────────────────────────────
 
     async def _open(self) -> Page:
         ctx = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
         url = self._upload_url()
         hosts = self._hosts()
-        # Переиспользуем открытую вкладку той же платформы, если есть.
         for p in ctx.pages:
             try:
                 if p.url and hosts and any(host in p.url for host in hosts):
                     await p.goto(url, wait_until="domcontentloaded")
                     return p
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
         page = await ctx.new_page()
         await page.goto(url, wait_until="domcontentloaded")
         return page
 
     async def _first_visible(self, page: Page, selectors: list[str], *, timeout_ms: int = 20_000) -> str | None:
-        deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+        while asyncio.get_running_loop().time() < deadline:
             for sel in selectors:
                 try:
                     if await page.locator(sel).count() > 0:
                         return sel
-                except Exception:  # noqa: BLE001
+                except Exception:
                     continue
             await asyncio.sleep(0.3)
         return None
@@ -216,7 +200,7 @@ class Publisher:
     async def _visible(self, page: Page, sel: str) -> bool:
         try:
             return bool(await page.locator(sel).first.is_visible())
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     async def _any_visible(self, page: Page, selectors: list[str]) -> str | None:
@@ -225,13 +209,11 @@ class Publisher:
                 return sel
         return None
 
-    # ── E03/E04: состояние страницы (preflight без публикации) ───────────────────
 
     async def check_page(self, page: Page) -> PreflightResult:
-        """Страница площадки открыта, это не капча/2FA/вход. Ничего не нажимает и не вводит."""
         label = self._acct().label()
         cur = page.url or ""
-        res = lambda ok, code=None, msg="": PreflightResult(  # noqa: E731
+        res = lambda ok, code=None, msg="": PreflightResult(
             platform=self.platform, ok=ok, code=code, message=msg or (refusal_text(code) if code else ""),
             page_url=_clean_url(cur), account_label=label)
         if not cur or cur.startswith("about:"):
@@ -271,7 +253,6 @@ class Publisher:
                 return code
         return None
 
-    # ── E07: подпись, ожидание обработки ─────────────────────────────────────────
 
     @staticmethod
     async def _read_text(page: Page, sel: str) -> str:
@@ -279,7 +260,6 @@ class Publisher:
             "el => ('value' in el && typeof el.value === 'string') ? el.value : (el.innerText || el.textContent || '')"))
 
     async def _fill_verified(self, page: Page, sel: str, text: str) -> bool:
-        """Заполнить поле и проверить чтением обратно. Не совпало - одна попытка вводом с клавиатуры."""
         want = _nospace(text)
         loc = page.locator(sel).first
         await loc.click()
@@ -294,8 +274,6 @@ class Publisher:
         return bool(want) and want in _nospace(await self._read_text(page, sel))
 
     async def _wait_ready(self, page: Page) -> tuple[str | None, str | None]:
-        """Ждать конца загрузки/обработки: нет индикаторов занятости, есть «готово» (если настроено),
-        кнопка «Опубликовать» видна и доступна. (селектор кнопки, None) или (None, код отказа)."""
         busy = self._list("processing_busy_selectors", [])
         done = self._list("processing_done_selectors", [])
         buttons = self._list("publish_button_selectors", self.publish_button_selectors)
@@ -315,13 +293,12 @@ class Publisher:
                         try:
                             if await page.locator(sel).first.is_enabled():
                                 return sel, None
-                        except Exception:  # noqa: BLE001
+                        except Exception:
                             pass
             if asyncio.get_event_loop().time() >= deadline:
                 return None, ("processing_timeout" if (saw_button or busy or done) else "selector_not_found")
             await asyncio.sleep(self.poll_s)
 
-    # ── публикация ───────────────────────────────────────────────────────────────
 
     def _result(self, code: str, *, status: str = "failed", clicked: bool = False, detail: str = "",
                 url: str | None = None) -> PublishResult:
@@ -333,23 +310,17 @@ class Publisher:
             needs_human=code in HUMAN_STOP_CODES or code in ("rate_limited", "rejected"))
 
     async def _shot(self, page: Page) -> str | None:
-        """Скриншот после клика: data/publications/<проект>/<площадка>.png. Сбой скриншота не меняет итог."""
         rel = pa.screenshot_relpath(self.project_label, self.platform)
         try:
             path = pa.data_root(self.data_dir) / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             await page.screenshot(path=str(path))
             return rel
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("{}: скриншот после клика не сохранён", self.platform)
             return None
 
     async def publish(self, video_path: Path, caption: str, *, before_click=None) -> PublishResult:
-        """before_click: async-колбэк без аргументов; False/исключение — клик не делается.
-
-        Всё, что случилось ДО клика, даёт failed с clicked=False (безопасно повторить).
-        Любое исключение с момента вызова колбэка считается «клик мог состояться» (clicked=True).
-        """
         clicked = False
         acct = self.account
         try:
@@ -364,12 +335,12 @@ class Publisher:
                 caption, truncated = comp.text, comp.truncated
             try:
                 page = await self._open()
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 if acct is None:
                     raise
                 return self._result("page_unavailable", detail=type(e).__name__)
 
-            if acct is not None:  # preflight: страница площадки, вход, капча, 2FA
+            if acct is not None:
                 pre = await self.check_page(page)
                 if not pre.ok:
                     r = self._result(pre.code or "page_unavailable")
@@ -383,7 +354,6 @@ class Publisher:
                 return self._result("selector_not_found", detail="поле выбора файла")
             await page.locator(file_sel).first.set_input_files(str(video_path))
 
-            # подпись: без неё пост не отправляем (failed ДО клика)
             cap_sel = await self._first_visible(page, self.caption_selectors, timeout_ms=self.find_timeout_ms)
             if not cap_sel:
                 return PublishResult(platform=self.platform, ok=False, status="failed",
@@ -401,13 +371,12 @@ class Publisher:
                     title = pa.make_title(caption, acct)
                     if not title_sel or not await self._fill_verified(page, title_sel, title):
                         return self._result("caption_not_filled", detail="заголовок")
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.warning("{}: не удалось заполнить caption", self.platform)
                 return PublishResult(platform=self.platform, ok=False, status="failed",
                                      error=f"{self.platform}: подпись не заполнена ({e}), клик не делался",
                                      error_code="caption_fill_failed")
 
-            # кнопка post / publish
             if acct is None:
                 pub_sel = await self._first_visible(page, self.publish_button_selectors, timeout_ms=60_000)
                 if not pub_sel:
@@ -417,7 +386,7 @@ class Publisher:
                 if bad:
                     return self._result(bad)
             if before_click is not None:
-                clicked = True  # если колбэк упадёт, лучше считать, что клик возможен
+                clicked = True
                 if not await before_click():
                     return PublishResult(platform=self.platform, ok=False, status="failed",
                                          error=f"{self.platform}: клик не разрешён журналом публикаций",
@@ -431,7 +400,7 @@ class Publisher:
                 res.caption_truncated = truncated
                 return res
             return await self._legacy_outcome(page)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.exception("{}: publish failed", self.platform)
             return PublishResult(platform=self.platform, ok=False, error=str(e), status="failed",
                                  clicked=clicked, error_code="exception_after_click" if clicked else "exception_before_click",
@@ -439,7 +408,7 @@ class Publisher:
 
     async def _legacy_outcome(self, page: Page) -> PublishResult:
         if await self._confirm(page):
-            if not page.url:  # confirmed без URL/ID невозможен
+            if not page.url:
                 return PublishResult(platform=self.platform, ok=False, status="unconfirmed", clicked=True,
                                      error="unconfirmed: признак успеха есть, но URL поста пуст",
                                      error_code="confirmed_without_url")
@@ -453,7 +422,6 @@ class Publisher:
         )
 
     async def _confirm(self, page: Page) -> bool:
-        """Ждём признак успеха; без признаков (или без совпадения) исход считается неподтверждённым."""
         if not self.success_selectors and not self.success_url_markers:
             await asyncio.sleep(self.confirm_timeout_s)
             return False
@@ -465,13 +433,12 @@ class Publisher:
                 for sel in self.success_selectors:
                     if await page.locator(sel).count() > 0:
                         return True
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             if asyncio.get_event_loop().time() >= deadline:
                 return False
             await asyncio.sleep(0.5)
 
-    # ── E04/E10: итог после клика ────────────────────────────────────────────────
 
     async def _marker_hit(self, page: Page, sels: list[str], markers: list[str]) -> bool:
         low = (page.url or "")
@@ -481,18 +448,17 @@ class Publisher:
             try:
                 if await page.locator(sel).count() > 0:
                     return True
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
         return False
 
     async def extract_post(self, page: Page) -> tuple[str | None, str | None]:
-        """(post_url, post_id) по настройкам: post_link_selector, post_url_regex; иначе новый http(s) URL страницы."""
         acct = self._acct()
         link: str | None = None
         if acct.post_link_selector:
             try:
                 link = await page.locator(acct.post_link_selector).first.get_attribute("href", timeout=1500)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 link = None
         cur = page.url or ""
         cands = [x for x in (link, cur) if x]
@@ -509,11 +475,10 @@ class Publisher:
                     pid = m.groupdict().get("id") or (m.group(1) if m.groups() else None)
                     return x, pid
             elif x == link or _clean_url(x) != _clean_url(self._upload_url()):
-                return x, None  # ссылка из post_link_selector или адрес страницы изменился после клика
+                return x, None
         return None, None
 
     async def _outcome(self, page: Page) -> PublishResult:
-        """Итог после клика по настраиваемым признакам. Пустые признаки -> unconfirmed."""
         acct = self._acct()
         label = acct.label()
         sels = self._list("success_selectors", self.success_selectors)
@@ -554,8 +519,6 @@ class Publisher:
                              needs_human=True, **base)
 
     async def verify_post(self, post_url: str) -> str:
-        """Независимая проверка поста (E10): открыть post_url в новой вкладке. 'ok' / 'gone' / 'unknown'.
-        Признаки берутся из verify_ok_selectors / verify_gone_selectors; не заданы - 'unknown'."""
         acct = self._acct()
         if not _is_http(post_url) or not (acct.verify_ok_selectors or acct.verify_gone_selectors):
             return "unknown"
@@ -572,15 +535,13 @@ class Publisher:
                 if asyncio.get_event_loop().time() >= deadline:
                     return "unknown"
                 await asyncio.sleep(self.poll_s)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return "unknown"
         finally:
             with contextlib.suppress(Exception):
                 await page.close()
 
     async def feed_has_post(self, snippet: str) -> bool | None:
-        """Сверка с лентой аккаунта перед ретраем (защита от дубля): есть ли пост с таким началом подписи.
-        None - сверка не настроена (feed_url и feed_item_selector) или не удалась; ретрай тогда решает человек."""
         acct = self._acct()
         snippet = _nospace(snippet)[:60]
         if not (acct.feed_url and acct.feed_item_selector and snippet):
@@ -593,17 +554,16 @@ class Publisher:
             texts = await page.eval_on_selector_all(
                 acct.feed_item_selector, "els => els.map(e => e.innerText || e.textContent || '')")
             return any(snippet in _nospace(str(t)) for t in texts)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         finally:
             with contextlib.suppress(Exception):
                 await page.close()
 
     async def preflight(self, *, open_page=None) -> PreflightResult:
-        """E03: открыть страницу площадки и проверить состояние, ничего не загружая и не нажимая."""
         try:
             page = await (open_page() if open_page else self._open())
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return PreflightResult(self.platform, False, "page_unavailable",
                                    f"{refusal_text('page_unavailable')} ({type(e).__name__})",
                                    account_label=self._acct().label())
@@ -627,8 +587,6 @@ class TikTokPublisher(Publisher):
 
 class YouTubeShortsPublisher(Publisher):
     platform = "yt_shorts"
-    # Заглушка канала «UC» убрана. Общий адрес загрузки ведёт в студию выбранного в профиле канала;
-    # точный адрес канала при необходимости задаётся upload_url в конфиге аккаунтов. Не проверено вживую.
     upload_url = "https://www.youtube.com/upload"
     extra_hosts = ["studio.youtube.com", "www.youtube.com"]
     login_url_markers = ["accounts.google.com", "/signin"]
@@ -645,8 +603,6 @@ class YouTubeShortsPublisher(Publisher):
 
 class InstagramReelsPublisher(Publisher):
     platform = "ig_reels"
-    # instagram web требует дополнительного клика "Create → Post/Reel" перед
-    # появлением файлового input; в базовом сценарии пробуем прямой URL.
     upload_url = "https://www.instagram.com/"
     file_input_selectors = ["input[type='file'][accept*='video']"]
     caption_selectors = ["textarea[aria-label*='caption' i]", "textarea"]
@@ -792,15 +748,12 @@ async def publish_everywhere(
             if gate is not None:
                 await gate.record(res)
             results.append(res)
-            # пауза между платформами (+ джиттер из конфига)
             await asyncio.sleep(cfg.pause_s + (random.uniform(0, cfg.jitter_s) if cfg.jitter_s else 0.0))
     return results
 
 
 async def preflight_everywhere(*, platforms: list[str] | None = None,
                                accounts: AccountsConfig | None = None) -> list[PreflightResult]:
-    """E03: для каждой площадки профиль запущен, страница открыта, вход есть, капчи/2FA нет.
-    Ничего не загружает и не нажимает; профиль после проверки не останавливается."""
     try:
         cfg = accounts if accounts is not None else pa.load_accounts()
     except AccountsConfigError as e:

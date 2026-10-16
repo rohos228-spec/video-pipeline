@@ -1,6 +1,3 @@
-"""W4 интеграция: общие хелперы, gpt_truncated, русские тексты диагностики, регистрация уведомителя.
-
-Только локальный код, без сети и платных вызовов."""
 from __future__ import annotations
 
 import os
@@ -44,7 +41,6 @@ def test_decision_uses_actions_recovery_classes():
     from app.services import actions_recovery, decision_v1
     assert decision_v1.DIAGNOSTIC_INCIDENTS == set(actions_recovery.RECOVERABLE_INCIDENT_TYPES)
     assert decision_v1.RECOVERY_INCIDENTS == set(actions_recovery.FORMAT_INCIDENTS)
-    # media never joins the automatic classes
     assert "media_failure" not in decision_v1.DIAGNOSTIC_INCIDENTS
     assert actions_recovery.recovery_class("media_failure", {}) is None
     assert actions_recovery.recovery_class("api_error", {"safe_retry": {"eligible": False}}) is None
@@ -60,4 +56,4 @@ def test_escalation_notifier_registration_is_safe(monkeypatch):
     monkeypatch.setattr(type(settings), "telegram_active", property(lambda self: True), raising=False)
     assert diagnosis.register_default_escalation_notifier() is True
     assert diagnosis._escalation_notifier is not None
-    assert diagnosis.register_default_escalation_notifier() is False  # already set: not replaced
+    assert diagnosis.register_default_escalation_notifier() is False

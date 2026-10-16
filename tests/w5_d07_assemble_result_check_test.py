@@ -1,12 +1,3 @@
-"""W5-3 / D07 (U/D): независимая проверка результата сборки и сохранность запроса approve_final.
-
-* чистая проверка дорожек и длины по ответу ffprobe (check_assembly_tracks);
-* настоящий ffprobe на маленьких файлах, собранных ffmpeg (пропуск, если ffmpeg нет);
-* _assemble_body: доказанный брак проваливает попытку и ровно один раз повторяется, прежний final не тронут, запрос
-  approve_final не создаётся; в журнал пишется событие artifact_verified (stage assembly_result);
-* отказ Telegram после проверки не теряет запрос approve_final, сборка остаётся собранной, подтверждение не выдаётся.
-Без сети, платных вызовов и Telegram.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +24,6 @@ def _probe(**changes):
     return probe
 
 
-# ------------------------------------------------------------------ pure verdict -----------------------------------
 
 def test_a_complete_file_passes_and_reports_its_tracks():
     check = asm.check_assembly_tracks(OK_PROBE, expected_duration=10.0, size_bytes=1000)
@@ -67,14 +57,12 @@ def test_a_missing_probe_is_unknown_never_a_failure_and_never_a_pass():
 
 
 def test_tail_and_ratio_slack_keep_a_normal_montage_passing():
-    # voice 10 s + 4 s tail: video runs 14 s, audio 10.5 s -> inside the slack (3 s + 5 % + tail)
     probe = _probe(streams=[{"codec_type": "video", "duration": "14.0"}, {"codec_type": "audio", "duration": "10.0"}],
                    format={"duration": "14.0"})
     assert asm.check_assembly_tracks(probe, expected_duration=10.0, tail_seconds=4.0, size_bytes=9)["status"] == "passed"
     assert asm.check_assembly_tracks(probe, expected_duration=10.0, tail_seconds=0.0, size_bytes=9)["status"] == "failed"
 
 
-# ------------------------------------------------------------------ real ffprobe on tiny files --------------------
 
 needs_ffmpeg = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg/ffprobe missing")
 
@@ -109,7 +97,6 @@ async def test_an_unreadable_file_is_unknown_not_a_pass(tmp_path):
     assert check["status"] == "unknown"
 
 
-# ------------------------------------------------------------------ _assemble_body ---------------------------------
 
 @pytest.fixture
 async def db():
@@ -130,7 +117,6 @@ async def _project(session, slug="w5d07") -> Project:
 
 
 class Wire:
-    """Replaces the engine, verify_artifact, the probe, the journal and the Telegram send; records what happened."""
 
     def __init__(self, monkeypatch, *, content=b"NEWVIDEO", probes=None, send=None):
         import app.services.artifact_verifier as av
@@ -201,7 +187,7 @@ async def test_a_verified_result_is_journaled_and_its_check_is_stored_with_the_a
 @pytest.mark.asyncio
 async def test_proven_defect_fails_the_attempt_and_the_single_local_retry_repairs_it(db, monkeypatch):
     project = await _project(db, "w5d07b")
-    broken = _probe(streams=[{"codec_type": "video", "duration": "10.0"}])   # no audio track
+    broken = _probe(streams=[{"codec_type": "video", "duration": "10.0"}])
     wire = Wire(monkeypatch, probes=[broken, OK_PROBE])
     await asm._assemble_body(db, project, None)
     assert wire.cores == 2, "exactly one controlled repeat"
@@ -237,7 +223,6 @@ async def test_unknown_probe_does_not_turn_a_passed_verify_artifact_into_a_failu
     assert len(await _approvals(db, project)) == 1
 
 
-# ------------------------------------------------------------------ Telegram refusal -------------------------------
 
 @pytest.mark.asyncio
 async def test_telegram_refusal_after_the_request_exists_keeps_it_pending_and_marks_it(db, monkeypatch):
@@ -246,11 +231,11 @@ async def test_telegram_refusal_after_the_request_exists_keeps_it_pending_and_ma
     async def send(bot, session, project, *, kind, video_path, caption, payload):
         req = HITLRequest(project_id=project.id, kind=kind, payload=dict(payload, video_path=video_path))
         session.add(req)
-        await session.flush()                     # create_hitl happened ...
-        raise ConnectionError("telegram refused")  # ... then the notification failed
+        await session.flush()
+        raise ConnectionError("telegram refused")
 
     wire = Wire(monkeypatch, send=send)
-    await asm._assemble_body(db, project, None)    # does not raise: the file is verified and assembled
+    await asm._assemble_body(db, project, None)
     approvals = await _approvals(db, project)
     assert len(approvals) == 1 and approvals[0].decision is HITLDecision.pending
     assert approvals[0].payload["notify_failed"]["error_type"] == "ConnectionError"
@@ -286,7 +271,7 @@ async def test_repeat_after_a_refused_notification_does_not_duplicate_the_reques
 
     Wire(monkeypatch, send=send)
     await asm._assemble_body(db, project, None)
-    await asm._assemble_body(db, project, None)            # same output: approve_final for this digest exists
+    await asm._assemble_body(db, project, None)
     assert len(await _approvals(db, project)) == 1
 
 

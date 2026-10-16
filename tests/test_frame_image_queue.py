@@ -33,7 +33,6 @@ def test_valid_png_on_disk_skips_generation(tmp_path: Path) -> None:
 
 
 def test_shot_child_without_png_needs_own_image(tmp_path: Path) -> None:
-    """K2/K3 — отдельные кадры со своим куском закадра, не shot2 родителя."""
     scenes = tmp_path / "scenes"
     scenes.mkdir()
     fr = _frame(2, FrameStatus.image_prompt_ready)

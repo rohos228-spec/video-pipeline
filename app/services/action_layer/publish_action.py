@@ -1,19 +1,3 @@
-"""Действие слоя «Опубликовать ролик на площадки» (шаг D15).
-
-Уровень destructive: публикацию нельзя отозвать из студии, а повтор после клика может выложить дважды.
-Поэтому план с этим действием всегда требует одноразового подтверждения человека (approval.py), а
-превью (``destructive_effects``) называет площадки, аккаунт и подпись ДОСЛОВНО из параметров шага.
-Подпись и список площадок входят в параметры, значит входят в хэш плана: подтверждается ровно то,
-что будет отправлено. Перед запуском сервер сверяет подпись с текущей темой проекта и список
-площадок с тем, что шаг ``publish`` реально опубликует (все платформы реестра, кроме уже
-подтверждённых): расхождение отказывает в предусловии, а не молча публикует другое.
-
-Управляемый (агентский) режим публикацию не запускает: ``steps/publish.py`` отказывает ему сам
-(MediaPolicyError), здесь то же проверяется заранее в предусловии и повторно перед запуском.
-
-Сам клик по площадкам делает существующий шаг ``publish`` через воркер; действие только ставит шаг
-в очередь эндпоинтом запуска шага и затем следит за статусом. Живой платформой не проверялось.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -25,25 +9,20 @@ from app.services.action_layer.spec import (
 PUBLISH_STEP = "publish"
 MAX_CAPTION = 2200
 
-# platform-код публикатора -> подпись для человека (коды те же, что в app/bots/publishers.py)
 PLATFORM_TITLES = {"tiktok": "TikTok", "yt_shorts": "YouTube Shorts", "ig_reels": "Instagram Reels",
                    "vk_clips": "VK Клипы", "likee": "Likee"}
 _PID = {"type": "integer", "minimum": 1}
 
 
 def registry_platforms() -> list[str]:
-    """Площадки, которые шаг publish обходит сегодня (из реестра публикаторов)."""
     from app.bots.publishers import ALL_PUBLISHERS
     return [cls.platform for cls in ALL_PUBLISHERS]
 
 
 def caption_of(project: dict) -> str:
-    """Подпись так же, как её берёт шаг publish: тема проекта или slug, не длиннее 2200 символов."""
     return str(project.get("topic") or project.get("slug") or "")[:MAX_CAPTION]
 
 
-# Факты публикации (sha256 файла и подписи) из GET /projects/{id}/publications (publication_facts), которые
-# предусловие project_exists кладёт сюда ДО построения превью: effects_text синхронный и сам БД не читает.
 _FACTS: dict[int, dict] = {}
 
 
@@ -60,8 +39,6 @@ def _remember_facts(project_id: int, facts: object) -> None:
 
 
 def account_text(platforms: list[str] | None = None) -> str:
-    """Аккаунт для превью. Есть конфиг по площадкам: подпись аккаунта каждой площадки (publish_accounts, label()
-    без секретов); иначе один профиль MORELOGIN_PROFILE_ID (кроме последних 4 символов id не показывается)."""
     from app.services import publish_accounts as pa
     from app.settings import settings
     try:
@@ -101,7 +78,6 @@ def effects_text(params: dict) -> str:
             "«Публикации» для этого файла и этой подписи.")
 
 
-# --- предусловия -------------------------------------------------------------
 
 async def _project(ctx: ActionContext, params: dict) -> dict:
     return await ctx.call("GET", f"/projects/{params['project_id']}")
@@ -109,9 +85,9 @@ async def _project(ctx: ActionContext, params: dict) -> dict:
 
 async def _pre_project(ctx: ActionContext, params: dict) -> str | None:
     await _project(ctx, params)
-    try:  # факты только для превью (sha256); их отсутствие не блокирует предусловие
+    try:
         _remember_facts(params["project_id"], await ctx.call("GET", f"/projects/{params['project_id']}/publications"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         _remember_facts(params["project_id"], None)
     return None
 
@@ -120,7 +96,7 @@ async def _not_managed(ctx: ActionContext, params: dict) -> str | None:
     try:
         from app.services.actions_v1 import managed_project_enabled
         managed = await managed_project_enabled(params["project_id"])
-    except Exception as exc:  # noqa: BLE001 - проверить не удалось: отказ (fail-closed)
+    except Exception as exc:
         return f"не удалось проверить управляемый режим ({type(exc).__name__})"
     if managed:
         return ("проект под управляемым (агентским) режимом Actions-v1: публикацию запускает только "
@@ -178,10 +154,8 @@ PRECONDITIONS = (
 )
 
 
-# --- исполнение --------------------------------------------------------------
 
 async def _publish_send(ctx: ActionContext, params: dict) -> dict:
-    # Повторная проверка перед отправкой: между превью и запуском состояние могло измениться.
     for pre in PRECONDITIONS[1:]:
         reason = await pre.check(ctx, params)
         if reason:

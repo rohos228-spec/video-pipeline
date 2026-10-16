@@ -1,8 +1,3 @@
-"""Structured, human-readable summary for an operator at the moment a
-decision escalates to human review. Additive only: it reads already-recorded
-Incident/DecisionRecord data and never changes status, budget, or any other
-field those rows already own.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -29,7 +24,6 @@ class HumanReviewSummary:
     provider_error_title: str | None
     recommended_next_step: str | None
     text: str
-    # Optional detail (defaults keep older callers unchanged).
     rule: str | None = None
     rule_diary: dict[str, Any] | None = None
     hold_reason: str | None = None
@@ -69,9 +63,6 @@ def build_human_review_summary(
     model_steps_used: int,
     max_model_steps: int,
 ) -> HumanReviewSummary:
-    """Pure function: no I/O, no DB access — caller supplies already-fetched
-    Incident fields so this stays trivially unit-testable.
-    """
     incident_title = TITLES.get(incident_type, incident_type)
     evidence_event_count = len(incident_details.get("event_ids") or [])
     catalog_code = incident_details.get("catalog_code")

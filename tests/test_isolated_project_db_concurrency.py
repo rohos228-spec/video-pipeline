@@ -25,7 +25,6 @@ from app.project_db import (
 
 @pytest.mark.asyncio
 async def test_init_project_db_without_row_is_empty(tmp_path: Path):
-    """Баг кнопки «Создать»: схема есть, строки Project нет → PATCH 404."""
     await init_project_db(tmp_path)
     sm = await get_project_sessionmaker(tmp_path)
     async with sm() as session:

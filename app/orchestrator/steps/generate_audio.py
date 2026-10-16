@@ -46,17 +46,16 @@ def _emit(kind: str, payload: dict) -> None:
         from app.services.observation import emit
 
         emit(kind, payload)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
 def _report_failure(project: Project, exc: Exception) -> None:
-    """Единый путь ошибок звука: тип сбоя, русский текст, факт в журнале; исключение не подменяется."""
     failure_class, text_ru = classify_audio_failure(exc)
     try:
-        exc.failure_class = failure_class  # type: ignore[attr-defined]
-        exc.operator_text = text_ru  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001
+        exc.failure_class = failure_class
+        exc.operator_text = text_ru
+    except Exception:
         pass
     logger.error("[#{}] generate_audio сбой [{}]: {}", project.id, failure_class, exc)
     _emit("audio_step_failure", {"node": "audio", "failure_class": failure_class, "error_class": type(exc).__name__,
@@ -225,7 +224,7 @@ async def run(
 ) -> None:
     try:
         await _run(session, project, bot, force_full_asr=force_full_asr)
-    except Exception as exc:  # noqa: BLE001  # отмена (BaseException) проходит мимо
+    except Exception as exc:
         _report_failure(project, exc)
         raise
 

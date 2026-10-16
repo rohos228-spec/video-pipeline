@@ -1,9 +1,3 @@
-"""W4-3 / C04: звук. Явная подмена процедурным синтезом, независимая проверка аудио, единый путь ошибок audio.
-
-Класс доказательства U и D: настоящий код sfx_gen / generate_sfx / generate_audio / audio_verification, настоящие
-ffprobe/ffmpeg на настоящих файлах. Подменена только граница журнала (emit) и сессия. Сети и платных вызовов нет;
-живого прогона не было.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -64,7 +58,6 @@ def facts():
         yield got
 
 
-# ── audio_verification ───────────────────────────────────────────────────────────────────────────────────────
 
 
 @needs_ffmpeg
@@ -145,7 +138,6 @@ def test_failure_classification_is_typed_and_russian():
         assert kind == want and text and any("а" <= c.lower() <= "я" for c in text)
 
 
-# ── sfx_gen: подмена без ключа явная ─────────────────────────────────────────────────────────────────────────
 
 
 def _project(tmp_path):
@@ -169,7 +161,7 @@ def test_no_key_is_an_explicit_fallback_event_per_sound(tmp_path, facts):
     assert all(f["synthetic"] is True and f["provider_fallback"]["reason"] == "no_api_key" for f in files)
     cp = ai_job_checkpoint(project, "sfx_files")
     assert cp["synthetic"] == 2 and cp["no_api_key"] is True and cp["provider_fallbacks"] == 2
-    assert all(Path(f["path"]).is_file() for f in files)  # подмена записана и реально существует
+    assert all(Path(f["path"]).is_file() for f in files)
 
 
 @needs_ffmpeg
@@ -210,7 +202,6 @@ def test_sfx_acceptance_uses_the_independent_verifier(tmp_path):
     assert sfx_gen.verify_audio_file(tmp_path / "missing.wav") != []
 
 
-# ── generate_sfx.run: нода не «готова нормально» ─────────────────────────────────────────────────────────────
 
 
 @needs_ffmpeg
@@ -220,7 +211,7 @@ def test_node_without_key_is_marked_degraded_and_journaled(tmp_path, facts):
             patch("app.services.sfx_plan.load_sfx_plan", lambda p: _events(2)):
         asyncio.run(generate_sfx.run(Sess(), project))
     m = project.meta
-    assert project.status is ProjectStatus.sfx_ready  # конвейер идёт дальше: политика допуска за владельцем
+    assert project.status is ProjectStatus.sfx_ready
     assert m["sfx_degraded"] is True and m["sfx_generated"] is False
     assert m["sfx_provider"] == "local_synth" and m["sfx_synthetic_count"] == 2
     assert "ключа" in m["sfx_degraded_reason"]
@@ -263,7 +254,6 @@ def test_degradation_summary_counts_mixed_results():
     assert (s["synthetic"], s["provider"], s["degraded"], s["no_api_key"]) == (1, "mixed", True, 0)
 
 
-# ── generate_audio: проверка результата и единый путь ошибок ─────────────────────────────────────────────────
 
 
 def _clip(path, end):
@@ -281,7 +271,7 @@ def test_persist_rejects_a_silent_voice_file_before_touching_the_db(tmp_path, fa
         asyncio.run(generate_audio._persist_audio_results(
             session, project, [frame], [_clip(voice, 1.0)], voice, [], tmp_path, source="elevenlabs"))
     assert ei.value.failure_class == "verification_failed"
-    assert session.added == [] and frame.start_ts is None  # ничего не записано
+    assert session.added == [] and frame.start_ts is None
     ver = next(p for k, p in facts if k == "audio_result_verification")
     assert ver["ok"] is False and "silent" in ver["codes"]
 

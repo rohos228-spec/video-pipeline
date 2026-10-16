@@ -1,10 +1,9 @@
-"""Create / drop scenes_space and frames_space. Idempotent up; down drops only those."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.services.scene_space import models as _scene_space_models  # noqa: F401
+from app.services.scene_space import models as _scene_space_models
 
 _SQL_SCENES = """
 CREATE TABLE IF NOT EXISTS scenes_space (
@@ -47,7 +46,6 @@ ON frames_space (scene_id, shot_order)
 async def migrate_scene_space_schema(conn: Any) -> None:
     await conn.exec_driver_sql(_SQL_SCENES)
     await conn.exec_driver_sql(_SQL_FRAMES)
-    # Колонка manual для старых таблиц: версионная миграция 0008 (schema_migrations).
     from app.services.schema_migrations import run_migration_ids
 
     await run_migration_ids(conn, ("0008_frames_space_manual",))
@@ -55,7 +53,6 @@ async def migrate_scene_space_schema(conn: Any) -> None:
 
 
 async def downgrade_scene_space_schema(conn: Any) -> None:
-    """DROP only frames_space / scenes_space. Never frames, scenes, projects."""
     await conn.exec_driver_sql("DROP TABLE IF EXISTS frames_space")
     await conn.exec_driver_sql("DROP TABLE IF EXISTS scenes_space")
 

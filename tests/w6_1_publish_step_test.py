@@ -1,7 +1,3 @@
-"""W6-1 (E01/E02/E11): шаг публикации. Без подтверждения человека клика нет; статус проекта выводится из журнала.
-
-Площадки и браузер подменены (фейковый реестр), файл ролика синтетический. Класс доказательства: U.
-"""
 from __future__ import annotations
 
 import pytest
@@ -31,7 +27,6 @@ def _enabled(monkeypatch):
     monkeypatch.setattr(settings, "social_publish_enabled", True)
 
 
-# ── E01: без подтверждения человека шаг не стартует ─────────────────────────────
 
 
 async def test_without_human_approval_nothing_is_clicked_or_opened(db, env, monkeypatch):
@@ -39,12 +34,11 @@ async def test_without_human_approval_nothing_is_clicked_or_opened(db, env, monk
     p = await make_project(db, env.workdir)
     bot = Bot()
     await step.run(db, p, bot)
-    assert clicks == [] and clicks.opened == []  # браузер даже не открывался
-    assert p.status is ProjectStatus.assembled  # не залип в publishing
+    assert clicks == [] and clicks.opened == []
+    assert p.status is ProjectStatus.assembled
     assert set(p.meta["publish_awaiting_approval"]["platforms"]) == set(PLATFORMS)
-    assert await ps.list_for(db, p.id) == []  # ни намерений, ни записей
+    assert await ps.list_for(db, p.id) == []
     assert len(bot.sent) == 1 and "ждёт вашего подтверждения" in bot.sent[0]
-    # повторный запуск того же файла: ни клика, ни второго уведомления
     p.status = ProjectStatus.publishing
     await step.run(db, p, bot)
     assert clicks == [] and len(bot.sent) == 1 and p.status is ProjectStatus.assembled
@@ -82,8 +76,8 @@ async def test_approval_is_spent_by_the_click_and_cannot_cause_a_second_one(db, 
     assert (await ps.list_approvals(db, p.id, sha))[PLATFORMS[0]]["consumed_at"] is not None
     p.status = ProjectStatus.publishing
     await step.run(db, p, Bot())
-    assert clicks == [PLATFORMS[0]]  # второго клика нет
-    with pytest.raises(ps.PublicationRefused) as e:  # и новое «да» поверх unconfirmed не выдаётся
+    assert clicks == [PLATFORMS[0]]
+    with pytest.raises(ps.PublicationRefused) as e:
         await grant(db, p, [PLATFORMS[0]])
     assert e.value.code == "needs_human_first"
 
@@ -91,7 +85,7 @@ async def test_approval_is_spent_by_the_click_and_cannot_cause_a_second_one(db, 
 async def test_rebuilt_video_has_a_new_sha_and_needs_a_new_yes(db, env, monkeypatch):
     clicks = fake_registry(monkeypatch)
     p = await make_project(db, env.workdir)
-    await grant(db, p)  # «да» на старый файл
+    await grant(db, p)
     await add_final(db, p, env.workdir, data=b"REBUILT-VIDEO", uuid="u-new")
     await step.run(db, p, Bot())
     assert clicks == [] and p.status is ProjectStatus.assembled
@@ -117,10 +111,9 @@ async def test_gate_refuses_click_if_the_approval_was_spent_by_someone_else(db, 
     assert await ps.consume_approval(db, project_id=p.id, platform=PLATFORMS[0], sha256=sha, caption_sha256=csha)
     assert await gate.before_click(PLATFORMS[0]) is False
     assert gate.not_claimed[PLATFORMS[0]] == "no_human_approval"
-    assert (await ps.list_for(db, p.id))[0]["clicked_at"] is None  # отметки клика нет
+    assert (await ps.list_for(db, p.id))[0]["clicked_at"] is None
 
 
-# ── переходы статусов проекта ─────────────────────────────────────────────────
 
 
 async def test_all_confirmed_gives_published_and_clears_markers(db, env, monkeypatch):
@@ -144,7 +137,6 @@ async def test_unconfirmed_leaves_publishing_with_visible_way_out_through_manual
     assert any("НЕ ПОДТВЕРЖДЕНО" in t and "ждёт проверки человека" in t for t in bot.sent)
     n = len(clicks)
     sha = await sha_of(db, p)
-    # выход: человек подтвердил вручную -> проект published, клика не было
     await ps.confirm_manual(db, project_id=p.id, platform=PLATFORMS[1], sha256=sha, actor="operator",
                             post_url="https://example.invalid/post/1")
     rows = await ps.list_for(db, p.id, sha)
@@ -176,7 +168,7 @@ async def test_failure_before_click_keeps_the_approval_and_retries_that_platform
     p = await make_project(db, env.workdir)
     await grant(db, p)
     await step.run(db, p, Bot())
-    assert p.status is ProjectStatus.publishing  # воркер доделает: клика не было, «да» не потрачено
+    assert p.status is ProjectStatus.publishing
     behaviors.clear()
     clicks.clear()
     await step.run(db, p, Bot())
@@ -199,14 +191,13 @@ async def test_manual_not_published_closes_the_project_out_of_publishing(db, env
     assert p.status is not ProjectStatus.published
 
 
-# ── SOCIAL_PUBLISH_ENABLED=false и удержание auto_advance ─────────────────────────
 
 
 async def test_disabled_flag_still_gives_publish_skipped_and_never_published(db, env, monkeypatch):
     clicks = fake_registry(monkeypatch)
     monkeypatch.setattr(settings, "social_publish_enabled", False)
     p = await make_project(db, env.workdir)
-    await grant(db, p)  # даже при «да» выключенный флаг ничего не публикует
+    await grant(db, p)
     await step.run(db, p, Bot())
     assert clicks == [] and p.status is ProjectStatus.assembled and step.is_publish_skipped(p)
     assert {r["status"] for r in await ps.list_for(db, p.id)} == {ps.S_SKIPPED}
@@ -218,11 +209,11 @@ async def test_hold_reason_follows_the_markers_and_the_current_file(db, env, mon
     assert await step.publish_hold_reason(db, p) is None
     p.meta = {"publish_awaiting_approval": {"artifact_uuid": "u-w61", "platforms": ["tiktok"]}}
     assert await step.publish_hold_reason(db, p) == "publish_awaiting_approval"
-    p.meta = {"publish_needs_human": {"platforms": ["tiktok"]}}  # старая отметка без uuid держит
+    p.meta = {"publish_needs_human": {"platforms": ["tiktok"]}}
     assert await step.publish_hold_reason(db, p) == "publish_needs_human"
     p.meta = {"publish_closed_by_human": {"artifact_uuid": "u-w61"}}
     assert await step.publish_hold_reason(db, p) == "publish_closed_by_human"
-    await add_final(db, p, env.workdir, data=b"REBUILT", uuid="u-new")  # пересборка снимает удержание
+    await add_final(db, p, env.workdir, data=b"REBUILT", uuid="u-new")
     assert await step.publish_hold_reason(db, p) is None
     p.meta = {"publish_skipped": {"artifact_uuid": "u-new"}}
     monkeypatch.setattr(settings, "social_publish_enabled", False)
@@ -231,7 +222,6 @@ async def test_hold_reason_follows_the_markers_and_the_current_file(db, env, mon
     assert await step.publish_hold_reason(db, p) is None
 
 
-# ── E11: факты публикации для наблюдения ───────────────────────────────────────
 
 
 async def test_facts_show_sha_post_url_status_and_actions(db, env, monkeypatch):
@@ -250,12 +240,11 @@ async def test_facts_show_sha_post_url_status_and_actions(db, env, monkeypatch):
     assert by[PLATFORMS[1]]["state"] == ps.D_UNCONFIRMED and by[PLATFORMS[1]]["can_confirm_manual"] is True
     assert by[PLATFORMS[1]]["can_mark_failed"] is True and by[PLATFORMS[1]]["can_approve"] is False
     assert by[PLATFORMS[2]]["state"] == "not_started" and by[PLATFORMS[2]]["can_approve"] is True
-    assert by[PLATFORMS[2]]["can_confirm_manual"] is False  # записи нет
+    assert by[PLATFORMS[2]]["can_confirm_manual"] is False
     assert facts["derived"]["state"] == ps.PS_NEEDS_HUMAN
 
 
 async def test_facts_with_publish_off_do_not_report_publishing_for_an_approved_platform(db, env, monkeypatch):
-    """Панель/наблюдение: «да» есть, а настройка выключена - состояние не «publishing», площадка в approved_publish_off."""
     fake_registry(monkeypatch)
     p = await make_project(db, env.workdir)
     await grant(db, p, PLATFORMS[:1])

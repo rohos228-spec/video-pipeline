@@ -1,4 +1,3 @@
-"""Observation history and explicit, policy-gated Actions-v1 controls."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -186,14 +185,12 @@ def _watchdog_info():
 
 @router.get('/kill-switch', dependencies=[Depends(require_web_user)])
 async def kill_switch_state(project_id: int):
-    """Global operator emergency stop (not project-scoped; project_id only routes the panel)."""
     from app.services import kill_switch
     return panel_safe({**await kill_switch.status(get_observer().master), "watchdog": _watchdog_info()})
 
 
 @router.get('/provider-tasks', dependencies=[Depends(require_web_user)])
 async def provider_tasks(project_id: int):
-    """Read-only: provider task ids submitted by native media calls (newest status per task)."""
     from app.services import spend_guard
     async with get_observer().master() as session:
         return panel_safe({"tasks": await spend_guard.list_provider_tasks(session, project_id)})
@@ -201,10 +198,6 @@ async def provider_tasks(project_id: int):
 
 @router.get('/spend', dependencies=[Depends(require_web_user)])
 async def spend_state(project_id: int, run_id: str | None = Query(None, max_length=64)):
-    """Read-only: today's / project / run spend versus the local caps (docs/SPEND_LIMITS.md).
-
-    `runs` lists the latest managed runs of the project with their recorded spend; `run_id` picks one
-    of them (default: the first enabled run, as before). Unknown ids are ignored, never trusted."""
     from app.services import spend_guard
     async with get_observer().master() as session:
         rows = (await session.scalars(select(ActionExecutionControl).where(
@@ -222,7 +215,6 @@ async def spend_state(project_id: int, run_id: str | None = Query(None, max_leng
 
 @router.post('/kill-switch', dependencies=[LocalOnlyDep])
 async def kill_switch_change(project_id: int, payload: KillSwitchChange, operator: AuthDep):
-    """Set the global emergency stop with explicit operator identity and rationale (audited)."""
     from app.services import kill_switch
     try:
         result = await kill_switch.set_state(get_observer().master, active=payload.active,
@@ -453,7 +445,6 @@ def managed_step_code(node):
 async def start_managed_node(project_id: int, execution_id: str, payload: ManagedStart,
                              operator: AuthDep,
                              session: AsyncSession = Depends(get_project_session)):
-    """Explicitly start one node inside the managed permission using start_step."""
     from sqlalchemy import select
     from app.models import WorkflowRun, NodeRun, NodeRunStatus
     from app.services.actions_v1 import get_permission, evaluate_start
@@ -551,7 +542,6 @@ async def start_managed_node(project_id: int, execution_id: str, payload: Manage
 async def verify_managed_node(project_id: int, execution_id: str, payload: VerifyNode,
                               operator: AuthDep,
                               session: AsyncSession = Depends(get_project_session)):
-    """Record runtime verification without changing business data or node state."""
     from sqlalchemy import select
     if not payload.idempotency_key.strip():
         raise HTTPException(422, "idempotency key required")
@@ -773,7 +763,6 @@ class ClearCommitUncertainty(BaseModel):
 @router.post("/{execution_id}/commit-uncertainty/clear", dependencies=[LocalOnlyDep])
 async def clear_commit_uncertainty(project_id: int, execution_id: str, payload: ClearCommitUncertainty,
                                    operator: AuthDep):
-    """A person confirms the business commit state; the marker stays in history."""
     observer = get_observer()
     async with observer.master() as session:
         await _scope(session, project_id, execution_id)
@@ -784,7 +773,6 @@ async def clear_commit_uncertainty(project_id: int, execution_id: str, payload: 
 
 @router.get("/{execution_id}/diagnoses", dependencies=[Depends(require_web_user)])
 async def diagnoses(project_id: int, execution_id: str):
-    """Read-only persisted projection; no provider, worker or diagnostic writes."""
     from datetime import datetime
     from sqlalchemy import func
     from app.services.diagnosis import Incident, DiagnosisState, get_diagnoser
@@ -812,11 +800,6 @@ async def diagnoses(project_id: int, execution_id: str):
 
 @router.get("/telemetry", dependencies=[Depends(require_web_user)])
 async def telemetry(project_id: int, since_hours: int | None = Query(default=None, ge=1, le=8760)):
-    """Project-wide aggregation across every execution this project has
-    had -- unlike every other endpoint in this router, deliberately not
-    scoped to one execution_id, since telemetry is only useful summed over
-    time. Read-only; see app/services/telemetry.py for the pure aggregation
-    logic (unit-tested in tests/test_telemetry.py without a DB)."""
     from datetime import datetime, timedelta
     from app.services.telemetry import project_telemetry
     since = datetime.utcnow() - timedelta(hours=since_hours) if since_hours else None
@@ -826,9 +809,6 @@ async def telemetry(project_id: int, since_hours: int | None = Query(default=Non
 
 @router.get("/node-coverage", dependencies=[Depends(require_web_user)])
 async def node_coverage():
-    """Panel «Покрытие нод»: every registered node type with its level (managed / observed /
-    human_only), what is verified, what recovery exists and, when none, the coded reason.
-    Static registry data: read-only, no database, no provider call (app/services/node_coverage.py)."""
     from app.services.node_coverage import node_coverage as coverage
     return panel_safe(coverage())
 
@@ -839,15 +819,6 @@ def _sse_telemetry_payload(payload: dict) -> str:
 
 
 async def _telemetry_stream_events(project_id: int, since_hours: int | None):
-    """Polls app/services/telemetry.py::project_telemetry on an interval and
-    only pushes a new payload when it actually changed (compared via the
-    existing digest() helper) -- a ': keepalive' comment otherwise, so an
-    idle project doesn't repeatedly ship an identical multi-KB JSON blob,
-    while still preventing the connection from being closed for inactivity.
-    Same StreamingResponse + 'data: ...\\n\\n' / ': keepalive\\n\\n' shape
-    app/web/routers/fleet.py already uses for its log-tail stream -- no new
-    SSE convention introduced here.
-    """
     from datetime import datetime, timedelta
     from app.services.telemetry import project_telemetry
 
@@ -872,19 +843,11 @@ async def _telemetry_stream_events(project_id: int, since_hours: int | None):
                 yield ": keepalive\n\n"
             await asyncio.sleep(2.0)
     except asyncio.CancelledError:
-        # Client disconnected (tab closed, navigated away, AbortController) --
-        # Starlette cancels this generator's task; nothing else to clean up,
-        # since project_telemetry only ever opens short-lived `async with`
-        # sessions that are already closed between ticks.
         raise
 
 
 @router.get("/stream", dependencies=[Depends(require_web_user)])
 async def telemetry_stream(project_id: int, since_hours: int | None = Query(default=None, ge=1, le=8760)):
-    """Server-Sent Events: pushes app/services/telemetry.py's project-wide
-    summary (same shape as GET /telemetry) every ~2s, deduplicated so an
-    idle project just sends keepalive comments. Deliberately not
-    execution-scoped, like GET /telemetry above."""
     from starlette.responses import StreamingResponse
     return StreamingResponse(
         _telemetry_stream_events(project_id, since_hours),
@@ -893,9 +856,6 @@ async def telemetry_stream(project_id: int, since_hours: int | None = Query(defa
     )
 
 
-# --- B05: единая лента проекта (только чтение; контракт - docs/REGISTRAR_FULL_PLAN.md, W3) -----------------
-# Префикс отличается от `router` (/observations), поэтому отдельный роутер: интегратор подключает его в api.py
-# строкой `app.include_router(observations.timeline_router, prefix=API_PREFIX)`.
 timeline_router = APIRouter(prefix="/projects/{project_id}/timeline", tags=["timeline"])
 
 
@@ -907,7 +867,6 @@ async def project_timeline(project_id: int, since: str | None = Query(None, max_
                            severity: str | None = Query(None, max_length=8),
                            limit: int = Query(100, ge=1, le=500),
                            cursor: str | None = Query(None, max_length=300)):
-    """Единая лента: события, инциденты, решения, действия, траты, задачи, действия оператора, публикации."""
     from app.services import timeline as tl
     async with get_observer().master() as session:
         try:
@@ -919,7 +878,6 @@ async def project_timeline(project_id: int, since: str | None = Query(None, max_
 
 @timeline_router.get("/totals", dependencies=[Depends(require_web_user)])
 async def project_timeline_totals(project_id: int, run_id: str | None = Query(None, max_length=64)):
-    """Итоги вкладки «Журнал» по всему проекту: деньги (сегодня/проект/запуск), ошибки, пробелы, место на диске."""
     from app.services import disk_guard, timeline as tl
     spend = await spend_state(project_id, run_id)
     async with get_observer().master() as session:
@@ -938,7 +896,6 @@ async def project_timeline_export(project_id: int, format: str = Query("csv", ma
                                   kinds: str | None = Query(None, max_length=500),
                                   q: str | None = Query(None, max_length=200),
                                   severity: str | None = Query(None, max_length=8)):
-    """Выгрузка ленты (до 50000 строк): csv (UTF-8 с BOM) или json."""
     from app.services import timeline as tl
     async with get_observer().master() as session:
         try:
@@ -950,7 +907,6 @@ async def project_timeline_export(project_id: int, format: str = Query("csv", ma
                     headers={"Content-Disposition": f'attachment; filename="timeline-{project_id}.{ext}"'})
 
 
-# --- C01: автонаблюдение (добавление; прежние маршруты не изменены) ---------------------------------------
 class AutoObservation(BaseModel):
     enabled: bool
 
@@ -977,8 +933,6 @@ async def get_auto_observation(project_id: int):
 
 @router.post("/auto", dependencies=[LocalOnlyDep])
 async def set_auto_observation(project_id: int, payload: AutoObservation):
-    """Включить/выключить автонаблюдение для проекта. Выключение останавливает действующее наблюдение
-    (режим observe); управляемый (managed) режим не затрагивается."""
     observer = get_observer()
     async with observer.master() as session:
         project = await session.get(Project, project_id)

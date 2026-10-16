@@ -83,11 +83,6 @@ def test_salvage_ops_from_partial_json_truncated() -> None:
 
 
 def test_extract_apply_ops_json_closes_truncated_nested_bits() -> None:
-    """#34 fw_script: один op, биты оборваны — стрим [DONE] без хвоста.
-
-    salvage_ops пустой (op не закрыт). Без close → RuntimeError
-    «модель не вернула apply-ops».
-    """
     text = (
         '{"ops":[{"frame_uuid":"98ce4c2b0697437bad9f71d8","fields":{"биты":['
         '{"порядок":1,"глагол":"подает","якорь":"раз"},'
@@ -105,7 +100,6 @@ def test_extract_apply_ops_json_closes_truncated_nested_bits() -> None:
 
 
 def test_extract_apply_ops_json_repairs_double_quoted_bit_key() -> None:
-    """fw_script kie: {""порядок":27 плюс обрыв хвоста — без починки extract=None."""
     text = (
         '{"ops":[{"frame_uuid":"561ead3634c945bdb825314a","fields":{"биты":['
         '{"порядок":1,"изменение":"а","якорь":"раз"},'

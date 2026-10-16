@@ -1,4 +1,3 @@
-"""Tests of the pure part of ``scripts/e2e_action_layer_paid_exec.py`` (F09). No server, no network, nothing paid."""
 from __future__ import annotations
 
 import importlib.util
@@ -30,22 +29,21 @@ def _free_port() -> int:
     return port
 
 
-# ───────── authorisation, caps, gate ─────────
 
 def test_authorisation_hard_ceiling_and_price_hint(mod):
     assert mod.authorisation_problem(3, 0.30) is None
     assert mod.authorisation_problem(1, 1.00) is None
     assert "hard ceiling" in mod.authorisation_problem(1, 1.01)
-    assert mod.authorisation_problem(4, 0.30) is not None          # 4 x $0.10 > $0.30
+    assert mod.authorisation_problem(4, 0.30) is not None
     assert mod.authorisation_problem(0, 0.30) is not None and mod.authorisation_problem(1, 0) is not None
 
 
 def test_app_caps_cover_the_app_own_estimate_and_never_go_below_max_usd(mod):
-    assert mod.app_cap_usd(0.0, 0.30) == 0.35            # 0.30 estimate of ONE submit + margin
+    assert mod.app_cap_usd(0.0, 0.30) == 0.35
     assert mod.app_cap_usd(0.10, 0.30) == 0.45
     assert mod.app_cap_usd(0.20, 0.30) == 0.55
-    assert mod.app_cap_usd(0.0, 0.80) == 0.80            # max-usd wins when larger
-    assert mod.app_cap_usd(0.70, 0.30) is None           # does not fit under the $1.00 ceiling
+    assert mod.app_cap_usd(0.0, 0.80) == 0.80
+    assert mod.app_cap_usd(0.70, 0.30) is None
 
 
 def test_gate_posts_one_per_scenario_two_only_in_the_second_submit_control(mod):
@@ -60,7 +58,6 @@ def test_constants_follow_the_production_code(mod):
     assert mod.CREDIT_USD == kie_catalog.CREDIT_USD
     assert abs(mod.LLM_OP_CALL_HIGH_CREDITS - bmm.LLM_OP_CALL_HIGH) < 0.01
     assert mod.IMAGE_BILLED_ATTEMPTS == bmm.IMAGE_BILLED_ATTEMPTS
-    # the stand's estimate of S1b equals the real estimator at the injected tariff
     est = bmm._media_estimate({"image_generator": "nano_banana_2", "image_resolution": "1k"}, 1, 1, 0, note="x") \
         if False else None
     assert est is None
@@ -76,7 +73,6 @@ def test_injected_tariff_makes_the_real_estimator_known(mod, monkeypatch):
 
 
 def test_shipped_layer_has_no_outsee_tariff(mod):
-    """S1a depends on it: if this turns false the stand's expectation of 'unknown' must change."""
     from app.services.action_layer import builtin_montage_more as bmm
     unit, why = bmm._kie_unit("image", "nano_banana_2", "1k")
     assert unit is None and "Outsee" in why
@@ -85,7 +81,6 @@ def test_shipped_layer_has_no_outsee_tariff(mod):
     assert est.known is False
 
 
-# ───────── wire, ledger ─────────
 
 def test_wire_counters(mod, tmp_path):
     p = tmp_path / "wire.jsonl"
@@ -138,7 +133,6 @@ def test_ledger_summary_ignores_other_plans_and_events(mod):
     assert led["layer_rows"] == 0 and led["native_rows"] == 0 and led["open_reserve"] is False
 
 
-# ───────── verdicts and honest lists ─────────
 
 def test_final_verdict_wording(mod):
     assert mod.final_verdict("dry", False) == "NOT PASSED" and mod.final_verdict("live", False) == "NOT PASSED"
@@ -165,7 +159,6 @@ def test_paid_report_skip_is_not_a_failure(mod):
     assert mod.PaidReport(strict=True).check("k", False, known="F09-D1") is False
 
 
-# ───────── arguments and refusals ─────────
 
 def test_parse_args_refusals(mod):
     for argv in ([], ["--dry", "--live", "--work-dir", "w"], ["--dry"], ["--live", "--work-dir", "w"],
@@ -184,7 +177,7 @@ def test_parse_args_defaults_and_tariff_policy(mod):
     assert a.max_real_posts == 3 and a.max_usd == 0.30 and a.scenario_list == ["S1", "S2", "S3"]
     assert a.inject_tariff_credits == mod.DEFAULT_TARIFF_CREDITS and a.image_generator == "nano_banana_2"
     b = mod.parse_args(["--live", "--env-file", "e", "--work-dir", "w"])
-    assert b.inject_tariff_credits == 0.0                 # a paid apply_queue needs an explicit owner decision
+    assert b.inject_tariff_credits == 0.0
     c = mod.parse_args(["--live", "--env-file", "e", "--work-dir", "w", "--inject-tariff-credits", "10"])
     assert c.inject_tariff_credits == 10.0
     d = mod.parse_args(["--dry", "--work-dir", "w", "--dry-scenario", "no_stop_on_kill", "--with-improve-scene"])
@@ -258,7 +251,6 @@ def test_scenario_reserve_matches_the_ceilings(mod):
         assert mod.app_cap_usd(mod.scenario_reserve(a, s), 0.30) <= mod.HARD_CEILING_USD
 
 
-# ───────── fake provider with delay ─────────
 
 def test_slow_fake_delays_the_submit_and_counts_it(mod):
     port = _free_port()
@@ -273,7 +265,6 @@ def test_slow_fake_delays_the_submit_and_counts_it(mod):
         fake.inner.stop()
 
 
-# ───────── catalog expectations the stand relies on ─────────
 
 def test_scenario_actions_exist_with_expected_tiers():
     from app.services.action_layer.spec import ensure_builtin_actions, registry
@@ -301,7 +292,6 @@ def test_stand_seams_target_names_that_exist(mod):
     assert "/api/v1/images/generate" == mod.prod.GENERATE_PATH
 
 
-# ───────── the source stays free of secrets, .env and git ─────────
 
 def test_script_source_is_safe():
     src = SCRIPT.read_text(encoding="utf-8")

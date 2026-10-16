@@ -1,4 +1,3 @@
-"""Правила вокруг ответа планировщика (planner_rules): умолчания, защита от лишнего, загрузки, шот."""
 from __future__ import annotations
 
 import json
@@ -36,7 +35,6 @@ def spec(aid: str):
     return registry.get(aid)
 
 
-# --- значения по умолчанию ---------------------------------------------------------------
 
 def test_generator_and_resolution_come_from_project_settings() -> None:
     out = rules.fill_defaults("montage.generate_scene_images", {"frame_numbers": [3, 4]}, FACTS,
@@ -44,8 +42,7 @@ def test_generator_and_resolution_come_from_project_settings() -> None:
     assert out.params["image_generator"] == "nano_banana_2" and out.params["image_resolution"] == "2k"
     assert out.params["project_id"] == 2
     assert "image_generator=nano_banana_2" in out.notes
-    assert "video_generator" not in out.params  # такого поля у действия нет
-    # заданное моделью не перезаписывается
+    assert "video_generator" not in out.params
     kept = rules.fill_defaults("montage.generate_scene_images",
                                {"frame_numbers": [3], "image_resolution": "4k"}, FACTS,
                                schema("montage.generate_scene_images"))
@@ -66,7 +63,7 @@ def test_apply_queue_limits_follow_the_queue_of_the_named_frames() -> None:
 def test_improve_scene_ops_cap_follows_scene_size() -> None:
     out = rules.fill_defaults("montage.improve_scene", {"frame_id": 1204, "prompt": "x"}, FACTS,
                               schema("montage.improve_scene")).params
-    assert out["max_image_ops"] == 5  # сцена 4-5: два кадра -> still + по два
+    assert out["max_image_ops"] == 5
     far = rules.fill_defaults("montage.improve_scene", {"frame_id": 999, "prompt": "x"}, FACTS,
                               schema("montage.improve_scene")).params
     assert far["max_image_ops"] == rules.MAX_IMPROVE_OPS
@@ -79,7 +76,7 @@ def test_required_shot_is_filled_only_when_it_is_unambiguous() -> None:
     assert (one["a_shot"], one["b_shot"]) == (1, 1)
     two = rules.fill_defaults("montage.swap_slots",
                               {"kind": "image", "a_frame": 4, "b_frame": 3}, FACTS, sch).params
-    assert "a_shot" not in two and two["b_shot"] == 1  # у кадра 4 картинки в обоих шотах
+    assert "a_shot" not in two and two["b_shot"] == 1
     trim = rules.fill_defaults("montage.set_video_trim", {"frame_number": 3, "start": 1}, FACTS,
                                schema("montage.set_video_trim")).params
     assert trim["shot"] == 1
@@ -90,7 +87,6 @@ def test_required_shot_is_filled_only_when_it_is_unambiguous() -> None:
 
 @pytest.fixture
 def prompts(tmp_path, monkeypatch):
-    """Мастер-промты: draft только у шага script, main у script и excel_gpt (выбран в проекте)."""
     from app.services import prompt_library as pl
     monkeypatch.setattr(pl, "PROMPTS_ROOT", tmp_path)
     for step, names in {"script": ("default", "main", "draft"), "excel_gpt": ("default", "main"),
@@ -109,15 +105,13 @@ def target(aid, params, text):
 
 
 def test_prompt_step_comes_from_the_words_first(prompts) -> None:
-    # модель взяла step_code из статуса проекта (split), а человек назвал script
     p, _n, ask = target("prompt.get_master", {"step_code": "split", "name": "main"},
                         "прочитай мастер-промт шага script")
     assert ask is None and p["step_code"] == "script" and p["name"] == "main"
     p, notes, ask = target("prompt.get_master", {}, "прочитай мастер-промт шага script")
-    assert p == {"step_code": "script", "name": "main"} and notes == ["name=main"]  # выбранный в проекте
+    assert p == {"step_code": "script", "name": "main"} and notes == ["name=main"]
     p, _n, _a = target("prompt.get_master", {}, "прочитай мастер-промт шага split")
     assert p["name"] == "default"
-    # названо несколько шагов - вопрос
     _p, _n, ask = target("prompt.get_master", {}, "сравни мастер-промт шага script и шага plan")
     assert ask and set(ask[1]) == {"script", "plan"}
 
@@ -136,11 +130,10 @@ def test_ambiguous_variant_asks_for_the_step_and_never_defaults_to_the_current_o
     assert ask and "main" in ask[0] and set(ask[1]) == {"script", "excel_gpt"}
     _p, _n, ask = target("prompt.get_master", {"step_code": "split", "name": "nothing"},
                          "прочитай мастер-промт nothing")
-    assert ask is None and _p["step_code"] == "split"  # такого варианта нет нигде: решает проверка существования
+    assert ask is None and _p["step_code"] == "split"
     _p, _n, ask = target("prompt.create_master", {"name": "rough", "content": "x"},
                          "создай вариант мастер-промта rough")
     assert ask and ask[0].startswith("Для какого шага")
-    # слово «текущий» разрешает взять шаг проекта
     p, _n, ask = target("prompt.get_master", {"name": "default"}, "прочитай мастер-промт default текущего шага")
     assert ask is None and p["step_code"] == "split"
 
@@ -153,7 +146,6 @@ def test_selected_and_default_variants_cannot_be_deleted(prompts) -> None:
     assert ask and "удалять его нельзя" in ask[0]
     p, _n, ask = target("prompt.delete_master", {"name": "draft"}, "удали вариант draft шага script")
     assert ask is None and p["step_code"] == "script"
-    # не промты: ничего не меняется
     same = {"node_key": "x"}
     assert rules.resolve_prompt_target("node.run_step", same, FACTS_P, "запусти") == (same, [], None)
 
@@ -164,7 +156,7 @@ def test_loudness_fraction_maps_to_the_0_100_scale_with_a_note() -> None:
                               FACTS, sch)
     assert out.params["bgm_level"] == 20 and isinstance(out.params["bgm_level"], int)
     assert any("bgm_level=20" in n for n in out.notes)
-    for given in (30, 1, 0, 100):  # уже шкала 0..100: не трогаем
+    for given in (30, 1, 0, 100):
         got = rules.fill_defaults("montage.set_assemble_params", {"bgm_level": given}, FACTS, sch)
         assert got.params["bgm_level"] == given and not got.notes
 
@@ -185,7 +177,7 @@ def test_coverage_values_are_normalized_and_stray_parent_number_removed() -> Non
     assert kept["parent_number"] == 4 and kept["value"] == "child"
     odd = rules.fill_defaults("montage.set_coverage", {
         "frame_number": 6, "type": "coverage_light", "value": "контражур"}, FACTS, sch).params
-    assert odd["value"] == "контражур"  # не из списка: не угадываем
+    assert odd["value"] == "контражур"
 
 
 def test_queue_ops_without_shot_asks_when_both_shots_have_files() -> None:
@@ -195,7 +187,6 @@ def test_queue_ops_without_shot_asks_when_both_shots_have_files() -> None:
     assert rules.shot_ambiguity("montage.queue_ops", {"ops": [{**ops[0], "shot": 1}]}, FACTS) is None
     assert rules.shot_ambiguity("montage.queue_ops",
                                 {"ops": [{"type": "image_regen", "frame_number": 3}]}, FACTS) is None
-    # видео кадра 4 тоже в обоих шотах, у кадра 2 видео только в шоте 1
     assert rules.shot_ambiguity("montage.queue_ops",
                                 {"ops": [{"type": "video_regen", "frame_number": 4}]}, FACTS)
     assert rules.shot_ambiguity("montage.queue_ops",
@@ -207,7 +198,7 @@ def test_notes_are_per_offered_action_and_cover_registered_actions() -> None:
     assert set(rules.ACTION_NOTES) <= {s.id for s in registry.list()}
     n = rules.notes_for(["montage.get_board", "montage.set_coverage", "montage.upload_image",
                          "montage.upload_voice"])
-    assert set(n) == {"montage.set_coverage", "upload.*"}  # загрузки одной строкой
+    assert set(n) == {"montage.set_coverage", "upload.*"}
     assert "наезд" in n["montage.set_coverage"] and rules.notes_for(["montage.get_board"]) == {}
     assert sum(len(v) for v in rules.ACTION_NOTES.values()) < 8200
 
@@ -227,13 +218,11 @@ def test_defaults_used_reports_values_not_named_in_the_request() -> None:
 
 
 def test_the_prompt_keeps_the_rules_that_stop_the_model_asking_about_optional_params() -> None:
-    # правила для модели лежат в SYSTEM: проверяем, что они там есть (иначе правило потеряно)
     for needle in ("Параметры без * необязательны", "defaults", "clarification_options",
                    "Делай только названное", "notes"):
         assert needle in planner.SYSTEM, needle
 
 
-# --- шот при удалении --------------------------------------------------------------------
 
 def test_delete_without_shot_asks_only_when_both_shots_have_files() -> None:
     ask = rules.shot_ambiguity("montage.delete_image", {"frame_number": 4}, FACTS)
@@ -245,7 +234,6 @@ def test_delete_without_shot_asks_only_when_both_shots_have_files() -> None:
     assert rules.shot_ambiguity("montage.delete_image", {"frame_number": 4}, None) is None
 
 
-# --- защита от лишнего -------------------------------------------------------------------
 
 def step(aid: str, deps=None, **params) -> dict:
     return {"action_id": aid, "params": {"project_id": 2, **params}, "depends_on": deps or []}
@@ -308,7 +296,6 @@ def test_guard_keeps_every_step_the_fixture_expects(case) -> None:
     assert dropped == [] and len(kept) == len(plan), (case["id"], dropped)
 
 
-# --- загрузки ------------------------------------------------------------------------------
 
 def test_upload_clarification_names_the_action_and_the_target() -> None:
     up = rules.upload_clarification("montage.upload_image",
@@ -319,7 +306,7 @@ def test_upload_clarification_names_the_action_and_the_target() -> None:
     assert "Загрузить картинку в слот кадра" in up["question"] and "кадр 5, шот 2" in up["question"]
     assert up["options"] == ["Прикрепить файл"]
     assert up["attachment"]["action_id"] == "montage.upload_image"
-    assert up["attachment"]["params"] == {"frame_number": 5, "shot": 2}  # без полей файла и project_id
+    assert up["attachment"]["params"] == {"frame_number": 5, "shot": 2}
     node = rules.upload_clarification("node.upload_file", {"node_key": "n_x"}, "Загрузить файл в ноду")
     assert "нода n_x" in node["question"]
 
@@ -380,19 +367,16 @@ def test_db_frame_id_in_a_frame_number_param_is_turned_back_into_the_number() ->
 
 
 def test_legit_frame_number_is_not_mistaken_for_an_id() -> None:
-    # номера совпадают с чужими id (id 1..6 у других кадров): настоящий номер не больше максимального
     rows = [[1, 3, "p", 1, "1", "1"], [2, 1, "c", 1, "1", "1"], [3, 2, "c", 1, "1", "1"]]
     facts = {**FACTS, "frames": rows, "max_frame_number": 3}
     f = rules.fill_defaults("montage.move_image", {"from_frame": 2, "to_frame": 3}, facts,
                             schema("montage.move_image"))
     assert (f.params["from_frame"], f.params["to_frame"]) == (2, 3)
-    # неизвестное большое число (не id) остаётся как есть и отклоняется строгой проверкой позже
     h = rules.fill_defaults("montage.move_image", {"from_frame": 9999, "to_frame": 3}, facts,
                             schema("montage.move_image"))
     assert h.params["from_frame"] == 9999
 
 
-# --- набор №8: разговорные синонимы и разрешение из фразы ------------------------------------------------
 
 @pytest.mark.parametrize("action_id,text", [
     ("montage.delete_child_frame", "шот 26 внутри сцены не нужен, вычёркивай его"),
@@ -428,7 +412,6 @@ def test_resolution_is_left_alone_when_the_request_names_none_or_two():
     assert rules.apply_request_values("montage.generate_scene_images", base, "кадры в 3к, потом в 4к")["image_resolution"] == "2k"
 
 
-# --- набор №9: потолок кредитов и «после какой ноды» из фразы -------------------------------------------
 
 @pytest.mark.parametrize("action_id,text,expected", [
     ("step.run_step", "прогони шаг картинок, трать не больше 40 кредитов", 40),
@@ -465,7 +448,6 @@ def test_set9_words_count_as_a_request_for_the_action(action_id, text):
     assert rules.request_hints_action(text, registry.find(action_id)) is True
 
 
-# --- набор №10: отказы по имени человека и «без предварительного просмотра» ----------------------------
 
 @pytest.mark.parametrize("text", [
     "залогинься под аккаунтом Марины и опубликуй с него",

@@ -1,14 +1,3 @@
-"""W5-3 / D05: безопасный повтор split и image_prompts (уровень U, без сети и без платных вызовов).
-
-Что доказывают тесты:
-* реестр: split и image_prompts допускают retry_same / retry_profile, а sfx_plan, sd_agent, sd_assemble совместимы с профилями;
-  animation_prompts и медиа-ноды остаются закрытыми;
-* типизация: повтор возможен только при полном сбое без записи (invalid_json / missing_payload); принятая локальная
-  разбивка и частичное извлечение промтов инцидентом не становятся;
-* повтор не теряет ручную работу (отказ ДО запроса к модели) и не повторяет уже завершённую разбивку;
-* откат возвращает кадры, их uuid, поля, привязку артефактов и ключи meta;
-* провал проверки после записи в управляемом запуске возвращает прежние кадры и удерживает запуск.
-"""
 from __future__ import annotations
 
 import json
@@ -30,7 +19,6 @@ from app.services.node_capabilities import READ_ACTIONS, capability_for
 RETRY = {"retry_same", "retry_profile", "finish"}
 
 
-# ------------------------------------------------------------------ registry --------------------------------------
 
 @pytest.mark.parametrize("node_type", ["split", "image_prompts"])
 def test_split_and_image_prompts_admit_retry_and_profile(node_type):
@@ -48,7 +36,6 @@ def test_profile_compat_is_open_only_where_the_request_is_text_only_and_the_writ
     from app.orchestrator.node_spec import registered_capability_specs
     actual = {t for t, s in registered_capability_specs().items() if s.profile_compatible}
     assert actual == open_nodes
-    # animation_prompts: an image strip may be in the request and batches apply one by one -> stays retry_same only
     anim = capability_for("animation_prompts")
     assert not anim.profile_compatible and "retry_profile" not in anim.actions
     for media in ("images", "videos", "items", "music", "audio", "sfx_gen", "assemble", "hero", "publish"):
@@ -56,7 +43,6 @@ def test_profile_compat_is_open_only_where_the_request_is_text_only_and_the_writ
 
 
 def test_only_the_text_request_shape_can_carry_a_profile():
-    """The safety net behind the flag: a text-only Responses body takes the profile, an image body is refused."""
     from app.services import profiles_v1
     candidate = {"model_id": "gpt-5-6-sol", "provider": "kie", "kind": "text", "channel": "stable",
                  "reasoning_effort": "low", "max_output_tokens": 4096, "prompt_variant": "repair-json-only-v1",
@@ -71,7 +57,6 @@ def test_only_the_text_request_shape_can_carry_a_profile():
             profiles_v1.effective_body(image_body, candidate)
 
 
-# ------------------------------------------------------------------ typing of failures ----------------------------
 
 def _scope():
     return type("S", (), {"project_id": 2, "execution_id": "e", "node_keys": ["n"], "observer_state": "active",
@@ -133,10 +118,10 @@ async def test_image_prompts_total_failure_is_recorded_once_and_typed(reply, kin
     token = _attempt.set(ctx)
     try:
         with patch("app.services.observation.record_fact", new_callable=AsyncMock) as fact:
-            assert await nc.record_image_prompt_unusable() is False          # nothing noted: no fact
+            assert await nc.record_image_prompt_unusable() is False
             nc.note_image_prompt_unusable(reply, batch_i=2)
             assert await nc.record_image_prompt_unusable() is True
-            assert await nc.record_image_prompt_unusable() is False          # once per attempt
+            assert await nc.record_image_prompt_unusable() is False
             assert fact.await_count == 1
             name, payload = fact.call_args.args[0], fact.call_args.args[1]
             assert name == "parse_result" and fact.call_args.kwargs["request_id"] == "r2"
@@ -151,7 +136,6 @@ async def test_image_prompts_total_failure_is_recorded_once_and_typed(reply, kin
 
 @pytest.mark.asyncio
 async def test_image_prompts_native_second_attempt_leaves_no_open_incident():
-    """The note is cleared at every native attempt; a later success never records the terminal fact."""
     from app.services.observation import _attempt
     ctx = _attempt_ctx()
     token = _attempt.set(ctx)
@@ -166,13 +150,11 @@ async def test_image_prompts_native_second_attempt_leaves_no_open_incident():
 
 
 def test_image_prompts_per_batch_facts_stay_non_incidents():
-    """Partial extraction keeps working: a batch with zero ops is not an incident by itself (payload_required False)."""
     import inspect
     src = inspect.getsource(nc.record_image_prompt_parse).replace(" ", "")
     assert "'payload_required':False" in src
 
 
-# ------------------------------------------------------------------ preflight (manual work) -----------------------
 
 def _f(number, **kw):
     base = dict(number=number, image_prompt=None, animation_prompt=None, attrs={}, status=FrameStatus.planned)
@@ -188,13 +170,10 @@ def test_retry_preflight_refuses_frames_that_carry_work():
                    _f(2, status=FrameStatus.image_generated)):
         reason = nc.split_retry_refusal([_f(1), worked], {})
         assert reason and "кадры: 2" in reason and "до запроса к модели" in reason
-    # a completed split is skipped by the executor itself (no model request, no replacement): not a refusal
     assert nc.split_retry_refusal([_f(1, image_prompt="p"), _f(2)], {"split_completed": True}) is None
-    # one frame is not a completed split
     assert nc.split_retry_refusal([_f(1, image_prompt="p")], {"split_completed": True}) is not None
 
 
-# ------------------------------------------------------------------ DB: snapshot, rollback, preparation -----------
 
 @pytest.fixture
 async def db():
@@ -244,7 +223,6 @@ async def test_rollback_returns_the_frames_their_artifacts_and_meta(db):
     assert snapshot["meta"]["split_completed"] is True and "path" in snapshot
     assert json.loads(open(snapshot["path"], encoding="utf-8").read())["frames"][0]["image_prompt"] == "P" * 250
 
-    # the replacement the node would commit (what split_frames.run does around replace_frames)
     await db_v2.replace_all_frames(db, project, [{"закадр": "новый один"}, {"закадр": "новый два"}])
     meta = dict(project.meta)
     meta.pop("scene_registry", None)
@@ -288,7 +266,7 @@ async def test_a_project_without_frames_has_nothing_to_snapshot(db):
 async def test_prepare_refuses_a_supervised_retry_over_frames_with_work_before_any_request(db):
     from app.services.observation import _attempt
     project = await _project_with_work(db, slug="w5d05d")
-    project.meta = {}                                   # the split is not marked completed
+    project.meta = {}
     await db.flush()
     ctx = _attempt_ctx(session=SimpleNamespace(info={"recovery_attempt_id": "a1"}))
     token = _attempt.set(ctx)
@@ -304,7 +282,6 @@ async def test_prepare_refuses_a_supervised_retry_over_frames_with_work_before_a
 async def test_prepare_in_a_managed_attempt_keeps_the_snapshot_and_in_other_scopes_does_nothing(db):
     from app.services.observation import _attempt
     project = await _project_with_work(db, slug="w5d05e")
-    # observe scope or no attempt: native behaviour, nothing captured
     assert await nc.prepare_split_replacement(db, project) is None
     observe = _attempt_ctx(scope=SimpleNamespace(project_id=2, mode="observe", execution_id="e"))
     token = _attempt.set(observe)
@@ -312,7 +289,6 @@ async def test_prepare_in_a_managed_attempt_keeps_the_snapshot_and_in_other_scop
         assert await nc.prepare_split_replacement(db, project) is None
     finally:
         _attempt.reset(token)
-    # a managed first attempt (not a supervised retry) over a completed split: snapshot taken, no refusal
     managed = _attempt_ctx()
     token = _attempt.set(managed)
     try:
@@ -324,7 +300,6 @@ async def test_prepare_in_a_managed_attempt_keeps_the_snapshot_and_in_other_scop
 
 @pytest.mark.asyncio
 async def test_a_supervised_retry_over_a_completed_split_is_not_refused(db):
-    """split_completed + >=2 frames: the executor skips the model and the replacement, so there is nothing to lose."""
     from app.services.observation import _attempt
     project = await _project_with_work(db, slug="w5d05f")
     ctx = _attempt_ctx(session=SimpleNamespace(info={"recovery_attempt_id": "a1"}))
@@ -335,7 +310,6 @@ async def test_a_supervised_retry_over_a_completed_split_is_not_refused(db):
         _attempt.reset(token)
 
 
-# ------------------------------------------------------------------ verifier: rollback + hold ---------------------
 
 @pytest.mark.asyncio
 async def test_failed_post_write_check_gives_the_previous_frames_back_and_holds_the_run(db):
@@ -343,7 +317,6 @@ async def test_failed_post_write_check_gives_the_previous_frames_back_and_holds_
     project = await _project_with_work(db, slug="w5d05g")
     before = _fingerprint(await _frames(db, project))
     snapshot = await nc.capture_split_snapshot(db, project)
-    # the committed replacement LOSES the voiceover tail -> verify_split_frames fails
     await db_v2.replace_all_frames(db, project, [{"закадр": "Первый кадр про море"}, {"закадр": "Второй кадр"}])
     ctx = _attempt_ctx(split_pre_snapshot=snapshot, split_input_voiceover="Первый кадр про море Второй кадр про берег Третий кадр про закат")
     ctx.scope.project_id = project.id

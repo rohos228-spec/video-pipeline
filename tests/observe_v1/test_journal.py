@@ -1,8 +1,3 @@
-"""Offline acceptance contracts for the durable observe journal.
-
-Run in the prepared image with --network none, not against customer databases.
-unittest is deliberate: the existing runtime image needs no extra packages.
-"""
 from __future__ import annotations
 
 import json

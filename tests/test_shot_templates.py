@@ -1,4 +1,3 @@
-"""Каталог шаблонов T/X для ноды shots."""
 
 from __future__ import annotations
 
@@ -24,7 +23,6 @@ def test_template_max_shots_from_catalog() -> None:
     assert template_max_shots("T0") == 1
     assert template_max_shots("T5") == 4
     assert template_max_shots("T3") == 2
-    # T8 — динамическая лестница (сколько мест, столько кадров): без лимита.
     assert template_max_shots("T8") == 0
 
 
@@ -32,14 +30,13 @@ def test_template_required_shots_minimum() -> None:
     from app.services.shot_templates import template_required_shots
 
     clear_shot_templates_cache()
-    assert template_required_shots("T1") == 2  # K2+K3 (стороны диалога)
-    assert template_required_shots("T2") == 2  # K2+K3 (взял + деталь)
-    assert template_required_shots("T4") == 2  # K1+K2 (смотрит + объект)
-    assert template_required_shots("T5") == 1  # K1 (жест)
-    assert template_required_shots("T8") == 0  # динамика по местам
+    assert template_required_shots("T1") == 2
+    assert template_required_shots("T2") == 2
+    assert template_required_shots("T4") == 2
+    assert template_required_shots("T5") == 1
+    assert template_required_shots("T8") == 0
 
 
-# Пример пользователя: герой идёт в полицию и пишет заявление о краже.
 POLICE_ACTION = (
     "1. улица — Михаил идёт к зданию полиции\n(Михаил пришёл к отделению полиции,)\n"
     "2. отделение полиции — заходит внутрь, снимает кепку\n(зашёл внутрь,)\n"
@@ -49,14 +46,12 @@ POLICE_ACTION = (
 
 
 def test_police_example_chain_templates() -> None:
-    """Путь → новое место → диалог → работа рук: T6 → T3 → T1 → T5."""
     clear_shot_templates_cache()
     assigned = assign_templates_for_action(POLICE_ACTION)
     assert [assigned[i] for i in sorted(assigned)] == ["T6", "T3", "T1", "T5"]
 
 
 def test_police_example_same_place_compression() -> None:
-    """Место сцен 2–4 одно → сжатие «место уже было», шаблон не меняется."""
     clear_shot_templates_cache()
     plan = plan_templates_for_action(POLICE_ACTION)
     by_n = {row["n"]: row for row in plan}
@@ -68,7 +63,6 @@ def test_police_example_same_place_compression() -> None:
 
 
 def test_police_catalog_fills_sequential_ladders() -> None:
-    """Эталон задачи: 1 кадр/сцена от GPT → лестницы T6 T3 T1 T5."""
     from app.services.shot_templates import fill_kadry_from_catalog
 
     clear_shot_templates_cache()
@@ -98,7 +92,6 @@ def test_police_catalog_fills_sequential_ladders() -> None:
 
 
 def test_catalog_fill_rewrites_slash_stub_into_full_action() -> None:
-    """Каталог больше не пишет «понял / испугался / решил» в действие."""
     from app.services.shot_templates import (
         fill_kadry_from_catalog,
         is_stub_shot_action,
@@ -130,7 +123,6 @@ def test_catalog_fill_rewrites_slash_stub_into_full_action() -> None:
 
 
 def test_catalog_fill_rewrites_child_slashes_when_ladder_already_full() -> None:
-    """GPT отдал все 4 T2, но K2–K4 — слоганы каталога: детей переписываем."""
     from app.services.shot_templates import (
         fill_kadry_from_catalog,
         is_stub_shot_action,
@@ -197,7 +189,6 @@ def test_catalog_fill_rewrites_child_slashes_when_ladder_already_full() -> None:
 
 
 def test_t8_does_not_steal_years_in_same_place() -> None:
-    """«долгие годы» / «служба» в кабинете — не прыжок жизни, не T8."""
     clear_shot_templates_cache()
     assert (
         select_template_when(
@@ -222,7 +213,6 @@ def test_t8_does_not_steal_years_in_same_place() -> None:
 
 
 def test_t8_chain_repeat_allowed() -> None:
-    """Биография «жил → служил → работал»: T8>T8>T8 — норма, не брак."""
     clear_shot_templates_cache()
     action = (
         "1. двор Киселёвска — мальчик Ткач бегает между домами\n(Ткач родился в Киселёвске,)\n"
@@ -235,7 +225,6 @@ def test_t8_chain_repeat_allowed() -> None:
 
 
 def test_same_place_keeps_template_with_compression() -> None:
-    """То же место — тот же T* по дереву + сжатие, а не подмена шаблона."""
     clear_shot_templates_cache()
     action = (
         "1. кабинет следствия — раскладывают дело\n(один)\n"
@@ -249,7 +238,6 @@ def test_same_place_keeps_template_with_compression() -> None:
 
 
 def test_select_specific_before_t3() -> None:
-    """T3 = «только смена места»: содержательные сцены не должны падать в T3."""
     clear_shot_templates_cache()
 
     def one(head: str, vo: str = "(текст.)") -> str:
@@ -305,7 +293,6 @@ def test_coverage_template_reason_t8_same_place_twice() -> None:
 
 
 def test_coverage_template_reason_repeat_t_allowed() -> None:
-    """Один T* на разных местах соседних сцен — не брак (T8>T8>T8, T3>T3)."""
     shots = [
         {"сцена": 1, "шаблон": "T8", "план": "ОБЩИЙ", "место": "двор"},
         {"сцена": 2, "шаблон": "T8", "план": "ОБЩИЙ", "место": "плац"},
@@ -320,7 +307,6 @@ def test_coverage_template_reason_repeat_t_allowed() -> None:
 
 
 def test_coverage_template_reason_minimum_ladder() -> None:
-    """Сцену нельзя сжать ниже required=1 кадров лестницы (T1 минимум 2)."""
     too_few = [{"сцена": 1, "шаблон": "T1", "план": "СРЕДНИЙ", "место": "кабинет"}]
     reason = coverage_template_reason(too_few)
     assert reason and "минимум" in reason
@@ -334,7 +320,6 @@ def test_coverage_template_reason_minimum_ladder() -> None:
 
 
 def test_coverage_template_reason_duplicate_action() -> None:
-    """Одинаковое действие у кадров сцены — вариации позы, не цепь."""
     dup = [
         {"сцена": 1, "шаблон": "T6", "план": "ОБЩИЙ", "место": "москва",
          "действие": "Дарья везёт сундуки в московский дом"},
@@ -352,7 +337,6 @@ def test_coverage_template_reason_duplicate_action() -> None:
     assert coverage_template_reason(chain) is None
 
 
-# Сцены в стиле отчёта «Салтыкова»: выбор не должен схлопываться в T5.
 SALTYKOVA_ACTION = (
     "1. приказная палата — крестьяне приносят две жалобы\n"
     "(История Дарьи Салтыковой началась с двух крестьянских жалоб.)\n"
@@ -378,31 +362,25 @@ SALTYKOVA_ACTION = (
 
 
 def test_saltykova_scenes_do_not_collapse_into_t5() -> None:
-    """T1 — только речь; предмет → T2, объект взгляда → T4, слом → T7,
-    перечисление владений → T8; T5 — только длительная работа руками.
-    В narration без диалогов T1 не выбирается вообще — это норма."""
     clear_shot_templates_cache()
     assigned = assign_templates_for_action(SALTYKOVA_ACTION)
     vals = [assigned[i] for i in sorted(assigned)]
-    assert vals[0] == "T2"  # приносят жалобы (предмет, новое место)
-    assert vals[1] == "T2"  # передают прошения (предмет)
-    assert vals[2] == "T2"  # раскрывает и читает жалобы
-    assert vals[3] == "T4"  # указывают на дом
-    assert vals[4] == "T7"  # получил возврат + приказ (слом)
-    assert vals[5] == "T5"  # подписывает дело — процесс
-    assert vals[6] == "T5"  # раскладывает/записывает — процесс
-    assert vals[7] == "T2"  # протягивают прошения (предмет)
-    assert vals[8] == "T8"  # перечисление владений
-    assert vals[9] == "T2"  # принимает кольцо (предмет, новое место)
-    # Распределение разнообразное: ни один шаблон не доминирует,
-    # T1 (диалог) в narration без реплик не выбирается.
+    assert vals[0] == "T2"
+    assert vals[1] == "T2"
+    assert vals[2] == "T2"
+    assert vals[3] == "T4"
+    assert vals[4] == "T7"
+    assert vals[5] == "T5"
+    assert vals[6] == "T5"
+    assert vals[7] == "T2"
+    assert vals[8] == "T8"
+    assert vals[9] == "T2"
     assert vals.count("T1") == 0
     assert vals.count("T5") <= 2
     assert len(set(vals)) >= 4
 
 
 def test_when_assignments_warns_on_repeat_template() -> None:
-    """3+ одинаковых T* в цепи → предупреждение перепроверить дерево."""
     clear_shot_templates_cache()
     action = (
         "1. архив — пишет отчёт\n(один.)\n"
@@ -423,11 +401,9 @@ def test_load_shot_templates_has_t1_and_select() -> None:
     ids = {t["id"] for t in data["templates"]}
     assert "T0" in ids and "T1" in ids and "T2" in ids and "X1" in ids
     assert data["select"][0]["then_template"] == "T1"
-    # У каждого шага выбора — полный вопрос из листа «Выбор».
     assert all(r.get("question") for r in data["select"])
     shots = [s for s in data["shots"] if s["template_id"] == "T2"]
     assert any(s.get("required") == 1 for s in shots)
-    # У каждого шаблона — эталон и варианты сжатия.
     assert all(t.get("example") for t in data["templates"])
     assert all(t.get("compression") for t in data["templates"])
 
@@ -437,13 +413,13 @@ def test_catalog_mentions_questions_examples_compression() -> None:
     text = format_shot_templates_catalog()
     assert "ШАБЛОНЫ СЦЕНА→КАДРЫ" in text
     assert "ВЫБОР" in text
-    assert "ГОВОРЯТ друг с другом" in text  # вопрос дерева, не машинный ключ
+    assert "ГОВОРЯТ друг с другом" in text
     assert "эталон" in text
-    assert "T1-c2" in text  # именованный вариант сжатия
+    assert "T1-c2" in text
     assert "keep_sides" in text
     assert "T1|" in text
     assert "ЭТАЛОННАЯ ЦЕПЬ" in text
-    assert "полици" in text  # пример с заявлением о краже
+    assert "полици" in text
 
 
 def test_format_when_assignments_police() -> None:
@@ -459,8 +435,8 @@ def test_format_when_assignments_police() -> None:
     assert "ПРЕДВЫБОР" in text
     assert "сцена 4" in text and "T5" in text
     assert "сцена 1" in text and "T6" in text
-    assert "сжатие" in text  # сцены 3–4 на том же месте → подсказки сжатия
-    assert "select_fix" in text  # разрешение поправить предвыбор с пометкой
+    assert "сжатие" in text
+    assert "select_fix" in text
 
 
 def test_neighbor_place_hints_prev() -> None:
@@ -494,7 +470,6 @@ def test_scenes_to_frames_resolves_v8_template() -> None:
     )
     assert "node_groups/script_frames_qc" in str(path).replace("\\", "/")
     text = path.read_text(encoding="utf-8")
-    # шаблон v14 (23426a95): вход = главное_действие + площадка, режем действие
     assert "главное_действие" in text
     assert "объект" in text
     grouped = list_group_owned_prompts("script_frames_qc")
@@ -537,7 +512,6 @@ def test_write_group_prompt_stays_out_of_excel_gpt(
 
 
 def test_catalog_fill_keeps_unique_gpt_actions() -> None:
-    """Уникальные описания GPT не затираем штампом «место. сцена. план»."""
     from app.services.shot_templates import fill_kadry_from_catalog
 
     clear_shot_templates_cache()
@@ -606,7 +580,6 @@ def test_normalize_scene_action_prose_and_chain() -> None:
 
 
 def test_explode_scene_action_keeps_beats_not_catalog_stub() -> None:
-    """Проза режиссёра → несколько кадров. Короткий закадр не схлопывает лестницу."""
     from app.services.shot_templates import (
         explode_scene_action_to_kadry,
         split_scene_action_beats,

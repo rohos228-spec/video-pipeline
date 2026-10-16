@@ -1,14 +1,3 @@
-"""Где лежит запрос подтверждения (HITL): в project.db проекта или в master.
-
-Запросы проектов создаются в project.db, а старые (до разделения баз) остались в master. У каждой
-базы свой счётчик id, поэтому номер запроса сам по себе не однозначен. Правила:
-
-* project.db проекта главнее master: если запрос есть там, решение принимается там (вместе с побочными
-  эффектами: статусы кадров и проекта пишутся в ту же базу);
-* master используется только для запросов без проектной копии;
-* один и тот же номер у разных проектов - явная неоднозначность (``HitlAmbiguous``): пользователь
-  должен указать ``project_id``, чужой запрос молча не берётся.
-"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -27,7 +16,6 @@ AMBIGUOUS_RU = ("Номер запроса подтверждения совпа
 
 
 class HitlAmbiguous(RuntimeError):
-    """Один номер запроса найден в разных проектах (или проектная копия не того проекта)."""
 
     def __init__(self, hitl_id: int, project_ids: list[int | None]):
         self.hitl_id = hitl_id
@@ -39,7 +27,7 @@ class HitlAmbiguous(RuntimeError):
 class HitlLocation:
     hitl_id: int
     project_id: int
-    store: str  # "project" | "master"
+    store: str
     data_dir: Path | None
 
 
@@ -57,7 +45,6 @@ def _project_db_file(data_dir: Path) -> Path | None:
 
 
 async def locate_hitl(hitl_id: int, project_id: int | None = None) -> HitlLocation | None:
-    """Найти, где лежит запрос. Ничего не создаёт и не мигрирует (только чтение)."""
     from app.db import SessionLocal
     from app.project_db import get_project_sessionmaker
 
@@ -84,7 +71,7 @@ async def locate_hitl(hitl_id: int, project_id: int | None = None) -> HitlLocati
                     row = await local.get(HITLRequest, hitl_id)
                     if row is not None and row.project_id == project.id:
                         project_hits.append(HitlLocation(hitl_id, project.id, "project", data_dir))
-            except Exception as exc:  # noqa: BLE001 - одна повреждённая база не должна скрывать запрос
+            except Exception as exc:
                 logger.warning("hitl locate: project #{} db unreadable: {}", project.id, exc)
 
     owners = {hit.project_id for hit in project_hits}
@@ -100,7 +87,6 @@ async def locate_hitl(hitl_id: int, project_id: int | None = None) -> HitlLocati
 @asynccontextmanager
 async def hitl_session_scope(hitl_id: int, project_id: int | None = None
                              ) -> AsyncIterator[tuple[AsyncSession, HitlLocation | None]]:
-    """Сессия той базы, где лежит запрос, с коммитом при выходе. Если запроса нет - сессия master."""
     from app.db import session_scope
     from app.project_db import project_session_scope
 
@@ -114,7 +100,6 @@ async def hitl_session_scope(hitl_id: int, project_id: int | None = None
 
 
 async def mirror_decision_to_master(req: HITLRequest) -> None:
-    """Старая копия запроса в master (если есть) получает то же решение, чтобы не висела «ждёт решения»."""
     from sqlalchemy import update
 
     from app.db import session_scope
@@ -126,5 +111,5 @@ async def mirror_decision_to_master(req: HITLRequest) -> None:
                 .where(HITLRequest.id == req.id, HITLRequest.project_id == req.project_id,
                        HITLRequest.decision == HITLDecision.pending)
                 .values(decision=req.decision, decided_at=req.decided_at, payload=dict(req.payload or {})))
-    except Exception as exc:  # noqa: BLE001 - зеркало не должно ломать принятое решение
+    except Exception as exc:
         logger.warning("hitl #{}: master mirror failed: {}", req.id, exc)

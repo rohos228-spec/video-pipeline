@@ -1,11 +1,3 @@
-"""Guards for scripts/e2e_music_kie.py (pure helpers, the request Gate, the fake Kie server, argument / env-file refusals and
-real --dry runs of the whole flow, including the stop and failure branches).
-
-Nothing here sends anything outside this machine and nothing here runs --live: the live-only paths are covered by the
-request Gate (a pure object that judges every outgoing request) and by the argument / env-file refusals that return
-before the application starts. The dry runs start the stand in a SUBPROCESS (isolated memory and settings) against a fake
-Kie server on 127.0.0.1, so run this file in ONE pytest process.
-"""
 import asyncio
 import importlib.util
 import json
@@ -26,7 +18,7 @@ sys.modules[_spec.name] = script
 _spec.loader.exec_module(script)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _stand_workdir import make_workdir, remove_workdir  # noqa: E402
+from _stand_workdir import make_workdir, remove_workdir
 
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 HOST = script.Gate(mode="live").host
@@ -34,7 +26,6 @@ HOST = script.Gate(mode="live").host
 
 @pytest.fixture
 def tmp_path():
-    """Outside the repository: the e2e guard refuses a work folder inside live data."""
     path = make_workdir()
     try:
         yield path
@@ -42,7 +33,6 @@ def tmp_path():
         remove_workdir(path)
 
 
-# ---------- arguments and authorisation ----------
 
 def test_exactly_one_of_dry_and_live_is_required():
     for bad in (["--work-dir", "w"], ["--work-dir", "w", "--dry", "--live", "--env-file", "e"], ["--dry"]):
@@ -93,12 +83,11 @@ def test_the_stand_prompt_is_the_instrumental_v5_5_payload_the_gate_accepts():
     spec = get_model("suno-music")
     payload = build_payload(spec, {"customMode": False, "prompt": script.MUSIC_PROMPT, "instrumental": True,
                                    "model": "V5_5"})
-    payload = {**payload, "callBackUrl": script.CALLBACK_PLACEHOLDER}   # what kie_http.create_task adds
+    payload = {**payload, "callBackUrl": script.CALLBACK_PLACEHOLDER}
     assert len(script.MUSIC_PROMPT) <= script.MUSIC_PROMPT_MAX_CHARS
     assert script.Gate(mode="live").judge("POST", "https", HOST, script.CREATE_PATH, payload).action == "pass"
 
 
-# ---------- the env file: whitelist only, never echoed ----------
 
 def test_env_file_is_read_only_by_the_whitelist(tmp_path):
     env_file = tmp_path / "e.env"
@@ -128,7 +117,7 @@ def test_live_refuses_before_starting_anything_without_a_key_a_file_or_with_a_ba
         assert asyncio.run(script.main(["--work-dir", str(tmp_path / "w"), "--live", "--env-file", str(bad_base)])) == 3
     out = capsys.readouterr().out
     assert "nothing sent" in out and "abcdefgh" not in out
-    assert not (tmp_path / "w").exists()  # nothing was created: the refusal came first
+    assert not (tmp_path / "w").exists()
     assert script.base_url_problem("https://api.kie.ai") is None and script.base_url_problem("https://relay.example.org/") is None
 
 
@@ -138,7 +127,6 @@ def test_the_balance_stop_rules():
     assert script.balance_stop_reason(script.MIN_BALANCE_CREDITS + 0.01) is None
 
 
-# ---------- the request Gate ----------
 
 def _gate(**kw):
     return script.Gate(mode=kw.pop("mode", "live"), **kw)
@@ -164,7 +152,7 @@ def test_only_the_kie_requests_are_let_through_everything_else_is_refused():
 def test_one_real_post_and_the_payload_and_size_limits():
     gate = _gate(max_real_posts=1)
     assert _create(gate).action == "pass" and gate.count("create") == 1
-    assert _create(gate).action == "refuse" and gate.refused[-1]["why"] == "paid_cap"   # never a second paid submit
+    assert _create(gate).action == "refuse" and gate.refused[-1]["why"] == "paid_cap"
     other = _gate()
     for body, why in (({"instrumental": False}, "payload"), ({"model": "V4"}, "payload"), ({"customMode": True}, "payload"),
                       ({"prompt": "я" * (script.MUSIC_PROMPT_MAX_CHARS + 1)}, "prompt_size"), ({"prompt": " "}, "prompt_size"),
@@ -176,17 +164,17 @@ def test_one_real_post_and_the_payload_and_size_limits():
 
 def test_balance_polls_and_downloads_follow_the_task_and_the_urls_the_provider_named():
     gate = _gate()
-    bal = lambda: gate.judge("GET", "https", HOST, script.BALANCE_PATH)  # noqa: E731
+    bal = lambda: gate.judge("GET", "https", HOST, script.BALANCE_PATH)
     assert [bal().action for _ in range(script.MAX_BALANCE_READS + 1)] == ["pass"] * script.MAX_BALANCE_READS + ["refuse"]
-    poll = lambda t: gate.judge("GET", "https", HOST, script.POLL_PATH, params={"taskId": t})  # noqa: E731
-    assert poll("t1").action == "refuse" and gate.refused[-1]["why"] == "foreign_task"   # no task created yet
+    poll = lambda t: gate.judge("GET", "https", HOST, script.POLL_PATH, params={"taskId": t})
+    assert poll("t1").action == "refuse" and gate.refused[-1]["why"] == "foreign_task"
     gate.task_id = "t1"
     assert poll("t1").action == "pass" and poll("other").action == "refuse"
     url = "https://files.example.org/a/clip.mp3"
-    dl = lambda u: gate.judge("GET", "https", urlsplit_host(u), urlsplit_path(u), url=u)  # noqa: E731
-    assert dl(url).action == "refuse"                                  # not named by the provider yet
+    dl = lambda u: gate.judge("GET", "https", urlsplit_host(u), urlsplit_path(u), url=u)
+    assert dl(url).action == "refuse"
     gate.learn_downloads([url, "https://files.example.org/cover.jpg"])
-    assert dl(url).action == "pass" and dl("https://files.example.org/other.mp3").action == "pass"   # same host redirect
+    assert dl(url).action == "pass" and dl("https://files.example.org/other.mp3").action == "pass"
     assert dl("https://files.example.org/cover.jpg").action == "refuse"
     assert dl("https://evil.example.com/clip.mp3").action == "refuse"
     assert gate.judge("GET", "http", "files.example.org", "/a/clip.mp3", url="http://files.example.org/a/clip.mp3").action == "refuse"
@@ -211,11 +199,10 @@ def test_dry_gate_allows_only_the_loopback_port():
     assert gate.judge("GET", "http", "127.0.0.1", script.BALANCE_PATH, port=5555).action == "pass"
     assert gate.judge("GET", "http", "127.0.0.1", script.BALANCE_PATH, port=5556).action == "refuse"
     assert gate.judge("GET", "https", "api.kie.ai", script.BALANCE_PATH).action == "refuse"
-    gate.learn_downloads(["https://api.kie.ai/x.mp3"])    # a foreign download URL is never fetched in dry mode
+    gate.learn_downloads(["https://api.kie.ai/x.mp3"])
     assert gate.judge("GET", "https", "api.kie.ai", "/x.mp3", url="https://api.kie.ai/x.mp3").action == "refuse"
 
 
-# ---------- fixtures, fake server and environment ----------
 
 def test_the_fake_server_speaks_the_kie_shapes_on_loopback_only():
     fake = script.FakeKie("ok", seconds=1.0)
@@ -262,11 +249,10 @@ def test_the_verdict_never_claims_a_live_proof_for_a_dry_run():
     assert script.final_verdict("live", False) == "NOT PASSED"
     assert any("NOT a live proof" in x for x in script.reality_not_proven("dry"))
     assert not any("NOT a live proof" in x for x in script.reality_not_proven("live"))
-    assert any("uncalibrated" in x for x in script.reality_not_proven("live"))   # said, not hidden
+    assert any("uncalibrated" in x for x in script.reality_not_proven("live"))
     assert script.verdict([script.check("a", True), script.check("b", False)]) == (False, ["b"])
 
 
-# ---------- real dry runs (the stand in a subprocess, nothing leaves the machine) ----------
 
 def _run(tmp_path: Path, *extra: str) -> tuple[int, dict, str]:
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}

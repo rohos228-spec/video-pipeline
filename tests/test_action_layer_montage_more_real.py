@@ -1,11 +1,10 @@
-"""Действия на реальных эндпоинтах монтажа и временной БД. Платные планы только preview, не run."""
 from __future__ import annotations
 
 from sqlalchemy import select
 
 from app.models import Frame, Project
 from app.services.action_layer import executor
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 CANVAS = {"canvas_graph": {"nodes": [{"id": "n1", "type": "images",
@@ -74,18 +73,16 @@ async def test_apply_queue_preview_has_real_cost_and_needs_approval(env) -> None
     assert step["cost"]["high"] > step["cost"]["low"]
     assert pv["cost"]["unknown_steps"] == 0 and pv["destructive_effects"]
     assert pv["budget"]["fits"] is True
-    # одно и то же, но очередь больше заявленной -> предусловие, а не запуск
     bad = await _preview(env, [{"action_id": "montage.apply_queue",
                                 "params": {**params, "max_image_ops": 1}}])
     assert bad.status_code == 422 and "queue_within_limits" in str(bad.json())
-    # другая модель, чем в проекте
     bad = await _preview(env, [{"action_id": "montage.apply_queue",
                                 "params": {**params, "image_generator": "seedream_5_pro"}}])
     assert bad.status_code == 422 and "cost_basis_matches" in str(bad.json())
 
 
 async def test_unpriced_outsee_model_blocks_approval_fail_closed(env) -> None:
-    pid = await _setup(env, kie=False)     # без ноды картинок: модель по умолчанию, Outsee
+    pid = await _setup(env, kie=False)
     await _run(env, [{"action_id": "montage.queue_ops", "params": {
         "project_id": pid, "ops": [{"type": "image_regen", "frame_number": 1}]}}])
     r = await _preview(env, [{"action_id": "montage.apply_queue", "params": {
@@ -105,7 +102,7 @@ async def test_apply_preview_blocked_while_apply_running_or_queue_empty(env, mon
     params = {"project_id": pid, "max_image_ops": 1, "max_video_ops": 0,
               "image_generator": "flux_2_pro", "image_resolution": "2k"}
     r = await _preview(env, [{"action_id": "montage.apply_queue", "params": params}])
-    assert r.status_code == 422 and "queue_within_limits" in str(r.json())   # очередь пуста
+    assert r.status_code == 422 and "queue_within_limits" in str(r.json())
     await _run(env, [{"action_id": "montage.queue_ops", "params": {
         "project_id": pid, "ops": [{"type": "image_regen", "frame_number": 1}]}}])
     monkeypatch.setattr(job_mod, "get_apply_job", lambda p: {"status": "running"})
@@ -166,7 +163,7 @@ async def test_local_actions_on_real_endpoints(env) -> None:
     async with env.factory() as s:
         meta = (await s.get(Project, pid)).meta
     assert meta["node_step_params"]["assemble"] == {"bgm_level": 55, "subtitles_enabled": True}
-    assert meta["canvas_graph"] == CANVAS["canvas_graph"]    # остальной meta не затёрт
+    assert meta["canvas_graph"] == CANVAS["canvas_graph"]
     assert "montage_board" in meta or any("video_trims" in str(v) for v in meta.values())
 
 
@@ -216,9 +213,8 @@ async def test_structure_actions_reach_endpoints_and_report_backend_errors(env) 
     first = view["steps"][0]
     assert first["status"] == "succeeded", view
     assert first["result"]["merged_frames"] >= 1
-    # у синтетических кадров нет шотов: бэкенд отказывает, шаг падает с текстом ошибки
     assert view["status"] == "failed" and view["steps"][1]["status"] == "failed"
     assert "HTTP 400" in view["steps"][1]["error"]
     bad = await _run(env, [{"action_id": "montage.split_scene", "params": {
         "project_id": pid, "frame_id": ids[3]}}], approve=True)
-    assert bad["status"] == "failed" and "HTTP 400" in bad["steps"][0]["error"]   # первый кадр сцены
+    assert bad["status"] == "failed" and "HTTP 400" in bad["steps"][0]["error"]

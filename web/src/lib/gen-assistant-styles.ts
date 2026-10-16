@@ -1,8 +1,3 @@
-/**
- * Помощник генерации: категории и стили с «агентами» (promptCore).
- * Источник ядер — prompts/blocks/visual_style/*.md (data/library/current).
- * Используется панелью gen-assistant-panel в окне «Генерация».
- */
 
 export type GenStyleArt =
   | "polka"
@@ -17,15 +12,11 @@ export type GenStyleArt =
 
 export type GenStyleDef = {
   id: string;
-  /** Ключ SVG-превью плитки. */
   art: GenStyleArt;
-  /** Готовая картинка превью (`/gen-styles/...`). Если нет — SVG по `art`. */
   cover?: string;
   name: string;
-  /** Путь блока в библиотеке промптов (справочно). */
   file: string;
   desc: string;
-  /** Ключ цвета точки/рамки плитки. */
   color: "red" | "purple" | "gray" | "orange" | "cyan" | "blue" | "green" | "pink" | "yellow";
   tags: string[];
   promptCore: string;
@@ -33,7 +24,6 @@ export type GenStyleDef = {
 
 export type GenCategoryDef = {
   id: string;
-  /** Превью-представитель категории. */
   art: GenStyleArt;
   name: string;
   styles: GenStyleDef[];
@@ -283,7 +273,6 @@ export const GEN_ASSISTANT_CATEGORIES: GenCategoryDef[] = [
 export const GEN_ASSISTANT_ALL_STYLES: GenStyleDef[] =
   GEN_ASSISTANT_CATEGORIES.flatMap((c) => c.styles);
 
-/** Цвета плиток в палитре окна генерации (dark + cyan accent). */
 export const GEN_STYLE_COLORS: Record<GenStyleDef["color"], string> = {
   red: "#f87171",
   purple: "#c084fc",
@@ -296,15 +285,10 @@ export const GEN_STYLE_COLORS: Record<GenStyleDef["color"], string> = {
   yellow: "#facc15",
 };
 
-/** Длиннее — это агент-инструкция со слотами, а не ядро стиля. */
 export const STYLE_CORE_MAX_CHARS = 700;
 
 const INSTRUCTION_MARKERS = ["\n#", "\n|", "```", "negative", "шаблон prompt", "чек-лист"];
 
-/**
- * Ядро стиля вставляется в промпт дословно, агент-инструкция — нет:
- * её исполняет LLM по кнопке «Сгенерировать» (зеркало looks_like_agent_echo).
- */
 export function isInstructionAgent(agentText: string): boolean {
   const text = (agentText ?? "").trim();
   if (!text) return false;
@@ -337,7 +321,6 @@ export function scrubStyleTopic(text: string): string {
   return kept.join(". ").trim();
 }
 
-/** Ядро стиля из длинного агента (блок после «ядра:»), без инструкции и без темы референсов. */
 export function extractAgentCore(agentText: string): string {
   const text = (agentText ?? "").trim();
   if (!text) return "";
@@ -369,7 +352,6 @@ export function extractAgentNegatives(agentText: string): string {
   return (m?.[1] || "").trim();
 }
 
-/** Локально промпт не собираем — только ответ LLM. */
 export function assembleGenPrompt(_opts: {
   request: string;
   agentText: string;
@@ -383,7 +365,6 @@ export function assistantRefHandle(index: number): string {
   return `@image${index + 1}`;
 }
 
-/** Сырой запрос без ответа LLM — в генератор картинки слать нельзя. */
 export function isUnfilledAssistantPrompt(prompt: string, request = ""): boolean {
   const p = prompt.trim();
   const req = request.trim();
@@ -397,7 +378,6 @@ export function isUnfilledAssistantPrompt(prompt: string, request = ""): boolean
   return false;
 }
 
-/** Текст варианта k из N: тот же промпт + указание варьировать ракурс. */
 export function genPromptVariant(base: string, idx: number, total: number): string {
   if (total <= 1) return base;
   return `${base}\n\n-- Вариант ${idx + 1} из ${total}: то же содержание и стиль, другой ракурс и мелкие детали кадра.`;

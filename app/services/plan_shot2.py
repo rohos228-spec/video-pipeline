@@ -159,12 +159,10 @@ def is_parent_slot(slot: str | None) -> bool:
 
 
 def is_parent_still_filename(name: str) -> bool:
-    """Отдельный still общего плана: ``frame_NNN_parent*.png``, не shot1."""
     return "_parent" in (name or "").lower()
 
 
 def find_shot1_image(scenes_dir: Path, frame_number: int) -> Path | None:
-    """Последний файл изображения первого кадра (без ``_s2_`` и still родителя)."""
     if not scenes_dir.is_dir():
         return None
     candidates = [
@@ -181,7 +179,6 @@ def find_shot1_image(scenes_dir: Path, frame_number: int) -> Path | None:
 
 
 def find_parent_still_image(scenes_dir: Path, frame_number: int) -> Path | None:
-    """Still общего плана ячейки — отдельный файл, не исходный shot1."""
     if not scenes_dir.is_dir():
         return None
     candidates = [
@@ -196,7 +193,6 @@ def find_parent_still_image(scenes_dir: Path, frame_number: int) -> Path | None:
 
 
 def resolve_coverage_parent_png(scenes_dir: Path, frame_number: int) -> Path | None:
-    """Still родителя для lock: ``frame_NNN_parent_*.png``, иначе shot1."""
     return find_parent_still_image(scenes_dir, frame_number) or find_shot1_image(
         scenes_dir, frame_number
     )

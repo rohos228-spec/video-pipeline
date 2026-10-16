@@ -55,7 +55,6 @@ async def _record_native_scene_input(session, project, frames, marker, *, cells=
         if cells is None:
             from app.services.scene_design import cells as sd_cells
 
-            # Diagnostic input read cannot flush pending native backfill writes.
             with session.no_autoflush:
                 cells = await sd_cells.load_cells(session, project, only_ok=False)
         if not runner._scene_journal_open(attempt):
@@ -147,10 +146,6 @@ _PHASE_RU = {"agents": "агенты сцен", "assemble": "сборка сце
 
 
 async def _record_skipped(session: AsyncSession, project: Project, phase: str) -> dict:
-    """Явное «пропущено» вместо молчаливого pass-through: журнал, meta проекта, прогресс ноды, лог.
-
-    Каждый канал независим: сбой одного не мешает остальным и не ломает пропуск (шаг по-прежнему
-    переходит дальше, как раньше). Возвращает записанную пометку."""
     from datetime import datetime, timezone
 
     text = SKIPPED_TEXT_RU.format(phase=_PHASE_RU.get(phase, phase))
@@ -166,7 +161,7 @@ async def _record_skipped(session: AsyncSession, project: Project, phase: str) -
         from app.services.observation import record_fact
 
         await record_fact("scene_design_skipped", dict(note))
-    except Exception:  # noqa: BLE001 - журнал не должен ломать переход шага
+    except Exception:
         logger.debug("[#{}] scene_design: событие пропуска не записано", project.id, exc_info=True)
     try:
         from app.services.project_meta import set_meta_fields
@@ -175,19 +170,18 @@ async def _record_skipped(session: AsyncSession, project: Project, phase: str) -
         history = dict(meta.get("scene_design_skipped") or {})
         history[phase] = note
         set_meta_fields(project, scene_design_skipped=history)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("[#{}] scene_design: пометка пропуска в meta не записана", project.id, exc_info=True)
     try:
         from app.services.run_sync import update_active_node_progress_text
 
         await update_active_node_progress_text(session, project, text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("[#{}] scene_design: текст прогресса не записан", project.id, exc_info=True)
     return note
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:
-    """Фаза 1: категорийные агенты (параллельно) → staging-ячейки."""
     if project.status is not ProjectStatus.scene_designing:
         return
     from app.services import db_v2
@@ -210,14 +204,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     if any(not fr.uuid for fr in frames):
         raise RuntimeError("scene_design: у кадров нет uuid — backfill не сработал")
 
-    # The journal follows this attempt's own node: its agent (camera, skeleton, characters, world,
-    # action) or, for the legacy single node, every agent that ran.
     scene_attempt = await _record_native_scene_input(
         session, project, frames, "agent",
     )
     runner.mark_running(project)
     await session.flush()
-    # Отпустить SQLite write-lock на время параллельных GPT-вызовов.
     await session.commit()
 
     only_agent = runner.get_only_agent(project)
@@ -243,11 +234,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             _stash_native_scene_output(
                 scene_attempt, "scene_agent_slice",
                 dict(slices) if own == scene_contracts.LEGACY_AGENT else slices.get(own))
-        # Чекпоинты агентов уже в meta — зафиксировать до записи ячеек.
         await session.commit()
 
-        # Срезы → staging-ячейки (валидация при записи, коммит частями).
-        # В only_agent режиме пишем только целевого (остальные — старые чекпоинты).
         full_vo = context_builder.full_voiceover(project, frames)
         cell_stats: dict[str, dict[str, int]] = {}
         to_store = (
@@ -260,8 +248,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             from app.services import scene_contracts
 
             if agent_name in scene_contracts.RETRY_ADMITTED_AGENTS:
-                # One transaction: old cells deleted, new ones inserted and the `data_applied`
-                # fact staged, committed together (recover_node reads that fact).
                 cell_stats[agent_name] = await sd_cells.store_cells(
                     session, project, agent_name, converted, transactional=True
                 )
@@ -271,7 +257,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
                 cell_stats[agent_name] = await sd_cells.store_cells(
                     session, project, agent_name, converted
                 )
-            # Ответ агента на диск ноды — материал для её ноды проверки.
             _write_sd_reply_file(project, agent_name, slice_data)
         logger.info("[#{}] scene_design cells: {}", project.id, cell_stats)
 
@@ -279,7 +264,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
             runner.mark_agents_done(project)
             project.status = ProjectStatus.scene_agents_ready
         else:
-            # Точечный ▶: веер ещё не полный — назад на frames_ready,
             # чтобы можно было запустить следующую ноду. only_agent держим
             # до complete_active_node (пометит только эту ноду done).
             project.status = ProjectStatus.frames_ready
@@ -445,7 +429,6 @@ async def run_assemble(
             )
             payload = local
             if problems:
-                # Качество сценария судит n_excel_gpt_1 (check), не GPT-сборщик.
                 logger.warning(
                     "[#{}] scene_design assemble: local chrono_dyn warnings "
                     "(пишу как есть, проверка кино отфильтрует): {}",
@@ -529,9 +512,8 @@ async def run_assemble(
                     blocked.get("changed"),
                 )
             logger.info("[#{}] scene_space ingest: {}", project.id, space_rep)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("[#{}] scene_space after assemble failed: {}", project.id, e)
-        # Пayload сборщика на диск ноды — материал для «Проверка: сборка сцен».
         _write_sd_reply_file(project, "assemble", payload)
         runner.mark_done(project, str(payload.get("report") or ""))
         project.status = ProjectStatus.scene_design_ready
@@ -540,10 +522,6 @@ async def run_assemble(
     except Exception as e:
         import contextlib
 
-        # Everything this attempt wrote since mark_assemble_running's commit (camera subdivision child
-        # frames, their rewritten parents, a partial apply) is DERIVED work of a failed attempt: it is
-        # rolled back, so a failure leaves the step input exactly as the attempt found it and a repeat
-        # (native or supervised) starts from the same rows.
         with contextlib.suppress(Exception):
             await session.rollback()
             await session.refresh(project)
@@ -552,9 +530,6 @@ async def run_assemble(
         from app.services.scene_design import agents as ag
 
         if scene_contracts.managed_scene_attempt():
-            # Managed execution: the repeat must replay the SAME request sequence (the recovery guard compares
-            # its first request with the failed attempt's first one), so chunk results of the failed attempt
-            # are dropped. An unmanaged native run keeps resuming from them.
             with contextlib.suppress(Exception):
                 runner.clear_chunk_checkpoints(project, ag.ASSEMBLER)
         with contextlib.suppress(Exception):

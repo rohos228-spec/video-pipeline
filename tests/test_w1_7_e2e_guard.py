@@ -1,4 +1,3 @@
-"""W1-7 / A19: e2e scripts refuse live data, never use a hard-coded project id; subtitle file names are escaped."""
 from __future__ import annotations
 
 import importlib.util
@@ -33,8 +32,6 @@ guard = _load("e2e_guard")
 
 @pytest.fixture
 def tmp_path():
-    """A work folder outside the repository: the shared pytest temp may sit inside ``data/`` (the guard would
-    rightly refuse it), so these tests use their own root."""
     import os
     import tempfile
 
@@ -48,7 +45,6 @@ def tmp_path():
 
 
 def _seed(root: Path, project_id: int = 7) -> Path:
-    """Minimal seed: two projects (the target and a bystander), their runs, frames and the per-project db."""
     data = root / "seed"
     (data / "videos" / SLUG).mkdir(parents=True)
     for path in (data / "state.db", data / "videos" / SLUG / "project.db"):
@@ -83,32 +79,31 @@ def _rows(db_path: Path, sql: str):
         return db.execute(sql).fetchall()
 
 
-# ---------------------------------------------------------------- layout guard
 def test_work_dir_inside_or_equal_to_live_data_is_refused(tmp_path):
     live = tmp_path / "live" / "data"
     live.mkdir(parents=True)
     seed = _seed(tmp_path)
     env = {"DATA_DIR": str(live)}
-    for work in (live, live / "scratch", tmp_path / "live"):  # equal, inside, and a parent of the live data
+    for work in (live, live / "scratch", tmp_path / "live"):
         with pytest.raises(SystemExit) as exc:
             guard.assert_safe_layout(seed, work, repo_root=tmp_path / "repo", env=env)
         assert "боевым" in str(exc.value)
-    env2 = {"SQLITE_PATH": str(live / "state.db")}  # SQLITE_PATH alone also marks the live folder
+    env2 = {"SQLITE_PATH": str(live / "state.db")}
     with pytest.raises(SystemExit):
         guard.assert_safe_layout(seed, live / "w", repo_root=tmp_path / "repo", env=env2)
-    with pytest.raises(SystemExit):  # the repository's own data folder
+    with pytest.raises(SystemExit):
         guard.assert_safe_layout(seed, tmp_path / "repo" / "data" / "w", repo_root=tmp_path / "repo", env={})
 
 
 def test_work_dir_overlapping_the_seed_is_refused_and_seed_survives(tmp_path):
-    seed = _seed(tmp_path)  # tmp/seed
+    seed = _seed(tmp_path)
     before = sorted(p.name for p in seed.rglob("*"))
-    for work in (seed, seed.parent):  # work == seed; and seed lying inside work (work/data does not overlap it)
+    for work in (seed, seed.parent):
         with pytest.raises(SystemExit):
             guard.prepare_scratch_data(seed, work, repo_root=tmp_path / "repo", env={})
     alias = tmp_path / "w"
     (alias).mkdir()
-    shutil.copytree(seed, alias / "data")  # work/data pre-exists: not created by the scripts, no marker
+    shutil.copytree(seed, alias / "data")
     with pytest.raises(SystemExit) as exc:
         guard.prepare_scratch_data(seed, alias, repo_root=tmp_path / "repo", env={})
     assert "маркера" in str(exc.value)
@@ -127,7 +122,7 @@ def test_prepare_copies_seed_marks_folder_and_may_be_repeated(tmp_path):
     data = guard.prepare_scratch_data(seed, work, repo_root=tmp_path / "repo", env={})
     assert (work / guard.MARKER).exists() and (data / "state.db").exists()
     (data / "extra.txt").write_text("x")
-    again = guard.prepare_scratch_data(seed, work, repo_root=tmp_path / "repo", env={})  # our own folder: recreated
+    again = guard.prepare_scratch_data(seed, work, repo_root=tmp_path / "repo", env={})
     assert again == data and not (data / "extra.txt").exists()
     reset = guard.reset_scratch_data(work, repo_root=tmp_path / "repo", env={})
     assert reset == data and list(data.iterdir()) == []
@@ -139,7 +134,7 @@ def test_scratch_writes_are_limited_to_the_work_folder(tmp_path):
     with guard.connect_scratch(data / "state.db", work) as db:
         db.execute("DELETE FROM frames")
     with pytest.raises(SystemExit):
-        guard.connect_scratch(seed / "state.db", work)  # the seed lies outside the work folder
+        guard.connect_scratch(seed / "state.db", work)
     with pytest.raises(SystemExit):
         guard.assert_scratch_file(data / "state.db", work, repo_root=tmp_path / "repo", env={"DATA_DIR": str(data)})
 
@@ -162,7 +157,6 @@ def test_project_id_is_looked_up_by_slug_not_hard_coded(tmp_path):
         guard.resolve_project_id(seed / "state.db", "no-such-slug")
 
 
-# ---------------------------------------------------------------- the real scripts
 def test_live_excel_script_prepares_only_its_copy_and_only_its_project(tmp_path, monkeypatch):
     monkeypatch.delenv("DATA_DIR", raising=False)
     monkeypatch.delenv("SQLITE_PATH", raising=False)
@@ -172,11 +166,10 @@ def test_live_excel_script_prepares_only_its_copy_and_only_its_project(tmp_path,
     data = mod._prepare_data(seed, work)
     assert mod.PROJECT_ID == 7 and mod.BASE.endswith("/api/projects/7")
     for db_path in (data / "state.db", data / "videos" / SLUG / "project.db"):
-        # target project: only the node under test survives; bystander project 8 is untouched
         assert _rows(db_path, "SELECT node_key,status,attempts FROM node_runs WHERE workflow_run_id=70") == [(NODE, "pending", 0)]
         assert len(_rows(db_path, "SELECT 1 FROM node_runs WHERE workflow_run_id=80")) == 2
         assert _rows(db_path, "SELECT status FROM projects WHERE id=8") == [("running",)]
-    assert (seed / "state.db").read_bytes() == seed_state_before  # the seed is only read
+    assert (seed / "state.db").read_bytes() == seed_state_before
 
 
 def test_live_excel_script_refuses_live_work_dir_before_any_delete(tmp_path, monkeypatch):
@@ -201,7 +194,7 @@ def test_text_nodes_script_deletes_frames_only_of_the_resolved_project(tmp_path,
     state = data / "state.db"
     assert _rows(state, "SELECT count(*) FROM frames WHERE project_id=7") == [(0,)]
     assert _rows(state, "SELECT count(*) FROM hitl_requests WHERE project_id=7") == [(0,)]
-    assert _rows(state, "SELECT count(*) FROM frames WHERE project_id=8") == [(1,)]  # bystander kept
+    assert _rows(state, "SELECT count(*) FROM frames WHERE project_id=8") == [(1,)]
     assert _rows(state, "SELECT count(*) FROM hitl_requests WHERE project_id=8") == [(1,)]
     assert _rows(state, "SELECT node_key FROM node_runs WHERE workflow_run_id=70") == [("native-plan-A",)]
     assert _rows(state, "SELECT count(*) FROM node_runs WHERE workflow_run_id=80") == [(2,)]
@@ -232,10 +225,9 @@ def test_every_destructive_e2e_script_goes_through_the_guard():
                  "e2e_vibecode_script_frames_qc", "e2e_full_project_check", "e2e_action_layer_fake_paid"):
         text = (SCRIPTS / f"{name}.py").read_text(encoding="utf-8")
         assert "import e2e_guard as guard" in text or "guard = base.guard" in text or "base._prepare_data" in text, name
-        assert "shutil.rmtree(" not in text, name  # removal goes only through guard.prepare/reset_scratch_data
+        assert "shutil.rmtree(" not in text, name
 
 
-# ---------------------------------------------------------------- assembly.subtitles_vf_arg (A19, second half)
 def test_plain_subtitle_name_is_unchanged():
     assert subtitles_vf_arg() == "subtitles=subs.ass"
     assert subtitles_vf_arg("my-subs_2.ass") == "subtitles=my-subs_2.ass"
@@ -250,7 +242,6 @@ def test_special_characters_are_escaped_on_both_ffmpeg_levels(name):
     if "=" in name:
         assert body.startswith("filename=")
         body = body[len("filename="):]
-    # no bare filter/option separator survives: every one is preceded by a backslash
     for i, ch in enumerate(body):
         if ch in ",;[]:' ":
             assert body[i - 1] == "\\", (name, vf)

@@ -1,10 +1,3 @@
-"""Общие исправления планировщика по разбору отложенного набора №3 (офлайн, без модели).
-
-Классы ошибок: (A) нужное действие убрано защитой из-за разговорного глагола или оборота без глагола;
-(B) модель взяла не то действие или добавила лишнее парное; (C) значение, названное словами, модель
-опустила («опусти необязательное»): площадки, предел операций, режим героя; (D) модель выдумала значения
-настроек вместо вопроса; (E) очистка всей очереди без слов о всей очереди. Фразы здесь свои, не из наборов.
-"""
 from __future__ import annotations
 
 import json
@@ -46,7 +39,6 @@ def _kept(aid: str, text: str) -> bool:
     return bool(kept) and not dropped
 
 
-# --- (A) защита не убирает названное действие ----------------------------------------------------
 
 @pytest.mark.parametrize("aid,text", [
     ("montage.upload_voice", "закачай мне озвучку диктора"),
@@ -72,7 +64,6 @@ def test_unrelated_wording_still_drops_the_action(aid: str, text: str) -> None:
     assert not _kept(aid, text), (aid, text)
 
 
-# --- (B) лишнее парное действие ------------------------------------------------------------------
 
 def test_auto_mode_request_does_not_continue_the_pipeline() -> None:
     steps = [_step("project.continue_pipeline"),
@@ -96,13 +87,12 @@ def test_run_step_without_run_words_but_with_resolution_becomes_a_setting() -> N
     for text in ("запусти видео в 1080p", "сгенерируй картинки в 4k сейчас", "видео сделай"):
         assert rules.pick_similar_action("step.run_step", {"project_id": 2, "step_code": "video"},
                                          text, FACTS, None, reg) is None, text
-    paid = {"project_id": 2, "step_code": "img", "count": 5}  # настоящий запуск с числом генераций
+    paid = {"project_id": 2, "step_code": "img", "count": 5}
     assert rules.pick_similar_action("step.run_step", paid, "кадры в 4k", FACTS, None, reg) is None
     assert rules.pick_similar_action("step.run_step", {"project_id": 2, "step_code": "video"},
                                      "видео делай в 1080p", FACTS, {"step.run_step"}, reg) is None
 
 
-# --- (C) значения, названные словами -------------------------------------------------------------
 
 def test_named_platforms() -> None:
     assert rules.named_platforms("залей в тикток и инстаграм") == ["tiktok", "ig_reels"]
@@ -147,7 +137,6 @@ def test_hero_mode_from_words() -> None:
     assert "hero_mode" not in plain.steps[0]["params"]
 
 
-# --- (D) настройки: значения только из запроса ---------------------------------------------------
 
 def test_settings_values_not_in_the_request_become_a_question() -> None:
     invented = {"project_id": 2, "image_generator": "nano_banana_2", "video_generator": "veo_3_fast"}
@@ -185,7 +174,6 @@ def test_settings_without_generator_or_resolution_are_untouched() -> None:
     assert out.steps and out.steps[0]["params"]["title"] == "Тихая гавань"
 
 
-# --- (E) очистка всей очереди --------------------------------------------------------------------
 
 def test_clearing_the_queue_needs_words_about_the_whole_queue() -> None:
     clear = _step("montage.cancel_queue_ops", {"project_id": 2, "clear_all": True})
@@ -198,7 +186,6 @@ def test_clearing_the_queue_needs_words_about_the_whole_queue() -> None:
     assert _run([ops], "убери правку кадра 3 из очереди").steps
 
 
-# --- подсказки модели ----------------------------------------------------------------------------
 
 def test_notes_cover_the_new_classes() -> None:
     notes = rules.ACTION_NOTES
@@ -209,7 +196,6 @@ def test_notes_cover_the_new_classes() -> None:
     assert "project.patch_settings" in notes["step.run_step"]
 
 
-# --- словарь защиты и каталога: слэнг, опечатки, указание без глагола (разбор офлайн-прогона набора №4) ---
 
 @pytest.mark.parametrize("aid,text", [
     ("hitl.approve", "апрувь запрос 11"),

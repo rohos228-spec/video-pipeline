@@ -1,8 +1,3 @@
-"""Copied genuine exhaustion; original observer owns every Decision turn.
-
-Only model HTTP is a fixture. No application/worker main, no replacement of
-configure/begin/tick/context/live/tools. SQLite triggers forbid business writes.
-"""
 import asyncio
 import hashlib
 import importlib.util

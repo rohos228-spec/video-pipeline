@@ -14,7 +14,6 @@ interface Props {
   frameId?: number | null;
   disabled?: boolean;
   onPlan: (r: PlanPreviewResponse, requestText: string) => void;
-  /** Прикреплённые файлы живут в родителе: их же отправляют и при повторе запроса после уточнения. */
   attachments: AttachmentItem[];
   onAttachments: (fn: (prev: AttachmentItem[]) => AttachmentItem[]) => void;
 }
@@ -24,7 +23,6 @@ export function CommandBar({projectId, sceneId, frameId, disabled, onPlan, attac
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // Повтор последнего запроса после временного сбоя планировщика (сервер пометил ошибку retryable).
   const [retry, setRetry] = useState<(() => void) | null>(null);
   const [macros, setMacros] = useState<MacroJson[] | null | undefined>(undefined);
   const [catalog, setCatalog] = useState<ActionSpecJson[]>([]);

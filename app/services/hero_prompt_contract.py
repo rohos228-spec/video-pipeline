@@ -66,7 +66,6 @@ _CHARACTER_LOCK_MARKERS = (
 
 
 def hero_style_looks_like_img_pr_template(text: str) -> bool:
-    """Глобальный hero_style часто = шаблон кадров (промт_картинки), не лок листа."""
     t = (text or "").lower()
     if not t.strip():
         return False

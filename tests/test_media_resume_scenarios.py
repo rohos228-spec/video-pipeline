@@ -1,8 +1,3 @@
-"""Resume, never resubmit: scenario tests for the native Kie image/video paths.
-
-Stubs only: createTask goes through a patched kie_post_json, status and downloads through a
-patched httpx send. No network, no paid calls. R1..R14 numbers are cited in the Phase F report.
-"""
 import asyncio
 import tempfile
 import unittest
@@ -24,7 +19,7 @@ PID = 7
 
 
 class ProcessDied(BaseException):
-    """Stands in for a killed process: not caught by any `except Exception`."""
+    pass
 
 
 class FakeClock:
@@ -57,8 +52,8 @@ class Env(unittest.IsolatedAsyncioTestCase):
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.creates = 0
         self.polls = 0
-        self.create_script = []  # per-call: exception instance or taskId string
-        self.poll_script = []  # per-call: exception, ("code", n), "waiting" or "success"
+        self.create_script = []
+        self.poll_script = []
         self.clock = FakeClock()
         self.patches = [
             patch("app.db.SessionLocal", self.sessions),
@@ -139,13 +134,12 @@ class Env(unittest.IsolatedAsyncioTestCase):
 
 class ImageResume(Env):
     async def test_R1_restart_mid_generation_resumes_without_second_create(self):
-        self.poll_script = [ProcessDied()]  # process dies on the first status request
+        self.poll_script = [ProcessDied()]
         with self.assertRaises(ProcessDied):
             await self.gen_image()
         self.assertEqual(self.creates, 1)
-        # restart: the step re-queues the frame, new file name, same request
         res = await self.gen_image(out=self.out("frame_012_99999999.png"))
-        self.assertEqual(self.creates, 1)  # exactly one createTask across the restart
+        self.assertEqual(self.creates, 1)
         self.assertEqual(res.gen_id, "T-1")
         self.assertTrue(res.file_path.exists())
         statuses = [(r.event, r.status) for r in await self.task_rows() if r.task_id == "T-1"]
@@ -196,7 +190,6 @@ class ImageResume(Env):
                 p.stop()
         self.assertEqual(self.creates, 1)
         self.assertGreater(self.polls, 10)
-        # next entry polls the same task id
         self.poll_script = []
         res = await self.gen_image(out=self.out("frame_012_55555555.png"))
         self.assertEqual((self.creates, res.gen_id), (1, "T-1"))
@@ -212,18 +205,17 @@ class ImageResume(Env):
         with self.assertRaises(kie_http.KieSubmitUnknownError):
             await self.gen_image()
         self.assertEqual(self.creates, 1)
-        with self.assertRaises(kie_http.KieSubmitUnknownError) as cm:  # next pass / restart
+        with self.assertRaises(kie_http.KieSubmitUnknownError) as cm:
             await self.gen_image(out=self.out("frame_012_66666666.png"))
         self.assertEqual(self.creates, 1)
         self.assertTrue(cm.exception.context["no_resubmit"])
-        # operator verified there was no charge
         self.assertEqual(await media_resume.release_unknown(PID, "frame_012"), 1)
         res = await self.gen_image(out=self.out("frame_012_44444444.png"))
         self.assertEqual((self.creates, res.gen_id), (2, "T-2"))
 
     async def test_R7_connect_error_before_send_is_not_blocking(self):
         self.create_script = [httpx.ConnectError("refused")]
-        with self.assertRaises(httpx.ConnectError):  # raised unchanged: caller may retry
+        with self.assertRaises(httpx.ConnectError):
             await self.gen_image()
         res = await self.gen_image(out=self.out("frame_012_33333333.png"))
         self.assertEqual((self.creates, res.gen_id), (2, "T-2"))
@@ -256,8 +248,8 @@ class ImageResume(Env):
         self.poll_script = [ProcessDied()]
         with self.assertRaises(ProcessDied):
             await self.gen_image()
-        await self.gen_image(out=self.out("frame_013_ab12cd34.png"))  # other frame: own submit
-        await self.gen_image(out=self.out("frame_012_11111111.png"), prompt="edited")  # other prompt: own submit
+        await self.gen_image(out=self.out("frame_013_ab12cd34.png"))
+        await self.gen_image(out=self.out("frame_012_11111111.png"), prompt="edited")
         self.assertEqual(self.creates, 3)
 
     async def test_R11_window_zero_disables_resume_but_keeps_no_resubmit_policy(self):
@@ -270,7 +262,7 @@ class ImageResume(Env):
             with self.assertRaises(ProcessDied):
                 await self.gen_image()
             await self.gen_image(out=self.out("frame_012_00000001.png"))
-        self.assertEqual(self.creates, 3)  # no ledger, no resume
+        self.assertEqual(self.creates, 3)
 
 
 class VideoLadder(Env):
@@ -285,13 +277,13 @@ class VideoLadder(Env):
         finally:
             for p in patches:
                 p.stop()
-        self.assertEqual(self.creates, 1)  # before the fix: a new createTask per burned attempt
+        self.assertEqual(self.creates, 1)
 
     async def test_R13_ladder_create_read_timeout_one_post_only(self):
         self.create_script = [httpx.ReadTimeout("slow")] * 5
         with self.assertRaises(kie_http.KieSubmitUnknownError):
             await self.ladder_video()
-        self.assertEqual(self.creates, 1)  # RETRY_SAME no longer applies after bytes were written
+        self.assertEqual(self.creates, 1)
         with self.assertRaises(kie_http.KieSubmitUnknownError):
             await self.ladder_video("clip_001_bb12cd34.mp4")
         self.assertEqual(self.creates, 1)
@@ -318,7 +310,7 @@ class VideoLadder(Env):
             return await self._send(client, request, **kw)
         with patch.object(httpx.AsyncClient, "send", fail_first):
             res = await self.ladder_video()
-        self.assertEqual((self.creates, res.gen_id), (2, "T-2"))  # confirmed failure: ladder behaviour unchanged
+        self.assertEqual((self.creates, res.gen_id), (2, "T-2"))
 
 
 class ImageLadder(Env):
@@ -411,9 +403,9 @@ class StartupReconcile(Env):
         self.assertEqual((stats["checked"], stats["downloaded"], stats["errors"]), (1, 1, 0))
         files = list((pr.data_dir / "scenes").glob("frame_012_*.png"))
         self.assertEqual(len(files), 1)
-        self.assertEqual(self.creates, 1)  # reattach never submits
+        self.assertEqual(self.creates, 1)
         again = await media_resume.reconcile_on_startup()
-        self.assertEqual(again["checked"], 0)  # downloaded is terminal
+        self.assertEqual(again["checked"], 0)
 
     async def test_R21_reconcile_leaves_pending_task_for_the_step_to_resume(self):
         pr = await self.make_project()

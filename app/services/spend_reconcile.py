@@ -1,18 +1,3 @@
-"""B10: сверка денег. Суммы журналов (``spend_ledger`` + ``tracker.db``) против снимков баланса провайдера
-до и после платного шага.
-
-Сеть здесь не ходит. Баланс приносит адаптер-колбэк, который подключает вызывающий код
-(``register_balance_adapter``): для Kie это запрос кредитов, для Outsee и ElevenLabs это число,
-которое владелец вводит из кабинета. Без адаптера и без переданного снимка сверка честно отвечает
-«нет снимка баланса» и не изображает сходимость.
-
-Результат сверки пишется:
-* в ``spend_ledger`` строкой ``kind=event`` (0 USD): ``source=reconcile_ok`` или ``reconcile_gap``,
-  числа лежат в ``note`` (журнал append-only, строку не изменить);
-* при несходимости ещё и строкой инцидента ``observation_incidents`` типа ``spend_mismatch``.
-
-Отчёт по проекту (``project_report``) читает ``telemetry.project_telemetry``.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -28,11 +13,11 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-DEFAULT_TOLERANCE = 0.05          # цель владельца: 5%; задаётся параметром ``tolerance``
+DEFAULT_TOLERANCE = 0.05
 SOURCE_OK = "reconcile_ok"
 SOURCE_GAP = "reconcile_gap"
 INCIDENT_TYPE = "spend_mismatch"
-INCIDENT_EXECUTION = "reconcile"  # у сверки нет запуска; поле обязательное в таблице инцидентов
+INCIDENT_EXECUTION = "reconcile"
 
 STATUS_CONVERGED = "converged"
 STATUS_GAP = "gap"
@@ -47,7 +32,6 @@ STATUS_RU = {
     STATUS_INCONCLUSIVE: "не удалось сверить",
 }
 
-# Адаптер возвращает баланс провайдера в USD (число или awaitable числа).
 BalanceAdapter = Callable[[], "float | Awaitable[float]"]
 _adapters: dict[str, BalanceAdapter] = {}
 
@@ -70,7 +54,7 @@ class Snapshot:
     provider: str
     balance_usd: float | None
     taken_at: datetime
-    source: str = "adapter"     # adapter | manual | error
+    source: str = "adapter"
     error: str = ""
 
     @property
@@ -79,12 +63,10 @@ class Snapshot:
 
 
 def manual_snapshot(provider: str, balance_usd: float, *, taken_at: datetime | None = None) -> Snapshot:
-    """Снимок из кабинета, который вводит владелец."""
     return Snapshot(_norm(provider), float(balance_usd), taken_at or datetime.utcnow(), "manual")
 
 
 async def take_snapshot(provider: str, adapter: BalanceAdapter | None = None) -> Snapshot:
-    """Снимок через адаптер. Нет адаптера или он упал: снимок без числа и с причиной (не исключение)."""
     key = _norm(provider)
     fn = adapter or _adapters.get(key)
     now = datetime.utcnow()
@@ -98,28 +80,16 @@ async def take_snapshot(provider: str, adapter: BalanceAdapter | None = None) ->
         if value != value or value in (float("inf"), float("-inf")):
             raise ValueError("баланс не число")
         return Snapshot(key, value, now, "adapter")
-    except Exception as exc:  # noqa: BLE001 - любой отказ колбэка становится видимой причиной
+    except Exception as exc:
         return Snapshot(key, None, now, "error", f"{type(exc).__name__}: {exc}"[:200])
 
 
-# --------------------------------------------------------------------------- чистое сравнение
 
 
 def compare(*, provider: str, before: Snapshot | None, after: Snapshot | None,
             ledger_usd: float, tracker_usd: float = 0.0, overlap_usd: float = 0.0,
             tolerance: float = DEFAULT_TOLERANCE, abs_tolerance_usd: float = 0.0,
             foreign_usd: float = 0.0, boundary_usd: float = 0.0) -> dict[str, Any]:
-    """Сравнивает убыль баланса с суммой журналов.
-
-    ``journal_usd = ledger_usd + tracker_usd - overlap_usd``: журналы покрывают разные швы (платные вызовы
-    медиа против LLM-вызовов трекера); если вызывающий знает, что одну трату записали оба, он вычитает
-    её в ``overlap_usd``. Допуск относительный (``tolerance`` от большего из двух чисел) и/или абсолютный.
-
-    W70/K11: баланс провайдера общий. ``foreign_usd`` - траты этого провайдера в окне вне сверяемого проекта,
-    ``boundary_usd`` - траты проекта, записанные между отметкой окна и снимком (или после снимка): их нет в
-    убыли баланса или они в неё не попали. Если без них сумма не сходится, это не доказанное расхождение, а
-    ``inconclusive`` (без инцидента). Сошедшаяся сверка остаётся сошедшейся.
-    """
     if tolerance < 0 or abs_tolerance_usd < 0:
         raise ValueError("допуск не может быть отрицательным")
     journal = float(ledger_usd) + float(tracker_usd) - float(overlap_usd)
@@ -137,8 +107,8 @@ def compare(*, provider: str, before: Snapshot | None, after: Snapshot | None,
         out.update(status=STATUS_NO_SNAPSHOT, status_ru=STATUS_RU[STATUS_NO_SNAPSHOT], converged=False,
                    reason_ru="; ".join(reasons) or "снимок баланса до или после шага не получен")
         return out
-    spent = float(before.balance_usd) - float(after.balance_usd)  # type: ignore[arg-type]
-    gap = spent - journal               # > 0: провайдер списал больше, чем записано
+    spent = float(before.balance_usd) - float(after.balance_usd)
+    gap = spent - journal
     base = max(abs(spent), abs(journal))
     ratio = (abs(gap) / base) if base > 0 else 0.0
     converged = abs(gap) <= abs_tolerance_usd + 1e-9 or ratio <= tolerance + 1e-12
@@ -161,7 +131,6 @@ def compare(*, provider: str, before: Snapshot | None, after: Snapshot | None,
 
 
 def message_ru(result: dict[str, Any]) -> str:
-    """Одна строка для оператора."""
     p = result.get("provider", "?")
     if result.get("status") == STATUS_NO_SNAPSHOT:
         return f"Сверка {p}: нет снимка баланса ({result.get('reason_ru', '')}). Сходимость не проверена."
@@ -176,12 +145,10 @@ def message_ru(result: dict[str, Any]) -> str:
     return base + f": расхождение. {result.get('reason_ru', '')}"
 
 
-# --------------------------------------------------------------------------- чтение журналов
 
 
 @dataclass
 class Mark:
-    """Положение журналов перед шагом: сумму окна считаем по id строк, а не по часам."""
     ledger_max_id: int
     tracker_max_id: int
 
@@ -193,7 +160,6 @@ def _tracker_path():
 
 def _tracker_sync(project_id: int | None, provider: str | None, after_id: int,
                   db_path=None) -> tuple[float, int]:
-    """(сумма cost_usd строк с id > after_id, максимальный id). Нет файла или таблицы: (0, 0)."""
     path = db_path or _tracker_path()
     if not path.is_file():
         return 0.0, 0
@@ -223,18 +189,12 @@ async def _ledger_max_id(session) -> int:
 
 async def mark(session, *, tracker_db=None) -> Mark:
     _, tracker_max = await asyncio.to_thread(_tracker_sync, None, None, 2 ** 62, tracker_db)
-    # after_id огромный: сумма пустая, нужен только максимальный id
     return Mark(await _ledger_max_id(session), tracker_max)
 
 
 async def window_sums(session, start: Mark, *, provider: str, project_id: int | None = None,
                       tracker_db=None,
                       ambiguous: "list[tuple[int, int | None]] | None" = None) -> dict[str, float]:
-    """Суммы журналов за окно после ``start``. Сервисные строки сверки (kind=event, 0 USD) сумму не меняют.
-
-    Кроме ``ledger_usd`` / ``tracker_usd`` (строки проекта) отдаёт ``foreign_usd`` (строки этого провайдера в окне
-    у других проектов или без проекта) и ``boundary_usd`` (строки проекта с id внутри ``ambiguous`` - пар
-    ``(после_id, до_id включительно | None)``: записаны у границ снимков). Это для ``compare``: баланс общий."""
     sql = "SELECT id, usd, provider, project_id FROM spend_ledger WHERE id > :a"
     params: dict[str, Any] = {"a": start.ledger_max_id}
     ledger = foreign = boundary = 0.0
@@ -255,7 +215,6 @@ async def window_sums(session, start: Mark, *, provider: str, project_id: int | 
     return {"ledger_usd": ledger, "tracker_usd": tracker, "foreign_usd": foreign, "boundary_usd": boundary}
 
 
-# --------------------------------------------------------------------------- запись результата
 
 
 def _note(result: dict[str, Any]) -> str:
@@ -266,15 +225,13 @@ def _note(result: dict[str, Any]) -> str:
 
 async def record_result(session, result: dict[str, Any], *, project_id: int | None,
                         window_key: str = "") -> str | None:
-    """Пишет строку журнала (всегда) и инцидент (только при расхождении). Коммит делает вызывающий.
-    Возвращает id инцидента или None."""
     from app.services import spend_guard
     ok = result.get("status") == STATUS_CONVERGED
     inconclusive = result.get("status") == STATUS_INCONCLUSIVE
     await spend_guard.record_event(session, project_id=project_id, provider=result["provider"],
                                    source=SOURCE_OK if ok else (SOURCE_INCONCLUSIVE if inconclusive else SOURCE_GAP),
                                    note=_note(result))
-    if ok or inconclusive:  # inconclusive: no proof of a mismatch, so no incident
+    if ok or inconclusive:
         return None
     return await _open_incident(session, result, project_id, window_key)
 
@@ -287,7 +244,7 @@ async def _open_incident(session, result: dict[str, Any], project_id: int | None
                                  f"{INCIDENT_EXECUTION}|{INCIDENT_TYPE}|{result['provider']}|{project_id}|{window_key}"))
     existing = await session.get(Incident, incident_id)
     if existing is not None:
-        return incident_id            # повторная запись того же окна не плодит дубли
+        return incident_id
     fact = message_ru(result)
     session.add(Incident(
         incident_id=incident_id, execution_id=INCIDENT_EXECUTION, project_id=int(project_id or 0),
@@ -305,7 +262,6 @@ async def _open_incident(session, result: dict[str, Any], project_id: int | None
     return incident_id
 
 
-# --------------------------------------------------------------------------- шаг под сверкой
 
 
 @asynccontextmanager
@@ -314,12 +270,6 @@ async def reconcile_window(session_factory, provider: str, *, project_id: int | 
                            overlap_usd: float = 0.0, adapter: BalanceAdapter | None = None,
                            before: Snapshot | None = None, after_snapshot: Callable[[], Snapshot] | None = None,
                            tracker_db=None):
-    """Оборачивает платный шаг: снимок до, шаг, снимок после, сверка и запись.
-
-    ``session_factory`` даёт сессию (async_sessionmaker). Итог кладётся в словарь, который отдаёт ``as``:
-    ``async with reconcile_window(...) as out: ...; out["result"]``. Исключение шага сверку не отменяет:
-    деньги могли уйти и при ошибке; исключение после сверки пробрасывается дальше.
-    """
     out: dict[str, Any] = {}
     async with session_factory() as session:
         start = await mark(session, tracker_db=tracker_db)
@@ -344,7 +294,6 @@ async def reconcile_now(session, *, provider: str, project_id: int | None, start
                         before: Snapshot, after: Snapshot, tolerance: float = DEFAULT_TOLERANCE,
                         abs_tolerance_usd: float = 0.0, overlap_usd: float = 0.0,
                         tracker_db=None, commit: bool = True) -> dict[str, Any]:
-    """Сверка по уже готовым снимкам (владелец ввёл баланс из кабинета до и после)."""
     sums = await window_sums(session, start, provider=provider, project_id=project_id, tracker_db=tracker_db)
     result = compare(provider=provider, before=before, after=after, overlap_usd=overlap_usd,
                      tolerance=tolerance, abs_tolerance_usd=abs_tolerance_usd, **sums)
@@ -355,21 +304,11 @@ async def reconcile_now(session, *, provider: str, project_id: int | None, start
     return result
 
 
-# --------------------------------------------------------------------------- отчёт по проекту
 
 
 async def project_report(session, project_id: int, *, since: datetime | None = None,
                          tolerance: float = DEFAULT_TOLERANCE, tracker_db=None,
                          recent: int = 10) -> dict[str, Any]:
-    """Оценено / фактически / расхождение / открытые резервы по проекту. Только чтение.
-
-    * ``estimated_usd``: сумма резервов (``reserve``) и строк ``estimated``;
-    * ``actual_usd``: сумма фактов (``actual``) плюс поправки ``settle`` (факт минус резерв);
-    * ``ledger_total_usd``: сумма всех строк (то, что считают потолки);
-    * ``open_reserves``: резервы по запускам, где нет строки ``settle``. Точное совпадение резерва с фактом
-      строки ``settle`` не оставляет, поэтому это верхняя граница, а не точное число;
-    * ``reconciliations``: последние результаты сверки с балансом (строки ``reconcile_*``).
-    """
     where = "project_id = :p"
     params: dict[str, Any] = {"p": project_id}
     if since is not None:

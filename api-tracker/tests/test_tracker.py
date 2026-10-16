@@ -38,24 +38,22 @@ def test_pricing_gemini_37_flash():
 
 
 def test_pricing_gemini_38_flash():
-    """Проверка тарифа Gemini 3.8 Flash (официальный $0.75 / $3.75)."""
     cost = calculate_cost(
         "gemini-3.8-flash",
         prompt_tokens=10000,
         completion_tokens=5000,
     )
-    expected = (10000 / 1e6) * 0.75 + (5000 / 1e6) * 3.75
+    expected = (10000 / 1e6) * 0.147622 + (5000 / 1e6) * 0.738108
     assert cost == round(expected, 6)
 
 
 def test_pricing_gpt_sol():
-    """Проверка тарифа GPT 5.6 Sol ($1.20 / $4.80)."""
     cost = calculate_cost(
         "gpt-5.6-sol",
         prompt_tokens=5000,
         completion_tokens=10000,
     )
-    expected = (5000 / 1e6) * 1.20 + (10000 / 1e6) * 4.80
+    expected = (5000 / 1e6) * 0.426462 + (10000 / 1e6) * 2.558774
     assert cost == round(expected, 6)
 
 
@@ -160,6 +158,9 @@ def test_db_get_stats_aggregation(tmp_path: Path):
 def test_api_endpoints(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     db_file = tmp_path / "server_test.db"
     monkeypatch.setattr("app.db.DEFAULT_DB_PATH", db_file)
+    monkeypatch.setattr("app.cloud_sync.push_call_to_supabase", lambda *a, **k: False)
+    monkeypatch.setattr("app.cloud_sync.get_cloud_logs", lambda **k: ([], 0))
+    monkeypatch.setattr("app.cloud_sync.get_cloud_stats", lambda **k: {})
     init_db(db_file)
 
     client = TestClient(app)
@@ -291,7 +292,8 @@ def test_api_profile_and_users(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr("app.identity.BASE_DIR", tmp_path)
     init_db(db_file)
 
-    insert_call(provider="OpenAI", model="gpt-4o", cost_usd=0.01, user_name="Владелец", db_path=db_file)
+    monkeypatch.setattr("app.cloud_sync.get_cloud_distinct_users", lambda: ["Тестировщик-1"])
+    insert_call(provider="OpenAI", model="gpt-4o", cost_usd=0.01, user_name="Тестировщик-1", db_path=db_file)
 
     client = TestClient(app)
 
@@ -309,7 +311,7 @@ def test_api_profile_and_users(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     users_res = client.get("/api/users")
     assert users_res.status_code == 200
     users = users_res.json()["users"]
-    assert "Владелец" in users or len(users) > 0
+    assert "Тестировщик-1" in users
 
 
 def test_killswitch_api_toggle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

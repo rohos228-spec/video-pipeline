@@ -1,8 +1,3 @@
-"""Pure diagnosis projection: animation degradation facts and scene result checks become typed incidents.
-
-No database, no provider. Facts are built by hand in the exact shape the executors write them
-(make_animation_prompts._record_degradation, scene_contracts.observe_scene_result/record_scene_parse).
-"""
 from types import SimpleNamespace
 
 from app.services.diagnosis import RECOMMENDATIONS, TITLES, derive_incidents

@@ -183,7 +183,9 @@ def test_local_synth_all_kinds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_sfx_files_local(tmp_path) -> None:
+async def test_generate_sfx_files_local(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.settings import settings
+    monkeypatch.setattr(settings, "elevenlabs_api_key", "")
     project = SimpleNamespace(id=1, meta={}, data_dir=tmp_path)
     session = MagicMock()
     session.flush = MagicMock(return_value=None)
@@ -244,6 +246,58 @@ def test_mix_sfx_positions_and_duck(tmp_path) -> None:
     assert "amix=inputs=3" in fc  # VO + 2 SFX
     # Каждый sfx — отдельный -i
     assert args.count("-i") == 2
+
+
+def test_collect_sfx_inputs_video_alignment(tmp_path) -> None:
+    import json
+    from app.services.sfx_mix import collect_sfx_inputs
+    from app.services.sfx_gen import _write_wav as write_wav
+
+    sfx_file = tmp_path / "sfx_hit.wav"
+    write_wav(sfx_file, _synth("hit", 0.5))
+
+    project = SimpleNamespace(
+        id=1,
+        data_dir=tmp_path,
+        meta={
+            "ai_jobs": {
+                "sfx_files": {
+                    "files": [
+                        {
+                            "idx": 0,
+                            "path": str(sfx_file),
+                            "frame_number": 26,
+                            "t_start": 54.20,  # Planned on 67.85s speech timeline
+                            "duration": 1.0,
+                            "kind": "hit",
+                            "gain": 0.6,
+                            "duck": False,
+                        }
+                    ]
+                }
+            }
+        },
+    )
+
+    # Simulation: words_*.json has frame 26 starting at 53.84s (planned offset = +0.36s)
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    words_json = audio_dir / "words_123.json"
+    words_json.write_text(
+        json.dumps({"frames": [{"frame_number": 26, "start_ts": 53.84, "end_ts": 55.44}]}),
+        encoding="utf-8",
+    )
+
+    # 1. Without video_frame_starts: keeps raw planned t_start
+    raw_sfx = collect_sfx_inputs(project)
+    assert len(raw_sfx) == 1
+    assert raw_sfx[0].t_start == 54.20
+
+    # 2. With video_frame_starts (where video cut for frame 26 happens at 50.24s):
+    # Re-anchors to 50.24 + 0.36 = 50.60s (eliminating the 3.96s lag!)
+    synced_sfx = collect_sfx_inputs(project, video_frame_starts={26: 50.24})
+    assert len(synced_sfx) == 1
+    assert synced_sfx[0].t_start == 50.60
 
 
 # ── ai_result_io: text_job + parse_json_object ────────────────────────────

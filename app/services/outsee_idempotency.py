@@ -1,36 +1,3 @@
-"""Outsee image idempotency by request key (D03): intent BEFORE the paid call, result AFTER it.
-
-Outsee gives no task id to the client, so a repeated call is a new paid task. This module makes a repeat
-safe without a task id. The key of a request is ``sha256(project, frame key, model, prompt)``; the rows live
-in the append-only table ``outsee_idempotency`` (own table, created on first use, no change to the shared
-ledger schema). Rows of one attempt share ``attempt_id`` and the newest row is its state:
-
-* ``intent``    written and awaited right before the paid call;
-* ``result``    the call returned and the file is on disk (path, size, sha256 of the file are stored);
-* ``failed``    the provider refused or nothing was sent (``outsee_guard.classify_failure``): a repeat is free;
-* ``uncertain`` the request may have been accepted and billed (answer lost, id known but no result, process
-                cancelled): a SEPARATE status, a repeat is refused until a human decides;
-* ``released``  the human checked the Outsee history: no charge, a repeat is allowed;
-* ``consumed``  the step has taken the result into the project (artifact saved): the result is no longer
-                offered for reuse, so an ordinary regeneration with the same prompt is a new request.
-
-A crash after ``intent`` leaves the attempt without a verdict. Reading treats it as ``uncertain``
-(``interrupted``): the call may have left the process.
-
-Decisions of ``check`` for a new call of (project, key):
-
-* an unresolved attempt of the key (any prompt)            -> ``OutseeIdempotencyUncertainError``;
-* a ``result`` of the SAME request, not consumed, inside ``MEDIA_RESUME_WINDOW_S``, file intact
-                                                           -> adopt the file, NO paid call;
-* otherwise                                                -> the call may go on.
-
-``resume_only`` (``media_spend.resume_only()``): only an adoptable result may be returned; with none, the
-call is refused before any byte leaves and without an intent row.
-
-This layer is added on top of ``outsee_guard`` (intent rows in the provider ledger). Both block; the human
-release of ``media_unknown.release`` (it resolves the ledger intents) also releases this layer: a ledger
-``released`` row newer than the attempt counts as the human decision.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -57,7 +24,6 @@ _MIN_IMAGE_BYTES = 1024
 
 
 class OutseeIdempotency(Base):
-    """Append-only attempt log of Outsee paid requests (see module docstring)."""
     __tablename__ = "outsee_idempotency"
     id: Mapped[int] = mapped_column(primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -85,8 +51,6 @@ _ensured: set[str] = set()
 
 
 async def ensure_schema(session) -> None:
-    """Create the table and its append-only triggers on first use (a registered migration may do the same:
-    ``OutseeIdempotency.__table__`` and ``_TRIGGERS`` are the whole definition)."""
     bind = session.get_bind()
     marker = str(getattr(bind, "url", id(bind)))
     if marker in _ensured:
@@ -100,14 +64,12 @@ async def ensure_schema(session) -> None:
 
 
 class OutseeIdempotencyUncertainError(OutseeSubmitUnknownError):
-    """An earlier paid request of this frame has no known outcome: a human decides. ``no_resubmit`` stops every ladder."""
 
     def __init__(self, reason: str, *, context: dict[str, Any] | None = None) -> None:
         super().__init__(reason, context={**(context or {}), "code": CODE_UNCERTAIN, "human_decision": True})
 
 
 class OutseeResumeOnlyError(OutseeImageError):
-    """Resume-only scope and no recorded result of this request: nothing was sent."""
 
     def __init__(self, reason: str, *, context: dict[str, Any] | None = None) -> None:
         super().__init__(reason, context={**(context or {}), "code": CODE_RESUME_ONLY, "no_resubmit": True,
@@ -122,7 +84,6 @@ def is_uncertain(exc: BaseException) -> bool:
     return isinstance(getattr(exc, "context", None), dict) and exc.context.get("code") == CODE_UNCERTAIN
 
 
-# -- request key --------------------------------------------------------------------------------
 
 def request_sha(project_id: int | None, key: str, model: str, prompt: str) -> str:
     raw = "\x1f".join([str(project_id), key, model or "", prompt or ""])
@@ -159,7 +120,6 @@ def make_ctx(project_id: Any, out_path: Any, model: Any, prompt: Any, media: str
     return Ctx(pid, key, str(model or ""), request_sha(pid, key, str(model or ""), str(prompt or "")), media)
 
 
-# -- storage ------------------------------------------------------------------------------------
 
 async def _append(session, ctx: Ctx, attempt_id: str, event: str, *, sha: str | None = None, note: str = "",
                   file_path: str = "", file_size: int | None = None, fsha: str = "", raw_url: str = "") -> None:
@@ -171,21 +131,19 @@ async def _append(session, ctx: Ctx, attempt_id: str, event: str, *, sha: str | 
 
 
 async def _write(ctx: Ctx, attempt_id: str, event: str, **kw) -> bool:
-    """One awaited, committed row. A failed write is traced and reported, never silently dropped."""
     try:
         from app.db import SessionLocal
         async with SessionLocal() as s:
             await _append(s, ctx, attempt_id, event, **kw)
             await s.commit()
         return True
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         await media_spend.gap_async("outsee", "idempotency_row", project_id=ctx.project_id, error=e,
                                     detail=f"{event} key={ctx.key}")
         return False
 
 
 async def _attempts(session, project_id: int | None, key: str) -> list[dict]:
-    """Attempts of one key, oldest first: newest row decides the state."""
     await ensure_schema(session)
     rows = (await session.scalars(select(OutseeIdempotency).where(
         OutseeIdempotency.project_id == project_id, OutseeIdempotency.key == key[:120])
@@ -204,7 +162,6 @@ async def _attempts(session, project_id: int | None, key: str) -> list[dict]:
 
 
 async def _human_released_since(session, project_id: int | None, key: str, since: datetime) -> bool:
-    """``media_unknown.release`` resolves the ledger intents of the key with note ``released``."""
     try:
         from app.services import spend_guard
         await spend_guard.ensure_task_schema(session)
@@ -216,7 +173,7 @@ async def _human_released_since(session, project_id: int | None, key: str, since
             spend_guard.ProviderTaskLedger.note == "released",
             spend_guard.ProviderTaskLedger.created_at >= since).limit(1))
         return row is not None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -233,9 +190,6 @@ def _file_intact(att: dict) -> Path | None:
 
 
 async def assess(project_id: int | None, key: str, sha: str | None = None) -> dict[str, Any]:
-    """Read-only verdict for one key. ``mode``: ``uncertain`` | ``adopt`` | ``free`` | ``unavailable``.
-
-    ``adopt`` carries the file of the newest unconsumed result (of ``sha`` when given). Never writes."""
     if not isinstance(project_id, int) or not key:
         return {"mode": "unavailable", "code": "no_key"}
     window = media_resume.window_s()
@@ -250,9 +204,9 @@ async def assess(project_id: int | None, key: str, sha: str | None = None) -> di
             for a in atts:
                 if a["state"] in OPEN_EVENTS:
                     if await _human_released_since(s, project_id, key, a["last_at"]):
-                        continue  # a human resolved the provider intents of this key after the attempt
+                        continue
                     unresolved.append(a)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("outsee_idempotency: read failed: {}", type(e).__name__)
         return {"mode": "unavailable", "code": "ledger_unreadable"}
     if unresolved:
@@ -272,9 +226,6 @@ async def assess(project_id: int | None, key: str, sha: str | None = None) -> di
 
 
 async def check(ctx: Ctx) -> dict[str, Any] | None:
-    """For a new call: ``None`` (go on) or the ``adopt`` verdict. Raises when an earlier request is uncertain.
-
-    Inside ``resume_only`` the call is refused when there is nothing to adopt (nothing is written)."""
     if not ctx.usable:
         return None
     verdict = await assess(ctx.project_id, ctx.key, ctx.sha)
@@ -288,7 +239,7 @@ async def check(ctx: Ctx) -> dict[str, Any] | None:
         return verdict
     if media_spend.in_resume_only():
         try:
-            media_spend.assert_submit_allowed("outsee", f"{ctx.media} {ctx.key}")  # records the refusal hit
+            media_spend.assert_submit_allowed("outsee", f"{ctx.media} {ctx.key}")
         except media_spend.ResumeOnlyBlocked as blocked:
             raise OutseeResumeOnlyError(
                 f"{ctx.key}: режим только возобновления, записанного результата этого запроса нет; "
@@ -302,21 +253,15 @@ def adopted_result(verdict: dict[str, Any]):
 
 
 async def run(ctx: Ctx, call: Callable[[], Awaitable[Any]], *, sent_prompt: str = "") -> Any:
-    """Run ONE paid Outsee call under an intent row and record its result.
-
-    Raises ``OutseeIdempotencyUncertainError`` instead of a second paid request when an earlier attempt of the key
-    is unresolved. On success the result file is hashed and recorded; on a lost answer the attempt becomes
-    ``uncertain`` (a separate status)."""
     if not ctx.usable:
         return await call()
     media_spend.assert_submit_allowed("outsee", f"{ctx.media} {ctx.key}")
     verdict = await assess(ctx.project_id, ctx.key, ctx.sha)
     if verdict["mode"] == "uncertain":
-        await check(ctx)  # raises with the common text
+        await check(ctx)
     attempt = uuid.uuid4().hex[:32]
     sent_note = ("sent=" + hashlib.sha256((sent_prompt or "").encode("utf-8", "replace")).hexdigest()[:16]) if sent_prompt else ""
     if not await _write(ctx, attempt, "intent", note=sent_note):
-        # no durable intent: a lost answer could not be blocked later. The paid call is NOT started blind.
         raise uncertain_error(
             f"{ctx.key}: не удалось записать намерение отправки в Outsee; платный запрос не отправлен",
             {"frame_key": ctx.key, "request_sent": False, "intent_row_missing": True})
@@ -336,7 +281,6 @@ async def _run_attempt(ctx: Ctx, call, attempt: str, OutseeDownloadError, StepCa
     try:
         result = await call()
     except (asyncio.CancelledError, StepCancelledError):
-        # the provider-ledger guard knows exactly whether the click/POST happened: it leaves an intent open only then
         if await _provider_intent_open(ctx):
             await _write(ctx, attempt, "uncertain", note="cancelled after submit")
         else:
@@ -348,7 +292,6 @@ async def _run_attempt(ctx: Ctx, call, attempt: str, OutseeDownloadError, StepCa
         if isinstance(exc, OutseeSubmitUnknownError):
             await _write(ctx, attempt, "uncertain", note=f"no verdict {type(exc).__name__}")
         elif isinstance(exc, OutseeDownloadError):
-            # generated and billed, the file is not here yet: uncertain until the download-only retry records it
             await _write(ctx, attempt, "uncertain", note="generated, download failed")
             if isinstance(getattr(exc, "context", None), dict):
                 exc.context["idem_attempt"] = attempt
@@ -360,7 +303,6 @@ async def _run_attempt(ctx: Ctx, call, attempt: str, OutseeDownloadError, StepCa
 
 
 async def record_download(ctx: Ctx | None, exc: BaseException, result: Any) -> bool:
-    """The download-only retry after a finished generation got the file: the attempt ends with a result."""
     attempt = (getattr(exc, "context", None) or {}).get("idem_attempt") if ctx is not None else None
     if ctx is None or not attempt or not ctx.usable:
         return False
@@ -372,8 +314,8 @@ async def _provider_intent_open(ctx: Ctx) -> bool:
         from app.services import outsee_guard
         guard = outsee_guard.Ctx(ctx.project_id, ctx.key, ctx.model, ctx.media, ctx.sha[:16], False)
         return bool(await outsee_guard._unresolved(guard))
-    except Exception:  # noqa: BLE001
-        return True  # cannot tell: stay on the safe side
+    except Exception:
+        return True
 
 
 async def record_result(ctx: Ctx, attempt: str, result: Any) -> bool:
@@ -382,7 +324,6 @@ async def record_result(ctx: Ctx, attempt: str, result: Any) -> bool:
         size = path.stat().st_size
         digest = file_sha256(path)
     except OSError:
-        # the call said ok but there is no file: the provider may have billed, the file is lost
         await _write(ctx, attempt, "uncertain", note="result without file")
         return False
     return await _write(ctx, attempt, "result", file_path=str(path), file_size=size, fsha=digest,
@@ -390,7 +331,6 @@ async def record_result(ctx: Ctx, attempt: str, result: Any) -> bool:
 
 
 async def mark_consumed(project_id: int | None, key: str) -> int:
-    """The step took the result into the project: it is not offered for reuse any more. Returns attempts marked."""
     if not isinstance(project_id, int) or not key or media_resume.window_s() <= 0:
         return 0
     if media_spend.disabled_reason("browser") is not None or media_spend._managed():
@@ -405,14 +345,12 @@ async def mark_consumed(project_id: int | None, key: str) -> int:
                               note="taken by the step")
             await s.commit()
         return len(todo)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         await media_spend.gap_async("outsee", "idempotency_consume", project_id=project_id, error=e, detail=key)
         return 0
 
 
 async def release(project_id: int, key: str, *, note: str = "released by human") -> int:
-    """Human decision 1: the Outsee history shows no charge, a new request is allowed. Also resolves the
-    provider-ledger intents of the key (``outsee_guard``). Returns the number of released attempts."""
     from app.db import SessionLocal
     from app.services import outsee_guard
     async with SessionLocal() as s:
@@ -425,8 +363,6 @@ async def release(project_id: int, key: str, *, note: str = "released by human")
 
 
 async def adopt_file(project_id: int, key: str, path: Path, *, note: str = "file named by human") -> bool:
-    """Human decision 2: the request was billed and the picture exists. The file becomes the recorded result of
-    the open attempt, so recovery and the next call take it instead of paying again."""
     from app.db import SessionLocal
     path = Path(path)
     if not path.is_file() or path.stat().st_size < _MIN_IMAGE_BYTES:

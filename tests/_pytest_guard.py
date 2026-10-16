@@ -1,17 +1,3 @@
-"""Охрана прогона pytest: один процесс за раз и никакой боевой базы.
-
-1. Замок запуска (``acquire_run_lock``). Два параллельных pytest на этой машине роняют память, а договорённость
-   «занять папку _pytest.lock» держалась на слове. Теперь замок настоящий: файл рядом с репозиторием
-   (``<папка над репозиторием>/_pytest.run.lock``), в нём pid держателя. Живой держатель -> второй прогон сразу
-   останавливается с понятным сообщением (или ждёт ``VP_PYTEST_LOCK_WAIT`` секунд). Мёртвый pid (упавший прогон) -> замок
-   снимается сам. Дочерние pytest внутри теста держателя замок не берут (``VP_PYTEST_LOCK_HELD_BY``).
-   Выключить: ``VP_PYTEST_NO_LOCK=1``. Старая папка ``_pytest.lock`` остаётся очередью между агентами и этому замку не мешает.
-
-2. Охрана боевой базы (``live_db_violation``). Глобальный ``app.db.engine`` создаётся при импорте и смотрит на
-   ``SQLITE_PATH``. Если переменной нет, это боевой ``data/state.db``: один тест уже записал в него проект. Поэтому conftest
-   до импорта приложения кладёт ``SQLITE_PATH`` и ``DATA_DIR`` во временную папку, а явный путь внутрь ``data/``
-   репозитория отклоняет.
-"""
 from __future__ import annotations
 
 import json
@@ -74,7 +60,6 @@ def busy_message(path: Path, holder: dict | None) -> str:
 
 
 def acquire_run_lock(path: Path | None = None, wait_s: float = 0.0, *, pid: int | None = None) -> tuple[bool, str]:
-    """Берёт замок. Возвращает (взят, сообщение). Не взят, если держатель жив и ожидание вышло."""
     path = path or DEFAULT_LOCK
     me = pid or os.getpid()
     deadline = time.monotonic() + max(0.0, wait_s)
@@ -88,7 +73,7 @@ def acquire_run_lock(path: Path | None = None, wait_s: float = 0.0, *, pid: int 
                 return True, "замок уже наш"
             if not holder_pid or not pid_alive(holder_pid):
                 try:
-                    path.unlink()  # держатель умер (или файл битый): замок осиротел
+                    path.unlink()
                 except FileNotFoundError:
                     pass
                 continue
@@ -104,7 +89,6 @@ def acquire_run_lock(path: Path | None = None, wait_s: float = 0.0, *, pid: int 
 
 
 def release_run_lock(path: Path | None = None, *, pid: int | None = None) -> bool:
-    """Снимает замок только если он наш."""
     path = path or DEFAULT_LOCK
     holder = read_holder(path)
     if holder is None or int(holder.get("pid") or 0) != (pid or os.getpid()):
@@ -117,7 +101,6 @@ def release_run_lock(path: Path | None = None, *, pid: int | None = None) -> boo
 
 
 def lock_wanted(env: dict | None = None) -> bool:
-    """Замок нужен корневому процессу pytest: не рабочему процессу xdist, не дочернему прогону и не при VP_PYTEST_NO_LOCK=1."""
     env = os.environ if env is None else env
     if env.get("VP_PYTEST_NO_LOCK") == "1":
         return False
@@ -136,7 +119,6 @@ def _inside(path: Path, base: Path) -> bool:
 
 
 def live_db_violation(db_file: str | os.PathLike | None, *, live_data: Path | None = None) -> str | None:
-    """Текст ошибки, если файл базы лежит в боевой папке data/ репозитория (None - всё в порядке)."""
     if not db_file or str(db_file) == ":memory:":
         return None
     live = live_data or LIVE_DATA
@@ -149,10 +131,6 @@ def live_db_violation(db_file: str | os.PathLike | None, *, live_data: Path | No
 
 
 def prepare_isolated_env(env: dict | None = None, *, live_data: Path | None = None, base: Path | None = None) -> str | None:
-    """Ставит SQLITE_PATH и DATA_DIR во временную папку, если они не заданы. Явный путь в боевую data/ - ошибка (текст).
-
-    Вызывается из conftest ДО импорта app.settings: глобальный движок БД создаётся при импорте и берёт путь из окружения.
-    """
     import tempfile
 
     env = os.environ if env is None else env

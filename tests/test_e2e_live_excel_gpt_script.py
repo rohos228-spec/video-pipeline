@@ -1,4 +1,3 @@
-"""Offline guards for scripts/e2e_live_excel_gpt_recovery.py (the script itself needs a paid provider)."""
 import importlib.util
 import json
 from pathlib import Path

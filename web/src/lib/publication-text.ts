@@ -1,10 +1,3 @@
-/**
- * Тексты панели «Публикации»: причины, ручные действия, исполнитель, общее состояние проекта.
- * Чистая логика без React и сети (тесты: web/src/lib/publication-text.test.mjs).
- *
- * PUBLICATION_CODE_RU равна `PUBLICATION_CODE_RU` из app/services/timeline_ru.py: человек видит одну и ту же
- * фразу в панели и в журнале. Равенство проверяет tests/w7_b_ui_texts_test.py.
- */
 
 export const PUBLICATION_CODE_RU: Record<string, string> = {
   manual_confirmed: "Подтверждено человеком вручную.",
@@ -37,16 +30,13 @@ export const PUBLICATION_CODE_RU: Record<string, string> = {
   exception_after_click: "Сбой после нажатия кнопки публикации: проверьте площадку вручную.",
 };
 
-/** Причина по коду. Незнакомый код не показывается латиницей: сказано, что причина записана в журнале. */
 export function publicationCodeText(code: string | null | undefined): string {
   const c = (code ?? "").trim();
   if (!c) return "";
-  // шаг публикации при выключенной автопубликации пишет причину текстом настройки, а не кодом
   if (c === "SOCIAL_PUBLISH_ENABLED=false") return PUBLICATION_CODE_RU.publish_disabled;
   return PUBLICATION_CODE_RU[c] ?? "Причина записана в журнале (код не расшифрован).";
 }
 
-/** Служебные коды ручных решений не считаются сбоем и отдельной «причиной» не показываются. */
 export function isManualDecisionCode(code: string | null | undefined): boolean {
   return code === "manual_confirmed" || code === "manual_not_published";
 }
@@ -61,11 +51,6 @@ export function manualActionText(action: string | null | undefined): string {
   return MANUAL_ACTION_RU[action ?? ""] ?? "ручное решение записано";
 }
 
-/**
- * Кто принял решение. Сервер пишет `operator` (имя не передано), `operator:<имя>` (имя передано заголовком
- * X-Action-Layer-Operator) или `telegram:<id>` (кнопка в Telegram). В Studio имени оператора из входа нет,
- * поэтому имя не выдумывается: «оператор».
- */
 export function actorText(actor: string | null | undefined): string {
   const a = (actor ?? "").trim();
   if (a.startsWith("telegram:")) return `Telegram, пользователь ${a.slice("telegram:".length) || "?"}`;
@@ -89,11 +74,6 @@ const PROJECT_STATE_TEXT: Record<string, string> = {
   resolved_unpublished: "Оставшиеся площадки закрыты вручную как «не опубликовано».",
 };
 
-/**
- * Общее состояние проекта одной честной фразой. Сервер считает состояние `publishing` и когда площадка занята,
- * и когда она просто разрешена человеком и ждёт шага публикации. Если автопубликация выключена, шаг публикации
- * не пойдёт, поэтому «Публикация идёт» было бы неправдой.
- */
 export function projectStateLines(derived: DerivedState | null | undefined, publishEnabled: boolean): string[] {
   if (!derived) return [];
   const lines: string[] = [];
@@ -103,12 +83,9 @@ export function projectStateLines(derived: DerivedState | null | undefined, publ
       lines.push("Публикация разрешена вами, но выключена настройкой (автопубликация выключена): "
         + "ничего не будет опубликовано, пока её не включат.");
     else lines.push("Публикация разрешена и поставлена в очередь: её выполнит шаг публикации.");
-    // «Ждёт проверки человека» не прячем за разрешённой площадкой.
     if ((derived.needs_human ?? []).length > 0) lines.push(PROJECT_STATE_TEXT.needs_human);
     return lines;
   }
-  // Сервер при выключенной автопубликации не считает разрешённую площадку «в работе»: состояние awaiting_approval,
-  // а разрешённые вами площадки перечислены отдельно.
   if (derived.state === "awaiting_approval" && (derived.approved_publish_off ?? []).length > 0) {
     lines.push("Публикация разрешена вами, но выключена настройкой (автопубликация выключена): "
       + "ничего не будет опубликовано, пока её не включат.");

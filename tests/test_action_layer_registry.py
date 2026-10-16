@@ -1,4 +1,3 @@
-"""Реестр действий: регистрация, защита от дублей, валидация параметров."""
 from __future__ import annotations
 
 import pytest
@@ -45,11 +44,11 @@ def test_risk_flags_must_be_consistent() -> None:
         reg.register(ActionSpec(id="a.paid", title_ru="t", description_ru="d",
                                 params_schema={"type": "object", "additionalProperties": False},
                                 executor=_noop, risk="paid", spends_money=True))
-    with pytest.raises(ActionRegistryError):  # paid без spends_money
+    with pytest.raises(ActionRegistryError):
         reg.register(make_spec("a.p2", _noop, risk="paid"))
-    with pytest.raises(ActionRegistryError):  # spends при local_safe
+    with pytest.raises(ActionRegistryError):
         reg.register(make_spec("a.p3", _noop, risk="local_safe", spends=True, cost=(1, 2)))
-    with pytest.raises(ActionRegistryError):  # destructive-флаг без tier
+    with pytest.raises(ActionRegistryError):
         reg.register(make_spec("a.p4", _noop, risk="local_safe", destructive=True))
     with pytest.raises(ActionRegistryError):
         reg.register(make_spec("a.p5", _noop, risk="bogus"))
@@ -90,9 +89,9 @@ def test_validate_params_rules() -> None:
         }}))
     assert reg.validate_params("a.v", {"project_id": 1, "mode": "x"}) == []
     assert reg.validate_params("a.v", {"project_id": 0, "mode": "x"})
-    assert reg.validate_params("a.v", {"project_id": True, "mode": "x"})  # bool не int
+    assert reg.validate_params("a.v", {"project_id": True, "mode": "x"})
     assert reg.validate_params("a.v", {"project_id": 1, "mode": "z"})
-    assert reg.validate_params("a.v", {"project_id": 1})  # нет mode
+    assert reg.validate_params("a.v", {"project_id": 1})
     assert reg.validate_params("a.v", {"project_id": 1, "mode": "x", "extra": 1})
     assert reg.validate_params("a.v", {"project_id": 1, "mode": "x", "items": ["a", "b", "c"]})
     assert reg.validate_params("a.v", {"project_id": 1, "mode": "x", "items": ["long!"]})

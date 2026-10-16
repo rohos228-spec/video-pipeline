@@ -1,9 +1,3 @@
-"""Группа script_frames_qc целиком: fw_action → fw_shots → fw_qc → fw_report.
-
-Сценарный GPT (scripts/run_script_frames_qc_space_test.py) делает ошибки:
-«к открытой двери», «уже в прихожей», камера за осью, QC ломает сцену улицы.
-Код площадки должен всё это починить через реальный раннер нод.
-"""
 
 from __future__ import annotations
 
@@ -33,7 +27,6 @@ async def test_space_plan_through_six_node_group(monkeypatch, tmp_path) -> None:
     import app.settings as settings_mod
 
     db = tmp_path / "state.db"
-    # test_project_root перезагружает app.settings: патчим и старый, и текущий объект.
     for obj in {id(settings): settings, id(settings_mod.settings): settings_mod.settings}.values():
         monkeypatch.setattr(obj, "sqlite_path", db)
         monkeypatch.setattr(obj, "data_dir", tmp_path / "data")
@@ -62,28 +55,23 @@ async def test_space_plan_through_six_node_group(monkeypatch, tmp_path) -> None:
     assert "S2-K1" in suffixes
     by_id = {_sid(fr).split("-", 1)[1]: fr for fr in frames}
     act = {k: (fr.attrs or {}).get("shot01_action") for k, fr in by_id.items()}
-    # fake-QC переписывает K1 в «...к открытой двери дома»; код площадки обязан вернуть
-    # «закрытой» (R-DOOR-STATE), а не оставить QC-ошибку и не потерять начало действия
     assert act["S1-K1"].startswith("Иван бежит по улице"), act
     assert "закрыт" in act["S1-K1"] and "открытой" not in act["S1-K1"], act
     assert any("открывает входную дверь" in str(v or "") for v in act.values()), act
     assert any("входит через входную дверь" in str(v or "") for v in act.values()), act
 
     s3_ids = [k for k in by_id if k.startswith("S3-")]
-    # авто-«общий вид {место}» отключён для script_frames_qc
     assert not any(str(v or "").startswith("общий вид") for v in act.values()), act
     def _layout(fr):
         attrs = fr.attrs or {}
         lay = str(attrs.get("раскладка") or "")
         if lay:
             return lay
-        # после expand раскладка часто остаётся в кадры[] родителя
         for shot in attrs.get("кадры") or []:
             if isinstance(shot, dict) and shot.get("раскладка"):
                 return str(shot.get("раскладка") or "")
         return ""
     lay = {k: _layout(fr) for k, fr in by_id.items()}
-    # если раскладка ещё не разложена по детям — хотя бы планы канонические
     if not any(lay[k] for k in s3_ids):
         plans = {
             k: str(

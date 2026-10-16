@@ -1,26 +1,3 @@
-"""Supervisory recovery of paid media nodes: read-only assessment and a resume-only action.
-
-Nothing here sends a new paid request. The module answers two questions from facts that already
-exist (``provider_task_ledger``, files on disk, per-event checkpoints):
-
-* ``assess``      what may be done for this node without paying twice, as a typed verdict;
-* ``resume_poll`` do the one safe thing: ask the provider about a task id it already holds and
-                  download a finished result. It runs inside ``media_spend.resume_only()``, so even
-                  a coding mistake cannot reach a createTask / Outsee / ElevenLabs POST.
-
-The verdict modes, strongest first:
-
-``denied``        an earlier submit has no known outcome (Kie intent, Outsee intent, a TTS marker, an
-                  SFX fallback that may have been charged) or the single retry is spent: only a human
-                  may continue after checking the provider history and balance.
-``resume_poll``   a Kie task is open (submitted, pending, finished but not downloaded): poll it.
-``resume_local``  the paid result already lies on disk (finished TTS file, finished sidecar): reuse it.
-``retry_same``    allowed ONCE: every earlier paid attempt of the key is provably failed (or, for audio,
-                  no paid job and no marker exist), so a new attempt cannot double-pay.
-``nothing_to_do`` nothing submitted yet / everything already downloaded.
-
-This is data and read-only logic. It does not start, retry or approve anything by itself.
-"""
 from __future__ import annotations
 
 import re
@@ -44,7 +21,6 @@ LOCAL_NODES = frozenset({"audio", "sfx_gen", "assemble"})
 RETRY_SAME_MAX = 1
 _MODE_ORDER = ("denied", "resume_poll", "resume_local", "retry_same", "nothing_to_do")
 
-# Declarative recovery profile per node: what exists, what may be repeated, what never may be.
 RECOVERY_PROFILES: dict[str, dict[str, Any]] = {
     "videos": {
         "resume": "Kie: опрос и скачивание по task id из журнала задач; Outsee: id нет, возобновить нельзя",
@@ -104,7 +80,6 @@ def _verdict(mode: str, code: str, **extra: Any) -> dict[str, Any]:
 
 
 def aggregate(items: list[dict[str, Any]]) -> dict[str, Any]:
-    """Strongest mode wins; the codes of the winning mode are listed."""
     if not items:
         return _verdict("nothing_to_do", "nothing_submitted", reasons=[])
     for mode in _MODE_ORDER:
@@ -115,7 +90,6 @@ def aggregate(items: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def classify_states(states: list[dict[str, Any]]) -> dict[str, Any]:
-    """Typed verdict for ONE ledger key from its task states (see spend_guard.find_task_states)."""
     unresolved = [t for t in states if t["intent"] and t["status"] == "submit_unknown"]
     if unresolved:
         provider = "outsee" if any(t["api"] == "outsee" for t in unresolved) else "kie"
@@ -162,7 +136,7 @@ async def _assess_ledger_node(project_id: int, node_type: str) -> dict[str, Any]
                 states = await spend_guard.find_task_states(
                     session, project_id=project_id, key=key, model=None, since=since)
                 items.append({"key": key, **classify_states(states)})
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("media_recovery: ledger read failed: {}", type(exc).__name__)
         return {"keys": [], "ledger": "unavailable", "verdict": _verdict(
             "denied", "ledger_unavailable", reasons=[{"key": None, "code": "ledger_unavailable"}])}
@@ -174,7 +148,6 @@ def _audio_dir(project) -> Path:
 
 
 def assess_audio(project) -> dict[str, Any]:
-    """TTS has no provider job id: the only proofs are the marker, the finished file and the sidecar."""
     from app.services.elevenlabs_api import _SIDECAR_SUFFIX, _UNCERTAIN_PREFIX
     directory = _audio_dir(project)
     items: list[dict[str, Any]] = []
@@ -188,10 +161,9 @@ def assess_audio(project) -> dict[str, Any]:
     from app.services.frame_audio import find_voice_full_on_disk
     try:
         voice = find_voice_full_on_disk(Path(project.data_dir), meta=project.meta if isinstance(project.meta, dict) else None)
-    except Exception:  # noqa: BLE001
+    except Exception:
         voice = None
     if voice is not None or finished:
-        # a finished file means the node takes the disk branch and sends no POST, so a stale marker is harmless
         items.append({"key": "audio", **_verdict("resume_local", "finished_file_on_disk", provider="elevenlabs",
                                                  files=[p.name for p in finished][:20],
                                                  voice_full=getattr(voice, "name", None),
@@ -205,14 +177,13 @@ def assess_audio(project) -> dict[str, Any]:
 
 
 def assess_sfx(project) -> dict[str, Any]:
-    """Per event: a fallback after an answer (no charge) may be repeated once; after a timeout never."""
     from app.services.ai_result_io import ai_job_checkpoint
     cp = ai_job_checkpoint(project, "sfx_files")
     files = cp.get("files") if isinstance(cp, dict) and isinstance(cp.get("files"), list) else []
     items: list[dict[str, Any]] = []
     prog = ai_job_checkpoint(project, "sfx_progress")
     inflight = prog.get("inflight") if isinstance(prog, dict) and isinstance(prog.get("inflight"), dict) else {}
-    for idx in inflight:  # платный запрос отправлен, ответ не записан: исход неизвестен
+    for idx in inflight:
         items.append({"key": f"sfx_{idx}", **_verdict("denied", "unknown_outcome_elevenlabs", provider="elevenlabs",
                                                       error_class="InterruptedAfterSend")})
     for rec in files:
@@ -234,7 +205,6 @@ def assess_sfx(project) -> dict[str, Any]:
 
 
 async def assess(project, node_type: str) -> dict[str, Any]:
-    """Read-only. Never submits, never writes."""
     if node_type in LEDGER_NODES:
         out = await _assess_ledger_node(project.id, node_type)
     elif node_type == "audio":
@@ -242,8 +212,6 @@ async def assess(project, node_type: str) -> dict[str, Any]:
     elif node_type == "sfx_gen":
         out = assess_sfx(project)
     elif node_type == "assemble":
-        # A static statement about the node (no provider spend), NOT evidence about an incident: admission of a
-        # supervised assemble retry is refused elsewhere (tests/observe_v1/test_media_dry_run_local_nodes.py).
         item = {"key": "final", **_verdict("retry_same", "local_only_no_provider_spend")}
         out = {"keys": [item], "verdict": aggregate([item]), "ledger": "n/a"}
     else:
@@ -253,11 +221,6 @@ async def assess(project, node_type: str) -> dict[str, Any]:
 
 
 async def resume_poll(project, node_type: str) -> dict[str, Any]:
-    """Resume what the providers already hold; never submit.
-
-    One status request per open Kie task and a download of a finished result. A key whose earlier
-    submit has no known outcome, or a node without a task id (Outsee, TTS), is reported and left
-    untouched: there is nothing a supervisor may resume."""
     if node_type not in LEDGER_NODES:
         raise ValueError(f"resume_poll needs a ledger node type, got {node_type!r}")
     report = await assess(project, node_type)
@@ -280,7 +243,7 @@ async def resume_poll(project, node_type: str) -> dict[str, Any]:
                     outcome = "task_not_found"
                 else:
                     outcome = await media_resume._reattach_one(project, task, key, stats)
-            except Exception as exc:  # noqa: BLE001 - a poll error never turns into a submit
+            except Exception as exc:
                 stats["errors"] += 1
                 error = type(exc).__name__
             resumed.append({"key": key, "task_id": item["task_id"], "outcome": outcome, "error": error})

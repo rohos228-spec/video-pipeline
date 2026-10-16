@@ -1,7 +1,3 @@
-"""W4-4 (C05): выключенная режиссура сцен пишет явное «пропущено», а не молча проходит. Без сети и без модели.
-
-Файл назван ``*_test.py``, чтобы pytest его собирал при префиксе ``w4_4_``.
-"""
 
 from __future__ import annotations
 
@@ -57,7 +53,7 @@ def _disabled(monkeypatch):
 async def test_agents_phase_disabled_is_recorded_as_skipped(facts) -> None:
     project, session = _project(ProjectStatus.scene_designing), _Session()
     await step.run(session, project)
-    assert project.status is ProjectStatus.scene_agents_ready  # переход прежний: пайплайн не ломается
+    assert project.status is ProjectStatus.scene_agents_ready
     assert session.committed == 1
     ((kind, payload),) = facts.events
     assert kind == "scene_design_skipped"
@@ -104,7 +100,6 @@ async def test_a_failing_journal_does_not_stop_the_skip(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_the_wrong_status_is_still_a_silent_return_without_a_skip_mark(facts) -> None:
-    """Вызов не в свою фазу ничего не делал и не должен выдавать «пропущено»."""
     project, session = _project(ProjectStatus.frames_ready), _Session()
     await step.run(session, project)
     await step.run_assemble(session, project)
@@ -114,7 +109,6 @@ async def test_the_wrong_status_is_still_a_silent_return_without_a_skip_mark(fac
 
 @pytest.mark.asyncio
 async def test_a_project_override_enables_the_step_so_nothing_is_skipped(facts, monkeypatch) -> None:
-    """При включённой режиссуре фаза идёт по обычному пути (здесь он остановится на отсутствии кадров), без пометки."""
     from app.services.scene_design import runner
 
     project, session = _project(ProjectStatus.scene_assembling, {"scene_design_enabled": True}), _Session()

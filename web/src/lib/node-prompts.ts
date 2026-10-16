@@ -96,7 +96,19 @@ const BASE: Record<string, NodePromptSlot[]> = {
   ],
   videos: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "video" },
-    { id: "outsee", title: "Генератор видео", kind: "gpt", description: "Veo 3.1" },
+    {
+      id: "frame_prompts",
+      title: "Промты анимации",
+      kind: "frame_prompts",
+      description: "animation_prompt по кадрам — уходит в модель видео",
+    },
+    {
+      id: "master",
+      title: "Мастер-промт",
+      kind: "gpt",
+      stepCode: "anim_pr",
+      description: "prompts/07_animation_prompts",
+    },
   ],
   audio: [
     { id: "excel", title: "Excel таблица", kind: "excel", stepCode: "audio" },

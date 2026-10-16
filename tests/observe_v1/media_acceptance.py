@@ -1,4 +1,3 @@
-"""Media modes of the existing group runner; only provider HTTP is a fixture."""
 import asyncio
 import hashlib
 import io
@@ -14,13 +13,9 @@ from PIL import Image
 
 
 def prepare(fixtures, root, mode):
-    # Profiles imports models -> settings. Configure the transport before any
-    # application import so the immutable checkpoint revision remains valid.
     assert 'app.settings' not in sys.modules, 'prepare media environment before loading application settings'
     os.environ['KIE_API_BASE_URL']='http://127.0.0.1:18766'
     if mode=='media-decision-recovery':
-        # Read a copy of the accepted genuine QC exhaustion checkpoint. Keep
-        # every original attempt, frame, graph and allowance intact.
         with sqlite3.connect(fixtures.DATA/'state.db') as db:
             execution,keys,used,limit=db.execute('SELECT execution_id,node_keys,requests_used,request_limit FROM action_execution_controls').fetchone()
             assert used==22 and limit==32
@@ -32,8 +27,6 @@ def prepare(fixtures, root, mode):
             failures=meta['step_failure']
             assert qc[0]=='failed' and qc[2] and failures.get('abandoned_at')
             assert failures['total_fails'][failures['last_running']]==9
-            # Native soft retries use step_failure + observed attempt UUIDs.
-            # The archived NodeRun.attempts is independently preserved (0).
         with sqlite3.connect(fixtures.DATA/'state.db') as db:
             assert db.execute('SELECT count(*) FROM observation_events WHERE node_key=? AND kind=?',
                 (fixtures.NODES[4],'node_start')).fetchone()[0]==9
@@ -77,8 +70,6 @@ def prepare(fixtures, root, mode):
     edges = [{"id": "synthetic-media-edge-" + str(i), "source": a, "target": b,
               "data": {"kind": "after"}} for i, (a, b) in enumerate(zip(keys, keys[1:]))]
     seed_voiceover = "Он вошёл в комнату и открыл папку."
-    # Initial state construction on fresh synthetic copies BEFORE app starts.
-    # No successful node statuses are manufactured.
     for db_path in (fixtures.DATA / "state.db", fixtures.DB):
         with sqlite3.connect(db_path) as db:
             meta = json.loads(db.execute("SELECT meta FROM projects WHERE id=2").fetchone()[0] or "{}")
@@ -88,11 +79,6 @@ def prepare(fixtures, root, mode):
             db.execute("UPDATE projects SET meta=?,image_generator='z_image' WHERE id=2", (json.dumps(meta),))
             if mode=='launch-images':db.execute("UPDATE projects SET status='new' WHERE id=2")
             if mixed_input:
-                # fw_script's real contract starts from one cell containing the
-                # complete voiceover. Two unrelated seeded cells are rebuilt by
-                # ensure_single_seed_vo_cell, correctly dropping their prompts.
-                # Construct a consistent input BEFORE startup; never patch the
-                # resulting frames or bypass the missing-input gate after start.
                 assert db.execute("SELECT count(*) FROM frames WHERE project_id=2").fetchone()[0] == 0
                 db.execute("UPDATE projects SET script_text=? WHERE id=2", (seed_voiceover,))
             db.execute("UPDATE workflow_runs SET nodes_snapshot=?,edges_snapshot=? WHERE project_id=2",
@@ -207,8 +193,6 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
         result['operator_starts']=0
         result['interventions']=prepared['operator_interventions']
         if os.environ.get('OBSERVE_APPROVED_PROFILE'):
-            # Control-table approval on the copied exhausted execution. This
-            # acceptance does not claim a new user launch or modify business data.
             from app.services.managed_launch import ManagedLaunch
             from app.services.profiles_v1 import active_catalog,catalog_hash
             from app.services.observation import digest
@@ -230,8 +214,6 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
         await post(prefix+"/actions/enable", {"group_id":"media-test", "node_keys":selected,
             "rationale":"synthetic existing worker media acceptance", "request_limit":32})
     if prepared["scenario"] == "media-unverified":
-        # After managed enable: unmanaged startup maintenance must not create
-        # baseline artifacts before this managed-worker denial test begins.
         scenes = fixtures.DB.parent / "scenes"
         scenes.mkdir(parents=True, exist_ok=True)
         rng = random.Random(47)
@@ -266,13 +248,12 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
                 break
         elif (meta.get("step_failure") or {}).get("last_error"):
             result["native_failure"] = meta["step_failure"]
-            break  # preserve first failure; no long native exhaustion for adapter debugging
+            break
         if nodes.get("n_images",{}).get("status") in {"done","failed","waiting_hitl"}:
             break
         await asyncio.sleep(.25)
     await observer.catch_up()
     result.update(state=state, media_counts=dict(handler.media_counts))
-    # Save diagnostics even when the original pipeline stops or fails.
     context = await client.get(base+prefix+"/context")
     result["context"] = context.json()
     history = []; after = 0
@@ -363,11 +344,6 @@ async def run(client, fixtures, observer, root, result, prepared, handler, *, un
 
 
 async def recover_exhausted_qc(client, fixtures, root, result, base, prefix):
-    """Observe real native exhaustion, then one explicit operator Actions POST.
-
-    No retry counters/status/input writes, shortened backoff, manual next-node
-    start or direct reconcile call. Observer.loop owns verification/continuation.
-    """
     import shutil
     from app.services.step_failure_policy import MAX_TOTAL_FAILS
     from app.services.step_cancel import is_generation_active

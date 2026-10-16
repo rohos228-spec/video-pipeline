@@ -1,4 +1,3 @@
-"""Контур изменений через слой действий: подтверждение оператора обязательно, планировщик не применяет."""
 from __future__ import annotations
 
 import pytest
@@ -13,8 +12,8 @@ from app.services.change_control import service
 from app.services.change_control import store as cs
 from app.services.change_control.errors import ChangeRefused
 from app.services.change_control.gateway import CtxGateway
-from tests.action_layer_support import env  # noqa: F401
-from tests.change_control_support import ccenv, prompts_root  # noqa: F401
+from tests.action_layer_support import env
+from tests.change_control_support import ccenv, prompts_root
 
 AL = "/api/action-layer"
 CC = "/api/change-control"
@@ -79,7 +78,6 @@ async def _history(env):
     return [h for h in rows if h.event.startswith("change_")]
 
 
-# --- каталог -----------------------------------------------------------------------------------
 
 async def test_catalog_has_the_change_actions_with_the_right_tiers(ccenv) -> None:
     expect = {"change.list": ("read", False), "change.get": ("read", False),
@@ -108,7 +106,6 @@ async def test_the_planner_cannot_smuggle_identity_or_approval_fields(ccenv) -> 
         "action_id": "change.propose", "params": {**body, "proposer": "human"}}])
 
 
-# --- одобрение ------------------------------------------------------------------------------------
 
 async def test_a_plan_with_change_apply_needs_approval_and_does_nothing_without_it(ccenv) -> None:
     view = await _propose_rest(ccenv)
@@ -135,10 +132,8 @@ async def test_apply_and_rollback_through_approved_plans(ccenv) -> None:
     assert got["current_version"] == 2
     versions = (await ccenv.client.get(f"{CC}/versions", params={"target": view["target"]})).json()
     assert [v["kind"] for v in versions["items"]] == ["apply", "baseline"]
-    # подтверждение одноразовое, повтор применения того же предложения не проходит
     assert (await ccenv.client.post(f"{AL}/plans/{plan_id}/run")).status_code == 409
     assert "status_not_applicable" in await _invalid(ccenv, [_apply_step(view)])
-    # откат: отдельный план, снова с подтверждением
     rb = [{"action_id": "change.rollback", "params": {
         "target": view["target"], "expected_version": 2, "reason": "тест"}}]
     rb_id, rb_prev = await _plan(ccenv, rb)
@@ -180,7 +175,6 @@ async def test_a_plan_made_before_another_apply_cannot_be_approved_after_it(ccen
     assert await _split_value(ccenv) == 600
 
 
-# --- планировщик ---------------------------------------------------------------------------------------
 
 async def test_a_planner_plan_creates_a_planner_proposal_that_cannot_apply_itself(ccenv) -> None:
     plan_id, preview = await _plan(ccenv, [{
@@ -193,9 +187,8 @@ async def test_a_planner_plan_creates_a_planner_proposal_that_cannot_apply_itsel
     proposal_id = plan["steps"][0]["result"]["proposal_id"]
     got = (await ccenv.client.get(f"{CC}/proposals/{proposal_id}")).json()
     assert got["proposer"] == "planner:local_web_operator" and got["status"] == "proposed"
-    assert await _split_value(ccenv) == 400                      # предложение ничего не меняет
+    assert await _split_value(ccenv) == 400
     gw = CtxGateway(ActionContext(app=ccenv.app, operator="x"))
-    # само себя оно применить не может: ни напрямую, ни своим планом без подтверждения
     with pytest.raises(ChangeRefused) as exc:
         await service.apply(gw, proposal_id, got["digest"], approved_by=got["proposer"])
     assert exc.value.code == "operator_required"
@@ -205,7 +198,6 @@ async def test_a_planner_plan_creates_a_planner_proposal_that_cannot_apply_itsel
         await al_service.approve_plan(ccenv.app, apply_plan, approval.OperatorIdentity("planner:x"))
     assert exc2.value.code == "operator_required"
     assert await _split_value(ccenv) == 400
-    # человек подтверждает отдельным вызовом - и только тогда применяется
     done = await _run(ccenv, apply_plan)
     assert done["status"] == "succeeded" and await _split_value(ccenv) == 600
 

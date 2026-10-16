@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Пересобрать docs/NODE_GROUP_RULES.md из app/services/node_rules.py."""
 
 from __future__ import annotations
 
@@ -9,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.services.node_rules import rules_markdown  # noqa: E402
+from app.services.node_rules import rules_markdown
 
 DOC = ROOT / "docs" / "NODE_GROUP_RULES.md"
 

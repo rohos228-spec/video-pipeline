@@ -1,8 +1,3 @@
-"""Serve original observation API and UI against saved synthetic history only.
-
-No pipeline worker, model transport, startup guards or application maintenance
-are launched. This viewer never claims to be a second pipeline run.
-"""
 import asyncio
 import hashlib
 import json
@@ -26,9 +21,6 @@ async def run():
     from app.web.api import create_app
     observer=get_observer()
     await observer.reload()
-    # Snapshot viewer: do not run the live supervisor loop against a captured
-    # in-flight ticket. Otherwise a legitimate saved running phase is changed
-    # to uncertain/human_review simply because no worker exists in this viewer.
     manifest=json.loads((SOURCE / "source-manifest.json").read_text())
     loaded=[]
     for name,module in sys.modules.copy().items():

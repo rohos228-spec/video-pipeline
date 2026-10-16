@@ -1,8 +1,3 @@
-"""W1-2 / A04: Host, Origin, токен оператора, CORS по списку, local-only без прокси, отказ старта.
-
-Сеть не нужна: ASGI-клиент. Настоящее приложение (create_app) используется только для запросов,
-которые защитный слой отклоняет ДО обработчика (до БД и действий).
-"""
 from __future__ import annotations
 
 import pytest
@@ -20,7 +15,6 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 
 @pytest.fixture(autouse=True)
 def _enforce(monkeypatch):
-    # Тесты этого файла проверяют именно включённый токен (поведение по умолчанию).
     monkeypatch.setenv("VP_OPERATOR_TOKEN_ENFORCE", "1")
     monkeypatch.delenv("VP_ALLOWED_ORIGINS", raising=False)
     monkeypatch.delenv("VP_ALLOWED_HOSTS", raising=False)
@@ -33,7 +27,6 @@ def _client(app, base="http://localhost:8765", peer=("127.0.0.1", 5000)) -> Asyn
                        base_url=base)
 
 
-# --- Host / Origin: таблицы ----------------------------------------------------------------------
 
 def test_host_allowed_table():
     for h in ("localhost:8765", "127.0.0.1:8765", "[::1]:8765", "LOCALHOST", "app.localhost:1",
@@ -53,12 +46,12 @@ def test_host_extra_from_env(monkeypatch):
 def test_origin_allowed_table():
     ok = [("http://localhost:3000", "localhost:3000"), ("http://127.0.0.1:8765", "127.0.0.1:8765"),
           ("http://localhost:8765", "localhost:8765"), ("http://[::1]:8765", "[::1]:8765"),
-          ("http://localhost:3000", "localhost:8765")]  # из явного списка (dev-фронт)
+          ("http://localhost:3000", "localhost:8765")]
     for origin, host in ok:
         assert ag.origin_allowed(origin, host), (origin, host)
-    bad = [("http://localhost:9999", "localhost:8765"),      # чужая страница на другом порту
+    bad = [("http://localhost:9999", "localhost:8765"),
            ("http://evil.example.com", "localhost:8765"),
-           ("http://evil.example.com:8765", "evil.example.com:8765"),  # rebinding: Host чужой
+           ("http://evil.example.com:8765", "evil.example.com:8765"),
            ("null", "localhost:8765"), ("*", "localhost:8765"), ("", "localhost:8765"),
            (None, "localhost:8765"), ("file://x", "localhost:8765")]
     for origin, host in bad:
@@ -72,7 +65,6 @@ def test_cors_list_has_no_wildcard(monkeypatch):
     assert "*" not in got and "http://studio.lan:8765" in got and "мусор" not in got
 
 
-# --- middleware на мини-приложении -----------------------------------------------------------------
 
 def _mini() -> FastAPI:
     app = FastAPI()
@@ -100,7 +92,7 @@ async def test_good_requests_pass():
     async with _client(_mini()) as c:
         h = {"Origin": "http://localhost:8765"}
         assert (await c.post("/api/plain", headers=h)).status_code == 200
-        assert (await c.post("/api/plain")).status_code == 200          # без Origin (скрипт/curl)
+        assert (await c.post("/api/plain")).status_code == 200
         assert (await c.get("/api/read", headers={"Origin": "http://evil.example.com"})).status_code == 200
 
 
@@ -131,7 +123,6 @@ async def test_operator_token_required_on_sensitive_paths():
             assert r.status_code == 403
             r = await c.post(url, headers={TOKEN_HEADER: tok})
             assert r.status_code == 200
-        # Токен виден обработчику; обычная ручка токена не требует.
         r = await c.post("/api/action-layer/plans/p1/approve", headers={TOKEN_HEADER: tok})
         assert r.json() == {"verified": True}
         assert (await c.post("/api/plain")).status_code == 200
@@ -172,7 +163,6 @@ def test_sensitive_path_table():
         assert not ag.path_needs_operator_token(path, method), (method, path)
 
 
-# --- настоящее приложение: перебор мутирующих ручек ---------------------------------------------------
 
 def _sample(path: str) -> str:
     import re
@@ -180,7 +170,6 @@ def _sample(path: str) -> str:
 
 
 def _mutating_ops(app) -> list[tuple[str, str]]:
-    """(метод, путь) всех изменяющих ручек /api по схеме OpenAPI (устойчиво к версии FastAPI)."""
     out = []
     for path, item in app.openapi()["paths"].items():
         if not path.startswith("/api/"):
@@ -199,7 +188,7 @@ def _real_app():
 async def test_every_mutating_route_denies_foreign_host_and_origin():
     app = _real_app()
     ops = _mutating_ops(app)
-    assert len(ops) > 150  # перебор действительно широкий
+    assert len(ops) > 150
     seen_sensitive = 0
     async with _client(app) as c:
         for method, url in ops:
@@ -211,14 +200,13 @@ async def test_every_mutating_route_denies_foreign_host_and_origin():
             assert r.status_code == 403 and r.json()["detail"]["code"] == "bad_origin", (method, url)
             if ag.path_needs_operator_token(url, method):
                 seen_sensitive += 1
-                r = await c.request(method, url)  # свой хост, без токена
+                r = await c.request(method, url)
                 assert r.status_code == 403 and (
                     r.json()["detail"]["code"] == "operator_token_required"), (method, url)
     assert seen_sensitive >= 15
 
 
 async def test_sensitive_real_routes_are_covered():
-    """Опасные ручки, названные в плане, реально существуют и требуют токен."""
     ops = set(_mutating_ops(_real_app()))
     must = [("POST", "/api/action-layer/plans/1/approve"), ("POST", "/api/action-layer/plans/1/run"),
             ("POST", "/api/action-layer/plans/1/stop"),
@@ -250,7 +238,6 @@ async def test_websocket_foreign_host_closed():
     assert sent and sent[0]["type"] == "websocket.close"
 
 
-# --- выдача токена -------------------------------------------------------------------------------------
 
 async def test_operator_token_endpoint_only_for_own_origin():
     app = _real_app()
@@ -266,15 +253,14 @@ async def test_operator_token_endpoint_only_for_own_origin():
         assert r.status_code == 403
         r = await c.get("/api/auth/operator-token", headers={"Sec-Fetch-Site": "cross-site"})
         assert r.status_code == 403
-    async with _client(app, base="http://evil.example.com:8765") as c:   # DNS-rebinding
+    async with _client(app, base="http://evil.example.com:8765") as c:
         r = await c.get("/api/auth/operator-token")
         assert r.status_code == 403 and r.json()["detail"]["code"] == "bad_host"
-    async with _client(app, peer=("203.0.113.5", 4000)) as c:            # чужой адрес без входа
+    async with _client(app, peer=("203.0.113.5", 4000)) as c:
         r = await c.get("/api/auth/operator-token")
         assert r.status_code == 403 and r.json()["detail"]["code"] == "local_only"
 
 
-# --- CORS ------------------------------------------------------------------------------------------------
 
 async def test_cors_preflight_uses_explicit_list():
     app = _real_app()
@@ -289,7 +275,6 @@ async def test_cors_preflight_uses_explicit_list():
         assert r.headers.get("access-control-allow-origin") not in ("*", "http://evil.example.com")
 
 
-# --- local-only: прокси не считается локальным ---------------------------------------------------------
 
 def _local_app() -> FastAPI:
     app = FastAPI()
@@ -316,7 +301,6 @@ async def test_reverse_proxy_on_loopback_is_not_local():
             r = await c.post("/m", headers=hdr)
             assert r.status_code == 403 and r.json()["detail"]["code"] == "local_only", hdr
             assert (await c.post("/strict", headers=hdr)).status_code == 403
-        # Чтение через прокси не режем (зависимость только на мутации).
         assert (await c.get("/m", headers={"X-Forwarded-For": "203.0.113.9"})).status_code == 200
 
 
@@ -328,8 +312,6 @@ async def test_remote_allowed_when_auth_enabled_even_proxied(monkeypatch):
 
 
 def test_studio_routers_are_wrapped_in_local_only_for_mutations():
-    """Роутеры из плана закрыты зависимостью на уровне include_router (структурная проверка:
-    настоящие обработчики не запускаем, чтобы не трогать данные)."""
     from app.web.routers import (
         create_queue, gen_assistant, gpt_workspace, kie_create, outsee_create, outsee_http,
         project_ops, projects, text_llm, workflows)
@@ -362,7 +344,6 @@ async def test_mutation_guard_denies_remote_but_allows_reads():
         assert resp.status_code == 403 and resp.json()["detail"]["code"] == "local_only"
 
 
-# --- отказ старта ---------------------------------------------------------------------------------------
 
 def test_assert_safe_bind(monkeypatch):
     monkeypatch.setattr(settings, "web_auth_user", "")
@@ -379,10 +360,10 @@ def test_assert_safe_bind(monkeypatch):
     monkeypatch.setattr(settings, "web_host", "0.0.0.0")
     monkeypatch.setattr(settings, "web_auth_user", "u")
     monkeypatch.setattr(settings, "web_auth_password", "p")
-    ag.assert_safe_bind()                                   # вход включён
+    ag.assert_safe_bind()
     monkeypatch.setattr(settings, "web_auth_user", "")
     monkeypatch.setattr(settings, "orchestrator_allow_remote_without_auth", True)
-    ag.assert_safe_bind()                                   # явное исключение владельца (с предупреждением)
+    ag.assert_safe_bind()
 
 
 async def test_lifespan_refuses_to_start_when_exposed_without_auth(monkeypatch):

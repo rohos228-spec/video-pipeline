@@ -1,8 +1,3 @@
-/**
- * Журнал проекта (шаг B06): чистая логика вкладки «Журнал». Без React и без сети:
- * формирование запроса к ленте, пагинация по курсору, подписи, итоги, имя файла экспорта.
- * Контракт ленты: GET /api/projects/{id}/timeline (см. docs/REGISTRAR_FULL_PLAN.md, W3-2).
- */
 
 export type JournalSeverity = "info" | "warn" | "error";
 
@@ -42,7 +37,6 @@ export const PAGE_LIMIT = 100;
 export const MAX_LIMIT = 500;
 export const EXPORT_MAX_ROWS = 50000;
 
-/** Быстрые наборы фильтров (B06: деньги, ошибки, действия оператора, запуски). */
 export const PRESETS: { id: string; label: string; filters: Partial<JournalFilters> }[] = [
   { id: "all", label: "Всё", filters: { kinds: [], severity: "" } },
   { id: "money", label: "Деньги", filters: { kinds: ["spend", "task"], severity: "" } },
@@ -63,8 +57,6 @@ export const KIND_LABELS_RU: Record<string, string> = {
   notification: "Уведомление",
   job: "Фоновая задача",
   gap: "Пробел журнала",
-  // Событие наблюдения у сервера имеет «сырой» вид (node_error, retry_scheduled...), поэтому фильтр и подпись
-  // идут по источнику: сервер принимает имя источника в `kinds`.
   observation_events: "Событие наблюдения",
 };
 
@@ -82,11 +74,6 @@ export const PERIOD_LABELS_RU: Record<JournalPeriod, string> = {
   "30d": "Последние 30 дней",
 };
 
-/**
- * Русская подпись вида записи. Сырой вид с сервера человеку не показывается никогда:
- * событие наблюдения подписывается по источнику, незнакомое получает «Прочее».
- * Понятный текст самой записи берётся с сервера (`title_ru`).
- */
 export function kindLabel(kind: string, source?: string): string {
   if (source === "observation_events") return KIND_LABELS_RU.observation_events;
   return KIND_LABELS_RU[kind] ?? (source ? SOURCE_KIND_LABELS_RU[source] : undefined) ?? "Прочее";
@@ -111,14 +98,12 @@ export function severityLabel(s: string): string {
   return SEVERITY_LABELS_RU[s as JournalSeverity] ?? "Обычное";
 }
 
-/** Классы Tailwind для важности. Цвет не единственный признак: рядом всегда текст. */
 export function severityClass(s: string): { dot: string; text: string; row: string } {
   if (s === "error") return { dot: "bg-red-400", text: "text-red-300", row: "border-red-400/30" };
   if (s === "warn") return { dot: "bg-amber-300", text: "text-amber-200", row: "border-amber-300/25" };
   return { dot: "bg-sky-300/70", text: "text-white/60", row: "border-white/[0.08]" };
 }
 
-/** Начало периода в ISO UTC (для `since`). `all` даёт null. Для «Сегодня» берётся локальная полночь. */
 export function periodSince(period: JournalPeriod, now: Date = new Date()): string | null {
   const DAY = 86_400_000;
   switch (period) {
@@ -147,7 +132,6 @@ function filterParams(f: JournalFilters, now: Date): URLSearchParams {
   return p;
 }
 
-/** Адрес страницы ленты. `cursor` — непрозрачная строка из прошлого ответа. */
 export function buildTimelineUrl(
   projectId: number,
   f: JournalFilters,
@@ -159,7 +143,6 @@ export function buildTimelineUrl(
   return `/api/projects/${projectId}/timeline?${p.toString()}`;
 }
 
-/** Адрес экспорта: те же фильтры, без limit/cursor (сервер отдаёт до 50000 строк). */
 export function buildExportUrl(
   projectId: number,
   f: JournalFilters,
@@ -176,7 +159,6 @@ export function exportFileName(projectId: number, format: "csv" | "json", now: D
   return `zhurnal-proekt-${projectId}-${d}.${format}`;
 }
 
-/** Склейка страниц без дублей по id; порядок как у сервера (ts по убыванию, затем id по убыванию). */
 export function mergeItems(old: JournalItem[], incoming: JournalItem[]): JournalItem[] {
   const seen = new Map<string, JournalItem>();
   for (const it of old) seen.set(it.id, it);
@@ -216,7 +198,6 @@ export interface JournalTotals {
   spendRows: number;
 }
 
-/** Итоги по ЗАГРУЖЕННЫМ строкам (сервер итогов не отдаёт). Деньги считаются только по kind=spend. */
 export function summarize(items: JournalItem[]): JournalTotals {
   let errors = 0, warnings = 0, spentUsd = 0, spendRows = 0;
   for (const it of items) {
@@ -230,7 +211,6 @@ export function summarize(items: JournalItem[]): JournalTotals {
   return { count: items.length, errors, warnings, spentUsd: Math.round(spentUsd * 1e6) / 1e6, spendRows };
 }
 
-/** Итоги по всему проекту с сервера: GET /api/projects/{id}/timeline/totals. */
 export interface CountCell { count: number; more: boolean }
 export interface ServerTotals {
   spend: { daily_spent: number | null; project_spent: number | null; run_spent: number | null; run_id: string | null;
@@ -245,7 +225,6 @@ const cell = (v: unknown): CountCell => {
   return { count: num(r.count) ?? 0, more: r.more === true };
 };
 
-/** Безопасная форма ответа: пропущенное остаётся «неизвестно» (null), а не превращается в ноль. */
 export function normalizeTotals(raw: unknown): ServerTotals {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, any>;
   const sp = (r.spend && typeof r.spend === "object" ? r.spend : {}) as Record<string, any>;
@@ -262,12 +241,10 @@ export function normalizeTotals(raw: unknown): ServerTotals {
   };
 }
 
-/** «12» или «500+» (если сервер насчитал до потолка). */
 export function countText(c: CountCell): string {
   return c.more ? `${c.count}+` : String(c.count);
 }
 
-/** «$0.31 из $2.00» или «$0.31» без лимита; неизвестное - «нет данных». */
 export function spendVsCap(spent: number | null, cap: number | null | undefined): string {
   if (spent === null) return "нет данных";
   return cap && cap > 0 ? `${formatUsd(spent)} из ${formatUsd(cap)}` : formatUsd(spent);
@@ -289,7 +266,6 @@ export function formatUsd(v: number | null | undefined): string {
   return `$${v.toFixed(abs > 0 && abs < 0.01 ? 4 : 2)}`;
 }
 
-/** «2026-10-07 14:03:09» по местному времени; нечитаемое значение возвращается как есть. */
 export function formatTs(ts: string): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return ts;
@@ -313,7 +289,6 @@ const SOURCE_LABELS_RU: Record<string, string> = {
   notification_log: "уведомления",
 };
 
-/** Русское название источника записи (вместо имени таблицы). Незнакомый источник не показывается как есть. */
 export function sourceLabel(source: string): string {
   return SOURCE_LABELS_RU[source] ?? "другой источник";
 }
@@ -324,7 +299,6 @@ export function missingSourcesText(missing: string[]): string {
   return `В этой базе нет источников: ${names.join(", ")}. Их записей в ленте нет.`;
 }
 
-/** Приводит ответ сервера к безопасной форме: пропущенное заполняем, неизвестную важность считаем обычной. */
 export function normalizePage(raw: unknown): JournalPage {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const items = Array.isArray(r.items)
@@ -348,7 +322,6 @@ export function normalizePage(raw: unknown): JournalPage {
   };
 }
 
-/** Текст ошибки загрузки по-русски. */
 export function journalErrorText(status: number | null): string {
   if (status === 404) return "Проект или журнал не найден. Обновите страницу.";
   if (status === 422) return "Сервер не принял фильтры. Сбросьте фильтры и повторите.";

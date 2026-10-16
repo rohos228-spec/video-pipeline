@@ -1,24 +1,3 @@
-"""Конфиг аккаунтов публикации (W6-2, E03/E07/E09): площадка -> профиль MoreLogin и подпись аккаунта,
-правила подписи, признаки успеха, лимиты в сутки, окно публикации.
-
-Источники (позже перекрывает раньше):
-  1. файл ``<DATA_DIR>/publish_accounts.json`` (по умолчанию ``data/publish_accounts.json``);
-  2. переменная окружения ``PUBLISH_ACCOUNTS_JSON`` (строка JSON того же вида).
-
-Формат::
-
-    {"defaults": {"pause_s": 3, "jitter_s": 2},
-     "platforms": {"tiktok": {"profile_id": "...", "account_label": "tiktok основной",
-                              "max_per_day": 2, "caption_limit": 2200, "hashtags": ["#ai"],
-                              "success_selectors": [], "success_url_markers": [], "post_url_regex": ""}}}
-
-Пароли, токены, куки здесь НЕ хранятся: ключи с такими именами отклоняются при загрузке.
-id профиля MoreLogin считается чувствительным: в repr/логах/текстах оператора показываются
-только последние 4 символа. Признаки успеха по умолчанию ПУСТЫЕ: пока заказчик не дал данные,
-итог любой публикации - unconfirmed.
-
-Живой площадкой не проверялось.
-"""
 
 from __future__ import annotations
 
@@ -35,7 +14,6 @@ KNOWN_PLATFORMS = ("tiktok", "yt_shorts", "ig_reels", "vk_clips", "likee")
 ENV_JSON = "PUBLISH_ACCOUNTS_JSON"
 ENV_FILE_NAME = "publish_accounts.json"
 
-# ── коды отказов (русский текст для оператора) ───────────────────────────────────
 
 REFUSALS: dict[str, str] = {
     "profile_missing": "Для площадки не задан профиль MoreLogin. Укажите его в data/publish_accounts.json.",
@@ -64,9 +42,7 @@ REFUSALS: dict[str, str] = {
     "exception_after_click": "Сбой после нажатия кнопки публикации: проверьте площадку вручную.",
 }
 
-# Эти причины требуют человека: автоповтор запрещён, оператору уходит уведомление (E04).
 HUMAN_STOP_CODES = frozenset({"not_logged_in", "captcha", "two_factor"})
-# Отказ ДО клика, после которого повтор безопасен только когда человек что-то поправил.
 NO_AUTO_RETRY_CODES = HUMAN_STOP_CODES | {"rate_limited", "rejected", "profile_missing", "accounts_config_invalid"}
 
 
@@ -74,14 +50,13 @@ def refusal_text(code: str | None) -> str:
     return REFUSALS.get(code or "", f"Отказ: {code}" if code else "")
 
 
-# ── защита от секретов ─────────────────────────────────────────────────────────────
 
 _SECRET_KEYS = re.compile(
     r"(pass(word|wd)?|pwd|token|secret|cookie|api[_-]?key|authorization|session|credential|otp|2fa_?code)", re.I)
 
 
 class AccountsConfigError(ValueError):
-    """Ошибка конфига. Текст не содержит значений из конфига, только имена ключей."""
+    pass
 
 
 def mask_profile(profile_id: str | None) -> str:
@@ -89,7 +64,6 @@ def mask_profile(profile_id: str | None) -> str:
     return f"…{pid[-4:]}" if pid else "не задан"
 
 
-# ── модель ─────────────────────────────────────────────────────────────────────────
 
 _LIST_FIELDS = (
     "hashtags", "success_selectors", "success_url_markers", "processing_busy_selectors",
@@ -108,16 +82,16 @@ _DEFAULT_KEYS = {"pause_s", "jitter_s"}
 @dataclass
 class PlatformAccount:
     platform: str
-    profile_id: str = field(default="", repr=False)  # чувствительно: не печатается
+    profile_id: str = field(default="", repr=False)
     account_label: str = ""
     region: str = ""
     enabled: bool = True
     upload_url: str = ""
     max_per_day: int | None = None
-    window_hours: tuple[int, int] | None = None  # [с, до) по местному времени
+    window_hours: tuple[int, int] | None = None
     caption_limit: int | None = None
     title_limit: int | None = None
-    on_overflow: str = "reject"  # reject | truncate
+    on_overflow: str = "reject"
     hashtags: list[str] = field(default_factory=list)
     hashtag_separator: str = "\n\n"
     caption_suffix: str = ""
@@ -131,7 +105,6 @@ class PlatformAccount:
     login_url_markers: list[str] = field(default_factory=list)
     logged_in_selectors: list[str] = field(default_factory=list)
     error_selectors: dict[str, list[str]] = field(default_factory=dict)
-    # признаки успеха: по умолчанию пусто -> unconfirmed
     success_selectors: list[str] = field(default_factory=list)
     success_url_markers: list[str] = field(default_factory=list)
     post_url_regex: str = ""
@@ -143,7 +116,6 @@ class PlatformAccount:
     feed_item_selector: str = ""
 
     def label(self) -> str:
-        """Безопасная подпись аккаунта для оператора и журнала."""
         return self.account_label or f"{self.platform} (профиль {mask_profile(self.profile_id)})"
 
 
@@ -156,7 +128,6 @@ class AccountsConfig:
 
     @property
     def configured(self) -> bool:
-        """Есть ли хоть один явно заданный профиль (иначе работает старый режим одного профиля)."""
         return any(a.profile_id for a in self.platforms.values())
 
     def for_platform(self, platform: str) -> PlatformAccount:
@@ -301,10 +272,6 @@ def _normalize(data: Any) -> Any:
 
 def load_accounts(*, env: dict[str, str] | None = None, path: str | Path | None = None,
                   data_dir: str | Path | None = None) -> AccountsConfig:
-    """Прочитать конфиг. Нет ни файла, ни переменной - пустой конфиг (старый режим одного профиля).
-
-    Ошибка формата/секреты в ключах -> AccountsConfigError (без значений в тексте).
-    """
     env = os.environ if env is None else env
     p = Path(path) if path else default_config_path(data_dir or env.get("DATA_DIR"))
     merged: dict = {}
@@ -333,15 +300,9 @@ def load_accounts(*, env: dict[str, str] | None = None, path: str | Path | None 
     return parse_config(merged, source="+".join(sources))
 
 
-# ── выбор профиля ──────────────────────────────────────────────────────────────────
 
 
 def select_profile(platform: str, cfg: AccountsConfig, *, legacy_profile_id: str | None = None) -> str | None:
-    """id профиля MoreLogin для площадки.
-
-    Задан конфиг -> строго по площадке (подстановки чужого профиля нет: иначе пост уйдёт не в тот аккаунт).
-    Конфига нет -> старый режим: единый MORELOGIN_PROFILE_ID. Нет профиля -> None (profile_missing).
-    """
     if cfg.configured:
         acct = cfg.platforms.get(platform)
         return (acct.profile_id or None) if acct else None
@@ -349,7 +310,6 @@ def select_profile(platform: str, cfg: AccountsConfig, *, legacy_profile_id: str
     return pid or None
 
 
-# ── подпись ────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -366,11 +326,6 @@ def _norm_tag(t: str) -> str:
 
 
 def compose_caption(caption: str, acct: PlatformAccount) -> CaptionResult:
-    """Подпись для площадки: основной текст + суффикс (метка ИИ и т.п.) + хэштеги из конфига; лимит длины.
-
-    on_overflow=reject: длиннее лимита -> platform_limit. truncate: обрезается основной текст, хвост
-    (суффикс и хэштеги) сохраняется; не помещается и хвост -> platform_limit.
-    """
     body = (caption or "").strip()
     if not body:
         return CaptionResult(error_code="caption_empty", error=refusal_text("caption_empty"))
@@ -394,7 +349,7 @@ def compose_caption(caption: str, acct: PlatformAccount) -> CaptionResult:
     if acct.on_overflow != "truncate":
         return CaptionResult(error_code="platform_limit",
                              error=f"Подпись {len(full)} символов, лимит площадки {lim}. {refusal_text('platform_limit')}")
-    room = lim - len(sep) - len(tail) - 1  # 1 символ под «…»
+    room = lim - len(sep) - len(tail) - 1
     if room < 1:
         return CaptionResult(error_code="platform_limit",
                              error=f"Хэштеги и суффикс ({len(tail)} символов) не помещаются в лимит {lim}.")
@@ -406,7 +361,6 @@ def compose_caption(caption: str, acct: PlatformAccount) -> CaptionResult:
 
 
 def make_title(caption: str, acct: PlatformAccount) -> str:
-    """Заголовок (YouTube): первая строка подписи, обрезанная до title_limit."""
     first = (caption or "").strip().splitlines()[0] if (caption or "").strip() else ""
     lim = acct.title_limit
     if lim and len(first) > lim:
@@ -414,7 +368,6 @@ def make_title(caption: str, acct: PlatformAccount) -> str:
     return first
 
 
-# ── лимиты и окно (E09) ────────────────────────────────────────────────────────────
 
 DAY_S = 86400.0
 
@@ -425,13 +378,12 @@ class LimitDecision:
     code: str | None = None
     used: int = 0
     limit: int | None = None
-    retry_after: float | None = None  # unix-время, когда можно пробовать снова
+    retry_after: float | None = None
     text: str = ""
 
 
 def daily_limit_decision(click_times: list[float] | None, max_per_day: int | None,
                          now: float | None = None) -> LimitDecision:
-    """Скользящие 24 часа: сколько нажатий уже было (по журналу publications_store.clicked_at)."""
     if not max_per_day or click_times is None:
         return LimitDecision(True, limit=max_per_day)
     now = time.time() if now is None else now
@@ -444,7 +396,6 @@ def daily_limit_decision(click_times: list[float] | None, max_per_day: int | Non
 
 
 def window_decision(window: tuple[int, int] | None, now: float | None = None) -> LimitDecision:
-    """Окно по местному времени [start, end); (22, 6) - окно через полночь."""
     if not window:
         return LimitDecision(True)
     now = time.time() if now is None else now
@@ -454,7 +405,6 @@ def window_decision(window: tuple[int, int] | None, now: float | None = None) ->
     inside = (s <= h < e) if s < e else (h >= s or h < e)
     if inside:
         return LimitDecision(True)
-    # ближайшее начало окна
     start_today = now - (lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec) + s * 3600
     retry = start_today if start_today > now else start_today + DAY_S
     return LimitDecision(False, "outside_window", retry_after=retry,
@@ -462,7 +412,6 @@ def window_decision(window: tuple[int, int] | None, now: float | None = None) ->
 
 
 async def recent_click_times(session, platform: str, *, now: float | None = None) -> list[float]:
-    """Времена нажатий «Опубликовать» за последние сутки по журналу publications (для PublishGate)."""
     from sqlalchemy import text as _t
 
     from app.services import publications_store as pstore
@@ -475,7 +424,6 @@ async def recent_click_times(session, platform: str, *, now: float | None = None
     return [float(r[0]) for r in rows]
 
 
-# ── путь скриншота ─────────────────────────────────────────────────────────────────
 
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -486,7 +434,6 @@ def safe_part(s: str | int | None, default: str = "unassigned") -> str:
 
 
 def screenshot_relpath(project_label: str | int | None, platform: str) -> str:
-    """Относительный путь внутри data: publications/<проект>/<площадка>.png (без секретов в имени)."""
     return f"publications/{safe_part(project_label)}/{safe_part(platform, 'platform')}.png"
 
 

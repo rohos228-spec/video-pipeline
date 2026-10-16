@@ -1,7 +1,3 @@
-"""sfx_gen: сбой типизируется как media_failure (как у остальных медиа-нод), нода остаётся под наблюдением.
-
-Чистые проверки без сети и БД. Класс доказательства: U.
-"""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -68,7 +64,7 @@ def test_sfx_gen_is_not_promoted_and_not_admitted_by_the_local_recovery():
     from app.services import local_node_recovery, media_admission
     from app.orchestrator import node_spec
     spec = node_spec.capability_spec_for("sfx_gen")
-    assert spec.recovery_only is True  # как было: только supervised-возобновление, не свободный запуск
+    assert spec.recovery_only is True
     assert spec.verifier == "sfx_result"
     assert "sfx_gen" not in media_admission.ADMITTED_NODES
     proof = _type_sfx_gen_as_media(_raw("failed"), RuntimeError("x"))

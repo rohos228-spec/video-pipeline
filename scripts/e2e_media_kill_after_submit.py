@@ -58,7 +58,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 
 def _load_sibling(name: str):
@@ -69,7 +69,7 @@ def _load_sibling(name: str):
     return mod
 
 
-prod = _load_sibling("e2e_media_production_route")  # Gate, FakeOutsee, _seed, env helpers: imported, not edited
+prod = _load_sibling("e2e_media_production_route")
 qc = prod.qc
 
 FAKE_PORT = 18771
@@ -87,7 +87,6 @@ SEED_FILE = "seed.json"
 EXIT_PASS, EXIT_FAIL, EXIT_ARGS, EXIT_REFUSED = 0, 1, 2, 3
 
 
-# ───────────────────────────── pure helpers (unit-tested) ─────────────────────────────
 
 def authorisation_problem(max_real_posts: int, max_usd: float) -> str | None:
     """Same rule as the production-route stand, plus a hard ceiling of $1.00 on what can ever be authorised."""
@@ -177,7 +176,6 @@ def reality_not_proven(mode: str) -> list[str]:
     return out
 
 
-# ───────────────────────────── checks (pure, unit-tested) ─────────────────────────────
 
 def check(name: str, ok: bool, detail: Any = None, *, needs: str | None = None) -> dict:
     return prod.check(name, ok, detail, needs=needs)
@@ -286,7 +284,6 @@ def final_verdict(mode: str, ok: bool) -> str:
     return "DRY OK (fake provider: kill/restart machinery proven offline, NOT a live proof)"
 
 
-# ───────────────────────────── arguments ─────────────────────────────
 
 def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -327,7 +324,6 @@ def posts_allowed(args: argparse.Namespace) -> int:
     return 2 if args.dry_scenario == "second_submit" else args.max_real_posts
 
 
-# ───────────────────────────── records read by the parent ─────────────────────────────
 
 def _rows(state_db: Path, sql: str) -> list[dict]:
     """Plain read connection: a database left by a killed process may need its WAL recovered, read-only mode cannot."""
@@ -360,13 +356,12 @@ def scene_files(data: Path, slug: str) -> list[dict]:
     return [{"name": p.name, "bytes": p.stat().st_size} for p in sorted(scenes.glob("frame_*.png")) if p.is_file()]
 
 
-# ───────────────────────────── the child (a real separate python) ─────────────────────────────
 
 async def child_main(args: argparse.Namespace) -> int:
     phase = int(args.child)
     mode = "live" if args.live else "dry"
     work = Path(args.work_dir).resolve()
-    data = guard.assert_scratch_data_dir(work / "data")  # A19: refuses live data; NEVER wipes (phase 2 needs it)
+    data = guard.assert_scratch_data_dir(work / "data")
     wire_path, seed_path = work / WIRE_FILE, work / SEED_FILE
     live_env: dict[str, str] = {}
     if mode == "live":
@@ -388,7 +383,6 @@ async def child_main(args: argparse.Namespace) -> int:
 
     import httpx
     from app.settings import settings
-    # Belt and braces over environment precedence (a stray repository .env must not add a route or a key):
     settings.gpt_relay_token, settings.gpt_proxy_url = "", None
     settings.vibecode_api_key = qc.SYNTHETIC_KEY
     settings.vibecode_base_url = f"http://127.0.0.1:{args.port}/v1"
@@ -403,9 +397,8 @@ async def child_main(args: argparse.Namespace) -> int:
     import app.services.api_tracker_hook as tracker
     tracker._TRACKER_DB = work / "tracker.db"
     from app import main as app_main
-    await app_main._init_db()  # idempotent: creates nothing on the second start
+    await app_main._init_db()
 
-    # The Gate is the one of the production-route stand; its paid counter is preloaded from the persisted wire file.
     gate = prod.Gate(mode=mode, max_paid_posts=posts_allowed(args), outsee_host=prod.outsee_host(live_env) if mode == "live" else "",
                      fake_port=args.fake_port, phase="main")
     gate.paid_posts = wire_posts(read_wire(wire_path))
@@ -416,7 +409,7 @@ async def child_main(args: argparse.Namespace) -> int:
         judged = gate.judge(request.method, request.url.host, request.url.port, request.url.path, is_decision=False)
         if judged.action == "refuse":
             if judged.kind == "paid_cap":
-                state["new_post_attempted"] = True  # production tried to pay again: the Gate stopped it, but it TRIED
+                state["new_post_attempted"] = True
             raise RuntimeError(judged.reason)
         paid = judged.kind in ("paid_post_fake", "paid_post_real")
         if paid:
@@ -427,11 +420,11 @@ async def child_main(args: argparse.Namespace) -> int:
         if paid:
             wire_append(wire_path, {"event": "response_received", "phase": phase, "status": response.status_code, "t": time.time()})
             if phase == 1:
-                os._exit(KILL_EXIT_CODE)  # the hard kill: no finally, no atexit, no flush, nothing after the answer
+                os._exit(KILL_EXIT_CODE)
         if judged.kind in ("outsee_get", "paid_post_real"):
             try:
                 gate.learn(response.text)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         return response
 
@@ -439,7 +432,7 @@ async def child_main(args: argparse.Namespace) -> int:
     from app.orchestrator.steps import generate_images
 
     async def no_curl_post(*_a, **_k):
-        return None  # the curl submit fallback is a second transport the hook cannot count: the stand never uses it
+        return None
 
     original_download_curl = outsee_http._download_via_curl
 
@@ -453,7 +446,7 @@ async def child_main(args: argparse.Namespace) -> int:
     stubs = {"hitl_cards": 0, "telegram_calls": 0}
 
     async def stub_hitl(*_a, **_k):
-        stubs["hitl_cards"] += 1  # the Telegram card is not sent: nothing here talks to Telegram
+        stubs["hitl_cards"] += 1
 
     class NoBot:
         def __getattr__(self, _name):
@@ -476,10 +469,9 @@ async def child_main(args: argparse.Namespace) -> int:
     original_check = outsee_idempotency.check
 
     async def spy_check(ctx):
-        # generate_images swallows the refusal into a failed frame + a Telegram note; the spy sees what the check decided
         try:
             verdict_ = await original_check(ctx)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             context = getattr(exc, "context", None)
             seen_refusals.append({"type": type(exc).__name__, "code": (context or {}).get("code") if isinstance(context, dict) else None,
                                   "request_sent": (context or {}).get("request_sent") if isinstance(context, dict) else None})
@@ -495,27 +487,26 @@ async def child_main(args: argparse.Namespace) -> int:
     else:
         seeded = json.loads(seed_path.read_text(encoding="utf-8"))
         pid, slug = int(seeded["pid"]), str(seeded["slug"])
-        try:  # what the application does on a start (media_resume.reconcile_on_startup); recorded, never required
+        try:
             from app.services import media_resume
             await media_resume.reconcile_on_startup()
             record["reconcile_on_startup"] = "ok"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             record["reconcile_on_startup"] = f"{type(exc).__name__}: {str(exc)[:100]}"
         if args.dry_scenario == "second_submit":
-            # negative control: a human releases the open attempt, so the production code legitimately pays again
             record["negative_control_released"] = await outsee_idempotency.release(pid, FRAME_KEY, note="negative control")
 
     scenes = data / "videos" / slug / "scenes"
     try:
         async with project_db_session_scope(pid) as session:
             project = await session.get(Project, pid)
-            project.status = ProjectStatus.generating_images  # the worker's state when it starts the step
+            project.status = ProjectStatus.generating_images
             await session.commit()
             try:
                 await generate_images.run(session, project, NoBot())
                 record["step_outcome"] = "returned"
                 await session.commit()
-            except BaseException as exc:  # noqa: BLE001 - recorded, whatever the production code raised
+            except BaseException as exc:
                 record["step_outcome"] = "raised"
                 record["error_type"] = type(exc).__name__
                 ctx = getattr(exc, "context", None)
@@ -523,7 +514,7 @@ async def child_main(args: argparse.Namespace) -> int:
                 record["error_text"] = str(exc)[:300]
                 try:
                     await session.rollback()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
             from sqlalchemy import select
             await session.refresh(project)
@@ -540,9 +531,8 @@ async def child_main(args: argparse.Namespace) -> int:
     if not record.get("error_code") and seen_refusals:
         record["error_type"] = record.get("error_type") or seen_refusals[-1]["type"]
         record["error_code"] = seen_refusals[-1]["code"]
-        record["error_swallowed_by_step"] = True  # the step turned it into a failed frame + owner note, it did not raise
+        record["error_swallowed_by_step"] = True
 
-    # an adopted recorded result shows as a valid file on disk WITHOUT any paid request of this phase
     record["adopted_recorded_result"] = (bool(record.get("valid_image_on_disk")) and not state["new_post_attempted"]
                                          and any(r.get("type") == "adopt" for r in seen_refusals))
     record.update(new_post_attempted=state["new_post_attempted"], post_attempts_this_phase=state["post_attempts_this_phase"],
@@ -553,13 +543,12 @@ async def child_main(args: argparse.Namespace) -> int:
     return 0
 
 
-# ───────────────────────────── the parent ─────────────────────────────
 
 def _child_env(args: argparse.Namespace) -> dict[str, str]:
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}
     for name in ("GPT_RELAY_TOKEN", "GPT_PROXY_URL", "VIBECODE_API_KEY", "GPT_API_KEY", "OUTSEE_API_KEY", "KIE_API_KEY",
                  "ELEVENLABS_API_KEY"):
-        env.pop(name, None)  # the child builds its own environment: no key from the parent's shell reaches it
+        env.pop(name, None)
     return env
 
 
@@ -607,14 +596,14 @@ def main(argv: list[str] | None = None) -> int:
         return text
 
     work = Path(args.work_dir).resolve()
-    data = guard.reset_scratch_data(work)  # A19: refuses live data; removes only <work>/data made by these scripts
+    data = guard.reset_scratch_data(work)
     for stale in (WIRE_FILE, SEED_FILE, "phase1.json", "phase2.json", "result.json"):
         (work / stale).unlink(missing_ok=True)
     state_db = data / "state.db"
     print(f"preflight: mode={mode} scenario={args.dry_scenario} posts_allowed={posts_allowed(args)} "
           f"worst_case=${prod.worst_case_usd(args.max_real_posts)} max_usd={args.max_usd}", flush=True)
 
-    fake = prod.FakeOutsee(args.fake_port).start() if mode == "dry" else None  # in the parent: it survives the kill
+    fake = prod.FakeOutsee(args.fake_port).start() if mode == "dry" else None
     result: dict[str, Any] = {"mode": mode, "scenario": args.dry_scenario, "node": NODE,
                               "args": {k: v for k, v in vars(args).items() if k != "env_file"}}
     try:

@@ -8,7 +8,6 @@ GPT-сессия (browser → new_conversation → ask_with_files → download) 
 from __future__ import annotations
 
 import re
-
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -42,11 +41,15 @@ _EMPTY_OPS_BACKOFF_S = (5.0, 10.0, 15.0)
 
 
 def img_pr_live_streams(project: Project | None) -> int:
-    """Параллель GPT для img_pr.
-
-    check_streams справа — верхняя граница; низ 8, иначе 102 кадра
-    при 2 потоках висят полчаса (волна gather ждёт всех).
-    """
+    if project is not None and isinstance(project.meta, dict):
+        raw = project.meta.get("img_pr_streams")
+        if raw is not None:
+            try:
+                n = int(raw)
+                if n >= 1:
+                    return min(8, n)
+            except (TypeError, ValueError):
+                pass
     from app.services.check_streams import get_check_streams
 
     n = get_check_streams(project)
@@ -56,7 +59,6 @@ def img_pr_live_streams(project: Project | None) -> int:
 
 
 def _plan_empty_error(xlsx_path: Path, *, plan_len: int) -> RuntimeError:
-    """Понятная ошибка: импортёр читает «Общий план», GPT часто пишет в «план»."""
     sheets: list[str] = []
     try:
         from openpyxl import load_workbook
@@ -226,8 +228,6 @@ class XlsxRoundtripResult:
     apply_ops: list[dict] | None = None
     # True = ops уже записаны в DB по батчам внутри runner (не apply повторно).
     ops_applied_inline: bool = False
-    # split: каким путём получены кадры (json_replace_frames / dash_blocks /
-    # local_voiceover_fallback) и прошёл ли ответ предпроверку до записи в БД.
     split_source: str | None = None
     split_verified: bool | None = None
 
@@ -260,10 +260,15 @@ _PLAN_DB_HINT = (
 
 
 def extract_general_plan_from_gpt_reply(reply: str) -> str:
-    """Достать общий_план из apply-ops JSON ответа модели."""
-    from app.services import db_apply
+    """Достать общий_план из любого ответа модели: apply-ops JSON, простой JSON или связный текст."""
+    if not reply or not reply.strip():
+        return ""
 
-    data = db_apply.extract_apply_ops_json(reply or "")
+    from app.services import db_apply
+    from app.services.plan_validation import MIN_GENERAL_PLAN_CHARS
+
+    # 1. Проверяем стандартный apply-ops JSON
+    data = db_apply.extract_apply_ops_json(reply)
     if isinstance(data, dict):
         for op in data.get("ops") or []:
             if not isinstance(op, dict):
@@ -271,7 +276,7 @@ def extract_general_plan_from_gpt_reply(reply: str) -> str:
             fields = op.get("fields") or {}
             if not isinstance(fields, dict):
                 continue
-            for key in ("общий_план", "general_plan", "план", "сценарий"):
+            for key in ("общий_план", "general_plan", "план", "сценарий", "plan", "script"):
                 val = fields.get(key)
                 if isinstance(val, str) and val.strip():
                     return val.strip()
@@ -279,6 +284,52 @@ def extract_general_plan_from_gpt_reply(reply: str) -> str:
                 for val in fields.values():
                     if isinstance(val, str) and len(val.strip()) >= 80:
                         return val.strip()
+
+    # 2. Проверяем JSON без обёртки ops (например {"general_plan": "..."} или {"общий_план": "..."})
+    import json
+    import re
+
+    json_candidates: list[str] = []
+    for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", reply, re.DOTALL):
+        json_candidates.append(m.group(1))
+
+    first_brace = reply.find("{")
+    last_brace = reply.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        json_candidates.append(reply[first_brace : last_brace + 1])
+
+    for raw_json in json_candidates:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                for key in (
+                    "общий_план",
+                    "general_plan",
+                    "план",
+                    "сценарий",
+                    "plan",
+                    "script",
+                    "content",
+                    "text",
+                ):
+                    val = parsed.get(key)
+                    if isinstance(val, str) and len(val.strip()) >= MIN_GENERAL_PLAN_CHARS:
+                        return val.strip()
+        except Exception:
+            continue
+
+    # 3. Fallback: если модель вернула связный текст сценария/плана напрямую
+    cleaned = reply.strip()
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+    if len(cleaned) >= MIN_GENERAL_PLAN_CHARS:
+        lower = cleaned.lower()
+        plan_keywords = ("план", "кадр", "сцена", "акт", "герой", "диктор", "voiceover", "shot", "act")
+        if any(kw in lower for kw in plan_keywords):
+            return cleaned
+
     return ""
 
 
@@ -450,7 +501,6 @@ _NII67_BORING_INTERIOR_RE = re.compile(
     r")"
 )
 
-# Гуманоидный дефолт: 4/6 рук + лицо/грудь/череп как у человека.
 _NII67_HUMANOID_CREATURE_RE = re.compile(
     r"(?i)(?:"
     r"(?:четыр(?:е|ёх|ех)|шесть|4|6)\s*рук\w*.{0,80}(?:лиц\w*|груд\w*|череп\w*)"
@@ -465,7 +515,6 @@ _NII67_HUMANOID_CREATURE_RE = re.compile(
     r")"
 )
 
-# Неснимаемое: колонны/столбы/мебель из пара/дыма/тумана.
 _NII67_STEAM_PILLAR_RE = re.compile(
     r"(?i)(?:"
     r"колонн\w*.{0,24}(?:пар\w*|дым\w*|туман\w*)"
@@ -479,7 +528,6 @@ _NII67_STEAM_PILLAR_RE = re.compile(
     r")"
 )
 
-# Копипаст-рецепт собор/камера/коридор+витрина как концепт места (голова двери).
 _NII67_COPYPASTE_PLACE_RE = re.compile(
     r"(?i)(?:"
     r"(?<![\wА-Яа-я])(?:собор|камера|коридор|музей|витрина|улица\s+с\s+фасад)"
@@ -487,7 +535,6 @@ _NII67_COPYPASTE_PLACE_RE = re.compile(
     r")"
 )
 
-# Выдуманные «материалы» — брак (место может быть космос/горизонт; вещество — нет).
 _NII67_NONSENSE_MATERIAL_RE = re.compile(
     r"(?i)(?:"
     r"вакуумн\w*\s+стекл\w*"
@@ -537,7 +584,6 @@ _NII67_NONSENSE_PLACE_RE = re.compile(
 
 _NII67_MAGIC_ENGULF_RE = re.compile(
     r"(?i)(?:"
-    # магма/лава поднимается вокруг / с выступа / и затягивает
     r"(?:магм|лав)\w*.{0,48}поднима\w*.{0,32}(?:вокруг|с\s+(?:выступ|скал|остров|террас)|и\s+затягив)"
     r"|(?:магм|лав)\w*.{0,48}затягива\w*.{0,40}(?:топит|тонет|утопа)"
     r"|поднима\w*.{0,24}вокруг.{0,40}(?:магм|лав|смол|ртут|кислот)"
@@ -547,8 +593,6 @@ _NII67_MAGIC_ENGULF_RE = re.compile(
     r")"
 )
 
-# v98-nii67-hg-ban: ртуть / mercury как материал мира или агент смерти — брак.
-# Физика: плотность ~13.5 г/см³ (человек плавает); t_пл ≈ −38.83°C (жидкая при комнатной).
 _NII67_MERCURY_BAN_RE = re.compile(
     r"(?:"
     r"ртут"
@@ -614,7 +658,6 @@ def _nii67_extract_experiment(text: str) -> str:
     return (m.group(1).strip().casefold() if m else "")
 
 
-# Ключевые мотивы МЕСТА по полному тексту (нормализованные ярлыки партии).
 _NII67_PLACE_MOTIF_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (key, re.compile(pat, re.I | re.U))
     for key, pat in (
@@ -659,7 +702,6 @@ _NII67_PLACE_MOTIF_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     )
 )
 
-# Мотивы существа/агента по полному тексту (не только строки «Существо:»).
 _NII67_CREATURE_MOTIF_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (key, re.compile(pat, re.I | re.U))
     for key, pat in (
@@ -680,7 +722,6 @@ _NII67_CREATURE_MOTIF_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     )
 )
 
-# Класс механики, видимый в тексте (кольца-тиски нельзя дважды в партии).
 _NII67_MECHANIC_MOTIF_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (key, re.compile(pat, re.I | re.U))
     for key, pat in (
@@ -718,19 +759,16 @@ _NII67_MECHANIC_MOTIF_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 
 
 def _nii67_extract_place_motifs(text: str) -> set[str]:
-    """Ярлыки ключевых мест/миров по полному тексту сценария."""
     blob = text or ""
     return {key for key, rx in _NII67_PLACE_MOTIF_RES if rx.search(blob)}
 
 
 def _nii67_extract_mechanic_motifs(text: str) -> set[str]:
-    """Ярлыки класса механики (кольца-тиски, стены, жидкость…) по тексту."""
     blob = text or ""
     return {key for key, rx in _NII67_MECHANIC_MOTIF_RES if rx.search(blob)}
 
 
 def _nii67_extract_creature_hints(text: str) -> set[str]:
-    """Метки существа/агента: строки «Существо …» + мотивы по полному тексту."""
     out: set[str] = set()
     for m in re.finditer(
         r"(?im)^\s*существо[:\s]+(.+?)\s*$",
@@ -755,12 +793,9 @@ _NII67_TIMED_LINE_RE = re.compile(
 
 
 def _nii67_extract_door_places(scenario: str) -> list[str]:
-    """Места из строк «Дверь 1/2. …» — голова до первой точки-описания."""
     out: list[str] = []
     for m in _NII67_DOOR_PLACE_RE.finditer(scenario or ""):
         line = m.group(1).strip()
-        # «Шахта с полом из …. Существо…» → до первого предложения-факта слишком длинно;
-        # берём до первой точки, но не короче 3 символов.
         head = line.split(".")[0].strip()
         if len(head) >= 3:
             out.append(head)
@@ -768,7 +803,6 @@ def _nii67_extract_door_places(scenario: str) -> list[str]:
 
 
 def _nii67_scenario_structure_ok(scenario: str) -> str | None:
-    """None = ok. Иначе причина: нет блока Кадры. или мало тайм-кодовых строк VO."""
     text = scenario or ""
     if not _NII67_FRAMES_HEADER_RE.search(text):
         return "нет блока «Кадры.»"
@@ -879,7 +913,6 @@ def _nii67_variant_reject_reason(
     used_world_kinds: set[str] | None = None,
     seed_world_kinds: set[str] | None = None,
 ) -> str | None:
-    """None = ok. Иначе короткая причина для retry/лога."""
     from app.services.nii67_card import place_kinds, places_collide, normalize_place_head
 
     struct = _nii67_scenario_structure_ok(scenario)
@@ -904,7 +937,6 @@ def _nii67_variant_reject_reason(
         )
     if _NII67_STEAM_PILLAR_RE.search(blob):
         return "неснимаемый материал (колонны/столбы/мебель из пара/дыма/тумана)"
-    # Оба мира — скучный интерьер без шока: брак. Один инженерный шок — ок.
     door_places = _nii67_extract_door_places(scenario)
     boring_hits = [
         p for p in door_places
@@ -915,7 +947,6 @@ def _nii67_variant_reject_reason(
             "оба мира — скучный интерьер (зал/кабинет/музей/столовая/комната) — "
             "смешай оси: Солнце/ад/космос/чёрная дыра/зеркало/лёд/криоген/лава/кислота"
         )
-    # Копипаст собор/камера/коридор как голова места — брак, если обе двери такие
     paste_hits = [
         p for p in door_places
         if _NII67_COPYPASTE_PLACE_RE.search((p or "").split(",")[0])
@@ -950,7 +981,6 @@ def _nii67_variant_reject_reason(
     if graft:
         return graft
 
-    # Смертельная ветка: обязателен ясный физический механизм смерти
     fatal_m = re.search(
         r"(?im)^Смертельная\s+дверь:\s*([12])",
         scenario or "",
@@ -972,13 +1002,11 @@ def _nii67_variant_reject_reason(
                 "(сжечь/упасть в лаву/фонтан из жерла/раздавить/заморозить/"
                 "вакуум/дыра/кислота попадает) — не «магма поднялась и топит»"
             )
-        # если есть только запечатка/накрытие без clear-death — уже отсечено выше
     if _NII67_FLOOR_TILE_TRAP_RE.search(blob):
         return (
             "пол/плитка-ловушка (плитки разъезжаются/смыкаются, пол складывается, "
             "керамический кокон из пола) — запрещено; пол только материал"
         )
-    # ≥2 вариантов партии с центром на пол/плитку — брак даже без жёсткого trap-паттерна
     if floor_trap_hits >= 1 and _NII67_FLOOR_TILE_CENTER_RE.search(blob):
         return (
             "повтор пола/плитки как центра угрозы в партии "
@@ -1008,7 +1036,6 @@ def _nii67_variant_reject_reason(
         if tok and tok in used_places:
             return f"повтор вида места: {tok} ({normalize_place_head(seed) or seed})"
 
-    # пересечение видов с уже занятыми токенами (g:/s:) и сырыми головами
     for place in check_places:
         head = normalize_place_head(place)
         if not head:
@@ -1016,12 +1043,10 @@ def _nii67_variant_reject_reason(
         for prev in used_places:
             if not prev:
                 continue
-            # prev — канонический токен (g:underground) или старая голова
             if prev.startswith(("g:", "s:", "h:")):
                 if prev in place_kinds(place) or prev == _nii67_place_token(place):
                     return f"повтор вида места: {prev} (~{head})"
             else:
-                # полные головы: равенство/подстрока; широкий g: уже в used_places как g:*
                 if len(prev) >= 6 and (prev == head or prev in head or head in prev):
                     return f"повтор места/синонима: {prev} (~{head})"
                 pa = prev.split()[0] if prev.split() else prev
@@ -1033,7 +1058,6 @@ def _nii67_variant_reject_reason(
                 ):
                     return f"повтор места/синонима: {prev} (~{head})"
 
-    # если модель явно повторила чужую ПОЛНУЮ голову места в тексте
     import re as _re
     for tok in used_places:
         if not tok or tok.startswith(("g:", "s:", "h:")):
@@ -1048,7 +1072,6 @@ def _nii67_variant_reject_reason(
         if c in used_creatures:
             return f"повтор существа/мотива: {c}"
 
-    # Мотивы места по полному тексту (лес живой плоти, астероидн, ртутн океан…)
     used_pm = used_place_motifs if used_place_motifs is not None else set()
     place_motifs = _nii67_extract_place_motifs(f"{scenario}\n{voiceover}")
     for seed in seed_places:
@@ -1057,14 +1080,12 @@ def _nii67_variant_reject_reason(
         if m in used_pm:
             return f"повтор мотива места в партии: {m}"
 
-    # Механика: стальные кольца-тиски и др. классы — не чаще одного раза
     used_mm = used_mechanic_motifs if used_mechanic_motifs is not None else set()
     mech_motifs = _nii67_extract_mechanic_motifs(f"{scenario}\n{voiceover}")
     for m in mech_motifs:
         if m in used_mm:
             return f"повтор класса механики в партии: {m}"
 
-    # Soft: world_kind group from seeds (g:cosmic / g:organic …) unique in batch
     used_wk = used_world_kinds if used_world_kinds is not None else set()
     seed_wk = seed_world_kinds if seed_world_kinds is not None else set()
     overlap_wk = used_wk & seed_wk
@@ -1084,6 +1105,8 @@ _SCRIPT_NII67_HINT = (
 
 
 def _voiceover_from_script_reply(reply: str) -> str:
+    import json
+
     from app.services import db_apply
     from app.services.voiceover_sanitize import extract_voiceover_block
 
@@ -1112,12 +1135,43 @@ def _voiceover_from_script_reply(reply: str) -> str:
             if voiceover_text:
                 break
     if not voiceover_text:
+        json_candidates: list[str] = []
+        for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", reply or "", re.DOTALL):
+            json_candidates.append(m.group(1))
+        first_b = (reply or "").find("{")
+        last_b = (reply or "").rfind("}")
+        if first_b != -1 and last_b > first_b:
+            json_candidates.append((reply or "")[first_b : last_b + 1])
+
+        for raw_json in json_candidates:
+            try:
+                pj = json.loads(raw_json)
+                if isinstance(pj, dict):
+                    for k in (
+                        "закадровый_текст",
+                        "script_text",
+                        "voiceover",
+                        "текст",
+                        "text",
+                        "диктор",
+                    ):
+                        v = pj.get(k)
+                        if isinstance(v, str) and len(v.strip()) >= 80:
+                            voiceover_text = v.strip()
+                            break
+            except Exception:
+                continue
+            if voiceover_text:
+                break
+
+    if not voiceover_text:
         voiceover_text = (extract_voiceover_block(reply or "") or "").strip()
     if not voiceover_text:
         raw = (reply or "").strip()
         if (
             raw
             and '"ops"' not in raw[:40]
+            and not raw.startswith("{")
             and "<<<SCENARIO>>>" not in raw
             and len(raw) >= 200
         ):
@@ -1260,7 +1314,6 @@ async def _run_nii67_script_variants(
             str(spec.get("creepy_place") or ""),
             str(spec.get("quiet_place") or ""),
         ]
-        # Если модель раньше заняла мотив, совпадающий с сидом — перештампуем места.
         from app.services.nii67_card import (
             place_kinds as _pk_kinds,
             _pick_unique_place_pair as _re_pick_places,
@@ -1273,7 +1326,6 @@ async def _run_nii67_script_variants(
         for sp in seed_places:
             seed_wk |= {k for k in _pk_kinds(sp) if k.startswith("g:")}
         if (seed_motifs & used_place_motifs) or (seed_wk & used_world_kinds):
-            # COPY: _pick_unique_place_pair мутирует set; не засоряем used до accept
             new_c, new_q = _re_pick_places(
                 i,
                 card,
@@ -1289,12 +1341,10 @@ async def _run_nii67_script_variants(
             for sp in seed_places:
                 seed_motifs |= _nii67_extract_place_motifs(sp)
                 seed_wk |= {k for k in _pk_kinds(sp) if k.startswith("g:")}
-            # creature hint тоже, если мотив существа уже занят штампом
             ch = str(spec.get("creature_hint") or "")
             ch_motifs = _nii67_extract_creature_hints(ch)
             if ch_motifs & used_creatures:
                 spec["creature_hint"] = _re_pick_creature(i, used_creatures)
-            # перезаписать карточку с новыми местами
             filled = format_nii67_card(apply_variant(card, spec))
             assignment = (
                 "\n\n## Назначение варианта\n"
@@ -1325,7 +1375,7 @@ async def _run_nii67_script_variants(
         vo = ""
         scenario = ""
         reject_reason: str | None = None
-        max_attempts = 3  # hard cap for nii67 variant regeneration retries
+        max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             retry_extra = ""
             if attempt > 1 and reject_reason:
@@ -1334,7 +1384,6 @@ async def _run_nii67_script_variants(
                     k in low_reason
                     for k in ("места", "мотив", "world_kind", "оси мира", "существ", "механик")
                 ):
-                    # свежие места/существо под занятые мотивы партии
                     new_c, new_q = _re_pick_places(
                         i,
                         card,
@@ -1419,7 +1468,6 @@ async def _run_nii67_script_variants(
                 )
                 continue
             if len(scenario) < 40:
-                # Не подменяем закадром: без сценария/Кадров — брак и retry.
                 scenario = scenario or ""
                 reject_reason = "нет сценария / слишком короткий SCENARIO"
                 logger.warning(
@@ -1453,7 +1501,7 @@ async def _run_nii67_script_variants(
                 both_none = len(doors) >= 2 and this_creature == 0 and this_none >= 2
                 remaining_after = n - i
                 ch = str(spec.get("creature_hint") or "")
-                min_creature_doors = max(3, (n * 2) // 3)  # count=5 → ≥3 of 10 door-worlds (~half soft floor)
+                min_creature_doors = max(3, (n * 2) // 3)
                 if ch and not _creature_hint_is_env_only_safe(ch) and this_creature == 0:
                     reject_reason = (
                         "штамп требовал существо, а в сценарии нет существа на дверях "
@@ -1482,7 +1530,6 @@ async def _run_nii67_script_variants(
                 reject_reason,
             )
         else:
-            # Структура (Кадры) и коллизии вида места — не принимаем «как есть».
             hard = reject_reason or "unknown"
             raise RuntimeError(
                 f"nii67 variant {spec['id']}: после {max_attempts} попыток "
@@ -1501,7 +1548,6 @@ async def _run_nii67_script_variants(
                 used_place_tokens.add(tok)
             used_place_tokens.update(k for k in _pk_all(sp) if k.startswith("g:"))
             head = normalize_place_head(sp)
-            # полная голова (не одно короткое «зал») — иначе ложные коллизии
             if head and len(head) >= 6:
                 used_place_tokens.add(head)
         used_creatures.update(_nii67_extract_creature_hints(f"{scenario}\n{vo}"))
@@ -1580,7 +1626,6 @@ async def run_script_xlsx(
     *,
     project_id: int | None = None,
 ) -> tuple[XlsxRoundtripResult, str]:
-    """Шаг «Закадровый текст»: GPT → текст/apply-ops → DB+voiceover.txt (без download)."""
     from app.services.voiceover_sanitize import (
         ensure_voiceover_format_instruction,
         extract_scenario_block,
@@ -1613,7 +1658,6 @@ async def run_script_xlsx(
         chat_msg = ensure_voiceover_format_instruction(chat_raw)
         chat_msg = f"{chat_msg}{_SCRIPT_DB_HINT}"
     attach_files: list[Path] = [prompt_file]
-    # Контекст: общий план / прошлый закадр — без ожидания скачивания xlsx.
     if (project.general_plan or "").strip():
         gp = tmp_dir / f"general_plan_{ts}.txt"
         gp.write_text(project.general_plan or "", encoding="utf-8")
@@ -1695,34 +1739,112 @@ async def run_script_xlsx(
     )
 
 
-_SPLIT_DB_HINT = (
-    "\n\n# РАЗБИВКА — ИСТОЧНИК ПРАВДЫ БАЗА (НЕ Excel)\n"
-    "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
-    "без скачивания .xlsx:\n"
-    '{"ops":[{"target":"replace_frames","frames":['
-    '{"закадр":"текст кадра 1","длительность":3},'
-    '{"закадр":"текст кадра 2"}'
-    "]}]}\n"
-    "Нужно ≥2 кадра. Каждый кадр — отдельный объект с полем закадр.\n"
-)
+def target_frames_from_project(project: Project | None) -> int:
+    if project is None:
+        return 30
+    plan = str(getattr(project, "general_plan", "") or "")
+    if not plan and isinstance(project.meta, dict):
+        plan = str(project.meta.get("general_plan") or "")
+    nums = [int(m) for m in re.findall(r"(?:Кадр|кадр)\s*(\d+)", plan)]
+    if nums:
+        return max(nums)
+    m = re.search(r"(\d+)\s*(?:кадр|кадров|кадра)", plan)
+    if m:
+        return int(m.group(1))
+    return 30
+
+
+def build_split_db_hint(project: Project | None = None) -> str:
+    target_n = target_frames_from_project(project)
+    if target_n and target_n > 0:
+        fmt_text = f"ФОРМАТ: ориентируйся на структуру плана (~{target_n} кадров, по 2–4 сек озвучки на кадр)."
+    else:
+        fmt_text = "ФОРМАТ SHORTS: для ролика 60–75 сек делай 15–30 кадров (по 2–4 сек озвучки на кадр)."
+    return (
+        "\n\n# РАЗБИВКА — ИСТОЧНИК ПРАВДЫ БАЗА (НЕ Excel)\n"
+        "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
+        "без скачивания .xlsx:\n"
+        '{"ops":[{"target":"replace_frames","frames":['
+        '{"закадр":"текст кадра 1","длительность":3},'
+        '{"закадр":"текст кадра 2"}'
+        "]}]}\n"
+        f"{fmt_text} "
+        "Запрещено дробить на микро-фразы по 1-2 слова. Один кадр = законченная мысль / клауза. "
+        "Каждый кадр — отдельный объект с полем закадр.\n"
+    )
+
+
+_SPLIT_DB_HINT = build_split_db_hint()
+
+
+def clamp_parent_frames(frames_spec: list[dict], max_frames: int = 30) -> list[dict]:
+    """Мягко объединяет соседние короткие кадры, если GPT вернул > max_frames (для Shorts).
+
+    Сохраняет 100% текста закадра слово в слово в строгом хронологическом порядке.
+    """
+    if not frames_spec or len(frames_spec) <= max_frames:
+        return frames_spec
+
+    items: list[dict] = []
+    for item in frames_spec:
+        if isinstance(item, dict):
+            items.append(dict(item))
+        elif isinstance(item, str):
+            items.append({"закадр": item.strip()})
+
+    while len(items) > max_frames:
+        # Ищем пару соседних кадров с минимальной суммарной длиной текста
+        best_idx = 0
+        min_len = float("inf")
+        for i in range(len(items) - 1):
+            vo1 = str(items[i].get("закадр") or items[i].get("voiceover") or "").strip()
+            vo2 = str(items[i + 1].get("закадр") or items[i + 1].get("voiceover") or "").strip()
+            combined_len = len(vo1) + len(vo2)
+            if combined_len < min_len:
+                min_len = combined_len
+                best_idx = i
+
+        f1 = items[best_idx]
+        f2 = items[best_idx + 1]
+
+        vo1 = str(f1.get("закадр") or f1.get("voiceover") or "").strip()
+        vo2 = str(f2.get("закадр") or f2.get("voiceover") or "").strip()
+        combined_vo = f"{vo1} {vo2}".strip()
+
+        merged = dict(f1)
+        if "закадр" in f1 or "закадр" in f2:
+            merged["закадр"] = combined_vo
+        else:
+            merged["voiceover"] = combined_vo
+
+        dur1 = f1.get("длительность") or f1.get("duration")
+        dur2 = f2.get("длительность") or f2.get("duration")
+        if dur1 is not None or dur2 is not None:
+            try:
+                d1 = float(dur1) if dur1 is not None else 0.0
+                d2 = float(dur2) if dur2 is not None else 0.0
+                dur_key = "длительность" if ("длительность" in f1 or "длительность" in f2) else "duration"
+                merged[dur_key] = round(d1 + d2, 2)
+            except (ValueError, TypeError):
+                pass
+
+        items[best_idx : best_idx + 2] = [merged]
+
+    logger.info("clamp_parent_frames: clamped {} -> {} frames", len(frames_spec), len(items))
+    return items
+
 
 
 _SPLIT_WORD = re.compile(r"\w+", re.UNICODE)
-# Доля слов закадра, которую должен покрывать ответ-блоки, и доля слов ответа,
-# которая должна принадлежать закадру. Ниже порога ответ похож на отказ/пояснение.
 SPLIT_COVERAGE_TOLERANCE = 0.85
 
 
 def split_answer_covers_voiceover(
     blocks: list[str], voiceover_text: str, *, tolerance: float = SPLIT_COVERAGE_TOLERANCE
 ) -> bool:
-    """Покрывают ли блоки ответа закадр (по мультимножеству слов, с допуском).
-
-    Без закадра сравнивать не с чем: возвращает True (прежнее поведение).
-    """
     from collections import Counter
 
-    words = lambda t: [w.casefold() for w in _SPLIT_WORD.findall(t or "")]  # noqa: E731
+    words = lambda t: [w.casefold() for w in _SPLIT_WORD.findall(t or "")]
     vo = Counter(words(voiceover_text))
     total_vo = sum(vo.values())
     if not total_vo:
@@ -1738,11 +1860,6 @@ def split_answer_covers_voiceover(
 def extract_frames_spec_with_source(
     reply: str, *, voiceover_path: Path | None
 ) -> tuple[list[dict], str, dict]:
-    """Кадры + источник: json_replace_frames | dash_blocks | local_voiceover_fallback | none.
-
-    Третий элемент: {"dash_rejected": bool} — блоки с тире были, но не покрывают закадр
-    (отказ/пояснение модели), поэтому приняты не были.
-    """
     from app.services import db_apply
 
     info = {"dash_rejected": False}
@@ -1782,7 +1899,6 @@ def extract_frames_spec_with_source(
 
 
 def extract_frames_spec_from_gpt_reply(reply: str, *, voiceover_path: Path | None) -> list[dict]:
-    """Достать кадры из replace_frames JSON или --- блоков / локальной разбивки."""
     return extract_frames_spec_with_source(reply, voiceover_path=voiceover_path)[0]
 
 
@@ -1791,7 +1907,6 @@ async def run_split_xlsx(
     *,
     project_id: int | None = None,
 ) -> XlsxRoundtripResult:
-    """Шаг «Разбивка»: GPT → replace_frames (DB); Excel только через export."""
     proj_xlsx = _ensure_project_xlsx(project)
     voiceover = cx.ensure_current_voiceover(project)
     if voiceover is None:
@@ -1807,7 +1922,7 @@ async def run_split_xlsx(
     prompt_file = cx.write_split_prompt_file(project, tmp_dir, ts=ts)
     chat_msg = (
         cx.chat_message(project, "split", prompt_file_name=prompt_file.name)
-        + _SPLIT_DB_HINT
+        + build_split_db_hint(project)
     )
 
     logger.info(
@@ -1838,12 +1953,14 @@ async def run_split_xlsx(
             f"(кадров={len(frames_spec)}). Нужен JSON "
             '{"ops":[{"target":"replace_frames","frames":[...]}]}'
         )
-    # E1b: в управляемом запуске ответ проверяется по контракту ДО любой записи в БД.
     from app.services.node_capabilities import enforce_split_contract_before_write
     await enforce_split_contract_before_write(frames_spec)
 
+    target_n = target_frames_from_project(project)
+    max_frames_limit = max(35, target_n + 2)
+    frames_spec = clamp_parent_frames(frames_spec, max_frames=max_frames_limit)
     # GPT as-is → DB (≥2 кадров). Лимиты символов — только в prompt settings.
-    logger.info("split_db: кадров из GPT/fallback={}", len(frames_spec))
+    logger.info("split_db: кадров из GPT/fallback={} (target_n={}, max_limit={})", len(frames_spec), target_n, max_frames_limit)
     return XlsxRoundtripResult(
         reply_text=reply,
         downloaded_path=proj_xlsx,
@@ -1900,12 +2017,9 @@ _PLASTILIN_IMG_PR_HINT = (
 
 @asynccontextmanager
 async def _project_runtime_session(project: Project) -> AsyncIterator[AsyncSession]:
-    """Сессия SoT кадров img_pr: isolated project.db, не master state.db.
+    from app.project_db import _PROJECT_DIR_CACHE
 
-    Wipe и валидатор шага уже ходят в project.db. Loader/apply на SessionLocal
-    видели чужие старые промты и пропускали GPT.
-    """
-    data_dir = getattr(project, "data_dir", None)
+    data_dir = _PROJECT_DIR_CACHE.get(project.id) or getattr(project, "data_dir", None)
     if data_dir:
         from app.project_db import get_project_sessionmaker
 
@@ -1971,7 +2085,6 @@ async def _load_img_pr_context(
         if is_shot_child(fr):
             n_child += 1
             continue
-        # Уже заполненные пропускаем (resume / soft retry).
         if (fr.image_prompt or "").strip():
             continue
         n_parent += 1
@@ -2043,7 +2156,6 @@ async def _apply_img_pr_ops_now(
     export_xlsx: bool = False,
     label: str = "",
 ) -> list[dict]:
-    """Сразу записать apply-ops батча в DB (Excel — только явный Export)."""
     from app.services import img_pr_batches as ipb
     from app.services.vo_shot_expand import is_img_pr_vo_parent
 
@@ -2122,7 +2234,7 @@ async def _apply_img_pr_ops_now(
                 applied = kept
             last_err = None
             break
-        except Exception as apply_err:  # noqa: BLE001
+        except Exception as apply_err:
             last_err = apply_err
             msg = str(apply_err).lower()
             locked = "database is locked" in msg or "database locked" in msg
@@ -2155,7 +2267,6 @@ async def run_img_pr_xlsx(
     uuid_map_text: str = "",
     n_batches: int | None = None,
 ) -> XlsxRoundtripResult:
-    """Шаг «Промты картинок»: GPT батчами → apply-ops (DB)."""
     from app.services import img_pr_batches as ipb
 
     proj_xlsx = _ensure_project_xlsx(project)
@@ -2198,8 +2309,6 @@ async def run_img_pr_xlsx(
         done_set = set(done_uuids)
         ipb.save_checkpoint(project.data_dir, done_uuids=done_uuids, ops=all_ops)
 
-    # После flush чекпоинта пустые кадры смотрим по DB, не по skip_uuids:
-    # иначе промты живут только в JSON до конца всего прогона.
     frames, cards, general_plan, all_frames = await _load_img_pr_context(project)
     if not frames:
         if all_ops:
@@ -2553,7 +2662,7 @@ async def run_img_pr_xlsx(
                                 export_xlsx=False,
                                 label=f"batch-{bi}",
                             )
-                    except Exception as apply_err:  # noqa: BLE001
+                    except Exception as apply_err:
                         logger.warning(
                             "img_pr_db: batch {} apply failed (ckpt keeps ops): {}",
                             bi,

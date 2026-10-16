@@ -1,4 +1,3 @@
-"""Offline adapter contracts; no provider or worker substitutions."""
 import asyncio
 import importlib.util
 import json
@@ -12,13 +11,11 @@ import pytest
 
 
 class Environment(unittest.TestCase):
-    # Пишет /results/media-environment.json и проверяет /.dockerenv: имеет смысл только в изолированном контейнере.
     @unittest.skipUnless(Path("/.dockerenv").exists() and Path("/results").is_dir(), "нужен контейнер с папкой /results")
     def test_record_existing_tools(self):
         tools = {name: shutil.which(name) for name in ("ffmpeg", "ffprobe")}
         modules = {name: importlib.util.find_spec(name) is not None
                    for name in ("PIL", "faster_whisper", "torch", "nemo")}
-        # Inspect local cache names only, never download models.
         cache = Path.home() / ".cache/huggingface/hub"
         models = sorted(p.name for p in cache.glob("models--*")) if cache.exists() else []
         Path("/results/media-environment.json").write_text(json.dumps({
@@ -32,7 +29,6 @@ class Capabilities(unittest.TestCase):
         from app.services.node_capabilities import capability_for, split_contract
         cap = capability_for('split')
         self.assertEqual(cap.result_kind, 'frame_set')
-        # W5 (D05): one bounded supervised retry, only for invalid_json / missing_payload with nothing written
         self.assertEqual(cap.actions, ('read_events','read_contract','wait','human_review','retry_same','retry_profile','finish'))
         contract = split_contract()
         self.assertEqual(contract['minimum_frames'], 2)
@@ -103,7 +99,6 @@ class Capabilities(unittest.TestCase):
             cap=capability_for(typ)
             self.assertEqual(cap.result_kind,'project_text')
             self.assertTrue(cap.managed)
-            # bounded recovery admitted by capability data; HITL and validators unchanged below
             self.assertIn('retry_same',cap.actions)
             self.assertIn('retry_profile',cap.actions)
             self.assertEqual(cap.recovery_continuation,'none')
@@ -135,9 +130,6 @@ class Capabilities(unittest.TestCase):
             cap = capability_for(typ)
             self.assertIn(typ, WORK_NODES)
             self.assertEqual(cap.result_kind, kind)
-            # videos is managed for supervised RECOVERY only (resume of a known provider task)
-            # images / audio: supervised recovery is a LOCAL resume of a recorded result only (D06), no paid resend
-            # assemble is managed for ONE supervised local re-run through the original worker (no provider job)
             self.assertIn("retry_same", cap.actions)
             self.assertNotIn("retry_profile", cap.actions)
             self.assertIn("human_review", cap.actions)
@@ -151,7 +143,6 @@ class Capabilities(unittest.TestCase):
 
 
 class ImagePromptsContract(unittest.TestCase):
-    """Observe native img_pr output without granting another write/retry path."""
 
     @staticmethod
     def _frames():
@@ -169,7 +160,6 @@ class ImagePromptsContract(unittest.TestCase):
                 attrs={"camera_subdivide": {
                     "role": "shot", "parent_uuid": parent_uuid,
                     "shot_index": 2, "shots_in_beat": 2}}),
-            # Native parents do not need explicit vo_parent metadata.
             SimpleNamespace(project_id=2, uuid="b2" * 12, number=3,
                 voiceover_text="После работы он возвращает инструмент на место.",
                 image_prompt="", attrs={}),
@@ -218,7 +208,6 @@ class ImagePromptsContract(unittest.TestCase):
         self.assertEqual(require_managed_capability("image_prompts"), cap)
         self.assertIn("generate_image_prompts.run", cap.executor)
         self.assertIn("xlsx_step_runners.run_img_pr_xlsx", cap.executor)
-        # W5 (D05): one bounded supervised retry (same body or approved profile) after invalid_json / missing_payload
         self.assertEqual(cap.actions, READ_ACTIONS + ("retry_same", "retry_profile", "finish"))
         contract = image_prompts_contract()
         self.assertEqual(IMG_PR_MIN_WRITE_CHARS, 200)
@@ -261,7 +250,6 @@ class ImagePromptsContract(unittest.TestCase):
         silent.uuid, silent.number, silent.voiceover_text = "d4" * 12, 4, " \t "
         no_uuid = deepcopy(implicit_parent)
         no_uuid.uuid, no_uuid.number = "", 5
-        # Still suppression does not change the img_pr VO-parent predicate.
         parent.attrs["camera_subdivide"]["use_parent_still"] = False
         frames = [parent, child, implicit_parent, silent, no_uuid]
         snapshot = image_prompt_input_snapshot(frames, project_id=2)
@@ -292,7 +280,6 @@ class ImagePromptsContract(unittest.TestCase):
         frames = self._frames()
         snapshot = image_prompt_input_snapshot(frames, project_id=2)
         output = self._completed_frames(frames)
-        # Actual apply-ops aliases become the primary column and this attrs key.
         fields = {"промт_картинки": "Primary scene.",
                   "промт_картинки_2": self._prompt(IMG_PR_MIN_WRITE_CHARS),
                   "voiceover_text": "Недопустимая перезапись закадра."}
@@ -316,7 +303,6 @@ class ImagePromptsContract(unittest.TestCase):
         frames = self._frames()
         snapshot = image_prompt_input_snapshot(frames, project_id=2)
         full = self._prompt(IMG_PR_MIN_WRITE_CHARS)
-        # Native batch acceptance alone does not prove _finish_success can finish.
         self.assertEqual(len(writeable_img_pr_ops([
             {"target": "frame", "frame_uuid": frames[0].uuid,
              "fields": {"image_prompt_shot2": full}},
@@ -447,7 +433,7 @@ class ImagePromptsContract(unittest.TestCase):
                 self.assertFalse(proof["semantic_quality_verified"])
                 self.assertEqual((output, snapshot), before)
         snapshot = image_prompt_input_snapshot(frames, project_id=2)
-        snapshot["frames"].pop(1)  # A targets-only snapshot cannot prove all-row integrity.
+        snapshot["frames"].pop(1)
         self._assert_verification(output, snapshot, "failed")
         snapshot = image_prompt_input_snapshot(frames, project_id=2)
         snapshot["project_id"] = 3
@@ -494,7 +480,6 @@ class ImagePromptFailedDatabase(unittest.IsolatedAsyncioTestCase):
             node.status = NodeRunStatus.running
             await master.commit()
             scope = await master.get(observation.ExecutionControl, execution_id)
-        # Load only this real persisted scope; avoid project discovery outside the fixture.
         observer.scopes[scope.workflow_run_id] = scope
 
         with patch.object(settings, "data_dir", Path(self.tmp.name)):
@@ -536,13 +521,12 @@ class ImagePromptFailedDatabase(unittest.IsolatedAsyncioTestCase):
                                 .where(Frame.project_id == 7).order_by(Frame.number))).all()
                             await record_image_prompt_input(frames, project)
                             frames[0].image_prompt = "A complete synthetic native scene. " * 10
-                            await business.commit()  # Actual partial result, no ready/done status.
+                            await business.commit()
                             committed_frames = [dict(row) for row in (await business.execute(
                                 select(Frame.__table__).where(Frame.project_id == 7)
                                 .order_by(Frame.number))).mappings().all()]
                             committed_project = dict((await business.execute(
                                 select(Project.__table__).where(Project.id == 7))).mappings().one())
-                            # These changes must roll back with the genuine constraint failure.
                             frames[1].voiceover_text = "Незафиксированная замена закадра."
                             frames[1].image_prompt = "Uncommitted synthetic prompt. " * 10
                             business.add(Frame(project_id=7, number=1, uuid="cf" * 16,

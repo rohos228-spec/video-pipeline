@@ -1,4 +1,3 @@
-"""W1-6 (A13/A14): безопасная публикация. Без сети и браузера: синтетические страницы и фейковые площадки."""
 
 from __future__ import annotations
 
@@ -50,7 +49,6 @@ async def _project(db, tmp_path, slug="w16", status=ProjectStatus.publishing) ->
     video.write_bytes(b"SYNTHETIC-VIDEO")
     db.add(Artifact(project_id=p.id, kind=ArtifactKind.final_video, uuid=f"u-{slug}", path=str(video)))
     await db.flush()
-    # W6-1 (E01): без подтверждения человека клика нет; здесь человек подтвердил все площадки для этого файла.
     sha = await ps.sha256_of_file_async(video)
     csha = step.caption_sha256(step.caption_for(p))
     for pl in PLATFORMS:
@@ -59,7 +57,6 @@ async def _project(db, tmp_path, slug="w16", status=ProjectStatus.publishing) ->
     return p
 
 
-# ── store: идемпотентность, намерение до клика, lease ──────────────────────────
 
 
 async def _claim(session, owner, platform="tiktok", sha="abc", project_id=1, **kw):
@@ -77,17 +74,15 @@ async def test_two_parallel_workers_one_publication(maker):
     assert all(r.outcome in (ps.ACQUIRED, ps.BUSY) for r in res)
     async with maker() as s:
         rows = await ps.list_for(s, 1)
-    assert len(rows) == 1 and rows[0]["status"] == ps.S_PLANNED  # намерение записано до всякого клика
+    assert len(rows) == 1 and rows[0]["status"] == ps.S_PLANNED
 
 
 async def test_crash_between_click_and_record_never_retries(db):
     c = await _claim(db, "w1")
     assert c.outcome == ps.ACQUIRED
     assert await ps.mark_clicked(db, c.pub_id, "w1") is True
-    # процесс упал: итог не записан. Даже после истечения lease автоповтора нет.
     later = await _claim(db, "w2", now=10**10)
     assert later.outcome == ps.NEEDS_HUMAN and later.status == ps.S_CLICKED
-    # чужой воркер не может кликнуть по чужому намерению
     assert await ps.mark_clicked(db, c.pub_id, "w2") is False
 
 
@@ -97,7 +92,7 @@ async def test_failure_before_click_is_retryable_but_bounded(db):
         assert c.outcome == ps.ACQUIRED and c.attempts == attempt
         await ps.record_result(db, c.pub_id, f"w{attempt}", status=ps.S_FAILED, error_code="caption_field_missing")
     final = await _claim(db, "wx")
-    assert final.outcome == ps.NEEDS_HUMAN  # попытки исчерпаны
+    assert final.outcome == ps.NEEDS_HUMAN
 
 
 async def test_stale_planned_lease_is_taken_over_but_live_one_is_busy(db):
@@ -120,7 +115,7 @@ async def test_confirmed_is_done_and_idempotent_per_sha(db):
     await ps.mark_clicked(db, c.pub_id, "w1")
     await ps.record_result(db, c.pub_id, "w1", status=ps.S_CONFIRMED, post_url="https://x/1")
     assert (await _claim(db, "w2")).outcome == ps.DONE
-    assert (await _claim(db, "w2", sha="other-file")).outcome == ps.ACQUIRED  # другой файл: другой ключ
+    assert (await _claim(db, "w2", sha="other-file")).outcome == ps.ACQUIRED
     assert ps.idempotency_key(1, "tiktok", "abc") == "1:tiktok:abc"
 
 
@@ -133,7 +128,6 @@ def test_summarize_published_only_when_all_confirmed_with_url():
     assert s["all_confirmed"] is False and PLATFORMS[0] in s["needs_human"]
 
 
-# ── publishers: сбой до клика / после клика ─────────────────────────────────────
 
 
 class _Loc:
@@ -235,11 +229,9 @@ async def test_before_click_refusal_means_no_click(monkeypatch, tmp_path):
     assert res.clicked is False and res.error_code == "click_not_allowed" and page.clicks == 0
 
 
-# ── publish_everywhere: итог пишется по каждой платформе сразу ───────────────────
 
 
 def _fake_registry(monkeypatch, behaviors):
-    """behaviors: platform -> 'confirmed' | 'unconfirmed' | 'fail_pre' | 'crash'."""
     clicks: list[str] = []
 
     def make(platform):
@@ -287,13 +279,12 @@ async def test_result_of_platform_1_survives_crash_on_platform_2(db, tmp_path, m
     sha = await ps.sha256_of_file_async(tmp_path / "w16.mp4")
     rows = {r["platform"]: r for r in await ps.list_for(db, p.id, sha)}
     assert rows[PLATFORMS[0]]["status"] == ps.S_CONFIRMED and rows[PLATFORMS[0]]["post_url"]
-    assert rows[PLATFORMS[1]]["status"] == ps.S_CLICKED  # клик был, итога нет
-    # перезапуск: платформа 1 и 2 больше не трогаются, остальные публикуются один раз
+    assert rows[PLATFORMS[1]]["status"] == ps.S_CLICKED
     clicks.clear()
     await step.run(db, p, Bot())
     assert PLATFORMS[0] not in clicks and PLATFORMS[1] not in clicks
     assert sorted(clicks) == sorted(PLATFORMS[2:])
-    assert p.status is ProjectStatus.assembled  # ждёт человека: не published и не залип в publishing
+    assert p.status is ProjectStatus.assembled
     assert p.meta["publish_needs_human"]["platforms"] == [PLATFORMS[1]]
     assert set(p.meta["published_platforms"]) == set(PLATFORMS) - {PLATFORMS[1]}
 
@@ -317,7 +308,7 @@ async def test_unconfirmed_everywhere_never_published_and_does_not_stick(db, tmp
     assert p.status is ProjectStatus.assembled and p.status is not ProjectStatus.published
     assert set(p.meta["publish_unconfirmed"]) == set(PLATFORMS)
     n = len(clicks)
-    p.status = ProjectStatus.publishing  # повторный запуск не кликает снова
+    p.status = ProjectStatus.publishing
     await step.run(db, p, Bot())
     assert len(clicks) == n and p.status is ProjectStatus.assembled
 
@@ -328,7 +319,7 @@ async def test_failure_before_click_retries_only_that_platform(db, tmp_path, mon
     monkeypatch.setattr(settings, "social_publish_enabled", True)
     p = await _project(db, tmp_path)
     await step.run(db, p, Bot())
-    assert p.status is ProjectStatus.publishing  # есть что повторять
+    assert p.status is ProjectStatus.publishing
     behaviors.pop(PLATFORMS[2])
     clicks.clear()
     await step.run(db, p, Bot())
@@ -341,7 +332,7 @@ async def test_second_worker_is_blocked_while_first_holds_lease(db, maker, tmp_p
     p = await _project(db, tmp_path)
     await db.commit()
     sha = await ps.sha256_of_file_async(tmp_path / "w16.mp4")
-    async with maker() as other:  # другой воркер уже взял все платформы
+    async with maker() as other:
         for pl in PLATFORMS:
             assert (await ps.claim(other, project_id=p.id, platform=pl, sha256=sha,
                                    artifact_uuid="u", owner="other")).outcome == ps.ACQUIRED
@@ -349,7 +340,6 @@ async def test_second_worker_is_blocked_while_first_holds_lease(db, maker, tmp_p
     assert clicks == [] and p.status is ProjectStatus.publishing
 
 
-# ── SOCIAL_PUBLISH_ENABLED=false ────────────────────────────────────────────────
 
 
 async def test_disabled_flag_gives_publish_skipped_not_published(db, tmp_path, monkeypatch):
@@ -362,7 +352,6 @@ async def test_disabled_flag_gives_publish_skipped_not_published(db, tmp_path, m
     assert step.is_publish_skipped(p) is True and clicks == []
     sha = await ps.sha256_of_file_async(tmp_path / "w16.mp4")
     assert {r["status"] for r in await ps.list_for(db, p.id, sha)} == {ps.S_SKIPPED}
-    # после включения флага пропущенное публикуется (клика раньше не было)
     monkeypatch.setattr(settings, "social_publish_enabled", True)
     p.status = ProjectStatus.publishing
     await step.run(db, p, Bot())
@@ -381,6 +370,6 @@ async def test_batch_progress_does_not_count_skipped_as_done(db, tmp_path, monke
     c.meta = {"publish_needs_human": {"platforms": ["tiktok"]}}
     await step.run(db, a, Bot())
     prog = await batch_progress(db, SimpleNamespace(id=7))
-    assert prog["done"] == 1  # только реально published
+    assert prog["done"] == 1
     assert prog["publish_skipped"] == 1 and prog["publish_needs_human"] == 1
     assert prog["in_progress"] == 0

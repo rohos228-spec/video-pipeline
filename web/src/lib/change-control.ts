@@ -1,9 +1,3 @@
-/**
- * Клиент контролируемых изменений (бэкенд: app/services/change_control, контракт: docs/CHANGE_CONTROL.md).
- * REST умеет только читать и создавать предложение. Применение и откат идут планом слоя действий
- * (change.apply / change.rollback): preview -> подтверждение оператора (клик) -> запуск -> опрос.
- * Здесь только типы, вызовы REST и чистые функции форматирования; подтверждение сам модуль не создаёт.
- */
 import { ApiError, http } from "./api";
 import {
   errorCode, previewPlan, serverTextRu,
@@ -28,9 +22,7 @@ export interface Proposal {
   target: string;
   base_version: number;
   base_digest: string;
-  /** В списке text заменён на text_chars. */
   candidate: Record<string, unknown>;
-  /** В списке пустой: полный diff даёт GET /proposals/{id}. */
   diff: string;
   digest: string;
   rationale: string;
@@ -43,7 +35,6 @@ export interface Proposal {
   rejected_by?: string | null;
   reject_reason?: string | null;
   rejected_at?: string | null;
-  /** Открыто, а текущая версия цели уже не равна base_version: применить нельзя, можно отклонить. */
   stale?: boolean;
   shadow: { name: string; ok: boolean; note: string }[] | null;
   applicable: boolean;
@@ -51,9 +42,7 @@ export interface Proposal {
   created_at: string | null;
   updated_at: string | null;
   applied_at: string | null;
-  /** Только в GET /proposals/{id} для T1/T2. */
   current_version?: number;
-  /** Только в ответе POST /proposals. */
   deduplicated?: boolean;
 }
 
@@ -89,7 +78,6 @@ export interface ProposalIn {
   node_key?: string;
 }
 
-// ---- вызовы REST ----
 
 export const getAllowList = () => http<AllowList>(`${BASE}/allow-list`);
 
@@ -109,7 +97,6 @@ export const listVersions = (target: string, limit = 100) =>
 export const REJECT_REASON_MIN = 3;
 export const REJECT_REASON_MAX = 500;
 
-/** Отклонить может только человек, и только proposed/developer_review. Ничего не применяет и не пишет в проект. */
 export const rejectProposal = (id: string, reason: string) =>
   http<Proposal>(`${BASE}/proposals/${encodeURIComponent(id)}/reject`, {
     method: "POST", body: JSON.stringify({ reason: reason.trim() }),
@@ -144,16 +131,13 @@ export const PROMPT_SOURCE_RU: Record<string, string> = {
 };
 export const promptSourceRu = (s: string) => PROMPT_SOURCE_RU[s] ?? `неизвестный источник (${s})`;
 
-// ---- планы применения и отката (через слой действий) ----
 
-/** План change.apply. Ничего не применяет: только preview, подтверждает оператор отдельным кликом. */
 export const previewApply = (p: Pick<Proposal, "id" | "digest">): Promise<PlanPreviewResponse> =>
   previewPlan(
     [{ action_id: "change.apply", params: { proposal_id: p.id, expected_digest: p.digest } }],
     `Применить предложение ${p.id.slice(0, 8)}`,
   );
 
-/** План change.rollback. expected_version = текущая версия цели. */
 export const previewRollback = (target: string, expectedVersion: number, reason = ""): Promise<PlanPreviewResponse> =>
   previewPlan(
     [{
@@ -163,7 +147,6 @@ export const previewRollback = (target: string, expectedVersion: number, reason 
     `Откатить ${target}`,
   );
 
-/** Откат доступен, только если предложение применено и с тех пор цель не менялась. null = не известно. */
 export function rollbackState(p: Proposal): { ok: boolean; reason: string } | null {
   if (p.status !== "applied") return { ok: false, reason: "" };
   if (p.current_version == null || p.applied_version == null) return null;
@@ -177,7 +160,6 @@ export function rollbackState(p: Proposal): { ok: boolean; reason: string } | nu
   return { ok: true, reason: "" };
 }
 
-// ---- подписи ----
 
 export const TIER_LABEL_RU: Record<Tier, string> = {
   T0: "подсказка",
@@ -228,7 +210,6 @@ export const TARGET_PART_RU: Record<string, string> = {
   step_params: "параметры шага",
 };
 
-/** "project:2:n_plan:step_params" -> "нода n_plan · параметры шага". Незнакомый формат остаётся как есть. */
 export function describeTarget(target: string): string {
   const m = target.match(/^project:(\d+):([^:]+):(prompt|options|step_params)$/);
   if (!m) return target;
@@ -247,7 +228,6 @@ export function describeProposer(proposer: string): { kind: ProposerKind; label:
   return { kind: "other", label: proposer || "неизвестно" };
 }
 
-/** Человек, подтвердивший применение: web_operator:<хэш> -> «оператор <хэш6>». */
 export function describeHuman(who: string | null | undefined): string {
   if (!who) return "неизвестно";
   if (who === "local_web_operator") return "локальный оператор";
@@ -265,12 +245,10 @@ export function formatWhen(iso: string | null | undefined): string {
   return d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-// ---- diff ----
 
 export type DiffLineKind = "add" | "del" | "ctx" | "hunk" | "meta";
 export interface DiffLine { kind: DiffLineKind; text: string }
 
-/** Разбор unified diff (difflib, lineterm=""): шапка ---/+++ в meta, @@ в hunk. */
 export function parseUnifiedDiff(diff: string): { lines: DiffLine[]; added: number; removed: number; truncated: boolean } {
   const out: DiffLine[] = [];
   let added = 0;
@@ -313,7 +291,6 @@ export function paramNameRu(name: string): string {
   return dot >= 0 ? `${base} (шаг ${name.slice(0, dot)})` : base;
 }
 
-/** Значение из python-repr строки diff ('text', True, ['a', 'b'], None) в читаемый вид. */
 export function paramValueRu(raw: string, field = ""): string {
   const t = raw.trim();
   if (t === "True") return "да";
@@ -329,7 +306,6 @@ export function paramValueRu(raw: string, field = ""): string {
   return t;
 }
 
-/** Строки «поле: было -> стало» (T1) в таблицу. null, если формат не распознан: тогда показываем сырой diff. */
 export function parseParamDiff(diff: string): ParamRow[] | null {
   const rows: ParamRow[] = [];
   for (const line of diff.split("\n")) {
@@ -342,7 +318,6 @@ export function parseParamDiff(diff: string): ParamRow[] | null {
   return rows.length ? rows : null;
 }
 
-/** Краткое содержимое версии: значения параметров, вариант или длина текста. */
 export function describeVersionContent(c: Record<string, unknown>): string {
   const parts: string[] = [];
   if (typeof c.variant === "string") parts.push(`вариант «${c.variant}»`);
@@ -358,7 +333,6 @@ export function describeVersionContent(c: Record<string, unknown>): string {
   return parts.join(" · ") || "содержимое не показано";
 }
 
-// ---- ошибки ----
 
 export const CC_ERROR_RU: Record<string, string> = {
   operator_required: "Применять, откатывать и отклонять предложения может только оператор-человек.",
@@ -378,7 +352,6 @@ export const CC_ERROR_RU: Record<string, string> = {
   bad_target: "Некорректная цель изменения.",
   node_not_found: "Нода не найдена на канвасе проекта.",
   project_not_found: "Проект не найден.",
-  // создание предложения
   bad_tier: "Неизвестный уровень предложения.",
   kind_tier_mismatch: "Этот вид изменения не относится к выбранному уровню.",
   bad_rationale: "Обоснование обязательно (до 1000 символов).",
@@ -393,7 +366,6 @@ export const CC_ERROR_RU: Record<string, string> = {
   too_many_open: "У проекта слишком много открытых предложений (максимум 50). Примените или закройте часть.",
 };
 
-/** Известные английские причины проверок, как их пишет сервер, в русский текст. null = не знаем. */
 export function lintErrorRu(msg: string): string | null {
   let m: RegExpMatchArray | null;
   if ((m = msg.match(/^text shorter than (\d+) chars$/))) return `Текст короче ${m[1]} символов.`;
@@ -440,7 +412,6 @@ export function lintErrorRu(msg: string): string | null {
 
 const CODES_BY_LENGTH = Object.keys(CC_ERROR_RU).sort((a, b) => b.length - a.length);
 
-/** Находит в тексте ошибки известный код контура (в «ChangeRefused: stale_base», «stale_base: ...»). */
 export function findChangeCode(text: string | null | undefined): string | null {
   if (!text) return null;
   let best: { code: string; at: number } | null = null;
@@ -451,10 +422,6 @@ export function findChangeCode(text: string | null | undefined): string | null {
   return best?.code ?? null;
 }
 
-/**
- * Русское объяснение текста ошибки шага/предусловия/ответа сервера.
- * Известный код переводится, причины проверок переводятся построчно, остальное остаётся как есть.
- */
 export function changeErrorRu(text: string | null | undefined, errors: string[] = []): string {
   if (!text && errors.length === 0) return "";
   const code = findChangeCode(text) ?? (errors.length ? "lint_failed" : null);
@@ -468,14 +435,12 @@ export function changeErrorRu(text: string | null | undefined, errors: string[] 
 
 function splitLintText(text: string, code: string | null): string[] {
   if (!code) return [];
-  // "ChangeRefused: lint_failed: a; b" или "lint_failed: a; b"
   const idx = text.indexOf(code);
   const rest = text.slice(idx + code.length).replace(/^\s*:\s*/, "").trim();
   if (!rest) return [];
   return rest.split("; ").map((s) => s.trim()).filter(Boolean);
 }
 
-/** Сообщение об ошибке REST/плана: код из detail.code, список errors, иначе текст. */
 export function describeChangeError(e: unknown): string {
   if (e instanceof ApiError) {
     const root = e.detail as unknown;
@@ -504,7 +469,6 @@ export function describeChangeError(e: unknown): string {
   return e instanceof Error ? e.message : "Неизвестная ошибка.";
 }
 
-/** Недопустимый план (422 plan_invalid): причины из preview, переведённые. */
 export function describePlanInvalid(root: unknown): string {
   const inner = root && typeof root === "object" && "detail" in (root as object) ? (root as { detail: unknown }).detail : root;
   const preview = (inner as { preview?: PlanPreview } | null)?.preview;
@@ -526,18 +490,15 @@ export function describeProposalFailure(error: string | null | undefined): strin
   return changeErrorRu(error ?? "");
 }
 
-// ---- форма: черновик candidate ----
 
 export function nodeKindOptions(allow: AllowList | null, nodeType: string | null): string[] {
   if (!allow || !nodeType) return [];
   return Object.keys(allow.node_types[nodeType] ?? {});
 }
 
-/** Тип ноды канваса -> тип allow-list (enrich_* это excel_gpt). null = для типа изменений нет. */
 export function allowTypeOf(nodeType: string, allow: AllowList | null): string | null {
   const t = nodeType.startsWith("enrich_") ? "excel_gpt" : nodeType;
   return allow && t in allow.node_types ? t : null;
 }
 
-/** Код шага ноды для T1 step_params / вариантов промпта. */
 export const STEP_OF_NODE_TYPE: Record<string, string> = { plan: "plan", script: "script", split: "split", excel_gpt: "excel_gpt" };

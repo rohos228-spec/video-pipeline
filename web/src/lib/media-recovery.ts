@@ -1,4 +1,3 @@
-/** Read-only client of the media recovery layer. Writes (resume, release) are NOT here: they go through the action layer. */
 import { http } from "./api";
 import type { RecoveryAssessment, UnknownOutcomes } from "./media-recovery-view";
 

@@ -35,12 +35,6 @@ DEFAULT_ASS_W, DEFAULT_ASS_H = 1920, 1080
 
 
 def subtitles_vf_arg(filename: str = SUBTITLES_ASS_NAME) -> str:
-    """Return -vf value for burning ASS subtitles from cwd=temp dir.
-
-    The name is escaped for both ffmpeg levels (option value, then filtergraph) so a colon, comma, semicolon,
-    bracket, quote, backslash or equals sign in a file name cannot split the filter or inject another one.
-    A plain name such as ``subs.ass`` stays unchanged. Directory separators are normalised to ``/``.
-    """
     name = str(filename).replace("\\", "/")
     if not name or any(ch in name for ch in "\n\r\x00"):
         raise ValueError("недопустимое имя файла субтитров")
@@ -53,7 +47,6 @@ def subtitles_vf_arg(filename: str = SUBTITLES_ASS_NAME) -> str:
 
 
 def subtitle_layout(width: int, height: int) -> tuple[int, int, str]:
-    """Центр снизу: позиция субтитров под фактическое разрешение кадра."""
     x = width // 2
     base_y = int(height * 0.92)
     y = int(base_y - height * 0.15)
@@ -81,7 +74,16 @@ async def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
         stderr=asyncio.subprocess.PIPE,
         cwd=str(cwd) if cwd is not None else None,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300.0)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        await proc.communicate()
+        logger.error("ffmpeg process timed out after 300s: {}", " ".join(cmd[:10]))
+        raise TimeoutError(f"ffmpeg timed out after 300s: {' '.join(cmd[:10])}") from None
     if proc.returncode != 0:
         logger.error("ffmpeg stderr:\n{}", stderr.decode(errors="ignore"))
         raise RuntimeError(f"ffmpeg exited with {proc.returncode}")

@@ -1,4 +1,3 @@
-"""Offline guards for the pure helpers of scripts/e2e_stop_resume_excel_gpt.py."""
 import importlib.util
 from pathlib import Path
 

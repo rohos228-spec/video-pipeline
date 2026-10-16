@@ -39,7 +39,6 @@ STOP_ENDPOINTS = [
 
 
 class MoreLoginError(RuntimeError):
-    """Ошибка MoreLogin. code: profile_missing (профиль не задан) или profile_unavailable (не запустился)."""
 
     def __init__(self, message: str, code: str = "profile_unavailable") -> None:
         super().__init__(message)
@@ -51,13 +50,10 @@ HTTP_TIMEOUT_S = 30.0
 
 
 def api_host() -> str:
-    """Адрес локального API MoreLogin: MORELOGIN_API_URL (settings.py не трогаем), по умолчанию порт 40000."""
     return (os.environ.get("MORELOGIN_API_URL") or DEFAULT_HOST).strip().rstrip("/")
 
 
 def stop_on_exit_default() -> bool:
-    """Закрывать ли профиль при выходе. По умолчанию НЕТ: браузер оператора не закрываем (E03).
-    Включается MORELOGIN_STOP_ON_EXIT=1 (только для профиля, который мы сами подняли для робота)."""
     return (os.environ.get("MORELOGIN_STOP_ON_EXIT") or "").strip().lower() in ("1", "true", "yes")
 
 
@@ -82,12 +78,9 @@ async def start_profile(profile_id: str) -> str:
         try:
             data = await _http_post(ep, profile_id)
         except (TimeoutError, aiohttp.ClientError, OSError) as e:
-            # MoreLogin не запущен / порт не тот: дальше кандидаты не помогут
             raise MoreLoginError(
                 f"MoreLogin не отвечает ({type(e).__name__}): запустите MoreLogin и проверьте MORELOGIN_API_URL",
                 "profile_unavailable") from e
-        # Возможные ключи ответа:
-        # MoreLogin 2.x: {"data": {"ws": "ws://..."}} или {"data": {"debuggerAddress": "127.0.0.1:port"}}
         body = data.get("data") if isinstance(data, dict) else None
         if isinstance(body, dict):
             ws = body.get("ws") or body.get("webSocketDebuggerUrl")
@@ -107,7 +100,6 @@ async def stop_profile(profile_id: str) -> None:
 
 
 def resolve_profile(profile_id: str | None = None, *, platform: str | None = None, accounts=None) -> str:
-    """Профиль для запуска: явный id, иначе по площадке из конфига аккаунтов, иначе MORELOGIN_PROFILE_ID."""
     if profile_id:
         return profile_id
     from app.services.publish_accounts import load_accounts, select_profile
@@ -137,20 +129,20 @@ async def morelogin_browser(profile_id: str | None = None, *, platform: str | No
     logger.info("morelogin started: profile=…{}", str(pid)[-4:])
     try:
         pw = await async_playwright().start()
-    except Exception as e:  # noqa: BLE001 - нет драйвера Playwright: площадка получит понятный отказ, остальные пойдут дальше
+    except Exception as e:
         raise MoreLoginError(f"Playwright не запустился: {type(e).__name__}", "profile_unavailable") from e
     try:
         try:
             browser = await pw.chromium.connect_over_cdp(cdp_url)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise MoreLoginError(f"не удалось подключиться к браузеру профиля …{str(pid)[-4:]} ({type(e).__name__})",
                                  "profile_unavailable") from e
         try:
             yield browser
         finally:
             try:
-                await browser.close()  # для CDP это отключение, а не закрытие браузера
-            except Exception:  # noqa: BLE001
+                await browser.close()
+            except Exception:
                 logger.warning("morelogin: отключение от CDP не удалось, игнорируем")
     finally:
         await pw.stop()
@@ -158,5 +150,5 @@ async def morelogin_browser(profile_id: str | None = None, *, platform: str | No
             await asyncio.sleep(0.5)
             try:
                 await stop_profile(pid)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.warning("morelogin stop_profile failed, игнорируем")

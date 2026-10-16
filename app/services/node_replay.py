@@ -1,9 +1,3 @@
-"""Повтор сохранённого прогона ноды без GPT.
-
-Берёт из ``node_trace`` ответ GPT (``ops_gpt.json``) и заново прогоняет
-программу (``run_code_passes``). Если итог не совпал с ``ops_final.json`` —
-значит правила поменялись с того прогона, и видно что именно.
-"""
 
 from __future__ import annotations
 
@@ -40,7 +34,6 @@ def _load_json(path: Path, default: Any) -> Any:
 
 
 def resolve_run_dir(path: Path | str, *, node: str = "") -> Path:
-    """Папка прогона или папка проекта + ``node`` (последний прогон этой ноды)."""
     p = Path(path)
     if (p / "run.json").is_file():
         return p
@@ -87,7 +80,7 @@ def replay_run(run_dir: Path | str, *, call: str = "") -> list[CallReplay]:
                 all_frames=all_frames or None,
                 ctx=PassCtx(0, str(meta.get("node_key") or "replay"), 0, 0),
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             rep.stopped = str(exc)
             rep.entries = list(getattr(exc, "diary", []) or [])
         else:

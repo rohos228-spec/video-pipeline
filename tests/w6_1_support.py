@@ -1,8 +1,3 @@
-"""Общие заготовки тестов W6-1 (публикация: подтверждение человека, ручные действия, статусы).
-
-Без сети, браузера и площадок: фейковый реестр площадок и синтетический «видеофайл». Рабочая папка (БД и файл
-ролика) лежит ВНЕ репозитория (tests/_stand_workdir.py).
-"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -75,7 +70,6 @@ async def grant(db, project, platforms=None, *, by="operator:test") -> None:
 
 
 class Clicks(list):
-    """Список платформ, по которым был клик; opened - сколько раз открывали браузер."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -83,7 +77,6 @@ class Clicks(list):
 
 
 def fake_registry(monkeypatch, behaviors: dict[str, str] | None = None):
-    """behaviors: платформа -> confirmed | unconfirmed | fail_pre | crash. Возвращает список кликов."""
     behaviors = behaviors if behaviors is not None else {}
     clicks = Clicks()
 

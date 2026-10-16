@@ -1,4 +1,3 @@
-"""An exhausted PassStop keeps its rule id so the journal's node_error can carry it."""
 import asyncio
 import json
 
@@ -76,4 +75,4 @@ async def test_exhausted_undercount_reaches_caller_with_rule(tmp_path, monkeypat
     assert aob.pass_stop_rule(err.value) == "R-SHOT-COVERAGE"
     assert applied == [] and calls
     if n_frames > 1:
-        assert any(name.endswith("_L2.json") for name in calls)  # split before giving up
+        assert any(name.endswith("_L2.json") for name in calls)

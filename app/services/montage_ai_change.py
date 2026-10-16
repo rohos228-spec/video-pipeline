@@ -179,7 +179,6 @@ _SCENE_PASSPORT_KEYS = frozenset(
 
 
 def _strip_scene_passport_fields(row: dict) -> None:
-    """Паспорт ячейки не участвует в ИИзменении — только шот."""
     for key in _SCENE_PASSPORT_KEYS:
         row.pop(key, None)
     parent = row.get("coverage_parent")
@@ -189,7 +188,6 @@ def _strip_scene_passport_fields(row: dict) -> None:
 
 
 def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
-    """В карточке ИИзменения — действие этого шота, без цепи сцены и чужих K."""
     from app.services.db_frames_context import apply_camera_chips_to_row
     from app.services.montage_board import _action_for_frame
     from app.services.vo_shot_expand import _cs, coverage_shot_id
@@ -233,7 +231,6 @@ def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
 
 
 def load_img_pr_master(project: object | None) -> tuple[Path | None, str]:
-    """Живой .md агента img_pr проекта — тот же файл, что у ноды."""
     if project is None:
         return None, ""
     try:
@@ -281,7 +278,6 @@ _MAX_AI_CHANGE_STYLE = 900
 
 
 def trim_style_encyclopedia(text: str, max_style: int = _MAX_AI_CHANGE_STYLE) -> str:
-    """Агент часто копирует §5–§6 целиком — тогда Outsee сжимает персонажа."""
     raw = (text or "").strip()
     match = _STYLE_LINE_RE.search(raw)
     start = match.start() if match else raw.find("STYLE:")
@@ -303,7 +299,6 @@ def trim_style_encyclopedia(text: str, max_style: int = _MAX_AI_CHANGE_STYLE) ->
 
 
 def strip_ai_change_reply(raw: str) -> str:
-    """Срезать обёртки; если модель вернула apply-ops — взять промт_картинки."""
     text = (raw or "").strip()
     if not text:
         return ""
@@ -364,7 +359,6 @@ async def rewrite_prompt_via_gpt(
     camera: dict[str, str] | None = None,
     coverage_role: str = "",
 ) -> str:
-    """Агент + карточка Базы + закадр → vibecode LLM → промт как есть."""
     del img_pr_rules, img_pr_variant, image_prompt
     from app.services.llm_override import bind_generation_llm
 

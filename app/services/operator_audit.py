@@ -1,20 +1,3 @@
-"""Аудит действий оператора (B01): каждая изменяющая ручка /api оставляет строку в `operator_audit`.
-
-Что пишется: id, ts, request_id, method, path (без query, секреты вырезаны), route_template,
-project_id, actor (имя, не токен), status_code, duration_ms, body_sha256, outcome.
-Тела запросов НЕ хранятся. Для JSON дайджест считается по РЕДАКТИРОВАННОМУ телу (пароли и ключи
-заменены), для остальных - по сырым байтам; для /api/auth/ дайджест не пишется вовсе.
-
-Таблица append-only (триггеры как у spend_ledger): UPDATE и DELETE запрещены.
-Запись не блокирует запрос: сбой записи логируется, счётчик `skipped_writes()` растёт.
-GET/HEAD/OPTIONS и WebSocket не пишутся.
-
-Слой - чистый ASGI (не BaseHTTPMiddleware), ставится внешним, чтобы отказы защитного слоя
-(403 по Host/Origin/токену) тоже попадали в журнал. Запись идёт в мастер-БД по
-`settings.sqlite_path` на момент записи (отдельное sqlite3-соединение в потоке).
-
-Живой Studio не проверялось: только юнит и ASGI-клиент.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -39,8 +22,8 @@ from app.models import Base
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 API_PREFIX = "/api"
 REQUEST_ID_HEADER = "X-Request-ID"
-BODY_JSON_LIMIT = 256 * 1024  # больше - дайджест по сырым байтам, тело не разбираем
-NO_DIGEST_PREFIXES = ("/api/auth/",)  # логин и пр.: даже дайджест тела не нужен
+BODY_JSON_LIMIT = 256 * 1024
+NO_DIGEST_PREFIXES = ("/api/auth/",)
 SESSION_COOKIE = "vp_session"
 
 OUTCOME_OK = "ok"
@@ -50,7 +33,6 @@ OUTCOME_ERROR = "error"
 
 
 class OperatorAudit(Base):
-    """Append-only: одна строка на одно изменяющее обращение к /api."""
     __tablename__ = "operator_audit"
     id: Mapped[int] = mapped_column(primary_key=True)
     ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
@@ -76,7 +58,6 @@ _TRIGGERS = (
     "operator_audit BEGIN SELECT RAISE(ABORT, 'operator audit is append-only'); END",
 )
 
-# --- счётчики --------------------------------------------------------------------------------------
 
 _LOCK = threading.Lock()
 _STATS = {"written": 0, "skipped": 0, "last_error": ""}
@@ -100,7 +81,6 @@ def enabled() -> bool:
     return (os.environ.get("VP_OPERATOR_AUDIT") or "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
-# --- редакция --------------------------------------------------------------------------------------
 
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _HEX = re.compile(r"^[0-9a-fA-F]{32,}$")
@@ -110,7 +90,6 @@ _PROJECT_IN_PATH = re.compile(r"/projects?/(\d+)(?:/|$)")
 
 
 def redact_path(path: str) -> str:
-    """Путь без query; сегменты, похожие на токен/ключ, заменены на [redacted]."""
     from app.services.observation import _CREDENTIAL_TEXT
     out = []
     for seg in (path or "").split("?", 1)[0].split("/"):
@@ -124,14 +103,13 @@ def redact_path(path: str) -> str:
 
 def body_digest(raw: bytes | None, *, content_type: str = "", complete: bool = True,
                 total: int = 0, raw_sha256: str | None = None) -> str | None:
-    """Дайджест тела без хранения тела. JSON - по редактированному виду, остальное - по сырым байтам."""
     if total == 0:
         return None
     if raw is not None and complete and "json" in (content_type or "").lower():
         try:
             from app.services.observation import digest
             return digest(json.loads(raw.decode("utf-8")))
-        except Exception:  # noqa: BLE001 - не JSON: падаем на сырой дайджест
+        except Exception:
             pass
     return raw_sha256
 
@@ -141,7 +119,7 @@ def _project_from_json(raw: bytes | None, content_type: str, complete: bool) -> 
         return None
     try:
         data = json.loads(raw.decode("utf-8"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     if isinstance(data, dict):
         v = data.get("project_id")
@@ -167,10 +145,6 @@ def _project_id(scope: dict, path: str, raw: bytes | None, content_type: str, co
 
 
 def route_template(scope: dict, path: str) -> str | None:
-    """Шаблон маршрута с префиксом: '/api/projects/{project_id}/go'. None, если маршрут не нашёлся (404).
-
-    Собирается из фактического пути и path_params (а не из внутренностей FastAPI: у вложенных роутеров
-    `route.path` бывает без префикса и зависит от версии)."""
     if scope.get("route") is None and "endpoint" not in scope:
         return None
     segs = path.split("/")
@@ -186,7 +160,6 @@ def route_template(scope: dict, path: str) -> str | None:
 
 
 def is_automatic_ok(path: str, status_code: int) -> bool:
-    """Интерфейс сам зовёт ensure-run при открытии проекта: успешный вызов — не действие оператора."""
     return path.endswith("/ensure-run") and 0 < status_code < 400
 
 
@@ -219,8 +192,6 @@ def _cookie(scope: dict, name: str) -> str | None:
 
 
 def resolve_actor(scope: dict) -> str:
-    """Имя действующего: пользователь веб-входа, иначе 'operator' (верный токен оператора), иначе 'local'.
-    Сами токены и сессии в журнал не попадают."""
     try:
         from app.settings import settings
         if settings.web_auth_enabled:
@@ -233,24 +204,21 @@ def resolve_actor(scope: dict) -> str:
                     hit = sess._MEM.get(key)
                     if hit and hit[1]:
                         return str(hit[1])[:120]
-    except Exception:  # noqa: BLE001 - имя не критично
+    except Exception:
         logger.debug("operator_audit: actor lookup failed", exc_info=True)
     try:
         from app.services.access_guard import OPERATOR_HEADER, check_operator_token
         if check_operator_token(_hdr(scope, OPERATOR_HEADER.lower().encode())):
-            # D12: the action layer names the person behind its internal call; the name is trusted only together
-            # with a valid operator token (an outside caller cannot forge it) and is reduced to safe characters.
             named = _hdr(scope, b"x-action-layer-operator")
             if named:
                 from app.services.action_layer.context import normalize_operator
                 return ("operator:" + normalize_operator(named))[:120]
             return "operator"
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("operator_audit: operator token check failed", exc_info=True)
     return "local"
 
 
-# --- хранилище -------------------------------------------------------------------------------------
 
 _ensured: set[str] = set()
 
@@ -281,7 +249,6 @@ def _ensure_schema(con: sqlite3.Connection, key: str) -> None:
 
 
 def insert_row(row: dict) -> None:
-    """Синхронная вставка одной строки (вызывается в потоке). Бросает исключение при сбое."""
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(path), timeout=5)
@@ -296,10 +263,9 @@ def insert_row(row: dict) -> None:
 
 
 async def record(row: dict) -> bool:
-    """Записать строку; сбой не пробрасывается (запрос не блокируется), считается и логируется."""
     try:
         await asyncio.to_thread(insert_row, row)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         with _LOCK:
             _STATS["skipped"] += 1
             _STATS["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -312,7 +278,6 @@ async def record(row: dict) -> bool:
 
 
 def list_rows(limit: int = 100, project_id: int | None = None) -> list[dict]:
-    """Последние строки (для ленты/диагностики); читает по тому же пути."""
     path = _db_path()
     if not path.exists():
         return []
@@ -334,7 +299,6 @@ def list_rows(limit: int = 100, project_id: int | None = None) -> list[dict]:
         con.close()
 
 
-# --- ASGI-слой -------------------------------------------------------------------------------------
 
 def new_request_id(incoming: str | None = None) -> str:
     if incoming and _REQ_ID.match(incoming):
@@ -343,7 +307,6 @@ def new_request_id(incoming: str | None = None) -> str:
 
 
 class OperatorAuditMiddleware:
-    """Чистый ASGI: request_id для любого http-запроса /api, строка аудита для изменяющих методов."""
 
     def __init__(self, app):
         self.app = app
@@ -392,7 +355,6 @@ class OperatorAuditMiddleware:
             finally:
                 if audited and not is_automatic_ok(path, status["code"]):
                     row = self._row(scope, path, method, rid, status["code"], crashed, started, body)
-                    # shield: отмена запроса (разрыв клиента) не должна терять строку аудита
                     await asyncio.shield(asyncio.ensure_future(record(row)))
 
     @staticmethod

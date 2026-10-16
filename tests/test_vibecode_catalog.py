@@ -42,7 +42,7 @@ def test_prices_use_expensive_markup() -> None:
     assert priced["output_usd_per_m"] == round(raw["pricing"]["output_usd_per_m"] * 3, 6)
     luna = next(m for m in load_snapshot() if m["id"] == "gpt-5.6-luna")
     expensive = apply_markup(luna["pricing"])
-    assert expensive["input_usd_per_m"] == round(0.026244 * 3, 6)
+    assert expensive["input_usd_per_m"] == round(0.131219 * 3, 6)
 
 
 def test_legacy_cheap_channel_arg_is_ignored() -> None:
@@ -69,12 +69,12 @@ def test_grouped_vendors_match_ui_tabs() -> None:
     assert "xai" in ids
     counts = {v["id"]: v["count"] for v in cat["vendors"]}
     assert counts["anthropic"] == 5
-    assert counts["gemini"] == 3
+    assert counts["gemini"] == 4
     assert counts["deepseek"] == 2
     assert counts["xai"] == 2
     assert counts["images"] == 7
     assert counts["video"] == 11
-    assert counts["openai"] == 5
+    assert counts["openai"] == 6
     sonnet = find_model("claude-sonnet-5")
     assert sonnet is not None
     assert sonnet["kind"] == "text"
@@ -260,16 +260,15 @@ def test_node_override_routes_chat_to_vibecode(monkeypatch, tmp_path: Path) -> N
     with use_override(ov):
         assert gpt_api.is_responses_mode() is False
         assert gpt_api._chat_url("claude-sonnet-5") == (
-            "https://vibecode.moe/v1/chat/completions"
+            "https://vibecode.moe/v1/messages"
         )
-        assert gpt_api._headers()["Authorization"] == "Bearer vk-test"
+        assert gpt_api._headers("claude-sonnet-5")["Authorization"] == "Bearer vk-test"
     assert gpt_api.is_responses_mode() is True
 
 
 def test_node_override_vibecode_uses_vps_relay(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """Нода vibecode при GPT_RELAY_TOKEN → VPS /v1/chat/completions, не kie /codex."""
     import app.services.gpt_api as gpt_api
     import app.settings as settings_mod
     from app.services.llm_override import NodeLlmOverride, use_override
@@ -303,9 +302,9 @@ def test_node_override_vibecode_uses_vps_relay(
     )
     with use_override(ov):
         assert gpt_api._chat_url("claude-sonnet-5") == (
-            "https://gpt.example.com/v1/chat/completions"
+            "https://gpt.example.com/v1/messages"
         )
-        headers = gpt_api._headers()
+        headers = gpt_api._headers("claude-sonnet-5")
         assert headers["Authorization"] == "Bearer vk-test"
         assert headers["X-VP-Relay-Token"] == "relay-secret"
 
@@ -434,4 +433,4 @@ async def test_catalog_api_returns_marked_up_prices() -> None:
     vendors = {v["id"]: v for v in body["vendors"]}
     assert vendors["anthropic"]["count"] == 5
     luna = next(m for m in body["models"] if m["id"] == "gpt-5.6-luna")
-    assert luna["pricing"]["input_usd_per_m"] == round(0.026244 * 3, 6)
+    assert luna["pricing"]["input_usd_per_m"] == round(0.131219 * 3, 6)

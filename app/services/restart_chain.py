@@ -1,21 +1,3 @@
-"""Единый потолок цепочки «брак -> перезапуск» на узел проекта (W40 C-12, C-11).
-
-Платные перезапуски одного узла считали три независимых счётчика, и успех соседнего сбрасывал соседний:
-
-* ``regen_budget`` (перегенерации по проверке файлов и по проверке картинок/клипов), его ``clear`` вызывается на каждом
-  успешном проходе проверки;
-* ``auto_retry_<ready>`` авто-ревью (``auto_advance``, 2 на шаг), сбрасывается одобрением;
-* ``step_failure.total_fails`` (повторы после ошибки), сбрасывается успехом шага.
-
-Здесь один счётчик ``project.meta['restart_chain'][<узел>]``: каждый платный перезапуск узла (любого происхождения)
-прибавляет единицу; успех проверки или соседнего счётчика его НЕ сбрасывает. Сбрасывается он только
-* одобрением шага (узел принят: цепочка закончилась) и
-* решением человека снять паузу (``release``): продолжить, возобновить, сбросить лимиты.
-
-Когда потолок достигнут, перезапуска нет: проект встаёт на паузу с причиной, пишется факт ``runtime_check`` /
-``regen_budget`` (его превращает в инцидент «нужен человек» слой диагностики). Потолок: ``RESTART_CHAIN_MAX_PER_NODE``
-(``0`` = выключен). Ручные действия человека тоже считаются (источник ``manual``), но не как «авто-регенерации».
-"""
 from __future__ import annotations
 
 from loguru import logger
@@ -23,7 +5,6 @@ from sqlalchemy.orm.attributes import flag_modified
 
 META_KEY = "restart_chain"
 
-# regen_budget-виды и проверки -> узел (running-статус шага, чьи платные результаты они переделывают)
 _KIND_TO_NODE = {
     "video": "generating_videos", "images": "generating_images", "music": "generating_music",
     "audio": "generating_audio", "vision:scenes": "generating_images", "vision:videos": "generating_videos",
@@ -39,7 +20,7 @@ def max_per_node() -> int:
     try:
         from app.settings import settings
         return int(settings.restart_chain_max_per_node)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 60
 
 
@@ -70,7 +51,6 @@ def would_exceed(project, node: str, n: int = 1) -> bool:
 
 
 def charge(project, node: str, source: str, n: int = 1) -> tuple[bool, int, int]:
-    """Прибавить ``n`` перезапусков узла. Возвращает (разрешено, счётчик, потолок). При отказе счётчик не растёт."""
     cap = max_per_node()
     cur = count(project, node)
     if cap and cur + n > cap:
@@ -86,7 +66,6 @@ def charge(project, node: str, source: str, n: int = 1) -> tuple[bool, int, int]
 
 
 def clear_node(project, node: str) -> bool:
-    """Шаг принят: цепочка этого узла закончилась."""
     state = dict(_state(project))
     if node not in state:
         return False
@@ -96,7 +75,6 @@ def clear_node(project, node: str) -> bool:
 
 
 def release(project, node: str | None = None) -> bool:
-    """Человек снял паузу (продолжить/возобновить/сбросить лимиты): цепочка начинается заново."""
     state = dict(_state(project))
     gone = [k for k in state if node is None or k == node]
     changed = bool(gone)
@@ -121,7 +99,6 @@ def summary(node: str, cur: int, cap: int, source: str) -> str:
 
 
 def remember_pause_origin(project) -> None:
-    """Перед прямой установкой status=paused: запомнить, откуда пауза, чтобы «Продолжить» вернул в этот шаг, а не в new."""
     from app.models import ProjectStatus
 
     if project.status != ProjectStatus.paused:
@@ -132,7 +109,6 @@ def remember_pause_origin(project) -> None:
 
 
 async def stop(session, project, node: str, cur: int, cap: int, source: str) -> str:
-    """Поставить проект на паузу с причиной и записать факт для инцидента. Возвращает текст причины."""
     from app.models import ProjectStatus
     from app.services import regen_budget
 
@@ -141,13 +117,13 @@ async def stop(session, project, node: str, cur: int, cap: int, source: str) -> 
     meta[regen_budget.PAUSE_REASON_KEY] = text
     meta["restart_chain_stop"] = {"node": node, "count": cur, "cap": cap, "source": source}
     if project.status != ProjectStatus.paused:
-        meta["paused_from_status"] = project.status.value  # «Продолжить» вернёт проект в этот шаг, а не в new
+        meta["paused_from_status"] = project.status.value
     project.meta = meta
     flag_modified(project, "meta")
     project.status = ProjectStatus.paused
     try:
         await session.flush()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("[#{}] restart_chain: flush failed", getattr(project, "id", "?"))
     logger.warning("[#{}] restart_chain: {}", getattr(project, "id", "?"), text)
     try:
@@ -155,14 +131,12 @@ async def stop(session, project, node: str, cur: int, cap: int, source: str) -> 
         await record_fact("runtime_check", {
             "check": "regen_budget", "performed": True, "status": "rejected", "kind": node,
             "restart_chain": True, "rounds": cur, "per_run_cap": cap, "source": source, "summary": text})
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("restart_chain: observation fact skipped", exc_info=True)
     return text
 
 
 async def release_for_human_everywhere(session, project) -> None:
-    """release_for_human в этой сессии и в зеркальной БД (master <-> project.db): счётчики лежат в обеих, сброс только в одной
-    оставлял на другой потолок, и следующий раунд сразу снова ставил проект на паузу (аудит W56 K1)."""
     release_for_human(project)
     try:
         from app.project_db import run_on_replica_project
@@ -171,14 +145,11 @@ async def release_for_human_everywhere(session, project) -> None:
             release_for_human(replica)
 
         await run_on_replica_project(session, project, _rel)
-    except Exception:  # noqa: BLE001 - зеркало не должно ломать ручное «продолжить»
+    except Exception:
         logger.warning("[#{}] restart_chain: сброс на зеркальной БД не удался", getattr(project, "id", "?"), exc_info=True)
 
 
 def release_for_human(project) -> bool:
-    """Человек снял паузу: общая цепочка, счётчики regen_budget и авто-ревью начинаются заново (C-11, C-12).
-
-    Вызывать только из ручных путей (кнопка «продолжить/возобновить»), никогда из автоматики."""
     from app.services import regen_budget
 
     changed = release(project)

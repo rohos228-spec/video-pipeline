@@ -1,8 +1,3 @@
-"""W4-2 / C11 и C03: реестр «подтверждено прогоном» по 24 нодам и честная запись способности `images`.
-
-Класс доказательства U: читаются реестр способностей, исходный код реестра и markdown-документы.
-Ни сети, ни базы, ни платных вызовов.
-"""
 from __future__ import annotations
 
 import re
@@ -10,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import app.services.decision_v1  # noqa: F401  (реестры)
+import app.services.decision_v1
 from app.orchestrator.node_spec import capability_spec_for, coverage_level
 from app.services import node_capabilities as nc
 from app.services.node_coverage import node_coverage, registry_node_types
@@ -55,7 +50,6 @@ def test_a_node_without_a_live_run_is_marked_dry_only_with_a_reason(node_type):
     else:
         assert row["missing"].startswith("только сухо: ")
         assert len(entry["why_no_live"].split()) >= 5, "причина должна быть предложением, не заглушкой"
-        # L без пометки «шов» нельзя приписать ноде, у которой живого прогона самой ноды нет
         assert not re.search(r"\bL\b", re.sub(r"шов [^;()]*?L \d{4}-\d{2}-\d{2}", "", entry["proof"]))
     for date in entry["live_seam"]:
         assert date in entry["proof"] and date in LIVE

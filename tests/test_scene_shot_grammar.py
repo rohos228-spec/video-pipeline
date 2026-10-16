@@ -1,4 +1,3 @@
-"""Грамматика сцены → кадры: цепь действия, таблица камеры, закадр по шагу."""
 
 from app.services.scene_shot_grammar import (
     SHOT_VO_MIN,
@@ -348,5 +347,4 @@ def test_vo_limits_normal_and_cutaway() -> None:
         }
     ]
     assert len(too_long[0]["закадр"]) > 80
-    # один кадр покрывает весь VO длиннее 80 — брак (не валить весь VO)
     assert shots_grammar_reason(too_long, too_long[0]["закадр"])

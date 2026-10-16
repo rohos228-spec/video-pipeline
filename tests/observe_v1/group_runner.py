@@ -1,4 +1,3 @@
-"""Existing synthetic HTTP answers relocated from diag_v2; no runtime wrapper."""
 from __future__ import annotations
 import asyncio,json,os,re,sqlite3
 from collections import Counter
@@ -28,12 +27,6 @@ NODES = (
 MODE = os.environ.get("DIAGNOSTIC_SCENARIO", "group")
 
 def prepare_launch_graph():
-    """Fresh synthetic graph only, before startup; keep original node contracts.
-
-    The historical seed has different master/canvas snapshots. A unified
-    launch correctly rejects that mismatch; this constructs a consistent
-    bounded graph instead of weakening revision checks or editing live state.
-    """
     with sqlite3.connect(DATA/'state.db') as db:
         original=json.loads(db.execute('SELECT nodes_snapshot FROM workflow_runs WHERE project_id=2').fetchone()[0])
     by_id={node['id']:node for node in original}
@@ -117,8 +110,6 @@ def synthetic_answer(node: str, attempt: int) -> str:
                 for i, chunk in enumerate(chunks)
             ]
             if node == NODES[4]:
-                # A full, identical list is an explicit synthetic QC write.
-                # Record this intervention; do not claim it tested model quality.
                 existing = attrs.get("кадры")
                 if isinstance(existing, list) and existing:
                     shots = existing
@@ -133,8 +124,6 @@ class FixtureHandler(BaseHTTPRequestHandler):
     response_ids: list[str] = []
 
     def do_GET(self):
-        # The fixture has no recoverable model answer beyond its completed SSE.
-        # A truncated JSON text triggers the application's normal retrieve path.
         self.send_error(404, "No separate recovery payload in this fixture")
 
     def do_POST(self):

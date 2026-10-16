@@ -1,4 +1,3 @@
-"""Profiles must be immutable, scoped and consume the existing recovery ticket."""
 from app.services import revisions
 import importlib,json,unittest
 from unittest.mock import patch
@@ -49,7 +48,6 @@ class Profiles(DecisionDurability):
 
     async def test_marked_scene_profiles_rejected_despite_excel_gpt_ui_type(self):
         from app.models import WorkflowRun
-        # 'assemble' (sd_assemble) is admitted since W5-3: one retry, only invalid_json/missing_payload
         for marker in ('skeleton','camera'):
             with self.subTest(marker=marker):
                 async with self.sessions() as s:
@@ -318,12 +316,10 @@ class Profiles(DecisionDurability):
         self.assertEqual(len(state['overlays']),1)
         self.assertEqual(state['overlays'][0]['profile_id'],'synthetic-format-v1')
 
-    # ---- provider of the profile must equal the provider of the failed attempt ----------------
     VIBECODE_PROFILE={'model_id':'gpt-synthetic-alt','provider':'vibecode','kind':'text','channel':'stable',
         'reasoning_effort':None,'max_output_tokens':None,'prompt_variant':'repair-json-only-v1','synthetic_only':True}
 
     async def set_source_start(self,body=None,**payload):
-        """Rewrite the first recorded request: only the given fields stay besides body references."""
         async with self.sessions() as s:
             event=await s.scalar(select(observation.ObservationEvent).where(observation.ObservationEvent.kind=='model_start'))
             kept={k:v for k,v in event.payload.items() if k not in {'provider','path','host'}}

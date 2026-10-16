@@ -276,7 +276,6 @@ def _vo_parts_by_shot_quotes(
 
 
 def vo_chunk_is_dangling(chunk: str) -> bool:
-    """Обрубок: кадр заканчивается на предлог/союз («продавали вместе с»)."""
     compact = re.sub(r"\s+", " ", chunk or "").strip()
     if not compact:
         return False
@@ -298,8 +297,6 @@ def split_text_into_parts(text: str, n: int) -> list[str]:
     if not words:
         return [""] * n
     if len(words) < n:
-        # Слов меньше кадров — весь текст на первом, хвост пустой.
-        # Не по слову на кадр («люди,» / «судов»).
         return [" ".join(words)] + [""] * (n - 1)
 
     units = _sentence_units(" ".join(words))
@@ -327,7 +324,6 @@ def _subdivide_attr(fr: Frame) -> dict[str, Any]:
 
 
 def derived_shot_uuid(parent_uuid: str | None, shot_index: int) -> str:
-    """Deterministic uuid (24 hex like new_frame_uuid) of the child frame ``shot_index`` of a VO parent."""
     import hashlib
 
     return hashlib.sha256(f"shot-child:{parent_uuid}:{int(shot_index)}".encode()).hexdigest()[:24]
@@ -592,7 +588,7 @@ async def renumber_frames_by_sort_key(
         from app.services.vo_shot_expand import sync_live_coverage_ids
 
         sync_live_coverage_ids(frames)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception(
             "[#{}] renumber: sync_live_coverage_ids failed", project.id
         )
@@ -744,15 +740,12 @@ async def subdivide_vo_frames_by_camera(
             child = await insert_frame_after(
                 session, project, after_frame_id=after_id
             )
-            # Derived identity: the same parent and shot index always give the same uuid, so a
-            # re-run after a rolled-back attempt rebuilds identical child frames (identical requests).
             child.uuid = derived_shot_uuid(parent_uuid, shot_no)
             children.append(child)
             after_id = child.id
             inserted += 1
 
         group = [parent, *children]
-        # Текст ячейки — по логике кадров: фрагмент шота = текст от его
         # цитаты до цитаты следующего (камера выбрала цитату под визуал).
         # Не легли цитаты → фолбэк: смысловое разбиение по фразам.
         vo_parts = None

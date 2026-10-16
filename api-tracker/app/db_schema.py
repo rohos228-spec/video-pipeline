@@ -1,14 +1,3 @@
-"""Versioned schema for tracker.db of the api-tracker service (replaces the raw ALTER TABLE in ``init_db``).
-
-Self-contained on purpose: the service ships on its own (PyInstaller exe) and has its own ``app`` package, so it
-cannot import ``app.services.tracker_schema`` of the main pipeline. The two share the same file
-(``api-tracker/tracker.db``) and the same bookkeeping table and ids for the shared steps (0001, 0002), which have the
-identical effect, so either side recording a migration is valid for the other; extra ids here are ignored there.
-
-Each migration runs in one transaction together with its bookkeeping row; a failing migration is rolled back whole,
-leaves no row and is raised to the caller. Migrations are idempotent (an old database that already has the columns
-or objects is only recorded). Nothing is dropped or rewritten.
-"""
 from __future__ import annotations
 
 import sqlite3
@@ -40,7 +29,6 @@ CREATE TABLE IF NOT EXISTS api_calls (
     synced INTEGER DEFAULT 1
 )"""
 
-# Columns older databases may lack: (name, exact legacy DDL).
 _LEGACY_COLUMNS = (
     ("user_name", "TEXT DEFAULT 'unknown'"),
     ("device_name", "TEXT DEFAULT ''"),
@@ -80,9 +68,8 @@ MIGRATIONS = (
 
 
 def migrate_tracker_db(conn: sqlite3.Connection) -> list[str]:
-    """Apply pending migrations; return the ids applied now. Raises on failure after rolling that one back."""
     prev = conn.isolation_level
-    conn.isolation_level = None  # explicit BEGIN/COMMIT below
+    conn.isolation_level = None
     applied: list[str] = []
     try:
         conn.execute(f"CREATE TABLE IF NOT EXISTS {MIGRATIONS_TABLE} "

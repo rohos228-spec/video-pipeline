@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * Мини-превью стиля/категории для панели «Помощник промпта».
- * Чистый SVG-эскиз в палитре окна генерации (dark + цвет стиля).
- * Превью в плитке: svg с width/height, без position:absolute (иначе привязка к окну Create).
- * Родителю: высота (h-[72px] и т.п.) + overflow-hidden.
- */
 
 import { GEN_STYLE_COLORS } from "@/lib/gen-assistant-styles";
 import type { GenStyleArt, GenStyleDef } from "@/lib/gen-assistant-styles";
@@ -130,7 +124,6 @@ export function GenStyleArt({
         <circle cx="42" cy="62" r="4" fill={c} />
       </svg>
     );
-  // retro — плёнка с перфорацией
   return (
     <svg {...common}>
       <rect width="120" height="96" fill={PANEL} />

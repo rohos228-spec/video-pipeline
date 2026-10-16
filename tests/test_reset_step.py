@@ -475,7 +475,6 @@ async def test_clear_step_outputs_for_rerun_img_pr_force_wipe_clears(session):
 
 @pytest.mark.asyncio
 async def test_clear_step_outputs_hero_soft_keeps_png(session, tmp_path: Path, monkeypatch):
-    """Soft ▶ hero не должен сносить уже готовые characters/*.png."""
     from app import settings as app_settings
 
     monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
@@ -537,7 +536,6 @@ async def test_clear_step_outputs_hero_force_wipe_removes_png(session, tmp_path:
 async def test_clear_step_outputs_hero_force_wipe_removes_orphan_png(
     session, tmp_path: Path, monkeypatch
 ):
-    """force_wipe hero удаляет characters/*.png даже без Artifact в project.db."""
     from app import settings as app_settings
 
     monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path)
@@ -556,7 +554,6 @@ async def test_clear_step_outputs_hero_force_wipe_removes_orphan_png(
 
 @pytest.mark.asyncio
 async def test_clear_step_outputs_img_force_wipe_removes_png(session):
-    """Явный ▶ img: PNG не скип — бэкап и удаление, кадры снова в очередь."""
     p = await _mkproject(session)
     fr = await _mkframe(
         session,
@@ -579,7 +576,6 @@ async def test_clear_step_outputs_img_force_wipe_removes_png(session):
 
 @pytest.mark.asyncio
 async def test_clear_step_outputs_for_rerun_anim_pr_preserves(session, tmp_path: Path):
-    """Повторный запуск anim_pr: не стираем animation_prompt (догонка с xlsx)."""
     p = await _mkproject(session)
     fr = await _mkframe(
         session,

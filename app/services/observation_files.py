@@ -1,4 +1,3 @@
-"""Local body access protection, independently testable without app/settings."""
 import os
 from pathlib import Path
 
@@ -21,7 +20,6 @@ def secure_directory(path: Path):
     kernel.LocalFree.argtypes = [ctypes.c_void_p]
     kernel.LocalFree.restype = ctypes.c_void_p
     descriptor = ctypes.c_void_p()
-    # Protected DACL: owner rights and SYSTEM only; children inherit this ACL.
     if not convert("D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)", 1, ctypes.byref(descriptor), None):
         raise ctypes.WinError(ctypes.get_last_error())
     try:

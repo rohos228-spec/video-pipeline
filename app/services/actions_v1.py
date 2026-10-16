@@ -1,8 +1,3 @@
-"""Explicit, bounded execution permissions layered over Observe-v1.
-
-This module deliberately contains no planner or model-driven action selection.
-Managed execution is opt-in, scope-bound, and defaults to disabled.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,12 +10,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models import Base
 from app.services.decision_state import DecisionControl, DecisionRecord, DecisionTurn
 from app.services.profiles_state import ProfileOverlay
-from app.services import kill_switch  # registers the durable emergency-stop tables
+from app.services import kill_switch
 from app.services import revisions
 
 
 class ActionExecutionControl(Base):
-    """Durable opt-in permission; absent rows mean disabled."""
     __tablename__ = "action_execution_controls"
     execution_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, index=True)
@@ -39,7 +33,6 @@ class ActionExecutionControl(Base):
 
 
 class ActionRecord(Base):
-    """Append-only audit facts for explicit operator actions and verification."""
     __tablename__ = "action_v1_records"
     __table_args__ = (UniqueConstraint("execution_id", "idempotency_key", name="uq_action_execution_idempotency"),)
     action_id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -59,11 +52,6 @@ class ActionRecord(Base):
 
 
 class ManagedRunAllowance(Base):
-    """An immutable execution owns this run's existing common request counter.
-
-    Closing controls cannot free ownership. No business state or allowance is
-    reset; historical controls are checked before registering new ownership.
-    """
     __tablename__='managed_run_allowances'
     project_id: Mapped[int]=mapped_column(Integer,primary_key=True)
     workflow_run_id: Mapped[int]=mapped_column(Integer,primary_key=True)
@@ -115,12 +103,6 @@ _permission_lock = RLock()
 
 
 def install_permission(permission: ExecutionPermission) -> None:
-    """Install an explicitly-authorized managed profile for this process.
-
-    Callers must persist the corresponding profile before installation. Startup
-    defaults to an empty registry, so a restart cannot accidentally authorize
-    execution if profile reload/validation fails.
-    """
     with _permission_lock:
         _permissions[permission.project_id] = permission
 
@@ -138,7 +120,6 @@ def get_permission(project_id: int) -> ExecutionPermission | None:
 
 
 async def managed_project_enabled(project_id: int) -> bool:
-    """Legacy tools fail closed even if volatile permissions were not reloaded."""
     if get_permission(project_id) is not None:
         return True
     from app.services.observation import get_observer
@@ -149,12 +130,6 @@ async def managed_project_enabled(project_id: int) -> bool:
 
 
 async def worker_entry_admission(project_id: int) -> StartDecision:
-    """Stop a new native tick before business work when held or permission is cold.
-
-    Existing active work is not cancelled here. Read durable control on every
-    new job and require a matching loaded permission for managed execution.
-    Stopping observation alone does not change this execution permission.
-    """
     from app.services.observation import _observer
     cached=get_permission(project_id)
     if _observer is None:
@@ -167,7 +142,7 @@ async def worker_entry_admission(project_id: int) -> StartDecision:
         stopped=await kill_switch.is_active(session)
     if not controls:
         return StartDecision(not (cached and cached.enabled),'ordinary_mode' if not cached else 'permission_not_confirmed')
-    if stopped:return StartDecision(False,kill_switch.REASON)  # operator emergency stop: managed work only
+    if stopped:return StartDecision(False,kill_switch.REASON)
     if len(controls)!=1:return StartDecision(False,'ambiguous_managed_execution')
     control=controls[0]
     if control.held:return StartDecision(False,'execution_held')
@@ -183,7 +158,6 @@ async def worker_entry_admission(project_id: int) -> StartDecision:
 
 def update_permission(project_id: int, *, held: bool | None = None,
                       requests_used: int | None = None) -> ExecutionPermission | None:
-    """Atomically update volatile gate state after a durable control write."""
     from dataclasses import replace
     with _permission_lock:
         current = _permissions.get(project_id)
@@ -200,7 +174,6 @@ def update_permission(project_id: int, *, held: bool | None = None,
 
 
 def check_managed_start(*, project_id: int | None, node_key: str) -> StartDecision | None:
-    """Return None for unmanaged work; otherwise enforce the managed scope."""
     if project_id is None:
         return None
     permission = get_permission(project_id)
@@ -209,8 +182,6 @@ def check_managed_start(*, project_id: int | None, node_key: str) -> StartDecisi
     if recovery_node is not None and node_key != recovery_node:
         return StartDecision(False, "recovery_verification_pending")
     if permission is None:
-        # A persisted managed execution without a loaded/valid profile is
-        # blocked, never silently treated as ordinary pipeline work.
         try:
             from app.services.observation import get_observer
             known_managed = any(
@@ -227,7 +198,6 @@ def check_managed_start(*, project_id: int | None, node_key: str) -> StartDecisi
 
 
 async def reload_permissions(master) -> None:
-    """Fail closed unless durable profiles can be loaded and validated."""
     with _permission_lock:
         _permissions.clear()
     from app.services.managed_launch import hold_interrupted_launches
@@ -246,16 +216,10 @@ async def reload_permissions(master) -> None:
             )
     from app.services.actions_recovery import reload_recovery_restrictions
     await reload_recovery_restrictions(master)
-    await kill_switch.load(master)  # durable emergency stop survives restart
+    await kill_switch.load(master)
 
 
 async def continue_managed_image(session, project, source_key, target_key, node_type):
-    """Admit an original graph-selected image successor to the existing FSM.
-
-    No planner, worker dispatch, retry/reset or stop/backoff clearing. The node
-    transition and its evidence share the caller's project transaction. Pending
-    is required so replay cannot restart a scheduled or terminal node.
-    """
     from app.models import Project, WorkflowRun, NodeRun, NodeRunStatus, Frame
     from app.services.observation import _attempt, ExecutionControl, digest, emit
     from app.services.decision_config import runtime_config, DecisionRuntimeBinding
@@ -333,9 +297,6 @@ async def continue_managed_image(session, project, source_key, target_key, node_
             or target.node_type != node_type or target.status != NodeRunStatus.pending
             or any(n.status in {NodeRunStatus.running, NodeRunStatus.queued, NodeRunStatus.waiting_hitl} for n in rows)):
         return denied("node_state_not_ready")
-    # Diagnosis snapshots can lag while this worker owns the project transaction.
-    # Only its source running -> done transition may differ from master; other
-    # node disagreement is not treated as a harmless cached warning.
     replicas = {n.node_key: n for n in master_nodes}
     if set(replicas) != {n.node_key for n in rows} or any(
             (n.node_key == source_key and replicas[n.node_key].status not in
@@ -348,7 +309,6 @@ async def continue_managed_image(session, project, source_key, target_key, node_
         project, project.status)
     if not selected or selected[0] != target_key:
         return denied("graph_prerequisites_or_gates_not_ready")
-    # Explicit graph input contract, not the legacy linear status sequence.
     from app.services.scan_frames import frame_image_prompt_text
     from app.services.vo_shot_expand import is_coverage_leftover
     from app.generation_options import is_skippable_empty_prompt
@@ -382,7 +342,6 @@ async def continue_managed_image(session, project, source_key, target_key, node_
 
 
 class ActionSupervisor:
-    """Durable operator controls for an already-observed execution."""
     def __init__(self, master):
         self.master = master
 
@@ -425,8 +384,6 @@ class ActionSupervisor:
             }
             if not graph_group_keys or graph_group_keys != set(node_keys):
                 raise ValueError("action scope must equal the complete selected graph group")
-            # A node type shared by nodes with different recovery safety (sd_agent: five agents) is admitted
-            # per node: a refused node never enters a managed scope, so it never reaches a supervised retry.
             from app.orchestrator.node_spec import node_admission_problem
             for node in run.nodes_snapshot or []:
                 if isinstance(node, dict) and str(node.get("id")) in node_keys:
@@ -546,9 +503,8 @@ class ActionSupervisor:
         return response
 
     async def charge_request(self, execution_id: str, *, media_reservation=None) -> int:
-        """Durably charge a model attempt before the provider transport starts."""
         async with self.master() as session:
-            await kill_switch.guard(session)  # before any reservation, charge or network call
+            await kill_switch.guard(session)
             from app.services.observation import ExecutionControl,get_observer,digest
             from app.models import Project,WorkflowRun
             control=await session.get(ActionExecutionControl,execution_id)
@@ -585,7 +541,7 @@ class ActionSupervisor:
                     raise RuntimeError("managed execution is absent, disabled, or held")
                 raise RuntimeError("managed execution request budget exhausted")
             used, project_id = reserved
-            from app.services import spend_guard  # local money caps, same transaction as the reservation
+            from app.services import spend_guard
             media_paid = media_reservation is not None and getattr(media_reservation, "category", "") == "generation_submit"
             if media_reservation is None or media_paid:
                 await spend_guard.reserve(
@@ -601,7 +557,6 @@ class ActionSupervisor:
 
     async def close(self, *, project_id: int, execution_id: str, initiator: str,
                     rationale: str, idempotency_key: str) -> dict:
-        """Revoke only when no managed node is queued/running; never stop business work."""
         from app.models import NodeRun, NodeRunStatus
         from app.services.observation import ExecutionControl
         if not initiator or not rationale.strip() or not idempotency_key.strip():
@@ -664,7 +619,6 @@ class ActionSupervisor:
 
 def evaluate_start(permission: ExecutionPermission | None, *, project_id: int,
                    node_key: str, graph_version: str) -> StartDecision:
-    """Pure fail-closed gate used immediately before a managed node starts."""
     if permission is None or not permission.enabled:
         return StartDecision(False, "execution_not_explicitly_enabled")
     if permission.held:
@@ -682,5 +636,4 @@ def evaluate_start(permission: ExecutionPermission | None, *, project_id: int,
 
 def action_is_idempotent(existing_execution_id: str, existing_action_id: str,
                          execution_id: str, action_id: str) -> bool:
-    """True only when the exact action identity has already been accepted."""
     return existing_execution_id == execution_id and existing_action_id == action_id

@@ -1,4 +1,3 @@
-"""Реалистичный сид (scripts/eval_seed.py) и контекст планировщика: что видит модель."""
 from __future__ import annotations
 
 import importlib.util
@@ -13,7 +12,7 @@ from app.models import Frame
 from app.services import prompt_library
 from app.services.action_layer import planner, planner_context as pc, planner_rules as rules
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 FIXTURE = Path(__file__).parent / "fixtures" / "action_planner_eval.json"
 CASES = json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"]
@@ -29,7 +28,7 @@ def load_seed():
 
 
 @pytest_asyncio.fixture
-async def seeded(env, tmp_path, monkeypatch):  # noqa: F811
+async def seeded(env, tmp_path, monkeypatch):
     ensure_builtin_actions()
     monkeypatch.setattr(prompt_library, "PROMPTS_ROOT", prompt_library.PROMPTS_ROOT)
     info = await load_seed().seed_realistic(project_id=2, factory=env.factory,
@@ -51,11 +50,11 @@ async def test_seed_fills_every_fact_the_model_sees(seeded) -> None:
     f = (await planner.load_context(seeded.project_id))["facts"]
     assert f["frame_count"] == 30 and f["max_frame_number"] == 30 and f["status"] == "frames_ready"
     rows = {r[0]: r for r in f["frames"]}
-    assert len(rows) == 30 and rows[7][1] == seeded.frame_ids[7] != 7  # frame_id != номер
-    assert rows[1][2] == "p" and rows[2][2] == "c" and rows[4][2] == "p"   # сцены 1-3 и 4-5
-    assert rows[7][3:] == [1, "1", "1"]                                      # один шот, картинка и видео
-    assert rows[4][3:] == [2, "12", "12"]                                    # два шота с файлами
-    assert rows[14][4:] == ["-", "-"] and rows[25][4:] == ["-", "-"]        # без файлов
+    assert len(rows) == 30 and rows[7][1] == seeded.frame_ids[7] != 7
+    assert rows[1][2] == "p" and rows[2][2] == "c" and rows[4][2] == "p"
+    assert rows[7][3:] == [1, "1", "1"]
+    assert rows[4][3:] == [2, "12", "12"]
+    assert rows[14][4:] == ["-", "-"] and rows[25][4:] == ["-", "-"]
     assert f["queue"]["image"] == 3 and f["queue"]["video"] == 1
     assert [3, "image_regen", 1] in f["queue"]["ops"]
     kinds = {n["id"]: n.get("kind") for n in f["nodes"]}
@@ -77,7 +76,7 @@ async def test_seed_writes_files_and_prompt_variants(seeded) -> None:
     assert vids[7] == {1} and vids[4] == {1, 2} and 13 not in vids
     names = prompt_library.list_prompts("script")
     assert "main" in names and "draft" in names
-    assert "draft" not in prompt_library.list_prompts("excel_gpt")  # draft только у шага script
+    assert "draft" not in prompt_library.list_prompts("excel_gpt")
     assert seeded.prompts_root == prompt_library.PROMPTS_ROOT
 
 
@@ -125,7 +124,7 @@ async def test_selected_frame_is_resolved_by_board_id_or_number(seeded) -> None:
 
 async def test_context_version_ignores_files_queue_and_proposals_but_not_structure(seeded) -> None:
     before = (await planner.load_context(2))["version"]
-    (seeded.data_dir / "scenes" / "frame_025_seed.png").write_bytes(b"x")  # картинка появилась
+    (seeded.data_dir / "scenes" / "frame_025_seed.png").write_bytes(b"x")
     assert (await planner.load_context(2))["version"] == before
     async with seeded.env.factory() as s:
         s.add(Frame(project_id=2, number=31, voiceover_text="н", attrs={}))
@@ -147,9 +146,9 @@ async def test_prompt_context_contains_only_what_the_offered_actions_need(seeded
     assert [p["n"] for p in change["proposals"]][-1] == 5 and change["versions"] and change["nodes"]
     assert all("type" not in n for n in change["nodes"])
     gen = prompt_ctx(facts, "сгенерируй картинки для кадров 3, 4 и 5")
-    assert "image_generator" not in gen.get("defaults", {}) and "queue" not in gen  # генератор, разрешение и лимиты сервер подставляет сам
+    assert "image_generator" not in gen.get("defaults", {}) and "queue" not in gen
     prompts = prompt_ctx(facts, "удали вариант мастер-промта draft")
-    assert "step_code" not in prompts.get("defaults", {})  # шаг промта берётся из слов запроса, а не из статуса проекта
+    assert "step_code" not in prompts.get("defaults", {})
     assert prompts["prompts"]["script"]["sel"] == "main" and "draft" in prompts["prompts"]["script"]["names"]
     assert "draft" not in prompts["prompts"].get("excel_gpt", {}).get("names", [])
     reset = pc.prompt_context(facts, ["node.reset_from_step"], registry, "сбрось шаг")
@@ -163,7 +162,7 @@ async def test_prompt_context_contains_only_what_the_offered_actions_need(seeded
     notes = json.loads(msgs[1]["content"]).get("notes", {})
     assert "montage.set_assemble_params" in notes and all(k in rules.ACTION_NOTES or k == "upload.*" for k in notes)
     shot = prompt_ctx(facts, "в меню съёмки поставь закадр ячейки кадра 4: «Новый текст»")
-    assert set(shot["frame_uuids"]) == {"4", "5"}  # названный и выбранный кадр, не все 30
+    assert set(shot["frame_uuids"]) == {"4", "5"}
 
 
 def test_frame_rows_window_is_bounded_and_centered() -> None:
@@ -177,7 +176,7 @@ def test_frame_rows_window_is_bounded_and_centered() -> None:
 
 
 def test_prompt_stays_small() -> None:
-    assert len(planner.SYSTEM) < 3900  # правила занимают не больше ~1 тыс. токенов
+    assert len(planner.SYSTEM) < 3900
     ensure_builtin_actions()
     facts = {"project_id": 2, "selected_scene": None, "selected_frame": None, "status": "idle",
              "frame_count": 30, "nodes": [], "queue": {"image": 0, "video": 0, "ops": []},
@@ -186,4 +185,4 @@ def test_prompt_stays_small() -> None:
     for c in CASES:
         _m, info = planner.build_prompt(c["text"], {"facts": facts, "version": "v"}, registry, 20, 24)
         sizes.append(info["chars"])
-    assert sum(sizes) / len(sizes) < 8000 and max(sizes) < 12500  # +200: подсказки set7 про близкие действия и пределы
+    assert sum(sizes) / len(sizes) < 8000 and max(sizes) < 12500

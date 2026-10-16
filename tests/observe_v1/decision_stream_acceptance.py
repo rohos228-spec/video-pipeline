@@ -1,8 +1,3 @@
-"""Offline Decision → real gpt_api → Unix gateway → loopback SSE acceptance.
-
-No real credentials, external network, worker, or manual Decision step calls.
-The optional delay affects only diagnostic body persistence.
-"""
 import asyncio
 import hashlib
 import importlib.util
@@ -248,7 +243,7 @@ async def run():
         try: gateway.reserve('POST','/codex/v1/responses')
         except RuntimeError as exc: assert 'degraded' in str(exc)
         else: raise AssertionError('storage failure did not block next POST')
-        gateway.AUDIT_DEGRADED=False  # Independent fresh-process restart fixture below.
+        gateway.AUDIT_DEGRADED=False
         gateway.LEDGER=gate_dir/'restart.sqlite'
         gateway.AUDIT_FAILURE=gate_dir/'restart.marker'
         gateway.reserve('POST','/codex/v1/responses')

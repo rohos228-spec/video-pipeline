@@ -4,7 +4,6 @@
  * сам отдаёт фронт + API из одного origin.
  */
 
-// Побочный эффект: ставит перехватчик fetch с токеном оператора (A04).
 import "./api-operator-token";
 import type {
   ArtifactDTO,
@@ -183,7 +182,6 @@ export async function http<T>(
       } catch {
         // оставляем как text
       }
-      // Сессия входа истекла: форма входа (AuthGate) откроется поверх интерфейса.
       if (res.status === 401 && typeof detail === "object" && (detail as { detail?: unknown }).detail === "login required") {
         window.dispatchEvent(new Event("vp-auth-required"));
       }
@@ -249,11 +247,9 @@ export interface MontagePendingOp {
     | "coverage_scene_action";
   frame_number: number;
   shot: 1 | 2;
-  /** Общий план: отдельный still, не shot1. */
   slot?: "parent";
   prompt?: string;
   correction?: string;
-  /** Заметка оператора для ИИзменения — агент img_pr пишет по ней новый промт. */
   instruction?: string;
   plan?: string;
   action?: string;
@@ -272,11 +268,8 @@ export interface MontagePendingOp {
   feature?: string;
   kind?: "parent" | "child";
   parent_number?: number;
-  /** Формат сцены: шаблон T0…T10 / X1 / X2 из каталога. */
   template?: string;
-  /** Якоря закадра ячейки — точки нарезки VO по кадрам. */
   anchors?: SceneAnchorRow[];
-  /** Выделение закадра: start/end в полном тексте ячейки. */
   start?: number;
   end?: number;
   text?: string;
@@ -336,7 +329,6 @@ export interface SceneShotRow {
   frame_number: number | null;
 }
 
-/** Состояние редактора кадра на доске монтажа (GET .../scene-editor). */
 export interface SceneEditorState {
   frame: {
     frame_id: number;
@@ -866,7 +858,6 @@ export const api = {
   // ── Projects ─────────────────────────────────────────────────────
   listProjects: () => http<ProjectSummary[]>(`/api/projects`),
   getProject: (id: number) => http<ProjectDetail>(`/api/projects/${id}`),
-  // Явная синхронизация состояния проекта (GET больше не подтягивает runtime сам).
   syncProject: (id: number) =>
     http<ProjectDetail>(`/api/projects/${id}/sync`, { method: "POST" }),
   getProjectRun: (projectId: number) =>
@@ -1209,6 +1200,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  regenerateFrameVideo: (projectId: number, frameId: number) =>
+    http<{ ok: boolean; frame_id: number; frame_number: number }>(
+      `/api/projects/${projectId}/frames/${frameId}/regenerate-video`,
+      { method: "POST" },
+    ),
 
   getMontageBoard: (projectId: number) =>
     http<MontageBoardDTO>(
@@ -1264,7 +1260,6 @@ export const api = {
       }),
     }),
 
-  /** U-3: отменить последнее деление сцены (ничего не удаляет; платные картинки и клипы остаются на кадрах). */
   undoSplitMontageScene: (projectId: number, undoId?: string | null) =>
     http<{
       ok: boolean;
@@ -1383,7 +1378,6 @@ export const api = {
       prompt?: string;
       passport?: Record<string, string>;
       frame_ids?: number[];
-      /** Якоря с доски. В 3-нодный прогон не входят. */
       anchors?: { "якорь": string; "изменение"?: string; "главный"?: boolean }[];
     },
   ) =>
@@ -1435,7 +1429,6 @@ export const api = {
     body: {
       pending_ops: MontagePendingOp[];
       video_trims?: Record<string, { start: number; end: number }>;
-      /** Пустая очередь иначе не затирает серверную (should_accept_queue_save). */
       force_clear?: boolean;
     },
   ) =>
@@ -1453,7 +1446,6 @@ export const api = {
     body: {
       video_trims: Record<string, { start: number; end: number }>;
       pending_ops: MontagePendingOp[];
-      /** Только эти кадры; остальные правки остаются в очереди. */
       frame_numbers?: number[];
     },
   ) =>
@@ -1805,7 +1797,6 @@ export const api = {
     if (params.kind) q.set("kind", params.kind);
     return http<ArtifactDTO[]>(`/api/artifacts?${q.toString()}`);
   },
-  // С project_id файл ищется в project.db проекта (там лежат артефакты); без него — только в общей базе.
   artifactFileUrl: (uuid: string, projectId?: number | null) =>
     projectId ? `/api/artifacts/${uuid}/file?project_id=${projectId}` : `/api/artifacts/${uuid}/file`,
 
@@ -2802,6 +2793,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  assistProject: (body: {
+    topic_draft?: string;
+    title_draft?: string;
+    tone?: string | null;
+    voiceover_style?: string | null;
+    mode?: "expand" | "generate";
+  }) =>
+    http<{
+      ok: boolean;
+      title: string;
+      topic: string;
+      suggested_hero_mode: "hero" | "no_hero" | "auto";
+      tone?: string | null;
+      voiceover_style?: string | null;
+    }>(
+      "/api/meta-agent/assist-project",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      90_000,
+    ),
 };
 
 export type GptWorkspaceSessionSummary = {

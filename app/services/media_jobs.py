@@ -1,8 +1,3 @@
-"""Durable transport bookkeeping for existing media services.
-
-No worker or scheduler here. Node identity comes only from the observed worker
-context. Submit reservations are permanent; only a known job may be polled.
-"""
 from __future__ import annotations
 
 import re
@@ -57,7 +52,7 @@ class MediaRequest(Base):
 
 
 class MediaPolicyError(RuntimeError):
-    """Protective stop; not a model quality or native pipeline defect."""
+    pass
 
 async def _verified_artifact_job(ctx, artifact):
     async with ctx.observer.master() as master:
@@ -78,7 +73,6 @@ async def _verified_artifact_job(ctx, artifact):
 
 
 async def persist_artifact(session, artifact):
-    """Original business transaction owns apply/rollback; job UUID deduplicates it."""
     from app.models import Artifact
     ctx = _attempt.get()
     if not ctx or ctx.scope.mode != "managed":
@@ -106,7 +100,6 @@ async def persist_artifact(session, artifact):
 
 
 async def require_verified_images(session, project):
-    """Final managed gate inside original validator; never applies or regenerates."""
     bound = await assert_entry(project_id=project.id, provider="kie")
     if bound is None:
         return
@@ -175,13 +168,6 @@ def validate_media_config(raw, *, mode):
 
 
 def media_profile_state(cfg):
-    """What the owner's runtime config says about managed media; the single source for the panel and
-    the two execution gates (assert_entry, actions_v1 media start). Computed, never a constant.
-
-    Media stays fail-closed: ``validate_media_config`` rejects an enabled media policy outside
-    synthetic mode (no authorized network profile / ceiling exists yet), so a validated production
-    config always reports ``production_profile_configured=False`` and ``execution_allowed=False``.
-    A media node is never enabled implicitly by the built-in text recovery catalog."""
     media = (cfg or {}).get("media") or {}
     mode = (cfg or {}).get("mode")
     enabled = bool(media.get("enabled"))
@@ -227,7 +213,6 @@ async def assert_entry(*, project_id=None, provider):
     state = media_profile_state(cfg)
     if (not media or not state["execution_allowed"] or media["provider"] != provider
             or state["production_profile_configured"]):
-        # A production media profile has no authorized network transport yet: fail closed.
         raise MediaPolicyError("media provider profile disabled or unsupported")
     from app.settings import settings
     if state["synthetic_only"] and not str(settings.gpt_api_key).startswith("synthetic"):
@@ -334,7 +319,7 @@ class JobHandle:
             row = await s.get(MediaJob, self.job_id)
             if row.phase in {"verified", "failed", "cancelled"}:
                 if row.phase == phase:
-                    return  # repeated delivery has no second application
+                    return
                 raise MediaPolicyError("terminal media transition denied")
             if provider_job_id:
                 if row.provider_job_id and row.provider_job_id != provider_job_id:
@@ -359,7 +344,6 @@ class JobHandle:
 
 
 async def stage_reservation(session, reservation):
-    """Called inside the SAME transaction as the common budget increment."""
     row = await session.get(MediaJob, reservation.job_id)
     if (row is None or row.execution_id != reservation.execution_id
             or row.node_key != reservation.node_key):

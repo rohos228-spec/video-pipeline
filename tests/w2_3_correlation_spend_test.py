@@ -1,8 +1,3 @@
-"""W2-3 (B02 + B03): корреляция трат (проект, запуск, запрос) и единая модель траты.
-
-Класс доказательства: U/D на заменителях провайдера и сети. Живых прогонов нет: ни сети, ни платных вызовов,
-ни боевой базы. Все базы лежат во временных каталогах.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +13,7 @@ from app.services import api_tracker_hook as hook
 from app.services import media_spend, request_context as rc, spend_guard
 from app.services.observation import _cost_project
 from app.settings import settings
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +25,6 @@ def _clean_state():
 
 @pytest_asyncio.fixture
 async def ledger(tmp_path, monkeypatch):
-    """Настоящий spend_guard на временной SQLite; media_spend пишет в неё через app.db.SessionLocal."""
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'ledger.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     monkeypatch.setattr("app.db.SessionLocal", sessions)
@@ -39,7 +33,7 @@ async def ledger(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "media_spend_recording", True)
     monkeypatch.setattr(settings, "gpt_api_key", "real-looking-key")
     monkeypatch.setattr(settings, "vibecode_api_key", "real-looking-key")
-    async with sessions() as s:  # таблицы заранее: первые записи из разных задач не гоняются за CREATE TABLE
+    async with sessions() as s:
         await spend_guard.ensure_schema(s)
         await spend_guard.ensure_task_schema(s)
     yield sessions
@@ -59,14 +53,12 @@ async def spend_guard_drain():
         await asyncio.gather(*list(spend_guard._tasks), return_exceptions=True)
 
 
-# ------------------------------------------------------------------ request_context (B02 основа)
 
 def test_request_scope_nests_and_restores():
     assert rc.get_request_id() == "" and rc.get_run_id() == "" and rc.get_project_id() is None
     with rc.request_scope("req-1", run_id="exec-9", project_id=4):
         assert rc.correlation() == {"project_id": 4, "run_id": "exec-9", "request_id": "req-1"}
         with rc.ensure_request_scope("op-", project_id=5):
-            # запрос оператора сохраняется, проект и запуск внутренней операции уточняются
             assert rc.get_request_id() == "req-1" and rc.get_project_id() == 5 and rc.get_run_id() == "exec-9"
         assert rc.get_project_id() == 4
     assert rc.get_request_id() == "" and rc.get_run_id() == "" and rc.get_project_id() is None
@@ -76,7 +68,7 @@ def test_ensure_request_scope_creates_an_id_when_there_is_no_request():
     with rc.ensure_request_scope("tick-", run_id=rc.native_run_id(3), project_id=3) as snap:
         assert snap["request_id"].startswith("tick-") and len(snap["request_id"]) <= 64
         assert snap["run_id"].startswith("native:3:")
-        assert _cost_project.get() == 3  # старый путь чтения тоже видит проект
+        assert _cost_project.get() == 3
     assert rc.get_request_id() == "" and _cost_project.get() is None
 
 
@@ -85,7 +77,7 @@ def test_bind_run_and_unbind_run_drop_only_what_they_created():
     try:
         rc.bind_run("plan:abc", 8, "plan-")
         assert rc.get_run_id() == "plan:abc" and rc.get_project_id() == 8 and rc.get_request_id() == "operator-req"
-        rc.unbind_run("plan:other")  # чужой запуск не снимается
+        rc.unbind_run("plan:other")
         assert rc.get_run_id() == "plan:abc"
         rc.unbind_run("plan:abc")
         assert rc.get_run_id() == "" and rc.get_project_id() is None and rc.get_request_id() == "operator-req"
@@ -97,7 +89,6 @@ def test_bind_run_and_unbind_run_drop_only_what_they_created():
     assert rc.get_request_id() == ""
 
 
-# ------------------------------------------------------------------ B02: нативные строки получают проект/запуск/запрос
 
 async def test_native_media_rows_carry_project_run_request_and_ref(ledger):
     with rc.ensure_request_scope("tick-", run_id="exec-77", project_id=7):
@@ -168,21 +159,19 @@ async def test_old_ledger_tables_get_the_new_columns_and_stay_append_only(tmp_pa
         with pytest.raises(Exception, match="append-only"):
             await s.execute(text("UPDATE spend_ledger SET usd = 0"))
         await s.rollback()
-    # повторный вызов ничего не ломает
     spend_guard._ensured.discard(str(engine.url))
     async with old_sessions() as s:
         await spend_guard.ensure_schema(s)
     await engine.dispose()
 
 
-# ------------------------------------------------------------------ B03: единая модель траты
 
 def test_unified_kind_mapping():
     uk = spend_guard.unified_kind
     assert uk("estimated", "media_native", "tts chars=3 uncalibrated") == "estimated"
     assert uk("estimated", "media_native", "image m ok cost_unknown=true") == "estimated"
     assert uk("actual", "media_native", "create jobs m rejected http=422") == "actual"
-    assert uk("actual", "media_native", "tts chars=3 uncalibrated") == "estimated"  # старая строка: не факт
+    assert uk("actual", "media_native", "tts chars=3 uncalibrated") == "estimated"
     assert uk("actual", "native_call", "basis=computed uncalibrated") == "estimated"
     assert uk("settle", "media_native", "basis=reported") == "actual"
     assert uk("settle", "media_native", "") == "estimated"
@@ -196,14 +185,13 @@ def test_unified_kind_mapping():
 
 
 async def test_no_actual_row_is_marked_uncalibrated_after_a_synthetic_run(ledger, monkeypatch):
-    """Все пути, которые раньше могли записать расчётную цену как факт: ElevenLabs, Vibecode/Kie по токенам, Outsee."""
     from app.services import observation
 
     with rc.ensure_request_scope("tick-", run_id="exec-1", project_id=9):
         media_spend.record("elevenlabs", usd=0.3, note="tts chars=10 uncalibrated")
         media_spend.record("elevenlabs", usd=0.12, note="sfx dur=3 uncalibrated")
         media_spend.record("outsee", usd=0.0, unknown=True, note="video m ok")
-        media_spend.record("kie", usd=0.0, note="create jobs m rejected http=422")  # отказ: факт 0
+        media_spend.record("kie", usd=0.0, note="create jobs m rejected http=422")
         observation._track_api_cost(model="vibecode-model", usage={"prompt_tokens": 1000, "completion_tokens": 100},
                                     duration_sec=1.0, provider="vibecode")
         observation._track_api_cost(model="gpt-5.6-sol", usage={"prompt_tokens": 1000, "completion_tokens": 100},
@@ -241,7 +229,7 @@ async def test_provider_reported_eleven_amount_is_a_fact_row(ledger):
     assert "uncalibrated" in est.note and spend_guard.unified_kind(est.kind, est.source, est.note) == "estimated"
     assert "basis=reported" in settle.note and spend_guard.unified_kind(settle.kind, settle.source, settle.note) == "actual"
     assert settle.run_id == "exec-1" and settle.request_id == est.request_id and settle.project_id == 2
-    assert sum(r.usd for r in rows) == pytest.approx(20 * media_spend.ELEVENLABS_USD_PER_CHAR)  # один вызов - одна сумма
+    assert sum(r.usd for r in rows) == pytest.approx(20 * media_spend.ELEVENLABS_USD_PER_CHAR)
 
 
 async def test_run_totals_net_a_closed_reserve(ledger):
@@ -261,7 +249,6 @@ async def test_run_totals_net_a_closed_reserve(ledger):
     assert totals["rows"] == 3
 
 
-# ------------------------------------------------------------------ B02: цепочка одним запросом
 
 async def test_chain_operator_plan_step_money_task_in_one_query(tmp_path):
     from app.models import Base
@@ -302,7 +289,6 @@ async def test_chain_operator_plan_step_money_task_in_one_query(tmp_path):
     await engine.dispose()
 
 
-# ------------------------------------------------------------------ B02: трекер вызовов
 
 def test_tracker_row_metadata_carries_ids_of_the_caller(monkeypatch, tmp_path):
     import json
@@ -320,7 +306,6 @@ def test_tracker_row_metadata_carries_ids_of_the_caller(monkeypatch, tmp_path):
     assert meta["project_id"] == 12 and source == "12"
 
 
-# ------------------------------------------------------------------ B02: точки входа
 
 def test_tick_run_id_is_the_execution_or_a_native_tick(monkeypatch):
     from app.services import actions_v1, advance_runner
@@ -354,7 +339,7 @@ async def test_advance_job_sets_project_run_and_request_for_the_whole_tick(monke
     with pytest.raises(RuntimeError, match="context was captured"):
         await advance_runner.advance_project_job(31, bot=None)
     assert seen["project_id"] == 31 and seen["run_id"].startswith("native:31:") and seen["request_id"].startswith("tick-")
-    assert rc.correlation() == {"project_id": None, "run_id": "", "request_id": ""}  # после такта всё снято
+    assert rc.correlation() == {"project_id": None, "run_id": "", "request_id": ""}
 
 
 async def test_generation_queue_attributes_spend_to_the_project(ledger, monkeypatch):
@@ -417,11 +402,8 @@ async def test_regeneration_inside_a_plan_keeps_the_plan_run(ledger, monkeypatch
     assert rows[0].run_id == "plan:pp" and rows[0].request_id == "operator-req" and rows[0].project_id == 62
 
 
-# ------------------------------------------------------------------ B02+B03: слой действий
 
 async def test_action_layer_step_native_spend_is_one_logical_spend_per_run(env, ledger, monkeypatch):
-    """Шаг плана: резерв слоя + нативная трата + закрытие резерва. Все строки с проектом, запуском plan:<id> и
-    запросом; сумма по запуску равна нативной трате (не удвоена); в конце контекст шага снят."""
     from app.services.action_layer import approval, executor, service, store
     from tests.action_layer_support import fresh_registry, make_spec
 
@@ -461,5 +443,5 @@ async def test_action_layer_step_native_spend_is_one_logical_spend_per_run(env, 
         assert native.ref == "PL1"
         totals = await spend_guard.run_totals(s, run)
         assert await spend_guard.correlation_gaps(s) == []
-    assert totals["total_usd"] == pytest.approx(0.02)  # одна логическая трата по запуску
-    assert rc.get_run_id() == "" and rc.get_project_id() is None  # привязка шага снята после сверки
+    assert totals["total_usd"] == pytest.approx(0.02)
+    assert rc.get_run_id() == "" and rc.get_project_id() is None

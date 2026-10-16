@@ -1,4 +1,3 @@
-"""A3: an unconfirmed business commit is persisted, restored after restart and cleared only by a person."""
 from __future__ import annotations
 
 import asyncio
@@ -37,7 +36,6 @@ class Restartable(unittest.IsolatedAsyncioTestCase):
         self.eid = self.scope.execution_id
 
     def new_observer(self):
-        """A fresh process: nothing in memory, same databases and body store."""
         return observation.Observer(self.master, body_root=self.root / "bodies")
 
     async def asyncTearDown(self):
@@ -80,7 +78,7 @@ class CommitUncertaintyPersistence(Restartable):
             self.observer.note_commit_uncertainty(self.eid, REASON)
             await asyncio.gather(*self.observer._tasks)
             await self.observer.persist_uncertainty()
-        self.assertEqual(self.observer.commit_uncertainty, {self.eid: REASON})  # still blocking
+        self.assertEqual(self.observer.commit_uncertainty, {self.eid: REASON})
         self.assertEqual(self.observer._uncertainty_unsaved, {self.eid: REASON})
         self.assertEqual(await self.markers(), [])
         await self.observer.maintain()
@@ -93,7 +91,6 @@ class CommitUncertaintyPersistence(Restartable):
         before = await self.incidents()
         self.assertEqual([(i.type, i.status) for i in before], [("journal_gap", before[0].status)])
         self.assertNotEqual(before[0].status, "resolved_confirmed")
-        # restart; the diagnoser runs before anything else has reloaded the observer
         restarted = self.new_observer()
         await Diagnoser(restarted).update(self.eid, snapshot={})
         after = await self.incidents()
@@ -104,8 +101,7 @@ class CommitUncertaintyPersistence(Restartable):
         self.assertIn(self.eid, restarted.commit_uncertainty)
 
     async def test_without_a_persisted_marker_the_old_failure_mode_is_reproducible(self):
-        """Control: memory-only marker (what the code did before) is closed as not observed after restart."""
-        self.observer.commit_uncertainty[self.eid] = REASON  # set directly, never persisted
+        self.observer.commit_uncertainty[self.eid] = REASON
         await Diagnoser(self.observer).update(self.eid, snapshot={})
         await Diagnoser(self.new_observer()).update(self.eid, snapshot={})
         rows = await self.incidents()
@@ -131,7 +127,6 @@ class CommitUncertaintyClearing(Restartable):
         restarted = self.new_observer()
         await restarted.reload()
         self.assertEqual(restarted.commit_uncertainty, {})
-        # a later uncertainty is a new row, the old one stays as history
         await self.mark_and_persist(restarted)
         self.assertEqual([r.cleared_at is None for r in await self.markers()], [False, True])
 

@@ -1,9 +1,3 @@
-"""Помощник генерации: LLM-агент промптов + обвязка-валидатор.
-
-Поток: запрос + текст агента стиля + формат + N → активная текстовая LLM
-(gpt_client) → строгий JSON-контракт → парсинг/валидация.
-Без готового промпта от LLM генерация не стартует.
-"""
 
 from __future__ import annotations
 
@@ -22,9 +16,6 @@ MAX_REQUEST_CHARS = 2000
 MAX_AGENT_CHARS = 16000
 MIN_PROMPT_CHARS = 40
 MAX_PROMPT_CHARS = 8000
-# Короткие ядра стиля (trash polka, pixel…) можно приклеить в начало.
-# Длинный шаблон агента (~7k) приклеивать нельзя: срез по MAX_PROMPT_CHARS
-# оставляет только YAML со слотами [ГЕРОЙ], а заполненный промпт отрезается.
 PREPEND_CORE_MAX = 480
 
 _SYSTEM_TEMPLATE = """Ты — агент визуальных промптов для генерации изображений.
@@ -77,13 +68,11 @@ _REQUEST_STOP = frozenset(
 
 
 def request_tokens(request: str) -> list[str]:
-    """Значимые слова запроса: они обязаны попасть в промпт для картинки."""
     words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]{4,}", request or "")
     return [w for w in words if w.lower() not in _REQUEST_STOP]
 
 
 def looks_like_agent_echo(prompt: str, core: str) -> bool:
-    """LLM вернула правила агента вместо готового промпта для картинки."""
     p = (prompt or "").strip()
     if not p:
         return True
@@ -112,7 +101,6 @@ _NEG_RE = re.compile(
 
 
 def extract_agent_core(agent_text: str) -> str:
-    """Ядро стиля из длинного агента — без инструкции и без темы референсов."""
     from app.services.style_analyzer import scrub_style_topic
 
     text = (agent_text or "").strip()
@@ -156,7 +144,6 @@ def local_visual_prompt(
     aspect: str,
     ref_labels: list[str] | None = None,
 ) -> str:
-    """Готовый visual-промпт: визуал стиля + предмет из запроса. Без темы референсов."""
     core = extract_agent_core(agent_text)
     if not core:
         core = (
@@ -189,7 +176,6 @@ def local_visual_prompt(
 
 
 def is_unfilled_prompt(prompt: str, request: str = "") -> bool:
-    """Сырой запрос / локальная заглушка — в генератор картинки слать нельзя."""
     p = (prompt or "").strip()
     req = (request or "").strip()
     if not p:
@@ -202,11 +188,9 @@ def is_unfilled_prompt(prompt: str, request: str = "") -> bool:
 
 
 def parse_prompts_reply(raw: str) -> list[str]:
-    """Разбор ответа LLM: строгий JSON → нумерованный список → абзацы."""
     text = (raw or "").strip()
     if not text:
         return []
-    # 1) JSON (ищем первый сбалансированный блок {...})
     m = re.search(r"\{[\s\S]*\}", text)
     if m:
         try:
@@ -216,11 +200,9 @@ def parse_prompts_reply(raw: str) -> list[str]:
                 return [str(p) for p in items]
         except (json.JSONDecodeError, AttributeError):
             pass
-    # 2) Нумерованный / маркированный список
     parts = [p.strip() for p in re.split(r"(?m)^\s*(?:\d+[.)]|[-•*])\s+", text) if p.strip()]
     if len(parts) >= 2:
         return parts
-    # 3) Абзацы через пустую строку
     return [c.strip() for c in re.split(r"\n\s*\n", text) if c.strip()]
 
 
@@ -232,7 +214,6 @@ def sanitize_prompts(
     request: str,
     aspect: str,
 ) -> tuple[list[str], bool]:
-    """Чистка. Возвращает (готовые промпты, не хватило до count). Без локальных заглушек."""
     core = core.strip()
     core_key = core[:40].lower()
     prepend_core = bool(core_key) and len(core) <= PREPEND_CORE_MAX
@@ -274,7 +255,6 @@ async def generate_prompts(
     count: int = 1,
     ref_labels: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Агент + обвязка. Без готового промпта — ValueError, картинка не стартует."""
     request = (request or "").strip()
     agent_text = (agent_text or "").strip()
     aspect = (aspect or "9:16").strip() or "9:16"
@@ -354,7 +334,7 @@ async def generate_prompts(
                 raw_prompts = [*good, *extra] if good else extra
     except ValueError:
         raise
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         last_err = str(e)
         logger.warning("gen_assistant: LLM недоступна ({})", e)
         raw_prompts = []

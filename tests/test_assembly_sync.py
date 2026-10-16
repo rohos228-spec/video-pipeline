@@ -304,7 +304,6 @@ def test_extract_local_frame_words_rebases_to_zero() -> None:
 
 
 def test_cut_clip_does_not_resize() -> None:
-    """Без target_w/target_h нарезка не масштабирует (scale/pad только по явному запросу)."""
     import asyncio
     from pathlib import Path
     from unittest.mock import patch
@@ -321,11 +320,8 @@ def test_cut_clip_does_not_resize() -> None:
         patch.object(asm, "_run", fake_run),
         patch.object(asm, "probe_duration", fake_probe),
     ):
-        # отрезок >= слота: ни замедления, ни scale -> -vf отсутствует
         asyncio.run(asm._cut_clip(Path("a.mp4"), 5.0, Path("b.mp4")))
-        # без размеров нет scale даже при замедлении (отрезок короче слота)
         asyncio.run(asm._cut_clip(Path("a.mp4"), 30.0, Path("b.mp4")))
-        # с размерами scale/pad применяются
         asyncio.run(
             asm._cut_clip(Path("a.mp4"), 5.0, Path("b.mp4"), target_w=1080, target_h=1920)
         )

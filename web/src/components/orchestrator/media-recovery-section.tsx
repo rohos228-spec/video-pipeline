@@ -20,9 +20,6 @@ import {cn} from "@/lib/utils";
 
 type NodeState = {data?: RecoveryAssessment; error?: string};
 
-// «Восстановление медиа»: read-only view of what can be done with a paid media node without paying twice.
-// Nothing here calls the write endpoints: «Докачать» and «Снять блокировку…» only build a plan through the action
-// layer, so the server-side preview -> approval -> run flow (and its audit trail) is reused.
 export function MediaRecoverySection({projectId}: {projectId: number | null}) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);

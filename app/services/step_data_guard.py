@@ -154,17 +154,12 @@ async def ready_status_confirmed_by_data(
         if project.status is ready_status:
             return True
 
-    # SFX выключен (SFX_ENABLED=false, значение по умолчанию): sfx_plan/sfx_gen проходят насквозь и не оставляют данных.
-    # Без этого clamp откатывал sfx_plan_ready -> music_ready, auto_advance снова запускал sfx_plan, и цепочка
-    # крутилась бесконечно (живой F10 14.10.2026).
     if ready_status in (ProjectStatus.sfx_plan_ready, ProjectStatus.sfx_ready) and project.status is ready_status:
         from app.settings import settings as _settings
 
         if not _settings.sfx_enabled:
             return True
 
-    # Ручная озвучка voice_full.wav: compute_actual_status может быть ниже
-    # (нет всех scene_image), но audio_ready уже законно — не откатывать.
     if ready_status in (ProjectStatus.audio_ready, ProjectStatus.music_ready):
         await recover_audio_from_disk(session, project)
         from app.services.frame_audio import find_voice_full_on_disk

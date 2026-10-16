@@ -1,4 +1,3 @@
-"""W56: исправления по аудиту (обход каталога статики, возврат в шаг после паузы, история отказов)."""
 from __future__ import annotations
 
 import asyncio
@@ -77,7 +76,6 @@ def _ffmpeg_ok() -> bool:
 
 @pytest.mark.skipif(not _ffmpeg_ok(), reason="нужен ffmpeg")
 def test_variant2_mux_mixes_sfx_into_audio(tmp_path):
-    """M1: звук из sfx_gen реально попадает в дорожку (раньше на пути variant2 выбрасывался молча)."""
     import subprocess
 
     from app.services.montage.variant2 import _mux
@@ -88,7 +86,7 @@ def test_variant2_mux_mixes_sfx_into_audio(tmp_path):
 
     video, voice, sfx_f = tmp_path / "v.mp4", tmp_path / "voice.wav", tmp_path / "sfx.wav"
     run("ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=4", "-pix_fmt", "yuv420p", str(video))
-    run("ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "4", str(voice))  # тишина
+    run("ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "4", str(voice))
     run("ffmpeg", "-y", "-f", "lavfi", "-i", "sine=f=800:d=1", str(sfx_f))
     out_plain, out_sfx = tmp_path / "plain.mp4", tmp_path / "sfx.mp4"
     asyncio.run(_mux(video, voice, out_plain, voice_s=4.0, bgm=None))
@@ -103,8 +101,8 @@ def test_variant2_mux_mixes_sfx_into_audio(tmp_path):
                 return float(line.split("max_volume:")[1].split("dB")[0])
         return -91.0
 
-    assert peak(out_plain) < -60          # без SFX дорожка тихая
-    assert peak(out_sfx) > -20            # с SFX слышен сигнал
+    assert peak(out_plain) < -60
+    assert peak(out_sfx) > -20
 
 
 def test_assemble_refuses_missing_clips_by_default():
@@ -143,12 +141,11 @@ def test_remember_pause_origin_keeps_running_step():
     restart_chain.remember_pause_origin(p)
     assert p.meta["paused_from_status"] == "plan_ready" and p.meta["x"] == 1
     p.status = ProjectStatus.paused
-    restart_chain.remember_pause_origin(p)          # уже на паузе: источник не затирается
+    restart_chain.remember_pause_origin(p)
     assert p.meta["paused_from_status"] == "plan_ready"
 
 
 def test_animation_prompt_placeholder_counts_as_missing():
-    """Живой F10 14.10: модель вернула «нет исходных данных для заполнения» для кадров 7-8; повтор шага не просил их заново."""
     from app.models import Frame
     from app.services.animation_prompt_gpt import has_animation_prompt_for_frame
 
@@ -159,7 +156,6 @@ def test_animation_prompt_placeholder_counts_as_missing():
 
 
 def test_sfx_disabled_pass_through_status_is_confirmed(monkeypatch):
-    """Живой F10 14.10: при SFX_ENABLED=false sfx_plan_ready откатывался в music_ready и шаг крутился бесконечно."""
     from app.models import Project, ProjectStatus
     from app.services.step_data_guard import ready_status_confirmed_by_data
     from app.settings import settings
@@ -171,7 +167,6 @@ def test_sfx_disabled_pass_through_status_is_confirmed(monkeypatch):
 
 
 def test_plan_sheet_is_created_for_db_first_workbook(tmp_path):
-    """Живой F10 14.10: в книге проекта нет листа «план», таймкоды R15 некуда писать, сборка вставала."""
     from openpyxl import Workbook, load_workbook
 
     from app.storage.plan_sheet_v8 import (
@@ -183,7 +178,7 @@ def test_plan_sheet_is_created_for_db_first_workbook(tmp_path):
     p = SimpleNamespace(id=1, data_dir=tmp_path)
     cells = [(1, "Первая фраза."), (2, "Вторая фраза.")]
     assert ensure_plan_sheet(p, cells) is True
-    assert ensure_plan_sheet(p, cells) is False                      # повтор ничего не меняет
+    assert ensure_plan_sheet(p, cells) is False
     assert "план" in load_workbook(tmp_path / "project.xlsx").sheetnames
     assert write_plan_timestamps(p, [(1, "0:00.00-0:03.00"), (2, "0:03.00-0:06.00")]) == 2
     got, _row = read_plan_timestamps_cells(p, [1, 2])
@@ -191,7 +186,6 @@ def test_plan_sheet_is_created_for_db_first_workbook(tmp_path):
 
 
 def test_create_project_keeps_aspect_and_generators():
-    """Живой F10 14.10: POST /api/projects принимал aspect_ratio и генераторы, но не сохранял их."""
     src = open("app/web/routers/projects.py", encoding="utf-8").read()
     assert 'for _field in ("aspect_ratio", "image_resolution", "video_resolution", "image_generator", "video_generator")' in src
 
@@ -232,7 +226,6 @@ def test_fleet_active_transfers_route_exists():
 
 
 def test_hollow_scene_prompt_is_detected():
-    """Живой F10 15.10: промты из шаблона стиля с заглушками в каждом поле сцены ушли в платную генерацию."""
     from app.generation_options import is_scene_prompt_hollow
 
     hollow = ("Референс: персонажи отсутствуют. Фон: нет исходных данных для заполнения. Свет: нет исходных данных для "

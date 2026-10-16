@@ -1,4 +1,3 @@
-"""excel_gpt list — общий каталог main; группа — только по group_id."""
 
 from __future__ import annotations
 
@@ -107,7 +106,6 @@ def test_global_list_hides_group_names_even_from_agents() -> None:
 def test_fw_shots_runner_reads_group_not_main_agents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompts_root: Path
 ) -> None:
-    """Баг: раннер без group_id брал excel_gpt_agents v6 («1 сцена = 1 кадр»)."""
     from types import SimpleNamespace
 
     group = tmp_path / "templates" / "node_groups" / "script_frames_qc"
@@ -158,7 +156,6 @@ def test_fw_shots_runner_reads_group_not_main_agents(
 def test_skeleton_and_place_prompts_live_in_scene_design(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompts_root: Path
 ) -> None:
-    """Каркас / площадка группы читают prompts/scene_design/, не копию в группе."""
     sd = tmp_path / "prompts" / "scene_design"
     sd.mkdir(parents=True, exist_ok=True)
     (sd / "scene_skeleton_agent.md").write_text("SKELETON\n", encoding="utf-8")

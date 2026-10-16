@@ -1,7 +1,3 @@
-"""W5 интеграция (D12, сервер): Idempotency-Key и X-Action-Layer-Operator на изменяющих ручках слоя действий.
-
-Сети и платных вызовов нет: заглушки действий, временная БД, внутренний ASGI-клиент.
-"""
 from __future__ import annotations
 
 import pytest
@@ -10,7 +6,7 @@ import pytest_asyncio
 from app.services import access_guard, operator_audit
 from app.services.action_layer import executor
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env, make_spec  # noqa: F401
+from tests.action_layer_support import env, make_spec
 
 BASE = "/api/action-layer"
 
@@ -65,7 +61,6 @@ async def test_run_with_a_repeated_key_is_not_executed_twice(env, stubs) -> None
     two = await env.client.post(f"{BASE}/plans/{pid}/run", headers=h)
     assert one.status_code == two.status_code == 200 and one.json() == two.json()
     assert len(stubs) == 1
-    # без ключа повтор честно отказывает (план уже выполнен)
     assert (await env.client.post(f"{BASE}/plans/{pid}/run")).status_code == 409
 
 
@@ -88,7 +83,7 @@ async def test_started_but_unfinished_call_blocks_a_blind_repeat(env, stubs) -> 
     body = _plan()
     fp = store.call_fingerprint("POST", f"{BASE}/plans/preview", params=[], body=PlanIn(**body).model_dump())
     state, _ = await store.claim_call("k-crashed", fp, method="POST", path=f"{BASE}/plans/preview", operator="x")
-    assert state == "new"  # the first attempt started and never wrote an outcome (process died)
+    assert state == "new"
     r = await env.client.post(f"{BASE}/plans/preview", json=body, headers={"Idempotency-Key": "k-crashed"})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "idempotency_unknown"
 
@@ -103,7 +98,7 @@ async def test_operator_header_is_recorded_in_the_call_journal(env, stubs) -> No
     async with env.factory() as s:
         row = await s.scalar(select(store.ActionCallRecord).where(store.ActionCallRecord.idem_key == "k-op-1"))
     assert row is not None and "\n" not in row.operator and "\r" not in row.operator
-    assert row.operator == "ivan_petrov_forged:_yes"  # unsafe characters become "_"
+    assert row.operator == "ivan_petrov_forged:_yes"
 
 
 def _scope(**headers: str) -> dict:
@@ -117,7 +112,6 @@ def test_operator_name_enters_the_audit_actor_only_with_a_valid_operator_token()
     assert named == "operator:ivan"
     plain = operator_audit.resolve_actor(_scope(**{access_guard.OPERATOR_HEADER: token}))
     assert plain == "operator"
-    # an outside caller cannot forge the name: without the token the header is ignored
     forged = operator_audit.resolve_actor(_scope(**{"X-Action-Layer-Operator": "ivan"}))
     assert forged == "local"
     wrong = operator_audit.resolve_actor(_scope(**{access_guard.OPERATOR_HEADER: "wrong",

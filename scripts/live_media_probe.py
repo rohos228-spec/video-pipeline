@@ -48,13 +48,13 @@ STEP_NEEDS = {"tts": "ELEVENLABS_API_KEY", "sfx": "ELEVENLABS_API_KEY", "image":
 
 TTS_TEXT = "Привет! Это короткая проверка озвучки."
 SFX_PROMPT = "short soft click"
-SFX_DURATION_S = 0.5  # minimum the production seam allows (min(max(duration, 0.5), 22.0))
+SFX_DURATION_S = 0.5
 IMAGE_PROMPT = "a plain white circle on a black background"
 assert len(TTS_TEXT) <= 120
 
 DEFAULT_MAX_SUBMITS = 3
 DEFAULT_TOTAL_USD = 0.25
-PROBE_PROJECT_ID = 900001  # int project id so the Outsee intent guard is active (key must start with frame_)
+PROBE_PROJECT_ID = 900001
 
 
 def load_env(path: str) -> dict:
@@ -74,13 +74,13 @@ def estimate_usd(step: str) -> float:
     if step == "tts":
         try:
             from app.services.media_spend import ELEVENLABS_USD_PER_CHAR
-        except Exception:  # noqa: BLE001
+        except Exception:
             ELEVENLABS_USD_PER_CHAR = 0.0003
         return round(len(TTS_TEXT) * ELEVENLABS_USD_PER_CHAR, 6)
     if step == "sfx":
         try:
             from app.services.media_spend import ELEVENLABS_SFX_USD_PER_SEC
-        except Exception:  # noqa: BLE001
+        except Exception:
             ELEVENLABS_SFX_USD_PER_SEC = 0.012
         return round(SFX_DURATION_S * ELEVENLABS_SFX_USD_PER_SEC, 6)
     return STEP_CAP_USD["image"]
@@ -91,11 +91,11 @@ class Deps:
     """Everything that touches the app, the DB or the network; tests inject fakes."""
     prepare: Callable[[dict, Path], None]
     runners: dict[str, Callable[[Path], Awaitable[dict]]]
-    snapshot: Callable[[], Awaitable[dict]]  # {"actual_rows", "task_events", "spent_usd"}
-    guard: Callable[[float], Awaitable[dict]]  # spend_guard.check_allowed shape: {"allowed": bool, "code": str}
+    snapshot: Callable[[], Awaitable[dict]]
+    guard: Callable[[float], Awaitable[dict]]
     work: Path | None = None
     cleanup: bool = True
-    real: bool = False  # True: create the app schema in the throw-away DB before the first step
+    real: bool = False
 
 
 class _Printer:
@@ -122,11 +122,10 @@ async def _audio_seconds(path: Any) -> float | None:
     try:
         from app.services.media_probe import probe_duration
         return round(float(await probe_duration(Path(str(path)))), 3)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
-# ----------------------------------------------------------------------------- real seams
 
 def _real_prepare(env: dict, work: Path) -> None:
     os.environ.update(env)
@@ -147,7 +146,6 @@ async def _real_init() -> None:
 
 def _real_deps(work: Path, total_usd: float, cleanup: bool) -> Deps:
     def prepare(env: dict, w: Path) -> None:
-        # caps of the app's own spend guard: the throw-away DB only ever sees this run's spend
         os.environ.update(SPEND_DAILY_CAP_USD=str(total_usd), SPEND_PROJECT_CAP_USD=str(total_usd),
                           SPEND_RUN_CAP_USD=str(total_usd))
         _real_prepare(env, w)
@@ -185,20 +183,18 @@ def _real_runners() -> dict[str, Callable[[Path], Awaitable[dict]]]:
         out = work / "tts" / "probe_tts.mp3"
         res: dict = {"output": out, "production_function": "elevenlabs_api.synthesize_speech"}
         try:
-            with el.tts_run_budget(1):  # the app's own per-run POST ceiling: a retry POST is refused
+            with el.tts_run_budget(1):
                 await el.synthesize_speech(TTS_TEXT, out)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             res["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
-        # offline: same text, same dir -> served from the sidecar cache, zero POST
         if out.is_file():
             with el.tts_run_budget(1) as budget:
                 try:
                     await el.synthesize_speech(TTS_TEXT, out)
                     res["second_call_cache_hit_no_post"] = budget[0] == 0
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     res["second_call_cache_hit_no_post"] = False
                     res["cache_check_error"] = type(exc).__name__
-        # offline: a cache MISS (fresh dir) under resume_only must be refused before any byte is sent
         hits: list = []
         try:
             with media_spend.resume_only(hits):
@@ -206,7 +202,7 @@ def _real_runners() -> dict[str, Callable[[Path], Awaitable[dict]]]:
             res["second_call_refused"] = False
         except media_spend.ResumeOnlyBlocked:
             res["second_call_refused"] = len(hits) == 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             res["second_call_refused"] = False
             res["resume_check_error"] = type(exc).__name__
         res["audio_seconds"] = await _audio_seconds(out) if out.is_file() else None
@@ -218,7 +214,7 @@ def _real_runners() -> dict[str, Callable[[Path], Awaitable[dict]]]:
         res: dict = {"output": out, "production_function": "sfx_gen._elevenlabs_sfx (track_eleven_sfx)"}
         try:
             await sfx_gen._elevenlabs_sfx(SFX_PROMPT, SFX_DURATION_S, out)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             res["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         hits: list = []
         try:
@@ -227,7 +223,7 @@ def _real_runners() -> dict[str, Callable[[Path], Awaitable[dict]]]:
             res["second_call_refused"] = False
         except media_spend.ResumeOnlyBlocked:
             res["second_call_refused"] = len(hits) == 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             res["second_call_refused"] = False
             res["resume_check_error"] = type(exc).__name__
         res["audio_seconds"] = await _audio_seconds(out) if out.is_file() else None
@@ -237,10 +233,9 @@ def _real_runners() -> dict[str, Callable[[Path], Awaitable[dict]]]:
         from app.bots import outsee_http
         from app.services import media_spend
         from app.settings import settings
-        # same wrapping as outsee_retry.generate_image_with_retries uses for the API path
         tracked = media_spend.outsee_tracked(outsee_http.generate_image, "image")
         slug = outsee_http.studio_id_to_outsee_image_slug(settings.outsee_default_image_model or None)
-        out = work / "image" / "frame_probe.png"  # frame_ prefix = resumable key for the outsee_guard intent row
+        out = work / "image" / "frame_probe.png"
         res: dict = {"output": out, "model": slug,
                      "production_function": "outsee_http.generate_image via media_spend.outsee_tracked"}
 
@@ -250,7 +245,7 @@ def _real_runners() -> dict[str, Callable[[Path], Awaitable[dict]]]:
         try:
             result = await call(out)
             res["output"] = result.file_path
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             res["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         hits: list = []
         try:
@@ -259,7 +254,7 @@ def _real_runners() -> dict[str, Callable[[Path], Awaitable[dict]]]:
             res["second_call_refused"] = False
         except media_spend.ResumeOnlyBlocked:
             res["second_call_refused"] = len(hits) == 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             res["second_call_refused"] = False
             res["resume_check_error"] = type(exc).__name__
         return res
@@ -267,7 +262,6 @@ def _real_runners() -> dict[str, Callable[[Path], Awaitable[dict]]]:
     return {"tts": tts, "sfx": sfx, "image": image}
 
 
-# ----------------------------------------------------------------------------- driver
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -319,7 +313,7 @@ async def _run(args: argparse.Namespace, steps: list[str], env: dict, deps: Deps
         started = time.monotonic()
         try:
             res = await deps.runners[step](work)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             res = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
         row["seconds"] = round(time.monotonic() - started, 1)
         snap1 = await deps.snapshot()

@@ -1,8 +1,3 @@
-"""W2-2 / B01: аудит мутаций оператора. Сети нет: ASGI-клиент, SQLite во временной папке.
-
-Настоящее приложение (create_app) получает запросы с чужим Host: защитный слой отвечает 403 ДО обработчика
-(до БД и действий), а аудит - самый внешний слой - всё равно пишет строку.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -90,7 +85,6 @@ def _rows(db_path=None) -> list[dict]:
     return oa.list_rows(limit=1000)
 
 
-# --- что пишется / что нет --------------------------------------------------------------------------
 
 async def test_mutating_methods_write_and_get_does_not():
     async with _client(_stub_app()) as c:
@@ -145,7 +139,6 @@ async def test_project_id_from_json_body_and_operator_actor():
     by_actor = {r["actor"]: r for r in _rows()}
     assert by_actor["operator"]["project_id"] == 9
     assert by_actor["local"]["project_id"] is None
-    # в журнале имя, а не сам токен
     assert all(ag.get_operator_token() not in json.dumps(r) for r in _rows())
 
 
@@ -157,11 +150,10 @@ async def test_exception_is_error_outcome_and_500():
     assert row["outcome"] == "error" and row["status_code"] == 500
 
 
-# --- секреты и тела ---------------------------------------------------------------------------------
 
 async def test_bodies_and_secrets_are_not_stored():
     secret = "hunter2-very-secret-password"
-    token = "Zq" * 10 + "Xy9" * 8  # токеноподобный сегмент пути
+    token = "Zq" * 10 + "Xy9" * 8
     async with _client(_stub_app()) as c:
         await c.post("/api/things", json={"password": secret, "note": "hello", "api_key": "sk-abcdef123456"})
         await c.put(f"/api/things/{token}?api_key=sk-zzzzzzzzzz", json={})
@@ -170,10 +162,8 @@ async def test_bodies_and_secrets_are_not_stored():
     flat = json.dumps(list(rows.values()))
     assert secret not in flat and "sk-abcdef" not in flat and token not in flat and "sk-zzzz" not in flat
     assert "[redacted]" in rows["PUT/api/things/[redacted]"]["path"]
-    # файл базы целиком: тела там нет
     raw = oa._db_path().read_bytes()
     assert secret.encode() not in raw and b"hello" not in raw
-    # дайджест JSON считается по редактированному телу: другой пароль - тот же дайджест
     from app.services.observation import digest
     expected = digest({"password": "x", "note": "hello", "api_key": "y"})
     assert rows["POST/api/things"]["body_sha256"] == expected
@@ -197,7 +187,6 @@ def test_redact_path_keeps_ids_and_uuid_and_sha():
     assert oa.redact_path("/api/x?token=zzz") == "/api/x"
 
 
-# --- request_id и loguru ----------------------------------------------------------------------------
 
 async def test_request_id_header_and_log_context():
     seen: list[str | None] = []
@@ -220,7 +209,6 @@ async def test_get_also_gets_request_id_but_no_row():
     assert r.headers.get("X-Request-ID") and _rows() == []
 
 
-# --- сбой записи не блокирует запрос -----------------------------------------------------------------
 
 async def test_write_failure_does_not_block_and_is_counted(monkeypatch):
     def _broken(row):
@@ -246,7 +234,6 @@ async def test_kill_switch_env_disables_rows(monkeypatch):
     assert r.status_code == 200 and _rows() == []
 
 
-# --- append-only -----------------------------------------------------------------------------------
 
 async def test_table_rejects_update_and_delete():
     async with _client(_stub_app()) as c:
@@ -262,7 +249,6 @@ async def test_table_rejects_update_and_delete():
         con.close()
 
 
-# --- миграции 0011 / 0012 --------------------------------------------------------------------------
 
 @pytest.fixture
 async def engine(tmp_path):
@@ -281,7 +267,6 @@ def test_0011_0012_registered_in_order():
 async def test_migrations_create_tables_and_triggers_idempotently(engine):
     from app.services import publications_store as ps
     async with engine.begin() as conn:
-        # publications уже создана самим хранилищем (как на боевой базе после W1-6)
         for ddl in ps._DDL:
             await conn.exec_driver_sql(ddl)
         await conn.exec_driver_sql(
@@ -317,7 +302,6 @@ async def test_migration_creates_publications_on_empty_db(engine):
 
 
 async def test_runtime_ddl_matches_migration_table(engine):
-    """Таблица, которую создаёт сам писатель (sqlite3), совпадает по колонкам с созданной миграцией."""
     async with engine.begin() as conn:
         await sm.run_migrations(conn)
         mig = [(r[1], r[2], r[3]) for r in (await conn.exec_driver_sql("PRAGMA table_info(operator_audit)")).fetchall()]
@@ -332,10 +316,8 @@ async def test_runtime_ddl_matches_migration_table(engine):
     assert rt == mig
 
 
-# --- перебор настоящих маршрутов -------------------------------------------------------------------
 
 def _mutating_routes(app) -> list[tuple[str, str]]:
-    """Перебор app.routes: обычные APIRoute и вложенные роутеры (FastAPI 0.14x хранит их лениво)."""
     from fastapi.routing import APIRoute
     out = set()
 
@@ -358,14 +340,12 @@ async def test_every_real_mutating_route_leaves_a_row_and_get_does_not():
     app = create_app()
     ops = _mutating_routes(app)
     assert len(ops) >= 150, len(ops)
-    # перебор маршрутов совпадает со схемой OpenAPI (ни один изменяющий маршрут не потерян)
     schema = {(m.upper(), re.sub(r"\{[^}]+\}", "1", p)) for p, item in app.openapi()["paths"].items()
               if p.startswith("/api") for m in item if m.upper() in MUTATING}
     assert set(ops) == schema
     rids: dict[str, tuple[str, str]] = {}
     async with _client(app) as c:
         for method, url in ops:
-            # чужой Host: защитный слой отвечает 403 до обработчика, аудит (внешний слой) всё равно пишет
             r = await c.request(method, url, headers={"Host": "evil.example.com"})
             assert r.status_code == 403, (method, url)
             rid = r.headers["X-Request-ID"]
@@ -373,7 +353,7 @@ async def test_every_real_mutating_route_leaves_a_row_and_get_does_not():
         g = await c.get("/api/openapi.json")
         assert g.status_code == 200 and g.headers.get("X-Request-ID")
     rows = {r["request_id"]: r for r in oa.list_rows(limit=10000)}
-    assert set(rows) == set(rids)  # ни одной пропущенной, ни одной лишней (GET не пишется)
+    assert set(rows) == set(rids)
     for rid, (method, url) in rids.items():
         row = rows[rid]
         assert (row["method"], row["path"]) == (method, url), rid

@@ -1,23 +1,3 @@
-"""B09: архив старых строк журналов (экспорт jsonl.gz + контролируемое удаление). Сеть и .env не используются.
-
-Таблицы журналов защищены триггерами append-only: DELETE запрещён. Архивация идёт ОДНИМ путём:
-
-  1. отбор строк старше N дней (по умолчанию 90) и экспорт в ``<data>/archive/<таблица>_<метка>.jsonl.gz``
-     (запись в ``.part``, fsync, переименование) + манифест ``*.manifest.json`` с sha256 и числом строк;
-  2. проверка экспорта: файл читается заново, sha256 и число строк совпадают с манифестом, множество id
-     равно множеству id в базе;
-  3. одна транзакция ``BEGIN IMMEDIATE`` (писатели ждут): повторный отбор должен дать те же id, триггеры
-     DELETE таблицы снимаются, строки удаляются (число удалённых == число экспортированных), для денежных
-     таблиц вставляются свёрточные строки ``kind='archive'`` и сумма до и после обязана совпасть, триггеры
-     пересоздаются из сохранённого SQL и сверяются с исходными, пишется строка ``journal_archive_log``.
-     Любая ошибка = ROLLBACK целиком: строки на месте, триггеры на месте (DDL в SQLite транзакционный).
-
-По умолчанию только сухой прогон (ничего не меняет, файлов не создаёт). ``apply=True`` только по явной команде.
-Свёртка нужна потому, что потолки трат считаются суммой по ``spend_ledger`` за проект и за запуск за всё время:
-без неё архивация молча ослабила бы потолок.
-
-Живой базой не проверялось: только юнит на временных базах.
-"""
 from __future__ import annotations
 
 import gzip
@@ -54,13 +34,12 @@ ARCHIVE_LOG_DDL = (
 
 @dataclass(frozen=True)
 class Rollup:
-    """Свёртка вместо удалённых денежных строк: группы по ``group`` с суммой ``sums``, прочее константы."""
     group: tuple[str, ...]
     sums: tuple[str, ...]
     kind: str = "archive"
     kind_column: str = "kind"
-    check_sum: str = ""          # колонка, сумма которой до и после обязана совпасть
-    take_max: tuple[str, ...] = ()  # колонки, берущие max по группе (время строки)
+    check_sum: str = ""
+    take_max: tuple[str, ...] = ()
     constants: tuple[tuple[str, object], ...] = ()
 
 
@@ -68,7 +47,7 @@ class Rollup:
 class Spec:
     table: str
     ts: str
-    where: str = ""              # дополнительное условие (параметр :cutoff доступен)
+    where: str = ""
     rollup: Rollup | None = None
     why_ru: str = ""
 
@@ -105,7 +84,7 @@ class ArchiveError(RuntimeError):
 @dataclass
 class TableResult:
     table: str
-    status: str = "ok"            # ok | empty | missing | failed | dry-run
+    status: str = "ok"
     candidates: int = 0
     min_id: int | None = None
     max_id: int | None = None
@@ -195,7 +174,6 @@ def _jsonable(value):
 
 
 def _delete_triggers(db: sqlite3.Connection, table: str) -> list[tuple[str, str]]:
-    """Триггеры таблицы, которые срабатывают на DELETE (имя, SQL)."""
     out = []
     for name, sql in db.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name=?", (table,)):
         if sql and " DELETE " in " ".join(sql.upper().split()):
@@ -219,7 +197,6 @@ def _export(db: sqlite3.Connection, spec: Spec, ids: list[int], cutoff: str, arc
     written = 0
     try:
         with open(part, "wb") as raw:
-            # mtime=0: одинаковое содержимое даёт одинаковый sha256
             with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
                 cur = db.execute(f"SELECT {', '.join(_qi(c) for c in cols)} FROM {_qi(spec.table)} "
                                  f"WHERE {_where(spec)} ORDER BY id", {"cutoff": cutoff})
@@ -247,7 +224,6 @@ def _export(db: sqlite3.Connection, spec: Spec, ids: list[int], cutoff: str, arc
 
 
 def verify_archive(path: Path, expected_ids: list[int] | None = None) -> dict:
-    """Проверка файла архива по манифесту. Возвращает {'ok', 'problems', 'rows', 'sha256'}."""
     path = Path(path)
     problems: list[str] = []
     rows, ids = 0, []
@@ -288,7 +264,6 @@ def _rollup_rows(db: sqlite3.Connection, spec: Spec, cutoff: str) -> list[dict]:
                      *(f"MAX({_qi(m)}) AS {_qi(m)}" for m in maxes), "COUNT(*) AS _n"])
     grp = f" GROUP BY {', '.join(_qi(g) for g in group)}" if group else ""
     out = []
-    # то же условие отбора, что у списка id (он сверен выше в той же транзакции)
     cur = db.execute(f"SELECT {sel} FROM {_qi(spec.table)} WHERE {_where(spec)}{grp}", {"cutoff": cutoff})
     names = [d[0] for d in cur.description]
     return [dict(zip(names, row)) for row in cur]
@@ -326,12 +301,11 @@ def _insert_rollups(db: sqlite3.Connection, spec: Spec, groups: list[dict], now_
 
 def _apply_one(db: sqlite3.Connection, spec: Spec, ids: list[int], cutoff: str, exported: dict,
                archive_dir: Path, res: TableResult) -> None:
-    """Одна транзакция: проверка, удаление, свёртка, триггеры, запись в журнал. Любая ошибка = ROLLBACK."""
     check = verify_archive(exported["path"], ids)
     if not check["ok"]:
         raise ArchiveError("экспорт не прошёл проверку: " + "; ".join(check["problems"]))
     for ddl in ARCHIVE_LOG_DDL:
-        db.execute(ddl)  # IF NOT EXISTS; вне транзакции ниже не нужен, но безвреден
+        db.execute(ddl)
     db.execute("BEGIN IMMEDIATE")
     try:
         again = _select_ids(db, spec, cutoff)
@@ -379,7 +353,6 @@ def _apply_one(db: sqlite3.Connection, spec: Spec, ids: list[int], cutoff: str, 
 def archive_journals(db_path: str | Path, *, days: int = DEFAULT_DAYS, apply: bool = False,
                      archive_dir: str | Path | None = None, tables: list[str] | None = None,
                      now: datetime | None = None) -> ArchiveReport:
-    """Сухой прогон по умолчанию. ``apply=True`` переносит старые строки в архив и удаляет их из базы."""
     if days < MIN_DAYS:
         raise ArchiveError(f"days должно быть не меньше {MIN_DAYS}")
     db_path = Path(db_path)
@@ -389,7 +362,6 @@ def archive_journals(db_path: str | Path, *, days: int = DEFAULT_DAYS, apply: bo
     cutoff = _cutoff_text(days, now)
     report = ArchiveReport(apply=apply, days=days, cutoff=cutoff, db=str(db_path), archive_dir=str(out_dir))
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + f"-{os.getpid()}"
-    # dry-run открывает базу только на чтение: изменить её он не может физически
     uri = f"file:{db_path.as_posix()}?mode={'rw' if apply else 'ro'}"
     with closing(sqlite3.connect(uri, uri=True, timeout=30, isolation_level=None)) as db:
         for spec in SPECS:
@@ -413,6 +385,6 @@ def archive_journals(db_path: str | Path, *, days: int = DEFAULT_DAYS, apply: bo
                 exported = _export(db, spec, ids, cutoff, out_dir, stamp)
                 res.archive_file, res.sha256 = str(exported["path"]), exported["sha256"]
                 _apply_one(db, spec, ids, cutoff, exported, out_dir, res)
-            except Exception as exc:  # noqa: BLE001  одна таблица не должна тянуть за собой остальные
+            except Exception as exc:
                 res.status, res.error = "failed", f"{type(exc).__name__}: {exc}"[:300]
     return report

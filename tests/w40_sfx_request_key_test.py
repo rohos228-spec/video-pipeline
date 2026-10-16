@@ -1,8 +1,3 @@
-"""N-12: у платного SFX есть ключ запроса (тот же запрос не оплачивается дважды), mp3 провайдера принимается как звук.
-
-Реально: файловая система, ffmpeg/ffprobe для настоящего mp3, независимая проверка audio_verification.
-Подменён только платный POST (счётчик вызовов). Сети и платных вызовов нет.
-"""
 from __future__ import annotations
 
 import shutil
@@ -45,7 +40,6 @@ class _Session:
 
 
 class _Provider:
-    """Подмена платного POST: пишет настоящий mp3 нужной длины и считает вызовы."""
 
     def __init__(self):
         self.calls = 0
@@ -61,9 +55,7 @@ def test_request_key_depends_on_text_and_duration_only():
     assert base == el.sfx_request_key("deep whoosh", 1.0)
     assert base != el.sfx_request_key("deep whoosh!", 1.0)
     assert base != el.sfx_request_key("deep whoosh", 1.5)
-    # длительность провайдеру уходит в его границах: 0.1 и 0.5 - один и тот же запрос
     assert el.sfx_request_key("x", 0.1) == el.sfx_request_key("x", 0.5)
-    # провайдер видит только первые 450 знаков
     assert el.sfx_request_key("a" * 500, 1.0) == el.sfx_request_key("a" * 450 + "b" * 50, 1.0)
 
 
@@ -85,13 +77,11 @@ async def test_same_paid_request_is_not_sent_twice(tmp_path):
         assert provider.calls == 1 and first[0]["provider"] == "elevenlabs"
         assert first[0]["path"].endswith(".mp3")
 
-        # чекпоинт потерян (рестарт, ручная правка), файл с меткой запроса остался: второй POST не уходит
         project.meta = {}
         again = await generate_sfx_files(_Session(), project, [_ev()])
         assert provider.calls == 1, "тот же запрос оплачен повторно"
         assert again[0]["provider"] == "elevenlabs" and Path(again[0]["path"]).is_file()
 
-        # другой текст - другой запрос, он платный
         project.meta = {}
         await generate_sfx_files(_Session(), project, [_ev(prompt="soft click")])
         assert provider.calls == 2
@@ -100,7 +90,6 @@ async def test_same_paid_request_is_not_sent_twice(tmp_path):
 @needs_ffmpeg
 @pytest.mark.asyncio
 async def test_forced_regeneration_still_pays(tmp_path):
-    """Осознанная перегенерация человеком (force) идёт мимо кэша: иначе её нельзя было бы заказать."""
     project = SimpleNamespace(id=1, meta={}, data_dir=tmp_path)
     provider = _Provider()
     with patch.object(settings, "elevenlabs_api_key", "test-key"), \

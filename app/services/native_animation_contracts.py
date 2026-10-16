@@ -1,10 +1,3 @@
-"""Bounded read-only evidence for the original animation prompt executor.
-
-Capture input before ``make_animation_prompts.run`` and compare it with Frame
-rows independently read after the executor. These helpers neither run/apply
-generation nor change statuses. The original harness and committed observation
-outbox remain separate authorities for their own checks and application facts.
-"""
 
 from __future__ import annotations
 
@@ -25,10 +18,6 @@ _UNCLAIMED = {
 }
 
 
-# C05: what a recorded degradation of animation_prompts means for the step. The executor already carries on
-# by a local fallback when the provider is down; this fixes the POLICY for that outcome in one place:
-# the step counts as "success with degradation" (never silent success, never an automatic failure), the
-# incident `animation_degraded` is its visible record, and a repeated paid model request is a human decision.
 ANIMATION_DEGRADATION_POLICY = {
     "outcome": "success_with_degradation",
     "visible_as": "incident animation_degraded (warning, human_review)",
@@ -41,7 +30,6 @@ ANIMATION_DEGRADATION_POLICY = {
 
 
 def animation_prompts_contract():
-    """Describe the shipped executor, parser, writes and coverage rules."""
     from app.services import animation_prompt_gpt as native
     from app.services.node_capabilities import capability_for
     from app.services.node_write_contract import ANIM_PROMPT_FIELDS
@@ -96,12 +84,6 @@ def _input_row(frame):
 
 
 def animation_prompt_input_snapshot(frames, *, project_id, project, finalize_status=True):
-    """Detach native input rows and capture the original pending-shot02 rule.
-
-    ``required_prompt`` covers every usable primary input, including children
-    with their own image prompt. ``required_shot2`` captures pending native work
-    only when the full executor finalizes; sidecar execution does not queue it.
-    """
     from app.services import animation_prompt_gpt as native
 
     if type(finalize_status) is not bool:
@@ -161,19 +143,10 @@ def _identity_errors(rows, *, source, project_id):
 
 
 def _preserved_attrs(attrs, animation_key):
-    # The original writer materializes None attrs as {}; only its native
-    # animation_prompt_shot2 attr is permitted to change for this node.
     return {key: value for key, value in (attrs or {}).items() if key != animation_key}
 
 
 def verify_animation_prompts(frames, *, project_id, project, snapshot):
-    """Verify actual scoped results without applying data or inferring commit.
-
-    Unknown input/output evidence never becomes a successful coverage check.
-    Iteration order is immaterial; identities, native number and V2 sort_key
-    remain exact. Native primary coverage and snapshot-pending shot02 coverage
-    are checked independently, without replacing the original harness.
-    """
     from app.generation_options import is_skippable_empty_prompt
     from app.services import animation_prompt_gpt as native
     from app.services.observation import digest
@@ -271,9 +244,6 @@ def verify_animation_prompts(frames, *, project_id, project, snapshot):
 
         if snapshot["finalize_status"]:
             try:
-                # Captured obligations cannot disappear because a declaration
-                # or PNG was removed. Preserve the original ready predicate,
-                # including its R64-over-attrs precedence when XLSX exists.
                 if previous["required_shot2"]:
                     if not native.has_animation_prompt_shot2_for_frame(project, actual):
                         errors.append(f"missing_native_shot2_animation:{uid}")
@@ -308,8 +278,6 @@ async def _animation_context():
         return None
     node_type = getattr(ctx, "native_node_type", None)
     if node_type is None:
-        # Older/internal contexts still require the immutable node identity.
-        # A copied sidecar context cannot turn an image NodeRun into animation.
         async with ctx.observer.master() as master:
             run = await master.get(WorkflowRun, ctx.scope.workflow_run_id)
             node = next((node for node in (run.nodes_snapshot if run else [])
@@ -320,7 +288,6 @@ async def _animation_context():
 
 
 async def record_animation_input(project, frames, finalize_status=True):
-    """Capture detached native inputs without flushing or changing authority."""
     from app.services.observation import digest, record_fact
 
     ctx = await _animation_context()
@@ -338,7 +305,6 @@ async def record_animation_input(project, frames, finalize_status=True):
 
 
 async def record_animation_parse(reply, pairs, ops, *, shot, target_uuids):
-    """Describe actual native extraction; never apply or repair its output."""
     import json
     from dataclasses import asdict
     from app.services.observation import (
@@ -360,9 +326,6 @@ async def record_animation_parse(reply, pairs, ops, *, shot, target_uuids):
     await record_fact("parse_result", {
         "contract": "native_animation_prompts", "shot": shot,
         "syntax_valid": syntax_valid, "parsed": bool(pairs and ops),
-        # Every batch needs usable pairs; the native executor raises right after a batch
-        # without them. A reply that is not a JSON object is normal here (the reply format
-        # is "image id / animation text" pairs), so syntax_valid=False alone says nothing.
         "payload_required": True, "payload_present": bool(pairs),
         "nonempty_payload_required": True,
         "payload_format": "animation_pairs_or_apply_ops",
@@ -381,12 +344,6 @@ async def record_animation_parse(reply, pairs, ops, *, shot, target_uuids):
 
 
 async def observe_animation_result(session, project, node_type="animation_prompts"):
-    """Read committed output independently, including after native SQL failure.
-
-    The reader shares the existing bind and performs no initialization, autoflush,
-    rollback or repair of the executor session. Missing provenance stays unknown.
-    This observation does not grant managed admission or affect runtime status.
-    """
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
     from app.models import Frame, Project
@@ -396,7 +353,7 @@ async def observe_animation_result(session, project, node_type="animation_prompt
     if (ctx is None or node_type != "animation_prompts"
             or getattr(ctx, "animation_verification_recorded", False)):
         return
-    project_id = ctx.scope.project_id  # Native ORM attributes may be expired.
+    project_id = ctx.scope.project_id
     frames = None
     read_error = None
     try:

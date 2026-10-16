@@ -97,15 +97,11 @@ def test_checkpoint_roundtrip_and_need_shots(tmp_path: Path) -> None:
 
 
 def test_diagnose_truncated_and_empty_arrays() -> None:
-    # Обрезанный JSON, который можно закрыть, теперь спасается (db_apply.close_truncated_json,
-    # коммиты d0a2486f / 78d74100, тесты test_db_apply_uuid_repair): reason "ok" + флаг
-    # _salvaged_partial, а недостающие шоты добирает _scenes_need_shots.
     reason, data = diagnose_apply_ops_text(
         '{"characters":[],"scenes":[{"id_scene":"scene_01","shots":[{"id_shot":"x"'
     )
     assert reason == "ok"
     assert isinstance(data, dict) and data.get("_salvaged_partial") is True
-    # Обрыв, который закрыть нельзя (после ключа без значения), остаётся json_truncated.
     reason_t, data_t = diagnose_apply_ops_text('{"scenes":[{"id_scene"')
     assert reason_t == "json_truncated"
     assert data_t is None

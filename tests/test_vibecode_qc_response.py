@@ -1,7 +1,3 @@
-"""QC no-op / completeness on Vibecode chat/completions (no `status` field) and per-pack parse linkage.
-
-Only the external HTTP answer is a fixture; the client, parser and batcher are the real code.
-"""
 import asyncio
 import json
 from types import SimpleNamespace
@@ -23,11 +19,9 @@ def _chat(raw, finish=""):
     return SimpleNamespace(raw=raw, finish_reason=finish, text='{"ops":[]}')
 
 
-# ---------- pure completeness ----------
 
 def test_chat_completions_stop_is_complete_without_status():
     assert goc._qc_response_complete(_chat({"choices": [{"finish_reason": "stop"}]}))
-    # usage-only last chunk: the real finish is carried by the result
     assert goc._qc_response_complete(_chat({"usage": {}}, "stop"))
     assert goc._qc_response_complete(_chat({"finish_reason": "stop"}))
 
@@ -84,7 +78,6 @@ async def test_managed_incomplete_answer_holds_with_shared_request_id(monkeypatc
     assert held == ["req-1"]
 
 
-# ---------- real client + batcher over a Vibecode chat/completions stub ----------
 
 class Vibecode:
     def __init__(self, tmp_path, monkeypatch):
@@ -160,7 +153,6 @@ async def test_vibecode_real_correction_applies_once(vibe):
     assert len(vibe.posts) == 1 and len(vibe.applied) == 1
 
 
-# ---------- parse_result / json_retry linked to this task's request ----------
 
 async def test_parse_is_linked_to_task_local_request_not_shared_last(monkeypatch):
     seen = []
@@ -173,7 +165,7 @@ async def test_parse_is_linked_to_task_local_request_not_shared_last(monkeypatch
 
     async def pack(own_id):
         observation._completed_model_request.set((ctx, own_id))
-        await asyncio.sleep(0)  # let the other pack run in between
+        await asyncio.sleep(0)
         assert goc._task_request_id() == own_id
         await goc._record_parse_for_task_request("{}", None)
 
@@ -183,7 +175,7 @@ async def test_parse_is_linked_to_task_local_request_not_shared_last(monkeypatch
     finally:
         observation._attempt.reset(token)
     assert sorted(r for _k, r in seen) == ["pack-A-request", "pack-C-request"]
-    assert ctx.last_request_id == "pack-B-request"  # shared context never mutated
+    assert ctx.last_request_id == "pack-B-request"
 
 
 async def test_parse_without_attempt_context_is_untouched():

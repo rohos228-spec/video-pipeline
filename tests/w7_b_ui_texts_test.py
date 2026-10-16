@@ -1,8 +1,3 @@
-"""W7-B: правки по визуальной проверке Studio (docs/UI_CHECK.md): тексты журнала и публикаций, общая ручка HITL.
-
-Без сети, браузера и площадок. Рабочая папка и БД вне репозитория (tests/_stand_workdir.py через Env).
-Класс доказательства: U (тесты на заменителях). Страницу в браузере проверяет scripts/ui_check_journal_publications.mjs.
-"""
 from __future__ import annotations
 
 import json
@@ -31,8 +26,6 @@ CYR = re.compile("[а-яёА-ЯЁ]")
 @pytest.fixture
 async def env(monkeypatch):
     e = await Env().create()
-    # настоящий путь HITL: master-база стенда и папка данных подставлены на уровне модулей, а не
-    # переопределением зависимости get_session в приложении
     import app.db as app_db
     from app.settings import settings
     monkeypatch.setattr(app_db, "SessionLocal", e.maker)
@@ -42,12 +35,11 @@ async def env(monkeypatch):
     await e.close()
 
 
-# --- общая ручка HITL не меняет approve_publish ---------------------------------------------------------------------
 
 def _hitl_app(env: Env) -> FastAPI:
     app = FastAPI()
     app.include_router(hitl_router.router, prefix="/api")
-    assert not app.dependency_overrides  # без подмены сессии
+    assert not app.dependency_overrides
     return app
 
 
@@ -69,7 +61,7 @@ async def test_generic_decision_refuses_approve_publish(env, decision):
     assert r.json()["detail"] == RU_HITL_REFUSAL
     async with env.maker() as db:
         req = (await db.execute(select(HITLRequest).where(HITLRequest.id == rid))).scalar_one()
-        assert req.decision is HITLDecision.pending and req.decided_at is None  # запрос не тронут
+        assert req.decision is HITLDecision.pending and req.decided_at is None
 
 
 async def test_generic_decision_refuses_even_already_decided_publish_request(env):
@@ -83,14 +75,12 @@ async def test_generic_decision_refuses_even_already_decided_publish_request(env
 
 
 async def test_generic_decision_still_serves_other_kinds(env):
-    """Запрет только для approve_publish: у остальных видов ручка работает как раньше (здесь - отказ по неверному решению)."""
     rid = await _make_request(env, HITLKind.approve_script)
     async with AsyncClient(transport=ASGITransport(app=_hitl_app(env)), base_url="http://t") as c:
         r = await c.post(f"/api/hitl/{rid}/decision", json={"decision": "нет-такого"})
     assert r.status_code == 400 and "Неизвестное решение" in r.json()["detail"]
 
 
-# --- «Разрешить публикацию»: одно честное сообщение ------------------------------------------------------------------
 
 @pytest.mark.parametrize("queued, enabled, must, must_not", [
     (True, True, "поставлено в очередь", "ничего не публикуется"),
@@ -103,7 +93,6 @@ def test_approve_message_is_one_honest_statement(queued, enabled, must, must_not
     assert msg.startswith("Разрешено") and CYR.search(msg)
 
 
-# --- журнал: решение человека не ошибка, оператор с настоящим путём и кодом ответа ---------------------------------
 
 def test_manual_not_published_is_a_human_decision_not_an_error():
     title, detail, sev = tr.describe({"source": "publications", "status": "failed", "platform": "ig_reels",
@@ -113,7 +102,6 @@ def test_manual_not_published_is_a_human_decision_not_an_error():
     t2, d2, s2 = tr.describe({"source": "publications", "status": "confirmed", "platform": "yt_shorts",
                               "error_code": "manual_confirmed", "post_url": "https://x.invalid/1"})
     assert s2 == "info" and "человеком" in t2 and "manual_confirmed" not in t2 + d2
-    # настоящий сбой остаётся ошибкой, с русской причиной вместо кода
     t3, d3, s3 = tr.describe({"source": "publications", "status": "failed", "platform": "tiktok",
                               "error_code": "not_logged_in"})
     assert s3 == "error" and "not_logged_in" not in t3 + d3 and "входа" in d3
@@ -128,7 +116,6 @@ def test_operator_row_shows_real_path_and_response_code():
                            "route_template": "/api/projects/{project_id}/publications/{platform}/confirm-manual"})
     assert "/api/projects/7/publications/yt_shorts/confirm-manual" in d and "код ответа 200" in d
     assert "{project_id}" not in t + d and s == "info"
-    # без пути остаётся шаблон (старые строки), но код ответа виден
     _, d2, _ = tr.describe({"source": "operator_audit", "method": "POST", "route_template": "/api/x/{id}",
                             "status_code": 409, "outcome": "rejected"})
     assert "код ответа 409" in d2
@@ -166,7 +153,6 @@ async def test_timeline_end_to_end_texts(tmp_path):
         await eng.dispose()
 
 
-# --- таблицы текстов на сервере и в Studio равны -------------------------------------------------------------------
 
 def _ts_map(path: Path, name: str) -> dict[str, str]:
     src = path.read_text(encoding="utf-8")
@@ -184,15 +170,14 @@ def test_publication_code_table_equals_studio_table():
     ts = _ts_map(ROOT / "web" / "src" / "lib" / "publication-text.ts", "PUBLICATION_CODE_RU")
     assert ts == tr.PUBLICATION_CODE_RU
     from app.services.publish_accounts import REFUSALS
-    assert set(REFUSALS) <= set(ts)  # любой отказ площадки имеет русскую фразу
+    assert set(REFUSALS) <= set(ts)
     assert all(CYR.search(v) for v in ts.values())
-    # коды, которые кладёт сам журнал публикаций
     for code in (ps.MANUAL_FAILED_CODE, "manual_confirmed", "publish_disabled", "confirm_timeout"):
         assert code in ts, code
 
 
 def test_studio_kind_labels_have_no_raw_fallback():
     src = (ROOT / "web" / "src" / "lib" / "journal-view.ts").read_text(encoding="utf-8")
-    assert "Событие «" not in src  # сырой вид в подписи больше не подставляется
+    assert "Событие «" not in src
     for kind in ("gap", "observation_events"):
         assert re.search(rf"\b{kind}: \"", src), kind

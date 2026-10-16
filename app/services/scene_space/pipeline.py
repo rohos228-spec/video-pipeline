@@ -1,8 +1,3 @@
-"""Ingest live Scene/Frame rows into scenes_space / frames_space.
-
-Overlay only: does not insert Frame rows. Blocking/service shots are a
-separate rewrite pass (assemble hook, ``--insert-service``).
-"""
 
 from __future__ import annotations
 
@@ -80,7 +75,6 @@ def overlay_hash(meaning: str, frames: list[Frame]) -> str:
 
 
 def default_plan(codes: list[str]) -> tuple[list[dict], list[dict]]:
-    """Place bodies on y=2, camera at mid_x,y=0 facing +Y. Side locks to B."""
     ids = [c for c in codes if c and c != "cam"]
     if not ids:
         ids = ["c01", "c02"]
@@ -225,7 +219,6 @@ async def ingest_scene(
     project: Project,
     scene: Scene,
 ) -> dict[str, Any]:
-    """Write overlay space rows for one pipeline Scene. No Frame inserts."""
     await _ensure_schema(session)
     frames = await _load_scene_frames(session, scene)
     sid = space_id_for(project.id, scene.id)
@@ -375,7 +368,6 @@ async def apply_blocking_after_ingest(
     scene_id: str,
     meaning: str,
 ) -> dict[str, Any]:
-    """Assemble-only: overlay already written; rewrite may insert service Frames."""
     from app.services.scene_space.rewrite import rewrite
 
     return await rewrite(session, scene_id, meaning)

@@ -203,8 +203,6 @@ def read_plan_timestamps_cells(
 
 
 def ensure_plan_sheet(project: Project, cells: list[tuple[int, str]]) -> bool:
-    """В проекте без листа «план» (DB-first, книга создана приложением) завести минимальный лист: R49 = закадровый
-    текст кадров из БД. Нужен монтажу R15 (variant2): без листа таймкоды некуда писать (живой F10 14.10.2026)."""
     path = project.data_dir / "project.xlsx"
     if not path.exists() or not cells:
         return False
@@ -223,7 +221,7 @@ def ensure_plan_sheet(project: Project, cells: list[tuple[int, str]]) -> bool:
                     col += 1
             wb.save(path)
             wb.close()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("[#{}] ensure_plan_sheet failed: {}", project.id, e)
         return False
     logger.info("[#{}] создан лист «{}»: R49 из БД ({} кадров)", project.id, SHEET_PLAN_V8, len(cells))

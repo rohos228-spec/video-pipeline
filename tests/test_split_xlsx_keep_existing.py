@@ -1,5 +1,3 @@
-"""split_xlsx (DB-SoT): повторный запуск шага всегда идёт в GPT; результат - replace_frames,
-project.xlsx не перезаписывается (Excel только экспорт)."""
 
 from __future__ import annotations
 
@@ -77,7 +75,6 @@ async def test_split_runs_gpt_even_when_project_already_has_blocks(
     assert result.project_xlsx == proj_xlsx
     assert [f["закадр"] for f in result.frames_spec] == ["one", "two", "three"]
     assert result.apply_ops[0]["target"] == "replace_frames"
-    # project.xlsx шагом не трогается (enrich остаётся)
     got = load_workbook(proj_xlsx)
     assert got[SHEET_PLAN_V8]["C2"].value == "must-keep"
     got.close()

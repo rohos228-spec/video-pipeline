@@ -1,9 +1,3 @@
-"""W70: мягкие проверки музыки, клипов и финала (M7-M9) и удаление мёртвого кода (K12/K13).
-
-Главное свойство: брак, найденный новой проверкой, даёт статус ``unknown`` с причиной ``soft_*`` (диагностика
--> human_review), а НЕ ``failed``, и не пускает автоодобрение финала. Ничто здесь не запускает платную генерацию.
-Настоящие ffmpeg/ffprobe (lavfi); без ffmpeg тесты вежливо пропускаются.
-"""
 import importlib
 import shutil
 import unittest
@@ -28,10 +22,10 @@ class PureHelpers(unittest.TestCase):
 
     def test_aspect_mismatch_is_conservative(self):
         self.assertFalse(soft.aspect_mismatch(1080, 1920, 9 / 16))
-        self.assertFalse(soft.aspect_mismatch(1080, 1912, 9 / 16))  # кодек округлил высоту
+        self.assertFalse(soft.aspect_mismatch(1080, 1912, 9 / 16))
         self.assertTrue(soft.aspect_mismatch(1920, 1080, 9 / 16))
-        self.assertFalse(soft.aspect_mismatch(1920, 1080, None))  # проект не задал: пропуск
-        self.assertFalse(soft.aspect_mismatch(None, None, 9 / 16))  # не измерили: не предупреждение
+        self.assertFalse(soft.aspect_mismatch(1920, 1080, None))
+        self.assertFalse(soft.aspect_mismatch(None, None, 9 / 16))
 
     def test_final_duration_rules(self):
         probe = {"width": 1080, "height": 1920, "duration": 30.0}
@@ -39,7 +33,6 @@ class PureHelpers(unittest.TestCase):
         self.assertEqual(soft.final_soft_issues_from(probe, asp, [10.0, 10.0, 10.0]), [])
         self.assertEqual(soft.final_soft_issues_from(probe, asp, [40.0, 40.0]), ["final_shorter_than_scenes"])
         self.assertEqual(soft.final_soft_issues_from(probe, asp, [1.0, 1.0]), ["final_longer_than_scenes"])
-        # длительность известна у меньшинства сцен: сравнения нет
         self.assertEqual(soft.final_soft_issues_from(probe, asp, [40.0, None, None, None]), [])
         self.assertEqual(soft.final_soft_issues_from(probe, asp, []), [])
         self.assertEqual(soft.final_soft_issues_from({**probe, "width": 1920, "height": 1080}, asp, [10.0] * 3),
@@ -52,7 +45,7 @@ class DeadCodeRemoved(unittest.TestCase):
         self.assertFalse((root / "app" / "worker.py").exists())
         from app.services import hitl
         self.assertFalse(hasattr(hitl, "wait_for_decision"))
-        importlib.import_module("app.main")  # живой воркер app/main.py на месте и импортируется
+        importlib.import_module("app.main")
 
 
 @unittest.skipUnless(FFMPEG, "ffmpeg/ffprobe are required for the media fixtures")
@@ -75,11 +68,10 @@ class SoftMediaChecks(tmv.Env):
         await self.add(Artifact(project_id=tmv.PID, frame_id=frame.id, kind=ArtifactKind.scene_video,
                                 uuid=f"u{frame.number}", path=str(path), meta={}))
 
-    # ---- M8: клипы ----
     async def test_clip_aspect_mismatch_is_soft_not_failed(self):
         (f1,) = await self.frames("a")
         await self.clip(f1)
-        await self.set_aspect("9:16")  # клип 64x96 = 2:3
+        await self.set_aspect("9:16")
         proof = await self.proof("videos")
         item = proof["items"][0]
         self.assertEqual((item["status"], item["reason"]), ("unknown", "soft_clip_aspect_mismatch"))
@@ -89,7 +81,7 @@ class SoftMediaChecks(tmv.Env):
     async def test_clip_with_matching_or_unset_aspect_passes(self):
         (f1,) = await self.frames("a")
         await self.clip(f1)
-        self.assertEqual((await self.proof("videos"))["status"], "passed")  # аспект не задан
+        self.assertEqual((await self.proof("videos"))["status"], "passed")
         await self.set_aspect("2:3")
         proof = await self.proof("videos")
         self.assertEqual((proof["status"], proof["soft_warnings"]), ("passed", []))
@@ -110,7 +102,6 @@ class SoftMediaChecks(tmv.Env):
         await self.clip(f1, b"")
         self.assertEqual((await self.proof("videos"))["status"], "failed")
 
-    # ---- M7: музыка ----
     async def _music(self, data):
         path = self.write("music/music.mp3", data)
         await self.add(Artifact(project_id=tmv.PID, kind=ArtifactKind.music, uuid="m1", path=str(path), meta={}))
@@ -127,9 +118,8 @@ class SoftMediaChecks(tmv.Env):
         proof = await self.proof("music")
         self.assertEqual((proof["status"], proof["soft_warnings"]), ("passed", []))
 
-    # ---- M9: финал ----
     async def _final(self, durations):
-        path = self.write("final/verify.mp4", self.mp4)  # 64x96, 1 с, видео+звук
+        path = self.write("final/verify.mp4", self.mp4)
         await self.add(Artifact(project_id=tmv.PID, kind=ArtifactKind.final_video, uuid="f1", path=str(path),
                                 meta={}))
         rows = [Frame(project_id=tmv.PID, number=i, uuid=f"{i:032x}", sort_key=i, voiceover_text="т",
@@ -154,7 +144,6 @@ class SoftMediaChecks(tmv.Env):
         async with self.sessions() as s:
             project = await s.get(Project, tmv.PID)
             self.assertIs(await aa._final_verified(s, project), False)
-        # то же при несовпадающем аспекте
         async with self.sessions() as s:
             for fr in (await s.scalars(__import__("sqlalchemy").select(Frame))).all():
                 fr.duration_seconds = 0.5
@@ -168,7 +157,7 @@ class SoftMediaChecks(tmv.Env):
             project.aspect_ratio = "2:3"
             await s.flush()
             self.assertIs(await aa._final_verified(s, project), True)
-        self.assertTrue(path.is_file())  # ничего не удалено и не пересобрано
+        self.assertTrue(path.is_file())
 
 
 if __name__ == "__main__":

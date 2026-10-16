@@ -83,7 +83,6 @@ def bind_project_llm(project: Any, status: Any | None = None) -> Iterator[NodeLl
 
     ov: NodeLlmOverride | None = None
     if is_script_frames_qc_gpt_node(meta, node_key=node_key):
-        # script_frames_qc must use Vibecode only (Kie 402 / no credits).
         active_id = resolve_active_model_id(settings)
         item = catalog_item(active_id) or {}
         if str(item.get("provider") or "").strip().lower() != "vibecode":

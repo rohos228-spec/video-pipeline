@@ -1,4 +1,3 @@
-"""Ошибки контура. ``code`` стабилен и показывается оператору."""
 from __future__ import annotations
 
 
@@ -17,7 +16,6 @@ class StaleBase(ChangeRefused):
 
 
 class ChangeFailed(ChangeRefused):
-    """Применение начато и не удалось; состояние уже зафиксировано и приведено назад."""
 
     def __init__(self, code: str, message: str = "", *, errors: list | None = None):
         super().__init__(code, message, http=409, errors=errors)

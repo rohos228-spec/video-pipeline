@@ -162,7 +162,6 @@ _SFQC_GRAPH = {
 
 
 def test_bind_script_frames_qc_forces_vibecode() -> None:
-    # llm_override.py: "script_frames_qc must use Vibecode only (Kie 402 / no credits)".
     from app.services.llm_override import current_override
 
     meta = {
@@ -240,7 +239,6 @@ def _route_script_frames_qc(monkeypatch, tmp_path, header: str) -> None:
         headers = gpt_api._headers()
         assert headers["Authorization"] == "Bearer vk-test"
         assert "X-VP-Relay-Token" not in headers
-    # Outside the group the header setting applies again.
     assert gpt_api.is_responses_mode() is (header == "kie")
 
 

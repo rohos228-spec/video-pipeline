@@ -1,6 +1,3 @@
-"""Node coverage: every registered node type is listed honestly (the "add a node" guard), each
-level is backed by evidence in the registries, each missing recovery carries a coded reason, and
-the panel endpoint serves exactly that data. No database for the data tests, no provider."""
 import asyncio
 import importlib
 import json
@@ -9,7 +6,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-import app.services.decision_v1  # noqa: F401  (registers the named contract builders)
+import app.services.decision_v1
 from app.orchestrator import node_registry, node_spec
 from app.orchestrator.node_spec import (
     COVERAGE_FIELDS, COVERAGE_LEVELS, KNOWN_FORBIDDEN_CODES, CapabilitySpec, capability_from_manifest,
@@ -22,31 +19,22 @@ RETRY = {"retry_same", "retry_profile"}
 SPECS = registered_capability_specs()
 REGISTRY_TYPES = node_coverage.registry_node_types()
 
-# Changing this set is a conscious decision: these are the only node types with automatic recovery.
 RECOVERING = {"plan", "script", "excel_gpt", "sfx_plan", "animation_prompts", "videos", "items", "music", "assemble",
               "sd_agent", "sd_assemble", "split", "image_prompts", "images", "hero", "audio", "sfx_gen"}
-# Managed for supervised RECOVERY only: a resume of a known provider task or of a recorded local result (D06,
-# media_local_resume), never a start or a paid re-submit. images keeps its synthetic managed launch (successor
-# continue_managed_image), so it is NOT recovery_only although its supervised recovery is a local resume only.
 RECOVERY_ONLY = {"videos", "items", "music", "hero", "audio", "sfx_gen"}
-# Recovery is a LOCAL resume of a recorded result (Outsee request key, finished files), never a paid resend.
 LOCAL_RESUME = {"images", "hero", "audio", "sfx_gen"}
-# Managed for a supervised LOCAL re-run only: no model request, no provider job; the original worker runs it once
-# under a ticket inside the resume-only scope and the ticket is verified from independent facts.
 LOCAL_RECOVERY = {"assemble"}
 EXPECTED_LEVELS = {
     "managed": {"plan", "script", "split", "image_prompts", "excel_gpt", "images", "sfx_plan",
                 "animation_prompts", "videos", "items", "music", "assemble", "sd_agent", "sd_assemble",
                 "hero", "audio", "sfx_gen"},
     "observed": {"scene_design", "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5"},
-    "human_only": {"publish"},  # publish stays human-only forever (irreversible external effect)
+    "human_only": {"publish"},
 }
 
 
-# ---- the "add a node" test ------------------------------------------------------------
 
 def test_every_registered_node_type_has_a_capability_spec():
-    """Fails when a node type is added to the pipeline registry without a CapabilitySpec."""
     assert node_coverage.uncovered_node_types() == []
     assert set(REGISTRY_TYPES) <= set(SPECS)
 
@@ -71,7 +59,6 @@ def test_registry_lists_all_23_work_nodes_and_the_virtual_excel_gpt():
     assert len(REGISTRY_TYPES) == len(set(REGISTRY_TYPES))
 
 
-# ---- levels are derived from registry evidence, and pinned --------------------------------
 
 def test_levels_are_exactly_the_expected_partition():
     actual = {level: {t for t in REGISTRY_TYPES if coverage_level(SPECS[t]) == level} for level in COVERAGE_LEVELS}
@@ -102,7 +89,6 @@ def test_observation_hooks_resolve_to_real_callables(node_type):
     assert callable(getattr(importlib.import_module(module), attr))
 
 
-# ---- every missing recovery has a coded reason; every recovery is bounded -------------------
 
 @pytest.mark.parametrize("node_type", REGISTRY_TYPES)
 def test_no_recovery_means_a_coded_reason_and_recovery_means_a_cap(node_type):
@@ -115,7 +101,6 @@ def test_no_recovery_means_a_coded_reason_and_recovery_means_a_cap(node_type):
     else:
         assert spec.forbidden_code in KNOWN_FORBIDDEN_CODES, node_type
         assert spec.recovery_cap == 0
-        # a real sentence, not a stub
         assert len(spec.forbidden_reason.split()) >= 10, node_type
         assert not RETRY & set(spec.actions)
 
@@ -147,12 +132,10 @@ def test_every_media_decision_node_is_resume_only_local_retry_or_has_a_coded_hum
 
 
 def test_recovery_only_nodes_can_never_be_started_by_the_supervisor():
-    """Managed for recovery only: a managed launch or a managed worker attempt of the node is refused."""
     for node_type in RECOVERY_ONLY:
         with pytest.raises(ValueError, match="recovery only"):
             node_capabilities.require_managed_capability(node_type)
     for node_type in LOCAL_RECOVERY:
-        # a fresh start is refused; only a worker attempt that has claimed a recovery ticket may run the node
         with pytest.raises(ValueError, match="recovery only"):
             node_capabilities.require_managed_capability(node_type)
         assert node_capabilities.require_managed_capability(node_type, recovery_claim=True).managed
@@ -168,7 +151,6 @@ def test_only_recovery_only_nodes_carry_the_flag():
 
 
 def test_coverage_only_entries_change_no_behaviour():
-    """A coverage-only entry is the same capability payload as an unregistered type."""
     for node_type in ("scene_design", "enrich_3"):
         cap = capability_for(node_type)
         unknown = capability_for("future-unsupported")
@@ -184,7 +166,6 @@ def test_forbidden_code_table_has_no_unused_or_unexplained_codes():
     assert all(len(text.split()) >= 5 for text in KNOWN_FORBIDDEN_CODES.values())
 
 
-# ---- coverage data stays out of the recovery revision and the capability payload -----------
 
 def test_coverage_notes_do_not_enter_the_recovery_revision():
     from app.services import revisions
@@ -205,7 +186,6 @@ def test_capability_payload_has_no_coverage_fields():
     assert not (COVERAGE_FIELDS | {"forbidden", "level"}) & keys
 
 
-# ---- manifest accepts and validates the coverage block ------------------------------------
 
 def _manifest(**block):
     return {"nodeapi": 1, "type": "manifest_text",
@@ -232,7 +212,6 @@ def test_manifest_rejects_bad_coverage_data(bad):
         capability_from_manifest(_manifest(**bad))
 
 
-# ---- the panel data and its endpoint ------------------------------------------------------
 
 def test_panel_data_is_complete_serializable_and_honest():
     data = node_coverage.node_coverage()
@@ -297,7 +276,6 @@ def test_new_specs_are_visible_in_capability_registry_and_verifiers_resolve():
     assert node_capabilities.capability_for("sfx_plan").actions == READ_ACTIONS + ("retry_same", "retry_profile", "finish")
 
 
-# ---- scene nodes and animation degradation: what is checked, what stays forbidden -------------
 
 SCENE_NODES = {"scene_design": "legacy_node_type"}
 
@@ -365,7 +343,6 @@ def test_animation_prompts_names_its_degradation_fact_and_it_is_not_a_recovery_i
     assert animation_prompts_contract()["degradation_facts"]["fact_kind"] == "animation_degraded"
 
 
-# ---- local media nodes: assemble is promoted by its dry run, audio and sfx_gen admit a LOCAL resume only ------
 
 @pytest.mark.parametrize("node_type", ["audio", "sfx_gen", "hero", "images"])
 def test_local_resume_nodes_offer_retry_same_for_a_recorded_result_only(node_type):

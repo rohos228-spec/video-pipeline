@@ -1,11 +1,3 @@
-"""Серверное подтверждение платных/разрушающих планов.
-
-Подтверждение создаёт только оператор отдельным аутентифицированным вызовом
-``POST /plans/{id}/approve``. Оно привязано к хэшу плана, живёт ограниченное
-время и расходуется атомарно при запуске. Планировщик/модель не получает ни
-способа его создать, ни способа передать: в payload плана нет такого поля, а
-``run`` не принимает идентификатор подтверждения от вызывающего.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -27,11 +19,7 @@ class ApprovalError(Exception):
 
 @dataclass(frozen=True)
 class OperatorIdentity:
-    """Личность оператора из AuthDep (тот же формат, что в observations)."""
     id: str
-    # True, когда личность построена из HTTP-запроса (``from_token``): такое подтверждение
-    # обязано прийти с проверенным токеном оператора (A06). Личности, собранные в коде
-    # напрямую, не из сети, флага не имеют.
     via_http: bool = field(default=False, compare=False)
 
     @classmethod
@@ -48,8 +36,6 @@ def _check_operator(operator: OperatorIdentity) -> None:
     if operator.id.lower().startswith(_FORBIDDEN_PREFIXES):
         raise ApprovalError("operator_required", "Подтвердить может только оператор-человек.")
     if operator.via_http:
-        # Автор плана (скрипт, чужая страница, модель через HTTP) без токена оператора
-        # подтвердить не может: токен выдаётся только своему интерфейсу (access_guard).
         from app.services import access_guard
         if access_guard.operator_token_enforced() and not access_guard.operator_token_verified.get():
             raise ApprovalError(
@@ -71,7 +57,6 @@ async def create_approval(session, plan: "store.ActionPlan", operator: OperatorI
         raise ApprovalError("plan_not_approvable", f"План сейчас в состоянии «{plan.status}»: подтвердить его нельзя.")
     if not plan.needs_approval:
         raise ApprovalError("approval_not_needed", "В плане только чтение и безопасные локальные шаги: подтверждение не нужно.")
-    # Новое подтверждение отменяет прежние неиспользованные.
     await session.execute(update(store.ActionApproval).where(
         store.ActionApproval.plan_id == plan.id,
         store.ActionApproval.used_at.is_(None),
@@ -88,7 +73,6 @@ async def create_approval(session, plan: "store.ActionPlan", operator: OperatorI
 
 async def consume_approval(session, plan: "store.ActionPlan", *,
                            now: datetime | None = None) -> "store.ActionApproval":
-    """Атомарно расходует действующее подтверждение этого плана и его хэша."""
     now = now or datetime.utcnow()
     candidate = await session.scalar(select(store.ActionApproval).where(
         store.ActionApproval.plan_id == plan.id,

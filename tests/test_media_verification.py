@@ -1,8 +1,3 @@
-"""Result verification of the paid media nodes (observation level) and its typed diagnosis.
-
-Real: sqlite databases, real files (ffmpeg / PIL fixtures), verify_artifact (ffprobe), the provider
-task ledger, the verifier hook and the diagnosis projection. No provider, no network, no paid call.
-"""
 import hashlib
 import shutil
 import subprocess
@@ -110,7 +105,7 @@ class VideosVerification(Env):
         return path
 
     async def test_good_clips_pass_and_the_provider_trail_is_recorded(self):
-        f1, f2, f3 = await self.frames("anim 1", "anim 2", "")  # frame 3 has no animation prompt: not a target
+        f1, f2, f3 = await self.frames("anim 1", "anim 2", "")
         await self.clip(f1)
         await self.clip(f2)
         await self.ledger("clip_001", "T-1", "downloaded")
@@ -119,7 +114,7 @@ class VideosVerification(Env):
         first, second = proof["items"]
         self.assertEqual(first["provenance"], {"provider": "kie", "durable_task_id": True, "task_id": "T-1",
                                                "task_status": "downloaded"})
-        self.assertFalse(second["provenance"]["durable_task_id"])  # no ledger row: untracked / Outsee
+        self.assertFalse(second["provenance"]["durable_task_id"])
         self.assertEqual((first["streams"], first["width"], first["height"]), (["audio", "video"], 64, 96))
         self.assertGreater(first["bytes"], 0)
         self.assertEqual(first["sha256"], hashlib.sha256(self.mp4).hexdigest())
@@ -128,18 +123,17 @@ class VideosVerification(Env):
 
     async def test_missing_empty_garbage_and_foreign_files_fail_with_typed_reasons(self):
         f1, f2, f3, f4 = await self.frames("a", "b", "c", "d")
-        await self.clip(f1, b"")  # empty
-        await self.clip(f2, b"not a video at all " * 100)  # garbage
+        await self.clip(f1, b"")
+        await self.clip(f2, b"not a video at all " * 100)
         foreign = Path(self.tmp.name) / "elsewhere.mp4"
         foreign.write_bytes(self.mp4)
         await self.add(Artifact(project_id=PID, frame_id=f3.id, kind=ArtifactKind.scene_video, uuid="foreign",
                                 path=str(foreign), meta={}))
-        # frame 4 has no clip at all
         proof = await self.proof("videos")
         self.assertEqual(proof["status"], "failed")
         reasons = {i["key"]: i.get("reason") for i in proof["items"]}
         self.assertEqual(reasons["clip_001"], "missing_empty_or_oversized_file")
-        self.assertEqual(reasons["clip_002"], "ValueError")  # ffprobe rejected the bytes
+        self.assertEqual(reasons["clip_002"], "ValueError")
         self.assertEqual(reasons["clip_003"], "path_outside_project")
         self.assertEqual(reasons["clip_004"], "missing_clip")
         self.assertIn("не прошли проверку 4 из 4", proof["summary"])
@@ -163,7 +157,7 @@ class VideosVerification(Env):
 
     async def test_a_second_shot_clip_does_not_replace_the_first(self):
         (f1,) = await self.frames("a")
-        await self.clip(f1, name="videos/clip_001_s2_ab12cd34.mp4")  # shot 2 only
+        await self.clip(f1, name="videos/clip_001_s2_ab12cd34.mp4")
         proof = await self.proof("videos")
         self.assertEqual(proof["items"][0]["reason"], "missing_clip")
 
@@ -174,7 +168,7 @@ class VideosVerification(Env):
         await self.ledger("clip_001", "intent:k1", "submit_unknown", event="intent")
         await self.ledger("clip_002", "intent:o1", "submit_unknown", provider="outsee", event="intent", api="outsee")
         proof = await self.proof("videos")
-        self.assertEqual(proof["status"], "passed")  # files are fine; the unknown payment is reported separately
+        self.assertEqual(proof["status"], "passed")
         self.assertEqual({(u["key"], u["provider"]) for u in proof["outcome_unknown"]},
                          {("clip_001", "kie"), ("clip_002", "outsee")})
         self.assertIn("исход прошлой платной отправки неизвестен", proof["summary"])
@@ -198,7 +192,6 @@ class VideosVerification(Env):
 @unittest.skipUnless(FFMPEG, "ffmpeg/ffprobe are required for the media fixtures")
 class OtherMediaNodes(Env):
     async def test_skipped_hero_step_is_not_a_failure(self):
-        """F10-D3: в листе нет описания героя - шаг законно пропущен, независимая проверка не поднимает сбой."""
         async with self.sessions() as s:
             project = await s.get(Project, PID)
             project.meta = {"hero_skipped_empty": True}
@@ -207,7 +200,6 @@ class OtherMediaNodes(Env):
         self.assertEqual((proof["status"], proof["reason"]), ("passed", "hero_skipped_empty"))
 
     async def test_no_hero_mode_and_zero_count_are_legal_skips(self):
-        """N-13: шаг пропускается и по режиму «без героя», и по hero_count=0, даже без флага в meta."""
         for field, value in (("hero_mode", "no_hero"), ("hero_count", 0)):
             async with self.sessions() as s:
                 project = await s.get(Project, PID)
@@ -285,18 +277,17 @@ class OtherMediaNodes(Env):
         self.assertEqual(proof["status"], "passed")
         self.assertEqual((item["approval"]["requests_for_this_file"], item["approval"]["pending"],
                           item["approval"]["human_barrier"]), (1, 1, "approve_final"))
-        async with self.sessions() as s:  # the recorded digest no longer matches the file
+        async with self.sessions() as s:
             art = await s.get(Artifact, 1)
             art.meta = {"sha256": "0" * 64}
             await s.commit()
         self.assertEqual((await self.proof("assemble"))["items"][0]["reason"], "digest_differs_from_recorded")
         path.write_bytes(self.silent)
         again = await self.proof("assemble")
-        self.assertEqual(again["status"], "failed")  # no audio stream in an assembled video
+        self.assertEqual(again["status"], "failed")
 
 
 class Hook(Env):
-    """observe_media_result: journals the proof, never raises, never holds a run."""
 
     def ctx(self):
         return SimpleNamespace(scope=SimpleNamespace(project_id=PID), media_result_observed=False)
@@ -318,7 +309,7 @@ class Hook(Env):
         out, facts, ctx = await self.run_hook("music")
         self.assertEqual([k for k, *_ in facts], ["node_output", "node_result_verification"])
         self.assertEqual(facts[1][1]["contract"], "native_media")
-        self.assertEqual(out["status"], "failed")  # no music artifact
+        self.assertEqual(out["status"], "failed")
         self.assertTrue(ctx.media_result_observed)
         again, more, _ = await self.run_hook("music", ctx=ctx)
         self.assertEqual((again, more), (None, []))
@@ -335,23 +326,23 @@ class Hook(Env):
         out, facts, _ = await self.run_hook("plan")
         self.assertEqual((out, facts), (None, []))
         self.assertIsNone(await media_verification.observe_media_result(SimpleNamespace(bind=self.engine), None,
-                                                                         "music"))  # no attempt context
+                                                                         "music"))
 
 
 class Registry(unittest.TestCase):
     def test_every_media_node_resolves_to_the_same_named_hook(self):
-        import app.services.decision_v1  # noqa: F401
-        import app.services.node_capabilities  # noqa: F401
+        import app.services.decision_v1
+        import app.services.node_capabilities
         for node_type in ("videos", "audio", "assemble", "hero", "items", "music"):
             spec = node_spec.verifier_spec_for(node_type)
             self.assertEqual(spec.name, "media_result", node_type)
             self.assertTrue(callable(spec.resolve()))
-            self.assertFalse(spec.managed_only)  # observation only: it never holds or fails a run
+            self.assertFalse(spec.managed_only)
         self.assertEqual(node_spec.verifier_spec_for("sfx_gen").name, "sfx_result")
         self.assertIsNone(node_spec.verifier_spec_for("publish"))
 
     def test_publish_stays_human_only_with_no_verifier_hook_or_recovery(self):
-        import app.services.node_capabilities  # noqa: F401
+        import app.services.node_capabilities
         spec = node_spec.capability_spec_for("publish")
         self.assertEqual(node_spec.coverage_level(spec), "human_only")
         self.assertEqual(spec.forbidden_code, "external_irreversible")

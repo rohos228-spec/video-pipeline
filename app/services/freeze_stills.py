@@ -1,4 +1,3 @@
-"""Раскладка СТАРТ/КОНЕЦ → два still: shot1 начало, shot2 конец."""
 
 from __future__ import annotations
 
@@ -19,13 +18,11 @@ _END_RE = re.compile(
     r"В референсе|Референса нет|Смена:|$))",
     re.IGNORECASE | re.DOTALL,
 )
-# Case-sensitive: scene_plan writes the markers upper-case; «старт»/«конец» in an action is not freeze.
 _START_MARK_RE = re.compile(r"СТАРТ\s*\([^)]*\)\s*:")
 _END_MARK_RE = re.compile(r"КОНЕЦ\s*\([^)]*\)\s*:")
 
 
 def layout_text(frame: Any) -> str:
-    """Текст раскладки кадра: attrs, иначе первый шоты[] с раскладкой."""
     attrs = getattr(frame, "attrs", None)
     if not isinstance(attrs, dict):
         if isinstance(frame, dict):
@@ -80,7 +77,6 @@ def layout_end_text(layout: str) -> str:
 
 
 def frame_needs_end_still(frame: Any) -> bool:
-    """Нужен конечный still (shot2): раскладка freeze или уже есть промт конца."""
     if layout_is_freeze(layout_text(frame)):
         return True
     attrs = getattr(frame, "attrs", None)
@@ -99,11 +95,6 @@ def _flag(frame: Any) -> None:
 
 
 def seed_end_still_prompt(frame: Any) -> bool:
-    """Записать ``image_prompt_shot2`` из блока КОНЕЦ, если пусто.
-
-    Не трогает ``image_prompt`` (shot1) — его пишет img_pr, skip_if_field
-    не должен срабатывать из-за черновика.
-    """
     attrs = getattr(frame, "attrs", None)
     attrs = {} if not isinstance(attrs, dict) else dict(attrs)
     existing = str(attrs.get(SHOT2_PROMPT_ATTR) or "").strip()
@@ -139,11 +130,6 @@ def frame_is_freeze(frame: Any) -> bool:
 def video_end_still(
     scenes_dir: Path, frame_number: int, shot: int, *, frame: Any = None
 ) -> Path | None:
-    """PNG конечного кадра для видео shot1. Shot2 сам уже конец — не дублируем.
-
-    С ``frame`` — только для раскладки СТАРТ/КОНЕЦ: у legacy shot2 картинка —
-    старт второго клипа, а не конец первого.
-    """
     if int(shot) != 1:
         return None
     if frame is not None and not frame_is_freeze(frame):

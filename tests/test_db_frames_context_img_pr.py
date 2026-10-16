@@ -62,7 +62,6 @@ def test_img_pr_db_context_picks_scene_grammar_keys() -> None:
 
 
 def test_img_pr_db_context_aliases_russian_action() -> None:
-    """Монтаж пишет «действие»; в карточке для агента это shot01_action."""
     fr = SimpleNamespace(
         number=2,
         uuid="def456",
@@ -139,11 +138,6 @@ def test_img_pr_db_context_fills_camera_chips_and_parent() -> None:
 
 
 def test_img_pr_vo_parent_leftover_coverage_parent_id_is_not_child() -> None:
-    """Later VO-ячейка с leftover coverage_parent_id=1-S1-K1 — не K2 сцены 1.
-
-    img_pr пишет промт на этот кадр; dump как child + still архивиста
-    заставляет GPT пропустить uuid или вернуть ops на родителя сцены 1.
-    """
     scene1 = SimpleNamespace(
         number=1,
         uuid="s" * 24,
@@ -191,7 +185,6 @@ def test_img_pr_vo_parent_leftover_coverage_parent_id_is_not_child() -> None:
 
 
 def test_img_pr_db_context_slims_bits_kadry_and_set() -> None:
-    """VO-ячейка с 73 битами и всей площадкой не должна раздувать db_frames."""
     kadry = [
         {"id": "1-S1-K1", "план": "ОБЩИЙ", "действие": "кладёт папку"},
         {"id": "1-S1-K2", "план": "СРЕДНИЙ", "действие": "открывает"},
@@ -240,7 +233,6 @@ def test_img_pr_db_context_slims_bits_kadry_and_set() -> None:
 
 
 def test_img_pr_db_context_slims_bits_kadry_and_set() -> None:
-    """VO-ячейка с 73 битами и всей площадкой не должна раздувать db_frames."""
     kadry = [
         {"id": "1-S1-K1", "план": "ОБЩИЙ", "действие": "кладёт папку"},
         {"id": "1-S1-K2", "план": "СРЕДНИЙ", "действие": "открывает"},
@@ -509,7 +501,6 @@ def test_excel_gpt_keeps_bits_action_shots_and_full_vo() -> None:
 
 
 def test_force_full_action_strips_old_main_action_keeps_bits() -> None:
-    """fw_action: биты — вход, старая цепь и старые кадры не в GPT."""
     from app.services.db_frames_context import force_full_strip_output_keys
 
     fr = SimpleNamespace(

@@ -1,24 +1,3 @@
-"""Bounded camera acceptance in the existing group/main/seed/loopback harness.
-
-Parent integration, owned elsewhere:
-* call prepare(fixtures, ROOT, 'native-scene-camera') before app imports;
-* use handler_for(fixtures, ROOT) for the existing loopback server;
-* call run(client, fixtures, observer, ROOT, result, prepared) after wait_api.
-The shared HTTP transport must keep its existing observed-node identity guard.
-No alternate main, worker, executor, provider, or server is started here.
-
-This is observation mode only. No Actions enable/launch, profile, approval,
-retry, force-wipe, or successful NodeRun write is issued. Existing frames are
-preserved. An empty seed must acquire frames through the original split API and
-worker first; this module never inserts/updates Frame or staging rows.
-
-Camera input is captured by the external HTTP fixture after native DB-v2
-backfill, before the camera reply and store_cells. Acceptance covers this camera
-node only, with actual input/parse/output/result journal bodies for its native
-attempt. Missing fanout/scene HITL remains diagnostic; assembler, full factory
-and managed acceptance stay false. Earlier archived diagnostic captures remain
-unchanged and separate from this later worker capture and helper GREEN tests.
-"""
 
 from __future__ import annotations
 
@@ -95,7 +74,6 @@ def _objects(state, *, data_dir=None):
 
 
 def prepare(fixtures, root, mode):
-    """Initialize only the fresh copied graph; never populate successful output."""
     root = Path(root)
     assert Path("/.dockerenv").is_file(), "Parent offline container only"
     assert "app.settings" not in sys.modules, "Prepare before application settings are loaded"
@@ -157,8 +135,6 @@ def prepare(fixtures, root, mode):
             meta = item["meta"]
             meta["canvas_graph"] = {"nodes": nodes, "edges": edges}
             meta["scene_design_enabled"] = True
-            # No existing Frame or checkpoint is changed. start_step owns the
-            # native per-agent only_agent/invalidation and all running states.
             db.execute("UPDATE projects SET status='new',auto_mode=0,meta=? WHERE id=?",
                 (json.dumps(meta), PROJECT_ID))
             run_id = item["run_ids"][0]
@@ -208,7 +184,6 @@ def prepare(fixtures, root, mode):
 
 
 def handler_for(fixtures, root, *, base_handler=None):
-    """Reuse the existing SSE handler; intercept only external fixture bytes."""
     root = Path(root)
     base_handler = base_handler or fixtures.FixtureHandler
 
@@ -242,7 +217,6 @@ def handler_for(fixtures, root, *, base_handler=None):
                     "boundary": "actual camera HTTP request after native backfill, before fixture response/staging",
                     "node_key": node, "request_ordinal": ordinal,
                 })
-            # The existing handler owns SSE shape, response IDs and counts.
             original = self.rfile
             self.rfile = io.BytesIO(raw)
             try:
@@ -275,8 +249,6 @@ async def _wait_native(fixtures, key):
         node = next((row for row in state["nodes"] if row["node_key"] == key), None)
         if node and node["status"] in {"done", "failed", "waiting_hitl"}:
             return state
-        # Native only_agent can return frames_ready before NodeRun replication.
-        # Do not infer completion from this Project status or staged cells alone.
         await asyncio.sleep(0.25)
     return state
 
@@ -309,7 +281,6 @@ def _journal_body(observer, fact, evidence):
 
 def _verify_camera_journal(observer, events, *, execution, camera_node, state,
                            captured, reply, transport_request, evidence):
-    """Read saved native facts and rows; no reconstructed facts or status writes."""
     from app.services.observation import digest
     from app.services.scene_contracts import scene_input_snapshot, verify_scene_agent
 
@@ -388,8 +359,6 @@ def _verify_camera_journal(observer, events, *, execution, camera_node, state,
     assert output["contract"] == "native_scene_camera" and output["frame_count"] == 2
     assert output["source"] == "committed original executor rows; independent read session"
     assert output["sha256"] == proof["sha256"]
-    # Each digest is checked with its original producer's encoding. The body
-    # reference hash, observer digest and compact typed-proof hash are distinct.
     evidence.update(status="passed", execution_id=execution, workflow_run_id=start["workflow_run_id"],
         node_key=CAMERA, attempt_id=attempt, request_id=request_id,
         event_ids={fact["kind"]: fact["event_id"] for fact in required},
@@ -398,7 +367,6 @@ def _verify_camera_journal(observer, events, *, execution, camera_node, state,
 
 
 async def run(client, fixtures, observer, root, result, prepared, *, browser=False):
-    """Accept this native camera node only after its real worker/journal checks."""
     root = Path(root)
     result.update(accepted=False, status="diagnostic", managed_execution_verified=False,
         semantic_quality_verified=False, factory_completed=False, full_scene_fanout_accepted=False,
@@ -533,8 +501,6 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     assert not actions["enabled"] and not actions["recoveries"] and not actions["records"], actions
     result["actions"] = actions
     result["managed_remained_disabled"] = True
-    # A quiet window exposes native duplicate worker starts without clearing
-    # stops/backoff, resetting nodes, or issuing another API launch.
     await asyncio.sleep(12)
     await observer.catch_up()
     final_events = await _history(client, prefix)

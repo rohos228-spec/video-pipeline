@@ -30,11 +30,10 @@ _TOKEN_TTL_SEC = 86400 * 7
 _HASH_PREFIX = "pbkdf2_sha256"
 _PBKDF2_ITERATIONS = 240_000
 
-_MEM: dict[str, tuple[float, str]] = {}      # sha256(токена) -> (выдан, пользователь)
+_MEM: dict[str, tuple[float, str]] = {}
 _LOCK = threading.Lock()
 
 
-# --- пароль ------------------------------------------------------------------------------------
 
 def hash_password(password: str, *, iterations: int = _PBKDF2_ITERATIONS,
                   salt: bytes | None = None) -> str:
@@ -49,7 +48,6 @@ def _b(value: str) -> bytes:
 
 
 def verify_password(stored: str, supplied: str) -> bool:
-    """Constant-time сравнение. ``stored`` - открытый пароль или pbkdf2-хэш."""
     if stored.startswith(_HASH_PREFIX + "$"):
         try:
             _name, iters, salt_b64, hash_b64 = stored.split("$", 3)
@@ -62,16 +60,13 @@ def verify_password(stored: str, supplied: str) -> bool:
 
 
 def verify_credentials(username: str, password: str) -> bool:
-    """Оба поля проверяются всегда (без раннего выхода по имени): время не выдаёт, что неверно."""
     user_ok = hmac.compare_digest(_b(settings.web_auth_user.strip()), _b(username))
     pwd_ok = verify_password(settings.web_auth_password, password)
     return bool(user_ok & pwd_ok)
 
 
-# --- ограничение попыток --------------------------------------------------------------------------
 
 class LoginThrottle:
-    """После ``max_failures`` неудач за ``window_s`` ключ блокируется на ``lockout_s``."""
 
     def __init__(self, max_failures: int = 5, window_s: float = 900.0, lockout_s: float = 900.0,
                  max_keys: int = 4096):
@@ -82,7 +77,6 @@ class LoginThrottle:
         self._lock = threading.Lock()
 
     def retry_after(self, keys: list[str], now: float | None = None) -> int:
-        """Секунд до разрешённой попытки; 0 - можно пробовать."""
         now = time.monotonic() if now is None else now
         with self._lock:
             left = max((self._locked_until.get(k, 0.0) - now for k in keys), default=0.0)
@@ -122,7 +116,6 @@ class LoginThrottle:
 login_throttle = LoginThrottle()
 
 
-# --- сессии ----------------------------------------------------------------------------------------
 
 def _db_path() -> Path:
     return Path(settings.data_dir) / "web_sessions.sqlite3"
@@ -198,7 +191,6 @@ def revoke_session_token(token: str | None) -> None:
 
 
 def forget_memory_sessions() -> None:
-    """Сбросить кэш в памяти (имитация перезапуска процесса; для тестов)."""
     with _LOCK:
         _MEM.clear()
 
@@ -236,7 +228,7 @@ async def require_web_user(request: Request) -> str | None:
 AuthDep = Annotated[str | None, Depends(require_web_user)]
 
 
-if __name__ == "__main__":  # python -m app.web.auth_sessions : получить хэш для WEB_AUTH_PASSWORD
+if __name__ == "__main__":
     _pw = getpass.getpass("Пароль для входа в Studio: ")
     if _pw != getpass.getpass("Повторите пароль: "):
         raise SystemExit("Пароли не совпали.")

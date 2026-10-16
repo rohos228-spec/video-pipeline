@@ -1,25 +1,3 @@
-"""Диск: проверка свободного места, чистка временных папок, ротация логов.
-
-Модуль намеренно зависит только от стандартной библиотеки (loguru подтягивается
-лениво), чтобы его можно было импортировать из ``app.bootstrap_env`` до
-``settings``/loguru/nemo.
-
-Что здесь:
-
-* ``check()``: разрешён ли новый запуск при текущем свободном месте. Порог «мало»
-  (``DISK_GUARD_LOW_FREE_GB``, по умолчанию 10 ГБ) запрещает новые платные
-  запуски и DEBUG-вывод; порог «критично» (``DISK_GUARD_CRITICAL_FREE_GB``,
-  по умолчанию 3 ГБ) запрещает любые новые запуски.
-* ``cleanup_stale_pid_temp()``: удаляет ``temp/pid-<PID>`` только мёртвых
-  процессов и только старше N часов (``DISK_GUARD_TEMP_MAX_AGE_H``, 6 ч).
-* ``cleanup_pytest_temp()``: удаляет устаревшие запуски ``pytest-of-*``.
-* ``append_rotating()`` / ``rotate_file()``: ротация текстовых логов по размеру.
-* ``enforce_total_cap()``: суммарный потолок размера для набора файлов.
-* ``vacuum_sqlite()``: VACUUM базы (трекер) при достаточном свободном месте.
-* ``housekeeping()``: всё вместе, с отчётом; ``start_housekeeping_timer()``: по таймеру.
-
-Проводка (хук в ``spend_guard``, событие, Telegram, старт в ``api.py``) не здесь.
-"""
 
 from __future__ import annotations
 
@@ -56,7 +34,6 @@ LEVEL_UNKNOWN = "unknown"
 _io_lock = threading.Lock()
 
 
-# --------------------------------------------------------------------------- env
 
 
 def _env_float(name: str, default: float) -> float:
@@ -79,11 +56,10 @@ def _log(level: str, message: str, *args: object) -> None:
         from loguru import logger
 
         getattr(logger, level)(message, *args)
-    except Exception:  # noqa: BLE001 — логирование не должно ломать чистку
+    except Exception:
         pass
 
 
-# ----------------------------------------------------------------- свободное место
 
 
 @dataclass(frozen=True)
@@ -105,7 +81,6 @@ class DiskCheck:
 def thresholds_bytes(
     low_free_gb: float | None = None, critical_free_gb: float | None = None
 ) -> tuple[int, int]:
-    """(низкий, критичный) пороги в байтах; критичный не выше низкого."""
     low = low_free_gb if low_free_gb is not None else _env_float(
         "DISK_GUARD_LOW_FREE_GB", DEFAULT_LOW_FREE_GB
     )
@@ -144,13 +119,6 @@ def check(
     low_free_gb: float | None = None,
     critical_free_gb: float | None = None,
 ) -> DiskCheck:
-    """Можно ли начинать новый запуск при текущем свободном месте.
-
-    ``paid=True``: «мало» уже отказ. ``paid=False`` (бесплатный запуск): отказ
-    только при «критично». Если место измерить не удалось (``OSError``),
-    уровень ``unknown``: платный запуск отказан (fail-closed), бесплатный
-    разрешён; причина попадает в ``reason``.
-    """
     target = Path(path) if path is not None else _default_data_dir()
     low_b, crit_b = thresholds_bytes(low_free_gb, critical_free_gb)
     try:
@@ -192,11 +160,9 @@ def check(
 
 
 def debug_allowed(path: str | os.PathLike[str] | None = None) -> bool:
-    """DEBUG-вывод разрешён только при уровне «ок» (и «неизвестно»)."""
     return check(path, paid=True).level in (LEVEL_OK, LEVEL_UNKNOWN)
 
 
-# ------------------------------------------------------------------ чистка temp
 
 
 def pid_alive(pid: int) -> bool:
@@ -206,7 +172,7 @@ def pid_alive(pid: int) -> bool:
         import ctypes
 
         kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(0x1000, False, pid)
         if handle:
             kernel32.CloseHandle(handle)
             return True
@@ -255,11 +221,6 @@ def cleanup_stale_pid_temp(
     now: float | None = None,
     alive_fn=pid_alive,
 ) -> CleanupResult:
-    """Удалить ``pid-<PID>`` старше ``max_age_h`` часов, чей процесс мёртв.
-
-    Папки живых процессов и своего PID не трогаются никогда, как и папки с
-    нечисловым хвостом. ``max_dirs`` ограничивает работу за один вызов.
-    """
     result = CleanupResult()
     if not temp_root.is_dir():
         return result
@@ -316,11 +277,6 @@ def cleanup_pytest_temp(
     now: float | None = None,
     protect: Iterable[Path] = (),
 ) -> CleanupResult:
-    """Удалить устаревшие запуски ``pytest-of-*/pytest-N`` внутри ``temp_root``.
-
-    Пути, внутри которых лежит ``protect`` (текущий tempdir и cwd), не трогаются.
-    Пустой ``pytest-of-*`` после чистки удаляется.
-    """
     result = CleanupResult()
     if not temp_root.is_dir():
         return result
@@ -340,7 +296,7 @@ def cleanup_pytest_temp(
         for child in children:
             try:
                 if child.is_symlink():
-                    child.unlink(missing_ok=True)  # pytest-current
+                    child.unlink(missing_ok=True)
                     continue
                 if not child.is_dir():
                     continue
@@ -366,14 +322,9 @@ def cleanup_pytest_temp(
     return result
 
 
-# ----------------------------------------------------------------------- ротация
 
 
 def rotate_file(path: Path, *, max_bytes: int, backups: int) -> bool:
-    """Если ``path`` больше ``max_bytes``: сдвинуть ``.1 .. .N``, самый старый удалить.
-
-    ``backups=0``: файл просто усекается (удаляется). True, если ротация была.
-    """
     try:
         if not path.is_file() or path.stat().st_size <= max_bytes:
             return False
@@ -396,7 +347,6 @@ def rotate_file(path: Path, *, max_bytes: int, backups: int) -> bool:
 
 
 def log_limits() -> tuple[int, int]:
-    """(макс. размер файла в байтах, число копий) из ``LOG_FILE_MAX_MB``/``LOG_FILE_BACKUPS``."""
     max_mb = _env_float("LOG_FILE_MAX_MB", DEFAULT_LOG_MAX_BYTES / MB)
     return max(1024, int(max_mb * MB)), max(0, _env_int("LOG_FILE_BACKUPS", DEFAULT_LOG_BACKUPS))
 
@@ -408,15 +358,11 @@ def append_rotating(
     max_bytes: int | None = None,
     backups: int | None = None,
 ) -> None:
-    """Дописать строку в ``path`` с ротацией по размеру.
-
-    Бросает ``OSError`` как обычный ``open``: вызывающий код сам решает, что с ним делать.
-    """
     try:
         from app.services.redact import redact_text
 
         line = redact_text(line)
-    except Exception:  # noqa: BLE001 - a redaction failure must not lose the log line
+    except Exception:
         pass
     mb, bk = log_limits()
     mb = max_bytes if max_bytes is not None else mb
@@ -438,11 +384,6 @@ def enforce_total_cap(
     max_age_days: float | None = None,
     now: float | None = None,
 ) -> CleanupResult:
-    """Удалять самые старые файлы, пока сумма по ``patterns`` выше потолка.
-
-    ``max_age_days``: сначала удалить всё старше срока. ``protect``: файлы,
-    которые не удаляются никогда (открытые сейчас).
-    """
     result = CleanupResult()
     if not directory.is_dir():
         return result
@@ -457,7 +398,7 @@ def enforce_total_cap(
                     seen[f] = (st.st_mtime, st.st_size)
             except OSError:
                 continue
-    files = sorted(seen.items(), key=lambda kv: kv[1][0])  # старые первыми
+    files = sorted(seen.items(), key=lambda kv: kv[1][0])
     t_now = now if now is not None else time.time()
     total = sum(s for _m, s in seen.values())
 
@@ -485,15 +426,9 @@ def enforce_total_cap(
     return result
 
 
-# ------------------------------------------------------------------------ VACUUM
 
 
 def vacuum_sqlite(db_path: Path, *, busy_timeout_s: float = 5.0) -> tuple[bool, str]:
-    """VACUUM для базы (например ``tracker.db``). Возвращает (сделано, пояснение).
-
-    VACUUM пишет копию файла, поэтому нужен запас свободного места не меньше
-    размера базы плюс критичный порог; иначе отказ с пояснением.
-    """
     if not db_path.is_file():
         return False, f"База не найдена: {db_path}"
     size = db_path.stat().st_size
@@ -514,7 +449,6 @@ def vacuum_sqlite(db_path: Path, *, busy_timeout_s: float = 5.0) -> tuple[bool, 
     return True, f"VACUUM выполнен: {size} -> {after} байт"
 
 
-# ------------------------------------------------------------------ housekeeping
 
 
 def _stamp_due(stamp: Path, interval_s: float, now: float) -> bool:
@@ -542,13 +476,6 @@ def housekeeping(
     max_dirs: int | None = None,
     now: float | None = None,
 ) -> dict[str, int | bool | str]:
-    """Один проход чистки. Идемпотентен, безопасен при параллельных процессах.
-
-    ``min_interval_s > 0``: если прошлый проход (метка в ``data/.cache``) был
-    недавно, возвращает ``{"skipped": True}``. Что делает: pid-temp мёртвых
-    процессов, pytest-of-*, потолок ``data/backend*.log``, ротация и потолок
-    ``logs/*.log``, потолок ``data/monitor``, VACUUM трекера раз в сутки.
-    """
     data = Path(data_dir) if data_dir is not None else _default_data_dir()
     t_now = now if now is not None else time.time()
     cache = data / ".cache"
@@ -633,10 +560,6 @@ def start_housekeeping_timer(
     logs_dir: Path | None = None,
     tracker_db: Path | None = None,
 ) -> bool:
-    """Демон-поток: ``housekeeping`` каждые ``interval_s`` секунд (по умолчанию 1 час).
-
-    Повторный вызов не плодит потоки. Возвращает True, если поток запущен этим вызовом.
-    """
     global _timer_thread
     if _timer_thread is not None and _timer_thread.is_alive():
         return False
@@ -648,7 +571,7 @@ def start_housekeeping_timer(
         while not _timer_stop.wait(period):
             try:
                 housekeeping(data_dir, logs_dir=logs_dir, tracker_db=tracker_db, max_dirs=200)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 _log("warning", "disk_guard: сбой периодической чистки: {}", exc)
 
     _timer_thread = threading.Thread(target=_loop, name="disk-guard-housekeeping", daemon=True)

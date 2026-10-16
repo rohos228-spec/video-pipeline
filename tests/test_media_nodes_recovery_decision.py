@@ -1,9 +1,3 @@
-"""Media nodes: declarative decision data, coverage guard, no network/DB.
-
-Human-only (no supervisor retry at all): publish.
-Local resume (hero, images, audio, sfx_gen): the supervisor may resume a RECORDED result only (resume_local), no paid resend.
-Local retry (assemble): one re-run through the original worker, no provider call at all.
-Resume-only (videos, items, music): the supervisor may resume a KNOWN provider task and never submit."""
 import pytest
 
 from app.orchestrator.node_registry import WORK_NODES
@@ -12,9 +6,6 @@ from app.services.node_capabilities import (
 
 RECOVERY_ACTIONS = {"retry_same", "retry_profile", "finish"}
 
-# Registered work nodes that are NOT media/paid-or-external. A new registry node must land in
-# exactly one of these two groups (media decision table or this text/structure set), otherwise
-# test_every_registry_node_has_a_media_decision_or_is_known_non_media fails.
 KNOWN_NON_MEDIA = {
     "plan", "script", "split", "scene_design", "sd_agent", "sd_assemble",
     "enrich_1", "enrich_2", "enrich_3", "enrich_4", "enrich_5",
@@ -35,8 +26,6 @@ def test_every_registry_node_has_a_media_decision_or_is_known_non_media():
 
 
 def test_generating_status_nodes_are_never_silently_non_media():
-    # Heuristic guard: any node whose running status is a 'generating_*' one that is not a known
-    # text step must carry a media decision (image_prompts / animation_prompts are text).
     for node_type, spec in WORK_NODES.items():
         if spec.running_status.name.startswith("generating_") and node_type not in KNOWN_NON_MEDIA:
             assert node_type in MEDIA, node_type

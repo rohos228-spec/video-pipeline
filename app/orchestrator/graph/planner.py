@@ -337,10 +337,6 @@ class WorkflowGraph:
         meta = project.meta if isinstance(project.meta, dict) else {}
         active = str(meta.get("active_excel_gpt_node_key") or "").strip()
         if finished_type.startswith("enrich_"):
-            # overflow-группа (slot 0) тоже заканчивается enrich_1_ready.
-            # BFS обязан стартовать с ноды, которая только что отработала
-            # (QC), а не с чужого excel_gpt slot=1 на том же канвасе —
-            # иначе после группы стартует «случайный» hero / img_pr.
             overflow_from: str | None = None
             if active:
                 n_act = self._by_id.get(active) or {}
@@ -366,9 +362,6 @@ class WorkflowGraph:
                     slot = 0
                 if 1 <= slot <= 5:
                     start_keys = self.excel_gpt_keys_for_slot(slot)
-                    # Несколько excel_gpt с одним slotIndex: BFS от всех ключей
-                    # слота даёт ложный «следующий» шаг (например split после
-                    # ранней slot=5). Сужаем до active / completed ключа слота.
                     if active and active in start_keys:
                         start_keys = [active]
                     else:

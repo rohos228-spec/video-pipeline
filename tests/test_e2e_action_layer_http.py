@@ -1,14 +1,3 @@
-"""Сквозная проверка командной строки через HTTP-API (без сети и без платных вызовов).
-
-Путь каждого сценария один и тот же, как у оператора в интерфейсе:
-``POST /plans/from-text`` (модель - заглушка транспорта) -> превью -> ``approve`` (одноразовая серверная запись,
-привязанная к хэшу плана) -> ``run`` -> опрос ``GET /plans/{id}`` -> ``GET /history``.
-
-Проект - реалистичный сид ``scripts/eval_seed.py`` (30 кадров, файлы, очередь, ноды, предложения изменений).
-Платное и разрушающее исполняют фейковые ``test.*`` действия из ``scripts/e2e_action_layer_fake_paid.py``
-(в памяти, без сети). Проверяется не качество модели, а всё вокруг неё: превью, подтверждение, потолок
-кредитов, аварийный стоп, вложения, устаревший план, чужой проект, журнал.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -28,7 +17,7 @@ from app.services.action_layer import executor, planner, store
 from app.services.action_layer import attachments as att
 from app.services.action_layer.spec import ensure_builtin_actions, registry
 from app.settings import settings
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 from tests.test_action_layer_planner import reply, res
 from tests.test_action_planner_seed_context import load_seed
 
@@ -44,12 +33,10 @@ def st(aid: str, deps=None, **params) -> dict:
 
 
 def fake_st(aid: str, deps=None, **params) -> dict:
-    """Шаг фейкового действия: у них нет project_id в схеме."""
     return {"action_id": aid, "params": params, "depends_on": deps or []}
 
 
 class Model:
-    """Заглушка модели планировщика: отдаёт заранее заданный ответ и запоминает запросы."""
 
     def __init__(self, *steps, clar: str | None = None, expl: str = "Делаю.") -> None:
         self.result = res(reply(list(steps), clar=clar, expl=expl))
@@ -90,7 +77,6 @@ async def run(env, plan_id: str):
 
 
 async def finish(env, plan_id: str) -> dict:
-    """approve (если нужно) -> run -> ждать конца -> вид плана; каждый шаг проверяется по кодам HTTP."""
     pv = await plan_view(env, plan_id)
     needs = pv.get("needs_approval")
     if needs is None:
@@ -107,14 +93,13 @@ async def finish(env, plan_id: str) -> dict:
 async def history(env, plan_id: str) -> list[dict]:
     r = await env.client.get(f"{BASE}/history", params={"plan_id": plan_id, "limit": 200})
     assert r.status_code == 200, r.text
-    return list(reversed(r.json()["items"]))  # старые первыми
+    return list(reversed(r.json()["items"]))
 
 
 def events(rows: list[dict]) -> list[str]:
     return [r["event"] for r in rows]
 
 
-# --- окружение ------------------------------------------------------------------------------------------
 
 def _load_launcher():
     spec = importlib.util.spec_from_file_location("e2e_http_fake_launcher", _LAUNCHER)
@@ -124,7 +109,7 @@ def _load_launcher():
 
 
 @pytest_asyncio.fixture
-async def live(env, tmp_path, monkeypatch):  # noqa: F811
+async def live(env, tmp_path, monkeypatch):
     ensure_builtin_actions()
     monkeypatch.setattr(prompt_library, "PROMPTS_ROOT", prompt_library.PROMPTS_ROOT)
     monkeypatch.setattr(settings, "vibecode_api_key", "vk-test-key")
@@ -138,7 +123,7 @@ async def live(env, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     seed = await load_seed().seed_realistic(project_id=PID, factory=env.factory,
                                             prompts_dir=tmp_path / "prompts")
-    async with env.factory() as s:  # второй проект: чужие вложения и чужие шаги
+    async with env.factory() as s:
         s.add(Project(id=OTHER, topic="other", slug="other-proj"))
         await s.commit()
     env.seed = seed
@@ -149,7 +134,6 @@ async def live(env, tmp_path, monkeypatch):  # noqa: F811
 
 @pytest.fixture
 def fake(live):
-    """Фейковые платные/разрушающие действия в общем реестре (на время теста)."""
     mod = _load_launcher()
     mod.JOBS.clear()
     added = []
@@ -165,7 +149,6 @@ def fake(live):
 
 
 def pad_clips(env, *numbers: int) -> None:
-    """Заглушки видео сида слишком малы для проверки «новый файл готов» (>= 1 КБ): дополняем нулями."""
     for n in numbers:
         for clip in (env.seed.data_dir / "videos").glob(f"clip_{n:03d}*.mp4"):
             clip.write_bytes(clip.read_bytes() + bytes(2048))
@@ -178,7 +161,6 @@ async def frame_state(env, number: int) -> dict:
                 "attrs": json.loads(json.dumps(f.attrs or {}, sort_keys=True))}
 
 
-# --- 1. чтение ----------------------------------------------------------------------------------------
 
 async def test_read_action_runs_without_approval_and_is_in_history(live) -> None:
     model = use(st("montage.get_board"), expl="Читаю доску.")
@@ -189,22 +171,21 @@ async def test_read_action_runs_without_approval_and_is_in_history(live) -> None
     assert body["preview"]["risk_max"] == "read" and body["needs_clarification"] is None
     assert len(model.calls) == 1
     pid = body["plan_id"]
-    assert (await plan_view(live, pid))["status"] == "proposed"      # планировщик ничего не запускает
+    assert (await plan_view(live, pid))["status"] == "proposed"
     view = await finish(live, pid)
     assert view["status"] == "succeeded" and view["spent_credits"] == 0.0
     board = view["steps"][0]["result"]
     assert board["frame_count"] == 30 and len(board["frames"]) == 30
-    assert board["pending_ops"]                                     # очередь правок сида видна
+    assert board["pending_ops"]
     rows = await history(live, pid)
     assert events(rows)[0] == "plan_created" and events(rows)[-1] == "plan_finished"
     assert {"run_requested", "plan_started", "step_started", "step_succeeded"} <= set(events(rows))
-    assert not {"approval_created", "approval_consumed"} & set(events(rows))   # чтению подтверждение не нужно
+    assert not {"approval_created", "approval_consumed"} & set(events(rows))
     assert rows[0]["request_text"] == "покажи состояние доски монтажа"
     allrows = (await live.client.get(f"{BASE}/history", params={"limit": 50})).json()["items"]
-    assert any(r["event"] == "planner_call" for r in allrows)       # вызов модели тоже в журнале
+    assert any(r["event"] == "planner_call" for r in allrows)
 
 
-# --- 2. локальная запись и обратимость ---------------------------------------------------------------------
 
 async def test_local_safe_write_changes_db_and_is_reversed_by_repeating_it(live) -> None:
     pad_clips(live, 4)
@@ -220,21 +201,19 @@ async def test_local_safe_write_changes_db_and_is_reversed_by_repeating_it(live)
     assert view["status"] == "succeeded", [(x["status"], x["error"]) for x in view["steps"]]
     assert view["steps"][0]["result"]["prompts_swapped"] is True
     after = await frame_state(live, 4)
-    assert after != before                                           # база действительно изменилась
+    assert after != before
     assert before["attrs"]["image_prompt_shot2"] == "финальный план кадра 4" and not before["image_prompt"]
     assert after["image_prompt"] == "финальный план кадра 4" and "image_prompt_shot2" not in after["attrs"]
 
-    # В реестре у действия нет «обратного плана»: обратимость = то же действие ещё раз (описание действия).
     assert registry.get("montage.swap_shots").reversible is True
     use(st("montage.swap_shots", frame_number=4, kind="both"))
     r2 = await ask(live, "верни шоты кадра 4 обратно")
     view2 = await finish(live, r2.json()["plan_id"])
     assert view2["status"] == "succeeded"
-    back = await frame_state(live, 4)                                # содержимое вернулось (пустое None -> "")
+    back = await frame_state(live, 4)
     assert back["attrs"] == before["attrs"] and not back["image_prompt"] and not back["animation_prompt"]
 
 
-# --- 3. платное: потолок кредитов ----------------------------------------------------------------------
 
 async def test_paid_action_needs_approval_and_spends_actual_credits(live, fake) -> None:
     use(fake_st("test.fake_paid_instant", label="проверка"), expl="Тестовая платная задача.")
@@ -243,7 +222,7 @@ async def test_paid_action_needs_approval_and_spends_actual_credits(live, fake) 
     pv = r.json()["preview"]
     assert pv["needs_approval"] and pv["risk_max"] == "paid" and pv["cost"]["high"] == 50.0
     pid = r.json()["plan_id"]
-    assert (await run(live, pid)).status_code == 403                 # без подтверждения не запускается
+    assert (await run(live, pid)).status_code == 403
     assert fake.events() == []
     view = await finish(live, pid)
     assert view["status"] == "succeeded" and view["spent_credits"] == pytest.approx(42.0)
@@ -255,7 +234,7 @@ async def test_paid_action_needs_approval_and_spends_actual_credits(live, fake) 
 
 
 async def test_session_credit_cap_refuses_a_paid_plan_before_anything_runs(live, fake, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "action_layer_session_cap_credits", 40.0)       # верхняя оценка 50 > 40
+    monkeypatch.setattr(settings, "action_layer_session_cap_credits", 40.0)
     use(fake_st("test.fake_paid_instant", label="a"), expl="Платное.")
     r = await ask(live, "тест платное мгновенное действие")
     assert r.status_code == 200
@@ -265,20 +244,20 @@ async def test_session_credit_cap_refuses_a_paid_plan_before_anything_runs(live,
     a = await approve(live, pid)
     assert a.status_code == 409 and a.json()["detail"]["code"] == "over_budget"
     assert (await run(live, pid)).status_code == 403
-    assert fake.events() == []                                       # ни один фейковый платный вызов не сделан
+    assert fake.events() == []
     assert (await plan_view(live, pid))["status"] == "proposed"
 
 
 async def test_cap_lowered_after_approval_blocks_the_step_at_run_time(live, fake, monkeypatch) -> None:
     use(fake_st("test.fake_paid_instant", label="b"), expl="Платное.")
     pid = (await ask(live, "тест платное мгновенное действие")).json()["plan_id"]
-    assert (await approve(live, pid)).status_code == 200            # потолок по умолчанию 200: влезает
-    monkeypatch.setattr(settings, "action_layer_session_cap_credits", 40.0)       # потом потолок снизили
+    assert (await approve(live, pid)).status_code == 200
+    monkeypatch.setattr(settings, "action_layer_session_cap_credits", 40.0)
     assert (await run(live, pid)).status_code == 200
     await executor.wait(pid)
     view = await plan_view(live, pid)
     assert view["status"] == "failed" and view["steps"][0]["status"] == "failed"
-    assert fake.events() == []                                       # шаг не стартовал
+    assert fake.events() == []
     assert "budget_block" in events(await history(live, pid))
 
 
@@ -292,7 +271,6 @@ async def test_two_paid_steps_do_not_fit_one_plan_cap(live, fake, monkeypatch) -
     assert a.status_code == 409 and a.json()["detail"]["code"] == "over_budget"
 
 
-# --- 4. разрушающее: подтверждение одноразовое -------------------------------------------------------------
 
 async def test_destructive_needs_approval_and_the_same_approval_cannot_be_replayed(live, fake) -> None:
     use(fake_st("test.fake_destructive", label="x"), expl="Стираю тестовую запись.")
@@ -301,25 +279,24 @@ async def test_destructive_needs_approval_and_the_same_approval_cannot_be_replay
     pv = r.json()["preview"]
     assert pv["needs_approval"] and pv["risk_max"] == "destructive" and pv["destructive_effects"]
     pid = r.json()["plan_id"]
-    assert (await run(live, pid)).status_code == 403                 # без подтверждения нельзя
+    assert (await run(live, pid)).status_code == 403
     assert fake.events() == []
 
     a = await approve(live, pid)
     assert a.status_code == 200
     approval = a.json()
     assert approval["plan_id"] == pid and len(approval["plan_hash"]) == 64
-    assert approval["plan_hash"] == pv["plan_hash"]                  # привязано к хэшу плана
+    assert approval["plan_hash"] == pv["plan_hash"]
     assert approval["operator"] == "local_web_operator"
     assert (await run(live, pid)).status_code == 200
     await executor.wait(pid)
     assert (await plan_view(live, pid))["status"] == "succeeded"
     assert [e["event"] for e in fake.events()] == ["destructive_done"]
 
-    again = await run(live, pid)                                     # повтор того же плана тем же подтверждением
+    again = await run(live, pid)
     assert again.status_code == 409 and again.json()["detail"]["code"] == "plan_finished"
-    assert len(fake.events()) == 1                                   # второго стирания не было
+    assert len(fake.events()) == 1
 
-    # Новый план с тем же содержимым: старое подтверждение к нему не относится.
     use(fake_st("test.fake_destructive", label="x"), expl="Стираю тестовую запись.")
     pid2 = (await ask(live, "тест стирающее действие")).json()["plan_id"]
     assert pid2 != pid
@@ -339,7 +316,7 @@ async def test_run_montage_deletes_the_old_final_so_it_needs_approval(live) -> N
     assert pv["cost"]["high"] == 0 and pv["steps"][0]["spends_money"] is False
     effect = pv["destructive_effects"][0]["text"]
     assert "final.mp4" in effect and "сборка займёт время" in effect and "платных вызовов нет" in effect
-    assert (await run(live, r.json()["plan_id"])).status_code == 403   # без подтверждения не запускается
+    assert (await run(live, r.json()["plan_id"])).status_code == 403
 
 
 async def test_assemble_macro_shows_one_plan_with_one_approval(live) -> None:
@@ -357,7 +334,7 @@ async def test_plan_changed_after_approval_is_refused(live, fake) -> None:
     use(fake_st("test.fake_destructive", label="before"), expl="Стираю.")
     pid = (await ask(live, "тест стирающее действие")).json()["plan_id"]
     assert (await approve(live, pid)).status_code == 200
-    async with live.factory() as s:                                  # кто-то подменил параметры шага в базе
+    async with live.factory() as s:
         await s.execute(update(store.ActionPlanStep).where(store.ActionPlanStep.plan_id == pid)
                         .values(params={"label": "after"}))
         await s.commit()
@@ -366,25 +343,24 @@ async def test_plan_changed_after_approval_is_refused(live, fake) -> None:
     assert fake.events() == []
 
 
-# --- 5. аварийный стоп -------------------------------------------------------------------------------------
 
 async def test_kill_switch_refuses_planning_and_execution_until_switched_off(live) -> None:
     pad_clips(live, 8)
     use(st("montage.swap_shots", frame_number=8, kind="both"))
     before = await frame_state(live, 8)
     r = await ask(live, "поменяй шоты кадра 8")
-    pid = r.json()["plan_id"]                                        # превью создано до включения стопа
+    pid = r.json()["plan_id"]
     await kill_switch.set_state(live.factory, active=True, actor="test", rationale="проверка e2e")
     try:
         denied = await run(live, pid)
         assert denied.status_code == 409 and denied.json()["detail"]["code"] == "kill_switch_active"
-        assert await frame_state(live, 8) == before                  # база не тронута
+        assert await frame_state(live, 8) == before
         assert (await plan_view(live, pid))["status"] == "proposed"
         planning = await ask(live, "покажи доску")
         assert planning.status_code == 409 and planning.json()["detail"]["code"] == "kill_switch_active"
     finally:
         await kill_switch.set_state(live.factory, active=False, actor="test", rationale="снято")
-    view = await finish(live, pid)                                   # стоп снят: тот же план проходит
+    view = await finish(live, pid)
     assert view["status"] == "succeeded"
     assert await frame_state(live, 8) != before
 
@@ -394,7 +370,7 @@ async def test_kill_switch_stops_a_running_background_step(live, fake) -> None:
     pid = (await ask(live, "тест платная фоновая задача")).json()["plan_id"]
     assert (await approve(live, pid)).status_code == 200
     assert (await run(live, pid)).status_code == 200
-    for _ in range(100):                                             # дождаться живого шага
+    for _ in range(100):
         if any(e["event"] == "started" for e in fake.events()):
             break
         await asyncio.sleep(0.03)
@@ -405,11 +381,10 @@ async def test_kill_switch_stops_a_running_background_step(live, fake) -> None:
         await kill_switch.set_state(live.factory, active=False, actor="test", rationale="снято")
     view = await plan_view(live, pid)
     assert view["status"] == "stopped" and view["steps"][0]["status"] == "cancelled"
-    assert {e["event"] for e in fake.events()} == {"started", "stopped"}      # фоновая задача остановлена, не дошла
+    assert {e["event"] for e in fake.events()} == {"started", "stopped"}
     assert "step_cancelled" in events(await history(live, pid))
 
 
-# --- 6. вложения и загрузка ---------------------------------------------------------------------------------
 
 async def upload(env, name: str, data: bytes, ctype: str, project_id: int = PID):
     return await env.client.post(f"{BASE}/attachments", data={"project_id": str(project_id)},
@@ -422,15 +397,15 @@ async def test_attachment_then_upload_action_end_to_end(live) -> None:
     att_id = up.json()["attachment_id"]
     assert up.json()["sha256"] == hashlib.sha256(MP3).hexdigest()
 
-    model = use(st("montage.upload_voice"), expl="Загружаю озвучку.")      # модель путь не знает и не пишет
+    model = use(st("montage.upload_voice"), expl="Загружаю озвучку.")
     r = await ask(live, "загрузи озвучку", attachments=[att_id])
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["attachments_used"] == [att_id] and body["preview"]["ok"]
     pv = body["preview"]
-    assert pv["needs_approval"] and pv["risk_max"] == "destructive"          # заменяет озвучку: нужно подтверждение
+    assert pv["needs_approval"] and pv["risk_max"] == "destructive"
     prompt = json.dumps(json.loads(model.calls[0]["body"]["messages"][1]["content"]), ensure_ascii=False)
-    assert "attachments/" not in prompt and str(live.tmp_path) not in prompt   # модель не видит пути
+    assert "attachments/" not in prompt and str(live.tmp_path) not in prompt
     pid = body["plan_id"]
     step = (await plan_view(live, pid))["steps"][0]
     assert step["params"]["source_path"] == f"attachments/{PID}/{att_id}_voice.mp3"
@@ -443,10 +418,9 @@ async def test_attachment_then_upload_action_end_to_end(live) -> None:
         project = await s.get(Project, PID)
         meta = project.meta or {}
         ddir = project.data_dir
-    assert (Path(ddir) / "audio" / "voice_full.mp3").read_bytes() == MP3     # файл реально лёг в проект
+    assert (Path(ddir) / "audio" / "voice_full.mp3").read_bytes() == MP3
     assert str(meta["montage_voice_path"]).endswith("voice_full.mp3")
 
-    # Файл использован: второй план с ним не строится.
     use(st("montage.upload_voice"))
     again = await ask(live, "загрузи озвучку", attachments=[att_id])
     assert again.status_code == 409 and again.json()["detail"]["code"] == "attachment_consumed"
@@ -479,7 +453,6 @@ async def test_bad_files_are_rejected_at_upload(live) -> None:
     assert not root.exists() or not [p for p in root.rglob("*") if p.is_file()]
 
 
-# --- 7. устаревший план, чужой проект ----------------------------------------------------------------------------
 
 async def test_stale_plan_is_refused_after_the_project_changed(live, fake) -> None:
     pad_clips(live, 4)
@@ -488,15 +461,14 @@ async def test_stale_plan_is_refused_after_the_project_changed(live, fake) -> No
     use(st("montage.get_board"))
     read_only = (await ask(live, "покажи доску")).json()["plan_id"]
     before = await frame_state(live, 4)
-    async with live.factory() as s:                                  # проект изменился: кадр 30 удалён
+    async with live.factory() as s:
         await s.execute(delete(Frame).where(Frame.project_id == PID, Frame.number == 30))
         await s.commit()
     r = await run(live, safe)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "stale_context"
-    assert await frame_state(live, 4) == before                      # ничего не выполнено
+    assert await frame_state(live, 4) == before
     r = await run(live, read_only)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "stale_context"
-    # план строится заново на новом состоянии: теперь проходит
     use(st("montage.swap_shots", frame_number=4, kind="both"))
     fresh = (await ask(live, "поменяй шоты кадра 4")).json()["plan_id"]
     assert (await finish(live, fresh))["status"] == "succeeded"
@@ -520,7 +492,7 @@ async def test_steps_for_another_project_reject_the_whole_plan(live) -> None:
     assert r.status_code == 422, r.text
     d = r.json()["detail"]
     assert d["code"] == "planner_rejected" and d["reason"] == "foreign_project"
-    assert len(model.calls) == 1                                     # отказ по безопасности не повторяется
+    assert len(model.calls) == 1
     plans = (await live.client.get(f"{BASE}/plans", params={"project_id": OTHER})).json()["items"]
     assert plans == []
 
@@ -538,14 +510,13 @@ async def test_a_plan_cannot_carry_approval_fields(live) -> None:
     r = await live.client.post(f"{BASE}/plans/preview", json={
         "steps": [{"action_id": "montage.get_board", "params": {"project_id": PID}}],
         "approval_id": "x", "approved": True})
-    assert r.status_code == 422                                      # подтверждение нельзя передать в теле плана
+    assert r.status_code == 422
     use(st("montage.get_board"))
     pid = (await ask(live, "покажи доску")).json()["plan_id"]
     r = await live.client.post(f"{BASE}/plans/{pid}/run", json={"approval_id": "x"})
     assert r.status_code == 422
 
 
-# --- 8. история ------------------------------------------------------------------------------------------------
 
 async def test_history_is_append_only_and_lists_every_request(live, fake) -> None:
     use(fake_st("test.fake_paid_instant", label="h"))
@@ -556,7 +527,7 @@ async def test_history_is_append_only_and_lists_every_request(live, fake) -> Non
                             "run_requested", "plan_started", "step_started", "step_succeeded", "plan_finished"]
     assert {r["actor"] for r in rows} <= {"local_web_operator", "system", "executor"} | {rows[0]["actor"]}
     last = rows[-1]["id"]
-    async with live.factory() as s:                                  # журнал нельзя править задним числом
+    async with live.factory() as s:
         for stmt in ("UPDATE action_layer_history SET event='x' WHERE id=:i",
                      "DELETE FROM action_layer_history WHERE id=:i"):
             with pytest.raises(Exception):

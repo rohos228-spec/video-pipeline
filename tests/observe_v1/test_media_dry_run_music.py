@@ -1,8 +1,3 @@
-"""Dry run of the supervised resume of `music` (Suno through Kie): see media_dry_run_base for what is real.
-
-The node body is the REAL generate_music.run: saved Suno prompt, kie_http.run_generation with the Suno spec,
-the resume guard, Artifact and the post-step check. Only the Kie HTTP boundary and the GPT client are faked.
-"""
 import unittest
 
 import pytest

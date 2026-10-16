@@ -14,7 +14,6 @@ from app.services.apply_ops_batches import (
 
 
 def test_pack_call_timeout_uses_gpt_timeout_not_90(monkeypatch) -> None:
-    """script_frames_qc (bits/shots) нельзя резать wait_for(90) — GPT пишет дольше."""
     from app.settings import settings
 
     monkeypatch.setattr(settings, "gpt_timeout_s", 600.0)
@@ -274,7 +273,6 @@ def test_camera_menu_skip_requires_size_move_set() -> None:
 
 
 def test_camera_menu_pending_includes_silent_coverage_child() -> None:
-    """K2/K3 без закадра всё равно должны попасть в добор движение/набор."""
     from app.services.apply_ops_batches import SKIP_CAMERA_MENU
 
     silent = {
@@ -296,7 +294,6 @@ def test_camera_menu_pending_includes_silent_coverage_child() -> None:
 
 
 def test_prompts_pending_includes_silent_coverage_child() -> None:
-    """Покрытие без vo_shot тоже нуждается в image/anim."""
     from app.services.apply_ops_batches import SKIP_PROMPTS_AND_ACTION
 
     silent = {
@@ -360,7 +357,6 @@ def _frame(i: int) -> dict:
 
 
 def test_split_vo_units_fat_attrs_do_not_solo_first_cell() -> None:
-    """Жирные кадры[]/площадка не делают первую ячейку соло-пачкой."""
     uid = f"{0:024d}"
     fat = {
         "uuid": uid,
@@ -403,7 +399,6 @@ def test_split_vo_units_solos_only_when_voiceover_is_5000() -> None:
 
 
 def test_split_vo_units_solos_heavy_action_chain_any_position() -> None:
-    """Длинная цепь действие → соло, даже если ячейка не первая и VO короткий."""
     from app.services.apply_ops_batches import split_vo_units
 
     light = []
@@ -425,11 +420,9 @@ def test_split_vo_units_solos_heavy_action_chain_any_position() -> None:
         "главное_действие": f"1. кабинет — {steps}",
         "camera_subdivide": {"role": "vo_parent", "parent_uuid": heavy_uid},
     }
-    # heavy in the middle
     frames = [light[0], heavy, light[1], light[2]]
     packs = split_vo_units(frames, 8)
     assert any(len(p) == 1 and p[0]["uuid"] == heavy_uid for p in packs)
-    # light cells not forced into heavy pack
     for p in packs:
         if len(p) == 1 and p[0]["uuid"] == heavy_uid:
             continue
@@ -466,7 +459,6 @@ def test_split_frames_fat_attrs_do_not_solo_first() -> None:
 
 
 def test_split_vo_units_keeps_shots_in_cell_packs() -> None:
-    """145 кадров = 115 ячеек → 4 пачки по 30 ячеек, не 5 по кадрам."""
     frames: list[dict] = []
     for i in range(115):
         uid = f"{i:024d}"
@@ -1049,7 +1041,6 @@ def test_action_chain_accepts_numbered() -> None:
 
 
 def test_plan_ladder_allows_t1_c2_two_medium_shots() -> None:
-    """T1-c2: два СРЕДНИХ с плеча на одном месте — норма по Excel, не брак."""
     from app.services.apply_ops_batches import _same_place_plan_ladder_reason
 
     shots = [
@@ -1060,7 +1051,6 @@ def test_plan_ladder_allows_t1_c2_two_medium_shots() -> None:
 
 
 def test_parent_repair_wired_into_shots_apply() -> None:
-    """repair_same_place_shot_parents подключён к пути shots_coverage."""
     from pathlib import Path
 
     src = Path("app/services/apply_ops_batches.py").read_text(encoding="utf-8")
@@ -1485,8 +1475,6 @@ def test_shots_vo_rejects_comma_splinter() -> None:
 def test_shots_vo_rejects_dangling_preposition() -> None:
     from app.services.apply_ops_batches import shots_coverage_ops_reason
 
-    # второй кусок >= 26 симв. (SHOT_VO_MIN): короткий хвост «землёй.» репейр
-    # склеил бы с предыдущим кадром и обрубок бы исчез
     vo = "Его записывали как «душу», продавали вместе с землёй и всем нажитым скарбом до нитки."
     frames = [{"uuid": "aa" * 4, "voiceover_text": vo}]
     ops = [
@@ -1801,7 +1789,6 @@ def test_shots_coverage_rejects_same_t_on_neighbor_scenes() -> None:
 
 @pytest.mark.asyncio
 async def test_vo_chunk_size_8_packs(tmp_path, monkeypatch) -> None:
-    """script_frames_qc: пачки по 8 отрезков закадра."""
     import json
 
     from app.services.apply_ops_batches import (
@@ -1907,7 +1894,6 @@ def test_split_into_n_packs_keeps_vo_units() -> None:
 
 @pytest.mark.asyncio
 async def test_shots_short_vo_writes_without_failing_node(tmp_path, monkeypatch) -> None:
-    """Короткий закадр — починить и записать, не валить ноду."""
     import json
 
     from app.services.gpt_operator_client import OperatorApiResult
@@ -2009,7 +1995,6 @@ def test_repair_bits_snaps_anchor_to_vo() -> None:
 
 @pytest.mark.asyncio
 async def test_uuid_auto_repair_in_batch(tmp_path, monkeypatch) -> None:
-    """Проверка автопочинки near-miss и frame number в батчере."""
     import json
     from app.services.gpt_operator_client import OperatorApiResult
 

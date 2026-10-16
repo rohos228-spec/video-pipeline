@@ -109,7 +109,6 @@ def test_user_message_includes_operator_instruction() -> None:
     assert "ACTION:" in msg
     assert "рука выводит строки" in msg
     assert "OPERATOR_CHANGE" in msg
-    # Текст оператора важнее старого действия кадра, если они расходятся.
     low = msg.lower()
     assert "важнее" in low or "расход" in low or "новое действие" in low
 
@@ -176,7 +175,6 @@ def test_write_ai_change_db_card_has_frame_fields(tmp_path: Path) -> None:
 def test_write_ai_change_db_card_uses_shot_action_not_scene_chain(
     tmp_path: Path,
 ) -> None:
-    """В запросе ИИзменения — действие ЭТОГО кадра, не цепь всей сцены."""
     project = Project(id=9, slug="card-act", topic="t", hero_mode="auto")
     fr = Frame(
         project_id=9,

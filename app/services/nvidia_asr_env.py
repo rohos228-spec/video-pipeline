@@ -83,10 +83,6 @@ def clear_stale_nemo_temp_dirs(cache_root: Path | None = None) -> int:
 
 
 def clear_stale_pid_temp_dirs(cache_root: Path | None = None, *, max_age_h: float | None = None) -> int:
-    """Удалить ``temp/pid-<PID>`` мёртвых процессов старше N часов (A01).
-
-    Папки живых процессов и текущего PID не трогаются. Возвращает число удалённых.
-    """
     from app.services import disk_guard
 
     if cache_root is None:
@@ -150,7 +146,7 @@ def configure_nvidia_asr_environment(*, force: bool = True) -> Path:
     clear_stale_nemo_temp_dirs(cache_root)
     try:
         clear_stale_pid_temp_dirs(cache_root)
-    except Exception as exc:  # noqa: BLE001 — чистка не должна мешать загрузке модели
+    except Exception as exc:
         logger.warning("nvidia_asr: чистка pid-temp не удалась: {}", exc)
 
     if not _configured:

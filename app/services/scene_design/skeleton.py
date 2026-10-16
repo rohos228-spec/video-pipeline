@@ -1567,7 +1567,6 @@ async def run_skeleton(
     timeout = float(getattr(settings, "scene_design_agent_attempt_timeout_s", 280.0) or 280.0)
 
     draft_prompt = ag.load_prompt(ag.SKELETON, project)
-    # Observation only (a no-op outside an attempt of this agent's node); never changes the flow.
     scene_attempt = await runner._scene_journal_attempt(project, ag.SKELETON)
     logger.info("[#{}] skeleton: draft GPT…", project.id)
     draft_raw = await _gpt(draft_prompt, context, project=project, timeout=timeout)

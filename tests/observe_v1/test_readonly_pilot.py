@@ -179,7 +179,6 @@ class ReadOnlyPilot(unittest.IsolatedAsyncioTestCase):
     async def test_complete_but_truncated_json_cannot_trigger_second_post(self):
         value = answer()
         transport, seen = fixture(value)
-        # First complete envelope claims completion but its text ends mid-JSON.
         from app.services import gpt_api
         original = gpt_api.parse_responses_sse_lines
         def truncated(lines):
@@ -265,7 +264,7 @@ class ReadOnlyPilot(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(client.get('http://gateway/codex/v1/responses/resp_fixture').status_code, 403)
                     self.assertEqual(client.post('http://gateway/codex/v1/responses', headers=headers, content=b'{}').status_code, 403)
                     self.assertEqual(client.post('http://gateway/codex/v1/responses', headers=headers, content=data).status_code, 200)
-                    base.recover_pending()  # Same persisted ledger, simulated gateway restart.
+                    base.recover_pending()
                     self.assertEqual(client.post('http://gateway/codex/v1/responses', headers=headers, content=data).status_code, 429)
             self.assertEqual(len(upstream), 1)
             self.assertEqual(str(upstream[0].url), pilot.ENDPOINT)
@@ -311,7 +310,7 @@ class ReadOnlyPilot(unittest.IsolatedAsyncioTestCase):
                'prepared_request_sha256': hashlib.sha256(pilot.encoded(pilot.request_body(CONTEXT))).hexdigest()}
         path.write_text(json.dumps(cfg))
         socket_path = Path('/gateway/llm.sock')
-        self.assertFalse(socket_path.exists())  # Never overwrite someone else's socket.
+        self.assertFalse(socket_path.exists())
         argv = ['pilot_gateway.py', str(path), '/observe-source/existing_gateway.py', str(self.root)]
         try:
             with patch.object(sys, 'argv', argv), patch.object(socketserver.BaseServer, 'serve_forever') as serve:
@@ -321,7 +320,7 @@ class ReadOnlyPilot(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(SystemExit, 'Existing socket'):
                     runpy.run_path('/observe-source/pilot_gateway.py', run_name='__main__')
         finally:
-            if socket_path.exists(): socket_path.unlink()  # This test's own isolated socket only.
+            if socket_path.exists(): socket_path.unlink()
         value = answer()
         value['recommendation']['evidence_ids'] = []
         with self.assertRaises(ValueError): pilot.validate_assessment(json.dumps(value), CONTEXT)

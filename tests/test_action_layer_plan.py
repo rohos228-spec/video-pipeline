@@ -1,4 +1,3 @@
-"""План: preview без побочных эффектов, хэш, оценка стоимости, разбор."""
 from __future__ import annotations
 
 import pytest
@@ -25,7 +24,7 @@ async def test_preview_never_runs_executors_and_blocks_writes() -> None:
         return {}
 
     async def pre_tries_write(ctx, params):
-        await ctx.call("POST", "/anything")  # в preview запись запрещена
+        await ctx.call("POST", "/anything")
         return None
 
     reg = fresh_registry(
@@ -68,7 +67,7 @@ async def test_unknown_cost_is_not_zero() -> None:
     async def ex(ctx, params):
         return {}
 
-    reg = fresh_registry(make_spec("t.unk", ex, risk="paid", spends=True))  # estimator -> None
+    reg = fresh_registry(make_spec("t.unk", ex, risk="paid", spends=True))
     preview = await build_preview(_plan({"action_id": "t.unk"}), reg, _ctx())
     assert preview["cost"]["unknown_steps"] == 1 and preview["cost"]["known"] is False
     assert preview["steps"][0]["cost"]["known"] is False
@@ -86,7 +85,7 @@ async def test_invalid_params_unknown_action_and_bad_dependency() -> None:
     assert not preview["ok"]
     joined = " ".join(preview["errors"])
     assert "меньше допустимого (0)" in joined and "неизвестное действие" in joined
-    assert preview["needs_approval"] is True  # неизвестное = fail-closed
+    assert preview["needs_approval"] is True
 
 
 def test_plan_hash_is_deterministic_and_content_bound() -> None:
@@ -96,12 +95,11 @@ def test_plan_hash_is_deterministic_and_content_bound() -> None:
     reg = fresh_registry(make_spec("t.a", ex), make_spec("t.b", ex))
     p1 = _plan({"action_id": "t.a", "params": {"n": 1}}, {"action_id": "t.b"}, text="one")
     p2 = _plan({"action_id": "t.a", "params": {"n": 1}}, {"action_id": "t.b"}, text="two")
-    assert plan_hash(p1, reg) == plan_hash(p2, reg)  # текст запроса не входит
+    assert plan_hash(p1, reg) == plan_hash(p2, reg)
     assert plan_hash(p1, reg) == plan_hash(p1, reg)
     changed = _plan({"action_id": "t.a", "params": {"n": 2}}, {"action_id": "t.b"})
     reordered = _plan({"action_id": "t.b"}, {"action_id": "t.a", "params": {"n": 1}})
     assert len({plan_hash(p1, reg), plan_hash(changed, reg), plan_hash(reordered, reg)}) == 3
-    # смена свойств безопасности действия меняет хэш
     reg2 = fresh_registry(make_spec("t.a", ex, risk="local_safe"), make_spec("t.b", ex))
     assert plan_hash(p1, reg) != plan_hash(p1, reg2)
 

@@ -1,4 +1,3 @@
-"""Нарезка закадра сцены: 13–90, цель 50–70, одна цифра = 4 символа."""
 
 from __future__ import annotations
 
@@ -16,7 +15,6 @@ _WORD_SPLIT = re.compile(r"\s+")
 
 
 def vo_weight(text: str) -> int:
-    """Длина для лимитов: буква/пробел/знак = 1, цифра = 4."""
     s = " ".join((text or "").split())
     return sum(DIGIT_WEIGHT if ch.isdigit() else 1 for ch in s)
 
@@ -76,10 +74,6 @@ def _flush_short(parts: list[str]) -> list[str]:
 
 
 def split_scene_vo(text: str) -> list[str]:
-    """Куски закадра: не короче 13, не длиннее 90 (по весу), цель 50–70.
-
-    Склейка кусков по словам = исходный текст. Цифра весит как 4 символа.
-    """
     raw = " ".join((text or "").split())
     if not raw:
         return []
@@ -117,7 +111,6 @@ def split_scene_vo(text: str) -> list[str]:
 
 
 def split_scene_vo_n(text: str, n: int) -> list[str]:
-    """Разрезать на n кусков, затем подтянуть к 13–90 / 50–70."""
     from app.services.scene_design.camera_expand import split_text_into_parts
 
     raw = " ".join((text or "").split())

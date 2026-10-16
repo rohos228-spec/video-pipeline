@@ -1,4 +1,3 @@
-"""W3-5 / B09: архив журналов (dry-run, apply, триггеры, свёртка сумм, повреждённый архив). Только tmp, без сети."""
 from __future__ import annotations
 
 import gzip
@@ -79,7 +78,7 @@ def test_dry_run_changes_nothing_and_creates_no_files(tmp_path):
     assert not rep.apply and rep.ok
     by = {t.table: t for t in rep.tables}
     assert by["spend_ledger"].candidates == 3 and by["spend_ledger"].status == "dry-run"
-    assert by["provider_task_ledger"].candidates == 1  # "live" имеет свежую строку: не трогаем
+    assert by["provider_task_ledger"].candidates == 1
     assert by["action_layer_history"].candidates == 1 and by["operator_audit"].candidates == 1
     assert by["observation_events"].status == "missing"
     assert _fingerprint(db) == before
@@ -95,24 +94,20 @@ def test_apply_moves_rows_keeps_triggers_and_preserves_sums(tmp_path):
     proj1 = _q(db, "SELECT SUM(usd) FROM spend_ledger WHERE project_id=1")[0][0]
     rep = ja.archive_journals(db, days=90, apply=True, now=NOW)
     assert rep.ok, rep.summary_ru()
-    # суммы, по которым считаются потолки, не изменились
     assert _q(db, "SELECT SUM(usd) FROM spend_ledger")[0][0] == pytest.approx(usd_before)
     assert _q(db, "SELECT SUM(usd) FROM spend_ledger WHERE project_id=1")[0][0] == pytest.approx(proj1)
     assert _q(db, "SELECT SUM(credits) FROM action_layer_spend WHERE session_key='s1'")[0][0] == pytest.approx(cr_before)
-    # старые строки ушли, свежие и свёртки на месте
     assert _q(db, "SELECT count(*) FROM spend_ledger WHERE kind='actual'")[0][0] == 1
-    assert _q(db, "SELECT count(*) FROM spend_ledger WHERE kind='archive'")[0][0] == 2  # проекты 1 и 2
-    assert _q(db, "SELECT task_id FROM provider_task_ledger ORDER BY id") == [("live",), ("live",)]  # done-old ушла, у live одна из строк свежая: остался весь
+    assert _q(db, "SELECT count(*) FROM spend_ledger WHERE kind='archive'")[0][0] == 2
+    assert _q(db, "SELECT task_id FROM provider_task_ledger ORDER BY id") == [("live",), ("live",)]
     assert _q(db, "SELECT count(*) FROM action_layer_history")[0][0] == 1
     assert _q(db, "SELECT count(*) FROM operator_audit")[0][0] == 1
-    # триггеры целы и снова блокируют DELETE и UPDATE (плюс триггеры самого журнала архива)
     assert set(triggers) <= set(_triggers(db))
     with closing(sqlite3.connect(db)) as c:
         for sql in ("DELETE FROM spend_ledger", "UPDATE spend_ledger SET usd=0", "DELETE FROM action_layer_history",
                     "DELETE FROM journal_archive_log", "UPDATE journal_archive_log SET note='x'"):
             with pytest.raises(sqlite3.DatabaseError, match="append-only"):
                 c.execute(sql)
-    # запись об архивации и файлы
     log = _q(db, "SELECT table_name, rows_archived, rows_deleted FROM journal_archive_log ORDER BY id")
     assert ("spend_ledger", 3, 3) in log and ("operator_audit", 1, 1) in log
     files = sorted((tmp_path / "archive").glob("*.jsonl.gz"))
@@ -143,7 +138,7 @@ def test_corrupted_archive_rolls_back_deletion(tmp_path, monkeypatch):
         out = real(*a, **kw)
         p = out["path"]
         data = bytearray(p.read_bytes())
-        data[len(data) // 2] ^= 0xFF  # портим середину файла
+        data[len(data) // 2] ^= 0xFF
         p.write_bytes(bytes(data))
         return out
 
@@ -154,7 +149,6 @@ def test_corrupted_archive_rolls_back_deletion(tmp_path, monkeypatch):
     failed = [t for t in rep.tables if t.status == "failed"]
     assert failed and "экспорт не прошёл проверку" in failed[0].error
     after = _fingerprint(db)
-    # данные и триггеры прежние; единственное отличие: создана пустая таблица журнала архива не должна появиться
     assert after[0] == before[0] and after[1] == before[1]
 
 
@@ -175,7 +169,6 @@ def test_failure_inside_transaction_restores_triggers_and_rows(tmp_path, monkeyp
 
 
 def test_row_count_mismatch_rolls_back(tmp_path, monkeypatch):
-    """Если удалено не столько строк, сколько экспортировано, транзакция откатывается."""
     db = _make_db(tmp_path / "state.db")
     real = ja._select_ids
     calls = {"n": 0}
@@ -183,7 +176,7 @@ def test_row_count_mismatch_rolls_back(tmp_path, monkeypatch):
     def shifted(conn, spec, cutoff):
         ids = real(conn, spec, cutoff)
         calls["n"] += 1
-        return ids if calls["n"] == 1 else ids[:-1]  # второй отбор (в транзакции) расходится с экспортом
+        return ids if calls["n"] == 1 else ids[:-1]
 
     monkeypatch.setattr(ja, "_select_ids", shifted)
     rep = ja.archive_journals(db, days=90, apply=True, now=NOW, tables=["operator_audit", "action_layer_history"])
@@ -201,7 +194,7 @@ def test_validation_and_cli(tmp_path, capsys):
     spec = importlib.util.spec_from_file_location("archive_journals_cli", ROOT / "scripts" / "archive_journals.py")
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
-    assert cli.main(["--db", str(db), "--days", "90"]) == 0  # сухой прогон: всё свежее или по возрасту 200 дн.
+    assert cli.main(["--db", str(db), "--days", "90"]) == 0
     out = capsys.readouterr().out
     assert "сухой прогон" in out
     assert not (tmp_path / "archive").exists()

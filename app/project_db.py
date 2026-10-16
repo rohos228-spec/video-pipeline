@@ -88,15 +88,12 @@ async def migrate_single_project_data(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     if db_path.exists():
-        # S-3: перезапись строки проекта из master затрагивает существующий project.db, поэтому копия обязательна
-        # (онлайн-копия SQLite с проверкой, WAL учтён) и не зависит от create_backup, если в базе есть данные.
-        # Не удалось сделать копию - миграции нет (BackupError).
         from app.services.schema_migrations import KEEP_PRE_MIGRATION, _has_user_data, backup_sqlite
 
         if create_backup or await asyncio.to_thread(_has_user_data, db_path):
             made = await asyncio.to_thread(backup_sqlite, db_path, None, tag="pre-master-sync",
                                            keep=KEEP_PRE_MIGRATION)
-            bak = db_path.with_suffix(".db.bak")  # прежнее имя оставлено для старых сценариев восстановления
+            bak = db_path.with_suffix(".db.bak")
             shutil.copy2(made.path, bak)
             logger.info("Backup created: {} (verified copy {})", bak, made.path)
 
@@ -242,6 +239,43 @@ def resolve_project_db_path(project_data_dir: Path | str) -> Path:
     return folder / "project.db"
 
 
+def resolve_project_db_path_by_id(project_id: int) -> Path | None:
+    """Синхронно определяет путь к project.db по project_id (для синхронных чекеров / harness)."""
+    if project_id in _PROJECT_DIR_CACHE:
+        p = resolve_project_db_path(_PROJECT_DIR_CACHE[project_id])
+        if p.is_file():
+            return p
+
+    # Попытка прочитать data_dir из state.db
+    from app.settings import settings
+
+    sp = getattr(settings, "sqlite_path", None)
+    if not sp:
+        return None
+    state_file = Path(sp)
+    if not state_file.is_file():
+        return None
+
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(str(state_file), timeout=3.0)
+        cur = conn.cursor()
+        cur.execute("SELECT data_dir FROM projects WHERE id = ?", (project_id,))
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            p_dir = Path(row[0])
+            _PROJECT_DIR_CACHE[project_id] = p_dir
+            pdb = resolve_project_db_path(p_dir)
+            if pdb.is_file():
+                return pdb
+    except Exception:  # noqa: BLE001
+        pass
+
+    return None
+
+
 def register_project_data_dir(project_id: int, data_dir: Path | str) -> None:
     """Зарегистрировать директорию проекта в кэше."""
     _PROJECT_DIR_CACHE[project_id] = Path(data_dir)
@@ -303,11 +337,6 @@ def register_text_project(text_id: int, project_id: int) -> None:
 
 
 async def _resolve_owner_project_id(model: type, obj_id: int, cache: dict[int, int], label: str) -> int | None:
-    """project_id владельца строки: master и все открытые проектные базы.
-
-    D-9: у master и каждой project.db свой автоинкремент, поэтому один id может принадлежать разным проектам.
-    Если базы не согласны, кто владелец, молча брать строку master нельзя: ``IdCollisionError``.
-    """
     if obj_id in cache:
         return cache[obj_id]
 
@@ -320,7 +349,6 @@ async def _resolve_owner_project_id(model: type, obj_id: int, cache: dict[int, i
         if row is not None:
             owners["master"] = row.project_id
 
-    # Проверяем в активных проектных базах
     for key, sm in list(_SESSION_MAKERS.items()):
         try:
             async with sm() as p_sess:
@@ -341,22 +369,18 @@ async def _resolve_owner_project_id(model: type, obj_id: int, cache: dict[int, i
 
 
 async def resolve_frame_project_id(frame_id: int) -> int | None:
-    """Определить project_id по frame_id с поиском в кэше, state.db и проектных базах."""
     return await _resolve_owner_project_id(Frame, frame_id, _FRAME_TO_PROJECT, "frame")
 
 
 async def resolve_entity_project_id(entity_id: int) -> int | None:
-    """Определить project_id по entity_id."""
     return await _resolve_owner_project_id(Entity, entity_id, _ENTITY_TO_PROJECT, "entity")
 
 
 async def resolve_scene_project_id(scene_id: int) -> int | None:
-    """Определить project_id по scene_id."""
     return await _resolve_owner_project_id(Scene, scene_id, _SCENE_TO_PROJECT, "scene")
 
 
 async def resolve_edge_project_id(edge_id: int) -> int | None:
-    """Определить project_id по edge_id."""
     return await _resolve_owner_project_id(FrameEdge, edge_id, _EDGE_TO_PROJECT, "frame_edge")
 
 
@@ -516,7 +540,6 @@ _CLEAR_WHEN_MASTER_RUNNING = (
     "mass_lane_user_stop",
     "auto_await_manual_start",
 )
-# Ключи-ворота: если в src их уже нет (▶ снял), dest не должен хранить True.
 _CLEAR_WHEN_SRC_ABSENT = _CLEAR_WHEN_MASTER_RUNNING + (
     "excel_gpt_ui_force_full",
     "excel_gpt_force_full_rerun",
@@ -529,7 +552,6 @@ def _bind_url(session: AsyncSession) -> str:
 
 
 def master_park_overrides_running(master: Project, project: Project) -> bool:
-    """Master paused/failed/⏹ — не крутить leftover running на канвасе."""
     from app.services.project_state import is_running_status
 
     if is_running_status(master.status):
@@ -550,7 +572,6 @@ def master_park_overrides_running(master: Project, project: Project) -> bool:
 
 
 async def run_on_replica_project(session: AsyncSession, project: Project, fn) -> None:
-    """Выполнить fn(replica_session, replica_project) на другой БД и закоммитить."""
     from app.db import commit_with_retry, session_scope
 
     if "project.db" in _bind_url(session):
@@ -576,14 +597,11 @@ async def run_on_replica_project(session: AsyncSession, project: Project, fn) ->
         await commit_with_retry(p_sess)
 
 
-# Счётчики перезапусков живут в project.db (там идут платные шаги); в master их только отражают (аудит W56 K1).
-# Направление строго project.db -> master: обратное копирование могло бы вернуть старый счётчик и дать лишний запуск.
 _COUNTER_META_KEYS = ("restart_chain", "regen_budget", "restart_chain_stop", "regen_budget_stop")
 SYNC_PENDING_KEY = "master_sync_pending"
 
 
 def _apply_runtime_fields(src: Project, dest: Project, *, mirror_counters: bool = False) -> None:
-    """Скопировать статус / auto_mode / runtime-meta (не весь контент проекта)."""
     from app.services.project_state import is_running_status
 
     dest.status = src.status
@@ -615,12 +633,6 @@ async def push_runtime_to_project_db(
     session: AsyncSession,
     project: Project,
 ) -> None:
-    """После ▶/⏹ на master: статус + runtime meta + NodeRuns → project.db.
-
-    Иначе воркер видит running в state.db, а advance открывает project.db
-    со старым *_ready и сразу выходит — нода «не продвигается».
-    Не копируем всю строку Project: в project.db контент может быть новее.
-    """
     from app.db import commit_with_retry
 
     if "project.db" in _bind_url(session):
@@ -654,7 +666,7 @@ async def push_runtime_to_project_db(
                 await _copy_noderuns_between_sessions(
                     session, p_sess, int(project.id)
                 )
-            except Exception as nexc:  # noqa: BLE001
+            except Exception as nexc:
                 logger.warning(
                     "push_runtime_to_project_db: #{} NodeRuns skipped: {}",
                     project.id,
@@ -666,7 +678,7 @@ async def push_runtime_to_project_db(
             project.id,
             getattr(project.status, "value", project.status),
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "push_runtime_to_project_db: #{} failed: {}",
             project.id,
@@ -675,11 +687,6 @@ async def push_runtime_to_project_db(
 
 
 def _pick_completed_node(nodes):
-    """Защита от устаревшего master (аудит W56 K5): узел этого типа в project.db, завершённый ПОСЛЕДНИМ.
-
-    Раньше защита работала только при ровно одном узле. Теперь: если в project.db какой-то узел этого типа
-    сейчас выполняется - это настоящий перезапуск, защита не применяется (None); иначе берётся последний
-    завершённый узел с отметками начала и конца."""
     nodes = list(nodes or [])
     if any(n.status == NodeRunStatus.running for n in nodes):
         return None
@@ -698,12 +705,6 @@ async def pull_master_runtime_into_project(
     *,
     copy_noderuns: bool = False,
 ) -> bool:
-    """Перед advance/GET: running с master, либо parked pause (сон / ⏹).
-
-    NodeRuns с master по умолчанию НЕ копируем: fw_* живут в project.db,
-    а state.db часто держит вчерашний failed — GET/advance тогда красят
-    живую ноду в «ошибка», пока воркер всё ещё пишет.
-    """
     from app.db import session_scope
     from app.orchestrator.node_registry import READY_TO_NODE_TYPE, RUNNING_TO_NODE_TYPE
     from app.services.project_state import is_running_status
@@ -723,10 +724,6 @@ async def pull_master_runtime_into_project(
                 and node_type
                 and READY_TO_NODE_TYPE.get(project.status) == node_type
             ):
-                # Native completion commits before its runtime push to master.
-                # A passive GET/advance must not restore that same old start.
-                # Require an unambiguous existing node and attempt evidence;
-                # explicit restarts reset started_at and remain admissible.
                 nodes = (
                     await session.scalars(
                         select(NodeRun).join(WorkflowRun).where(
@@ -804,11 +801,6 @@ async def push_runtime_to_master(
     session: AsyncSession,
     project: Project,
 ) -> bool:
-    """После работы в project.db: статус + runtime meta + NodeRuns → state.db.
-
-    UI и воркер выбирают проекты по master; без этого копии нода остаётся
-    running на канвасе после успешного шага / рестарта.
-    """
     from app.db import commit_with_retry, session_scope
 
     if "project.db" not in _bind_url(session):
@@ -823,7 +815,7 @@ async def push_runtime_to_master(
                 await _copy_noderuns_between_sessions(
                     session, master, int(project.id)
                 )
-            except Exception as nexc:  # noqa: BLE001
+            except Exception as nexc:
                 logger.warning(
                     "push_runtime_to_master: #{} NodeRuns skipped: {}",
                     project.id,
@@ -836,7 +828,7 @@ async def push_runtime_to_master(
             getattr(project.status, "value", project.status),
         )
         return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "push_runtime_to_master: #{} failed: {}",
             project.id,
@@ -846,11 +838,6 @@ async def push_runtime_to_master(
 
 
 async def push_runtime_to_master_recorded(session: AsyncSession, project: Project) -> bool:
-    """push_runtime_to_master, но сбой не молчаливый (аудит W56 K5).
-
-    При сбое в project.meta ставится маркер ``master_sync_pending`` (с числом неудач) и пишется факт наблюдения;
-    маркер лежит в project.db и снимается при первой успешной отправке на следующей границе такта.
-    Возвращает True, если master актуален."""
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.db import commit_with_retry
@@ -884,14 +871,13 @@ async def push_runtime_to_master_recorded(session: AsyncSession, project: Projec
             await record_fact("runtime_check", {
                 "check": "master_sync", "performed": True, "status": "failed", "failures": failures,
                 "summary": "статус и счётчики проекта не отправлены в master; повтор на следующем такте"})
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("master_sync: observation fact skipped", exc_info=True)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("push_runtime_to_master_recorded: #{} marker update failed", project.id, exc_info=True)
     return ok
 
 
-# Поля, которые человек правит в инспекторе: список проектов (боковая панель) читает master, правка идёт в project.db.
 _MASTER_MIRROR_FIELDS = (
     "title", "topic", "hero_mode", "image_generator", "aspect_ratio", "image_resolution", "image_quality",
     "image_relax", "video_generator", "video_resolution", "video_relax", "hero_count",
@@ -899,7 +885,6 @@ _MASTER_MIRROR_FIELDS = (
 
 
 async def push_display_fields_to_master(session: AsyncSession, project: Project, keys) -> None:
-    """После правки в project.db перенести название, тему и настройки генерации в строку master."""
     from app.db import commit_with_retry, session_scope
 
     names = [k for k in keys if k in _MASTER_MIRROR_FIELDS]
@@ -914,7 +899,7 @@ async def push_display_fields_to_master(session: AsyncSession, project: Project,
                 setattr(existing, name, getattr(project, name))
             existing.updated_at = project.updated_at
             await commit_with_retry(master)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("push_display_fields_to_master: #{} failed: {}", project.id, exc)
 
 
@@ -922,7 +907,6 @@ async def sync_runtime_both_ways(
     session: AsyncSession,
     project: Project,
 ) -> None:
-    """После ▶/⏹: дописать runtime в ту БД, которой текущая сессия не является."""
     await push_runtime_to_project_db(session, project)
     await push_runtime_to_master(session, project)
 
@@ -930,7 +914,6 @@ async def sync_runtime_both_ways(
 def _merge_run_snapshot(
     dest_items: list | None, src_items: list | None
 ) -> tuple[list, bool]:
-    """Добавить в dest элементы src, которых нет по id (ноды группы на канвасе)."""
     dest = [x for x in (dest_items or []) if isinstance(x, dict)]
     ids = {str(n.get("id") or "") for n in dest}
     added = False
@@ -947,7 +930,6 @@ def _merge_run_snapshot(
 
 
 def _noderun_copy_should_apply(dest: NodeRun, src: NodeRun) -> bool:
-    """Не затирать живую/готовую ноду вчерашним failed с другой БД."""
     live = {
         NodeRunStatus.running,
         NodeRunStatus.queued,
@@ -1054,13 +1036,41 @@ async def _copy_noderuns_from_master_into_session(
     )
 
 
+async def sync_project_row_to_master_db(project: Project) -> None:
+    from app.db import commit_with_retry, session_scope
+
+    async with session_scope() as master_sess:
+        m_proj = await master_sess.get(Project, project.id)
+        if m_proj is not None:
+            parked = master_park_overrides_running(m_proj, project)
+            if not parked:
+                m_proj.status = project.status
+            if project.general_plan is not None:
+                m_proj.general_plan = project.general_plan
+            if project.script_text is not None:
+                m_proj.script_text = project.script_text
+            if project.hero_description is not None:
+                m_proj.hero_description = project.hero_description
+            if isinstance(project.meta, dict):
+                new_meta = dict(project.meta)
+                if parked:
+                    old_meta = m_proj.meta if isinstance(m_proj.meta, dict) else {}
+                    for key in _RUNTIME_META_KEYS:
+                        if key in old_meta:
+                            new_meta[key] = old_meta[key]
+                        else:
+                            new_meta.pop(key, None)
+                m_proj.meta = new_meta
+            m_proj.updated_at = project.updated_at
+            await commit_with_retry(master_sess)
+
+
 async def init_project_db(
     project_data_dir: Path | str, project: Project | None = None
 ) -> None:
-    """Инициализировать схему таблиц в project.db проекта (create_all) и синхронизировать проект."""
     eng = await get_project_engine(project_data_dir)
     async with eng.begin() as conn:
-        from app.services.scene_space import models as _scene_space_models  # noqa: F401
+        from app.services.scene_space import models as _scene_space_models
 
         await conn.run_sync(Base.metadata.create_all)
         from app.services.db_v2 import migrate_db_v2_schema
@@ -1075,7 +1085,7 @@ async def init_project_db(
     if project is not None:
         try:
             await sync_project_row_to_project_db(project, data_dir=project_data_dir)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("init_project_db: sync project row failed: {}", exc)
 
 
@@ -1083,7 +1093,6 @@ async def init_project_db(
 async def project_session_scope(
     project_data_dir: Path | str,
 ) -> AsyncIterator[AsyncSession]:
-    """Контекстный менеджер транзакции для персональной проектной БД с автокоммитом."""
     sm = await get_project_sessionmaker(project_data_dir)
     async with sm() as session:
         try:
@@ -1097,12 +1106,11 @@ async def project_session_scope(
 
 
 async def _check_collisions_once(project_id: int, data_dir: Path | str) -> None:
-    """D-9: при первом открытии проекта сверить id master и project.db (ошибка в лог, проект не падает)."""
     try:
         from app.services.project_db_guard import check_project_id_collisions
 
         await check_project_id_collisions(project_id, data_dir)
-    except Exception as exc:  # noqa: BLE001 - проверка не должна ломать открытие проекта
+    except Exception as exc:
         logger.warning("id collision check failed for project #{}: {}", project_id, exc)
 
 

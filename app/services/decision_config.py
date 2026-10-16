@@ -1,4 +1,3 @@
-"""Explicit local policy for the existing text client. No secrets; approved routes are Kie Responses and Vibecode chat/completions."""
 import json,os
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -16,7 +15,6 @@ class DecisionRuntimeBinding(Base):
 
 VIBECODE_HOST='vibecode.moe'
 LOOPBACK={'127.0.0.1','localhost','::1'}
-# Exact catalog ids only (no aliases): each maps to one provider and one endpoint path.
 APPROVED_DECISION_ROUTES={
     'gpt-kie':{'provider':'kie','route_kind':'kie_responses','path':'/codex/v1/responses'},
     'gpt-5.6-sol-vibecode':{'provider':'vibecode','route_kind':'vibecode_chat_completions','path':'/v1/chat/completions'},
@@ -26,7 +24,6 @@ READ_ACTIONS={'read_events','read_contract','human_review','wait','finish'}
 ALL_ACTIONS=READ_ACTIONS|{'retry_same','retry_profile'}
 
 def owner_budget_policy(config=None):
-    """Local owner configuration only. Models and execution requests cannot raise it."""
     cfg=runtime_config() if config is None else config
     policy=cfg.get('budget_policy',{'policy_id':'default-100','max_requests':100})
     if (not isinstance(policy,dict) or set(policy)!={'policy_id','max_requests'}
@@ -48,7 +45,6 @@ def check_incident_scope(config, **identity):
 
 
 def route_info(config):
-    """Approved route of a validated config (None when no decision model is configured)."""
     model=(config or {}).get('decision')
     return APPROVED_DECISION_ROUTES.get(model.get('catalog_id')) if model else None
 
@@ -61,7 +57,6 @@ def provider(config):
     return info['provider'] if info else None
 
 def approved_vibecode_hosts():
-    """Constant direct host, the operator's VPS relay host (if configured) and loopback for tests."""
     from app.settings import settings
     hosts={VIBECODE_HOST}|LOOPBACK
     relay=urlsplit(settings.vps_relay_base_url or '').hostname
@@ -79,16 +74,13 @@ def validate_model(model):
     mid=model.get('model_id','')
     if not isinstance(mid,str):raise ValueError('unknown production text model')
     if route['provider']=='vibecode':
-        # Vibecode model id is exactly the catalog api_model (no Kie-style aliasing).
         known=mid==catalog_api_model(cid,default='') and find_model(mid)
     else:
-        # Existing model catalog supplies compatibility, never operator permission.
         alias=mid.replace('gpt-5-6-','gpt-5.6-')
         known=find_model(alias) or find_model(mid)
     if not known or known.get('kind')!='text' or 'synthetic' in mid:
         raise ValueError('unknown production text model')
     if route['provider']=='vibecode':
-        # Vibecode chat/completions gets no reasoning parameter, so config must not promise one.
         if model.get('reasoning_effort') is not None:raise ValueError('vibecode decision requires reasoning_effort null')
     elif model.get('reasoning_effort') not in {'low','medium','high','xhigh'}:raise ValueError('unsupported reasoning effort')
     n=model.get('max_output_tokens')
@@ -117,7 +109,6 @@ def validate_profile(candidate,mode):
 
 
 def validate_vibecode_policy(raw,endpoint):
-    """Fail-closed extras for the paid Vibecode route: explicit opt-in, one POST, no Kie-only features."""
     if raw['mode']!='production' or raw.get('model_transport')!='real' or raw.get('external_calls_enabled') is not True:
         raise ValueError('vibecode decision requires production mode with explicit real external authorization')
     if raw.get('continuation_allowed') is not False or raw.get('retrieval_allowed') is not False or raw.get('gateway_ack',False):
@@ -189,7 +180,6 @@ def runtime_config():
     from app.settings import settings
     path=os.environ.get('ORCHESTRATOR_RUNTIME_CONFIG','').strip()
     if path:return validate_config(json.loads(Path(path).read_text(encoding='utf-8-sig')))
-    # Backward compatible isolated acceptance only; never infers online approval.
     host=urlsplit(settings.gpt_base_url or '').hostname
     if host in {'127.0.0.1','localhost','::1'} and str(settings.gpt_api_key).startswith('synthetic'):
         return validate_config({'version':1,'mode':'synthetic','online_enabled':True,
@@ -207,7 +197,6 @@ def check_route(config,url):
         if not str(settings.gpt_api_key).startswith('synthetic'):raise ValueError('synthetic credential required')
     if provider(config)=='vibecode':
         from app.settings import settings
-        # Presence only: the key itself is read by the transport from settings, never logged.
         if not (settings.vibecode_api_key or '').strip():raise ValueError('vibecode credential missing')
 
 

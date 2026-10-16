@@ -2,7 +2,21 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Download, Loader2, Maximize2, Replace, Upload } from "lucide-react";
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  Loader2,
+  Maximize2,
+  Replace,
+  Save,
+  Upload,
+  Volume2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { errorMessageFromUnknown } from "@/lib/error-message";
 import { api } from "@/lib/api";
@@ -39,6 +53,7 @@ export function NodeResultViewBody({
           projectId={projectId}
           nodeKey={nodeKey}
           nodeType={nodeType}
+          snapshot={snapshot}
         />
       );
     case "voiceover_wide":
@@ -63,14 +78,27 @@ export function NodeResultViewBody({
         />
       );
     case "frame_videos":
+      if (nodeType === "videos" || nodeType === "hitl_videos") {
+        return <SceneVideosGalleryView projectId={projectId} />;
+      }
       return <FrameVideosView items={snapshot.items} />;
     case "topic_edit":
       return <TopicEditView projectId={projectId} snapshot={snapshot} />;
     case "html_report":
       return <ShotsReportView snapshot={snapshot} />;
+    case "sfx_plan":
+      return <SfxPlanView projectId={projectId} snapshot={snapshot} />;
+    case "sfx_gen":
+      return <SfxGenView projectId={projectId} snapshot={snapshot} />;
     default:
       if (nodeKey?.endsWith("_fw_report")) {
         return <ShotsReportView snapshot={snapshot} />;
+      }
+      if (nodeType === "sfx_plan") {
+        return <SfxPlanView projectId={projectId} snapshot={snapshot} />;
+      }
+      if (nodeType === "sfx" || nodeType === "sfx_gen") {
+        return <SfxGenView projectId={projectId} snapshot={snapshot} />;
       }
       if (
         nodeType === "excel_gpt" ||
@@ -205,11 +233,14 @@ function GeneralPlanSheetView({
   projectId,
   nodeKey,
   nodeType,
+  snapshot,
 }: {
   projectId: number;
   nodeKey?: string | null;
   nodeType?: string | null;
+  snapshot?: NodeResultSnapshot;
 }) {
+  const qc = useQueryClient();
   const project = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId),
@@ -236,58 +267,198 @@ function GeneralPlanSheetView({
     enabled: Boolean(sheet),
   });
 
-  if (meta.isLoading || grid.isLoading) return <LoadingBlock />;
+  const rawPlanText =
+    project.data?.general_plan?.trim() ||
+    snapshot?.items.find((i) => i.kind === "text")?.content?.trim() ||
+    "";
+  const [text, setText] = useState(rawPlanText);
+  const [dirty, setDirty] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [activeTab, setActiveTab] = useState<"text" | "table">("text");
 
-  if (!sheet || !grid.data?.rows?.length) {
-    const planText = project.data?.general_plan?.trim();
-    return (
-      <div className="flex flex-col gap-3">
-        <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
-        {planText ? (
-          <div className="rounded-lg border border-white/10 bg-black/20 p-4">
-            <p className="mb-2 text-xs text-muted-foreground">Текст плана (из БД)</p>
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{planText}</p>
-          </div>
-        ) : (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            Лист «Общий план» пока пуст или Excel ещё не создан.
-          </p>
-        )}
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (!dirty && rawPlanText) {
+      setText(rawPlanText);
+    }
+  }, [rawPlanText, dirty]);
 
+  const save = useMutation({
+    mutationFn: (body: string) =>
+      api.patchProject(projectId, { general_plan: body }),
+    onSuccess: (updated) => {
+      const saved = (updated.general_plan ?? text).trim();
+      setText(saved);
+      setDirty(false);
+      qc.setQueryData(["project", projectId], updated);
+      qc.invalidateQueries({ queryKey: ["xlsx-general-plan"] });
+      toast.success("Сценарий сохранён");
+    },
+    onError: (e) => toast.error(errorMessageFromUnknown(e)),
+  });
+
+  const handleCopy = async () => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      toast.success("Сценарий скопирован в буфер обмена");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Не удалось скопировать текст");
+    }
+  };
+
+  if (project.isLoading && !rawPlanText) return <LoadingBlock />;
+
+  const charCount = text.length;
+  const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
   const snapLabel = grid.data?.xlsx_snapshot || meta.data?.xlsx_snapshot;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
-      {snapLabel ? (
-        <p className="mb-1 text-[10px] text-muted-foreground">
-          Снимок ноды: {snapLabel}
-        </p>
-      ) : null}
-      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10 bg-black/20">
-      <table className="min-w-max border-collapse text-left text-xs">
-        <tbody>
-          {grid.data.rows.map((row, ri) => (
-            <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.02]">
-              <td className="sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-1.5 text-[10px] text-muted-foreground">
-                {ri + 1}
-              </td>
-              {row.map((cell, ci) => (
-                <td
-                  key={ci}
-                  className="max-w-[320px] min-w-[80px] whitespace-pre-wrap border-r border-white/5 px-2 py-1.5 align-top"
-                >
-                  {cell || "\u00a0"}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-        </table>
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
+        <div className="flex items-center gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className={cn(
+              "h-8 gap-1.5 rounded-lg px-3 text-xs font-medium transition-all",
+              activeTab === "text"
+                ? "bg-zinc-800 text-zinc-100 border border-zinc-700 shadow-sm"
+                : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50",
+            )}
+            onClick={() => setActiveTab("text")}
+          >
+            <FileText className="h-3.5 w-3.5 text-teal-400" />
+            Сценарий (текст)
+            {charCount > 0 && (
+              <span className="ml-1 rounded bg-zinc-700/60 px-1.5 py-0.5 text-[10px] text-zinc-300">
+                {charCount.toLocaleString("ru-RU")} симв.
+              </span>
+            )}
+          </Button>
+
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className={cn(
+              "h-8 gap-1.5 rounded-lg px-3 text-xs font-medium transition-all",
+              activeTab === "table"
+                ? "bg-zinc-800 text-zinc-100 border border-zinc-700 shadow-sm"
+                : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50",
+            )}
+            onClick={() => setActiveTab("table")}
+          >
+            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" />
+            Таблица Excel
+            {sheet && (
+              <span className="ml-1 rounded bg-zinc-700/60 px-1.5 py-0.5 text-[10px] text-zinc-300">
+                {sheet}
+              </span>
+            )}
+          </Button>
+        </div>
+
+        {activeTab === "text" && text && (
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-zinc-400">
+              {wordCount} слов
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1"
+              onClick={handleCopy}
+            >
+              {copied ? (
+                <Check className="h-3 w-3 text-emerald-400" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+              {copied ? "Скопировано" : "Копировать"}
+            </Button>
+            {dirty && (
+              <Button
+                size="sm"
+                className="h-7 text-xs gap-1 bg-teal-600 hover:bg-teal-500 text-white"
+                disabled={save.isPending}
+                onClick={() => save.mutate(text)}
+              >
+                {save.isPending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Replace className="h-3 w-3" />
+                )}
+                Сохранить
+              </Button>
+            )}
+          </div>
+        )}
       </div>
+
+      {activeTab === "text" ? (
+        text ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-2">
+            <Textarea
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value);
+                setDirty(true);
+              }}
+              className="min-h-[420px] flex-1 resize-none rounded-lg border border-white/10 bg-black/40 p-4 font-mono text-xs leading-relaxed text-zinc-200 focus-visible:ring-1 focus-visible:ring-teal-500"
+              placeholder="Сценарий ролика..."
+            />
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center py-16 text-center text-zinc-400">
+            <FileText className="mb-2 h-8 w-8 text-zinc-600" />
+            <p className="text-sm font-medium">Сценарий ещё не сгенерирован</p>
+            <p className="text-xs text-zinc-500 mt-1">
+              Запустите ноду «Сценарий» для создания плана ролика
+            </p>
+          </div>
+        )
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <XlsxUploadBar projectId={projectId} nodeKey={nodeKey} nodeType={nodeType} />
+          {snapLabel ? (
+            <p className="mb-1 text-[10px] text-muted-foreground">
+              Снимок ноды: {snapLabel}
+            </p>
+          ) : null}
+          {grid.isLoading ? (
+            <LoadingBlock />
+          ) : !sheet || !grid.data?.rows?.length ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              Лист «Общий план» пуст или Excel ещё не загружен.
+            </p>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-white/10 bg-black/20">
+              <table className="min-w-max border-collapse text-left text-xs">
+                <tbody>
+                  {grid.data.rows.map((row, ri) => (
+                    <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.02]">
+                      <td className="sticky left-0 z-10 border-r border-white/10 bg-card/95 px-2 py-1.5 text-[10px] text-muted-foreground">
+                        {ri + 1}
+                      </td>
+                      {row.map((cell, ci) => (
+                        <td
+                          key={ci}
+                          className="max-w-[320px] min-w-[80px] whitespace-pre-wrap border-r border-white/5 px-2 py-1.5 align-top"
+                        >
+                          {cell || "\u00a0"}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -334,6 +505,20 @@ function VoiceoverWideView({
     onError: (e) => toast.error(errorMessageFromUnknown(e)),
   });
 
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      toast.success("Закадровый текст скопирован в буфер");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Не удалось скопировать текст");
+    }
+  };
+
   if (fileText.isLoading && !text) return <LoadingBlock />;
   if (fileText.isError && !text) {
     return (
@@ -343,52 +528,99 @@ function VoiceoverWideView({
     );
   }
 
+  const charCount = text.length;
+  const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+  const estSeconds = Math.round(charCount / 14);
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      
-      <div className="flex shrink-0 flex-wrap gap-2">
-        {fileItem?.downloadUrl && (
-          <Button size="sm" variant="outline" asChild>
-            <a href={fileItem.downloadUrl} download target="_blank" rel="noreferrer">
-              <Download className="h-3.5 w-3.5" />
-              Скачать voiceover.txt
-            </a>
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {fileItem?.downloadUrl && (
+            <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" asChild>
+              <a href={fileItem.downloadUrl} download target="_blank" rel="noreferrer">
+                <Download className="h-3.5 w-3.5" />
+                Скачать voiceover.txt
+              </a>
+            </Button>
+          )}
+          <Button
+            size="sm"
+            className="h-8 gap-1.5 text-xs bg-teal-600 hover:bg-teal-500 text-white shadow-sm"
+            disabled={save.isPending}
+            onClick={() => save.mutate(text)}
+          >
+            {save.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Save className="h-3.5 w-3.5" />
+            )}
+            Сохранить текст
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 text-xs"
+            onClick={handleCopy}
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-emerald-400" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+            {copied ? "Скопировано" : "Копировать"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 text-xs"
+            onClick={() => fileRef.current?.click()}
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Загрузить файл
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".txt,text/plain"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              const reader = new FileReader();
+              reader.onload = () => {
+                const body = String(reader.result ?? "");
+                setText(body);
+                save.mutate(body);
+              };
+              reader.readAsText(f, "utf-8");
+              e.target.value = "";
+            }}
+          />
+        </div>
+
+        {charCount > 0 && (
+          <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <span className="rounded bg-zinc-800 px-2 py-0.5 text-[11px] font-medium text-teal-300 border border-zinc-700/60">
+              {charCount.toLocaleString("ru-RU")} симв.
+            </span>
+            <span className="text-[11px] text-zinc-400">
+              {wordCount} слов
+            </span>
+            <span className="text-[11px] text-zinc-500">
+              ≈ {estSeconds} сек (14 зн/сек)
+            </span>
+          </div>
         )}
-        <Button size="sm" disabled={save.isPending} onClick={() => save.mutate(text)}>
-          {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Replace className="h-3.5 w-3.5" />}
-          Сохранить текст
-        </Button>
-        <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
-          <Upload className="h-3.5 w-3.5" />
-          Загрузить файл
-        </Button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".txt,text/plain"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (!f) return;
-            const reader = new FileReader();
-            reader.onload = () => {
-              const body = String(reader.result ?? "");
-              setText(body);
-              save.mutate(body);
-            };
-            reader.readAsText(f, "utf-8");
-            e.target.value = "";
-          }}
-        />
       </div>
+
       <Textarea
         value={text}
         onChange={(e) => {
           setText(e.target.value);
           setDirty(true);
         }}
-        className="min-h-[65vh] flex-1 resize-none font-mono text-sm leading-relaxed"
+        className="min-h-[55vh] flex-1 resize-none rounded-lg border border-white/10 bg-black/40 p-4 font-mono text-xs leading-relaxed text-zinc-200 focus-visible:ring-1 focus-visible:ring-teal-500"
         placeholder="Закадровый текст…"
       />
     </div>
@@ -538,11 +770,48 @@ export function FramePromptsView({ items }: { items: NodeResultItem[] }) {
           ))}
         </div>
       </ScrollArea>
-      <Textarea
-        readOnly
-        value={selected?.content ?? ""}
-        className="h-[65vh] resize-none text-xs leading-relaxed"
-      />
+      {selected?.previewUrl ? (
+        <div className="grid h-[65vh] min-h-0 grid-cols-1 gap-3 md:grid-cols-[260px_1fr]">
+          <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-black/20 p-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Стартовый кадр (I2V)
+              </span>
+              <a
+                href={selected.previewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[10px] text-muted-foreground hover:text-primary underline"
+              >
+                Открыть
+              </a>
+            </div>
+            <div className="relative flex flex-1 items-center justify-center overflow-hidden rounded-md border border-white/5 bg-black/40">
+              <img
+                src={selected.previewUrl}
+                alt={selected.label}
+                className="h-full w-full object-contain"
+              />
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 min-h-0">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Промпт движения (анимация)
+            </span>
+            <Textarea
+              readOnly
+              value={selected?.content ?? ""}
+              className="flex-1 resize-none text-xs leading-relaxed"
+            />
+          </div>
+        </div>
+      ) : (
+        <Textarea
+          readOnly
+          value={selected?.content ?? ""}
+          className="h-[65vh] resize-none text-xs leading-relaxed"
+        />
+      )}
     </div>
   );
 }
@@ -563,9 +832,11 @@ function FrameImagesView({
   }
 
   const [index, setIndex] = useState(0);
+  const [zoomOpen, setZoomOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
   const isHero = nodeType === "hero" || nodeType === "hitl_hero";
+  const isItems = nodeType === "items";
   const current = items[index] ?? items[0];
 
   const replaceHero = useMutation({
@@ -610,6 +881,16 @@ function FrameImagesView({
             </Button>
           </>
         )}
+        {current?.previewUrl && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setZoomOpen(true)}
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+            Открыть
+          </Button>
+        )}
         {current?.downloadUrl && (
           <Button size="sm" variant="outline" asChild>
             <a href={current.downloadUrl} download target="_blank" rel="noreferrer">
@@ -652,8 +933,8 @@ function FrameImagesView({
               type="button"
               onClick={() => setIndex(i)}
               className={cn(
-                "h-16 w-12 shrink-0 overflow-hidden rounded-lg border transition",
-                i === index ? "border-primary ring-1 ring-primary/40" : "border-white/10",
+                "relative h-16 w-24 shrink-0 overflow-hidden rounded-lg border transition",
+                i === index ? "border-primary ring-1 ring-primary/40 shadow-sm" : "border-white/10 hover:border-white/20",
               )}
             >
               {item.previewUrl ? (
@@ -661,16 +942,36 @@ function FrameImagesView({
               ) : (
                 <span className="flex h-full items-center justify-center px-1 text-[9px]">{item.label}</span>
               )}
+              <span className="absolute bottom-1 left-1 rounded bg-black/80 px-1.5 py-0.5 text-[9px] font-mono font-medium text-white backdrop-blur-sm">
+                #{i + 1}
+              </span>
             </button>
           ))}
         </div>
       )}
       {current?.previewUrl && (
-        <div className="flex justify-center rounded-xl border border-white/10 bg-black/30 p-2">
-          <img src={current.previewUrl} alt="" className="max-h-[45vh] w-full object-contain" />
+        <div
+          className="group relative flex justify-center rounded-xl border border-white/10 bg-black/30 p-2 cursor-pointer transition hover:border-white/25"
+          onClick={() => setZoomOpen(true)}
+          title="Нажмите, чтобы открыть на весь экран"
+        >
+          <img src={current.previewUrl} alt="" className="max-h-[45vh] w-full object-contain transition group-hover:opacity-95" />
+          <div className="absolute right-3 top-3 flex items-center gap-1.5 rounded-md bg-black/70 px-2.5 py-1 text-xs text-white/90 opacity-0 backdrop-blur-sm transition group-hover:opacity-100">
+            <Maximize2 className="h-3.5 w-3.5" />
+            Увеличить
+          </div>
         </div>
       )}
-      {!isHero && (
+      {isItems ? (
+        <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+          <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Описание предмета
+          </p>
+          <p className="max-h-36 overflow-auto whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+            {current?.content?.trim() || "—"}
+          </p>
+        </div>
+      ) : !isHero ? (
         <div className="rounded-lg border border-white/10 bg-black/20 p-3">
           <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             Закадровый текст
@@ -678,6 +979,48 @@ function FrameImagesView({
           <p className="max-h-36 overflow-auto whitespace-pre-wrap text-sm leading-relaxed">
             {current?.content?.trim() || "—"}
           </p>
+        </div>
+      ) : null}
+
+      {zoomOpen && current?.previewUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm"
+          onClick={() => setZoomOpen(false)}
+        >
+          <div
+            className="relative flex max-h-[95vh] max-w-[95vw] flex-col items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={current.previewUrl}
+              alt=""
+              className="max-h-[88vh] max-w-[92vw] rounded-lg object-contain shadow-2xl"
+            />
+            <div className="absolute right-2 top-2 flex items-center gap-2">
+              <Button size="sm" variant="secondary" className="h-8 gap-1.5 text-xs" asChild>
+                <a href={current.previewUrl} target="_blank" rel="noreferrer">
+                  <Maximize2 className="h-3.5 w-3.5" />
+                  В новой вкладке
+                </a>
+              </Button>
+              {current.downloadUrl && (
+                <Button size="sm" variant="secondary" className="h-8 gap-1.5 text-xs" asChild>
+                  <a href={current.downloadUrl} download target="_blank" rel="noreferrer">
+                    <Download className="h-3.5 w-3.5" />
+                    Скачать
+                  </a>
+                </Button>
+              )}
+              <Button
+                size="icon"
+                variant="secondary"
+                className="h-8 w-8"
+                onClick={() => setZoomOpen(false)}
+              >
+                ✕
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -760,6 +1103,7 @@ function SceneImagesGalleryView({ projectId }: { projectId: number }) {
   const media = useQuery({
     queryKey: ["media-review", projectId, "images"],
     queryFn: () => api.listMediaReview(projectId, "images"),
+    refetchInterval: 5000,
   });
 
   if (media.isLoading) return <LoadingBlock />;
@@ -771,6 +1115,29 @@ function SceneImagesGalleryView({ projectId }: { projectId: number }) {
       <MediaFrameGallery
         projectId={projectId}
         kind="images"
+        items={items}
+        showApproveButtons={false}
+      />
+    </div>
+  );
+}
+
+function SceneVideosGalleryView({ projectId }: { projectId: number }) {
+  const media = useQuery({
+    queryKey: ["media-review", projectId, "videos"],
+    queryFn: () => api.listMediaReview(projectId, "videos"),
+    refetchInterval: 5000,
+  });
+
+  if (media.isLoading) return <LoadingBlock />;
+
+  const items = (media.data ?? []).filter((f) => f.preview_url);
+
+  return (
+    <div className="min-h-0 flex-1 overflow-auto">
+      <MediaFrameGallery
+        projectId={projectId}
+        kind="videos"
         items={items}
         showApproveButtons={false}
       />
@@ -973,22 +1340,472 @@ function DefaultResultView({
           ) : null}
         </div>
       )}
-      {item.kind === "file" && (item.previewUrl || item.downloadUrl) && (
-        <Button size="sm" variant="outline" asChild>
-          <a
-            href={item.previewUrl || item.downloadUrl || "#"}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Открыть отчёт
-          </a>
-        </Button>
+      {item.kind === "file" && (
+        <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/5 border border-white/10">
+              <FileText className="h-4 w-4 text-primary" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-foreground">{item.label}</p>
+              <p className="text-xs text-muted-foreground">Файл результатов готов</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {item.previewUrl && (
+              <Button size="sm" variant="outline" asChild>
+                <a href={item.previewUrl} target="_blank" rel="noreferrer">
+                  Открыть отчёт
+                </a>
+              </Button>
+            )}
+            {item.downloadUrl && (
+              <Button size="sm" variant="outline" asChild>
+                <a href={item.downloadUrl} download>
+                  <Download className="h-3.5 w-3.5" />
+                  Скачать
+                </a>
+              </Button>
+            )}
+          </div>
+        </div>
       )}
       {item.content && (
         <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-black/30 p-3 text-xs">
           {item.content}
         </pre>
       )}
+    </div>
+  );
+}
+
+function SfxPlanView({
+  projectId,
+  snapshot,
+}: {
+  projectId: number;
+  snapshot: NodeResultSnapshot;
+}) {
+  const [copied, setCopied] = useState(false);
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId),
+  });
+
+  if (project.isLoading) return <LoadingBlock />;
+
+  const meta = (project.data?.meta || {}) as Record<string, unknown>;
+  const aiJobs = (meta.ai_jobs || {}) as Record<string, unknown>;
+  const rawPlan = (aiJobs.sfx_plan || meta.sfx_plan) as
+    | {
+        total_duration?: number;
+        events?: Array<{
+          frame_number: number;
+          t_start: number;
+          duration: number;
+          kind: string;
+          prompt: string;
+          gain: number;
+          duck: boolean;
+        }>;
+      }
+    | undefined;
+
+  const events = rawPlan?.events || [];
+  const totalDuration = rawPlan?.total_duration;
+
+  const kindColors: Record<string, { bg: string; text: string; border: string }> = {
+    hit: { bg: "bg-rose-500/15", text: "text-rose-300", border: "border-rose-500/30" },
+    whoosh: { bg: "bg-cyan-500/15", text: "text-cyan-300", border: "border-cyan-500/30" },
+    foley: { bg: "bg-emerald-500/15", text: "text-emerald-300", border: "border-emerald-500/30" },
+    stinger: { bg: "bg-purple-500/15", text: "text-purple-300", border: "border-purple-500/30" },
+    riser: { bg: "bg-amber-500/15", text: "text-amber-300", border: "border-amber-500/30" },
+    ambience: { bg: "bg-indigo-500/15", text: "text-indigo-300", border: "border-indigo-500/30" },
+    transition: { bg: "bg-sky-500/15", text: "text-sky-300", border: "border-sky-500/30" },
+  };
+
+  const copyJson = () => {
+    if (!rawPlan) return;
+    navigator.clipboard.writeText(JSON.stringify(rawPlan, null, 2));
+    setCopied(true);
+    toast.success("План звуков скопирован в буфер");
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  if (!events.length) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.02] p-8 text-center">
+        <Volume2 className="h-8 w-8 text-muted-foreground/60" />
+        <div>
+          <p className="text-sm font-medium text-foreground">План звуков ещё не составлен</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Запустите шаг «План звуков», чтобы ИИ-агент расставил эффекты по таймлайну.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Сводная карточка */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-gradient-to-r from-amber-500/5 via-violet-500/5 to-transparent p-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/15 text-amber-300 border border-amber-500/30">
+            <Volume2 className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-foreground">План звуков (SFX)</span>
+              <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-300 border border-emerald-500/30">
+                Готов · {events.length} событий
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Хронометраж: {totalDuration ? `${totalDuration} с` : "—"} · Подготовлено для шага «Звуки (SFX)»
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" onClick={copyJson}>
+            {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? "Скопировано" : "Копировать JSON"}
+          </Button>
+          {snapshot.items[0]?.downloadUrl ? (
+            <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs" asChild>
+              <a href={snapshot.items[0].downloadUrl} download>
+                <Download className="h-3.5 w-3.5" />
+                Скачать
+              </a>
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Список звуковых событий */}
+      <div className="flex flex-col gap-2">
+        {events.map((ev, idx) => {
+          const style = kindColors[ev.kind.toLowerCase()] || {
+            bg: "bg-white/5",
+            text: "text-zinc-300",
+            border: "border-white/10",
+          };
+          return (
+            <div
+              key={idx}
+              className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.04] p-3.5 transition-colors"
+            >
+              <div className="flex items-start sm:items-center gap-3">
+                <span className="text-xs font-mono text-muted-foreground w-6 shrink-0">
+                  #{idx + 1}
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={cn(
+                      "rounded-lg px-2.5 py-1 text-xs font-semibold uppercase tracking-wider border",
+                      style.bg,
+                      style.text,
+                      style.border,
+                    )}
+                  >
+                    {ev.kind}
+                  </span>
+                  <span className="rounded-md bg-white/5 px-2 py-0.5 text-xs font-mono text-zinc-300 border border-white/10">
+                    {ev.t_start.toFixed(1)} с (+{ev.duration.toFixed(1)} с)
+                  </span>
+                  <span className="rounded-md bg-white/5 px-2 py-0.5 text-xs text-zinc-400 border border-white/10">
+                    Кадр {ev.frame_number}
+                  </span>
+                  {ev.duck && (
+                    <span className="rounded-md bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-300 border border-blue-500/20">
+                      Duck (под голосом)
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center justify-between sm:justify-end gap-3 min-w-0 flex-1 sm:max-w-[55%]">
+                <p className="text-xs text-zinc-200 truncate font-sans" title={ev.prompt}>
+                  «{ev.prompt}»
+                </p>
+                <span className="shrink-0 text-[11px] font-mono text-muted-foreground">
+                  {Math.round(ev.gain * 100)}%
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SfxGenView({
+  projectId,
+  snapshot,
+}: {
+  projectId: number;
+  snapshot: NodeResultSnapshot;
+}) {
+  const project = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId),
+  });
+
+  if (project.isLoading) return <LoadingBlock />;
+
+  const meta = (project.data?.meta || {}) as Record<string, unknown>;
+  const aiJobs = (meta.ai_jobs || {}) as Record<string, unknown>;
+  const sfxPlan = (aiJobs.sfx_plan || meta.sfx_plan) as
+    | {
+        total_duration?: number;
+        events?: Array<{
+          frame_number: number;
+          t_start: number;
+          duration: number;
+          kind: string;
+          prompt: string;
+          gain: number;
+          duck: boolean;
+        }>;
+      }
+    | undefined;
+
+  const sfxFilesRecord = aiJobs.sfx_files as
+    | {
+        files?: Array<{
+          idx: number;
+          path: string;
+          frame_number: number;
+          t_start: number;
+          duration: number;
+          kind: string;
+          gain: number;
+          duck: boolean;
+          provider: string;
+          prompt?: string;
+        }>;
+      }
+    | undefined;
+
+  const plannedEvents = sfxPlan?.events || [];
+  const generatedFiles = sfxFilesRecord?.files || [];
+  const items = snapshot.items;
+  const hasFiles = generatedFiles.length > 0 || items.length > 0;
+
+  const kindColors: Record<string, { bg: string; text: string; border: string }> = {
+    hit: { bg: "bg-rose-500/15", text: "text-rose-300", border: "border-rose-500/30" },
+    whoosh: { bg: "bg-cyan-500/15", text: "text-cyan-300", border: "border-cyan-500/30" },
+    foley: { bg: "bg-emerald-500/15", text: "text-emerald-300", border: "border-emerald-500/30" },
+    stinger: { bg: "bg-purple-500/15", text: "text-purple-300", border: "border-purple-500/30" },
+    riser: { bg: "bg-amber-500/15", text: "text-amber-300", border: "border-amber-500/30" },
+    ambience: { bg: "bg-indigo-500/15", text: "text-indigo-300", border: "border-indigo-500/30" },
+    transition: { bg: "bg-sky-500/15", text: "text-sky-300", border: "border-sky-500/30" },
+  };
+
+  if (!hasFiles) {
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.02] p-8 text-center">
+          <Volume2 className="h-8 w-8 text-muted-foreground/60" />
+          <div>
+            <p className="text-sm font-medium text-foreground">Звуки ещё не сгенерированы</p>
+            <p className="mt-1 text-xs text-muted-foreground max-w-md">
+              {plannedEvents.length > 0
+                ? `В плане подготовлено ${plannedEvents.length} звуковых событий. Нажмите «Запустить шаг», чтобы синтезировать звуки через ElevenLabs API / локальный синтезатор.`
+                : "Сначала запустите шаг «План звуков», чтобы разметить звуковые эффекты по таймлайну."}
+            </p>
+          </div>
+        </div>
+
+        {plannedEvents.length > 0 && (
+          <div className="flex flex-col gap-2 opacity-60">
+            <div className="text-xs font-semibold text-zinc-400 px-1">
+              Очередь генерации по плану ({plannedEvents.length} событий):
+            </div>
+            {plannedEvents.map((ev, idx) => {
+              const style = kindColors[ev.kind.toLowerCase()] || {
+                bg: "bg-white/5",
+                text: "text-zinc-300",
+                border: "border-white/10",
+              };
+              return (
+                <div
+                  key={idx}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-white/[0.01] p-3 text-xs"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <span className="font-mono text-zinc-500">#{idx + 1}</span>
+                    <span
+                      className={cn(
+                        "rounded px-2 py-0.5 text-[11px] font-semibold uppercase border",
+                        style.bg,
+                        style.text,
+                        style.border,
+                      )}
+                    >
+                      {ev.kind}
+                    </span>
+                    <span className="text-zinc-400 font-mono">
+                      {ev.t_start.toFixed(1)} с · Кадр {ev.frame_number}
+                    </span>
+                  </div>
+                  <span className="text-zinc-400 truncate max-w-[50%]">«{ev.prompt}»</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const displayItems = generatedFiles.length > 0
+    ? generatedFiles.map((file, idx) => {
+        const planEv = plannedEvents[file.idx ?? idx];
+        const prompt = file.prompt || planEv?.prompt || "";
+        const url = `/api/files?path=${encodeURIComponent(file.path)}`;
+        return {
+          idx: file.idx ?? idx,
+          kind: file.kind,
+          provider: file.provider,
+          tStart: file.t_start,
+          duration: file.duration,
+          frameNumber: file.frame_number,
+          gain: file.gain,
+          duck: file.duck,
+          prompt,
+          audioUrl: url,
+          fileName: file.path.split(/[/\\]/).pop() || `sfx_${idx}.mp3`,
+        };
+      })
+    : items.map((item, idx) => {
+        const planEv = plannedEvents[idx];
+        const rawKind = item.label?.split("_")[2]?.replace(/\.\w+$/, "") || planEv?.kind || "sfx";
+        return {
+          idx,
+          kind: rawKind,
+          provider: "elevenlabs",
+          tStart: planEv?.t_start ?? 0,
+          duration: planEv?.duration ?? 0,
+          frameNumber: planEv?.frame_number ?? (idx + 1),
+          gain: planEv?.gain ?? 0.5,
+          duck: planEv?.duck ?? false,
+          prompt: planEv?.prompt || item.label || "",
+          audioUrl: item.previewUrl || item.downloadUrl || "",
+          fileName: item.label || `sfx_${idx}.mp3`,
+        };
+      });
+
+  const providers = Array.from(new Set(displayItems.map((d) => d.provider)));
+  const providerLabel = providers.includes("elevenlabs")
+    ? providers.includes("local_synth")
+      ? "ElevenLabs + Синтез"
+      : "ElevenLabs SFX API"
+    : "Локальный синтез";
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Сводная карточка */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-gradient-to-r from-emerald-500/5 via-violet-500/5 to-transparent p-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+            <Volume2 className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-foreground">Звуки сопровождения (SFX)</span>
+              <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-300 border border-emerald-500/30">
+                Готово · {displayItems.length} файл(ов)
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Провайдер: <strong className="text-zinc-200">{providerLabel}</strong> · Готовы к миксу в шаге «Сборка»
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Список звуков с аудиоплеерами */}
+      <div className="flex flex-col gap-2.5">
+        {displayItems.map((item) => {
+          const style = kindColors[item.kind.toLowerCase()] || {
+            bg: "bg-white/5",
+            text: "text-zinc-300",
+            border: "border-white/10",
+          };
+          return (
+            <div
+              key={item.idx}
+              className="flex flex-col gap-2 rounded-xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.04] p-3.5 transition-colors"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-xs font-mono text-muted-foreground w-6">
+                    #{item.idx + 1}
+                  </span>
+                  <span
+                    className={cn(
+                      "rounded-lg px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider border",
+                      style.bg,
+                      style.text,
+                      style.border,
+                    )}
+                  >
+                    {item.kind}
+                  </span>
+                  <span className="rounded-md bg-white/5 px-2 py-0.5 text-xs font-mono text-zinc-300 border border-white/10">
+                    {item.tStart.toFixed(1)} с (+{item.duration.toFixed(1)} с)
+                  </span>
+                  <span className="rounded-md bg-white/5 px-2 py-0.5 text-xs text-zinc-400 border border-white/10">
+                    Кадр {item.frameNumber}
+                  </span>
+                  {item.duck && (
+                    <span className="rounded-md bg-blue-500/10 px-2 py-0.5 text-[11px] text-blue-300 border border-blue-500/20">
+                      Duck
+                    </span>
+                  )}
+                  <span className="text-[11px] font-mono text-zinc-400">
+                    Громкость: {Math.round(item.gain * 100)}%
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      "rounded px-1.5 py-0.5 text-[10px] font-medium border",
+                      item.provider === "elevenlabs"
+                        ? "bg-violet-500/10 text-violet-300 border-violet-500/20"
+                        : "bg-zinc-500/10 text-zinc-300 border-zinc-500/20",
+                    )}
+                  >
+                    {item.provider === "elevenlabs" ? "ElevenLabs" : "Синтез"}
+                  </span>
+                  <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground" asChild>
+                    <a href={item.audioUrl} download={item.fileName} title="Скачать аудио">
+                      <Download className="h-3.5 w-3.5" />
+                    </a>
+                  </Button>
+                </div>
+              </div>
+
+              {item.prompt && (
+                <p className="text-xs text-zinc-300 italic pl-8 leading-relaxed">
+                  «{item.prompt}»
+                </p>
+              )}
+
+              <div className="pl-8 pt-0.5">
+                <audio
+                  controls
+                  src={item.audioUrl}
+                  className="h-8 w-full max-w-xl rounded"
+                  preload="none"
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

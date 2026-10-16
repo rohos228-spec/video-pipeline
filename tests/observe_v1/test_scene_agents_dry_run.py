@@ -1,17 +1,3 @@
-"""Dry run of the sd_agent fan-out agents through the REAL step: observation -> diagnosis -> verdict.
-
-No network, no provider, no paid call. What is REAL: scene_design.run (agent waves, checkpoints,
-slice_to_cells, store_cells, the original harness gate), parse_agent_slice, the runner journal
-hooks, observe_model (request identity), observe_attempt, the journal and outbox delivery, the
-Diagnoser and ActionSupervisor.recover_node. What is SCRIPTED: the model boundary only (the
-low-level POST returns canned replies). What is SEEDED by hand: the master/project runtime copy
-(the application's own copy functions on the test databases).
-
-This file is the OBSERVATION side (typed failures, the result check, an observed execution has no
-recovery grant at all). The supervised retry of the admitted agents (characters, world) and the exact
-refusals of the others (skeleton, camera, action, the legacy node) are in
-test_scene_agents_retry_dry_run.py.
-"""
 import json
 import unittest
 from contextlib import ExitStack, asynccontextmanager
@@ -46,7 +32,6 @@ GOOD_CHARACTERS = {"characters": [{"id": "c01", "имя": "Альфа", "вне�
 
 @observe_model
 async def fake_http_post(*, url, headers, body, timeout, use_model):
-    """The model boundary: the real observe_model wrapper records and gates every call."""
     SCRIPT["bodies"].append(body)
     if not SCRIPT["replies"]:
         raise AssertionError("unscripted model request: the dry run allows exactly the scripted ones")
@@ -63,9 +48,8 @@ async def fake_ask_fresh(text, *, timeout=600, project_id=None, max_retries=None
 
 
 class SceneAgentFixture(unittest.IsolatedAsyncioTestCase):
-    """The real-step fixture for one marked sd_agent node (no tests of its own)."""
     fixture_node_type = "sd_agent"
-    node_type = "sd_agent"   # "scene_design": the legacy single node that stands for the whole phase
+    node_type = "sd_agent"
     agent = "characters"
 
     async def asyncSetUp(self):
@@ -79,7 +63,6 @@ class SceneAgentFixture(unittest.IsolatedAsyncioTestCase):
             self.stack.enter_context(patcher)
         self.observer = observation._observer
 
-        # The canvas node is a marked sd_agent node: this agent is the node's own agent.
         marker = {"sd_agent": self.agent} if self.node_type == "sd_agent" else {}
         self.nodes = [{"id": "n1", "type": self.node_type, "data": {"groupId": "g1", **marker}},
                       {"id": "n2", "type": "script", "data": {"groupId": "g2"}}]
@@ -142,7 +125,6 @@ class SceneAgentFixture(unittest.IsolatedAsyncioTestCase):
         finally:
             await base_tests.DurableActions.asyncTearDown(self)
 
-    # ---- runtime bookkeeping -------------------------------------------------------------
     async def copy_runtime(self, session, project):
         from app.project_db import _apply_runtime_fields, _copy_noderuns_between_sessions
         async with self.sessions() as master:
@@ -182,7 +164,6 @@ class SceneAgentFixture(unittest.IsolatedAsyncioTestCase):
                                                .order_by(SceneDesignCell.id))).all())
 
     async def worker(self, replies):
-        """One native attempt of the original step under observe_attempt (what advance does)."""
         SCRIPT["replies"] = list(replies)
         async with self.business() as session:
             project = await session.get(Project, 7)
@@ -216,9 +197,6 @@ class SceneAgentFixture(unittest.IsolatedAsyncioTestCase):
 class SceneAgentDryRun(SceneAgentFixture):
     agent = "characters"
 
-    # ======================================================================================
-    # typed failure classes through the real step
-    # ======================================================================================
     async def test_unparseable_reply_is_typed_invalid_json_with_a_request_bound_parse_fact(self):
         await self.failed_attempt(["I cannot produce JSON for this."])
         parse = (await self.facts("parse_result"))[-1]
@@ -267,9 +245,6 @@ class SceneAgentDryRun(SceneAgentFixture):
         self.assertIn("contract_rejected", types)
         self.assertFalse(set(types) & {"invalid_json", "missing_payload"}, types)
 
-    # ======================================================================================
-    # the result check on a good run
-    # ======================================================================================
     async def test_a_valid_slice_is_stored_verified_and_raises_no_incident(self):
         await self.worker([json.dumps(GOOD_CHARACTERS, ensure_ascii=False)])
         stored = await self.cells()
@@ -284,9 +259,6 @@ class SceneAgentDryRun(SceneAgentFixture):
         await self.diagnose()
         self.assertEqual(await self.incidents(), [])
 
-    # ======================================================================================
-    # an observed (not managed) execution never has a recovery grant
-    # ======================================================================================
     async def test_an_observed_execution_has_no_recovery_grant_at_all(self):
         await self.failed_attempt(["I cannot produce JSON for this."])
         incident = next(i for i in await self.incidents() if i.type == "invalid_json")
@@ -297,7 +269,6 @@ class SceneAgentDryRun(SceneAgentFixture):
 
 
 class WorldAgentDryRun(SceneAgentFixture):
-    """The same real step for the world agent: an empty list is a valid slice here."""
     agent = "world"
 
     async def test_a_world_without_places_is_a_valid_empty_slice(self):
@@ -322,10 +293,9 @@ class WorldAgentDryRun(SceneAgentFixture):
 
 
 class LegacySceneDesignDryRun(SceneAgentFixture):
-    """The legacy single node: observed as the union of the agents that ran (here one), read-only."""
     node_type = "scene_design"
     fixture_node_type = "scene_design"
-    agent = "characters"   # which agent the step runs (meta only_agent); the node itself has no marker
+    agent = "characters"
 
     async def test_the_legacy_node_gets_typed_parse_facts_and_a_result_check_for_the_agent_that_ran(self):
         await self.worker([json.dumps(GOOD_CHARACTERS, ensure_ascii=False)])

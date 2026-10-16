@@ -1,4 +1,3 @@
-"""Live parent_uuid vs QC Сцена vs chips vs leftover sort_key."""
 from __future__ import annotations
 
 import json
@@ -75,7 +74,6 @@ if left:
     if live_sorts:
         print(f"live sort {min(live_sorts)}-{max(live_sorts)}")
 
-# leftover interleaved in sort order?
 inter = []
 prev_live = None
 for f in frames:
@@ -122,7 +120,6 @@ print(f"chip parent != vo parent: {len(chip_vs_vo)}")
 for row in chip_vs_vo[:30]:
     print(" ", row)
 
-# Adjacent QC scene change that is still a child
 print("\n=== QC scene change but still child of previous parent ===")
 prev = None
 bad = 0
@@ -141,7 +138,6 @@ for fr in live:
     prev = (q, fr.number, kind, vo_p)
 print(f"QC-scene-change-still-child: {bad}")
 
-# New QC scene whose first frame is child
 print("\n=== first frame of QC scene is child ===")
 first_of = {}
 for n, s in qc_scene.items():
@@ -158,7 +154,6 @@ for s, n in sorted(first_of.items()):
             print(f"  QC scene {s} starts #{n} as CHILD of {pn} place={(_frame_place(fr) or '')[:50]}")
 print(f"QC scene starts that are children: {n_child_heads}")
 
-# Same shot_parent on two consecutive vo cards
 print("\n=== same chip parent on two consecutive VO cards ===")
 cards = []
 seen = set()
@@ -178,6 +173,5 @@ for fr in live:
     cards.append((p.number, chips, [m.number for m in members]))
 for a, b in zip(cards, cards[1:]):
     overlap = (a[1] & b[1]) - {a[0], b[0]}
-    # parent of A appearing as chip on B
     if a[0] in b[1] or b[0] in a[1] or overlap:
         print(f"  VO#{a[0]} {a[2]} chips={sorted(a[1])} | VO#{b[0]} {b[2]} chips={sorted(b[1])}")

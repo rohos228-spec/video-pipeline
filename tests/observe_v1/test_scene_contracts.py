@@ -1,32 +1,3 @@
-"""Bounded scene-design contracts; parent executes RED/GREEN in offline Docker.
-
-Ownership: this test file, then app/services/scene_contracts.py after captured RED.
-No inherited Excel recovery fixture and no replacement worker or provider.
-
-Native worker fixture for the parent's integration:
-* Workflow/default WorkflowRun/NodeRun initially pending; marked excel_gpt nodes
-  camera -> assemble with matching canvas snapshot and project-scoped permission.
-* DB-v2 backfilled Frame/FrameText/Scene rows, scene_design_enabled=True,
-  scene_design.only_agent='camera'; original prepare_node_for_step_start and
-  advance_runner.advance_project_job dispatch scene_d -> scene_design.run.
-* For assemble, original checkpoints for characters/world/action/camera are
-  required by runner.agents_all_done. Capture assembly frames AFTER native
-  camera_expand, before validate_payload/apply_scene_design. Reuse scene_asm ->
-  run_assemble, original harness/HITL/FSM. Never seed done or mock validation.
-
-Managed sd_* capability/admission and observation hooks are parent prerequisites.
-This suite verifies native staging/apply effects and a pure read-only helper; it
-does not assert a managed worker acceptance without those prerequisites.
-
-Helper API proposed for the parent:
-  scene_contract(node)
-  scene_input_snapshot(project, frames, *, cells=())
-  verify_scene_agent(project, node, cells, *, frames, snapshot, agent_slice)
-  verify_scene_assembly(project, frames, *, snapshot, payload)
-
-"passed" proves bounded row/payload integrity only. Commit provenance comes
-from the existing observation outbox; HITL and semantic quality remain explicit.
-"""
 
 from __future__ import annotations
 
@@ -51,7 +22,6 @@ VO_PARTS = ("Альфа открывает книгу.", "Бета закрыв�
 
 
 def helper():
-    # Import inside tests: a missing owned helper is the intended RED signal.
     return importlib.import_module("app.services.scene_contracts")
 
 
@@ -343,11 +313,9 @@ class SceneContracts(unittest.TestCase):
         self.assertEqual(result["frame_count"], 2)
         self.assertEqual(len(result["sha256"]), 64)
         self.assert_bounded_proof(result)
-        # Registry string sc01 is not the actual Scene primary key (31).
         self.assertTrue(all(f.scene_id == 31 for f in self.frames))
 
     def test_assembler_lighting_field_is_ignored_not_unsupported(self):
-        # Prompt/product add "освещение" to ops[].fields; apply does not write it, so it is neither checked nor unsupported.
         for key in ("освещение", "lighting", "scene_lighting"):
             payload = assembly_payload(self.frames)
             for op in payload["ops"]:
@@ -362,12 +330,11 @@ class SceneContracts(unittest.TestCase):
         payload = assembly_payload(self.frames)
         for op in payload["ops"]:
             op["fields"]["освещение"] = "свет"
-            op["fields"]["bits"] = "x"  # known to normalize_fields, never written by apply
+            op["fields"]["bits"] = "x"
         result = self.assembly_result(payload=payload, frames=applied_frames(self.frames, payload))
         self.assertEqual(result["status"], "unknown", result)
         self.assertIn("биты", result["reason"])
         self.assertNotIn("lighting", result["reason"])
-        # a name nobody knows is still rejected outright
         payload["ops"][0]["fields"]["unknown_extra"] = "x"
         self.assertEqual(self.assembly_result(payload=payload,
                                               frames=applied_frames(self.frames, payload))["status"], "failed")
@@ -416,7 +383,6 @@ class SceneContracts(unittest.TestCase):
             frames[0].attrs = {**frames[0].attrs, field: "unapplied or stale"}
             with self.subTest(field=field):
                 self.assertEqual(self.assembly_result(frames=frames, payload=payload)["status"], "failed")
-        # The model's valid JSON is insufficient when the DB registry is absent.
         result = helper().verify_scene_assembly(self.project, applied_frames(self.frames, payload),
             snapshot=self.snapshot(), payload=payload)
         self.assertEqual(result["status"], "failed")
@@ -432,7 +398,6 @@ class SceneContracts(unittest.TestCase):
 
 
 class SliceAgentContracts(unittest.TestCase):
-    """skeleton / characters / world / action: slice shape, stored cells, typed failure classes."""
 
     VALID = {
         "skeleton": {"scenes": [{"id_scene": "scene_01", "кадры": [1, 2]}],
@@ -549,7 +514,6 @@ class SliceAgentContracts(unittest.TestCase):
 
 
 class NativeSceneEffects(unittest.IsolatedAsyncioTestCase):
-    """Real original writers against synthetic SQLite; no manufactured status."""
 
     async def asyncSetUp(self):
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -618,8 +582,6 @@ class NativeSceneEffects(unittest.IsolatedAsyncioTestCase):
             payload = assembly_payload(frames)
             self.assertEqual(validate_payload(project, frames, payload,
                 context_builder.full_voiceover(project, frames)), [])
-            # Nonempty character cards avoid checkpoint/disk fallback in the
-            # original apply function. Entity creation is the original writer.
             payload["characters"] = [{"id": "c01", "имя": "Альфа", "внешность": "синтетическая"}]
             applied = await apply_scene_design(writer, project, payload)
             self.assertTrue(applied["ok"])

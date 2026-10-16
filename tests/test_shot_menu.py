@@ -109,9 +109,6 @@ def test_empty_vo_shots_attach_to_parent_cell() -> None:
     assert len(cells) == 2
     assert len(cells[0]["shots"]) == 2
     assert cells[0]["shots"][0]["voiceover_in_shot"] != "—"
-    # После перегенерации закадр часто только на родителе - лента режет по шотам.
-    # split_text_into_parts режет по смыслу (фраза целиком, 4e5edc8e): текст должен
-    # содержать >= 2 фраз/клауз, иначе хвостовой шот остаётся без закадра ("—").
     child_vo = cells[0]["shots"][1]["voiceover_in_shot"]
     assert child_vo != "—"
     joined = " ".join(
@@ -123,7 +120,6 @@ def test_empty_vo_shots_attach_to_parent_cell() -> None:
         "Что, если самый страшный адрес. Выглядел как обычный дом".split()
     ) == " ".join(joined.split())
     assert cells[0]["shots"][1]["fields"]["action"] == "Соседка хватает рукав"
-    # SET показываем с человеческим именем из camera_sets.md
     assert cells[0]["loc"] == "SET_32 · Два человека"
     assert len(cells[1]["shots"]) == 1
     assert cells[1]["voiceover"].startswith("Новокузнецк")
@@ -483,7 +479,6 @@ def test_shot_plan_overlay_set_and_stitch_differ_inside_scene() -> None:
     assert cells[0]["shots"][1]["fields"]["characters"] == "c02"
     vos = [s["voiceover_in_shot"] for s in cells[0]["shots"]]
     assert all(v != "—" for v in vos)
-    # 3 шота = 3 фразы (иначе хвост без закадра, см. split_text_into_parts).
     assert " ".join("Что если самый страшный адрес. Выглядел как ссора. Или как дом.".split()) == " ".join(
         " ".join(vos).split()
     )
@@ -612,11 +607,6 @@ def test_display_vo_split_does_not_mutate_frames() -> None:
 
 
 def test_single_phrase_vo_leaves_tail_shot_without_vo() -> None:
-    """Одна фраза на 2 шота: закадр целиком на первом, хвост пустой ("—").
-
-    Контракт split_text_into_parts (4e5edc8e, tests/test_camera_expand.py):
-    фраза не рвётся между кадрами.
-    """
     frames = [
         {"id": 1, "number": 1, "sort_key": 10, "voiceover_text": "Одна короткая фраза",
          "duration_seconds": 2, "attrs": {"camera_subdivide": {"parent_uuid": "p1", "shot_index": 1}}},

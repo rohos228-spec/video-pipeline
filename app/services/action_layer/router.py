@@ -1,8 +1,3 @@
-"""REST под /api/action-layer. Все ручки за AuthDep (как остальные роутеры).
-
-Подтверждение создаётся только здесь, вызовом оператора. Тело плана и запуска
-не содержит полей подтверждения; лишние поля запрещены (extra=forbid).
-"""
 from __future__ import annotations
 
 import re
@@ -47,8 +42,6 @@ class FromTextIn(BaseModel):
     project_id: int | None = Field(None, ge=1)
     selected_scene: int | None = Field(None, ge=1)
     selected_frame: int | None = Field(None, ge=1)
-    # id файлов, загруженных через POST /attachments; планировщик видит id, имя, вид и размер,
-    # путь в шаг загрузки подставляет сервер
     attachments: list[str] = Field(default_factory=list, max_length=attachments.MAX_PER_REQUEST)
 
 
@@ -80,15 +73,9 @@ def _attachment_http(exc: "attachments.AttachmentError") -> HTTPException:
 
 
 def _operator(token: str | None) -> approval.OperatorIdentity:
-    # Тот же формат, что observations._operator_id.
     return approval.OperatorIdentity.from_token(token)
 
 
-# --- D12: Idempotency-Key и X-Action-Layer-Operator на изменяющих ручках слоя действий ----------------------
-# Только этот роутер: остальные эндпоинты приложения заголовок ключа сами не разбирают (оператора в журнал
-# изменяющих запросов записывает operator_audit). Повтор с тем же ключом и тем же запросом отдаёт ответ первой
-# попытки и не исполняется второй раз; тот же ключ с другим запросом считается другим вызовом; начатая и не
-# завершённая попытка блокирует слепой повтор (409), потому что исход неизвестен.
 
 _IDEM_KEY_RE = re.compile(r"^[A-Za-z0-9_.:\-]{1,80}$")
 
@@ -118,7 +105,6 @@ IdemDep = Annotated[IdemHeaders, Depends(_idem_headers)]
 
 async def _once(request: Request, idem: IdemHeaders, who: approval.OperatorIdentity,
                 call: Callable[[], Awaitable[Any]], *, body: Any = None) -> Any:
-    """Выполняет ``call`` не более одного раза на (Idempotency-Key, запрос). Без ключа - просто вызов."""
     if not idem.key:
         return await call()
     from sqlalchemy.exc import SQLAlchemyError
@@ -130,7 +116,6 @@ async def _once(request: Request, idem: IdemHeaders, who: approval.OperatorIdent
         state, row = await store.claim_call(idem.key, fp, method=request.method, path=request.url.path,
                                             operator=actor)
     except SQLAlchemyError:
-        # Журнала вызовов нет (БД до миграции 0016): без дедупликации, не ломая запрос.
         return await call()
     if state == "done":
         if row is not None and row.response_omitted:
@@ -146,7 +131,6 @@ async def _once(request: Request, idem: IdemHeaders, who: approval.OperatorIdent
     except HTTPException as exc:
         await store.finish_call(idem.key, fp, ok=False, http_status=exc.status_code)
         raise
-    # Обрыв или внутренняя ошибка: запись остаётся 'started', исход неизвестен, слепой повтор запрещён.
     await store.finish_call(idem.key, fp, ok=True, http_status=200, response=result)
     return result
 
@@ -179,7 +163,6 @@ async def preview_plan(request: Request, body: PlanIn, operator: AuthDep, idem: 
 
 @router.post("/plans/from-text", dependencies=[LocalOnlyDep])
 async def plan_from_text(request: Request, body: FromTextIn, operator: AuthDep, idem: IdemDep) -> dict:
-    """Запрос -> планировщик -> только preview (proposed). Не подтверждает и не запускает."""
     who = _operator(operator)
     return await _once(request, idem, who, lambda: _plan_from_text(request, body, operator), body=body.model_dump())
 
@@ -217,7 +200,7 @@ async def _plan_from_text(request: Request, body: FromTextIn, operator: str | No
     if reply.needs_clarification:
         return {"plan_id": None, "preview": None, "attachments_used": [], **extra}
     used = list(reply.attachments_used)
-    try:  # файл занят этим планом до его создания: второй план с тем же файлом не получится
+    try:
         await attachments.claim(used, body.project_id)
     except attachments.AttachmentError as exc:
         raise _attachment_http(exc) from exc
@@ -275,7 +258,6 @@ async def delete_macro(macro_id: str, operator: AuthDep) -> dict:
 
 @router.post("/plans/from-macro", dependencies=[LocalOnlyDep])
 async def plan_from_macro(request: Request, body: FromMacroIn, operator: AuthDep, idem: IdemDep) -> dict:
-    """Макрос -> шаги -> тот же preview, что у /plans/preview. Ничего не запускает."""
     who = _operator(operator)
     return await _once(request, idem, who, lambda: _plan_from_macro(request, body, operator), body=body.model_dump())
 
@@ -392,7 +374,6 @@ class ReleaseReserveIn(BaseModel):
 
 @router.get("/reserves")
 async def list_unresolved_reserves(operator: AuthDep, older_than_s: float = Query(0.0, ge=0)) -> dict:
-    """C-9: резервы завершённых шагов, не закрытые фактом (удерживаются в потолках до решения оператора)."""
     from app.services.action_layer import budget
     async with store.sessions()() as s:
         rows = await budget.unresolved_reserves(s, older_than_s=older_than_s)
@@ -425,10 +406,8 @@ async def get_history(operator: AuthDep, plan_id: str | None = Query(None),
     return await service.history(plan_id=plan_id, limit=limit, before_id=before_id)
 
 
-# --- вложения командной строки ---------------------------------------------------------------------
 
 class _UploadRoute(APIRoute):
-    """Размер тела проверяется по Content-Length до разбора multipart (иначе файл сначала уйдёт на диск)."""
 
     def get_route_handler(self):
         original = super().get_route_handler()
@@ -452,14 +431,12 @@ attachments_router = APIRouter(route_class=_UploadRoute)
 
 @attachments_router.get("/attachments/rules")
 async def attachment_rules(operator: AuthDep) -> dict:
-    """Какие файлы принимает загрузка (расширения и потолки размера по видам)."""
     return attachments.rules_view()
 
 
 @attachments_router.post("/attachments", dependencies=[LocalOnlyDep])
 async def upload_attachment(operator: AuthDep, file: UploadFile = File(...),
                             project_id: int = Form(..., ge=1)) -> dict:
-    """Принимает файл для командной строки. Возвращает {attachment_id, name, size, kind, sha256}."""
     who = _operator(operator)
     from app.models import Project
     async with store.sessions()() as s:
@@ -478,7 +455,6 @@ async def upload_attachment(operator: AuthDep, file: UploadFile = File(...),
 @attachments_router.delete("/attachments/{attachment_id}", dependencies=[LocalOnlyDep])
 async def remove_attachment(attachment_id: str, operator: AuthDep,
                             project_id: int | None = Query(None, ge=1)) -> dict:
-    """Убирает ещё не использованный файл (кнопка «убрать» у вложения)."""
     try:
         removed = await attachments.delete_unused(attachment_id, project_id)
     except attachments.AttachmentError as exc:

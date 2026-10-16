@@ -1,4 +1,3 @@
-"""Промты с рефами героев: 1 референс = 1 свой человек, не клон одного лица."""
 
 from __future__ import annotations
 
@@ -16,7 +15,6 @@ _STYLE_LOCK_LINE_RE = re.compile(
     r"(?im)^(?:STYLE:|Final style lock|Negative:)",
 )
 
-# Глобальный «no duplicate faces» модель читает как «в кадре одно лицо».
 _TWIN_SWAPS: tuple[tuple[str, str], ...] = (
     (
         "no twins, no clones, no duplicate faces",
@@ -119,7 +117,6 @@ def fit_prompt_for_outsee(
     text: str,
     max_chars: int = OUTSEE_PROMPT_TARGET_BODY_CHARS,
 ) -> str:
-    """Влезает в Outsee без GPT-сжатия: режем сцену, lock и STYLE не трогаем."""
     raw = (text or "").strip()
     if len(raw) <= max_chars:
         return raw
@@ -156,7 +153,6 @@ def rewrite_hero_ref_prompt(
     *,
     child: bool = False,
 ) -> str:
-    """Переписать промт: 1 hero-ref = 1 персонаж, без схлопывания лиц."""
     raw = (prompt or "").strip()
     if not raw:
         return raw

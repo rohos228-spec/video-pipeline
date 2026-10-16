@@ -19,7 +19,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Границы слов () не используются: в записях SQLite байт длины стоит прямо перед текстом и может быть буквой.
 SKIP_SUFFIXES = {
     ".mp4", ".mov", ".webm", ".mkv", ".mp3", ".wav", ".ogg", ".flac", ".m4a", ".png", ".jpg", ".jpeg",
     ".webp", ".gif", ".zip", ".gz", ".woff", ".woff2", ".ttf", ".otf", ".ico", ".pyc",

@@ -1,9 +1,7 @@
-"""Throw-away real server for the command-line card smoke: empty data dir, seeded project 1, fake planner
-model, fake paid/destructive test.* actions (no network, no real spend), kill switch usable from the UI."""
 import asyncio, json, os, sys, tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent  # A19: no hard-coded checkout path
+ROOT = Path(__file__).resolve().parent.parent
 PORT = int(os.environ.get("E2E_PORT", "8802"))
 work = Path(tempfile.mkdtemp(prefix="ui_cmdline_"))
 (work / "data").mkdir()
@@ -67,7 +65,7 @@ async def main():
     print("registered", fp.register_fake_actions(), flush=True)
     import eval_seed
     info = await eval_seed.seed_realistic(1, prompts_dir=work / "prompts")
-    for clip in (info.data_dir / "videos").glob("clip_004*.mp4"):   # the swap check wants clips >= 1 KB
+    for clip in (info.data_dir / "videos").glob("clip_004*.mp4"):
         clip.write_bytes(clip.read_bytes() + bytes(2048))
     planner.set_transport(fake_model)
     cfg = uvicorn.Config(create_app(), host="127.0.0.1", port=PORT, log_level="warning")

@@ -1,8 +1,3 @@
-"""«Улучшить сцену»: 3 ноды fw_action → fw_shots → fw_qc + нарезка VO.
-
-В GPT только заказ и реестр. Закадр клеим без дыр. Персонажи — только
-из реестра и только если они в тексте.
-"""
 
 from __future__ import annotations
 
@@ -48,7 +43,6 @@ ANCHOR_1 = "Он пришёл домой поздно"
 ANCHOR_2 = "Через минуту к нему"
 UID = "ab" * 12
 
-# (якорь, зона, действие, роль, объект, план, ракурс, движение, стык)
 STEPS = [
     (1, "коридор", "кладёт носок на пол", "действие", "предмет", "ДЕТАЛЬ", "сверху", "статика", "cut"),
     (2, "коридор", "девушка кричит и убегает", "действие", "тело", "СРЕДНИЙ", "3/4", "статика", "cut"),
@@ -133,9 +127,6 @@ def _members(frames: list[Frame]) -> list[Frame]:
     ]
 
 
-# --------------------------------------------------------------------------- #
-# Чистые функции
-# --------------------------------------------------------------------------- #
 
 
 def test_check_bits_requires_verbatim_ordered_anchors() -> None:
@@ -482,9 +473,6 @@ def test_merge_passport_keeps_operator_place_and_fills_empty() -> None:
     assert "place" not in changed
 
 
-# --------------------------------------------------------------------------- #
-# Пайплайн на ячейке — прямой прогон
-# --------------------------------------------------------------------------- #
 
 
 def _registry(project: Project) -> list:
@@ -508,7 +496,7 @@ async def test_improve_matches_registry_and_keeps_medium_parent(
     await session.flush()
     prompts: list[str] = []
 
-    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+    async def fake_ask(text: str, **kwargs):
         prompts.append(text)
         return json.dumps(
             {
@@ -591,7 +579,7 @@ async def test_improve_does_not_attach_unmentioned_registry_name(
     session.add_all([project, parent, neighbor, *_registry(project)])
     await session.flush()
 
-    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+    async def fake_ask(text: str, **kwargs):
         return json.dumps(
             {"сцена": "крик", "персонажи": "c01, c02, c03", "план_родителя": "ОБЩИЙ"},
             ensure_ascii=False,
@@ -613,7 +601,7 @@ async def test_improve_without_gpt_still_splits_vo(
     session.add_all([project, parent, neighbor, *_registry(project)])
     await session.flush()
 
-    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+    async def fake_ask(text: str, **kwargs):
         return "нет ответа"
 
     monkeypatch.setattr("app.services.gpt_client.gpt_ask_fresh", fake_ask)
@@ -641,7 +629,7 @@ async def test_improve_writes_full_scene_card_and_shot_coverage(
     session.add_all([project, parent, neighbor, *_registry(project)])
     await session.flush()
 
-    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+    async def fake_ask(text: str, **kwargs):
         assert "voiceover_text" not in text
         assert VO not in text
         if "Поставь сцену" in text:
@@ -675,8 +663,6 @@ async def test_improve_writes_full_scene_card_and_shot_coverage(
                     },
                     {
                         "действие": "девушка кричит и убегает",
-                        # R-PLAN-STEP (b1b8b454): прыжок крупности на 3+ ступени
-                        # (ДЕТАЛЬ -> СРЕДНИЙ) код выправляет, поэтому фикстура легальная
                         "план": "КРУПНЫЙ",
                         "ракурс": "3/4",
                         "движение": "отъезд",

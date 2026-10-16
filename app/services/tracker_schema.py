@@ -1,18 +1,9 @@
-"""Versioned schema for the local api-tracker SQLite database (tracker.db).
-
-Replaces the ad-hoc ``CREATE TABLE`` + ``PRAGMA table_info`` + ``ALTER TABLE`` that ran on every recorded
-call. Each migration runs in one transaction together with its bookkeeping row in ``tracker_schema_migrations``;
-a failing migration is rolled back whole, leaves no row and is raised to the caller (the hook logs it and the
-pipeline never stops because of telemetry). Migrations are idempotent: an old database that already has the
-columns is only recorded. Nothing is dropped or rewritten. After a successful run the database path is
-remembered in-process, so the steady-state call does one set lookup, not a schema scan.
-"""
 from __future__ import annotations
 
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from pathlib import Path  # noqa: F401  (db_path may be a Path)
+from pathlib import Path
 
 MIGRATIONS_TABLE = "tracker_schema_migrations"
 
@@ -40,7 +31,6 @@ CREATE TABLE IF NOT EXISTS api_calls (
     synced INTEGER DEFAULT 1
 )"""
 
-# Columns older databases may lack: (name, exact legacy DDL). Same DDL the old inline code used.
 _LEGACY_COLUMNS = (
     ("user_name", "TEXT DEFAULT 'unknown'"),
     ("device_name", "TEXT DEFAULT ''"),
@@ -69,11 +59,6 @@ _lock = threading.Lock()
 
 
 def backup_tracker_before_migration(conn: sqlite3.Connection) -> Path | None:
-    """Copy an existing tracker.db before its first pending migration (A15).
-
-    A fresh or in-memory database has nothing to protect and returns ``None``. A failed copy raises
-    ``BackupError`` and the migration does not start (the hook logs it; telemetry never stops the pipeline).
-    """
     from app.services.schema_migrations import backup_sqlite
 
     main = next((r[2] for r in conn.execute("PRAGMA database_list").fetchall() if r[1] == "main"), "")
@@ -88,10 +73,9 @@ def backup_tracker_before_migration(conn: sqlite3.Connection) -> Path | None:
 
 
 def migrate_tracker_db(conn: sqlite3.Connection) -> list[str]:
-    """Apply pending migrations; return the ids applied now. Raises on failure after rolling that one back."""
     backup_tracker_before_migration(conn)
     prev = conn.isolation_level
-    conn.isolation_level = None  # explicit BEGIN/COMMIT below
+    conn.isolation_level = None
     applied: list[str] = []
     try:
         conn.execute(f"CREATE TABLE IF NOT EXISTS {MIGRATIONS_TABLE} "
@@ -116,10 +100,8 @@ def migrate_tracker_db(conn: sqlite3.Connection) -> list[str]:
 
 
 def ensure_tracker_schema(conn: sqlite3.Connection, db_path: Path | str) -> None:
-    """Run migrations once per database path per process (re-run if the file was deleted)."""
     key = str(db_path)
     if key in _ready:
-        # One cheap read: a deleted/recreated file has no bookkeeping table, so it is migrated again.
         has = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
                            (MIGRATIONS_TABLE,)).fetchone()
         if has:

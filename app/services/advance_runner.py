@@ -23,8 +23,18 @@ class AdvanceJobResult:
     new_status: str | None  # None если статус не изменился
 
 
+async def _mirror_content_to_master(project: Project) -> None:
+    async with session_scope() as master_sess:
+        m_proj = await master_sess.get(Project, project.id)
+        if m_proj is None:
+            return
+        for name in ("general_plan", "script_text", "hero_description"):
+            value = getattr(project, name)
+            if value:
+                setattr(m_proj, name, value)
+
+
 def _tick_run_id(project_id: int) -> str:
-    """Run of this tick: the confirmed managed execution id, otherwise ``native:<project>:<tick>``."""
     from app.services import request_context
     try:
         from app.services.actions_v1 import get_permission
@@ -32,7 +42,7 @@ def _tick_run_id(project_id: int) -> str:
         execution_id = str(getattr(permission, "execution_id", "") or "") if permission is not None else ""
         if execution_id:
             return execution_id
-    except Exception:  # noqa: BLE001 - a native id is still a real, unique run id
+    except Exception:
         pass
     return request_context.native_run_id(project_id)
 
@@ -46,8 +56,6 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
     from app.services import request_context
     from app.services.observation import _cost_project
     cost_token = _cost_project.set(project_id)
-    # B02: every paid call of this tick carries a project, a run and a request id. Run = the managed execution
-    # when the project has one, else a native tick id; request = this tick (the worker has no HTTP request).
     corr_scope = request_context.ensure_request_scope(
         "tick-", run_id=_tick_run_id(project_id), project_id=project_id)
     corr_scope.__enter__()
@@ -87,19 +95,20 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                     prev_status=prev_status,
                     new_status=project.status,
                 )
-            # Сначала фиксируем project.db, потом показываем итог в master: иначе при сбое коммита master уже
-            # новее, а project.db откатился, и платный шаг мог бы выполниться второй раз (аудит W56 K6).
             from app.db import commit_with_retry
 
             await commit_with_retry(session)
             try:
                 from app.project_db import push_runtime_to_master_recorded
 
-                # Сбой не молчаливый: маркер master_sync_pending в project.db, повтор на следующем такте (аудит W56 K5).
                 await push_runtime_to_master_recorded(session, project)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("advance_project_job: sync runtime to master failed: {}", exc)
             if new != prev:
+                try:
+                    await _mirror_content_to_master(project)
+                except Exception as exc:
+                    logger.warning("advance_project_job: sync content to master failed: {}", exc)
                 logger.debug(
                     "advance_project_job: #{} {} -> {}", project_id, prev, new
                 )
@@ -118,13 +127,11 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
     finally:
         try:
             corr_scope.__exit__(None, None, None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         try:
             _cost_project.reset(cost_token)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
-        # Recovery tracking spans the entire original job, including project DB
-        # commit. pipeline.advance_project unregisters before that commit.
         from app.services.actions_recovery import finish_job_tracking
         finish_job_tracking(project_id)

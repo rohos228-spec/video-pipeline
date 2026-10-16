@@ -11,7 +11,6 @@ const LINE_CLASS: Record<DiffLineKind, string> = {
 };
 const GUTTER: Record<DiffLineKind, string> = { add: "+", del: "−", ctx: " ", hunk: "@", meta: " " };
 
-/** Построчный diff текста промпта: добавленные и удалённые строки различаются знаком, а не только цветом. */
 export function TextDiff({ diff, label = "Изменение текста" }: { diff: string; label?: string }) {
   if (!diff.trim()) return <p className="text-white/50">Различий в тексте нет или diff не получен.</p>;
   const { lines, added, removed, truncated } = parseUnifiedDiff(diff);
@@ -36,7 +35,6 @@ export function TextDiff({ diff, label = "Изменение текста" }: { 
   );
 }
 
-/** Таблица «параметр: было / станет» для T1. Нераспознанный формат показывается сырым текстом. */
 export function ParamTable({ diff }: { diff: string }) {
   if (!diff.trim()) return <p className="text-white/50">Описание изменения не получено.</p>;
   const rows = parseParamDiff(diff);
@@ -65,7 +63,6 @@ export function ParamTable({ diff }: { diff: string }) {
   );
 }
 
-/** Произвольный diff (T3): строки +/− подсвечиваются, остальное показывается как есть. */
 export function CodeDiff({ diff }: { diff: string }) {
   const lines = diff.split("\n");
   return (

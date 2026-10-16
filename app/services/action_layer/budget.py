@@ -1,10 +1,3 @@
-"""Потолок трат (кредиты) на сессию плана и проверка аварийного стопа.
-
-Резерв под оценку шага (верхняя граница) делается одним атомарным INSERT ...
-SELECT до запуска шага; после шага сверка с фактом дописывается отдельной
-строкой журнала (журнал append-only). Неизвестная оценка платного шага =
-отказ (fail-closed), а не 0.
-"""
 from __future__ import annotations
 
 import math
@@ -48,7 +41,6 @@ async def remaining(session, key: str, cap: float | None = None) -> float:
 
 
 def preview_budget(cost: dict, cap: float | None = None, already_spent: float = 0.0) -> dict:
-    """Помещается ли оценка плана в потолок (для preview/approve)."""
     cap = session_cap() if cap is None else cap
     free = cap - already_spent
     fits = bool(cost.get("known", True)) and float(cost.get("high") or 0.0) <= free + 1e-9
@@ -57,14 +49,12 @@ def preview_budget(cost: dict, cap: float | None = None, already_spent: float = 
 
 async def reserve(session, *, key: str, plan_id: str, step_index: int,
                   estimate: CostEstimate, cap: float | None = None) -> float:
-    """Резервирует верхнюю оценку или бросает BudgetError. Возвращает резерв."""
     if not estimate.known:
         raise BudgetError("estimate_unknown", "У платного шага нет оценки стоимости: запуск без неё запрещён.")
     amount = float(estimate.high)
     if amount < 0 or math.isnan(amount) or math.isinf(amount):
         raise BudgetError("estimate_invalid", "Оценка стоимости некорректна.")
     cap = session_cap() if cap is None else cap
-    # The step's paid work (and the money rows of this reserve) carry the plan's project, run and a request id.
     await _bind_plan_context(session, plan_id)
     try:
         result = await session.execute(text(
@@ -80,15 +70,12 @@ async def reserve(session, *, key: str, plan_id: str, step_index: int,
         await _spend_reserve(session, plan_id, amount, step_index=step_index)
     except BaseException:
         from app.services import request_context
-        request_context.unbind_run(plan_run_id(plan_id))  # refused or failed: nothing is bound to the step
+        request_context.unbind_run(plan_run_id(plan_id))
         raise
     return amount
 
 
 async def _bind_plan_context(session, plan_id: str) -> None:
-    """B02: from the reserve to the settle of a step, every native paid call of this task (regeneration, Kie, Outsee,
-    ElevenLabs) is written with the plan's project, ``plan:<id>`` as run and a request id. Without it the native
-    rows of a plan step had no project and an empty run, so the layer could not be matched with its own spend."""
     from app.services import request_context
     request_context.bind_run(plan_run_id(plan_id), await _plan_project(session, plan_id), "plan-")
 
@@ -99,7 +86,6 @@ def plan_run_id(plan_id: str) -> str:
 
 @contextmanager
 def plan_scope(plan_id: str, project_id: int | None):
-    """Explicit form of the same binding (for a caller that can wrap the step in ``with``)."""
     from app.services import request_context
     with request_context.ensure_request_scope("plan-", run_id=plan_run_id(plan_id), project_id=project_id) as snap:
         yield snap
@@ -109,12 +95,11 @@ async def _plan_project(session, plan_id: str):
     row = await session.get(store.ActionPlanContext, plan_id)
     if row is not None and row.project_id is not None:
         return row.project_id
-    plan = await session.get(store.ActionPlan, plan_id)  # план без контекста планировщика
+    plan = await session.get(store.ActionPlan, plan_id)
     return plan.project_id if plan is not None else None
 
 
 async def _spend_reserve(session, plan_id: str, credits: float, step_index: int | None = None) -> None:
-    """Local USD caps (daily/project/run) in addition to the per-plan credit cap."""
     from app.services import spend_guard
     from app.services.kie_catalog import CREDIT_USD
     try:
@@ -129,15 +114,8 @@ async def _spend_reserve(session, plan_id: str, credits: float, step_index: int 
 async def settle(session, *, key: str, plan_id: str, step_index: int,
                  reserved: float, actual: float | None,
                  native_counted: bool = False) -> None:
-    """Сверка резерва с фактом; факт неизвестен - резерв остаётся (консервативно).
-
-    ``native_counted=True``: факт уже записан в ``spend_ledger`` нативными путями
-    (``media_native``), поэтому резерв слоя в общем журнале закрывается до нуля, а не до
-    факта, иначе одна генерация считается дважды. Потолок плана (``action_layer_spend``)
-    всегда сверяется с фактом.
-    """
     from app.services import request_context
-    rid = request_context.get_request_id()  # the rows below still belong to the step's request
+    rid = request_context.get_request_id()
     try:
         if actual is None or actual < 0 or math.isnan(actual) or math.isinf(actual):
             return
@@ -153,16 +131,13 @@ async def settle(session, *, key: str, plan_id: str, step_index: int,
                                      run_id=f"plan:{plan_id}", reserved_usd=float(reserved) * CREDIT_USD,
                                      actual_usd=ledger_actual * CREDIT_USD, source="action_layer",
                                      credits_delta=ledger_delta,
-                                     # B03: native_counted closes the reserve to zero (the fact is already in the
-                                     # native rows, so it is not a second spend); otherwise the executor's reported
-                                     # amount is a fact (the action's own answer).
                                      basis="closes_reserve" if native_counted else "reported",
                                      ref=f"plan:{plan_id}#{step_index}", request_id=rid)
         if delta:
             session.add(store.ActionSpend(session_key=key, plan_id=plan_id, step_index=step_index,
                                           kind="settle", credits=delta))
     finally:
-        request_context.unbind_run(plan_run_id(plan_id))  # end of the step: the binding of reserve() is released
+        request_context.unbind_run(plan_run_id(plan_id))
 
 
 _UNKNOWN_MARKS = ("cost_unknown", "write_failed")
@@ -170,13 +145,6 @@ _UNKNOWN_MARKS = ("cost_unknown", "write_failed")
 
 async def measure_native_credits(session, *, project_id: int | None, since: datetime,
                                  run_id: str | None = None) -> float | None:
-    """Факт трат проекта с момента ``since`` по строкам ``spend_ledger`` нативных путей.
-
-    Источник ``action_layer`` (резервы самого слоя) не считается. ``None``: факт неизвестен
-    (нет проекта, в журнале строка «цена неизвестна» или «дыра» записи), тогда резерв
-    остаётся. Пустой журнал после завершения шага = 0: платный вызов без записи
-    невозможен (запись пишет сам шов), но если запись потеряна, это видно как ``write_failed``.
-    """
     if project_id is None:
         return None
     from app.services import spend_guard
@@ -184,7 +152,7 @@ async def measure_native_credits(session, *, project_id: int | None, since: date
     try:
         from app.services import media_spend
         await media_spend.drain()
-    except Exception:  # noqa: BLE001 - ожидание фоновых записей необязательно
+    except Exception:
         pass
     await spend_guard.ensure_schema(session)
     q = select(spend_guard.SpendLedger).where(
@@ -192,7 +160,7 @@ async def measure_native_credits(session, *, project_id: int | None, since: date
         spend_guard.SpendLedger.created_at >= since,
         spend_guard.SpendLedger.kind != "event",
         spend_guard.SpendLedger.source != "action_layer")
-    if run_id:  # B02: rows of this plan's own run only (another tick of the project in the same minutes is not ours)
+    if run_id:
         q = q.where(spend_guard.SpendLedger.run_id == run_id)
     rows = (await session.scalars(q)).all()
     total = 0.0
@@ -205,11 +173,6 @@ async def measure_native_credits(session, *, project_id: int | None, since: date
 
 
 async def native_unknown_cost_rows(session, *, project_id: int | None, since: datetime) -> tuple[int, bool]:
-    """(число нативных строк «цена неизвестна», есть ли «дыра» записи) с момента ``since``.
-
-    Провайдеры без цены в ответе (Outsee, ElevenLabs) пишут строку usd=0 с пометкой cost_unknown; такую строку потолки
-    уже считают фиксированной оценкой. Резерв слоя при этом не должен висеть вечно поверх неё (F09-D1).
-    """
     if project_id is None:
         return 0, False
     from app.services import spend_guard
@@ -230,22 +193,15 @@ async def native_unknown_cost_rows(session, *, project_id: int | None, since: da
 
 
 async def guard_kill_switch(session) -> None:
-    """Бросает KillSwitchActive до любого шага (и чтения тоже)."""
     await kill_switch.guard(session)
 
 
-# --- C-9: резерв, который не закрылся фактом --------------------------------------------------------------
-# Резерв остаётся, когда факт неизвестен (таймаут без подтверждённой остановки, итог шага не подтверждён, шаг без
-# проекта, строка «цена неизвестна»). Это консервативно, но без метки такой резерв висел бы вечно и молча занимал
-# потолок. Здесь он получает явную метку в журнале слоя и может быть снят оператором после проверки кабинета.
 
 _TERMINAL_STEP = (store.STEP_SUCCEEDED, store.STEP_FAILED, store.STEP_UNKNOWN, store.STEP_CANCELLED)
 
 
 async def unresolved_reserves(session, *, older_than_s: float = 0.0, now: datetime | None = None,
                               skip_plans: frozenset[str] | set[str] = frozenset()) -> list[dict]:
-    """Шаги, у которых резерв кредитов не закрыт фактом: шаг завершён, ``cost_actual`` пуст, сумма записей
-    ``action_layer_spend`` по шагу больше нуля. Шаги из ``skip_plans`` (серверная задача ещё наблюдается) пропускаются."""
     cutoff = (now or datetime.utcnow()) - timedelta(seconds=max(0.0, float(older_than_s)))
     held = (select(store.ActionSpend.plan_id.label("plan_id"), store.ActionSpend.step_index.label("idx"),
                    func.sum(store.ActionSpend.credits).label("held"))
@@ -268,7 +224,6 @@ async def unresolved_reserves(session, *, older_than_s: float = 0.0, now: dateti
 
 
 async def mark_unresolved_reserves(session, rows: list[dict]) -> list[dict]:
-    """Явная метка в журнале слоя (по одной на шаг, повтор не дублируется). Резерв не меняется. Возвращает новые метки."""
     fresh: list[dict] = []
     for row in rows:
         seen = await session.scalar(select(func.count()).select_from(store.ActionHistory).where(
@@ -287,8 +242,6 @@ async def mark_unresolved_reserves(session, rows: list[dict]) -> list[dict]:
 
 
 async def release_reserve(session, *, plan_id: str, step_index: int, operator: str, reason: str) -> dict:
-    """Снять незакрытый резерв по решению оператора (он сверил кабинет провайдера). Записи только добавляются:
-    отрицательная сверка в ``action_layer_spend`` и в ``spend_ledger``. Без причины и для закрытого шага - отказ."""
     reason = (reason or "").strip()
     if len(reason) < 3:
         raise BudgetError("reason_required", "Укажите причину: что именно вы проверили в кабинете провайдера.")
@@ -297,9 +250,6 @@ async def release_reserve(session, *, plan_id: str, step_index: int, operator: s
     if not rows:
         raise BudgetError("not_releasable", "У этого шага нет незакрытого резерва (шаг не завершён или резерв уже снят).")
     held = float(rows[0]["held_credits"])
-    # W70/K10: atomic claim. The check above and the writes below are separate statements, so two parallel
-    # releases (double click, retry without Idempotency-Key) could both pass it. This single INSERT ... SELECT
-    # writes the negative settle only while the step still holds exactly ``held``; the loser inserts nothing.
     claim = await session.execute(text(
         "INSERT INTO action_layer_spend (session_key, plan_id, step_index, kind, credits, created_at) "
         "SELECT :k, :p, :i, 'settle', :neg, :now WHERE "

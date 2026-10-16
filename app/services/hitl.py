@@ -60,7 +60,6 @@ def _keyboard(
 
 
 def _split_html(body: str, limit: int) -> list[str]:
-    """Режет уже экранированный текст на куски не длиннее limit, не разрывая сущность вроде &amp;."""
     out: list[str] = []
     i = 0
     while i < len(body):
@@ -68,7 +67,7 @@ def _split_html(body: str, limit: int) -> list[str]:
         if end < len(body):
             amp = body.rfind("&", i, end)
             if amp != -1 and body.find(";", amp, end) == -1 and end - amp <= 8:
-                end = amp  # сущность не поместилась целиком: переносим её в следующий кусок
+                end = amp
         out.append(body[i:end])
         i = end
     return out or [body]
@@ -109,7 +108,6 @@ async def send_hitl_text(
     frame_id: int | None = None,
     keyboard=None,
 ) -> HITLRequest:
-    """keyboard - необязательная фабрика кнопок hitl_id -> InlineKeyboardMarkup (по умолчанию «Одобрить / Перегенерировать»)."""
     p = dict(payload or {})
     if "text" not in p and text:
         p["text"] = text
@@ -135,7 +133,6 @@ async def send_hitl_text(
     body = f"<b>{_html.escape(title)}</b>\n\n{_html.escape(text)}"
     chunks = _split_html(body, 3800)
 
-    # Кнопки прикрепляем ТОЛЬКО к последнему сообщению — чтобы они всегда
     # были снизу. Иначе при дроблении на куски кнопки прилипают к первой
     # части, и ниже идёт «голый» хвост текста.
     msg = None
@@ -315,14 +312,6 @@ async def send_hitl_video(
     return req
 
 
-# ---------------------------------------------------------------------------
-# W7: HITL approve_publish - «да» на публикацию одной площадки из Telegram.
-#
-# Сообщение оператору: площадка, подпись дословно, первые 12 символов sha256 файла, кнопки «Разрешить публикацию» /
-# «Не публиковать». Нажатие идёт ТОЙ ЖЕ серверной логикой, что и панель Studio (publications_store): одноразовое «да»
-# на площадку x sha256 x подпись. Поле HITLRequest.decision здесь лишь журнал запроса: «да» живёт в publish_approvals.
-# auto_mode и HITL_AUTO_APPROVE ничего не решают: этот вид HITL нет ни в одном переходе auto_advance.
-# Реальным Telegram не проверялось: тесты идут на заменителе бота.
 
 PUBLISH_CB_PREFIX = "hpub"
 _PUBLISH_ACTIONS = ("yes", "no")
@@ -351,11 +340,6 @@ async def _pending_publish_requests(session: AsyncSession, project_id: int) -> l
 async def request_publish_approval(bot: Bot | None, session: AsyncSession, project: Project, *,
                                    platforms: list[str], sha256: str, caption: str, caption_sha256: str,
                                    artifact_uuid: str | None = None) -> list[HITLRequest]:
-    """Создать запросы approve_publish (по одному на площадку) и отправить их оператору в Telegram.
-
-    Только если Telegram активен: без него запросов нет, «да» выдаётся из панели. Повторный вызов для той же
-    площадки, файла и подписи второй запрос не создаёт. Старые ожидающие запросы по другому файлу или подписи
-    помечаются устаревшими. Сбой отправки не оставляет запрос без сообщения: строка удаляется."""
     if not settings.telegram_active or bot is None or not platforms:
         return []
     from app.telegram import publish_texts as ptexts
@@ -371,7 +355,7 @@ async def request_publish_approval(bot: Bot | None, session: AsyncSession, proje
             try:
                 await bot.edit_message_reply_markup(
                     chat_id=settings.telegram_owner_chat_id, message_id=old.tg_message_id, reply_markup=None)
-            except Exception:  # noqa: BLE001 - кнопки всё равно будут отклонены как устаревшие
+            except Exception:
                 logger.debug("approve_publish #{}: не удалось убрать кнопки у устаревшего запроса", old.id)
     await session.flush()
     already = {(r.payload or {}).get("platform") for r in pending if _matches(r, sha256, caption_sha256)}
@@ -380,13 +364,12 @@ async def request_publish_approval(bot: Bot | None, session: AsyncSession, proje
         payload = {"platform": platform, "sha256": sha256, "caption_sha256": caption_sha256,
                    "artifact_uuid": artifact_uuid, "caption": caption, "text": None}
         try:
-            # одна точка отправки с notify(): длинная подпись режется на куски, кнопки только на последнем
             req = await send_hitl_text(
                 bot, session, project, HITLKind.approve_publish,
                 ptexts.publish_approval_title(project.id),
                 ptexts.publish_approval_request_text(platform, sha256, caption),
                 payload=payload, keyboard=publish_keyboard)
-        except Exception:  # noqa: BLE001 - запрос без сообщения никто не нажмёт: не оставляем его висеть
+        except Exception:
             logger.exception("approve_publish: сообщение по {} (проект #{}) не отправлено", platform, project.id)
             for orphan in await _pending_publish_requests(session, project.id):
                 if (orphan.payload or {}).get("platform") == platform and orphan.tg_message_id is None                         and _matches(orphan, sha256, caption_sha256):
@@ -399,7 +382,6 @@ async def request_publish_approval(bot: Bot | None, session: AsyncSession, proje
 
 
 async def recompute_publication_state(session: AsyncSession, project: Project, sha: str) -> dict:
-    """Статус проекта заново из записей журнала (после «да» или закрытия площадки). Общий для панели и Telegram."""
     from app.bots.publishers import ALL_PUBLISHERS
     from app.orchestrator.steps import publish as publish_step
     from app.services import publications_store as pstore
@@ -420,10 +402,6 @@ async def recompute_publication_state(session: AsyncSession, project: Project, s
 
 async def grant_publish_approvals(session: AsyncSession, project: Project, platforms: list[str], *, sha256: str,
                                   caption_sha256: str, actor: str) -> dict:
-    """Выдать одноразовое «да» (площадка x sha256 x подпись) и, если автопубликация включена и проект ждёт,
-    поставить его в очередь шага публикации. Единая логика для панели (POST .../approve) и для Telegram.
-
-    Бросает publications_store.PublicationRefused. Сама публикация здесь не выполняется."""
     from app.models import ProjectStatus
     from app.orchestrator.steps import publish as publish_step
     from app.services import publications_store as pstore
@@ -446,7 +424,6 @@ async def grant_publish_approvals(session: AsyncSession, project: Project, platf
 
 @dataclass
 class PublishDecision:
-    """Итог нажатия кнопки approve_publish. text - то, что видит оператор; code - причина отказа или 'ok'."""
     ok: bool
     code: str
     text: str
@@ -459,7 +436,6 @@ class PublishDecision:
 
 
 async def _audit_tg(*, user_id: int | None, path: str, project_id: int | None, status: int, started: float) -> None:
-    """Строка operator_audit для нажатия в Telegram: actor = telegram:<id>. Сбой записи не мешает ответу."""
     from app.services import operator_audit as oa
     try:
         await oa.record({
@@ -469,7 +445,7 @@ async def _audit_tg(*, user_id: int | None, path: str, project_id: int | None, s
             "actor": f"telegram:{user_id}"[:120], "status_code": status,
             "duration_ms": int((time.perf_counter() - started) * 1000), "body_sha256": None,
             "outcome": oa.outcome_for(status)})
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("approve_publish: аудит не записан")
 
 
@@ -479,7 +455,6 @@ def _refusal(code: str, **kw) -> PublishDecision:
 
 
 async def _close_request(session: AsyncSession, hitl_id: int, decision: HITLDecision, **extra) -> bool:
-    """Атомарно закрыть ожидающий запрос. False - его уже закрыл кто-то другой (двойное нажатие)."""
     req = await session.get(HITLRequest, hitl_id)
     payload = {**((req.payload if req is not None else None) or {}), **extra}
     upd = await session.execute(update(HITLRequest).where(
@@ -490,7 +465,6 @@ async def _close_request(session: AsyncSession, hitl_id: int, decision: HITLDeci
 
 
 async def _staleness(session: AsyncSession, project: Project, payload: dict) -> str | None:
-    """Код отказа, если «да» по этому запросу сейчас давать нельзя; None - запрос актуален."""
     from app.bots.publishers import ALL_PUBLISHERS
     from app.models import ProjectStatus
     from app.orchestrator.steps import publish as publish_step
@@ -514,10 +488,6 @@ async def _staleness(session: AsyncSession, project: Project, payload: dict) -> 
 
 async def decide_publish_approval(session: AsyncSession, hitl_id: int, action: str, tg_user_id: int | None
                                   ) -> PublishDecision:
-    """Нажатие «Разрешить публикацию» (yes) / «Не публиковать» (no). Результат всегда пишется в operator_audit.
-
-    Отказ без «да»: чужой пользователь; запрос уже обработан (повтор); видео пересобрано или подпись сменилась
-    (запрос закрывается как устаревший); проект не готов; правила publications_store."""
     from app.services import publications_store as pstore
     from app.telegram import publish_texts as ptexts
 
@@ -554,7 +524,6 @@ async def decide_publish_approval(session: AsyncSession, hitl_id: int, action: s
 
     actor = f"telegram:{tg_user_id}"
     sha, csha = str(payload["sha256"]), str(payload["caption_sha256"])
-    # Одно нажатие = один закрытый запрос: условный UPDATE выигрывает ровно одно из двух быстрых нажатий.
     chosen = HITLDecision.approved if action == "yes" else HITLDecision.rejected
     if not await _close_request(session, hitl_id, chosen, decided_by=actor, decided_action=action):
         return await done(_refusal("already_decided", hide_buttons=True, **ids), 409)
@@ -579,14 +548,13 @@ async def decide_publish_approval(session: AsyncSession, hitl_id: int, action: s
 async def _mark_refused(session: AsyncSession, hitl_id: int, code: str) -> None:
     req = await session.get(HITLRequest, hitl_id)
     if req is not None:
-        req.decision = HITLDecision.rejected  # «да» не выдано: запрос не остаётся «одобренным»
+        req.decision = HITLDecision.rejected
         req.payload = {**(req.payload or {}), "refused": code}
         await session.commit()
 
 
 async def _close_platform(session: AsyncSession, project: Project, platform: str, *, sha256: str,
                           actor: str) -> None:
-    """«Не публиковать»: площадка закрыта человеком для этого файла (как «Не опубликовано» в панели)."""
     from app.orchestrator.steps import publish as publish_step
     from app.services import publications_store as pstore
 
@@ -602,7 +570,6 @@ async def _close_platform(session: AsyncSession, project: Project, platform: str
 
 async def handle_publish_approval_callback(session: AsyncSession, data: str | None, tg_user_id: int | None
                                            ) -> PublishDecision:
-    """Разбор callback_data вида hpub:<id>:yes|no и решение. Чужой пользователь отклоняется до разбора БД."""
     started = time.perf_counter()
     try:
         prefix, hitl_id_s, action = (data or "").split(":", 2)

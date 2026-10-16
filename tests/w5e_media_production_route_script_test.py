@@ -1,10 +1,3 @@
-"""Guards for scripts/e2e_media_production_route.py (pure helpers, the fake Outsee, and a real --dry run).
-
-Nothing here sends anything outside this machine and nothing here runs --live: the live-only paths are covered by
-the request Gate (a pure object that judges every outgoing request) and by the argument / env-file refusals that
-return before the application starts. The dry run starts the whole application in a SUBPROCESS (isolated memory and
-ports), so run this file alone: one pytest at a time.
-"""
 import asyncio
 import importlib.util
 import json
@@ -25,14 +18,13 @@ sys.modules[_spec.name] = script
 _spec.loader.exec_module(script)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _stand_workdir import make_workdir, remove_workdir  # noqa: E402
+from _stand_workdir import make_workdir, remove_workdir
 
 MAIN, FAKE = 18768, 18769
 
 
 @pytest.fixture
 def tmp_path():
-    """Outside the repository: the e2e guard refuses a work folder inside live data."""
     path = make_workdir()
     try:
         yield path
@@ -40,7 +32,6 @@ def tmp_path():
         remove_workdir(path)
 
 
-# ---------- arguments and authorisation ----------
 
 def test_exactly_one_of_dry_and_live_is_required():
     for bad in ([], ["--dry", "--live", "--env-file", "e"], ["--work-dir", "w"]):
@@ -90,10 +81,9 @@ def test_a_kie_generator_cannot_be_chosen():
 
 def test_the_app_caps_admit_exactly_one_submit_estimate():
     cap = script.gate_cap_usd(0.30)
-    assert 0.30 <= cap < 0.60  # one estimate passes, estimate + the recorded unknown-cost row (0.30 + 0.30) does not
+    assert 0.30 <= cap < 0.60
 
 
-# ---------- the env file: whitelist only, never echoed ----------
 
 def test_env_file_is_read_only_by_the_whitelist(tmp_path):
     env_file = tmp_path / "e.env"
@@ -118,7 +108,7 @@ def test_the_report_never_contains_a_secret():
     ("https://user:pw@outsee.io", False), ("https://outsee.io/?x=1", False)])
 def test_the_outsee_base_must_be_a_plain_https_host(base, ok):
     assert (script.base_problem({"OUTSEE_API_BASE_URL": base}) is None) is ok
-    assert script.base_problem({}) is None  # the default is https://outsee.io
+    assert script.base_problem({}) is None
 
 
 def test_live_refuses_before_starting_anything_without_a_key_or_with_a_bad_base(tmp_path, capsys):
@@ -134,10 +124,9 @@ def test_live_refuses_before_starting_anything_without_a_key_or_with_a_bad_base(
                                     "--real-decision"])) == 3
     out = capsys.readouterr().out
     assert "nothing sent" in out and "abcdefgh" not in out
-    assert not (tmp_path / "w").exists()  # nothing was created: the refusal came first
+    assert not (tmp_path / "w").exists()
 
 
-# ---------- the request Gate ----------
 
 def _dry_gate(**kw):
     return script.Gate(mode="dry", fake_port=FAKE, **kw)
@@ -232,7 +221,6 @@ def test_balance_helpers_only_use_plain_numbers():
     assert script.balance_delta({"balance": 10.0, "x": 1.0}, {"balance": 9.97, "x": 1.0}) == {"balance": 0.03}
 
 
-# ---------- the fake Outsee ----------
 
 def _req(url, *, key=script.FAKE_KEY, body=None):
     req = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
@@ -272,7 +260,6 @@ def test_the_fake_picture_passes_the_native_scene_checks(tmp_path):
     assert is_valid_scene_image(path)
 
 
-# ---------- environment ----------
 
 def test_environment_is_synthetic_loopback_with_the_fake_provider(tmp_path):
     env = script.env_overrides(tmp_path, MAIN, fake_base="http://127.0.0.1:18769", gate_cap=0.45, dry=True)
@@ -281,9 +268,9 @@ def test_environment_is_synthetic_loopback_with_the_fake_provider(tmp_path):
     assert env["KIE_API_KEY"] == "" and env["ELEVENLABS_API_KEY"] == ""
     assert not any(k in env for k in ("GPT_RELAY_TOKEN", "GPT_PROXY_URL"))
     assert {env["SPEND_DAILY_CAP_USD"], env["SPEND_PROJECT_CAP_USD"], env["SPEND_RUN_CAP_USD"]} == {"0.45"}
-    assert float(env["DISK_GUARD_LOW_FREE_GB"]) < 0.01  # dry: not machine dependent
+    assert float(env["DISK_GUARD_LOW_FREE_GB"]) < 0.01
     live = script.env_overrides(tmp_path, MAIN, fake_base="http://127.0.0.1:18769", gate_cap=0.45, dry=False)
-    assert "DISK_GUARD_LOW_FREE_GB" not in live  # live: the production thresholds stay
+    assert "DISK_GUARD_LOW_FREE_GB" not in live
 
 
 def test_runtime_config_is_the_loopback_decision_by_default():
@@ -301,7 +288,6 @@ def test_the_node_is_the_images_node_with_its_native_step_code():
     assert media_local_resume.admitted(script.NODE)
 
 
-# ---------- checks ----------
 
 def _good_snapshot(**over):
     ticket = {"status": "verified", "incident_id": "inc-1",
@@ -431,10 +417,9 @@ def test_reality_report_separates_real_from_local():
     assert any("2 real Decision" in x for x in live_decision["real"]) and not any("stub" in x for x in live_decision["not_real"])
     assert any("NOT a live proof" in x for x in script.reality_not_proven("dry"))
     assert not any("NOT a live proof" in x for x in script.reality_not_proven("live"))
-    assert any("task id" in x for x in dry["not_real"])  # Outsee has none: stated, not hidden
+    assert any("task id" in x for x in dry["not_real"])
 
 
-# ---------- a real dry run (whole app in a subprocess, nothing leaves the machine) ----------
 
 def _run(tmp_path: Path, *extra: str) -> tuple[int, dict, str]:
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}
@@ -462,7 +447,7 @@ def test_a_real_dry_run_proves_the_machinery_offline(tmp_path):
     ticket = result["actions"]["recoveries"][0]
     assert ticket["status"] == "verified" and ticket["preconditions"]["media_operation"] == "resume_local"
     assert ticket["verification_result"]["new_paid_requests"] == 0
-    assert result["node_status"][script.TARGET] == "failed"  # the supervisor never starts the node
+    assert result["node_status"][script.TARGET] == "failed"
     assert [e[0] for e in result["idem_events"] if e[1] == "frame_001"] == ["intent", "result"]
     assert result["fake_after_probes"]["posts"] == 1
     assert all(result["probes"][k]["posts_delta"] == 0 for k in

@@ -11,13 +11,11 @@ const WINDOWS: {label: string; hours: number | undefined}[] = [
   {label: "всё время", hours: undefined},
 ];
 
-// Newer servers add a per-provider split; older ones omit it (everything was Kie).
 type CostExtra = {
   by_provider?: Record<string, {calls: number; cost_usd: number; unknown_cost_calls: number}>;
   unknown_cost_calls?: number;
 };
 
-// What the cost figure is based on, per provider: Kie rates are calibrated, Vibecode's are not.
 function CostNotes({cost}: {cost: TelemetrySummary["cost"] & CostExtra}) {
   const providers = Object.keys(cost.by_provider ?? {});
   const onlyVibecode = providers.length > 0 && providers.every((p) => p === "vibecode");
@@ -64,12 +62,6 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
     let cancelled = false;
     setBusy(true);
 
-    // Initial paint comes from the plain GET (fast first render); live
-    // updates afterward come from the SSE stream (same aggregation,
-    // app/services/telemetry.py::project_telemetry -- the stream just
-    // re-pushes it on a ~2s interval, deduplicated server-side). If the
-    // stream itself fails to connect/parses nothing, the initial GET
-    // result still stands -- this never regresses to a blank panel.
     void observations
       .telemetry(projectId, windowHours)
       .then((data) => {

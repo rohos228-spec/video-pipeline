@@ -237,7 +237,7 @@ async def wait_for_selector_stable(
 ) -> None:
     await page.wait_for_selector(selector, timeout=timeout_ms)
     last_sig = None
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_ms / 1000
     stable_since: float | None = None
     while loop.time() < deadline:

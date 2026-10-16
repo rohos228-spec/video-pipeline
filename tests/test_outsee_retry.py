@@ -225,7 +225,6 @@ async def test_prepare_prompt_compresses_when_over_limit(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_generate_image_network_does_not_rewrite(monkeypatch) -> None:
-    """Сеть Outsee — не GPT-rewrite промта (кадр 77: 3 fail + rewrite + 3 fail)."""
     attempts: list[str] = []
     rewrite_calls: list[str] = []
 
@@ -519,7 +518,6 @@ async def test_image_download_exhaustion_does_not_regenerate(
 async def test_http_download_error_retries_http_download(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """HTTP API: download-ошибка → повтор _download, не CDP и не новый Generate."""
     gen_calls: list[str] = []
     dl_calls: list[str] = []
     out = tmp_path / "frame.png"
@@ -647,7 +645,6 @@ async def test_compress_reattaches_style_and_ignores_gpt_rewrite(monkeypatch) ->
 async def test_gpt_image_2_content_policy_falls_back_to_nano_banana_2(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """Create/pipeline: gpt-image-2 CONTENT_POLICY → nano-banana-2, без GPT."""
     from app.bots.outsee_http import OutseeApiError
 
     slugs: list[str] = []

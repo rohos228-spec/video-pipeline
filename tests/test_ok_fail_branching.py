@@ -141,8 +141,8 @@ def test_role_review_auto_label(tmp_path: Path, monkeypatch) -> None:
         "excel_gpt_nodes": {key: {"label": "Работа с GPT", "role": "assist"}},
     }
     res = patch_operator_config(p, key, {"role": "review", "transport": "api"})
-    assert res["label"] == "Ок / не ок"
-    assert p.meta["excel_gpt_nodes"][key]["label"] == "Ок / не ок"
+    assert res["label"] == "Работа с GPT"
+    assert p.meta["excel_gpt_nodes"][key]["label"] == "Работа с GPT"
     assert res["branching"]["enabled"] is True
     assert res["branching"]["hasFail"] is False
 

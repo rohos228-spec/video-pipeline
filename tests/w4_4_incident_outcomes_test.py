@@ -1,8 +1,3 @@
-"""W4-4 (C05, C08): исход для каждого типа инцидента, безопасность повтора api_error, проверка
-animation_prompts как инцидент, уведомление человека ровно один раз. Без сети, без платных вызовов.
-
-Файл назван ``*_test.py``, чтобы pytest его собирал при префиксе ``w4_4_``.
-"""
 
 from __future__ import annotations
 
@@ -47,7 +42,6 @@ def api_failure(**error):
             ev("model_error", request="r1", **{**base, **error})]
 
 
-# --------------------------------------------------------------------------- таблица исходов
 
 def test_every_one_of_the_16_incident_types_has_an_outcome() -> None:
     assert len(TITLES) == 16
@@ -62,7 +56,6 @@ def test_every_one_of_the_16_incident_types_has_an_outcome() -> None:
 
 
 def test_no_outcome_promises_an_automatic_paid_retry() -> None:
-    """Исход может быть «повтор по решению», но ни один не выполняет платный повтор сам."""
     for kind, outcome in INCIDENT_OUTCOMES.items():
         assert outcome["paid_retry"] != "auto", kind
     for kind in ("stalled", "uncertain_request", "journal_gap", "db_disagreement", "user_stop", "runtime_wait"):
@@ -83,7 +76,6 @@ def test_the_derived_incident_carries_its_outcome() -> None:
     assert set(item["outcome"]) >= {"kind", "notify", "paid_retry", "summary_ru"}
 
 
-# --------------------------------------------------------------------------- api_error: безопасность повтора
 
 def test_5xx_answer_is_the_only_api_error_eligible_for_a_gated_retry() -> None:
     (item,) = derive_incidents(SCOPE, api_failure(status_code=503), {})
@@ -126,7 +118,6 @@ def test_a_connect_timeout_with_a_5xx_looking_status_is_still_uncertain() -> Non
     assert item["type"] == "uncertain_request" and item["safe_retry"]["eligible"] is False
 
 
-# --------------------------------------------------------------------------- contract_rejected: после локальной правки
 
 def test_a_failed_local_check_is_a_local_fix_candidate_but_never_retried_as_is() -> None:
     rows = [ev("model_start", request="r1"), ev("model_end", request="r1", complete=True),
@@ -147,7 +138,6 @@ def test_an_unknown_cause_contract_rejected_is_not_a_candidate() -> None:
     assert item["outcome"]["kind"] == OUTCOME_ESCALATE and item["outcome"]["recovery_class"] is None
 
 
-# --------------------------------------------------------------------------- animation_prompts
 
 def animation_check(status, **extra):
     base = dict(node_type="animation_prompts", status=status, errors=[], reason=None, unknown_checks=[])
@@ -188,7 +178,6 @@ def test_animation_degradation_is_success_with_degradation_by_policy() -> None:
     assert animation_prompts_contract()["degradation_facts"]["policy"] is ANIMATION_DEGRADATION_POLICY
 
 
-# --------------------------------------------------------------------------- уведомление человека
 
 def test_default_notify_types_are_the_ones_marked_in_the_table(monkeypatch) -> None:
     monkeypatch.delenv(diagnosis.NOTIFY_ENV, raising=False)
@@ -210,7 +199,6 @@ def test_escalation_text_is_russian_and_promises_no_automatic_paid_retry() -> No
 
 
 class _Observer:
-    """Минимальный наблюдатель: только master() поверх SQLite в памяти."""
 
     def __init__(self, factory):
         self.factory = factory
@@ -225,7 +213,7 @@ class _Observer:
 
 @pytest.fixture
 async def world(monkeypatch):
-    from app.services import actions_v1  # noqa: F401  (регистрирует ActionRecord в метаданных)
+    from app.services import actions_v1
 
     monkeypatch.delenv(diagnosis.NOTIFY_ENV, raising=False)
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -265,7 +253,7 @@ async def test_a_human_review_incident_is_announced_exactly_once(world) -> None:
     diagnosis.set_escalation_notifier(notifier)
     await _add_incident(world)
     assert await world.diagnoser.escalate("execution") == 1
-    assert await world.diagnoser.escalate("execution") == 0  # второй проход журнала не дублирует
+    assert await world.diagnoser.escalate("execution") == 0
     assert await world.diagnoser.escalate("execution") == 0
     assert len(sent) == 1 and sent[0][0] == 2 and "Нужно решение человека" in sent[0][1]
     (record,) = await _records(world)
@@ -382,7 +370,6 @@ async def test_update_derives_the_incident_and_announces_it_once_across_passes(w
         await world.diagnoser.update("execution", snapshot=dict(SNAPSHOT, gaps=[]))
     async with world.factory() as s:
         rows = (await s.scalars(select(diagnosis.Incident))).all()
-    # the same failure also leaves a generic contract_rejected echo (node_error); only api_error is announced
     assert sorted(r.type for r in rows) == ["api_error", "contract_rejected"]
     row = next(r for r in rows if r.type == "api_error")
     assert row.status == "human_review"
@@ -397,7 +384,7 @@ async def test_a_broken_escalation_never_breaks_the_diagnosis_pass(world, monkey
 
     monkeypatch.setattr(world.diagnoser, "escalate", failing_escalate)
     await _seed_run(world)
-    await world.diagnoser.update("execution", snapshot=dict(SNAPSHOT, gaps=[]))  # не бросает
+    await world.diagnoser.update("execution", snapshot=dict(SNAPSHOT, gaps=[]))
     async with world.factory() as s:
         rows = (await s.scalars(select(diagnosis.Incident))).all()
         state = await s.get(diagnosis.DiagnosisState, "execution")

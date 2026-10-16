@@ -1,4 +1,3 @@
-"""Правки покрытия (Кадр / План / Действие) с панели монтажа."""
 
 from __future__ import annotations
 
@@ -57,8 +56,6 @@ COVERAGE_OP_TYPES = frozenset(
     }
 )
 
-# Поля VO-ячейки, которые доска читает в `_scene_common` / `frame_board_scene_cell`.
-# «Применить правки» пишет те же ключи, иначе клетка сцены остаётся со старым текстом.
 SCENE_FIELD_OP_TYPES = frozenset(
     {
         "coverage_sense",
@@ -83,7 +80,6 @@ _MASTER_PLANS = frozenset({"ОБЩИЙ", "СРЕДНИЙ", "ДАЛЬНИЙ"})
 
 
 def parent_establishing_plan(raw: Any) -> str:
-    """Родитель сцены: ОБЩИЙ или СРЕДНИЙ (ДАЛЬНИЙ тоже establishing)."""
     text = " ".join(str(raw or "").split()).upper().replace("ПЛАН", "").strip()
     return text if text in _MASTER_PLANS else "ОБЩИЙ"
 
@@ -125,7 +121,6 @@ COVERAGE_LIGHT_CHOICES = (
     "туман",
 )
 
-# Словарь тип_сцены из prompts/scene_design/style.md — те же значения, что у агентов.
 COVERAGE_VISUAL_TYPE_CHOICES = (
     "Реализм",
     "Кинематографический реализм",
@@ -142,7 +137,6 @@ COVERAGE_VISUAL_TYPE_CHOICES = (
 
 @dataclass(frozen=True)
 class SceneFieldSpec:
-    """Один механизм правки поля сцены: op → те ключи, которые читает доска."""
 
     op_type: str
     payload_key: str
@@ -275,7 +269,6 @@ def stitch_label(value: str) -> str:
 
 
 def _vo_parent_frame(frames: list[Frame], frame: Frame) -> Frame:
-    """VO-родитель ячейки по parent_uuid. coverage_parent_id (X1) не считаем."""
     if is_shot_child(frame):
         uid = str(_cs(frame).get("parent_uuid") or "").strip()
         if uid:
@@ -347,7 +340,6 @@ def _remove_kadry_id(frame: Frame, shot_id: str) -> None:
 
 
 def _children_of(frames: list[Frame], parent: Frame) -> list[Frame]:
-    """Шоты VO-ячейки по parent_uuid, не по still покрытия."""
     puid = str(getattr(parent, "uuid", "") or "")
     out: list[Frame] = []
     if not puid:
@@ -393,7 +385,6 @@ def _detach_from_coverage_ancestor(
     node: Frame,
     ancestor: Frame,
 ) -> None:
-    """Снять still-связь, из‑за которой node → … → ancestor. Иначе K1 нельзя сделать ребёнком."""
     cur: Frame | None = node
     seen: set[int] = set()
     while cur is not None:
@@ -486,7 +477,6 @@ def apply_coverage_action(frame: Frame, action: str, frames: list[Frame]) -> Non
 
 
 def _clear_shot_action(frame: Frame) -> None:
-    """Лишний шот ячейки после новой цепи — не держит старое действие в склейке."""
     attrs = dict(getattr(frame, "attrs", None) or {})
     attrs["shot01_action"] = ""
     attrs["действие"] = ""
@@ -586,7 +576,6 @@ def apply_scene_field(
     spec: SceneFieldSpec,
     value: str,
 ) -> None:
-    """Записать поле сцены всем кадрам VO-ячейки в ключи, которые читает доска."""
     text = (value or "").strip()
     if not text:
         raise RuntimeError(spec.empty_error)
@@ -612,11 +601,6 @@ def apply_coverage_template(
     frames: list[Frame],
     template: str,
 ) -> dict[str, Any]:
-    """Формат сцены (шаблон T*/X*) на всю группу ячейки + план по лестнице.
-
-    Своё написанное «действие» не затираем — только заглушки каталога
-    переписываем под новую роль кадра.
-    """
     from app.services.montage_scene_editor import frame_place, scene_group
     from app.services.shot_templates import (
         catalog_shot_rows,
@@ -684,7 +668,6 @@ def apply_coverage_template(
 
 
 def _new_shot_from_parent(parent: Frame, kid: Frame) -> None:
-    """Новый шот ячейки: персонажи и свет от родителя, крупность — за оператором."""
     pattrs = dict(getattr(parent, "attrs", None) or {})
     attrs = dict(getattr(kid, "attrs", None) or {})
     for key in (
@@ -722,11 +705,6 @@ async def _grow_cell_shots(
     count: int,
     renumber: bool = True,
 ) -> tuple[list[Frame], list[Frame], dict[int, int]]:
-    """Дописали якорь / улучшение → в ячейке появляются шоты.
-
-    ``renumber=False`` — не трогаем number существующих кадров: превью
-    ищутся как frame_NNN_*.png. Новые шоты получают max+1.
-    """
     from app.services.db_v2 import insert_frame_after
     from app.services.montage_scene_editor import scene_group
     from app.services.scene_design.camera_expand import renumber_frames_by_sort_key
@@ -767,10 +745,6 @@ async def _grow_cell_shots(
 
 
 def _visible_cell_members(parent: Frame, members: list[Frame]) -> list[Frame]:
-    """Живые шоты ячейки: leftover-клей не маппим и не вставляем после него.
-
-    Иначе improve снимает leftover и доска рисует хвост как новые «Сцена · кадр».
-    """
     live = [m for m in members if not bool(_cs(m).get("leftover"))]
     if not live:
         live = [parent]
@@ -792,11 +766,6 @@ async def apply_coverage_anchors(
     frames: list[Frame],
     anchors: list[Any],
 ) -> dict[str, Any]:
-    """Якоря закадра → биты[] родителя + пересборка кусков VO по кадрам.
-
-    Якорей больше, чем кадров — недостающие шоты создаём сами сразу после
-    правленого кадра: «дописал якорь» и есть разбивка, отдельной кнопки нет.
-    """
     from app.services.montage_scene_editor import (
         anchor_positions,
         cell_full_text,
@@ -826,7 +795,6 @@ async def apply_coverage_anchors(
     texts = [row["якорь"] for row in rows]
     lost = [texts[i] for i, pos in enumerate(anchor_positions(full, texts)) if pos < 0]
     if lost:
-        # Иначе нарезка молча теряет точки реза и кадры дублируют текст.
         raise RuntimeError(
             "якорь не найден по порядку в закадре ячейки: "
             + "; ".join(f"«{x}»" for x in lost)
@@ -844,8 +812,6 @@ async def apply_coverage_anchors(
     claim_scene_bits(frames, parent, members, rows)
 
     if len(parts) < len(members):
-        # Кусков меньше, чем кадров: резать нельзя — соседи остались бы с
-        # чужим текстом. Якоря сохранили, шоты убирает «удалить кадр».
         logger.info(
             "montage anchors #{} ячейка {}: {} кусков на {} кадров — только биты",
             project.id,
@@ -877,7 +843,6 @@ async def apply_coverage_anchors(
         )
 
     used = min(len(parts), len(group))
-    # Хвост текста не теряем: последний кадр группы забирает остаток.
     assigned = list(parts[: used - 1]) + [" ".join(parts[used - 1 :])] if used else []
     total_sec = float(getattr(parent, "duration_seconds", 0) or 0)
     for i, member in enumerate(group[:used]):
@@ -890,7 +855,6 @@ async def apply_coverage_anchors(
         if member is not parent:
             _patch_kadry_item_on_parent_ladder(parent, member, закадр=piece)
     if inserted and total_sec > 0 and used > 0:
-        # Аудиометки остаются у родителя, длительность делим на шоты поровну.
         part_sec = round(total_sec / used, 2)
         for member in group[:used]:
             member.duration_seconds = part_sec
@@ -958,7 +922,6 @@ def _has_ref_ids(attrs: dict[str, Any], keys: tuple[str, ...]) -> bool:
 
 
 def _inherit_scene_refs_if_empty(frame: Frame, source: Frame | None) -> None:
-    """После child→parent: листы персонажей/предметов вместо still родителя."""
     if source is None or int(source.number) == int(frame.number):
         return
     dst = dict(getattr(frame, "attrs", None) or {})
@@ -987,7 +950,6 @@ def apply_coverage_kind(
     kind: str,
     parent_number: int | None,
 ) -> None:
-    """Роль покрытия: still родителя вкл/выкл. VO-ячейка (parent_uuid) не меняется."""
     role = (kind or "").strip().lower()
     if role not in ("parent", "child"):
         raise RuntimeError("нужно выбрать родитель или дочерний")
@@ -1089,7 +1051,6 @@ MAX_IMPROVE_SHOTS = 12
 
 
 def _apply_shot_coverage(member: Frame, shot: dict[str, Any], group: list[Frame]) -> None:
-    """Покрытие кадра с улучшения сцены → те же ключи, что пишут чипы доски."""
     for key, fn in (
         ("план", apply_coverage_plan),
         ("ракурс", apply_coverage_angle),
@@ -1118,16 +1079,6 @@ async def apply_coverage_scene_action(
     kadry: list[dict[str, Any]] | None = None,
     lock_parent_plan: bool = True,
 ) -> dict[str, Any]:
-    """Последовательность кадров сцены → кадры[] на членах ячейки.
-
-    По умолчанию новые Frame не создаём: insert + глобальный renumber
-    сдвигает number, а превью ищутся по frame_NNN_*.png.
-    ``grow`` дописывает недостающие шоты без перенумерации существующих.
-    ``kadry`` — готовые кадры с покрытием (план/ракурс/движение/стык):
-    текст не режем заново, покрытие пишем на каждый шот.
-    ``lock_parent_plan`` — первый шот привести к ОБЩИЙ/СРЕДНИЙ. Для improve
-    с готовыми кадрами сцены выключаем: still родителя живёт отдельно.
-    """
     from app.services.montage_scene_editor import (
         cell_full_text,
         cell_scene_text,
@@ -1315,7 +1266,6 @@ async def apply_coverage_op(
     project: Project,
     op: dict[str, Any],
 ) -> dict[str, Any]:
-    """Записать план/действие/родство. Highlight ключ слота покрытия."""
     op_type = str(op.get("type") or "").strip()
     if op_type not in COVERAGE_OP_TYPES:
         raise RuntimeError(f"неизвестная coverage-операция: {op_type}")
@@ -1391,12 +1341,10 @@ async def apply_coverage_op(
         "highlight": highlight,
         "frame_number": frame_number,
         "op": op,
-        # Якоря меняют только нарезку закадра — картинку не трогаем.
         "regen_image": op_type not in _NO_IMAGE_REGEN,
     }
     if report is not None:
         out["report"] = report
-        # Вставка шота сдвинула нумерацию — очередь и подсветку правит apply.
         renumber = report.pop("renumber", None)
         if renumber:
             out["renumber"] = {int(k): int(v) for k, v in renumber.items()}

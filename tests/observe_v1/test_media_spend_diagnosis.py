@@ -1,7 +1,6 @@
-"""Timeouts wrapped by provider clients are diagnosed as uncertain_request."""
 import unittest
 
-from app.services.actions_recovery import RecoveryAction  # noqa: F401 - register schema
+from app.services.actions_recovery import RecoveryAction
 from app.services.diagnosis import derive_incidents
 import test_diagnosis as td
 

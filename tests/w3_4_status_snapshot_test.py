@@ -1,7 +1,3 @@
-"""W3-4 / B08: единая точка записи статуса ноды и снимок status из node_runs.
-
-Класс доказательства U и D: настоящая машина состояний, SQLite во временной папке. Живых прогонов нет.
-"""
 from __future__ import annotations
 
 import re
@@ -45,7 +41,7 @@ def test_every_transition_path_goes_through_single_log_point(status_log):
     assert nsm.queue_node_for_start(nr, project_id=3, initiator="api")
     assert nsm.start_node_running(nr, project_id=3, initiator="api")
     assert nsm.fail_node(nr, "упало", project_id=3)
-    assert not nsm.transition_node_status(nr, NodeRunStatus.running, initiator="worker", project_id=3)  # failed→running
+    assert not nsm.transition_node_status(nr, NodeRunStatus.running, initiator="worker", project_id=3)
     assert nsm.reset_node_to_pending(nr, project_id=3)
     lines = status_log.read_text(encoding="utf-8").splitlines()
     assert [(l.split("\t")[1], l.split("\t")[4]) for l in lines] == [
@@ -66,11 +62,10 @@ def test_transitions_log_can_be_switched_off(status_log, monkeypatch):
     nr = _nr()
     assert nsm.queue_node_for_start(nr, project_id=1)
     assert not status_log.exists()
-    assert nr.status == NodeRunStatus.queued  # сам переход не зависит от лога
+    assert nr.status == NodeRunStatus.queued
 
 
 def test_status_log_is_written_only_by_the_machine():
-    """Закон: только node_status_machine пишет в logs/status.log."""
     offenders = []
     for path in (ROOT / "app").rglob("*.py"):
         if path.name == "node_status_machine.py":
@@ -97,7 +92,7 @@ def test_derive_status_lines_from_rows():
 
 @pytest.fixture
 async def sessions(tmp_path):
-    from app.services import actions_v1  # noqa: F401  (регистрирует свои таблицы)
+    from app.services import actions_v1
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'm.db'}", poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

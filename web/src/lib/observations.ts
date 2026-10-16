@@ -92,8 +92,8 @@ export interface TelemetrySummary {
   cost:{total_calls:number;failed_calls:number;total_cost_usd:number;
     total_prompt_tokens:number;total_completion_tokens:number;total_cached_tokens:number;
     by_model:Record<string,{calls:number;cost_usd:number;prompt_tokens:number;completion_tokens:number}>;
-    source:string;      // русская подпись источника цены
-    source_raw?:string; // исходный английский код (для совместимости)
+    source:string;
+    source_raw?:string;
     sources?:Record<string,string>; sources_raw?:Record<string,string>};
 }
 export interface ObservationContext extends ObservationScope {
@@ -139,16 +139,8 @@ export const observations = {
     http(path(project,execution)+"/profiles/"+encodeURIComponent(overlay)+"/cancel",{method:"POST",body:JSON.stringify({rationale})}),
   retryNode: (project:number,execution:string,payload:{incident_id:string;node_key:string;rationale:string;idempotency_key:string}) =>
     http(path(project,execution)+"/actions/retry",{method:"POST",body:JSON.stringify(payload)}),
-  // Project-wide, deliberately not execution-scoped -- aggregates across every execution this project has had.
-  // Read-only registry data (which node types the supervisor manages, observes or leaves to a human).
   nodeCoverage: (project:number)=>http<NodeCoverage>(path(project)+"/node-coverage"),
   telemetry: (project:number,since_hours?:number)=>http<TelemetrySummary>(path(project)+"/telemetry"+(since_hours?`?since_hours=${since_hours}`:"")),
-  // Server-Sent Events variant of the same endpoint: same fetch+reader
-  // pattern api.ts's gptAskStream already uses (not the EventSource API --
-  // this codebase has no existing EventSource usage, and fetch+reader
-  // gives the same AbortSignal-based cleanup every other streaming call
-  // here already relies on). Resolves once the stream ends or aborts;
-  // never throws on a clean AbortError.
   telemetryStream: async (project:number,since_hours:number|undefined,
       onUpdate:(data:TelemetrySummary)=>void,signal:AbortSignal)=>{
     let res:Response;
@@ -171,7 +163,7 @@ export const observations = {
         buffer=lines.pop()||"";
         for(const line of lines){
           const trimmed=line.trim();
-          if(!trimmed.startsWith("data:"))continue; // skip ": keepalive" comments and blank lines
+          if(!trimmed.startsWith("data:"))continue;
           try{
             const payload=JSON.parse(trimmed.slice(5).trim());
             if(payload.type==="telemetry")onUpdate(payload.data as TelemetrySummary);

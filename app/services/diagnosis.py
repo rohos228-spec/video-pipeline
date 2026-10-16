@@ -1,9 +1,3 @@
-"""Rule-based projection of the existing journal. Never schedules business work.
-
-The cursor and incidents commit together in master observation storage. Every
-revision reads the complete delivered history in pages, including late project
-outbox events. Correlation uses attempt/request links, never cross-DB clocks.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +11,6 @@ from loguru import logger
 from sqlalchemy import JSON, String, select, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-# Timeouts and wrapped timeouts after submit: the provider may have accepted the request.
 UNCERTAIN_ERROR_TYPES = frozenset({'CancelledError', 'ReadTimeout', 'ConnectTimeout',
     'ElevenLabsUncertainError', 'KieUncertainError', 'KieSubmitUnknownError', 'KieTaskPending',
     'OutseeSubmitUnknownError'})
@@ -80,17 +73,11 @@ RECOMMENDATIONS = {
 }
 
 
-# ---------------------------------------------------------------------------------------------------------
-# W4-4 (C08): an OUTCOME for every incident type. Nothing here retries anything; ``retry_gated`` means "the
-# supervisor may be offered ONE ticket (actions_recovery.recover_node) after a human/Decision authorization",
-# and a repeated paid request is never part of any outcome. ``notify`` marks the types a person is told about in
-# Telegram once per incident (INCIDENT_TELEGRAM_TYPES overrides the list; "none" switches it off).
-# ---------------------------------------------------------------------------------------------------------
-OUTCOME_RETRY_GATED = 'retry_gated'      # one supervised retry is possible, only with a decision
-OUTCOME_ESCALATE = 'escalate'            # a person decides; no automatic action exists
-OUTCOME_DIAGNOSE_ONLY = 'diagnose_only'  # visible in the journal; nothing to do and nobody is paged
-OUTCOME_WAIT = 'wait'                    # not an error: waiting for a queue, a person or a stop
-OUTCOME_DEGRADED = 'degraded_success'    # the step went on by a recorded fallback; a person may re-decide
+OUTCOME_RETRY_GATED = 'retry_gated'
+OUTCOME_ESCALATE = 'escalate'
+OUTCOME_DIAGNOSE_ONLY = 'diagnose_only'
+OUTCOME_WAIT = 'wait'
+OUTCOME_DEGRADED = 'degraded_success'
 
 INCIDENT_OUTCOMES = {
     'media_failure': dict(kind=OUTCOME_ESCALATE, notify=True, paid_retry='human_only',
@@ -130,7 +117,6 @@ NOTIFY_ENV = 'INCIDENT_TELEGRAM_TYPES'
 
 
 def outcome_for(item):
-    """Outcome of one derived incident: the table row, adjusted by what the incident's own facts allow."""
     base = dict(INCIDENT_OUTCOMES[item['type']])
     base.setdefault('recovery_class', None)
     kind = item['type']
@@ -153,12 +139,6 @@ def notify_types():
 
 
 def _api_retry_safety(payload):
-    """Is a repeated request of this failed API call safe and idempotent? Only a 5xx ANSWER qualifies.
-
-    A 5xx is a complete HTTP reply: the gateway refused the request, nothing was processed or billed. A timeout,
-    a dropped connection, a cancel or an unknown status says nothing about acceptance, so it never qualifies
-    (it is an uncertain_request or stays a plain api_error for a person). The journal does not record whether a
-    timeout happened before the request left the machine, so "timeout before send" cannot be proven here."""
     status = payload.get('status_code')
     if payload.get('uncertain') is not False:
         return {'eligible': False, 'reason': 'Исход запроса неизвестен (таймаут, обрыв или отмена): повтор запрещён.'}
@@ -175,8 +155,6 @@ RULE_DIARY_RULES_SHOWN = 8
 
 
 def rule_diary_summary(diaries):
-    """Merge bounded `rule_diary` facts of one attempt: counts per kind, top rules,
-    last stop rule. None when there is nothing usable."""
     counts = {}; rules = {}; stop_rule = None; calls = 0
     for e in diaries:
         p = e.get('payload') or {}
@@ -203,23 +181,12 @@ def _rule_text(rule, diary):
     return text
 
 
-# A failure of one attempt can leave several incidents: the specific one (invalid_json, missing_payload, api_error,
-# uncertain_request, verification_hold, ...) and the generic contract_rejected that the same ``node_error`` produces.
-# The generic one is only an ECHO of the specific one: it carries no other fact and owns no remedy of its own. The
-# specific incident is the PRIMARY. The echo stays in the journal (it is append-only) but points at the primary
-# (``echo_of``), so that nobody (Decision, notification) opens a second competing record for one failure.
 FORMAT_PRIMARY_TYPES = ('invalid_json', 'missing_payload')
 ECHO_PRIMARY_ORDER = ('invalid_json', 'missing_payload', 'api_error', 'uncertain_request', 'verification_hold',
                       'media_failure')
 
 
 def echo_primary(item, items):
-    """The incident an echo item belongs to, or None. Pure: ``item`` / ``items`` are derived incident dicts.
-
-    An echo is a ``contract_rejected`` of the same attempt that (a) is the generic node_error one (no own fact, not a
-    local-fix candidate), or (b) is the failed result check of the very request that the primary incident already
-    reports (format failure: the check ``native_<node>_text_requirement`` and the like are the same fact seen twice).
-    A rule rejection and an observe-only check are never echoes, and neither is a check of another request."""
     if item.get('type') != 'contract_rejected' or not item.get('attempt_id') or item.get('rule') or item.get('observe_only'):
         return None
     others = [o for o in items if o is not item and o.get('node_key') == item.get('node_key')
@@ -246,7 +213,6 @@ def bind_echo_incidents(items):
 
 
 def derive_incidents(scope, events, snapshot):
-    """Pure projection; all inputs are recorded facts, not provider body guesses."""
     rows = {e['event_id']: e for e in events if e.get('project_id') == scope.project_id
             and e.get('execution_id') == scope.execution_id
             and (e.get('node_key') is None or e['node_key'] in scope.node_keys)}
@@ -288,8 +254,6 @@ def derive_incidents(scope, events, snapshot):
         def retry_for(request):
             explicit=[e for e in retries if e.get('request_id')==request or e['payload'].get('source_request_id')==request]
             if explicit: return explicit
-            # Legacy JSON retry had no request_id. Accept only an unambiguous
-            # single retry plus the actual recorded previous_request link.
             if len(retries)==1 and not retries[0].get('request_id') and not retries[0]['payload'].get('source_request_id'):
                 children=[r for r in starts if previous(r)==request]
                 if len(children)==1 and request in bad_requests: return retries
@@ -406,7 +370,6 @@ def derive_incidents(scope, events, snapshot):
                 item['status']='human_review'; item['may_have_charged']=p.get('may_have_charged')
             if (kind=='node_result_verification' and str(p.get('contract') or '').startswith('native_scene_')
                     and p.get('status')=='failed'):
-                # Scene result check (agent slice / assembly): the stored result breaks its contract.
                 klass=p.get('failure_class') or 'contract_rejected'
                 item=issue('contract_rejected',(node,attempt,'scene_verify',e['event_id']),[e],
                     fact='Результат сцен ('+str(p.get('agent') or 'сцены')+') не прошёл проверку контракта ('+klass+'): '+
@@ -454,7 +417,6 @@ def derive_incidents(scope, events, snapshot):
             elif (kind=='runtime_check' and p.get('performed') is True and p.get('status') in {'failed','rejected'}
                     and p.get('failure_class') not in {'invalid_json','missing_payload'}):
                 if p.get('observe_only') is True:
-                    # Observe-only result check: the run was never held, so the incident must not block anything.
                     item=issue('contract_rejected',(node,attempt,p.get('check'),e.get('request_id') or e['event_id']),[e],blocking=False,severity='warning',
                         fact='Режим наблюдения: проверка результата ноды '+(str(p.get('check') or '').removeprefix('observe_only_').removesuffix('_result') or str(node))+' не подтвердила результат. Запуск не останавливался и не повторялся, решает человек.',
                         action='human_review')
@@ -464,12 +426,11 @@ def derive_incidents(scope, events, snapshot):
                     item['local_fix_candidate']=True
             if kind in {'apply_error','node_error','model_error'}:
                 if kind == 'node_error' and any(r['kind']=='media_failure' for r in related):
-                    continue  # the typed media evidence already owns this failure
+                    continue
                 rule=p.get('rule') if kind=='node_error' else None
                 if kind=='node_error' and not (isinstance(rule,str) and rule.strip()) and diary and diary.get('stop_rule'):
-                    rule=diary['stop_rule']  # rule failure that is not a PassStop: taken from the rule_diary fact
+                    rule=diary['stop_rule']
                 if isinstance(rule,str) and rule.strip() and p.get('uncertain') is not True:
-                    # An enforced business rule (e.g. PassStop) rejected the result: not a format/API failure.
                     rule=' '.join(rule.split())[:120]
                     item=issue('contract_rejected',(node,attempt,'rule',e['event_id']),[e],
                         fact=_rule_text(rule,diary),action='human_review')
@@ -494,7 +455,7 @@ def derive_incidents(scope, events, snapshot):
                     item['safe_retry']=_api_retry_safety(p)
                     if type(p.get('status_code')) is int: item['http_status']=p['status_code']
                     if any(r['kind']=='node_result_verification' and r['payload'].get('contract')=='native_media' for r in related):
-                        item['media']=True  # the attempt of a media node: media_recovery.assess judges it from ledger facts
+                        item['media']=True
                     if p.get('catalog_source')=='exception_type_or_text':
                         item['fact']+=' Код каталога выведен из типа/текста исключения; этот вывод менее надёжен.'
                 else:
@@ -541,8 +502,6 @@ def derive_incidents(scope, events, snapshot):
     for gap in [*(scope.gaps or []),*snapshot.get('gaps',[])]:
         evidence=[e for e in rows if e['event_id']==gap.get('event_id')]
         issue('journal_gap',digest(gap),evidence,blocking=False,severity='warning',action='restore_journal',incomplete=True,fact='Не хватает доказательств: '+str(gap.get('kind') or gap.get('error_type') or 'observer gap'))
-    # A later recorded worker start supersedes the active attempt, but cannot
-    # prove recovery of an earlier attempt. Preserve its unresolved history.
     latest_attempt = {}
     for e in rows:
         if e['kind']=='node_start' and e.get('attempt_id'):
@@ -561,17 +520,11 @@ _escalation_notifier=None
 
 
 def set_escalation_notifier(notifier):
-    """Register ``async notifier(project_id, text, url) -> bool`` (tests, or an app that owns its own bot).
-    None restores the default: the Telegram bot when Telegram is active, otherwise no escalation at all."""
     global _escalation_notifier
     _escalation_notifier=notifier
 
 
 def register_default_escalation_notifier():
-    """Register the Telegram notifier at app start. Safe by construction: nothing is registered when Telegram is
-    not active or a notifier is already set; the notifier itself re-checks Telegram at send time and any failure
-    of delivery is handled by ``Diagnoser.escalate`` (it never stops a diagnosis pass or the start of the app).
-    Returns True when a notifier was registered."""
     try:
         from app.settings import settings
         if _escalation_notifier is not None or not settings.telegram_active:
@@ -590,8 +543,6 @@ def register_default_escalation_notifier():
 
 
 def escalation_text_ru(details,*,project_id,node_title=None):
-    """Russian operator text of one escalation. Says what happened, what the outcome is, and that no paid
-    request is repeated by itself."""
     outcome=details.get('outcome') or INCIDENT_OUTCOMES.get(details.get('type'),{})
     title=details.get('title') or TITLES.get(details.get('type'),'Инцидент')
     node=node_title or details.get('node_title') or details.get('node_key') or 'выполнение группы'
@@ -657,8 +608,6 @@ class Diagnoser:
 
     async def update(self,execution_id,*,snapshot=None):
         async with self.lock:
-            # Persisted unconfirmed commits must be loaded before gaps are derived,
-            # otherwise a restart would close the journal_gap as condition_not_observed.
             ensure=getattr(self.observer,'ensure_commit_uncertainty_restored',None)
             if ensure is not None: await ensure()
             async with self.observer.master() as s:
@@ -687,7 +636,6 @@ class Diagnoser:
                     RecoveryAction.status == "verified"))).all()
                 proofs = {r.incident_id: r for r in verified_recoveries if r.verification_result.get("verified")}
                 for item in computed:
-                    # an echo is settled together with its primary incident (same verified recovery, same attempt)
                     proof = proofs.get(item['incident_id']) or proofs.get(item.get('echo_of'))
                     if proof and item['attempt_id'] == proof.source_attempt_id:
                         item.update(status='resolved_confirmed', blocking=False, currently_relevant=False,
@@ -705,8 +653,6 @@ class Diagnoser:
                         s.add(row)
                     elif digest(row.details)!=digest(item):
                         row.status=item['status'];row.details=panel_safe(item);row.updated_at=datetime.utcnow()
-                # Keep historical notices and their proof when a wait/gap or
-                # disagreement disappears. Do not falsely call this JSON recovery.
                 for row in stored:
                     if row.incident_id not in computed_ids and row.type in {'runtime_wait','user_stop','db_disagreement','journal_gap'}:
                         row.status='resolved_confirmed'; row.details={**row.details,'status':'resolved_confirmed','currently_relevant':False,
@@ -720,16 +666,11 @@ class Diagnoser:
             self.failures.pop(execution_id,None)
 
     async def escalate(self,execution_id):
-        """Tell a person about every incident whose outcome says so, ONCE per incident.
-
-        At most once: a reservation row (ActionRecord, unique per execution+key) is committed BEFORE the send, so a
-        restart or a second diagnosis pass never repeats the message; a failed send is retried up to 3 times. Only
-        the delivery is automatic. No retry, no paid request and no state change of the business node happens."""
         notifier=_escalation_notifier or await _default_notifier()
         types=notify_types()
         if not types: return 0
         if notifier is None:
-            await self.log_undelivered_holds(execution_id,types)  # no Telegram: the hold is still written to the log
+            await self.log_undelivered_holds(execution_id,types)
             return 0
         from app.services.actions_v1 import ActionRecord
         from app.settings import settings
@@ -745,7 +686,7 @@ class Diagnoser:
                 if d.get('currently_relevant') is False or d.get('historical_attempt'): continue
                 if d.get('echo_of') or (row.type=='contract_rejected' and not d.get('local_fix_candidate')
                         and attempt_types[(row.node_key,row.attempt_id)]-{'contract_rejected'}):
-                    continue  # the generic echo of a failure that another incident of the same attempt already explains
+                    continue
                 key='incident-notify:'+row.incident_id
                 prior=await s.scalar(select(ActionRecord).where(ActionRecord.execution_id==execution_id,
                     ActionRecord.idempotency_key==key))
@@ -772,10 +713,6 @@ class Diagnoser:
         return sent
 
     async def log_undelivered_holds(self,execution_id,types):
-        """Telegram is off, so a verification hold cannot be announced. The same rule as ``notify()`` with the no-op
-        bot: write ONE row to ``notification_log`` marked as not delivered (channel ``telegram_off``), so the operator
-        journal shows that a verification hold needed a person. Once per incident (own reservation key, independent
-        of the delivery key: a later working Telegram still announces it). No state of the business node changes."""
         if 'verification_hold' not in types: return 0
         from app.services import notification_log
         from app.services.actions_v1 import ActionRecord
@@ -794,7 +731,7 @@ class Diagnoser:
                     rationale=('Удержание проверкой записано в журнал уведомлений без отправки: Telegram отключён')[:500],
                     evidence_ids=[],preconditions={'incident_id':row.incident_id,'incident_type':row.type,'business_action':False},
                     idempotency_key=key,status='notify_off',verification={'verified':False,'business_action':False,'delivered':False}))
-                await s.commit()  # reserved BEFORE the write: a second pass never repeats the row
+                await s.commit()
                 text=escalation_text_ru({**d,'type':row.type},project_id=row.project_id,node_title=d.get('node_title'))
                 ok=await asyncio.to_thread(notification_log.log_notification,project_id=row.project_id,run_id=execution_id,
                     channel=notification_log.CHANNEL_OFF,kind='verification_hold',text=text,ok=False,

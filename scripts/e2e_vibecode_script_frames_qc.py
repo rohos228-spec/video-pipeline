@@ -66,7 +66,7 @@ from typing import Any
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 _HERE = Path(__file__).resolve().parent
 ROOT = _HERE.parent
@@ -129,18 +129,16 @@ PROVIDER_HOSTS = ("vibecode.moe", "kie.ai")
 TERMINAL_DECISION = {"done", "human_review", "failed", "rejected", "cancelled"}
 SYNTHETIC_KEY = "synthetic-vibecode-fixture"
 PROFILE_ID = "vibecode-json-repair-v1"
-# Same candidate as config/orchestrator-runtime.vibecode.example.json (a test compares them).
 PROFILE = {"model_id": "gpt-5.6-sol", "provider": "vibecode", "kind": "text", "channel": "stable",
            "reasoning_effort": None, "max_output_tokens": None, "prompt_variant": "repair-json-only-v1",
            "synthetic_only": False}
 RECOVERIES = ("retry_same", "retry_profile")
 LIVE_ENV_NAMES = ("VIBECODE_API_KEY", "VIBECODE_BASE_URL", "GPT_RELAY_TOKEN", "GPT_PROXY_URL", "GPT_BASE_URL")
 DIRECT_HOST = "vibecode.moe"
-COST_MARKUP = 3.0  # pessimistic multiplier over the catalog list price
+COST_MARKUP = 3.0
 FORBIDDEN_PROFILE_KEYS = ("input", "reasoning", "max_output_tokens", "max_tokens", "max_completion_tokens",
                           "reasoning_effort")
 
-# ───────────────────────────── pure helpers (unit-tested) ─────────────────────────────
 
 def is_loopback(host: str | None) -> bool:
     return (host or "").strip("[]").lower() in LOOPBACK_HOSTS
@@ -153,7 +151,6 @@ def refusal_reason(method: str, host: str | None) -> str | None:
     return None
 
 
-# ───────────────────────────── live-mode helpers (pure, unit-tested) ─────────────────────────────
 
 def load_env_whitelist(path: str) -> dict[str, str]:
     """Only the names in LIVE_ENV_NAMES from an env file; nothing else is kept, nothing is printed."""
@@ -392,8 +389,6 @@ def broken_answer(mode: str, suffix: str, frames: list[dict]) -> str:
     if mode == "truncated":
         return TRUNCATED
     if mode == "undercount" and suffix == "shots":
-        # Valid JSON, zero shots. The shots pass hard-stops on this ("GPT не вернул кадры") only when the frame has
-        # `главное_действие`, hence with_action in the undercount scenario; a partial undercount is a soft WARN.
         ops = [{"frame_uuid": str(f["uuid"]), "fields": {"кадры": []}}
                for f in frames if frame_vo(f) == FULL_VO]
         return json.dumps({"ops": ops}, ensure_ascii=False)
@@ -417,7 +412,7 @@ def runtime_config(port: int, max_requests: int = 60, recovery: str = "retry_sam
     if recovery == "retry_profile":
         cfg["profiles"] = {PROFILE_ID: dict(PROFILE)}
         cfg["allowed_actions"] = [*cfg["allowed_actions"], "retry_profile"]
-        if endpoint:  # live: the real Decision must pick the profile, not the plain retry
+        if endpoint:
             cfg["allowed_actions"].remove("retry_same")
     return cfg
 
@@ -468,7 +463,6 @@ def evaluate(snapshot: dict, *, break_node: str, break_mode: str, qc_answer: str
         check("decision_on_vibecode_route", counters.get("decision", 0) >= 1, counters.get("decision")),
     ]
     if break_mode == "truncated":
-        # A cut answer (finish_reason=length) is uncertain: managed mode must hold, never POST again or recover.
         return [c for c in out if c["name"] != "decision_on_vibecode_route"] + [
             check("truncated_answer_posted_once", counters.get("by_node", {}).get(target) == 1, counters.get("by_node")),
             check("truncated_answer_holds_execution", (snapshot.get("actions") or {}).get("held") is True,
@@ -579,7 +573,6 @@ def evaluate_live(snapshot: dict, *, break_node: str, break_mode: str, qc_answer
     return out
 
 
-# ───────────────────────────── runtime (needs the app) ─────────────────────────────
 
 def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -641,8 +634,9 @@ async def _seed(*, native_graph: bool = False) -> tuple[int, str]:
              for i, k in enumerate(kinds)]
     edges = [{"id": f"e_{i}", "source": f"n_{a}", "target": f"n_{b}"} for i, (a, b) in enumerate(zip(kinds, kinds[1:], strict=False))]
     slug = f"vibecode-qc-{_uuid.uuid4().hex[:6]}"
+    from app.web.settings_default import seed_default_workflow
     async with session_scope() as session:
-        # Not the default workflow: startup would refresh a default one to the factory graph.
+        await seed_default_workflow(session)
         wf = Workflow(name=f"wf-{slug}", is_default=False, nodes=nodes, edges=edges)
         session.add(wf)
         await session.flush()
@@ -750,7 +744,6 @@ async def _wait_api(base: str) -> None:
 
 
 async def main(argv: list[str] | None = None) -> int:
-    # The environment must be set before anything imports app.settings (_args reads the group definition).
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--work-dir")
     pre.add_argument("--port", type=int, default=PORT)
@@ -766,13 +759,13 @@ async def main(argv: list[str] | None = None) -> int:
     mode = "live" if early.live else "dry" if early.dry else "offline"
     live_env: dict[str, str] = {}
     if mode != "offline" and early.env_file:
-        live_env = load_env_whitelist(early.env_file)  # values stay in this dict and the process environment
+        live_env = load_env_whitelist(early.env_file)
     if mode == "live" and (not live_env.get("VIBECODE_API_KEY") or live_env["VIBECODE_API_KEY"].startswith("synthetic")):
         print("env file has no VIBECODE_API_KEY; nothing sent")
         return 3
     hosts = allowed_hosts(live_env)
     work = Path(early.work_dir).resolve()
-    data = guard.reset_scratch_data(work)  # A19: refuses live data; removes only <work>/data made by these scripts
+    data = guard.reset_scratch_data(work)
     runtime_path = work / "runtime.json"
     endpoint = live_endpoint(live_env) if mode != "offline" else None
     runtime_path.write_text(json.dumps(runtime_config(early.port, early.request_limit, early.recovery, endpoint=endpoint),
@@ -790,8 +783,6 @@ async def main(argv: list[str] | None = None) -> int:
 
     import httpx
     from app.settings import settings
-    # Belt and braces over environment precedence: offline nothing may route through a relay/proxy; live/dry
-    # use exactly the whitelisted env-file values (a stray repository .env cannot add a route).
     settings.gpt_relay_token = live_env.get("GPT_RELAY_TOKEN", "") if mode != "offline" else ""
     settings.gpt_proxy_url = (live_env.get("GPT_PROXY_URL") or None) if mode != "offline" else None
     if mode != "offline":
@@ -808,7 +799,7 @@ async def main(argv: list[str] | None = None) -> int:
     step_failure_policy.XLSX_SHEET_FORMAT_SLEEP_MINUTES = args.sleep_minutes
 
     import app.services.shots_report as shots_report
-    shots_report.find_project_root = lambda: work  # the HTML report goes to <work>/exports, not the repository
+    shots_report.find_project_root = lambda: work
     from app import main as app_main
     await app_main._init_db()
     pid, slug = await _seed(native_graph=args.native_graph)
@@ -846,7 +837,6 @@ async def main(argv: list[str] | None = None) -> int:
         broken = key == target and not recovery
         finish = "stop"
         if CONTINUE_MARKER in text:
-            # gpt_api's "continue after a cut" follow-up: nothing more to say, the first text stays salvaged.
             counters["continue_requests"] = counters.get("continue_requests", 0) + 1
             answer = ""
         elif broken:
@@ -1110,8 +1100,6 @@ async def _poll(client, base, execution, args, project_db, counters, result) -> 
         progress = (state, tuple(sorted(nodes.items())))
         if progress != last_progress:
             last_progress, idle_since = progress, time.monotonic()
-        # Settled: the whole chain is done, or the decision ended and nothing has changed for a while
-        # (e.g. human_review / a final failure / undercount that is never recovered).
         idle = time.monotonic() - idle_since
         final = chain_done or (decision_done and idle > 45) or (args.break_mode == "undercount" and idle > 45)
         if final:

@@ -1,6 +1,3 @@
-// Файлы, прикреплённые к командной строке слоя действий: чистые функции без импортов
-// (офлайн-тест контракта грузит этот файл отдельно). Сервер: app/services/action_layer/attachments.py;
-// правила ниже - запасные, настоящие приходят из GET /api/action-layer/attachments/rules.
 
 const MIB = 1024 * 1024;
 
@@ -27,7 +24,6 @@ export interface AttachmentItem {
   name: string;
   size: number;
   status: AttachmentStatus;
-  /** 0..100, только при загрузке */
   progress: number;
   kind?: string;
   attachmentId?: string;
@@ -47,12 +43,10 @@ export function fileExtension(name: string): string {
   return dot > 0 ? base.slice(dot).toLowerCase() : "";
 }
 
-/** Значение атрибута accept для выбора файла: все разрешённые расширения. */
 export function acceptAttr(rules: AttachmentRules = DEFAULT_RULES): string {
   return Object.values(rules.kinds).flatMap((k) => k.extensions).join(",");
 }
 
-/** «png, jpg, mp4, …» для подсказки. */
 export function allowedList(rules: AttachmentRules = DEFAULT_RULES): string {
   return Object.values(rules.kinds).flatMap((k) => k.extensions).map((e) => e.slice(1)).join(", ");
 }
@@ -64,7 +58,6 @@ export function kindOfFile(name: string, rules: AttachmentRules = DEFAULT_RULES)
   return null;
 }
 
-/** Проверка до отправки (сервер проверяет всё заново): текст ошибки по-русски или null. */
 export function checkFile(file: { name: string; size: number }, rules: AttachmentRules = DEFAULT_RULES): string | null {
   const kind = kindOfFile(file.name, rules);
   if (!kind) {
@@ -77,7 +70,6 @@ export function checkFile(file: { name: string; size: number }, rules: Attachmen
   return null;
 }
 
-/** id готовых к отправке файлов (в порядке выбора). */
 export function readyIds(items: AttachmentItem[]): string[] {
   return items.filter((i) => i.status === "ready" && i.attachmentId).map((i) => i.attachmentId as string);
 }
@@ -86,7 +78,6 @@ export function isUploading(items: AttachmentItem[]): boolean {
   return items.some((i) => i.status === "uploading");
 }
 
-/** После создания плана использованные файлы больше не нужны: сервер пометил их занятыми. */
 export function withoutUsed(items: AttachmentItem[], used: string[] | undefined | null): AttachmentItem[] {
   if (!used || used.length === 0) return items;
   const gone = new Set(used);

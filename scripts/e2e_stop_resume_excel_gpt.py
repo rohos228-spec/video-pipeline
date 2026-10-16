@@ -33,11 +33,10 @@ _spec.loader.exec_module(base)
 
 NODE, PROFILE_ID, MALFORMED = base.NODE, base.PROFILE_ID, base.MALFORMED
 SLUG: str = base.SLUG
-ROOT_URL: str | None = None  # set in main() once the project id of the seed copy is known
+ROOT_URL: str | None = None
 COUNTER_KEYS = ("injected_worker", "real_decision", "real_worker_recovery", "refused")
 
 
-# ---------------------------------------------------------------- pure helpers (unit-tested)
 def total_requests(counters: dict) -> int:
     """All provider-bound attempts seen by the transport hook, injected or refused."""
     return sum(int(counters.get(k, 0)) for k in COUNTER_KEYS)
@@ -105,7 +104,6 @@ def classify_continue(before: dict, after: dict) -> str:
     return "no_effect"
 
 
-# ---------------------------------------------------------------- environment / sampling
 def _args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--scenario", choices=("project", "observer"), default="project")
@@ -220,7 +218,7 @@ async def main() -> int:
             return httpx.Response(200, headers={"content-type": "text/event-stream"},
                                   content=base._sse(MALFORMED, f"resp_injected_{counters['injected_worker']}"),
                                   request=request)
-        counters["refused"] += 1  # dry only: nothing provider-bound ever leaves the machine
+        counters["refused"] += 1
         raise RuntimeError("dry-run: provider request refused (%s)" % ("decision" if is_decision else "recovery"))
 
     httpx.AsyncClient.send = send
@@ -281,7 +279,6 @@ async def main() -> int:
                 result["after_continue"] = after_cont
                 checks["continue_outcome"] = classify_continue(before_cont, after_cont)
                 checks["requests_after_continue"] = counter_delta(samples, t_cont)
-                # Supported-continue probes (what the code lets an operator do after the stop).
                 probes = result["probes"] = {}
                 resp = await client.post(f"{ROOT_URL}/observations/{execution}/actions/start", json={
                     "node_key": NODE, "step_code": "excel_gpt", "rationale": "probe start after stop",
@@ -302,7 +299,6 @@ async def main() -> int:
                 checks["native_run_after_close_started_worker"] = (
                     after_native["node_status"] == "running" or counter_delta(samples, t_native) > 0)
                 checks["user_stop_after_native_run"] = after_native["user_stop"]
-                # cleanup: stop again so the worker is quiet before the app is torn down
                 await client.post(ROOT_URL + "/stop")
                 await asyncio.sleep(2)
     finally:

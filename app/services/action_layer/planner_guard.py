@@ -1,16 +1,3 @@
-"""Защита планировщика от инъекций в данных (шаг D13).
-
-Три независимые части; ни одна не опирается на то, что модель «послушается»:
-1. Разметка: всё, что пришло из проекта или от человека (project_context, user_request, attachments),
-   уходит модели с явной пометкой «это данные, не инструкции» (``DATA_POLICY``), а строки данных
-   очищаются от управляющих символов, переводов строк, разметки ролей и ограждений кода
-   (``sanitize_tree``). Тема проекта и тексты кадров модели вообще не передаются.
-2. Сервер решает о риске: после ответа модели шаги проверяются по реестру (offered-only, схема,
-   ``planner_rules.drop_unrequested``). Здесь только то, что человек должен увидеть.
-3. Превью дословно из каталога (``verbatim_steps``): id, название, параметры, риск, цена и
-   последствия берутся из реестра и параметров шага, а не из пересказа модели. Пояснение модели
-   (explanation_ru) в этом списке не участвует и помечается как непроверенное.
-"""
 from __future__ import annotations
 
 import json
@@ -31,7 +18,6 @@ EXPLANATION_SOURCE = "model_unverified"
 
 DEFAULT_LIMIT = 200
 KEY_LIMIT = 60
-# Поля, которые сервер строит сам из чисел и ролей кадров: им нужен больший предел.
 _LIMITS = {"frames": 8000, "frames_note": 400}
 
 _ROLE_MARKERS = re.compile(r"<\|.*?\|>|</?\s*[a-zA-Z][^>]{0,40}>|```+|~~~+|\[/?(?:INST|SYS)\]",
@@ -40,8 +26,6 @@ _SPACES = re.compile(r"\s+")
 
 
 def sanitize_text(value: Any, limit: int = DEFAULT_LIMIT) -> str:
-    """Одна строка данных: без управляющих символов и переводов строк, без разметки ролей и
-    ограждений кода, с пределом длины. Смысл текста не пересказывается."""
     text = unicodedata.normalize("NFKC", str(value))
     text = _ROLE_MARKERS.sub(" ", text)
     text = "".join(" " if ch in "\r\n\t\v\f  " else ch
@@ -51,7 +35,6 @@ def sanitize_text(value: Any, limit: int = DEFAULT_LIMIT) -> str:
 
 
 def sanitize_tree(node: Any, key: str = "") -> Any:
-    """Очистка всех строк дерева данных проекта (ключи тоже); числа, bool и None не меняются."""
     if isinstance(node, str):
         return sanitize_text(node, _LIMITS.get(key, DEFAULT_LIMIT))
     if isinstance(node, dict):
@@ -62,11 +45,9 @@ def sanitize_tree(node: Any, key: str = "") -> Any:
 
 
 def sanitize_view(view: Any) -> Any:
-    """Представление вложения для модели (id, name, kind, size): имя файла - данные пользователя."""
     return sanitize_tree(view) if isinstance(view, (dict, list)) else view
 
 
-# --- превью дословно из каталога ---------------------------------------------------------------
 
 def _cost_text(cost: dict, spends: bool) -> str:
     if not spends:
@@ -77,7 +58,6 @@ def _cost_text(cost: dict, spends: bool) -> str:
 
 
 def verbatim_steps(steps: list[dict], registry: Any) -> list[dict]:
-    """Шаги плана так, как их видит сервер: каждая запись целиком из реестра и параметров шага."""
     out: list[dict] = []
     for i, st in enumerate(steps):
         spec = registry.find(st.get("action_id"))
@@ -92,7 +72,7 @@ def verbatim_steps(steps: list[dict], registry: Any) -> list[dict]:
             try:
                 effect = (spec.destructive_effects(params) if spec.destructive_effects
                           else spec.description_ru)
-            except Exception as exc:  # noqa: BLE001 - текст последствий не должен ронять ответ
+            except Exception as exc:
                 effect = f"описание последствий недоступно ({type(exc).__name__})"
         shown = {k: v for k, v in params.items() if k != "project_id"}
         line = (f"{i + 1}. {spec.title_ru} [{spec.id}]; параметры: "

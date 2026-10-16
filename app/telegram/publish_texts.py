@@ -1,8 +1,3 @@
-"""Тексты уведомлений о публикации для оператора (W6-1, E01/E02). Чистые функции, без сети и без бота.
-
-Правила текста: что произошло, что не произошло, что делать человеку. «Опубликовано» пишется только для
-подтверждённых площадок; неподтверждённое и сбой после клика всегда сопровождаются «автоповтора не будет».
-"""
 from __future__ import annotations
 
 from typing import Iterable
@@ -14,7 +9,6 @@ def _sha_short(sha256: str | None) -> str:
 
 def publish_summary_text(project_id: int, results: Iterable, *, skipped: Iterable[str] = (),
                          not_claimed: dict[str, str] | None = None) -> str:
-    """Итог одного запуска публикации по площадкам (results - PublishResult из publishers)."""
     lines: list[str] = [f"Публикация проекта #{project_id}:"]
     for r in results:
         if r.ok:
@@ -37,7 +31,6 @@ def publish_summary_text(project_id: int, results: Iterable, *, skipped: Iterabl
 
 
 def awaiting_approval_text(project_id: int, platforms: Iterable[str], sha256: str | None) -> str:
-    """Публикация не начата: на площадки нет подтверждения человека для этого файла."""
     names = ", ".join(sorted(platforms)) or "—"
     return (f"Проект #{project_id}: публикация НЕ начата, ждёт вашего подтверждения.\n"
             f"Площадки: {names}. Файл (sha256): {_sha_short(sha256)}.\n"
@@ -62,7 +55,6 @@ def manual_action_text(project_id: int, platform: str, action: str, actor: str, 
     return f"Проект #{project_id}, {platform}: {what} ({actor}). Клик по площадке не повторялся.{tail}"
 
 
-# --- W7: «да» на публикацию из Telegram (вид HITL approve_publish) ---------------------------------------
 
 BTN_PUBLISH_YES = "Разрешить публикацию"
 BTN_PUBLISH_NO = "Не публиковать"
@@ -73,9 +65,6 @@ def publish_approval_title(project_id: int) -> str:
 
 
 def publish_approval_request_text(platform: str, sha256: str | None, caption: str) -> str:
-    """Тело сообщения оператору (заголовок - publish_approval_title). Простой текст: экранирует отправитель.
-
-    Подпись приводится дословно."""
     return (f"Площадка: {platform}\n"
             f"Файл (sha256, первые 12 символов): {_sha_short(sha256)}\n"
             "Подпись дословно:\n" + caption + "\n\n"
@@ -85,7 +74,6 @@ def publish_approval_request_text(platform: str, sha256: str | None, caption: st
 
 
 def publish_approval_refusal_text(code: str) -> str:
-    """Короткий ответ оператору на нажатие, которое «да» не создало."""
     return {
         "forbidden": "Нет доступа: подтверждать публикацию может только владелец.",
         "bad_callback": "Плохая кнопка: запрос подтверждения не разобран.",
@@ -102,7 +90,6 @@ def publish_approval_refusal_text(code: str) -> str:
 
 def publish_approval_done_text(project_id: int, platform: str, action: str, actor: str, *, queued: bool,
                                publish_enabled: bool) -> str:
-    """Итог нажатия, который дописывается к исходному сообщению."""
     if action == "yes":
         if queued:
             tail = "Поставлено в очередь: публикацию выполнит шаг публикации."

@@ -1,4 +1,3 @@
-"""HTML-отчёт группы: кадры слева, промты/QC справа, без uuid/роли."""
 
 from types import SimpleNamespace
 
@@ -400,7 +399,6 @@ def test_plan_section_legend_and_skips_shot_child() -> None:
 
 
 def test_existing_report_is_left_as_fw_report_wrote_it(tmp_path, monkeypatch) -> None:
-    """GET /shots-report читает файл ноды, а не пересобирает HTML из кадров."""
     from app.services import shots_report as sr
 
     monkeypatch.setattr(sr, "find_project_root", lambda: tmp_path)
@@ -415,7 +413,6 @@ def test_existing_report_is_left_as_fw_report_wrote_it(tmp_path, monkeypatch) ->
 
 
 def test_diary_follows_shot_id_across_cells() -> None:
-    """После expand uuid дневника — родитель, а кадр живёт в другой ячейке."""
     parent = _frame(
         number=1,
         vo="начало",

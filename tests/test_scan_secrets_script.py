@@ -1,4 +1,3 @@
-"""Сканер секретов (A16): находит посаженные секреты, не печатает значения, пропускает чистые файлы и медиа."""
 from __future__ import annotations
 
 import importlib.util
@@ -10,7 +9,7 @@ _SPEC = importlib.util.spec_from_file_location(
     "scan_secrets", Path(__file__).resolve().parent.parent / "scripts" / "scan_secrets.py")
 scan = importlib.util.module_from_spec(_SPEC)
 sys.modules["scan_secrets"] = scan
-_SPEC.loader.exec_module(scan)  # type: ignore[union-attr]
+_SPEC.loader.exec_module(scan)
 
 BOT = "123456789:" + "A" * 35
 GOOGLE = "AIza" + "B" * 35

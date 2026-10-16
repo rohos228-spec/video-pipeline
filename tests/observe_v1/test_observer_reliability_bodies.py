@@ -1,4 +1,3 @@
-"""A2: per-project body quota, no per-write directory scan, retention cleanup of closed executions only."""
 from __future__ import annotations
 
 import json
@@ -28,7 +27,6 @@ def body(tag, size=500):
 
 
 class Fixture(unittest.IsolatedAsyncioTestCase):
-    """Same wiring as test_journal.JournalAcceptance, without re-running its tests."""
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -55,12 +53,11 @@ class BodyStore(Fixture):
         await super().asyncSetUp()
         self.observer.MAX_TOTAL = 4000
         self.observer.RETENTION_SECONDS = 3 * DAY
-        self.a = self.scope  # project 2
+        self.a = self.scope
         self.b = await self.observer.enable(project_id=3, workflow_run_id=8, node_keys=["script"],
                                             graph_version="synthetic-graph-b")
 
     def fill(self, scope):
-        """Write until the quota blocks; returns (stored refs, blocked ref)."""
         stored = []
         for i in range(100):
             ref = self.observer.save_body(scope.execution_id, body(f"{scope.execution_id}-{i}"))
@@ -85,14 +82,14 @@ class BodyStore(Fixture):
         return scope, refs
 
     def rescan(self):
-        self.observer._body_index = None  # as after a restart: mtimes come from disk
+        self.observer._body_index = None
 
     async def test_quota_is_per_project(self):
         stored_a, blocked = self.fill(self.a)
         self.assertEqual(blocked["gap"], "body_total_limit")
         self.assertGreater(len(stored_a), 3)
         self.assertEqual(self.observer.save_body(self.a.execution_id, body("again"))["gap"], "body_total_limit")
-        stored_b, blocked_b = self.fill(self.b)  # untouched by project 2 filling its quota
+        stored_b, blocked_b = self.fill(self.b)
         self.assertEqual(len(stored_b), len(stored_a))
         usage = self.observer.body_usage()
         self.assertEqual(set(usage), {2, 3})
@@ -134,7 +131,7 @@ class BodyStore(Fixture):
         self.fill(self.a)
         self.assertIn(self.a.execution_id, self.observer.failures)
         self.assertEqual(self.a.observer_state, "degraded")
-        self.fill(self.b)  # observe mode: visible, but not a gate
+        self.fill(self.b)
         self.assertNotIn(self.b.execution_id, self.observer.failures)
         self.assertEqual(self.observer.save_body(self.a.execution_id, body("more"))["gap"], "body_total_limit")
         await self.observer.flush_events()
@@ -143,7 +140,6 @@ class BodyStore(Fixture):
         payload = next(e.payload for e in events if e.execution_id == self.a.execution_id)
         self.assertEqual((payload["limit"], payload["project_id"]), (4000, 2))
         self.assertGreater(payload["bytes"] + payload["project_bytes"], 4000)
-        # repeated blocks inside the interval are counted, not flooded
         self.assertEqual(len([e for e in events if e.execution_id == self.a.execution_id]), 1)
         clock = [self.observer._clock() + 61]
         self.observer._clock = lambda: clock[0]
@@ -155,7 +151,7 @@ class BodyStore(Fixture):
 
     async def test_cleanup_removes_only_old_closed_unreferenced_execution_bodies(self):
         live_ref = self.observer.save_body(self.a.execution_id, body("live"))
-        os.utime(self.observer.body_root / live_ref["path"], (1, 1))  # ancient but live
+        os.utime(self.observer.body_root / live_ref["path"], (1, 1))
         old, old_refs = await self.closed_execution(4, 14, age_days=10)
         old2, _ = await self.closed_execution(5, 15, age_days=9)
         young, young_refs = await self.closed_execution(6, 16, age_days=1)
@@ -183,13 +179,11 @@ class BodyStore(Fixture):
         before = self.observer.body_usage()
         done = await self.observer.cleanup_bodies(force=True)
         self.assertEqual(set(done), {old.execution_id, old2.execution_id, resolved.execution_id})
-        # untouched: live, young, pinned, open incident, open decision, open recovery
         for scope, refs in ((self.a, [live_ref]), (young, young_refs), (pinned, pinned_refs),
                             (incident, incident_refs), (decision, decision_refs), (recovery, recovery_refs)):
             for ref in refs:
                 data = json.loads((self.observer.body_root / ref["path"]).read_text())
                 self.assertNotIn("purged", data, scope.execution_id)
-        # purged: the file name (journal reference) still resolves, content is a tombstone with sha and size
         for ref in old_refs:
             path = self.observer.body_root / ref["path"]
             self.assertTrue(path.is_file())
@@ -205,7 +199,6 @@ class BodyStore(Fixture):
         payload = next(e.payload for e in events if e.execution_id == old.execution_id)
         self.assertEqual((payload["reason"], payload["files"]), ("retention", 2))
         self.assertGreater(payload["bytes_before"], payload["bytes_after"])
-        # idempotent, even after a restart rescan
         self.rescan()
         self.assertEqual(await self.observer.cleanup_bodies(force=True), [])
         self.assertEqual(len(await self.events("body_cleanup")), 3)
@@ -214,14 +207,13 @@ class BodyStore(Fixture):
         scope, refs = await self.closed_execution(4, 14, age_days=10, bodies=2)
         closed = self.observer.body_usage()[4]
         self.assertEqual(closed, 2 * refs[0]["bytes"])
-        # a live execution of the same project shares its quota (attributed by hand: one open per project)
         live = str(uuid.uuid4())
         self.observer._execution_project[live] = 4
         self.observer.MAX_TOTAL = closed + 300
         self.assertEqual(self.observer.save_body(live, body("blocked", 400))["gap"], "body_total_limit")
         self.rescan()
         self.observer._execution_project[live] = 4
-        await self.observer.cleanup_bodies()  # requested by the block itself, not forced
+        await self.observer.cleanup_bodies()
         self.assertLess(self.observer.body_usage()[4], closed)
         self.assertIn("path", self.observer.save_body(live, body("fits now", 400)))
 
@@ -247,7 +239,7 @@ class BodyStore(Fixture):
         self.rescan()
         clock = [100.0]
         self.observer._clock = lambda: clock[0]
-        self.assertEqual(await self.observer.cleanup_bodies(), [scope.execution_id])  # first run is due
+        self.assertEqual(await self.observer.cleanup_bodies(), [scope.execution_id])
         scope2, _ = await self.closed_execution(5, 15, age_days=10)
         self.rescan()
         clock[0] += 10

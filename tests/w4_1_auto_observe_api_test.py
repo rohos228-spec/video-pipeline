@@ -1,4 +1,3 @@
-"""W4-1 / C01: маршрут GET/POST /projects/{id}/observations/auto (состояние и выключатель автонаблюдения). Только tmp."""
 from __future__ import annotations
 
 import pytest
@@ -61,7 +60,7 @@ async def test_state_then_switch_off_stops_the_observe_scope_and_blocks_new_one(
 
     on = (await client.post(f"/api/projects/{pid}/observations/auto", json={"enabled": True})).json()
     assert on["enabled"] is True and on["project_setting"] is True
-    assert len(on["active_scopes"]) == 1  # включили обратно: новая область observe
+    assert len(on["active_scopes"]) == 1
 
 
 async def test_unknown_project_is_404(api):

@@ -1,14 +1,3 @@
-"""Шаг 12: публикация готового ролика на 5 площадок через MoreLogin-профиль.
-
-Безопасность (A13/A14, W6-1 E01/E02/E11): намерение пишется в журнал `publications` ДО клика, итог каждой
-платформы сразу после неё, автоповтор только при сбое ДО клика, `published` только при confirmed с URL/ID
-на всех платформах реестра. Клик возможен только при подтверждении ЧЕЛОВЕКА на эту площадку, этот файл
-(sha256) и эту подпись; подтверждение одноразовое, тратится перед кликом и не выдаётся ни `auto_mode`, ни
-`HITL_AUTO_APPROVE`. При SOCIAL_PUBLISH_ENABLED=false ничего не публикуется, проект помечается
-«публикация пропущена» (meta.publish_skipped), а не published. Статус проекта после обхода площадок
-считается из записей журнала: published / ждёт подтверждения / ждёт проверки человека / закрыт человеком.
-Живой платформой не проверялось.
-"""
 
 from __future__ import annotations
 
@@ -38,7 +27,6 @@ _SKIPPED_KEY = "publish_skipped"
 _HUMAN_KEY = "publish_needs_human"
 _AWAITING_KEY = "publish_awaiting_approval"
 _CLOSED_KEY = "publish_closed_by_human"
-# W6-2: площадка перенесена (лимит в сутки / окно публикации) до retry_after; это не «ждёт человека».
 _DEFERRED_KEY = "publish_deferred"
 _MARKER_KEYS = (_SKIPPED_KEY, _HUMAN_KEY, _AWAITING_KEY, _CLOSED_KEY, _DEFERRED_KEY)
 
@@ -54,7 +42,6 @@ def caption_sha256(caption: str) -> str:
 
 
 async def preview_publication(session: AsyncSession, project: Project) -> dict:
-    """Read-only validation of the existing publish job. Never opens a browser."""
     from app.services.artifact_verifier import verify_artifact
 
     already = (project.meta or {}).get(_META_KEY, {})
@@ -84,7 +71,6 @@ async def preview_publication(session: AsyncSession, project: Project) -> dict:
 
 
 class _StoreGate(PublishGate):
-    """Мост publishers -> publications_store. Каждый шаг журнала фиксируется commit-ом сразу."""
 
     def __init__(self, session: AsyncSession, project_id: int, sha256: str, artifact_uuid: str | None,
                  caption_sha: str = "") -> None:
@@ -94,7 +80,7 @@ class _StoreGate(PublishGate):
         self.pub_ids: dict[str, int] = {}
         self.recorded: set[str] = set()
         self.not_claimed: dict[str, str] = {}
-        self.deferred: dict[str, dict] = {}  # площадка -> {"retry_after": unix, "code": ...}
+        self.deferred: dict[str, dict] = {}
 
     async def recent_clicks(self, platform: str) -> list[float] | None:
         return await publish_accounts.recent_click_times(self.session, platform)
@@ -112,8 +98,6 @@ class _StoreGate(PublishGate):
         pid = self.pub_ids.get(platform)
         if pid is None:
             return False
-        # E01: подтверждение человека тратится ПЕРЕД кликом и атомарно; нет подтверждения (или подпись
-        # изменилась после него) - клика нет, итог пишется как «сбой до клика».
         if not await pstore.consume_approval(self.session, project_id=self.project_id, platform=platform,
                                              sha256=self.sha256, caption_sha256=self.caption_sha):
             self.not_claimed[platform] = "no_human_approval"
@@ -165,7 +149,6 @@ _SHA_CACHE: dict[tuple[str, int, int], str] = {}
 
 
 async def _file_sha_cached(path: str) -> str:
-    """sha256 с кэшем по (путь, размер, mtime): панель опрашивает список, видео не хешируется каждый раз."""
     try:
         st = os.stat(path)
     except OSError:
@@ -182,9 +165,6 @@ async def _file_sha_cached(path: str) -> str:
 
 
 def _sync_meta(project: Project, rows: list[dict], platforms: list[str]) -> dict:
-    """Зеркало журнала в project.meta (Studio и обратная совместимость).
-
-    published_platforms содержит только confirmed с URL/ID."""
     summ = pstore.summarize(rows, platforms)
     by = {r["platform"]: r for r in rows}
     meta = dict(project.meta or {})
@@ -198,7 +178,7 @@ def _sync_meta(project: Project, rows: list[dict], platforms: list[str]) -> dict
         if r and r["status"] in (pstore.S_UNCONFIRMED, pstore.S_CLICKED) and p not in already:
             unconfirmed[p] = r["post_url"] or ""
         elif r and p in unconfirmed and r["status"] not in (pstore.S_UNCONFIRMED, pstore.S_CLICKED):
-            unconfirmed.pop(p, None)  # человек вернул площадку в работу или закрыл её: зеркало не держит её "неподтверждённой"
+            unconfirmed.pop(p, None)
     meta[_META_KEY], meta[_UNCONFIRMED_KEY] = already, unconfirmed
     project.meta = meta
     flag_modified(project, "meta")
@@ -206,7 +186,6 @@ def _sync_meta(project: Project, rows: list[dict], platforms: list[str]) -> dict
 
 
 def _set_markers(project: Project, **markers: dict | None) -> None:
-    """Выставить/снять отметки состояния в meta; ключи без значения снимаются."""
     meta = dict(project.meta or {})
     for key, value in markers.items():
         if value:
@@ -218,7 +197,6 @@ def _set_markers(project: Project, **markers: dict | None) -> None:
 
 
 async def _skip_publication(session: AsyncSession, project: Project) -> None:
-    """SOCIAL_PUBLISH_ENABLED=false: ничего не публикуем, `published` НЕ ставим."""
     final = await _latest_final(session, project)
     sha = await _file_sha(final.path) if final is not None else "no-artifact"
     reason = "SOCIAL_PUBLISH_ENABLED=false"
@@ -231,23 +209,17 @@ async def _skip_publication(session: AsyncSession, project: Project) -> None:
                           "text": "Публикация пропущена: автопубликация выключена, ничего не опубликовано."}
     project.meta = meta
     flag_modified(project, "meta")
-    # published был бы ложным, publishing залипает: assembled = «собрано, не опубликовано».
     project.status = ProjectStatus.assembled
     await session.flush()
     logger.info("[#{}] publish_skipped (SOCIAL_PUBLISH_ENABLED=false): опубликовано 0 платформ", project.id)
 
 
 def is_publish_skipped(project: Project) -> bool:
-    """Проект помечен «публикация пропущена» и не опубликован (метрики батчей, Studio)."""
     meta = project.meta or {}
     return bool(meta.get(_SKIPPED_KEY)) and project.status is not ProjectStatus.published
 
 
 async def publish_hold_reason(session: AsyncSession, project: Project) -> str | None:
-    """Ключ отметки meta, из-за которой auto_advance НЕ должен снова переводить assembled -> publishing.
-
-    Отметка действует только для того же финального файла (artifact_uuid): после пересборки решение по
-    старому файлу не держит проект. `publish_skipped` держит, пока автопубликация выключена."""
     meta = project.meta or {}
     if not any(isinstance(meta.get(k), dict) and meta.get(k) for k in _MARKER_KEYS):
         return None
@@ -260,7 +232,7 @@ async def publish_hold_reason(session: AsyncSession, project: Project) -> str | 
         if key == _SKIPPED_KEY and settings.social_publish_enabled:
             continue
         if key == _DEFERRED_KEY and not _active_deferred(marker):
-            continue  # срок переноса вышел: можно возвращаться в publishing
+            continue
         marked = marker.get("artifact_uuid")
         if marked and current and marked != current:
             continue
@@ -269,7 +241,6 @@ async def publish_hold_reason(session: AsyncSession, project: Project) -> str | 
 
 
 def _active_deferred(marker: object, now: float | None = None) -> dict[str, dict]:
-    """Платформы из отметки переноса, у которых retry_after ещё не наступил."""
     if not isinstance(marker, dict):
         return {}
     now = time.time() if now is None else now
@@ -280,9 +251,6 @@ def _active_deferred(marker: object, now: float | None = None) -> dict[str, dict
 
 
 def _legacy_map(meta: dict, rows: list[dict] | None = None) -> dict[str, bool]:
-    """Итоги из старого meta до появления журнала: платформа -> была ли ссылка (True = считаем confirmed).
-
-    Платформы, у которых для этого файла есть запись журнала, сюда не попадают: журнал главнее зеркала в meta."""
     out: dict[str, bool] = {}
     unconfirmed = meta.get(_UNCONFIRMED_KEY)
     if isinstance(unconfirmed, dict):
@@ -297,10 +265,6 @@ def _legacy_map(meta: dict, rows: list[dict] | None = None) -> dict[str, bool]:
 async def apply_project_state(session: AsyncSession, project: Project, *, rows: list[dict],
                               platforms: list[str], sha: str, artifact_uuid: str | None,
                               approved: set[str]) -> dict:
-    """Единственное место, где статус проекта выводится из записей журнала (шаг и ручные действия).
-
-    published - все confirmed с URL/ID. publishing - воркер доделает сам. Остальное -> assembled с видимой
-    отметкой в meta (ждёт подтверждения / ждёт проверки человека / закрыт человеком); из publishing не залипаем."""
     legacy = _legacy_map(project.meta or {}, rows)
     st = pstore.derive_project_state(rows, platforms, approved, legacy=legacy)
     state = st["state"]
@@ -326,7 +290,7 @@ async def apply_project_state(session: AsyncSession, project: Project, *, rows: 
                             "text": "Публикация не начата: нужно подтверждение человека на каждую площадку."},
             _HUMAN_KEY: None, _CLOSED_KEY: None, _SKIPPED_KEY: None})
         project.status = ProjectStatus.assembled
-    else:  # PS_CLOSED
+    else:
         _set_markers(project, **{
             _CLOSED_KEY: {**base, "platforms": st["manual_failed"], "confirmed": st["confirmed"],
                           "text": "Человек закрыл оставшиеся площадки как «не опубликовано»."},
@@ -337,7 +301,6 @@ async def apply_project_state(session: AsyncSession, project: Project, *, rows: 
 
 
 async def publication_facts(session: AsyncSession, project: Project) -> dict:
-    """E11 + E01: факты публикации для панели и наблюдения. Только чтение: браузер не открывается, клика нет."""
     platforms = [cls.platform for cls in ALL_PUBLISHERS]
     final = await _latest_final(session, project)
     caption = caption_for(project)
@@ -386,7 +349,6 @@ async def publication_facts(session: AsyncSession, project: Project) -> dict:
                                 or r["status"] == pstore.S_PLANNED and not r.get("clicked_at")),
         })
     facts["platforms"] = items
-    # Публикация не бывает автоматической: при выключенной настройке разрешённая площадка не «в работе».
     facts["derived"] = (pstore.derive_project_state(rows, platforms, approved, legacy=_legacy_map(project.meta or {}, rows),
                                                     publish_enabled=bool(settings.social_publish_enabled))
                         if sha else None)
@@ -419,7 +381,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     csha = caption_sha256(caption)
     platforms = [cls.platform for cls in ALL_PUBLISHERS]
 
-    # Записи meta до появления журнала считаем «итог уже есть»: автоповтор запрещён.
     meta = project.meta or {}
     legacy: set[str] = set()
     for key in (_META_KEY, _UNCONFIRMED_KEY):
@@ -427,17 +388,14 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             legacy |= set(meta[key].keys())
 
     rows = await pstore.list_for(session, project.id, sha)
-    legacy -= {r["platform"] for r in rows}  # журнал главнее зеркала в meta
+    legacy -= {r["platform"] for r in rows}
     summ = pstore.summarize(rows, platforms)
     approvals = await pstore.list_approvals(session, project.id, sha, csha)
     approved = {p for p, a in approvals.items() if a["valid"]}
-    # W6-2: перенос (лимит в сутки / окно) действует до retry_after только для этого же файла.
     old_marker = meta.get(_DEFERRED_KEY) if isinstance(meta.get(_DEFERRED_KEY), dict) else {}
     if old_marker.get("artifact_uuid") not in (None, final.uuid):
         old_marker = {}
     deferred: dict[str, dict] = dict(_active_deferred(old_marker))
-    # E01: платформа без подтверждения человека (для этого файла и этой подписи) не трогается вообще:
-    # ни намерения, ни браузера. auto_mode и HITL_AUTO_APPROVE подтверждение не создают.
     unapproved = set(platforms) - approved
     skip_platforms = (set(legacy) | set(summ["confirmed"]) | set(summ["needs_human"])
                       | set(summ["manual_failed"]) | unapproved | set(deferred))
@@ -449,7 +407,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if not all(p in skip_platforms for p in platforms):
         results = await publish_everywhere(Path(final.path), caption, skip_platforms=skip_platforms, gate=gate,
                                            project_label=project.id)
-        for r in results:  # вызов без gate (подмена в тестах): итог всё равно попадает в журнал
+        for r in results:
             if r.platform not in gate.recorded:
                 await gate.record(r)
 
@@ -461,14 +419,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     new_deferred = {p: v for p, v in gate.deferred.items() if p not in deferred}
     deferred.update(gate.deferred)
     by_status = {r["platform"]: r["status"] for r in rows}
-    deferred = {p: v for p, v in deferred.items() if by_status.get(p) == pstore.S_SKIPPED}  # только ещё не сделанное
+    deferred = {p: v for p, v in deferred.items() if by_status.get(p) == pstore.S_SKIPPED}
     legacy_now = _legacy_map(project.meta or {}, rows)
     preview = pstore.derive_project_state(rows, platforms, approved, legacy=legacy_now)
     pure_wait = (bool(deferred) and preview["state"] == pstore.PS_WORKING and not preview["busy"]
                  and set(preview["retry_approved"]) <= set(deferred))
     if pure_wait and not preview["needs_human"]:
-        # Ждём только срок переноса: не needs_human и не повтор по кругу. Вернёт в publishing auto_advance,
-        # когда retry_after пройдёт (publish_hold_reason снимет удержание).
         _set_markers(project, **{
             _DEFERRED_KEY: {"at": _now_iso(), "sha256": sha, "artifact_uuid": final.uuid, "platforms": deferred,
                             "text": "Публикация перенесена (лимит или окно публикации); повтор после указанного времени."},
@@ -487,18 +443,15 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 {"at": _now_iso(), "sha256": sha, "artifact_uuid": final.uuid, "platforms": deferred,
                  "text": "Часть площадок перенесена (лимит или окно публикации)."} if deferred else None)})
 
-    # W7: вид HITL approve_publish. Ждём «да» человека: спрашиваем в Telegram (если он активен) по каждой площадке.
-    # Ответ идёт той же серверной логикой, что и панель; auto_mode и HITL_AUTO_APPROVE «да» не создают.
     if st["state"] == pstore.PS_AWAITING_APPROVAL and st["awaiting_approval"] and settings.telegram_active:
         try:
             from app.services.hitl import request_publish_approval
             await request_publish_approval(bot, session, project, platforms=list(st["awaiting_approval"]),
                                            sha256=sha, caption=caption, caption_sha256=csha,
                                            artifact_uuid=final.uuid)
-        except Exception:  # noqa: BLE001 — «да» остаётся доступным из панели, шаг публикации не ломаем
+        except Exception:
             logger.exception("[#{}] publish: запрос approve_publish в Telegram не создан", project.id)
 
-    # Одно уведомление за запуск. Перенос (skipped) в «сбои» не попадает: он не ошибка и не ждёт человека.
     shown = [r for r in results if r.status != pstore.S_SKIPPED]
     human = [r for r in shown if r.needs_human and not r.clicked]
     parts: list[str] = []
@@ -506,7 +459,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         parts.append(ptexts.publish_summary_text(project.id, shown, skipped=skip_platforms,
                                                  not_claimed=gate.not_claimed))
     elif st["state"] == pstore.PS_AWAITING_APPROVAL and prev_awaiting.get("artifact_uuid") != final.uuid:
-        parts.append(ptexts.awaiting_approval_text(project.id, st["awaiting_approval"], sha))  # один раз на файл
+        parts.append(ptexts.awaiting_approval_text(project.id, st["awaiting_approval"], sha))
     if human:
         parts.append("Нужен человек:\n" + "\n".join(
             f"- {r.platform}: {publish_accounts.refusal_text(r.error_code)}" for r in human))
@@ -521,6 +474,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         try:
             await notify(bot, "send_message", settings.telegram_owner_chat_id, "\n\n".join(parts),
                          kind="publish_summary", project_id=project.id)
-        except Exception:  # noqa: BLE001 — итог уже в журнале, уведомление вторично
+        except Exception:
             logger.exception("[#{}] publish: Telegram не отправлен", project.id)
     await session.flush()

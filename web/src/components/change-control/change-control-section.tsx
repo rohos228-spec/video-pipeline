@@ -18,10 +18,6 @@ const FILTERS: { id: Filter; label: string; match: (p: Proposal) => boolean }[] 
   { id: "all", label: "Все", match: () => true },
 ];
 
-/**
- * Контролируемые изменения: предложения по проекту, просмотр diff, применение и откат через слой действий.
- * Применение и откат выполняются только по клику оператора в окне подтверждения; планировщик и модель только предлагают.
- */
 export function ChangeControlSection({ projectId }: { projectId: number | null }) {
   const [open, setOpen] = usePersistedState("vp-change-control-open", false);
   const [filter, setFilter] = useState<Filter>("open");
@@ -31,7 +27,6 @@ export function ChangeControlSection({ projectId }: { projectId: number | null }
   const [allowError, setAllowError] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [notice, setNotice] = useState("");
-  // Карточки с открытым потоком применения/отката не пропадают из списка, пока оператор не закроет результат.
   const [pinned, setPinned] = useState<Record<string, boolean>>({});
 
   const refresh = useCallback(async () => {

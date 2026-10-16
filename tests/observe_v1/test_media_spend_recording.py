@@ -1,4 +1,3 @@
-"""Native paid media/audio calls are recorded best-effort; no network, stubs only."""
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,7 +42,6 @@ class MediaSpendBase(actions_tests.DurableActions):
             return (await s.scalars(select(spend_guard.ProviderTaskLedger).order_by(spend_guard.ProviderTaskLedger.id))).all()
 
     async def run_gen(self, spec_id, create_payload, polls=2):
-        """Run kie_http.run_generation against stubbed createTask / recordInfo / download."""
         from app.services import kie_catalog
 
         async def post(url, body, timeout=120.0):
@@ -72,7 +70,7 @@ class MediaSpendBase(actions_tests.DurableActions):
 class KieRecording(MediaSpendBase):
     async def test_priced_submit_poll_and_task_ledger(self):
         res = await self.run_gen("z-image", {"code": 200, "data": {"taskId": "T-1"}})
-        self.assertEqual(res.gen_id, "T-1")  # native result unchanged
+        self.assertEqual(res.gen_id, "T-1")
         rows = await self.rows()
         create = [r for r in rows if r.note.startswith("create")]
         self.assertEqual(len(create), 1)
@@ -107,12 +105,12 @@ class KieRecording(MediaSpendBase):
             raise httpx.ReadTimeout("slow")
         with patch.object(kie_http, "kie_post_json", boom), patch.object(kie_http, "kie_api_base_url", lambda: "https://x"):
             with media_spend.kie_scope(spec, payload, "frame_001_aaaaaaaa.png"):
-                with self.assertRaises(httpx.ReadTimeout):  # raised unchanged
+                with self.assertRaises(httpx.ReadTimeout):
                     await kie_http.create_task("jobs", None, payload)
         create = [r for r in await self.rows() if r.note.startswith("create")][0]
         self.assertIn("uncertain", create.note)
         self.assertAlmostEqual(create.usd, 0.004)
-        self.assertEqual(await self.task_rows(), [])  # no task id, no task row
+        self.assertEqual(await self.task_rows(), [])
 
     async def test_402_engages_kill_switch_with_audit_and_native_error_unchanged(self):
         with self.assertRaises(kie_http.KieHttpError) as cm:
@@ -122,7 +120,7 @@ class KieRecording(MediaSpendBase):
         self.assertTrue((await kill_switch.status(self.sessions))["active"])
         self.assertTrue(any(r.kind == "event" and r.source == "media_402" and r.provider == "kie" for r in rows))
         rej = [r for r in rows if r.note.startswith("create")][0]
-        self.assertEqual(rej.usd, 0.0)  # definite rejection is not billed
+        self.assertEqual(rej.usd, 0.0)
         self.assertIn("rejected http=402", rej.note)
 
     async def test_402_with_setting_off_audits_but_does_not_kill(self):
@@ -136,9 +134,6 @@ class KieRecording(MediaSpendBase):
 
 class NeverRaises(MediaSpendBase):
     async def test_broken_database_does_not_affect_the_call(self):
-        # Проверка рубильника и потолков перед платным вызовом закрыта по умолчанию (нечитаемая база = отказ, это
-        # проверяют свои тесты). Здесь проверяется ДРУГОЕ: сломанная ЗАПИСЬ расхода не ломает отправленный вызов.
-        # Поэтому ломаем писателей записи, а не всю базу.
         db_down = dict(side_effect=RuntimeError("db down"))
         with patch.object(media_spend, "_write", **db_down), patch.object(media_spend, "_write_task", **db_down),                 patch.object(media_spend, "_credit_stop", **db_down), patch.object(media_spend, "_write_gap_row", **db_down):
             res = await self.run_gen("z-image", {"code": 200, "data": {"taskId": "T-9"}}, 1)
@@ -159,10 +154,10 @@ class NeverRaises(MediaSpendBase):
         try:
             media_spend.reset_gap_state()
             with patch.object(settings, "elevenlabs_api_key", "real-looking"):
-                self.assertFalse(media_spend._enabled("elevenlabs"))  # sandbox: ledger DB is not the configured one; counted, not silent
+                self.assertFalse(media_spend._enabled("elevenlabs"))
             self.assertIn("elevenlabs:ledger_target_mismatch", media_spend.skipped_counts())
             with patch.object(media_spend, "TEST_FORCE", True), patch.object(settings, "elevenlabs_api_key", "synthetic-1"):
-                self.assertTrue(media_spend._enabled("elevenlabs"))  # A08: synthetic* no longer disables the ledger
+                self.assertTrue(media_spend._enabled("elevenlabs"))
             with patch.object(media_spend, "TEST_FORCE", True), patch.object(settings, "elevenlabs_api_key", "real-looking"):
                 self.assertTrue(media_spend._enabled("elevenlabs"))
         finally:
@@ -174,7 +169,7 @@ class NeverRaises(MediaSpendBase):
         async def slow(*a, **k):
             await gate.wait()
         with patch.object(media_spend, "_write", slow):
-            media_spend.record("kie", usd=1.0, note="n")  # returns immediately (scheduled only)
+            media_spend.record("kie", usd=1.0, note="n")
             self.assertTrue(media_spend._tasks)
             gate.set()
             await media_spend.drain()
@@ -198,7 +193,7 @@ class ElevenLabsRecording(MediaSpendBase):
         self.assertTrue(out.exists())
         rows = await self.rows()
         chars = len("Привет мир")
-        est = [r for r in rows if r.kind == "estimated"][0]  # A08: a price we computed is an estimate, not a fact
+        est = [r for r in rows if r.kind == "estimated"][0]
         self.assertAlmostEqual(est.usd, chars * media_spend.ELEVENLABS_USD_PER_CHAR)
         self.assertEqual((est.provider, est.project_id), ("elevenlabs", 7))
         settle = [r for r in rows if r.kind == "settle"]
@@ -226,8 +221,8 @@ class ElevenLabsRecording(MediaSpendBase):
         with self.stub(h), patch("asyncio.sleep", fast):
             with self.assertRaises(elevenlabs_api.ElevenLabsApiError) as cm:
                 await self.synth()
-        self.assertIsInstance(cm.exception, elevenlabs_api.ElevenLabsUncertainError)  # still an ElevenLabsApiError
-        self.assertEqual(len(calls), 1)  # no re-POST after a post-send timeout
+        self.assertIsInstance(cm.exception, elevenlabs_api.ElevenLabsUncertainError)
+        self.assertEqual(len(calls), 1)
         rows = [r for r in await self.rows() if r.kind == "estimated"]
         self.assertEqual(len(rows), 1)
         self.assertTrue(all("uncertain" in r.note for r in rows))

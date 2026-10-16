@@ -1,4 +1,3 @@
-"""Кроп переднего роста с 16:9 turnaround-листа."""
 
 from __future__ import annotations
 
@@ -12,7 +11,6 @@ from app.services.character_sheet_ref import identity_ref_from_sheet
 def test_identity_ref_crops_front_of_wide_sheet(tmp_path: Path) -> None:
     sheet = tmp_path / "c02.png"
     im = Image.new("RGB", (2048, 1152), (240, 240, 240))
-    # Левая колонка «перед» — красная, остальное серое.
     for x in range(30, 280):
         for y in range(40, 1110):
             im.putpixel((x, y), (200, 20, 20))
@@ -26,7 +24,6 @@ def test_identity_ref_crops_front_of_wide_sheet(tmp_path: Path) -> None:
     w, h = out.size
     assert w < 400
     assert h > 900
-    # Кроп должен попасть в красную зону.
     px = out.getpixel((w // 2, h // 2))
     assert px[0] > 150 and px[1] < 60
 

@@ -1,11 +1,3 @@
-"""recover_node / profile / reconcile preconditions for the native text nodes.
-
-Seeds the state a real exhausted native plan/script run leaves behind: a typed invalid_json
-incident, NO inner `json_retry` fact (native text executors have none), failed NodeRun,
-step_failure total_fails at the cap, abandoned. Asserts that the recovery either is admitted
-or is rejected for the intended reason, node type by node type. Every existing guard is
-re-asserted on a text node. No provider, no worker.
-"""
 import unittest
 import uuid
 from contextlib import asynccontextmanager
@@ -21,7 +13,7 @@ from app.services.actions_v1 import ActionExecutionControl, get_permission
 from app.services.diagnosis import DiagnosisState, Incident
 from app.services.observation import ObservationEvent, digest
 from app.services.profiles_v1 import ProfilesSupervisor
-import test_actions_v1_contract as base_tests  # module import: do not re-collect its classes here
+import test_actions_v1_contract as base_tests
 
 
 class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
@@ -54,16 +46,12 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                    'input': [{'role': 'user', 'content': 'Attachments: 1. prompt_plan_20261001_205923.txt\noriginal facts'}]}
 
     def hermetic_runtime(self):
-        """Explicit synthetic loopback runtime config: independent of whatever env/settings other
-        modules of a combined pytest run left behind."""
         from app.services import decision_config
         cfg = decision_config.validate_config({'version': 1, 'mode': 'synthetic', 'online_enabled': True,
             'endpoint': 'http://127.0.0.1:18766/codex/v1/responses',
             'decision': {'catalog_id': 'gpt-kie', 'model_id': 'gpt-5-6-sol', 'reasoning_effort': 'low',
                          'max_output_tokens': 1024, 'timeout_s': 30},
             'profiles': {}, 'allowed_actions': sorted(decision_config.ALL_ACTIONS)})
-        # Patch the settings object the application resolves NOW (a combined run can leave a
-        # different instance behind than the one conftest's autouse fixture patched).
         from app.settings import settings as live_settings
         for patcher in (patch.object(decision_config, 'runtime_config', return_value=cfg),
                         patch.object(live_settings, 'gpt_api_key', 'synthetic-observe-test-key'),
@@ -75,7 +63,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
         self.hermetic_runtime()
         await self.mixed_recovery_fixture(node_type)
         async with self.sessions() as s:
-            # The recorded source request body (what recover_node compares the recovery request to).
             source = await s.scalar(select(ObservationEvent).where(ObservationEvent.kind == 'model_start'))
             source.payload = {'input_revision': digest(self.SOURCE_BODY), 'provider': 'kie',
                               'body': observation._observer.save_body(self.EXECUTION_UUID, self.SOURCE_BODY)}
@@ -88,9 +75,7 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
             (await s.get(Incident, 'source-incident')).type = incident_type
             await s.commit()
 
-    # ---- admission by node type -------------------------------------------------------
     async def test_plan_and_script_exhausted_invalid_json_without_inner_retry_is_admitted(self):
-        # W5 D05: split and image_prompts (nothing written before the typed failure) are admitted the same way.
         for node_type in ('plan', 'script', 'split', 'image_prompts'):
             with self.subTest(node_type=node_type):
                 await self.asyncTearDown()
@@ -116,9 +101,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(ticket['preconditions']['profile_overlay_id'], overlay_id)
 
     async def test_media_nodes_are_still_denied_by_capability(self):
-        # images / audio / hero / sfx_gen are admitted since W5 ONLY for local resume of a recorded result
-        # (resume_local, never a paid resend); videos / music are managed since W5 for media incidents only, so a text
-        # retry is still refused (the message names the media-only admission) and nothing is dispatched.
         for node_type in ('videos', 'music'):
             for profile in (False, True):
                 with self.subTest(node_type=node_type, profile=profile):
@@ -132,14 +114,13 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                     await self.assert_no_dispatch()
 
     async def test_split_style_contract_rejected_incident_is_refused_for_the_incident_reason(self):
-        """What split/image_prompts failures look like (payload_required=False -> contract_rejected)."""
         await self.text_fixture('plan', incident_type='contract_rejected')
         with self.assertRaisesRegex(ValueError, 'current mandatory JSON/payload incident required'):
             await self.retry()
         await self.assert_no_dispatch()
 
     async def test_excel_gpt_still_needs_its_inner_json_retry_fact(self):
-        await self.text_fixture('excel_gpt')  # no json_retry fact
+        await self.text_fixture('excel_gpt')
         with self.assertRaisesRegex(ValueError, 'native JSON retries not exhausted'):
             await self.retry()
         await self.assert_no_dispatch()
@@ -148,7 +129,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
         await self.text_fixture('excel_gpt', inner_json_retry=True)
         self.assertEqual((await self.retry())['preconditions']['effective_node_type'], 'excel_gpt')
 
-    # ---- sfx_plan / animation_prompts: retry_same only, never a profile ------------------------
     async def test_sfx_plan_and_animation_prompts_exhausted_invalid_json_is_admitted_for_retry_same(self):
         for node_type in ('sfx_plan', 'animation_prompts'):
             for incident_type in ('invalid_json', 'missing_payload'):
@@ -161,7 +141,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(ticket['preconditions']['effective_node_type'], node_type)
                     self.assertEqual(ticket['preconditions']['action_type'], 'retry_same')
                     self.assertIn('retry_same', ticket['preconditions']['capability_actions'])
-                    # W5 D05: sfx_plan also carries retry_profile; animation_prompts (image strip) never does
                     self.assertEqual('retry_profile' in ticket['preconditions']['capability_actions'],
                                      node_type == 'sfx_plan')
                     self.assertEqual(ticket['budget_state']['recovery_limit'], 1)
@@ -195,7 +174,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                 await self.assert_no_dispatch()
 
     async def test_sfx_plan_and_animation_prompts_apply_evidence_blocks_retry(self):
-        # animation applies per batch (data_applied after the first one); sfx_plan applies once at the end.
         for node_type in ('sfx_plan', 'animation_prompts'):
             with self.subTest(node_type=node_type):
                 await self.asyncTearDown()
@@ -226,7 +204,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, 'before transport'):
             await self.first_request_check('sfx_plan', self.with_stamp('20261001_205929'))
 
-    # ---- first-request identity: only attachment file-name stamps are masked --------------
     async def first_request_check(self, node_type, body, *, profile=False):
         from types import SimpleNamespace
         from app.services.actions_recovery import check_body
@@ -278,7 +255,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
             await self.retry()
         await self.assert_no_dispatch()
 
-    # ---- every guard still applies to a text node -------------------------------------
     async def test_text_node_native_retries_must_be_exhausted(self):
         await self.text_fixture('plan')
         async with self.sessions() as s:
@@ -353,10 +329,7 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
     async def _pending_hitl_node(self, s):
         (await s.scalar(select(NodeRun).where(NodeRun.node_key == 'n2'))).status = NodeRunStatus.waiting_hitl
 
-    # ---- profile eligibility is capability data ----------------------------------------
     async def test_decision_context_lists_profiles_only_for_profile_compatible_nodes(self):
-        # eligible_profiles is computed from the launch snapshot and gated by capability data;
-        # the gate expression itself is asserted here so a node without the flag can never get one.
         from app.services import decision_v1
         import inspect
         source = inspect.getsource(decision_v1.DecisionSupervisor._context)
@@ -364,8 +337,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("result_kind=='structured'", source)
 
     async def test_profile_base_gate_by_capability_for_each_node_type(self):
-        """ProfilesSupervisor._base: text nodes with the flag pass the capability gate; the others
-        are refused with the capability reason (or fail later on a different, non-capability guard)."""
         expectations = {'plan': True, 'script': True, 'excel_gpt': True, 'split': True, 'image_prompts': True,
                         'sfx_plan': True, 'sd_assemble': True, 'animation_prompts': False, 'audio': False}
         for node_type, allowed in expectations.items():
@@ -391,7 +362,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                 else:
                     self.assertEqual(reason, 'incompatible accepted text node contract')
 
-    # ---- verification at the HITL boundary --------------------------------------------
     async def verified_attempt(self, node_type, *, done_event='attempt'):
         await self.text_fixture(node_type, inner_json_retry=node_type == 'excel_gpt')
         ticket = await self.retry()
@@ -418,7 +388,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
                     s.add(ObservationEvent(event_id=uuid.uuid4().hex, execution_id='exec-durable', project_id=7,
                         workflow_run_id=11, node_key='n1', attempt_id='some-other-attempt', db_scope='project',
                         kind='node_start', payload={}, created_at=datetime.utcnow()))
-                # the runtime's own commit of NodeRun done, after the executor returned: no attempt id
                 s.add(ObservationEvent(event_id=uuid.uuid4().hex, execution_id='exec-durable', project_id=7,
                     workflow_run_id=11, node_key='n1', attempt_id=None, db_scope='project', kind=done[0],
                     payload=done[1], created_at=datetime.utcnow()))
@@ -517,7 +486,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(get_permission(7).held)
 
 
-    # ---- Vibecode (chat/completions) source requests --------------------------------------
     async def mark_source_provider(self, provider, *, complete=True):
         async with self.sessions() as s:
             start = await s.scalar(select(ObservationEvent).where(ObservationEvent.kind == 'model_start'))
@@ -527,7 +495,6 @@ class TextNodeRecovery(unittest.IsolatedAsyncioTestCase):
             await s.commit()
 
     async def test_vibecode_source_with_complete_chat_answer_is_admitted_for_retry_same(self):
-        # G3/G9 read model_end.complete; observe_model now sets it for a normal chat/completions answer.
         await self.text_fixture('excel_gpt', inner_json_retry=True)
         await self.mark_source_provider('vibecode')
         ticket = await self.retry()

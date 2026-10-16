@@ -1,10 +1,3 @@
-"""Dev-проверка: большой кадр доски подстраивается под формат картинки.
-
-Не часть пайплайна. Нужен бэкенд на :8765 и сид
-``scripts/dev_seed_montage_scene.py``.
-
-    python3 scripts/dev_check_montage_frame_aspect.py [project_id] [out_dir]
-"""
 
 from __future__ import annotations
 

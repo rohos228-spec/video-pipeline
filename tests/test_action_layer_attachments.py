@@ -1,7 +1,3 @@
-"""Файлы командной строки слоя действий: загрузка, проверки, подстановка пути сервером, уборка.
-
-Модель - заглушка, сеть не используется. Проект - реалистичный сид (scripts/eval_seed.py).
-"""
 from __future__ import annotations
 
 import hashlib
@@ -18,7 +14,7 @@ from app.services.action_layer import attachments as att
 from app.services.action_layer import planner, store
 from app.services.action_layer.spec import ensure_builtin_actions
 from app.settings import settings
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 from tests.test_action_layer_planner import OP, reply, res, use
 from tests.test_action_planner_seed_context import load_seed
 
@@ -35,7 +31,7 @@ def st(aid: str, deps=None, **params) -> dict:
 
 
 @pytest_asyncio.fixture
-async def live(env, tmp_path, monkeypatch):  # noqa: F811
+async def live(env, tmp_path, monkeypatch):
     ensure_builtin_actions()
     monkeypatch.setattr(prompt_library, "PROMPTS_ROOT", prompt_library.PROMPTS_ROOT)
     monkeypatch.setattr(settings, "vibecode_api_key", "vk-test-key")
@@ -43,7 +39,7 @@ async def live(env, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setattr(settings, "action_layer_planner_max_catalog", 24)
     monkeypatch.setattr(att, "_last_cleanup", 0.0)
     await load_seed().seed_realistic(project_id=PID, factory=env.factory, prompts_dir=tmp_path / "prompts")
-    async with env.factory() as s:  # второй проект: чужие файлы
+    async with env.factory() as s:
         from app.models import Project
         s.add(Project(id=OTHER, topic="other", slug="other-proj"))
         await s.commit()
@@ -78,7 +74,6 @@ def files_under(env) -> list:
     return sorted(p for p in root.rglob("*") if p.is_file()) if root.exists() else []
 
 
-# --- имена ---------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("raw,want", [
     ("../../etc/passwd.png", "passwd.png"),
@@ -110,7 +105,6 @@ def test_sanitize_name_limits_length_and_keeps_extension() -> None:
     assert len(got) <= att.MAX_NAME_LEN and got.endswith(".mp3")
 
 
-# --- загрузка ------------------------------------------------------------------------------------------
 
 async def test_upload_stores_file_under_data_dir_and_returns_digest(live) -> None:
     out = await ok_upload(live, "voice.mp3", MP3, "audio/mpeg")
@@ -141,9 +135,9 @@ async def test_upload_rejects_wrong_type_mime_and_content(live) -> None:
     assert r.status_code == 415 and r.json()["detail"]["code"] == "type_not_allowed"
     r = await upload(live, "noext", PNG)
     assert r.status_code == 415
-    r = await upload(live, "pic.png", PNG, "video/mp4")                 # MIME другого вида
+    r = await upload(live, "pic.png", PNG, "video/mp4")
     assert r.status_code == 415 and r.json()["detail"]["code"] == "mime_not_allowed"
-    r = await upload(live, "pic.png", b"this is not a png at all")      # сигнатура
+    r = await upload(live, "pic.png", b"this is not a png at all")
     assert r.status_code == 415 and r.json()["detail"]["code"] == "content_mismatch"
     r = await upload(live, "table.xlsx", b"not a zip")
     assert r.status_code == 415
@@ -151,7 +145,7 @@ async def test_upload_rejects_wrong_type_mime_and_content(live) -> None:
     assert r.status_code == 415
     r = await upload(live, "pic.png", b"")
     assert r.status_code == 422 and r.json()["detail"]["code"] == "empty_file"
-    assert files_under(live) == [] and await rows(live) == []           # отказ не оставляет следов
+    assert files_under(live) == [] and await rows(live) == []
 
 
 async def test_upload_accepts_every_allowed_kind(live) -> None:
@@ -176,12 +170,12 @@ async def test_upload_oversize_is_refused_and_leaves_no_file(live, monkeypatch) 
     assert r.status_code == 413 and r.json()["detail"]["code"] in ("too_large",)
     assert files_under(live) == [] and await rows(live) == []
     root = live.tmp_path / "attachments"
-    assert not list(root.rglob(".*.part"))                               # временный файл убран
+    assert not list(root.rglob(".*.part"))
     assert (await upload(live, "fits.png", PNG, "image/png")).status_code == 200
 
 
 async def test_upload_per_kind_cap_is_smaller_than_the_global_one(live) -> None:
-    r = await upload(live, "agent.txt", b"a" * (att.MIB + 1), "text/plain")   # потолок текста 1 МБ
+    r = await upload(live, "agent.txt", b"a" * (att.MIB + 1), "text/plain")
     assert r.status_code == 413
     assert att.max_bytes_for("text") == att.MIB and att.max_bytes_for("video") == 200 * att.MIB
 
@@ -212,7 +206,7 @@ async def test_rules_endpoint_lists_kinds_and_caps(live) -> None:
 async def test_delete_removes_unused_file_but_not_a_consumed_one(live) -> None:
     out = await ok_upload(live, "voice.mp3", MP3, "audio/mpeg")
     r = await live.client.delete(f"{BASE}/attachments/{out['attachment_id']}", params={"project_id": OTHER})
-    assert r.status_code == 404 and len(files_under(live)) == 1          # чужой проект не удаляет
+    assert r.status_code == 404 and len(files_under(live)) == 1
     r = await live.client.delete(f"{BASE}/attachments/{out['attachment_id']}", params={"project_id": PID})
     assert r.status_code == 200 and files_under(live) == [] and await rows(live) == []
     out = await ok_upload(live, "voice.mp3", MP3, "audio/mpeg")
@@ -223,7 +217,6 @@ async def test_delete_removes_unused_file_but_not_a_consumed_one(live) -> None:
     assert (await live.client.delete(f"{BASE}/attachments/not-an-id")).status_code == 404
 
 
-# --- план из текста с вложением -----------------------------------------------------------------------------
 
 def sent(fake) -> dict:
     return json.loads(fake.calls[0]["body"]["messages"][1]["content"])
@@ -231,7 +224,6 @@ def sent(fake) -> dict:
 
 async def test_planner_fills_source_path_from_the_attachment_id(live) -> None:
     out = await ok_upload(live, "voice.mp3", MP3, "audio/mpeg")
-    # модель вернула шаг загрузки без пути (и, для проверки, с выдуманным путём: он отбрасывается)
     bad = st("montage.upload_voice", source_path="C:/secret/evil.mp3", filename="evil.mp3")
     fake = use(res(reply([bad], expl="Загружаю озвучку.")))
     r = await from_text(live, "загрузи озвучку", [out["attachment_id"]])
@@ -244,9 +236,8 @@ async def test_planner_fills_source_path_from_the_attachment_id(live) -> None:
     plan = (await live.client.get(f"{BASE}/plans/{body['plan_id']}")).json()
     params = plan["steps"][0]["params"]
     rel = f"attachments/{PID}/{out['attachment_id']}_voice.mp3"
-    assert params == {"project_id": PID, "source_path": rel}             # ни filename, ни пути модели
+    assert params == {"project_id": PID, "source_path": rel}
     assert "voice.mp3" in body["explanation_ru"]
-    # модель видит только {id, name, kind, size}
     seen = sent(fake)["attachments"]
     assert seen == [{"id": out["attachment_id"], "name": "voice.mp3", "kind": "audio", "size": len(MP3)}]
     prompt = json.dumps(sent(fake), ensure_ascii=False)
@@ -278,7 +269,7 @@ async def test_wrong_kind_gives_a_clear_russian_clarification_and_keeps_the_file
     assert body["attachment_request"]["action_id"] == "montage.upload_voice"
     assert body["attachments_used"] == []
     (row,) = await rows(live)
-    assert row.consumed_at is None                                       # файл не потрачен
+    assert row.consumed_at is None
 
 
 async def test_wrong_format_for_the_action_is_explained(live) -> None:
@@ -321,7 +312,6 @@ async def test_two_matching_files_ask_which_one(live) -> None:
     use(res(reply([st("montage.upload_voice")])))
     body = (await from_text(live, "загрузи озвучку", [a["attachment_id"], b["attachment_id"]])).json()
     assert body["plan_id"] is None and set(body["clarification_options"]) == {"one.mp3", "two.mp3"}
-    # название файла в тексте снимает вопрос
     use(res(reply([st("montage.upload_voice")])))
     body = (await from_text(live, "загрузи озвучку. Уточнение: two.mp3",
                             [a["attachment_id"], b["attachment_id"]])).json()
@@ -350,7 +340,7 @@ async def test_unknown_malformed_and_projectless_ids_are_refused(live) -> None:
     assert r.status_code == 422 and r.json()["detail"]["code"] == "attachments_need_project"
     r = await live.client.post(f"{BASE}/plans/from-text", json={
         "text": "x", "project_id": PID, "attachments": [out["attachment_id"]] * 1 + ["a" * 32] * 5})
-    assert r.status_code == 422                                           # не больше пяти
+    assert r.status_code == 422
     assert fake.calls == []
 
 
@@ -376,11 +366,11 @@ async def test_claim_is_atomic_for_two_attachments(live) -> None:
 
 async def test_invalid_plan_releases_the_file(live) -> None:
     out = await ok_upload(live, "frame99.png", PNG, "image/png")
-    use(res(reply([st("montage.upload_image", frame_number=99)])))      # такого кадра в проекте нет
+    use(res(reply([st("montage.upload_image", frame_number=99)])))
     r = await from_text(live, "загрузи картинку в кадр 99", [out["attachment_id"]])
     assert r.status_code == 422 and r.json()["detail"]["code"] == "plan_invalid"
     (row,) = await rows(live)
-    assert row.consumed_at is None                                       # можно использовать снова
+    assert row.consumed_at is None
 
 
 async def test_attachment_not_used_by_the_plan_is_not_consumed(live) -> None:
@@ -417,7 +407,6 @@ async def test_two_upload_steps_get_two_different_files(live) -> None:
     paths = [s["params"]["source_path"] for s in out.reply.steps]
     assert paths == [voice.rel_path, pic.rel_path] and sorted(out.reply.attachments_used) == sorted(
         [voice.id, pic.id])
-    # одного файла на два шага не хватает: вопрос, а не повторное использование
     use(res(reply([st("montage.upload_voice"), st("montage.upload_music")])))
     out = await planner.plan_from_text("загрузи озвучку и музыку", operator=OP, project_id=PID,
                                        attachments=[voice])
@@ -425,7 +414,6 @@ async def test_two_upload_steps_get_two_different_files(live) -> None:
     assert out.reply.steps == [] and out.reply.attachments_used == []
 
 
-# --- уборка ---------------------------------------------------------------------------------------------
 
 async def _age(env, att_id: str, days: float) -> None:
     async with env.factory() as s:
@@ -445,7 +433,7 @@ async def test_cleanup_removes_only_old_unused_attachments(live) -> None:
     part.write_bytes(b"x")
     import os
     os.utime(part, (1, 1))
-    res_ = await att.cleanup_unused()                                    # срок из настроек: 7 дней
+    res_ = await att.cleanup_unused()
     assert res_["removed"] == 1 and res_["bytes"] == len(MP3) and res_["orphans"] == 1
     names = {r.name for r in await rows(live)}
     assert names == {"used.mp3", "fresh.mp3"} and not part.exists()
@@ -456,9 +444,9 @@ async def test_cleanup_removes_only_old_unused_attachments(live) -> None:
 async def test_cleanup_respects_settings_and_explicit_age(live, monkeypatch) -> None:
     a = await ok_upload(live, "a.mp3", MP3, "audio/mpeg")
     await _age(live, a["attachment_id"], 3)
-    assert (await att.cleanup_unused())["removed"] == 0                  # 3 дня < 7
+    assert (await att.cleanup_unused())["removed"] == 0
     monkeypatch.setattr(settings, "action_layer_attachment_retention_days", 0)
-    assert (await att.cleanup_unused())["removed"] == 0                  # 0 = не удалять
+    assert (await att.cleanup_unused())["removed"] == 0
     monkeypatch.setattr(settings, "action_layer_attachment_retention_days", 2)
     assert (await att.cleanup_unused())["removed"] == 1
     assert files_under(live) == []
@@ -477,12 +465,11 @@ async def test_cleanup_tolerates_a_file_that_is_already_gone(live) -> None:
 async def test_upload_triggers_throttled_cleanup(live) -> None:
     old = await ok_upload(live, "old.mp3", MP3, "audio/mpeg")
     await _age(live, old["attachment_id"], 30)
-    att._last_cleanup = 0.0                                              # как после перезапуска сервера
-    await ok_upload(live, "new.mp3", MP3, "audio/mpeg")                  # первая загрузка после старта чистит
+    att._last_cleanup = 0.0
+    await ok_upload(live, "new.mp3", MP3, "audio/mpeg")
     assert {r.name for r in await rows(live)} == {"new.mp3"}
 
 
-# --- оценка планировщика: вложения в фикстуре ----------------------------------------------------------------
 
 def test_fixture_has_attachment_cases_and_the_seed_builds_fake_attachments() -> None:
     cases = [c for c in json.loads((Path(__file__).parent / "fixtures" / "action_planner_eval.json").read_text(
@@ -493,5 +480,5 @@ def test_fixture_has_attachment_cases_and_the_seed_builds_fake_attachments() -> 
         refs = seed.fake_attachments(PID, c["context"]["attachments"])
         assert len(refs) == len(c["context"]["attachments"])
         assert all(r.rel_path.startswith(f"attachments/{PID}/") and r.project_id == PID for r in refs)
-        assert refs == seed.fake_attachments(PID, c["context"]["attachments"])      # детерминированно
+        assert refs == seed.fake_attachments(PID, c["context"]["attachments"])
     assert seed.fake_attachments(PID, None) == [] and seed.fake_attachments(PID, []) == []

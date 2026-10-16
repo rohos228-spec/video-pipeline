@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""Rebuild shot breakdown from current scene meaning.
-
-  python scripts/scene_space_rebuild.py --scene fix:dialogue
-"""
 
 from __future__ import annotations
 

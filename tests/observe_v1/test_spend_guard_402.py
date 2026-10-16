@@ -1,4 +1,3 @@
-"""HTTP 402 / credit exhaustion engages the supervisory kill switch only when the setting is on."""
 from unittest.mock import patch
 
 from sqlalchemy import select
@@ -36,7 +35,7 @@ class Auto402(actions_tests.DurableActions):
         async with self.sessions() as s:
             kinds = [r.action_kind for r in (await s.scalars(select(ActionRecord))).all()]
         self.assertIn("kill_switch_on", kinds)
-        with self.assertRaises(kill_switch.KillSwitchActive):  # supervisory work now refused
+        with self.assertRaises(kill_switch.KillSwitchActive):
             await self.supervisor.charge_request("exec-durable")
 
     async def test_setting_off_does_nothing(self):

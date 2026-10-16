@@ -1,21 +1,3 @@
-"""План площадки сцены: зоны, проходы, двери, камера, люди — по компасу.
-
-GPT (fw_action) пишет ``площадка`` на VO-ячейку, GPT (fw_shots) пишет в
-каждом кадре ``зона`` / ``камера`` / ``люди`` / ``меняет``. Всё, что модель
-не написала, код выводит из действия. Дальше код:
-
-* ведёт состояния предметов (дверь закрыта, пока её не открыли в кадре);
-* считает экран из направления камеры (смотрит на север → запад слева);
-* чинит физику: проход через закрытую дверь (вставляет кадр на пороге),
-  «к открытой двери» при закрытой, «идёт на месте», переворот направления
-  движения на экране, переход оси 180° в паре;
-* пишет в кадр ``раскладка``: для точного жеста (смена предмета) —
-  старт до / конец после; для процесса — одно действие в разгаре,
-  без пары «до/после». Положения предметов и отличие от референса.
-
-Направления: север / восток / юг / запад / центр. Модель мира плоская,
-без метрики: сторона зоны = где стоит предмет, человек или камера.
-"""
 
 from __future__ import annotations
 
@@ -124,7 +106,6 @@ def _stems(raw: Any) -> set[str]:
 
 
 def _mentions(name: str, text: str) -> bool:
-    """Все значимые слова имени есть в тексте (без окончаний)."""
     need = _stems(name)
     return bool(need) and need <= _stems(text)
 
@@ -147,7 +128,6 @@ def _right_of(look: str) -> tuple[int, int]:
 
 
 def screen_of(look: str, where: str) -> str:
-    """Где предмет на экране, если камера смотрит ``look``."""
     if where == CENTER or where not in _VEC or look not in _VEC:
         return "в центре"
     vx, vy = _VEC[where]
@@ -161,7 +141,6 @@ def screen_of(look: str, where: str) -> str:
 
 
 def lateral(look: str, where: str) -> int:
-    """-1 слева, +1 справа, 0 по оси камеры."""
     if where not in _VEC or look not in _VEC:
         return 0
     vx, vy = _VEC[where]
@@ -192,7 +171,6 @@ def _facing_on_screen(look: str, face: str) -> str:
 
 
 def _step_toward(where: str, move: str) -> str:
-    """Шаг по пути: противоположная сторона → центр → сторона движения."""
     if move not in DIRS:
         return where
     if where == _OPPOSITE[move]:
@@ -216,7 +194,6 @@ def _is_door(prop_id: str) -> bool:
     return bool(_DOOR_RE.search(prop_id or ""))
 
 
-# ── План площадки ──────────────────────────────────────────────────────
 
 
 def _as_list(raw: Any) -> list[Any]:
@@ -258,7 +235,6 @@ def _norm_state(raw: str) -> str:
 
 
 class ScenePlan:
-    """Нормализованная площадка ячейки: зоны, проходы, люди, состояния."""
 
     def __init__(self) -> None:
         self.zones: dict[str, dict[str, Any]] = {}
@@ -266,7 +242,6 @@ class ScenePlan:
         self.people: dict[str, dict[str, str]] = {}
         self.derived: list[str] = []
 
-    # зоны
     def zone_key(self, raw: Any) -> str | None:
         k = _key(raw)
         if not k:
@@ -309,7 +284,6 @@ class ScenePlan:
                     return pk
         return None
 
-    # проходы
     def passage(self, a: str, b: str) -> dict[str, str] | None:
         for p in self.passages:
             if {p["из"], p["в"]} == {a, b}:
@@ -451,7 +425,6 @@ def _add_passage(
     return p
 
 
-# ── Кадры ──────────────────────────────────────────────────────────────
 
 
 def _shot_text(shot: dict[str, Any]) -> str:
@@ -534,7 +507,6 @@ def _scene_n(shot: dict[str, Any]) -> int:
 
 
 def _scene_jump(prev: dict[str, Any] | None, shot: dict[str, Any]) -> bool:
-    """Склейка двух карточек сцены — не непрерывный проход через дверь."""
     if prev is None:
         return False
     a, b = _scene_n(prev), _scene_n(shot)
@@ -549,7 +521,6 @@ _PUNCT_END = (",", ".", ";", ":", "—", "!", "?", "…")
 
 
 def _split_vo(text: str) -> tuple[str, str] | None:
-    """Кусок закадра надвое: по знаку препинания ближе к середине, иначе по слову."""
     words = str(text or "").split()
     if len(words) < 2:
         return None
@@ -571,7 +542,6 @@ def _split_vo(text: str) -> tuple[str, str] | None:
 
 
 def accusative(name: str) -> str:
-    """«входная дверь» → «входную дверь», «калитка» → «калитку» (вин. падеж)."""
     out: list[str] = []
     for word in name.split():
         low = word.casefold()
@@ -586,7 +556,6 @@ def accusative(name: str) -> str:
 
 
 def _renumber_scene(shots: list[dict[str, Any]], prefix: str) -> None:
-    """После вставки: K-номера сцены ``prefix`` по порядку, parent_id = K1."""
     k = 0
     first = f"{prefix}-K1"
     for shot in shots:
@@ -618,7 +587,6 @@ def _is_close(shot: dict[str, Any]) -> bool:
     return size.startswith(("круп", "детал", "cu", "ecu"))
 
 
-# Канон R-PLAN-STEP: docs/plan_rules_script_frames_qc.md
 _PLAN_RUNG = (
     ("дальний", 0, "ДАЛЬНИЙ"),
     ("общий", 1, "ОБЩИЙ"),
@@ -629,13 +597,11 @@ _PLAN_RUNG = (
     ("детал", 5, "ДЕТАЛЬ"),
 )
 _PLAN_NAMES = ("ДАЛЬНИЙ", "ОБЩИЙ", "СРЕДНИЙ", "СРЕДНЕ-КРУПНЫЙ", "КРУПНЫЙ", "ДЕТАЛЬ")
-# Запрет соседних склеек (быт 2↔3 и 3↔4)
 _FORBIDDEN_ADJACENT = frozenset({(1, 2), (2, 1), (2, 3), (3, 2)})
 
 
 def _plan_rung(raw: Any) -> int | None:
     k = _key(raw).replace("ё", "е")
-    # длинные префиксы раньше коротких («средне-крупн» до «средн»)
     for prefix, n, _name in _PLAN_RUNG:
         if k.startswith(prefix) or prefix in k:
             return n
@@ -659,7 +625,6 @@ def _step_away_plan(plan: str, obj: str) -> str:
         "тело": 2,
     }.get(_key(obj))
     if want is not None and want != idx:
-        # не прыгать в запрещённую соседнюю пару с текущим
         if (idx, want) not in _FORBIDDEN_ADJACENT:
             return _plan_name(want)
     for delta in (2, -2, 1, -1, 3, -3):
@@ -669,13 +634,11 @@ def _step_away_plan(plan: str, obj: str) -> str:
     return _plan_name(idx)
 
 
-# Соседние имена ≥45° номинал — запас к правилу 30°. «с плеча» рядом с 3/4 не ставим.
 _NAMED_ANGLE_30 = ("фронт", "3/4", "сверху", "снизу")
 _ANGLE_TOKENS = ("с плеча", "макро", "сверху", "снизу", "3/4", "фронт")
 
 
 def named_angle_token(raw: Any) -> str:
-    """Короткое имя ракурса из поля (в т.ч. «уровень глаз, …, фронт»)."""
     k = _key(raw)
     if not k:
         return ""
@@ -686,7 +649,6 @@ def named_angle_token(raw: Any) -> str:
 
 
 def angles_under_30(prev: Any, cur: Any) -> bool:
-    """True = именованные ракурсы ближе 30° (совпали или 3/4↔с плеча)."""
     a = named_angle_token(prev)
     b = named_angle_token(cur)
     if not a and not b:
@@ -697,7 +659,6 @@ def angles_under_30(prev: Any, cur: Any) -> bool:
 
 
 def next_named_angle_30(raw: Any, obj: Any = "") -> str:
-    """Следующий именованный ракурс с шагом ≥30°."""
     cur = named_angle_token(raw) or _key(raw)
     objk = _key(obj)
     if objk in {"предмет", "взгляд"}:
@@ -719,7 +680,6 @@ def _with_angle_token(raw: Any, nxt: str) -> str:
 
 
 def _core_action(shot: dict[str, Any]) -> str:
-    """Действие без префикса «уже лежит…,» — это конец прошлого кадра, не жест."""
     act = " ".join(str(shot.get("действие") or shot.get("action") or "").split())
     stripped = _ALREADY_CLAUSE_RE.sub("", act, count=1).strip()
     return stripped or act
@@ -744,7 +704,6 @@ def _freeze_copies_action(text: str, act: str) -> bool:
     return _key(act) in _key(text)
 
 
-# Глагольный список — запасной сигнал; главный критерий — смена состояния / необратимость.
 _PRECISE_VERB_RE = re.compile(
     r"открыл|открыва|закрыл|закрыва|положил|клад[её]т|достал|вынул|"
     r"взял|бер[её]т|вставл|сунул|сорвал|разорв|подписал|поставил печат|"
@@ -819,20 +778,10 @@ def _is_generic_freeze(start: str, end: str) -> bool:
 
 
 def needs_freeze(shot: dict[str, Any]) -> bool:
-    """Пара старт/конец только у точного жеста (смена предмета), не у процесса."""
     return freeze_decision(shot)[0]
 
 
 def freeze_decision(shot: dict[str, Any]) -> tuple[bool, str]:
-    """СТАРТ/КОНЕЦ vs процесс: смена состояния / необратимость важнее списка глаголов.
-
-    Эвристика (R-FREEZE-PRECISE):
-    - меняется предмет/дверь (поле ``меняет``) → старт+конец;
-    - необратимое действие (сломал, подписал, сжёг…) → старт+конец;
-    - непрерывный процесс (идёт, говорит, смотрит…) → одна картинка;
-    - GPT ``точность`` / явные разные старт·конец — как указано;
-    - глагольный список — только запасной сигнал, если нет процесса.
-    """
     flag = _precision_flag(shot.get("точность"))
     if flag is False:
         return False, "GPT пометил «точность: нет» — это процесс, одна картинка"
@@ -868,7 +817,6 @@ def freeze_decision(shot: dict[str, Any]) -> tuple[bool, str]:
 
 
 def _freeze_broken(start: str, end: str, act: str) -> bool:
-    """Старт = конец или оба копируют глагол — в кадре нет видимого изменения."""
     if not start or not end:
         return True
     if _key(start) == _key(end):
@@ -884,7 +832,6 @@ def _freeze_broken(start: str, end: str, act: str) -> bool:
 
 
 def _freeze_from_changes(shot: dict[str, Any]) -> tuple[str, str]:
-    """Состояние до жеста / после жеста. Не копировать глагол действия."""
     who = _actor_name(shot) or "герой"
     act = _core_action(shot)
     start_bits: list[str] = []
@@ -1018,12 +965,10 @@ def _focal_prop_keys(shot: dict[str, Any], props: dict[str, dict[str, Any]]) -> 
 
 
 def _turn(cam: dict[str, str], side: str) -> dict[str, str]:
-    """Камера на соседнюю сторону (90°): ``side`` = новая сторона стояния."""
     return {"где": side, "смотрит": _OPPOSITE[side]}
 
 
 class _Sim:
-    """Прогон кадров подряд. ``_ro`` — кадр соседней ячейки: только контекст."""
 
     def __init__(self, plan: ScenePlan, shots: list[dict[str, Any]]) -> None:
         self.plan = plan
@@ -1034,7 +979,6 @@ class _Sim:
     def owned(shot: dict[str, Any]) -> bool:
         return not shot.get("_ro")
 
-    # 1. зоны кадров и проходы
     def assign_zones(self) -> None:
         prev_zone: str | None = None
         for shot in self.shots:
@@ -1061,8 +1005,6 @@ class _Sim:
                 continue
             if _cut_is_soft(cur) or _scene_jump(prev, cur):
                 continue
-            # дверь в прошлом кадре не делает проход в другую зону, если
-            # прибытие про дверь/вход не говорит (склейка сцен ≠ ходьба).
             text_cur = _shot_text(cur)
             text_prev = _shot_text(prev)
             if not _ENTER_RE.search(text_cur) and not _DOOR_RE.search(text_cur):
@@ -1084,9 +1026,7 @@ class _Sim:
                 f"проход «{self.plan.zones[a]['id']}» → «{self.plan.zones[b]['id']}»"
             )
 
-    # 2. камера и люди
     def entry_door(self, i: int) -> tuple[str, str] | None:
-        """(дверь, сторона в текущей зоне), если в зону вошли из прошлого кадра."""
         if i == 0:
             return None
         a, b = self.shots[i - 1]["_zk"], self.shots[i]["_zk"]
@@ -1182,7 +1122,6 @@ class _Sim:
                 last[row["кто"]] = {**row, "_zk": zk}
             shot["люди"] = people
 
-    # 3. состояния предметов
     def infer_changes(self) -> None:
         for i, shot in enumerate(self.shots):
             changes = _norm_changes(shot.get("меняет"))
@@ -1216,7 +1155,6 @@ class _Sim:
             if pk:
                 states[pk] = c["состояние"]
 
-    # 4. физика
     def check_doors(self) -> None:
         states = self.plan.initial_states()
         i = 0
@@ -1280,11 +1218,9 @@ class _Sim:
             i += 1
 
     def open_jumped_scene_wide(self) -> None:
-        """Отключено для script_frames_qc: без авто-вставки «общий вид {место}»."""
         return
 
     def resplit_threshold_vo(self) -> None:
-        """QC мог вернуть весь закадр родителю — снова отдать половину кадру на пороге."""
         for i, shot in enumerate(self.shots):
             if shot.get("вставлен") != "порог" or i == 0:
                 continue
@@ -1300,7 +1236,6 @@ class _Sim:
             shot["закадр"] = halves[1]
 
     def check_entry_shown(self) -> None:
-        """Первый кадр новой зоны не «уже внутри»: вход виден (match on action)."""
         for i, shot in enumerate(self.shots):
             entry = self.entry_door(i)
             if not entry or not self.owned(shot) or _cut_is_soft(shot):
@@ -1415,7 +1350,6 @@ class _Sim:
         return True
 
     def vary_shot_sizes(self) -> None:
-        """Одинаковый план подряд, запрет ОБЩИЙ↔СРЕДНИЙ / СРЕДНИЙ↔СРЕДНЕ-КРУПНЫЙ, прыжок 3+."""
         prev: dict[str, Any] | None = None
         for shot in self.shots:
             if not self.owned(shot) or prev is None or prev.get("_zk") != shot.get("_zk"):
@@ -1430,12 +1364,10 @@ class _Sim:
             forbidden = (prev_r, cur_r) in _FORBIDDEN_ADJACENT
             if delta == 0 or forbidden or delta >= 3:
                 nxt = None
-                # После КРУПНЫЙ/ДАЛЬНИЙ предпочитаем легальный СРЕДНИЙ (тело/двое),
-                # иначе лестница залипает на ОБЩИЙ↔СРЕДНЕ-КРУПНЫЙ без СРЕДНИЙ.
                 prefer_sredniy = []
                 obj_k = str(shot.get("объект") or "").strip().casefold()
                 if prev_r in (0, 4) and obj_k in ("тело", "двое", ""):
-                    prefer_sredniy = [_plan_name(2)]  # СРЕДНИЙ
+                    prefer_sredniy = [_plan_name(2)]
                 for cand in (
                     *prefer_sredniy,
                     _step_away_plan(str(shot.get("план") or ""), str(shot.get("объект") or "")),
@@ -1472,11 +1404,6 @@ class _Sim:
             prev = shot
 
     def vary_repeated_camera(self) -> None:
-        """Правило 30°: смена плана или тот же объект — угол не тот же.
-
-        Компас: соседняя сторона (90°), если ось 180° и стороны людей держатся.
-        Имя ракурса: ступень ≥30°, если совпало с прошлым кадром.
-        """
         for i in range(1, len(self.shots)):
             prev, cur = self.shots[i - 1], self.shots[i]
             if prev["_zk"] != cur["_zk"] or not self.owned(cur):
@@ -1528,7 +1455,6 @@ class _Sim:
         cam: dict[str, str],
         sides: dict[str, int],
     ) -> bool:
-        """90° не ломает лево/право и не прячет человека за камеру."""
         look = cam["смотрит"]
         for row in shot.get("люди") or []:
             if row.get("движется") or row.get("где") not in DIRS:
@@ -1555,7 +1481,6 @@ class _Sim:
         return True
 
     def _people_sides(self, i: int) -> dict[str, int]:
-        """Последняя сторона экрана каждого человека в зоне кадра ``i``."""
         zk = self.shots[i]["_zk"]
         sides: dict[str, int] = {}
         for shot in self.shots[:i]:
@@ -1599,7 +1524,6 @@ class _Sim:
                 ))
 
     def check_axis(self) -> None:
-        """Ось 180°: стоящий человек не меняет сторону экрана внутри зоны."""
         for i in range(1, len(self.shots)):
             cur = self.shots[i]
             if _cut_is_soft(cur) or not self.owned(cur):
@@ -1622,11 +1546,9 @@ class _Sim:
                 fixed=True,
             ))
 
-    # 5. раскладка
     def _hide_arrivals_at_start(
         self, shot: dict[str, Any], start_states: dict[str, str]
     ) -> None:
-        """Кладёт/ставит: на старте предмета ещё нет на столе."""
         for c in shot.get("меняет") or []:
             if not isinstance(c, dict):
                 continue
@@ -1853,14 +1775,12 @@ class _Sim:
 
 _TMP_KEYS = ("_zk", "_start", "_end", "_ro", "_cell", "_cam_given", "_почему_точность")
 
-# Дневник: apply_scene_plan_ops ставит список — сюда падают решения СТАРТ/КОНЕЦ.
 FREEZE_DECISIONS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
     "scene_plan_freeze_decisions", default=None
 )
 
 
 def _merge_plans(raws: list[Any]) -> dict[str, Any]:
-    """Площадки нескольких ячеек → одна (зоны/проходы/люди без дублей)."""
     merged: dict[str, Any] = {"зоны": [], "проходы": [], "люди": []}
     zones: dict[str, dict[str, Any]] = {}
     for raw in raws:
@@ -1887,12 +1807,6 @@ def _merge_plans(raws: list[Any]) -> dict[str, Any]:
 def apply_scene_plan_cells(
     cells: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
-    """Несколько ячеек подряд: ``[{"key", "shots", "plan", "owned"}]``.
-
-    Кадры ``owned=False`` — контекст соседей (двери, путь, ось), их не
-    правим и не возвращаем. Кадры своих ячеек правятся на месте (в т.ч.
-    вставка кадра на пороге). Возвращает (общая площадка, проблемы по key).
-    """
     raws = [c.get("plan") for c in cells if c.get("plan")]
     plan = parse_plan(_merge_plans(raws)) if raws else ScenePlan()
     flat: list[dict[str, Any]] = []
@@ -1974,12 +1888,6 @@ def apply_scene_plan_cells(
 def apply_scene_plan(
     shots: list[Any], plan_raw: Any
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Нормализовать площадку и кадры одной ячейки, починить физику, раскладка.
-
-    Мутирует ``shots`` (может вставить кадр на пороге). Возвращает
-    (площадка для attrs, список проблем с флагом ``исправлено``).
-    Повторный прогон на своём выходе ничего не меняет.
-    """
     cell = {"key": "_", "shots": shots, "plan": plan_raw, "owned": True}
     base, issues_by = apply_scene_plan_cells([cell])
     issues = issues_by.get("_", [])
@@ -1992,7 +1900,6 @@ def with_plan_notes(
     issues: list[dict[str, Any]],
     shots: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """Площадка + история правок кода; ``shots`` — отсечь заметки чужих кадров."""
     out = dict(base)
     old = old_raw if isinstance(old_raw, dict) else {}
     derived = [*(old.get("выведено_кодом") or []), *(base.get("выведено_кодом") or [])]
@@ -2028,7 +1935,6 @@ def plan_fix_notes(issues: list[dict[str, Any]]) -> list[str]:
 
 
 def notes_for_shots(notes: list[Any], shot_ids: set[str] | None) -> list[str]:
-    """Заметки только про кадры этой ячейки (после разрезки seed-ячейки)."""
     out: list[str] = []
     for note in notes:
         m = _NOTE_ID_RE.match(str(note))
@@ -2037,7 +1943,6 @@ def notes_for_shots(notes: list[Any], shot_ids: set[str] | None) -> list[str]:
     return out
 
 
-# ── Схема сверху для отчёта ───────────────────────────────────────────
 
 
 _SVG_POS = {
@@ -2055,7 +1960,6 @@ def _zones_for_svg(
     passages: list[Any],
     shots: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
-    """Не тащить всю карту фильма в каждую ячейку — только зоны кадров + соседи."""
     used = {_key(s.get("зона")) for s in (shots or []) if s.get("зона")}
     used.discard("")
     if not used:
@@ -2086,7 +1990,6 @@ def _cam_label(shot: dict[str, Any], fallback: int) -> str:
 
 
 def plan_svg(plan: dict[str, Any], shots: list[dict[str, Any]] | None = None) -> str:
-    """Схема сверху: зоны сеткой, предметы по сторонам, камеры кадров."""
     zones_all = [z for z in (plan or {}).get("зоны") or [] if isinstance(z, dict)]
     if not zones_all:
         return ""

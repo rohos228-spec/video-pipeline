@@ -86,33 +86,28 @@ def _load_sibling(name: str):
     return mod
 
 
-loc = _load_sibling("e2e_action_layer_local_exec")      # Api, Db, Report, server_env, serve_main, ffprobe, helpers
-prod = _load_sibling("e2e_media_production_route")      # make_png, outsee paths
-qc = _load_sibling("e2e_vibecode_script_frames_qc")     # SSE / JSON chat bodies, request_text
-scan = _load_sibling("scan_secrets")                    # scan_tree
+loc = _load_sibling("e2e_action_layer_local_exec")
+prod = _load_sibling("e2e_media_production_route")
+qc = _load_sibling("e2e_vibecode_script_frames_qc")
+scan = _load_sibling("scan_secrets")
 
 DEFAULT_PORT = 18831
 DEFAULT_FAKE_PORT = 18832
-DEFAULT_VOICE = os.environ.get("VP_STAND_VOICE_WAV", "")  # wav с русской речью (SAPI); путь задаёт вызывающий
+DEFAULT_VOICE = os.environ.get("VP_STAND_VOICE_WAV", "")
 DEFAULT_ASR = "medium"
 LEVELS = ("A", "B", "C", "D", "E")
-# Node groups the stand can put into the project graph (``--prompt-group``). The node keys are the group's production ids
-# (app.services.node_groups._script_frames_qc_group; a drift test compares them), kept here as literals because the parent
-# process of the stand must not import ``app`` (settings / .env).
 PROMPT_GROUPS = ("script_frames_qc",)
 PROMPT_GROUP_ANCHOR = "n_excel_gpt_1"
-SECOND_GENERIC_NODE = "n_excel_gpt_2"       # the generic node behind hero / items: the group chain leaves a stale active key (F10-D12)
+SECOND_GENERIC_NODE = "n_excel_gpt_2"
 GROUP_NODE_KEYS: dict[str, tuple[str, ...]] = {
     "script_frames_qc": ("n_excel_gpt_fw_script", "n_excel_gpt_fw_action", "n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc",
                          "n_excel_gpt_fw_report"),
 }
-# model-calling nodes of the group (the report node is code only) -> oracle kind; one request each for a one-cell project
 GROUP_LLM_KINDS: dict[str, tuple[str, ...]] = {
     "script_frames_qc": ("group_skeleton", "group_action", "group_shots", "group_qc"),
 }
 EXIT_PASS, EXIT_FAIL, EXIT_ARGS = 0, 1, 2
 
-# fake credentials: short on purpose (scan_secrets looks for sk-/vk-/Bearer + 20 chars)
 FAKE_KEYS = {"vibecode": "fake-llm-key", "outsee": "fake-outsee-key", "elevenlabs": "fake-eleven-key", "kie": "fake-kie-key"}
 PROVIDERS = ("llm", "outsee_image", "outsee_video", "tts", "sfx", "kie_music")
 
@@ -126,12 +121,9 @@ KIE_POLL = "/api/v1/generate/record-info"
 TTS_RE = re.compile(r"^/v1/text-to-speech/[^/?#]+$")
 SFX_PATH = "/v1/sound-generation"
 CHAT_PATH = "/v1/chat/completions"
-# public file hosts outsee_http.ensure_public_image_url uploads a video start frame to (outsee_http.py:1002-1075)
 PUBLIC_IMAGE_HOSTS = ("litterbox.catbox.moe", "catbox.moe", "uguu.se", "0x0.st", "tmpfiles.org")
 
-# ───────────────────────────── pure helpers (unit-tested) ─────────────────────────────
 
-# node type of the default graph -> (level, provider kind of its paid seam or None)
 NODE_LEVEL: dict[str, str] = {
     "plan": "A", "script": "A", "split": "A", "excel_gpt": "A", "image_prompts": "A", "animation_prompts": "A",
     "sfx_plan": "A",
@@ -153,7 +145,6 @@ def level_index(level: str) -> int:
     return LEVELS.index(level)
 
 
-# the same, per node KEY of the default graph (the two excel_gpt nodes and the text nodes sit at different levels)
 NODE_KEY_LEVEL: dict[str, str] = {
     "n_plan": "A", "n_script": "A", "n_split": "A", "n_excel_gpt_1": "A",
     "n_hero": "B", "n_items": "B", "n_excel_gpt_2": "B", "n_image_prompts": "B", "n_images": "B",
@@ -225,8 +216,8 @@ def expected_paid_counts(frames: int, *, hero: int = 0, items: int = 0, sfx_even
             "kie_music": music, "sfx": sfx_events}
 
 
-HOLLOW_PHRASE = "нет исходных данных для заполнения"          # app.generation_options._PLACEHOLDER_PHRASES (a test compares)
-HOLLOW_MIN_PLACEHOLDERS = 3                                    # app.generation_options.is_scene_prompt_hollow(min_placeholders=3)
+HOLLOW_PHRASE = "нет исходных данных для заполнения"
+HOLLOW_MIN_PLACEHOLDERS = 3
 
 
 def _attrs_of(row: dict) -> dict:
@@ -288,7 +279,6 @@ class Report(loc.Report):
         print("ADVISE " + text[:300], flush=True)
 
 
-# ───────────────────────────── fake providers (one loopback server) ─────────────────────────────
 
 def _ff() -> str:
     return loc.ffmpeg_exe()
@@ -383,7 +373,7 @@ class FakeProviders:
                 n = int(self.headers.get("Content-Length") or 0)
                 return self.rfile.read(n) if n else b""
 
-            def do_POST(self):  # noqa: N802
+            def do_POST(self):
                 raw = self._body()
                 path = urlsplit(self.path).path
                 try:
@@ -433,7 +423,7 @@ class FakeProviders:
                             dur = 1.0
                         key = round(dur, 1)
                         if key not in outer._sfx_cache:
-                            outer._sfx_cache[key] = make_mp3(dur)      # the clip is as long as the request asked for
+                            outer._sfx_cache[key] = make_mp3(dur)
                         data = outer._sfx_cache[key]
                     return self._send(200, data, "audio/mpeg")
                 if path == KIE_CREATE:
@@ -447,7 +437,7 @@ class FakeProviders:
                     outer.extra["not_found"] += 1
                 return self._json(404, {"error": "not found", "path": path})
 
-            def do_GET(self):  # noqa: N802
+            def do_GET(self):
                 parts = urlsplit(self.path)
                 path = parts.path
                 if path.startswith(OUTSEE_STATUS):
@@ -465,7 +455,7 @@ class FakeProviders:
                     with outer._lock:
                         outer.extra["balance"] += 1
                     return self._json(200, {"balance": 100.0})
-                if path == "/v1/user/subscription":  # автоснимок остатка ElevenLabs (W55)
+                if path == "/v1/user/subscription":
                     with outer._lock:
                         outer.extra["balance"] += 1
                     return self._json(200, {"character_limit": 100000, "character_count": 0})
@@ -513,7 +503,6 @@ class FakeProviders:
         self.httpd.daemon_threads = True
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True, name="fake-providers")
 
-    # --- text LLM ---
     def _chat(self, h: BaseHTTPRequestHandler, body: dict) -> None:
         if not h._auth("vibecode"):
             return
@@ -523,7 +512,7 @@ class FakeProviders:
             n = self.counts["llm"]
         try:
             answer = self.oracle({"text": text, "body": body, "n": n}, self)
-        except Exception as exc:  # noqa: BLE001 - an oracle bug must be visible, not silent
+        except Exception as exc:
             answer = f"ORACLE ERROR: {type(exc).__name__}: {exc}"
         rec = {"n": n, "chars": len(text), "answer_chars": len(answer), "stream": bool(body.get("stream")),
                "model": body.get("model")}
@@ -536,7 +525,6 @@ class FakeProviders:
         else:
             h._send(200, qc.chat_json_body(answer, rid))
 
-    # --- TTS: real speech for the real text (Windows SAPI) when available, else the supplied wav ---
     def _tts(self, h: BaseHTTPRequestHandler, body: dict, path: str) -> None:
         text = str(body.get("text") or "")
         with self._lock:
@@ -610,7 +598,6 @@ def sapi_mp3(text: str, work: Path) -> bytes | None:
                 pass
 
 
-# ───────────────────────────── request classification (child hook and tests) ─────────────────────────────
 
 def classify_request(method: str, host: str, path: str, fake_port: int | None = None, port: int | None = None) -> str:
     """Provider bucket of ONE outgoing request (by path: the stand points every provider at one loopback port)."""
@@ -638,7 +625,6 @@ def classify_request(method: str, host: str, path: str, fake_port: int | None = 
     return "other"
 
 
-# ───────────────────────────── child process: settings, send hook ─────────────────────────────
 
 def child_main() -> int:
     """Thin launcher of ``python -m app.main``: the sibling's socket guard / secret blanking, then OUR seams."""
@@ -671,7 +657,7 @@ def install_child_seams(cfg: dict) -> None:
     def put(name: str, value) -> None:
         try:
             setattr(settings, name, value)
-        except Exception:  # noqa: BLE001
+        except Exception:
             object.__setattr__(settings, name, value)
 
     base = f"http://127.0.0.1:{fake}"
@@ -681,7 +667,7 @@ def install_child_seams(cfg: dict) -> None:
     put("gpt_base_url", base)
     put("outsee_api_key", FAKE_KEYS["outsee"])
     put("outsee_api_base_url", base)
-    put("outsee_allow_public_image_hosts", True)   # W68: боевой умолчательный запрет; в сухом стенде файлообменник - локальный фейк
+    put("outsee_allow_public_image_hosts", True)
     put("image_provider", "outsee")
     put("video_provider", "outsee")
     put("kie_api_key", FAKE_KEYS["kie"])
@@ -700,11 +686,11 @@ def install_child_seams(cfg: dict) -> None:
         if isinstance(getattr(client, "_transport", None), httpx.ASGITransport):
             return await original_send(client, request, **kwargs)
         host = (request.url.host or "").lower()
-        if host == "api.elevenlabs.io":        # sfx_gen.py has the URL as a literal: the stand's seam moves it to the fake
+        if host == "api.elevenlabs.io":
             request.url = request.url.copy_with(scheme="http", host="127.0.0.1", port=fake)
             request.headers["host"] = f"127.0.0.1:{fake}"
             host = "127.0.0.1"
-        elif host in PUBLIC_IMAGE_HOSTS:       # image-to-video: the start frame is uploaded to a PUBLIC file host
+        elif host in PUBLIC_IMAGE_HOSTS:
             request.url = request.url.copy_with(scheme="http", host="127.0.0.1", port=fake, path=f"/hostfake/{host}")
             request.headers["host"] = f"127.0.0.1:{fake}"
             host = "127.0.0.1"
@@ -722,7 +708,7 @@ def install_child_seams(cfg: dict) -> None:
     from app.bots import outsee_http
 
     async def no_curl_post(*_a, **_k):
-        return None        # the curl submit fallback is a second transport the hook could not count
+        return None
 
     outsee_http._post_generate_via_curl = no_curl_post
 
@@ -733,7 +719,7 @@ def keep_group_report_out_of_repo(work: Path) -> None:
     try:
         from app.services import shots_report
         shots_report.find_project_root = lambda: Path(work)
-    except Exception:  # noqa: BLE001 - the module is absent only in a trimmed checkout; the group is then not used either
+    except Exception:
         pass
 
 
@@ -758,7 +744,6 @@ def wire_counts(wire: list[dict]) -> dict[str, int]:
 
 
 
-# ───────────────────────────── text oracle: valid, contract-shaped answers for every text node ─────────────────────────────
 
 FRAME_TEXTS = (
     "Человек находит на старом столе пожелтевшую записку и долго читает неровные строки.",
@@ -766,9 +751,6 @@ FRAME_TEXTS = (
     "Тогда он возвращает записку на прежнее место, чтобы её нашёл следующий.",
 )
 SCRIPT_TEXT = " ".join(FRAME_TEXTS)
-# ``--prompt-group script_frames_qc``: the group is fed the SAME synthetic story the group's own stand uses (its answers are shaped
-# for exactly this text and pass the production rule passes: VO coverage, shot grammar, scene plan); the story replaces the
-# one-line note only in that mode.
 GROUP_SCENE_VOS = tuple(sc["vo"] for sc in qc.SCENES)
 GROUP_VO = qc.FULL_VO
 PLAN_TEXT = ("Короткий ролик о человеке и старой записке. Вступление: комната, стол, пожелтевшая бумага. Развитие: "
@@ -798,11 +780,10 @@ class TextOracle:
         self.sfx_requests = 0
         self.with_hero = with_hero
         self.prompt_group = prompt_group
-        self.frames: list[dict] = []         # filled from the project's own frames when a later node asks about them
+        self.frames: list[dict] = []
         self.script_text = GROUP_VO if prompt_group else SCRIPT_TEXT
         self.frame_texts = GROUP_SCENE_VOS if prompt_group else FRAME_TEXTS
 
-    # the group's master prompts open the request (the same way "# Доп. работа с Excel" opens the generic node's)
     GROUP_MARKERS = (
         ("# Агент: каркас сцены", "group_skeleton"),
         ("# РАЗБОР СЦЕН / АГЕНТ ПЛОЩАДКИ", "group_action"),
@@ -881,7 +862,7 @@ class TextOracle:
         return self._group_ops(text, lambda n: {"кадры": qc._kadry(n)})
 
     def answer_group_qc(self, text: str, ctx: dict) -> str:
-        return json.dumps({"ops": []}, ensure_ascii=False)         # nothing to fix: the checked fields are already valid
+        return json.dumps({"ops": []}, ensure_ascii=False)
 
     def answer_image_prompts(self, text: str, ctx: dict) -> str:
         ops = [{"frame_uuid": u, "fields": {"промт_картинки": IMAGE_PROMPT_TEXT}} for u in self.frame_uuids(text)]
@@ -906,7 +887,6 @@ class TextOracle:
             events.append({"frame_number": int(f["frame_number"]), "t_start": round(float(f["start"]) + 0.5, 2),
                            "duration": 1.0, "kind": kinds[i % len(kinds)],
                            "prompt": "soft paper whoosh" if i % 2 == 0 else "light desk hit", "gain": 0.5, "duck": False})
-        # the application sends one paid request per DISTINCT (prompt, duration): a repeated event is a free copy
         self.sfx_events = len(events)
         self.sfx_requests = len({(e["prompt"], e["duration"]) for e in events})
         return json.dumps({"events": events}, ensure_ascii=False)
@@ -955,7 +935,6 @@ class TextOracle:
                                     "frames": [{"закадр": t, "длительность": 6} for t in self.frame_texts]}]}, ensure_ascii=False)
 
 
-# ───────────────────────────── driver (parent process) ─────────────────────────────
 
 LAST_RUNNING = {"A": "enriching_1", "B": "generating_images", "C": "generating_videos", "D": "generating_sfx"}
 STATUS_END = {"A": "enrich_1_ready", "B": "images_ready", "C": "videos_ready", "D": "sfx_ready", "E": "assembled"}
@@ -1001,7 +980,7 @@ class Chain:
         self.human_final_detail: Any = "не выполнялось"
         self.auto_off = False
         self.auto_final: dict | None = None
-        self.interventions: list[dict] = []          # operator presses that work around a finding (never hidden: they go to result.json)
+        self.interventions: list[dict] = []
 
     def project(self) -> dict:
         """Full project through the API (used before/after the run: GET /api/projects/{id} also heals and commits)."""
@@ -1028,7 +1007,7 @@ class Chain:
         R = self.R
         payload = {"title": "F10 tiny chain", "topic": self.args.topic, "auto_mode": True, "hero_mode": "auto",
                    "aspect_ratio": "9_16"}
-        payload.update(getattr(self, "create_extra", None) or {})        # the live part sets hero_mode / generators
+        payload.update(getattr(self, "create_extra", None) or {})
         code, body = self.api.post("/api/projects", payload)
         if not R.check("проект создан через настоящий API (201)", code == 201 and isinstance(body, dict) and body.get("id"),
                        (code, str(body)[:300])):
@@ -1077,8 +1056,6 @@ class Chain:
         code, body = self.api.post(f"/api/projects/{self.pid}/steps/plan/run")
         return self.R.check("запуск конвейера: ▶ шага plan через настоящую ручку (200)", code == 200, (code, str(body)[:300]))
 
-    # the pipeline holds after an excel_gpt node by design (enrich_xlsx._hold_pipeline_after_excel_gpt): the OPERATOR
-    # presses the next node's start. The stand does it through the same production route the UI button uses.
     MANUAL_START_AFTER = {"enrich_1_ready": "hero", "enrich_2_ready": "img_pr"}
 
     def operator_start_if_held(self, project: dict, status: str) -> None:
@@ -1216,7 +1193,7 @@ class Chain:
                 self.status_log.append({"t": round(time.time() - self.t0, 2), "status": st})
                 print(f"  [{time.time() - self.t0:6.1f}s] status={st}", flush=True)
                 last, last_change = st, time.time()
-            hook = getattr(self, "tick_hook", None)          # the live part: spend ceilings / frame gate
+            hook = getattr(self, "tick_hook", None)
             if hook is not None:
                 why = hook(st)
                 if why:
@@ -1245,7 +1222,6 @@ class Chain:
         return f"таймаут {int(timeout_s)} с, последний статус {last}"
 
 
-# ───────────────────────────── capture and checks (after the run) ─────────────────────────────
 
 RUNNING_STATUSES = {"planning", "scripting", "splitting", "enriching_1", "enriching_2", "enriching_3", "enriching_4",
                     "enriching_5", "generating_hero", "generating_items", "generating_image_prompts", "generating_images",
@@ -1332,7 +1308,6 @@ def fetch_timeline(api, pid: int, pages: int = 40) -> list[dict]:
     return items
 
 
-# ───────────────────────────── recording API and evaluation ─────────────────────────────
 
 class RecordingApi(loc.Api):
     """loc.Api that remembers every state-changing call of the stand (each must have an operator_audit row)."""
@@ -1481,7 +1456,6 @@ def gather(chain: "Chain", work: Path) -> Evidence:
     return ev
 
 
-# ───────────────────────────── checks ─────────────────────────────
 
 LEDGER_PROVIDER_OF = {"llm": "vibecode", "outsee_image": "outsee", "outsee_video": "outsee", "tts": "elevenlabs",
                       "sfx": "elevenlabs", "kie_music": "kie"}
@@ -1537,7 +1511,7 @@ def level_after(statuses: list[str], final_ok: bool, human_final: bool) -> str |
 
 
 def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextOracle", until: str, work: Path,
-               R: Report, human_final: bool, repo_data_before: float | None) -> dict:  # noqa: C901
+               R: Report, human_final: bool, repo_data_before: float | None) -> dict:
     pid = chain.pid
     seen = [e["status"] for e in chain.status_log]
     final_ok = bool(ev.final_probe.get("has_video") and ev.final_probe.get("has_audio"))
@@ -1546,7 +1520,6 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
             reached is not None and level_index(reached) >= level_index(until),
             chain.stop_reason or "ок")
 
-    # --- nodes ---
     scope = [n for n in ev.nodes if node_in_scope(n["node_type"], until, n["node_key"]) and n["node_type"] != "publish"]
     for n in scope:
         R.check(f"нода {n['node_key']} ({n['node_type']}): статус done", n["status"] == "done",
@@ -1554,7 +1527,6 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
         if int(n.get("attempts") or 0) > 1:
             R.advise(f"нода {n['node_key']}: {n['attempts']} попыток (повтор после отказа)")
 
-    # --- providers: independent counters agree, exact counts per seam ---
     wc = wire_counts(ev.wire)
     diff = compare_wire_to_fake(wc, fake.counts)
     R.check("счётчики провайдеров: отправлено (хук внутри сервера) = принято (loopback-провайдер)", not diff, diff or wc)
@@ -1594,7 +1566,6 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
     R.check("сеть: ни одного запроса за пределы loopback (хук отправки и сторож сокетов)",
             not refused and not ev.net_attempts, {"refused": refused[:3], "net_attempts": ev.net_attempts[:3]})
 
-    # --- image prompts: what the paid image step reads must be a real prompt on EVERY frame (the F10 live hollow-prompt defect) ---
     prompts_info: dict = {}
     if level_index(until) >= level_index("B"):
         prompts_info = frames_prompt_report(ev.frame_rows)
@@ -1614,7 +1585,6 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
         R.check("отчёт группы записан в рабочую папку стенда и не в exports/ репозитория",
                 work_html.is_file() and not repo_html.exists(), {"work": work_html.is_file(), "repo_exports": repo_html.exists()})
 
-    # --- spend ledger ---
     led = summarize_ledger(ev.ledger, pid)
     want = ledger_expectation(wc)
     for prov, n in want.items():
@@ -1631,14 +1601,12 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
             {"без проекта/запуска": led["without_project"], "без run_id": led["without_run"]}, known="F10-D4")
     R.check("spend_ledger: нет строк чужого проекта", led["other_project"] == 0, led["other_project"])
 
-    # --- operator audit ---
     gaps = audit_gaps(chain.api.mutations, ev.audit)
     R.check(f"operator_audit: каждое из {len(chain.api.mutations)} изменяющих обращений стенда записано (метод, путь, код)",
             not gaps, gaps[:5])
     R.check("operator_audit: у каждой записи есть автор и исход", not audit_unattributed(ev.audit),
             audit_unattributed(ev.audit)[:3])
 
-    # --- timeline ---
     items = ev.timeline
     R.check("лента проекта (GET /api/projects/{id}/timeline) не пуста", len(items) > 0, len(items))
     eng = english_only_titles(items)
@@ -1647,7 +1615,6 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
     R.check("лента: есть строки запусков нод, трат и действий оператора",
             all(any(k in str(kind) for kind in kinds) for k in ("node", "spend", "operator")), kinds)
 
-    # --- journal gaps / typed errors ---
     R.check("журнал наблюдения: ни одного неописанного пробела (observation_degradations пуста)",
             not ev.degradations, len(ev.degradations))
     blocking = []
@@ -1662,8 +1629,6 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
     R.check("инциденты: каждый записанный инцидент типизирован (type и статус)", len(typed) == len(ev.incidents),
             len(ev.incidents))
     known_nodes = {"n_hero": "F10-D3", "n_sfx_gen": "F10-D10"}
-    # F10-D11: the anim_pr sidecar spawned by the images step inherits its attempt; a model call still in flight when
-    # the attempt closes is recorded as an unconfirmed request of n_images (timing dependent, not on every run)
     sidecar_race = [b for b in blocking if b[0] == "n_images" and b[1] == "uncertain_request"]
     other = [b for b in blocking if b[0] not in known_nodes and b not in sidecar_race]
     R.check("у чистого прогона нет блокирующих инцидентов наблюдения (кроме описанных находок)", not other, other)
@@ -1680,13 +1645,11 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
     if non_blocking:
         R.advise(f"неблокирующие инциденты наблюдения: {non_blocking}")
 
-    # --- HITL ---
     hitl_rows = [(h.get("kind"), h.get("decision"), h.get("frame_id")) for h in ev.hitl if isinstance(h, dict)]
     pend = [h for h in hitl_rows if h[1] == "pending"]
     if pend:
         R.advise(f"после автопродвижения остались неснятые запросы подтверждения: {pend}")
 
-    # --- final ---
     if level_index(until) >= level_index("E"):
         R.check("final.mp4 существует и в нём есть видео и звук (ffprobe)", final_ok, ev.final_probe or ev.final_path)
         if ev.voice_seconds and ev.final_probe.get("duration"):
@@ -1714,7 +1677,6 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
                 {"publications": ev.publications, "status": ev.project.get("status")})
         R.advise("субтитры выключены по умолчанию в проекте: в этом прогоне они не проверялись")
 
-    # --- repository data untouched ---
     slug_dir = ROOT / "data" / "videos" / chain.slug
     R.check("проект стенда не создан в боевой папке data/ репозитория (нет data/videos/<slug>)",
             not slug_dir.exists(), str(slug_dir))
@@ -1729,10 +1691,7 @@ def run_checks(chain: "Chain", ev: Evidence, fake: FakeProviders, oracle: "TextO
 
 SEAMS = ("auto_on_project_db",)
 
-# ───────────────────────────── findings, honest lists, report ─────────────────────────────
 
-# Findings of THIS stand about production code (file:line checked by a drift test). ``masked_by`` names the stand seam
-# that lets the run continue; without it (``--no-seams``) the run stops where ``stops_at`` says.
 FINDINGS: list[dict] = [
     {"id": "F10-D1", "level": "A", "node": "plan -> script (auto_advance)",
      "title": "Воркер двигает auto_mode-проект по строке master (state.db), а содержимое проекта лежит только в project.db: "
@@ -1930,7 +1889,6 @@ def print_report(R: Report, result: dict) -> None:
     print("result.json:", result["result_json"])
 
 
-# ───────────────────────────── main ─────────────────────────────
 
 def build_cfg(work: Path, port: int, fake_port: int, app_cap_usd: float, seams: list[str] | None = None) -> dict:
     return {"work": str(work), "port": port, "fake_port": fake_port, "app_cap_usd": app_cap_usd,
@@ -1952,7 +1910,7 @@ def server_env(work: Path, port: int, cfg: dict, asr_model: str) -> dict[str, st
         "PYTHONUNBUFFERED": "1",
     })
     if "auto_on_project_db" in (cfg.get("seams") or []):
-        env["WORKER_USE_PROJECT_DB"] = "true"   # боевой флаг F10-D1, не заплатка кода
+        env["WORKER_USE_PROJECT_DB"] = "true"
     else:
         env.pop("WORKER_USE_PROJECT_DB", None)
     return env
@@ -2015,11 +1973,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return args
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: C901
+def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "--serve":
         return child_main()
-    if any(a in ("--live", "--live-preflight") for a in argv):      # the paid part lives in its own sibling script
+    if any(a in ("--live", "--live-preflight") for a in argv):
         return _load_sibling("e2e_full_chain_live").main(argv)
     try:
         args = parse_args(argv)
@@ -2070,7 +2028,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
             ev = gather(chain, work)
     except SystemExit:
         pass
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         R.check("сценарий дошёл до конца без исключений", False, f"{type(exc).__name__}: {exc}")
         import traceback
         traceback.print_exc()
@@ -2088,7 +2046,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     if chain is not None and ev is not None:
         try:
             info = run_checks(chain, ev, fake, oracle, args.until, work, R, chain.human_final, repo_data_before)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             R.check("проверки результата выполнены без исключений", False, f"{type(exc).__name__}: {exc}")
             import traceback
             traceback.print_exc()

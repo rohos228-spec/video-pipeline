@@ -68,11 +68,7 @@ def drop_ai_job_checkpoint(project: Any, name: str) -> None:
 
 
 class TextJobFailed(RuntimeError):
-    """text_job used all its attempts without a reply that parsed and validated.
-
-    A RuntimeError subclass with the original message: existing handlers and the step
-    failure policy see no difference. Transport errors are NOT this type, so a caller
-    can tell "the model answered badly" from "the model could not be reached"."""
+    pass
 
 
 @dataclass

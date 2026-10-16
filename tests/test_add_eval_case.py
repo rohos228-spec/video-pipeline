@@ -1,4 +1,3 @@
-"""scripts/add_eval_case.py: проверка и добавление случая в набор оценки планировщика (без сети и модели)."""
 from __future__ import annotations
 
 import importlib.util
@@ -48,7 +47,6 @@ def ids(path: Path) -> list[str]:
     return [c["id"] for c in json.loads(path.read_text(encoding="utf-8"))["cases"]]
 
 
-# --- набор в порядке, формат стабилен --------------------------------------------------------------
 
 def test_every_existing_fixture_case_passes_the_validator(m) -> None:
     cases = m.load_fixture(FIXTURE)["cases"]
@@ -67,13 +65,12 @@ def test_adding_a_case_only_appends_to_the_file(m, fx) -> None:
     assert errors == []
     after = fx.read_text(encoding="utf-8")
     old_tail = before[: before.rindex("\n ]\n}")]
-    assert after.startswith(old_tail + ",\n")                         # прежние записи не тронуты ни байтом
+    assert after.startswith(old_tail + ",\n")
     assert ids(fx)[-1] == "swap_k9" and len(ids(fx)) == len(json.loads(before)["cases"]) + 1
     added = json.loads(after)["cases"][-1]
     assert list(added) == ["id", "text", "workflow", "context", "outcome", "steps", "also_offered"]
 
 
-# --- исходы ----------------------------------------------------------------------------------------
 
 def test_clarify_and_refuse_cases_are_accepted(m, fx) -> None:
     ok = {"id": "vague_fix", "text": "поправь там что-нибудь", "workflow": "ambiguous", "outcome": "clarify",
@@ -98,7 +95,6 @@ def test_plan_needs_steps_and_other_outcomes_forbid_them(m, fx) -> None:
     assert any("explanation_contains" in e for e in errs)
 
 
-# --- дубликаты и имена ----------------------------------------------------------------------------
 
 def test_duplicate_id_and_text_are_refused_and_the_file_is_untouched(m, fx) -> None:
     before = fx.read_bytes()
@@ -123,7 +119,6 @@ def test_bad_ids_are_refused(m, fx, bad) -> None:
     assert any(e.startswith("id:") for e in errs)
 
 
-# --- реестр: действия и параметры -------------------------------------------------------------------
 
 def test_unknown_action_and_unknown_param_and_bad_value_are_refused(m, fx) -> None:
     errs, _ = m.add_case(plan_case(steps=[{"action_id": "montage.nope", "params": {}}]), fx)
@@ -176,17 +171,15 @@ def test_context_is_validated(m, fx) -> None:
     assert m.add_case(ok, fx)[0] == []
 
 
-# --- предфильтр каталога -----------------------------------------------------------------------------------
 
 def test_prefilter_miss_is_a_warning_not_an_error(m, fx) -> None:
     case = plan_case(id="odd", text="абракадабра", steps=[{"action_id": "montage.delete_frame",
                                                           "params": {"frame_id": "$frame.5"}}])
     errs, warns = m.add_case(case, fx, dry_run=True)
     assert errs == [] and warns and "предфильтр" in warns[0] and "montage.delete_frame" in warns[0]
-    assert "odd" not in ids(fx)                                       # dry-run ничего не пишет
+    assert "odd" not in ids(fx)
 
 
-# --- командная строка --------------------------------------------------------------------------------------
 
 def test_cli_adds_a_plan_case_and_defaults_the_workflow(m, fx, capsys) -> None:
     code = m.main(["--fixture", str(fx), "--id", "cli_swap", "--text", "поменяй шоты девятого кадра местами",
@@ -216,9 +209,9 @@ def test_cli_json_file_and_failure_codes(m, fx, tmp_path, capsys) -> None:
     assert m.main(["--fixture", str(fx), "--json", str(src)]) == 0
     capsys.readouterr()
     before = fx.read_bytes()
-    assert m.main(["--fixture", str(fx), "--json", str(src)]) == 1               # дубликат
+    assert m.main(["--fixture", str(fx), "--json", str(src)]) == 1
     assert "ОШИБКА" in capsys.readouterr().err and fx.read_bytes() == before
-    assert m.main(["--fixture", str(fx), "--id", "only_id"]) == 2                # нет --text
+    assert m.main(["--fixture", str(fx), "--id", "only_id"]) == 2
     assert m.main(["--fixture", str(fx), "--json", str(tmp_path / "missing.json")]) == 2
     assert m.main(["--fixture", str(fx), "--dry-run", "--id", "dry", "--text", "что-то про шоты кадра девять",
                    "--step", "montage.swap_shots", '{"frame_number": 9}']) == 0
@@ -233,7 +226,6 @@ def test_cli_strict_turns_prefilter_warning_into_failure(m, fx, capsys) -> None:
 
 
 def test_a_case_added_by_the_script_is_scored_by_the_eval_helpers(m, fx) -> None:
-    """Добавленный случай читается тем же кодом, что и оценка (scripts/eval_action_planner.py)."""
     assert m.add_case(plan_case(), fx)[0] == []
     spec = importlib.util.spec_from_file_location("eval_action_planner_for_add", ROOT / "scripts" / "eval_action_planner.py")
     ev = importlib.util.module_from_spec(spec)

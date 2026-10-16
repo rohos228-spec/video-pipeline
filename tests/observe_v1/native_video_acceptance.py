@@ -1,20 +1,3 @@
-"""Original video API/worker acceptance using the existing group runner.
-
-Parent wires mode ``native-video`` to prepare/handler_for/run, before app.main
-starts. Only provider HTTP responses are synthetic. The input PNG and the
-transport's MP4 are constructed before startup; the MP4 is outside the project
-so native disk recovery cannot substitute it for a download. No executor,
-FSM, provider method or application verifier is replaced. No managed grant.
-
-Native observe mode has no durable MediaJob or artifact_verified event for
-videos. The worker's original post-step file/Artifact validation remains
-enabled; acceptance additionally calls the original structural verifier on
-the actual downloaded output, without recording a fabricated business fact.
-
-Startup may derive script_ready from the source frames without a split claim.
-Calibrate that baseline with the original status/data guards in a rolled-back
-session; the original explicit video API still owns admission and execution.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -95,7 +78,6 @@ def _state(fixtures):
 
 
 def prepare(fixtures, root, mode):
-    """Construct synthetic prerequisites only, on the copied seed before startup."""
     assert mode == "native-video", mode
     assert Path("/.dockerenv").is_file(), "parent's offline container only"
     assert "app.settings" not in sys.modules, "prepare before application imports/startup"
@@ -179,8 +161,6 @@ def prepare(fixtures, root, mode):
               "decision": None, "profiles": {}, "allowed_actions": []}
     config_path = root / "synthetic-native-video-runtime.json"
     _write(config_path, config)
-    # These are dummy diagnostic credentials for original native HTTP clients.
-    # Outsee's key selects its existing no-CDP branch; the actual model is KIE.
     os.environ.update({"ORCHESTRATOR_RUNTIME_CONFIG": str(config_path), "VIDEO_PROVIDER": "kie",
         "KIE_API_KEY": "synthetic-native-video-token", "KIE_API_BASE_URL": ORIGIN,
         "OUTSEE_API_KEY": "synthetic-native-video-no-cdp", "OUTSEE_API_BASE_URL": ORIGIN,
@@ -213,7 +193,6 @@ def prepare(fixtures, root, mode):
 
 
 def handler_for(fixtures, root, *, base_handler=None):
-    """Serve only the original native client's external HTTP contracts."""
     root, prepared = Path(root), fixtures.native_video_prepared
     image, video = Path(prepared["input_image"]).read_bytes(), Path(prepared["transport_video"]).read_bytes()
 
@@ -366,8 +345,6 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
     from app.telegram.menu import step_by_code
 
     assert not browser and 0 < timeout_s <= 120
-    # "managed" for supervised RECOVERY only (a resume of a known provider task): the probe still gets no
-    # managed start grant, a managed attempt of the node is refused.
     from app.orchestrator.node_spec import capability_spec_for
     from app.services.node_capabilities import require_managed_capability
     assert capability_spec_for("videos").recovery_only, "videos is managed for recovery only"
@@ -407,8 +384,6 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
             "original_step_code": step.code, "declared_step_requires": step.requires.value,
             "status_or_output_writes": False, "managed_eligible": False,
         }
-        # compute_actual_status may inspect/recover disk artifacts. Calibration
-        # must retain the persisted input fixture and all pending node states.
         await input_session.rollback()
     _write(root / "native-video-admission-calibration.json", calibration)
     assert allowed, calibration

@@ -15,13 +15,24 @@ async def test_ensure_public_image_url_uses_fallback_when_yandex_not_configured(
     monkeypatch.setattr(settings, "yandex_storage_bucket", "")
     monkeypatch.setattr(settings, "yandex_storage_access_key", "")
     monkeypatch.setattr(settings, "yandex_storage_secret_key", "")
-    monkeypatch.setattr(settings, "outsee_allow_public_image_hosts", True)  # W68: по умолчанию выключено
+    monkeypatch.setattr(settings, "outsee_allow_public_image_hosts", True)
 
     data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
+    for earlier in ("telegraph", "tmpfiles", "uguu"):
+        monkeypatch.setattr(
+            f"app.bots.outsee_http._host_via_{earlier}",
+            AsyncMock(side_effect=RuntimeError(f"{earlier} offline")),
+        )
+    for later in ("catbox", "0x0"):
+        monkeypatch.setattr(
+            f"app.bots.outsee_http._host_via_{later}",
+            AsyncMock(side_effect=AssertionError(f"{later} must not be reached")),
+        )
+
     with patch("app.bots.outsee_http._host_via_litterbox", new_callable=AsyncMock) as mock_litterbox:
         mock_litterbox.return_value = "https://litterbox.catbox.moe/files/test_frame.png"
-        
+
         hosted = await ensure_public_image_url(data_url)
         assert hosted == "https://litterbox.catbox.moe/files/test_frame.png"
         assert mock_litterbox.called

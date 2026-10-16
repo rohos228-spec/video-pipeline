@@ -1,8 +1,3 @@
-"""W5-3 / D05 (D): допуск повтора split / image_prompts / sd_assemble через настоящий recover_node.
-
-Состояние, которое оставляет исчерпанный нативный запуск, засеивается так же, как в test_text_nodes_recovery.py;
-проверяется, что повтор допущен ровно там, где ничего не записано, и отклонён во всех остальных случаях. Без сети и воркера.
-"""
 import unittest
 import uuid
 from datetime import datetime
@@ -72,7 +67,6 @@ class SplitImagePromptsAdmission(unittest.IsolatedAsyncioTestCase):
                     await self.assert_no_dispatch()
 
     async def test_contract_rejection_and_degradation_never_open_a_retry(self):
-        """SplitContractRejected / a failed post-write check are not format incidents: a human decides."""
         for node_type in RETRYABLE_NEW:
             with self.subTest(node_type=node_type):
                 await self.fresh(node_type, incident_type="contract_rejected")

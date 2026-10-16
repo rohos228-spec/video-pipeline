@@ -99,7 +99,6 @@ LIST_KEY: dict[str, str] = {
     "camera": "shot_plan",
     "action": "scenes",
     ASSEMBLER: "scenes",
-    # Снят с волн, но старые чекпоинты style.json ещё читает сборка.
     "style": "style_arc",
 }
 

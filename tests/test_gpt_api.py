@@ -32,7 +32,6 @@ from app.services.gpt_api import (
 def _enable(monkeypatch) -> None:
     from app.settings import settings
 
-    # Явно kie: иначе .env с TEXT_LLM_PROVIDER=vibecode перехватит путь/модель.
     monkeypatch.setattr(settings, "text_llm_provider", "kie")
     monkeypatch.setattr(settings, "gpt_api_key", "test-key")
     monkeypatch.setattr(settings, "gpt_base_url", "https://gw.test")
@@ -153,7 +152,6 @@ async def test_vibecode_upstream_error_stream_falls_back_to_nostream(
 
 @pytest.mark.asyncio
 async def test_stream_cancelled_error_is_not_retryable(monkeypatch) -> None:
-    """⏹ / ▶ другой ноды: CancelledError нельзя превращать в retryable GptApiError."""
 
     class _BoomStream:
         status_code = 200

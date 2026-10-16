@@ -1,11 +1,3 @@
-"""SQLite authority contracts for the existing native runtime and read APIs.
-
-Run only in the parent's isolated offline container. The plan executor uses a
-synthetic result at its existing runner boundary. Image rejection starts at
-the committed partial-apply/failure boundary; retry/checkpoint is tested by
-the parent's original executor tests. No successful NodeRun is manufactured.
-WorkflowRun.status remains the original run_sync aggregate, not a copied field.
-"""
 from __future__ import annotations
 from app.services import revisions
 
@@ -30,9 +22,7 @@ from app.models import (
 from app.orchestrator.graph.planner import load_graph_for_project
 from app.orchestrator.steps import make_plan
 from app.services import observation
-# These existing read/attempt paths query their own model tables. Import them
-# before creating either SQLite schema, including in a standalone unittest run.
-from app.services import media_view, profiles_v1  # noqa: F401
+from app.services import media_view, profiles_v1
 from app.services.actions_v1 import clear_permission
 from app.services.db_apply import apply_ops
 from app.services.managed_launch import validate_scope
@@ -63,8 +53,6 @@ class RuntimeProjection(unittest.IsolatedAsyncioTestCase):
         self.patches.enter_context(patch.object(settings, "data_dir", self.root))
         self.patches.enter_context(patch.object(settings, "sqlite_path", self.root / "master.db"))
         self.patches.enter_context(patch.object(settings, "telegram_enabled", False))
-        # Same mechanical-test setting as tests/conftest.py. No model quality
-        # verdict is claimed by these database/read authority contracts.
         self.patches.enter_context(patch.object(settings, "harness_gate_disabled", True))
         self.engine = create_async_engine(f"sqlite+aiosqlite:///{self.root / 'master.db'}")
         self.addAsyncCleanup(self.engine.dispose)
@@ -78,8 +66,6 @@ class RuntimeProjection(unittest.IsolatedAsyncioTestCase):
         app = FastAPI()
         app.include_router(projects.router, prefix="/api")
         app.include_router(observations.router, prefix="/api")
-        # Use the real project dependency/router; do not redirect both DBs to
-        # one session factory. ASGITransport opens no network socket.
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
         self.addAsyncCleanup(self.client.aclose)
 
@@ -155,10 +141,6 @@ class RuntimeProjection(unittest.IsolatedAsyncioTestCase):
         await self.deliver_fixture_events()
 
     async def deliver_fixture_events(self):
-        # Native attempts record external node_start/node_end/node_error facts
-        # in master; emit records transactional apply/HITL facts in project.
-        # Deliver the start before its approval, as the original catch_up path
-        # does. Consuming only project hides both approval ownership and errors.
         await self.observer.consume(self.scope.execution_id, "master", self.master)
         await self.observer.consume(self.scope.execution_id, "project", self.project)
 
@@ -193,8 +175,6 @@ class RuntimeProjection(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context["wait_reasons"]["native"]["hitl_request_id"], approval_id)
         self.assertEqual(context["wait_reasons"]["native"]["decision"], "pending")
         self.assertEqual((await self.read_json(self.base))["general_plan"], PLAN)
-        # A native decision updates only its owner DB; reading the context must
-        # clear the wait without approving anything or starting a successor.
         async with self.project() as session:
             approval = await session.get(HITLRequest, approval_id)
             self.assertEqual(approval.decision, HITLDecision.pending)
@@ -206,8 +186,6 @@ class RuntimeProjection(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((outside.status, outside.attempts), (NodeRunStatus.pending, 0))
 
     async def test_read_during_native_completion_does_not_restore_stale_master_planning(self):
-        # Real native commit + completion precede advance_runner's runtime push.
-        # Exercise that window through real GET dependencies and both DB files.
         await self.finish_plan(push=False)
         before = await self.read_json(self.context_url)
         self.assertEqual(before["master"]["project_status"], "planning")
@@ -271,8 +249,6 @@ class RuntimeProjection(unittest.IsolatedAsyncioTestCase):
         )
         for reason, started_at, attempts in commands:
             with self.subTest(command=reason):
-                # Change only one freshness signal relative to the completed
-                # native attempt; the source remains the same running node.
                 async with self.master() as session:
                     command = await session.scalar(command_query)
                     command.started_at = started_at
@@ -290,8 +266,6 @@ class RuntimeProjection(unittest.IsolatedAsyncioTestCase):
                                      hitl_before)
                     self.assertEqual([dict(row) for row in (await session.execute(node_query)).mappings()],
                                      nodes_before)
-                    # Retain the real completed fixture for the next subcase,
-                    # including its pending approval; never assign done/ready.
                     await session.rollback()
 
     async def test_rejected_image_prompts_context_and_managed_validation_read_native_node_rows(self):

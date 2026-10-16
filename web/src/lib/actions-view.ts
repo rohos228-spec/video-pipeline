@@ -24,8 +24,6 @@ export function scopedLaunchStrategies(options:{nodes:{node_key:string;supported
   if(!options || !nodeKeys.length) return [];
   const selected=nodeKeys.map(key=>options.nodes.find(node=>node.node_key===key && node.supported));
   if(selected.some(node=>!node)) return [];
-  // Older metadata has no actions field; the current backend independently
-  // validates contracts before persisting any permission.
   const actions=new Set(selected.flatMap(node=>node?.actions ?? options.strategies));
   return options.strategies.filter(strategy=>actions.has(strategy));
 }

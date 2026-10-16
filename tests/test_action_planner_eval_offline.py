@@ -1,9 +1,3 @@
-"""Офлайн-оценка предфильтра каталога планировщика: без модели и без сети.
-
-Для каждого запроса из tests/fixtures/action_planner_eval.json проверяется, что в промпт попали
-ВСЕ ожидаемые действия (полнота 100%), а запросы вне каталога не показывают платных и
-разрушающих возможностей. Печатает размеры (запустить с -s, чтобы увидеть отчёт).
-"""
 from __future__ import annotations
 
 import json
@@ -17,7 +11,7 @@ from app.services.action_layer.spec import ensure_builtin_actions, registry
 FIXTURE = Path(__file__).parent / "fixtures" / "action_planner_eval.json"
 CASES = json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"]
 MAX_CATALOG = 24
-OLD_FULL_TOKENS = 8500  # замер живого запроса с полным каталогом (56 действий)
+OLD_FULL_TOKENS = 8500
 
 
 def facts_of(case: dict) -> dict:

@@ -1,20 +1,3 @@
-"""Human clearing of an 'unknown outcome' block of a paid media request (Kie or Outsee).
-
-A paid submit whose answer was lost (timeout, dropped connection, cancelled mid-flight) leaves an intent row
-in the append-only ``provider_task_ledger`` with status ``submit_unknown``. For ``MEDIA_RESUME_WINDOW_S`` a new
-submit of the same key is refused (``KieSubmitUnknownError`` / ``OutseeSubmitUnknownError``), because the first
-one may already be accepted and billed. Only a human who has looked at the provider dashboard and balance may
-lift the block. Lifting it RE-OPENS a paid resubmit, so a second charge is possible.
-
-This module is the single code path for that human decision (REST endpoint, action layer action):
-
-* ``list_unknown`` read only: blocked keys with provider, age and the window they stay blocked for;
-* ``release`` one provider of one key: a written reason is mandatory, every call writes an audit row to the
-  append-only ``action_layer_history`` BEFORE and AFTER the change. It resolves ONLY the intents of the named
-  provider: a key blocked by both Kie and Outsee keeps the other block until that one is released on its own.
-
-Nothing here submits anything; it only appends ``intent_done``/``rejected`` rows.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -30,7 +13,6 @@ EVENT_DONE = "media_release_unknown"
 
 
 class ReleaseRefused(ValueError):
-    """Typed refusal. ``code`` is machine readable, the message is for people."""
 
     def __init__(self, code: str, message: str):
         self.code = code
@@ -60,7 +42,6 @@ async def _unresolved(session, project_id: int, key: str, since: datetime) -> li
 
 
 async def list_unknown(project_id: int, *, now: datetime | None = None) -> dict[str, Any]:
-    """Blocked keys of the project: one row per (key, provider). Read only."""
     from app.db import SessionLocal
     from app.services import media_spend
     await media_spend.drain()
@@ -109,7 +90,6 @@ async def _audit(*, event: str, project_id: int, key: str, provider: str, reason
 
 
 async def _release_kie(session, project_id: int, key: str, tasks: list[dict]) -> int:
-    """Only Kie intents (``media_resume.release_unknown`` would also resolve Outsee intents of the same key)."""
     for t in tasks:
         await spend_guard.resolve_intent(
             session, project_id=project_id, key=key, model=t["model"], api=t["api"],
@@ -120,7 +100,6 @@ async def _release_kie(session, project_id: int, key: str, tasks: list[dict]) ->
 
 async def release(project_id: int, key: str, provider: str, *, reason: str, actor: str = "",
                   approved_by: str = "", plan_id: str = "", step_index: int | None = None) -> dict[str, Any]:
-    """Resolve the unresolved submit intents of ONE provider of ONE key as rejected; audit before and after."""
     from app.db import SessionLocal
     from app.services import media_spend, outsee_guard
     if provider not in PROVIDERS:

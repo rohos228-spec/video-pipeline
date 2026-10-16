@@ -1,41 +1,3 @@
-"""Tests-first bounded observation of ORIGINAL SFX services.
-
-Parent owns production hooks, shared observation/main wiring and captured RED/
-GREEN. Only DurableActions fixture methods are reused; its tests are not
-inherited. All application/SQLAlchemy imports are deferred until parent runs.
-WAV integration requires the already approved diagnostic FFmpeg image: native
-generate_sfx.run and verify_audio_file remain real, with ElevenLabs disabled.
-These units do not claim API/worker acceptance or automatic continuation.
-
-Approved APIs in app.services.sfx_plan (generation input may live in sfx_gen):
-  async record_sfx_plan_input(project, frames, *, timeline, total_duration,
-                              scenes, prompt)
-  async record_sfx_generation_input(project, frames, *, source, payload,
-                                    events, provider)
-  async record_sfx_parse(payload, events, problems, *, source, reply=None,
-                         parse_error=None, request_id=None)
-  async observe_sfx_result(session, project, node_type='sfx_plan')
-
-Journal bodies: node_input contains project_id, frames and native phase inputs.
-Frame fields are FRAME_FIELDS below. Plan input adds timeline/total_duration/
-scenes/prompt/cached_payload; generation adds source/payload/events/provider.
-parse_result: source, syntax_valid, parsed, schema_valid, error_type, problems,
-sha256; body contains payload/events. Cached syntax is unclaimed (None), with
-no current model request ID. Events are ORIGINAL normalized SfxEvent dicts.
-runtime_check is native_sfx_events_validation, with performed/status and no
-business_commit_claim. No generic text_job callback or discarded fresh retry
-parse coverage is required by this target.
-
-node_output independently reads committed project.db metadata and local files.
-node_result_verification exposes status/input_sha256/files; WAV evidence has
-idx/path/sha256/duration_seconds/rms_db/provider/source_frame/artifact_row.
-Source Frame identity is id/project_id/uuid/number. No SFX Artifact row exists.
-Absent captured input is unknown, never reconstructed from successful output.
-Observer failures cannot repair sessions or replace native exceptions. All
-proofs keep managed_eligible/business_commit_claim/semantic_quality_verified/
-mix_verified false. Existing native parser, validator and partial-output
-behavior are preserved; diagnostic rejection never writes business statuses.
-"""
 from __future__ import annotations
 
 from contextlib import contextmanager, ExitStack
@@ -71,8 +33,6 @@ GENERATION_CASES = {
 
 
 def plan_payload():
-    # Native sort_key order is Frame 2, then Frame 1. Deliberately unsorted
-    # events exercise the original normalization, not a replacement parser.
     return {"events": [
         {"frame_number": 1, "t_start": 3.512345, "duration": 0.612345,
          "kind": "HIT", "prompt": " light desk hit ", "gain": 0.5, "duck": False},
@@ -102,7 +62,7 @@ class NativeSfxObservation(unittest.IsolatedAsyncioTestCase):
         self.observer = observation.get_observer()
         async with self.sessions() as master:
             project = await master.get(Project, 7)
-            project.status = self.running  # Initial running unit input only.
+            project.status = self.running
             project.auto_mode = False
             project.meta = {"canvas_graph": {"nodes": self.nodes, "edges": []}}
             node = await master.scalar(select(NodeRun).where(NodeRun.node_key == "n1"))
@@ -265,9 +225,6 @@ class NativeSfxObservation(unittest.IsolatedAsyncioTestCase):
         from app.services.node_capabilities import capability_for
         from app.services.observation import ExecutionControl
 
-        # sfx_plan allows one bounded retry_same / retry_profile (W5 D05); sfx_gen is in the registry as managed since D06
-        # (resume of a recorded result only, never a paid resend).
-        # Neither grants authority to an observation scope: the checks below stay in force.
         self.assertIn("retry_same", capability_for("sfx_plan").actions)
         self.assertTrue(capability_for("sfx_gen").managed)
         self.assertIsNone(get_permission(7))
@@ -453,7 +410,7 @@ class NativeSfxObservation(unittest.IsolatedAsyncioTestCase):
         self.api("observe_sfx_result")
         async with self.business_sessions() as seed:
             save_ai_job_checkpoint(await seed.get(Project, 7), "sfx_plan", payload)
-            await seed.commit()  # Invalid initial checkpoint, never a ready status.
+            await seed.commit()
         before = await self.state()
         no_model = AsyncMock(side_effect=AssertionError("cached rejection must not request a model"))
         async with self.business_sessions() as business:
@@ -550,7 +507,7 @@ class NativeSfxObservation(unittest.IsolatedAsyncioTestCase):
         observe = self.api("observe_sfx_result")
         async with self.business_sessions() as business:
             project, _ = await self.inputs(business)
-            await self.native_commit(business, project)  # Observation context is off.
+            await self.native_commit(business, project)
             before = await self.state()
             with self.context(business), self.business_sql() as statements:
                 await observe(business, project, "sfx_plan")
@@ -645,7 +602,7 @@ class NativeSfxObservation(unittest.IsolatedAsyncioTestCase):
                 records = deepcopy(project.meta["ai_jobs"]["sfx_files"]["files"])
                 mutation(records)
                 save_ai_job_checkpoint(project, "sfx_files", {"files": records})
-                await business.commit()  # Synthetic fault; no status is written.
+                await business.commit()
                 before = await self.state()
                 with self.business_sql() as statements:
                     await observe(business, project, "sfx_gen")
@@ -673,7 +630,6 @@ class NativeSfxObservation(unittest.IsolatedAsyncioTestCase):
         await self.generation_fault(lambda records: records.pop())
 
     async def test_sfx_gen_proof_carries_the_shared_media_contract(self):
-        """sfx_gen is typed like the other media nodes (diagnosis reads contract native_media), sfx_plan is not."""
         observe = self.api("observe_sfx_result")
         async with self.business_sessions() as business:
             project, frames = await self.inputs(business)
@@ -688,7 +644,6 @@ class NativeSfxObservation(unittest.IsolatedAsyncioTestCase):
         self.unclaimed(proof)
 
     async def test_failed_sfx_gen_attempt_never_passes_on_earlier_files(self):
-        """The attempt raised after complete files from an earlier run: typed failed with its own error type."""
         observe = self.api("observe_sfx_result")
         async with self.business_sessions() as business:
             project, frames = await self.inputs(business)

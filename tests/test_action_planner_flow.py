@@ -1,7 +1,3 @@
-"""План от текста до ответа: умолчания, защита от лишнего, загрузки, варианты ответа, повтор при ошибке.
-
-Модель - заглушка (никаких сетевых вызовов); проект - реалистичный сид из scripts/eval_seed.py.
-"""
 from __future__ import annotations
 
 import json
@@ -13,7 +9,7 @@ from app.services import prompt_library
 from app.services.action_layer import planner, planner_autofill
 from app.services.action_layer.spec import ensure_builtin_actions
 from app.settings import settings
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 from tests.test_action_layer_planner import OP, history_rows, reply, res, use
 from tests.test_action_planner_seed_context import load_seed
 
@@ -25,7 +21,7 @@ def st(aid: str, deps=None, **params) -> dict:
 
 
 @pytest_asyncio.fixture
-async def live(env, tmp_path, monkeypatch):  # noqa: F811
+async def live(env, tmp_path, monkeypatch):
     ensure_builtin_actions()
     monkeypatch.setattr(prompt_library, "PROMPTS_ROOT", prompt_library.PROMPTS_ROOT)
     monkeypatch.setattr(settings, "vibecode_api_key", "vk-test-key")
@@ -48,19 +44,18 @@ def sent_context(fake, i: int = 0) -> dict:
     return json.loads(fake.calls[i]["body"]["messages"][1]["content"])["project_context"]
 
 
-# --- умолчания ---------------------------------------------------------------------------------
 
 async def test_missing_generator_and_resolution_are_filled_and_announced(live) -> None:
     out, fake = await run("сгенерируй картинки для кадров 3, 4 и 5", res(reply(
         [st("montage.generate_scene_images", frame_numbers=[3, 4, 5])], expl="Ставлю картинки.")))
     p = out.reply.steps[0]["params"]
     d = (await planner.load_context(PID))["facts"]["defaults"]
-    assert "defaults" not in sent_context(fake)  # модели это не нужно: сервер подставляет сам
+    assert "defaults" not in sent_context(fake)
     assert p["image_generator"] == d["image_generator"] and p["image_resolution"] == d["image_resolution"]
     assert "По умолчанию подставлено" in out.reply.explanation_ru
     assert f"image_generator={d['image_generator']}" in out.reply.explanation_ru
     assert out.reply.applied_defaults and out.meta["applied_defaults"] == out.reply.applied_defaults
-    assert out.meta["attempts"] == 1 and len(fake.calls) == 1  # без повторного запроса к модели
+    assert out.meta["attempts"] == 1 and len(fake.calls) == 1
 
 
 async def test_values_the_model_took_from_defaults_are_announced_too(live) -> None:
@@ -70,7 +65,6 @@ async def test_values_the_model_took_from_defaults_are_announced_too(live) -> No
         image_generator=ctx["image_generator"], image_resolution=ctx["image_resolution"])],
         expl="Картинки.")))
     assert "По умолчанию подставлено" in out.reply.explanation_ru
-    # назвал сам человек - значение не помечается как умолчание
     out, _ = await run(f"сгенерируй картинки для кадров 3 в {ctx['image_resolution']}", res(reply([st(
         "montage.generate_scene_images", frame_numbers=[3], image_generator=ctx["image_generator"],
         image_resolution=ctx["image_resolution"])], expl="Картинки.")))
@@ -93,7 +87,7 @@ async def test_unambiguous_shots_are_filled_for_swap_slots(live) -> None:
 
 
 async def test_ambiguous_shot_costs_one_repair_and_the_error_names_the_field(live) -> None:
-    bad = st("montage.swap_slots", kind="image", a_frame=4, b_frame=8)  # у обоих по 2 шота
+    bad = st("montage.swap_slots", kind="image", a_frame=4, b_frame=8)
     good = [st("montage.swap_slots", kind="image", a_frame=4, a_shot=1, b_frame=8, b_shot=1),
             st("montage.swap_slots", kind="image", a_frame=4, a_shot=2, b_frame=8, b_shot=2)]
     out, fake = await run("кадр 4 и кадр 8: поменяй картинки местами", res(reply([bad])), res(reply(good)))
@@ -125,7 +119,6 @@ async def test_change_actions_see_proposals_and_versions(live) -> None:
     assert out.reply.steps[0]["params"]["expected_digest"] == third["digest"]
 
 
-# --- лишние шаги -------------------------------------------------------------------------------
 
 async def test_unrequested_run_montage_is_removed_and_the_human_is_told(live) -> None:
     plan = [st("montage.set_assemble_params", bgm_level=20, subtitles_enabled=True),
@@ -148,12 +141,11 @@ async def test_plan_with_only_unrequested_steps_becomes_a_confirmation_question(
     reply_ = out.reply
     assert reply_.steps == [] and reply_.guard_question and "Вы хотите: смонтировать видео" in reply_.needs_clarification
     assert reply_.clarification_options == ["Да, подготовить", "Нет, другое"]
-    assert out.meta["guard_question"] is True and len(fake.calls) == 1  # без повтора
+    assert out.meta["guard_question"] is True and len(fake.calls) == 1
     rows = await history_rows(live, "planner_call")
     assert [r.outcome for r in rows] == ["clarify"] and rows[0].error == "unrequested_action"
 
 
-# --- загрузки файлов ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text,aid,params,title,target", [
     ("загрузи озвучку с компьютера", "montage.upload_voice", {}, "Загрузить озвучку", "озвучка проекта"),
@@ -204,7 +196,6 @@ async def test_other_steps_are_postponed_until_the_file_is_attached(live) -> Non
     assert out.reply.steps == [] and "после загрузки файла" in out.reply.explanation_ru
 
 
-# --- варианты ответа ------------------------------------------------------------------------------
 
 async def test_clarification_options_pass_through_cleaned(live) -> None:
     raw = reply([], clar="Какой шот?")
@@ -233,7 +224,6 @@ async def test_system_prompt_documents_the_optional_options_field(live) -> None:
     assert "clarification_options" in system and "Делай только названное" in system
 
 
-# --- безопасность не ослаблена ---------------------------------------------------------------------
 
 async def test_offered_set_and_forbidden_fields_still_reject_without_repair(live) -> None:
     fake = use(res(reply([st("montage.delete_frame", frame_id=1201)])), res(reply([st("montage.get_board")])))
@@ -254,7 +244,6 @@ async def test_forbidden_intent_is_cut_before_the_model_sees_dangerous_actions(l
     assert len(user["catalog"]) <= 6 and "hint" in user
 
 
-# --- лимиты запуска ноды -------------------------------------------------------------------------
 
 class _Basis:
     min_requests, max_requests = 2, 5
@@ -282,9 +271,8 @@ async def test_node_run_limits_come_from_the_project_basis(monkeypatch) -> None:
               "depends_on": []},
              {"action_id": "montage.get_board", "params": {"project_id": 2}, "depends_on": []}]
     notes = await planner_autofill.fill_node_run_limits(object(), "op", steps)
-    assert seen == ["n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc"]  # код-ноды отчёта не трогаются
+    assert seen == ["n_excel_gpt_fw_shots", "n_excel_gpt_fw_qc"]
     assert steps[0]["params"]["max_input_tokens"] == 9000 and steps[0]["params"]["min_llm_requests"] == 2
-    # названное или заданное ранее значение не перезаписывается, недостающие лимиты берутся из расчёта
     assert steps[1]["params"]["max_llm_requests"] == 7 and steps[1]["params"]["min_llm_requests"] == 2
     assert "limits" not in str(steps[2]["params"]) and len(notes) == 2 and "n_excel_gpt_fw_shots" in notes[0]
 
@@ -308,7 +296,6 @@ async def test_node_run_limits_stay_empty_when_the_basis_cannot_be_computed(monk
     assert await planner_autofill.fill_node_run_limits(object(), "op", steps) == []
 
 
-# --- маршрут -----------------------------------------------------------------------------------------
 
 BASE = "/api/action-layer"
 
@@ -332,7 +319,7 @@ async def test_router_returns_options_and_attachment_request(live) -> None:
                                    json={"text": "удали видео кадра 4", "project_id": PID})).json()
     assert body["clarification_options"] == ["шот 1", "шот 2"] and body["attachment_request"] is None
 
-    use(res(reply([], clar="Какой кадр?")))  # старый ответ без вариантов
+    use(res(reply([], clar="Какой кадр?")))
     body = (await live.client.post(f"{BASE}/plans/from-text",
                                    json={"text": "поправь кадр", "project_id": PID})).json()
     assert body["needs_clarification"] == "Какой кадр?" and body["clarification_options"] == []
@@ -346,19 +333,17 @@ async def test_router_builds_a_plan_with_defaults_in_the_explanation(live) -> No
     assert body["attachment_request"] is None
 
 
-# --- мастер-промты: шаг берётся из слов запроса ---------------------------------------------------
 
 def pr(aid: str, **params) -> dict:
     return {"action_id": aid, "params": params, "depends_on": []}
 
 
 async def test_prompt_step_from_the_words_not_from_the_project_status(live) -> None:
-    # статус проекта frames_ready -> split; человек назвал script
     out, _ = await run("прочитай мастер-промт шага script", res(reply([
         pr("prompt.get_master", step_code="split", name="main")])))
     assert out.reply.steps[0]["params"] == {"step_code": "script", "name": "main"}
     out, _ = await run("прочитай мастер-промт шага script", res(reply([pr("prompt.get_master")])))
-    assert out.reply.steps[0]["params"] == {"step_code": "script", "name": "main"}  # выбранный в проекте
+    assert out.reply.steps[0]["params"] == {"step_code": "script", "name": "main"}
     assert "name=main" in out.reply.explanation_ru
 
 
@@ -390,7 +375,6 @@ async def test_selected_and_default_variants_are_not_deleted(live) -> None:
     assert out.reply.steps and out.reply.steps[0]["params"]["name"] == "draft"
 
 
-# --- настройки сборки, покрытие, шоты очереди -------------------------------------------------------
 
 async def test_loudness_fraction_is_converted_and_only_named_settings_are_sent(live) -> None:
     out, fake = await run("сделай громкость музыки 0.2 и включи субтитры в ролике", res(reply([

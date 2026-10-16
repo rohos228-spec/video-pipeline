@@ -21,6 +21,7 @@ from app.generation_options import build_gen_id_prefix
 from app.models import Frame, FrameStatus, Project
 from app.services import gpt_text_builder as gtb
 from app.services.plan_shot2 import (
+    _IMG_EXTENSIONS,
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     SHOT2_VIDEO_PROMPT_ATTR,
     find_shot2_image,
@@ -113,7 +114,9 @@ def index_scene_image_paths(project: Project) -> dict[int, Path]:
     if not scenes_dir.is_dir():
         return {}
     best: dict[int, tuple[float, Path]] = {}
-    for path in scenes_dir.glob("frame_*_*.png"):
+    for path in scenes_dir.iterdir():
+        if not path.is_file() or path.suffix.lower() not in _IMG_EXTENSIONS:
+            continue
         # frame_003_abcd.png / frame_003_s2_abcd.png — shot1 = без _s2_
         parts = path.stem.split("_")
         if len(parts) < 3:
@@ -316,8 +319,6 @@ def has_animation_prompt_for_frame(project: Project, frame: Frame) -> bool:
     # Целый JSON-ответ GPT ≠ готовый промт кадра (баг старого парсера).
     if is_apply_ops_blob(text):
         return False
-    # Заглушка модели («нет исходных данных для заполнения») не промт: кадр надо запросить заново, иначе шаг
-    # зацикливается на проверке покрытия anim_pr_coverage, а повтор ничего не просит у модели.
     from app.generation_options import is_skippable_empty_prompt
 
     if is_skippable_empty_prompt(text):

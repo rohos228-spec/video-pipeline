@@ -1,4 +1,3 @@
-"""Вставка / удаление кадров и правка закадра с панели монтажа."""
 
 from __future__ import annotations
 
@@ -31,7 +30,6 @@ from app.services.vo_shot_expand import _cs, _flag_attrs, _set_cs, is_shot_child
 
 
 async def upsert_frame_voiceover(session: AsyncSession, frame: Frame, text: str) -> None:
-    """Frame.voiceover_text + FrameText(kind=voiceover)."""
     vo = (text or "").strip()
     frame.voiceover_text = vo
     existing = (
@@ -87,11 +85,6 @@ async def insert_montage_frame(
     voiceover: str = "",
     kind: str = "parent",
 ) -> Frame:
-    """Вставить кадр.
-
-    ``parent`` — новая VO-ячейка после кадра / в начало.
-    ``child`` — шот в ту же сцену, сразу после указанного кадра.
-    """
     from app.services.montage_board import _vo_parent_and_members
     from app.services.montage_coverage_ops import _new_shot_from_parent, _refresh_shots_in_beat
 
@@ -184,7 +177,6 @@ async def _drop_frame_rows(
 
 
 def _promote_first_child(parent: Frame, kids: list[Frame]) -> Frame | None:
-    """Голова сцены удалена — первый шот становится VO-родителем, остальные остаются."""
     if not kids:
         return None
     ordered = sorted(kids, key=lambda fr: (float(fr.sort_key or 0.0), int(fr.number or 0)))
@@ -222,7 +214,6 @@ async def delete_montage_frame(
     project: Project,
     frame_id: int,
 ) -> dict[str, Any]:
-    """Удалить только этот кадр. Детей сцены не трогаем — повышаем первого."""
     from app.services.ensure_frames_from_disk import quarantine_frame_media
 
     frames = await _load_frames(session, int(project.id))
@@ -274,10 +265,6 @@ async def merge_montage_scenes(
     left_frame_id: int,
     right_frame_id: int,
 ) -> dict[str, Any]:
-    """Склеить две соседние VO-ячейки в одну сцену. Номера кадров не трогаем.
-
-    Якоря обеих сцен переезжают на родителя склеенной сцены.
-    """
     from app.services.montage_scene_editor import (
         cell_full_text,
         claim_scene_bits,
@@ -385,7 +372,6 @@ def _promote_to_vo_parent(frame: Frame) -> None:
 
 
 def _rewrite_vo_cell(parent: Frame, members: list[Frame]) -> None:
-    """vo_cell_full / кадры[] / главное_действие только из текущих членов."""
     from app.services.montage_scene_editor import frame_action, frame_place
     from app.services.shot_templates import format_scene_chain
 
@@ -436,7 +422,6 @@ def _visible_and_extras(
     members: list[Frame],
     frame_ids: list[int] | None,
 ) -> tuple[list[Frame], list[Frame]]:
-    """Кадры, которые делим (как на доске) vs хвост, который прячем."""
     ordered = _timeline_members(members)
     live = [m for m in ordered if not bool(_cs(m).get("leftover"))]
     if frame_ids:
@@ -460,7 +445,6 @@ def _mark_leftover_shots(parent: Frame, extras: list[Frame]) -> None:
 
 
 def _split_anchor_bits(frames: list[Frame], parents: list[Frame]) -> None:
-    """После разделения каждый якорь уходит в сцену, где лежит его текст."""
     from app.services.montage_scene_editor import (
         claim_scene_bits,
         scene_anchor_bits,
@@ -483,7 +467,6 @@ _MISSING = object()
 
 
 def _attrs_snapshot(frames: list[Frame]) -> dict[int, dict[str, Any]]:
-    """Копия attrs каждого кадра ДО деления (деление правит только attrs: файлы и Artifact не трогает)."""
     return {int(fr.id): deepcopy(dict(getattr(fr, "attrs", None) or {})) for fr in frames}
 
 
@@ -503,9 +486,6 @@ def _record_split_undo(
     scene_frame_ids: list[int],
     at_frame_id: int,
 ) -> str | None:
-    """Снимок для «Отменить деление»: только ключи attrs, которые деление изменило, и отпечаток их нового значения.
-
-    Отпечаток нужен, чтобы отмена не затёрла правки, сделанные после деления (тогда она откажет)."""
     changes: dict[str, dict[str, Any]] = {}
     for fr in after:
         old = before.get(int(fr.id))
@@ -547,7 +527,6 @@ def _record_split_undo(
 
 
 def split_undo_info(project: Project) -> dict[str, Any]:
-    """Что можно отменить: последнее деление (стек LIFO), без тяжёлых данных."""
     stack = [e for e in (montage_meta(project).get(SPLIT_UNDO_KEY) or []) if isinstance(e, dict)]
     last = stack[-1] if stack else None
     return {
@@ -566,11 +545,6 @@ async def undo_montage_split(
     *,
     undo_id: str | None = None,
 ) -> dict[str, Any]:
-    """Отменить последнее деление сцены: вернуть attrs затронутых кадров к состоянию до деления.
-
-    Ничего не удаляется: кадры, их номера, картинки и клипы (Artifact) остаются на месте и привязаны к тем же
-    кадрам; платные файлы только пересчитываются в ответе. Если после деления эти поля правили (покрытие,
-    озвучка, ещё одно деление и т.п.), отмена отказывает целиком: она затёрла бы чужие правки."""
     board = montage_meta(project)
     stack = [e for e in (board.get(SPLIT_UNDO_KEY) or []) if isinstance(e, dict)]
     if not stack:
@@ -648,7 +622,6 @@ async def split_montage_scene_at(
     at_frame_id: int,
     frame_ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Кадр ``at`` и все правее в ячейке — новая VO-сцена. Номера не трогаем."""
     from app.services.montage_scene_editor import scene_display_ordinals, scene_group
 
     frames = await _load_frames(session, int(project.id))
@@ -733,7 +706,6 @@ async def split_montage_scene_frames(
     frame_id: int,
     frame_ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Каждый шот VO-ячейки — отдельная сцена. Номера кадров не трогаем."""
     from app.services.montage_scene_editor import scene_group
 
     frames = await _load_frames(session, int(project.id))

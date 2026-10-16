@@ -1,4 +1,3 @@
-"""Synthetic brain transport, original actions executor/planner/worker/DB."""
 import asyncio
 import json
 import sqlite3
@@ -27,8 +26,6 @@ def handler_for(fixtures,root,mode,*,base_handler=None):
             walk(body)
             contexts=[]
             for text in strings:
-                # Existing Kie client flattens role messages into one input
-                # string. Read the supplied JSON context inside that envelope.
                 for opening in re.finditer(r'\{',text):
                     try:x,_=json.JSONDecoder().raw_decode(text[opening.start():])
                     except ValueError:continue

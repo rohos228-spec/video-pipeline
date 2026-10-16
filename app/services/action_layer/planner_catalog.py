@@ -1,10 +1,3 @@
-"""Сжатие каталога для промпта планировщика: офлайн-предфильтр и компактные записи.
-
-Модель видит не весь реестр, а не более N действий, выбранных детерминированно по тексту
-запроса, контексту проекта и макросам (совпадение по основам слов, без сети и без модели).
-Проверка ответа остаётся строгой и идёт по ПОЛНОМУ реестру; дополнительно id, которого не
-было в промпте, отклоняется (модель может использовать только показанное).
-"""
 from __future__ import annotations
 
 import json
@@ -15,24 +8,21 @@ from typing import Any
 
 from app.services.action_layer.spec import ActionRegistry
 
-# Всегда в каталоге (чтение состояния и остановка), если они есть в реестре.
 ESSENTIAL_IDS = ("montage.get_board", "project.stop")
-# Небольшой безопасный набор, когда запрос ничему не соответствует.
 FALLBACK_IDS = ("montage.get_board", "montage.apply_status", "montage.montage_status",
                 "shot.get_menu", "montage.get_cost_basis", "project.stop")
-_RELATIVE_CUTOFF = 0.22   # доля от лучшего балла, ниже которой действие не берётся
-_MIN_KEEP = 8             # но не меньше стольких действий при наличии совпадений
-_SHORT_TOKENS = 2         # запрос из такого числа слов считается расплывчатым: берём шире
+_RELATIVE_CUTOFF = 0.22
+_MIN_KEEP = 8
+_SHORT_TOKENS = 2
 _SHORT_KEEP = 12
-_CUT_MIN_SCORE = 8.0      # после вырезанной фразы вне каталога остаток должен совпасть уверенно
+_CUT_MIN_SCORE = 8.0
 _MACRO_MIN_SCORE = 3.0
 _MACRO_TOP = 2
-_BONUS = 0.55             # вес действий, подтянутых макросом, от балла макроса
-_PARAM_LIMIT = 420        # символов на описание одного параметра
+_BONUS = 0.55
+_PARAM_LIMIT = 420
 
 _W_SYN, _W_TITLE, _W_TAG, _W_DESC = 2.0, 1.5, 1.2, 0.6
 
-# Синонимы и разговорные формы: начала слов (сравнение по началу слова запроса).
 SYNONYMS: dict[str, str] = {
     "hero.replace_image": "загруз залей замен подмен картинк геро персонаж characters основн фото",
     "history.list_snapshots": "истор снимк прежн значен было стало правк журнал откат",
@@ -144,7 +134,6 @@ _STOP = frozenset("""для что как это или при над под п�
 после перед между себя свой своя свои мой моя мои наш наша наши там изменения изменение покажи покажите выведи
 выполни выполните команду расскажи скажи""".split())
 
-# Фразы вне каталога: вырезаются из запроса до подбора действий.
 _OUT_OF_SCOPE = (
     re.compile(r"\b(?:удал\w*|сотр\w*|снес\w*|убер\w*|стер\w*)\s+(?:весь\s+|все\s+|всех\s+|этот\s+|мой\s+|"
                r"мои\s+|целиком\s+|полностью\s+)?проект\w*"),
@@ -184,11 +173,11 @@ def _id_words(action_id: str) -> list[str]:
 
 @dataclass
 class CatalogSelection:
-    ids: list[str]                      # что показано модели (отсортировано по id)
-    total: int                          # размер всего реестра
-    no_match: bool = False              # ничего не подошло: безопасный набор + уточнение
-    out_of_scope: str = ""              # вырезанная фраза вне каталога (если была)
-    filtered: bool = True               # False: показан весь реестр
+    ids: list[str]
+    total: int
+    no_match: bool = False
+    out_of_scope: str = ""
+    filtered: bool = True
     scores: dict[str, float] = field(default_factory=dict)
 
     @property
@@ -197,7 +186,6 @@ class CatalogSelection:
 
 
 def strip_out_of_scope(text: str) -> tuple[str, str]:
-    """(остаток запроса, вырезанные фразы). Остаток и идёт в подбор действий."""
     norm = _norm(text)
     cut: list[str] = []
     for pat in _OUT_OF_SCOPE:
@@ -222,12 +210,11 @@ def _matches(token: str, keys: set[str]) -> bool:
     return any(token.startswith(k) for k in keys)
 
 
-_TYPO_MAX_TAIL = 3  # слово длиннее основы больше чем на столько букв - другое слово, а не опечатка
-_TYPO_MIN_KEY = 6  # опечатка в одну букву допускается только у основ из 6+ букв (короткие дали бы ложные совпадения)
+_TYPO_MAX_TAIL = 3
+_TYPO_MIN_KEY = 6
 
 
 def _typo_matches(token: str, keys: set[str]) -> bool:
-    """Слово запроса отличается от начала основы одной буквой («возабнови» - «возобнов»)."""
     for k in keys:
         n = len(k)
         if n < _TYPO_MIN_KEY or not n <= len(token) <= n + _TYPO_MAX_TAIL or token[0] != k[0]:
@@ -237,14 +224,11 @@ def _typo_matches(token: str, keys: set[str]) -> bool:
     return False
 
 
-_BASE_ACTIONS = 56  # опорный размер каталога для idf: рост реестра не сдвигает веса прежних действий
+_BASE_ACTIONS = 56
 
 
 def _score_docs(tokens: list[str], docs: dict[str, list[tuple[float, set[str]]]],
                 base_n: int | None = None) -> dict[str, float]:
-    """Сумма вес_поля * idf(слово) по уникальным словам запроса; редкие слова весят больше.
-
-    idf считается от фиксированного опорного числа документов ``base_n``, а не от размера реестра."""
     n = max(1, base_n if base_n is not None else len(docs))
     per_token: list[dict[str, float]] = []
     for tok in tokens:
@@ -253,7 +237,7 @@ def _score_docs(tokens: list[str], docs: dict[str, list[tuple[float, set[str]]]]
             best = max((w for w, keys in fields if _matches(tok, keys)), default=0.0)
             if best:
                 hit[aid] = best
-        if not hit and len(tok) >= _TYPO_MIN_KEY:  # слово ничему не соответствует: пробуем с опечаткой
+        if not hit and len(tok) >= _TYPO_MIN_KEY:
             for aid, fields in docs.items():
                 best = max((w for w, keys in fields if _typo_matches(tok, keys)), default=0.0)
                 if best:
@@ -290,7 +274,6 @@ def _macro_bonus(tokens: list[str], registry: ActionRegistry, macros: Any) -> di
 
 
 def _context_tokens(facts: dict | None, norm_text: str) -> list[str]:
-    """Дополнительные слова из контекста проекта (выбранные сцена/кадр, статус, пустая доска)."""
     f = facts or {}
     extra: list[str] = []
     deictic = re.search(r"\b(?:этот|эту|этого|этой|текущ\w*|выбран\w*|здесь|тут|его|ее)\b", norm_text)
@@ -309,7 +292,6 @@ def _context_tokens(facts: dict | None, norm_text: str) -> list[str]:
 
 def select_catalog(text: str, facts: dict | None, registry: ActionRegistry, max_catalog: int,
                    macros: Any = None) -> CatalogSelection:
-    """Детерминированный отбор не более ``max_catalog`` действий для промпта."""
     all_ids = [s.id for s in registry.list()]
     total = len(all_ids)
     if max_catalog >= total:
@@ -338,7 +320,6 @@ def select_catalog(text: str, facts: dict | None, registry: ActionRegistry, max_
     return CatalogSelection(ids, total, out_of_scope=cut, scores=dict(keep))
 
 
-# --- компактные записи ------------------------------------------------------
 
 _T = {"integer": "int", "string": "str", "boolean": "bool", "number": "num", "array": "list",
       "object": "obj"}
@@ -387,7 +368,6 @@ def catalog_entries(registry: ActionRegistry, ids: list[str] | None = None) -> l
 
 
 def full_entries(registry: ActionRegistry) -> list[dict]:
-    """Прежний полный формат (для сравнения размера в тестах и отчётах)."""
     from app.services.action_layer.planner import _compact_schema
     return [{"id": s.id, "title": s.title_ru, "what": s.description_ru[:160], "risk": s.risk,
              "params_schema": _compact_schema(s.params_schema)} for s in registry.list()]

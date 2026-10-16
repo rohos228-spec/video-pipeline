@@ -1,4 +1,3 @@
-"""Действия нод: предусловия, запуск шага (фон), стоп, настройки. Бэкенд заменён заглушкой."""
 from __future__ import annotations
 
 import pytest
@@ -6,13 +5,12 @@ import pytest
 from app.services.action_layer import builtin_group as bg
 from app.services.action_layer.context import ActionCallError
 from app.services.action_layer.spec import ActionRegistry, registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 NODE = "n_excel_gpt_fw_shots"
 
 
 class FakeCtx:
-    """Подменяет ctx.call: маршрут -> ответ, функция или исключение; журнал вызовов."""
 
     def __init__(self, routes):
         self.routes, self.calls = routes, []

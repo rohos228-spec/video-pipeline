@@ -1,8 +1,7 @@
-"""REST /api/change-control: чтение и создание предложения; применения и одобрения здесь нет."""
 from __future__ import annotations
 
-from tests.action_layer_support import env  # noqa: F401
-from tests.change_control_support import ccenv, prompts_root  # noqa: F401
+from tests.action_layer_support import env
+from tests.change_control_support import ccenv, prompts_root
 
 CC = "/api/change-control"
 
@@ -20,12 +19,11 @@ async def test_post_creates_a_proposal_and_get_reads_it_back(ccenv) -> None:
     assert r.status_code == 200, r.text
     view = r.json()
     assert view["status"] == "proposed" and view["tier"] == "T1" and view["can_apply"] is True
-    assert view["proposer"] == "local_web_operator"           # из AuthDep, не из тела
+    assert view["proposer"] == "local_web_operator"
     assert view["target"] == f"project:{ccenv.pid}:n_split:step_params"
     assert view["diff"] == "split.cell_max_chars: 400 -> 600" and len(view["digest"]) == 64
     got = (await ccenv.client.get(f"{CC}/proposals/{view['id']}")).json()
     assert got["id"] == view["id"] and got["current_version"] == 0
-    # тот же запрос не плодит дубликатов
     again = (await ccenv.client.post(f"{CC}/proposals", json=_body(ccenv.pid))).json()
     assert again["id"] == view["id"] and again["deduplicated"] is True
 

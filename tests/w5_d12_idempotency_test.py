@@ -1,8 +1,3 @@
-"""W5-4 D12: идемпотентность записывающих вызовов слоя и проверка атрибуции оператора.
-
-Сервер заменён маленьким приложением со счётчиком: считаем, сколько раз запись реально дошла
-до эндпоинта. Сети и денег нет.
-"""
 from __future__ import annotations
 
 import pytest
@@ -11,7 +6,7 @@ from fastapi import FastAPI, File, Request, UploadFile
 from app.services.action_layer import store
 from app.services.action_layer.context import (
     ActionCallError, ActionContext, FileUpload, normalize_operator)
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 
 def _counting_app(refuse_first: bool = False, boom: bool = False) -> tuple[FastAPI, dict]:
@@ -102,7 +97,6 @@ async def test_refusal_inside_a_2xx_answer_is_not_cached(env) -> None:
 
 
 async def test_unfinished_attempt_blocks_a_blind_repeat(env) -> None:
-    """Попытка началась и не записала исход (обрыв): результат неизвестен, повтор запрещён."""
     app, state = _counting_app()
     fp = store.call_fingerprint("POST", "/write", params=None, body={"a": 1}, files=None)
     verdict, _ = await store.claim_call("step-1", fp, method="POST", path="/write",
@@ -115,7 +109,6 @@ async def test_unfinished_attempt_blocks_a_blind_repeat(env) -> None:
 
 
 async def test_idempotent_action_may_repeat_after_an_unfinished_attempt(env) -> None:
-    """Для идемпотентного действия (по реестру) недописанная попытка не блокирует повтор."""
     from app.services.action_layer.spec import ensure_builtin_actions
 
     ensure_builtin_actions()

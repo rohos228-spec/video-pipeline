@@ -49,8 +49,8 @@ sys.modules[_spec.name] = base
 _spec.loader.exec_module(base)
 
 PORT, MALFORMED = base.PORT, base.MALFORMED
-guard = base.guard  # A19 guard shared with the base script
-BASE: str | None = None  # set in main() once the project id of the seed copy is known
+guard = base.guard
+BASE: str | None = None
 PROFILE_ID = base.PROFILE_ID
 TEXT = ("Синтетический текст: человек находит папку, читает записку и возвращает её на стол. " * 6).strip()
 NODE_TYPES = ("plan", "script", "split", "image_prompts")
@@ -80,7 +80,7 @@ def _args() -> argparse.Namespace:
 
 def _prepare_data(seed: Path, work: Path, typ: str, node_key: str,
                   slug: str | None = None, project_id: int | None = None) -> Path:
-    data = guard.prepare_scratch_data(seed, work)  # refuses live data; removes only <work>/data
+    data = guard.prepare_scratch_data(seed, work)
     pid = base.configure(data, slug, project_id, PORT)
     video_dir = data / "videos" / base.SLUG
     db_paths = [data / "state.db", video_dir / "project.db"]
@@ -95,7 +95,6 @@ def _prepare_data(seed: Path, work: Path, typ: str, node_key: str,
             meta.pop("active_excel_gpt_node_key", None)
             db.execute("DELETE FROM frames WHERE project_id=?", (pid,))
             db.execute("DELETE FROM hitl_requests WHERE project_id=?", (pid,))
-            # Same minimal real state as project_text_acceptance.prepare().
             db.execute("UPDATE projects SET status='new',general_plan=?,script_text=?,meta=? WHERE id=?",
                        (None if typ == "plan" else TEXT, TEXT if typ in {"split", "image_prompts"} else None,
                         json.dumps(meta), pid))
@@ -118,7 +117,7 @@ def _prepare_data(seed: Path, work: Path, typ: str, node_key: str,
     if typ in {"split", "image_prompts"}:
         voiceover.write_text(TEXT, encoding="utf-8")
     elif voiceover.exists():
-        voiceover.unlink()  # plan/script start before any voiceover exists
+        voiceover.unlink()
     return data
 
 
@@ -213,7 +212,7 @@ async def main() -> int:
     tracker_db = work / "tracker.db"
     if tracker_db.exists():
         tracker_db.unlink()
-    tracker._TRACKER_DB = tracker_db  # never touch the operator's own tracker
+    tracker._TRACKER_DB = tracker_db
     from app.services import observation
     from app.services.decision_transport import current as decision_hook
 
@@ -299,8 +298,6 @@ async def main() -> int:
             execution = response.json()["execution_id"]
             result["execution_id"] = execution
             if args.probe_retry:
-                # Managed launch enables the Decision loop by default; the operator-driven probe must
-                # own the incident, so the loop is switched off before any incident can exist.
                 response = await client.post(BASE + f"/observations/{execution}/decisions/control", json={
                     "enabled": False, "rationale": "dry probe: operator-driven recovery, Decision loop off"})
                 print("decisions/control(off):", response.status_code)
@@ -359,8 +356,6 @@ async def _probe(client, args, prefix, execution, node_key, incident_id) -> dict
             "idempotency_key": f"probe-retry-{node_key}"})
         return {"mode": "retry_same", "http": response.status_code, "accepted": response.status_code < 300,
                 "body": response.text[:500]}
-    # retry_profile: approve the pre-approved catalog entry exactly as the Decision path would,
-    # then reserve the one recovery through ProfilesSupervisor.recover (real preconditions).
     state = (await client.get(prefix + "/profiles", params={"node_key": node_key})).json()
     if not state.get("available"):
         return {"mode": "retry_profile", "accepted": False, "stage": "profiles/state", "reason": state.get("reason")}
@@ -413,8 +408,6 @@ async def _poll(client, args, execution, node_key, data, counters, result) -> No
                             and i["node_key"] == node_key]
                 invalid = [i for i in relevant if i["type"] in {"invalid_json", "missing_payload"}]
                 if not invalid:
-                    # The journal is delivered asynchronously: the last attempt's facts can trail
-                    # the NodeRun/step_failure state by a few seconds. Only a persistent absence counts.
                     first_seen = result.setdefault("_probe_wait_since", time.monotonic())
                     if time.monotonic() - first_seen < 60:
                         await asyncio.sleep(2)
@@ -438,7 +431,6 @@ async def _poll(client, args, execution, node_key, data, counters, result) -> No
             if recs and recs[0]["status"] in TERMINAL_DECISION:
                 return
             if not recs and db_state["abandoned"] and db_state["node"] == "failed" and not diagnoses.get("lagging"):
-                # exhausted natively, no incident-driven Decision appeared within a grace period
                 result.setdefault("_exhausted_at", time.monotonic())
                 if time.monotonic() - result["_exhausted_at"] > 45:
                     result["stopped_at"] = "native retries exhausted; no Decision record was created"

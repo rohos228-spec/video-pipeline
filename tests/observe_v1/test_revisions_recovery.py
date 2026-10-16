@@ -1,8 +1,3 @@
-"""Recovery tickets keep their validity under irrelevant change and are rejected cleanly otherwise.
-
-Uses the durable-action fixtures of test_actions_v1_contract (temporary databases,
-synthetic evidence, no provider, no worker).
-"""
 import copy
 import tempfile
 import unittest
@@ -16,7 +11,7 @@ from app.services import observation, prompt_active_global, prompt_library, revi
 from app.services.actions_recovery import RecoveryAction, claim, input_revision
 from app.services.observation import ObservationEvent
 from app.settings import settings
-import test_actions_v1_contract as base_tests  # module import: do not re-collect its classes here
+import test_actions_v1_contract as base_tests
 
 
 class RecoveryRevisionScope(unittest.IsolatedAsyncioTestCase):
@@ -38,7 +33,6 @@ class RecoveryRevisionScope(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(patcher.stop)
 
     async def record(self, canvas=None):
-        """Re-record the source attempt's revision and parts under the current state."""
         async with self.sessions() as s:
             project = await s.get(Project, 7)
             if canvas is not None:
@@ -64,7 +58,6 @@ class RecoveryRevisionScope(unittest.IsolatedAsyncioTestCase):
     def canvas(self):
         return {"nodes": copy.deepcopy(self.nodes), "edges": []}
 
-    # ---- the ticket records scheme and per-node configuration -------------------------
     async def test_ticket_records_scheme_and_node_config_revision(self):
         self.isolate_prompts()
         await self.exhausted_fixture()
@@ -76,14 +69,11 @@ class RecoveryRevisionScope(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pre["node_config_revision"], pre["input_parts"]["node_config_revision"])
         self.assertEqual(pre["graph_version"], revisions.graph_version(self.nodes, []))
 
-    # ---- irrelevant change keeps the reserved ticket valid -----------------------------
     async def test_irrelevant_changes_after_reservation_keep_the_claim_valid(self):
         self.isolate_prompts()
         await self.exhausted_fixture()
         await self.record(self.canvas())
         ticket = await self.retry()
-        # Another node's configuration and a cosmetic label, an unrelated setting and an
-        # unrelated prompt file change while the ticket is queued.
         canvas = self.canvas()
         canvas["nodes"][1]["data"]["modelId"] = "other-model"
         canvas["nodes"][1]["data"]["outputMode"] = "text"
@@ -95,7 +85,6 @@ class RecoveryRevisionScope(unittest.IsolatedAsyncioTestCase):
                 patch.object(settings, "watchdog_model_request_timeout_s", 991):
             self.assertEqual(await self.claim_now(), ticket["new_attempt_id"])
 
-    # ---- relevant change invalidates --------------------------------------------------
     async def relevant_change_is_rejected(self, mutate):
         self.isolate_prompts()
         await self.exhausted_fixture()
@@ -145,7 +134,6 @@ class RecoveryRevisionScope(unittest.IsolatedAsyncioTestCase):
             await self.retry()
         await self.assert_no_dispatch()
 
-    # ---- old-scheme values --------------------------------------------------------------
     async def test_source_attempt_recorded_under_legacy_scheme_is_rejected_with_a_reason(self):
         self.isolate_prompts()
         await self.exhausted_fixture()

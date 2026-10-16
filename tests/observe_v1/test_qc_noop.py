@@ -1,4 +1,3 @@
-"""Original batch/operator/model parser; only external HTTP answers are fixtures."""
 from app.services import revisions
 import json
 import tempfile
@@ -286,8 +285,6 @@ class NoopRecoveryVerify(unittest.IsolatedAsyncioTestCase):
         posts=[];applied=[]
         def response(request):
             posts.append(request)
-            # Fault in the actual journal limit, after initial model_start was saved.
-            # No scheduler/operator/parser/storage method is replaced.
             observation._observer.MAX_TOTAL=0
             payload={'type':'response.completed','response':{'id':'resp_audit_test','status':'completed',
                 'output':[{'content':[{'type':'output_text','text':'{"ops":[]}'}]}]}}

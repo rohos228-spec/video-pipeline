@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""Migrate cinematic scene space tables. --up / --down.
-
-Uses app.db.engine when it already points at settings.sqlite_path; otherwise
-opens that sqlite file. --down drops only frames_space and scenes_space.
-"""
 
 from __future__ import annotations
 

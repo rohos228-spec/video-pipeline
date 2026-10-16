@@ -46,7 +46,7 @@ CASE_KEYS = ("id", "text", "workflow", "context", "outcome", "steps", "also_offe
              "clarify_contains", "explanation_contains", "post_live_edit")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 PLACEHOLDER_RE = re.compile(r"^\$[a-z_]+(\.[A-Za-z0-9_]+)+$")
-PREFIX_ONLY_KEYS = {"source_path"}   # в фикстуре пишется префиксом "attachments/": путь подставляет сервер
+PREFIX_ONLY_KEYS = {"source_path"}
 
 
 def _load_seed():
@@ -118,7 +118,7 @@ def _check_step(i: int, step, registry, variables: dict, problems: list[str]) ->
         resolved = _resolve(value, variables, problems, f"{where}.{key}")
         from app.services.action_layer import schema as schema_mod
         for err in schema_mod.validate(props[key], resolved, key):
-            if err.endswith(": required"):   # ожидание в фикстуре - подмножество параметров: пропуск полей не ошибка
+            if err.endswith(": required"):
                 continue
             problems.append(f"{where}: {aid}: {err}")
 

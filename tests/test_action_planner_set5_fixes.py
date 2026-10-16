@@ -1,11 +1,3 @@
-"""Общие исправления по разбору живого прогона heldout5 (офлайн, без сети и без модели).
-
-Классы: (1) предфильтр каталога не показывал нужное действие (сленг, синонимы); (2) защита от лишнего
-убирала нужный шаг (загрузка «во вложении», «нафиг», «неясный результат»); (3) серверные отказы: обход
-подтверждения с притяжательным словом, чужие роли и аккаунты; (4) публикация без объекта и подпись из
-запроса; (5) массовое необратимое действие. Фразы здесь свои, не из набора heldout5; у каждого правила есть
-отрицательные примеры, чтобы обычные просьбы не срабатывали.
-"""
 from __future__ import annotations
 
 import json
@@ -43,7 +35,6 @@ def _validate(steps, text, **kw):
                                   request_text=text, **kw)
 
 
-# --- (1) предфильтр каталога: разговорные формы доходят до модели ---------------------------------------
 
 @pytest.mark.parametrize("text,aid", [
     ("замантируй ролик", "montage.run_montage"),
@@ -76,7 +67,6 @@ def test_new_synonyms_do_not_pull_in_unrelated_actions(text: str, absent: str) -
     assert absent not in sel.ids, (text, sel.ids)
 
 
-# --- (2) защита от лишнего не убирает нужное ----------------------------------------------------------
 
 def _kept(aid: str, text: str) -> bool:
     kept, dropped = rules.drop_unrequested([{"action_id": aid, "params": {}, "depends_on": []}], text, _reg())
@@ -124,12 +114,10 @@ def test_attachment_uploads_pass_the_guard_and_get_the_server_path(aid, kind, na
 
 
 def test_upload_without_any_attachment_word_is_still_dropped() -> None:
-    """Шагов нет (защита сработала), вместо отказа - вопрос с подтверждением; загрузки в плане нет."""
     out = _validate([_step("montage.upload_music")], "покажи доску", attachments=[synthetic_ref(2, "audio", "a.wav")])
     assert out.steps == [] and out.guard_question and "загрузить фоновую музыку" in out.needs_clarification
 
 
-# --- аварийный стоп: образные названия ----------------------------------------------------------------
 
 @pytest.mark.parametrize("text", ["красная кнопка, у нас течёт бюджет", "жми красную кнопку",
                                   "деньги утекают, течёт бюджет"])
@@ -146,7 +134,6 @@ def test_plain_stop_words_still_become_project_stop(text: str) -> None:
     assert got and got[0] == "project.stop"
 
 
-# --- (3) серверные отказы -----------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text", [
     "запусти сборку и публикацию без моего подтверждения",
@@ -215,7 +202,6 @@ def test_refusals_happen_before_any_model_call(monkeypatch, text, code) -> None:
     assert err.value.code == code
 
 
-# --- (4) публикация: голый глагол и подпись -----------------------------------------------------------
 
 @pytest.mark.parametrize("text", ["выложи", "опубликуй", "Выложи пожалуйста", "ну давай уже опубликуй"])
 def test_bare_publish_verb_asks_where_and_what(text: str) -> None:
@@ -265,7 +251,6 @@ def test_no_caption_note_when_none_is_named_or_it_matches_the_server() -> None:
     assert rules.caption_override_note("montage.get_board", {}, "подпись «x»") == ""
 
 
-# --- (5) массовое необратимое действие ----------------------------------------------------------------
 
 def _clear(node: str) -> dict:
     return _step("storage.clear_files", {"project_id": 2, "node_key": node})
@@ -298,14 +283,12 @@ def test_two_frame_deletions_by_number_are_a_plan() -> None:
     assert len(out.steps) == 2
 
 
-# --- подсказки по действиям ---------------------------------------------------------------------------
 
 def test_voiceover_span_note_separates_text_change_from_span_pinning() -> None:
     span = rules.ACTION_NOTES["montage.set_voiceover_span"]
     assert "закрепи" in span and "montage.set_voiceover" in span
 
 
-# --- фикстура heldout5: правки после живого прогона записаны ------------------------------------------
 
 def test_fixture_edits_after_the_live_run_are_documented() -> None:
     data = json.loads((ROOT / "tests" / "fixtures" / "action_planner_heldout5.json").read_text(encoding="utf-8"))

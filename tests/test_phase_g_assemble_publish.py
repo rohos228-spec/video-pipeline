@@ -1,4 +1,3 @@
-"""Фаза G: атомарная сборка, проверка выхода, один approve_final, честный publish. Без сети."""
 
 from __future__ import annotations
 
@@ -41,7 +40,6 @@ async def _project(session, slug="g4") -> Project:
 
 
 def _wire(monkeypatch, *, content=b"NEWVIDEO", verdict="passed", fail_core=False):
-    """Заглушки: сборка пишет во временный путь, проверка и HITL подменены."""
     import app.services.artifact_verifier as av
     import app.services.mass_factory as mf
 
@@ -130,7 +128,7 @@ async def test_unknown_verification_is_not_success(db, monkeypatch):
 async def test_success_writes_final_and_one_approval_per_digest(db, monkeypatch):
     p = await _project(db)
     sent = _wire(monkeypatch)
-    for _ in range(3):  # retries of the same output
+    for _ in range(3):
         await asm._assemble_body(db, p, None)
     final = p.data_dir / "final" / f"{p.slug}.mp4"
     assert final.read_bytes() == b"NEWVIDEO"
@@ -151,7 +149,6 @@ async def test_new_digest_gets_new_approval(db, monkeypatch):
     assert len(await _approvals(db, p)) == 2
 
 
-# ── auto approval requires the verifier ──────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -174,7 +171,7 @@ async def test_auto_approve_final_needs_verification(db, monkeypatch):
     assert await aa._final_verified(db, p) is False
     transition = aa.TRANSITIONS[ProjectStatus.assembled]
     await aa._apply_approve(db, p, None, transition)
-    assert p.status is ProjectStatus.assembled  # not advanced
+    assert p.status is ProjectStatus.assembled
 
     async def good(*a, **k):
         return {"status": "passed", "sha256": "abc"}
@@ -189,14 +186,12 @@ async def test_auto_approve_final_needs_verification(db, monkeypatch):
         await aa._apply_approve(db, p, None, transition)
     finally:
         logger.remove(sink)
-    assert not any("verification not passed" in m for m in logs)  # guard let it through
-    # recorded digest that no longer matches the file blocks as well
+    assert not any("verification not passed" in m for m in logs)
     art = (await _finals(db, p))[0]
     art.meta = {"sha256": "other"}
     assert await aa._final_verified(db, p) is False
 
 
-# ── publish: unconfirmed is not success ──────────────────────────────────────
 
 
 class _Loc:
@@ -272,7 +267,6 @@ async def test_publish_run_does_not_record_unconfirmed_as_success(db, tmp_path, 
     db.add(Artifact(project_id=p.id, kind=ArtifactKind.final_video, uuid="u2", path=str(video)))
     await db.flush()
     monkeypatch.setattr(settings, "social_publish_enabled", True)
-    # W6-1 (E01): клик возможен только после подтверждения человека на каждую площадку для этого файла.
     from app.services import publications_store as ps
     sha = await ps.sha256_of_file_async(video)
     csha = pub.caption_sha256(pub.caption_for(p))
@@ -301,7 +295,6 @@ async def test_publish_run_does_not_record_unconfirmed_as_success(db, tmp_path, 
     assert set(p.meta["publish_unconfirmed"]) == {"tiktok"}
     assert p.status is ProjectStatus.publishing
     assert any("НЕ ПОДТВЕРЖДЕНО" in t for t in sent)
-    # a retry never re-publishes to the unconfirmed platform
     await pub.run(db, p, Bot())
     assert calls[1] >= {"tiktok", "yt_shorts"}
 
@@ -311,4 +304,4 @@ def test_preview_stays_read_only_signature():
     from app.orchestrator.steps.publish import preview_publication
 
     assert list(inspect.signature(preview_publication).parameters) == ["session", "project"]
-    assert SimpleNamespace  # keep import used
+    assert SimpleNamespace

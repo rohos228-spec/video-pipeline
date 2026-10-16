@@ -1,15 +1,3 @@
-"""Реалистичный проект для оценки планировщика действий (без сети и без платных вызовов).
-
-Заполняет ту же БД и ту же папку проекта, что читает ``planner.load_context``:
-- 30 кадров (сцены из 3, 2 и 1 кадра по кругу; шот 2 у части кадров), закадр, uuid, порядок доски;
-- файлы: картинки у кадров 1..24 (кадр 14 без картинки), видео у кадров 1..12, шот 2 у кадров 2, 4, 8;
-- очередь правок доски (кадры 3, 4, 8), настройки генерации проекта (не умолчания);
-- ноды n_excel_gpt_fw_script / shots / qc / action / report в снимке графа;
-- предложения изменений (T0/T1/T2, разные статусы), версии и указатели целей;
-- варианты мастер-промтов main/draft у шага script (и main у excel_gpt) во ВРЕМЕННОЙ копии prompts/.
-Все данные детерминированы; повторный вызов пересоздаёт кадры проекта.
-Использование: ``await seed_realistic(project_id=2)`` после ``_init_db()`` и выставленного DATA_DIR.
-"""
 from __future__ import annotations
 
 import shutil
@@ -24,11 +12,11 @@ PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08
 MP4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom\x00\x00\x00\x08free"
 
 N_FRAMES = 30
-SCENE_SIZES = (3, 2, 1)                 # размеры сцен по кругу: голова + шоты
-SHOT2_FRAMES = (2, 4, 8, 12, 20)         # у этих кадров есть второй шот
+SCENE_SIZES = (3, 2, 1)
+SHOT2_FRAMES = (2, 4, 8, 12, 20)
 IMAGE_FRAMES = tuple(n for n in range(1, 25) if n != 14)
 VIDEO_FRAMES = tuple(range(1, 13))
-SHOT2_IMAGE_FRAMES = (2, 4, 8)           # у кадра 4 файлы в обоих шотах: «удали картинку кадра 4» неоднозначно
+SHOT2_IMAGE_FRAMES = (2, 4, 8)
 SHOT2_VIDEO_FRAMES = (4,)
 NODES = ("n_excel_gpt_fw_script", "n_excel_gpt_fw_action", "n_excel_gpt_fw_shots",
          "n_excel_gpt_fw_qc", "n_excel_gpt_fw_report")
@@ -40,16 +28,15 @@ DRAFT_TEXT = "# draft\nЧерновик мастер-промта для оце�
 @dataclass
 class SeedInfo:
     project_id: int
-    frame_ids: dict[int, int] = field(default_factory=dict)      # number -> frame_id
-    proposals: list[dict] = field(default_factory=list)          # n, id, digest, status, target
-    targets: dict[str, int] = field(default_factory=dict)        # target -> current version
+    frame_ids: dict[int, int] = field(default_factory=dict)
+    proposals: list[dict] = field(default_factory=list)
+    targets: dict[str, int] = field(default_factory=dict)
     queue: list[dict] = field(default_factory=list)
     data_dir: Path | None = None
     prompts_root: Path | None = None
 
 
 def scene_layout(n_frames: int = N_FRAMES) -> list[str]:
-    """Роль каждого кадра по порядку: 'p' голова сцены, 'c' шот сцены."""
     roles: list[str] = []
     i = 0
     while len(roles) < n_frames:
@@ -85,7 +72,6 @@ def write_media(data_dir: Path) -> None:
 
 
 def seed_prompts(dest: Path) -> Path:
-    """Временная копия нужных папок prompts/ + варианты main/draft; PROMPTS_ROOT указывает на неё."""
     from app.services import prompt_library as pl
     src = Path(pl.PROMPTS_ROOT)
     if dest.exists():
@@ -130,7 +116,7 @@ async def _seed_project(s, project_id: int | None, data_dir_hint: Path | None):
             attrs["camera_subdivide"] = {"role": "shot"}
         if n in SHOT2_FRAMES:
             attrs["image_prompt_shot2"] = f"финальный план кадра {n}"
-        s.add(Frame(id=frame_id_of(pid, n), project_id=pid, number=n,  # frame_id != number
+        s.add(Frame(id=frame_id_of(pid, n), project_id=pid, number=n,
                     voiceover_text=f"Реплика кадра {n}.", uuid=frame_uuid_of(pid, n),
                     sort_key=float(n), attrs=attrs))
     nodes = [{"id": nid, "type": "excel_gpt", "data": {"type": "excel_gpt"}} for nid in NODES]
@@ -157,13 +143,12 @@ def frame_uuid_of(pid: int, number: int) -> str:
 
 
 def proposal_specs(pid: int) -> list[dict]:
-    """Предложения изменений: детерминированные id и digest (их ждёт фикстура оценки)."""
     from app.services.change_control import store as cs
 
     shots = f"project:{pid}:n_excel_gpt_fw_shots:prompt"
     qc_opts = f"project:{pid}:n_excel_gpt_fw_qc:options"
     script_params = f"project:{pid}:n_excel_gpt_fw_script:step_params"
-    spec = [  # (tier, kind, node, target, base, candidate, status, applied_version)
+    spec = [
         ("T2", "prompt_text", "n_excel_gpt_fw_shots", shots, 1,
          {"text": "Правка промпта шотов, версия 2."}, "applied", 2),
         ("T2", "prompt_text", "n_excel_gpt_fw_shots", shots, 2,
@@ -185,7 +170,6 @@ def proposal_specs(pid: int) -> list[dict]:
 
 
 def expected_vars(pid: int = 2) -> dict:
-    """Значения для плейсхолдеров фикстуры оценки ($frame.N, $uuid.N, $proposal.N.id, ...)."""
     out: dict = {}
     for n in range(1, N_FRAMES + 1):
         out[f"frame.{n}"] = frame_id_of(pid, n)
@@ -201,10 +185,6 @@ def expected_vars(pid: int = 2) -> dict:
 
 
 def fake_attachments(project_id: int, specs: list[dict] | None) -> list:
-    """Вложения для кейсов фикстуры с ``context.attachments`` ([{kind, name, size}]): без файлов на диске.
-
-    Планировщик видит только id/имя/вид/размер, а путь для шага загрузки берёт из записи сам, поэтому
-    для оценки достаточно записи (id детерминирован: повторный запуск даёт те же значения)."""
     from app.services.action_layer.attachments import synthetic_ref
     return [synthetic_ref(project_id, str(sp["kind"]), str(sp["name"]), int(sp.get("size", 1024)),
                           att_id=uuid.uuid5(uuid.NAMESPACE_DNS, f"eval-attachment-{project_id}-{i}-{sp['name']}").hex)
@@ -235,7 +215,7 @@ async def _seed_changes(s, pid: int) -> tuple[list[dict], dict[str, int]]:
         for v in range(1, current + 1):
             if await s.scalar(select(cs.ConfigVersion.id).where(
                     cs.ConfigVersion.target == target, cs.ConfigVersion.version == v)):
-                continue  # версии append-only: повторный запуск их не трогает
+                continue
             s.add(cs.ConfigVersion(target=target, version=v, parent_version=v - 1, kind="apply",
                                    project_id=pid, node_key=target.split(":")[2],
                                    content={"text": f"версия {v}"}, digest=cs.sha({"v": v, "t": target}),
@@ -245,7 +225,6 @@ async def _seed_changes(s, pid: int) -> tuple[list[dict], dict[str, int]]:
 
 async def seed_realistic(project_id: int | None = 2, *, factory=None,
                          prompts_dir: Path | None = None) -> SeedInfo:
-    """Создаёт или пересоздаёт реалистичный проект. ``factory``: фабрика сессий (по умолчанию слоя действий)."""
     from app.services.action_layer import store
     factory = factory or store.sessions()
     async with factory() as s:

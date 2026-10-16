@@ -1,8 +1,3 @@
-"""Отложенный набор №3 планировщика: валидность, изоляция от основного набора, наборов №1/№2 и правил.
-
-Все проверки офлайн, без сети. Набор написан до просмотра ответов планировщика и не подгоняется под правила:
-тесты проверяют только форму, эталоны по схеме каталога и то, что фразы не просочились в другие наборы и в код правил.
-"""
 from __future__ import annotations
 
 import json
@@ -19,7 +14,7 @@ RULE_FILES = ("app/services/action_layer/planner_rules.py", "app/services/action
               "app/services/action_layer/planner_autofill.py", "app/services/action_layer/planner_uploads.py",
               "app/services/action_layer/planner.py")
 _QUOTED = "[\"'«]([^\"'»\n]{6,})[\"'»]"
-SHINGLE = 6  # слов подряд: совпадение такой длины с отложенной фразой считается просочившимся текстом
+SHINGLE = 6
 
 
 def _cases(name: str) -> list[dict]:
@@ -51,7 +46,6 @@ def _vars() -> dict:
     return mod.expected_vars(2)
 
 
-# --- валидность набора №3 -----------------------------------------------------------------------
 
 def test_heldout3_is_big_and_diverse() -> None:
     assert len(HELD3) >= 100
@@ -88,7 +82,7 @@ def test_heldout3_expectations_follow_the_catalog_schema() -> None:
             props = (spec.params_schema or {}).get("properties", {})
             unknown = set(step["params"]) - set(props)
             assert not unknown, (case["id"], aid, sorted(unknown))
-            loose = {k: v for k, v in spec.params_schema.items() if k != "required"}  # сервер добавит недостающее
+            loose = {k: v for k, v in spec.params_schema.items() if k != "required"}
             errors = schema_mod.validate(loose, {k: v for k, v in step["params"].items() if k != "source_path"})
             assert not errors, (case["id"], aid, errors)
 
@@ -103,7 +97,6 @@ def test_heldout3_clarify_and_attachment_cases_are_well_formed() -> None:
             assert case["steps"] == [], case["id"]
 
 
-# --- изоляция: фразы не пересекаются с другими наборами и не попадают в правила -------------------
 
 def test_no_text_is_shared_between_all_sets() -> None:
     sets = {"main": MAIN, "held1": HELD1, "held2": HELD2, "held3": HELD3}

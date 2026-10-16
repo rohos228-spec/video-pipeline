@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.services import journal_archive as ja  # noqa: E402
+from app.services import journal_archive as ja
 
 
 def _default_db() -> Path:

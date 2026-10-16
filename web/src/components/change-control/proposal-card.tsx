@@ -38,7 +38,6 @@ const STATUS_CLASS: Partial<Record<ProposalStatus, string>> = {
   developer_review: "border-red-400/30 text-red-200",
 };
 
-/** Строки «что изменится» для окна подтверждения. */
 function changeLinesOf(p: Proposal): string[] {
   if (p.kind === "prompt_text") {
     const { added, removed } = parseUnifiedDiff(p.diff || "");
@@ -52,9 +51,7 @@ function changeLinesOf(p: Proposal): string[] {
 interface Props {
   proposal: Proposal;
   defaultOpen?: boolean;
-  /** Обновить список после применения/отката. */
   onChanged: () => void;
-  /** Пока открыт поток применения/отката, карточка закреплена в списке (не пропадает при смене статуса). */
   onPin?: (on: boolean) => void;
 }
 
@@ -83,7 +80,6 @@ export function ProposalCard({ proposal, defaultOpen = false, onChanged, onPin }
     if (open && !detail) void reload();
   }, [open, detail, reload]);
 
-  // Список обновился (например, после применения): перечитываем подробности, если они уже открыты.
   useEffect(() => {
     if (detail && (detail.status !== proposal.status || detail.updated_at !== proposal.updated_at)) void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -270,7 +266,6 @@ export function ProposalCard({ proposal, defaultOpen = false, onChanged, onPin }
 }
 
 
-/** Отклонение: только по клику оператора, причина обязательна (3..500 символов). Применять/писать в проект не умеет. */
 function RejectBlock({ proposal, prominent, open, onOpen, onCancel, onRejected }: {
   proposal: Proposal; prominent: boolean; open: boolean; onOpen: () => void; onCancel: () => void; onRejected: () => void;
 }) {

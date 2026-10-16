@@ -31,7 +31,6 @@ def test_detect_character_registry_prompt() -> None:
 
 
 def test_detect_character_registry_personaji_db_and_07_07() -> None:
-    """Studio slot personajiDB / 07.07 — не dense shot-fill."""
     header = (
         "ПРОМТ ДЛЯ АГЕНТА РЕЕСТРА ПЕРСОНАЖЕЙ (DB / apply-ops)\n\n"
         "Ты — агент реестра персонажей проекта.\n"

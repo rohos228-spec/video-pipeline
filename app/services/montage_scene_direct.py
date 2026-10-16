@@ -1,8 +1,3 @@
-"""«Улучшить сцену» — прямой запуск, без группы нод script_frames_qc.
-
-Промт оператора → персонажи + кадры с покрытием. Паспорта сцены нет.
-Закадр только нарезаем на шоты.
-"""
 
 from __future__ import annotations
 
@@ -194,7 +189,6 @@ def pick_scene_characters(
     gpt_raw: str,
     entities: list[Any],
 ) -> list[dict[str, str]]:
-    """Реестр ∩ текст (заказ+закадр). GPT может только сузить список."""
     mentioned = match_registry_characters(haystack, entities)
     gpt_chars = intersect_codes_with_registry(gpt_raw, entities)
     allowed = {row["code"] for row in mentioned}
@@ -240,12 +234,10 @@ def actions_too_similar(left: str, right: str) -> bool:
 
 
 def vo_beat(piece: str) -> str:
-    """Действие кадра из его куска закадра — не копия соседнего промта."""
     return _norm(piece)
 
 
 def _is_parent_still_action(act: str, parent_action: str) -> bool:
-    """Still родителя («лицом к камере») не считается кадром сцены."""
     text = _norm(act)
     if not text:
         return True
@@ -260,7 +252,6 @@ def unique_gpt_shots(
     *,
     parent_action: str,
 ) -> list[dict[str, Any]]:
-    """Уникальные кадры GPT: без повтора и без still родителя."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for shot in shots:
@@ -283,7 +274,6 @@ def unique_gpt_beats(
     *,
     parent_action: str,
 ) -> list[tuple[str, str]]:
-    """Уникальные действия GPT: без повтора и без still родителя."""
     return [
         (_shot_action(row), _plan(row.get("план") or "СРЕДНИЙ"))
         for row in unique_gpt_shots(shots, parent_action=parent_action)
@@ -313,7 +303,6 @@ def attach_shot_coverage(
     place: str,
     cell_number: int,
 ) -> list[dict[str, Any]]:
-    """Дописать план/ракурс/движение/стык/роль/объект на каждый шот."""
     from app.services.montage_scene_improve import normalize_shots
 
     packed = normalize_shots(kadry, cell_number=cell_number, place=place, anchors=1)
@@ -376,11 +365,6 @@ def build_kadry(
     cell_number: int,
     operator_prompt: str = "",
 ) -> list[dict[str, Any]]:
-    """Кадры сцены из промта/GPT. Родительский still сюда не входит.
-
-    Число кадров = число действий заказа, не число кусков закадра.
-    Закадр только нарезаем на готовые шоты.
-    """
     from app.services.montage_coverage_ops import MAX_IMPROVE_SHOTS
     from app.services.montage_scene_improve import is_raw_prompt_dump, split_vo_for_shots
 

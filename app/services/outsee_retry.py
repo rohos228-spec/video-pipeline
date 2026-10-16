@@ -101,8 +101,6 @@ from app.services.video_prompt_sanitize import (
     sanitize_video_prompt_after_errors,
 )
 
-# Developer API: gpt-image-2 (OpenAI) часто бьёт CONTENT_POLICY даже на
-# безопасном тексте; nano-banana-2 — вторая живая image-модель каталога.
 _IMAGE_POLICY_FALLBACK_SLUG = "nano-banana-2"
 
 
@@ -186,7 +184,6 @@ def _join_scene_style(scene: str, style: str) -> str:
     return scene or style
 
 
-# Словарь стиля из агента часто 3k+ симв. Тогда GPT-сжатие убивает персонажа.
 _MIN_SCENE_CHARS = 1200
 _MAX_STYLE_SHARE = 0.42
 
@@ -219,7 +216,6 @@ def _join_lock_scene(lock: str, scene: str) -> str:
 
 
 def _hard_truncate_prompt(text: str, body_limit: int) -> str:
-    """Обрезка тела: lock персонажа и STYLE бережём, режем воду сцены."""
     if len(text) <= body_limit:
         return text
     scene, style = _split_style_lock(text)
@@ -253,7 +249,6 @@ def _hard_truncate_prompt(text: str, body_limit: int) -> str:
         )
     return _join_scene_style(_cut_at_space(scene_keep, scene_limit), style)
 
-# Fallback для rewrite не из-за модерации (редко — второй раунд после других сбоев).
 _GPT_REWRITE_META = (
     "пришли только готовый текст без рассуждений: исправь промт ниже "
     "и пришли только отредактированный текст."
@@ -421,7 +416,6 @@ def _is_audio_content_policy_error(err: BaseException) -> bool:
 
 
 def _is_transient_network_error(err: BaseException) -> bool:
-    """Сеть к Outsee / host рефов — retry, не wipe кадра и не GPT-rewrite."""
     if isinstance(err, (OSError, TimeoutError)):
         return True
     try:
@@ -634,7 +628,6 @@ async def _compress_prompt_for_outsee(
                 len(style),
             )
         body_only = scene_only or shrunk
-        # GPT мог вернуть lock обратно — не дублируем.
         _again_lock, body_only = _split_identity_lock(body_only)
         joined = _join_scene_style(_join_lock_scene(id_lock, body_only), style)
         if len(joined) > max_body:
@@ -947,9 +940,6 @@ def _uniquify_prompt_id(base: str | None, round_idx: int, attempt: int) -> str |
 
 
 class KieSlugWithoutOutseeBotError(OutseeImageError):
-    """Слаг картинки ведёт в Kie, а бота Outsee нет: native-маршрут Kie для картинок не используется.
-
-    Бросается ДО любой отправки (платного запроса не было). Решение по маршруту за владельцем."""
 
     def __init__(self, slug: str | None) -> None:
         super().__init__(
@@ -990,7 +980,6 @@ async def generate_image_with_retries(
     from app.settings import settings as _settings
 
     fallback_done = bool(kwargs.pop("_image_model_fallback_done", False))
-    # D03: the step asks for request-key idempotency (images/hero/items); never forwarded to the bot.
     idem_flag = bool(kwargs.pop("idempotent", False))
     raw_slug = kwargs.get("model_slug") or getattr(
         _settings, "outsee_default_image_model", None
@@ -999,8 +988,6 @@ async def generate_image_with_retries(
     from app.services.media_jobs import assert_entry
     managed = await assert_entry(project_id=kwargs.get("project_id"), provider=backend)
     if managed:
-        # The original provider service owns submit/status/download. Its durable
-        # job replaces this legacy retry/rewrite/fallback ladder in managed mode.
         from app.bots.kie_http import generate_kie_image
         refs = kwargs.get("reference_image")
         return await generate_kie_image(prompt, out_path, model_slug=str(raw_slug),
@@ -1016,7 +1003,6 @@ async def generate_image_with_retries(
             context={"error_kind": "no_key", "provider": "outsee"},
         )
     if backend == "kie" and outsee is None:
-        # Раньше здесь был AttributeError на outsee.generate_image; маршрут и платное поведение не менялись.
         raise KieSlugWithoutOutseeBotError(str(raw_slug) if raw_slug else None)
     idem_ctx = None
     if idem_flag:
@@ -1025,7 +1011,7 @@ async def generate_image_with_retries(
         if not idem_ctx.usable:
             idem_ctx = None
         else:
-            adopted = await outsee_idempotency.check(idem_ctx)  # uncertain -> raises, nothing is sent
+            adopted = await outsee_idempotency.check(idem_ctx)
             if adopted is not None:
                 logger.warning(
                     "outsee_retry: {} — платный результат этого запроса уже записан ({}); новый запрос не отправляю",
@@ -1049,7 +1035,7 @@ async def generate_image_with_retries(
     base_prompt_id = kwargs.get("prompt_id_prefix")
     rounds: list[tuple[str, str]] = [("original", current_prompt)]
     if gpt_rewrite and gpt is not None:
-        rounds.append(("rewritten", ""))  # placeholder, заполним если дойдём
+        rounds.append(("rewritten", ""))
     _DOWNLOAD_ONLY_RETRIES = 8
 
     for round_idx, (round_label, _) in enumerate(rounds):
@@ -1059,6 +1045,8 @@ async def generate_image_with_retries(
         while attempt < max_attempts_per_prompt:
             attempt += 1
             abort_if_cancelled(pid if isinstance(pid, int) else None)
+            from app.services.api_tracker_hook import check_api_allowed
+            check_api_allowed(provider=str(backend or "image"), model=str(kwargs.get("model_slug") or "image"))
             attempt_kwargs = dict(kwargs)
             attempt_kwargs["prompt_id_prefix"] = base_prompt_id
             try:
@@ -1070,106 +1058,88 @@ async def generate_image_with_retries(
                     else None,
                     project_id=pid if isinstance(pid, int) else None,
                 )
-                if use_outsee_api:
-                    refs = attempt_kwargs.get("reference_image")
-                    ref_list: list[Any] | None = None
-                    if isinstance(refs, Path):
-                        ref_list = [refs]
-                    elif isinstance(refs, list):
-                        ref_list = [p for p in refs if p is not None]
-                    raw_slug = attempt_kwargs.get("model_slug") or getattr(
-                        _settings, "outsee_default_image_model", None
+                refs = attempt_kwargs.get("reference_image")
+                ref_list: list[Any] | None = None
+                if isinstance(refs, Path):
+                    ref_list = [refs]
+                elif isinstance(refs, list):
+                    ref_list = [p for p in refs if p is not None]
+                raw_slug = attempt_kwargs.get("model_slug") or getattr(
+                    _settings, "outsee_default_image_model", None
+                )
+                ar = attempt_kwargs.get("aspect_ratio") or "9:16"
+                res = attempt_kwargs.get("resolution") or attempt_kwargs.get(
+                    "image_resolution"
+                )
+                if ref_list:
+                    logger.info(
+                        "outsee_retry: {} ref(s) → image API reference_images",
+                        len(ref_list),
                     )
+
+                if use_outsee_api:
                     slug = studio_id_to_outsee_image_slug(
                         str(raw_slug) if raw_slug else None
                     )
-                    ar = attempt_kwargs.get("aspect_ratio") or "9:16"
-                    res = attempt_kwargs.get("resolution") or attempt_kwargs.get(
-                        "image_resolution"
-                    )
-                    if ref_list:
-                        logger.info(
-                            "outsee_retry: {} ref(s) → Outsee HTTP API image_urls",
-                            len(ref_list),
+                    result = await _paid(lambda: outsee_api_generate_image(
+                        send_prompt,
+                        out_path,
+                        model_slug=slug,
+                        aspect_ratio=str(ar).replace("_", ":"),
+                        resolution=str(res) if res else "2K",
+                        detail_level=attempt_kwargs.get("quality"),
+                        reference_images=ref_list,
+                        prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
+                        timeout=float(attempt_kwargs.get("timeout") or 600),
+                        gen_id=attempt_kwargs.get("gen_id"),
+                        project_id=pid if isinstance(pid, int) else None,
+                    ), send_prompt)
+                    try:
+                        from app.services.generation_storage import write_sidecar
+
+                        write_sidecar(
+                            result.file_path,
+                            media="image",
+                            model=slug,
+                            prompt=send_prompt,
+                            params={
+                                "aspect": str(ar).replace("_", ":"),
+                                "resolution": str(res) if res else "2K",
+                                "project_id": pid,
+                                "gen_id": attempt_kwargs.get("gen_id"),
+                            },
+                            raw_url=result.raw_url,
+                            quote=None,
+                            provider="outsee",
                         )
-                    if backend == "kie":
-                        from app.bots.kie_http import generate_kie_image
+                    except Exception:  # noqa: BLE001
+                        logger.debug("outsee sidecar write skipped", exc_info=True)
+                    try:
+                        from app.services.api_tracker_hook import record_api_call
 
-                        result = await generate_kie_image(
-                            send_prompt,
-                            out_path,
-                            model_slug=str(raw_slug or "seedream-5-pro"),
-                            aspect_ratio=str(ar).replace("_", ":"),
-                            resolution=str(res) if res else "2K",
-                            reference_images=ref_list,
-                            timeout=float(attempt_kwargs.get("timeout") or 600),
-                            gen_id=attempt_kwargs.get("gen_id"),
-                            project_id=pid if isinstance(pid, int) else None,
+                        record_api_call(
+                            provider="outsee",
+                            model=slug,
+                            call_type="image",
+                            media_count=1,
+                            status_code=200,
+                            project_source=f"pipeline_project_{pid}" if pid else "pipeline",
+                            metadata={"prompt": send_prompt[:500]},
                         )
-                        try:
-                            from app.services.generation_storage import write_sidecar
+                    except Exception:
+                        pass
+                    return result
 
-                            write_sidecar(
-                                result.file_path,
-                                media="image",
-                                model=str(raw_slug),
-                                prompt=send_prompt,
-                                params={
-                                    "aspect": str(ar).replace("_", ":"),
-                                    "resolution": str(res) if res else "2K",
-                                    "project_id": pid,
-                                    "gen_id": attempt_kwargs.get("gen_id"),
-                                },
-                                raw_url=result.raw_url,
-                                quote=None,
-                                provider="kie",
-                            )
-                        except Exception:  # noqa: BLE001
-                            logger.debug("kie sidecar write skipped", exc_info=True)
-                        return result
-                    if use_outsee_api:
-                        result = await _paid(lambda: outsee_api_generate_image(
-                            send_prompt,
-                            out_path,
-                            model_slug=slug,
-                            aspect_ratio=str(ar).replace("_", ":"),
-                            resolution=str(res) if res else "2K",
-                            detail_level=attempt_kwargs.get("quality"),
-                            reference_images=ref_list,
-                            prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
-                            timeout=float(attempt_kwargs.get("timeout") or 600),
-                            gen_id=attempt_kwargs.get("gen_id"),
-                            project_id=pid if isinstance(pid, int) else None,
-                        ), send_prompt)
-                        try:
-                            from app.services.generation_storage import write_sidecar
-
-                            write_sidecar(
-                                result.file_path,
-                                media="image",
-                                model=slug,
-                                prompt=send_prompt,
-                                params={
-                                    "aspect": str(ar).replace("_", ":"),
-                                    "resolution": str(res) if res else "2K",
-                                    "project_id": pid,
-                                    "gen_id": attempt_kwargs.get("gen_id"),
-                                },
-                                raw_url=result.raw_url,
-                                quote=None,
-                                provider="outsee",
-                            )
-                        except Exception:  # noqa: BLE001
-                            logger.debug("outsee sidecar write skipped", exc_info=True)
-                        return result
+                else:
+                    if outsee is None:
+                        raise OutseeImageError(
+                            "Браузерная сессия Outsee не инициализирована (outsee is None)",
+                            context={"error_kind": "no_browser", "model": str(raw_slug)},
+                        )
                     media_spend.assert_submit_allowed("outsee", "browser image")
-                    return await outsee.generate_image(
+                    return await _paid(lambda: outsee.generate_image(
                         send_prompt, out_path, **attempt_kwargs
-                    )
-                media_spend.assert_submit_allowed("outsee", "browser image")
-                return await _paid(lambda: outsee.generate_image(
-                    send_prompt, out_path, **attempt_kwargs
-                ), send_prompt)
+                    ), send_prompt)
             except StepCancelledError:
                 raise
             except OutseeDownloadError as e:
@@ -1239,7 +1209,7 @@ async def generate_image_with_retries(
                 raise last_err or e
             except OutseeImageError as e:
                 if is_no_resubmit(e):
-                    raise  # платная задача жива или исход submit неизвестен: ни retry, ни rewrite
+                    raise
                 last_err = e
                 if _is_concurrency_limit_error(e):
                     concurrency_waits += 1
@@ -1420,7 +1390,6 @@ async def generate_video_with_retries(
     лимиты — VIDEO_PRIMARY_TOTAL_ATTEMPTS / VIDEO_FALLBACK_ATTEMPTS.
     """
     del max_attempts_per_prompt  # лестница фиксирована константами
-    # N-7: шаг просит ключ запроса (как images/hero/items); боту этот флаг не передаётся.
     idem_flag = bool(kwargs.pop("idempotent", False))
     last_err: BaseException | None = None
     current_prompt = prompt
@@ -1455,8 +1424,6 @@ async def generate_video_with_retries(
             generate_audio=False, timeout=float(kwargs.get("timeout") or 900),
             project_id=project_id, gen_id=kwargs.get("gen_id"))
     use_outsee_api_video = primary_backend == "outsee" and outsee_api_configured()
-    # KIE also hosts primary models such as Seedance.  Only the actual Kling
-    # fallback starts in the fallback phase.
     primary_is_kling = _video_fallback_active(primary_kwargs)
     if primary_backend == "outsee" and not outsee_api_configured() and outsee is None:
         raise OutseeImageError(
@@ -1464,8 +1431,6 @@ async def generate_video_with_retries(
             context={"error_kind": "no_key", "provider": "outsee"},
         )
 
-    # Ключ запроса клипа: платная отправка Outsee идёт под записью намерения. Исход неизвестен (ответ потерян,
-    # файл не скачан) -> второй платный запрос не уходит, решает человек; записанный результат берётся как есть.
     idem_ctx = None
     if idem_flag and primary_backend == "outsee" and not primary_is_kling:
         from app.services import outsee_idempotency
@@ -1474,7 +1439,7 @@ async def generate_video_with_retries(
         if not idem_ctx.usable:
             idem_ctx = None
         else:
-            adopted = await outsee_idempotency.check(idem_ctx)  # неизвестный исход -> исключение, ничего не уходит
+            adopted = await outsee_idempotency.check(idem_ctx)
             if adopted is not None:
                 logger.warning(
                     "outsee_retry: {} — платный результат этого клипа уже записан ({}); новый запрос не отправляю",
@@ -1501,6 +1466,13 @@ async def generate_video_with_retries(
     if primary_is_kling:
         fallback_started = True
         logger.info("outsee_retry: video primary Kling 2.6 via kie (KIE_API_KEY)")
+    else:
+        logger.info(
+            "outsee_retry: video primary model={} via {} (ladder fallback={})",
+            primary_slug,
+            primary_backend,
+            KIE_KLING_FALLBACK_SLUG,
+        )
 
     async def _prepare_send(prompt_body: str, attempt_kwargs: dict[str, Any], *, kling: bool) -> str:
         prefix = (
@@ -1547,7 +1519,11 @@ async def generate_video_with_retries(
         attempt_kwargs = dict(attempt_kwargs)
         attempt_kwargs["generate_audio"] = False
         if kie:
-            raw_slug = attempt_kwargs.get("model_slug") or "kling-2-6"
+            raw_slug = (
+                KIE_KLING_FALLBACK_SLUG
+                if kling
+                else (attempt_kwargs.get("model_slug") or primary_slug)
+            )
             from app.bots.kie_http import generate_kie_video
 
             result = await generate_kie_video(
@@ -1555,7 +1531,7 @@ async def generate_video_with_retries(
                 out_path,
                 model_slug=str(raw_slug),
                 start_frame=attempt_kwargs.get("start_frame"),
-                aspect_ratio=str(attempt_kwargs.get("aspect_ratio") or "9:16"),
+                aspect_ratio=str(attempt_kwargs.get("aspect_ratio") or "adaptive"),
                 resolution=str(attempt_kwargs.get("resolution") or "720p"),
                 duration=attempt_kwargs.get("duration") or 5,
                 generate_audio=False,
@@ -1572,7 +1548,7 @@ async def generate_video_with_retries(
                     model=str(raw_slug),
                     prompt=send_prompt,
                     params={
-                        "aspect": str(attempt_kwargs.get("aspect_ratio") or "9:16"),
+                        "aspect": str(attempt_kwargs.get("aspect_ratio") or "adaptive"),
                         "duration": attempt_kwargs.get("duration") or 5,
                         "project_id": project_id,
                         "ladder": "fallback" if phase == "fallback" else "primary",
@@ -1583,6 +1559,21 @@ async def generate_video_with_retries(
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("kie video sidecar skipped", exc_info=True)
+            try:
+                from app.services.api_tracker_hook import record_api_call
+
+                record_api_call(
+                    provider="kie",
+                    model=str(raw_slug),
+                    call_type="video",
+                    media_count=1,
+                    duration_sec=float(attempt_kwargs.get("duration") or 5),
+                    status_code=200,
+                    project_source=f"pipeline_project_{project_id}" if project_id else "pipeline",
+                    metadata={"prompt": send_prompt[:500]},
+                )
+            except Exception:
+                pass
             return result
         if use_outsee_api_video:
             raw_slug = attempt_kwargs.get("model_slug") or getattr(
@@ -1631,6 +1622,21 @@ async def generate_video_with_retries(
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("outsee video sidecar skipped", exc_info=True)
+            try:
+                from app.services.api_tracker_hook import record_api_call
+
+                record_api_call(
+                    provider="outsee",
+                    model=slug,
+                    call_type="video",
+                    media_count=1,
+                    duration_sec=float(dur or 5),
+                    status_code=200,
+                    project_source=f"pipeline_project_{project_id}" if project_id else "pipeline",
+                    metadata={"prompt": send_prompt[:500]},
+                )
+            except Exception:
+                pass
             return result
         cdp_kwargs = {
             k: v
@@ -1659,7 +1665,6 @@ async def generate_video_with_retries(
             )
             local_sanitized = True
             return
-        # GPT недоступен / не помог — локальная санация (триггеры + simplify)
         current_prompt = _apply_local_prompt_sanitize(
             current_prompt, where="video ladder local sanitize"
         )
@@ -1667,6 +1672,8 @@ async def generate_video_with_retries(
 
     while True:
         abort_if_cancelled(project_id)
+        from app.services.api_tracker_hook import check_api_allowed
+        check_api_allowed(provider="kling" if phase == "fallback" else "video", model=str(primary_slug or "video"))
         use_kling = phase == "fallback"
         if use_kling:
             if fallback_burns >= VIDEO_FALLBACK_ATTEMPTS:
@@ -1714,7 +1721,7 @@ async def generate_video_with_retries(
         provider_label = (
             "kie-kling"
             if use_kling
-            else ("outsee-api" if use_outsee_api_video else "outsee-cdp")
+            else (f"kie-{primary_slug}" if primary_backend == "kie" else ("outsee-api" if use_outsee_api_video else "outsee-cdp"))
         )
         logger.info(
             "outsee_retry: video [{}] попытка {}/{} model={} provider={} {}",
@@ -1890,6 +1897,22 @@ async def generate_video_with_retries(
         model_fallback=KIE_KLING_FALLBACK_SLUG,
     )
     detail = str(last_err.reason if isinstance(last_err, OutseeImageError) else last_err)
+    try:
+        from app.services.api_tracker_hook import record_api_call
+        record_api_call(
+            provider="kling" if fallback_burns > 0 else "outsee",
+            model=KIE_KLING_FALLBACK_SLUG if fallback_burns > 0 else primary_slug,
+            call_type="video",
+            media_count=1,
+            duration_sec=0.0,
+            cost_usd=0.0,
+            status_code=500,
+            error_message=f"Video ladder exhausted: {detail[:250]}",
+            project_source="video_ladder",
+            metadata={"primary_burns": primary_burns, "fallback_burns": fallback_burns},
+        )
+    except Exception:
+        pass
     raise VideoLadderExhaustedError(
         f"video ladder exhausted: {summary}; last={detail[:240]}",
         context={
@@ -1900,4 +1923,13 @@ async def generate_video_with_retries(
             "last_error": detail[:300],
         },
     )
+
+
+async def sleep_after_outsee_account_slot_limit(
+    project_id: int | None = None,
+    context: str = "",
+) -> None:
+    """Пауза при исчерпании слотов / параллельных лимитов генератора."""
+    await sleep_cancellable(20.0, project_id)
+
 

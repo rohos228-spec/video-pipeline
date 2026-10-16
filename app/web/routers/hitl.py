@@ -45,8 +45,6 @@ async def list_pending(
     rows = list((await session.execute(query)).scalars().all())
     if get_session in request.app.dependency_overrides:
         return rows
-    # Запросы проектов лежат в их project.db: собираем их вместе с запросами из master.
-    # Проектная копия главнее master (одинаковые проект и номер - одна запись).
     merged: dict[tuple[int, int], HITLRequest] = {(r.project_id, r.id): r for r in rows}
     for project in (await session.execute(select(Project))).scalars().all():
         try:
@@ -69,7 +67,6 @@ async def list_for_project(
     project_id: int, session: AsyncSession = Depends(get_session),
     request: Request = None,
 ) -> list[HITLRequest]:
-    # FastAPI injects Request; the default preserves legacy two-argument calls.
     query = (select(HITLRequest).where(HITLRequest.project_id == project_id)
              .order_by(HITLRequest.id.desc()))
     if request is not None and get_session in request.app.dependency_overrides:
@@ -93,8 +90,6 @@ async def list_for_project(
         except (OSError, RuntimeError) as exc:
             raise HTTPException(status_code=503, detail="База проекта недоступна") from exc
         if existing:
-            # Existing project storage is authoritative even with no HITL rows.
-            # Never initialize, migrate or copy master rows during this GET.
             try:
                 sessions = await get_project_sessionmaker(folder)
                 async with sessions() as local:
@@ -106,7 +101,6 @@ async def list_for_project(
             except (SQLAlchemyError, OSError) as exc:
                 raise HTTPException(status_code=503, detail="База проекта недоступна") from exc
 
-    # Master-only legacy storage: no project file means no initialization.
     rows = (await session.execute(query)).scalars().all()
     return list(rows)
 
@@ -126,7 +120,7 @@ def _actor(request: Request) -> str:
     from app.services.operator_audit import resolve_actor
     try:
         return resolve_actor(request.scope)
-    except Exception:  # noqa: BLE001 - автор решения не должен ломать само решение
+    except Exception:
         return "operator"
 
 
@@ -136,8 +130,6 @@ async def _decide(session: AsyncSession, hitl_id: int, payload: HITLDecisionRequ
     if req is None or (project_id is not None and req.project_id != project_id):
         raise HTTPException(status_code=404, detail="Запрос подтверждения не найден")
     if req.kind is HITLKind.approve_publish:
-        # Разрешение на публикацию выдаётся только с проверкой файла, подписи и площадки (страница публикаций
-        # или кнопка в Telegram). Общая ручка не должна менять такой запрос в обход этих проверок.
         raise HTTPException(status_code=409, detail=PUBLISH_DECISION_ELSEWHERE_RU)
     if req.decision != HITLDecision.pending:
         raise HTTPException(status_code=400, detail="Решение по этому запросу уже принято")
@@ -146,7 +138,6 @@ async def _decide(session: AsyncSession, hitl_id: int, payload: HITLDecisionRequ
     if new_decision is None:
         raise HTTPException(status_code=400, detail=f"Неизвестное решение «{payload.decision}»")
 
-    # Занять запрос одним условным UPDATE: два одновременных решения не запишутся оба.
     if not await claim_hitl_decision(session, req, new_decision, actor=actor,
                                      edited_prompt=payload.edited_prompt):
         await session.rollback()

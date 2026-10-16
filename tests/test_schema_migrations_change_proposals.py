@@ -1,4 +1,3 @@
-"""Migration 0010: change_proposals reject columns, formerly a raw ALTER in change_control/store.py (no network)."""
 from __future__ import annotations
 
 import pytest
@@ -24,7 +23,6 @@ async def _cols(eng):
 
 
 async def _legacy_table(eng):
-    """change_proposals as it was before the reject columns, with a row."""
     from sqlalchemy.schema import CreateTable
     async with eng.begin() as conn:
         ddl = str(await conn.run_sync(lambda c: CreateTable(cs.ChangeProposal.__table__).compile(c)))
@@ -68,7 +66,7 @@ async def test_ensure_schema_alone_no_longer_alters(engine):
     await _legacy_table(engine)
     async with engine.begin() as conn:
         await cs.ensure_change_control_schema(conn)
-    assert not (NEW & await _cols(engine))  # only the versioned migration adds columns now
+    assert not (NEW & await _cols(engine))
 
 
 async def test_fresh_database_has_columns_without_alter(engine):

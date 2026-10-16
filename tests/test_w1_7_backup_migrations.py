@@ -1,4 +1,3 @@
-"""W1-7 / A15: backup before migrations, journal copy, restore check, restore, schedule, tracker (no network)."""
 from __future__ import annotations
 
 import asyncio
@@ -20,7 +19,6 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _open(path):
-    """sqlite3 connection that is really closed on exit (Windows keeps the file locked otherwise)."""
     return closing(sqlite3.connect(path))
 
 
@@ -41,7 +39,6 @@ def _count(path: Path, table: str) -> int:
         return db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
 
-# ---------------------------------------------------------------- file level
 def test_backup_is_verified_has_manifest_and_separate_journal(tmp_path):
     db = _make_db(tmp_path / "state.db")
     res = sm.backup_sqlite(db, tag="Pre Migration!")
@@ -50,7 +47,7 @@ def test_backup_is_verified_has_manifest_and_separate_journal(tmp_path):
     assert res.manifest_path.is_file() and res.tables == {"legacy": 5, "spend_ledger": 5}
     assert _count(res.path, "legacy") == 5
     assert res.journal_path and ".journal." in res.journal_path.name
-    with _open(str(res.journal_path)) as j:  # only journal tables, with rows
+    with _open(str(res.journal_path)) as j:
         assert [r[0] for r in j.execute("SELECT name FROM sqlite_master WHERE type='table'")] == ["spend_ledger"]
         assert j.execute("SELECT count(*) FROM spend_ledger").fetchone()[0] == 5
     assert sm.verify_backup(res.path)["ok"] is True
@@ -93,13 +90,13 @@ def test_restore_into_clean_folder_passes_integrity_and_keeps_rows(tmp_path):
 def test_restore_over_existing_moves_current_file_aside_and_never_deletes(tmp_path):
     db = _make_db(tmp_path / "state.db", rows=3)
     res = sm.backup_sqlite(db)
-    with _open(str(db)) as c:  # changes after the backup
+    with _open(str(db)) as c:
         c.execute("INSERT INTO legacy(note) VALUES ('later')")
         c.commit()
     out = sm.restore_backup(res.path, db)
     assert _count(db, "legacy") == 3
     aside = Path(out["moved_aside"][0])
-    assert aside.exists() and _count(aside, "legacy") == 4  # the post-backup state is still on disk
+    assert aside.exists() and _count(aside, "legacy") == 4
 
 
 def test_restore_refuses_bad_backup_and_leaves_target_untouched(tmp_path):
@@ -121,11 +118,10 @@ def test_prune_keeps_only_newest_of_each_tag(tmp_path):
     left = sm.backup_files(tmp_path / "backups", "state", "scheduled")
     assert left == made[-2:]
     assert len(list((tmp_path / "backups").glob("state.journal.scheduled.*.bak.db"))) == 2
-    sm.backup_sqlite(db, tag="manual")  # another tag is never pruned by this one
+    sm.backup_sqlite(db, tag="manual")
     assert len(sm.backup_files(tmp_path / "backups", "state", "manual")) == 1
 
 
-# ---------------------------------------------------------------- before migrations
 @pytest.fixture
 async def engine_for(tmp_path):
     engines = []
@@ -146,12 +142,12 @@ async def test_existing_database_is_copied_before_the_first_pending_migration(tm
         report = await sm.migrate_orchestrator_schema(conn)
     assert report.failed is None and report.applied and report.backup
     backup = Path(report.backup)
-    with _open(str(backup)) as c:  # the copy is the state BEFORE migrating
+    with _open(str(backup)) as c:
         names = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "legacy" in names and sm.MIGRATIONS_TABLE not in names
         assert c.execute("SELECT count(*) FROM legacy").fetchone()[0] == 4
     assert report.as_dict()["backup"] == report.backup and report.journal_backup
-    async with eng.begin() as conn:  # nothing pending: no new copy
+    async with eng.begin() as conn:
         again = await sm.migrate_orchestrator_schema(conn)
     assert again.backup is None and not again.applied
     assert len(sm.backup_files(tmp_path / "backups", "state", "pre-migration")) == 1
@@ -181,16 +177,16 @@ async def test_failing_migration_keeps_backup_rolls_back_and_names_restore_comma
             await sm.migrate_orchestrator_schema(conn)
     rep = info.value.report
     assert rep.failed == "9002_bad" and rep.backup and Path(rep.backup).is_file()
-    with _open(str(db)) as c:  # the working database is exactly as before: no half table, no rows
+    with _open(str(db)) as c:
         names = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert "w17_half" not in names  # the failing step rolled back as a unit
+        assert "w17_half" not in names
         assert c.execute("SELECT count(*) FROM legacy").fetchone()[0] == 2
     assert sm.verify_backup(rep.backup)["ok"]
-    with _open(rep.backup) as c:  # the copy predates every migration of this run
+    with _open(rep.backup) as c:
         assert "w17_good" not in {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "backup_db.py" in sm.restore_command(rep.backup, db) and str(db) in sm.restore_command(rep.backup, db)
-    await eng.dispose()  # Studio stopped: a file held open by a live process is refused (see restore_backup)
-    sm.restore_backup(rep.backup, db)  # and the command really restores
+    await eng.dispose()
+    sm.restore_backup(rep.backup, db)
     assert _count(db, "legacy") == 2
 
 
@@ -209,23 +205,21 @@ async def test_backup_failure_blocks_migration_fail_closed(tmp_path, engine_for,
 
 
 async def test_backup_can_be_made_while_the_app_holds_a_write_transaction(tmp_path, engine_for):
-    """create_all runs in the same transaction before the migrations: the copy must not deadlock on it."""
     db = _make_db(tmp_path / "state.db", rows=2)
     eng = engine_for(db)
     async with eng.begin() as conn:
         await conn.exec_driver_sql("INSERT INTO legacy(note) VALUES ('uncommitted')")
         report = await asyncio.wait_for(sm.migrate_orchestrator_schema(conn), 60)
     assert report.backup
-    with _open(str(report.backup)) as c:  # committed state only: the open transaction's row is not in the copy
+    with _open(str(report.backup)) as c:
         assert c.execute("SELECT count(*) FROM legacy").fetchone()[0] == 2
 
 
-# ---------------------------------------------------------------- schedule
 def test_scheduled_backup_respects_interval_and_checks_restore(tmp_path):
     db = _make_db(tmp_path / "state.db")
     first = sm.run_scheduled_backups([db], interval_h=6)
     assert first[0]["status"] == "backed_up" and first[0]["verified"] is True
-    assert sm.run_scheduled_backups([db], interval_h=6)[0]["status"] == "skipped"  # fresh copy exists
+    assert sm.run_scheduled_backups([db], interval_h=6)[0]["status"] == "skipped"
     old = Path(first[0]["path"])
     stale = time.time() - 7 * 3600
     os.utime(old, (stale, stale))
@@ -252,7 +246,6 @@ async def test_scheduled_loop_stops_on_event_and_never_raises(tmp_path):
     assert len(sm.backup_files(tmp_path / "backups", "state", "scheduled")) == 1
 
 
-# ---------------------------------------------------------------- tracker.db
 def test_tracker_existing_database_is_copied_before_its_migration(tmp_path):
     path = tmp_path / "tracker.db"
     db = sqlite3.connect(str(path))
@@ -265,7 +258,7 @@ def test_tracker_existing_database_is_copied_before_its_migration(tmp_path):
     assert applied == ["0001_api_calls", "0002_legacy_columns"]
     copies = sm.backup_files(tmp_path / "backups", "tracker", "pre-migration")
     assert len(copies) == 1 and _count(copies[0], "api_calls") == 1
-    with _open(str(copies[0])) as c:  # the copy is from before the new columns were added
+    with _open(str(copies[0])) as c:
         assert "user_name" not in {r[1] for r in c.execute("PRAGMA table_info(api_calls)")}
 
 
@@ -293,7 +286,6 @@ def test_tracker_backup_failure_stops_the_migration(tmp_path, monkeypatch):
     db.close()
 
 
-# ---------------------------------------------------------------- command line
 def _cli():
     spec = importlib.util.spec_from_file_location("w17_backup_db", ROOT / "scripts" / "backup_db.py")
     mod = importlib.util.module_from_spec(spec)
@@ -320,7 +312,7 @@ def test_cli_backup_verify_restore_roundtrip(tmp_path, capsys):
 
 def test_cli_reports_failures_with_nonzero_exit(tmp_path):
     cli = _cli()
-    assert cli.main(["verify", "--db", str(tmp_path / "state.db")]) == 1  # no copies: nothing was verified
+    assert cli.main(["verify", "--db", str(tmp_path / "state.db")]) == 1
     assert cli.main(["restore", str(tmp_path / "nope.bak.db"), "--target", str(tmp_path / "state.db")]) == 1
     junk = tmp_path / "state.db"
     junk.write_bytes(b"garbage" * 300)

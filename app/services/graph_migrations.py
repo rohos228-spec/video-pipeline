@@ -1,25 +1,3 @@
-"""Versioned graph migrations (C5/C6): legacy ``enrich_N`` nodes -> ``excel_gpt``.
-
-Why: a graph node of the legacy type ``enrich_1``..``enrich_5`` is read by the orchestrator as an
-unsupported type (no managed executor, no recovery). The live node is ``excel_gpt``; the enrich slot
-lives in ``data.slotIndex``. This module moves old graphs onto ``excel_gpt`` without changing which
-slot a node answers to.
-
-Rules (pure, no database):
-  * the node ``id``, position and every ``data`` key are kept; only ``type`` changes and, if the node
-    carries no explicit slot, ``data.slotIndex`` = N of the legacy type;
-  * the slot a node resolves to (``slot_index_from_node``) is the same before and after, always: a
-    node whose result would differ is left untouched and reported (``skipped``);
-  * an empty label gets the default label, a user label is never rewritten;
-  * edges are not changed (they refer to node ids);
-  * idempotent: a graph without ``enrich_N`` nodes yields no changes and no rollback record.
-
-Where graphs live (all three are handled by ``migrate_stores``): ``Workflow.nodes`` (template),
-``WorkflowRun.nodes_snapshot`` plus ``NodeRun.node_type`` (run snapshot), ``Project.meta.canvas_graph``
-(canvas of one project). ``dry_run=True`` (the default) reports what would change and writes nothing.
-Every applied change stores a rollback record (the full original node dicts) next to the data in
-``meta["graph_migrations"]``; ``rollback_stores`` restores them.
-"""
 from __future__ import annotations
 
 import copy
@@ -42,7 +20,6 @@ from app.services.excel_gpt_node import (
 
 ENRICH_TO_EXCEL_GPT_ID = "graph_0001_enrich_to_excel_gpt"
 GRAPH_MIGRATIONS_META_KEY = "graph_migrations"
-# Rollback records are bounded: a store keeps at most this many (oldest dropped).
 _MAX_RECORDS = 5
 
 
@@ -66,7 +43,7 @@ class GraphMigrationResult:
     nodes: list[dict[str, Any]]
     changes: list[NodeChange] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)
-    rollback: list[dict[str, Any]] = field(default_factory=list)  # full original node dicts
+    rollback: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
@@ -78,7 +55,6 @@ class GraphMigrationResult:
 
 
 def migrate_enrich_graph(nodes: list[dict[str, Any]] | None) -> GraphMigrationResult:
-    """Pure: return the migrated node list (new objects) plus a change report and rollback data."""
     out: list[dict[str, Any]] = []
     result = GraphMigrationResult(nodes=out)
     for node in nodes or []:
@@ -94,7 +70,7 @@ def migrate_enrich_graph(nodes: list[dict[str, Any]] | None) -> GraphMigrationRe
             and 1 <= explicit <= MAX_EXCEL_GPT_SLOTS
         added = False
         if not has_explicit_slot and not data.get("slotOverflow") and not sd_agent_marker(node):
-            data["slotIndex"] = legacy_slot  # old and new resolution: explicit data wins, else the type's N
+            data["slotIndex"] = legacy_slot
             added = True
         label = str(data.get("label") or "").strip()
         label_changed = False
@@ -114,7 +90,6 @@ def migrate_enrich_graph(nodes: list[dict[str, Any]] | None) -> GraphMigrationRe
 
 
 def rollback_enrich_graph(nodes: list[dict[str, Any]] | None, rollback: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
-    """Pure: put the original node dicts back (by id). A node the user has since removed or retyped is skipped."""
     originals = {str(n.get("id")): n for n in rollback or [] if isinstance(n, dict) and n.get("id")}
     restored: list[str] = []
     out: list[dict[str, Any]] = []
@@ -162,7 +137,6 @@ def _store_report(kind: str, ident: Any, result: GraphMigrationResult, **extra: 
 
 
 async def migrate_stores(session: AsyncSession, *, dry_run: bool = True) -> dict[str, Any]:
-    """Migrate every stored graph. ``dry_run`` (default) only reports. The caller commits."""
     from app.models import NodeRun, Project, Workflow, WorkflowRun
 
     items: list[dict[str, Any]] = []
@@ -211,7 +185,6 @@ async def migrate_stores(session: AsyncSession, *, dry_run: bool = True) -> dict
 
 
 async def rollback_stores(session: AsyncSession) -> dict[str, Any]:
-    """Restore the original ``enrich_N`` nodes from the rollback records. The caller commits."""
     from app.models import NodeRun, Project, Workflow, WorkflowRun
 
     restored: list[dict[str, Any]] = []
@@ -248,14 +221,12 @@ async def rollback_stores(session: AsyncSession) -> dict[str, Any]:
     return {"migration": ENRICH_TO_EXCEL_GPT_ID, "restored": restored}
 
 
-# ---------------------------------------------------------------- operator layer: backup, report, run
 
 class MigrationError(RuntimeError):
-    """Миграция остановлена; текст предназначен оператору (по-русски)."""
+    pass
 
 
 def backup_database(db_path: Path, backup_dir: Path | None = None) -> Path:
-    """Консистентная копия SQLite-файла (онлайн-копирование, WAL учитывается) + проверка целостности."""
     import sqlite3
 
     db_path = Path(db_path)
@@ -286,7 +257,6 @@ def backup_database(db_path: Path, backup_dir: Path | None = None) -> Path:
 
 
 def format_report_ru(report: dict[str, Any]) -> str:
-    """Читаемый отчёт «что изменится / что изменено» для оператора."""
     dry = bool(report.get("dry_run", True))
     head = "СУХОЙ ПРОХОД (ничего не записано)" if dry else "ПРИМЕНЕНО"
     verb = "изменится" if dry else "изменено"
@@ -311,7 +281,6 @@ def format_report_ru(report: dict[str, Any]) -> str:
 
 
 async def count_enrich_nodes(session: AsyncSession) -> int:
-    """Сколько узлов enrich_N осталось во всех хранилищах (шаблоны, снимки запусков, холсты)."""
     from app.models import Project, Workflow, WorkflowRun
 
     total = 0
@@ -328,12 +297,6 @@ async def count_enrich_nodes(session: AsyncSession) -> int:
 
 async def run_migration(session_factory: Any, db_path: Path, *, apply: bool = False, rollback: bool = False,
                         backup_dir: Path | None = None) -> dict[str, Any]:
-    """Точка входа для скрипта. По умолчанию сухой проход.
-
-    ``apply``: резервная копия файла базы -> запись в одной транзакции -> проверка (повторный сухой проход
-    не должен находить применимых узлов). Если проверка не прошла, записи отката применяются сразу, а
-    результат помечается ``verified=False``. ``rollback``: возврат по записям отката (тоже с копией).
-    """
     if apply and rollback:
         raise MigrationError("--apply и --rollback нельзя вместе")
     if rollback:

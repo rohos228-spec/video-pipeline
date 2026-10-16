@@ -104,8 +104,6 @@ def test_explicit_forward_paths(tmp_path: Path, monkeypatch) -> None:
         input_paths=[keep, other],
     )
     got = files_from_source_node(p, "n_check")
-    # Явный список выбирает hero.png (а не skip.png); текстовые отчёты проверки
-    # (emitKinds: check_report.txt и т.п.) идут следом по дизайну.
     assert got[0] == keep
     assert other not in got
     assert [g for g in got[1:] if g.suffix not in (".txt", ".json", ".md")] == []

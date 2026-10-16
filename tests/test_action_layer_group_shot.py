@@ -1,4 +1,3 @@
-"""Меню съёмки, группы и project.stop на временной БД через роутер и исполнитель."""
 from __future__ import annotations
 
 import pytest
@@ -8,7 +7,7 @@ from app.models import Frame, Project
 from app.services.action_layer import executor
 from app.services.action_layer.builtin_group import _specs
 from app.services.action_layer.spec import registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 

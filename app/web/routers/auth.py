@@ -1,4 +1,3 @@
-"""Веб-вход Studio (необязательный) и токен оператора (шаги A04, A05)."""
 
 from __future__ import annotations
 
@@ -14,7 +13,6 @@ from app.web.auth_sessions import AuthDep, issue_session_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# Пауза после неверного пароля (замедляет перебор даже до блокировки). Тесты ставят 0.
 FAILED_LOGIN_DELAY_S = 0.4
 
 
@@ -46,7 +44,6 @@ async def login(body: LoginBody, request: Request, response: Response) -> dict:
         raise HTTPException(status_code=401, detail="invalid credentials")
     auth_sessions.login_throttle.record_success(keys)
     token = issue_session_token(body.username)
-    # Страница Studio сама токен не шлёт: сессия едет в куке (без доступа из скриптов страницы, только свой сайт).
     response.set_cookie("vp_session", token, max_age=auth_sessions._TOKEN_TTL_SEC, httponly=True,
                         samesite="strict", secure=request.url.scheme == "https", path="/")
     return {"ok": True, "token": token, "auth_required": True}
@@ -67,7 +64,6 @@ async def auth_status() -> dict:
 
 @router.get("/operator-token", dependencies=[Depends(access_guard.local_only_when_no_auth)])
 async def operator_token(request: Request, operator: AuthDep) -> dict:
-    """Токен оператора для своей страницы Studio. Чужому Origin и cross-site запросу не выдаётся."""
     origin = request.headers.get("origin")
     host = request.headers.get("host")
     cross_site = (request.headers.get("sec-fetch-site") or "").lower() == "cross-site"

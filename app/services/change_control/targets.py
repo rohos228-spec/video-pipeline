@@ -1,10 +1,3 @@
-"""Что именно меняется и как это читается, проверяется и пишется.
-
-Три вида цели: выбор/текст промпта ноды, настройки ноды «Работа с GPT» и числовые
-параметры шага. Запись идёт через ProjectGateway (существующие эндпоинты). Эти
-значения входят в revisions.compute_input_revision ноды, поэтому изменение само
-делает устаревшими билеты восстановления именно этой ноды.
-"""
 from __future__ import annotations
 
 import copy
@@ -94,9 +87,6 @@ def _norm_num(n: float, kind: str) -> int | float:
     return n
 
 
-# ---------------------------------------------------------------------------
-# Промпт: выбор варианта (T1) и новый текст (T2)
-# ---------------------------------------------------------------------------
 
 class PromptHandler:
     group = "prompt"
@@ -105,7 +95,6 @@ class PromptHandler:
         return f"project:{nctx.project_id}:{nctx.node_key}:prompt"
 
     def _resolve(self, nctx: NodeCtx) -> tuple[str, str, Path]:
-        """(вариант, источник prompt_library, путь к файлу): единая точка для базы T2 и prompt-base."""
         from app.services import prompt_library as pl
         ns = nctx.ns
         excel = nctx.is_excel
@@ -132,7 +121,6 @@ class PromptHandler:
                      "global": "global_active", "default": "default"}
 
     def describe(self, nctx: NodeCtx) -> dict:
-        """Текущий базовый промпт ноды для просмотра (только чтение, длина ограничена)."""
         name, source, path = self._resolve(nctx)
         out = {"variant": name, "source": self._SOURCE_NAMES.get(source, source),
                "text": "", "text_chars": 0, "truncated": False, "base_text_sha256": ""}
@@ -156,8 +144,6 @@ class PromptHandler:
         return {"variant": name, "text_sha256": sha(text)}
 
     def _shadowed_by_override(self, nctx: NodeCtx) -> str | None:
-        """Явный выбор проекта (prompt_overrides) важнее слота ноды: слот не подействовал бы.
-        Его нельзя менять через PATCH проекта: эндпоинт синхронизирует ГЛОБАЛЬНЫЙ активный вариант."""
         from app.services import prompt_library as pl
         if nctx.is_excel:
             return None
@@ -171,7 +157,6 @@ class PromptHandler:
         return self._effective(nctx)[2]
 
     def _variant_text(self, nctx: NodeCtx, variant: str) -> str | None:
-        """Текст существующего варианта этого шага или None, если файла нет."""
         from app.services import prompt_library as pl
         if nctx.is_excel:
             if not pl.excel_gpt_prompt_exists(variant):
@@ -277,15 +262,11 @@ class PromptHandler:
                                    "a prompt file with this name has different content")
         live = self.live(nctx)
         if live["variant"] == variant and live["text_sha256"] == content.get("text_sha256"):
-            return  # уже действует: лишний слот не закрепляем
-        # Только слот ноды: PATCH prompt_overrides синхронизировал бы общий active_variants.json.
+            return
         await gateway.patch(nctx.project_id, {
             "meta": {"prompt_slot_variants": {nctx.node_key: {"main": variant}}}})
 
 
-# ---------------------------------------------------------------------------
-# Настройки ноды «Работа с GPT»
-# ---------------------------------------------------------------------------
 
 class OptionsHandler:
     group = "options"
@@ -329,7 +310,6 @@ class OptionsHandler:
         return cand
 
     def validate(self, nctx: NodeCtx, cand: dict, live: dict) -> list[str]:
-        """Значение должно вступить в силу: роль и режим проверки его не подменяют."""
         from app.services.gpt_operator import operator_config
         values = cand.get("values") or {}
         if all(live["values"].get(f) == v for f, v in values.items()):
@@ -364,9 +344,6 @@ class OptionsHandler:
                                 {"meta": {"excel_gpt_nodes": {nctx.node_key: changed}}})
 
 
-# ---------------------------------------------------------------------------
-# Числовые параметры шага
-# ---------------------------------------------------------------------------
 
 class StepParamsHandler:
     group = "step_params"
@@ -486,7 +463,6 @@ _TARGET_RE = re.compile(r"^project:(\d+):([A-Za-z0-9_.\-]+):(prompt|options|step
 
 
 def node_title(node_key: str) -> str:
-    """Название ноды по-русски (по ключу холста; без чтения проекта)."""
     from app.services import prompt_library as pl
     key = str(node_key or "")
     for step in ("plan", "script", "split"):
@@ -498,7 +474,6 @@ def node_title(node_key: str) -> str:
 
 
 def target_title(target: str) -> str:
-    """Читаемое описание цели: «параметры шага ноды «Разбивка на блоки», проект 7»."""
     m = _TARGET_RE.match(target or "")
     if not m:
         return "настройка проекта"

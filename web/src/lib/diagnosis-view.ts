@@ -1,8 +1,6 @@
 import type {Diagnosis, DiagnosticIncident} from './observations';
 
-// Только `import type`: файл проверяется контрактным тестом отдельно от сборки.
 
-/** Необязательные поля, которые бэкенд добавляет к инцидентам новых типов. */
 export interface IncidentExtras {
   rule?: string | null;
   rule_diary?: {calls?: number; counts?: Record<string, number>; rules?: Record<string, number>; stop_rule?: string | null} | null;
@@ -30,7 +28,6 @@ function rank(i: Partial<DiagnosticIncident>): number {
   return 2;
 }
 
-/** Блокирующие и актуальные выше; внутри группы порядок бэкенда сохраняется. */
 function byAttention<T extends Partial<DiagnosticIncident>>(items: T[]): T[] {
   return items.map((item, index) => ({item, index}))
     .sort((a, b) => rank(a.item) - rank(b.item) || a.index - b.index).map(x => x.item);
@@ -51,7 +48,6 @@ export function diagnosisSummary(diagnosis: Diagnosis | null): string {
   return diagnosis.blocking_count ? `Требуют внимания блокирующие проблемы: ${diagnosis.blocking_count}.` : 'По доступным правилам блокирующих проблем не выявлено; качество результата не оценивалось.';
 }
 
-/** Русские названия типов инцидентов (на случай, если сервер прислал только код). */
 export const INCIDENT_TYPE_RU: Record<string, string> = {
   media_failure: 'Результат медиа-задачи не подтверждён',
   media_policy: 'Отправка остановлена защитным ограничением',
@@ -69,13 +65,11 @@ export const INCIDENT_TYPE_RU: Record<string, string> = {
   verification_hold: 'Нативная проверка не подтвердила результат; запуск удержан',
 };
 
-/** Заголовок: русское название по типу, если сервер прислал код или пустую строку. */
 export function incidentTitle(i: Pick<DiagnosticIncident, 'type' | 'title'>): string {
   const t = (i.title ?? '').trim();
   return t && t !== i.type ? t : (INCIDENT_TYPE_RU[i.type] ?? i.type);
 }
 
-/** Название ноды: у части инцидентов (сторож) приходит технический ключ; берём название соседних инцидентов той же ноды. */
 export function nodeTitles(incidents: DiagnosticIncident[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const i of incidents) if (i.node_key && i.node_title && i.node_title !== i.node_key && !out[i.node_key]) out[i.node_key] = i.node_title;
@@ -93,7 +87,6 @@ const TOKEN_RU: [RegExp, string][] = [
   [/\bobserver_error\b/g, 'ошибка наблюдателя'],
   [/\bbusiness_commit_unconfirmed\b/g, 'запись бизнес-данных не подтверждена'],
 ];
-/** Известные технические коды в текстах сервера -> по-русски. Остальной текст не трогаем. */
 export function textRu(s: string | null | undefined): string {
   return TOKEN_RU.reduce((acc, [re, to]) => acc.replace(re, to), s ?? '');
 }
@@ -133,7 +126,6 @@ export function stallLine(s: NonNullable<IncidentExtras['stall']>): string | nul
   return s.kind ? `Признак зависания: ${s.kind}, ${age}${limit}.` : null;
 }
 
-/** Строки блока «Что известно»: только записанные факты, без догадок. */
 export function incidentFacts(i: IncidentView): string[] {
   const lines: string[] = [];
   if (i.rule) lines.push(`Правило, остановившее результат: ${i.rule}`);
@@ -143,7 +135,6 @@ export function incidentFacts(i: IncidentView): string[] {
   return lines;
 }
 
-/** Рекомендация без дословного повтора факта. */
 export function recommendationText(i: Pick<DiagnosticIncident, 'fact' | 'recommendation'>): string {
   const title = (i.recommendation?.title ?? '').trim();
   const reason = textRu(i.recommendation?.reason).trim();

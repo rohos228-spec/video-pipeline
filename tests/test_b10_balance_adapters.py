@@ -1,5 +1,3 @@
-"""B10: автоматические снимки баланса. Класс доказательства U и D: настоящий код адаптеров и автосверки,
-HTTP подменён (httpx.MockTransport / patch), журналы во временных SQLite. Живых вызовов нет."""
 from __future__ import annotations
 
 import asyncio
@@ -31,7 +29,7 @@ def _clean(monkeypatch, tmp_path):
 
 @pytest.fixture
 async def sessions(tmp_path, monkeypatch):
-    from app.services import actions_v1  # noqa: F401
+    from app.services import actions_v1
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'm.db'}", poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -54,7 +52,6 @@ def mock_httpx(monkeypatch, handler):
     monkeypatch.setattr(httpx, "AsyncClient", Client)
 
 
-# ------------------------------------------------------------------ адаптеры
 
 
 async def test_kie_adapter_converts_credits_to_usd(monkeypatch):
@@ -107,7 +104,7 @@ async def test_elevenlabs_returns_chars_and_no_usd_snapshot(monkeypatch):
     mock_httpx(monkeypatch, handler)
     assert await ba.eleven_remaining_chars() == 10000
     assert seen["key"] == "xi-test" and seen["url"] == ba.ELEVEN_SUBSCRIPTION_URL
-    assert ba.eleven_usd_per_char() is None  # цена символа пока оценка
+    assert ba.eleven_usd_per_char() is None
     ba.register_default_adapters()
     snap = await sr.take_snapshot("elevenlabs")
     assert not snap.ok and "нет USD-снимка" in snap.error and "10000" in snap.error
@@ -138,7 +135,6 @@ def test_vibecode_has_no_adapter_and_is_documented():
     assert "ЖУРНАЛ ПРИЛОЖЕНИЯ" in pc.BALANCE_SOURCES["vibecode"]
 
 
-# ------------------------------------------------------------------ без сети при импорте / регистрации
 
 
 def test_no_network_on_import_or_registration():
@@ -155,7 +151,6 @@ def test_no_network_on_import_or_registration():
     assert "kie" in out.stdout
 
 
-# ------------------------------------------------------------------ автосверка
 
 
 def test_auto_is_off_under_pytest_by_default(monkeypatch):
@@ -168,7 +163,7 @@ def test_auto_is_off_under_pytest_by_default(monkeypatch):
 async def test_open_returns_none_when_disabled(monkeypatch, sessions):
     monkeypatch.setattr(settings, "spend_reconcile_auto", False)
     assert await ba.open_auto_window("generating_images", 7) is None
-    assert await ba.open_auto_window("planning", 7) is None  # не платный шаг
+    assert await ba.open_auto_window("planning", 7) is None
 
 
 def _balances(monkeypatch, values):
@@ -222,7 +217,7 @@ async def test_network_failure_never_breaks_step_only_no_snapshot_row(monkeypatc
     res = await _run_window(monkeypatch, sessions, [10.0, ConnectionError("down")], 1.0)
     assert res["status"] == sr.STATUS_NO_SNAPSHOT
     async with sessions() as s:
-        assert (await s.scalars(select(Incident))).all() == []  # без инцидента
+        assert (await s.scalars(select(Incident))).all() == []
         rep = await sr.project_report(s, 7)
     assert rep["reconciliations"][0]["status"] == sr.STATUS_NO_SNAPSHOT
 
@@ -251,7 +246,7 @@ async def test_open_and_close_swallow_internal_failures(monkeypatch):
     assert await ba.open_auto_window("generating_images", 7) is None
     win = ba.AutoWindow("outsee", 7, None, None)
     ba._active["outsee"] = [win]
-    assert await ba.close_auto_window(win) is None  # _finish упал, наружу ничего
+    assert await ba.close_auto_window(win) is None
 
 
 async def test_overlapping_windows_skip_comparison(monkeypatch, sessions):

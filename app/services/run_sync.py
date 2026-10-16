@@ -50,6 +50,11 @@ async def _get_default_workflow_id(
     Каталог шаблонов живёт в state.db. Изолированная project.db часто без
     ``workflows`` — тогда смотрим master, иначе ▶ падает с
     «workflow по умолчанию не найден».
+
+    Самовосстанавливающийся поиск:
+    1. Ищет Workflow с is_default == True.
+    2. Если не найден — берет любой существующий Workflow и делает его дефолтным.
+    3. Если воркфлоу нет вообще — авто-засевает дефолтный шаблон в master через seed_default_workflow().
     """
 
     async def _lookup(s: AsyncSession) -> int | None:
@@ -62,15 +67,40 @@ async def _get_default_workflow_id(
                     .limit(1)
                 )
             ).scalar_one_or_none()
+            if wf is not None:
+                return wf.id
+
+            # Фолбэк 1: есть ли любой воркфлоу в БД
+            any_wf = (
+                await s.execute(
+                    select(Workflow).order_by(Workflow.id.asc()).limit(1)
+                )
+            ).scalar_one_or_none()
+            if any_wf is not None:
+                any_wf.is_default = True
+                await s.flush()
+                return any_wf.id
         except Exception:  # noqa: BLE001 — пустая/битая БД в тестах
             logger.debug("default workflow lookup failed", exc_info=True)
             return None
-        return wf.id if wf is not None else None
+        return None
 
     if session is not None:
         found = await _lookup(session)
         if found is not None:
             return found
+    async with session_scope() as s:
+        found = await _lookup(s)
+    if found is not None:
+        return found
+
+    try:
+        from app.web.settings_default import seed_default_workflow
+
+        await seed_default_workflow()
+    except Exception:  # noqa: BLE001
+        logger.warning("auto seed_default_workflow failed", exc_info=True)
+
     async with session_scope() as s:
         return await _lookup(s)
 
@@ -96,7 +126,6 @@ async def ensure_run_for_project(
             return existing.id
         wf = await s.get(Workflow, workflow_id)
         if wf is None:
-            # Шаблон в state.db, а session — project.db.
             from app.project_db import _clone_model_instance
 
             async with session_scope() as master:
@@ -350,9 +379,6 @@ async def sync_run_for_project(
 
         # Heal: excel_gpt в completed_keys, но NodeRun ещё running/queued —
         # (auto-chain раньше помечал next done и оставлял prev running).
-        # Линейный slot 1..5: pending + completed_keys = stale meta → сброс.
-        # overflow slot 0 (fw_*): pending + ключ = NodeRun не закрыли после
-        # apply-ops (STOP / stale status) → done, meta не трогаем.
         active_key = active_excel_gpt_node_key(project)
         done_keys = completed_node_keys(project)
         for nr in run.node_runs:
@@ -366,9 +392,6 @@ async def sync_run_for_project(
                 continue
             slot = slot_for_excel_gpt_node_key(project, nr.node_key)
             if nr.status == NodeRunStatus.pending:
-                # overflow / slotOverflow (fw_*): runner пишет completed_keys,
-                # но NodeRun остаётся pending если STOP/stale status обошёл
-                # complete_excel_gpt_node_by_key. Ключ — правда, закрываем ноду.
                 if slot == 0:
                     old = nr.status.value
                     queue_node_for_start(
@@ -684,7 +707,6 @@ async def prepare_node_for_step_start(
 
     if nr.status == NodeRunStatus.skipped:
         if explicit_ui_start:
-            # Ручной старт: включаем ноду обратно и продолжаем.
             meta = dict(project.meta or {})
             disabled = [str(x) for x in (meta.get("disabled_nodes") or [])]
             if nr.node_key in disabled:
@@ -979,9 +1001,6 @@ async def complete_active_node_for_step(
     # excel_gpt auto-chain УЖЕ ставит active_excel_gpt_node_key на СЛЕДУЮЩУЮ
     # ноду до вызова complete (enriching_N → enriching_N+1). Брать active_key
     # первым = пометить next done и оставить prev running — UI врёт, xlsx
-    # следующего слота «применён» без работы. При chain — слот из prev_status.
-    # Без chain (→ *_ready): overflow/точечный ▶ живёт в active_key или в
-    # excel_gpt_completed_keys; слот 1 иначе закрывает чужую pending-ноду.
     finished_key: str | None = None
     if only_agent and node_type == "sd_agent":
         try:
@@ -1406,11 +1425,6 @@ async def park_leftover_running_nodes(
     as_failed: bool = True,
     error: str | None = None,
 ) -> bool:
-    """Если проект на паузе/failed — leftover running/queued на канвасе гасим.
-
-    Воркер пишет NodeRun в state.db, а fw_* живут в project.db: без этого
-    сайдбар «пауза», нода крутит «в работе».
-    """
     parked = project.status in (ProjectStatus.paused, ProjectStatus.failed)
     meta = project.meta if isinstance(project.meta, dict) else {}
     stopped = bool(meta.get("user_stop") or meta.get("mass_lane_user_stop"))
@@ -1441,7 +1455,6 @@ async def park_leftover_running_nodes(
     return changed
 
 
-# Линейный порядок типов нод (legacy — reset_nodes_from_step, тесты).
 NODE_TYPE_ORDER: list[str] = [
     "topic",
     "plan",
@@ -1552,7 +1565,6 @@ async def _reconcile_stale_in_session(
     now: datetime,
     grace: timedelta,
 ) -> tuple[int, int]:
-    """Один SQLite: state.db или изолированный project.db."""
     from app.services.step_cancel import is_generation_active
 
     fixed = 0
@@ -1764,7 +1776,6 @@ async def _reconcile_isolated_project_dbs(
     now: datetime,
     grace: timedelta,
 ) -> int:
-    """UI читает project.db; reconcile по state.db его не видит."""
     from pathlib import Path
 
     from app.project_db import (
@@ -1778,7 +1789,7 @@ async def _reconcile_isolated_project_dbs(
     extra = 0
     try:
         master = Path(settings.sqlite_path).resolve()
-    except Exception:  # noqa: BLE001
+    except Exception:
         master = None
     for pid in pids:
         try:
@@ -1803,7 +1814,7 @@ async def _reconcile_isolated_project_dbs(
                     pp = await ps.get(Project, pid)
                     if pp is not None:
                         await push_runtime_to_master(ps, pp)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning(
                 "reconcile isolated #{} failed ({})",
                 pid,
@@ -1819,7 +1830,6 @@ async def _reconcile_stale_node_runs(
     require_no_live_task: bool = False,
     grace_sec: float = _STALE_GRACE_SEC,
 ) -> int:
-    """NodeRun running/queued без живого воркера → failed (или heal → done)."""
     now = datetime.utcnow()
     grace = timedelta(seconds=grace_sec)
     async with session_scope() as session:
@@ -1845,7 +1855,7 @@ async def _reconcile_stale_node_runs(
             now=now,
             grace=grace,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("reconcile isolated project.db failed ({})", initiator)
     if fixed:
         logger.info("reconcile stale NodeRun: {} → failed ({})", fixed, initiator)
@@ -1859,18 +1869,16 @@ async def _reconcile_stale_node_runs(
 
 
 async def reconcile_stale_node_runs_on_startup() -> int:
-    """NodeRun running/queued без живого воркера после перезапуска → failed."""
     return await _reconcile_stale_node_runs(initiator="startup_reconcile")
 
 
 async def background_node_run_reconcile_loop(*, interval_sec: float = 60.0) -> None:
-    """Фон: running/queued без живой задачи дольше N сек → failed."""
     while True:
         try:
             await _reconcile_stale_node_runs(
                 initiator="background_reconcile",
                 require_no_live_task=True,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("background_node_run_reconcile_loop failed")
         await asyncio.sleep(interval_sec)

@@ -1,12 +1,3 @@
-/**
- * Токен оператора (шаг A04): Studio получает его одним GET /api/auth/operator-token и добавляет
- * заголовок X-VP-Operator ко всем изменяющим запросам на /api/*. Сервер требует токен на опасных
- * ручках (approve, run, stop, рубильник, release-unknown, публикация). Чужая страница токен не
- * получит: сервер отдаёт его только своему origin, а CORS ограничен явным списком.
- *
- * Установка: перехватчик window.fetch ставится один раз при импорте модуля (api.ts и fleet-api.ts
- * импортируют его ради побочного эффекта), поэтому сырые fetch() в компонентах тоже покрыты.
- */
 
 const OPERATOR_HEADER = "X-VP-Operator";
 const TOKEN_PATH = "/api/auth/operator-token";
@@ -80,7 +71,6 @@ function withToken(init: RequestInit | undefined, token: string): RequestInit {
   return { ...init, headers };
 }
 
-/** Ставит перехватчик fetch (идемпотентно). */
 export function installOperatorFetchGuard(): void {
   if (typeof window === "undefined" || typeof window.fetch !== "function") return;
   const marker = "__vpOperatorGuard";
@@ -98,7 +88,6 @@ export function installOperatorFetchGuard(): void {
     const token = await loadOperatorToken(false, original);
     const first = await original(input, token ? withToken(init, token) : init);
     if (first.status !== 403) return first;
-    // Токен мог смениться после перезапуска backend: один раз обновляем и повторяем.
     let code: unknown = null;
     try {
       const body = (await first.clone().json()) as { detail?: { code?: string } };

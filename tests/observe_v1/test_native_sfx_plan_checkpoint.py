@@ -1,8 +1,3 @@
-"""Persisted SFX checkpoint tests for the parent's existing container runner.
-
-Only synthetic SQLite/input data and the external model boundary are supplied.
-The native planner, text_job cache, parser, validator and step remain real.
-"""
 from __future__ import annotations
 
 import copy
@@ -49,7 +44,6 @@ class NativeSfxPlanCheckpoint(unittest.IsolatedAsyncioTestCase):
             ]
         }
         async with self.sessions() as session:
-            # Initial running input only; all ready states come from the step.
             project = Project(
                 id=2, slug="synthetic-sfx-checkpoint", topic="Synthetic SFX",
                 status=ProjectStatus.sfx_planning, meta={},
@@ -82,7 +76,6 @@ class NativeSfxPlanCheckpoint(unittest.IsolatedAsyncioTestCase):
         ]
 
     async def _assert_persisted(self, expected_status, checkpoint, *, ready):
-        # A separate session proves committed state, rather than ORM identity.
         async with self.sessions() as reader:
             project = await reader.get(Project, 2)
             self.assertEqual(project.status, expected_status)
@@ -94,7 +87,8 @@ class NativeSfxPlanCheckpoint(unittest.IsolatedAsyncioTestCase):
         output = json.loads((self.data / "sfx_plan.json").read_text(encoding="utf-8"))
         self.assertEqual(output, {
             "total_duration": 6.0,
-            "events": [event.to_dict() for event in events],
+            "frame_starts": {"1": 0.0, "2": 3.0},
+            "events": [{**event.to_dict(), "offset_in_frame": 0.512} for event in events],
         })
 
     async def test_valid_persisted_checkpoint_replays_native_parse_without_model(self):
@@ -102,7 +96,6 @@ class NativeSfxPlanCheckpoint(unittest.IsolatedAsyncioTestCase):
         with patch.object(Project, "data_dir", property(lambda _: self.data)), \
              patch("app.services.gpt_client.gpt_ask_fresh", new=no_model):
             for _ in range(2):
-                # Close/reopen after each call; cache is read from actual SQLite.
                 async with self.sessions() as session:
                     project = await session.get(Project, 2)
                     self.assertEqual(ai_job_checkpoint(project, "sfx_plan"), self.checkpoint)
@@ -159,12 +152,10 @@ class NativeSfxPlanCheckpoint(unittest.IsolatedAsyncioTestCase):
                 project = await session.get(Project, 2)
                 self.assertEqual(ai_job_checkpoint(project, "sfx_plan"), invalid)
                 with self.assertRaises(RuntimeError):
-                    # Calls the actual plan_sfx_events -> text_job cached path.
                     await plan_sfx.run(session, project)
                 self.assertEqual(project.status, ProjectStatus.sfx_planning)
                 self.assertFalse(project.meta.get("sfx_plan"))
                 self.assertFalse((self.data / "sfx_plan.json").exists())
-                # Committing after rejection must not persist a ready marker.
                 await session.commit()
             await self._assert_persisted(
                 ProjectStatus.sfx_planning, invalid, ready=False

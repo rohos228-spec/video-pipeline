@@ -264,7 +264,6 @@ def test_api_stub_writes_reply(tmp_path: Path, monkeypatch) -> None:
     )
     assert res.output_paths
     assert any(p.name == "analysis.json" for p in res.output_paths)
-    # W4-4 (C05): без ключа stub не выдаёт «pass» - проверка не проводилась.
     assert "not_checked" in res.reply_text
     assert res.gate_status == "not_checked"
     assert res.analysis is not None

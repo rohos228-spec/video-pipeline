@@ -1,14 +1,3 @@
-"""Fixed allowlisted node profiles on the original recovery executor.
-
-Synthetic profiles serve isolated acceptance. Production has a built-in catalog of
-text-recovery profiles (PRODUCTION_CATALOG): it becomes active only when the owner's
-runtime config is production, has a decision model, lists ``retry_profile`` in
-``allowed_actions``, carries no explicit ``profiles`` and no ``incident_scope`` (a scoped
-pilot stays explicit). An explicit ``profiles`` object always wins; ``builtin_profiles:false``
-switches the built-in catalog off. Media nodes never get a profile. Approval binds the base and exact first
-request transformation; subsequent requests keep the same attempt overlay.
-Reverting configuration cannot roll back business data or billed work.
-"""
 import copy,hashlib,json,uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -27,18 +16,10 @@ CATALOG.update({name:{**CATALOG['synthetic-json-v1'],'reasoning_effort':'low','m
     'prompt_variant':variant} for name,variant in (
         ('synthetic-original-v1','original-contract-v1'),('synthetic-format-v1','repair-json-only-v1'))})
 PROVIDERS=('kie','vibecode')
-# Reference Vibecode repair profile (chat/completions). reasoning_effort / max_output_tokens stay None:
-# whether Vibecode honours them for this model is unverified, so the body never carries them.
 VIBECODE_REPAIR_PROFILE_ID='vibecode-json-repair-v1'
 VIBECODE_REPAIR_PROFILE={'model_id':'gpt-5.6-sol','provider':'vibecode','kind':'text','channel':'stable',
     'reasoning_effort':None,'max_output_tokens':None,'prompt_variant':'repair-json-only-v1','synthetic_only':False}
 
-# Built-in production recovery profiles for text nodes. Only real catalog models
-# (text_llm_catalog / vibecode_catalog); only prompt variants from the approved library
-# (original contract or formatting-only JSON repair). They never touch media, write
-# permissions, graph or budget: a profile changes only the body of one recovery request.
-# Kie (Responses) honours reasoning_effort / max_output_tokens; Vibecode chat/completions is
-# not known to, so its profile keeps both None (see validate_vibecode_profile).
 def _kie(effort,tokens,variant):
     return {'model_id':'gpt-5-6-sol','provider':'kie','kind':'text','channel':'stable',
         'reasoning_effort':effort,'max_output_tokens':tokens,'prompt_variant':variant,'synthetic_only':False}
@@ -47,8 +28,6 @@ PRODUCTION_CATALOG={
     'kie-json-repair-v1':_kie('medium',4096,'repair-json-only-v1'),
     'kie-json-repair-roomy-v1':_kie('high',8192,'repair-json-only-v1'),
     VIBECODE_REPAIR_PROFILE_ID:dict(VIBECODE_REPAIR_PROFILE)}
-# Managed text node types (capability must also be profile_compatible: that check stays in
-# decision_v1/_base) and the incidents a built-in profile may answer.
 BUILTIN_NODE_TYPES=frozenset({'excel_gpt','plan','script','split','image_prompts','sfx_plan',
     'animation_prompts','sd_agent','sd_assemble'})
 BUILTIN_INCIDENTS=frozenset({'invalid_json','missing_payload'})
@@ -56,8 +35,6 @@ MEDIA_NODE_TYPES=frozenset({'images','videos','items','music','audio','sfx_gen',
 PROFILE_BINDINGS={pid:{'node_types':BUILTIN_NODE_TYPES,'incidents':BUILTIN_INCIDENTS} for pid in PRODUCTION_CATALOG}
 
 def builtin_production_profiles(cfg):
-    """Built-in profiles of the decision provider, or {} unless the owner opted in (see module doc).
-    A profile that no longer validates against the model catalogs is dropped (fail closed)."""
     from app.services import decision_config as dc
     if (not isinstance(cfg,dict) or cfg.get('mode')!='production' or cfg.get('decision') is None
             or cfg.get('profiles') or cfg.get('incident_scope') or cfg.get('builtin_profiles') is False
@@ -71,20 +48,15 @@ def builtin_production_profiles(cfg):
     return result
 
 def effective_profiles(cfg):
-    """Owner's explicit profiles, else the built-in production catalog (when enabled)."""
     return cfg['profiles'] if cfg.get('profiles') else builtin_production_profiles(cfg)
 
 def binding_allows(profile_id,*,node_type,incident_type):
-    """Built-in profiles are bound to node types and incidents; owner-defined ids are not restricted here."""
     b=PROFILE_BINDINGS.get(profile_id)
     return True if b is None else (node_type in b['node_types'] and incident_type in b['incidents']
         and node_type not in MEDIA_NODE_TYPES)
 _current=ContextVar('attempt_profile_overlay',default=None)
 
 def source_provider(payload):
-    """Provider of a recorded model_start: the recorded field, else a legacy path/host fingerprint, else 'unknown'.
-
-    A profile is only allowed for a known provider that equals its own (fail closed)."""
     payload=payload or {}
     if payload.get('provider') in PROVIDERS:return payload['provider']
     path=str(payload.get('path') or '')
@@ -96,7 +68,6 @@ def _provider_mismatch(candidate,source):
     return source not in PROVIDERS or candidate.get('provider')!=source
 
 async def _source_events(s,execution_id,project_id,node_key):
-    """Latest node_start of the node and the first model_start of that attempt (as recorded in the journal)."""
     source=await s.scalar(select(ObservationEvent).where(ObservationEvent.execution_id==execution_id,
         ObservationEvent.project_id==project_id,ObservationEvent.node_key==node_key,
         ObservationEvent.kind=='node_start').order_by(ObservationEvent.id.desc()).limit(1))
@@ -113,7 +84,6 @@ def active_catalog():
 def catalog_hash():return digest(active_catalog())
 
 async def eligible_profiles(session,row,base_version):
-    """Read-only choices from the operator's launch snapshot; no overlay writes."""
     from app.services.managed_launch import ManagedLaunch
     launch=await session.scalar(select(ManagedLaunch).where(ManagedLaunch.execution_id==row.execution_id,
         ManagedLaunch.project_id==row.project_id))
@@ -151,7 +121,6 @@ def validate_candidate(candidate):
     validate_profile(candidate,runtime_config()['mode'])
 
 def validate_vibecode_profile(candidate,mode):
-    """Vibecode chat/completions profile. decision_config.validate_profile is Kie-only, so this lives here."""
     from app.services.prompt_library import APPROVED_PROFILE_PROMPTS
     c=candidate
     if (not isinstance(c,dict) or set(c)!=set(CATALOG['synthetic-json-v1']) or c['provider']!='vibecode'
@@ -168,8 +137,6 @@ def validate_vibecode_profile(candidate,mode):
     if not known or known.get('kind')!='text' or known.get('provider')!='vibecode':raise ValueError('unknown production text model')
 
 def _check_vibecode_route(cfg,url):
-    """Route of a Vibecode profile request: an approved Vibecode host (direct or the owner's relay),
-    HTTPS (loopback excepted) and the chat/completions path. The Kie-only decision endpoint is not used."""
     from app.services import decision_config as dc
     if not cfg['online_enabled'] or cfg['decision'] is None:raise ValueError('decision provider disabled / not configured')
     if url is None:
@@ -203,7 +170,6 @@ def synthetic_transport(url=None,key=None,provider='kie'):
         raise ValueError('Profiles-v1 synthetic loopback only; no production approval')
 
 def _effective_chat_body(body,candidate):
-    """Vibecode chat/completions: only text `messages`; no Responses `input`, no reasoning/token knobs."""
     from app.services.prompt_library import apply_approved_profile_prompt
     result=dict(body);messages=result.get('messages')
     if 'input' in result or not (isinstance(messages,list) and messages and all(isinstance(m,dict)
@@ -254,16 +220,8 @@ class ProfilesSupervisor:
         from app.services.node_capabilities import capability_for
         from app.services.excel_gpt_node import effective_node_type
         capability=capability_for(effective_node_type(node)) if node else None
-        # Eligibility is capability data, not a hardcoded node-type string: a managed
-        # node qualifies only if its capability declares profile_compatible (excel_gpt
-        # and the native plan/script text nodes). effective_body() below is the real
-        # safety net: it raises on any request shape it does not recognize
-        # (e.g. vision/multimodal input), so widening eligibility here cannot by
-        # itself let an incompatible node start using a profile.
         if not capability or not capability.managed or not capability.profile_compatible:
             raise ValueError('incompatible accepted text node contract')
-        # D05: compatibility is per TYPE, admission per NODE (sd_agent: only the agents characters and world); a
-        # node of a refused agent never gets a profile overlay, whatever path put it into the grant.
         from app.orchestrator.node_spec import node_admission_problem
         problem=node_admission_problem(node)
         if problem:raise ValueError('incompatible accepted text node contract: '+str(problem)[:200])
@@ -283,7 +241,6 @@ class ProfilesSupervisor:
 
     async def state(self,project_id,execution_id,node_key):
         async with self.master() as s:
-            # Viewing a terminal/held execution still shows its immutable history.
             scope=await s.get(ExecutionControl,execution_id)
             if not scope or scope.project_id!=project_id or node_key not in scope.node_keys:raise ValueError('scope unavailable')
             rows=(await s.scalars(select(ProfileOverlay).where(ProfileOverlay.execution_id==execution_id,
@@ -358,7 +315,6 @@ class ProfilesSupervisor:
                 raise ValueError('one immutable profile version per node/execution; no replacement or extra recovery')
             source,event=await _source_events(s,execution_id,project_id,node_key)
             if not event:raise ValueError('recorded source request required')
-            # A profile only changes the request body; the node (not the profile) decides the provider.
             if _provider_mismatch(candidate,source_provider(event.payload)):
                 raise ValueError('profile provider differs from failed attempt provider')
             if candidate['prompt_variant']!='original-contract-v1':
@@ -386,7 +342,6 @@ class ProfilesSupervisor:
 
     async def recover(self,*,overlay_id,**kwargs):
         from app.services.actions_v1 import ActionSupervisor
-        # Executor repeats profile checks inside its durable reservation transaction.
         return await ActionSupervisor(self.master).recover_node(profile_overlay_id=overlay_id,**kwargs)
 
     async def cancel(self,*,project_id,execution_id,overlay_id,initiator,rationale):

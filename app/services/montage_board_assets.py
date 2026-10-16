@@ -222,7 +222,10 @@ async def finalize_scene_image(
     elif shot == 2:
         patterns = [shot2_file_pattern(frame_number)]
     else:
-        patterns = [f"frame_{frame_number:03d}_*.png"]
+        patterns = [
+            f"frame_{frame_number:03d}_*.{ext}"
+            for ext in ("png", "jpg", "jpeg", "webp")
+        ]
     purged = purge_replaced_media(
         scenes,
         patterns=patterns,
@@ -336,21 +339,28 @@ async def delete_scene_image(
 ) -> bool:
     scenes = project.data_dir / "scenes"
     if is_parent_slot(slot):
-        pattern = f"frame_{frame_number:03d}_*parent*.png"
+        patterns = [
+            f"frame_{frame_number:03d}_*parent*.{ext}"
+            for ext in ("png", "jpg", "jpeg", "webp")
+        ]
     elif shot == 2:
-        pattern = shot2_file_pattern(frame_number)
+        patterns = [shot2_file_pattern(frame_number)]
     else:
-        pattern = f"frame_{frame_number:03d}_*.png"
+        patterns = [
+            f"frame_{frame_number:03d}_*.{ext}"
+            for ext in ("png", "jpg", "jpeg", "webp")
+        ]
     deleted = False
     if scenes.is_dir():
-        for p in list(scenes.glob(pattern)):
-            if is_parent_slot(slot):
-                if not is_parent_still_filename(p.name):
+        for pattern in patterns:
+            for p in list(scenes.glob(pattern)):
+                if is_parent_slot(slot):
+                    if not is_parent_still_filename(p.name):
+                        continue
+                elif shot == 1 and not _is_shot1_media_name(p.name):
                     continue
-            elif shot == 1 and not _is_shot1_media_name(p.name):
-                continue
-            archive_file(p, project, "scenes")
-            deleted = True
+                archive_file(p, project, "scenes")
+                deleted = True
     fr = await _frame(session, project.id, frame_number)
     if fr is not None:
         arts = (

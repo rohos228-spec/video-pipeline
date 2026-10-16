@@ -132,7 +132,6 @@ async def test_montage_board_ships_scene_row_choices(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """Строки сцены рисуются из одной выдачи доски — без запроса на кадр."""
     fr = Frame(
         project_id=montage_project.id,
         number=1,
@@ -154,7 +153,6 @@ async def test_montage_board_ships_scene_row_choices(
     assert templates and all(t["name"] for t in templates.values())
     assert templates["T5"]["plans"]
     row = board["frames"][0]
-    # Битов у кадра нет — якорь выводится из его закадра, править можно сразу.
     assert [r["якорь"] for r in row["shot_anchor_rows"]] == ["vo"]
     assert row["scene_anchor_rows"] == []
     assert row["anchor_can_add"] is True
@@ -166,7 +164,6 @@ async def test_montage_board_hides_character_refs_on_shot_children(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """K2/K3 не показывают листы персонажей — реф только still родителя."""
     xlsx = montage_project.data_dir / "project.xlsx"
     wb = Workbook()
     ws = wb.active
@@ -202,7 +199,6 @@ async def test_montage_board_group_refs_on_vo_cell(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """Рефы VO-ячейки: still родителя только у детей; персонажи/предметы на группе."""
     parent_uid = "aa" * 12
     scenes = montage_project.data_dir / "scenes"
     chars_dir = montage_project.data_dir / "characters"
@@ -752,7 +748,6 @@ async def test_montage_board_shows_scene_row_from_frame_data_without_group(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """Строка «Сцена» в монтаже — по данным кадра, не отдельное меню и не только QC-группа."""
     parent_uid = "aa" * 12
     fr = Frame(
         project_id=montage_project.id,
@@ -892,7 +887,6 @@ async def test_montage_board_frame_aspect_follows_project(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """Доска отдаёт формат кадра проекта: под него считается высота картинки."""
     session.add(montage_project)
     await session.flush()
 
@@ -911,7 +905,6 @@ async def test_montage_board_frame_aspect_from_real_image(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """Ручная загрузка вертикали в 16:9-проекте — доска берёт формат файла."""
     from PIL import Image
 
     scenes = montage_project.data_dir / "scenes"
@@ -936,7 +929,6 @@ async def test_montage_board_manual_refs_roundtrip(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """Загруженный реф: файл + имя видны на доске, удаление их убирает."""
     from app.services.montage_frame_refs import (
         add_manual_ref,
         delete_manual_ref,
@@ -988,7 +980,6 @@ async def test_montage_board_manual_refs_roundtrip(
 async def test_montage_board_manual_ref_needs_name(
     montage_project: Project,
 ) -> None:
-    """Без имени реф не принимаем: на доске его будет не отличить."""
     from app.services.montage_frame_refs import add_manual_ref
 
     fr = Frame(project_id=montage_project.id, number=1, status="planned")
@@ -1008,7 +999,6 @@ async def test_montage_board_link_existing_asset(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """Готовый персонаж проекта прикладывается без загрузки и файл переживает отвязку."""
     from app.models import Entity
     from app.services.montage_frame_refs import (
         delete_manual_ref,
@@ -1061,7 +1051,6 @@ async def test_montage_board_link_existing_asset(
     assert ref["linked"] is True
 
     assert delete_manual_ref(fr, data_dir=montage_project.data_dir, ref_id=row["id"])
-    # Ассет проекта не наш файл — отвязка его не удаляет.
     assert png.is_file()
 
 
@@ -1069,7 +1058,6 @@ async def test_montage_board_link_existing_asset(
 async def test_montage_board_link_ref_rejects_outside_file(
     montage_project: Project,
 ) -> None:
-    """Приложить можно только то, что лежит в папках проекта."""
     from app.services.montage_frame_refs import link_ref_asset
 
     fr = Frame(project_id=montage_project.id, number=1, status="planned")
@@ -1082,7 +1070,6 @@ async def test_montage_board_unlink_hides_scene_character(
     montage_project: Project,
     session: AsyncSession,
 ) -> None:
-    """Крестик в окне рефов снимает персонажа ячейки, даже если id пришёл из attrs."""
     from app.services.montage_board import _group_refs_for_frames
     from app.services.montage_frame_refs import hidden_ref_ids, unlink_scene_ref
 
@@ -1129,7 +1116,6 @@ def test_list_ref_assets_groups_backgrounds(montage_project: Project) -> None:
 
 
 def test_shot_kind_parent_from_explicit_coverage_kind() -> None:
-    """Кнопка «Родитель» подсвечивается и без плана/детей — coverage_kind."""
     from app.services.montage_board import _shot_kind_payload
 
     fr = Frame(
@@ -1152,7 +1138,6 @@ def test_shot_kind_parent_from_explicit_coverage_kind() -> None:
 
 
 def test_shot_kind_child_on_vo_head_with_plan() -> None:
-    """Первый кадр ячейки (vo_parent + план) может быть дочерним."""
     from app.services.montage_board import _shot_kind_payload
 
     parent = Frame(

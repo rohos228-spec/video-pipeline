@@ -1,24 +1,3 @@
-"""Bounded Entity hero mode for the EXISTING group_acceptance runner.
-
-The parent owns prepare/handler_for/run wiring into that runner, retaining
-its copied seed, main.main, loopback server and non-loopback transport refusal.
-There is no server, worker, provider implementation or executable entrypoint
-here. Only external HTTP answers are synthetic; original prompts, parser,
-GPT client, Outsee transport, executor, planner and FSM execute unchanged.
-
-Exact scope: observe-only, one Entity base character, no reference upload,
-legacy variations, HITL approval, managed start, supervisor retry or Decision.
-Initial fixture state is new/pending; only the real API/worker changes runtime
-statuses. Native Entity hero currently writes each wave's Artifact through
-app.db.SessionLocal (master DB); the outer job uses project.db. Inspect both
-without repairing/copying rows or interpreting a disk shortcut as provenance.
-
-Fixture HTTP ordinals/job IDs are transport evidence, not native request UUIDs
-or GenerationResult captures. Helper verification deliberately gets provenance
-None and must remain unknown, with structural verification passed. Parent must
-establish a shared counter and capture actual native request/result bindings
-before considering managed hero; this acceptance cannot grant that admission.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -56,7 +35,6 @@ def _save(root, name, value):
 
 
 def _reader(path):
-    # All reads after prepare are explicitly read-only, including live WAL DBs.
     return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
 
 
@@ -117,7 +95,6 @@ async def _events(client, base, execution):
 
 
 def prepare(fixtures, root, mode):
-    """Prepare only a fresh copied synthetic seed, before application imports."""
     assert mode == MODE, "this draft accepts only the bounded observe-only hero mode"
     assert Path("/.dockerenv").is_file(), "parent executes acceptance only in its isolated container"
     assert "app.settings" not in sys.modules, "prepare before immutable settings are loaded"
@@ -135,8 +112,6 @@ def prepare(fixtures, root, mode):
             assert not db.execute("SELECT 1 FROM entities WHERE id=99001").fetchone()
     assert not any((fixtures.DB.parent / "characters").glob("*.png")), "no preexisting native hero cache"
 
-    # Same already registered defaults; the native resolver owns the actual
-    # GPT/image model routes and native hero forces 16:9 + Relax itself.
     nodes = [{"id": NODE, "type": "hero", "position": {"x": 100, "y": 100},
               "data": {"label": "Synthetic Entity hero"}},
              {"id": OUTSIDE, "type": "items", "position": {"x": 500, "y": 100},
@@ -169,7 +144,6 @@ def prepare(fixtures, root, mode):
                     "created_at,updated_at) VALUES(?,?,?,'pending',0,0,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
                     (run_id, node["id"], node["type"]))
 
-    # Synthetic token only. No real credentials/configuration are read.
     os.environ.update(IMAGE_PROVIDER="outsee", OUTSEE_API_KEY="synthetic-native-entity-token",
                       OUTSEE_API_BASE_URL="http://127.0.0.1:18766", OUTSEE_HTTP_API="true",
                       OUTSEE_HTTP_FALLBACK_CDP="false")
@@ -206,15 +180,11 @@ def prepare(fixtures, root, mode):
 
 
 def handler_for(fixtures, root):
-    """Extend the same loopback server's handler, replacing external HTTP only."""
     from PIL import Image
 
     root = Path(root)
     assert not fixtures.FixtureHandler.counts and not fixtures.FixtureHandler.response_ids, "fresh existing transport required"
     stream = io.BytesIO()
-    # Uncompressed bytes exceed the original Outsee 200,000-byte image floor
-    # and the native hero cache's 1,000-byte floor. The original verifier owns
-    # decode/hash checks; this synthetic color image makes no quality claim.
     Image.new("RGB", IMAGE_SIZE, "steelblue").save(stream, "PNG", compress_level=0)
     image_bytes = stream.getvalue()
     assert 200_000 <= len(image_bytes) < 256 * 1024 * 1024
@@ -222,8 +192,6 @@ def handler_for(fixtures, root):
     transport_lock = threading.Lock()
 
     class Handler(fixtures.FixtureHandler):
-        # Inherit the original GPT fixture counters so the parent's final
-        # rollup sees these calls too. These are not managed budget counters.
         media_counts = Counter()
         transport = []
         jobs = {}
@@ -253,7 +221,6 @@ def handler_for(fixtures, root):
                 original_stream = self.rfile
                 self.rfile = io.BytesIO(raw)
                 try:
-                    # Retain the original group handler's SSE/response identity.
                     returned = super().do_POST()
                 finally:
                     self.rfile = original_stream
@@ -263,8 +230,6 @@ def handler_for(fixtures, root):
             if path != "/api/v1/images/generate":
                 self.record({"method": "POST", "path": path, "unexpected": True})
                 return self.send_error(404)
-            # Original catalog default gpt-image-2-vip resolves through the
-            # native HTTP adapter to its wired API default gpt-image-2.
             assert body["model"] == "gpt-image-2", body
             assert body["aspect_ratio"] == "16:9", body
             assert body["resolution"] == "2K", body
@@ -302,7 +267,6 @@ def handler_for(fixtures, root):
 
 
 async def run(client, fixtures, observer, root, result, prepared, handler):
-    """Use the real API start and existing main/worker, then inspect evidence."""
     from app.services.native_entity_contracts import hero_entity_input_snapshot, verify_hero_entity_results
     from app.services.node_capabilities import capability_for
     from app.settings import settings
@@ -311,8 +275,6 @@ async def run(client, fixtures, observer, root, result, prepared, handler):
     base = "http://127.0.0.1:18765/api/projects/2"
     paths = {"master": fixtures.DATA / "state.db", "project": fixtures.DB}
     assert prepared["scenario"] == MODE and "retry_profile" not in capability_for("hero").actions
-    # Check the effective native client settings, including choice-file
-    # resolution; never alter that selection or read/log any credential.
     assert settings.resolved_text_llm_provider() == "kie"
     assert settings.gpt_api_effective_base_url == "http://127.0.0.1:18766"
     assert settings.gpt_chat_path_effective == "/codex/v1/responses"
@@ -375,8 +337,6 @@ async def run(client, fixtures, observer, root, result, prepared, handler):
     assert cfg == {"source": "entity", "characters": expected_characters}, "worker must reuse the original parser and input fields"
     assert not state["project"]["meta"].get("hero_skipped_empty"), "native parser must not skip the supplied Entity"
 
-    # Read the original wave's actual master rows. Neither the fixture nor this
-    # verifier projects/reconstructs them into project.db.
     artifacts = state["master"]["artifacts"]
     assert len(artifacts) == 1 and not state["project"]["artifacts"], state
     artifact = artifacts[0]
@@ -435,7 +395,6 @@ async def run(client, fixtures, observer, root, result, prepared, handler):
         db_authority={"artifact_write": "master via original SessionLocal wave",
                       "outer_worker": "project.db", "artifact_rows_repaired_or_projected_by_fixture": False})
 
-    # The original manual-mode boundary, with no fixture changes after launch.
     before_counts = dict(handler.counts), dict(handler.media_counts)
     await asyncio.sleep(12)
     assert before_counts == (dict(handler.counts), dict(handler.media_counts)), "no repeated or outside work"

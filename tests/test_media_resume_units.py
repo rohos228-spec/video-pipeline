@@ -1,4 +1,3 @@
-"""Resume, never resubmit: policy mapping, prompt hash, ledger state rules. Stubs only."""
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -20,7 +19,7 @@ class PolicyMapping(unittest.TestCase):
             c = classify_video_error(exc)
             self.assertEqual((c.code, c.action), ("media_no_resubmit", VideoErrorAction.HOLD_UNKNOWN))
             self.assertTrue(is_no_resubmit(exc))
-            self.assertIsInstance(exc, KieUncertainError)  # still an uncertain Kie error
+            self.assertIsInstance(exc, KieUncertainError)
 
     def test_U2_old_actions_unchanged(self):
         self.assertEqual(classify_video_error(KieHttpError("x", context={"provider_code": 502})).action,

@@ -1,17 +1,9 @@
-"""Русская фраза для строки «действие оператора» в ленте: по методу и шаблону маршрута.
-
-Лента должна говорить, ЧТО сделал человек («Оператор поставил на паузу: проект»), а не «изменил данные».
-Фраза собирается из двух словарей: последнее слово пути (действие) и ближайшее слово-ресурс. Если на маршруте
-слова нет в словарях, функция вернёт None, а тест ``tests/test_operator_phrases.py`` уронит сборку: новый
-маршрут нельзя добавить без фразы.
-"""
 from __future__ import annotations
 
 import re
 
-# Последний сегмент пути - действие.
 ACTIONS: dict[str, str] = {
-    "activate": "включил", "apply": "применил", "apply-ops": "применил операции", "approve": "подтвердил",
+    "activate": "включил", "apply": "применил", "apply-ops": "применил операции", "approve": "подтвердил", "assist-project": "запросил помощь по проекту",
     "ask": "задал вопрос", "ask-stream": "задал вопрос", "analyze-style": "проанализировал стиль",
     "audio-align": "выровнял озвучку по кадрам", "build-agent": "собрал агента", "bulk-enqueue": "поставил в очередь пачкой",
     "cancel": "отменил", "categorize-styles": "разложил стили по категориям", "clear": "очистил",
@@ -29,7 +21,7 @@ ACTIONS: dict[str, str] = {
     "logout": "вышел из Studio", "mark-failed": "пометил неудачным", "mark-montage-ready": "пометил готовым к монтажу",
     "merge": "склеил", "montage": "запустил монтаж", "move-image": "переместил картинку", "normalize": "нормализовал",
     "parse-topics": "разобрал темы", "pause": "поставил на паузу", "pin": "закрепил", "preview": "посмотрел предпросмотр",
-    "pull-to-main": "подтянул изменения в main", "rebuild": "пересобрал", "recover-outsee": "запустил восстановление Outsee",
+    "pull-to-main": "подтянул изменения в main", "rebuild": "пересобрал", "regenerate-video": "перегенерировал видео", "recover-outsee": "запустил восстановление Outsee",
     "register": "зарегистрировал", "reject": "отклонил", "release": "снял", "release-unknown": "снял блокировку неизвестного исхода",
     "reload": "перечитал", "remap-keys": "переназначил ключи", "remount-video": "пересобрал видео", "rename": "переименовал",
     "replace": "заменил", "reset": "сбросил", "restore": "восстановил", "restore-original-voiceover": "вернул исходную озвучку",
@@ -44,7 +36,6 @@ ACTIONS: dict[str, str] = {
     "validate": "проверил", "kill-switch": "переключил рубильник", "verify": "проверил", "child": "создал дочерний проект",
 }
 
-# Ближайший к концу сегмент-ресурс - «что именно».
 RESOURCES: dict[str, str] = {
     "action-layer": "слой действий", "actions": "действия", "agent-overrides": "переопределения агентов",
     "animation-prompts": "промты анимации", "assets": "ресурсы проекта", "attachments": "вложения", "auth": "вход",
@@ -85,7 +76,6 @@ def _words(template: str) -> list[str]:
 
 
 def operator_phrase(method: str, template: str) -> str | None:
-    """Фраза по методу и шаблону маршрута; None, если в пути нет слов из словарей."""
     method = (method or "").upper()
     words = _words(template)
     if not words:

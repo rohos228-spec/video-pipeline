@@ -1,4 +1,3 @@
-"""Шлюз vp-verify не должен снова и снова требовать починить старую историю ветки."""
 from __future__ import annotations
 
 import importlib.util

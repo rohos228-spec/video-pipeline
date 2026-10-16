@@ -305,7 +305,6 @@ async def test_complete_recovers_pending_when_prepare_missed(
 async def test_complete_overflow_does_not_recover_slot1_sibling(
     mem_db, monkeypatch
 ) -> None:
-    """fw_report (slotOverflow) закрыт: pending персонажи slotIndex=1 не done."""
     overflow = "n_excel_gpt_fw_report"
     slot1 = "n_excel_gpt_1787849035232"
     slug = f"excel-nr-{uuid.uuid4().hex[:8]}"
@@ -551,11 +550,6 @@ async def test_sync_heals_stale_running_from_completed_keys(mem_db, monkeypatch)
 async def test_sync_heals_overflow_pending_completed_to_done(
     mem_db, monkeypatch
 ) -> None:
-    """fw_* slotOverflow: pending + completed_keys → done, ключ не стираем.
-
-    Лог #34: apply-ops записан, STOP → script_ready, complete_excel_gpt
-    пропущен, heal снимал n_excel_gpt_fw_script и нода оставалась серой.
-    """
     overflow = "n_excel_gpt_fw_script"
     nxt = "n_excel_gpt_fw_check_script"
     slug = f"excel-nr-{uuid.uuid4().hex[:8]}"

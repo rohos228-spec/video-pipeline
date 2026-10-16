@@ -1,4 +1,3 @@
-"""Freeze раскладка СТАРТ/КОНЕЦ → два still и last_frame для видео."""
 
 from __future__ import annotations
 

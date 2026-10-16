@@ -1,10 +1,3 @@
-"""«Улучшить сцену»: одна VO-ячейка через 3 ноды группы script_frames_qc.
-
-fw_action → fw_shots → fw_qc. fw_script и fw_check_script не зовём.
-В GPT только заказ оператора и реестр персонажей: якоря, биты, паспорт
-и закадр как сюжет не входят. Закадр режет код после кадров.
-Без заказа — нарезка по закадру, GPT не зовём.
-"""
 
 from __future__ import annotations
 
@@ -88,7 +81,6 @@ _ANGLE_ALIASES = {
     "верхний": "сверху",
     "нижний": "снизу",
 }
-# Соседние ступени крупности; ОБЩИЙ ↔ ДЕТАЛЬ подряд — прыжок «не через план».
 _PLAN_STEP = {"ДАЛЬНИЙ": 0, "ОБЩИЙ": 1, "СРЕДНИЙ": 2, "КРУПНЫЙ": 3, "ДЕТАЛЬ": 4}
 
 _SUB_PLACE_RE = re.compile(r"\s*[:·]\s*")
@@ -109,12 +101,10 @@ AskFn = Callable[[str], Awaitable[str]]
 
 
 def is_establishing_step(step: str) -> bool:
-    """Вход в место — глагол, не «входная дверь» / «за входом»."""
     return bool(_ENTER_RE.search(_norm(step)))
 
 
 def is_walk_step(step: str) -> bool:
-    """Ход камеры. «прихожая» не считается ходьбой."""
     return bool(_WALK_RE.search(_norm(step)))
 
 
@@ -131,7 +121,6 @@ def _step_plan(plan: str, obj: str) -> str:
 
 
 def vary_adjacent_coverage(shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Если все кадры одной крупности — развести. Иначе чипы на доске не меняются."""
     if len(shots) < 2:
         return shots
     plans = [s.get("план") for s in shots]
@@ -162,11 +151,6 @@ def _base_place(shot: dict[str, Any]) -> str:
 def wide_return_reason(
     shot: dict[str, Any], prev: dict[str, Any]
 ) -> str | None:
-    """Шире прошлого кадра до ОБЩЕГО/ДАЛЬНЕГО без нового места — «средний → общий → средний».
-
-    Разрешено: вход в новое место скачком (не через дверь прошлого кадра),
-    стык dissolve/fade (прошло время).
-    """
     plan = str(shot.get("план") or "")
     prev_plan = str(prev.get("план") or "")
     if plan not in _WIDE_PLANS or prev_plan in _WIDE_PLANS:
@@ -186,7 +170,6 @@ def wide_return_reason(
 
 
 def smooth_plan_sequence(shots: list[dict[str, Any]]) -> list[str]:
-    """Кино-порядок: общий → средний → крупный; назад к общему только с причиной."""
     fixed: list[str] = []
     for i in range(1, len(shots)):
         shot, prev = shots[i], shots[i - 1]
@@ -204,9 +187,6 @@ def smooth_plan_sequence(shots: list[dict[str, Any]]) -> list[str]:
     return fixed
 
 
-# --------------------------------------------------------------------------- #
-# Промты группы
-# --------------------------------------------------------------------------- #
 
 
 def load_group_prompt(name: str) -> str:
@@ -217,7 +197,6 @@ def load_group_prompt(name: str) -> str:
 
 
 def shot_budget(vo: str) -> int:
-    """По умолчанию один кадр на кусок закадра — длину текста в кадры не раздуваем."""
     return 1 if _norm(vo) else 1
 
 
@@ -225,13 +204,11 @@ _ARROW_SPLIT_RE = re.compile(r"\s*→\s*|\s*->\s*")
 
 
 def operator_arrow_beats(text: str) -> list[str]:
-    """Шаги только по ``→``. Проза, «потом» и точки кадры не плодят."""
     parts = [p for p in _ARROW_SPLIT_RE.split(_norm(text)) if p]
     return parts if len(parts) >= 2 else []
 
 
 def allot_budgets(pieces: list[str], operator_prompt: str = "") -> list[int]:
-    """Один кадр на якорь. Больше — только если промт оператора сам режет шаги ``→``."""
     n = len(pieces) or 1
     out = [1] * n
     extra = len(operator_arrow_beats(operator_prompt)) - n
@@ -343,7 +320,6 @@ IMPROVE_SHOTS_RULES = """# Агент: сцены → кадры
 
 
 def _loose_json_dict(text: str) -> dict[str, Any] | None:
-    """apply-ops или любой JSON-объект из ответа GPT."""
     if not (text or "").strip():
         return None
     data = extract_apply_ops_json(text)
@@ -362,7 +338,7 @@ def _loose_json_dict(text: str) -> dict[str, Any] | None:
     for cand in candidates:
         try:
             obj = json.loads(cand)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         if isinstance(obj, dict):
             return obj
@@ -428,13 +404,9 @@ def _units_payload(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-# --------------------------------------------------------------------------- #
-# fw_script + fw_check_script — якоря = границы текста
-# --------------------------------------------------------------------------- #
 
 
 def check_bits(vo: str, bits: list[Any]) -> str | None:
-    """Проверка битов как у fw_check_script: массив, изменение, якоря по порядку."""
     text = _norm(vo)
     if not text:
         return None
@@ -459,7 +431,6 @@ def check_bits(vo: str, bits: list[Any]) -> str | None:
 def anchor_units(
     vo: str, rows: list[dict[str, Any]], operator_prompt: str = ""
 ) -> list[dict[str, Any]]:
-    """Якоря → куски закадра, как их режет доска. Ненайденный якорь — ошибка."""
     text = _norm(vo)
     ordered = sorted(
         (r for r in rows if _norm(r.get("якорь"))),
@@ -524,7 +495,6 @@ async def stage_script(
     members: list[Frame] | None = None,
     anchors: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Куски сцены по якорям. Якоря есть — GPT биты не пишет."""
     frames = frames if frames is not None else [parent]
     members = members if members is not None else [parent]
     given = normalize_anchor_rows(anchors) if anchors else []
@@ -571,7 +541,7 @@ async def stage_script(
         prompt = build_script_prompt(parent, vo, operator_prompt, reason if attempt else "")
         try:
             reply = await ask(prompt)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             tries.append(f"GPT: {type(exc).__name__}: {exc}"[:160])
             break
         raw = _ops_fields(reply, str(parent.uuid or "")).get("биты")
@@ -608,9 +578,6 @@ async def stage_script(
     ]
 
 
-# --------------------------------------------------------------------------- #
-# fw_action — карточка N. на каждый якорь
-# --------------------------------------------------------------------------- #
 
 
 def _passport_input(passport: dict[str, Any], character_labels: str) -> dict[str, str]:
@@ -645,7 +612,6 @@ def build_improve_action_prompt(
     registry_labels: str = "",
     matched_labels: str = "",
 ) -> str:
-    """fw_action: сюжет только из заказа. Якоря, биты, закадр, паспорт не входим."""
     _ = vo, units, passport
     task = (
         "Поставь сцену по этому заказу — не копируй текст заказа в действие "
@@ -724,7 +690,6 @@ def _inline_numbered_steps(text: str) -> list[dict[str, Any]]:
 def loose_action_steps(
     text: str, *, allow_sentences: bool = False
 ) -> list[dict[str, Any]]:
-    """Разбор цепи, если нет строгой формы ``N. место — шаг``."""
     raw = (text or "").replace("–", "—").replace(" - ", " — ").strip()
     if not raw:
         return []
@@ -757,7 +722,6 @@ def loose_action_steps(
 
 
 def cards_raw_from_reply(fields: dict[str, Any], reply: str) -> list[dict[str, Any]]:
-    """главное_действие / кадры / нумерованный текст → шаги сцены."""
     raw = fields.get("главное_действие") or fields.get("main_action")
     if isinstance(raw, list):
         out: list[dict[str, Any]] = []
@@ -797,7 +761,6 @@ def cards_raw_from_reply(fields: dict[str, Any], reply: str) -> list[dict[str, A
 def fit_cards_to_units(
     cards: list[dict[str, Any]], units: list[dict[str, Any]], place: str
 ) -> list[dict[str, Any]] | None:
-    """Карточки GPT → по одной на якорь с его куском закадра. None — не сходится."""
     if not cards:
         return None
     if len(cards) != len(units):
@@ -824,7 +787,6 @@ def fit_cards_to_units(
 def cap_cards_to_budget(
     cards: list[dict[str, Any]], units: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Лишние шаги сверх бюджета якоря отрезаем — GPT не раздувает сцену."""
     out: list[dict[str, Any]] = []
     for card, unit in zip(cards, units, strict=True):
         cap = max(1, int(unit.get("бюджет") or 1))
@@ -840,7 +802,6 @@ _PROSE_SPLIT_RE = re.compile(r"(?i)\s+(?:а\s+)?потом\s+")
 
 
 def operator_action_beats(text: str) -> list[str]:
-    """Шаги сцены только из промта. `→`, иначе «потом», иначе один шаг."""
     arrows = operator_arrow_beats(text)
     if arrows:
         return arrows[:MAX_IMPROVE_SHOTS]
@@ -854,7 +815,6 @@ def operator_action_beats(text: str) -> list[str]:
 def cards_from_operator_prompt(
     operator_prompt: str, place: str, vo: str
 ) -> list[dict[str, Any]]:
-    """Запасной разбор, если GPT молчит: шаги `→` или один шаг."""
     beats = operator_action_beats(operator_prompt)
     if not beats:
         return []
@@ -868,7 +828,6 @@ def cards_from_operator_prompt(
 def scene_cards_from_gpt(
     cards_raw: list[dict[str, Any]], place: str, vo: str
 ) -> list[dict[str, Any]] | None:
-    """Ответ GPT → кадры сцены. Закадр только нарезаем, сюжет из него не берём."""
     steps = [s for card in cards_raw for s in _card_steps(card)]
     steps = [s for s in steps if s][:MAX_IMPROVE_SHOTS]
     if not steps:
@@ -882,7 +841,6 @@ def scene_cards_from_gpt(
 
 
 def is_raw_prompt_dump(cards: list[dict[str, Any]], operator_prompt: str) -> bool:
-    """GPT не поставил сцену — в действие свалил весь заказ."""
     op = _norm(operator_prompt)
     if not cards or not op:
         return False
@@ -908,7 +866,6 @@ def units_from_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def fallback_cards(
     parent: Frame, units: list[dict[str, Any]], operator_prompt: str, place: str
 ) -> list[dict[str, Any]]:
-    """Без GPT: промт целиком → текущая цепь → изменение якоря."""
     vo = " ".join(_norm(u.get("закадр")) for u in units)
     if _norm(operator_prompt):
         return cards_from_operator_prompt(operator_prompt, place, vo)
@@ -966,7 +923,7 @@ async def stage_action(
             )
         try:
             reply = await ask(ask_text)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             reply = ""
             note = f"GPT: {type(exc).__name__}: {exc}"[:160]
             break
@@ -1023,9 +980,6 @@ async def stage_action(
     return cards, gpt_passport
 
 
-# --------------------------------------------------------------------------- #
-# fw_shots — покрытие кадра
-# --------------------------------------------------------------------------- #
 
 
 def canonical_plan(value: Any) -> str:
@@ -1120,7 +1074,6 @@ def _default_stitch(i: int, shot: dict[str, Any], prev: dict[str, Any] | None) -
 
 
 def _split_place(raw: str, place: str) -> tuple[str, str]:
-    """(место сцены, зона). Место паспорта не меняется; «дом: коридор» → зона."""
     text = _norm(raw)
     if not place:
         return text, ""
@@ -1153,7 +1106,6 @@ def normalize_shots(
     place: str,
     anchors: int = 1,
 ) -> list[dict[str, Any]]:
-    """Кадры GPT → enum доски; пустое покрытие дописывает таблица грамматики."""
     rows = [
         dict(s)
         for s in shots
@@ -1221,7 +1173,6 @@ def normalize_shots(
 
 
 def anchors_grouped(shots: list[dict[str, Any]], k: int) -> bool:
-    """Кадры идут по якорям подряд 1..k, у каждого якоря есть кадр."""
     seq = [s.get("якорь_n") for s in shots]
     if any(not isinstance(v, int) for v in seq):
         return False
@@ -1229,7 +1180,6 @@ def anchors_grouped(shots: list[dict[str, Any]], k: int) -> bool:
 
 
 def shots_list_from_reply(fields: dict[str, Any], reply: str) -> list[Any]:
-    """кадры / shots из apply-ops, голого JSON или массива."""
     for key in ("кадры", "shots"):
         val = fields.get(key)
         if isinstance(val, list) and val:
@@ -1259,7 +1209,6 @@ def merge_shot_coverage(
     cell_number: int,
     place: str,
 ) -> list[dict[str, Any]] | None:
-    """Покрытие GPT накладываем на шаги действия, даже если в ответе нет текста."""
     if not canonical or not isinstance(raw, list) or len(raw) != len(canonical):
         return None
     rows: list[dict[str, Any]] = []
@@ -1298,7 +1247,6 @@ def merge_shot_coverage(
 
 
 def coverage_is_flat(shots: list[dict[str, Any]]) -> bool:
-    """Одинаковая крупность на 2+ кадрах — чипы на доске не двигаются."""
     if len(shots) < 2:
         return False
     plans = {_norm(s.get("план")) for s in shots if _norm(s.get("план"))}
@@ -1309,7 +1257,6 @@ _ANGLE_30_LADDER = ("3/4", "фронт", "сверху", "снизу")
 
 
 def diversify_shot_coverage(shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Лестница покрытия: первый общий, последний крупнее, ракурсы разные."""
     n = len(shots)
     if n < 2:
         return shots
@@ -1354,7 +1301,6 @@ def finish_shots(shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def shots_from_cards(
     cards: list[dict[str, Any]], *, cell_number: int, place: str
 ) -> list[dict[str, Any]]:
-    """Код fw_shots без GPT: шаги карточек → кадры, камера из таблицы."""
     rows = [
         {"действие": step, "место": card.get("place") or place, "якорь_n": card["n"]}
         for card in cards
@@ -1430,7 +1376,7 @@ async def stage_shots(
     note = ""
     try:
         reply = await ask(prompt)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         reply = ""
         note = f"GPT: {type(exc).__name__}: {exc}"[:160]
     fields = _ops_fields(reply, str(parent.uuid or ""))
@@ -1474,9 +1420,6 @@ async def stage_shots(
     return finish_shots(canonical)
 
 
-# --------------------------------------------------------------------------- #
-# fw_qc — код чинит, GPT только если брак остался
-# --------------------------------------------------------------------------- #
 
 
 _COGNITIVE_ONLY_RE = re.compile(
@@ -1486,7 +1429,6 @@ _COGNITIVE_ONLY_RE = re.compile(
 
 
 def split_vo_for_shots(vo: str, n: int) -> list[str]:
-    """Дословные куски закадра на n кадров; при хватке слов — ни одного пустого."""
     from app.services.scene_design.camera_expand import split_text_into_parts
 
     text = _norm(vo)
@@ -1528,7 +1470,6 @@ def _group(shots: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
 
 
 def _trim_to_cap(shots: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
-    """Сверх бюджета режем мосты и перебивки, исходные события и следствие держим."""
     out = list(shots)
     for role in ("мост", "перебивка"):
         i = len(out) - 1
@@ -1542,7 +1483,6 @@ def _trim_to_cap(shots: list[dict[str, Any]], cap: int) -> list[dict[str, Any]]:
 def _ensure_coverage_angle_30(
     shot: dict[str, Any], prev: dict[str, Any] | None
 ) -> str | None:
-    """Смена плана или тот же объект — ракурс не тот же (правило 30°)."""
     if prev is None:
         return None
     if shot.get("ракурс") != prev.get("ракурс") and not angles_under_30(
@@ -1563,7 +1503,6 @@ def _ensure_coverage_angle_30(
 
 
 def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> list[str]:
-    """Детерминированные правки fw_qc по якорям. Возвращает, что починено."""
     fixed: list[str] = []
     seen: set[str] = set()
     kept: list[dict[str, Any]] = []
@@ -1619,7 +1558,6 @@ def repair_shots(shots: list[dict[str, Any]], units: list[dict[str, Any]]) -> li
 def qc_reasons(
     shots: list[dict[str, Any]], units: list[dict[str, Any]]
 ) -> tuple[list[str], list[str]]:
-    """(брак, замечания) по разделу режиссуры и shots_qc_ru."""
     hard: list[str] = []
     soft: list[str] = []
     if not shots:
@@ -1720,7 +1658,7 @@ async def stage_qc(
                     parent=parent, vo=vo, shots=shots, units=units, reasons=hard
                 )
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             reply = ""
             notes.append(f"GPT QC: {type(exc).__name__}"[:80])
         raw = _ops_fields(reply, str(parent.uuid or "")).get("кадры")
@@ -1744,7 +1682,6 @@ async def stage_qc(
 
 
 def neighbour_scene_cells(frames: list[Any], parent: Any) -> tuple[list[dict], list[dict]]:
-    """Соседние сцены (прошлая, следующая) — контекст площадки только для чтения."""
     from app.services.apply_ops_batches import _frame_shots, _is_child_frame
 
     rows = [
@@ -1781,7 +1718,6 @@ def stage_scene_plan(
     before: list[dict[str, Any]] | None = None,
     after: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Площадка после fw_qc: двери, порог, путь, ось — и раскладка кадров."""
     if before or after:
         own = {"key": "_", "shots": shots, "plan": raw_plan, "owned": True}
         base, by_key = apply_scene_plan_cells([*(before or []), own, *(after or [])])
@@ -1808,9 +1744,6 @@ def stage_scene_plan(
     return plan
 
 
-# --------------------------------------------------------------------------- #
-# Паспорт → доска
-# --------------------------------------------------------------------------- #
 
 _LOCKED_KEYS = ("place", "characters", "set", "light", "visual_type")
 _PASSPORT_RU = {
@@ -1830,8 +1763,6 @@ _PASSPORT_RU = {
 def merge_passport(
     operator: dict[str, Any], gpt: dict[str, Any]
 ) -> tuple[dict[str, str], list[str]]:
-    """Паспорт после улучшения: место/набор/персонажи/свет/тип оператора держим,
-    описательные поля — от GPT (или оператора, если GPT пусто)."""
     out: dict[str, str] = {}
     changed: list[str] = []
     for key, ru in _PASSPORT_RU.items():
@@ -1849,9 +1780,6 @@ def merge_passport(
     return out, changed
 
 
-# --------------------------------------------------------------------------- #
-# Пайплайн
-# --------------------------------------------------------------------------- #
 
 
 def _node(key: str, status: str, note: str) -> dict[str, Any]:
@@ -1874,7 +1802,6 @@ async def _load_frames(session: AsyncSession, project_id: int) -> list[Frame]:
 
 
 def _final_chain(shots: list[dict[str, Any]], units: list[dict[str, Any]], place: str) -> str:
-    """главное_действие после QC: карточка N. на якорь, шаги = кадры, закадр = кусок."""
     return format_scene_chain(
         [
             {
@@ -1899,7 +1826,6 @@ async def improve_cell_scene(
     anchors: list[Any] | None = None,
     timeout: float = 180.0,
 ) -> dict[str, Any]:
-    """fw_action → fw_shots → fw_qc на одну ячейку. Якоря и паспорт не входят."""
     from app.services.gpt_client import gpt_ask_fresh
     from app.services.montage_action_gpt import apply_cell_passport
     from app.services.montage_coverage_ops import _visible_cell_members

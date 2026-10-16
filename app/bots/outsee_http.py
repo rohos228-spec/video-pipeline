@@ -66,7 +66,6 @@ OutseeHttpAuthError = OutseeApiError
 
 
 class OutseeSubmitUnknownError(OutseeApiError):
-    """Submit ушёл, исход неизвестен: задача могла быть принята и оплачена. Повторный submit запрещён."""
 
     def __init__(self, reason: str, *, context: dict[str, Any] | None = None) -> None:
         super().__init__(
@@ -75,11 +74,8 @@ class OutseeSubmitUnknownError(OutseeApiError):
         )
 
 
-# Заполняется outsee_guard на время одного вызова generate_*: что именно успело уйти к провайдеру.
 submit_probe: contextvars.ContextVar[dict | None] = contextvars.ContextVar("outsee_submit_probe", default=None)
-# Запрос уже был на проводе, ответ потерян: провайдер мог принять и списать.
 _SENT_ERRORS = (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError)
-# curl: 18 partial, 28 timeout, 52 empty reply, 55 send, 56 recv — тело могло дойти до сервера.
 _CURL_SENT_CODES = frozenset({18, 28, 52, 55, 56})
 
 
@@ -91,7 +87,6 @@ def _probe_mark(**fields: Any) -> None:
 
 @contextlib.contextmanager
 def ensure_probe():
-    """The current submit probe, or a private one for the duration when no guard installed one."""
     probe = submit_probe.get()
     if probe is not None:
         yield probe
@@ -105,18 +100,11 @@ def ensure_probe():
 
 
 def reset_probe(probe: dict) -> None:
-    """Forget what an API attempt marked once it is known to have cost nothing (the next path marks its own)."""
     probe.update(maybe_sent=False, task_id=None, done=False)
     probe.pop("rejected", None)
 
 
 def api_failure_needs_hold(probe: dict, exc: BaseException) -> str | None:
-    """None when an API failure left nothing in flight (a fallback to the browser UI cannot double-charge).
-
-    ``"unknown"`` - a paid task may exist (request on the wire, or id known without a verdict): never fall back.
-    ``"done"``    - the generation finished and only a later step failed: no new Generate either.
-    A provider-declared failure (``status`` dict in the error context) is a known outcome and may fall back.
-    """
     ctx = getattr(exc, "context", None)
     if isinstance(ctx, dict) and isinstance(ctx.get("status"), dict):
         return None
@@ -136,7 +124,6 @@ def outsee_api_configured() -> bool:
 
 
 def outsee_api_enabled_for_image() -> bool:
-    """IMAGE_PROVIDER=outsee + ключ."""
     return outsee_api_configured() and (
         (settings.image_provider or "").lower() == "outsee"
     )
@@ -306,8 +293,6 @@ _CONCURRENCY_MARKERS = (
 )
 _CONCURRENCY_MAX_WAITS = 3
 _CONCURRENCY_BACKOFF_S = (15.0, 30.0, 45.0)
-# outsee.io с этого ПК часто принимает TCP >20с — старый connect=20 резал POST
-# до того, как генерация вообще ставилась в очередь.
 _GENERATE_CONNECT_S = 60.0
 _GENERATE_TOTAL_S = 180.0
 
@@ -332,7 +317,6 @@ def _generate_timeout() -> httpx.Timeout:
 
 
 def _curl_tls_args() -> list[str]:
-    """Windows curl = schannel: без --ssl-no-revoke падает CRYPT_E_REVOCATION_OFFLINE."""
     if sys.platform == "win32":
         return ["--ssl-no-revoke"]
     return []
@@ -344,7 +328,6 @@ def _prefer_curl_download(url: str) -> bool:
 
 
 async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, Any] | None:
-    """Fallback, когда httpx не коннектится к outsee.io (Windows / долгий handshake)."""
     import os
     import shutil
     import tempfile
@@ -438,14 +421,10 @@ async def _post_generate_via_curl(path: str, body: dict[str, Any]) -> dict[str, 
 
 
 def _generate_estimate(args: tuple, kwargs: dict) -> float:
-    """UNCALIBRATED in-flight estimate of one Outsee submit (the price is not known before the call)."""
     path = str(args[0] if args else kwargs.get("path", ""))
     return spend_guard.OUTSEE_VIDEO_ESTIMATE_USD if "/videos/" in path else spend_guard.MEDIA_SUBMIT_ESTIMATE_USD
 
 
-# Operator kill switch, disk guard and money cap BEFORE the first byte of every generate submit
-# (also the curl fallback below, which is reached only from inside this function). A refusal is a
-# ``spend_guard.PaidCallBlocked``: it is not an OutseeHttpError, so the browser-UI fallback never starts.
 @spend_guard.paid_seam("outsee", "generate submit", estimate=_generate_estimate)
 async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
     waits = 0
@@ -454,14 +433,13 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
     while True:
         try:
             async with httpx.AsyncClient(timeout=_generate_timeout()) as client:
-                # Пока POST в полёте, отмена (рубильник, стоп) не доказывает, что запрос не ушёл: см. outsee_guard.run.
                 _probe_mark(in_flight=True)
                 try:
                     r = await client.post(
                         f"{_base_url()}{path}", headers=_headers(), json=body
                     )
                 except asyncio.CancelledError:
-                    raise  # флаг остаётся поднятым: outsee_guard.run увидит отмену посреди POST
+                    raise
                 except BaseException:
                     _probe_mark(in_flight=False)
                     raise
@@ -504,7 +482,6 @@ async def _post_generate(path: str, body: dict[str, Any]) -> dict[str, Any]:
         except (httpx.HTTPError, OSError) as e:
             detail = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
             if isinstance(e, _SENT_ERRORS):
-                # Запрос ушёл, ответ потерян: второй POST (в том числе через curl) оплатил бы вторую задачу.
                 _probe_mark(maybe_sent=True)
                 raise OutseeSubmitUnknownError(
                     f"Outsee API {path}: ответа нет после отправки ({type(e).__name__}); "
@@ -649,7 +626,6 @@ def _curl_download_args(url: str, out_path: Path) -> list[str]:
 
 
 async def _download_via_curl(url: str, out_path: Path) -> bool:
-    """Windows/httpx DNS часто падает на yandexcloud — curl с --ssl-no-revoke проходит."""
     import shutil
 
     curl = shutil.which("curl")
@@ -989,29 +965,57 @@ async def _host_via_uguu(client: httpx.AsyncClient, raw: bytes, mime: str, filen
 
 
 async def _host_via_litterbox(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
-    r = await client.post(
-        "https://litterbox.catbox.moe/resources/internals/api.php",
-        data={"reqtype": "fileupload", "time": "24h"},
-        files={"fileToUpload": (filename, raw, mime)},
-    )
-    text = (r.text or "").strip()
-    if r.status_code >= 400 or not text.startswith("http"):
-        raise OutseeApiError(
-            f"litterbox HTTP {r.status_code}: {text[:160] or '(empty body)'}"
-        )
-    return await _accept_hosted_url(client, text, host="litterbox", raw_len=len(raw))
+    url = "https://litterbox.catbox.moe/resources/internals/api.php"
+    for attempt in range(2):
+        try:
+            r = await client.post(
+                url,
+                data={"reqtype": "fileupload", "time": "24h"},
+                files={"fileToUpload": (filename, raw, mime)},
+            )
+            text = (r.text or "").strip()
+            if r.status_code < 400 and text.startswith("http"):
+                return await _accept_hosted_url(client, text, host="litterbox", raw_len=len(raw))
+            if attempt == 0 and r.status_code in {500, 502, 503, 504}:
+                await asyncio.sleep(1.0)
+                continue
+            raise OutseeApiError(
+                f"litterbox HTTP {r.status_code}: {text[:160] or '(empty body)'}"
+            )
+        except OutseeApiError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 0:
+                await asyncio.sleep(1.0)
+                continue
+            raise OutseeApiError(f"litterbox connection fail: {exc}") from exc
+    raise OutseeApiError("litterbox: exhausted retries")
 
 
 async def _host_via_catbox(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
-    r = await client.post(
-        "https://catbox.moe/user/api.php",
-        data={"reqtype": "fileupload"},
-        files={"fileToUpload": (filename, raw, mime)},
-    )
-    text = (r.text or "").strip()
-    if r.status_code >= 400 or not text.startswith("http"):
-        raise OutseeApiError(f"catbox HTTP {r.status_code}: {text[:160] or '(empty body)'}")
-    return await _accept_hosted_url(client, text, host="catbox", raw_len=len(raw))
+    url = "https://catbox.moe/user/api.php"
+    for attempt in range(2):
+        try:
+            r = await client.post(
+                url,
+                data={"reqtype": "fileupload"},
+                files={"fileToUpload": (filename, raw, mime)},
+            )
+            text = (r.text or "").strip()
+            if r.status_code < 400 and text.startswith("http"):
+                return await _accept_hosted_url(client, text, host="catbox", raw_len=len(raw))
+            if attempt == 0 and r.status_code in {412, 429, 500, 502, 503, 504}:
+                await asyncio.sleep(1.0)
+                continue
+            raise OutseeApiError(f"catbox HTTP {r.status_code}: {text[:160] or '(empty body)'}")
+        except OutseeApiError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 0:
+                await asyncio.sleep(1.0)
+                continue
+            raise OutseeApiError(f"catbox connection fail: {exc}") from exc
+    raise OutseeApiError("catbox: exhausted retries")
 
 
 async def _host_via_0x0(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
@@ -1044,6 +1048,23 @@ async def _host_via_tmpfiles(client: httpx.AsyncClient, raw: bytes, mime: str, f
     return await _accept_hosted_url(client, direct, host="tmpfiles", raw_len=len(raw))
 
 
+async def _host_via_telegraph(client: httpx.AsyncClient, raw: bytes, mime: str, filename: str) -> str:
+    r = await client.post(
+        "https://telegra.ph/upload",
+        files={"file": (filename, raw, mime)},
+    )
+    if r.status_code >= 400:
+        raise OutseeApiError(f"telegra.ph HTTP {r.status_code}: {(r.text or '')[:160]}")
+    try:
+        data = r.json()
+        if isinstance(data, list) and data and "src" in data[0]:
+            src = str(data[0]["src"]).lstrip("/")
+            return await _accept_hosted_url(client, f"https://telegra.ph/{src}", host="telegraph", raw_len=len(raw))
+    except Exception as exc:  # noqa: BLE001
+        raise OutseeApiError(f"telegra.ph parse error: {(r.text or '')[:160]}") from exc
+    raise OutseeApiError(f"telegra.ph unexpected response: {(r.text or '')[:160]}")
+
+
 async def ensure_public_image_url(
     url: str | None,
     *,
@@ -1054,7 +1075,8 @@ async def ensure_public_image_url(
 
     data: → публичный URL только через Yandex Object Storage.
     http(s) → как есть (кроме localhost), либо force_rehost=True → скачать и
-    залить в Yandex. Публичные хосты (litterbox/catbox/uguu) отключены.
+    залить в Yandex. Публичные хосты (telegraph/tmpfiles/uguu/litterbox/catbox/0x0)
+    отключены, если не включён OUTSEE_ALLOW_PUBLIC_IMAGE_HOSTS.
     ``yandex`` в skip_hosts игнорируется: новый PUT = новый URL.
     """
     if not url or not str(url).strip():
@@ -1104,18 +1126,23 @@ async def ensure_public_image_url(
     if yandex_storage_configured():
         hosts.append(("yandex", _host_via_yandex))
         if settings.outsee_allow_public_image_hosts:
-            # Резервные публичные хосты только по явному разрешению владельца
             hosts.extend([
+                ("telegraph", _host_via_telegraph),
+                ("tmpfiles", _host_via_tmpfiles),
+                ("uguu", _host_via_uguu),
                 ("litterbox", _host_via_litterbox),
                 ("catbox", _host_via_catbox),
+                ("0x0", _host_via_0x0),
             ])
         logger.info("outsee_api.frame: upload host=yandex ({} bytes)", len(raw))
     elif settings.outsee_allow_public_image_hosts:
-        logger.info("outsee_api.frame: Yandex S3 не настроен, публичные хосты разрешены (litterbox/catbox/uguu/0x0, {} bytes)", len(raw))
+        logger.info("outsee_api.frame: Yandex S3 не настроен, публичные хосты разрешены (telegraph/tmpfiles/uguu/litterbox/catbox/0x0, {} bytes)", len(raw))
         hosts.extend([
+            ("telegraph", _host_via_telegraph),
+            ("tmpfiles", _host_via_tmpfiles),
+            ("uguu", _host_via_uguu),
             ("litterbox", _host_via_litterbox),
             ("catbox", _host_via_catbox),
-            ("uguu", _host_via_uguu),
             ("0x0", _host_via_0x0),
         ])
     else:
@@ -1687,7 +1714,6 @@ async def generate_image_http(
     page: Any = None,
     **kwargs: Any,
 ) -> GenerationResult:
-    """Совместимость с OutseeBot._try_http_image(page, …) — page игнорируется."""
     del page
     prompt = kwargs.pop("prompt")
     out_path = kwargs.pop("out_path")

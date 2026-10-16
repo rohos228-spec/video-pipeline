@@ -34,7 +34,6 @@ def _env_mb(name: str, default_mb: float) -> int:
 
 
 def sink_limits() -> dict[str, int | str]:
-    """Лимиты файловых логов монитора (A03), переопределяются окружением."""
     days = max(1, disk_guard._env_int("MONITOR_LOG_RETENTION_DAYS", 3))
     return {
         "rotation_bytes": max(disk_guard.MB, _env_mb("MONITOR_LOG_ROTATION_MB", 20)),
@@ -46,7 +45,6 @@ def sink_limits() -> dict[str, int | str]:
 
 
 def enforce_monitor_cap(monitor_dir: Path | None = None) -> int:
-    """Суммарный потолок ``data/monitor``: старые файлы удаляются первыми."""
     base = monitor_dir or get_monitor_dir()
     lim = sink_limits()
     res = disk_guard.enforce_total_cap(
@@ -64,7 +62,6 @@ def _ensure_dir(p: Path) -> Path:
 
 
 def remove_sinks() -> None:
-    """Снять файловые приёмники loguru, созданные ``init`` (повторный init не плодит дубли)."""
     global _sink_id
     for sid in _sink_ids:
         try:
@@ -76,7 +73,6 @@ def remove_sinks() -> None:
 
 
 def init(monitor_dir: Path | None = None) -> Path:
-    """Инициализирует лог-систему. Возвращает путь к monitor_dir."""
     global _monitor_dir, _sink_id
 
     if monitor_dir is None:
@@ -87,11 +83,10 @@ def init(monitor_dir: Path | None = None) -> Path:
     _ensure_dir(monitor_dir / "events")
 
     remove_sinks()
-    install_log_redaction()  # A16: глобальный фильтр секретов для всех приёмников loguru
+    install_log_redaction()
 
     lim = sink_limits()
     rotation = f"{int(lim['rotation_bytes']) // disk_guard.MB} MB"
-    # DEBUG при нехватке места отключается: самый объёмный источник записи.
     level = "DEBUG" if disk_guard.debug_allowed(monitor_dir) else "INFO"
 
     _sink_id = logger.add(
@@ -104,7 +99,7 @@ def init(monitor_dir: Path | None = None) -> Path:
         ),
         level=level,
         enqueue=True,
-        diagnose=False,  # A16: diagnose печатает значения локальных переменных (секреты)
+        diagnose=False,
     )
     _sink_ids.append(_sink_id)
 
@@ -124,7 +119,7 @@ def init(monitor_dir: Path | None = None) -> Path:
         _open_events_locked(force=True)
     try:
         enforce_monitor_cap(monitor_dir)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     logger.info("monitor log_sink initialized → {}", monitor_dir)
@@ -132,7 +127,6 @@ def init(monitor_dir: Path | None = None) -> Path:
 
 
 def _open_events_locked(*, force: bool = False) -> None:
-    """Открыть events_<сегодня>.jsonl; смена суток и превышение размера роллят файл."""
     global _events_file, _events_day, _last_cap_check
     base = _monitor_dir or Path("data/monitor")
     today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
@@ -154,14 +148,14 @@ def _open_events_locked(*, force: bool = False) -> None:
     elif _events_file is not None:
         _close_events_locked()
     path.parent.mkdir(parents=True, exist_ok=True)
-    _events_file = open(path, "a", encoding="utf-8")  # noqa: SIM115
+    _events_file = open(path, "a", encoding="utf-8")
     _events_day = today
     now = time.monotonic()
     if now - _last_cap_check > 300:
         _last_cap_check = now
         try:
             enforce_monitor_cap(base)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 
@@ -170,7 +164,7 @@ def _close_events_locked() -> None:
     if _events_file is not None:
         try:
             _events_file.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         _events_file = None
 
@@ -219,7 +213,7 @@ def emit_event(
                 _open_events_locked()
                 _events_file.write(line)
                 _events_file.flush()
-            except OSError as exc:  # диск полон: событие теряем, процесс не роняем
+            except OSError as exc:
                 logger.warning("monitor log_sink: не удалось записать событие: {}", exc)
 
     logger.debug("monitor event: {}", event_type)

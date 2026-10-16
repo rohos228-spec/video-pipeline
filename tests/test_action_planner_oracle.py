@@ -1,11 +1,3 @@
-"""Все случаи фикстуры оценки через настоящий планировщик с «идеальной» моделью-заглушкой.
-
-Заглушка отвечает ровно тем, что ждёт фикстура (шаги, вопрос или отказ). Проверяется не модель,
-а всё вокруг неё: каталог показывает нужные действия, строгая проверка принимает ожидаемые
-параметры на реалистичном сиде, защита от лишнего их не режет, загрузки и неоднозначный шот
-превращаются в вопросы, а оценка (scripts/eval_action_planner.py) засчитывает результат.
-Так видно, что ожидания фикстуры согласованы со схемами действий и с сидом.
-"""
 from __future__ import annotations
 
 import json
@@ -16,7 +8,7 @@ from app.services import prompt_library
 from app.services.action_layer import planner
 from app.services.action_layer.spec import ensure_builtin_actions, registry
 from app.settings import settings
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 from tests.test_action_layer_planner import reply, res
 from tests.test_action_planner_eval_script import script
 from tests.test_action_planner_seed_context import CASES, load_seed
@@ -26,7 +18,6 @@ OP = "web_operator:oracle"
 
 
 def dummy(sch: dict):
-    """Минимальное допустимое значение по схеме (для обязательных полей, которых нет в фикстуре)."""
     if "enum" in sch:
         return sch["enum"][0]
     typ = sch.get("type")
@@ -48,7 +39,6 @@ def dummy(sch: dict):
 
 
 def complete(value, sch: dict):
-    """Дополняет значение обязательными полями схемы (рекурсивно), заданное не меняет."""
     if isinstance(value, dict) and sch.get("type") == "object":
         props = sch.get("properties") or {}
         out = {k: complete(v, props.get(k, {})) for k, v in value.items()}
@@ -62,7 +52,6 @@ def complete(value, sch: dict):
 
 
 class Const:
-    """Заглушка модели: на любой запрос (в том числе повторный) один и тот же ответ."""
 
     def __init__(self, result) -> None:
         self.result = result
@@ -89,7 +78,6 @@ def oracle_reply(case: dict, variables: dict) -> dict:
     return reply(steps, expl="Делаю.")
 
 
-# параметры, которые сервер подставляет сам: оракул их не даёт (проверяем заодно подстановку)
 _FILLED_BY_SERVER = {
     "image_generator": ("montage.generate_scene_images", "montage.improve_scene", "montage.apply_queue"),
     "image_resolution": ("montage.generate_scene_images", "montage.improve_scene", "montage.apply_queue"),
@@ -97,14 +85,13 @@ _FILLED_BY_SERVER = {
 
 
 @pytest_asyncio.fixture
-async def oracle_env(env, tmp_path, monkeypatch):  # noqa: F811
+async def oracle_env(env, tmp_path, monkeypatch):
     ensure_builtin_actions()
     monkeypatch.setattr(prompt_library, "PROMPTS_ROOT", prompt_library.PROMPTS_ROOT)
     monkeypatch.setattr(settings, "vibecode_api_key", "vk-test-key")
     monkeypatch.setattr(settings, "vibecode_base_url", "https://vibecode.moe/v1")
     monkeypatch.setattr(settings, "action_layer_planner_max_catalog", 24)
     monkeypatch.setattr(settings, "action_layer_planner_calls_per_hour", 10000)
-    # каждый вызов резервирует оценку в локальном бюджете: 250 вызовов упираются в потолок проекта (10 USD)
     monkeypatch.setattr(settings, "spend_project_cap_usd", 1000.0)
     monkeypatch.setattr(settings, "spend_daily_cap_usd", 1000.0)
     await load_seed().seed_realistic(project_id=PID, factory=env.factory, prompts_dir=tmp_path / "prompts")
@@ -135,13 +122,12 @@ async def test_every_fixture_case_is_scored_ok_for_the_expected_answer(oracle_en
 
 
 async def test_concurrent_requests_share_the_local_database_without_errors(oracle_env) -> None:
-    """Как в `eval_action_planner.py --concurrency 4`: журнал и бюджет пишутся из нескольких запросов сразу."""
     m = script()
     variables = load_seed().expected_vars(PID)
     plans = [c for c in CASES if c["outcome"] == "plan" and not (c.get("context") or {}).get("attachments")][:48]
     replies = {c["text"]: res(oracle_reply(c, variables)) for c in plans}
 
-    class ByText:  # ответ выбирается по тексту запроса, поэтому порядок завершения не важен
+    class ByText:
         async def __call__(self, **kw):
             user = json.loads(kw["body"]["messages"][1]["content"])["user_request"]
             return replies[user]
@@ -152,7 +138,7 @@ async def test_concurrent_requests_share_the_local_database_without_errors(oracl
         try:
             out = await planner.plan_from_text(case["text"], operator=OP, project_id=PID)
             return {"id": case["id"], "ok": bool(out.reply.steps), "est_cost_usd": 0.0}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {"id": case["id"], "ok": False, "error": f"{type(exc).__name__}: {exc}", "est_cost_usd": 0.0}
 
     rows = await m.run_cases(plans, one, concurrency=4, budget=m.SpendBudget(10.0))

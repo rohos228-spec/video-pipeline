@@ -1,4 +1,3 @@
-"""Фразы ленты для действий оператора: у каждой изменяющей ручки есть своя русская фраза (закон полноты B01)."""
 from __future__ import annotations
 
 import re
@@ -13,7 +12,7 @@ def _templates() -> list[tuple[str, str]]:
     from app.web.api import create_app
     out = set()
     for path, item in create_app().openapi()["paths"].items():
-        if path.startswith("/api/") and path != "/api/{rest}":  # общий обработчик 404 не кнопка
+        if path.startswith("/api/") and path != "/api/{rest}":
             for method in item:
                 if method.upper() in MUTATING:
                     out.add((method.upper(), path))

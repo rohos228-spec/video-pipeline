@@ -1,10 +1,3 @@
-"""Анализ референсных изображений → запись стиля в формате агента + категории.
-
-Поток: пачки изображений (vision, до 8 шт за вызов) → заметки по общим
-критериям → синтез ОДНОЙ записи стиля (name/desc/category/prompt_core в
-формате GEN_ASSISTANT: EN-ядро + RU + «Не …» негативы) → группировка
-нескольких стилей в категории по общим критериям.
-"""
 
 from __future__ import annotations
 
@@ -17,7 +10,7 @@ from typing import Any
 from loguru import logger
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-BATCH_SIZE = 8  # лимит vision-входа gpt_api: до 8 изображений / 4MB каждое
+BATCH_SIZE = 8
 MAX_IMAGES = 64
 
 _NOTES_SYSTEM = """Ты — аналитик визуальных стилей для генерации изображений.
@@ -101,7 +94,6 @@ _CATEGORIES_SYSTEM = """Ты — редактор библиотеки стил�
 
 
 def parse_json_object(raw: str) -> dict[str, Any] | None:
-    """Первый сбалансированный {...} из ответа LLM → dict (или None)."""
     text = (raw or "").strip()
     m = re.search(r"\{[\s\S]*\}", text)
     if not m:
@@ -122,7 +114,6 @@ def _gpt_host_dead(err: str) -> bool:
 
 
 def collect_image_paths(paths: list[str | Path]) -> list[Path]:
-    """Валидация: существуют, картинки, не больше MAX_IMAGES."""
     out: list[Path] = []
     for p in paths:
         fp = Path(p)
@@ -143,7 +134,6 @@ def batch_paths(paths: list[Path], size: int = BATCH_SIZE) -> list[list[Path]]:
 
 
 def _normalize_entry(data: dict[str, Any], *, name_hint: str | None) -> dict[str, str]:
-    """Запись стиля в формате фронтовой библиотеки (GenStyleDef-подобной)."""
     name = str(data.get("name") or name_hint or "Новый стиль").strip()
     return {
         "name": name,
@@ -158,13 +148,11 @@ async def analyze_style_images(
     *,
     name_hint: str | None = None,
 ) -> dict[str, Any]:
-    """Изображения → запись стиля {name, desc, category, prompt_core} + сырые заметки."""
     images = collect_image_paths(paths)
     from app.services.gpt_client import get_gpt_client
 
     client = get_gpt_client()
 
-    # 1) Пачки → заметки по общим критериям
     notes: list[dict[str, Any]] = []
     for i, batch in enumerate(batch_paths(images)):
         raw = await client.ask_with_files(
@@ -182,7 +170,6 @@ async def analyze_style_images(
     if not notes:
         raise ValueError("LLM не смогла описать ни одной пачки — попробуйте меньше изображений")
 
-    # 2) Синтез одной записи стиля
     synth_user = json.dumps(notes, ensure_ascii=False, indent=2)
     if name_hint:
         synth_user += f"\n\nПодсказка названия от пользователя: {name_hint}"
@@ -200,17 +187,12 @@ async def analyze_style_images(
 
 
 def strip_markdown_fences(text: str) -> str:
-    """Убирает ```-обёртки: агент должен быть сплошным текстом."""
     out = re.sub(r"^\s*```[a-zA-Z]*\s*\n?", "", (text or "").strip())
     out = re.sub(r"\n?```\s*$", "", out)
     return out.replace("```", "").strip()
 
 
 def fit_agent_text(text: str) -> tuple[str, str | None]:
-    """Агент должен влезать и в 8000 знаков, и в 8000 байт UTF-8.
-
-    Режем по абзацам с конца: лучше короткий рабочий агент, чем обрубок фразы.
-    """
     out = strip_markdown_fences(text)
     out = re.sub(r"[ \t]+", " ", out)
     out = re.sub(r"\n{3,}", "\n\n", out)
@@ -255,7 +237,6 @@ _STRONG_VISUAL_RE = re.compile(
 
 
 def is_topic_clause(clause: str) -> bool:
-    """Предмет/сюжет референса, а не визуальный приём."""
     c = (clause or "").strip()
     if len(c) < 6:
         return False
@@ -267,7 +248,6 @@ def is_topic_clause(clause: str) -> bool:
 
 
 def scrub_style_topic(text: str) -> str:
-    """Выкинуть из ядра стиля тему референсов — оставить только визуал."""
     kept = [c for c in _style_clauses(text) if c and not is_topic_clause(c)]
     return ". ".join(kept).strip()
 
@@ -285,7 +265,6 @@ def _scrub_agent_core_block(agent: str) -> str:
 
 
 def parse_agent_reply(raw: str, *, name_hint: str | None = None) -> dict[str, str]:
-    """Ответ вида NAME/DESC/CATEGORY/AGENT → запись стиля."""
     text = strip_markdown_fences(raw)
     if not text:
         raise ValueError("LLM вернула пустой ответ")
@@ -297,7 +276,6 @@ def parse_agent_reply(raw: str, *, name_hint: str | None = None) -> dict[str, st
     m_agent = re.search(r"^AGENT\s*:\s*\n?", text, re.MULTILINE | re.IGNORECASE)
     agent = text[m_agent.end() :].strip() if m_agent else ""
     if not agent:
-        # Ответ без разметки полей — считаем весь текст агентом.
         agent = text
     agent, warning = fit_agent_text(agent)
     if len(agent) < 200:
@@ -318,7 +296,6 @@ async def build_style_agent(
     user_request: str = "",
     name_hint: str | None = None,
 ) -> dict[str, Any]:
-    """Референсы (+ пожелание пользователя) → готовый текст агента стиля."""
     images = collect_image_paths(paths)
     from app.services.gpt_client import get_gpt_client
 
@@ -335,7 +312,7 @@ async def build_style_agent(
                 timeout=240,
                 max_retries=1,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             last_err = str(e)
             logger.warning("build_style_agent: пачка {} — GPT недоступен ({})", i + 1, e)
             continue
@@ -357,7 +334,7 @@ async def build_style_agent(
             if note:
                 notes.append(note)
                 logger.info("build_style_agent: заметки с первой картинки после сбоя пачки")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             last_err = str(e)
             logger.warning("build_style_agent: первая картинка тоже недоступна ({})", e)
     if not notes:
@@ -376,7 +353,7 @@ async def build_style_agent(
             user, [], system=_AGENT_SYSTEM, timeout=300, max_retries=1
         )
         entry = parse_agent_reply(raw, name_hint=name_hint)
-    except Exception as e:  # noqa: BLE001 — шлюз часто рвёт второй вызов
+    except Exception as e:
         logger.warning("build_style_agent: второй вызов недоступен ({}) — агент не записан", e)
         raise ValueError(f"GPT не собрал агента ({e}) — агент не записан") from e
     logger.info(
@@ -396,7 +373,6 @@ async def build_style_agent(
 
 
 async def categorize_styles(entries: list[dict[str, Any]]) -> dict[str, Any]:
-    """Список записей стилей → категории по общим критериям."""
     if not entries:
         raise ValueError("Пустой список стилей")
     from app.services.gpt_client import get_gpt_client

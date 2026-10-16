@@ -1,5 +1,3 @@
-"""Загрузка файлов через ctx.call(files=...): лимиты размера и типа, безопасность пути,
-реальные эндпоинты загрузки на временной БД. Сеть и платные вызовы не используются."""
 from __future__ import annotations
 
 import base64
@@ -16,7 +14,7 @@ from app.services.action_layer import executor
 from app.services.action_layer.context import (
     ActionContext, FileUpload, UploadRejected, WriteNotAllowed)
 from app.services.action_layer.spec import ActionRegistry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 MP3 = b"ID3" + bytes(400)
@@ -31,7 +29,6 @@ def _wave3_registered():
     ensure_builtin_actions()
 
 
-# --- FileUpload: размер, тип, содержимое ----------------------------------------------
 
 def test_build_accepts_valid_and_sanitizes_name() -> None:
     up = FileUpload.build("voice", "../../my voice?.MP3", MP3)
@@ -43,7 +40,7 @@ def test_build_rejects_type_size_empty_and_wrong_content(monkeypatch) -> None:
     with pytest.raises(UploadRejected, match="не разрешён"):
         FileUpload.build("voice", "a.exe", MP3)
     with pytest.raises(UploadRejected, match="не разрешён"):
-        FileUpload.build("scene_image", "a.jpg", PNG)        # слот сцены принимает только png
+        FileUpload.build("scene_image", "a.jpg", PNG)
     with pytest.raises(UploadRejected, match="пустой"):
         FileUpload.build("voice", "a.mp3", b"")
     with pytest.raises(UploadRejected, match="не похоже"):
@@ -72,7 +69,6 @@ def test_base64_source_limits() -> None:
         c.source_to_upload("voice", {})
 
 
-# --- путь на сервере: только внутри DATA_DIR ---------------------------------------------
 
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
@@ -142,7 +138,6 @@ def test_path_size_limit(data_dir, monkeypatch) -> None:
         FileUpload.check_data_path("voice", str(f))
 
 
-# --- ctx.call(files=...) --------------------------------------------------------------
 
 def _echo_app() -> FastAPI:
     app = FastAPI()
@@ -204,7 +199,6 @@ async def test_ctx_call_total_size_limit(monkeypatch) -> None:
         await ctx.call("POST", "/echo", files={"file": a, "second": b})
 
 
-# --- каталог: флаги и предусловия ----------------------------------------------------------
 
 def test_upload_actions_flags() -> None:
     from app.services.action_layer.spec import registry
@@ -215,11 +209,10 @@ def test_upload_actions_flags() -> None:
         assert spec.reversible is False and spec.destructive_effects is not None, aid
         assert any(p.id == "upload_source" for p in spec.preconditions), aid
     ref = registry.get("montage.upload_ref")
-    assert ref.risk == "local_safe" and ref.idempotent is False   # новый файл, прежние не трогает
+    assert ref.risk == "local_safe" and ref.idempotent is False
     assert registry.get("node.clear_check_agent").destructive
 
 
-# --- реальные эндпоинты загрузки --------------------------------------------------------------
 
 async def _setup(env, frames=2, meta=None) -> tuple[int, object]:
     pid = await env.add_project(frames=frames)
@@ -271,7 +264,7 @@ async def test_upload_voice_overwrites_and_reports_digest(env) -> None:
     _r, view = await _plan(env, [{"action_id": "montage.upload_voice",
                                   "params": {"project_id": pid, "source_path": src2}}])
     assert view["status"] == "succeeded"
-    assert (ddir / "audio" / "voice_full.mp3").read_bytes() == second   # прежний перезаписан
+    assert (ddir / "audio" / "voice_full.mp3").read_bytes() == second
 
 
 async def test_upload_music_from_base64(env) -> None:
@@ -297,9 +290,9 @@ async def test_upload_previews_refuse_bad_sources(env, tmp_path_factory) -> None
         {"source_path": fake},
         {"source_path": "../../etc/passwd"},
         {"data_base64": "!!!", "filename": "a.mp3"},
-        {"data_base64": base64.b64encode(MP3).decode()},                    # без имени
+        {"data_base64": base64.b64encode(MP3).decode()},
         {"data_base64": base64.b64encode(MP3).decode(), "filename": "a.exe"},
-        {"source_path": bad_type, "data_base64": "QQ==", "filename": "a.mp3"},   # два источника
+        {"source_path": bad_type, "data_base64": "QQ==", "filename": "a.mp3"},
         {},
     ]
     for extra in cases:
@@ -329,7 +322,7 @@ async def test_upload_image_archives_previous_and_refuses_missing_frame(env) -> 
     now = list((ddir / "scenes").glob("frame_001_*.png"))
     assert len(now) == 1 and now[0].read_bytes() == PNG + b"2"
     archived = [p for p in ddir.rglob("*frame_001_*.png") if "old" in p.parts]
-    assert len(archived) == 1                                         # прежняя картинка в old/
+    assert len(archived) == 1
     r, _ = await _plan(env, [{"action_id": "montage.upload_image", "params": {
         "project_id": pid, "frame_number": 99, "source_path": src}}], run=False)
     assert r.status_code == 422 and "frame_numbers_exist" in str(r.json())
@@ -361,7 +354,7 @@ async def test_upload_video_and_ref(env) -> None:
     nameless = await env.client.post(f"{BASE}/plans/preview", json={"steps": [{
         "action_id": "montage.upload_ref", "params": {
             "project_id": pid, "frame_number": 1, "source_path": ref_src}}]})
-    assert nameless.status_code == 422        # имя обязательно по схеме
+    assert nameless.status_code == 422
 
 
 CANVAS = {"canvas_graph": {"nodes": [{"id": NODE, "type": "excel_gpt", "data": {}}],
@@ -385,7 +378,6 @@ async def test_node_upload_file_and_check_agent(env) -> None:
                                   "params": {"project_id": pid, "node_key": NODE}}])
     assert view["status"] == "succeeded", view
     assert not (ddir / "excel_gpt_uploads" / NODE / "agent.md").exists()
-    # ноды на канвасе нет -> предусловие, а не создание папки
     r, _ = await _plan(env, [{"action_id": "node.upload_file", "params": {
         "project_id": pid, "node_key": "n_ghost", "source_path": txt}}], run=False)
     assert r.status_code == 422 and "node_exists" in str(r.json())
@@ -394,7 +386,6 @@ async def test_node_upload_file_and_check_agent(env) -> None:
     assert r.status_code == 422 and "node_key_safe" in str(r.json())
 
 
-# --- исполнители на заглушке ----------------------------------------------------------------------
 
 class RecCtx:
     def __init__(self, responses=None):

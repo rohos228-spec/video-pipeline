@@ -1,8 +1,3 @@
-"""D5/C-13: решение по запросу подтверждения (HITL) идёт в проектную базу, а не в master.
-
-Без сети и без подмены сессии: настоящие master и project.db во временной папке ВНЕ репозитория.
-Класс доказательства: U (тесты на настоящих базах во временной папке).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +22,6 @@ from tests.w6_1_support import Env
 
 @pytest.fixture
 async def stores(monkeypatch):
-    """Настоящая master-база и папка данных во временной папке; приложение без подмены get_session."""
     env = await Env().create()
     monkeypatch.setattr(app_db, "SessionLocal", env.maker)
     monkeypatch.setattr(web_deps, "SessionLocal", env.maker)
@@ -85,14 +79,13 @@ def _req(project_id: int, rid: int, kind=HITLKind.approve_script, **kw) -> HITLR
 async def test_decision_of_project_request_lands_in_project_db_not_404(stores):
     p = await _project(stores, "d5-a")
     await _local_add(p, _req(p.id, 7))
-    # в master этого запроса нет: раньше здесь был 404
     r = await _post(7, {"decision": "approve"})
     assert r.status_code == 200, r.text
     assert r.json()["decision"] == "approved"
     row = await _local_get(p, HITLRequest, 7)
     assert row.decision is HITLDecision.approved and row.decided_at is not None
     async with stores.maker() as db:
-        assert await db.get(HITLRequest, 7) is None  # master не получил чужой записи
+        assert await db.get(HITLRequest, 7) is None
 
 
 async def test_author_of_decision_is_recorded(stores):
@@ -130,18 +123,18 @@ async def test_two_simultaneous_decisions_write_only_one(stores):
 async def test_same_number_in_two_projects_is_ambiguous_until_project_is_named(stores):
     pa = await _project(stores, "d5-coll-a")
     pb = await _project(stores, "d5-coll-b")
-    await _master_add(stores, _req(pa.id, 11))        # старый запрос проекта A лежит в master
-    await _local_add(pb, _req(pb.id, 11))             # у проекта B запрос с тем же номером в его базе
+    await _master_add(stores, _req(pa.id, 11))
+    await _local_add(pb, _req(pb.id, 11))
     r = await _post(11, {"decision": "approve"})
     assert r.status_code == 409 and r.json()["detail"] == hl.AMBIGUOUS_RU
     assert (await _local_get(pb, HITLRequest, 11)).decision is HITLDecision.pending
     async with stores.maker() as db:
-        assert (await db.get(HITLRequest, 11)).decision is HITLDecision.pending  # ничего не тронуто
+        assert (await db.get(HITLRequest, 11)).decision is HITLDecision.pending
     rb = await _post(11, {"decision": "approve", "project_id": pb.id})
     assert rb.status_code == 200
     assert (await _local_get(pb, HITLRequest, 11)).decision is HITLDecision.approved
     async with stores.maker() as db:
-        assert (await db.get(HITLRequest, 11)).decision is HITLDecision.pending  # чужой master не затронут
+        assert (await db.get(HITLRequest, 11)).decision is HITLDecision.pending
     ra = await _post(11, {"decision": "reject"}, project_id=pa.id)
     assert ra.status_code == 200
     async with stores.maker() as db:
@@ -184,7 +177,7 @@ async def test_side_effects_are_written_to_project_db(stores):
     assert r.status_code == 200, r.text
     assert (await _local_get(p, Frame, 1)).status is FrameStatus.image_approved
     async with stores.maker() as db:
-        assert await db.get(Frame, 1) is None  # в master кадра нет и не появилось
+        assert await db.get(Frame, 1) is None
 
 
 async def test_pending_list_collects_project_and_master_requests(stores):
@@ -213,10 +206,8 @@ async def test_old_telegram_button_format_still_answers_for_project_request(stor
     await bot.on_hitl_callback(cb)
     assert answers and answers[-1].startswith("Решение"), answers
     assert (await _local_get(p, HITLRequest, 71)).decision is HITLDecision.approved
-    # повторное нажатие старой кнопки: понятный отказ, второй записи нет
     await bot.on_hitl_callback(cb)
     assert "обработан" in answers[-1].lower()
-    # номер запроса, которого нет нигде
     cb2 = SimpleNamespace(from_user=SimpleNamespace(id=5), data="hitl:999:approve", message=None, bot=None, answer=answer)
     await bot.on_hitl_callback(cb2)
     assert answers[-1] == "HITL не найден"

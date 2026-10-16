@@ -110,9 +110,6 @@ def test_resolve_operator_upload_replaces_edge_xlsx(
     _write_xlsx(upload, "UPLOADED")
     # Даже если takeFromEdges=True в конфиге — upload Excel вытесняет стрелку.
     p.meta["excel_gpt_nodes"]["n_gpt"]["takeFromEdges"] = True
-    # Для role=assist дефолтный outputMode - project_file (DB SoT): xlsx со входа
-    # намеренно убирается целиком (5a9ac471 «project_file = только DB, без project.xlsx»;
-    # см. отдельный тест ниже). Вытеснение стрелки загрузкой проверяем в режиме text.
     p.meta["excel_gpt_nodes"]["n_gpt"]["outputMode"] = "text"
     res = resolve_operator(p, "n_gpt")
     names = [f["name"] for f in res["files"] if f.get("ok")]
@@ -127,7 +124,6 @@ def test_resolve_operator_upload_replaces_edge_xlsx(
 def test_resolve_operator_project_file_drops_xlsx_inputs(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """project_file = DB SoT (5a9ac471): ни загруженный, ни стрелочный xlsx во вход не идёт."""
     p = _project(tmp_path, monkeypatch)
     upload = upload_file_path(p, "n_gpt", "new.xlsx")
     _write_xlsx(upload, "UPLOADED")

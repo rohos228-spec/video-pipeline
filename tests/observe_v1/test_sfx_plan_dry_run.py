@@ -1,15 +1,3 @@
-"""Dry run of the sfx_plan retry path: observation -> diagnosis -> decision -> action -> verification.
-
-No network, no provider, no paid call. What is REAL: plan_sfx.run, sfx_plan.plan_sfx_events,
-ai_result_io.text_job, the observe_model wrapper (request identity, budget charge, first-body
-check), observe_attempt, the journal and outbox delivery, the Diagnoser, the DecisionSupervisor
-and its policy, ActionSupervisor.recover_node, the claim, the reconcile verification and the
-recovery cap. What is SCRIPTED: the model boundary only (the low-level POST returns canned
-replies) and the Decision model (canned proposals). What is SEEDED by hand: the native
-step-failure counter that proves "native retries exhausted" (a runtime policy outside the
-observation scope) and the master/project runtime copy, which uses the application's own
-copy functions on the test databases.
-"""
 import json
 import unittest
 from contextlib import ExitStack, asynccontextmanager
@@ -49,7 +37,6 @@ def plan_reply(**overrides):
 
 @observe_model
 async def fake_http_post(*, url, headers, body, timeout, use_model):
-    """The model boundary: the real observe_model wrapper records and gates every call."""
     SCRIPT["bodies"].append(body)
     if not SCRIPT["replies"]:
         raise AssertionError("unscripted model request: the dry run allows exactly the scripted ones")
@@ -88,7 +75,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         self.stack.enter_context(patch.object(decision_config, "runtime_config", return_value=cfg))
         self.observer = observation._observer
 
-        # Business database (project.db) next to the master database, like production.
         self.engine = create_async_engine(f"sqlite+aiosqlite:///{self.data / 'project.db'}")
         self.business = async_sessionmaker(self.engine, expire_on_commit=False)
         async with self.engine.begin() as connection:
@@ -142,7 +128,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         finally:
             await base_tests.DurableActions.asyncTearDown(self)
 
-    # ---- runtime bookkeeping (the application's own copy functions) --------------------
     async def copy_runtime(self, session, project):
         from app.project_db import _apply_runtime_fields, _copy_noderuns_between_sessions
         async with self.sessions() as master:
@@ -177,9 +162,7 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             return (await session.scalars(select(Incident).where(Incident.execution_id == EXECUTION))).all()
 
-    # ---- the worker, as the runtime drives it -------------------------------------------
     async def worker(self, replies, *, start=True):
-        """One native attempt of the original step under observe_attempt (what advance does)."""
         SCRIPT["replies"] = list(replies)
         async with self.business() as session:
             project = await session.get(Project, 7)
@@ -198,7 +181,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
             await session.commit()
 
     async def exhaust_native_retries(self, error="native step retries exhausted"):
-        """The runtime's step-failure policy after 9 failed native attempts (outside observation)."""
         async with self.business() as session:
             project = await session.get(Project, 7)
             node = await session.scalar(select(NodeRun).where(NodeRun.node_key == "n1"))
@@ -222,7 +204,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         return found[0]
 
     def decision_model(self, actions):
-        """The Decision model: canned proposals, validated by the real policy."""
         queue = list(actions)
 
         async def reply(**kwargs):
@@ -235,9 +216,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
             return GptChatResult(text=json.dumps(proposal), model="synthetic", raw={"status": "completed"})
         return patch("app.services.gpt_api.chat", side_effect=reply)
 
-    # ======================================================================================
-    # observation + diagnosis
-    # ======================================================================================
     async def test_unparseable_replies_are_typed_invalid_json_and_request_bound(self):
         error = await self.failed_attempt(["no json here", "still {not json"])
         self.assertEqual(type(error).__name__, "TextJobFailed")
@@ -277,7 +255,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(types & {"invalid_json", "missing_payload"})
 
     async def test_transport_failure_is_not_a_parse_failure(self):
-        # No scripted reply: the fake boundary raises, which is a transport-class error.
         with self.assertRaises(AssertionError):
             await self.worker([])
         self.assertEqual(await self.facts("parse_result"), [])
@@ -304,9 +281,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.facts("data_applied"), [])
         self.assertFalse((self.data / "sfx_plan.json").exists())
 
-    # ======================================================================================
-    # checkpoint reset
-    # ======================================================================================
     async def seed_invalid_checkpoint(self):
         from app.services.ai_result_io import save_ai_job_checkpoint
         async with self.business() as session:
@@ -363,9 +337,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("sfx_plan", project.meta["ai_jobs"])
                 session.info.pop("recovery_attempt_id")
 
-    # ======================================================================================
-    # managed verification gate
-    # ======================================================================================
     async def test_managed_pass_through_without_a_plan_is_held_not_verified(self):
         with patch.object(settings, "sfx_enabled", False):
             with self.assertRaisesRegex(RuntimeError, "verification not confirmed"):
@@ -388,24 +359,18 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
             await master.commit()
         await self.observer.reload()
         with patch.object(settings, "sfx_enabled", False):
-            await self.worker([])  # pass-through: journal only, no hold, no exception
+            await self.worker([])
         async with self.sessions() as session:
             self.assertFalse((await session.get(base_tests.ActionExecutionControl, EXECUTION)).held)
         self.assertTrue(callable(observe_sfx_plan_result))
 
-    # ======================================================================================
-    # the whole path
-    # ======================================================================================
     async def test_failed_attempt_to_decision_to_one_verified_retry(self):
         from app.services import decision_v1
-        # 1. observation: the original step fails twice with unusable replies.
         await self.failed_attempt(["no json here", "still {not json"])
         first_bodies = list(SCRIPT["bodies"])
         self.assertEqual(len(first_bodies), 2)
-        # 2. diagnosis: one typed, current, complete incident.
         incident = await self.typed_incident()
         self.assertEqual(incident.type, "invalid_json")
-        # 3. decision: read the contract, then ask for retry_same.
         loop = decision_v1.DecisionSupervisor(self.observer)
         await loop.configure(project_id=7, execution_id=EXECUTION, enabled=True,
                              initiator="dry-run", rationale="sfx_plan dry run decision")
@@ -421,7 +386,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
         with self.decision_model(["read_contract", "retry_same"]):
             await loop.step(record["decision_id"])
             await loop.step(record["decision_id"])
-        # 4. action: exactly one recovery ticket, queued for the ORIGINAL worker.
         async with self.sessions() as session:
             ticket = await session.scalar(select(RecoveryAction))
             self.assertEqual(ticket.status, "queued")
@@ -430,13 +394,11 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ticket.budget_state["recovery_limit"], 1)
             row = await session.get(decision_v1.DecisionRecord, record["decision_id"])
             self.assertEqual((row.status, row.action_id), ("waiting_worker", ticket.action_id))
-        # 5. the original worker runs the retry: the SAME first request, now a valid reply.
         await self.worker([plan_reply()], start=False)
         finish_job_tracking(7)
         second_bodies = SCRIPT["bodies"][len(first_bodies):]
         self.assertEqual(len(second_bodies), 1)
         self.assertEqual(second_bodies[0], first_bodies[0], "recovery's first request equals the source's")
-        # 6. verification of the attempt, from the journal.
         await self.sync()
         await self.deliver()
         await reconcile(self.observer)
@@ -453,8 +415,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
             project = await session.get(Project, 7)
             self.assertTrue(project.meta.get("sfx_plan"))
             self.assertEqual(project.status, ProjectStatus.sfx_plan_ready)
-        # 7. cap: the decision owner refuses a competing recovery, and the database refuses a
-        #    second ticket for the same node and execution; sfx_gen was never started.
         with self.assertRaisesRegex(ValueError, "decision owner"):
             await self.supervisor.recover_node(project_id=7, execution_id=EXECUTION,
                 incident_id=incident.incident_id, node_key="n1", idempotency_key="second-retry-0001",
@@ -488,7 +448,6 @@ class DryRun(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await session.scalar(select(RecoveryAction)))
 
     async def test_profile_retry_with_an_unapproved_overlay_is_refused_without_a_ticket(self):
-        # W5 D05: sfx_plan is profile compatible, so the capability no longer denies a profile retry; an unapproved overlay is still refused and no ticket is issued
         await self.failed_attempt(["no json here", "still {not json"])
         incident = await self.typed_incident()
         with self.assertRaisesRegex(ValueError, "execution grant|profile outside|unknown or incompatible"):

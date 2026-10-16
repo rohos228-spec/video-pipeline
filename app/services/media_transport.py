@@ -1,8 +1,3 @@
-"""Bounded HTTP boundary used by existing provider clients in managed mode.
-
-This is a client helper, not a proxy/worker. Production stays disabled. URLs
-come from a pinned explicit profile; fixture redirects are never followed.
-"""
 import asyncio
 import contextvars
 import os
@@ -19,7 +14,6 @@ ROUTES = {("POST", "/api/v1/jobs/createTask"): "generation_submit",
 
 
 async def json_request(method, path, *, payload=None, params=None, headers=None):
-    # headers (Authorization) go only to the wire: record_fact below receives body/params, never headers.
     job = current_job.get()
     category = ROUTES.get((method, path))
     if job is None or category is None:
@@ -87,7 +81,6 @@ async def download(job, url):
         return path
     except BaseException:
         await job.settle(request_id, "unknown")
-        # Partial evidence is preserved; it cannot pass as a final artifact.
         raise
 
 

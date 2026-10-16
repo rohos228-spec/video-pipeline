@@ -238,11 +238,6 @@ path: excel_gpt_uploads/n_check/project_fixed.xlsx
     )
     assert out.gate_status == "fail"
     assert out.analysis is not None
-    # Excel writeback отключён намеренно (bd038612 «Excel only Import/Export - DB is
-    # sole runtime SoT»; xlsx_text_writeback.writeback_project_xlsx бросает RuntimeError,
-    # см. test_xlsx_text_writeback). Устаревший XLSX_WRITEBACK из ответа модели игнорируется:
-    # отчёт проверки не падает, исходный xlsx не тронут, project_fixed.xlsx не создаётся.
-    # (rewrite_file в analysis - лишь заявление модели из отчёта; файла на диске нет.)
     fixed = tmp_path / "excel_gpt_uploads" / "n_check" / "project_fixed.xlsx"
     assert not fixed.exists()
     got = load_workbook(src)
@@ -272,7 +267,6 @@ async def test_stub_api_writes_check_report(tmp_path: Path, monkeypatch) -> None
     body = report.read_text(encoding="utf-8")
     assert "verdict:" in body
     assert "mode: report_only" in body
-    # W4-4 (C05): stub без ключа - не «pass» и не «fail», а явное «не проверено».
     assert out.gate_status == "not_checked"
     assert any(p.name == CHECK_REPORT_NAME for p in out.output_paths)
 

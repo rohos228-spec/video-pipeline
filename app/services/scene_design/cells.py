@@ -418,13 +418,6 @@ async def store_cells(
     chunk_size: int = _CHUNK,
     transactional: bool = False,
 ) -> dict[str, int]:
-    """Перезаписать ячейки агента.
-
-    По умолчанию — частями (короткие транзакции, коммит на чанк). ``transactional=True`` —
-    одной транзакцией: удаление старых ячеек и вставка новых лишь flush, коммит делает
-    вызывающий (вместе с фактом применения для журнала). Те же строки, тот же результат;
-    сбой между удалением и вставкой откатывает всё, а не оставляет агента без ячеек.
-    """
     await session.execute(
         delete(SceneDesignCell).where(
             SceneDesignCell.project_id == project.id,

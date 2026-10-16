@@ -84,12 +84,6 @@ def test_stop_backend_supports_wait_sec() -> None:
 
 
 def test_studio_cmd_heals_bom_before_powershell() -> None:
-    """PS 5.1 without BOM reads UTF-8 as CP1251: Д/— bytes become quotes.
-
-    STUDIO.cmd must restore the UTF-8 BOM locally before ``-File``.
-    Do not git reset origin/main and do not download studio.ps1 from GitHub:
-    that would wipe the PC branch (housepc/tompc/...).
-    """
     root = Path(__file__).resolve().parents[1]
     data = (root / "STUDIO.cmd").read_bytes()
     assert not data.startswith(UTF8_BOM), "UTF-8 BOM before @echo off breaks cmd.exe"
@@ -109,11 +103,6 @@ def test_studio_cmd_heals_bom_before_powershell() -> None:
 
 
 def test_studio_git_fetch_does_not_pipe_lastexitcode() -> None:
-    """PS 5.1: ``git fetch 2>&1 | ForEach-Object`` leaves $LASTEXITCODE null.
-
-    ``($null -ne 0)`` is True, so the first fetch with progress prints
-    ``git fetch не удался`` even when git exited 0. Retry is quiet -> success.
-    """
     root = Path(__file__).resolve().parents[1]
     text = (root / "scripts/studio.ps1").read_text(encoding="utf-8-sig")
     assert "function Invoke-StudioGitLogged" in text

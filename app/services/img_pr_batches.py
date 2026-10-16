@@ -24,7 +24,6 @@ _CHECKPOINT_NAME = "img_pr_checkpoint.json"
 
 
 def strip_img_pr_master_preamble(text: str) -> str:
-    """Мастер из чата часто начинается с «окей, давай агента» — это не инструкция."""
     raw = text or ""
     lines = raw.splitlines()
     for i, line in enumerate(lines):
@@ -249,7 +248,6 @@ _PROMPT_FIELD_KEYS = _SHOT1_PROMPT_KEYS + _SHOT2_PROMPT_KEYS
 
 _FRAME_UUID_RE = re.compile(r"^[a-fA-F0-9]{3,64}$")
 _PLACEHOLDER_PROMPT = frozenset({"", "…", "...", "—", "-"})
-# Запись в DB: короче — заглушка (портрет 1 строка / «…»), не сцена+STYLE.
 IMG_PR_MIN_WRITE_CHARS = 200
 
 
@@ -322,7 +320,6 @@ def filter_prompt_ops(ops: list[Any]) -> list[dict]:
 
 
 def writeable_img_pr_ops(ops: list[Any]) -> list[dict]:
-    """Ops, которые можно писать в DB: реальный uuid + полный промт."""
     kept: list[dict] = []
     for op in filter_prompt_ops(ops):
         fields = op.get("fields") or {}
@@ -338,7 +335,6 @@ def writeable_img_pr_ops(ops: list[Any]) -> list[dict]:
 
 
 def _read_json_string(text: str, start: int) -> tuple[str, int] | None:
-    """Прочитать JSON-строку начиная с start (символ сразу после открывающей \")."""
     if start < 0 or start > len(text):
         return None
     i = start

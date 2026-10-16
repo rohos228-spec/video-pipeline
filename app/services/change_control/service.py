@@ -1,11 +1,3 @@
-"""Предложение, применение, откат. Применяет только то, что одобрил человек.
-
-Одобрение живёт в слое действий (план с ``change.apply`` требует подтверждения
-оператора, привязанного к хэшу плана). Этот модуль не создаёт одобрений и не имеет
-пути записи для T0/T3. Порядок применения: проверки -> запись версии в журнал с CAS
-указателя -> запись значения через эндпоинты проекта -> чтение обратно и сверка ->
-при расхождении возврат прежнего значения и новая строка версии.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -41,7 +33,6 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _human(identity: str) -> None:
-    """Применять и откатывать может только человек (как при создании подтверждения)."""
     from app.services.action_layer import approval
     try:
         approval._check_operator(approval.OperatorIdentity(str(identity or "")))
@@ -50,7 +41,6 @@ def _human(identity: str) -> None:
                             http=403) from exc
 
 
-# --- представления -------------------------------------------------------------
 
 def proposal_view(row: cs.ChangeProposal, *, full: bool = True,
                   current_version: int | None = None) -> dict:
@@ -67,7 +57,6 @@ def proposal_view(row: cs.ChangeProposal, *, full: bool = True,
         "applied_version": row.applied_version, "shadow": row.shadow,
         "rejected_by": row.rejected_by or "", "reject_reason": row.reject_reason or "",
         "rejected_at": _iso(row.rejected_at),
-        # база устарела: цель уже менялась после предложения (интерфейс предлагает отклонить)
         "stale": bool(current_version is not None and row.tier in tiers.APPLICABLE_TIERS
                       and row.status in (cs.ST_PROPOSED, cs.ST_APPROVED)
                       and current_version != row.base_version),
@@ -94,7 +83,6 @@ def _proposal_digest(row_like: dict) -> str:
                                           "base_version", "candidate")})
 
 
-# --- журнал аудита --------------------------------------------------------------
 
 async def _record(event: str, *, actor: str, plan_id: str = "", action_id: str = "",
                   proposal_id: str = "", target: str = "", version: int | None = None,
@@ -107,7 +95,6 @@ async def _record(event: str, *, actor: str, plan_id: str = "", action_id: str =
         await s.commit()
 
 
-# --- чтение -----------------------------------------------------------------------
 
 async def _pointer(s, target: str) -> int:
     ptr = await s.get(cs.ConfigPointer, target)
@@ -153,7 +140,6 @@ async def list_proposals(*, project_id: int | None = None, status: str | None = 
 
 
 async def reject(proposal_id: str, reason: str, *, actor: str, plan_id: str = "") -> dict:
-    """Закрывает открытое предложение как отклонённое. Значений проекта не касается."""
     _human(actor)
     reason = (reason or "").strip()
     if not 3 <= len(reason) <= 500:
@@ -182,7 +168,6 @@ async def reject(proposal_id: str, reason: str, *, actor: str, plan_id: str = ""
 
 
 async def prompt_base(gateway: ProjectGateway, project_id: int, node_key: str) -> dict:
-    """Текущий базовый промпт ноды: то же разрешение, что у проверок T2."""
     nctx = await _load_node(gateway, project_id, node_key)
     if tiers.K_PROMPT_TEXT not in tiers.allowed_kinds(nctx.node_type):
         raise ChangeRefused("kind_not_allowed", f"{nctx.node_type!r} has no editable prompt")
@@ -204,7 +189,6 @@ async def list_versions(target: str, *, limit: int = 100) -> dict:
             "items": [version_view(r) for r in rows]}
 
 
-# --- предложение ----------------------------------------------------------------------
 
 async def _load_node(gateway: ProjectGateway, project_id: int, node_key: str):
     try:
@@ -217,7 +201,6 @@ async def _load_node(gateway: ProjectGateway, project_id: int, node_key: str):
 async def prepare_proposal(gateway: ProjectGateway | None, *, tier: str, kind: str,
                            rationale: str, candidate: dict, proposer: str,
                            project_id: int | None = None, node_key: str = "") -> dict:
-    """Вся проверка предложения без записи (используется и как предусловие плана)."""
     if tier not in tiers.TIERS:
         raise ChangeRefused("bad_tier", f"tier must be one of {list(tiers.TIERS)}")
     if kind not in tiers.KINDS_BY_TIER[tier]:
@@ -259,7 +242,6 @@ async def prepare_proposal(gateway: ProjectGateway | None, *, tier: str, kind: s
 async def propose(gateway: ProjectGateway | None, *, tier: str, kind: str, rationale: str,
                   candidate: dict, proposer: str, project_id: int | None = None,
                   node_key: str = "", plan_id: str = "") -> dict:
-    """Создаёт предложение. Ничего не применяет и не пишет в проект."""
     p = await prepare_proposal(gateway, tier=tier, kind=kind, rationale=rationale,
                                candidate=candidate, proposer=proposer, project_id=project_id,
                                node_key=node_key)
@@ -300,7 +282,6 @@ async def propose(gateway: ProjectGateway | None, *, tier: str, kind: str, ratio
 
 
 def _record_only_candidate(tier: str, candidate: dict):
-    """T0 и T3: текст для человека. Применять их нельзя нигде."""
     if tier == tiers.T0:
         if set(candidate) != {"text"} or not isinstance(candidate["text"], str) \
                 or not 1 <= len(candidate["text"]) <= 4000:
@@ -326,7 +307,6 @@ def _record_only_candidate(tier: str, candidate: dict):
     return cand, diff, target, status
 
 
-# --- применение --------------------------------------------------------------------------
 
 def _busy(state: dict) -> bool:
     from app.models import ProjectStatus
@@ -338,7 +318,6 @@ def _busy(state: dict) -> bool:
 
 
 async def _checks(gateway: ProjectGateway, proposal_id: str, expected_digest: str):
-    """Все проверки без записи. Возвращает (row, nctx, handler, live, current_version)."""
     async with cs.sessions()() as s:
         row = await s.get(cs.ChangeProposal, proposal_id)
         if row is None:
@@ -380,7 +359,6 @@ async def _checks(gateway: ProjectGateway, proposal_id: str, expected_digest: st
 
 
 async def check_apply(gateway: ProjectGateway, proposal_id: str, expected_digest: str) -> str | None:
-    """Для предусловия плана: причина отказа или None. Ничего не пишет."""
     try:
         await _checks(gateway, proposal_id, expected_digest)
     except ChangeRefused as exc:
@@ -390,7 +368,6 @@ async def check_apply(gateway: ProjectGateway, proposal_id: str, expected_digest
 
 async def _append_version(s, *, target: str, base: int, kind: str, content: dict,
                           project_id, node_key: str, proposal_id: str | None, by: str) -> int:
-    """Новая строка версии и CAS указателя base -> base+1 в транзакции вызывающего."""
     ptr = await s.get(cs.ConfigPointer, target)
     if (ptr.current_version if ptr else 0) != base:
         raise StaleBase()
@@ -412,7 +389,6 @@ async def _append_version(s, *, target: str, base: int, kind: str, content: dict
 
 
 async def _commit_versions(rows: list[dict]) -> list[int]:
-    """Несколько версий подряд в одной транзакции; конфликт = stale_base."""
     out: list[int] = []
     async with cs.sessions()() as s:
         try:
@@ -433,11 +409,10 @@ async def _set_proposal(proposal_id: str, **values: Any) -> None:
 
 
 async def _write_and_verify(gateway: ProjectGateway, handler, nctx, content: dict) -> str | None:
-    """Пишет значение и читает обратно. None = совпало, иначе причина."""
     try:
         await handler.write(gateway, nctx, content)
         state = await gateway.get(nctx.project_id)
-    except Exception as exc:  # noqa: BLE001 - любая ошибка записи = не подтверждено
+    except Exception as exc:
         return f"write failed: {type(exc).__name__}: {exc}"[:400]
     after = targets.with_state(nctx, **state)
     if handler.comparable(handler.live(after)) != handler.comparable(content):
@@ -447,7 +422,6 @@ async def _write_and_verify(gateway: ProjectGateway, handler, nctx, content: dic
 
 async def apply(gateway: ProjectGateway, proposal_id: str, expected_digest: str, *,
                 approved_by: str, plan_id: str = "") -> dict:
-    """Применяет одобренное человеком предложение T1/T2 (одобрение проверяет слой действий)."""
     _human(approved_by)
     async with cs.sessions()() as s:
         row0 = await s.get(cs.ChangeProposal, proposal_id)
@@ -515,7 +489,6 @@ async def apply(gateway: ProjectGateway, proposal_id: str, expected_digest: str,
 
 async def _auto_rollback(gateway, row, handler, nctx, live, applied_version, problem,
                          actor, plan_id) -> None:
-    """Проверка после записи не прошла: вернуть прежнее значение и зафиксировать это версией."""
     fresh = targets.with_state(nctx, **await _safe_state(gateway, nctx))
     restore_problem = await _write_and_verify(gateway, handler, fresh, live)
     if restore_problem is None:
@@ -543,11 +516,10 @@ async def _auto_rollback(gateway, row, handler, nctx, live, applied_version, pro
 async def _safe_state(gateway: ProjectGateway, nctx) -> dict:
     try:
         return await gateway.get(nctx.project_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return nctx.state
 
 
-# --- откат ---------------------------------------------------------------------------------
 
 async def _rollback_checks(gateway: ProjectGateway, target: str, expected_version: int):
     if not _TARGET_RE.match(target or ""):
@@ -583,7 +555,6 @@ async def check_rollback(gateway: ProjectGateway, target: str, expected_version:
 
 async def rollback(gateway: ProjectGateway, target: str, expected_version: int, *,
                    approved_by: str, reason: str = "", plan_id: str = "") -> dict:
-    """Возвращает прежнюю версию значения новой строкой версии. История не удаляется."""
     _human(approved_by)
     async with _lock(target):
         try:

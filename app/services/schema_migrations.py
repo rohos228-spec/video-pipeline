@@ -1,22 +1,3 @@
-"""Versioned migrations for the tables the orchestrator owns.
-
-Each database keeps a ``schema_migrations`` table (id, applied_at, checksum). Migrations run in id order,
-each in its own savepoint together with its bookkeeping row: a failing migration leaves no partial schema and
-no row, stops the run and is reported (``MigrationFailed``). Migrations are idempotent, so a database created
-before the runner existed (tables already there) is simply recorded; nothing is altered or dropped. The
-checksum is a fingerprint of the tables/triggers the migration owns; a recorded checksum that no longer
-matches is reported as drift (the model changed without a new migration) and never rewritten.
-Migrations 0007+ move the ad-hoc startup ``ALTER TABLE ... ADD COLUMN`` of older tables (projects, frames,
-frames_space) here, unchanged in result: the same columns, the same DDL, only recorded, checksummed and rolled
-back as a unit. Other legacy tables are not touched here.
-
-Backups (step A15). ``migrate_orchestrator_schema`` copies an existing file database BEFORE its first pending
-migration (sqlite online backup, safe under WAL), checks the copy (integrity, row counts, sha256 manifest) and
-keeps a separate copy of the journal tables (spend / observation / action-layer history). A failing migration
-still rolls back by itself; the report names the backup and the restore command. ``restore_backup`` puts a
-verified copy back (the replaced file is moved aside, never deleted); ``run_scheduled_backups`` and
-``scheduled_backup_loop`` make periodic copies. The command line is ``scripts/backup_db.py``.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -135,8 +116,6 @@ async def _action_layer(conn) -> None:
     await ensure_action_layer_schema(conn)
 
 
-# Tables added to the action layer after 0004 was released (W5): they belong to 0016, so the 0004 fingerprint of
-# databases that already applied it does not change (no false drift).
 _ACTION_LAYER_W5_TABLES = ("action_layer_calls", "action_layer_snapshots")
 
 
@@ -165,7 +144,6 @@ def _action_attachments_fp() -> str:
     return tables_fingerprint(attachments._TABLES)
 
 
-# --- 0007+: columns added by ALTER to tables that create_all already knows (exact legacy DDL) ---------------
 
 FRAMES_V2_COLUMNS: tuple[tuple[str, str], ...] = (
     ("uuid", "VARCHAR(64)"),
@@ -204,11 +182,6 @@ PROJECTS_COLUMNS: tuple[tuple[str, str], ...] = (
 
 
 async def add_missing_columns(conn, table: str, columns) -> list[str]:
-    """Idempotent ``ALTER TABLE ADD COLUMN`` of the columns the table lacks; returns the added names.
-
-    A table that does not exist yet is left alone: whoever creates it (create_all / raw DDL) creates it with
-    every column already. Any error propagates so the surrounding migration rolls back as a unit.
-    """
     have = {r[1] for r in (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()}
     if not have:
         return []
@@ -252,7 +225,6 @@ def _projects_columns_fp() -> str:
 
 async def _change_proposals_reject_columns(conn) -> None:
     from app.services.change_control.store import _ADDED_COLUMNS
-    # _ADDED_COLUMNS holds "name DDL" strings; split to the (name, ddl) pairs add_missing_columns takes.
     await add_missing_columns(conn, "change_proposals",
                               [(name, ddl[len(name):].strip()) for name, ddl in _ADDED_COLUMNS])
 
@@ -273,8 +245,6 @@ def _operator_audit_fp() -> str:
 
 
 async def _publications(conn) -> None:
-    # Тот же DDL, что у publications_store.ensure_schema: CREATE ... IF NOT EXISTS, поэтому таблица,
-    # уже созданная самим хранилищем, миграцию не ломает.
     from app.services import publications_store
     if conn.dialect.name == "sqlite":
         for ddl in publications_store._DDL:
@@ -287,7 +257,6 @@ def _publications_fp() -> str:
 
 
 def _ddl_statements(script) -> list[str]:
-    """DDL-скрипт (строка или кортеж операторов) -> список отдельных операторов (триггеры с BEGIN..END целиком)."""
     parts = [script] if isinstance(script, str) else list(script)
     out: list[str] = []
     for part in parts:
@@ -304,7 +273,6 @@ def _ddl_statements(script) -> list[str]:
 
 
 async def _notification_log(conn) -> None:
-    # Тот же DDL, что создаёт notification_log.py сам (IF NOT EXISTS): уже созданная модулем таблица не мешает.
     from app.services import notification_log
     if conn.dialect.name == "sqlite":
         for ddl in _ddl_statements(notification_log.NOTIFICATION_LOG_DDL):
@@ -341,8 +309,6 @@ def _create_jobs_fp() -> str:
 
 
 async def _outsee_idempotency(conn) -> None:
-    # Same definition the module creates for itself on first use (IF NOT EXISTS / checkfirst): a table created by
-    # the module earlier does not break the migration. The action layer's idempotency / snapshot tables ride along.
     from app.services import outsee_idempotency
     from app.services.action_layer import store
     tables = [outsee_idempotency.OutseeIdempotency.__table__] + [
@@ -359,7 +325,6 @@ def _outsee_idempotency_fp() -> str:
 
 
 async def _publish_approvals(conn) -> None:
-    # Same DDL as publications_store.ensure_schema (_DDL_W6, IF NOT EXISTS): lazily created tables do not break it.
     from app.services import publications_store
     if conn.dialect.name == "sqlite":
         for ddl in publications_store._DDL_W6:
@@ -421,7 +386,6 @@ async def _recorded(conn) -> dict[str, str]:
 
 
 async def applied_migrations(conn) -> list[dict]:
-    """Read-only view of what a database has recorded (empty if the runner never ran)."""
     def has_table(sync_conn):
         from sqlalchemy import inspect
         return inspect(sync_conn).has_table(MIGRATIONS_TABLE)
@@ -434,10 +398,6 @@ async def applied_migrations(conn) -> list[dict]:
 
 async def run_migrations(conn, *, scope: str = SCOPE_MASTER,
                          migrations: tuple[Migration, ...] | None = None) -> MigrationReport:
-    """Apply pending migrations of ``scope`` on an open (transactional) async connection.
-
-    Raises MigrationFailed after rolling back the failing migration; earlier ones stay applied.
-    """
     plan = tuple(m for m in (MIGRATIONS if migrations is None else migrations) if scope in m.scopes)
     _validate(plan)
     report = MigrationReport()
@@ -468,7 +428,7 @@ async def run_migrations(conn, *, scope: str = SCOPE_MASTER,
             report.failed, report.error = migration.id, "IntegrityError"
             logger.error("schema migration {} failed and was rolled back", migration.id)
             raise MigrationFailed(report)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             report.failed, report.error = migration.id, f"{type(exc).__name__}: {exc}"[:300]
             logger.error("schema migration {} failed and was rolled back: {}", migration.id, report.error)
             raise MigrationFailed(report) from exc
@@ -478,11 +438,6 @@ async def run_migrations(conn, *, scope: str = SCOPE_MASTER,
 
 
 async def migrate_orchestrator_schema(conn, *, scope: str = SCOPE_MASTER, backup: bool = True) -> MigrationReport:
-    """Startup entry point replacing the separate ensure/create_all calls for orchestrator tables.
-
-    Before the first pending migration of an existing file database a verified copy is made (fail closed: if the
-    copy cannot be made nothing is migrated and ``BackupError`` is raised).
-    """
     made: BackupResult | None = None
     if backup:
         path = await _conn_db_path(conn)
@@ -503,19 +458,15 @@ async def migrate_orchestrator_schema(conn, *, scope: str = SCOPE_MASTER, backup
 
 
 async def run_migration_ids(conn, ids, *, scope: str = SCOPE_PROJECT) -> MigrationReport:
-    """Run only the named registered migrations (for narrow legacy entry points); same bookkeeping."""
     wanted = tuple(m for m in MIGRATIONS if m.id in set(ids))
     return await run_migrations(conn, scope=scope, migrations=wanted)
 
 
-# --- A15: backups before migrations, on a schedule, restore and restore check --------------------------------
 
 BACKUP_DIR_NAME = "backups"
 BACKUP_SUFFIX = ".bak.db"
 KEEP_PRE_MIGRATION = 10
 KEEP_SCHEDULED = 14
-# Journal tables (append-only records of money, observation and operator actions) copied on their own so a
-# damaged main copy never takes the journal with it.
 JOURNAL_TABLES: tuple[str, ...] = (
     "spend_ledger", "provider_task_ledger",
     "observation_executions", "observation_outbox", "observation_events", "observation_degradations",
@@ -530,11 +481,11 @@ JOURNAL_TABLES: tuple[str, ...] = (
 
 
 class BackupError(RuntimeError):
-    """A backup could not be made or did not pass its check (the caller must not go on to migrate)."""
+    pass
 
 
 class RestoreError(RuntimeError):
-    """A restore was refused; the target file is unchanged."""
+    pass
 
 
 @dataclass
@@ -593,7 +544,6 @@ def default_backup_dir(db_path: Path | str) -> Path:
 
 
 def backup_files(dest_dir: Path | str, stem: str, tag: str | None = None) -> list[Path]:
-    """Backups of ``stem`` in ``dest_dir``, oldest first (names sort by time). Journal copies are separate."""
     d = Path(dest_dir)
     if not d.is_dir():
         return []
@@ -608,7 +558,6 @@ def latest_backup(dest_dir: Path | str, stem: str, tag: str | None = None) -> Pa
 
 
 def prune_backups(dest_dir: Path | str, stem: str, tag: str, keep: int) -> list[Path]:
-    """Delete the oldest backups of this tag beyond ``keep`` (and their manifests). Only our own names."""
     removed: list[Path] = []
     keep = max(1, int(keep))
     d = Path(dest_dir)
@@ -629,7 +578,7 @@ def _has_user_data(path: Path) -> bool:
         with contextlib.closing(sqlite3.connect(str(path), timeout=30)) as db:
             return any(t != MIGRATIONS_TABLE for t in _user_tables(db))
     except sqlite3.Error:
-        return True  # unreadable but non-empty: treat as data worth copying (the copy will then fail loudly)
+        return True
 
 
 def _check_space(dest_dir: Path, src: Path) -> None:
@@ -644,11 +593,6 @@ def _check_space(dest_dir: Path, src: Path) -> None:
 
 def backup_sqlite(src: Path | str, dest_dir: Path | str | None = None, *, tag: str = "manual",
                   keep: int | None = None, journal: bool = True) -> BackupResult:
-    """Consistent copy of a live SQLite file (online backup API, safe while the app writes in WAL mode).
-
-    The copy is written under a ``.part`` name, checked (integrity_check, row counts) and only then renamed;
-    a sha256 manifest sits next to it. Raises ``BackupError``; never leaves a half-written ``.bak.db``.
-    """
     src = Path(src).resolve()
     if not src.is_file():
         raise BackupError(f"нет файла базы: {src}")
@@ -680,7 +624,7 @@ def backup_sqlite(src: Path | str, dest_dir: Path | str | None = None, *, tag: s
         with contextlib.suppress(OSError):
             part.unlink()
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         with contextlib.suppress(OSError):
             part.unlink()
         raise BackupError(f"не удалось скопировать {src.name}: {type(exc).__name__}: {exc}"[:400]) from exc
@@ -688,7 +632,7 @@ def backup_sqlite(src: Path | str, dest_dir: Path | str | None = None, *, tag: s
     if journal:
         try:
             result.journal_path = extract_journal(final, dest_dir / f"{stem}.journal.{suffix}")
-        except Exception as exc:  # noqa: BLE001  the full copy exists; a missing journal copy is loud, not fatal
+        except Exception as exc:
             logger.error("journal copy of {} failed: {}", src.name, exc)
     if keep:
         prune_backups(dest_dir, stem, tag, keep)
@@ -697,7 +641,6 @@ def backup_sqlite(src: Path | str, dest_dir: Path | str | None = None, *, tag: s
 
 
 def extract_journal(backup: Path | str, dest: Path | str) -> Path | None:
-    """Copy only the journal tables (with their rows) of a verified backup into their own small database."""
     backup, dest = Path(backup), Path(dest)
     part = dest.with_name(dest.name + ".part")
     with contextlib.suppress(OSError):
@@ -729,10 +672,6 @@ def extract_journal(backup: Path | str, dest: Path | str) -> Path | None:
 
 
 def verify_backup(path: Path | str) -> dict:
-    """Restore check: sha256 against the manifest, then restore into a clean temp folder and read it back.
-
-    Returns ``{"ok", "problems", "integrity", "tables"}``; never raises on a damaged file.
-    """
     path = Path(path)
     problems: list[str] = []
     out = {"ok": False, "problems": problems, "integrity": None, "tables": {}}
@@ -775,13 +714,6 @@ def restore_command(backup: Path | str, target: Path | str) -> str:
 
 
 def restore_backup(backup: Path | str, target: Path | str) -> dict:
-    """Put a verified backup in place of ``target``.
-
-    The backup is verified first; the copy is staged next to the target and checked again; the current file
-    (with its ``-wal``/``-shm``) is MOVED aside as ``<name>.before-restore-<time>``, never deleted, so the restore
-    itself can be undone. Stop Studio first: on Windows a file held open by another process cannot be moved and
-    the restore stops with the target untouched.
-    """
     backup, target = Path(backup), Path(target)
     check = verify_backup(backup)
     if not check["ok"]:
@@ -836,7 +768,6 @@ def pending_migration_ids(db_path: Path | str, scope: str = SCOPE_MASTER,
 def backup_before_migrations(db_path: Path | str, scope: str = SCOPE_MASTER,
                              migrations: tuple[Migration, ...] | None = None,
                              dest_dir: Path | str | None = None) -> BackupResult | None:
-    """Copy ``db_path`` if it holds data and has a pending migration; ``None`` when nothing needs protecting."""
     path = Path(db_path)
     if not _has_user_data(path):
         return None
@@ -865,8 +796,6 @@ def backup_due(dest_dir: Path | str, stem: str, interval_h: float, tag: str = "s
 
 def run_scheduled_backups(db_paths, *, interval_h: float = 6.0, keep: int = KEEP_SCHEDULED, force: bool = False,
                           dest_dir: Path | str | None = None) -> list[dict]:
-    """One pass over the databases: copy those whose last scheduled copy is older than ``interval_h``, then
-    run the restore check on the new copy. Failures are reported per database, never raised."""
     out: list[dict] = []
     for raw in db_paths:
         db = Path(raw)
@@ -885,7 +814,7 @@ def run_scheduled_backups(db_paths, *, interval_h: float = 6.0, keep: int = KEEP
                         journal=_str_or_none(res.journal_path), verified=check["ok"], problems=check["problems"])
             if not check["ok"]:
                 logger.error("scheduled backup of {} failed its restore check: {}", db.name, check["problems"])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             item.update(status="failed", error=f"{type(exc).__name__}: {exc}"[:300])
             logger.exception("scheduled backup of {} failed", db)
     return out
@@ -893,7 +822,6 @@ def run_scheduled_backups(db_paths, *, interval_h: float = 6.0, keep: int = KEEP
 
 async def scheduled_backup_loop(db_paths, *, interval_h: float = 6.0, check_every_s: float = 600.0,
                                 keep: int = KEEP_SCHEDULED, stop: asyncio.Event | None = None) -> None:
-    """Background task for the web process: a pass every ``check_every_s``; copies are made when due."""
     while stop is None or not stop.is_set():
         paths = db_paths() if callable(db_paths) else db_paths
         await asyncio.to_thread(run_scheduled_backups, paths, interval_h=interval_h, keep=keep)

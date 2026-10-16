@@ -1,4 +1,3 @@
-"""SQLAlchemy models for scenes_space / frames_space (cinematic scene space)."""
 
 from __future__ import annotations
 

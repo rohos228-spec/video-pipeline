@@ -1,7 +1,6 @@
-"""Saved journal rules and isolated persistence; no provider or worker required."""
 import json
 import unittest
-from app.services.actions_recovery import RecoveryAction  # Register additive schema before create_all.
+from app.services.actions_recovery import RecoveryAction
 from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace

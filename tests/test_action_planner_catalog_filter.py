@@ -1,4 +1,3 @@
-"""Планировщик с предфильтром каталога: только показанные действия, журнал, уточнение."""
 from __future__ import annotations
 
 import json
@@ -8,8 +7,8 @@ import pytest
 from app.services.action_layer import planner
 from app.services.action_layer.spec import registry
 from app.settings import settings
-from tests.action_layer_support import env  # noqa: F401
-from tests.test_action_layer_planner import (  # noqa: F401
+from tests.action_layer_support import env
+from tests.test_action_layer_planner import (
     OP, history_rows, reply, res, step, stubs, use)
 
 

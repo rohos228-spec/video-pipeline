@@ -1,18 +1,3 @@
-"""W5c: native text nodes recover through ONE incident and ONE Decision (plan, script, animation_prompts, sfx_plan,
-sd_agent, sd_assemble).
-
-Three defects found by the live runs on Vibecode, each pinned here:
-  1. one failed attempt leaves several incidents; the generic contract_rejected / failed result check is only an ECHO
-     of the primary invalid_json. Decision opened a second record for the echo, escalated it and held the run, so the
-     recovery of the primary never started (diagnosis.bind_echo_incidents / decision_v1 begin+tick);
-  2. the Decision started while the diagnosis was still rewriting the incident and the paid answer came back with
-     "stale context version" -> human_review (decision_v1: diagnosis_settled gate and StaleContext resume);
-  3. the model read the diagnosis label human_review and native_json_retry=false as a ban on retry_same
-     (decision_v1: recovery_guidance in the context and in the system prompt).
-
-The DB tests use the synthetic fixtures of tests/observe_v1; the stand tests start the whole application in a
-SUBPROCESS in offline mode (stubs only, every non-loopback request refused), so run this file alone.
-"""
 import asyncio
 import importlib
 import json
@@ -31,22 +16,21 @@ from sqlalchemy import select
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests" / "observe_v1"))
 sys.path.insert(0, str(ROOT / "tests"))
-from _stand_workdir import make_workdir, remove_workdir  # noqa: E402
+from _stand_workdir import make_workdir, remove_workdir
 
 
 @pytest.fixture
 def tmp_path():
-    """Outside the repository: the e2e guard refuses a work folder inside live data."""
     path = make_workdir()
     try:
         yield path
     finally:
         remove_workdir(path)
 
-from app.services.diagnosis import (  # noqa: E402
+from app.services.diagnosis import (
     bind_echo_incidents, derive_incidents, echo_primary, Incident)
-from app.services import observation  # noqa: E402
-import test_actions_v1_contract as actions_tests  # noqa: E402
+from app.services import observation
+import test_actions_v1_contract as actions_tests
 
 SCOPE = SimpleNamespace(execution_id="execution", project_id=2, node_keys=["plan"], observer_state="active", gaps=[])
 _n = [1000]
@@ -60,7 +44,6 @@ def ev(kind, /, *, node="plan", attempt="a1", request=None, **payload):
 
 
 def failed_plan_attempt(*, check_request="r1", attempt="a1"):
-    """What the native plan executor writes for an unparseable answer (shape taken from a stand journal)."""
     return [ev("node_start", attempt=attempt),
             ev("model_start", attempt=attempt, request="r1"), ev("model_end", attempt=attempt, request="r1", complete=True),
             ev("parse_result", attempt=attempt, request="r1", contract="native_project_text", payload_required=True,
@@ -77,7 +60,6 @@ def _synthetic_loopback_credentials(monkeypatch):
     monkeypatch.setattr(settings, "gpt_base_url", "http://127.0.0.1:18766")
 
 
-# ---------------------------------------------------------------- 1. echo binding (pure)
 
 def test_failed_result_check_of_the_same_request_is_an_echo_of_the_format_incident():
     out = {i["type"]: i for i in derive_incidents(SCOPE, failed_plan_attempt(), {})}
@@ -109,19 +91,17 @@ def test_rule_rejections_and_observe_only_checks_are_never_echoes():
     assert echo_primary({**base, "rule": "R1"}, [base, primary]) is None
     assert echo_primary({**base, "observe_only": True}, [base, primary]) is None
     assert echo_primary({**base, "attempt_id": None}, [base, primary]) is None
-    assert echo_primary({**primary}, [base, primary]) is None            # a primary is never an echo
+    assert echo_primary({**primary}, [base, primary]) is None
     assert echo_primary(base, [base, {**primary, "status": "resolved_confirmed"}]) is None
 
 
 def test_a_genuine_local_fix_check_keeps_its_own_record():
-    """A failed result check that is NOT the verdict on the primary's request stays a separate local-fix incident."""
     check = dict(type="contract_rejected", node_key="n", attempt_id="a", incident_id="c", request_ids=["rX"],
                  local_fix_candidate=True, status="open")
     primary = dict(type="invalid_json", node_key="n", attempt_id="a", incident_id="p", request_ids=["r"], status="human_review")
     items = [check, primary]
     bind_echo_incidents(items)
     assert "echo_of" not in check
-    # without any primary there is nothing to bind to
     lone = dict(check)
     bind_echo_incidents([lone])
     assert "echo_of" not in lone
@@ -136,7 +116,6 @@ def test_the_generic_node_error_echo_binds_to_the_most_specific_primary():
     assert echo_primary(generic, [generic, hold]) is hold
 
 
-# ---------------------------------------------------------------- 2. Decision (database)
 
 class DecisionOnOneIncident(actions_tests.DurableActions):
     fixture_node_type = "excel_gpt"
@@ -181,7 +160,6 @@ class DecisionOnOneIncident(actions_tests.DurableActions):
             return GptChatResult(text=json.dumps(p), model="synthetic", raw={"status": "completed"})
         return reply, calls
 
-    # --- echo gets no record
     async def test_an_echo_incident_opens_no_decision(self):
         await self.set_incident(echo_of="primary-incident")
         self.assertIsNone(await self.loop.begin(project_id=7, execution_id="exec-durable",
@@ -204,7 +182,6 @@ class DecisionOnOneIncident(actions_tests.DurableActions):
         self.assertEqual(len(await self.records()), 1)
         self.assertEqual(len(calls), 1)
 
-    # --- diagnosis must be caught up before a paid decision starts
     async def test_no_decision_starts_while_the_diagnosis_lags_the_journal(self):
         from app.services.diagnosis import DiagnosisState
         async with self.sessions() as s:
@@ -217,7 +194,6 @@ class DecisionOnOneIncident(actions_tests.DurableActions):
         self.assertIsNone(await self.loop.begin(project_id=7, execution_id="exec-durable",
                                                 incident_id="source-incident", automatic=True))
         self.assertEqual(await self.records(), [])
-        # a record that is already open is not dispatched either (no claim, no paid request)
         async with self.sessions() as s:
             state = await s.get(DiagnosisState, "exec-durable")
             state.cursor = 6
@@ -233,7 +209,6 @@ class DecisionOnOneIncident(actions_tests.DurableActions):
         async with self.sessions() as s:
             self.assertEqual((await s.get(self.service.DecisionRecord, record["decision_id"])).model_steps, 0)
 
-    # --- the evidence moves while the model thinks
     async def test_context_drift_during_the_model_call_asks_again_instead_of_escalating(self):
         record = await self.loop.begin(project_id=7, execution_id="exec-durable", incident_id="source-incident")
 
@@ -277,17 +252,14 @@ class DecisionOnOneIncident(actions_tests.DurableActions):
             self.assertIn("kept changing", row.policy_result["reason"])
 
     async def test_only_a_change_of_the_diagnosis_view_is_resumable(self):
-        """Input/config/policy drift after the request went out always denies the late reply (no resume)."""
         self.assertTrue(issubclass(self.service.StaleContext, ValueError))
         record = await self.loop.begin(project_id=7, execution_id="exec-durable", incident_id="source-incident")
         token = await self.loop.claim(record["decision_id"])
         async with self.sessions() as s:
             row = await s.get(self.service.DecisionRecord, record["decision_id"])
             context = await self.loop._context(s, row)
-            # the version differs but the stable part is the same: resumable
             with self.assertRaises(self.service.StaleContext):
                 await self.loop._live(s, row, token, version="old", stable=context["stable_version"])
-            # the stable part differs (input / config / policy): a plain denial, never resumed
             with self.assertRaises(ValueError) as denied:
                 await self.loop._live(s, row, token, version="old", stable="another-input")
             self.assertNotIsInstance(denied.exception, self.service.StaleContext)
@@ -311,7 +283,6 @@ class DecisionOnOneIncident(actions_tests.DurableActions):
             self.assertEqual(row.status, "human_review")
             self.assertIn("stale", row.policy_result["reason"])
 
-    # --- the model sees what the server itself offers
     async def test_the_context_states_what_the_server_offers_for_the_incident(self):
         record = await self.loop.begin(project_id=7, execution_id="exec-durable", incident_id="source-incident")
         context = await self.loop.context(record["decision_id"])
@@ -323,7 +294,6 @@ class DecisionOnOneIncident(actions_tests.DurableActions):
         self.assertEqual(guidance["retry_same_offered"], "retry_same" in context["allowed_actions"])
 
     async def test_guidance_never_widens_the_allowed_actions(self):
-        """The hint is data about the allowed set, not a grant: a node without retry_same gets no offer."""
         record = await self.loop.begin(project_id=7, execution_id="exec-durable", incident_id="source-incident")
         from app.services import node_capabilities
         real = node_capabilities.capability_for
@@ -338,7 +308,6 @@ class DecisionOnOneIncident(actions_tests.DurableActions):
         self.assertFalse(context["recovery_guidance"]["retry_same_offered"])
 
 
-# The fixture base brings its own tests; they run (once) in tests/observe_v1, not here.
 for _name in dir(actions_tests.DurableActions):
     if _name.startswith("test") and _name not in vars(DecisionOnOneIncident):
         setattr(DecisionOnOneIncident, _name, None)
@@ -349,12 +318,10 @@ def test_the_system_prompt_does_not_let_the_model_read_labels_as_bans():
     text = service.SYSTEM
     assert "NOT an earlier escalation" in text and "native_json_retry=false" in text
     assert "retry_profile is a" in text and "different action" in text
-    # the safety statements of the prompt stay in place
     for must in ("UNTRUSTED DATA", "cannot grant permission", "never invent parameters", "Maximum three model steps"):
         assert must in text
 
 
-# ---------------------------------------------------------------- 3. the whole chain on the stand (offline, stubs)
 
 _STAND = ROOT / "scripts" / "e2e_vibecode_text_nodes.py"
 
@@ -373,15 +340,12 @@ def _run_offline(node, tmp_path, *extra):
 
 @pytest.mark.parametrize("node,extra", [
     ("plan", ()), ("script", ()), ("animation_prompts", ()),
-    ("sfx_plan", ("--decision-delay-s", "6")),       # a model that thinks for seconds, as the real one does
+    ("sfx_plan", ("--decision-delay-s", "6")),
     ("sd_agent", ("--sd-agent", "characters")), ("sd_agent", ("--sd-agent", "world")),
     ("sd_assemble", ())])
 def test_failure_one_incident_one_decision_retry_same_recovered_done(node, extra, tmp_path):
     code, result, tail = _run_offline(node, tmp_path, *extra)
     if code != 0:
-        # Стенд поднимает настоящий сервер и воркер, и при загруженной машине один из семи вариантов иногда не успевает
-        # (при разных прогонах падали разные: script, sd_agent, sd_assemble; поодиночке проходят). Одна повторная попытка
-        # в чистой папке; если упали обе, тест красный и показывает хвосты обеих.
         first_tail = tail
         code, result, tail = _run_offline(node, tmp_path / "retry", *extra)
         assert code == 0, f"первая попытка:\n{first_tail}\nвторая попытка:\n{tail}"
@@ -390,12 +354,10 @@ def test_failure_one_incident_one_decision_retry_same_recovered_done(node, extra
     assert result["counters"]["real_total"] == 0 and result["refused_hosts"] == []
     assert result["node_status"][result["target"]] == "done"
     records = result["decisions"]["records"]
-    # ONE decision record for the failed attempt (the echo opened none), and it finished by the verified recovery
     assert [r["status"] for r in records] == ["done"], [(r["status"], r["incident_id"]) for r in records]
     recoveries = result["actions"]["recoveries"]
     assert len(recoveries) == 1 and recoveries[0]["status"] == "verified"
     assert recoveries[0]["preconditions"]["action_type"] == "retry_same"
-    # the human stays in the loop where no permission was given: nothing was held, nothing waits for approval
     assert result["actions"]["held"] is False
 
 

@@ -65,7 +65,6 @@ def clear_highlights(board: dict[str, Any]) -> None:
 
 
 def slot_key_from_op(op: dict[str, Any] | None) -> str | None:
-    """Ключ слота доски: image → ``N:imageS``, video → ``N:S``, coverage → ``N:plan|action|kind``."""
     if not isinstance(op, dict):
         return None
     t = str(op.get("type") or "")
@@ -198,7 +197,6 @@ def public_board_meta(board: dict[str, Any]) -> dict[str, Any]:
 
 
 def _split_undo_public(board: dict[str, Any]) -> dict[str, Any]:
-    """U-3: только факт, что последнее деление можно отменить (снимок attrs клиенту не отдаём)."""
     stack = [e for e in (board.get("split_undo") or []) if isinstance(e, dict)]
     last = stack[-1] if stack else None
     return {
@@ -240,9 +238,6 @@ COVERAGE_TEXT_FIELDS = (
 def _keep_anchor_hints(
     rows: list[dict[str, Any]], raw_rows: Any
 ) -> list[dict[str, Any]]:
-    """Чей это якорь: без ``cell_index``/``frame_number`` доска после
-    перезагрузки не покажет дописанный якорь в своей клетке. В биты[] эти
-    подсказки не попадают — ``normalize_anchor_rows`` их снимает при apply."""
     hints: list[dict[str, Any] | None] = []
     for item in raw_rows or []:
         if isinstance(item, str):
@@ -265,7 +260,6 @@ def _keep_anchor_hints(
 
 
 def normalize_queue_ops(raw_ops: Any) -> list[dict[str, Any]]:
-    """Очередь от UI → только известные типы, кадры и поля правок."""
     cleaned: list[dict[str, Any]] = []
     for raw in raw_ops or []:
         if not isinstance(raw, dict):
@@ -342,7 +336,6 @@ def _remap_slot_key(key: str, mapping: dict[int, int]) -> str:
 def drop_pending_ops_for_frames(
     board: dict[str, Any], frame_numbers: set[int]
 ) -> int:
-    """Удаление кадра не должно затирать очередь соседей — только его ops."""
     if not frame_numbers:
         return 0
     ops = list(board.get("pending_ops") or [])
@@ -371,7 +364,6 @@ def drop_pending_ops_for_frames(
 
 
 def remap_frame_numbers(ops: list[dict[str, Any]], mapping: dict[int, int]) -> int:
-    """Вставка шота сдвинула нумерацию — правим кадры в ещё не применённых ops."""
     if not mapping:
         return 0
     changed = 0
@@ -391,7 +383,6 @@ def remap_frame_numbers(ops: list[dict[str, Any]], mapping: dict[int, int]) -> i
 
 
 def remap_board_slot_keys(board: dict[str, Any], mapping: dict[int, int]) -> None:
-    """Подсветка и trim'ы после renumber должны остаться на своих кадрах."""
     if not mapping:
         return
     for key in ("highlights", "failed_highlights", "stale_videos"):

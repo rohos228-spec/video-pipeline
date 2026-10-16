@@ -71,7 +71,6 @@ def test_set_montage_meta_pending_ops_roundtrip() -> None:
 
 
 def test_normalize_queue_keeps_all_scene_row_fields() -> None:
-    """Строки сцены: ракурс / движение / стык / свет / набор доживают до apply."""
     cleaned = normalize_queue_ops(
         [
             {"type": "coverage_angle", "frame_number": 2, "shot": 1, "angle": "с плеча"},
@@ -125,13 +124,11 @@ def test_normalize_queue_keeps_all_scene_row_fields() -> None:
     assert by_type["coverage_vo_span"]["end"] == 12
     assert slot_key_from_op(by_type["coverage_vo_span"]) == "1:vo_span"
     assert by_type["image_regen"]["shot"] == 2
-    # Неизвестный тип и кадр < 1 отбрасываются.
     assert "unknown_op" not in by_type
     assert len(cleaned) == 11
 
 
 def test_normalize_queue_keeps_anchor_owner_hints() -> None:
-    """Дописанный якорь остаётся привязан к своему кадру после перезагрузки."""
     cleaned = normalize_queue_ops(
         [
             {
@@ -149,13 +146,11 @@ def test_normalize_queue_keeps_anchor_owner_hints() -> None:
     rows = cleaned[0]["anchors"]
     assert [r["якорь"] for r in rows] == ["Он вошёл", "Открыл папку"]
     assert rows[0]["cell_index"] == 0
-    # Новый якорь: своего места в биты[] ещё нет, но кадр известен.
     assert "cell_index" not in rows[1]
     assert rows[1]["frame_number"] == 2
 
 
 def test_remap_frame_numbers_after_inserted_shot() -> None:
-    """Якорь создал шот → ещё не применённые ops идут за своими кадрами."""
     ops = [
         {"type": "coverage_plan", "frame_number": 5, "shot": 1, "plan": "КРУПНЫЙ"},
         {"type": "coverage_kind", "frame_number": 6, "shot": 1, "kind": "child",

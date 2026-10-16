@@ -1,15 +1,3 @@
-"""Защита проектных баз: цели плановых бэкапов, миграция схемы существующих project.db, коллизии id.
-
-Три задачи фазы 2 плана (S-3, S-1, D-9):
-
-* ``backup_targets`` - какие файлы копирует плановый бэкап: master state.db, tracker.db и project.db каждого проекта;
-  ``start_scheduled_backups`` запускает ``scheduled_backup_loop`` в процессе веб-приложения.
-* ``migrate_existing_project_dbs`` - при старте приводит схему УЖЕ существующих project.db к текущей
-  (``init_project_db``: перед первой миграцией проверенная копия, без копии миграции нет).
-* ``find_id_collisions`` - id строки есть и в master, и в project.db, но принадлежит там разным проектам.
-  У каждой базы свой автоинкремент, поэтому ``master.get(Frame, id)`` может вернуть кадр другого проекта.
-  id не перенумеровываются: коллизия фиксируется в логе и реестре, а ``resolve_*_project_id`` отказывает явно.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -21,9 +9,8 @@ from pathlib import Path
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parents[2]
-BACKUP_ENV = "VP_SCHEDULED_BACKUP"  # "0" выключает плановый бэкап в процессе приложения
+BACKUP_ENV = "VP_SCHEDULED_BACKUP"
 
-# Таблицы master/project.db, где строка принадлежит проекту (колонка project_id) и id у каждой базы свой.
 SCOPED_TABLES: tuple[str, ...] = (
     "scenes", "frames", "frame_texts", "prompt_versions", "frame_edges", "artifacts",
     "entities", "hitl_requests", "scene_design_cells", "asr_words", "attempts",
@@ -31,10 +18,9 @@ SCOPED_TABLES: tuple[str, ...] = (
 
 
 class IdCollisionError(RuntimeError):
-    """Один и тот же id принадлежит разным проектам в master и в проектной базе."""
+    pass
 
 
-# project_id -> найденные коллизии (последняя проверка); читается интерфейсом и тестами
 _COLLISIONS: dict[int, list[dict]] = {}
 _CHECKED: set[int] = set()
 
@@ -48,17 +34,14 @@ def reset_state() -> None:
     _CHECKED.clear()
 
 
-# --- S-3: цели планового бэкапа -----------------------------------------------------------------------
 
 def project_dir(data_root: Path, slug: str, batch_id: int | None, batch_slug: str | None) -> Path:
-    """Папка проекта; та же формула, что у ``Project.data_dir`` (в таблице projects такой колонки нет)."""
     if batch_id is not None and batch_slug:
         return data_root / "batches" / batch_slug / "sub" / slug
     return data_root / "videos" / slug
 
 
 def project_db_files(state_path: Path | str, data_root: Path | str | None = None) -> list[Path]:
-    """project.db всех проектов, найденные по таблице projects в master (только чтение)."""
     state = Path(state_path)
     if not state.is_file():
         return []
@@ -97,7 +80,6 @@ def scheduled_backup_enabled(env: dict | None = None) -> bool:
 def start_scheduled_backups(state_path: Path | str | None = None, *, interval_h: float = 6.0,
                             check_every_s: float = 600.0, stop: asyncio.Event | None = None,
                             data_root: Path | str | None = None):
-    """Фоновая задача планового бэкапа (список баз пересчитывается на каждом проходе: новые проекты попадают сами)."""
     if not scheduled_backup_enabled():
         logger.info("scheduled backups disabled by {}=0", BACKUP_ENV)
         return None
@@ -108,14 +90,8 @@ def start_scheduled_backups(state_path: Path | str | None = None, *, interval_h:
         name="scheduled-db-backup")
 
 
-# --- S-1: схема существующих project.db -----------------------------------------------------------------
 
 async def migrate_existing_project_dbs() -> dict:
-    """Привести схему каждого существующего project.db к текущей. Сбой одного проекта не останавливает остальных.
-
-    Перед первой применяемой миграцией ``migrate_orchestrator_schema`` делает проверенную копию; не удалось
-    сделать копию - миграции этого проекта нет (она не применяется молча без защиты).
-    """
     from sqlalchemy import select
 
     from app.db import SessionLocal
@@ -132,16 +108,14 @@ async def migrate_existing_project_dbs() -> dict:
         report["checked"] += 1
         try:
             await init_project_db(data_dir)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             report["failed"].append({"project_id": pid, "slug": slug, "error": f"{type(exc).__name__}: {exc}"[:300]})
             logger.error("project.db schema migration failed for project #{} [{}]: {}", pid, slug, exc)
     return report
 
 
-# --- D-9: коллизии id -----------------------------------------------------------------------------------
 
 def find_id_collisions(master_db: Path | str, project_db: Path | str, project_id: int | None = None) -> list[dict]:
-    """Строки, чей id есть в обеих базах, но project_id в них разный. Обе базы открываются только на чтение."""
     master, proj = Path(master_db), Path(project_db)
     if not master.is_file() or not proj.is_file():
         return []
@@ -177,7 +151,6 @@ def _master_path() -> Path | None:
 
 
 async def check_project_id_collisions(project_id: int, data_dir: Path | str | None = None, *, force: bool = False) -> list[dict]:
-    """Проверка при открытии проекта (один раз за процесс): коллизии пишутся в лог ERROR и в реестр, проект не падает."""
     if project_id in _CHECKED and not force:
         return collisions_for(project_id)
     from app.project_db import get_project_data_dir, resolve_project_db_path

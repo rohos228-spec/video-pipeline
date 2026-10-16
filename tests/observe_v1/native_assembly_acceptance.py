@@ -1,10 +1,3 @@
-"""Docker-only group_acceptance seam: native API -> assemble.run -> final HITL.
-
-prepare() initializes explicit synthetic INPUT artifacts before app startup.
-run() never writes business rows, calls an executor directly, approves HITL,
-or installs tools. FFmpeg commands below have fixed purposes and no shell.
-This is ordinary native assembly with Observe, not managed/ASR acceptance.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +17,6 @@ from pathlib import Path
 
 NODE_KEY = "native-assemble-A"
 OUTSIDE = "outside-native-publish-Z"
-# Unequal audio slots expose a montage that incorrectly splits time equally.
 SLOTS = ((1, "red", 440, 2.0), (2, "blue", 880, 3.0))
 
 
@@ -69,7 +61,6 @@ def _duration(probe):
 
 
 def _generate_inputs(project_dir):
-    """Only fixed local colors, PCM sine fixtures and MP3 encodes, before startup."""
     tools = _tools()
     inputs = _local(project_dir / "assembly-fixture-inputs")
     inputs.mkdir(exist_ok=False)
@@ -81,8 +72,6 @@ def _generate_inputs(project_dir):
     mp3s = []
     for number, color, frequency, seconds in SLOTS:
         video = project_dir / "videos" / f"clip_{number:03d}_fixture.mp4"
-        # Four seconds of source video must be trimmed to its shorter audio slot
-        # by the ORIGINAL assembly implementation.
         subprocess.run(
             [tools["ffmpeg"], "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
              "-f", "lavfi", "-i", f"color=c={color}:s=160x240:r=25:d=4",
@@ -127,7 +116,6 @@ def _generate_inputs(project_dir):
 
 
 def prepare(fixtures, root, mode):
-    """Same pre-start seam as project_text_acceptance; no app imports."""
     root = _local(root)
     try:
         assert mode == "launch-assembly", "parent runner must explicitly select launch-assembly"
@@ -135,7 +123,6 @@ def prepare(fixtures, root, mode):
         project_dir = _local(fixtures.DB.parent)
         assert project_dir == fixtures.DATA / "videos" / fixtures.SLUG
         paths = (fixtures.DATA / "state.db", fixtures.DB)
-        # Check the copied seed before producing or registering media inputs.
         for path in paths:
             assert path.is_file(), "copied seed DB missing: " + str(path)
             with sqlite3.connect(path) as db:
@@ -215,8 +202,6 @@ def prepare(fixtures, root, mode):
                                       "pending NodeRuns and NULL frame timing; no final output or done/approved status seeded",
                                       "explicit initial subtitles=false, BGM=false, tail=0, intro=0 and auto_mode=false",
                                       "one original step API start; no direct executor call, HITL decision, recovery or publish start"]}
-        # Provenance only. Legitimate DBv2/startup backfill may change this
-        # snapshot; runtime verification takes a fresh baseline after startup.
         prepared["initial_state"] = _state(fixtures.DB)
         assert all(f["start_ts"] is None and f["end_ts"] is None and f["duration_seconds"] is None
                    for f in prepared["initial_state"]["frames"])
@@ -253,8 +238,6 @@ def _assert_boundary(state):
     assert not state["project"]["auto_mode"]
     assert not (state["project"]["meta"].get("published_platforms") or []), "publication side effect"
     assert state["nodes"][NODE_KEY]["status"] == "done", state["nodes"]
-    # Legacy ordinary assembly does not increment NodeRun.attempts. The
-    # actual invocation count is checked using native Observe attempt IDs.
     assert state["nodes"][OUTSIDE]["status"] == "pending" and state["nodes"][OUTSIDE]["attempts"] == 0, state["nodes"]
     assert len(state["hitl"]) == 1, state["hitl"]
     approval = state["hitl"][0]
@@ -320,9 +303,6 @@ def _verify_media(state, prepared, project_dir, baseline):
     assert abs(_duration(probe) - master) <= .15, "final duration must follow real per-frame audio"
     assert abs(float(video["duration"]) - master) <= .15 and abs(float(audio["duration"]) - master) <= .15, probe
     evidence = []
-    # +/- .25 sec distinguishes the genuine first audio boundary (~2 sec)
-    # from incorrectly equal halves (~2.5 sec); also inspect both slot centers.
-    # The 100-ms tone windows finish before the MP3 boundary/padding.
     for at, color, hz in ((boundary / 2, "red", 440), (boundary - .25, "red", 440),
                           (boundary + .25, "blue", 880), ((boundary + master) / 2, "blue", 880)):
         rgb = _rgb(final, round(at, 3))
@@ -350,7 +330,6 @@ async def _history(client, prefix):
 
 
 async def run(client, fixtures, observer, root, result, prepared, *, browser=False):
-    """Parent owns main/loopback/network-none lifecycle and sequential execution."""
     root = _local(root)
     result.update(accepted=False, interventions=prepared["interventions"], operator_starts=0,
                   managed_adapter_accepted=False, asr_accepted=False, subtitles_accepted=False,
@@ -362,8 +341,6 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
         assert not dict(fixtures.FixtureHandler.counts), "fresh loopback fixture must have zero calls"
         initial = _state(fixtures.DB)
         assert all(n["status"] == "pending" and n["attempts"] == 0 for n in initial["nodes"].values()), initial
-        # Original startup recompute can legitimately derive an input-ready
-        # status. It must not have run assembly or generated its outputs.
         assert initial["project"]["status"] not in {"assembling", "assembled", "publishing", "published"}, initial
         assert not initial["hitl"], initial
         assert not [a for a in initial["artifacts"] if a["kind"] == "final_video"]
@@ -395,8 +372,6 @@ async def run(client, fixtures, observer, root, result, prepared, *, browser=Fal
         media = await asyncio.to_thread(_verify_media, state, prepared, _local(fixtures.DB.parent), initial)
         result["media_verification"] = media
         _save(root / "native-assembly-media-verification.json", media)
-        # Let subsequent original scheduler ticks reach the pending final HITL.
-        # No status updates, approvals, retries or second starts during this wait.
         result["native_assembly_stage"] = "pending_final_approval_stability"
         await asyncio.sleep(12)
         after = _state(fixtures.DB)

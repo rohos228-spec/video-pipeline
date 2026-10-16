@@ -1,5 +1,3 @@
-"""Оценка прогона текстовой ноды script_frames_qc: пачки, запросы, токены, цена, fail-closed.
-Бэкенд и модель не вызываются: данные проекта подставлены, платный запуск не стартует."""
 from __future__ import annotations
 
 import math
@@ -12,7 +10,7 @@ from app.services.action_layer import builtin_wave3 as w3
 from app.services.action_layer import node_run_cost as nrc
 from app.services.action_layer.context import ActionCallError
 from app.services.action_layer.spec import ActionRegistry, CostEstimate
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 NODE = "n_excel_gpt_fw_shots"
 
@@ -47,10 +45,8 @@ def _basis(node_key=NODE, frames=None, **kw) -> nrc.RunBasis:
     return nrc.compute_run_basis(**base)
 
 
-# --- запросы на пачку (худший исход _run_adaptive) -----------------------------------------
 
 def test_worst_requests_per_pack_matches_code_paths() -> None:
-    # лист: 3 вызова (недобор дважды, затем успех); по 2 запроса на вызов (повтор JSON)
     assert nrc.worst_requests_for_pack(1) == 2 * 3
     assert nrc.worst_requests_for_pack(2) == 2 * 8
     assert nrc.worst_requests_for_pack(4) == 2 * 18
@@ -62,7 +58,7 @@ def test_worst_requests_per_pack_matches_code_paths() -> None:
 def test_worst_case_follows_split_levels_of_the_runner(monkeypatch) -> None:
     from app.services import adaptive_llm_batches as alb
     nrc._chunk_calls.cache_clear()
-    monkeypatch.setattr(alb, "NEXT_SPLIT", {})          # дробления нет: только повторы листа
+    monkeypatch.setattr(alb, "NEXT_SPLIT", {})
     try:
         assert nrc._chunk_calls(8, 1, 2) < 22
     finally:
@@ -71,11 +67,10 @@ def test_worst_case_follows_split_levels_of_the_runner(monkeypatch) -> None:
     assert nrc._chunk_calls(8, 1, 2) == 22
 
 
-# --- базис по данным проекта --------------------------------------------------------------------
 
 def test_basis_packs_units_and_requests() -> None:
     b = _basis(frames=_frames(20))
-    assert (b.packs, b.units, b.rows) == (3, 20, 20)          # 8 + 8 + 4 ячеек
+    assert (b.packs, b.units, b.rows) == (3, 20, 20)
     assert b.min_requests == 3
     assert b.max_requests == sum(nrc.worst_requests_for_pack(m) for m in (8, 8, 4))
     assert b.node_kind == "_fw_shots"
@@ -85,9 +80,9 @@ def test_basis_packs_units_and_requests() -> None:
 
 def test_heavy_cell_goes_solo_and_children_do_not_add_units() -> None:
     frames = _frames(9, children_per_parent=2)
-    frames[0]["voiceover_text"] = "слово " * 1000                # >= 5000 символов: соло-пачка
+    frames[0]["voiceover_text"] = "слово " * 1000
     b = _basis(frames=frames)
-    assert b.units == 9 and b.packs == 2                         # соло + одна пачка из 8
+    assert b.units == 9 and b.packs == 2
 
 
 def test_tokens_grow_with_prompt_and_project_text_and_data() -> None:
@@ -100,7 +95,7 @@ def test_tokens_grow_with_prompt_and_project_text_and_data() -> None:
     plan_small = _basis(node_key="n_excel_gpt_fw_script", project_text_chars=0)
     plan_big = _basis(node_key="n_excel_gpt_fw_script", project_text_chars=50000)
     assert plan_big.max_input_tokens > plan_small.max_input_tokens
-    other = _basis(project_text_chars=50000)                     # план проекта только у fw_script
+    other = _basis(project_text_chars=50000)
     assert other.max_input_tokens == _basis().max_input_tokens
     assert _basis().max_output_tokens > nrc.REASONING_ALLOWANCE_TOKENS
 
@@ -110,12 +105,11 @@ def test_qc_excludes_shot_children_and_empty_or_unknown_node() -> None:
     assert _basis(node_key="n_excel_gpt_fw_qc", frames=frames).rows == 3
     assert _basis(frames=[]) is None
     assert _basis(frames=[{"uuid": "a" * 32, "number": 1, "voiceover_text": "", "attrs": {}}]
-                  ) is None                                       # нечего писать
+                  ) is None
     with pytest.raises(ValueError):
         _basis(node_key="n_excel_gpt_fw_frames")
 
 
-# --- цена ----------------------------------------------------------------------------------------
 
 def test_price_uses_vibecode_cost_times_catalog_markup() -> None:
     from app.services.api_tracker_hook import vibecode_cost
@@ -136,7 +130,6 @@ def test_price_unknown_when_model_has_no_snapshot_price(monkeypatch) -> None:
     assert est.known is False
 
 
-# --- оценка: fail-closed ---------------------------------------------------------------------------
 
 DECL = {"min_llm_requests": 3, "max_llm_requests": 120, "max_input_tokens": 30000,
         "max_output_tokens": 20000}
@@ -144,7 +137,7 @@ DECL = {"min_llm_requests": 3, "max_llm_requests": 120, "max_input_tokens": 3000
 
 def test_estimator_known_only_with_declared_basis_and_says_uncalibrated() -> None:
     base = {"project_id": 1, "node_key": NODE}
-    assert w3._estimate_node_run(base).known is False            # без заявки неизвестна
+    assert w3._estimate_node_run(base).known is False
     for missing in DECL:
         params = {**base, **{k: v for k, v in DECL.items() if k != missing}}
         assert w3._estimate_node_run(params).known is False, missing
@@ -182,7 +175,6 @@ def test_run_step_flags_unchanged_and_basis_params_optional() -> None:
     assert [s.id for s in reg.list()].count("node.run_step") == 1
 
 
-# --- загрузка данных и предусловия на заглушке ---------------------------------------------------------
 
 class FakeCtx:
     def __init__(self, *, frames=None, variant="scenes_to_frames_ru", user_text="",
@@ -247,10 +239,8 @@ async def test_precondition_demands_declared_cost_not_below_computed() -> None:
         assert msg and key in msg and str(ok[key]) in msg, key
     assert "min_llm_requests больше" in await pre.check(
         ctx, {**ok, "min_llm_requests": ok["max_llm_requests"] + 1})
-    # данные выросли после заявки -> заявка недействительна
     grown = FakeCtx(frames=_frames(40))
     assert "по данным проекта" in await pre.check(grown, ok)
-    # код-нода отчёта проверки стоимости не требует
     assert await pre.check(ctx, {"project_id": 1, "node_key": "n_excel_gpt_fw_report"}) is None
 
 
@@ -273,8 +263,8 @@ async def test_cost_basis_action_matches_estimator_and_executor_reverifies() -> 
     with pytest.raises(RuntimeError, match="не совпадает"):
         await run(ctx, {**base, **lied})
     with pytest.raises(RuntimeError, match="не совпадает"):
-        await run(ctx, base)                                     # без заявки
-    assert not any(c[0] == "POST" for c in ctx.calls[n:])          # запуск не отправлен
+        await run(ctx, base)
+    assert not any(c[0] == "POST" for c in ctx.calls[n:])
     report = await run(ctx, {"project_id": 1, "node_key": "n_excel_gpt_fw_report"})
     assert report["started"] is True
 
@@ -289,7 +279,6 @@ async def test_cost_basis_action_reports_not_estimable_instead_of_guessing() -> 
     assert free["free"] is True
 
 
-# --- реальное приложение: preview/approve без запуска ------------------------------------------------------
 
 async def _project_with_cells(env, cells=20) -> int:
     pid = await env.add_project(frames=0)
@@ -329,7 +318,6 @@ async def test_real_flow_basis_then_run_step_preview_is_known_and_approvable(
     info = view["steps"][0]["result"]
     assert info["estimable"] and info["packs"] == 3 and info["units"] == 20
     params = {"project_id": pid, "node_key": NODE, **info["declare"]}
-    # без заявки предусловие отказывает, а оценка остаётся неизвестной
     r0 = await env.client.post(f"{base}/plans/preview", json={"steps": [{
         "action_id": "node.run_step", "params": {"project_id": pid, "node_key": NODE}}]})
     assert r0.status_code == 422 and "run_cost_declared" in str(r0.json())
@@ -343,15 +331,13 @@ async def test_real_flow_basis_then_run_step_preview_is_known_and_approvable(
     assert "не откалибровано" in step["cost"]["basis"]
     assert pv["needs_approval"] and pv["budget"]["fits"] is True and pv["ok"] is True
     a = await env.client.post(f"{base}/plans/{r1.json()['plan_id']}/approve")
-    assert a.status_code == 200, a.text                   # подтверждение возможно; запуска нет
-    # потолок по умолчанию меньше верхней оценки: не помещается -> approve отказывает
+    assert a.status_code == 200, a.text
     monkeypatch.setattr(settings, "action_layer_session_cap_credits", 1.0)
     r2 = await env.client.post(f"{base}/plans/preview", json={"steps": [{
         "action_id": "node.run_step", "params": params}]})
     assert r2.json()["preview"]["budget"]["fits"] is False
     a2 = await env.client.post(f"{base}/plans/{r2.json()['plan_id']}/approve")
     assert a2.status_code == 409 and a2.json()["detail"]["code"] == "over_budget"
-    # заявка ниже расчёта отклоняется предусловием
     low = {**params, "max_llm_requests": 1}
     r3 = await env.client.post(f"{base}/plans/preview", json={"steps": [{
         "action_id": "node.run_step", "params": low}]})

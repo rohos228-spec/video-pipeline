@@ -291,6 +291,8 @@ def expected_status_progression(project: Project | None) -> list[ProjectStatus]:
         ProjectStatus.generating_videos,
         ProjectStatus.generating_audio,
         ProjectStatus.generating_music,
+        ProjectStatus.sfx_planning,
+        ProjectStatus.generating_sfx,
         ProjectStatus.assembling,
         ProjectStatus.publishing,
     ])
@@ -627,6 +629,9 @@ _LINEAR_MEDIA_READY: frozenset[ProjectStatus] = frozenset(
         ProjectStatus.animation_prompts_ready,
         ProjectStatus.videos_ready,
         ProjectStatus.audio_ready,
+        ProjectStatus.music_ready,
+        ProjectStatus.sfx_plan_ready,
+        ProjectStatus.sfx_ready,
     }
 )
 
@@ -639,6 +644,8 @@ _LINEAR_MEDIA_RUNNING: frozenset[ProjectStatus] = frozenset(
         ProjectStatus.generating_videos,
         ProjectStatus.generating_audio,
         ProjectStatus.generating_music,
+        ProjectStatus.sfx_planning,
+        ProjectStatus.generating_sfx,
         ProjectStatus.assembling,
     }
 )
@@ -683,16 +690,9 @@ async def _prepare_node_run_for_status(
         meta = dict(project.meta) if isinstance(project.meta, dict) else {}
         node_key = str(meta.get("active_excel_gpt_node_key") or "").strip() or None
         # Stale active: уже done → иначе снова крутим ноду ДО hero.
-        # НО: ▶ overflow (slot 0) живёт в enriching_1. Если шаг уже running
-        # с этим active_key, re-resolve(slot=1) стартует чужую линейную ноду
-        # параллельно, а выбранная через секунду heal'ится в done (#63).
         already_running = project.status is running_status
         if node_key and node_key in completed_node_keys(project):
             if already_running:
-                # Leftover worker tick после успеха: ключ уже в
-                # completed_keys, статус ещё enriching_N. Раньше pop
-                # completed_keys + allow_restart заново гнал GPT.
-                # Явный ▶ снимает ключ в start_step до воркера.
                 logger.info(
                     "auto_advance: #{} keep active_excel_gpt_node_key={} "
                     "(already {}, still in completed_keys — no restart)",
@@ -709,8 +709,6 @@ async def _prepare_node_run_for_status(
                     node_key,
                 )
                 node_key = None
-        # auto_mode: active key часто пуст (multi excel_gpt) — резолвим по слоту
-        # (incomplete-first, см. resolve_excel_gpt_node_key_for_slot).
         if not node_key:
             node_key = resolve_excel_gpt_node_key_for_slot(project, slot)
             if node_key:
@@ -820,7 +818,6 @@ async def _commit_running_after_prepare(
 
 
 async def _final_verified(session: AsyncSession, project: Project) -> bool:
-    """Автоодобрение финала только после живой структурной проверки последнего final_video."""
     from app.models import Artifact, ArtifactKind
     from app.services.artifact_verifier import verify_artifact
 
@@ -833,23 +830,20 @@ async def _final_verified(session: AsyncSession, project: Project) -> bool:
         return False
     try:
         res = await verify_artifact(art.path, root=project.data_dir, kind="assembly")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     if res.get("status") != "passed":
         return False
-    # Звуки подменены процедурным синтезом (нет ключа / сбой провайдера): финал смотрит человек, а не автоодобрение.
     if isinstance(project.meta, dict) and project.meta.get("sfx_degraded") is True:
         return False
     recorded = (art.meta or {}).get("sha256")
     if recorded is not None and recorded != res.get("sha256"):
         return False
-    # W70 (M9): мягкая проверка финала (соотношение сторон, длительность против суммы сцен). Нарушение только
-    # отдаёт финал человеку: ничего не пересобирается и не генерируется заново.
     try:
         from app.services.media_soft_checks import final_soft_issues
         from pathlib import Path as _Path
         issues = await final_soft_issues(session, project, _Path(art.path), res)
-    except Exception:  # noqa: BLE001
+    except Exception:
         issues = []
     if issues:
         logger.warning("auto_advance: #{} финал не автоодобрен, мягкая проверка: {}", project.id, ",".join(issues))
@@ -871,11 +865,6 @@ async def _record_unchecked_auto_approve(
     status: ProjectStatus,
     reason: str,
 ) -> None:
-    """C06: an approval that nobody and nothing checked is written down as exactly that.
-
-    The journal event and the log line both say "auto-approved without a check", never "approved by review".
-    A journal failure never blocks the approval itself.
-    """
     reason_ru = _UNCHECKED_REASONS_RU.get(reason, reason)
     summary = (f"Автоодобрение без проверки: шаг {transition.kind.value} ({status.value}) принят автоматически, "
                f"качество результата не проверялось: {reason_ru}.")
@@ -896,7 +885,7 @@ async def _record_unchecked_auto_approve(
         from app.services.observation import record_project_event
 
         await record_project_event(session, project, "runtime_check", payload)
-    except Exception:  # noqa: BLE001 - the journal must not block the approval
+    except Exception:
         logger.exception("auto_advance: #{} unchecked auto-approve event failed", project.id)
 
 
@@ -909,11 +898,9 @@ async def _apply_approve(
     bot: Bot | None = None,
     badge: str | None = None,
 ) -> None:
-    """Эмулируем клик `approve` пользователем в TG."""
     from app.services.gen_queue_run import is_user_stopped, should_hold_queue_auto_advance
     from app.services.project_control import auto_awaits_manual_start
 
-    # Свежий meta: ⏹ мог только что выставить user_stop / await_manual.
     try:
         await session.refresh(project)
     except Exception:  # noqa: BLE001
@@ -956,11 +943,9 @@ async def _apply_approve(
 
     # Hero-ready: внутри шага 4 может быть несколько героев / вариаций,
     # одна HITL-карточка ≠ переход к следующему шагу. Зеркалим логику
-    # из bot.py callback (parity #1 + #2 — multi-hero / excel-hero).
     if transition.ready_status is ProjectStatus.hero_ready:
         nxt = await _next_status_after_hero_approve(session, project, hitl)
         if nxt is not ProjectStatus.generating_hero:
-            # Цикл check(hero)→regen→check: не идём «дальше», а обратно в check.
             try:
                 from app.services.vision_check_loop import (
                     maybe_return_to_check_after_vision_ready,
@@ -1141,6 +1126,30 @@ async def _apply_approve(
         ):
             # Нода запущена флагом без узла на канвасе — линейный fallback.
             graph_nxt = ProjectStatus.generating_hero
+        if (
+            transition.ready_status is ProjectStatus.music_ready
+            and graph_nxt is None
+        ):
+            # Старый канвас без SFX нод — линейный fallback на sfx_planning.
+            graph_nxt = ProjectStatus.sfx_planning
+        if (
+            transition.ready_status is ProjectStatus.sfx_plan_ready
+            and graph_nxt is None
+        ):
+            # Линейный fallback на генерацию SFX.
+            graph_nxt = ProjectStatus.generating_sfx
+        if (
+            transition.ready_status is ProjectStatus.sfx_ready
+            and graph_nxt is None
+        ):
+            # Линейный fallback на финальную сборку.
+            graph_nxt = ProjectStatus.assembling
+        if (
+            transition.ready_status in _ENRICH_READY_TO_INDEX
+            and graph_nxt is None
+        ):
+            # Fallback для enrich-цепочки с учетом enrich_slots_count (парити #3).
+            graph_nxt = _next_running_with_enrich_cap(project, transition)
         if graph_nxt is None:
             # assembled без publish на графе — нормальный idle, не WARNING каждые 5с
             if transition.ready_status in (
@@ -1176,7 +1185,7 @@ async def _apply_approve(
             return
     _reset_retry_count(project, transition.ready_status)
     _node = _running_for_ready(transition.ready_status)
-    if _node is not None:  # шаг принят: цепочка перезапусков этого узла закончилась (C-12)
+    if _node is not None:
         from app.services import restart_chain
         restart_chain.clear_node(project, _node.value)
     await session.flush()
@@ -1201,11 +1210,6 @@ async def _apply_regen(
     bot: Bot | None = None,
     manual: bool = False,
 ) -> None:
-    """Эмулируем клик `regen` + кладём fix_hints для следующей генерации.
-
-    ``manual=True``: решение человека (HITL). Оно не считается «авто-регенерацией» (счётчик ``auto_retry_*`` не
-    растёт, пауза «GPT просил regen» не ставится), но считается в общей цепочке перезапусков узла (C-11, C-12, N-16).
-    """
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.regenerate
 
@@ -1230,10 +1234,8 @@ async def _apply_regen(
         )
         return
 
-    # Откатываемся к running-статусу шага.
     back_to = _running_for_ready(transition.ready_status)
 
-    # Общий потолок перезапусков узла (C-12): платный перезапуск сверх него не делается, решает человек.
     from app.services import restart_chain
     _node = back_to.value if back_to is not None else transition.ready_status.value
     _src = "manual" if manual else "auto_review"
@@ -1256,8 +1258,6 @@ async def _apply_regen(
         )
         project.status = back_to
 
-    # Передаём fix_hints в gpt_text_override, чтобы шаг увидел их и
-    # передал в промт.
     meta = dict(project.meta or {})
     if result.fix_hints:
         meta["auto_fix_hints"] = result.fix_hints
@@ -1375,11 +1375,8 @@ async def continue_project_pipeline(
     if cleared:
         project.meta = meta
         flag_modified(project, "meta")
-    # Flush before maybe_auto_advance(): it session.refresh()es the project, which
-    # silently discards unflushed changes (the stop flag used to survive "continue").
-    # An explicit continue is the user's manual ▶, so the manual-start gate goes too.
     clear_auto_await_manual_start(project)
-    from app.services import restart_chain  # явное «продолжить» человека снимает счётчики цепочки (C-11, C-12)
+    from app.services import restart_chain
     await restart_chain.release_for_human_everywhere(session, project)
     await session.flush()
 
@@ -1405,7 +1402,6 @@ _HARNESS_GATE_OBSERVABILITY = frozenset(
     {
         "project_log_clean",
         "node_runs_failed",
-        # Не блокировать HITL-цепочку c01→c02 из-за мягких проверок картинки.
         "hero_sheet_png",
         "excel_hero_fields_sane",
     }
@@ -1681,9 +1677,6 @@ async def maybe_auto_advance(
         _nxt = await _graph_next_running(session, project, status)
         if _nxt is None:
             return False
-        # W6-1 (E01/E02): пока публикация пропущена / ждёт подтверждения человека / ждёт его проверки,
-        # проект не возвращается в publishing сам (иначе цикл assembled -> publishing -> assembled).
-        # Выход - только через панель «Публикации»; auto_mode и HITL_AUTO_APPROVE подтверждение не создают.
         from app.orchestrator.steps.publish import publish_hold_reason
 
         _hold = await publish_hold_reason(session, project)
@@ -1714,7 +1707,6 @@ async def maybe_auto_advance(
     if hitl is not None and hitl.decision is HITLDecision.rejected:
         return False
 
-    # Контроль только ИИ (ручной режим / «Контроль пайплайна» убраны).
     meta = dict(project.meta or {})
     meta["ai_control"] = True
 
@@ -1791,8 +1783,6 @@ async def maybe_auto_advance(
             session, project, hitl, transition, result, bot=bot
         )
 
-    # Все остальные случаи (visual + AUTO_REVIEW_VISUAL=1): проверки для них нет.
-    # Одобряем, но честно записываем «автоодобрение без проверки» (C06).
     await _record_unchecked_auto_approve(
         session, project, transition, status, "visual_review_not_implemented"
     )
@@ -1821,7 +1811,6 @@ def _should_vision_check(project: Project, kind: HITLKind) -> bool:
 
 
 def _artifact_for_kind(project: Project, kind: HITLKind) -> str | None:
-    """Берёт текст артефакта из проекта по типу HITL."""
     if kind is HITLKind.approve_plan:
         return project.general_plan or None
     if kind is HITLKind.approve_script:
@@ -1858,7 +1847,6 @@ async def _run_verdict_review_for_step(
 
     gpt = get_gpt_client()
     await gpt.new_conversation()
-    # Платный вызов проверки идёт вне такта шага: без области проект и запуск не попадали в spend_ledger (F10-D4).
     from app.services import request_context
     from app.services.observation import _cost_project
     cost_token = _cost_project.set(int(project.id))
@@ -1896,7 +1884,6 @@ async def _run_verdict_review_for_step(
 async def _run_text_review(
     project: Project, kind: HITLKind, artifact: str
 ) -> ReviewResult:
-    """Запускает GPT-ревью текста через HTTP API."""
     from app.services import auto_review
     from app.services.gpt_client import get_gpt_client
 
@@ -2223,13 +2210,6 @@ async def serial_tick_mass_lanes(session: AsyncSession) -> int:
 async def maybe_auto_advance_for_worker(
     session: AsyncSession, project: Project, bot: Bot, *, force: bool = False
 ) -> bool:
-    """Тик воркера: автопродвижение на базе проекта (F10-D1).
-
-    Содержимое проекта (general_plan, script_text, кадры, HITL, артефакты) лежит в его project.db, а воркер держит
-    сессию master. На строке master ``clamp_status_to_data`` видит пустые данные и откатывает ``plan_ready`` в ``new``.
-    При ``WORKER_USE_PROJECT_DB=true`` та же боевая функция идёт на сессии project.db (как ``advance_project_job`` для
-    шагов): рантайм подтягивается из master до тика и возвращается в master после. Флаг выключен: прежнее поведение.
-    Строки проекта нет в project.db: возврат на master, как и раньше."""
     if not settings.worker_use_project_db:
         return await maybe_auto_advance(session, project, bot, force=force)
     from app.project_db import project_db_session_scope, pull_master_runtime_into_project, push_runtime_to_master
@@ -2245,6 +2225,6 @@ async def maybe_auto_advance_for_worker(
         await push_runtime_to_master(ps, p)
     try:
         await session.refresh(project)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("auto_advance: refresh проекта #{} после тика на project.db не удался", pid)
     return advanced

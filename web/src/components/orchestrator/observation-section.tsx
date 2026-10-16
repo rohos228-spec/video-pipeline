@@ -19,8 +19,6 @@ import type {MediaContext} from "@/lib/observations";
 function VerifiedImagePreview({href}:{href:string}) {
   const [failed,setFailed]=useState(false);
   if(failed) return <p role="status" className="text-amber-200">Превью недоступно: файл нужно проверить повторно.</p>;
-  // Original application endpoint rechecks ownership, containment and file hash.
-  // eslint-disable-next-line @next/next/no-img-element
   return <img src={href} alt="Проверенный файл изображения; качество содержания не оценивалось"
     loading="lazy" onError={()=>setFailed(true)} className="mt-2 max-h-64 max-w-full rounded object-contain"
     data-testid="verified-image-preview"/>;
@@ -77,9 +75,7 @@ export function ObservationSection({projectId}: {projectId: number | null}) {
   const [actionError,setActionError]=useState('');
   const [controlsError,setControlsError]=useState('');
   const generation = useRef(0);
-  // Проект сменился, а выбранный запуск ещё от прежнего: до загрузки списка нового проекта не опрашиваем его.
   const staleFor = useRef<number | null>(null);
-  // В первом кадре после смены проекта `execution` ещё от прежнего: дочерним разделам его не отдаём.
   const shownProject = useRef(projectId);
   const projectSwitched = shownProject.current !== projectId;
   useEffect(() => { shownProject.current = projectId; });

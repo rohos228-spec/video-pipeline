@@ -1,4 +1,3 @@
-"""CANON §6 validator: every rule_id, CLI exit codes."""
 
 from __future__ import annotations
 
@@ -224,7 +223,6 @@ def test_crossing_method_allows_side_change():
 
 def test_screen_pos_mismatch():
     rows = [_row(1, screen_pos={"c01": "R", "c02": "L"})]
-    # default geometry is c01 L, c02 R for cam below
     if _screen() == {"c01": "R", "c02": "L"}:
         rows = [_row(1, screen_pos={"c01": "L", "c02": "R"})]
     issues = validate_scene("fix:test", rows, _space(), _frames(1))

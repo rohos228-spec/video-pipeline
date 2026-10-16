@@ -1,7 +1,3 @@
-"""beforeShellExecution: git-политика, секреты, опасные удаления, второй Chrome.
-
-Всегда печатает JSON с permission allow/ask/deny и выходит с кодом 0.
-"""
 from __future__ import annotations
 
 import re
@@ -10,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from vp_common import PROTECTED_BRANCHES, current_branch, log, project_root, read_input, respond  # noqa: E402
+from vp_common import PROTECTED_BRANCHES, current_branch, log, project_root, read_input, respond
 
 ALLOW, ASK, DENY = "allow", "ask", "deny"
 RANK = {ALLOW: 0, ASK: 1, DENY: 2}
@@ -49,7 +45,6 @@ def split_tokens(text: str) -> list[str]:
 
 
 def git_invocations(command: str) -> list[list[str]]:
-    """Все вызовы git (в т.ч. внутри bash -c "..."/powershell -Command "...")."""
     result = []
     for m in GIT_TOKEN.finditer(command):
         rest = command[m.end():]
@@ -61,7 +56,6 @@ def git_invocations(command: str) -> list[list[str]]:
 
 
 def strip_global_opts(tokens: list[str]) -> tuple[list[str], str | None]:
-    """Возвращает (аргументы после подкоманды включительно, путь из -C)."""
     i, cwd = 0, None
     while i < len(tokens) and tokens[i].startswith("-"):
         opt = tokens[i]
@@ -176,7 +170,7 @@ def main() -> None:
     cwd = Path(data.get("cwd") or project_root())
     try:
         permission, reason = decide(command, cwd)
-    except Exception as exc:  # хук не должен падать молча — лучше спросить
+    except Exception as exc:
         permission, reason = ASK, f"guard error: {exc}"
     if permission != ALLOW:
         log("guard", f"{permission}: {reason} :: {command[:300]}")

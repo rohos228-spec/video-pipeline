@@ -1,4 +1,3 @@
-"""Offline two-turn replay through the online entrypoint and exact pilot Handler."""
 import asyncio
 import hashlib
 import importlib.util

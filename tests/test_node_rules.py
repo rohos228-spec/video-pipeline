@@ -1,4 +1,3 @@
-"""Реестр правил группы script_frames_qc: ссылки живые, документ свежий."""
 
 from __future__ import annotations
 

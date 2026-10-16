@@ -1,4 +1,3 @@
-"""Vibecode decision adapter through HttpDecision / DecisionSupervisor.step; stubs only, no network."""
 import importlib,json,unittest
 from unittest.mock import patch,MagicMock
 import httpx
@@ -58,7 +57,6 @@ class VibecodeAdapter(base_tests.DecisionDurability):
         return d,self.service.HttpDecision(self.loop,d['decision_id'],token,ctx['context_version'])
 
     async def fresh(self):
-        # step() claims the decision itself, so these tests must not pre-claim it.
         await self.enable_decisions();return await self.begin()
 
     def kwargs(self,**extra):
@@ -78,7 +76,6 @@ class VibecodeAdapter(base_tests.DecisionDurability):
     async def status(self,decision_id):
         async with self.sessions() as s:return await s.get(self.service.DecisionRecord,decision_id)
 
-    # --- full step: one non-stream POST -------------------------------------------------
     async def test_step_makes_one_nonstream_vibecode_post(self):
         d=await self.fresh();self.handler=self.proposal_handler('wait')
         with self.mock_client(),patch('app.services.gpt_api.chat',side_effect=AssertionError('Kie client must not be used')):
@@ -172,7 +169,6 @@ class VibecodeAdapter(base_tests.DecisionDurability):
         with self.mock_client():await self.loop.step(d['decision_id'])
         self.assertEqual((await self.status(d['decision_id'])).status,'ready')
 
-    # --- HttpDecision.send directly -----------------------------------------------------
     async def test_send_body_has_token_cap_and_no_reasoning(self):
         d,hook=await self.hook();seen=[]
         async def send(**kw):seen.append(kw);return result()
@@ -272,7 +268,6 @@ class VibecodeAdapter(base_tests.DecisionDurability):
         self.assertNotEqual(self.track.call_args.kwargs.get('provider'),'vibecode')
 
 
-# Inherit fixtures, not historical suites.
 for _name in list(dir(VibecodeAdapter)):
     if _name.startswith('test_') and _name not in VibecodeAdapter.__dict__:setattr(VibecodeAdapter,_name,None)
 if __name__=='__main__':unittest.main()

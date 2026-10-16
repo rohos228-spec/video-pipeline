@@ -1,8 +1,3 @@
-/**
- * Клиент слоя действий (бэкенд: app/services/action_layer, контракт: docs/ACTION_LAYER.md).
- * Только типы, вызовы REST и чистые функции форматирования. Подтверждение создаётся
- * только явным вызовом approvePlan из обработчика клика оператора.
- */
 import { useEffect, useState } from "react";
 import { ApiError, http } from "./api";
 import type { AttachmentRules } from "./attachment-view";
@@ -38,7 +33,6 @@ export interface ActionSpecJson {
 
 export interface CatalogResponse { count: number; actions: ActionSpecJson[] }
 
-/** low/high = null или known=false означает «неизвестно», а не 0. */
 export interface CostEstimateJson { low: number; high: number; basis: string; known: boolean }
 
 export interface PreviewStep {
@@ -68,23 +62,17 @@ export interface PlanPreview {
   budget?: { cap_credits: number; remaining_credits: number; fits: boolean };
 }
 
-/** Ответ preview / from-text / from-macro. Поля модели необязательны (зависят от маршрута). */
 export interface PlanPreviewResponse {
-  /** null, если планировщик просит уточнение или план не прошёл проверку. */
   plan_id: string | null;
   preview: PlanPreview | null;
   explanation_ru?: string | null;
   needs_clarification?: boolean | string | null;
-  /** Короткие варианты ответа на уточнение (для кнопок); пусто, если вариантов нет. */
   clarification_options?: string[];
-  /** Планировщик ждёт файл: какое действие он применит после загрузки (кнопкой загрузки). */
   attachment_request?: { action_id: string; params: Record<string, unknown>; formats?: string } | null;
-  /** id прикреплённых файлов, которые сервер подставил в шаги плана (после создания плана они заняты). */
   attachments_used?: string[];
   context_version?: string | number | null;
   macro_id?: string | null;
   steps?: { action_id: string; params: Record<string, unknown>; depends_on?: number[] }[];
-  /** Планировщик не смог ответить из-за временного сбоя: тот же запрос можно отправить ещё раз. */
   retryable?: boolean;
 }
 
@@ -125,9 +113,7 @@ export interface PlanView {
   error: string | null;
   live: boolean;
   interrupted: boolean;
-  /** Резерв по журналу расходов (верхняя граница), а не факт. */
   reserved_credits?: number;
-  /** Сумма credits_spent, которую сообщили сами действия; null, если факт не сообщён. */
   actual_credits?: number | null;
   resume_window_s?: number;
   resume_expired?: boolean;
@@ -155,7 +141,6 @@ export interface HistoryItem {
 }
 export interface HistoryResponse { total: number; items: HistoryItem[] }
 
-/** Умная кнопка (макрос). Форма ответа допускает несколько вариантов имён полей. */
 export interface MacroParamSchema {
   type?: string;
   enum?: unknown[];
@@ -179,7 +164,6 @@ export interface MacroJson {
 
 export interface PlanStepInput { action_id: string; params: Record<string, unknown>; depends_on?: number[] }
 
-// ---- вызовы ----
 
 export const getCatalog = () => http<CatalogResponse>(`${BASE}/catalog`);
 
@@ -196,7 +180,6 @@ const sel = (ctx: SceneContext) => ({
   ...(ctx.selected_frame ? { selected_frame: ctx.selected_frame } : {}),
 });
 
-/** attachmentIds: файлы, уже загруженные через uploadAttachment (путь подставляет сервер). */
 export const planFromText = (text: string, ctx: SceneContext, attachmentIds: string[] = []) =>
   http<PlanPreviewResponse>(`${BASE}/plans/from-text`, {
     method: "POST",
@@ -206,11 +189,9 @@ export const planFromText = (text: string, ctx: SceneContext, attachmentIds: str
     }),
   }, 90_000);
 
-// ---- файлы командной строки ----
 
 export interface AttachmentInfo { attachment_id: string; name: string; size: number; kind: string; sha256: string }
 
-/** Правила загрузки с сервера; null, если ручки нет (тогда берутся запасные правила). */
 export async function getAttachmentRules(): Promise<AttachmentRules | null> {
   try {
     const r = await http<AttachmentRules>(`${BASE}/attachments/rules`);
@@ -220,7 +201,6 @@ export async function getAttachmentRules(): Promise<AttachmentRules | null> {
   }
 }
 
-/** Загрузка файла с прогрессом (fetch не умеет прогресс отправки, поэтому XMLHttpRequest). */
 export function uploadAttachment(
   file: File, projectId: number, onProgress?: (percent: number) => void, signal?: AbortSignal,
 ): Promise<AttachmentInfo> {
@@ -249,7 +229,6 @@ export function uploadAttachment(
   });
 }
 
-/** Убирает ещё не использованный файл на сервере (кнопка «убрать»). */
 export const deleteAttachment = (attachmentId: string, projectId: number) =>
   http<{ deleted: string }>(`${BASE}/attachments/${encodeURIComponent(attachmentId)}?project_id=${projectId}`, { method: "DELETE" });
 
@@ -259,7 +238,6 @@ export const planFromMacro = (macroId: string, params: Record<string, unknown>, 
     body: JSON.stringify({ macro_id: macroId, params, request_text: requestText, ...sel(ctx) }),
   });
 
-/** Возвращает null, если маршрут отсутствует (404/405): функция недоступна, не ошибка. */
 export async function listMacros(): Promise<MacroJson[] | null> {
   try {
     const r = await http<{ macros?: MacroJson[] } | MacroJson[]>(`${BASE}/macros`);
@@ -270,7 +248,6 @@ export async function listMacros(): Promise<MacroJson[] | null> {
   }
 }
 
-/** Только по клику оператора. */
 export const approvePlan = (planId: string) =>
   http<ApprovalResponse>(`${BASE}/plans/${encodeURIComponent(planId)}/approve`, { method: "POST", body: "{}" });
 
@@ -282,7 +259,6 @@ export interface PlanListItem {
   live: boolean; interrupted: boolean; created_at: string | null; updated_at: string | null;
 }
 
-/** Планы по статусу (для восстановления экрана выполнения после перезагрузки страницы). */
 export const listPlans = (status: string, limit = 10) =>
   http<{ items: PlanListItem[] }>(`${BASE}/plans?status=${encodeURIComponent(status)}&limit=${limit}`);
 
@@ -295,7 +271,6 @@ export const stopPlan = (planId: string) =>
 export const getHistory = (limit = 20) =>
   http<HistoryResponse>(`${BASE}/history?limit=${limit}`);
 
-// ---- ошибки ----
 
 export const ERROR_TEXT_RU: Record<string, string> = {
   plan_invalid: "План не прошёл проверку: исправьте шаги и составьте план заново.",
@@ -341,7 +316,6 @@ function stringifyItem(x: unknown): string {
   return String(x);
 }
 
-/** Достаёт стабильный код ошибки из ответа API (detail.code или detail строкой). */
 export function errorCode(e: unknown): string | null {
   if (!(e instanceof ApiError)) return null;
   const d = e.detail as unknown;
@@ -356,7 +330,6 @@ export function errorCode(e: unknown): string | null {
   return null;
 }
 
-/** Временный сбой планировщика: сервер пометил ошибку `retryable: true` (в detail или в detail.detail). */
 export function isRetryable(e: unknown): boolean {
   if (!(e instanceof ApiError)) return false;
   const d = e.detail as unknown;
@@ -366,7 +339,6 @@ export function isRetryable(e: unknown): boolean {
   return Boolean(o.detail && typeof o.detail === "object" && (o.detail as { retryable?: unknown }).retryable === true);
 }
 
-/** Читаемое русское сообщение: строка, {detail:{code,message}}, массив ошибок валидации или текст. */
 export function describeError(e: unknown): string {
   if (!(e instanceof ApiError)) return e instanceof Error ? e.message : "Неизвестная ошибка.";
   const root = e.detail as unknown;
@@ -396,7 +368,6 @@ export function describeError(e: unknown): string {
   return `Ошибка сервера (${e.status}): ${e.message}`;
 }
 
-/** Недопустимый план при preview: 422 {detail:{code:"plan_invalid", preview}}. */
 export function previewFromError(e: unknown): PlanPreview | null {
   if (e instanceof ApiError && e.status === 422 && e.detail && typeof e.detail === "object") {
     const d = (e.detail as { detail?: { preview?: PlanPreview } }).detail ?? (e.detail as { preview?: PlanPreview });
@@ -405,7 +376,6 @@ export function previewFromError(e: unknown): PlanPreview | null {
   return null;
 }
 
-// ---- форматирование (чистые функции) ----
 
 export const RISK_LABEL_RU: Record<RiskTier, string> = {
   read: "чтение",
@@ -457,7 +427,6 @@ export const EVENT_RU: Record<string, string> = {
 
 const fmtNum = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, ""));
 
-/** "2–6 кр." / "3 кр." / "неизвестно". Неизвестное никогда не превращается в 0. */
 export function formatCredits(low: number | null | undefined, high: number | null | undefined, known = true): string {
   if (!known || low == null || high == null) return "неизвестно";
   return low === high ? `${fmtNum(low)} кр.` : `${fmtNum(low)}–${fmtNum(high)} кр.`;
@@ -481,7 +450,6 @@ export function formatTotalCost(preview: PlanPreview): string {
 
 export interface ParamInfo { label: string; hint?: string }
 
-/** Русские подписи параметров действий и умных кнопок. Неизвестные имена показываются как есть. */
 export const PARAM_RU: Record<string, ParamInfo> = {
   project_id: { label: "Проект" },
   node_type: { label: "Медиа-нода", hint: "videos, items, music и т.д." },
@@ -607,7 +575,6 @@ export const PARAM_RU: Record<string, ParamInfo> = {
 export const paramLabel = (name: string): string => PARAM_RU[name]?.label ?? name;
 export const paramHint = (name: string): string | undefined => PARAM_RU[name]?.hint;
 
-/** Параметры шага простым языком: «Проект: 12; Номер кадра: 3». */
 export function describeParams(params: Record<string, unknown> | undefined | null): string {
   const entries = Object.entries(params ?? {});
   if (entries.length === 0) return "без параметров";
@@ -620,7 +587,6 @@ export function describeParams(params: Record<string, unknown> | undefined | nul
     .join("; ");
 }
 
-/** Итоги и причины, которые сервер пишет в журнал и в план. */
 export const OUTCOME_RU: Record<string, string> = {
   proposed: "предложен",
   approved: "подтверждён",
@@ -648,7 +614,6 @@ export const STOP_REASON_RU: Record<string, string> = {
 };
 export const stopReasonRu = (r: string): string => STOP_REASON_RU[r] ?? r;
 
-/** Переводит известные английские тексты ошибок сервера; неизвестные оставляет как есть. */
 export function serverTextRu(t: string | null | undefined): string {
   if (!t) return "";
   let m: RegExpMatchArray | null;
@@ -671,7 +636,6 @@ export function serverTextRu(t: string | null | undefined): string {
 }
 
 let titlesPromise: Promise<Record<string, string>> | null = null;
-/** Словарь «id действия -> русское название» из каталога (кэшируется на время сессии страницы). */
 export function loadActionTitles(): Promise<Record<string, string>> {
   if (!titlesPromise) {
     titlesPromise = getCatalog()
@@ -691,7 +655,6 @@ export function useActionTitles(): Record<string, string> {
   return t;
 }
 
-/** «Выполнить» без подтверждения допустимо только если сервер не требует approval и план валиден. */
 export function canRunWithoutApproval(p: PlanPreview): boolean {
   return p.ok && !p.needs_approval;
 }
@@ -706,7 +669,6 @@ export function macroTitle(m: MacroJson): string {
   return m.title_ru ?? String(m.id);
 }
 
-/** Начальные значения формы макроса: default, первый enum, пусто; project_id подставляется отдельно. */
 export function macroInitialValues(m: MacroJson, projectId: number): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
   for (const [k, sch] of Object.entries(m.params_schema?.properties ?? {})) {
@@ -719,7 +681,6 @@ export function macroInitialValues(m: MacroJson, projectId: number): Record<stri
   return out;
 }
 
-/** Собирает типизированные params из значений формы. Пустые необязательные поля опускаются. */
 export function buildMacroParams(m: MacroJson, values: Record<string, string | boolean>): { params: Record<string, unknown>; errors: string[] } {
   const params: Record<string, unknown> = {};
   const errors: string[] = [];
@@ -743,7 +704,6 @@ export function buildMacroParams(m: MacroJson, values: Record<string, string | b
   return { params, errors };
 }
 
-/** C-9: резерв потолка шага, не закрытый фактом (удерживается, пока человек не снимет его после сверки кабинета). */
 export interface UnresolvedReserve {
   plan_id: string; step_index: number; action_id: string; status: string; held_credits: number; ended_at: string;
 }
@@ -751,7 +711,6 @@ export interface UnresolvedReserve {
 export const listUnresolvedReserves = () =>
   http<{ items: UnresolvedReserve[]; total_held_credits: number }>(`${BASE}/reserves`);
 
-/** Снять резерв: сервер требует токен оператора (его добавляет http) и причину не короче 3 символов. */
 export const releaseReserve = (planId: string, stepIndex: number, reason: string) =>
   http<{ plan_id: string; step_index: number; released_credits: number }>(`${BASE}/reserves/release`, {
     method: "POST",

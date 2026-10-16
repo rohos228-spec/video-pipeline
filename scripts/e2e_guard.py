@@ -1,16 +1,3 @@
-"""Защита e2e-скриптов от боевых данных (шаг A19).
-
-e2e-скрипты копируют «семя» данных в рабочую папку и затем делают ``DELETE``/``UPDATE`` и ``rmtree``. Этот модуль
-не даёт им коснуться боевой папки данных:
-
-* рабочая папка не может совпадать с боевыми данными, лежать внутри них, содержать их или пересекаться с семенем;
-* ``rmtree`` разрешён только для ``<work>/data`` и только если ``<work>`` создана этими скриптами (маркер) либо
-  ``<work>/data`` ещё не существует;
-* любая запись в sqlite идёт через ``connect_scratch``: файл должен лежать внутри рабочей папки.
-
-Боевыми считаются: ``<репозиторий>/data``, ``DATA_DIR`` и папка ``SQLITE_PATH`` из окружения процесса.
-Файл ``.env`` не читается. Любое нарушение даёт ``SystemExit(2)`` с русским текстом, ничего не удаляется.
-"""
 from __future__ import annotations
 
 import os
@@ -50,7 +37,6 @@ def _overlap(a: Path, b: Path) -> bool:
 
 
 def assert_safe_layout(seed: Path, work: Path, *, repo_root: Path = REPO_ROOT, env: dict | None = None) -> Path:
-    """Check seed/work before anything is copied or removed; return ``<work>/data``."""
     seed, work = Path(seed).resolve(), Path(work).resolve()
     data = work / "data"
     for live in live_data_dirs(repo_root, env):
@@ -68,7 +54,6 @@ def assert_safe_layout(seed: Path, work: Path, *, repo_root: Path = REPO_ROOT, e
 
 
 def prepare_scratch_data(seed: Path, work: Path, *, repo_root: Path = REPO_ROOT, env: dict | None = None) -> Path:
-    """Safe replacement of ``rmtree(work/data); copytree(seed, work/data)``."""
     data = assert_safe_layout(seed, work, repo_root=repo_root, env=env)
     work = Path(work).resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -80,7 +65,6 @@ def prepare_scratch_data(seed: Path, work: Path, *, repo_root: Path = REPO_ROOT,
 
 
 def reset_scratch_data(work: Path, *, repo_root: Path = REPO_ROOT, env: dict | None = None) -> Path:
-    """Safe replacement of ``rmtree(work/data); mkdir`` for scripts that build their data from scratch."""
     work = Path(work).resolve()
     data = work / "data"
     for live in live_data_dirs(repo_root, env):
@@ -109,7 +93,6 @@ def assert_scratch_file(path: Path, work: Path, *, repo_root: Path = REPO_ROOT, 
 
 
 class _ClosingConnection(sqlite3.Connection):
-    """``with`` commits (as sqlite3 does) and then really closes, so Windows does not keep the file locked."""
 
     def __exit__(self, *exc):
         try:
@@ -119,12 +102,10 @@ class _ClosingConnection(sqlite3.Connection):
 
 
 def connect_scratch(path: Path, work: Path, **kw) -> sqlite3.Connection:
-    """``sqlite3.connect`` only for files inside the scratch folder (the only place DELETE/UPDATE may run)."""
     return sqlite3.connect(assert_scratch_file(path, work), factory=_ClosingConnection, **kw)
 
 
 def assert_scratch_data_dir(data_dir: Path, *, repo_root: Path = REPO_ROOT, env: dict | None = None) -> Path:
-    """For launchers that take ``--data-dir``: a data dir that is (or is inside) the live one is refused."""
     d = Path(data_dir).resolve()
     for live in live_data_dirs(repo_root, env):
         if _overlap(d, live):
@@ -138,7 +119,6 @@ def new_scratch_dir(prefix: str = "e2e_") -> Path:
 
 
 def resolve_project_id(state_db: Path, slug: str | None, explicit: int | None = None) -> int:
-    """Project id by slug in the copied state.db (no hard-coded ``2``); ``explicit`` wins when given."""
     if explicit is not None:
         return int(explicit)
     if not slug:

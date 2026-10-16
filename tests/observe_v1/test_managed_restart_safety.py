@@ -1,10 +1,3 @@
-"""Crash windows through existing Actions/FSM/Kie paths and durable SQLite.
-
-Reuse the established fixtures without inheriting their already verified tests.
-Process loss is injected at a committed boundary; no child process or socket is
-started. Only the HTTP transport is synthetic; reservation, claim, reload,
-reconciliation, provider parsing, download and image verification remain real.
-"""
 import io
 import unittest
 from datetime import datetime, timedelta
@@ -39,7 +32,7 @@ from app.settings import settings
 
 
 class SimulatedProcessLoss(BaseException):
-    """Bypass application exception handling at a specific durable boundary."""
+    pass
 
 
 class ManagedRecoveryRestartSafety(unittest.IsolatedAsyncioTestCase):
@@ -71,7 +64,6 @@ class ManagedRecoveryRestartSafety(unittest.IsolatedAsyncioTestCase):
 
     async def reserve_and_claim(self):
         await self.exhausted_fixture()
-        # Real project.db routing: no alias of the business and control sessions.
         async with self.sessions() as master:
             project = await master.get(Project, 7)
             project_db.register_project_data_dir(7, project.data_dir)
@@ -86,7 +78,6 @@ class ManagedRecoveryRestartSafety(unittest.IsolatedAsyncioTestCase):
                 execution_id="exec-durable",
             )
             self.assertEqual(actual, ticket["new_attempt_id"])
-            # The claim committed in master before this business transaction.
             project.topic = "uncommitted worker edit"
             await business.flush()
             await business.rollback()
@@ -98,7 +89,6 @@ class ManagedRecoveryRestartSafety(unittest.IsolatedAsyncioTestCase):
         actions_recovery.finish_job_tracking(7)
         await project_db.close_all_project_engines()
         await self.engine.dispose()
-        # Reopen the same durable files with new sessions and runtime objects.
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         db.SessionLocal = self.sessions
         self.supervisor = ActionSupervisor(self.sessions)
@@ -160,7 +150,6 @@ class ManagedRecoveryRestartSafety(unittest.IsolatedAsyncioTestCase):
         ticket, original_topic = await self.reserve_and_claim()
         await self.reconstruct()
         claimed = await self.assert_single_ticket(ticket, "claimed")
-        # Cross the existing grace period without sleeping or rewriting a ticket.
         with patch.object(actions_recovery, "datetime", wraps=datetime) as clock:
             clock.utcnow.return_value = claimed.created_at + timedelta(seconds=31)
             await actions_recovery.reconcile(self.observer)
@@ -348,7 +337,6 @@ class ManagedMediaRestartSafety(unittest.IsolatedAsyncioTestCase):
         admission = await worker_entry_admission(7)
         self.assertFalse(admission.allowed,
             "durable managed execution with an unsettled submit must block a cold worker: " + admission.reason)
-        # The original runner must obey that admission before opening business DB.
         from app.services.advance_runner import advance_project_job
         with patch("app.services.advance_runner.project_db_session_scope",
                    side_effect=AssertionError("cold managed worker opened a business session")) as business:
@@ -375,7 +363,6 @@ class ManagedMediaRestartSafety(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered.job_id, original_job_id)
         self.assertEqual(recovered.path, original_path)
         self.assertEqual(recovered.provider_job_id, "restart-job-001")
-        # Real CAS rejection must roll back the common budget increment too.
         with self.assertRaisesRegex(RuntimeError, "duplicate submit"):
             await recovered.reserve("generation_submit")
         _, requests, control = await self.durable_state()

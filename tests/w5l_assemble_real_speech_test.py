@@ -1,11 +1,3 @@
-"""Guards for the F07 option of scripts/e2e_assemble_local.py: `--real-speech --voice-wav <wav> --asr-model medium`.
-
-Pure helpers (words, ASS cues, pixel bands, network guard, model link, plan sheet) plus ONE real dry run: the whole
-application starts in a SUBPROCESS, the REAL offline faster-whisper transcribes a Windows SAPI wav, the production
-assemble burns the subtitles, a forced failure and one supervised retry run, and the approval stays pending. The real run
-is skipped, with the reason, when faster_whisper, the cached model, ffmpeg or the wav is missing. Run this file alone:
-one pytest at a time (the stand binds a port).
-"""
 import asyncio
 import importlib.util
 import json
@@ -28,7 +20,7 @@ sys.modules[_spec.name] = script
 _spec.loader.exec_module(script)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _stand_workdir import make_workdir, remove_workdir  # noqa: E402
+from _stand_workdir import make_workdir, remove_workdir
 
 PORT = 18817
 DEFAULT_WAV = Path(os.environ.get("F07_VOICE_WAV") or r"C:\video-pipeline\_asr1\voice.wav")
@@ -38,7 +30,6 @@ needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe are re
 
 @pytest.fixture
 def tmp_path():
-    """Outside the repository: the e2e guard refuses a work folder inside live data."""
     path = make_workdir()
     try:
         yield path
@@ -51,7 +42,6 @@ def _words(texts=None, step=0.7):
     return [{"word": t, "start": round(i * step, 3), "end": round(i * step + 0.6, 3), "prob": 0.9} for i, t in enumerate(texts)]
 
 
-# ---------- words ----------
 
 def test_normalisation_ignores_case_punctuation_and_yo():
     assert script.normalize_word("Привет,") == "привет" and script.normalize_word("ЁЖ!") == "еж"
@@ -62,8 +52,8 @@ def test_alignment_keeps_order_and_tolerates_an_ending_but_not_a_short_miss():
     pairs = script.align_words(["привет", "это", "проверка", "субтитр"], ["Привет", "это", "ПРОВЕРКА!", "субтитры"])
     assert pairs == [(0, 0), (1, 1), (2, 2), (3, 3)]
     assert script.align_words(["мы", "как"], ["мы", "ли", "как"]) == [(0, 0), (1, 2)]
-    assert script.align_words(["кот"], ["код"]) == []                  # short words must match exactly
-    assert script.align_words(["а", "б"], ["б", "а"]) in ([(0, 1)], [(1, 0)])  # order is never crossed
+    assert script.align_words(["кот"], ["код"]) == []
+    assert script.align_words(["а", "б"], ["б", "а"]) in ([(0, 1)], [(1, 0)])
 
 
 def test_asr_check_passes_with_eight_of_eleven_and_sane_stamps():
@@ -82,7 +72,6 @@ def test_asr_check_fails_on_non_monotonic_or_outside_the_voice_or_nothing():
     assert not script.check_asr_words([], voice_s=8.7)["ok"]
 
 
-# ---------- ASS cues and the subtitles built from the words ----------
 
 def _ass_for(cues, tmp_path):
     from app.services.assembly import make_simple_ass
@@ -103,14 +92,13 @@ def test_ass_cues_are_read_back_without_override_tags(tmp_path):
 def test_subtitles_built_from_the_words_pass_and_wrong_text_or_timing_fails(tmp_path):
     cues = _ass_for(GOOD_CUES, tmp_path)
     words = _words(step=0.7)
-    # cue starts follow the words with the production lead: shift the words to the cue starts
     words = [dict(w, start=s, end=s + 0.5) for w, s in zip(words, [0.0, 0.7, 0.9, 1.9, 2.3, 3.9, 4.3, 5.0, 5.8, 6.4, 7.0])]
     good = script.check_subtitles_from_words(cues, words)
     assert good["ok"] and good["script_words_shown"] and good["aligned_to_asr"] == 11 and good["cue_first_words_aligned"] == 6
     wrong_text = script.check_subtitles_from_words(_ass_for([(0.0, 1.0, "совсем другой текст")], tmp_path), words)
     assert not wrong_text["ok"] and not wrong_text["script_words_shown"]
     late = [dict(w, start=w["start"] + 3.0, end=w["end"] + 3.0) for w in words]
-    assert not script.check_subtitles_from_words(cues, late)["ok"]          # cues far from where the ASR heard the words
+    assert not script.check_subtitles_from_words(cues, late)["ok"]
     assert not script.check_subtitles_from_words([], words)["ok"]
 
 
@@ -118,34 +106,33 @@ def test_probe_times_are_inside_a_spoken_word_with_a_cue_and_a_silence_without_o
     words = [{"word": "a", "start": 0.0, "end": 3.2}, {"word": "b", "start": 4.6, "end": 8.0}]
     cues = [(0.0, 3.2, "a"), (4.4, 8.0, "b")]
     got = script.pick_probe_times(cues, words, voice_s=8.7)
-    assert got["word"] == {"t": 6.3, "word": "b"}                          # the longest word, its middle, a cue is on screen
+    assert got["word"] == {"t": 6.3, "word": "b"}
     assert got["silent"] == 3.9 and not any(s <= got["silent"] <= e for s, e, _ in cues)
-    assert script.pick_probe_times([], words, 8.7)["word"] is None          # no cue on screen -> no proof possible
+    assert script.pick_probe_times([], words, 8.7)["word"] is None
     assert script.pick_probe_times(cues, [{"word": "a", "start": 0.0, "end": 8.6}], 8.7)["silent"] is None
 
 
-# ---------- pixels (numpy only) ----------
 
 def test_a_lower_third_band_difference_is_seen_and_noise_elsewhere_is_not():
     import numpy as np
     a = np.full((960, 540), 20, dtype=np.uint8)
     b = a.copy()
-    b[640:700, 100:440] = 255                   # white text block in the lower third
+    b[640:700, 100:440] = 255
     low = script.band_difference(a, b, band=script.LOWER_BAND)
     up = script.band_difference(a, b, band=script.UPPER_BAND)
     assert low["fraction"] > 0.1 and up["fraction"] == 0.0
     word = {"lower": low, "upper": up}
     assert script.check_subtitle_pixels(word, {"lower": up, "upper": up})["ok"]
-    assert not script.check_subtitle_pixels({"lower": up, "upper": up}, None)["ok"]        # nothing drawn
-    assert not script.check_subtitle_pixels(word, {"lower": low, "upper": up})["ok"]        # drawn in silence too
-    assert not script.check_subtitle_pixels({"lower": low, "upper": low}, None)["ok"]       # the whole picture changed
+    assert not script.check_subtitle_pixels({"lower": up, "upper": up}, None)["ok"]
+    assert not script.check_subtitle_pixels(word, {"lower": low, "upper": up})["ok"]
+    assert not script.check_subtitle_pixels({"lower": low, "upper": low}, None)["ok"]
     assert not script.check_subtitle_pixels(None, None)["ok"]
 
 
 def test_small_codec_noise_below_the_pixel_threshold_does_not_count():
     import numpy as np
     a = np.full((960, 540), 100, dtype=np.uint8)
-    b = a + np.uint8(script.PIXEL_THRESHOLD)       # every pixel differs, but by exactly the threshold (not more)
+    b = a + np.uint8(script.PIXEL_THRESHOLD)
     assert script.band_difference(a, b, band=script.LOWER_BAND)["fraction"] == 0.0
 
 
@@ -159,7 +146,6 @@ def test_a_frame_is_taken_with_ffmpeg_at_the_requested_time(tmp_path):
     assert pair["lower"]["fraction"] == 0.0 and pair["upper"]["fraction"] == 0.0
 
 
-# ---------- the network guard ----------
 
 def test_loopback_hosts_are_recognised():
     for host in ("127.0.0.1", "::1", "localhost", "[::1]", None, "127.5.5.5"):
@@ -184,17 +170,16 @@ def test_the_network_guard_records_and_refuses_a_foreign_connect_and_lookup_then
                 socket.getaddrinfo("huggingface.co", 443)
             with pytest.raises(OSError):
                 await asyncio.get_running_loop().sock_connect(socket.socket(), ("203.0.113.9", 80))
-            assert socket.getaddrinfo("127.0.0.1", 80)                       # loopback still resolves
+            assert socket.getaddrinfo("127.0.0.1", 80)
         finally:
             restore()
 
     asyncio.run(go())
     assert {a["kind"] for a in seen} >= {"connect", "connect_ex", "getaddrinfo", "sock_connect"}
     assert all(a["host"] in ("203.0.113.9", "huggingface.co") for a in seen)
-    assert socket.getaddrinfo("localhost", 80)                                  # restored
+    assert socket.getaddrinfo("localhost", 80)
 
 
-# ---------- the wav, the plan sheet, the cached model link ----------
 
 def _write_wav(path: Path, *, width=2, seconds=4.0, rate=16000):
     with wave.open(str(path), "wb") as w:
@@ -227,7 +212,7 @@ def test_the_plan_sheet_carries_the_frame_texts_where_the_full_voice_path_reads_
     xlsx = tmp_path / "videos" / "project.xlsx"
     script.make_plan_xlsx(xlsx)
 
-    class P:                       # the reader needs only data_dir and id
+    class P:
         id = 1
         data_dir = xlsx.parent
 
@@ -251,14 +236,13 @@ def test_the_cached_model_is_found_linked_into_the_scratch_data_and_only_the_lin
     assert (link / "snapshots" / "abc" / "model.bin").read_bytes() == b"x" * 10
     assert link.parent == tmp_path / "data" / ".cache" / "huggingface" / "hub"
     script.unlink_cached_model(link)
-    assert not link.exists() and (snap / "model.bin").is_file()        # the model behind the link is untouched
+    assert not link.exists() and (snap / "model.bin").is_file()
     real_dir = tmp_path / "data" / ".cache" / "huggingface" / "hub" / "plain"
     real_dir.mkdir(parents=True)
     with pytest.raises(OSError):
-        script.unlink_cached_model(real_dir)                           # a real directory is never removed
+        script.unlink_cached_model(real_dir)
 
 
-# ---------- arguments and reports ----------
 
 def test_real_speech_needs_a_wav_and_the_wav_needs_the_flag(tmp_path):
     wav = tmp_path / "v.wav"
@@ -280,14 +264,13 @@ def test_the_reports_say_what_is_real_and_what_is_not_proven_in_real_speech_mode
     assert "SAPI" in text and "NOT a human voice" in text and "lavfi" in text and "faster-whisper" in text
     assert "Telegram: off" in text and "forced failure" in text
     assert "human voices" in json.dumps(script.reality_not_proven(True))
-    assert "ASR / Whisper and burned subtitles: not used" in json.dumps(script.reality_report(False))   # default unchanged
+    assert "ASR / Whisper and burned subtitles: not used" in json.dumps(script.reality_report(False))
     assert script.final_verdict(True, True).startswith("DRY OK") and "NOT proven" in script.final_verdict(True, True)
     assert script.final_verdict(False, True) == "NOT PASSED"
     assert "NOT exercised" in script.final_verdict(True)
     assert script.asr_probe(True)["used_by_this_stand"] is True and script.asr_probe()["used_by_this_stand"] is False
 
 
-# ---------- the checks over a snapshot ----------
 
 def _good_real_snapshot(**over):
     from w5h_assemble_local_script_test import _good_snapshot
@@ -320,7 +303,7 @@ def test_a_good_real_speech_snapshot_passes_every_check_old_and_new():
 
 def test_the_per_frame_duration_window_does_not_apply_to_the_real_voice():
     snap = _good_real_snapshot()
-    assert "final_file_passes_the_real_verifier_after_the_run" not in _failed(snap)             # 8.7 s is fine here
+    assert "final_file_passes_the_real_verifier_after_the_run" not in _failed(snap)
     snap["final_check"] = {"status": "passed", "streams": ["video", "audio"], "duration": 5.0, "sha256": "abc"}
     assert {"final_file_passes_the_real_verifier_after_the_run", "final_duration_matches_the_voice"} <= _failed(snap)
 
@@ -366,7 +349,6 @@ def test_the_default_snapshot_gets_none_of_the_new_checks():
     assert "real_asr_ran_offline_without_a_stub" not in names and len(names) == 18
 
 
-# ---------- ONE real dry run: real offline ASR + burned subtitles + forced failure + one retry ----------
 
 def _real_run_skip_reason():
     if not HAVE_FFMPEG:
@@ -406,12 +388,12 @@ def test_a_real_dry_run_with_real_speech_asr_and_burned_subtitles(tmp_path):
     assert abs(result["final_check"]["duration"] - rs["voice"]["duration"]) <= 0.5
     assert rs["network_attempts"] == [] and rs["network_guard"] is True
     counters = result["counters"]
-    assert counters["injected_failures"] >= 4 and counters["injected_failures"] % 2 == 0     # one in-node retry per attempt
+    assert counters["injected_failures"] >= 4 and counters["injected_failures"] % 2 == 0
     recoveries = result["actions"]["recoveries"]
     assert len(recoveries) == 1 and recoveries[0]["status"] == "verified"
     assert recoveries[0]["verification_result"]["local_details"]["approve_final"]["approved_by_supervisor"] is False
     assert [a["decision"] for a in result["approvals"]] == ["pending"]
     assert result["ledger_rows"] == [] and result["spend_rows_paid"] == [] and result["refused_hosts"] == []
     assert any("SAPI" in x for x in result["reality"]["not_real"])
-    assert not (tmp_path / "data" / ".cache" / "huggingface" / "hub" / script.model_cache_dir_name("medium")).exists()  # link removed
-    assert script.find_cached_model("medium") is not None                                      # the cached model survived
+    assert not (tmp_path / "data" / ".cache" / "huggingface" / "hub" / script.model_cache_dir_name("medium")).exists()
+    assert script.find_cached_model("medium") is not None

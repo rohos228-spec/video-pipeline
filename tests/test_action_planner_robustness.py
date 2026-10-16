@@ -1,7 +1,3 @@
-"""Устойчивость планировщика: один повтор при сбое сети и один повтор вопроса о параметре с умолчанием.
-
-Модель - заглушка (без сети); проект - реалистичный сид из scripts/eval_seed.py.
-"""
 from __future__ import annotations
 
 import json
@@ -10,9 +6,9 @@ import pytest
 
 from app.services.action_layer import planner, planner_rules
 from app.services.gpt_api import GptApiError
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 from tests.test_action_layer_planner import OP, history_rows, reply, res, use
-from tests.test_action_planner_flow import PID, live, st  # noqa: F401
+from tests.test_action_planner_flow import PID, live, st
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +20,6 @@ def ask(question: str) -> dict:
     return {"steps": [], "needs_clarification": question, "explanation_ru": "Нужно уточнить."}
 
 
-# --- сбой сети ---------------------------------------------------------------------------------
 
 async def test_timeout_is_retried_once_and_logged_as_attempt_two(live) -> None:
     fake = use(TimeoutError("slow"), res(reply([st("montage.get_board")])))
@@ -41,7 +36,7 @@ async def test_second_transport_failure_is_retryable_with_a_russian_message(live
         await planner.plan_from_text("покажи доску монтажа", operator=OP, project_id=PID)
     assert err.value.code == "transport_error" and err.value.retryable is True
     assert str(err.value) == "сеть/модель недоступны, повторите"
-    assert len(fake.calls) == 2  # не больше одного повтора
+    assert len(fake.calls) == 2
 
 
 async def test_provider_refusal_that_cannot_succeed_is_not_retried(live) -> None:
@@ -70,7 +65,6 @@ async def test_transport_retry_does_not_use_up_the_format_repair(live) -> None:
     assert out.reply.steps and len(fake.calls) == 3
 
 
-# --- вопрос о параметре с умолчанием -----------------------------------------------------------
 
 async def test_question_about_a_project_default_is_repaired_once(live) -> None:
     good = reply([st("montage.generate_scene_images", frame_numbers=[3, 4])], expl="Картинки.")
@@ -83,7 +77,6 @@ async def test_question_about_a_project_default_is_repaired_once(live) -> None:
     assert {"image_generator", "image_resolution"} <= names
     assert all(r["source"] == "default" for r in note["clarification_resolved"])
     assert sorted(r.outcome for r in await history_rows(live, "planner_call")) == ["clarify_autorepair", "ok"]
-    # размер запроса не растёт: системный промпт и каталог те же
     assert fake.calls[1]["body"]["messages"][0] == fake.calls[0]["body"]["messages"][0]
     assert fake.calls[1]["body"]["messages"][1] == fake.calls[0]["body"]["messages"][1]
 
@@ -108,10 +101,10 @@ async def test_selected_frame_question_is_repaired_from_context(live) -> None:
 
 
 @pytest.mark.parametrize("request_text,question", [
-    ("удали этот кадр", "Какой кадр удалить?"),                                  # цель удаления
-    ("примени правки из очереди", "Сколько операций применить и какой генератор?"),  # сумма и лимит
-    ("перегенерируй картинку", "Почему нужна перегенерация? Укажите причину."),   # причина
-    ("сгенерируй картинки для кадра 3", "Вы уверены, что можно потратить кредиты на генератор?"),  # подтверждение
+    ("удали этот кадр", "Какой кадр удалить?"),
+    ("примени правки из очереди", "Сколько операций применить и какой генератор?"),
+    ("перегенерируй картинку", "Почему нужна перегенерация? Укажите причину."),
+    ("сгенерируй картинки для кадра 3", "Вы уверены, что можно потратить кредиты на генератор?"),
 ])
 async def test_safety_relevant_questions_are_never_auto_answered(live, request_text, question) -> None:
     fake = use(res(ask(question)), res(reply([st("montage.get_board")])))
@@ -120,13 +113,11 @@ async def test_safety_relevant_questions_are_never_auto_answered(live, request_t
 
 
 async def test_server_built_questions_are_not_repaired(live) -> None:
-    # вопрос про шот строит сервер (shot_ambiguity), а не модель: повтора нет
     fake = use(res(reply([st("montage.delete_image", frame_number=4)])), res(reply([st("montage.get_board")])))
     out = await planner.plan_from_text("убери картинку кадра 4", operator=OP, project_id=PID)
     assert out.reply.needs_clarification and len(fake.calls) == 1
 
 
-# --- чистые правила -----------------------------------------------------------------------------
 
 FACTS = {"project_id": 7, "defaults": {"image_generator": "g1", "image_resolution": "2K",
                                        "video_generator": "v1", "video_resolution": "720p",
@@ -144,7 +135,7 @@ def test_resolve_clarification_picks_the_named_defaults() -> None:
     assert names("Какой проект?") == {"project_id"}
     assert names("Каким методом разбирать аудио?") == {"method"}
     assert names("Какой кадр?", "поставь на этот кадр крупный план") == {"selected"}
-    assert names("Какой кадр?", "поставь крупный план") == set()  # человек не сказал «этот»
+    assert names("Какой кадр?", "поставь крупный план") == set()
 
 
 def test_resolve_clarification_has_no_context_no_answer() -> None:

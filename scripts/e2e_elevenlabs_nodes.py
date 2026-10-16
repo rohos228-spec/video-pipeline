@@ -72,7 +72,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 ELEVEN_HOST = "api.elevenlabs.io"
 TTS_PATH_RE = re.compile(r"^/v1/text-to-speech/[^/?#]+$")
@@ -81,13 +81,11 @@ ENV_NAMES = ("ELEVENLABS_API_KEY", "ELEVENLABS_PROXY_URL")
 SECRET_NAMES = ("ELEVENLABS_API_KEY", "ELEVENLABS_PROXY_URL")
 FAKE_KEY = "fake-elevenlabs-dry-key"
 
-# Conservative prices of the planned real POSTs: the application's own UNCALIBRATED constants
-# (media_spend.ELEVENLABS_USD_PER_CHAR / ELEVENLABS_SFX_USD_PER_SEC; a test keeps them equal).
 USD_PER_CHAR_HINT = 0.0003
 USD_PER_SFX_SEC_HINT = 0.012
-TTS_TEXT = "Папка лежит на столе у окна."          # 28 characters
-TTS_TEXT_UNCERTAIN = "Чашка стоит рядом с блокнотом."   # simulated timeout scenario (never leaves the machine)
-TTS_TEXT_OTHER = "Совсем другой текст."             # refused under resume-only
+TTS_TEXT = "Папка лежит на столе у окна."
+TTS_TEXT_UNCERTAIN = "Чашка стоит рядом с блокнотом."
+TTS_TEXT_OTHER = "Совсем другой текст."
 TTS_MAX_CHARS = 40
 SFX_MAX_SECONDS = 1.0
 SFX_PROMPT = "short soft click"
@@ -95,7 +93,7 @@ SFX_EVENT_SECONDS = 1.0
 SFX_MAX_PROMPT_CHARS = 80
 DEFAULT_MAX_REAL_POSTS = 2
 DEFAULT_MAX_USD = 0.05
-SIM_ALLOWANCE_USD = 0.10     # simulated losses are recorded as estimated rows too; they must not trip the application caps
+SIM_ALLOWANCE_USD = 0.10
 NODES = ("sfx_gen", "audio", "both")
 
 
@@ -103,7 +101,6 @@ class ProcessDied(BaseException):
     """Stands in for a killed process: not caught by any `except Exception` of the production code."""
 
 
-# ───────────────────────────── pure helpers (unit-tested) ─────────────────────────────
 
 def load_env_whitelist(path: str, names: tuple[str, ...] = ENV_NAMES) -> dict[str, str]:
     """Only `names` from an env file; everything else is ignored and nothing is printed."""
@@ -174,8 +171,8 @@ def final_verdict(mode: str, ok: bool) -> str:
 
 @dataclass
 class Judgement:
-    action: str            # pass | fault | refuse
-    kind: str              # tts | sfx | other
+    action: str
+    kind: str
     reason: str = ""
     fault: str | None = None
 
@@ -186,12 +183,12 @@ class Gate:
 
     Only POST https://api.elevenlabs.io/v1/text-to-speech/<voice> and /v1/sound-generation exist for the stand. A simulated
     loss (`arm`) is delivered INSTEAD of the request: it never reaches the wire and is counted separately."""
-    mode: str                                   # dry | live
+    mode: str
     max_real_posts: int = DEFAULT_MAX_REAL_POSTS
     max_per_kind: int = 1
     host: str = ELEVEN_HOST
-    wire: list = field(default_factory=list)    # posts let through (dry: answered by the fake, live: sent for real)
-    sim: list = field(default_factory=list)     # simulated losses delivered
+    wire: list = field(default_factory=list)
+    sim: list = field(default_factory=list)
     refused: list = field(default_factory=list)
     fault: str | None = None
 
@@ -241,7 +238,6 @@ class Gate:
         return Judgement("pass", kind)
 
 
-# ───────────────────────────── audio fixtures (dry) ─────────────────────────────
 
 _FIXTURES: dict[float, bytes] = {}
 
@@ -262,7 +258,7 @@ def make_audio(seconds: float) -> bytes:
                 subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={key}",
                                 "-c:a", "libmp3lame", str(out)], check=True, timeout=60, capture_output=True)
                 data = out.read_bytes()
-            except Exception:  # noqa: BLE001 - no encoder: the WAV below
+            except Exception:
                 data = None
     if not data:
         import io
@@ -281,7 +277,6 @@ def make_audio(seconds: float) -> bytes:
     return data
 
 
-# ───────────────────────────── environment and honest reporting ─────────────────────────────
 
 def env_overrides(data: Path, *, cap: float, dry: bool) -> dict[str, str]:
     """Environment of the in-process app (applied BEFORE the application is imported). Never a real key here."""
@@ -295,7 +290,7 @@ def env_overrides(data: Path, *, cap: float, dry: bool) -> dict[str, str]:
         "NVIDIA_ASR_PRELOAD_ON_STARTUP": "false", "SUPABASE_URL": "http://127.0.0.1:9", "SUPABASE_KEY": "unused",
         "KIE_API_KEY": "", "OUTSEE_API_KEY": "",
     }
-    if dry:  # a free-space threshold that does not depend on the machine
+    if dry:
         out.update({"DISK_GUARD_LOW_FREE_GB": "0.001", "DISK_GUARD_CRITICAL_FREE_GB": "0.0005"})
     return out
 
@@ -328,7 +323,6 @@ def reality_not_proven(mode: str) -> list[str]:
     return out
 
 
-# ───────────────────────────── runtime ─────────────────────────────
 
 def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -411,7 +405,7 @@ async def main(argv: list[str] | None = None) -> int:
         return text
 
     work = Path(args.work_dir).resolve()
-    data = guard.reset_scratch_data(work)  # A19: refuses live data; removes only <work>/data made by these scripts
+    data = guard.reset_scratch_data(work)
     os.chdir(ROOT)
     cap = app_cap_usd(args.node)
     os.environ.update(env_overrides(data, cap=cap, dry=(mode == "dry")))
@@ -421,14 +415,13 @@ async def main(argv: list[str] | None = None) -> int:
 
     import httpx
     from app.settings import settings
-    # Belt and braces over environment precedence (a stray repository .env must not add a route or a key):
     settings.elevenlabs_api_key = live_env["ELEVENLABS_API_KEY"] if mode == "live" else FAKE_KEY
     settings.elevenlabs_proxy_url = (live_env.get("ELEVENLABS_PROXY_URL") or None) if mode == "live" else None
     settings.kie_api_key = ""
     settings.media_spend_recording = True
     settings.sfx_enabled = True
     settings.spend_daily_cap_usd = settings.spend_project_cap_usd = settings.spend_run_cap_usd = cap
-    for guarded in (settings.data_dir, settings.sqlite_path):  # no write outside the work dir, ever
+    for guarded in (settings.data_dir, settings.sqlite_path):
         if not guard._inside(Path(guarded).resolve(), work):
             raise guard.refuse(f"настройки указывают на {guarded}, это вне рабочей папки {work}; ничего не отправлено.")
 
@@ -444,7 +437,7 @@ async def main(argv: list[str] | None = None) -> int:
     async def send(client, request, **kwargs):
         try:
             body = json.loads(request.content.decode("utf-8") or "{}")
-        except Exception:  # noqa: BLE001
+        except Exception:
             body = {}
         judged = gate.judge(request.method, request.url.scheme, request.url.host, request.url.path, body)
         if judged.action == "refuse":
@@ -484,7 +477,7 @@ async def main(argv: list[str] | None = None) -> int:
         if "audio" in nodes_of(args.node):
             await _audio_scenarios(rec, gate, facts, state_db)
         await media_spend.drain()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["error"] = scrub(f"{type(exc).__name__}: {exc}")
         import traceback
         result["traceback"] = scrub(traceback.format_exc())[-2500:]
@@ -495,7 +488,6 @@ async def main(argv: list[str] | None = None) -> int:
     return _finish(args, mode, result, rec, gate, facts, state_db, scrub, work)
 
 
-# ───────────────────────────── seeding and runners ─────────────────────────────
 
 async def _seed(kind: str, meta: dict | None = None) -> int:
     from app.db import session_scope
@@ -549,7 +541,7 @@ async def _run_sfx_step(pid: int, tag: str, *, tail_fault: bool = False, hits: l
                     project = await session.get(Project, pid)
                     await generate_sfx.run(session, project)
         return None
-    except BaseException as exc:  # noqa: BLE001 - ProcessDied is a BaseException on purpose
+    except BaseException as exc:
         return exc
     finally:
         generate_sfx.degradation_summary = original
@@ -566,7 +558,6 @@ async def _sfx_scenarios(rec: Rec, gate: Gate, facts: list, state_db: Path) -> N
     from app.services.ai_result_io import ai_job_checkpoint
     from app.services.audio_verification import verify_audio
 
-    # ---- S1: one real POST, outcome lost at the tail of the step, recovered without a second POST ----
     pid = await _seed("sfx", _sfx_plan_meta())
     before = gate.count("sfx")
     err = await _run_sfx_step(pid, "loss", tail_fault=True)
@@ -595,7 +586,7 @@ async def _sfx_scenarios(rec: Rec, gate: Gate, facts: list, state_db: Path) -> N
     rec.check("sfx_no_fallback_or_degraded_fact_on_the_paid_path", not bad_facts, bad_facts[:3])
 
     hits: list = []
-    err2 = await _run_sfx_step(pid, "resume", hits=hits)  # the recovery rerun: resume-only, no paid seam may be touched
+    err2 = await _run_sfx_step(pid, "resume", hits=hits)
     await media_spend.drain()
     project = await _load(pid)
     files = (ai_job_checkpoint(project, "sfx_files") or {}).get("files") or []
@@ -618,10 +609,9 @@ async def _sfx_scenarios(rec: Rec, gate: Gate, facts: list, state_db: Path) -> N
         sup, ok = {"denied": exc.code}, False
     rec.check("sfx_supervised_resume_local_verifies_the_file_without_a_paid_request",
               ok and gate.count("sfx") == 1, {**sup, "sfx_wire_posts": gate.count("sfx")})
-    err3 = await _run_sfx_step(pid, "again")  # a plain native rerun: the checkpoint answers, no POST
+    err3 = await _run_sfx_step(pid, "again")
     rec.check("sfx_plain_rerun_makes_no_second_post", err3 is None and gate.count("sfx") == 1 and gate.attempts("sfx") == 1,
               {"error": repr(err3), "attempts": gate.attempts("sfx")})
-    # the file itself is lost: under resume-only a new paid POST is refused before the wire (never a silent resend)
     path.unlink()
     hits4: list = []
     attempts_before = gate.attempts("sfx")
@@ -630,7 +620,6 @@ async def _sfx_scenarios(rec: Rec, gate: Gate, facts: list, state_db: Path) -> N
               isinstance(err4, media_spend.ResumeOnlyBlocked) and len(hits4) == 1 and gate.attempts("sfx") == attempts_before,
               {"error": type(err4).__name__, "hits": hits4, "attempts": gate.attempts("sfx")})
 
-    # ---- S2 (simulated): the process dies after the POST was sent -> the inflight mark blocks a resend ----
     pid2 = await _seed("sfx2", _sfx_plan_meta())
     gate.arm("kill")
     err = await _run_sfx_step(pid2, "kill")
@@ -687,7 +676,7 @@ async def _tts(pid: int, text: str, out_path: Path, tag: str, *, hits: list | No
                 with tts_run_budget():
                     await synthesize_speech(text, out_path)
         return None
-    except BaseException as exc:  # noqa: BLE001
+    except BaseException as exc:
         return exc
 
 
@@ -697,7 +686,6 @@ async def _audio_scenarios(rec: Rec, gate: Gate, facts: list, state_db: Path) ->
     from app.services import media_admission, media_local_resume, media_recovery, media_spend
     from app.services.audio_verification import classify_audio_failure, verify_audio
 
-    # ---- A1: one real POST, sidecar, rerun from the sidecar, the node's answer lost -> recovered without a POST ----
     pid = await _seed("audio")
     project = await _load(pid)
     audio_dir = project.data_dir / "audio"
@@ -730,8 +718,6 @@ async def _audio_scenarios(rec: Rec, gate: Gate, facts: list, state_db: Path) ->
               err is None and gate.count("tts") == 1 and gate.attempts("tts") == 1 and out2.is_file()
               and out2.read_bytes() == out1.read_bytes(),
               {"error": repr(err), "tts_wire_posts": gate.count("tts")})
-    # the answer the node held (the tail of the step died after the POST) is lost: the sidecar copy answers, also
-    # under resume-only, where any paid seam would raise
     out2.unlink()
     hits: list = []
     out3 = audio_dir / "voice_full_cccc3333.mp3"
@@ -758,7 +744,6 @@ async def _audio_scenarios(rec: Rec, gate: Gate, facts: list, state_db: Path) ->
               isinstance(err, media_spend.ResumeOnlyBlocked) and len(hits2) == 1 and gate.attempts("tts") == 1,
               {"error": type(err).__name__, "hits": hits2, "attempts": gate.attempts("tts")})
 
-    # ---- A2 (simulated): read timeout after send -> marker blocks every automatic resend ----
     pid2 = await _seed("audio2")
     project2 = await _load(pid2)
     adir2 = project2.data_dir / "audio"
@@ -793,7 +778,7 @@ async def _audio_scenarios(rec: Rec, gate: Gate, facts: list, state_db: Path) ->
               and denied == "verdict_denied", {"verdict": report["verdict"]["mode"], "code": report["verdict"]["code"],
                                                "admit": denied})
     facts_before = len(facts)
-    generate_audio._report_failure(project2, err)  # the step's own typing of the failure into the journal
+    generate_audio._report_failure(project2, err)
     failure = [f for f in facts[facts_before:] if f["kind"] == "audio_step_failure"]
     rec.check("tts_uncertain_failure_is_typed_in_the_journal",
               len(failure) == 1 and failure[0]["payload"].get("failure_class") == classify_audio_failure(err)[0] == "tts_failed"
@@ -815,7 +800,6 @@ def _voice_settings() -> dict:
     return {"voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
 
 
-# ───────────────────────────── result ─────────────────────────────
 
 def _finish(args, mode, result, rec: Rec, gate: Gate, facts, state_db, scrub, work) -> int:
     counters = {"wire_posts": len(gate.wire), "wire_sfx": gate.count("sfx"), "wire_tts": gate.count("tts"),

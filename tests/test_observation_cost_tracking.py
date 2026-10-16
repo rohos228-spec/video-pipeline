@@ -26,12 +26,6 @@ def test_usage_tokens_none_or_missing_is_zero():
 
 
 def _with_real_key():
-    """api_tracker_hook.record_api_call must only ever fire for a real
-    (non-synthetic, non-empty) GPT_API_KEY -- see _track_api_cost's
-    docstring for why: it pushes to the operator's own cross-project
-    Supabase tracker, and every test in this repo otherwise runs with a
-    synthetic or absent key by convention.
-    """
     from app.settings import settings
     return patch.object(settings, "gpt_api_key", "sk-real-looking-key-not-synthetic")
 
@@ -58,11 +52,10 @@ def test_track_api_cost_unknown_project_is_empty_string():
 
 def test_track_api_cost_never_raises_even_if_hook_fails():
     with _with_real_key(), patch("app.services.api_tracker_hook.record_api_call", side_effect=RuntimeError("boom")):
-        _track_api_cost(model="x", usage=None, duration_sec=0.1, project_id=1)  # must not raise
+        _track_api_cost(model="x", usage=None, duration_sec=0.1, project_id=1)
 
 
 def test_track_api_cost_records_synthetic_key_tagged():
-    # A08: a synthetic* key no longer switches accounting off; the row is tagged instead.
     from app.settings import settings
     with patch.object(settings, "gpt_api_key", "synthetic-observe-test-key"),          patch("app.services.api_tracker_hook.record_api_call") as mock_record:
         _track_api_cost(model="gpt-5-6-sol", usage={"input_tokens": 10, "output_tokens": 5},
@@ -88,10 +81,8 @@ def _real_kie_usage():
 
 
 def test_usage_tokens_real_kie_response_reports_input_only_under_attribution():
-    # Captured from a real paid call to https://api.kie.ai/codex/v1/responses
-    # (gpt-5-6-sol, prompt "Reply with exactly the single word: OK").
     usage = _real_kie_usage()
-    assert usage["input_tokens"] == 0  # the top-level figure really is zero
+    assert usage["input_tokens"] == 0
     prompt, completion, cached = _usage_tokens(usage)
     assert (prompt, completion, cached) == (4394, 5, 4224)
 
@@ -103,10 +94,7 @@ def test_calc_cost_matches_kie_dashed_model_names_to_the_rate_table():
     assert dashed == dotted == round(170 / 1e6 * 1.6 + 5 / 1e6 * 8.4, 6)
 
 
-# Real probes against the Kie credit balance (scripts/calibrate_kie_cost.py, 2026-10-01,
-# 1 credit = $0.005; reasoning tokens are inside completion). billed = credits * 0.005.
 _KIE_PROBES = [
-    # (prompt, completion, cached, credits_billed)
     (4394, 5, 4224, 0.01),
     (4400, 465, 4224, 0.78),
     (4400, 467, 4224, 0.78),
@@ -128,10 +116,9 @@ def test_cached_tokens_are_not_billed_like_fresh_input():
     fresh = _calc_cost("gpt-5-6-sol", 4394, 5, "text", 1.0)
     cached = _calc_cost("gpt-5-6-sol", 4394, 5, "text", 1.0, cached_tok=4224)
     assert cached < fresh / 5
-    assert _calc_cost("gpt-5-6-sol", 100, 0, "text", 1.0, cached_tok=999) == 0.0  # cached clamped to prompt
+    assert _calc_cost("gpt-5-6-sol", 100, 0, "text", 1.0, cached_tok=999) == 0.0
 
 
-# --- project_id fallback via the advance_runner contextvar -------------------
 
 def _project_source_for(**kw):
     with _with_real_key(), patch("app.services.api_tracker_hook.record_api_call") as mock_record:
@@ -169,7 +156,7 @@ def test_cost_project_fallback_records_synthetic_key_tagged():
         with patch.object(settings, "gpt_api_key", "synthetic-key"), \
                 patch("app.services.api_tracker_hook.record_api_call") as mock_record:
             _track_api_cost(model="m", usage=None, duration_sec=0.1)
-        mock_record.assert_called_once()  # A08: synthetic* is tagged, not skipped
+        mock_record.assert_called_once()
         assert mock_record.call_args.kwargs["project_source"] == "42"
     finally:
         _cost_project.reset(token)
@@ -192,7 +179,7 @@ def test_advance_project_job_sets_and_resets_cost_project():
 
         async def __aenter__(self):
             seen.setdefault("during", []).append((self.pid, _cost_project.get()))
-            await asyncio.sleep(0)  # let the other task interleave
+            await asyncio.sleep(0)
             raise RuntimeError("stop after observing the contextvar")
 
         async def __aexit__(self, *a):
@@ -212,5 +199,5 @@ def test_advance_project_job_sets_and_resets_cost_project():
             return await asyncio.gather(run(1), run(2)), _cost_project.get()
 
     after, outer = asyncio.run(main())
-    assert sorted(seen["during"]) == [(1, 1), (2, 2)]  # each task saw only its own project
-    assert after == [None, None] and outer is None  # reset, no leakage
+    assert sorted(seen["during"]) == [(1, 1), (2, 2)]
+    assert after == [None, None] and outer is None

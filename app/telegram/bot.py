@@ -4954,9 +4954,9 @@ async def on_enrich_run_all(cb: CallbackQuery) -> None:
         ENRICH_RUNNING,
         _objects_requires_for_step5,
         enabled_enrich_slots,
-        is_running_status,
         status_order,
     )
+    from app.services.project_state import is_running_status
 
     async with session_scope() as s:
         project = (
@@ -6464,10 +6464,6 @@ async def _create_new_project(msg: Message) -> None:
     logger.info("new project {} '{}'", pid, slug)
 
 
-# ---------------------------------------------------------------------------
-# W7: HITL approve_publish - «да» на публикацию одной площадки: hpub:<id>:yes|no.
-# Решает сервер (app.services.hitl.decide_publish_approval): владелец, одноразовость, актуальность файла и подписи,
-# запись в operator_audit. Здесь только показ ответа и снятие кнопок.
 
 @dp.callback_query(F.data.startswith("hpub:"))
 async def on_publish_approval_callback(cb: CallbackQuery) -> None:
@@ -6477,20 +6473,16 @@ async def on_publish_approval_callback(cb: CallbackQuery) -> None:
         res = await handle_publish_approval_callback(s, cb.data, cb.from_user.id if cb.from_user else None)
     await cb.answer(res.text[:190], show_alert=not res.ok)
     if res.hide_buttons and cb.message is not None:
-        # Подпись дословная и может содержать < и &: текст сообщения не переписываем, а только снимаем кнопки
-        # и пишем итог отдельным простым сообщением.
         try:
             await cb.message.edit_reply_markup(reply_markup=None)
-        except Exception:  # noqa: BLE001 - повторное нажатие всё равно будет отклонено сервером
+        except Exception:
             logger.debug("approve_publish: кнопки не сняты")
         try:
             await cb.message.answer(res.badge or res.text, parse_mode=None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("approve_publish: итог не отправлен")
 
 
-# ---------------------------------------------------------------------------
-# Старый HITL-callback (картинки кадров): hitl:<id>:<action>
 
 @dp.callback_query(F.data.startswith("hitl:"))
 async def on_hitl_callback(cb: CallbackQuery) -> None:
@@ -6509,13 +6501,10 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
     try:
         await locate_hitl(hitl_id)
     except HitlAmbiguous:
-        # Старая кнопка несёт только номер запроса: при совпадении номеров у разных проектов не угадываем.
         await cb.answer(AMBIGUOUS_RU, show_alert=True)
         return
 
     if action == "original":
-        # Шлём оригинал (send_document, без TG-сжатия). Файл лежит в
-        # payload.photo_path.
         from pathlib import Path as _Path
 
         from aiogram.types import FSInputFile
@@ -6544,7 +6533,7 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                 kind="hitl_original",
                 caption=f"Оригинал (без сжатия TG): {_Path(photo_path).name}",
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("send original failed: {}", e)
             await cb.answer(f"Ошибка: {e}", show_alert=True)
             return
@@ -6625,10 +6614,6 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
         if hitl_loc is not None and hitl_loc.store == "project" and decision is not HITLDecision.pending:
             decided_for_mirror = req
 
-        # В ручном режиме 🔁 на hero-карточке = «перезапустить шаг 4
-        # для текущего героя» (с тем же описанием). На ✅ — если у проекта
-        # больше одного героя и не все ещё сделаны, возвращаем проект в
-        # generating_hero, чтобы воркер сгенерил следующего.
         regen_step_msg = ""
         if req.kind is HITLKind.approve_hero:
             project = (
@@ -6655,7 +6640,6 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                                 "\n\n⏸ Общий потолок перезапусков hero исчерпан: проект на паузе, нужно решение человека."
                             )
                     elif action == "approve":
-                        # Считаем сколько ещё не одобрено в excel-списке.
                         meta = dict(project.meta or {})
                         cfg = meta.get("excel_hero") or {}
                         all_ids = [
@@ -6719,8 +6703,6 @@ async def on_hitl_callback(cb: CallbackQuery) -> None:
                                 "\n\n⏸ Общий потолок перезапусков hero исчерпан: проект на паузе, нужно решение человека."
                             )
                     elif action == "approve":
-                        # ✅ — определяем что дальше: следующая вариация
-                        # этого же героя; следующий герой; или всё готово.
                         if cur_vi < n_var:
                             project.status = ProjectStatus.generating_hero
                             regen_step_msg = (
@@ -7002,7 +6984,7 @@ async def notify_step_done(
                 "notify_step_done: сообщение отправлено для project #{}",
                 project_id,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception(
                 "notify_step_done: send_message провалился для project #{}",
                 project_id,
@@ -7026,7 +7008,7 @@ async def notify_step_done(
                         f"Проект #{project_id}"
                     ),
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception(
                     "notify_step_done: send_document xlsx failed for #{}",
                     project_id,

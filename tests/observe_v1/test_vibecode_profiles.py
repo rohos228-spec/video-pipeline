@@ -1,4 +1,3 @@
-"""Vibecode repair profile: validation, chat-body transformation, route and runtime provider checks (no DB)."""
 import copy
 import unittest
 from types import SimpleNamespace
@@ -16,7 +15,6 @@ REFERENCE = profiles_v1.VIBECODE_REPAIR_PROFILE
 
 
 def production(candidate=None):
-    """runtime_config + catalog as a production deployment with the Vibecode profile would see them."""
     catalog = {profiles_v1.VIBECODE_REPAIR_PROFILE_ID: candidate or dict(REFERENCE)}
     return (patch('app.services.decision_config.runtime_config', return_value={**PRODUCTION, 'profiles': catalog}),
             patch.object(profiles_v1, 'active_catalog', return_value=catalog))
@@ -140,7 +138,7 @@ class VibecodeRoute(unittest.TestCase):
     def test_production_transport_check_is_provider_specific(self):
         with patch('app.services.decision_config.runtime_config', return_value=PRODUCTION):
             profiles_v1.synthetic_transport('https://vibecode.moe/v1/chat/completions', 'vk-x', 'vibecode')
-            with self.assertRaisesRegex(ValueError, 'route differs'):  # Kie profile may not use the Vibecode URL
+            with self.assertRaisesRegex(ValueError, 'route differs'):
                 profiles_v1.synthetic_transport('https://vibecode.moe/v1/chat/completions', 'vk-x', 'kie')
 
 
@@ -148,7 +146,7 @@ class RuntimeProviderGuard(unittest.IsolatedAsyncioTestCase):
     async def test_transform_request_blocks_a_profile_of_another_provider_before_any_io(self):
         kie_candidate = dict(profiles_v1.CATALOG['synthetic-json-v1'])
         overlay = {'attempt_id': 'a1', 'overlay_id': 'o1', 'candidate': kie_candidate}
-        ctx = SimpleNamespace(attempt_id='a1', observer=None)  # observer=None: any DB access would raise AttributeError
+        ctx = SimpleNamespace(attempt_id='a1', observer=None)
         token = profiles_v1._current.set(overlay)
         try:
             with use_override(NodeLlmOverride('gpt-5.6-sol', 'stable', 'text', 'vibecode', 'x')):

@@ -1,4 +1,3 @@
-"""HTML-отчёт группы script_frames_qc: шаг действия = кадр. Без T0–T10."""
 
 from __future__ import annotations
 
@@ -183,7 +182,6 @@ def _synth_shot(fr: Any) -> dict[str, Any]:
 
 
 def _collect_shots(frames: list[Any]) -> list[dict[str, Any]]:
-    """Один кадр БД = один шаг. Если в ячейке ещё лежит список кадры[] > 1 — все."""
     index = _overlay_index(frames)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -231,7 +229,6 @@ def _scene_chain_line(scene: dict[str, Any]) -> str:
 
 
 def _scene_meta(frames: list[Any]) -> dict[int, dict[str, Any]]:
-    """Цепь главное_действие с VO-родителя: N. место — шаг → шаг."""
     by_n: dict[int, dict[str, Any]] = {}
     for fr in frames:
         if is_shot_child(fr):
@@ -318,7 +315,6 @@ def _build_row(
 
 
 def _plan_shot(row: dict[str, Any]) -> dict[str, Any]:
-    """Кадр для схемы: зона/камера с карточки, если в шаге пусто."""
     overlay = row.get("_frame")
     attrs = _attrs(overlay) if overlay is not None else {}
     cs = _cs(overlay) if overlay is not None else {}
@@ -341,7 +337,6 @@ def _plan_shot(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _plans(frames: list[Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Площадки ячеек: схема сверху + зоны/проходы + что починил код."""
     from app.services.scene_plan import accusative, plan_svg
 
     out: list[dict[str, Any]] = []
@@ -406,7 +401,6 @@ def _attach_diary(
     scenes: list[dict[str, Any]],
     diary: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Записи дневника → строка кадра / сцена. Возвращает записи без кадра."""
     number_of = _frame_numbers_by_uuid(frames)
     rows_by_cell: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
@@ -838,20 +832,18 @@ def report_paths(project: Any, *, node_key: str = "n_excel_gpt_fw_report") -> li
 def existing_shots_report_path(
     project: Any, *, node_key: str = "n_excel_gpt_fw_report"
 ) -> Path | None:
-    """Файл, который уже записала нода fw_report. GET его не пересобирает."""
     return next((p for p in report_paths(project, node_key=node_key) if p.is_file()), None)
 
 
 def _safe_load(fn: Any, default: Any) -> Any:
     try:
         return fn()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("shots_report: diary load failed", exc_info=True)
         return default
 
 
 def _latest_check(data_dir: Path) -> dict[str, Any]:
-    """Последний вердикт ноды «Проверка сценария» (analysis.json)."""
     paths = sorted(
         (data_dir / "excel_gpt_uploads").glob("*_fw_check_script/analysis.json"),
         key=lambda p: p.stat().st_mtime,

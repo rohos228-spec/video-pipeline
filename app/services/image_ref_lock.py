@@ -1,9 +1,3 @@
-"""Роли аттачей для GPT Image 2: identity vs style/scene.
-
-Модель копирует людей с любой приложенной картинки и игнорирует текстовый
-блок персонажа. Особенно ломается на turnaround-листе (несколько тел/голов
-одного id). Здесь: кроп одного тела + Image N по фактическому порядку файлов.
-"""
 
 from __future__ import annotations
 
@@ -15,7 +9,6 @@ from loguru import logger
 from app.services.character_sheet_ref import identity_ref_from_sheet
 from app.services.hero_ref_prompt import fit_prompt_for_outsee, rewrite_hero_ref_prompt
 
-# identity | parent_still | item | style | other
 RefRole = str
 
 _CHAR_STEM_RE = re.compile(r"^c\d{2}", re.IGNORECASE)
@@ -26,7 +19,6 @@ _FRAME_KIND_RE = re.compile(
 
 
 def classify_attached_ref(path: Path) -> tuple[RefRole, str | None]:
-    """Роль файла и cNN, если это лист персонажа."""
     p = Path(path)
     parent = p.parent.name.lower()
     stem = p.stem.lower().replace("_front", "")
@@ -65,7 +57,6 @@ def _char_id_from_stem(stem: str) -> str | None:
 
 
 def crop_identity_refs(refs: list[Path], cache_dir: Path) -> list[Path]:
-    """Кропнуть только turnaround-листы; остальные файлы не трогать."""
     out: list[Path] = []
     cache = Path(cache_dir)
     for src in refs:
@@ -85,12 +76,10 @@ def crop_identity_refs(refs: list[Path], cache_dir: Path) -> list[Path]:
 
 
 def strip_leading_attach_lock(text: str) -> str:
-    """Снять прежний HARD CAST / Image N — его мог написать агент вкривую."""
     return split_identity_lock(text)[1]
 
 
 def split_identity_lock(text: str) -> tuple[str, str]:
-    """Префикс Image N / HARD CAST и остаток сцены."""
     raw = (text or "").strip()
     rest = raw
     while rest.startswith("HARD CAST LOCK:") or rest.startswith("Image 1 is the"):
@@ -113,7 +102,6 @@ def with_attached_ref_lock(
     *,
     sheet_ids: list[str] | None = None,
 ) -> str:
-    """Первый абзац: Image N = роль реального аттача, не выдумка агента."""
     raw = strip_leading_attach_lock(prompt)
     if not refs:
         return raw
@@ -186,7 +174,6 @@ def prepare_refs_and_prompt(
     cache_dir: Path | None = None,
     child: bool = False,
 ) -> tuple[str, list[Path]]:
-    """Кроп листов + lock, согласованный с порядком image_urls."""
     raw = (prompt or "").strip()
     if not refs:
         return raw, []

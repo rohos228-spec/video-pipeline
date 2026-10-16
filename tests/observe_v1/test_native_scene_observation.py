@@ -1,29 +1,3 @@
-"""Tests first for journaling the ORIGINAL native camera/assembler effects.
-
-Only this new test file is owned here. Parent captures Docker RED/GREEN and
-owns all production hooks. No worker fixture, capability, admission, recovery,
-provider, executor, parser, validator or business writer is replaced here.
-All application/SQLAlchemy imports are deferred until parent execution.
-
-Proposed async APIs in the existing app.services.scene_contracts module:
-  record_scene_input(project, node, frames, *, cells=())
-  record_scene_parse(reply, parsed, *, node, validation_performed,
-                     problems=(), error=None, origin='model')
-  observe_scene_result(session, project, node, *, agent_slice=None, payload=None)
-
-Input is captured AFTER native camera DB-v2 backfill, or AFTER assembler
-camera_expand, before their writes. Parse receives the actual native result,
-check outcome and exception; it does not invent validation or run apply_ops.
-Unvalidated chunks remain unknown. Local assembly has no model request ID.
-Result independently reads project-scoped committed rows and delegates to
-verify_scene_agent/verify_scene_assembly. Missing input/body evidence remains
-unknown even when output is filled. The journal never flushes, commits or
-rolls back the native business session, repairs output, approves HITL or
-changes execution authority. Its own journal uses the existing observer.
-
-This suite establishes bounded journal contracts, not worker/API acceptance,
-managed eligibility, full fanout, transaction provenance or artistic quality.
-"""
 
 from __future__ import annotations
 from app.services import revisions
@@ -62,7 +36,6 @@ def assembly_payload(frames):
     from app.services.scene_design.context_builder import frame_seconds
 
     return {
-        # Real cards keep the original writer out of disk/checkpoint fallback.
         "characters": [{"id": "c01", "имя": "Альфа", "внешность": "синтетическая"}],
         "scenes": [{"id_scene": "sc01", "start_words": "Альфа открывает",
                     "end_words": "закрывает книгу.",
@@ -76,7 +49,6 @@ def assembly_payload(frames):
 
 
 class NativeSceneObservation(unittest.IsolatedAsyncioTestCase):
-    """Own native SQLite fixture; no Excel/actions test inheritance."""
 
     async def asyncSetUp(self):
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -140,8 +112,6 @@ class NativeSceneObservation(unittest.IsolatedAsyncioTestCase):
                 seed.add(FrameText(project_id=7, frame_id=number, kind="voiceover", text=text))
             seed.add(Frame(id=8, project_id=8, number=1, uuid="e" * 24,
                            voiceover_text="Foreign input.", attrs={}))
-            # This is an existing native pending approval input, not a scene
-            # approval invented by the journal or a manufactured decision.
             seed.add(HITLRequest(project_id=7, kind=HITLKind.approve_script,
                                  decision=HITLDecision.pending, payload={"fixture": "preserve"}))
             await seed.commit()
@@ -476,7 +446,7 @@ class NativeSceneObservation(unittest.IsolatedAsyncioTestCase):
             payload = assembly_payload(frames)
             payload["ops"].pop()
             reply = json.dumps(payload, ensure_ascii=False)
-            parsed = parse_assembler_payload(reply)  # Extraction accepts it.
+            parsed = parse_assembler_payload(reply)
             problems = validate_payload(project, frames, parsed, full_voiceover(project, frames))
             self.assertTrue(problems, "Native validator must detect missing frame coverage")
             original = deepcopy(parsed)
@@ -513,7 +483,6 @@ class NativeSceneObservation(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fact.payload["contract"], "native_scene_assembly")
             self.assertEqual((fact.payload["failure_class"], fact.payload["payload_required"],
                               fact.payload["payload_present"]), (expected, True, present))
-        # a payload that is there but rejected must not look like a missing one to the diagnosis
         self.assertIs(facts[2].payload["parsed"], True)
 
     async def test_local_assembly_warnings_have_no_invented_model_request(self):
@@ -641,7 +610,7 @@ class NativeSceneObservation(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(args[2], original["ops"])
                 self.assertEqual(kwargs, {"characters": original["characters"],
                                          "scenes": original["scenes"], "export_xlsx": False})
-                await business.commit()  # Only the ORIGINAL writer's transaction.
+                await business.commit()
                 committed = await self.state()
                 with patch.object(scene_contracts, "verify_scene_assembly", wraps=scene_contracts.verify_scene_assembly) as verify, self.business_sql() as statements:
                     await result(business, project, ASSEMBLER, payload=payload)
@@ -713,7 +682,6 @@ class NativeSceneObservation(unittest.IsolatedAsyncioTestCase):
     async def test_original_camera_runner_records_native_parse_fact(self):
         from app.services.scene_design import runner
 
-        # Unit external reply only. Native prompt, parser and return value stay real.
         reply, expected = self.parsed_camera()
         async with self.business_sessions() as business:
             project, _, _ = await self.inputs(business)

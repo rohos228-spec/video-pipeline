@@ -1,10 +1,3 @@
-"""Offline readiness contract for the native text nodes (plan/script/split/image_prompts).
-
-No database, provider or worker: capability data, profile eligibility inputs, diagnosis
-typing of the injected '{"ops": }' failure, and the semantic limits that must NOT widen.
-The DB-backed recover_node / reconcile preconditions are in
-tests/observe_v1/test_text_nodes_recovery.py.
-"""
 import pytest
 
 from app.services.node_capabilities import (
@@ -20,17 +13,13 @@ def test_plan_and_script_are_recovery_ready_by_capability_data(node_type):
     assert cap.managed and cap.result_kind == "project_text"
     assert RECOVERY_ACTIONS <= set(cap.actions) and set(READ_ACTIONS) <= set(cap.actions)
     assert cap.profile_compatible is True
-    # no inner JSON retry exists in these executors; exhaustion is proven by the runtime counter
     assert cap.native_json_retry is False
-    # the supervisor never continues the pipeline itself; the mandatory HITL stays untouched
     assert cap.recovery_continuation == "none"
     assert "human_approval" in cap.phases and "hitl_request" in cap.effects
 
 
 @pytest.mark.parametrize("node_type", ["split", "image_prompts"])
 def test_split_and_image_prompts_are_recovery_ready_since_w5_d05(node_type):
-    # W5 D05: a retry is idempotent only when nothing was written; that is proven by data_applied facts and by the
-    # validate-before-write rules of both nodes (tests/w5_d05_*). The mandatory incident gate stays in actions_recovery.
     cap = capability_for(node_type)
     assert cap.managed
     assert set(cap.actions) == set(READ_ACTIONS) | RECOVERY_ACTIONS
@@ -46,9 +35,6 @@ def test_excel_gpt_behaviour_is_unchanged():
 
 
 def test_profile_eligibility_is_capability_data_not_result_kind():
-    # Eligibility needs an explicit profile_compatible flag (never result_kind). W5 D05 opened it for the text nodes
-    # whose retry is idempotent and validated before writing; animation_prompts (image strip in the request, batches
-    # applied one by one) and every media node stay closed.
     sfx = capability_for("sfx_plan")
     assert sfx.result_kind == "structured" and sfx.managed and sfx.profile_compatible
     assert "retry_profile" in sfx.actions
@@ -61,8 +47,6 @@ def test_profile_eligibility_is_capability_data_not_result_kind():
 def test_no_other_node_gained_recovery_actions():
     for node_type in ("publish", "scene_design", "enrich_1", "future-unsupported"):
         assert not RECOVERY_ACTIONS & set(capability_for(node_type).actions), node_type
-    # D06: images / hero / audio / sfx_gen carry retry_same ONLY as a local resume of a recorded result
-    # (media_local_resume); never a profile retry, never a paid resend.
     for node_type in ("images", "hero", "audio", "sfx_gen"):
         actions = set(capability_for(node_type).actions)
         assert "retry_same" in actions and "retry_profile" not in actions, node_type
@@ -143,10 +127,6 @@ def test_script_without_any_usable_payload_requires_one_but_short_text_does_not_
 
 
 def test_split_and_image_prompts_type_only_a_total_failure_as_recoverable_json_incident():
-    """Per-attempt parse facts stay payload_required=False for image_prompts (partial extraction) and for a split
-    that still has a usable answer or the native fallback. Only a TOTAL failure (no frames at all / no writeable
-    operation from any batch, nothing written) is typed invalid_json/missing_payload: the behavioural proof
-    is in tests/w5_d05_split_image_prompts_retry_test.py."""
     import inspect
     from app.services import node_capabilities as nc
     assert "'payload_required':notframes_spec" in inspect.getsource(nc.record_split_parse).replace(" ", "")
@@ -173,7 +153,6 @@ def test_prompt_variants_stay_the_registered_closed_set():
 
 @pytest.mark.parametrize("shape", ["text", "messages_list"])
 def test_effective_body_accepts_only_text_responses_shapes(shape):
-    """The safety net behind widened eligibility: text Responses bodies pass, anything else raises."""
     from app.services import decision_config, profiles_v1
     from unittest.mock import patch
     candidate = {"model_id": "gpt-5-6-sol", "provider": "kie", "kind": "text", "channel": "stable",
@@ -191,4 +170,4 @@ def test_effective_body_accepts_only_text_responses_shapes(shape):
                     {"model": "m", "input": {"unexpected": 1}}):
             with pytest.raises(ValueError):
                 profiles_v1.effective_body(bad, candidate)
-    assert decision_config  # imported to ensure the config module loads with the profile module
+    assert decision_config

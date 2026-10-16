@@ -1,4 +1,3 @@
-"""W6 интеграция W6-2 в W6-1: журнал, перенос по лимиту, ожидание человека, превью действия. Сети и площадок нет."""
 from __future__ import annotations
 
 import time
@@ -64,7 +63,6 @@ async def test_needs_human_result_waits_for_human_one_telegram_no_autoretry(db, 
     assert p.status is ProjectStatus.assembled and PLATFORMS[0] in p.meta["publish_needs_human"]["platforms"]
     assert len(bot.sent) == 1 and pa.REFUSALS["captcha"] in bot.sent[0]
     assert not ps.is_auto_retryable(r0, time.time())
-    # повторный запуск: ни клика по этой площадке, ни второго уведомления
     p.status = ProjectStatus.publishing
     await step.run(db, p, bot)
     assert sorted(clicks) == sorted(PLATFORMS[1:]) and len(bot.sent) == 1
@@ -93,13 +91,10 @@ async def test_daily_limit_defers_without_needs_human_and_retries_after_time(db,
     marker = meta["publish_deferred"]
     assert set(marker["platforms"]) == {PLATFORMS[0]} and marker["platforms"][PLATFORMS[0]]["retry_after"] > now
     assert len(bot.sent) == 1 and pa.REFUSALS["daily_limit"] in bot.sent[0]
-    # пока срок не вышел, проект сам в publishing не возвращается
     assert await step.publish_hold_reason(db, p) == "publish_deferred"
-    # шаг, запущенный раньше срока, ничего не трогает
     p.status = ProjectStatus.publishing
     await step.run(db, p, bot)
     assert PLATFORMS[0] not in clicks and len(bot.sent) == 1
-    # срок вышел и лимит снят: удержания нет, площадка публикуется (подтверждение «да» не тратилось)
     marker["platforms"][PLATFORMS[0]]["retry_after"] = now - 1
     p.meta = {**p.meta, "publish_deferred": marker}
     assert await step.publish_hold_reason(db, p) is None

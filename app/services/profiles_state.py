@@ -1,4 +1,3 @@
-"""An immutable approved config version; never a project/global config mutation."""
 from datetime import datetime
 from sqlalchemy import JSON,String,UniqueConstraint
 from sqlalchemy.orm import Mapped,mapped_column

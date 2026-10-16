@@ -1,28 +1,3 @@
-"""Operator-level emergency stop for the whole supervisory layer.
-
-One persisted global flag (master DB, survives restart). While it is ON:
-
-* ``ActionSupervisor.charge_request`` refuses before the atomic reservation, so
-  no worker, decision, media or retrieval request of a managed execution is
-  charged or sent;
-* ``worker_entry_admission`` refuses a new native tick of a managed project;
-* ``recover_node`` refuses before any ticket is reserved;
-* the Decision supervisor neither opens decisions nor starts model steps;
-* ``evaluate_start`` / managed successors refuse (in-process cached value).
-
-Native paid seams (``kie_http``, ``outsee_http``, ``gpt_api``, ``elevenlabs_api``,
-``sfx_gen``, the Create routers and the Outsee bot) check the same durable flag through
-``guard_native`` (called from ``spend_guard.paid_gate``), so a manual Studio button is
-stopped too. An unreadable flag blocks (fail-closed).
-
-It does NOT hold executions (no ``held`` flag is touched) and does not cancel
-an already-sent request. Switching it OFF is therefore the only step needed to
-resume; there is no per-execution state to unwind. Read-only endpoints, the
-observer journal, diagnosis and the watchdog keep running.
-
-The cache below is only an optimisation for synchronous gates; every async
-choke point re-reads the durable row.
-"""
 from __future__ import annotations
 
 import uuid
@@ -39,11 +14,10 @@ REASON = "kill_switch_active"
 
 
 class KillSwitchActive(RuntimeError):
-    """Raised before any network call or charge while the emergency stop is ON."""
+    pass
 
 
 class KillSwitchState(Base):
-    """Single durable row (key='global'); absent row means OFF."""
     __tablename__ = "supervisor_kill_switch"
     key: Mapped[str] = mapped_column(String(20), primary_key=True)
     active: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -55,7 +29,6 @@ class KillSwitchState(Base):
 
 
 class KillSwitchHistory(Base):
-    """Append-only record of every change."""
     __tablename__ = "supervisor_kill_switch_history"
     id: Mapped[int] = mapped_column(primary_key=True)
     revision: Mapped[int] = mapped_column(Integer)
@@ -70,7 +43,6 @@ _cache = {"active": False}
 
 
 def cached_active() -> bool:
-    """Last value seen or written by this process; for synchronous gates only."""
     return bool(_cache["active"])
 
 
@@ -79,7 +51,6 @@ def reset_cache() -> None:
 
 
 async def ensure_table(master) -> None:
-    """Create the two tables if the startup migration did not (idempotent)."""
     async with master() as session:
         def create(sync_session):
             connection = sync_session.connection()
@@ -90,19 +61,11 @@ async def ensure_table(master) -> None:
 
 
 def _is_missing_table(exc: BaseException) -> bool:
-    """True only for "the table does not exist yet" (the switch was never set)."""
     text_ = str(exc).lower()
     return "no such table" in text_ or "does not exist" in text_ or "undefinedtable" in text_
 
 
 async def is_active(session) -> bool:
-    """Durable read on the caller's session; also refreshes the cache.
-
-    A missing table can only mean the switch was never set (setting creates the
-    table first), so it reads as OFF. Any other database error (locked file, I/O
-    error, broken connection) propagates: reading it as OFF would let a paid call
-    through while the operator may have stopped everything (fail-closed).
-    """
     try:
         value = await session.scalar(select(KillSwitchState.active).where(
             KillSwitchState.key == GLOBAL_KEY))
@@ -117,26 +80,19 @@ async def is_active(session) -> bool:
 
 
 async def guard(session) -> None:
-    """Raise KillSwitchActive before any charge / reservation / network call."""
     if await is_active(session):
         raise KillSwitchActive("kill switch active: operator emergency stop blocks supervisor requests")
 
 
 class KillSwitchCheckFailed(KillSwitchActive):
-    """The switch state could not be read. Treated as ON: nothing is sent (fail-closed)."""
+    pass
 
 
 async def guard_native(sessions) -> None:
-    """Gate for native paid calls (manual Studio buttons, pipeline steps, routers).
-
-    ``sessions`` is a session factory (``async with sessions() as s``). Raises
-    ``KillSwitchActive`` when the durable flag is ON and ``KillSwitchCheckFailed`` when it
-    cannot be read. Never returns normally on an unreadable state.
-    """
     try:
         async with sessions() as session:
             active = await is_active(session)
-    except Exception as exc:  # noqa: BLE001 - any failure to read the flag blocks the call
+    except Exception as exc:
         raise KillSwitchCheckFailed(
             f"kill switch state unreadable ({type(exc).__name__}): paid call refused") from exc
     if active:
@@ -144,7 +100,6 @@ async def guard_native(sessions) -> None:
 
 
 async def load(master) -> bool:
-    """Startup / reload: ensure the table and prime the cache from the database."""
     await ensure_table(master)
     async with master() as session:
         return await is_active(session)
@@ -177,12 +132,6 @@ async def status(master, *, history_limit: int = 20) -> dict:
 
 async def set_state(master, *, active: bool, actor: str, rationale: str,
                     source: str = "operator_api") -> dict:
-    """Persist the flag with explicit identity and rationale, and audit it.
-
-    Every managed execution's action history receives an ``ActionRecord`` so the
-    stop is visible where operators already look. An unchanged value is a no-op
-    (no revision, no audit noise).
-    """
     from app.services.actions_v1 import ActionExecutionControl, ActionRecord
     if not str(actor or "").strip() or len((rationale or "").strip()) < 3:
         raise ValueError("explicit operator identity and rationale required")

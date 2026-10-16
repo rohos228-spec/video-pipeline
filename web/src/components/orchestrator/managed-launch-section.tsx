@@ -35,7 +35,6 @@ export function ManagedLaunchSection({projectId,context,actions,diagnosis,onExec
     void observations.launchOptions(projectId).then(value=>{
       if(cancelled || generation.current!==epoch) return;
       setOptions(value);setLimit(value.request_limit_default);setStrategies(value.strategies.filter(s=>s!=='retry_profile'));
-      // Default to a single existing group; disconnected graphs require explicit selection.
       const eligible=value.nodes.filter(node=>node.supported && node.status==='pending');
       const firstGroup=eligible.find(node=>node.group_id)?.group_id;
       setNodes(firstGroup ? eligible.filter(node=>node.group_id===firstGroup).map(node=>node.node_key) : []);

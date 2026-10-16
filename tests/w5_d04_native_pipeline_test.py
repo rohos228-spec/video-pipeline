@@ -1,17 +1,3 @@
-"""W5-2 (D04): дефекты нативного конвейера, закрытые тестом на каждый случай.
-
-Класс доказательства: U/D на заменителе провайдера (createTask, статус и скачивание подменены на уровне httpx,
-журнал задач во временной SQLite). Сети, платных вызовов и боевой базы нет. Живого доказательства нет: ни один
-настоящий запрос в Kie не отправлялся.
-
-Случаи плана D04:
-1. рестарт во время generating_* не ставит заново кадры с живой задачей (платная задача одна);
-2. таймаут/сбой опроса и RETRY_BURN не создают новую задачу при живой;
-3. task id записан до опроса, а потеря между ответом createTask и записью ловится запретом второго createTask;
-4. скачивание сразу после готовности, неудача скачивания не ведёт к новому createTask;
-5. авторизация и референсы в `json_request` управляемого транспорта: ЗАКРЫТО ТОЛЬКО ЧАСТИЧНО, см. отчёт (файл
-   `media_transport.py` вне границы волны); тест фиксирует текущую границу.
-"""
 import inspect
 import unittest
 from pathlib import Path
@@ -30,7 +16,6 @@ PID = base.PID
 
 
 class NoUrlsEnv(base.Env):
-    """Статус «готово», но ссылок на результат нет (ответ провайдера без resultUrls)."""
 
     no_urls = False
 
@@ -44,21 +29,17 @@ class NoUrlsEnv(base.Env):
 
 class RestartWithLiveTask(base.Env):
     async def test_D04_1_restart_during_generation_keeps_one_paid_task_for_every_frame(self):
-        """Два кадра в полёте, процесс умер на опросе каждого: после рестарта оба идут по своим task id."""
         self.poll_script = [base.ProcessDied(), base.ProcessDied()]
         for number, prompt in ((1, "первый"), (2, "второй")):
             with self.assertRaises(base.ProcessDied):
                 await self.gen_image(out=self.out(f"frame_00{number}_aaaaaaaa.png"), prompt=prompt)
         self.assertEqual(self.creates, 2)
-        # рестарт: оба кадра поставлены заново, новые имена файлов, те же запросы
         first = await self.gen_image(out=self.out("frame_001_bbbbbbbb.png"), prompt="первый")
         second = await self.gen_image(out=self.out("frame_002_bbbbbbbb.png"), prompt="второй")
         self.assertEqual(self.creates, 2, "ни одной новой платной задачи")
         self.assertEqual((first.gen_id, second.gen_id), ("T-1", "T-2"))
 
     async def test_D04_1_a_finished_frame_is_not_resubmitted_by_the_ledger_but_by_the_step_check(self):
-        """Скачанный кадр в журнале терминален: повтор того же запроса был бы новой задачей. Защита от этого
-        в шаге (кадр с готовым файлом не ставится в очередь), поэтому проверяем именно границу: журнал не держит."""
         await self.gen_image(out=self.out("frame_003_aaaaaaaa.png"), prompt="третий")
         self.assertEqual(self.creates, 1)
         await self.gen_image(out=self.out("frame_003_bbbbbbbb.png"), prompt="третий")
@@ -85,12 +66,10 @@ class RestartWithLiveTask(base.Env):
 
 class BurnWithLiveTask(NoUrlsEnv):
     async def test_D04_2_burn_on_a_generic_error_does_not_create_a_second_task(self):
-        """Задача жива и оплачена (готова, но ответ без ссылок). Ошибка «сжигает попытку» лестницы, а новая задача
-        не создаётся: каждая попытка опрашивает ту же задачу."""
         self.no_urls = True
-        with self.assertRaises(kie_kling.KieKlingError) as caught:  # 4 сожжённых попытки, дальше запасной Kling
+        with self.assertRaises(kie_kling.KieKlingError) as caught:
             await self.ladder_video()
-        self.assertEqual(caught.exception.context.get("error_kind"), "no_key")  # запасной путь без ключа не платит
+        self.assertEqual(caught.exception.context.get("error_kind"), "no_key")
         self.assertEqual(self.creates, 1, "основная модель: одна задача на все сожжённые попытки")
         self.assertGreaterEqual(self.polls, 4, "попытки лестницы опрашивали ту же задачу")
         rows = [r for r in await self.task_rows() if not r.task_id.startswith(spend_guard.INTENT_PREFIX)]
@@ -135,8 +114,6 @@ class TaskIdBeforePolling(base.Env):
         self.assertIn(("T-1", "bound", "submitted"), seen["rows"])
 
     async def test_D04_3_process_dies_between_the_create_answer_and_the_task_id_row(self):
-        """Окно, где task id есть только в локальной переменной: процесс умер. Рестарт не шлёт второй createTask
-        (намерение без исхода), второй платной задачи нет; снять блокировку может только человек."""
         real = spend_guard.append_task_event
 
         async def dies_on_bound(session, **kw):
@@ -190,11 +167,7 @@ class DownloadRightAway(base.Env):
 
 class ManagedTransportBoundary(unittest.TestCase):
     def test_D04_5_managed_references_stay_refused_fail_closed(self):
-        """Граница, зафиксированная тестом (не закрытие): управляемый `json_request` не принимает заголовки, а
-        `generate_kie_image` отказывает в референсах. Закрытие требует правки `media_transport.py` /
-        `media_jobs.py` (вне границы W5-2), патч в отчёте."""
         from app.services import media_transport
-        # авторизация закрыта (tests/w5_d04_5_managed_auth_test.py): headers принимается и передаётся в провод
         self.assertIn("headers", inspect.signature(media_transport.json_request).parameters)
         source = inspect.getsource(kie_http.generate_kie_image)
         self.assertIn("managed reference upload has no authorized adapter", source)
@@ -210,7 +183,7 @@ class OutseeStartupReport(base.Env):
             await s.refresh(pr)
         with patch.object(media_spend, "TEST_FORCE", True), patch.object(idem, "_ensured", set()):
             ctx = idem.make_ctx(pr.id, Path(self.tmp.name) / "frame_001_aaaaaaaa.png", "nano-banana-2", "p")
-            await idem._write(ctx, "a" * 32, "intent")  # процесс умер после отправки
+            await idem._write(ctx, "a" * 32, "intent")
             done = Path(self.tmp.name) / "frame_002_aaaaaaaa.png"
             done.write_bytes(base.PNG)
             ctx2 = idem.make_ctx(pr.id, done, "nano-banana-2", "p2")

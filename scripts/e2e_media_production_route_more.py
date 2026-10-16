@@ -88,7 +88,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 
 def _load_script(name: str, alias: str):
@@ -99,7 +99,7 @@ def _load_script(name: str, alias: str):
     return mod
 
 
-base = _load_script("e2e_media_production_route", "e2e_media_production_route_for_more")  # imported, not edited
+base = _load_script("e2e_media_production_route", "e2e_media_production_route_for_more")
 qc = base.qc
 
 PORT = 18778
@@ -135,13 +135,13 @@ FAULT_VALIDATE = "simulated outcome loss: the post-step validation of the video 
 @dataclass(frozen=True)
 class NodeProfile:
     node: str
-    step_code: str            # node_registry.WORK_NODES[node].step_code
-    target: str               # canvas node key
-    key: str                  # request-key / clip key of the single unit ("" = none for the node)
+    step_code: str
+    target: str
+    key: str
     paid_path: str
-    price_usd: float          # CONSERVATIVE price of ONE paid request of the node
-    result_dir: str           # folder of the result file inside the project
-    kind: str                 # image | video
+    price_usd: float
+    result_dir: str
+    kind: str
     file_prefix: str
 
 
@@ -153,7 +153,6 @@ PROFILES = {
 NODES = ("images",) + tuple(PROFILES)
 
 
-# ───────────────────────────── pure helpers (unit-tested) ─────────────────────────────
 
 def worst_case_usd(node: str, max_real_posts: int) -> float:
     return round(max_real_posts * PROFILES[node].price_usd, 6)
@@ -220,7 +219,6 @@ class MediaGate(base.Gate):
         return super().judge(method, host, port, path, is_decision=is_decision)
 
 
-# ───────────────────────────── the fake Outsee API ─────────────────────────────
 
 def _ffmpeg() -> str:
     exe = shutil.which("ffmpeg")
@@ -259,7 +257,7 @@ class FakeOutseeMedia:
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
-            def log_message(self, *a, **k):  # quiet
+            def log_message(self, *a, **k):
                 pass
 
             def _send(self, code: int, body: bytes, ctype: str = "application/json"):
@@ -281,7 +279,7 @@ class FakeOutseeMedia:
                 self._json(401, {"error": "bad key"})
                 return False
 
-            def do_POST(self):  # noqa: N802
+            def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(length) if length else b""
                 if self.path not in PAID_PATHS:
@@ -307,7 +305,7 @@ class FakeOutseeMedia:
                                          "prompt_chars": len(str(body.get("prompt") or ""))})
                 self._json(200, {"id": f"{'fakevid' if video else 'fake'}-{n:04d}", "status": "queued"})
 
-            def do_GET(self):  # noqa: N802
+            def do_GET(self):
                 if self.path.startswith(STATUS_PREFIX):
                     if not self._auth():
                         return
@@ -373,7 +371,7 @@ class StubGpt:
                 f"on a neutral light grey background, even studio lighting, clean flat colours, no text, no logos. "
                 f"(stub answer {self.calls}-{_uuid.uuid4().hex[:6]})")
 
-    async def ask(self, text: str, *a, **k) -> str:  # a rewrite after a refusal would land here; never expected
+    async def ask(self, text: str, *a, **k) -> str:
         return await self.ask_fresh(text)
 
 
@@ -382,7 +380,6 @@ async def _no_browser():
     yield None
 
 
-# ───────────────────────────── environment and honest reporting ─────────────────────────────
 
 def env_overrides(data: Path, port: int, *, fake_base: str, gate_cap: float, dry: bool) -> dict[str, str]:
     out = base.env_overrides(data, port, fake_base=fake_base, gate_cap=gate_cap, dry=dry)
@@ -433,7 +430,6 @@ def reality_not_proven(node: str, mode: str) -> list[str]:
     return out
 
 
-# ───────────────────────────── checks (pure, unit-tested) ─────────────────────────────
 
 def check(name: str, ok: bool, detail: Any = None, *, needs: str | None = None) -> dict:
     return qc.check(name, ok, detail, needs=needs)
@@ -468,7 +464,6 @@ def evaluate_image_node(node: str, snap: dict, *, mode: str, max_real_posts: int
     prof = PROFILES[node]
     saved = (base.FRAME_KEY, base.TARGET, base.NODE)
     base.FRAME_KEY, base.TARGET, base.NODE = prof.key, prof.target, node
-    # the sibling counts a HITL fault and a tail fault separately; this node injects ONE kind of loss (named in the header)
     counters = dict(snap.get("counters", {}))
     injected = int(counters.get("injected_hitl", 0)) + int(counters.get("injected_tail", 0))
     counters["injected_hitl"] = counters["injected_tail"] = injected
@@ -590,7 +585,6 @@ def final_verdict(node: str, mode: str, ok: bool) -> str:
     return f"DRY OK ({node}: fake provider and stub Decision: machinery proven offline, NOT a live proof)"
 
 
-# ───────────────────────────── runtime ─────────────────────────────
 
 def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -663,7 +657,9 @@ async def _seed(args: argparse.Namespace, prof: NodeProfile) -> tuple[int, str]:
                              "items": dict(status=ProjectStatus.hero_ready, item_descriptions=[ITEM_DESC]),
                              "videos": dict(status=ProjectStatus.animation_prompts_ready, video_generator="veo_3_1_lite",
                                             video_resolution=VIDEO_RESOLUTION, video_relax=True)}[prof.node]
+    from app.web.settings_default import seed_default_workflow
     async with session_scope() as session:
+        await seed_default_workflow(session)
         wf = Workflow(name=f"wf-{slug}", is_default=False, nodes=nodes, edges=edges)
         session.add(wf)
         await session.flush()
@@ -684,7 +680,7 @@ async def _seed(args: argparse.Namespace, prof: NodeProfile) -> tuple[int, str]:
         pid, data_dir = int(project.id), project.data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "voiceover.txt").write_text(voiceover, encoding="utf-8")
-    if prof.node == "videos":  # the start frame the step insists on (a real decodable PNG above the scene threshold)
+    if prof.node == "videos":
         scenes = data_dir / "scenes"
         scenes.mkdir(parents=True, exist_ok=True)
         (scenes / "frame_001_abcdef01.png").write_bytes(base.make_png())
@@ -719,7 +715,6 @@ def _install_faults(prof: NodeProfile, counters: dict, restore: list) -> None:
         original_flush = AsyncSession.flush
 
         async def failing_write(self, *a, **k):
-            # the database write of the new item row fails AFTER the paid file was downloaded and recorded
             if any(isinstance(o, Artifact) and o.kind is ArtifactKind.item_reference for o in self.sync_session.new):
                 await lost("injected_tail", FAULT_TAIL)
             return await original_flush(self, *a, **k)
@@ -728,13 +723,10 @@ def _install_faults(prof: NodeProfile, counters: dict, restore: list) -> None:
         from app.bots import outsee_http
         from app.orchestrator.steps import generate_videos
         from app.services import post_step_validate
-        patch(generate_videos, "browser_session", _no_browser)
+        if hasattr(generate_videos, "browser_session"):
+            patch(generate_videos, "browser_session", _no_browser)
 
         async def broken_validate(*a, **_k):
-            # The outcome is really lost for the application: the provider was paid and answered, but the clip is not
-            # where the step looks for it after the crash (the project keeps one store now, so a file that stayed in
-            # place would simply be re-bound by the disk recovery). The stand keeps the paid file aside, to prove it
-            # exists exactly once.
             project = a[1] if len(a) > 1 else None
             root = getattr(project, "data_dir", None)
             if root is not None:
@@ -752,8 +744,6 @@ def _install_faults(prof: NodeProfile, counters: dict, restore: list) -> None:
         original_video = outsee_http.generate_video
 
         async def short_text_video(prompt, out_path, **kw):
-            # the step passes no duration (Veo default 8 s) and a start frame; the stand pays for the SHORTEST clip and
-            # sends text-to-video (no public frame upload). Everything else is the production client.
             kw["duration"] = VIDEO_SECONDS
             for name in ("reference_image", "last_frame_image", "first_frame_url", "last_frame_url"):
                 kw.pop(name, None)
@@ -793,12 +783,11 @@ async def main(argv: list[str] | None = None) -> int:
               "(they would point at the live data folder); run the stand in its own process; nothing was started")
         return 3
 
-    # the sibling's flow helpers read these module globals at call time
     base.NODE, base.STEP_CODE, base.TARGET, base.FRAME_KEY = prof.node, prof.step_code, prof.target, prof.key
     base.GENERATE_PATH = prof.paid_path
 
     work = Path(args.work_dir).resolve()
-    data = guard.reset_scratch_data(work)  # A19
+    data = guard.reset_scratch_data(work)
     os.chdir(ROOT)
     fake = FakeOutseeMedia(args.fake_port).start()
     decision_endpoint = qc.live_endpoint(live_env) if (mode == "live" and args.real_decision) else None
@@ -850,8 +839,6 @@ async def main(argv: list[str] | None = None) -> int:
     step_failure_policy.SLEEP_MINUTES = args.sleep_minutes
     step_failure_policy.XLSX_SHEET_FORMAT_SLEEP_MINUTES = args.sleep_minutes
     from app import main as app_main
-    # The scratch environment must be what the application really uses: a settings object loaded earlier (the module
-    # was imported after another one touched `app`) would point at the LIVE data folder. Never start in that case.
     if Path(str(settings.data_dir)).resolve() != Path(data).resolve():
         fake.stop()
         print(f"refused: the application settings point at {settings.data_dir}, not at the scratch data {data}; "
@@ -902,7 +889,7 @@ async def main(argv: list[str] | None = None) -> int:
         judged = gate.judge(request.method, host, port, path, is_decision=is_decision)
         if judged.action == "refuse":
             if paid_bodies and judged.kind in ("paid_cap",) and request.method.upper() == "POST":
-                paid_bodies.pop()  # the refused second body never left
+                paid_bodies.pop()
             raise RuntimeError(judged.reason)
         if judged.action == "stub_decision":
             body = json.loads(request.content.decode("utf-8") or "{}")
@@ -927,7 +914,7 @@ async def main(argv: list[str] | None = None) -> int:
         if judged.kind in ("outsee_get", "paid_post_real"):
             try:
                 gate.learn(response.text)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         return response
 
@@ -935,7 +922,7 @@ async def main(argv: list[str] | None = None) -> int:
     restore: list = []
 
     async def no_curl_post(*_a, **_k):
-        return None  # the curl submit fallback is a second transport the hook cannot count: the stand never uses it
+        return None
 
     original_download_curl = outsee_http._download_via_curl
 
@@ -1016,7 +1003,6 @@ async def _verify_downloaded(prof: NodeProfile, project_root: Path, state_db: Pa
                                                  "duration", "streams")} | {"file": files[-1].name}
 
 
-# ───────────────────────────── the flow ─────────────────────────────
 
 async def _run_flow(args, prof, mode, client, api, fake, gate, counters, probes, result, advisories, project_db, state_db,
                     project_root, pid, seen_prompts, real_base) -> None:
@@ -1129,7 +1115,7 @@ async def _probe_after(prof, fake, gate, probes, project_root, pid, seen_prompts
                     None, None, prompt=seen["prompt"], out_path=folder / f"{prof.key}_deadbeef.png",
                     model_slug=seen["model"], project_id=pid, gpt_rewrite=False, idempotent=True)
                 entry.update(adopted=str(getattr(res, "gen_id", "")).startswith("idem:"), file=Path(str(res.file_path)).name)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 entry.update(error=f"{type(exc).__name__}: {str(exc)[:120]}")
         else:
             entry["error"] = "the request of the step was not captured"
@@ -1145,27 +1131,24 @@ async def _probe_after(prof, fake, gate, probes, project_root, pid, seen_prompts
                     idempotent=True)
         except outsee_idempotency.OutseeResumeOnlyError:
             entry["refused"] = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             entry["error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
         entry["posts_delta"] = fake.posts + gate.paid_posts + gate.probe_posts - before
         probes["resume_only_other"] = entry
     else:
-        # a video has no request-key record: under resume-only ANY paid video call is refused before a byte
         from app.settings import settings
         entry = {"refused": False}
         before = fake.posts + gate.paid_posts + gate.probe_posts
         saved_caps = (settings.spend_daily_cap_usd, settings.spend_project_cap_usd, settings.spend_run_cap_usd)
-        # the spend gate is checked first and would refuse by itself: lift the caps so that ONLY resume-only decides
-        # (the target is the fake: a failed guard shows up as a counted probe POST, never as a real request)
         settings.spend_daily_cap_usd = settings.spend_project_cap_usd = settings.spend_run_cap_usd = 1000.0
         try:
             from app.bots import outsee_http
-            tracked = media_spend.outsee_tracked(outsee_http.generate_video, "video")  # what generate_video_with_retries calls
+            tracked = media_spend.outsee_tracked(outsee_http.generate_video, "video")
             with media_spend.resume_only():
                 await tracked("another clip", folder / "clip_002_cafebabe.mp4", model_slug=VIDEO_MODEL, project_id=pid)
         except media_spend.ResumeOnlyBlocked:
             entry["refused"] = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             entry["error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
         finally:
             settings.spend_daily_cap_usd, settings.spend_project_cap_usd, settings.spend_run_cap_usd = saved_caps

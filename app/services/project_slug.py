@@ -1,8 +1,3 @@
-"""Свободен ли slug на диске.
-
-Удаление проекта убирает строку из базы, а папка `data/videos/<slug>` с его project.db и медиа остаётся. Новый проект
-с тем же slug подхватывал чужую project.db и отвечал 500 (UNIQUE projects.id), а старые кадры и ролики подмешивались.
-"""
 from __future__ import annotations
 
 from pathlib import Path

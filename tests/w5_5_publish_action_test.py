@@ -1,8 +1,3 @@
-"""W5-5 / D15: публикация как действие слоя уровня destructive. Сети, браузера и платформ нет.
-
-Контекст исполнения - заглушка с проектом в памяти; публикаторы не запускаются (executor вызывает только
-эндпоинт запуска шага, он тоже подменён).
-"""
 from __future__ import annotations
 
 import pytest
@@ -83,8 +78,8 @@ async def test_preview_names_platforms_account_and_caption_verbatim(reg) -> None
     effect = out["destructive_effects"][0]["text"]
     for name in ("TikTok", "YouTube Shorts", "Instagram Reels", "VK Клипы", "Likee"):
         assert name in effect
-    assert f"«{CAPTION}»" in effect  # подпись дословно
-    assert "MoreLogin …1234" in effect and "profile-abcd1234" not in effect  # аккаунт без полного id
+    assert f"«{CAPTION}»" in effect
+    assert "MoreLogin …1234" in effect and "profile-abcd1234" not in effect
     assert "нельзя отозвать" in effect and "автоповтора не будет" in effect
     assert out["steps"][0]["destructive"] is True and out["steps"][0]["spends_money"] is False
 
@@ -108,7 +103,7 @@ async def test_managed_agent_mode_is_refused(reg, monkeypatch) -> None:
     with pytest.raises(ActionCallError) as err:
         await reg.get("publish.send").executor(ctx, step()["params"])
     assert err.value.status == 409 and "not_managed" in str(err.value.detail)
-    assert [c for c in ctx.calls if c[0] == "POST"] == []  # запуска шага не было
+    assert [c for c in ctx.calls if c[0] == "POST"] == []
 
 
 async def test_managed_check_failure_is_fail_closed(reg, monkeypatch) -> None:
@@ -149,7 +144,7 @@ async def test_platform_subset_is_refused_with_the_real_list(reg) -> None:
 async def test_already_published_platforms_are_left_out_of_the_expected_list(reg) -> None:
     meta = {"published_platforms": {"tiktok": "https://t/1"}}
     ctx = FakeCtx(project(meta=meta))
-    assert (await preview(reg, ctx))["ok"] is False  # tiktok уже есть: его в списке быть не должно
+    assert (await preview(reg, ctx))["ok"] is False
     ok = await preview(reg, ctx, platforms=[p for p in PLATFORMS if p != "tiktok"])
     assert ok["ok"] is True and "TikTok" not in ok["destructive_effects"][0]["text"]
 

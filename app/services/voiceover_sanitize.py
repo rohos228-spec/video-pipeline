@@ -101,7 +101,6 @@ _SCENARIO_BLOCK_RE = re.compile(
 
 
 def extract_scenario_block(text: str) -> str | None:
-    """Текст между <<<SCENARIO>>> и <<<END_SCENARIO>>>, иначе None."""
     raw = text or ""
     m = _SCENARIO_BLOCK_RE.search(raw)
     if m:
@@ -155,7 +154,6 @@ def _scenario_from_apply_ops(text: str) -> str:
 
 
 def extract_scenario_or_preamble(text: str) -> str:
-    """Сценарий из маркеров; иначе текст до <<<VOICEOVER>>>; иначе apply-ops."""
     marked = extract_scenario_block(text)
     if marked:
         return marked
@@ -172,7 +170,6 @@ def extract_scenario_or_preamble(text: str) -> str:
 
 
 def extract_voiceover_block(text: str) -> str | None:
-    """Достать текст между <<<VOICEOVER>>> и <<<END>>>, иначе None."""
     m = _VOICEOVER_BLOCK_RE.search(text or "")
     if not m:
         return None

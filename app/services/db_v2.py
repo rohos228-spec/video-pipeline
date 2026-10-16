@@ -47,10 +47,6 @@ _FRAME_V2_COLS: list[tuple[str, str]] = _frame_v2_cols()
 
 
 async def migrate_db_v2_schema(conn: Any) -> None:
-    """Добавить v2-колонки в frames: версионная миграция 0007 (create_all не умеет ALTER).
-
-    Тонкая обёртка для старых вызовов; сам ALTER живёт в ``schema_migrations``.
-    """
     from app.services.schema_migrations import run_migration_ids
 
     await run_migration_ids(conn, ("0007_frames_v2_columns",))
@@ -61,7 +57,6 @@ def new_frame_uuid() -> str:
 
 
 def resolve_full_voiceover_text(project: Project) -> str:
-    """Целый закадр: script_text, иначе актуальный voiceover.txt."""
     text = (project.script_text or "").strip()
     if text:
         return " ".join(text.split())
@@ -69,7 +64,7 @@ def resolve_full_voiceover_text(project: Project) -> str:
         from app.services.chatgpt_xlsx import ensure_current_voiceover
 
         path = ensure_current_voiceover(project)
-    except Exception:  # noqa: BLE001
+    except Exception:
         path = None
     if path is not None and path.is_file():
         try:
@@ -86,12 +81,6 @@ async def ensure_single_seed_vo_cell(
     project: Project,
     full_vo: str,
 ) -> Frame:
-    """Одна seed-ячейка = весь закадр (для fw_script до разбивки хвостом группы).
-
-    Игнорирует текущие split-ячейки: при необходимости сносит все Frame и
-    создаёт ровно одну с ``voiceover_text = full_vo``. Идемпотентно, если
-    уже ровно одна ячейка с тем же текстом.
-    """
     from sqlalchemy import delete, update
 
     vo = " ".join((full_vo or "").split())
@@ -296,7 +285,6 @@ async def replace_all_frames(
 
 
 async def _fill_missing_sort_keys(session: AsyncSession, frames: list[Frame]) -> None:
-    """Старые кадры часто без sort_key — тогда вставка всегда падает в конец."""
     missing = [fr for fr in frames if fr.sort_key is None]
     if not missing:
         return
@@ -310,11 +298,11 @@ def sort_key_between(before: float | None, after: float | None) -> float:
     if before is None and after is None:
         return _SORT_STEP
     if before is None:
-        return float(after) - _SORT_STEP  # type: ignore[arg-type]
+        return float(after) - _SORT_STEP
     if after is None:
         return float(before) + _SORT_STEP
     mid = (float(before) + float(after)) / 2.0
-    if mid == float(before):  # ключи слиплись — редкий вырожденный случай
+    if mid == float(before):
         return float(before) + 1e-6
     return mid
 
@@ -454,8 +442,6 @@ async def insert_frame_after(
             )
         ).scalars()
     )
-    # Без sort_key SQLite ставит NULL первыми: новый кадр с ключом 10
-    # оказывается в конце, а порядок сцены разъезжается.
     await _fill_missing_sort_keys(session, frames)
     frames.sort(key=lambda fr: (float(fr.sort_key or 0.0), int(fr.number or 0)))
 

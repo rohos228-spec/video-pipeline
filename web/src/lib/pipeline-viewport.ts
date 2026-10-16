@@ -1,4 +1,3 @@
-/** Панорама/зум пайплайна по проекту — не терять при переключении. */
 
 export type PipelineViewport = { x: number; y: number; zoom: number };
 

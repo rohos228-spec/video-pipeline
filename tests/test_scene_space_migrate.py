@@ -1,4 +1,3 @@
-"""Migration, geom, and store for cinematic scene space."""
 
 from __future__ import annotations
 
@@ -357,7 +356,7 @@ async def test_delete_middle_frame_state_replays_remaining(session: AsyncSession
 
 
 async def test_create_all_registers_space_tables(mem_engine):
-    from app.services.scene_space import models as _scene_space_models  # noqa: F401
+    from app.services.scene_space import models as _scene_space_models
 
     async with mem_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -369,7 +368,7 @@ async def test_create_all_registers_space_tables(mem_engine):
 
 
 async def test_pipeline_project_survives_space_downgrade(session: AsyncSession):
-    session.add(Project(slug="keep-me", topic="t", status=None))  # type: ignore[arg-type]
+    session.add(Project(slug="keep-me", topic="t", status=None))
     await session.commit()
     conn = await session.connection()
     await downgrade_scene_space_schema(conn)

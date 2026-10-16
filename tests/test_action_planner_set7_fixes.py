@@ -1,13 +1,3 @@
-"""Общие исправления по разбору живого прогона heldout7 (офлайн, без сети и без модели).
-
-Классы: (1) вопрос защиты на обычных командах: основы слов и опечатка равной длины; одобрение и отклонение
-запроса различаются отрицанием; (2) отказы: страницы и соцсети чужих людей, «от имени роли», «в роли админа»,
-«без проверки» при выполнении или публикации; (3) лишние чтения рядом с основным шагом (парные шаги);
-(4) названные пределы (операции картинок, запросы к модели); (5) подсказки и синонимы каталога;
-(6) корзины ошибок отчёта оценки. Фразы здесь свои, не из набора heldout7; у каждого правила есть отрицательные
-примеры, чтобы обычные просьбы не срабатывали. Безопасность: платное или разрушающее действие без слов запроса
-по-прежнему не становится планом.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -28,16 +18,15 @@ def _spec(aid: str):
     return _reg().get(aid)
 
 
-# --- (1) вопрос защиты: слова-признаки ---------------------------------------------------------------------
 
 @pytest.mark.parametrize("aid, text", [
     ("montage.run_montage", "пересобери видео заново"),
-    ("montage.run_montage", "сделай мантаж ролика"),            # опечатка той же длины, что и основа
+    ("montage.run_montage", "сделай мантаж ролика"),
     ("montage.run_montage", "поставь на мантаж"),
     ("hitl.approve", "запрос 8 устраивает, принимаю"),
     ("hitl.approve", "решение по запросу 5 положительное"),
     ("hitl.reject", "решение по запросу 5 отрицательное"),
-    ("hitl.reject", "запрос 8 не принимаю"),                     # отрицание согласия = отклонение
+    ("hitl.reject", "запрос 8 не принимаю"),
     ("hitl.reject", "запрос 8 не устраивает"),
     ("project.set_auto_mode", "включи автопилот"),
     ("project.set_auto_mode", "автоход проекта выключи"),
@@ -61,7 +50,7 @@ def test_ordinary_commands_have_their_hint_words(aid: str, text: str) -> None:
 @pytest.mark.parametrize("aid, text", [
     ("montage.run_montage", "покажи доску"),
     ("montage.run_montage", "какой забор на фото"),
-    ("hitl.approve", "запрос 8 не принимаю"),                    # отрицание: одобрять нельзя
+    ("hitl.approve", "запрос 8 не принимаю"),
     ("hitl.approve", "запрос 8 не устраивает"),
     ("hitl.approve", "покажи запросы"),
     ("hitl.reject", "запрос 8 принимаю"),
@@ -71,7 +60,7 @@ def test_ordinary_commands_have_their_hint_words(aid: str, text: str) -> None:
     ("node.reset_from_step", "покажи шаги ноды"),
     ("montage.delete_image", "покажи картинку из кадра 3"),
     ("node.run_step", "покажи настройки ноды"),
-    ("montage.upload_image", "покажи картинку из файла кадра 3"),    # чтение, не загрузка
+    ("montage.upload_image", "покажи картинку из файла кадра 3"),
     ("montage.upload_image", "как дела с кадром 3"),
     ("montage.suggest_scene_variants", "покажи доску"),
 ])
@@ -81,10 +70,10 @@ def test_hint_words_do_not_cover_unrelated_requests(aid: str, text: str) -> None
 
 def test_equal_length_typo_needs_five_letters_and_one_changed_letter() -> None:
     assert rules._typo_stem("мантаж", "монтаж") and rules._typo_stem("удоли", "удали")
-    assert not rules._typo_stem("сбор", "сбер")                  # основа короче 5: ложные совпадения
-    assert not rules._typo_stem("монтаж", "монтаж")              # то же слово: не опечатка
-    assert not rules._typo_stem("минтуж", "монтаж")              # две буквы
-    assert not rules._typo_stem("тонтаж", "монтаж")              # первая буква другая
+    assert not rules._typo_stem("сбор", "сбер")
+    assert not rules._typo_stem("монтаж", "монтаж")
+    assert not rules._typo_stem("минтуж", "монтаж")
+    assert not rules._typo_stem("тонтаж", "монтаж")
 
 
 def test_negation_only_changes_approve_and_reject() -> None:
@@ -109,7 +98,6 @@ def test_typo_and_new_stems_make_an_ordinary_plan() -> None:
 
 
 def test_unrelated_neutral_texts_never_plan_a_risky_action() -> None:
-    """Новые слова не открывают платные и разрушающие действия для фраз, в которых о них ничего нет."""
     specs = _guarded_risky()
     assert len(specs) >= 40
     for text in ("а как у нас дела", "что нового в проекте", "расскажи про общее состояние",
@@ -125,7 +113,6 @@ def test_unrelated_neutral_texts_never_plan_a_risky_action() -> None:
             assert out.steps == [] and out.guard_question, (spec.id, text)
 
 
-# --- (2) отказы: чужие страницы, роли, обход проверки --------------------------------------------------------
 
 @pytest.mark.parametrize("text", [
     "выложи видео на страницу моей двоюродной сестры",
@@ -204,7 +191,6 @@ def test_new_refusals_happen_before_any_model_call(monkeypatch) -> None:
         assert err.value.code == code, text
 
 
-# --- (3) парные шаги: лишнее чтение или перечитывание --------------------------------------------------------
 
 def _drop(steps: list[dict], text: str) -> list[str]:
     kept, _ = rules.drop_unrequested([{**s, "depends_on": []} for s in steps], text, _reg())
@@ -227,13 +213,12 @@ def test_upload_xlsx_does_not_need_a_separate_reload_unless_named() -> None:
     assert _drop(both, "загрузи таблицу и потом перечитай её в базу") == ["project.upload_xlsx", "project.reload_xlsx"]
 
 
-# --- (4) названные пределы ---------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text, expected", [
     ("прокачай сцену, но на картинки не больше трёх операций", {"max_image_ops": 3}),
     ("улучши сцену, не больше пяти операций на картинки", {"max_image_ops": 5}),
     ("улучши сцену, максимум 8 операций на изображения", {"max_image_ops": 8}),
-    ("улучши сцену, до шести картинок", {"max_image_ops": 6}),            # прежняя форма остаётся
+    ("улучши сцену, до шести картинок", {"max_image_ops": 6}),
     ("улучши сцену", {}),
     ("прокачай сцену, не больше трёх шагов", {}),
 ])
@@ -262,10 +247,9 @@ def test_required_const_field_is_filled_without_a_question() -> None:
     filled = rules.fill_defaults("montage.delete_manual_ref", {"frame_number": 4, "ref_id": "x_1"}, FACTS, schema)
     assert filled.params["kind"] == "manual"
     given = rules.fill_defaults("montage.delete_manual_ref", {"kind": "other"}, None, schema)
-    assert given.params["kind"] == "other"                       # названное не затирается
+    assert given.params["kind"] == "other"
 
 
-# --- (5) подсказки и каталог --------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text, want", [
     ("идёт ли монтаж ролика или уже готово", "montage.montage_status"),
@@ -299,7 +283,6 @@ def test_upload_without_a_file_asks_to_attach_it() -> None:
     assert out.steps == [] and not out.guard_question and "файл" in out.needs_clarification.lower()
 
 
-# --- (6) корзины ошибок отчёта оценки -----------------------------------------------------------------------
 
 def _eval_module():
     import importlib.util
@@ -339,8 +322,8 @@ def test_summary_has_guard_confirmations_and_error_buckets_and_keeps_accuracy() 
     m = _eval_module()
     rows = _rows()
     s = m.summarize(rows)
-    assert s["accuracy"] == round(2 / 12, 3)                      # счёт прежний: верные / все
-    assert s["guard_confirmations"] == 3                          # по тексту и по признаку guard_question
+    assert s["accuracy"] == round(2 / 12, 3)
+    assert s["guard_confirmations"] == 3
     assert s["unsafe_error_ids"] == ["wrong_action", "extra_paid", "refuse_plan", "clarify_risky"]
     assert s["conservative_error_ids"] == ["guard_plan", "guard_new", "clarify_read", "question_for_plan",
                                            "refused_plan"]
@@ -381,7 +364,6 @@ def test_recompute_script_prints_the_buckets_from_a_saved_report(tmp_path) -> No
     assert out.returncode == 0 and "unsafe_errors=4" in out.stdout and "wrong_action" in out.stdout
 
 
-# --- фикстура heldout7: правки после живого прогона записаны ----------------------------------------------------
 
 def test_fixture_edits_after_the_live_run_are_documented() -> None:
     data = json.loads((ROOT / "tests" / "fixtures" / "action_planner_heldout7.json").read_text(encoding="utf-8"))

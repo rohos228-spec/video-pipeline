@@ -1,10 +1,3 @@
-"""Макросы («умные кнопки»): именованные готовые планы с параметрами.
-
-Макрос не исполняется сам: он разворачивается в обычные шаги и проходит тот же
-preview, подтверждение, бюджет и журнал, что и план планировщика. Ссылаться
-макрос может только на зарегистрированные действия; встроенные макросы могут
-ссылаться на id, которые пока не зарегистрированы (тогда макрос «недоступен»).
-"""
 from __future__ import annotations
 
 import copy
@@ -70,7 +63,6 @@ class MacroSpec:
                 "available": not missing, "missing_action_ids": missing}
 
 
-# --- шаблоны ----------------------------------------------------------------
 
 def _placeholders(node: Any) -> set[str]:
     if isinstance(node, str):
@@ -103,7 +95,7 @@ def _substitute(node: Any, values: dict) -> Any:
         out = {}
         for key, value in node.items():
             res = _substitute(value, values)
-            if res is not _OMIT:  # необязательный параметр не задан - поле опускается
+            if res is not _OMIT:
                 out[key] = res
         return out
     if isinstance(node, list):
@@ -121,7 +113,6 @@ def _max_steps() -> int:
 
 def validate_macro(title_ru: str, steps: Any, params_schema: Any, registry: ActionRegistry, *,
                    require_registered: bool, description_ru: str = "") -> list[str]:
-    """Список ошибок (пустой = макрос корректен). Ничего не бросает."""
     errors: list[str] = []
     if not isinstance(title_ru, str) or not title_ru.strip() or len(title_ru) > 200:
         errors.append("title_ru: 1..200 characters")
@@ -189,7 +180,6 @@ def validate_macro(title_ru: str, steps: Any, params_schema: Any, registry: Acti
 
 
 def expand(macro: MacroSpec, params: Any, registry: ActionRegistry) -> list[dict]:
-    """Подставляет параметры. Недоступный макрос = MacroUnavailable."""
     missing = macro.missing_actions(registry)
     if missing:
         raise MacroUnavailable(macro.id, missing)
@@ -206,7 +196,6 @@ def expand(macro: MacroSpec, params: Any, registry: ActionRegistry) -> list[dict
     return out
 
 
-# --- встроенные макросы -----------------------------------------------------
 
 _PID = {"type": "integer", "minimum": 1}
 
@@ -231,7 +220,6 @@ _COST_NOTE = (" Платные шаги требуют явных лимитов
               "параметры макроса (текущие значения даёт montage.get_cost_basis). "
               "План нужно подтвердить оператором.")
 
-# Только реально зарегистрированные действия; проверяется тестом на реестре.
 BUILTIN_MACROS: tuple[MacroSpec, ...] = (
     MacroSpec(
         "smart.check_board", "Проверить доску монтажа",
@@ -376,7 +364,6 @@ BUILTIN_MACROS: tuple[MacroSpec, ...] = (
 _BUILTIN_BY_ID = {m.id: m for m in BUILTIN_MACROS}
 
 
-# --- хранение пользовательских макросов -------------------------------------
 
 def _from_row(row: "store.ActionMacro") -> MacroSpec:
     return MacroSpec(row.id, row.title_ru, row.description_ru or "",
@@ -402,7 +389,6 @@ async def list_macros(operator: str) -> list[MacroSpec]:
 
 
 async def get_macro(macro_id: str, operator: str) -> MacroSpec:
-    """LookupError, если макроса нет или он чужой и не общий (существование не раскрывается)."""
     if macro_id in _BUILTIN_BY_ID:
         return _BUILTIN_BY_ID[macro_id]
     async with store.sessions()() as s:

@@ -23,10 +23,10 @@ DEFAULT_PRICING: dict[str, dict[str, Any]] = {
     },
     "gemini-3.8-flash": {
         "type": "text",
-        "input_usd_per_m": 0.75,
-        "output_usd_per_m": 3.75,
-        "cache_read_usd_per_m": 0.075,
-        "provider": "Google",
+        "input_usd_per_m": 0.147622,
+        "output_usd_per_m": 0.738108,
+        "cache_read_usd_per_m": 0.014762,
+        "provider": "Google / Vibecode",
     },
     "gemini-3.6-flash": {
         "type": "text",
@@ -51,25 +51,39 @@ DEFAULT_PRICING: dict[str, dict[str, Any]] = {
     },
 
     # --- OpenAI / Vibecode ---
+    "gpt-6-astra": {
+        "type": "text",
+        "input_usd_per_m": 0.852925,
+        "output_usd_per_m": 4.264624,
+        "cache_read_usd_per_m": 0.085292,
+        "provider": "OpenAI / Vibecode",
+    },
+    "gpt-5.5": {
+        "type": "text",
+        "input_usd_per_m": 0.426462,
+        "output_usd_per_m": 2.558774,
+        "cache_read_usd_per_m": 0.042646,
+        "provider": "OpenAI / Vibecode",
+    },
     "gpt-5.6-sol": {
         "type": "text",
-        "input_usd_per_m": 1.20,
-        "output_usd_per_m": 4.80,
-        "cache_read_usd_per_m": 0.30,
+        "input_usd_per_m": 0.426462,
+        "output_usd_per_m": 2.558774,
+        "cache_read_usd_per_m": 0.042646,
         "provider": "OpenAI / Vibecode",
     },
     "gpt-5.6-terra": {
         "type": "text",
-        "input_usd_per_m": 1.50,
-        "output_usd_per_m": 6.00,
-        "cache_read_usd_per_m": 0.375,
+        "input_usd_per_m": 0.170585,
+        "output_usd_per_m": 1.023510,
+        "cache_read_usd_per_m": 0.017058,
         "provider": "OpenAI / Vibecode",
     },
     "gpt-5.6-luna": {
         "type": "text",
-        "input_usd_per_m": 2.00,
-        "output_usd_per_m": 8.00,
-        "cache_read_usd_per_m": 0.50,
+        "input_usd_per_m": 0.131219,
+        "output_usd_per_m": 0.787315,
+        "cache_read_usd_per_m": 0.013122,
         "provider": "OpenAI / Vibecode",
     },
     "gpt-4o": {
@@ -97,10 +111,65 @@ DEFAULT_PRICING: dict[str, dict[str, Any]] = {
     },
     "deepseek-v4-pro": {
         "type": "text",
-        "input_usd_per_m": 0.55,
-        "output_usd_per_m": 2.19,
-        "cache_read_usd_per_m": 0.014,
+        "input_usd_per_m": 0.875687,
+        "output_usd_per_m": 2.627061,
+        "cache_read_usd_per_m": 0.02919,
         "provider": "DeepSeek / Vibecode",
+    },
+
+    # --- xAI / Vibecode ---
+    "grok-4-5": {
+        "type": "text",
+        "input_usd_per_m": 0.06561,
+        "output_usd_per_m": 0.196829,
+        "cache_read_usd_per_m": 0.009841,
+        "provider": "xAI / Vibecode",
+    },
+
+    # --- xAI / Vibecode ---
+    "grok-4-6": {
+        "type": "text",
+        "input_usd_per_m": 0.06561,
+        "output_usd_per_m": 0.196829,
+        "cache_read_usd_per_m": 0.016402,
+        "provider": "xAI / Vibecode",
+    },
+
+    # --- Anthropic / Vibecode ---
+    "claude-sonnet-5": {
+        "type": "text",
+        "input_usd_per_m": 0.196829,
+        "output_usd_per_m": 0.984144,
+        "cache_read_usd_per_m": 0.019683,
+        "provider": "Anthropic / Vibecode",
+    },
+    "claude-opus-5": {
+        "type": "text",
+        "input_usd_per_m": 0.492072,
+        "output_usd_per_m": 2.46036,
+        "cache_read_usd_per_m": 0.049207,
+        "provider": "Anthropic / Vibecode",
+    },
+    "claude-opus-4-8": {
+        "type": "text",
+        "input_usd_per_m": 0.492072,
+        "output_usd_per_m": 2.46036,
+        "cache_read_usd_per_m": 0.049207,
+        "provider": "Anthropic / Vibecode",
+    },
+    "claude-fable-5-1": {
+        "type": "text",
+        "input_usd_per_m": 1.968288,
+        "output_usd_per_m": 9.84144,
+        "cache_read_usd_per_m": 0.049207,
+        "provider": "Anthropic / Vibecode",
+    },
+    "claude-fable-5": {
+        "type": "text",
+        "input_usd_per_m": 4.705535,
+        "output_usd_per_m": 23.527676,
+        "cache_read_usd_per_m": 0.470554,
+        "provider": "Anthropic / Vibecode",
     },
 
     # --- Видеогенераторы ---
@@ -192,6 +261,16 @@ MODEL_ALIASES: dict[str, str] = {
     "gpt-5.6-luna-vibecode": "gpt-5.6-luna",
     "deepseek-v4-flash-vibecode": "deepseek-v4-flash",
     "deepseek-v4-pro-vibecode": "deepseek-v4-pro",
+    "gemini-3.8-flash-vibecode": "gemini-3.8-flash",
+    "gpt-6-astra-vibecode": "gpt-6-astra",
+    "grok-4-6-vibecode": "grok-4-6",
+    "claude-sonnet-5-vibecode": "claude-sonnet-5",
+    "claude-opus-5-vibecode": "claude-opus-5",
+    "claude-opus-4-8-vibecode": "claude-opus-4-8",
+    "claude-fable-5-1-vibecode": "claude-fable-5-1",
+    "claude-fable-5.1": "claude-fable-5-1",
+    "claude-fable-5.1-vibecode": "claude-fable-5-1",
+    "claude-fable-5-vibecode": "claude-fable-5",
     # Media models
     "flux-2-pro": "flux-2-pro",
     "flux-2/pro-text-to-image": "flux-2-pro",

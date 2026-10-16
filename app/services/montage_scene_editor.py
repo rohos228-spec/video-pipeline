@@ -1,17 +1,3 @@
-"""Редактор сцены на доске монтажа: состояние карточки кадра + подбор вариантов.
-
-Одно место, откуда UI получает всё, что можно править у кадра:
-
-- роль в покрытии (VO-родитель / дочерний шот) и кто родитель;
-- крупность (план) и «действие» этого кадра;
-- якоря закадра ячейки (``attrs.биты[].якорь``) — точки реза VO по кадрам;
-- общие поля сцены / VO-ячейки (полный закадр, персонажи, свет, предметы);
-- последовательность кадров сцены (действия шотов через « → »);
-- лестница кадров сцены (``attrs.кадры``) с закадром каждого кадра.
-
-Варианты («подобрать вариантами») собираются тем же знанием, что и ноды
-группы сцен: текст ячейки и короткое описание видимой сцены от оператора.
-"""
 
 from __future__ import annotations
 
@@ -70,7 +56,6 @@ def _norm(text: str) -> str:
 
 
 def frame_template_id(frame: Any) -> str:
-    """Шаблон сцены этого кадра: camera_subdivide → кадры[0]."""
     cs = _cs(frame)
     tid = normalize_template_id(str(cs.get("шаблон") or cs.get("template") or ""))
     if tid:
@@ -84,7 +69,6 @@ def frame_template_id(frame: Any) -> str:
 
 
 def frame_plan(frame: Any) -> str:
-    """Крупность кадра: camera_subdivide → attrs → кадры[0]."""
     cs = _cs(frame)
     for key in ("план", "крупность"):
         val = _norm(str(cs.get(key) or ""))
@@ -100,7 +84,6 @@ def frame_plan(frame: Any) -> str:
 
 
 def frame_action(frame: Any) -> str:
-    """Действие этого кадра (не цепь сцен ячейки)."""
     attrs = _attrs(frame)
     for key in ("shot01_action", "действие"):
         val = _norm(str(attrs.get(key) or ""))
@@ -125,11 +108,6 @@ def frame_place(frame: Any) -> str:
 
 
 def scene_group(frames: list[Any], frame: Any) -> tuple[Any, list[Any]]:
-    """VO-родитель ячейки + шоты с тем же parent_uuid.
-
-    ``coverage_parent_id`` (X1 / «место уже было») — реюз still другой
-    сцены, не членство в этой ячейке.
-    """
     parent = frame
     if is_shot_child(frame):
         uid = str(_cs(frame).get("parent_uuid") or "").strip()
@@ -162,7 +140,6 @@ def scene_group(frames: list[Any], frame: Any) -> tuple[Any, list[Any]]:
 
 
 def cell_full_text(parent: Any, members: list[Any]) -> str:
-    """Полный текст VO-ячейки: vo_cell_full → склейка кусков → текст родителя."""
     full = _norm(str(_attrs(parent).get("vo_cell_full") or ""))
     if full:
         return full
@@ -196,18 +173,11 @@ def _source_vo_piece(
     excel_by_frame: dict[int, Any] | None,
     current_full: str,
 ) -> str:
-    """Кусок исходного закадра: Excel leftover / нормальный Excel / живой VO.
-
-    Огромная ячейка Excel (слитый столбец / весь ролик) не источник — иначе
-    каждая сцена считает пропуском чужой текст.
-    """
     excel_p = _excel_vo_piece(member, excel_by_frame)
     vo = _norm(str(getattr(member, "voiceover_text", "") or ""))
     leftover = bool(_cs(member).get("leftover"))
     if leftover:
         return excel_p
-    # Живой кадр — только его кусок. Excel родителя часто вся ячейка:
-    # если взять её сюда, хвост ребёнка склеится второй раз и станет «пропуском».
     _ = current_full
     return vo
 
@@ -217,7 +187,6 @@ def cell_vo_source(
     members: list[Any] | None = None,
     excel_by_frame: dict[int, Any] | None = None,
 ) -> str:
-    """Исходный закадр ячейки: Excel leftover + живые куски, иначе vo_cell_full."""
     group = list(members) if members is not None else [parent]
     current = cell_full_text(parent, group)
     ordered = sorted(
@@ -245,13 +214,11 @@ _PUNCT_SPACE_RE = re.compile(r"\s*([:;,.!?—–-])\s*")
 
 
 def _vo_fold(text: str) -> str:
-    """Сравнение кусков закадра: пробелы вокруг пунктуации не важны."""
     folded = _PUNCT_SPACE_RE.sub(r"\1", _norm(text).casefold())
     return re.sub(r"\s+", " ", folded).strip()
 
 
 def _find_vo_piece(hay: str, needle: str, start: int = 0) -> tuple[int, int]:
-    """Индекс куска в полном тексте. Пусто = (-1, 0)."""
     piece = _norm(needle)
     if not hay or not piece:
         return -1, 0
@@ -293,7 +260,6 @@ def _find_vo_piece(hay: str, needle: str, start: int = 0) -> tuple[int, int]:
 
 
 def _gap_owned_by_other_cell(gap: str, other_fulls: list[str]) -> bool:
-    """Чужой vo_cell_full не рисуем как пропуск этой ячейки."""
     folded = _vo_fold(gap)
     if len(folded) < 24:
         return False
@@ -312,7 +278,6 @@ def cell_vo_skip_report(
     excel_by_frame: dict[int, Any] | None = None,
     other_cell_fulls: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Пропуски закадра и номер последнего живого кадра с текстом до обрыва."""
     group = list(members) if members is not None else [parent]
     full = cell_vo_source(parent, group, excel_by_frame)
     empty = {"between": [], "after_number": None}
@@ -390,7 +355,6 @@ def cell_vo_skipped(
     excel_by_frame: dict[int, Any] | None = None,
     other_cell_fulls: list[str] | None = None,
 ) -> list[str]:
-    """Куски исходного закадра ячейки, которых нет ни на одном живом кадре."""
     return list(
         cell_vo_skip_report(
             parent, members, excel_by_frame, other_cell_fulls=other_cell_fulls
@@ -399,7 +363,6 @@ def cell_vo_skipped(
 
 
 def normalize_vo_span(raw: Any, full: str = "") -> dict[str, Any] | None:
-    """Выделение закадра: start/end в полном тексте ячейки + сохранённый кусок."""
     if raw in (None, "", {}, []):
         return None
     if isinstance(raw, str):
@@ -437,7 +400,6 @@ def cell_vo_span(parent: Any) -> dict[str, Any] | None:
 
 
 def cell_scene_text(parent: Any, members: list[Any]) -> str:
-    """Текст, которым сцена владеет при перегенерации: выделение или весь закадр."""
     full = cell_full_text(parent, members)
     span = normalize_vo_span(_attrs(parent).get(VO_SPAN_ATTR), full)
     if not span:
@@ -447,7 +409,6 @@ def cell_scene_text(parent: Any, members: list[Any]) -> str:
 
 
 def scene_vo_owned_range(parent: Any, members: list[Any]) -> tuple[int, int]:
-    """Граница владения сцены внутри её vo_cell_full: выделение или весь текст."""
     full = cell_full_text(parent, members)
     if not full:
         return 0, 0
@@ -475,7 +436,6 @@ def _vo_cells_in_order(
     frames: list[Any],
     index: dict[str, dict[str, Any]] | None = None,
 ) -> list[tuple[Any, list[Any], str, bool]]:
-    """VO-ячейки по порядку доски: родитель, члены, uuid, leftover-клей."""
     idx = index if index is not None else scene_index(frames)
     seen: set[str] = set()
     out: list[tuple[Any, list[Any], str, bool]] = []
@@ -498,13 +458,6 @@ def scene_vo_unused(
     *,
     index: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, str]]:
-    """Неиспользованный закадр до/после каждой сцены.
-
-    Склеиваем vo_cell_full всех VO-ячеек по порядку. Кусок между концом
-    владения предыдущей сцены и началом следующей — один и тот же текст:
-    у предыдущей ``after``, у следующей ``before``. leftover-клей владеет
-    ничем: его текст попадает в этот зазор целиком.
-    """
     cells = _vo_cells_in_order(frames, index)
     pieces: list[str] = []
     owned: list[tuple[str, int, int, bool]] = []
@@ -544,7 +497,6 @@ def apply_vo_span(
     *,
     full_text: str | None = None,
 ) -> dict[str, Any] | None:
-    """Записать или снять выделение закадра на родителе ячейки."""
     attrs = dict(_attrs(parent))
     edited = _norm(str(full_text or ""))
     if edited:
@@ -564,7 +516,6 @@ def apply_vo_span(
 
 
 def anchor_positions(full: str, anchors: list[str]) -> list[int]:
-    """Позиции якорей в тексте по порядку. -1 — якорь не найден."""
     text = _norm(full)
     lower = text.lower()
     out: list[int] = []
@@ -584,12 +535,6 @@ def anchor_positions(full: str, anchors: list[str]) -> list[int]:
 
 
 def split_vo_by_anchors(full: str, anchors: list[str]) -> list[str]:
-    """Нарезка ячейки по якорям: якорь = начало своего кадра.
-
-    Первый кусок всегда начинается с начала текста (даже если первый якорь
-    стоит не на первом слове) — иначе хвост ячейки теряется. Ненайденный
-    якорь склеивается с предыдущим куском.
-    """
     text = _norm(full)
     if not text or not anchors:
         return [text] if text else []
@@ -612,7 +557,6 @@ def split_vo_by_anchors(full: str, anchors: list[str]) -> list[str]:
 
 
 def normalize_anchor_rows(raw: Any) -> list[dict[str, Any]]:
-    """Якоря от UI → биты[] с порядком и единственным «главный»."""
     rows: list[dict[str, Any]] = []
     if not isinstance(raw, list):
         return rows
@@ -647,11 +591,6 @@ def normalize_anchor_rows(raw: Any) -> list[dict[str, Any]]:
 
 
 def scene_display_ordinals(frames: list[Any]) -> dict[int, int]:
-    """U-2: показываемый порядковый номер сцены (1, 2, 3 ...) по порядку на ленте.
-
-    Ключ - id головного кадра сцены, значение - позиция по ``(sort_key, number)``. Внутренний ``number`` кадра
-    и ключи БД не меняются: после вставки кадра в середину или деления сцена показывается по своему месту,
-    а не по историческому номеру."""
     heads = sorted(
         (fr for fr in frames if not is_shot_child(fr)),
         key=lambda fr: (float(getattr(fr, "sort_key", 0) or 0.0), int(fr.number or 0)),
@@ -660,7 +599,6 @@ def scene_display_ordinals(frames: list[Any]) -> dict[int, int]:
 
 
 def scene_index(frames: list[Any]) -> dict[str, dict[str, Any]]:
-    """Все VO-сцены проекта: uuid родителя → родитель, члены, закадр сцены."""
     out: dict[str, dict[str, Any]] = {}
     for fr in frames:
         if is_shot_child(fr):
@@ -688,12 +626,6 @@ def scene_anchor_bits(
     *,
     index: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Якоря сцены = якоря, чей текст есть в закадре ЭТОЙ сцены.
-
-    Берём биты родителя и всех шотов сцены, плюс «осиротевшие» биты других
-    сцен (после склейки / разделения остались на чужом родителе и в его
-    тексте их нет). Порядок — по месту в закадре сцены.
-    """
     full = _norm(cell_full_text(parent, members))
     if not full:
         return []
@@ -723,8 +655,6 @@ def scene_anchor_bits(
             continue
         pos = _find_ci(full, anchor)
         if pos < 0:
-            # Свой якорь без текста — показываем красным (сломан правкой закадра),
-            # но не тот, чей текст ушёл в другую сцену.
             if not bit.get("_own") or any(_find_ci(t, anchor) >= 0 for t in other_texts):
                 continue
             pos = len(full) + order
@@ -767,11 +697,6 @@ def claim_scene_bits(
     members: list[Any],
     rows: list[dict[str, Any]],
 ) -> None:
-    """Якоря сцены живут на её родителе: шоты и чужие родители их больше не держат.
-
-    Снимаем биты шотов этой сцены и сиротские биты других сцен, чей текст
-    теперь в этой сцене — иначе удалённый якорь всплывёт снова.
-    """
     full = _norm(cell_full_text(parent, members))
     _set_bits(parent, rows)
     for member in members:
@@ -845,7 +770,6 @@ def _cs_text(frame: Any, *keys: str) -> str:
 
 
 def _shot_field(frame: Any, *keys: str) -> str:
-    """Значение шота: camera_subdivide → attrs → кадры[]."""
     found = _cs_text(frame, *keys)
     if found:
         return found
@@ -887,7 +811,6 @@ def _first_attr(frames: list[Any], *keys: str) -> str:
 
 
 def _vo_anchor_hint(text: str) -> str:
-    """Короткий якорь из начала закадра кадра, если бит шота не найден."""
     words = _norm(text).split()
     if not words:
         return ""
@@ -897,7 +820,6 @@ def _vo_anchor_hint(text: str) -> str:
 def _assign_bits_to_members(
     bits: list[dict[str, Any]], members: list[Any]
 ) -> list[int | None]:
-    """Какой кадр группы владеет битом. None — бит ещё без визуального кадра."""
     n_bits = len(bits)
     n_members = len(members)
     if n_bits == 0 or n_members == 0:
@@ -964,7 +886,6 @@ def _cell_anchor_rows(
 
 
 def _anchor_payload(parent: Any, full: str) -> dict[str, Any]:
-    """Все якоря ячейки (совместимость). Для UI кадра — ``_frame_anchor_payload``."""
     rows, parts = _cell_anchor_rows(parent, [parent], full)
     return {
         "text": full,
@@ -983,7 +904,6 @@ def _frame_anchor_payload(
     frames: list[Any] | None = None,
     index: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Якоря только этого кадра + полный список ячейки для склейки при сохранении."""
     rows, parts = _cell_anchor_rows(parent, members, full, frames=frames, index=index)
     frame_no = int(frame.number)
     frame_rows = [row for row in rows if row.get("frame_number") == frame_no]
@@ -1028,7 +948,6 @@ def _frame_anchor_payload(
 
 
 def _anchor_row_for_ui(row: dict[str, Any]) -> dict[str, Any]:
-    """Бит → строка для инлайновой правки якоря на доске."""
     return {
         "якорь": str(row.get("якорь") or ""),
         "изменение": str(row.get("изменение") or ""),
@@ -1040,7 +959,6 @@ def _anchor_row_for_ui(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def scene_template_auto(parent: Any) -> str:
-    """Что предлагает дерево «Выбор» для ячейки (подсказка над шаблоном)."""
     scene_action = main_action_text(parent)
     place = frame_place(parent)
     chain = parse_scene_chain(scene_action)
@@ -1063,7 +981,6 @@ def frame_board_scene_cell(
     vo_unused: dict[str, dict[str, str]] | None = None,
     excel_by_frame: dict[int, Any] | None = None,
 ) -> dict[str, Any]:
-    """Всё, что правится в строках сцены на доске: якоря кадра + поля ячейки."""
     parent, members = scene_group(frames, frame)
     full = cell_full_text(parent, members)
     gaps = vo_unused if vo_unused is not None else scene_vo_unused(frames, index=index)
@@ -1148,12 +1065,10 @@ def frame_board_scene_cell(
 
 
 def frame_bits_count(frames: list[Any], frame: Any) -> int:
-    """Сколько якорей принадлежит этому кадру (не всей ячейке)."""
     return int(frame_board_scene_cell(frames, frame)["shot_anchors"])
 
 
 def _scene_common(parent: Any, members: list[Any]) -> dict[str, Any]:
-    """Поля, общие для VO-ячейки / сцены, а не для отдельного шота."""
     lookup = [parent, *[m for m in members if m is not parent]]
     places: list[str] = []
     for member in members:
@@ -1230,15 +1145,12 @@ def _shots_payload(parent: Any, members: list[Any]) -> list[dict[str, Any]]:
                 "frame_number": int(owner.number) if owner is not None else None,
             }
         )
-    # Кадры группы без строки в кадры[] — показываем, чтобы не терялись.
     for m in members:
         sid = coverage_shot_id(m)
         if sid and sid in by_id:
             continue
         if any(row["frame_number"] == int(m.number) for row in out):
             continue
-        # Хвост ячейки после короткой цепи не подмешиваем: иначе старые
-        # «следователь…» шаги снова склеиваются в последовательность.
         if planned:
             continue
         out.append(
@@ -1260,12 +1172,6 @@ def _shots_payload(parent: Any, members: list[Any]) -> list[dict[str, Any]]:
 
 
 def shot_sequence_text(parent: Any, members: list[Any] | None = None) -> str:
-    """Действия кадров ячейки через « → » — то, что в строке сцены на доске.
-
-    Источник — ``кадры[]`` / цепь ``главное_действие`` родителя, не склейка
-    всех членов ячейки: лишние шоты после короткой цепи иначе возвращают
-    старую ленту.
-    """
     planned = planned_shots_from_attrs(parent)
     steps = [
         _norm(str(item.get("действие") or item.get("action") or ""))
@@ -1294,7 +1200,6 @@ def shot_sequence_text(parent: Any, members: list[Any] | None = None) -> str:
 
 
 def build_scene_editor_state(frames: list[Any], frame: Any) -> dict[str, Any]:
-    """Всё редактируемое у кадра одним payload для панели монтажа."""
     parent, members = scene_group(frames, frame)
     is_child = frame is not parent
     full = cell_full_text(parent, members)
@@ -1646,7 +1551,6 @@ def _clean_anchors_variant(raw: dict[str, Any], state: dict[str, Any]) -> dict[s
         if pos < 0:
             continue
         kept.append(row)
-    # В мультишоте у кадра один якорь — лишние отбрасываем.
     if int(state.get("template", {}).get("group_len") or 0) > 1:
         kept = kept[:1]
     kept = normalize_anchor_rows(kept)
@@ -1672,18 +1576,13 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def _variants_payload(reply: str) -> dict[str, Any] | None:
-    """JSON из ответа: голый объект → fence → поиск по маркеру «варианты».
-
-    Голый ``json.loads`` идёт первым: маркерный поиск не находит ключ, если
-    модель отдала его в escape-виде (``\\u0432\\u0430…``).
-    """
     raw = (reply or "").strip()
     if not raw:
         return None
     for cand in (raw, *(m.group(1) for m in _FENCE_RE.finditer(raw))):
         try:
             data = json.loads(cand)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         if isinstance(data, dict) and (
             isinstance(data.get("варианты"), list) or isinstance(data.get("variants"), list)
@@ -1695,7 +1594,6 @@ def _variants_payload(reply: str) -> dict[str, Any] | None:
 
 
 def parse_variants(reply: str, *, kind: str, state: dict[str, Any]) -> list[dict[str, Any]]:
-    """Ответ модели → чистые варианты. Мусор молча отбрасываем."""
     payload = _variants_payload(reply)
     if payload is None:
         return []
@@ -1732,7 +1630,6 @@ async def generate_scene_variants(
     project_id: int | None = None,
     timeout: float = 180.0,
 ) -> dict[str, Any]:
-    """Подбор вариантов знанием группы нод сцен (каталог T/X + закадр + описание)."""
     if kind not in VARIANT_KINDS:
         raise ValueError(f"неизвестный вид вариантов: {kind}")
     from app.services.gpt_client import gpt_ask_fresh
@@ -1756,7 +1653,6 @@ async def generate_scene_variants(
 
 
 def preview_template_ladder(state: dict[str, Any], tid: str) -> dict[str, Any]:
-    """Что даст выбор шаблона: план/роль на каждый существующий кадр группы."""
     rows = template_ladder_for_ui(tid)
     group = int(state["template"].get("group_len") or 1)
     place = state["frame"].get("place") or ""

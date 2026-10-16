@@ -1,4 +1,3 @@
-"""Versioned migrations of the api-tracker service database (replace the raw ALTER in ``init_db``)."""
 from __future__ import annotations
 
 import sqlite3
@@ -52,7 +51,6 @@ def test_legacy_db_gets_missing_columns_and_keeps_rows(tmp_path):
 
 
 def test_db_already_migrated_by_the_main_pipeline_is_only_recorded(tmp_path):
-    """The pipeline hook shares tracker.db and the bookkeeping table: 0001/0002 recorded there are not re-run."""
     db = tmp_path / "t.db"
     with closing(sqlite3.connect(db)) as c:
         c.execute(ts._API_CALLS_DDL)

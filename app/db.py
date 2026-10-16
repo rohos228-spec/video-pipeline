@@ -88,6 +88,5 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
 
 
 def is_sqlite_locked(exc: BaseException) -> bool:
-    """SQLite ответил «database is locked/busy»: параллельная запись, можно повторить."""
     msg = str(exc).lower()
     return "database is locked" in msg or "database is busy" in msg

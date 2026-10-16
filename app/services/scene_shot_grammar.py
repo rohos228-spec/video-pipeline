@@ -1,9 +1,3 @@
-"""Грамматика сцены → кадры: действие целиком, камера из таблицы, не T0–T10.
-
-GPT пишет видимое действие сцены и объект шага. Код:
-GPT пишет видимое действие сцены и объект шага. Код: камера из таблицы,
-parent, место_новое. Авто-вставку «общий вид» не делаем. Каталог T/X не трогаем.
-"""
 
 from __future__ import annotations
 
@@ -21,10 +15,6 @@ SHOT_VO_CUTAWAY_MAX = 30
 
 
 def vo_shot_capacity(vo: str) -> int:
-    """Сколько обычных кадров унесёт VO при мин. 26 симв.
-
-    floor(len(VO)/26). Пустой → 0. Короткий (1..25) → 1.
-    """
     n = visible_len(vo or "")
     if n <= 0:
         return 0
@@ -34,11 +24,6 @@ def vo_shot_capacity(vo: str) -> int:
 
 
 def expected_shots_for_cell(action: str, vo: str = "") -> int:
-    """Скелет = шаги главное_действие; VO-cap — только если шагов нет.
-
-    Не схлопываем фильм через min(steps, floor(len/26)): короткий VO
-    режется на куски (в т.ч. перебивки 10–30), а не оправдывает 1–5 кадров.
-    """
     steps = count_action_steps(action)
     if steps > 0:
         return steps
@@ -99,7 +84,6 @@ _THRESHOLD_RE = re.compile(
 
 
 def is_threshold_step(step: str) -> bool:
-    """Шаг на пороге: дверь, калитка, вбегает. Следующий кадр — продолжение, не новый общий."""
     return bool(_THRESHOLD_RE.search(step or ""))
 
 
@@ -117,7 +101,6 @@ _CUTAWAY_STEP_RE = re.compile(
 
 
 def is_cutaway_shot(shot: dict[str, Any] | None) -> bool:
-    """Перебивка / короткая реакция: 10–30 симв. или короткий эмо-кадр."""
     if not isinstance(shot, dict):
         return False
     role = str(shot.get("роль") or shot.get("role") or "").strip().casefold()
@@ -193,7 +176,6 @@ def object_matches_step(step: str, obj: str) -> bool:
 
 
 def fill_bit_spans(vo: str, bits: list[Any]) -> list[dict[str, Any]]:
-    """Якорь = старт куска. Код режет закадр ячейки по якорям по порядку."""
     text = " ".join((vo or "").split())
     ordered = sorted(
         (dict(b) for b in bits if isinstance(b, dict)),
@@ -249,7 +231,6 @@ def bits_cover_vo(vo: str, bits: list[Any]) -> bool:
 
 
 def merge_same_place_scenes(action: str) -> str:
-    """Соседние сцены с одним местом → одна карточка, шаги через →."""
     chain = parse_scene_chain(action)
     if len(chain) < 2:
         return action
@@ -292,7 +273,6 @@ def merge_same_place_scenes(action: str) -> str:
 
 
 def _split_vo_for_steps(vo: str, n: int) -> list[str]:
-    """Сначала смысл (фразы/клаузы), потом доп. склейка кусков короче 26."""
     from app.services.scene_design.camera_expand import split_text_into_parts
 
     text = " ".join((vo or "").split())
@@ -401,7 +381,6 @@ def choose_plan_for_situation(
     position: str,
     step: str = "",
 ) -> str:
-    """План по ситуации (docs/plan_rules_script_frames_qc.md), не только объект→план."""
     blob = step or ""
     if place_new:
         return "ОБЩИЙ"
@@ -491,7 +470,6 @@ def expand_action_to_shots(
     cell_number: int = 1,
     prev_place: str = "",
 ) -> list[dict[str, Any]]:
-    """Карточки сцен → кадры. Камера из таблицы. Без авто-«общий вид»."""
     chain = parse_scene_chain(action)
     if not chain:
         return []
@@ -518,7 +496,6 @@ def expand_action_to_shots(
         steps = uniq or steps[:1] or ["действие"]
         pieces = _split_vo_for_steps(vo, len(steps))
         if len(pieces) < len(steps):
-            # длинный закадр лучше держать на одном кадре, чем дробить в обрубки
             vo_text = " ".join(vo.split())
             if visible_len(vo_text) > SHOT_VO_MAX:
                 pieces = [vo_text] + [""] * (len(steps) - 1)
@@ -529,7 +506,6 @@ def expand_action_to_shots(
         n = len(steps)
         master_id = f"{cell_number}-S{int(scene['n'])}-K1"
         prev_shot: dict[str, Any] | None = None
-        # Прошли через дверь прошлой карточки — изнутри продолжаем, не новый общий.
         through_door = place_new and bool(out) and is_threshold_step(last_step)
         for i in range(n):
             step = steps[i]
@@ -577,10 +553,6 @@ def expand_action_to_shots(
 
 
 def fill_kadry_scene_numbers(shots: list[Any]) -> int:
-    """Проставить ``сцена``, если GPT выкинул номер, но оставил parent_id.
-
-    Без этого promote_shots_to_vo_cells режет каждый кадр в свою VO-ячейку.
-    """
     filled = 0
     scene = 0
     master: dict[str, int] = {}
@@ -617,7 +589,6 @@ def fill_kadry_scene_numbers(shots: list[Any]) -> int:
 
 
 def count_action_steps(action: str) -> int:
-    """Сколько видимых шагов в главное_действие (без авто-вставок места)."""
     chain = parse_scene_chain(action)
     n = 0
     for scene in chain:
@@ -642,7 +613,6 @@ def count_action_steps(action: str) -> int:
 
 
 def _prefer_full_action_text(*candidates: str) -> str:
-    """Выбрать полную цепь ОДНОЙ сцены, не stub и не dump всех сцен."""
     best = ""
     best_score = (-1, -999, -1, -1, -1)
     for raw in candidates:
@@ -667,17 +637,9 @@ def merge_gpt_shots_with_action(
     prev_place: str = "",
     vo: str = "",
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Склейка GPT с шагами действия.
-
-    Если шаг совпал — берём текст GPT (действие/закадр/объект/…).
-    Если GPT вернул 0 кадров — ошибка (PassStop).
-    Mild undercount (≥70% / ≤2 дырки) — WARN soft.
-    Severe undercount — None + «нужен добор GPT» (PassStop/retry), без invent.
-    """
     dict_shots = [dict(s) for s in gpt_shots if isinstance(s, dict)]
     if not dict_shots:
         return None, "GPT не вернул кадры — нужен добор или повтор ноды"
-    # убрать наследие авто-«общий вид …»
     cleaned = [
         s
         for s in dict_shots
@@ -688,8 +650,6 @@ def merge_gpt_shots_with_action(
     steps_raw = count_action_steps(action)
     cap = vo_shot_capacity(vo)
     expected = expected_shots_for_cell(action, vo)
-    # Undercount: mild → WARN; severe → PassStop (retry), без invent шагов.
-    # Severe: <50% expected или меньше expected-2 при expected≥5.
     if expected > 0 and len(cleaned) < expected:
         if len(cleaned) < 1:
             return None, (
@@ -728,11 +688,9 @@ def merge_gpt_shots_with_action(
         stem = action_stem(str(can.get("действие") or ""))
         gpt = by_stem.get(stem)
         if gpt is None and i < len(cleaned):
-            # порядок совпал — тоже считаем матчем
             gpt = cleaned[i]
             gpt_stem = action_stem(str(gpt.get("действие") or ""))
             if gpt_stem and stem and gpt_stem != stem and stem not in by_stem:
-                # чужой шаг на этой позиции — не матч
                 if len(cleaned) < expected:
                     gpt = None
         if gpt is None:
@@ -762,8 +720,6 @@ def merge_gpt_shots_with_action(
                 row[key] = gpt[key]
         out.append(row)
     if missing:
-        # Mild: почти все шаги покрыты (≤2 дырки и ≥70% canonical) → WARN.
-        # Severe → PassStop на retry, без silent invent и без принятия 1/N.
         n_can = max(1, len(canonical))
         covered = n_can - len(missing)
         ratio = covered / float(n_can)
@@ -786,7 +742,6 @@ def merge_gpt_shots_with_action(
             + "; ".join(missing[:5])
             + " — нужен добор GPT"
         )
-    # если GPT дал больше кадров (осознанные вставки) — дописать хвост GPT
     if len(cleaned) > len(out):
         seen_ids = {str(r.get("id") or "") for r in out}
         for s in cleaned[len(out) :]:
@@ -794,7 +749,6 @@ def merge_gpt_shots_with_action(
             if sid and sid in seen_ids:
                 continue
             out.append(s)
-    # VO-cap / expected: не держим десятки кадров на короткий закадр.
     limit = expected if expected > 0 else cap
     if limit > 0 and len(out) > limit:
         kept: list[dict[str, Any]] = []
@@ -812,7 +766,6 @@ def merge_gpt_shots_with_action(
 
 
 def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
-    """Дозаполнить камеру; склеить GPT с шагами. Пустые/неполные — не молчать."""
     by_uid = {
         str(fr.get("uuid") or "").strip(): fr
         for fr in frames
@@ -852,16 +805,13 @@ def apply_grammar_to_ops(ops: list[Any], frames: list[dict[str, Any]]) -> None:
                 shots, action, cell_number=num, prev_place=prev_place, vo=vo
             )
             if err and str(err).startswith("WARN"):
-                # Не кладём в fields: db_apply.reject unknown. Маркер на op.
                 op["_shots_under_warn"] = err
                 fields.pop("_shots_under_warn", None)
                 if merged is not None:
                     fields["кадры"] = merged
                     shots = merged
-                # soft underproduction: не incomplete, не invent шагов
             elif err:
                 fields["_shots_incomplete"] = err
-                # оставляем GPT как есть — вызывающий код обязан упасть/добрать
             elif merged is not None:
                 fields["кадры"] = merged
                 shots = merged
@@ -960,7 +910,6 @@ def _vo_pieces_splintered(pieces: list[str]) -> bool:
 
 
 def _assign_vo_by_steps(vo: str, steps: list[str]) -> list[str]:
-    """Закадр по шагам. Обрубок и слово-осколок («судов») схлопываются на первый кадр."""
     from app.services.scene_design.camera_expand import split_text_into_parts
 
     text = " ".join((vo or "").split())
@@ -1003,7 +952,6 @@ def _frame_action(op: dict[str, Any], frame: dict[str, Any]) -> str:
 def align_shots_to_action_chain(
     ops: list[Any], frames: list[dict[str, Any]]
 ) -> int:
-    """Убрать кадры чужой комнаты. Кадры того же места, даже вне цепи, остаются."""
     by_uid = {
         str(fr.get("uuid") or "").strip(): fr
         for fr in frames
@@ -1053,7 +1001,6 @@ def align_shots_to_action_chain(
 
 
 def scene_script_text(place: str, action: str) -> str:
-    """Блок «Сценарий сцены»: место и шаги (без авто-кадра «общий вид»)."""
     where = " ".join((place or "").split())
     steps = split_scene_action(action)
     bits = ["Сценарий сцены."]
@@ -1070,13 +1017,6 @@ def scene_script_text(place: str, action: str) -> str:
 
 
 def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
-    """Перерезать закадр: >80 — дробим; <26 (не перебивка) — склеиваем и УДАЛЯЕМ пустышку.
-
-    Предпочитаем меньше более длинных кусков в 26–80, а не десятки пустых
-    оболочек после склейки. Хвост пустых non-cutaway выкидываем; число
-    обычных кадров режем по VO-cap (floor(len/26)).
-    Возвращает список предупреждений.
-    """
     from app.services.scene_design.camera_expand import split_text_into_parts
 
     if not isinstance(shots, list) or not shots:
@@ -1085,10 +1025,6 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
     norm_vo = " ".join((vo or "").split())
     cap = vo_shot_capacity(vo)
 
-    # 0) underproduction grow ОТКЛЮЧЁН: пустые оболочки под VO давали empty_vo
-    # и маскировали undercount. Severe undercount → PassStop/retry GPT,
-    # а не invent оболочек без действия.
-    # 1) короткие non-cutaway → склеить с соседом и pop (не оставлять пустой закадр)
     i = 0
     while i < len(shots):
         shot = shots[i]
@@ -1117,7 +1053,6 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
                 continue
         i += 1
 
-    # 2) длиннее 80 — разрезать; куски кладём в пустые соседи
     idx = 0
     while idx < len(shots):
         shot = shots[idx]
@@ -1168,7 +1103,6 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
                 ri += 1
             j += 1
         if ri < len(rest):
-            # Под VO-cap: плодим пустые оболочки только под VO (без invent действия).
             inserted = 0
             while ri < len(rest):
                 normals_now = sum(
@@ -1184,7 +1118,7 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
                 ri += 1
                 shell = {
                     "id": f"{shot.get('id') or 'S'}-v{idx}-{inserted}",
-                    "действие": "",  # не invent шагов из narrative
+                    "действие": "",
                     "закадр": piece,
                     "объект": shot.get("объект") or "место",
                     "parent_id": shot.get("parent_id") or shot.get("id"),
@@ -1209,7 +1143,6 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
             warnings.append(f"кадр[{idx}] закадр {n} разрезан на {len(parts)}")
             idx += 1
 
-    # 3) выкинуть пустые non-cutaway оболочки (фикс «35 empty»)
     before = len(shots)
     kept: list[Any] = []
     for s in shots:
@@ -1223,7 +1156,6 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
         warnings.append(f"удалили пустые закадры {before - len(kept)} шт")
         shots[:] = kept
 
-    # 4) VO-cap: склеить лишние обычные в более длинные 26–80
     if cap > 0:
         while True:
             normals = [
@@ -1323,9 +1255,9 @@ def shots_grammar_reason(shots: list[Any], vo: str, uid: str = "") -> str | None
                 cutaway
                 and SHOT_VO_CUTAWAY_MIN <= n <= SHOT_VO_CUTAWAY_MAX
             ):
-                pass  # ок: перебивка 10–30
+                pass
             elif cutaway and n < SHOT_VO_CUTAWAY_MIN:
-                pass  # ок: короткий эмо/реакция кадр
+                pass
         stem = action_stem(step)
         if stem:
             if stem in stems:

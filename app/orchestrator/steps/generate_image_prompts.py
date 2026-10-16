@@ -9,7 +9,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.vo_shot_expand import is_shot_child
 from app.storage import for_project as _sheet_for_project
+
+
+def is_parent_grid_frame(fr: Frame) -> bool:
+    """True для базового родительского кадра сетки (не дочерний шот покрытия)."""
+    if is_shot_child(fr):
+        return False
+    attrs = fr.attrs if isinstance(fr.attrs, dict) else {}
+    if attrs.get("is_shot") is True or attrs.get("shot_child") is True:
+        return False
+    if str(attrs.get("role") or "").lower() == "shot":
+        return False
+    return True
 
 
 def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
@@ -18,7 +31,9 @@ def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
     return [
         fr
         for fr in frames
-        if is_img_pr_vo_parent(fr) and not (fr.image_prompt or "").strip()
+        if is_img_pr_vo_parent(fr)
+        and is_parent_grid_frame(fr)
+        and not (fr.image_prompt or "").strip()
     ]
 
 
@@ -28,7 +43,9 @@ def _frames_with_image_prompt(frames: list[Frame]) -> list[Frame]:
     return [
         fr
         for fr in frames
-        if is_img_pr_vo_parent(fr) and (fr.image_prompt or "").strip()
+        if is_img_pr_vo_parent(fr)
+        and is_parent_grid_frame(fr)
+        and (fr.image_prompt or "").strip()
     ]
 
 
@@ -115,6 +132,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     await record_image_prompt_input(frames,project)
 
     need = _frames_needing_image_prompt(frames)
+    if len(need) > 30:
+        logger.warning(
+            "[#{}] generate_image_prompts: parent frames count {} > 30, clamping to 30",
+            project.id,
+            len(need),
+        )
+        need = need[:30]
     if not need:
         # Уже всё в DB (прошлый apply успел, а шаг упал на snapshot/greenlet).
         if _frames_with_image_prompt(frames):
@@ -153,10 +177,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             break
         try:
             if attempt > 1:
-                # The previous partial result bound an XLSX snapshot and flushed
-                # its metadata in this session. Release that write transaction
-                # before checkpoint apply opens an independent project.db writer.
-                # Keep committed partial prompts; do not roll back or reset retry.
                 await session.commit()
             from app.services import xlsx_step_runners as xsr
             from app.services.node_capabilities import clear_image_prompt_unusable
@@ -175,7 +195,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 ops = filter_ops_for_node(ops, node_kind="img_pr")
             if not ops and not result.ops_applied_inline:
                 raise RuntimeError("пустой apply-ops после GPT")
-            # Один apply в конце (не по батчам) — та же project.db, что wipe.
             if ops and not result.ops_applied_inline:
                 import asyncio
 
@@ -190,7 +209,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                         last_apply_err = None
                         break
-                    except Exception as apply_err:  # noqa: BLE001
+                    except Exception as apply_err:
                         last_apply_err = apply_err
                         msg = str(apply_err).lower()
                         locked = (
@@ -257,13 +276,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 e,
             )
             if attempt >= 2:
-                # D05: the whole step failed because no batch gave a writeable operation (nothing applied):
-                # type it (invalid_json / missing_payload) so a single supervised retry is possible.
                 try:
                     from app.services.node_capabilities import record_image_prompt_unusable
 
                     await record_image_prompt_unusable()
-                except Exception as note_err:  # noqa: BLE001 - journal only
+                except Exception as note_err:
                     logger.warning("[#{}] image_prompts typed failure not recorded: {}", project.id, note_err)
                 raise RuntimeError(
                     f"generate_image_prompts: не удалось получить промты: {e}"

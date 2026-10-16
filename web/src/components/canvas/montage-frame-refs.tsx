@@ -30,7 +30,6 @@ type Thumb = {
   key: string;
   kind: string;
   title: string;
-  /** Код рефа (c02) или пусто. */
   subtitle?: string;
   imageUrl: string | null | undefined;
   source: "parent" | "character" | "item" | "manual";
@@ -85,7 +84,6 @@ function thumbsForFrame(
   const out: Thumb[] = [];
   const child = isShotChild(fr, pendingKind);
   const parent = child ? parentThumbFrom(fr.ref_parent ?? null, parentFrame, fr) : null;
-  // У дочернего шота still родителя — всегда, даже если URL совпал с картинкой кадра.
   if (parent) {
     out.push({
       key: `parent-${parent.number}`,
@@ -102,7 +100,6 @@ function thumbsForFrame(
     if (ownUrl && url && url === ownUrl) return;
     out.push(t);
   };
-  // Персонажи/предметы сцены — на VO-родителе. После child→parent still родителя нет.
   if (!child) {
     for (const c of chars) {
       const code = (c.code || c.id || "").trim();
@@ -154,12 +151,6 @@ const GROUP_FILTERS: { id: string; label: string }[] = [
   { id: "background", label: "фоны" },
 ];
 
-/**
- * Рефы кадра — маленькой полосой прямо под его картинкой, без отдельной строки
- * доски: имя каждого рефа видно в подсказке, а `+` открывает окно, где можно
- * приложить уже готового персонажа / предмет проекта или загрузить новый файл
- * под своим именем. Имя дальше показывается на доске и уходит в промт кадра.
- */
 export function FrameRefsStrip({
   projectId,
   frame,
@@ -174,13 +165,11 @@ export function FrameRefsStrip({
   projectId: number | null;
   frame: MontageBoardFrame;
   parentFrame?: MontageBoardFrame | null;
-  /** Очередь / только что нажатая роль: parent — сразу убрать still родителя. */
   pendingKind?: "parent" | "child" | "" | null;
   kinds: MontageRefKindChoice[] | undefined;
   disabled?: boolean;
   onPreview: (p: { url: string; kind: "image"; label: string }) => void;
   onChanged: () => void;
-  /** Снять still родителя = сделать кадр родительским. */
   onPromoteToParent?: () => Promise<void> | void;
 }) {
   const [open, setOpen] = useState(false);
@@ -221,8 +210,6 @@ export function FrameRefsStrip({
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      // Доска монтажа слушает тот же Escape: перехватываем на capture, иначе
-      // закрытие окна рефов заодно закрывает всю панель.
       e.stopImmediatePropagation();
       e.preventDefault();
       setOpen(false);
@@ -332,7 +319,6 @@ export function FrameRefsStrip({
                 }}
               >
                 {t.imageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={t.imageUrl}
                     alt={t.title}
@@ -432,7 +418,6 @@ export function FrameRefsStrip({
                         >
                           <span className="h-10 w-10 shrink-0 overflow-hidden rounded-md border border-white/10 bg-black/40">
                             {t.imageUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
                               <img
                                 src={t.imageUrl}
                                 alt={t.title}
@@ -542,7 +527,6 @@ export function FrameRefsStrip({
                                 >
                                   <span className="h-16 w-full overflow-hidden rounded-md border border-white/10 bg-black/40">
                                     {a.image_url ? (
-                                      // eslint-disable-next-line @next/next/no-img-element
                                       <img
                                         src={a.image_url}
                                         alt={a.name}

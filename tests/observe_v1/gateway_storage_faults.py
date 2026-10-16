@@ -1,4 +1,3 @@
-"""Controlled offline SQLite, ACK and drain barriers for the exact pilot Handler."""
 import importlib.util
 import json
 import shutil
@@ -101,7 +100,7 @@ try:
     third = g.reserve('POST', '/codex/v1/responses')
     _, orphan_info = g.save_batch(third, 1, 1, [terminal], '{}', terminal=True, terminal_at=time.time())
     assert (g.BODY_ROOT / orphan_info['terminal_path']).exists()
-    g.recover_pending()  # Simulated restart before the settlement commit.
+    g.recover_pending()
     with sqlite3.connect(g.LEDGER) as db:
         assert db.execute('SELECT state,credits,response_id FROM requests WHERE ordinal=3').fetchone() == ('uncertain', None, None)
     assert pending() == 0
@@ -127,17 +126,16 @@ try:
     assert marker[-1]['operation'] == 'drain_pending'
     assert marker[-1]['exception_text'] == 'synthetic_drain_ledger_unavailable'
 
-    # A new process opening a committed request must never charge it again.
     g.LEDGER = ROOT / 'after-commit.sqlite'
     g.AUDIT_FAILURE = ROOT / 'after-commit.marker'
     g.DRAIN_REQUEST = ROOT / 'after-commit-drain.marker'
-    g.AUDIT_DEGRADED = False  # New isolated ledger/process state for post-commit restart case.
+    g.AUDIT_DEGRADED = False
     g.recover_pending()
     fourth = g.reserve('POST', '/codex/v1/responses')
     _, committed_info = g.save_batch(fourth, 1, 1, [terminal], '{}', terminal=True, terminal_at=time.time())
     g.finish(fourth, status=200, credits=.7, complete=True, downstream_complete=True,
              terminal_info=committed_info)
-    g.recover_pending()  # Simulated restart after commit.
+    g.recover_pending()
     with sqlite3.connect(g.LEDGER) as db:
         assert db.execute('SELECT COUNT(*),SUM(credits) FROM requests WHERE state=?', ('complete',)).fetchone() == (1, .7)
     result = {'transient_contention_recovered': True, 'ack_waited_for_commit': True,

@@ -1,4 +1,3 @@
-"""W70: синхронизация двух БД и потолок цепочки (аудит W56 K1, K5, K6, K7)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -34,7 +33,6 @@ def _node(status, start, finish):
     return SimpleNamespace(status=status, started_at=start, finished_at=finish)
 
 
-# ---- K5: защита от устаревшего master не зависит от числа узлов
 def test_pick_completed_node_several_nodes_takes_latest_done():
     t = datetime(2026, 1, 1)
     old = _node(NodeRunStatus.done, t, t + timedelta(minutes=1))
@@ -52,7 +50,6 @@ def test_pick_completed_node_running_or_empty_means_no_guard():
     assert pdb._pick_completed_node([_node(NodeRunStatus.done, None, None)]) is None
 
 
-# ---- K1: счётчики отражаются project.db -> master, не наоборот
 def test_counters_mirrored_to_master_only_when_requested():
     src = Project(slug="a", topic="t", status=ProjectStatus.paused, meta={"restart_chain": {"images": {"count": 3}}})
     dest = Project(slug="b", topic="t", status=ProjectStatus.new, meta={"regen_budget": {"x": 1}, "title_note": 1})
@@ -63,7 +60,6 @@ def test_counters_mirrored_to_master_only_when_requested():
     assert "regen_budget" not in dest.meta and dest.meta["title_note"] == 1
 
 
-# ---- K5: сбой push записывается и снимается при успехе
 async def test_push_failure_is_recorded_then_cleared(session):
     p = Project(slug="pf", topic="t", status=ProjectStatus.paused, meta={})
     session.add(p)
@@ -88,10 +84,9 @@ async def test_push_ok_leaves_meta_untouched(session):
 
 async def test_push_runtime_to_master_returns_true_on_non_project_db(session):
     p = Project(slug="pm", topic="t", status=ProjectStatus.paused)
-    assert await pdb.push_runtime_to_master(session, p) is True  # не project.db: нечего отправлять
+    assert await pdb.push_runtime_to_master(session, p) is True
 
 
-# ---- K6: порядок в advance_runner - commit project.db раньше push в master
 def test_advance_runner_commits_before_push():
     import inspect
     from app.services import advance_runner
@@ -99,7 +94,6 @@ def test_advance_runner_commits_before_push():
     assert src.index("commit_with_retry(session)") < src.index("push_runtime_to_master_recorded(session, project)")
 
 
-# ---- K7: решение «перегенерировать» не теряется на потолке цепочки
 async def test_manual_regen_at_ceiling_returns_request_to_pending(session, monkeypatch):
     monkeypatch.setattr(app_settings.settings, "restart_chain_max_per_node", 1)
     p = Project(slug="k7", topic="t", status=ProjectStatus.images_ready, hero_mode="no_hero", meta={
@@ -118,7 +112,7 @@ async def test_manual_regen_at_ceiling_returns_request_to_pending(session, monke
     assert p.status == ProjectStatus.paused
     assert req.decision is HITLDecision.pending and req.decided_at is None
     assert req.payload["blocked_decision"] == "regenerate"
-    assert f.status == FrameStatus.image_generated  # кадр не тронут
+    assert f.status == FrameStatus.image_generated
 
 
 async def test_manual_regen_below_ceiling_keeps_decision(session, monkeypatch):

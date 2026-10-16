@@ -1,7 +1,3 @@
-"""W4-1 / C06: автоодобрение без проверки пишется в журнал и в лог как «без проверки», а не проходит молча.
-
-Без сети и провайдеров. Класс доказательства: U (живого прогона нет; включение визуального ревью - решение владельца).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -63,7 +59,7 @@ def _drive(monkeypatch, *, status, kind, meta, verdict_steps=None):
 def test_visual_review_off_is_recorded_as_unchecked(monkeypatch, status, kind):
     advanced, events, apply_mock = _drive(monkeypatch, status=status, kind=kind, meta={"auto_review_kinds": []})
     assert advanced is True
-    apply_mock.assert_awaited_once()  # одобрение выполнено, как и раньше
+    apply_mock.assert_awaited_once()
     assert len(events) == 1
     event_kind, payload = events[0]
     assert event_kind == "runtime_check"
@@ -74,7 +70,6 @@ def test_visual_review_off_is_recorded_as_unchecked(monkeypatch, status, kind):
 
 
 def test_review_enabled_but_not_wired_is_also_recorded(monkeypatch):
-    # ревью включено для kind, но шага «Вердикт» для статуса нет: раньше тихо «TODO, auto-approve»
     advanced, events, apply_mock = _drive(
         monkeypatch, status=ProjectStatus.images_ready, kind=HITLKind.approve_images,
         meta={"auto_review_kinds": ["approve_images"]}, verdict_steps={})
@@ -94,7 +89,7 @@ def test_journal_failure_never_blocks_the_approval(monkeypatch):
 
     monkeypatch.setattr("app.services.observation.record_project_event", boom)
     asyncio.run(aa._record_unchecked_auto_approve(_Sess(), project, transition, ProjectStatus.images_ready,
-                                                  "visual_review_off"))  # не бросает
+                                                  "visual_review_off"))
 
 
 def test_event_lands_in_the_real_journal(monkeypatch, tmp_path):

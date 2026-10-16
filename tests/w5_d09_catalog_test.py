@@ -1,8 +1,3 @@
-"""W5-4 D09: недостающие контролы Студии как действия слоя + законы каталога.
-
-Эндпоинты настоящие, на временной БД; запуск воркера и платных вызовов нет (где нужен запуск,
-записывающий эндпоинт подменён заменителем).
-"""
 from __future__ import annotations
 
 import io
@@ -18,7 +13,7 @@ from app.services.action_layer import builtin_wave5 as w5
 from app.services.action_layer import executor
 from app.services.action_layer.context import ActionContext
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 DOC = Path(__file__).resolve().parents[1] / "docs" / "ACTION_LAYER_WAVE5.md"
@@ -87,7 +82,6 @@ def step(action, **params):
     return {"action_id": action, "params": params}
 
 
-# --- законы каталога --------------------------------------------------------------------------------
 
 def test_every_new_action_has_russian_text_and_the_expected_tier() -> None:
     assert set(EXPECTED_TIER) == set(w5.WAVE5_IDS)
@@ -144,7 +138,6 @@ def test_docs_list_exactly_the_new_and_changed_actions() -> None:
 
 def test_publication_is_one_destructive_human_approved_action_and_kill_switch_release_stays_out() -> None:
     ids = {s.id for s in registry.list()}
-    # D15: publish.send is the ONLY publication action; it is destructive, irreversible and always needs approval
     assert [i for i in ids if "publish" in i or "publication" in i] == ["publish.send"]
     spec = registry.get("publish.send")
     assert spec.risk == "destructive" and spec.destructive and not spec.reversible and spec.needs_approval
@@ -164,8 +157,6 @@ def test_publication_is_one_destructive_human_approved_action_and_kill_switch_re
 
 
 def test_wave5_param_names_are_labelled_in_the_ui_or_listed_for_the_integrator() -> None:
-    """Подписи параметров живут в web/src/lib/action-layer.ts (граница W5-6): тест фиксирует,
-    каких подписей там не хватает, чтобы интегратор их добавил."""
     src = (Path(__file__).resolve().parents[1] / "web" / "src" / "lib" / "action-layer.ts"
            ).read_text(encoding="utf-8")
     labelled = set(re.findall(r"^\s{2}([A-Za-z_0-9]+): \{ label:", src, re.M))
@@ -176,7 +167,6 @@ def test_wave5_param_names_are_labelled_in_the_ui_or_listed_for_the_integrator()
                             "aspect_ratio", "snapshot_id", "count", "force"}, missing
 
 
-# --- HITL ----------------------------------------------------------------------------------------------
 
 async def _hitl(env, pid, kind=HITLKind.approve_images):
     async with env.factory() as s:
@@ -203,7 +193,6 @@ async def test_hitl_list_then_approve_runs_the_real_endpoint(env, not_managed) -
     pv = await _preview(env, [step("hitl.approve", project_id=pid, hitl_id=hid)])
     assert pv.status_code == 200, pv.text
     assert pv.json()["preview"]["needs_approval"] is True
-    # без подтверждения решение не принимается
     plan = pv.json()["plan_id"]
     assert (await env.client.post(f"{BASE}/plans/{plan}/run")).status_code in (403, 409)
     assert await _decision(env, hid) == HITLDecision.pending
@@ -213,7 +202,6 @@ async def test_hitl_list_then_approve_runs_the_real_endpoint(env, not_managed) -
     assert await _decision(env, hid) == HITLDecision.approved
     async with env.factory() as s:
         assert (await s.get(Frame, fid)).status == FrameStatus.image_approved
-    # повторное решение отклоняется условием
     again = await _preview(env, [step("hitl.approve", project_id=pid, hitl_id=hid)])
     assert again.status_code == 422 and "hitl_pending" in str(again.json())
 
@@ -232,7 +220,7 @@ async def test_hitl_regenerate_needs_a_ceiling_and_binds_approval_to_it(env, not
     pid = await env.add_project(frames=1)
     hid, fid = await _hitl(env, pid)
     bare = await _preview(env, [step("hitl.regenerate", project_id=pid, hitl_id=hid)])
-    assert bare.status_code in (400, 422)  # потолок обязателен в схеме
+    assert bare.status_code in (400, 422)
     ok = await _preview(env, [step("hitl.regenerate", project_id=pid, hitl_id=hid,
                                    ceiling_credits=30)])
     assert ok.status_code == 200, ok.text
@@ -255,7 +243,6 @@ async def test_hitl_wrong_project_or_missing_request_is_refused(env, not_managed
     assert r.status_code in (404, 422)
 
 
-# --- проект ---------------------------------------------------------------------------------------------
 
 async def test_project_create_and_child_use_the_real_endpoints(env, not_managed) -> None:
     made = await _run(env, [step("project.create", title="  Урок про кофе  ", topic="кофе",
@@ -304,9 +291,8 @@ async def test_massfactory_start_needs_ceiling_and_stays_behind_approval(env, no
     plan = ok.json()["plan_id"]
     assert (await env.client.post(f"{BASE}/plans/{plan}/run")).status_code in (403, 409)
     assert stub_writes["calls"] == []
-    # потолок выше потолка расходов сессии слоя подтвердить нельзя
     huge = await _preview(env, [step("massfactory.start", project_id=pid, topics=["а", "б"],
-                                     ceiling_credits=50000)])  # выше потолка плана по умолчанию (10000 кредитов)
+                                     ceiling_credits=50000)])
     assert huge.status_code == 200 and huge.json()["preview"]["budget"]["fits"] is False
     assert (await env.client.post(f"{BASE}/plans/{huge.json()['plan_id']}/approve")
             ).status_code == 409
@@ -318,10 +304,8 @@ async def test_massfactory_start_needs_ceiling_and_stays_behind_approval(env, no
     assert done["steps"][0]["result"]["started_id"] == 77
 
 
-# --- аварийный стоп ---------------------------------------------------------------------------------------
 
 async def test_kill_switch_engage_goes_through_the_kill_switch_endpoint(env, not_managed, stub_writes) -> None:
-    """The endpoint call is STUBBED: this test must never engage the kill switch of the real database."""
     pid = await env.add_project(frames=1)
     stub_writes["patterns"][r"/observations/kill-switch$"] = {"active": True}
     short = await _preview(env, [step("kill_switch.engage", project_id=pid, rationale="ab")])
@@ -333,7 +317,6 @@ async def test_kill_switch_engage_goes_through_the_kill_switch_endpoint(env, not
     assert [c[:2] for c in stub_writes["calls"]] == [("POST", f"/projects/{pid}/observations/kill-switch")]
 
 
-# --- загрузки -----------------------------------------------------------------------------------------------
 
 def _xlsx_bytes() -> bytes:
     import openpyxl

@@ -1,14 +1,3 @@
-"""W4-4 (C08): the supervised retry is offered for more incident classes, never twice and never for an unknown
-outcome. Real ``recover_node`` / ``claim`` / ``check_body`` on the isolated actions fixture (SQLite, no provider,
-no network, no paid call: reserving or refusing a ticket sends nothing).
-
-Every test that opens a ticket also proves the double-paid-call barriers: a second ticket for the node is
-refused, the same idempotency key replays the first ticket without a second row, and the request counter does
-not move.
-
-The file is named ``*_test.py`` so that pytest collects it with the ``w4_4_`` prefix; it lives in tests/observe_v1
-to get that directory's synthetic-credentials fixture.
-"""
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
@@ -76,12 +65,7 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
     retry = base_tests.DurableActions.retry
     assert_no_dispatch = base_tests.DurableActions.assert_no_dispatch
 
-    # ---- fixture shaping -------------------------------------------------------------------------------
     async def shape(self, *, incident_type, details=None, events=None, drop=(), node_start=None, step_failure=None):
-        """Turn the stock text-node fixture into an incident of another class.
-
-        events: {event id: (kind, payload)}; the stock events are 1 node_start, 2 model_start (request-source),
-        3 model_end complete, 4 json_retry, 5 parse_result, 6 node_error."""
         await self.exhausted_fixture()
         async with self.sessions() as s:
             incident = await s.get(Incident, "source-incident")
@@ -109,7 +93,6 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
             drop=(4, 5), **kw)
 
     async def assert_one_ticket_and_no_second_paid_call(self, ticket):
-        """The three barriers that keep a second paid request from ever being reserved."""
         self.assertEqual(ticket["status"], "queued")
         replay = await self.retry()
         self.assertTrue(replay["idempotent_replay"])
@@ -121,7 +104,6 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
             control = await s.get(ActionExecutionControl, EXEC)
             self.assertEqual(control.requests_used, 0, "reserving a ticket must not spend a request")
 
-    # ---- api_error: only a 5xx ANSWER ------------------------------------------------------------------
     async def test_a_5xx_api_error_gets_exactly_one_ticket_and_never_a_second(self):
         await self.api_error(status=503)
         ticket = await self.retry()
@@ -134,9 +116,9 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
         ticket = await self.retry()
         ctx = SimpleNamespace(observer=observation._observer, attempt_id=ticket["new_attempt_id"], last_request_id=None,
                               scope=SimpleNamespace(execution_id=EXEC, observer_state="active", gaps=[]))
-        await check_body(ctx, digest({"test": 1}))  # identical body: allowed
+        await check_body(ctx, digest({"test": 1}))
         with self.assertRaisesRegex(RuntimeError, "HTTP input changed"):
-            await check_body(ctx, digest({"test": 2}))  # a different paid request is blocked before transport
+            await check_body(ctx, digest({"test": 2}))
 
     async def test_a_timeout_is_never_retried_even_if_the_incident_claims_it_is_safe(self):
         for error_type, status in (("ReadTimeout", None), ("ConnectTimeout", 503)):
@@ -165,7 +147,6 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
         await self.assert_no_dispatch()
 
     async def test_a_paid_answer_earlier_in_the_attempt_forbids_the_5xx_retry(self):
-        """One request got a complete (paid) answer, another got a 5xx: repeating would buy the first one twice."""
         await self.api_error(status=503)
         async with self.sessions() as s:
             for event_id, kind, payload in ((7, "model_start", {"input_revision": digest({"t": 2})}),
@@ -185,7 +166,7 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
         await self.api_error(status=503)
         async with self.sessions() as s:
             error = await s.get(ObservationEvent, 3)
-            error.request_id = "other-request"  # the 5xx belongs to another request: request-source is open
+            error.request_id = "other-request"
             await s.commit()
         with self.assertRaisesRegex(ValueError, "uncertain request"):
             await self.retry()
@@ -207,7 +188,6 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
             await self.retry()
         await self.assert_no_dispatch()
 
-    # ---- stalled / uncertain_request / the rest: diagnosis and notification only -----------------------------
     async def test_stalled_and_uncertain_incidents_never_get_a_ticket(self):
         for incident_type in ("stalled", "uncertain_request", "journal_gap", "db_disagreement", "user_stop"):
             with self.subTest(incident_type=incident_type):
@@ -230,7 +210,6 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
             await self.retry()
         await self.assert_no_dispatch()
 
-    # ---- contract_rejected: only after a recorded local correction ---------------------------------------------
     async def contract_rejected(self, *, node_start, candidate=True):
         await self.shape(incident_type="contract_rejected",
                          details={"local_fix_candidate": True} if candidate else {},
@@ -268,10 +247,10 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
         ticket = await self.retry()
         ctx = SimpleNamespace(observer=observation._observer, attempt_id=ticket["new_attempt_id"], last_request_id=None,
                               scope=SimpleNamespace(execution_id=EXEC, observer_state="active", gaps=[]))
-        await check_body(ctx, digest({"a": "corrected body"}))  # no equality demanded after a correction
+        await check_body(ctx, digest({"a": "corrected body"}))
         ctx.scope.observer_state = "degraded"
         with self.assertRaisesRegex(RuntimeError, "audit unavailable"):
-            await check_body(ctx, digest({"a": "corrected body"}))  # the audit gate still applies
+            await check_body(ctx, digest({"a": "corrected body"}))
 
     async def test_a_generic_contract_rejected_is_refused_for_the_incident_reason(self):
         await self.contract_rejected(node_start={"recovery_input_revision": "revision-before-the-fix"}, candidate=False)
@@ -285,7 +264,6 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
             await self.retry(profile_overlay_id="some-overlay")
         await self.assert_no_dispatch()
 
-    # ---- the format class is unchanged -----------------------------------------------------------------
     async def test_the_original_format_recovery_still_works_and_still_demands_the_same_input(self):
         await self.exhausted_fixture()
         ticket = await self.retry()
@@ -298,7 +276,6 @@ class RecoveryClassesDurable(unittest.IsolatedAsyncioTestCase):
             await self.retry()
         await self.assert_no_dispatch()
 
-    # ---- wait profile meets recovery -------------------------------------------------------------------------
     async def test_a_fast_profile_closure_opens_the_same_single_recovery_after_four_failures(self):
         step_failure = {"total_fails": {"enriching_1": 4}, "last_running": "enriching_1",
                         "abandoned_at": "synthetic", "abandoned_threshold": 4}

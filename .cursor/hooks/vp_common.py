@@ -1,4 +1,3 @@
-"""Общие функции хуков video-pipeline. Только стандартная библиотека Python."""
 from __future__ import annotations
 
 import json
@@ -77,7 +76,6 @@ def toplevel(path: Path | str) -> Path | None:
 
 
 def main_checkout(worktree: Path) -> Path:
-    """Корень основного checkout (для linked worktree — папка, где лежит общий .git)."""
     code, common = git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if code == 0 and common:
         return Path(common).resolve().parent
@@ -88,7 +86,6 @@ RUFF_SELECT = "E9,F63,F7,F82"
 
 
 def lint_errors(py: list[str], cwd: Path, files: list[str]) -> set[str]:
-    """Синтаксис и неопределённые имена: ruff из venv проекта, без него — compile()."""
     if not files:
         return set()
     env = {k: v for k, v in os.environ.items() if k not in ("FORCE_COLOR", "CLICOLOR_FORCE")}
@@ -122,7 +119,6 @@ def lint_errors(py: list[str], cwd: Path, files: list[str]) -> set[str]:
 
 
 def project_python(worktree: Path) -> list[str]:
-    """Python проекта: .venv основного checkout, затем текущий интерпретатор."""
     for root in (worktree, main_checkout(worktree)):
         for cand in (root / ".venv" / "Scripts" / "python.exe", root / ".venv" / "bin" / "python"):
             if cand.exists():

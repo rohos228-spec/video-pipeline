@@ -3,7 +3,6 @@ import {useEffect, useState} from "react";
 import {http} from "@/lib/api";
 import {cn} from "@/lib/utils";
 
-// Read-only local spend totals versus caps (server: app/services/spend_guard.py). 0 cap = unlimited.
 interface SpendState {
   caps: {daily: number; project: number; run: number};
   daily_spent: number; project_spent: number | null; run_spent: number | null; run_id: string | null;
@@ -28,7 +27,6 @@ const TASK_STATUS_RU: Record<string, string> = {
 };
 const taskStatus = (s?: string) => (s ? (TASK_STATUS_RU[s] ?? s) : "статус неизвестен");
 
-/** Доля лимита и состояние: ниже 80% обычное, от 80% предупреждение, от 100% превышен. */
 export function capState(spent: number | null, limit: number): {pct: number | null; level: "none" | "ok" | "warn" | "over"} {
   if (spent === null || !(limit > 0)) return {pct: null, level: "none"};
   const pct = (spent / limit) * 100;

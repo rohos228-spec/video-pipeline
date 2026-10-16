@@ -39,7 +39,7 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
     "gpt_no_base": ErrorSpec(
         "gpt_no_base",
         "Текст LLM: нет базы",
-        "Нода vibecode: VIBECODE_BASE_URL. GPT: GPT_BASE_URL.",
+        "Vibecode: VIBECODE_BASE_URL. GPT: GPT_BASE_URL.",
     ),
     "gpt_auth": ErrorSpec(
         "gpt_auth",
@@ -49,12 +49,12 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
     "gpt_model_unauthorized": ErrorSpec(
         "gpt_model_unauthorized",
         "Текст LLM: модель не авторизована",
-        "Ключ без доступа к модели (vibecode/GPT).",
+        "Ключ без доступа к модели (Vibecode/GPT).",
     ),
     "gpt_model_unsupported": ErrorSpec(
         "gpt_model_unsupported",
         "Текст LLM: модель не поддерживается",
-        "Проверь GPT_MODEL.",
+        "Проверь конфигурацию модели или GPT_MODEL.",
     ),
     "gpt_credits": ErrorSpec(
         "gpt_credits",
@@ -152,11 +152,10 @@ _CREDIT_WORDS = ("insufficient credit", "insufficient_quota", "insufficient bala
 
 
 def _is_credits(ctx: dict, status, pcode) -> bool:
-    """HTTP 402 / provider code 402 / the explicit flag gpt_api sets on a credit-balance envelope."""
     return bool(ctx.get("credits_exhausted")) or status == 402 or str(pcode).strip() == "402"
 
 
-def _match_code(exc: Exception) -> str:  # noqa: C901
+def _match_code(exc: Exception) -> str:
     """Определить код ошибки по типу/тексту исключения."""
     name = type(exc).__name__
     msg = str(exc)
@@ -182,7 +181,6 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
         if _is_credits(ctx, status, pcode):
             return "media_credits" if media else "gpt_credits"
         if kind == "empty_stream" and ctx.get("stream_error"):
-            # The stream broke before any text arrived: a timeout/transport cause, not an empty answer.
             return "gpt_timeout" if "Timeout" in str(ctx["stream_error"]) else "gpt_network"
         code_num = pcode if pcode is not None else status
         if code_num == 408:
@@ -211,7 +209,6 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
     if "download" in low or "скач" in low:
         return "media_download"
     if any(w in low for w in _CREDIT_WORDS):
-        # A text-LLM client error is not a media job (Outsee/Kie media errors keep media_credits).
         return "gpt_credits" if name == "GptApiError" else "media_credits"
     if "rate limit" in low or "429" in low:
         return "media_rate_limit"
@@ -219,7 +216,6 @@ def _match_code(exc: Exception) -> str:  # noqa: C901
         return "infra_db_locked"
     if name in ("FileNotFoundError",) or "нет файл" in low or "не найден" in low:
         return "file_missing"
-    # «enrich_xlsx» — имя шага DB SoT, не файл Excel. Не путать с .xlsx.
     xlsx_probe = low.replace("enrich_xlsx", "")
     if "xlsx-sync" in low or ".xlsx" in xlsx_probe or "некорректный xlsx" in xlsx_probe:
         if "corrupt" in low or "не открыв" in low:
@@ -238,11 +234,9 @@ _PROVIDER_TOPUP = {"vibecode": "Vibecode (vibecode.moe)", "kie": "Kie (kie.ai)"}
 
 
 def describe_error(exc: Exception) -> tuple[str, str]:
-    """(code, короткое сообщение для ноды) для любого исключения."""
     code = _match_code(exc)
     spec = ERROR_CATALOG.get(code, ERROR_CATALOG["unknown"])
     if code == "gpt_credits":
-        # Fixed text only: the provider's response body is not echoed into node errors.
         ctx = getattr(exc, "context", None)
         name = _PROVIDER_TOPUP.get(str(ctx.get("llm_provider") or "").lower() if isinstance(ctx, dict) else "")
         return code, f"{spec.title}. " + (f"Пополни баланс {name} и запусти шаг заново." if name else spec.hint)

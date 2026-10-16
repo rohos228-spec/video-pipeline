@@ -1,4 +1,3 @@
-"""Versioned migrations for the local api-tracker database (replaces per-call inline ALTER)."""
 from __future__ import annotations
 
 import sqlite3
@@ -26,7 +25,7 @@ def test_fresh_db_gets_all_migrations(tmp_path):
         applied = ts.migrate_tracker_db(c)
         assert applied == [m for m, _ in ts.MIGRATIONS]
         assert {"user_name", "device_name", "synced", "metadata_json"} <= _cols(c)
-        assert ts.migrate_tracker_db(c) == []  # idempotent
+        assert ts.migrate_tracker_db(c) == []
 
 
 def test_legacy_db_gets_missing_columns_and_keeps_rows(tmp_path):

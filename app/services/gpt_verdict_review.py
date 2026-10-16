@@ -624,7 +624,6 @@ async def run_verdict_review(
                 history=history,
             )
 
-        # причина отказа должна быть в журнале: иначе повтор плана «вслепую» не разобрать
         logger.info(
             "[#{}] gpt_verdict {} round {}: причина отказа: {}",
             project.id,

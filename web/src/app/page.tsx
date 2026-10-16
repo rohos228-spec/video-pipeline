@@ -37,8 +37,6 @@ export default function HomePage() {
   const [gptOpen, setGptOpen] = useState(false);
   const [bazaOpen, setBazaOpen] = useState(false);
   const { transfer, dismiss } = useFleetTransfer(selectedProjectId);
-  // Телефон: боковые колонки (проекты слева, инспектор справа) не делят экран с центром,
-  // а выезжают поверх него по кнопке. На широком экране раскладка прежняя.
   const narrow = useMediaQuery(NARROW_QUERY);
   const [projectsDrawer, setProjectsDrawer] = useState(false);
   const [inspectorDrawer, setInspectorDrawer] = useState(false);

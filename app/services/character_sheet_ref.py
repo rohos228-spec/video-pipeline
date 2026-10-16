@@ -1,9 +1,3 @@
-"""Кроп лица/тела с turnaround-листа персонажа для Outsee.
-
-Лист — сетка из 4 тел + голов одного человека. Если слать его целиком
-вместе с «no twins», gpt-image-2 видит пачку одинаковых лиц и схлопывает
-двух разных cXX в одного.
-"""
 
 from __future__ import annotations
 
@@ -11,7 +5,6 @@ from pathlib import Path
 
 from loguru import logger
 
-# 16:9 turnaround: 4 full-body views share the left half.
 _SHEET_MIN_ASPECT = 1.3
 _FRONT_LEFT = 0.012
 _FRONT_RIGHT = 0.148
@@ -20,7 +13,6 @@ _FRONT_BOTTOM = 0.975
 
 
 def identity_ref_from_sheet(sheet_path: Path, cache_dir: Path) -> Path:
-    """Вернуть кроп переднего полного роста; если не лист — исходный файл."""
     src = Path(sheet_path)
     if not src.is_file():
         return src
@@ -30,7 +22,7 @@ def identity_ref_from_sheet(sheet_path: Path, cache_dir: Path) -> Path:
             if dest.stat().st_size > 10_000:
                 return dest
         cropped = _crop_front_body(src, dest)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("character_sheet_ref: crop {} failed: {}", src.name, exc)
         return src
     return cropped if cropped is not None else src

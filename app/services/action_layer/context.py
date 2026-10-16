@@ -1,12 +1,3 @@
-"""Контекст исполнения действия и вызов существующего backend внутри процесса.
-
-Почему in-process ASGI, а не прямые функции сервисов: эндпоинты монтажа сами
-открывают сессию проекта (``get_project_session``), валидируют параметры,
-коммитят и публикуют события. Вызов через ASGI-клиент того же приложения
-сохраняет всё это без копирования логики и без сетевого соединения
-(``ASGITransport`` не открывает сокет). Тесты подменяют зависимости приложения,
-и действия автоматически работают на подменённой БД.
-"""
 from __future__ import annotations
 
 import base64
@@ -26,7 +17,6 @@ _BASE_URL = "http://action-layer.invalid"
 
 
 class ActionCallError(RuntimeError):
-    """Backend ответил ошибкой (status >= 400) или вернул неожиданное."""
 
     def __init__(self, status: int, detail: Any):
         self.status = status
@@ -35,18 +25,13 @@ class ActionCallError(RuntimeError):
 
 
 class WriteNotAllowed(RuntimeError):
-    """Попытка записи из контекста только для чтения (preview / precondition)."""
+    pass
 
 
-# --- загрузка файлов (multipart) ---------------------------------------------
-#
-# Файл попадает в запрос только как FileUpload. Источник байтов: путь на сервере строго
-# внутри DATA_DIR или base64 из параметров (малый размер). Произвольные пути и
-# сырые bytes/tuple в ctx.call(files=...) не принимаются.
 
 MIB = 1024 * 1024
-MAX_BASE64_BYTES = 512 * 1024        # декодированный размер файла из параметров плана
-MAX_TOTAL_UPLOAD_BYTES = 512 * MIB   # потолок на один запрос
+MAX_BASE64_BYTES = 512 * 1024
+MAX_TOTAL_UPLOAD_BYTES = 512 * MIB
 
 
 @dataclass(frozen=True)
@@ -69,7 +54,6 @@ UPLOAD_POLICIES: dict[str, UploadPolicy] = {
     "voice": UploadPolicy("voice", frozenset(_AUDIO_TYPES), 100 * MIB, _AUDIO_TYPES),
     "music": UploadPolicy("music", frozenset(set(_AUDIO_TYPES) - {".aac"}), 100 * MIB,
                           {k: v for k, v in _AUDIO_TYPES.items() if k != ".aac"}),
-    # Слот сцены ищет и архивирует только frame_NNN_*.png: другой формат оставил бы старый файл.
     "scene_image": UploadPolicy("scene_image", frozenset({".png"}), 30 * MIB,
                                 {".png": "image/png"}),
     "scene_video": UploadPolicy("scene_video", frozenset({".mp4"}), 300 * MIB,
@@ -78,7 +62,6 @@ UPLOAD_POLICIES: dict[str, UploadPolicy] = {
     "node_file": UploadPolicy("node_file", frozenset(_NODE_TYPES), 25 * MIB, _NODE_TYPES),
     "check_agent": UploadPolicy("check_agent", frozenset({".txt", ".md"}), 1 * MIB,
                                 {".txt": "text/plain", ".md": "text/markdown"}),
-    # Excel проекта (замена project.xlsx): только .xlsx; содержимое проверяет сам эндпоинт.
     "xlsx": UploadPolicy("xlsx", frozenset({".xlsx"}), 25 * MIB, {".xlsx": _NODE_TYPES[".xlsx"]}),
 }
 
@@ -87,7 +70,7 @@ _SAFE_NAME = re.compile(r"[^0-9A-Za-zА-Яа-яЁё._ -]")
 
 
 class UploadRejected(ValueError):
-    """Файл не прошёл проверку размера, типа или пути."""
+    pass
 
 
 def _magic_ok(ext: str, head: bytes, content: bytes) -> bool:
@@ -124,12 +107,6 @@ def _magic_ok(ext: str, head: bytes, content: bytes) -> bool:
 
 
 def _attachment_row(real: Path) -> tuple[bool, str, int]:
-    """(это вложение?, sha256 из реестра, размер из реестра). Вложение = файл внутри DATA_DIR/attachments.
-
-    Реестр читается напрямую из SQLite (только чтение): загрузка в слое действий синхронная, а
-    привязка к хэшу должна отработать в момент чтения файла, не раньше (A06). Нет записи или
-    нет таблицы - отказ (fail-closed), а не пропуск.
-    """
     from app.services.action_layer.attachments import ATTACH_DIR
     from app.settings import settings
 
@@ -154,11 +131,6 @@ def _attachment_row(real: Path) -> tuple[bool, str, int]:
 
 
 def verify_attachment_binding(real: Path, *, content: bytes | None = None, size: int | None = None) -> None:
-    """Файл вложения должен совпадать с тем, что принято при загрузке (sha256 и размер).
-
-    Подмена файла на диске между подтверждением плана и запуском даёт отказ. Не-вложения
-    (другие пути внутри DATA_DIR) не проверяются: для них хэша нет.
-    """
     is_att, want_sha, want_size = _attachment_row(real)
     if not is_att:
         return
@@ -171,7 +143,6 @@ def verify_attachment_binding(real: Path, *, content: bytes | None = None, size:
 
 @dataclass(frozen=True)
 class FileUpload:
-    """Проверенный файл для multipart. Создавать через from_data_path / from_base64."""
     form_field: str
     filename: str
     content: bytes = field(repr=False)
@@ -250,7 +221,6 @@ class FileUpload:
 
     @classmethod
     def from_data_path(cls, kind: str, path: str) -> "FileUpload":
-        """Файл на сервере: только внутри DATA_DIR, без скрытых имён, с проверкой типа."""
         policy, real, _size = cls._resolve_data_path(kind, path)
         with real.open("rb") as fh:
             content = fh.read(policy.max_bytes + 1)
@@ -259,7 +229,6 @@ class FileUpload:
 
     @classmethod
     def check_data_path(cls, kind: str, path: str) -> int:
-        """Те же проверки без чтения всего файла (для preview). Возвращает размер."""
         policy, real, size = cls._resolve_data_path(kind, path)
         verify_attachment_binding(real, size=size)
         ext = real.suffix.lower()
@@ -282,7 +251,6 @@ class FileUpload:
 
 
 def source_to_upload(kind: str, params: dict) -> FileUpload:
-    """Файл из параметров действия: ровно один источник, source_path или data_base64."""
     path, b64 = params.get("source_path"), params.get("data_base64")
     if bool(path) == bool(b64):
         raise UploadRejected("укажите ровно один источник: source_path или data_base64")
@@ -292,7 +260,6 @@ def source_to_upload(kind: str, params: dict) -> FileUpload:
 
 
 def validate_source_params(params: dict, kind: str) -> str | None:
-    """Проверка источника для precondition (файл целиком не читается): причина или None."""
     path, b64 = params.get("source_path"), params.get("data_base64")
     if bool(path) == bool(b64):
         return "укажите ровно один источник: source_path или data_base64"
@@ -310,18 +277,12 @@ _OPERATOR_BAD = re.compile(r"[^0-9A-Za-z_.:@-]")
 
 
 def normalize_operator(value: Any) -> str:
-    """D12: атрибуция оператора в заголовке - только безопасные ASCII-символы, до 120 знаков.
-
-    Заголовок идёт в события и журналы приложения; управляющие символы и переводы строк (подмена
-    записи в журнале) заменяются, пустое значение становится ``unknown``.
-    """
     text = _OPERATOR_BAD.sub("_", str(value or "").strip())[:120]
     return text or "unknown"
 
 
 @dataclass(frozen=True)
 class _Replay:
-    """Повтор уже выполненного записывающего вызова: ответ первой попытки."""
     body: Any
 
 
@@ -342,10 +303,6 @@ class ActionContext:
     async def call(self, method: str, path: str, *, params: dict | None = None,
                    json: Any = None, files: dict | None = None,
                    timeout: float = 120.0) -> Any:
-        """Вызов эндпоинта приложения (path без /api). Возвращает JSON.
-
-        ``files``: {поле: FileUpload}; только POST/PUT/PATCH и без json.
-        """
         method = method.upper()
         if self.read_only and method != "GET":
             raise WriteNotAllowed(f"{method} {path} is not allowed in read-only context")
@@ -355,7 +312,6 @@ class ActionContext:
                 raise UploadRejected("files допустимы только для POST/PUT/PATCH без json")
             if not files or not all(isinstance(f, FileUpload) for f in files.values()):
                 raise UploadRejected("files принимает только FileUpload")
-            # Повторная проверка: объект могли собрать мимо build().
             checked = [FileUpload.build(f.policy, f.filename, f.content, field_name=f.form_field)
                        for f in files.values()]
             if sum(len(f.content) for f in checked) > MAX_TOTAL_UPLOAD_BYTES:
@@ -364,17 +320,14 @@ class ActionContext:
                          for name, f in zip(files.keys(), checked)}
         from app.services import access_guard
         headers = {"X-Action-Layer-Operator": normalize_operator(self.operator),
-                   # Внутренний вызов своего приложения: свой токен оператора (A04).
                    access_guard.OPERATOR_HEADER: access_guard.get_operator_token()}
         if self.idempotency_key:
             headers["Idempotency-Key"] = self.idempotency_key
-        # D12: записывающий вызов с ключом выполняется не более одного раза (повтор отдаёт тот же ответ).
         fingerprint = None
         if self.idempotency_key and method != "GET":
             fingerprint = await self._claim(method, path, params, json, multipart)
             if isinstance(fingerprint, _Replay):
                 return fingerprint.body
-        # При отмене или обрыве запись остаётся 'started': исход неизвестен, повтор решает _claim.
         transport = httpx.ASGITransport(app=self.app)
         async with httpx.AsyncClient(transport=transport, base_url=_BASE_URL,
                                      timeout=timeout) as client:
@@ -388,7 +341,6 @@ class ActionContext:
             await self._finish(fingerprint, ok=False, status=resp.status_code, body=None)
             detail = body.get("detail") if isinstance(body, dict) else body
             raise ActionCallError(resp.status_code, detail)
-        # Ответ 2xx с отказом внутри (rejected / ok=false) не считается выполненным: повтор разрешён.
         refused = isinstance(body, dict) and (body.get("rejected") or body.get("ok") is False)
         await self._finish(fingerprint, ok=not refused, status=resp.status_code, body=body)
         return body
@@ -407,14 +359,12 @@ class ActionContext:
                 self.idempotency_key, fp, method=method, path=path,
                 operator=normalize_operator(self.operator), plan_id=self.plan_id or "")
         except SQLAlchemyError:
-            # Таблицы журнала нет (старая БД до миграции): без дедупликации, не ломая вызов.
             return None
         if state == "done":
             if row.response_omitted:
                 return _Replay({"idempotent_replay": True, "response_omitted": True})
             return _Replay(row.response)
         if state == "unknown" and row is not None and await self._step_is_idempotent():
-            # Повтор безвреден (значение выставляется, а не переключается): берём запись заново.
             if await store.reclaim_call(row.id):
                 return fp
         if state == "unknown":
@@ -425,7 +375,6 @@ class ActionContext:
         return fp
 
     async def _step_is_idempotent(self) -> bool:
-        """Шаг плана - идемпотентное действие (по реестру): повтор после обрыва допустим."""
         if not self.plan_id or self.step_index is None:
             return False
         from sqlalchemy import select

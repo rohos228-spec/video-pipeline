@@ -1,4 +1,3 @@
-"""Read-only panel projection. No polling, scheduling or provider access."""
 import shutil
 from collections import Counter
 from pathlib import Path

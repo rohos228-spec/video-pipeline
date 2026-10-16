@@ -1,5 +1,3 @@
-"""Declarative node knowledge: snapshot equality, registry conformance over every
-registered node spec, onboarding a node by data only, and the manifest loader."""
 import asyncio
 import json
 import unittest
@@ -11,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import test_decision_v1 as decision_tests
-import app.services.decision_v1  # noqa: F401  (registers the named contract builders)
+import app.services.decision_v1
 from app.models import ProjectStatus
 from app.orchestrator import node_registry, node_spec
 from app.orchestrator.node_spec import (
@@ -31,7 +29,6 @@ def _jsonable(value):
     return json.loads(json.dumps(value, ensure_ascii=False))
 
 
-# --- snapshot -----------------------------------------------------------
 
 def test_capabilities_equal_pre_refactor_snapshot():
     expected = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
@@ -52,32 +49,23 @@ def test_twelve_original_nodes_are_registered():
     assert ORIGINAL_TWELVE <= set(json.loads(SNAPSHOT.read_text(encoding="utf-8")))
 
 
-# --- conformance over all registered specs ------------------------------
 
 @pytest.mark.parametrize("node_type", ALL_SPECS)
 def test_spec_conformance(node_type):
     spec = registered_capability_specs()[node_type]
     assert spec.node_type == node_type
-    # A coverage-only entry (result_kind 'unsupported') deliberately carries no executor: it
-    # is the same payload as an unregistered type plus the reason in coverage data.
     if spec.result_kind != "unsupported":
         assert spec.executor
     assert spec.phases and isinstance(spec.effects, tuple)
     actions = set(spec.actions)
     assert actions <= KNOWN_ACTIONS, actions - KNOWN_ACTIONS
     assert {"read_events", "read_contract", "human_review"} <= actions
-    # managed requires a named acceptance artifact; the built capability agrees.
     if spec.managed:
         assert spec.acceptance, "managed without acceptance"
     assert capability_for(node_type).managed == spec.effective_managed
-    assert node_registry.is_work_node_type(node_type)  # excel_gpt is virtual, not in WORK_NODES
-    # retry requires a managed, text-like node; a profile retry additionally needs profile rules.
+    assert node_registry.is_work_node_type(node_type)
     if actions & RETRY:
         assert spec.effective_managed
-        # a media node may carry the retry slot ONLY as a supervised resume of a known provider task, or (a local
-        # node without any provider job) as one supervised re-run through the original worker
-        # D06: images keeps its synthetic managed launch, and its supervised recovery is a LOCAL resume of a
-        # recorded result (media_local_resume), never a paid resend: the one media node that is not recovery_only.
         from app.services import media_local_resume
         assert spec.result_kind not in MEDIA_KINDS or (
             (spec.recovery_only or spec.local_recovery or node_type in media_local_resume.NODES)
@@ -87,7 +75,6 @@ def test_spec_conformance(node_type):
         assert spec.profile_compatible, "profile retry without profile_compatible"
     if spec.profile_compatible:
         assert "retry_profile" in actions
-    # media nodes expose retry only as a resume-only recovery (media_admission) and are never profile compatible.
     if spec.result_kind in MEDIA_KINDS:
         assert (not actions & RETRY or spec.recovery_only or spec.local_recovery
                 or node_type in __import__('app.services.media_local_resume', fromlist=['NODES']).NODES)
@@ -95,10 +82,8 @@ def test_spec_conformance(node_type):
     if spec.recovery_only:
         assert spec.result_kind in MEDIA_KINDS and spec.effective_managed and spec.recovery_cap == 1
     if spec.local_recovery:
-        # never both: a provider resume and a worker re-run are different, separately proven mechanisms
         assert not spec.recovery_only and spec.result_kind in MEDIA_KINDS and spec.effective_managed
         assert spec.recovery_cap == 1 and spec.forbidden_code is None
-    # names resolve.
     if spec.verifier is not None:
         assert spec.verifier in node_spec.registered_verifiers(), spec.verifier
     if spec.contract is not None:
@@ -123,7 +108,6 @@ def test_unknown_node_type_is_unsupported_and_read_only():
     assert not set(cap.actions) & (RETRY | {"finish"})
 
 
-# --- manifest loader ----------------------------------------------------
 
 def _manifest(**block):
     return {"nodeapi": 1, "type": "manifest_text",
@@ -157,7 +141,6 @@ def test_manifest_rejects_invalid(bad):
         capability_from_manifest("not a mapping")
 
 
-# --- add a node by data -------------------------------------------------
 
 SYNTH = "synthetic_text"
 
@@ -229,7 +212,7 @@ class AddNodeByData(unittest.TestCase):
         assert self.calls == [SYNTH, SYNTH]
         ordinary = SimpleNamespace(scope=SimpleNamespace(mode="ordinary", execution_id="e"), observer=MagicMock())
         asyncio.run(node_spec.run_verifier_after_success(ordinary, None, None, SYNTH))
-        assert self.calls == [SYNTH, SYNTH]  # managed_only: untouched outside managed scope
+        assert self.calls == [SYNTH, SYNTH]
 
     def test_unknown_contract_name_fails_closed(self):
         cap = replace(capability_for(SYNTH))
@@ -240,7 +223,6 @@ class AddNodeByData(unittest.TestCase):
 
 
 class SyntheticNodeDecision(decision_tests.DecisionDurability):
-    """The Decision layer reads the new node's contract and allow-list from data."""
 
     async def asyncSetUp(self):
         await super().asyncSetUp()

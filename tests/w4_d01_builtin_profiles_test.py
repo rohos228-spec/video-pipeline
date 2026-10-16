@@ -1,8 +1,3 @@
-"""W4 / D01: built-in production catalog of text recovery profiles and computed media flags.
-
-Class U and D: real code, no network and no paid calls; model catalogs are the repository's own.
-Nothing was run live.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -38,7 +33,6 @@ def kie(**extra):
     return d
 
 
-# ---- catalog content ---------------------------------------------------------------------
 
 def test_every_builtin_profile_validates_against_the_real_catalogs():
     from app.services.prompt_library import APPROVED_PROFILE_PROMPTS
@@ -75,7 +69,6 @@ def test_bindings_cover_managed_text_types_and_never_media():
     assert profiles_v1.binding_allows("owner-defined", node_type="images", incident_type="x")
 
 
-# ---- activation --------------------------------------------------------------------------
 
 def test_production_with_retry_profile_gets_the_builtin_catalog_by_decision_provider():
     v = profiles_v1.builtin_production_profiles(dc.validate_config(vibecode()))
@@ -86,7 +79,7 @@ def test_production_with_retry_profile_gets_the_builtin_catalog_by_decision_prov
 
 
 @pytest.mark.parametrize("change", [
-    {"allowed_actions": ["read_events", "retry_same", "human_review"]},   # owner did not allow retry_profile
+    {"allowed_actions": ["read_events", "retry_same", "human_review"]},
     {"builtin_profiles": False},
     {"incident_scope": {"execution_id": "e", "incident_id": "i", "node_key": "n", "source_attempt_id": "a",
                         "recovery_limit": 1}},
@@ -130,7 +123,6 @@ def test_active_catalog_and_status_report_builtin_profiles(monkeypatch):
     assert st["profile_count"] == 1 and st["profile_source"] == "builtin" and st["mode"] == "production"
     assert profiles_v1.catalog_hash() == profiles_v1.catalog_hash()
     profiles_v1.validate_candidate(profiles_v1.active_catalog()["vibecode-json-repair-v1"])
-    # profiles outside the active catalog (synthetic or foreign provider) are still refused
     with pytest.raises(ValueError):
         profiles_v1.validate_candidate(profiles_v1.CATALOG["synthetic-json-v1"])
     with pytest.raises(ValueError):
@@ -163,7 +155,6 @@ def test_builtin_effective_body_is_bounded_and_deterministic(monkeypatch):
     assert profiles_v1.effective_body(body, cand) == out
 
 
-# ---- media stays fail-closed, flags are computed ------------------------------------------
 
 MEDIA = {"enabled": True, "provider": "kie", "origin": "http://127.0.0.1:9",
          "download_origins": ["http://127.0.0.1:9"], "model_ids": ["m"], "max_bytes": 4096,
@@ -187,7 +178,6 @@ def test_media_flags_follow_configuration():
                   "production_profile_configured": False, "synthetic_only": True, "execution_allowed": True}
     disabled = media_jobs.media_profile_state({"mode": "synthetic", "media": {**MEDIA, "enabled": False}})
     assert disabled["execution_allowed"] is False
-    # an (unvalidated) production-enabled dict is reported honestly, not as synthetic
     prod = media_jobs.media_profile_state({"mode": "production", "media": MEDIA})
     assert prod["production_profile_configured"] is True and prod["synthetic_only"] is False
 

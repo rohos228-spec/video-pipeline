@@ -1,4 +1,3 @@
-"""Sidecar Место vs montage VO parent — what the pictures actually locked to."""
 from __future__ import annotations
 
 import json
@@ -79,7 +78,6 @@ for fr in live:
     if flag:
         for n, kind, pn, pl in rows:
             print(f"    #{n} {kind:6} parent={pn}  {pl}")
-        # children whose sidecar place != parent's sidecar place
         parent_pl = sidecar_place(p.number)
         for n, kind, pn, pl in rows:
             if kind == "child" and parent_pl and pl not in ("?", parent_pl) and pl.casefold() != parent_pl.casefold():
@@ -88,7 +86,6 @@ for fr in live:
 print(f"\nmixed VO groups (sidecar): {mixed}")
 print(f"children locked to other place than montage parent: {child_wrong_still}")
 
-# adjacent frames: sidecar place change vs shot_kind
 print("\nplace-change in sidecar vs chip:")
 prev = None
 new_place_child = 0

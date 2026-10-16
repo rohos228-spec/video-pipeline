@@ -1,4 +1,3 @@
-"""Vibecode decision transport: one non-stream POST, parsing, completeness. httpx.MockTransport only."""
 import asyncio,json,unittest
 from unittest.mock import patch
 import httpx
@@ -121,7 +120,6 @@ class CompletionState(unittest.TestCase):
         self.assertEqual(self.state('kie_responses',{'status':'in_progress'}),(False,False))
         self.assertEqual(self.state('kie_responses',{'status':'completed','sse_salvaged':True}),(False,False))
         self.assertEqual(self.state('kie_responses',{'status':'incomplete'}),(False,True))
-        # Kie never trusts a bare finish_reason without a Responses status.
         self.assertEqual(self.state('kie_responses',{},'stop'),(False,False))
         self.assertEqual(self.state('kie_responses',{'status':'completed'},usage={'completion_tokens':5000}),(True,False))
 

@@ -13,7 +13,6 @@ PACK = ROOT / "ai-pack"
 
 # Должны совпадать с scripts/build_ai_pack.py
 COPY_MAP: list[tuple[str, str]] = [
-    ("AGENTS.md", "00_core/AGENTS.md"),
     ("docs/AGENT_MAP.md", "00_core/AGENT_MAP.md"),
     (".cursor/rules/video-pipeline-ops.mdc", "00_core/video-pipeline-ops.md"),
     (".cursor/rules/video-pipeline-map.mdc", "00_core/video-pipeline-map.md"),
@@ -71,7 +70,6 @@ def check_start_here() -> list[str]:
 
     # Файлы, на которые ссылается START_HERE, должны существовать в паке.
     for rel in (
-        "00_core/AGENTS.md",
         "00_core/AGENT_MAP.md",
         "00_core/video-pipeline-ops.md",
         "01_data_prompts/PROMPT_CONTRACT.md",
@@ -214,8 +212,6 @@ def main() -> int:
             print(f"  ! {e}")
     else:
         print("ai-pack VERIFY OK")
-    # git HEAD — только информативная строка; не валим проверку, если git недоступен
-    # или отказывает (dubious ownership у чужого Windows-пользователя, нет .git).
     try:
         head = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],

@@ -1,4 +1,3 @@
-"""Local stdlib line coverage, without installing/uploading tracing services."""
 import json
 import sys
 import trace

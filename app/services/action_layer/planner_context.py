@@ -1,10 +1,3 @@
-"""Контекст проекта для планировщика: факты из БД и файлов, значения по умолчанию, сжатие для промпта.
-
-Факты (``build_facts``) целиком входят в хэш версии контекста (устаревший план нельзя
-подтверждать). В промпт модели идёт только нужная часть (``prompt_context``): кадры, очередь,
-предложения изменений и т.п. показываются, когда в каталоге есть действия, которым они нужны.
-Текстов кадров, промтов и темы проекта здесь нет.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import func, or_, select
 
-MAX_FRAMES = 80            # строк кадров в контексте (больше: окно вокруг выбранного кадра)
+MAX_FRAMES = 80
 MAX_QUEUE_OPS = 40
 MAX_PROPOSALS = 6
 MAX_VERSIONS = 6
@@ -26,7 +19,6 @@ _FRAME_FILE = re.compile(r"^frame_(\d+)_", re.IGNORECASE)
 _CLIP_FILE = re.compile(r"^clip_(\d+)_", re.IGNORECASE)
 _SAFE_NODE = re.compile(r"[^\w.\-: ]", re.UNICODE)
 
-# Текущий шаг проекта по статусу (best effort): значение по умолчанию для step_code.
 STATUS_STEP = {
     "planning": "plan", "plan_ready": "plan",
     "scripting": "script", "script_ready": "script",
@@ -39,19 +31,16 @@ STATUS_STEP = {
     "generating_animation_prompts": "anim_pr", "animation_prompts_ready": "anim_pr",
 }
 
-# Свойства схем действий, по которым видно, что действию нужна карта кадров.
 FRAME_PROPS = ("frame_id", "frame_number", "frame_numbers", "a_frame", "b_frame", "from_frame",
                "to_frame", "left_frame_id", "right_frame_id", "after_frame_id", "frame_ids")
-QUEUE_ACTIONS = frozenset({"montage.cancel_queue_ops"})  # очередь для apply/queue сервер читает сам
+QUEUE_ACTIONS = frozenset({"montage.cancel_queue_ops"})
 GEN_ACTIONS = frozenset({"montage.apply_queue", "montage.generate_scene_images",
                          "montage.improve_scene"})
 UUID_ACTIONS = frozenset({"shot.edit_cell_voiceover", "shot.edit_field"})
 
 
-# --- файлы проекта ---------------------------------------------------------------------
 
 def media_presence(data_dir: Path) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
-    """({кадр: {шоты с картинкой}}, {кадр: {шоты с видео}}) по именам файлов проекта."""
     imgs: dict[int, set[int]] = {}
     vids: dict[int, set[int]] = {}
     scenes = Path(data_dir) / "scenes"
@@ -75,7 +64,6 @@ def _mask(shots: set[int] | None) -> str:
     return "".join(str(n) for n in sorted(shots or ())) or "-"
 
 
-# --- кадры ------------------------------------------------------------------------------
 
 def _role(attrs: Any) -> str:
     cs = attrs.get("camera_subdivide") if isinstance(attrs, dict) else None
@@ -92,10 +80,6 @@ def _has_shot2_attrs(attrs: Any) -> bool:
 def frame_rows(frames: list[tuple[int, int, Any, str | None]],
                imgs: dict[int, set[int]], vids: dict[int, set[int]],
                selected: int | None = None) -> tuple[list[list], str]:
-    """Строки [number, frame_id, role, shots, img, vid] по порядку доски и пометка об усечении.
-
-    ``frames``: (number, id, attrs, uuid) уже в порядке доски. role: p - сцена (ячейка закадра),
-    c - шот сцены. shots: 1 или 2. img/vid: шоты, у которых файл есть ("-" нет)."""
     rows: list[list] = []
     for number, fid, attrs, _uuid in frames:
         two = (2 in imgs.get(number, ())) or (2 in vids.get(number, ())) or _has_shot2_attrs(attrs)
@@ -111,12 +95,10 @@ def frame_rows(frames: list[tuple[int, int, Any, str | None]],
 
 
 def frames_text(rows: list[list]) -> str:
-    """Компактная запись строк кадров для промпта: «number,frame_id,role,shots,img,vid;...»."""
     return ";".join(",".join(str(x) for x in r) for r in rows)
 
 
 def scene_of(rows: list[list], number: int | None) -> list[list]:
-    """Строки сцены кадра: голова (role p) и её шоты (role c) до следующей головы."""
     if number is None:
         return []
     start = None
@@ -138,7 +120,6 @@ def scene_of(rows: list[list], number: int | None) -> list[list]:
 
 
 def resolve_selected(rows: list[list], selected: int | None) -> dict:
-    """Выбранный в интерфейсе кадр: по frame_id доски, иначе по номеру. {number, frame_id, scene_id}."""
     if selected is None:
         return {}
     hit = next((r for r in rows if r[1] == selected), None) or next(
@@ -149,7 +130,6 @@ def resolve_selected(rows: list[list], selected: int | None) -> dict:
     return {"number": hit[0], "frame_id": hit[1], "scene_head_id": scene[0][1] if scene else hit[1]}
 
 
-# --- очередь ----------------------------------------------------------------------------
 
 def queue_facts(project_meta: Any) -> dict:
     board = project_meta.get("montage_board") if isinstance(project_meta, dict) else None
@@ -168,10 +148,8 @@ def queue_facts(project_meta: Any) -> dict:
     return out
 
 
-# --- настройки по умолчанию -------------------------------------------------------------
 
 def effective_media(project: Any) -> dict[str, str]:
-    """Генератор и разрешение, как их берёт регенерация панели (настройки проекта или умолчания)."""
     try:
         from app.services.action_layer.builtin_montage_more import _effective_settings
         return dict(_effective_settings({
@@ -179,7 +157,7 @@ def effective_media(project: Any) -> dict[str, str]:
             "image_resolution": project.image_resolution, "image_quality": project.image_quality,
             "aspect_ratio": project.aspect_ratio, "video_generator": project.video_generator,
             "video_resolution": project.video_resolution}))
-    except Exception:  # noqa: BLE001 - настройки не должны ронять планировщик
+    except Exception:
         return {}
 
 
@@ -194,7 +172,6 @@ def build_defaults(project: Any, status: str) -> dict:
     return out
 
 
-# --- ноды -------------------------------------------------------------------------------
 
 def node_facts(nodes_snapshot: Any) -> list[dict]:
     from app.services.action_layer import node_run_cost as nrc
@@ -216,10 +193,8 @@ def node_facts(nodes_snapshot: Any) -> list[dict]:
     return out
 
 
-# --- контур изменений -------------------------------------------------------------------
 
 async def change_facts(project_id: int) -> dict:
-    """Последние предложения проекта (n - порядковый номер от старых к новым) и версии целей."""
     try:
         from app.services.action_layer import store
         from app.services.change_control import store as cs
@@ -242,13 +217,11 @@ async def change_facts(project_id: int) -> dict:
                 .limit(MAX_VERSIONS))).all()
         return {"proposals": proposals,
                 "versions": [{"target": t, "v": int(v)} for t, v in ptrs]}
-    except Exception:  # noqa: BLE001 - таблиц контура может не быть (старая БД)
+    except Exception:
         return {"proposals": [], "versions": []}
 
 
 def publish_facts(project: Any) -> dict:
-    """Подпись и площадки публикации, известные только серверу (в промпт НЕ идут: тема проекта это
-    недоверенный текст). Их подставляет ``planner_rules.fill_defaults`` в шаг ``publish.send``."""
     try:
         from app.services.action_layer import publish_action as pa
         meta = project.meta if isinstance(getattr(project, "meta", None), dict) else {}
@@ -256,15 +229,13 @@ def publish_facts(project: Any) -> dict:
         platforms = [p for p in pa.registry_platforms() if p not in done]
         caption = pa.caption_of({"topic": getattr(project, "topic", None),
                                  "slug": getattr(project, "slug", None)})
-    except Exception:  # noqa: BLE001 - публикаторов нет в окружении: шаг получит отказ в проверке
+    except Exception:
         return {"platforms": [], "caption": ""}
     return {"platforms": platforms, "caption": caption}
 
 
-# --- сборка фактов ----------------------------------------------------------------------
 
 async def build_facts(s, project: Any, project_id: int, selected_frame: int | None) -> dict:
-    """Факты проекта (без выбранных сцены/кадра и project_id: их ставит вызывающий)."""
     from app.models import Frame, WorkflowRun
     status = str(getattr(project.status, "value", project.status))
     count = await s.scalar(select(func.count(Frame.id)).where(Frame.project_id == project_id))
@@ -279,7 +250,7 @@ async def build_facts(s, project: Any, project_id: int, selected_frame: int | No
         .order_by(Frame.sort_key.asc(), Frame.number.asc()))).all()
     try:
         imgs, vids = await asyncio.to_thread(media_presence, project.data_dir)
-    except OSError:  # папка проекта недоступна: карта кадров без пометок о файлах
+    except OSError:
         imgs, vids = {}, {}
     rows, note = frame_rows([(r.number, r.id, r.attrs, r.uuid) for r in frames], imgs, vids,
                             selected_frame)
@@ -300,26 +271,21 @@ async def build_facts(s, project: Any, project_id: int, selected_frame: int | No
     return facts
 
 
-# --- мастер-промты ----------------------------------------------------------------------
 
 def master_prompts(text: str, facts: dict) -> dict:
-    """{step_code: {"sel": выбранный в проекте или None, "names": [...]}} для шагов запроса.
-
-    В список попадают шаги, чей код или имя варианта названы в запросе, и шаги с выбранным
-    в проекте вариантом. Файлы промтов общие для всех проектов (prompt_library)."""
     try:
         from app.services import prompt_library as pl
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {}
     words = set(re.findall(r"[\w\-]+", (text or "").lower().replace("ё", "е")))
     overrides = facts.get("prompt_overrides") or {}
     out: dict = {}
     for step in pl.STEP_FOLDERS:
         if step in pl.ENRICH_STEP_CODES and step != pl.EXCEL_GPT_UNIFIED_STEP and step not in overrides:
-            continue  # слоты enrich_N показывают тот же список, что excel_gpt
+            continue
         try:
             names = pl.list_prompts(step)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         named = step.lower() in words or any(n.lower() in words for n in names)
         if not (named or step in overrides):
@@ -331,7 +297,6 @@ def master_prompts(text: str, facts: dict) -> dict:
     return out
 
 
-# --- сжатие для промпта -----------------------------------------------------------------
 
 def _schema_dump(registry: Any, aid: str) -> str:
     spec = registry.find(aid)
@@ -344,10 +309,6 @@ def _mentioned_numbers(text: str) -> set[int]:
 
 def prompt_context(facts: dict, offered: list[str] | frozenset[str], registry: Any,
                    text: str = "") -> dict:
-    """Часть фактов, нужная модели для показанных ей действий (остальное в промпт не идёт).
-
-    Все строки очищаются (``planner_guard.sanitize_tree``): имена, подписи и тексты из проекта
-    - недоверенные данные, а не часть инструкции."""
     from app.services.action_layer import planner_guard
     return planner_guard.sanitize_tree(_prompt_context(facts, offered, registry, text))
 
@@ -369,7 +330,7 @@ def _prompt_context(facts: dict, offered: list[str] | frozenset[str], registry: 
     if ids & QUEUE_ACTIONS:
         out["queue"] = facts.get("queue", {})
     defaults = facts.get("defaults") or {}
-    pick: dict = {}  # генератор/разрешение, лимиты, шаг и вариант промта сервер подставляет сам
+    pick: dict = {}
     if "node.reset_from_step" in ids and defaults.get("step_code"):
         pick["step_code"] = defaults["step_code"]
     if "node.set_prompt_variant" in ids:

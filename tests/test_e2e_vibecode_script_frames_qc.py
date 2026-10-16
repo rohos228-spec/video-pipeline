@@ -1,4 +1,3 @@
-"""Offline guards for scripts/e2e_vibecode_script_frames_qc.py (pure helpers; the run itself starts the whole app)."""
 import importlib.util
 import json
 import sys
@@ -15,7 +14,6 @@ _spec.loader.exec_module(script)
 FRAME = {"uuid": "a" * 24, "number": 1, "voiceover_text": script.FULL_VO, "attrs": {}}
 
 
-# ---------- safety: dry only, loopback only ----------
 
 def test_default_mode_is_offline_and_live_is_opt_in():
     args = script._args(["--work-dir", "w"])
@@ -69,14 +67,13 @@ def test_linear_edges_chain_the_group_nodes():
     assert [(e["source"], e["target"]) for e in edges] == list(zip(script.node_keys(), script.node_keys()[1:]))
 
 
-# ---------- the Vibecode wire format is what the real parser reads ----------
 
 def test_sse_body_is_parsed_by_the_real_vibecode_parser():
     from app.services.gpt_api import parse_chat_completions_sse_lines
     body = script.sse_chat_body('{"ops": []}', "r1").decode()
     text, finish, last = parse_chat_completions_sse_lines(body.splitlines())
     assert text == '{"ops": []}' and finish == "stop"
-    assert "status" not in last  # chat/completions carries no Kie-style status
+    assert "status" not in last
 
 
 def test_sse_usage_only_trailing_chunk_and_status_flag():
@@ -105,7 +102,6 @@ def test_pack_for_request_matches_24_hex_uuids_not_rfc_uuids():
     assert script.pack_for_request([FRAME, other], "no ids here") == [FRAME, other]
 
 
-# ---------- Decision stub speaks the real proposal contract ----------
 
 def _context(allowed):
     return {"allowed_actions": allowed, "context_version": "v1", "evidence_ids": ["e1", "e2"]}
@@ -142,13 +138,12 @@ def test_runtime_config_is_a_valid_loopback_vibecode_production_config():
     assert "retry_profile" not in cfg["allowed_actions"] and cfg["continuation_allowed"] is False
 
 
-# ---------- model fixtures ----------
 
 def test_valid_answers_follow_the_space_scenario():
     bits = json.loads(script.valid_answer("script", [FRAME]))["ops"][0]["fields"]["биты"]
     assert bits == script.BITS
     action = json.loads(script.valid_answer("action", [FRAME]))["ops"][0]["fields"]
-    assert action == {"площадка": script.PLAN}  # the site node writes only the site (no main action)
+    assert action == {"площадка": script.PLAN}
     shots = json.loads(script.valid_answer("shots", [FRAME]))["ops"][0]["fields"]["кадры"]
     assert len(shots) == sum(len(s["shots"]) for s in script.SCENES)
     assert json.loads(script.valid_answer("qc", [FRAME])) == {"ops": []}
@@ -177,7 +172,6 @@ def test_undercount_is_valid_json_with_no_shots():
     assert data["ops"][0]["fields"]["кадры"] == [] and full["ops"][0]["fields"]["кадры"]
 
 
-# ---------- assertions ----------
 
 def _happy_snapshot():
     target = "n_excel_gpt_fw_script"
@@ -260,7 +254,6 @@ def test_truncated_answer_expects_hold_single_post_and_no_recovery():
     assert {"truncated_answer_posted_once", "truncated_answer_holds_execution"} <= set(failed)
 
 
-# ---------- retry_profile scenario ----------
 
 def test_recovery_flag_defaults_to_retry_same_and_profile_needs_malformed():
     assert script._args(["--work-dir", "w"]).recovery == "retry_same"
@@ -351,7 +344,6 @@ def test_profile_snapshot_passes_and_each_profile_requirement_can_fail():
     assert "profile_request_is_vibecode_chat_body" in run(snap)[1]
 
 
-# ---------- composition is read from the group definition ----------
 
 def test_composition_comes_from_the_group_definition():
     from app.services.node_groups import get_node_group
@@ -359,7 +351,6 @@ def test_composition_comes_from_the_group_definition():
     assert script.node_suffixes() == tuple(n.local_key for n in group.nodes)
     assert script.node_keys() == tuple(n.preferred_id for n in group.nodes)
     assert all(k.startswith("n_excel_gpt_fw_") for k in script.node_keys())
-    # the code-only report node never calls the model, so it cannot be broken
     assert "report" in script.node_suffixes() and "report" not in script.model_suffixes()
     assert set(script.model_suffixes()) <= set(script.node_suffixes())
     assert script.target_key("shots") == "n_excel_gpt_fw_shots"
@@ -381,7 +372,6 @@ def test_action_answer_carries_the_legacy_main_action_only_on_request():
     assert legacy == {"главное_действие": script.ACTION, "площадка": script.PLAN}
 
 
-# ---------- live mode: whitelist loader, host allow-list, caps, spend ----------
 
 def test_env_loader_keeps_only_the_whitelisted_names(tmp_path):
     f = tmp_path / "e.env"
@@ -399,7 +389,6 @@ def test_endpoint_and_allowed_hosts_direct_and_relay():
     relay = {"GPT_RELAY_TOKEN": "t", "GPT_BASE_URL": "https://vp.example.net"}
     assert script.live_endpoint(relay) == "https://vp.example.net/v1/chat/completions"
     assert script.allowed_hosts(relay) == {"vibecode.moe", "vp.example.net"}
-    # a Kie/vibecode GPT_BASE_URL is not a relay; a token without a base is not either
     for env in ({"GPT_RELAY_TOKEN": "t", "GPT_BASE_URL": "https://api.kie.ai"}, {"GPT_RELAY_TOKEN": "t"},
                 {"GPT_BASE_URL": "https://vp.example.net"}):
         assert script.relay_base(env) is None and script.allowed_hosts(env) == {"vibecode.moe"}
@@ -425,7 +414,7 @@ def test_real_post_and_cost_caps_refuse_further_posts():
     assert _refuse("vibecode.moe", real_posts=6).startswith("cap:")
     assert _refuse("vibecode.moe", spent_usd=0.0999) is None
     assert _refuse("vibecode.moe", spent_usd=0.10).startswith("cap:")
-    assert _refuse("example.com", real_posts=99).startswith("host:")  # host rule wins
+    assert _refuse("example.com", real_posts=99).startswith("host:")
 
 
 def test_spend_estimate_is_catalog_price_times_three_with_recorded_cost_fallback():
@@ -466,7 +455,7 @@ def test_live_runtime_config_uses_the_real_route_and_is_valid(tmp_path, monkeypa
     assert cfg["endpoint"] == "https://vibecode.moe/v1/chat/completions" and "retry_same" in cfg["allowed_actions"]
     prof = script.runtime_config(18766, 60, "retry_profile", endpoint=script.live_endpoint({}))
     assert "retry_profile" in prof["allowed_actions"] and "retry_same" not in prof["allowed_actions"]
-    assert "retry_same" in script.runtime_config(18766, 60, "retry_profile")["allowed_actions"]  # offline unchanged
+    assert "retry_same" in script.runtime_config(18766, 60, "retry_profile")["allowed_actions"]
     path = tmp_path / "rt.json"
     path.write_text(json.dumps(prof), encoding="utf-8")
     monkeypatch.setenv("ORCHESTRATOR_RUNTIME_CONFIG", str(path))

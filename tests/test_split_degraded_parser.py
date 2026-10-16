@@ -1,5 +1,3 @@
-"""split: which path produced the frames, pre-write validation of the model answer,
-and the guard in front of replace_all_frames. Stubs only; no network."""
 from __future__ import annotations
 
 import contextlib
@@ -73,7 +71,6 @@ def test_plain_garbage_uses_local_fallback_and_no_voiceover_gives_none(vo_path):
 
 
 def test_without_voiceover_dash_is_accepted_as_before():
-    # Nothing to compare with: the previous behaviour is kept (documented limitation).
     spec, source, _ = extract_frames_spec_with_source(REFUSAL, voiceover_path=None)
     assert source == "dash_blocks" and len(spec) >= 2
 
@@ -88,8 +85,8 @@ def test_coverage_tolerance_cases():
     blocks = [s.strip() for s in VO.split(".") if s.strip()]
     assert split_answer_covers_voiceover(blocks, VO)
     assert not split_answer_covers_voiceover(["совсем другой текст про погоду"], VO)
-    assert not split_answer_covers_voiceover(blocks[:2], VO)  # lost tail
-    assert split_answer_covers_voiceover(["что угодно"], "")  # nothing to compare
+    assert not split_answer_covers_voiceover(blocks[:2], VO)
+    assert split_answer_covers_voiceover(["что угодно"], "")
 
 
 @pytest.mark.asyncio
@@ -183,10 +180,6 @@ async def test_split_frames_never_calls_apply_with_unverified_result():
 
 
 
-# ---------------------------------------------------------------------------
-# E1b (owner decision 2026-10-07): validate BEFORE write. In a managed attempt an answer
-# that violates the split contract fails with SplitContractRejected before any DB write.
-# ---------------------------------------------------------------------------
 
 BAD_JSON = json.dumps({"ops": [{"target": "replace_frames", "frames": [
     {"закадр": "Сегодня мы разберём погоду."}, {"закадр": "Совсем другой текст."}]}]})
@@ -250,10 +243,9 @@ async def test_managed_invalid_answer_is_rejected_before_any_write(tmp_path, mon
             await split_frames.run(session, project)
     assert ei.value.failure_class == "contract_rejected"
     assert "voiceover_changed_or_missing" in ei.value.errors
-    apply_ops.assert_not_called()                      # nothing written to frames/shots
+    apply_ops.assert_not_called()
     session.commit.assert_not_called()
     assert project.status is ProjectStatus.splitting and project.meta == {}
-    # evidence is journaled before the failure: parse_result + failed runtime_check
     kinds = [c.args[0] for c in fact.call_args_list]
     assert "parse_result" in kinds and "runtime_check" in kinds
     check = [c.args[1] for c in fact.call_args_list if c.args[0] == "runtime_check"][0]
@@ -275,17 +267,16 @@ async def test_managed_valid_answers_are_identical_to_native(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_unmanaged_behaviour_is_unchanged_for_the_same_answer(tmp_path, monkeypatch):
-    result = await _run_split(tmp_path, monkeypatch, BAD_JSON)   # no attempt context: native path
+    result = await _run_split(tmp_path, monkeypatch, BAD_JSON)
     assert result.split_source == "json_replace_frames" and len(result.frames_spec) == 2
     with _attempt_ctx(SimpleNamespace(scope=SimpleNamespace(project_id=9, mode="observe", observer_state="active"),
                                       last_request_id="r", split_input_voiceover=None)):
-        result = await _run_split(tmp_path / "obs", monkeypatch, BAD_JSON)   # observe mode: no gate
+        result = await _run_split(tmp_path / "obs", monkeypatch, BAD_JSON)
     assert result.split_source == "json_replace_frames"
 
 
 @pytest.mark.asyncio
 async def test_rejected_attempt_leaves_nothing_behind_and_a_later_attempt_succeeds(tmp_path, monkeypatch):
-    """Restart safety: a rejected answer writes no state; the next attempt starts clean."""
     from app.orchestrator.steps import split_frames
     from app.services.node_capabilities import SplitContractRejected
 
@@ -293,7 +284,7 @@ async def test_rejected_attempt_leaves_nothing_behind_and_a_later_attempt_succee
     before = (project.status, dict(project.meta), sorted(p.name for p in tmp_dir.parent.iterdir()))
     session = _session_without_frames()
     apply_ops = AsyncMock(return_value={"replace_frames": 4})
-    for _ in range(2):  # the same rejection twice: deterministic, still no write
+    for _ in range(2):
         with contextlib.ExitStack() as st:
             for cm in _patches(tmp_dir, AsyncMock(return_value=BAD_JSON)):
                 st.enter_context(cm)
@@ -303,7 +294,6 @@ async def test_rejected_attempt_leaves_nothing_behind_and_a_later_attempt_succee
                 await split_frames.run(session, project)
     apply_ops.assert_not_called()
     assert (project.status, dict(project.meta), sorted(p.name for p in tmp_dir.parent.iterdir())) == before
-    # a valid answer afterwards reaches the writer exactly once with the original ops
     with contextlib.ExitStack() as st:
         for cm in _patches(tmp_dir, AsyncMock(return_value=DASH_OK)):
             st.enter_context(cm)
@@ -314,7 +304,7 @@ async def test_rejected_attempt_leaves_nothing_behind_and_a_later_attempt_succee
         st.enter_context(_attempt_ctx(_managed_ctx()))
         try:
             await split_frames.run(session, project)
-        except RuntimeError as e:  # post-write checks need a real DB; the write gate is what matters
+        except RuntimeError as e:
             assert "кадров" in str(e)
     apply_ops.assert_called_once()
     ops = apply_ops.call_args.args[2]

@@ -1,4 +1,3 @@
-"""Vibecode keys (vk-...) must be scrubbed from journal text like sk- keys."""
 import json
 import unittest
 
@@ -22,7 +21,6 @@ class VibecodeKeyRedaction(unittest.TestCase):
         self.assertNotIn("sk-ABCDEFGH12345678", redact("key sk-ABCDEFGH12345678"))
 
     def test_short_vk_prefix_in_ordinary_words_is_kept(self):
-        # Fewer than 8 key characters: not a credential (e.g. a node id or label).
         self.assertEqual(redact("see vk-test and vk-1"), "see vk-test and vk-1")
 
     def test_digest_ignores_the_token_value(self):

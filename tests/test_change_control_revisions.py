@@ -1,7 +1,3 @@
-"""Применённое изменение сдвигает input_revision именно своей ноды, откат возвращает прежнее значение.
-
-Настоящие эндпоинты проекта (ASGI), временная БД и временный PROMPTS_ROOT. Билеты восстановления
-сравнивают именно эту ревизию, поэтому устаревают только билеты изменённой ноды."""
 from __future__ import annotations
 
 from app.models import Project
@@ -9,8 +5,8 @@ from app.services import revisions
 from app.services.action_layer.context import ActionContext
 from app.services.change_control import service
 from app.services.change_control.gateway import CtxGateway
-from tests.action_layer_support import env  # noqa: F401
-from tests.change_control_support import (  # noqa: F401
+from tests.action_layer_support import env
+from tests.change_control_support import (
     GPT_PROMPT, HUMAN, PLAN_PROMPT, ccenv, prompts_root)
 
 NODES = ("n_plan", "n_script", "n_split", "n_gpt")
@@ -65,8 +61,6 @@ async def test_prompt_variant_change_invalidates_only_that_node(ccenv) -> None:
     applied = await _revs(ccenv)
     assert _changed(before, applied) == {"n_plan"}
     await _rollback(ccenv, f"project:{ccenv.pid}:n_plan:prompt", res["version"])
-    # слот ноды нельзя удалить: откат закрепляет прежний вариант, поэтому ревизия не равна исходной,
-    # но она снова другая, чем у применённого значения, и других нод это не касается
     after_rb = await _revs(ccenv)
     assert after_rb["n_plan"] != applied["n_plan"]
     assert _changed(before, after_rb) <= {"n_plan"}
@@ -78,11 +72,10 @@ async def test_prompt_text_change_invalidates_only_that_node(ccenv) -> None:
     _view, res = await _apply(ccenv, tier="T2", kind="prompt_text", node_key="n_gpt",
                               candidate={"text": text})
     assert _changed(before, await _revs(ccenv)) == {"n_gpt"}
-    # общий файл не менялся: другая нода с тем же шагом не пострадала, а при откате ревизия прежняя
     assert (ccenv.prompts / "05_excel_gpt" / "default.md").read_text(encoding="utf-8") == GPT_PROMPT
     await _rollback(ccenv, f"project:{ccenv.pid}:n_gpt:prompt", res["version"])
     after_rb = await _revs(ccenv)
-    assert _changed(before, after_rb) <= {"n_gpt"}   # слот закреплён на default: тот же текст
+    assert _changed(before, after_rb) <= {"n_gpt"}
 
 
 async def test_node_options_change_moves_node_config_revision_of_that_node(ccenv) -> None:

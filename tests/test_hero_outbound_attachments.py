@@ -182,8 +182,6 @@ async def test_run_excel_missing_ref_file_exits_without_loop(monkeypatch) -> Non
     monkeypatch.setattr(generate_hero, "_excel_ids_with_artifact", generated)
     monkeypatch.setattr(generate_hero, "_excel_batch_auto", lambda _p: True)
 
-    # _run_excel генерирует персонажей в отдельной SessionLocal и перечитывает
-    # Project из БД - отдаём тот же объект проекта через заглушку сессии.
     class _Res:
         def scalar_one(self):
             return p

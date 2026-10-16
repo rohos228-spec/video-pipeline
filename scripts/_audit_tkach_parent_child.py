@@ -1,4 +1,3 @@
-"""One-shot: tkach montage parent/child vs scene vs place. Delete after."""
 from __future__ import annotations
 
 import json

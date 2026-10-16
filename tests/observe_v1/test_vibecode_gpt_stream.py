@@ -1,4 +1,3 @@
-"""gpt_api chat/completions results expose the real finish_reason and raw (stub streams, no network)."""
 import json
 import unittest
 from unittest.mock import patch
@@ -65,7 +64,6 @@ class ChatStreamFinish(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "hello")
         self.assertEqual(result.finish_reason, "stop")
         self.assertEqual(result.raw["finish_reason"], "stop")
-        # the last chunk (usage only) is still the raw body, usage is preserved
         self.assertEqual(result.usage, {"prompt_tokens": 7, "completion_tokens": 3})
         self.assertTrue(response_complete(result.raw, result.finish_reason))
 

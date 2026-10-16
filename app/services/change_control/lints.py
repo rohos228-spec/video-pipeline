@@ -1,4 +1,3 @@
-"""Детерминированные офлайн-проверки кандидатов. Сеть и модели не используются."""
 from __future__ import annotations
 
 import json
@@ -36,7 +35,6 @@ def required_markers(step: str, name: str, base_text: str) -> set[str]:
 
 
 def new_secret_hits(candidate: str, base: str) -> list[str]:
-    """Совпадения с шаблонами секретов (как у observation.redact), которых не было в исходнике."""
     from app.services.observation import _CREDENTIAL_TEXT
     cand = {m.group(0) for m in _CREDENTIAL_TEXT.finditer(candidate)}
     old = {m.group(0) for m in _CREDENTIAL_TEXT.finditer(base)}
@@ -44,7 +42,6 @@ def new_secret_hits(candidate: str, base: str) -> list[str]:
 
 
 def lint_prompt_text(candidate: str, base: str, *, step: str, base_name: str) -> list[str]:
-    """Пустой список = текст допустим."""
     errors: list[str] = []
     if not isinstance(candidate, str):
         return ["text must be a string"]

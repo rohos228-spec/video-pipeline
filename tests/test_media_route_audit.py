@@ -1,10 +1,3 @@
-"""Маршрут нативной генерации картинки: куда реально уходит слаг модели Kie (docs/MEDIA_ROUTE_AUDIT.md).
-
-Без сети, без платных вызовов, без БД: оба провайдерских шва подменены. Тесты закрепляют ТЕКУЩЕЕ поведение
-`outsee_retry.generate_image_with_retries` вне управляемого режима: ветка Kie (`generate_kie_image`) стоит внутри
-`if use_outsee_api`, а `use_outsee_api = backend == "outsee" and ...`, поэтому для слага Kie она недостижима.
-Если маршрут починят, эти тесты упадут: это сигнал пересмотреть уровень `items`/`images`/`hero` в покрытии нод.
-"""
 from __future__ import annotations
 
 import ast
@@ -50,9 +43,6 @@ async def test_a_kie_slug_goes_to_the_outsee_browser_seam_not_to_kie_in_the_nati
 
 @pytest.mark.parametrize("slug", KIE_IMAGE_SLUGS)
 async def test_a_kie_slug_with_an_outsee_key_and_no_browser_bot_never_reaches_kie_either(slug):
-    """The images step passes outsee=None when an Outsee key is set (HTTP primary). A Kie slug then has no seam
-    at all: the call fails BEFORE any submit with a typed, human-readable error (it used to be an AttributeError
-    on None). Routing is unchanged (owner decision pending): Kie is still not reached."""
     kie = AsyncMock(side_effect=AssertionError("kie seam reached"))
     api = AsyncMock(side_effect=AssertionError("outsee api reached"))
     with patch("app.bots.kie_http.generate_kie_image", kie), \
@@ -71,17 +61,13 @@ async def test_a_kie_slug_with_an_outsee_key_and_no_browser_bot_never_reaches_ki
 
 
 def test_the_images_step_treats_the_typed_kie_slug_error_as_a_normal_frame_failure():
-    """generate_images catches OutseeImageError (frame -> failed, owner message); the typed error is one, with its own
-    head text, so it no longer leaves the step as an unhandled AttributeError."""
     src = (APP / "orchestrator" / "steps" / "generate_images.py").read_text(encoding="utf-8-sig")
     assert "except OutseeImageError as e:" in src
     assert "KieSlugWithoutOutseeBotError" in src
     assert issubclass(outsee_retry.KieSlugWithoutOutseeBotError, outsee_retry.OutseeImageError)
 
 
-def test_the_only_production_caller_of_generate_kie_image_is_the_unreachable_branch_and_the_managed_one():
-    """No step calls the Kie image seam directly: the native image ledger rows (frame_/hero_/predmet) can only
-    come from outsee_retry, whose Kie branch is unreachable outside the synthetic managed route."""
+def test_the_only_production_caller_of_generate_kie_image_is_the_managed_one():
     callers = []
     for path in APP.rglob("*.py"):
         source = path.read_text(encoding="utf-8-sig")
@@ -92,4 +78,4 @@ def test_the_only_production_caller_of_generate_kie_image_is_the_unreachable_bra
             if isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", None)) == "generate_kie_image":
                 callers.append(path.relative_to(APP).as_posix())
     assert sorted(set(callers)) == ["services/outsee_retry.py"]
-    assert len(callers) == 2  # managed branch + the unreachable native branch
+    assert len(callers) == 1

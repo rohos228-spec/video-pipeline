@@ -30,7 +30,6 @@ import {
   type JournalPeriod,
 } from "@/lib/journal-view";
 
-/** U-10: как часто журнал и итоги обновляются сами, пока панель открыта и вкладка видна. */
 export const JOURNAL_REFRESH_MS = 10_000;
 
 function statusOf(e: unknown): number | null {
@@ -83,19 +82,16 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
   const abortRef = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
 
-  // Смена проекта: сбросить всё.
   useEffect(() => {
     setFilters(EMPTY_FILTERS); setSearch(""); setItems([]); setCursor(null);
     setMissing([]); setTotal(null); setError(null); setExportError(null); setLoaded(false);
   }, [project]);
 
-  // Поиск применяется с задержкой, чтобы не слать запрос на каждую букву.
   useEffect(() => {
     const t = setTimeout(() => setFilters((f) => (f.q === search ? f : { ...f, q: search })), 400);
     return () => clearTimeout(t);
   }, [search]);
 
-  // Первая страница при смене проекта, фильтров или по кнопке «Обновить».
   useEffect(() => {
     if (projectId == null) return;
     abortRef.current?.abort();
@@ -118,7 +114,6 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
     return () => ctrl.abort();
   }, [projectId, filters, reloadTick]);
 
-  // Итоги по всему проекту: не зависят от фильтров, обновляются вместе с кнопкой «Обновить».
   useEffect(() => {
     if (projectId == null) { setServer(null); return; }
     const ctrl = new AbortController();
@@ -129,8 +124,6 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
     return () => ctrl.abort();
   }, [projectId, reloadTick]);
 
-  // U-10: тихое автообновление первой страницы и итогов. Новые записи добавляются сверху, уже загруженные
-  // («Показать ещё») и прокрутка не сбрасываются; при ошибке или скрытой вкладке цикл просто ждёт следующего шага.
   useEffect(() => {
     if (projectId == null || !autoRefresh || !loaded || loading || loadingMore || error) return;
     let stopped = false;
@@ -296,7 +289,6 @@ export function JournalSection({ projectId }: { projectId: number | null }) {
           )}
 
           {items.length > 0 && (
-            // Длинный журнал листается внутри своего окна, а не растягивает всю панель на тысячи пикселей.
             <ul ref={listRef} data-testid="journal-list" tabIndex={0} className="max-h-[60vh] space-y-1 overflow-y-auto overscroll-contain pr-1" aria-label="Записи журнала">
               {items.map((it) => <Row key={it.id} it={it} />)}
             </ul>

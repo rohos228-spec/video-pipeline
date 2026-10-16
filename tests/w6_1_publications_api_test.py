@@ -1,6 +1,3 @@
-"""W6-1 (E01/E02): API публикаций. Токен оператора обязателен, каждый POST попадает в operator_audit,
-ручное подтверждение не кликает. Приложение собрано из слоя аудита и одного роутера; площадок и браузера нет.
-"""
 from __future__ import annotations
 
 import pytest
@@ -36,7 +33,6 @@ def _flags(monkeypatch):
 
 @pytest.fixture
 async def ctx(env, monkeypatch):
-    """Приложение + проект с пятью неподтверждёнными площадками (после клика итога нет)."""
     app = FastAPI()
     app.add_middleware(oa.OperatorAuditMiddleware)
     app.include_router(router_mod.router, prefix="/api")
@@ -80,7 +76,6 @@ def _audit(pid):
     return [r for r in oa.list_rows(limit=500, project_id=pid) if "/publications" in r["path"]]
 
 
-# ── список (E11) ─────────────────────────────────────────────────────────────
 
 
 async def test_list_shows_platforms_status_sha_and_error(ctx):
@@ -93,14 +88,13 @@ async def test_list_shows_platforms_status_sha_and_error(ctx):
     assert first["state"] == "unconfirmed" and "ждёт проверки" in first["state_label"]
     assert first["post_url"] == "https://up" and first["can_confirm_manual"] is True
     assert body["derived"]["state"] == ps.PS_NEEDS_HUMAN
-    assert _audit(ctx.pid) == []  # чтение в аудит не пишется
+    assert _audit(ctx.pid) == []
 
 
 async def test_list_unknown_project_is_404(ctx):
     assert (await ctx.client.get("/api/projects/999999/publications")).status_code == 404
 
 
-# ── токен оператора ──────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("tail,body", [
@@ -117,7 +111,6 @@ async def test_mutations_without_valid_operator_token_are_denied_and_audited(ctx
     assert (row["method"], row["status_code"], row["outcome"]) == ("POST", 403, oa.OUTCOME_DENIED)
 
 
-# ── E02: ручное подтверждение ────────────────────────────────────────────────
 
 
 async def test_confirm_manual_writes_audit_and_does_not_click(ctx):
@@ -125,8 +118,8 @@ async def test_confirm_manual_writes_audit_and_does_not_click(ctx):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["changed"] is True and body["clicked_again"] is False and body["state"] == "confirmed"
-    assert len(ctx.clicks) == 5  # только исходные клики шага; ручное подтверждение нового не добавило
-    assert ctx.clicks.opened == [1]  # и браузер второй раз не открывался
+    assert len(ctx.clicks) == 5
+    assert ctx.clicks.opened == [1]
     row = (await ctx.rows())["tiktok"]
     assert row["status"] == ps.S_CONFIRMED and row["post_url"] == GOOD_URL
     [a] = _audit(ctx.pid)
@@ -222,14 +215,13 @@ async def test_all_closed_by_human_gives_resolved_state_not_published(ctx):
     assert set(p.meta["publish_closed_by_human"]["platforms"]) == set(PLATFORMS)
 
 
-# ── E01: подтверждение публикации через API ───────────────────────────────────
 
 
 async def test_approve_rules_stale_caption_unknown_platform_and_needs_human_first(ctx):
     csha = step.caption_sha256("тема ролика")
     base = {"sha256": ctx.sha, "caption_sha256": csha}
     r = await ctx.client.post(ctx.url("/approve"), json={**base, "platforms": ["tiktok"]})
-    assert r.status_code == 409 and r.json()["detail"]["code"] == "needs_human_first"  # клик уже мог быть
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "needs_human_first"
     r = await ctx.client.post(ctx.url("/approve"), json={**base, "platforms": ["myspace"]})
     assert r.status_code == 404
     r = await ctx.client.post(ctx.url("/approve"), json={**base, "caption_sha256": "d" * 64, "platforms": ["tiktok"]})
@@ -239,11 +231,10 @@ async def test_approve_rules_stale_caption_unknown_platform_and_needs_human_firs
 
 
 async def test_approve_after_republish_decision_queues_the_step_and_clicks_only_that_platform(ctx, monkeypatch):
-    # человек проверил: поста на tiktok нет, повтор разрешён -> новое «да» -> шаг кликает только tiktok
     r = await ctx.client.post(ctx.url("/tiktok/mark-failed"), json={"sha256": ctx.sha, "reason": "поста нет, повторить", "allow_republish": True})
     assert r.status_code == 200, r.text
     p = await ctx.project()
-    assert "tiktok" not in p.meta["publish_needs_human"]["platforms"]  # остальные четыре по-прежнему ждут человека
+    assert "tiktok" not in p.meta["publish_needs_human"]["platforms"]
     async with ctx.env.maker() as s:
         facts = await step.publication_facts(s, p)
     assert {x["platform"]: x["can_approve"] for x in facts["platforms"]}["tiktok"] is True
@@ -259,7 +250,7 @@ async def test_approve_after_republish_decision_queues_the_step_and_clicks_only_
         await step.run(s, proj, Bot())
         await s.commit()
     assert ctx.clicks[before:] == ["tiktok"]
-    assert (await ctx.project()).status is ProjectStatus.assembled  # четыре unconfirmed по-прежнему ждут человека
+    assert (await ctx.project()).status is ProjectStatus.assembled
     assert [a["outcome"] for a in _audit(ctx.pid)] == [oa.OUTCOME_OK, oa.OUTCOME_OK]
 
 
@@ -272,7 +263,6 @@ async def test_approve_when_publish_disabled_records_but_does_not_queue(ctx, mon
     assert (await ctx.project()).status is ProjectStatus.assembled
 
 
-# ── U-7: отзыв «да» ───────────────────────────────────────────────────────────
 
 
 async def _approve_tiktok(ctx):
@@ -298,12 +288,10 @@ async def test_revoke_before_step_runs_means_no_click(ctx):
         proj = await s.get(Project, ctx.pid)
         await step.run(s, proj, Bot())
         await s.commit()
-    assert ctx.clicks[before:] == []  # после отзыва публикация не стартует
+    assert ctx.clicks[before:] == []
     assert (await ctx.project()).status is not ProjectStatus.publishing
-    # повторный отзыв: разрешения уже нет
     r = await ctx.client.post(ctx.url("/tiktok/revoke"), json={"sha256": ctx.sha})
     assert r.status_code == 409 and r.json()["detail"]["code"] == "no_active_approval"
-    # новое «да» после отзыва снова работает
     csha = step.caption_sha256("тема ролика")
     r = await ctx.client.post(ctx.url("/approve"), json={"sha256": ctx.sha, "caption_sha256": csha, "platforms": ["tiktok"]})
     assert r.status_code == 200
@@ -315,7 +303,7 @@ async def test_revoke_refused_when_approval_already_spent(ctx):
     async with ctx.env.maker() as s:
         from app.models import Project
         proj = await s.get(Project, ctx.pid)
-        await step.run(s, proj, Bot())  # шаг тратит «да» и кликает
+        await step.run(s, proj, Bot())
         await s.commit()
     assert "tiktok" in ctx.clicks
     r = await ctx.client.post(ctx.url("/tiktok/revoke"), json={"sha256": ctx.sha})

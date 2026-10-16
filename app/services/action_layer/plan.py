@@ -1,4 +1,3 @@
-"""План: упорядоченные шаги, preview без исполнения, детерминированный хэш."""
 from __future__ import annotations
 
 import hashlib
@@ -35,7 +34,6 @@ class Plan:
 
     @classmethod
     def from_json(cls, data: Any, *, max_steps: int, request_text: str = "") -> "Plan":
-        """Строгий разбор: лишние поля, нет шагов или их слишком много = ошибка."""
         if not isinstance(data, list) or not data:
             raise PlanFormatError("Список шагов должен быть непустым.")
         if len(data) > max_steps:
@@ -74,11 +72,6 @@ class Plan:
 
 
 def plan_hash(plan: Plan, registry: ActionRegistry) -> str:
-    """Хэш содержимого шагов и свойств безопасности их действий.
-
-    Текст запроса не входит: подтверждается то, что будет исполнено.
-    Смена риска/схемы действия после подтверждения меняет хэш.
-    """
     body = {
         "v": PLAN_HASH_VERSION,
         "steps": [
@@ -93,10 +86,6 @@ def plan_hash(plan: Plan, registry: ActionRegistry) -> str:
 
 
 async def build_preview(plan: Plan, registry: ActionRegistry, ctx) -> dict:
-    """Проверка параметров и предусловий, оценка стоимости. Ничего не исполняет.
-
-    ``ctx`` обязан быть read-only: запись через него бросает WriteNotAllowed.
-    """
     ro_ctx = ctx.readonly_copy()
     errors: list[str] = []
     steps_out: list[dict] = []
@@ -105,8 +94,6 @@ async def build_preview(plan: Plan, registry: ActionRegistry, ctx) -> dict:
     unknown = 0
     destructive_effects: list[dict] = []
     future_spend: list[dict] = []
-    # C-16: замок проекта, потолок проекта и измерение факта работают по одному проекту плана.
-    # План из шагов разных проектов их теряет (``Plan.project_id()`` = None), поэтому отклоняется.
     pids = sorted({s.params.get("project_id") for s in plan.steps
                    if isinstance(s.params.get("project_id"), int)
                    and not isinstance(s.params.get("project_id"), bool)})
@@ -141,7 +128,7 @@ async def build_preview(plan: Plan, registry: ActionRegistry, ctx) -> dict:
             for pre in spec.preconditions:
                 try:
                     reason = await pre.check(ro_ctx, step.params)
-                except Exception as exc:  # noqa: BLE001 - неизвестное = не выполнено
+                except Exception as exc:
                     reason = f"проверка не выполнена: {type(exc).__name__}: {exc}"
                 if reason:
                     item["precondition_failures"].append(

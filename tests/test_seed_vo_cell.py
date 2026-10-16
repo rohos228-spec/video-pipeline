@@ -1,4 +1,3 @@
-"""Seed-ячейка: целый закадр → 1 Frame для fw_script."""
 
 from __future__ import annotations
 
@@ -23,7 +22,7 @@ async def session() -> AsyncSession:
 
 
 async def _mk_project(session: AsyncSession, *, script: str = "") -> Project:
-    p = Project(slug="seed-vo", topic="тест", status=None)  # type: ignore[arg-type]
+    p = Project(slug="seed-vo", topic="тест", status=None)
     p.script_text = script
     session.add(p)
     await session.flush()
@@ -83,13 +82,13 @@ async def test_seed_idempotent_same_text(session: AsyncSession) -> None:
 
 
 def test_resolve_full_voiceover_prefers_script_text() -> None:
-    p = Project(slug="vo-res", topic="t", status=None)  # type: ignore[arg-type]
+    p = Project(slug="vo-res", topic="t", status=None)
     p.script_text = "  Целый   текст  "
     assert db_v2.resolve_full_voiceover_text(p) == "Целый текст"
 
 
 def test_resolve_full_voiceover_empty() -> None:
-    p = Project(slug="vo-empty", topic="t", status=None)  # type: ignore[arg-type]
+    p = Project(slug="vo-empty", topic="t", status=None)
     p.script_text = ""
     assert db_v2.resolve_full_voiceover_text(p) == ""
 

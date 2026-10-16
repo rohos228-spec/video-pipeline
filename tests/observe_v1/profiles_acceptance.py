@@ -1,4 +1,3 @@
-"""Actual API approval, decision selection, original worker and scoped HTTP proof."""
 import hashlib,json,sqlite3
 
 async def approve(client,base,execution,fixtures,root):

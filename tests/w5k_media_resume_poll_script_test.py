@@ -1,10 +1,3 @@
-"""Guards for scripts/e2e_media_resume_poll.py (plan step F06: media.resume_poll resumes a known Kie task, it does not pay again).
-
-Nothing here sends anything outside this machine and nothing here runs --live: the live-only paths are covered by the
-argument / env-file refusals (they return before anything starts) and by the request Gate (a pure object that judges every
-outgoing request). The dry runs start the stand in a SUBPROCESS (isolated memory and settings) against a fake Kie server on
-127.0.0.1, so run this file in ONE pytest process.
-"""
 import asyncio
 import importlib.util
 import json
@@ -25,7 +18,7 @@ sys.modules[_spec.name] = script
 _spec.loader.exec_module(script)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _stand_workdir import make_workdir, remove_workdir  # noqa: E402
+from _stand_workdir import make_workdir, remove_workdir
 
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 TASK = "726a12e93b47b076ea5431dd0532c4fb"
@@ -34,7 +27,6 @@ HOST = script.Gate(mode="live").host
 
 @pytest.fixture
 def tmp_path():
-    """Outside the repository: the e2e guard refuses a work folder inside live data."""
     path = make_workdir()
     try:
         yield path
@@ -42,7 +34,6 @@ def tmp_path():
         remove_workdir(path)
 
 
-# ---------- arguments, authorisation, refusals ----------
 
 def test_exactly_one_of_dry_and_live_is_required():
     for bad in (["--work-dir", "w"], ["--work-dir", "w", "--dry", "--live", "--env-file", "e", "--task-id", TASK], ["--dry"]):
@@ -96,7 +87,7 @@ def test_live_refuses_before_starting_anything_without_a_key_a_file_or_with_a_ba
         assert asyncio.run(script.main([*base, "--env-file", str(bad_base)])) == 3
     out = capsys.readouterr().out
     assert "nothing sent" in out and "abcdefgh" not in out
-    assert not (tmp_path / "w").exists()  # nothing was created: the refusal came first
+    assert not (tmp_path / "w").exists()
 
 
 def test_env_file_is_read_only_by_the_whitelist(tmp_path):
@@ -115,7 +106,6 @@ def test_the_script_without_dry_or_live_refuses(tmp_path):
     assert proc.returncode == 2 and not (tmp_path / "w").exists()
 
 
-# ---------- the request Gate ----------
 
 def _gate(**kw):
     return script.Gate(mode=kw.pop("mode", "live"), task_id=kw.pop("task_id", TASK), **kw)
@@ -138,7 +128,7 @@ def test_any_write_to_kie_is_refused_and_counted_before_it_leaves():
 
 def test_only_the_given_task_may_be_polled_and_only_a_few_times():
     gate = _gate()
-    poll = lambda t: _get(gate, script.POLL_PATH, params={"taskId": t})  # noqa: E731
+    poll = lambda t: _get(gate, script.POLL_PATH, params={"taskId": t})
     assert poll(TASK).action == "pass" and poll(TASK[:-1] + "0").action == "refuse"
     assert gate.refused[-1]["why"] == "foreign_task" and poll("").action == "refuse"
     while gate.count("poll") < script.MAX_POLLS:
@@ -162,10 +152,10 @@ def test_balance_reads_are_capped_and_everything_else_on_the_origin_is_refused()
 def test_downloads_follow_only_the_urls_the_poll_answer_named():
     gate = _gate()
     url = "https://files.example.org/a/clip.mp3"
-    dl = lambda u, scheme="https": gate.judge("GET", scheme, urlsplit_host(u), urlsplit_path(u), url=u)  # noqa: E731
-    assert dl(url).action == "refuse"                                  # not named by the provider yet
+    dl = lambda u, scheme="https": gate.judge("GET", scheme, urlsplit_host(u), urlsplit_path(u), url=u)
+    assert dl(url).action == "refuse"
     gate.learn_downloads([url, "https://files.example.org/cover.jpg", "not a url"])
-    assert dl(url).action == "pass" and dl("https://files.example.org/other.mp3").action == "pass"   # same host redirect
+    assert dl(url).action == "pass" and dl("https://files.example.org/other.mp3").action == "pass"
     assert dl("https://files.example.org/cover.jpg").action == "refuse"
     assert dl("https://evil.example.com/clip.mp3").action == "refuse"
     assert dl("http://files.example.org/a/clip.mp3", "http").action == "refuse"
@@ -198,18 +188,16 @@ def test_dry_gate_allows_only_the_loopback_port_and_never_a_foreign_download():
 
 def test_the_in_process_calls_are_limited_to_the_seeded_project():
     gate = _gate(project_id=7)
-    ok = lambda m, p: gate.judge(m, "http", script.INTERNAL_HOST, p).action  # noqa: E731
+    ok = lambda m, p: gate.judge(m, "http", script.INTERNAL_HOST, p).action
     assert ok("GET", "/api/projects/7") == "pass" and ok("GET", "/api/projects/7/media-recovery/music") == "pass"
     assert ok("POST", "/api/projects/7/media-recovery/music/resume-poll") == "pass"
     assert ok("GET", "/api/projects/70") == "refuse" and ok("GET", "/api/projects/8/media-recovery/music") == "refuse"
     assert ok("GET", "/api/other") == "refuse" and gate.judge("GET", "https", script.INTERNAL_HOST, "/api/projects/7").action == "refuse"
-    assert _gate().judge("GET", "http", script.INTERNAL_HOST, "/api/projects/7").action == "refuse"   # no project yet
+    assert _gate().judge("GET", "http", script.INTERNAL_HOST, "/api/projects/7").action == "refuse"
     assert len(gate.internal) == 3 and gate.wire == []
-    # an in-process POST is not a write to Kie, but a POST to the Kie host still is
     assert gate.write_attempts == [] or all(r["method"] != "POST" or r["what"].find(script.INTERNAL_HOST) < 0 for r in gate.write_attempts)
 
 
-# ---------- the fake server ----------
 
 def test_the_fake_server_speaks_the_kie_shapes_on_loopback_and_counts_any_post():
     fake = script.FakeKie("ok", TASK, seconds=1.0)
@@ -231,7 +219,6 @@ def test_the_fake_server_speaks_the_kie_shapes_on_loopback_and_counts_any_post()
         fake.stop()
 
 
-# ---------- checks (pure) ----------
 
 def _ledger(extra=()):
     rows = [
@@ -301,7 +288,7 @@ def test_a_missing_empty_or_short_file_fails():
     short = [{"name": "music_ab12cd34.mp3", "bytes": 5000, "duration_s": 2.0}]
     assert "audio_duration_over_5_seconds" in _failed(_good_snapshot(music_files=short))
     unmeasured = [{"name": "music_ab12cd34.mp3", "bytes": 5000, "duration_s": None}]
-    assert "audio_duration_over_5_seconds" in _failed(_good_snapshot(music_files=unmeasured))        # ffprobe exists: must measure
+    assert "audio_duration_over_5_seconds" in _failed(_good_snapshot(music_files=unmeasured))
     assert "audio_duration_over_5_seconds" not in _failed(_good_snapshot(music_files=unmeasured, ffprobe=False))
 
 
@@ -396,11 +383,9 @@ def test_the_stand_drives_the_registered_action_and_never_a_create_function():
     text = _PATH.read_text(encoding="utf-8")
     assert "registry.get(ACTION_ID)" in text and "resume_spec.executor" in text
     calls = [ln.strip() for ln in text.splitlines() if "kie_http.create_task(" in ln]
-    # called only by the negative-control seam and by the resume-only probe, never by the flow itself
     assert len(calls) == 2, calls
 
 
-# ---------- real dry runs (the stand in a subprocess, nothing leaves the machine) ----------
 
 def _run(tmp_path: Path, *extra: str) -> tuple[int, dict, str]:
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}
@@ -444,10 +429,9 @@ def test_the_negative_control_makes_production_try_a_create_task_and_is_not_pass
     assert code == 1, tail
     assert result["ok"] is False and result["summary"]["verdict"] == "NOT PASSED"
     assert {"zero_writes_on_the_wire", "nothing_foreign_was_attempted"} <= set(result["failed"])
-    assert result["counters"]["write_attempts"] == 1 and result["snapshot"]["fake"]["posts"] == 0   # the Gate stopped it
+    assert result["counters"]["write_attempts"] == 1 and result["snapshot"]["fake"]["posts"] == 0
     assert result["snapshot"]["seam"]["create_task_called"] is True
     assert "POST" in result["summary"]["reason"] and "refused it before it left the machine" in result["summary"]["reason"]
-    # everything else still held: the stand fails only because of the attempt
     assert result["snapshot"]["credits_delta"] == 0 and result["snapshot"]["gate"]["poll"] == 1
 
 

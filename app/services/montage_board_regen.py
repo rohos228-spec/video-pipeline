@@ -302,11 +302,6 @@ async def _montage_shot1_refs(
     *,
     ref_person_ids: list[str] | None = None,
 ) -> tuple[list[Path], bool]:
-    """Shot1-рефы как у generate_images: K2/K3 → PNG VO-родителя, иначе листы.
-
-    Рефы, добавленные оператором на доске, идут первыми: он принёс их
-    осознанно, а слотов у генератора всего два.
-    """
     from app.services.montage_frame_refs import manual_ref_paths
     from app.services.vo_shot_expand import uses_parent_still
 
@@ -354,7 +349,6 @@ async def _montage_shot1_refs(
         fr.number,
         persons_override=override,
     )
-    # Лимит генератора: ручные рефы важнее автоматических и вытесняют их.
     return [*manual, *refs][:_OUTSEE_MAX_REFS], False
 
 
@@ -366,7 +360,6 @@ def _lock_montage_image_refs(
     *,
     child: bool = False,
 ) -> tuple[str, list[Path]]:
-    """Кроп листов + Image N по фактическим аттачам (как generate_images)."""
     if not refs:
         return prompt_text, refs
     from app.services.image_ref_lock import prepare_refs_and_prompt
@@ -448,8 +441,6 @@ async def prepare_image_regen(
             current = find_shot1_image(scenes_dir, frame_number)
         if current is None:
             raise RuntimeError("нет текущего изображения для корректировки")
-        # Только текст из модалки + текущий кадр как reference.
-        # НЕ склеивать с Excel/БД — иначе в генератор уходит «другой» промт.
         prompt_text = text
         refs = [current]
     else:
@@ -494,7 +485,6 @@ async def prepare_image_regen(
         else:
             refs = []
 
-    # Как в generate_images: gen_id и prefix из одного uuid.
     gen_id = uuid.uuid4().hex
     short_uuid = gen_id[:8]
     if is_parent_slot(slot):

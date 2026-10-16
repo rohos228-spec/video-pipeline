@@ -1,8 +1,3 @@
-"""Outsee: a submit with an unknown outcome is never resubmitted automatically.
-
-Stubs only: HTTP goes through a patched httpx send, the ledger is a temporary sqlite file. No network,
-no paid calls.
-"""
 import asyncio
 import tempfile
 import unittest
@@ -68,7 +63,6 @@ class Env(unittest.IsolatedAsyncioTestCase):
 
 
 async def accepted_then(exc):
-    """The provider accepted the submit (id known), then the call ended with ``exc``."""
     outsee_http._probe_mark(task_id="G-1")
     raise exc
 
@@ -90,7 +84,7 @@ class Guard(Env):
         self.assertEqual(self.calls, 1)
         with self.assertRaises(OutseeSubmitUnknownError) as ctx:
             await self.call(ok)
-        self.assertEqual(self.calls, 1)  # the provider was not called again
+        self.assertEqual(self.calls, 1)
         self.assertTrue(is_no_resubmit(ctx.exception))
         self.assertIn("без известного исхода", str(ctx.exception))
         self.assertIn("outsee_guard.release_unknown", str(ctx.exception))
@@ -121,7 +115,7 @@ class Guard(Env):
         with self.assertRaises(OutseeApiError) as ctx:
             await self.call(lambda: accepted_then(failed))
         self.assertIs(ctx.exception, failed)
-        self.assertEqual(await self.call(ok), "result")  # the ladder may retry
+        self.assertEqual(await self.call(ok), "result")
         self.assertEqual(self.calls, 2)
 
     async def test_rejected_or_never_sent_submit_does_not_block(self):
@@ -153,7 +147,6 @@ class Guard(Env):
         self.assertEqual(self.calls, 1)
 
     async def test_cancel_while_the_post_is_in_flight_keeps_the_hold(self):
-        """F09-D5: рубильник/стоп отменяют клиента, пока POST в полёте: запрос мог уйти и быть оплачен."""
         async def cancelled_in_flight():
             outsee_http._probe_mark(in_flight=True)
             raise StepCancelledError("kill switch")
@@ -161,7 +154,7 @@ class Guard(Env):
             await self.call(cancelled_in_flight)
         with self.assertRaises(OutseeSubmitUnknownError):
             await self.call(ok)
-        self.assertEqual(self.calls, 1)  # второй платный submit не ушёл
+        self.assertEqual(self.calls, 1)
 
     async def test_cancel_before_anything_was_sent_does_not_block(self):
         async def cancelled_early():
@@ -226,7 +219,6 @@ class Classify(unittest.TestCase):
 
 
 class RealSubmitPath(Env):
-    """The real outsee_http._post_generate and the real retry ladder over a patched transport."""
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
@@ -273,7 +265,7 @@ class RealSubmitPath(Env):
         self.post_script = [httpx.ReadTimeout("slow")]
         with self.assertRaises(OutseeSubmitUnknownError):
             await self.ladder()
-        self.assertEqual(len(self.posts()), 1)  # no second POST, neither inside _post_generate nor in the ladder
+        self.assertEqual(len(self.posts()), 1)
         with self.assertRaises(OutseeSubmitUnknownError) as ctx:
             await self.ladder()
         self.assertEqual(len(self.posts()), 1)

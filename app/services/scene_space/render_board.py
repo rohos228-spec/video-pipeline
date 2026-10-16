@@ -1,4 +1,3 @@
-"""Montage HTML board: shots in order, 2.9 summary, validator violations highlighted."""
 
 from __future__ import annotations
 
@@ -137,7 +136,6 @@ def _moved_ge_1m(state: dict[str, Any]) -> bool:
 
 
 def interest_criteria_29(space: dict[str, Any], frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Local 2.9 summary. Each item: rule_id, ok, label, detail."""
     space = normalize_space(space)
     frames = normalize_frames(frames)
     states = replay_states(space, frames)
@@ -359,7 +357,6 @@ def normalize_violations(raw: Any) -> list[dict[str, Any]]:
 
 
 def try_call_validate(module: Any, scene_id: str, space: dict[str, Any], frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Call stream-4 validate if present. Expected: validate_scene(scene_id, space, frames)."""
     names = (
         "validate_scene",
         "validate_scene_space",

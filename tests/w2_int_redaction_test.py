@@ -1,4 +1,3 @@
-"""W2 integration: secrets never reach errors.log / status.log or the append-only spend notes."""
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,4 +1,3 @@
-"""Keyless probe in the actual gateway process, before its listener starts."""
 import json
 import os
 import socket

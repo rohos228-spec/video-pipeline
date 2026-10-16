@@ -174,7 +174,6 @@ async def test_collect_ref_paths_char_then_item_slots(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_load_refs_uses_override_not_empty_xlsx(tmp_path: Path) -> None:
-    """shot1 должен брать id из БД/override, даже если Excel пустой."""
     data_dir = tmp_path / "proj"
     chars = data_dir / "characters"
     chars.mkdir(parents=True)

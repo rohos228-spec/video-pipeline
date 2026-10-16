@@ -512,7 +512,13 @@ async def _assemble_core(
         tail_seconds = post_voiceover_tail_seconds_for_project(project)
         from app.services.sfx_mix import collect_sfx_inputs
 
-        sfx_inputs = collect_sfx_inputs(project)
+        video_frame_starts: dict[int, float] = {}
+        cum_t = 0.0
+        for fr in frames:
+            video_frame_starts[fr.number] = round(cum_t, 3)
+            cum_t += duration_by_frame.get(fr.number, 0.0)
+
+        sfx_inputs = collect_sfx_inputs(project, video_frame_starts=video_frame_starts)
         if sfx_inputs:
             logger.info("[#{}] assemble: {} SFX из sfx_gen идут в микс", project.id, len(sfx_inputs))
         await assemble(
@@ -528,16 +534,17 @@ async def _assemble_core(
     else:
         from app.services.sfx_mix import collect_sfx_inputs
 
-        sfx_v2 = collect_sfx_inputs(project)
-        if sfx_v2:
-            logger.info("[#{}] assemble: {} SFX из sfx_gen идут в микс (variant2)", project.id, len(sfx_v2))
+        v_starts_m = {m.frame_number: m.start_s for m in markers} if "markers" in locals() else None
+        sfx_inputs = collect_sfx_inputs(project, video_frame_starts=v_starts_m)
+        if sfx_inputs:
+            logger.info("[#{}] assemble (variant3): {} SFX из sfx_gen идут в микс", project.id, len(sfx_inputs))
         await run_variant2(
             project,
             frame_numbers,
             audio_path,
             out_path,
             bgm=bgm,
-            sfx=sfx_v2,
+            sfx=sfx_inputs,
         )
         # ASS ещё нет на диске: путь зарезервирован выше, файл пишем здесь.
         # Старый `subs_path.is_file()` пропускал весь burn на montage-v3.
@@ -558,7 +565,16 @@ async def _assemble_core(
                     str(burned),
                     cwd=str(tmp),
                 )
-                await proc.communicate()
+                try:
+                    await asyncio.wait_for(proc.communicate(), timeout=300.0)
+                except asyncio.TimeoutError:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    await proc.communicate()
+                    logger.error("[#{}] assemble: ffmpeg subtitle burn timed out after 300s", project.id)
+                    raise TimeoutError("ffmpeg subtitle burn timed out after 300s") from None
                 if proc.returncode != 0:
                     raise RuntimeError("ffmpeg subtitle burn failed")
                 shutil.copy2(burned, out_path)
@@ -589,32 +605,26 @@ async def _assemble_core(
     return audio_duration, skip_intro
 
 
-ASSEMBLE_MAX_ATTEMPTS = 2  # первая попытка + ровно один повтор
+ASSEMBLE_MAX_ATTEMPTS = 2
 
 
 class AssembleVerificationError(RuntimeError):
-    """Собранный файл не прошёл verify_artifact (статус failed или unknown)."""
+    pass
 
 
 def _assemble_retryable(exc: BaseException) -> bool:
-    """Повторяем только сбой самой сборки или проверки итога; ошибки входа (нет клипов, озвучки) не лечатся."""
     if isinstance(exc, (AssembleVerificationError, OSError)):
         return True
     return isinstance(exc, RuntimeError) and "ffmpeg" in str(exc).lower()
 
 
-# D07: independent check of the assembled file's tracks and length, on top of verify_artifact. A defect proven by the
-# probe (a missing track, tracks of very different length, a length far outside the voice) fails the attempt, which the
-# existing single local retry may repeat; a probe that cannot run is "unknown" and never turns a passed
-# verify_artifact into a failure (verify_artifact has already refused a file that ffprobe cannot read).
-ASSEMBLE_TRACK_TOLERANCE_S = 3.0      # absolute slack between the video and the audio track
-ASSEMBLE_TRACK_TOLERANCE_RATIO = 0.05  # plus this share of the longer track
-ASSEMBLE_MAX_OVERRUN_RATIO = 1.5       # the file may not be longer than this multiple of the voice (plus tail)
+ASSEMBLE_TRACK_TOLERANCE_S = 3.0
+ASSEMBLE_TRACK_TOLERANCE_RATIO = 0.05
+ASSEMBLE_MAX_OVERRUN_RATIO = 1.5
 ASSEMBLE_MAX_OVERRUN_SLACK_S = 10.0
 
 
 async def _probe_tracks(path: Path) -> dict | None:
-    """ffprobe the file (streams and format) as JSON; None when the probe cannot run or answers nothing usable."""
     import json
 
     if not shutil.which("ffprobe"):
@@ -649,7 +659,6 @@ def check_assembly_tracks(
     tail_seconds: float = 0.0,
     size_bytes: int | None = None,
 ) -> dict:
-    """Pure verdict on an ffprobe answer for the assembled file. ``passed`` / ``failed`` / ``unknown`` (no probe)."""
     result: dict = {"status": "unknown", "errors": [], "expected_duration": round(float(expected_duration), 3),
                     "size_bytes": size_bytes, "semantic_quality_verified": False}
     if size_bytes is not None and size_bytes <= 0:
@@ -692,18 +701,16 @@ def check_assembly_tracks(
 
 
 async def _journal(kind: str, payload: dict) -> None:
-    """Write a runtime fact to the observation journal when an attempt is open; never raises, never blocks assembly."""
     try:
         from app.services.observation import _attempt, record_fact
 
         if _attempt.get() is not None:
             await record_fact(kind, payload)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
 async def _verify_result_tracks(work_path: Path, *, expected_duration: float, tail_seconds: float) -> dict:
-    """Independent file / length / tracks check of the part file; always journals one ``artifact_verified`` fact."""
     try:
         size = work_path.stat().st_size
     except OSError:
@@ -719,8 +726,6 @@ async def _verify_result_tracks(work_path: Path, *, expected_duration: float, ta
 async def _keep_approve_final_after_notify_failure(
     session: AsyncSession, project: Project, sha256: str, final_path: Path, exc: BaseException
 ) -> HITLRequest:
-    """Telegram refused the notification: the verified file stays assembled and the approve_final request is kept
-    (created here when the failure happened before it existed), marked as not notified. Nothing is approved."""
     from datetime import datetime, timezone
 
     from app.services.hitl import create_hitl
@@ -749,7 +754,6 @@ async def _keep_approve_final_after_notify_failure(
 
 
 async def _approve_final_exists(session: AsyncSession, project: Project, sha256: str) -> bool:
-    """Запрос approve_final для этого проекта и этого файла (по sha256) уже создан."""
     rows = (await session.execute(
         select(HITLRequest).where(
             HITLRequest.project_id == project.id,
@@ -774,7 +778,6 @@ async def _assemble_body(
     out_dir = project.data_dir / "final"
     out_dir.mkdir(parents=True, exist_ok=True)
     final_path = out_dir / f"{project.slug}.mp4"
-    # Остатки упавшей сборки: финальный файл они не затрагивают.
     for stale in out_dir.glob(f".{project.slug}.*.part.mp4"):
         try:
             stale.unlink()
@@ -783,8 +786,6 @@ async def _assemble_body(
     from app.services.step_cancel import StepCancelledError
 
     verification: dict = {}
-    # Сборка локальная (ffmpeg, без платных вызовов): один повтор при сбое сборки или проверки итога.
-    # Прежний final не затрагивается, пока новый файл не прошёл verify_artifact.
     for attempt in range(1, ASSEMBLE_MAX_ATTEMPTS + 1):
         work_path = out_dir / f".{project.slug}.{uuid.uuid4().hex[:8]}.part.mp4"
         try:
@@ -804,7 +805,7 @@ async def _assemble_body(
             tail = 0.0
             try:
                 tail = float(post_voiceover_tail_seconds_for_project(project) or 0.0)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 tail = 0.0
             tracks = await _verify_result_tracks(
                 work_path, expected_duration=max(0.0, audio_duration - skip_intro), tail_seconds=tail)
@@ -820,7 +821,7 @@ async def _assemble_body(
             break
         except (StepCancelledError, asyncio.CancelledError):
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if attempt >= ASSEMBLE_MAX_ATTEMPTS or not _assemble_retryable(exc):
                 raise
             logger.warning(
@@ -832,7 +833,7 @@ async def _assemble_body(
 
                 emit("assemble_retry", {"attempt": attempt, "error_type": type(exc).__name__,
                                         "retry_cap": ASSEMBLE_MAX_ATTEMPTS - 1})
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         finally:
             try:
@@ -874,5 +875,5 @@ async def _assemble_body(
         )
     except (StepCancelledError, asyncio.CancelledError):
         raise
-    except Exception as exc:  # noqa: BLE001 - the file is verified; a notification failure must not lose the request
+    except Exception as exc:
         await _keep_approve_final_after_notify_failure(session, project, sha256, final_path, exc)

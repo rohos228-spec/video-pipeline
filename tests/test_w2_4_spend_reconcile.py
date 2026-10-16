@@ -1,5 +1,3 @@
-"""W2-4 (B10): сверка денег. Класс доказательства U и D: настоящий код сверки, временные SQLite для журнала
-трат, инцидентов и трекера; баланс провайдера подаёт адаптер-заменитель. Живых прогонов нет."""
 from __future__ import annotations
 
 import sqlite3
@@ -25,7 +23,7 @@ def _clean_adapters():
 
 @pytest.fixture
 async def sessions(tmp_path):
-    from app.services import actions_v1  # noqa: F401
+    from app.services import actions_v1
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'm.db'}", poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -55,7 +53,6 @@ async def add_actual(sessions, usd, provider="outsee", project=7):
         await s.commit()
 
 
-# ------------------------------------------------------------------ чистое сравнение
 
 
 def snaps(before, after):
@@ -63,7 +60,7 @@ def snaps(before, after):
 
 
 def test_compare_converged_within_tolerance():
-    b, a = snaps(10.0, 9.0)  # списано 1.00
+    b, a = snaps(10.0, 9.0)
     r = sr.compare(provider="outsee", before=b, after=a, ledger_usd=1.04)
     assert r["status"] == sr.STATUS_CONVERGED and r["converged"]
     assert r["gap_usd"] == pytest.approx(-0.04)
@@ -102,7 +99,7 @@ def test_compare_balance_rise_and_zero_zero():
 
 
 async def test_no_snapshot_is_never_reported_as_converged():
-    snap = await sr.take_snapshot("outsee")  # адаптера нет
+    snap = await sr.take_snapshot("outsee")
     assert not snap.ok and "не подключён" in snap.error
     r = sr.compare(provider="outsee", before=snap, after=snap, ledger_usd=1.0)
     assert r["status"] == sr.STATUS_NO_SNAPSHOT and not r["converged"]
@@ -125,7 +122,6 @@ async def test_adapter_sync_async_and_failure():
     assert not s.ok and "кабинет недоступен" in s.error
 
 
-# ------------------------------------------------------------------ окно, запись, инцидент
 
 
 async def test_window_converges_and_writes_ok_row_without_incident(sessions, tracker):
@@ -134,7 +130,7 @@ async def test_window_converges_and_writes_ok_row_without_incident(sessions, tra
     async with sr.reconcile_window(sessions, "outsee", project_id=7, tracker_db=tracker) as out:
         await add_actual(sessions, 1.0)
         await add_actual(sessions, 0.5)
-        await add_actual(sessions, 99.0, provider="kie")  # чужой провайдер окно не портит
+        await add_actual(sessions, 99.0, provider="kie")
     assert out["result"]["status"] == "converged" and out["incident_id"] is None
     async with sessions() as s:
         rows = (await s.execute(text("SELECT source FROM spend_ledger WHERE kind='event'"))).all()
@@ -143,7 +139,7 @@ async def test_window_converges_and_writes_ok_row_without_incident(sessions, tra
 
 
 async def test_window_gap_creates_incident_and_gap_row(sessions, tracker):
-    balances = iter([10.0, 7.0])  # списано 3.00, в журнале 1.00
+    balances = iter([10.0, 7.0])
     sr.register_balance_adapter("outsee", lambda: next(balances))
     async with sr.reconcile_window(sessions, "outsee", project_id=7, tracker_db=tracker) as out:
         await add_actual(sessions, 1.0)
@@ -159,7 +155,7 @@ async def test_window_gap_creates_incident_and_gap_row(sessions, tracker):
 
 
 async def test_window_counts_tracker_rows_and_runs_even_if_step_raises(sessions, tracker):
-    add_tracker(tracker, 5.0)  # до окна: не считается
+    add_tracker(tracker, 5.0)
     balances = iter([10.0, 9.0])
     sr.register_balance_adapter("vibecode", lambda: next(balances))
     with pytest.raises(RuntimeError):
@@ -193,7 +189,6 @@ async def test_missing_snapshot_opens_warning_incident(sessions, tracker):
         assert (await s.scalars(select(Incident))).one().severity == "warning"
 
 
-# ------------------------------------------------------------------ отчёт и телеметрия
 
 
 async def test_project_report_and_telemetry_read_it(sessions, tracker, monkeypatch):

@@ -1,20 +1,3 @@
-"""stop / subagentStop: проверочный шлюз «не закончил, пока не зелёное».
-
-1. Смотрит этот checkout и `.worktrees/*`. Чужие linked checkout (другой ПК,
-   отдельная папка вне `.worktrees`) не сканирует.
-2. Первый запуск запоминает текущий HEAD и не разбирает историю ветки против
-   merge-base с main. Дальше — незакоммиченные .py и коммиты после этой отметки.
-   Для subagentStop список файлов берётся из modified_files.
-3. ruff E9,F63,F7,F82 по этим файлам.
-4. pytest по изменённым тестам и тестам, упоминающим изменённые модули (до MAX_TESTS файлов).
-5. Каждое падение перепроверяется на базовой версии кода (git archive <base> во временную
-   папку, git только читается). Агента просят чинить только НОВЫЕ поломки — старые красные
-   тесты репозитория не зацикливают агента.
-6. Результат кэшируется по подписи содержимого. Повторный stop с тем же деревом
-   не гоняет проверки и не шлёт followup ещё раз.
-
-Отключить: переменная окружения VP_HOOKS_VERIFY=0.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -30,7 +13,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from vp_common import (  # noqa: E402
+from vp_common import (
     RUFF_SELECT, git, lint_errors, log, main_checkout, project_python, project_root,
     read_input, respond, state_dir, toplevel,
 )
@@ -40,9 +23,7 @@ PYTEST_TIMEOUT = int(os.environ.get("VP_HOOKS_PYTEST_TIMEOUT", "600"))
 NODE_RE = re.compile(r"^(FAILED|ERROR)\s+(\S+?)(?:\s+-\s+(.*))?$", re.M)
 
 
-# ---------------------------------------------------------------- сбор изменений
 def repo_roots(data: dict) -> dict[Path, set[str] | None]:
-    """{корень worktree: явный список файлов или None (вычислить по git)}."""
     root = project_root()
     main = main_checkout(root)
     roots: dict[Path, set[str] | None] = {}
@@ -66,7 +47,6 @@ def repo_roots(data: dict) -> dict[Path, set[str] | None]:
 
 
 def include_worktree(main: Path, wt: Path) -> bool:
-    """Только основной checkout и папки внутри `.worktrees/`."""
     wt = wt.resolve()
     main = main.resolve()
     if wt == main:
@@ -125,11 +105,6 @@ def py_existing(root: Path, names: set[str]) -> set[str]:
 
 
 def scope_files(root: Path, cache: dict, explicit: set[str] | None) -> tuple[set[str], str]:
-    """Файлы этого захода и база сравнения.
-
-    Первый запуск запоминает HEAD: история ветки не становится списком долгов.
-    Дальше в список попадают незакоммиченное и коммиты после отметки.
-    """
     head = head_sha(root)
     rec = mark_state(cache)
     key = str(root.resolve())
@@ -149,7 +124,6 @@ def scope_files(root: Path, cache: dict, explicit: set[str] | None) -> tuple[set
 
 
 def deliver(cache: dict, sig: str, report: str, old: list[str]) -> str:
-    """Один и тот же отчёт не повторяем на следующем stop."""
     if sig in cache:
         return ""
     cache[sig] = {"report": report, "ts": time.time(), "old_failures": old[:50]}
@@ -188,9 +162,7 @@ def select_tests(root: Path, files: set[str]) -> list[str]:
     return chosen[:MAX_TESTS]
 
 
-# ---------------------------------------------------------------- проверки
 def run_pytest(py: list[str], cwd: Path, targets: list[str], timeout: int) -> tuple[dict[str, str], str, bool]:
-    """{node_id: краткая причина}, хвост вывода, timed_out."""
     if not targets:
         return {}, "", False
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8")

@@ -1,4 +1,3 @@
-"""Additive durable state for the opt-in, bounded Decision-v1 supervisor."""
 from datetime import datetime
 from sqlalchemy import Boolean, DateTime, JSON, String, UniqueConstraint,select
 from sqlalchemy.orm import Mapped, mapped_column

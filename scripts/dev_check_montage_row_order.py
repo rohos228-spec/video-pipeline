@@ -1,10 +1,3 @@
-"""Dev-проверка порядка строк доски: кадр сверху, ниже сцена, потом данные кадра.
-
-Не часть пайплайна. Нужен бэкенд на :8765 и сид
-``scripts/dev_seed_montage_scene.py``.
-
-    python3 scripts/dev_check_montage_row_order.py [project_id] [out_dir]
-"""
 
 from __future__ import annotations
 

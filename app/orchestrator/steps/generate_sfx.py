@@ -48,12 +48,11 @@ def _emit(kind: str, payload: dict) -> None:
         from app.services.observation import emit
 
         emit(kind, payload)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
 def degradation_summary(files: list[dict]) -> dict:
-    """Сводка подмен: сколько звуков сделано процедурно (нет ключа, отказ провайдера, обрыв)."""
     synthetic = [f for f in files if f.get("provider") == "local_synth" or f.get("synthetic")]
     no_key = [f for f in synthetic
               if isinstance(f.get("provider_fallback"), dict) and f["provider_fallback"].get("reason") == "no_api_key"]
@@ -94,7 +93,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     meta = dict(project.meta or {})
     summary = degradation_summary(files)
     meta["sfx_ready"] = True
-    # «Сгенерировано нормально» только если ни один звук не подменён процедурным синтезом.
     meta["sfx_generated"] = not summary["degraded"]
     meta["sfx_degraded"] = summary["degraded"]
     meta["sfx_synthetic_count"] = summary["synthetic"]

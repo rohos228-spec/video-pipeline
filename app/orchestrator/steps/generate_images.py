@@ -92,13 +92,43 @@ from app.services.notification_log import notify
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
+def is_transient_network_error(exc: BaseException) -> bool:
+    """Проверяет, является ли ошибка временным сетевым/DNS сбоем."""
+    msg = str(exc).lower()
+    transient_markers = (
+        "gaierror",
+        "getaddrinfo failed",
+        "clientconnectorerror",
+        "connecterror",
+        "readtimeout",
+        "connecttimeouterror",
+        "network unreachable",
+        "temporary failure in name resolution",
+        "connection reset",
+        "connection refused",
+        "timed out",
+        "timeout",
+        "502 bad gateway",
+        "503 service unavailable",
+        "504 gateway time-out",
+        "econnreset",
+        "enetunreach",
+    )
+    if any(m in msg for m in transient_markers):
+        return True
+    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    if cause and cause is not exc:
+        return is_transient_network_error(cause)
+    return False
+
+
 def _img_http_primary() -> bool:
     """Outsee HTTP — без Chrome CDP (как excel_hero)."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
     from app.services.observation import _attempt
     ctx = _attempt.get()
     if ctx and ctx.scope.mode == "managed":
-        return True  # provider entry gate rejects unsupported profiles before HTTP
+        return True
 
     return bool(outsee_api_enabled_for_image() or outsee_api_configured())
 
@@ -190,7 +220,6 @@ _SHOT1_CHAR_KEYS = ("characters", "персонажи", "persons")
 
 
 def _person_ids_from_frame(frame: Any) -> list[str]:
-    """Id персонажей кадра из attrs (DB), не из Excel."""
     attrs = getattr(frame, "attrs", None) or {}
     if not isinstance(attrs, dict):
         return []
@@ -202,7 +231,6 @@ def _person_ids_from_frame(frame: Any) -> list[str]:
 
 
 def _character_sheet_ids_for_image(frame: Any) -> list[str]:
-    """Листы cNN только у VO-родителя. K2/K3 — still родителя, не герои."""
     from app.services.vo_shot_expand import is_shot_child
 
     if is_shot_child(frame):
@@ -210,8 +238,7 @@ def _character_sheet_ids_for_image(frame: Any) -> list[str]:
     return _person_ids_from_frame(frame)
 
 
-def _resolve_plan_sheet(wb):  # noqa: ANN001
-    """Лист «план» (v8), без учёта регистра."""
+def _resolve_plan_sheet(wb):
     if _XLSX_SHEET_PLAN in wb.sheetnames:
         return wb[_XLSX_SHEET_PLAN]
     low = _XLSX_SHEET_PLAN.casefold()
@@ -324,7 +351,11 @@ def _hero_legacy_ref(project_data_dir: Path, persons_id: str) -> Path | None:
     if not chars_dir.is_dir():
         return None
     candidates = sorted(
-        chars_dir.glob(f"hero_{idx}_v1_*.png"),
+        [
+            p
+            for p in chars_dir.glob(f"hero_{idx}_v1_*")
+            if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+        ],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -514,11 +545,10 @@ def requeue_failed_frames_without_png(
     *,
     project_id: int | None = None,
 ) -> int:
-    """failed без валидного PNG снова в очередь — иначе resume их пропускает."""
     n = 0
     for fr in frames:
         if (fr.status is FrameStatus.failed
-                and not (fr.attrs or {}).get("rejected_by_human")  # N-17: отклонённый человеком не возвращается сам
+                and not (fr.attrs or {}).get("rejected_by_human")
                 and not disk_has_valid_frame_image(out_dir, fr.number)):
             logger.warning(
                 "[#{}] frame {}: failed без PNG — обратно в очередь",
@@ -567,7 +597,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         if ctx and ctx.scope.mode == "managed":
             await _hold(ctx, str(exc), "image-recovery:"+ctx.node_key+":"+ctx.attempt_id)
         raise
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception(
             "[#{}] generate_images: recover_scene_images_from_disk failed",
             project.id,
@@ -588,8 +618,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
 
     from app.services.vo_shot_expand import is_shot_child
 
-    # Платная генерация по «пустому» промту (шаблон стиля, поля сцены = «нет исходных данных») даёт бессмысленные
-    # картинки: живой F10 15.10.2026 заплатил за 8 одинаковых абстрактных пятен. Останавливаемся до оплаты.
     from app.generation_options import is_scene_prompt_hollow
     from app.settings import settings as _settings
 
@@ -897,7 +925,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         )
                         break
 
-                    # phase == "shot2"
                     batch2 = await _claim_shot2_batch(
                         session, project.id, project=project, limit=streams
                     )
@@ -1110,11 +1137,6 @@ async def _claim_shot1_batch(
     project: Project | None = None,
     limit: int = 1,
 ) -> list[Frame]:
-    """Забрать до ``limit`` кадров под генерацию (lease через attrs).
-
-    С группой script_frames_qc: сначала K1 ячеек; K2/K3 — когда PNG
-    родителя уже на диске.
-    """
     from app.services.node_groups import canvas_has_script_frames_qc
     from app.services.vision_check_loop import scene_regen_allows
     from app.services.vo_shot_expand import (
@@ -1188,11 +1210,6 @@ async def _resolve_shot2_reference(
     *,
     project: Project | None = None,
 ) -> Path | None:
-    """Реф shot2.
-
-    Глобально: свой shot1, у ребёнка покрытия — PNG родителя.
-    С группой script_frames_qc: shot2 = PNG shot1 ЭТОГО кадра.
-    """
     from app.services.node_groups import canvas_has_script_frames_qc
     from app.services.vo_shot_expand import is_shot_child
 
@@ -1223,7 +1240,6 @@ async def _coverage_parent_png(
     project: Project,
     frame: Frame,
 ) -> Path | None:
-    """PNG K1 ЭТОЙ ячейки — layout-lock только для K2/K3 группы."""
     from app.services.vo_shot_expand import (
         find_coverage_parent_frame,
         uses_parent_still,
@@ -1335,7 +1351,6 @@ async def _generate_frame_job(
                     shot1_reference=shot1_reference,
                 )
             finally:
-                # _generate_and_send уже commit'ит; освежим и снимем lease
                 try:
                     await session.refresh(frame)
                 except Exception:  # noqa: BLE001
@@ -1406,6 +1421,7 @@ async def _run_claimed_batch(
         return
 
     await session.commit()
+
     jobs = []
     for fr in claimed:
         ref = (
@@ -1509,11 +1525,6 @@ async def _all_frames_have_image_or_failed(
 
 
 def _skip_legacy_shot2(project: Project | None, frames: list[Frame]) -> bool:
-    """True — не генерить legacy shot2-колонку: каждый кадр уже свой кусок закадра.
-
-    Freeze СТАРТ/КОНЕЦ всё равно ставит в очередь конечный still (см.
-    ``_queue_freeze_end_stills``).
-    """
     from app.services.node_groups import canvas_has_script_frames_qc
     from app.services.vo_shot_expand import is_shot_child
 
@@ -1529,7 +1540,6 @@ async def _init_shot2_queue(
     out_dir: Path,
     xlsx_path: Path,
 ) -> int:
-    """Подготовить очередь shot_02: xlsx + дети покрытия из DB."""
     from app.services.vo_shot_expand import is_shot_child
 
     if _skip_legacy_shot2(project, frames):
@@ -1575,7 +1585,6 @@ async def _queue_freeze_end_stills(
     frames: list[Frame],
     out_dir: Path,
 ) -> int:
-    """При skip_legacy: конечный still раскладки СТАРТ/КОНЕЦ всё равно в очередь."""
     from app.services.freeze_stills import frame_needs_end_still, seed_end_still_prompt
 
     queued = 0
@@ -1834,8 +1843,6 @@ async def _generate_and_send(
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] xlsx write_frame(gen_id) failed: {}", project.id, e)
 
-    # Референсы: shot_02 — PNG shot_01 той же колонки.
-    # K2/K3: только still родителя. Листы персонажей — только у VO-родителя.
     from app.services.image_ref_lock import prepare_refs_and_prompt
 
     crop_dir = project.data_dir / "tmp_gpt" / "ref_crops"
@@ -1886,7 +1893,6 @@ async def _generate_and_send(
         )
 
     try:
-        # regenerate_image — только CDP UI; при HTTP (outsee is None) — fresh generate.
         if use_regen_button and outsee is not None:
             try:
                 await session.commit()
@@ -1897,9 +1903,6 @@ async def _generate_and_send(
                     model_slug=model_slug,
                 )
             except OutseeImageError:
-                # Если на странице нет предыдущего результата (или другая
-                # «структурная» ошибка regenerate) — падаем на полноценный
-                # generate с тем же gen_id, чтобы не плодить ложных файлов.
                 logger.warning(
                     "[#{}] frame {}: «Повторить» не сработала — падаю на generate",
                     project.id,
@@ -1948,10 +1951,25 @@ async def _generate_and_send(
     except StepCancelledError:
         raise
     except OutseeImageError as e:
+        attrs = dict(frame.attrs or {})
+        t_count = int(attrs.get("transient_net_retries") or 0)
+        if is_transient_network_error(e) and t_count < 2:
+            attrs["transient_net_retries"] = t_count + 1
+            frame.attrs = attrs
+            logger.warning(
+                "[#{}] frame {}: временный сетевой/DNS сбой ({}) — рекью кадра (попытка {}/2)",
+                project.id,
+                frame.number,
+                type(e).__name__,
+                t_count + 1,
+            )
+            frame.status = FrameStatus.image_prompt_ready
+            await session.flush()
+            return
+
         # Не «возьму последнюю картинку», не silent retry: помечаем кадр
         # failed и шлём в TG понятное описание ошибки (с gen_id, baseline-ом
         # и тем что нашли). Пайплайн пойдёт к следующему кадру; общая логика
-        # анти-зацикливания (MAX_FAIL=3) защитит проект целиком.
         logger.exception(
             "[#{}] frame {}: outsee fail (gen_id={})",
             project.id,
@@ -2010,7 +2028,7 @@ async def _generate_and_send(
                 project_id=project.id,
                 parse_mode="HTML",
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         await session.commit()
         return
@@ -2077,10 +2095,18 @@ async def _generate_and_send(
     )
     # Коммитим сразу, чтобы callback-хендлер в другом таске видел HITL.
     await session.commit()
-    # Результат взят в проект и закоммичен: платная картинка больше не предлагается для повторного использования
-    # (обычная перегенерация с тем же промтом — новый запрос). До этого места её подберёт рестарт.
     from app.services import media_spend as _media_spend, outsee_idempotency
     await outsee_idempotency.mark_consumed(project.id, _media_spend._task_key(file_path))
+    try:
+        from app.services.event_bus import publish_project_event
+
+        await publish_project_event(
+            project.id,
+            event_type="image_generated",
+            data={"frame_id": frame.id, "image_path": str(result.file_path)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[#{}] publish image_generated event failed: {}", project.id, exc)
 
 
 def _html_escape(s: str) -> str:

@@ -1,7 +1,3 @@
-// Panel «Восстановление медиа»: types and pure helpers (no imports, so the offline contract test can load it).
-// Data comes from GET /api/projects/{id}/media-recovery/{node_type} and .../unknown-outcomes
-// (app/web/routers/media_recovery.py). The UI never calls POST resume-poll or release-unknown directly:
-// both go through the action layer (plan -> preview -> operator approval -> run).
 
 export type RecoveryMode = "resume_poll" | "resume_local" | "retry_same" | "denied" | "nothing_to_do";
 
@@ -43,7 +39,6 @@ export interface UnknownOutcomes {
   count: number;
 }
 
-/** Media nodes in the order they are shown. Only the first three can be resumed by a provider task id. */
 export const MEDIA_NODES: { node_type: string; title: string }[] = [
   { node_type: "videos", title: "Клипы" },
   { node_type: "items", title: "Предметы" },
@@ -65,7 +60,6 @@ export const MODE_LABEL_RU: Record<RecoveryMode, string> = {
   nothing_to_do: "Делать нечего",
 };
 
-// Tailwind classes per mode: green = safe to do, sky = local reuse, amber = a paid repeat, red = stop, grey = idle.
 export const MODE_CLASS: Record<RecoveryMode, string> = {
   resume_poll: "border-emerald-400/50 text-emerald-200",
   resume_local: "border-sky-400/50 text-sky-200",
@@ -124,7 +118,6 @@ export function modeLabel(mode: string): string {
 export function modeClass(mode: string): string {
   return isMode(mode) ? MODE_CLASS[mode] : "border-white/20 text-white/60";
 }
-// retry_same means different things per node: a provably failed Kie task, a fallback after an answer, or a local node.
 export const RETRY_EXPLAIN_RU: Record<string, string> = {
   no_paid_job_and_no_marker: "Платной озвучки ещё не было и меток неизвестного исхода нет: обычный запуск ноды ничего не удвоит.",
   local_only_no_provider_spend: "Локальная сборка: платных запросов к провайдерам нет, её можно просто запустить заново.",
@@ -142,7 +135,6 @@ export function ledgerText(ledger: string | null | undefined): string {
   return ledger ? LEDGER_RU[ledger] ?? ledger : "журнал задач: нет данных";
 }
 
-/** Counts of keys per mode: «открыто 2, неизвестный исход 1». Empty list gives an explicit sentence. */
 export function ledgerCounts(keys: RecoveryKey[] | null | undefined): string {
   const list = keys ?? [];
   if (list.length === 0) return "задач в журнале нет";
@@ -159,13 +151,11 @@ export const hasTaskId = (a: RecoveryAssessment): boolean => a.keys.some((k) => 
 export const taskIds = (a: RecoveryAssessment): string[] =>
   Array.from(new Set(a.keys.map((k) => k.task_id).filter((t): t is string => Boolean(t))));
 
-/** The resume button needs a node that can be resumed AND a verdict the server itself admits as resume_poll. */
 export function canResume(a: RecoveryAssessment | null | undefined): boolean {
   if (!a) return false;
   return RESUME_NODES.includes(a.node_type) && a.supervisor_admission?.operation === "resume_poll";
 }
 
-/** Why the resume button is off, in Russian; null when it is on. */
 export function resumeBlockedReason(a: RecoveryAssessment | null | undefined): string | null {
   if (!a) return "Состояние не прочитано.";
   if (canResume(a)) return null;
@@ -175,7 +165,6 @@ export function resumeBlockedReason(a: RecoveryAssessment | null | undefined): s
   return DENIED_RU[code] ?? `возобновление недоступно (${code})`;
 }
 
-/** «2 ч 5 мин» / «40 мин» / «30 с». */
 export function formatAge(seconds: number | null | undefined): string {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "неизвестно";
   const s = Math.floor(seconds);
@@ -187,7 +176,6 @@ export function formatAge(seconds: number | null | undefined): string {
   return rest ? `${h} ч ${rest} мин` : `${h} ч`;
 }
 
-/** «до 06.10 14:35» from an ISO timestamp (server time is UTC without a zone mark); unparseable text is kept as is. */
 export function formatBlockedUntil(iso: string | null | undefined): string {
   if (!iso) return "неизвестно";
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
@@ -197,14 +185,12 @@ export function formatBlockedUntil(iso: string | null | undefined): string {
 export const MIN_REASON_CHARS = 10;
 export const MAX_REASON_CHARS = 500;
 
-/** Same cleaning as the server: collapse whitespace. */
 export const cleanReason = (text: string): string => text.split(/\s+/).filter(Boolean).join(" ");
 export const reasonOk = (text: string): boolean => {
   const n = cleanReason(text).length;
   return n >= MIN_REASON_CHARS && n <= MAX_REASON_CHARS;
 };
 
-/** Params of media.resume_poll / media.release_unknown exactly as the action schemas require them. */
 export const resumeParams = (projectId: number, nodeType: string) => ({ project_id: projectId, node_type: nodeType });
 export const releaseParams = (projectId: number, row: Pick<UnknownOutcome, "key" | "provider">, reason: string) => ({
   project_id: projectId, key: row.key, provider: row.provider, reason: cleanReason(reason),

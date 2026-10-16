@@ -30,9 +30,6 @@ from app.services.disk_guard import append_rotating
 from app.settings import settings
 
 STATUS_LOG_PATH = Path("logs/status.log")
-# Снимок «как сейчас» строится из таблицы node_runs (B08): status.log хранит переходы (их в node_runs нет,
-# там только текущее состояние; долговечная история переходов - observation_events.node_change),
-# а снимок можно в любой момент пересоздать из БД.
 STATUS_SNAPSHOT_PATH = Path("logs/status.snapshot.log")
 
 _FORWARD_TRANSITIONS: dict[NodeRunStatus, frozenset[NodeRunStatus]] = {
@@ -74,7 +71,6 @@ def is_status_write_allowed() -> bool:
 
 @contextmanager
 def allow_replica_status_write():
-    """Копия NodeRun между state.db и project.db — не переход FSM."""
     token = _status_machine_write.set(True)
     try:
         yield
@@ -83,7 +79,6 @@ def allow_replica_status_write():
 
 
 def guard_direct_status_write(nr: NodeRun, new_status: NodeRunStatus) -> None:
-    """Runtime-защита от записи nr.status мимо машины состояний."""
     if is_status_write_allowed():
         return
     msg = (
@@ -100,7 +95,6 @@ def _transitions_log_enabled() -> bool:
 
 
 def _write_status_log(line: str) -> None:
-    # Ротация по размеру (A03): logs/status.log не растёт без границы.
     if not _transitions_log_enabled():
         return
     try:
@@ -120,7 +114,6 @@ def format_status_line(
     blocked: bool = False,
     ts: str | None = None,
 ) -> str:
-    """Строка status.log целиком из полей NodeRun и перехода (чистая функция)."""
     ts = ts or datetime.utcnow().isoformat(timespec="seconds")
     pid = project_id if project_id is not None else "?"
     action = "BLOCKED" if blocked else "OK"
@@ -140,11 +133,6 @@ def _log_line(
     project_id: int | None,
     blocked: bool = False,
 ) -> None:
-    """Единая точка записи перехода/отказа в status.log (все пути transition_* проходят здесь).
-
-    Применённый переход параллельно попадает в журнал наблюдателя: `_apply_side_effects` кладёт его в
-    `nr._observation_transitions`, а хук `_stage_node_changes` пишет `observation_events.node_change`
-    в той же транзакции, что и сам NodeRun. Отказы (BLOCKED) состояния не меняют и живут только здесь."""
     _write_status_log(format_status_line(
         node_key=node_key, node_type=node_type, old=old, new=new, initiator=initiator,
         project_id=project_id, blocked=blocked,
@@ -160,9 +148,6 @@ def _row_ts(nr: Any) -> str:
 
 
 def derive_status_lines(rows: Iterable[tuple[Any, int | None]]) -> list[str]:
-    """Снимок состояния нод из строк node_runs: [(NodeRun, project_id), ...] -> строки лога.
-
-    Формат близок к status.log, но действие SNAPSHOT и без инициатора: переходов в node_runs нет."""
     out: list[str] = []
     for nr, project_id in rows:
         status = nr.status.value if hasattr(nr.status, "value") else str(nr.status)
@@ -179,9 +164,6 @@ def derive_status_lines(rows: Iterable[tuple[Any, int | None]]) -> list[str]:
 
 async def rebuild_status_snapshot(session, *, project_id: int | None = None,
                                   path: Path | None = None) -> int:
-    """Пересоздать logs/status.snapshot.log из таблицы node_runs. Возвращает число строк.
-
-    Запись атомарная (временный файл и замена); журнал переходов status.log не трогается."""
     from sqlalchemy import select
 
     from app.models import WorkflowRun
@@ -264,9 +246,6 @@ def transition_node_status(
     if old == new_status:
         return False
 
-    # Managed actions impose a single execution-scope gate at the FSM boundary,
-    # covering worker, API, and auto-advance callers. Unmanaged projects retain
-    # their existing behavior; a missing managed permission is never inferred.
     if new_status == NodeRunStatus.running:
         from app.services.actions_v1 import check_managed_start
 
@@ -299,8 +278,6 @@ def transition_node_status(
         )
         return True
 
-    # Heal: Project уже на следующем ready/assembled, а NodeRun залип в failed
-    # (гонка reconcile / WA после успеха). Не открываем failed→done для worker.
     if (
         initiator == "heal_success"
         and new_status == NodeRunStatus.done
@@ -407,7 +384,6 @@ def start_node_running(nr: NodeRun, *, project_id: int | None, initiator: str = 
 
 
 def complete_node(nr: NodeRun, *, project_id: int | None, initiator: str = "worker") -> bool:
-    """running | waiting_hitl → done после успешного шага (только initiator=worker)."""
     if initiator != "worker":
         logger.error(
             "complete_node: initiator={!r} запрещён для {}/{}",

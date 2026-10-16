@@ -18,10 +18,6 @@ from sqlalchemy.orm import selectinload
 from app.models import Frame, NodeRunStatus, Project, ProjectStatus, WorkflowRun
 
 
-# Что sidecar уже получил: project_id -> {номер кадра: (хеш входов, хеш полученного промта)}.
-# Вход в шаг animation_prompts не стирает такой выход (иначе второй платный вызов модели). В памяти процесса, а не в
-# Frame.attrs: шаг картинок целиком переписывает attrs кадра параллельно и теряет метку. После рестарта процесса записей
-# нет, шаг стирает и считает заново, как раньше.
 _RESULTS: dict[int, dict[int, tuple[str, str]]] = {}
 
 _LOCKS: dict[int, asyncio.Lock] = {}
@@ -39,7 +35,6 @@ def sidecar_source_hash(frame: Frame) -> str:
 
 
 def stamp_sidecar_results(project_id: int, frames: list[Frame]) -> int:
-    """Запомнить кадры, у которых видеопромт уже есть: хеш входов и хеш самого промта."""
     from app.services.animation_prompt_gpt import (
         frame_has_usable_image_prompt,
         has_animation_prompt_for_frame,
@@ -58,7 +53,6 @@ def stamp_sidecar_results(project_id: int, frames: list[Frame]) -> int:
 
 
 def take_fresh_sidecar_frames(project_id: int, frames: list[Frame]) -> set[int]:
-    """Номера кадров, где промт всё ещё тот, что получил sidecar, и входы не менялись. Записи проекта снимаются."""
     got = _RESULTS.pop(project_id, {})
     return {
         fr.number for fr in frames
@@ -148,7 +142,6 @@ async def drain_anim_pr_from_image_prompts(
     from app.services.frame_store import session_factory_for
 
     async with _lock_for(project_id):
-        # D2: кадры проекта лежат в его project.db; на id-коллизию IdCollisionError до платного вызова GPT
         factory = await session_factory_for(project_id)
         async with factory() as session:
             project = await session.get(Project, project_id)
@@ -199,7 +192,6 @@ async def _sidecar_loop(project_id: int) -> None:
             except asyncio.CancelledError:
                 raise
             except IdCollisionError:
-                # повтором это не лечится: выходим, а не пробуем каждые 20 с
                 logger.exception("[#{}] anim_pr_sidecar: id-коллизия master/project.db — stop", project_id)
                 break
             except Exception:  # noqa: BLE001
@@ -222,7 +214,6 @@ async def _sidecar_loop(project_id: int) -> None:
                     if await sync_anim_pr_noderun_done(session, project):
                         await session.commit()
 
-            # Пока img льёт картинки — ждём новые image_prompt/пропуски и крутимся.
             if status is ProjectStatus.generating_images:
                 idle_rounds = 0 if pending else idle_rounds + 1
                 await asyncio.sleep(12 if pending == 0 else 4)

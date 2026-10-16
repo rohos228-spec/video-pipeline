@@ -1,4 +1,3 @@
-"""Live pipeline ingest into scene_space overlay."""
 
 from __future__ import annotations
 

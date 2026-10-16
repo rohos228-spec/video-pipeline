@@ -1,29 +1,3 @@
-"""Stuck-work watchdog. Marks and notifies; never retries, resumes or repairs.
-
-Detects, per observed execution (active or degraded observer):
-
-1. ``model_request``: a ``model_start`` with no ``model_end`` / ``model_error`` of the
-   same request older than ``watchdog_model_request_timeout_s`` while its attempt has
-   not ended (an ended attempt is already diagnosed as ``uncertain_request``). This
-   is also what a process crash in the middle of a provider call leaves behind.
-2. ``execution_idle``: nodes are ``running`` but the execution journal has had no
-   activity for ``watchdog_execution_idle_s``.
-
-On detection it writes a visible ``stalled`` incident (status ``human_review``,
-carrying the existing human-review summary text) and an audit ``ActionRecord`` with
-initiator ``watchdog``. Nothing is held, retried or re-sent: the outcome of an
-uncertain request is unknown and a human decides. The ``stalled`` type blocks
-recovery and decisions (see ``recover_node`` / ``DecisionSupervisor._live``) until it
-clears. Only when ``watchdog_kill_switch_on_stall`` is enabled (default off) does a
-new incident also switch the global emergency stop on.
-
-A late ``model_end``, a node end or fresh journal activity resolves the incident
-automatically (``resolved_confirmed``, ``quality_verified=False``) - resolving a
-mark is not a repair.
-
-Hook: ``DecisionSupervisor.tick`` (background mode, i.e. the production observer
-loop) calls ``get_watchdog(observer).tick()``; the call is rate limited internally.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -71,7 +45,7 @@ class Watchdog:
         for execution_id in execution_ids:
             try:
                 created.extend(await self._scan_scope(execution_id, now))
-            except Exception as exc:  # one execution never hides the others
+            except Exception as exc:
                 self.failures[execution_id] = type(exc).__name__
                 logger.warning("watchdog scan failed: execution={} error_type={}", execution_id, type(exc).__name__)
             else:
@@ -112,7 +86,6 @@ class Watchdog:
                 Incident.execution_id == execution_id, Incident.type == INCIDENT_TYPE))).all()
             known = {i.incident_id: i for i in stored}
 
-            # -- 1. model requests that never finished ---------------------------------
             closing = aliased(ObservationEvent)
             node_end = aliased(ObservationEvent)
             cutoff = now - timedelta(seconds=request_timeout)
@@ -143,7 +116,6 @@ class Watchdog:
                            "threshold_s": request_timeout}, ActionRecord=ActionRecord, Incident=Incident))
                 known[identity] = True
 
-            # -- 2. running nodes with a silent journal ------------------------------
             open_request_marks = any(
                 (i.details or {}).get("stall", {}).get("kind") == "model_request"
                 and i.status != "resolved_confirmed" for i in stored) or any(
@@ -178,7 +150,6 @@ class Watchdog:
                                    "running_nodes": [n.node_key for n in running]},
                             ActionRecord=ActionRecord, Incident=Incident))
 
-            # -- 3. clear marks whose condition no longer holds ---------------------
             for row in stored:
                 if row.status == "resolved_confirmed":
                     continue
@@ -255,7 +226,7 @@ class Watchdog:
             node_key=node_key or "execution", incident_id=identity, incident_type=INCIDENT_TYPE,
             incident_details=details, escalation_reason=fact, model_steps_used=0, max_model_steps=MAX_STEPS)
         details["human_review_summary"] = summary.as_dict()
-        details["human_review_summary_text"] = summary.text  # panel_safe hides the key "text"
+        details["human_review_summary_text"] = summary.text
         session.add(Incident(incident_id=identity, execution_id=scope.execution_id,
                              project_id=scope.project_id, node_key=node_key, attempt_id=attempt_id,
                              type=INCIDENT_TYPE, severity="error", status="human_review",
@@ -279,8 +250,6 @@ class Watchdog:
                     "type": "observation_updated", "execution_id": item["execution_id"]})
         except Exception as exc:
             logger.warning("watchdog notification failed: {}", type(exc).__name__)
-        # C-18: тревога идёт и владельцу через единственную точку доставки (без Telegram строка
-        # журнала помечается «не доставлено», как везде), а не только в шину интерфейса.
         try:
             from app.services.supervisor_heartbeat import _send
             for item in created:
@@ -289,7 +258,7 @@ class Watchdog:
                 await _send(f"Сторож: зависла работа в проекте #{item['project_id']} "
                             f"({node}, {kind}). Нужно решение человека.", "watchdog_stalled",
                             project_id=item.get("project_id"))
-        except Exception as exc:  # noqa: BLE001 - доставка тревоги не должна ронять сканирование
+        except Exception as exc:
             logger.warning("watchdog telegram alarm failed: {}", type(exc).__name__)
 
 

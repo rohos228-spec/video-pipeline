@@ -56,7 +56,6 @@ def _disk_has_image(scenes_dir: Path, number: int) -> bool:
 
 
 def quarantine_frame_media(project: Project, number: int) -> list[str]:
-    """Убрать PNG/MP4 удалённого кадра, чтобы монтаж не воскресил его с диска."""
     data_dir = Path(project.data_dir)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dest = data_dir / "old" / "scenes" / f"deleted-{stamp}_frame_{int(number):03d}"

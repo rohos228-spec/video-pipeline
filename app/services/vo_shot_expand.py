@@ -43,7 +43,6 @@ def is_shot_child(frame: Any) -> bool:
 
 
 def parent_still_suppressed(frame: Any) -> bool:
-    """Явная роль «родитель» на доске: still снят, кадр остаётся в VO-сцене."""
     cs = _cs(frame)
     raw = cs.get("use_parent_still")
     if raw is False or str(raw).strip().lower() in {"0", "false", "no", "off"}:
@@ -52,7 +51,6 @@ def parent_still_suppressed(frame: Any) -> bool:
 
 
 def uses_parent_still(frame: Any) -> bool:
-    """Вешать PNG родителя в генерацию / рефы доски."""
     if parent_still_suppressed(frame):
         return False
     if str(_cs(frame).get("coverage_kind") or "").strip().lower() == "child":
@@ -61,7 +59,6 @@ def uses_parent_still(frame: Any) -> bool:
 
 
 def is_img_pr_vo_parent(frame: Any) -> bool:
-    """GPT img_pr пишет только VO-родителя ячейки, не K2/K3."""
     if is_shot_child(frame):
         return False
     if not str(getattr(frame, "uuid", "") or "").strip():
@@ -70,7 +67,6 @@ def is_img_pr_vo_parent(frame: Any) -> bool:
 
 
 def effective_image_prompt(frame: Any, frames: list[Any] | None = None) -> str:
-    """Промт для outsee: свой, иначе раскладка K2/K3 (реф = PNG родителя)."""
     own = str(getattr(frame, "image_prompt", None) or "").strip()
     if own:
         return own
@@ -109,7 +105,6 @@ def _child_angle_chip(frame: Any) -> str:
 
 
 def compose_coverage_child_prompt(child: Any, parent: Any | None = None) -> str:
-    """Формула ребёнка: сцена с референса (кадр N), крупность, РАКУРС, раскладка."""
     attrs = getattr(child, "attrs", None)
     layout = ""
     if isinstance(attrs, dict):
@@ -132,14 +127,12 @@ def compose_coverage_child_prompt(child: Any, parent: Any | None = None) -> str:
 
 
 def child_shot_brief(frame: Any, parent: Any | None = None) -> str:
-    """Свой шаг ребёнка: раскладка площадки, не копия STYLE родителя."""
     return compose_coverage_child_prompt(frame, parent)
 
 
 def write_coverage_child_prompts(
     frames: list[Any], *, overwrite: bool = False
 ) -> int:
-    """Вписать промт раскладки в пустой image_prompt shot-ребёнка. Родителей не трогает."""
     universe = list(frames)
     n = 0
     for fr in universe:
@@ -190,7 +183,6 @@ _IDENTITY_LOCK_PREFIX = "Image 1 is the identity reference of "
 
 
 def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
-    """Список кадров ноды «сцены → кадры» (attrs.кадры)."""
     attrs = getattr(frame, "attrs", None)
     if not isinstance(attrs, dict):
         return []
@@ -201,7 +193,6 @@ def planned_shots_from_attrs(frame: Any) -> list[dict[str, Any]]:
 
 
 def kadry_are_scene_shots(planned: list[dict[str, Any]] | None) -> bool:
-    """Настоящие кадры сцен (шаги действия / план+место), не заглушки Bnn-K1."""
     for item in planned or []:
         if not isinstance(item, dict):
             continue
@@ -225,7 +216,6 @@ def frame_has_scene_shots(frame: Any) -> bool:
 
 
 def _scene_plan_for(raw: Any, shots: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Площадка seed-ячейки → сцене: та же карта, заметки только своих кадров."""
     if not isinstance(raw, dict) or not raw.get("зоны"):
         return None
     from app.services.scene_plan import notes_for_shots
@@ -250,7 +240,6 @@ def main_action_text(frame: Any) -> str:
 
 
 def collect_bits_for_reseed(frames: list[Any]) -> list[dict[str, Any]]:
-    """Биты с самой длинной ячейки; если везде по одному — склеить по порядку."""
     per_cell: list[list[dict[str, Any]]] = []
     for fr in frames:
         found = bits_from_attrs(fr)
@@ -268,7 +257,6 @@ def collect_bits_for_reseed(frames: list[Any]) -> list[dict[str, Any]]:
 
 
 def strip_non_scene_kadry(frame: Any) -> bool:
-    """Снять фейковые Bnn-K1, чтобы shots GPT писал кадры-шаги с нуля."""
     planned = planned_shots_from_attrs(frame)
     if not planned or kadry_are_scene_shots(planned):
         return False
@@ -281,7 +269,6 @@ def strip_non_scene_kadry(frame: Any) -> bool:
 
 
 def coverage_shot_id(frame: Any) -> str:
-    """id шота покрытия: ``кадры[0].id`` или ``camera_subdivide.shot_id``."""
     planned = planned_shots_from_attrs(frame)
     if planned:
         sid = str(planned[0].get("id") or "").strip()
@@ -298,19 +285,12 @@ def parse_coverage_shot(shot_id: str) -> tuple[str, int] | None:
 
 
 def is_coverage_child(frame: Any) -> bool:
-    """Дочерний кадр покрытия: shot-ребёнок или есть родитель по T/X."""
     if is_shot_child(frame):
         return True
     return bool(coverage_parent_shot_id(frame))
 
 
 def coverage_parent_shot_id(frame: Any) -> str:
-    """Родитель покрытия: явный parent_id из таблицы T/X, иначе prefix-K1.
-
-    В scene-split структуре ``parent_id=null`` = новое место → референса
-    нет (кадр самостоятельный), эвристика prefix-K1 не применяется.
-    Leftover ``1-S1-K1`` на позднем VO-родителе (другая S-сцена) не still.
-    """
     cs = _cs(frame)
 
     def _stale_cross_scene(pid: str) -> bool:
@@ -370,7 +350,6 @@ def _pick_coverage_parent_by_shot_id(
     parent_sid: str,
     child: Any,
 ) -> Any | None:
-    """Первый leftover с тем же id не подменяет live-родителя с доски."""
     child_uid = str(getattr(child, "uuid", "") or "")
     try:
         child_n = int(getattr(child, "number", 0) or 0)
@@ -407,13 +386,6 @@ def _pick_coverage_parent_by_shot_id(
 
 
 def find_coverage_parent_frame(frames: list[Any], child: Any) -> Any | None:
-    """Still-родитель покрытия. VO-ячейка (parent_uuid) здесь не меняется.
-
-    По умолчанию K2/K3 берут K1 своей ячейки. Явный ``coverage_kind=child``
-    на доске — выбранный still (номер кадра, иначе id), даже с другой сцены.
-    Без этой роли ``coverage_parent_id`` X1 не подменяет PNG K1 ячейки.
-    Leftover с тем же shot_id не считается родителем.
-    """
     if parent_still_suppressed(child):
         return None
     child_uid = str(getattr(child, "uuid", "") or "")
@@ -446,7 +418,6 @@ def merge_parent_scene_refs(
     *,
     max_refs: int = 2,
 ) -> list[Any]:
-    """Слот 1 = PNG родителя (layout lock), слот 2 = персонаж."""
     if parent_png is None:
         return list(other)[:max_refs]
     out = [parent_png]
@@ -466,7 +437,6 @@ def with_parent_scene_lock(
     has_parent_ref: bool,
     has_char_ref: bool = False,
 ) -> str:
-    """Контракт Preserve/Change для GPT Image 2, если прикреплён still родителя."""
     raw = (prompt or "").strip()
     if not has_parent_ref:
         return raw
@@ -479,7 +449,6 @@ def with_parent_scene_lock(
 
 
 def with_character_sheet_lock(prompt: str, sheet_ids: list[str]) -> str:
-    """Image N = какой cXX. Без этого gpt-image-2 сливает два листа в одно лицо."""
     raw = (prompt or "").strip()
     ids = [str(x).strip() for x in sheet_ids if str(x).strip()]
     if not ids:
@@ -514,11 +483,6 @@ def with_character_sheet_lock(prompt: str, sheet_ids: list[str]) -> str:
 def flattened_coverage_groups(
     frames: list[Any],
 ) -> dict[str, list[Any]]:
-    """K1+K2+… после flatten: группа по префиксу id (`5` из `5-K2`).
-
-    После promote каждый кадр — vo_parent с ``parent_uuid`` = сам себе,
-    поэтому ``_group_by_parent`` их не склеивает.
-    """
     buckets: dict[str, list[tuple[int, Any]]] = {}
     for fr in frames:
         if not _is_pipeline_frame(fr):
@@ -541,7 +505,6 @@ def flattened_coverage_groups(
 def merge_flattened_coverage_members(
     members: list[Any],
 ) -> tuple[Any, list[Any]]:
-    """Склеить K1+K2+K3 обратно на родителя: полный закадр + кадры[]."""
     if len(members) < 2:
         return members[0], []
     parent = members[0]
@@ -588,10 +551,6 @@ async def collapse_flattened_coverage_cells(
     session: AsyncSession,
     project: Project,
 ) -> dict[str, Any]:
-    """Перед повторным script_frames_qc: K2/K3 → снова дети на K1.
-
-    Иначе GPT видит 44 самостоятельных ячейки и пишет покрытие на покрытие.
-    """
     from sqlalchemy import delete, or_, select as sel, update
 
     from app.models import Artifact, Frame, FrameEdge, FrameText, PromptVersion
@@ -609,7 +568,6 @@ async def collapse_flattened_coverage_cells(
         .all()
     )
     if any(_cs(fr).get("scene_split") for fr in frames):
-        # Уже разбито по сценам (родитель + дочерние шоты) — нечего склеивать.
         return {"groups": 0, "deleted": 0, "skipped": "scene_split"}
     groups = flattened_coverage_groups(frames)
     extra: list[Any] = []
@@ -656,7 +614,6 @@ async def collapse_flattened_coverage_cells(
 
 
 def _vo_parts_without_empty(text: str, n: int) -> list[str]:
-    """Нарезка без пустого хвоста: лишние слоты не оставляем пустыми."""
     raw = (text or "").strip()
     parts = split_text_into_parts(raw, max(1, int(n)))
     while parts and not str(parts[-1] or "").strip():
@@ -672,7 +629,6 @@ def kadry_vo_pieces(
     full: str,
     action: str = "",
 ) -> list[str]:
-    """Ровно ``len(planned)`` кусков. Нарезка VO длину лестницы не режет."""
     n = len(planned)
     if n < 1:
         text = " ".join((full or "").split())
@@ -705,7 +661,6 @@ def resolve_shot_plan(
     planned: list[dict[str, Any]],
     action: str = "",
 ) -> tuple[int, list[str]]:
-    """Сколько шотов: только из кадры[]. Без плана не выдумывать нарезку."""
     text = (original_vo or "").strip()
     if planned:
         return len(planned), kadry_vo_pieces(planned, text, action)
@@ -723,7 +678,6 @@ def bits_from_attrs(frame: Any) -> list[dict[str, Any]]:
 
 
 def kadry_from_bits(full_vo: str, bits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """1 бит → 1 кадр. Склейка закадр = весь текст ячейки, без хвостов."""
     text = " ".join((full_vo or "").split())
     ordered = sorted(
         (item for item in bits if isinstance(item, dict)),
@@ -768,7 +722,6 @@ def kadry_from_bits(full_vo: str, bits: list[dict[str, Any]]) -> list[dict[str, 
 def _kadry_rows(
     bits: list[dict[str, Any]], parts: list[str]
 ) -> list[dict[str, Any]]:
-    """1 бит = самостоятельная VO-ячейка ``Bnn-K1``, не покрытие ``B01-K2``."""
     rows: list[dict[str, Any]] = []
     for i, (item, piece) in enumerate(zip(bits, parts, strict=False)):
         sid = f"B{i + 1:02d}-K1"
@@ -787,7 +740,6 @@ def _kadry_rows(
 
 
 def ensure_kadry_from_bits(frame: Any) -> int:
-    """Если кадры[] пустые, а биты есть — собрать покрытие по якорям."""
     if planned_shots_from_attrs(frame):
         return 0
     bits = bits_from_attrs(frame)
@@ -807,7 +759,6 @@ _SCENE_CHAIN_RE = re.compile(r"(?m)^\s*\d+\.\s+\S")
 
 
 def looks_like_scene_chain(text: str) -> bool:
-    """Нумерованная цепь сцен: «1. место — действие» + кусок в скобках."""
     raw = (text or "").strip()
     if not raw:
         return False
@@ -824,14 +775,10 @@ def _apply_shot_meta(frame: Any, shot: dict[str, Any] | None) -> None:
         attrs["place"] = place
     if action:
         attrs["shot01_action"] = action
-        # НИКОГДА не пишем действие шота в main_action: иначе stub первого
-        # шага затирает/маскирует полное главное_действие и shots видит steps=0.
     for key in ("раскладка", "зона"):
         val = str(shot.get(key) or "").strip()
         if val:
             attrs[key] = val
-        # не стираем уже записанную раскладку/зону пустым shot-полем
-        # (QC sync / partial ops иначе затирали layout)
     frame.attrs = attrs
     _flag_attrs(frame)
     extra: dict[str, Any] = {}
@@ -946,7 +893,6 @@ def repair_split_vo_on_parents(frames: list[Any]) -> int:
             joined = next(iter(unique))
         else:
             parent_vo = (getattr(parent, "voiceover_text", None) or "").strip()
-            # Порог уже разрезал закадр по запятой — не склеивать обратно.
             if parent_vo.endswith((",", ";", ":", "—")):
                 continue
             joined = " ".join(p for p in parts if p)
@@ -1014,7 +960,6 @@ def _norm_vo_key(text: str) -> str:
 def _write_frame_shot_id(
     frame: Any, sid: str, *, parent_sid: str | None
 ) -> None:
-    """camera_subdivide + кадры[0] — coverage_shot_id читает кадры первым."""
     extra: dict[str, Any] = {"shot_id": sid}
     if parent_sid is not None:
         extra["coverage_parent_id"] = parent_sid
@@ -1187,13 +1132,6 @@ def leftover_later_duplicate_vo_frames(
     frames: list[Any],
     scenes_dir: Path | None = None,
 ) -> int:
-    """Второй раз тот же закадр — leftover, если нет своего PNG.
-
-    Повторный expand копирует фразы на хвост (tkach #65 и #129). Карточку
-    без картинки прячем. PNG второго прохода не трогаем: это другой still.
-    Шоты живой ячейки (parent_uuid → этот прогон) не прячем: иначе монтаж
-    оставляет у сцены один кадр.
-    """
     uuid_of = {
         str(getattr(fr, "uuid", "") or ""): fr
         for fr in frames
@@ -1243,7 +1181,6 @@ def apply_ordered_voiceover_to_stills(
     pieces: list[str],
     scenes_dir: Path,
 ) -> int:
-    """Закадр QC/лестницы — на кадры с PNG по порядку, не на пустые слоты."""
     stills: list[Any] = []
     for fr in _ordered_pipeline_frames(frames):
         if is_coverage_leftover(fr):
@@ -1280,7 +1217,6 @@ def _norm_words(text: str) -> list[str]:
 
 
 def kadry_vo_partition(full: str, planned: list[dict[str, Any]]) -> list[str] | None:
-    """закадр из кадры[], только если склейка = ячейка и нет обрубков."""
     parts = [str(item.get("закадр") or "").strip() for item in planned]
     if not parts or not all(parts):
         return None
@@ -1294,13 +1230,6 @@ def kadry_vo_partition(full: str, planned: list[dict[str, Any]]) -> list[str] | 
 def kadry_vo_partition_aligned(
     full: str, planned: list[dict[str, Any]]
 ) -> list[str] | None:
-    """Фрагменты кадры[].закадр, выровненные по тексту последовательно.
-
-    Терпим к мелким расхождениям GPT (пунктуация/пробелы между кусками):
-    каждый фрагмент ищется в остатке текста; промежутки приклеиваются к
-    предыдущему куску, хвост — к последнему. Склейка = весь текст.
-    None — если фрагмент не нашёлся по порядку (тогда слепая нарезка).
-    """
     text = " ".join((full or "").split())
     frags = [" ".join(str(item.get("закадр") or "").split()) for item in planned]
     if not text or not frags or any(not f for f in frags):
@@ -1344,7 +1273,6 @@ def _scene_num(shot: dict[str, Any] | None) -> int | None:
 
 
 def frame_scene_number(frame: Any) -> int | None:
-    """Номер сцены кадра: camera_subdivide / кадры[0] / id ``1-S3-K1``."""
     cs = _cs(frame)
     try:
         return int(cs.get("сцена"))
@@ -1367,7 +1295,6 @@ _SIDECAR_PLACE_RE = re.compile(
 
 
 def generation_place_from_prompt(prompt: str) -> str:
-    """Место из строки «Место:» / «Место и время:». Preserve — lock, не локация."""
     raw = str(prompt or "")
     m = _SIDECAR_PLACE_RE.search(raw)
     if m:
@@ -1376,7 +1303,6 @@ def generation_place_from_prompt(prompt: str) -> str:
 
 
 def generation_place_from_sidecar(scenes_dir: Path, number: int) -> str:
-    """Место из sidecar JSON рядом с PNG кадра."""
     if number < 1 or not scenes_dir.is_dir():
         return ""
     files = sorted(
@@ -1399,7 +1325,6 @@ def apply_generation_places_from_sidecars(
     frames: list[Any],
     scenes_dir: Path,
 ) -> int:
-    """Вернуть ``место`` кадра из sidecar — DB после relink часто гомогенна."""
     updated = 0
     for fr in frames:
         if is_coverage_leftover(fr):
@@ -1462,7 +1387,6 @@ def _ordered_pipeline_frames(frames: list[Any]) -> list[Any]:
 
 
 def assigned_scene_numbers(frames: list[Any]) -> list[int | None]:
-    """Номер сцены по порядку кадров: явный, иначе предыдущий (хвост без ``сцена``)."""
     prev: int | None = None
     out: list[int | None] = []
     for fr in frames:
@@ -1476,7 +1400,6 @@ def assigned_scene_numbers(frames: list[Any]) -> list[int | None]:
 
 
 def _is_generic_shot_id(shot_id: str) -> bool:
-    """Короткие ``f1`` / ``1-S1-K1`` переиспользуются между сценами — не ключ группы."""
     sid = (shot_id or "").strip()
     if not sid:
         return True
@@ -1492,7 +1415,6 @@ _INHERIT_PLACE_RE = re.compile(
 
 
 def _norm_place_key(place: str) -> str:
-    """Канон места для склейки: пусто = наследовать предыдущее."""
     raw = " ".join((place or "").split()).strip()
     if not raw:
         return ""
@@ -1504,7 +1426,6 @@ def _norm_place_key(place: str) -> str:
 
 
 def _explicit_scene_number(frame: Any) -> int | None:
-    """Номер сцены из cs/кадры, не из stamped ``7-S2-K1``."""
     cs = _cs(frame)
     try:
         return int(cs.get("сцена"))
@@ -1520,7 +1441,6 @@ def _explicit_scene_number(frame: Any) -> int | None:
 
 
 def _should_split_place_run(prev: Any, fr: Any) -> bool:
-    """Смена места режет склейку, кроме подхода той же сцены (T6, parent_id пуст)."""
     prev_p = _norm_place_key(_frame_place(prev))
     cur_p = _norm_place_key(_frame_place(fr))
     if not prev_p or not cur_p or prev_p == cur_p:
@@ -1541,15 +1461,6 @@ def _should_split_place_run(prev: Any, fr: Any) -> bool:
 
 
 def assigned_place_run_keys(frames: list[Any]) -> list[str]:
-    """Прогон сцены по месту картинки, не по штампу VO-ячейки.
-
-    Смена места при том же номере и пустом parent_id (улица → крыльцо) не режет.
-    parent_id на чужой K1 при смене места режет. То же место на соседнем
-    VO-родителе не режет — иначе дети still-лока висят на двух карточках.
-    Пустое / «тот же» место наследует текущий прогон; следующее реальное
-    место режет, даже если предыдущий кадр был пустым.
-    ``cs.сцена`` / parent_uuid сами по себе группу не закрывают.
-    """
     flats = assigned_flatten_keys(frames)
     out: list[str] = []
     prev_key = ""
@@ -1600,7 +1511,6 @@ def assigned_place_run_keys(frames: list[Any]) -> list[str]:
 
 
 def _run_already_linked(members: list[Any]) -> bool:
-    """Эта пачка уже parent + shot с parent_uuid на голову — не переписывать."""
     if not members:
         return True
     parent = members[0]
@@ -1626,7 +1536,6 @@ def _run_already_linked(members: list[Any]) -> bool:
 
 
 def flatten_scene_key(frame: Any) -> str | None:
-    """Ключ сцены после flatten: S-лестница / префикс ``57-2``, не reused f1."""
     sid = coverage_shot_id(frame)
     from_s = _scene_from_shot_id(sid)
     if from_s is not None:
@@ -1652,7 +1561,6 @@ def flatten_scene_key(frame: Any) -> str | None:
 
 
 def assigned_flatten_keys(frames: list[Any]) -> list[str]:
-    """Ключ каждого кадра; пустой хвост (f2 без места) наследует предыдущий."""
     out: list[str] = []
     prev: str | None = None
     for i, fr in enumerate(frames):
@@ -1673,14 +1581,6 @@ def relink_shot_roles_by_scene(
     *,
     resplit_places: bool = False,
 ) -> int:
-    """Склеить подряд идущие кадры одной сцены: первый родитель, остальные shot.
-
-    QC часто выкидывает ``сцена``. promote тогда делает 1 кадр = 1 VO-ячейка.
-    По умолчанию уже связанные parent+children не трогаем (хвост
-    script_frames_qc). ``resplit_places`` — доска монтажа: смена места
-    с parent_id на чужой K1 режет группу, иначе дети одного родителя
-    висят на двух соседних сценах.
-    """
     work = [
         fr
         for fr in _ordered_pipeline_frames(frames)
@@ -1714,8 +1614,6 @@ def relink_shot_roles_by_scene(
                 gap = int(fr.number) - int(prev_fr.number) > 1
             except (TypeError, ValueError):
                 gap = False
-        # Ручное «разделить сцену» на доске: голова новой сцены режет прогон по
-        # месту, иначе пересборка доски склеивает кадры обратно.
         manual = (
             resplit_places
             and not is_shot_child(fr)
@@ -1867,12 +1765,6 @@ def relink_shot_roles_by_scene(
 def planned_for_parent_expand(
     parent: Any, planned: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """После scene_split не разворачивать чужие сцены из полного кадры[].
-
-    Повторный apply-ops часто пишет всю лестницу ролика на первый
-    vo_parent. Без отсечения expand считает need=20 при have=2 и
-    вставляет вторую копию сцен 2…N рядом со старыми ячейками.
-    """
     if not planned or not _cs(parent).get("scene_split"):
         return list(planned)
     own = frame_scene_number(parent)
@@ -1898,7 +1790,6 @@ def _ladder_keep_key(members: list[Any], index: int) -> tuple[int, int, int]:
 
 
 def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
-    """Вторые лестницы той же сцены (``1-K7`` рядом с ``1-S3-K*``)."""
     groups = _group_by_parent(frames)
     seen: set[int] = set()
     ladders: dict[int, list[tuple[int, list[Any]]]] = {}
@@ -1942,7 +1833,6 @@ def partition_planned_by_scene_chain(
     planned: list[dict[str, Any]],
     action: str,
 ) -> list[str] | None:
-    """Нарезать закадр по сценам ``главное_действие``, не по всей ячейке."""
     from app.services.shot_templates import parse_scene_chain, plain_scene_vo
 
     chain = parse_scene_chain(action)
@@ -1997,11 +1887,6 @@ def _cell_full_text(parent: Any, members: list[Any]) -> str:
 
 
 def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
-    """После QC: закадр ячейки → voiceover_text каждого кадра группы.
-
-    Режем по фразам/клаузам, не по 27–54 и не по словам. Склейка непустых
-    кусков = исходная ячейка. Полный текст — в attrs.vo_cell_full.
-    """
     updated = 0
     for members in _group_by_parent(frames).values():
         if not members:
@@ -2040,7 +1925,6 @@ def apply_shot_voiceover_to_cells(frames: list[Any]) -> int:
 
 
 def _scene_group_key(shot: dict[str, Any] | None, solo: str) -> str:
-    """Ключ сцены: ``сцена`` / ``1-S3-K1`` / цепочка ``parent_id``, иначе соло."""
     if not isinstance(shot, dict):
         return solo
     sc = shot.get("сцена")
@@ -2059,14 +1943,6 @@ def _scene_group_key(shot: dict[str, Any] | None, solo: str) -> str:
 
 
 def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
-    """Кадры[] → ячейки по СЦЕНАМ: K1 = VO-родитель, K2+ = дочерние шоты.
-
-    Сцена (``кадры[].сцена``) = одна ячейка заказа: родитель несёт полную
-    лестницу кадров сцены (``parent_id`` по таблице T/X) и кусок закадра
-    своего кадра, дочерние шоты — ``role="shot"`` с ``parent_uuid`` на
-    родителя и своими кусками. Склейка кусков всех ячеек = закадр исходной
-    ячейки. Лишние слоты сверх ``кадры[]`` — на удаление.
-    """
     from app.services.plan_shot2 import (
         SHOT2_PROMPT_ATTR,
         SHOT2_VIDEO_PROMPT_ATTR,
@@ -2111,7 +1987,6 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
         planned = (planned or [])[:n]
         parts = parts[:n]
 
-        # Группы шотов по сценам (порядок = порядок кадров в кадры[]).
         scene_order: list[str] = []
         scene_idxs: dict[str, list[int]] = {}
         for i in range(n):
@@ -2122,7 +1997,6 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                 scene_order.append(key)
             scene_idxs[key].append(i)
 
-        # Цепь сцен ячейки → своя строка главное_действие на каждую сцену.
         chain = {sc["n"]: sc for sc in parse_scene_chain(main_action_text(parent))}
         seed_plan = (getattr(parent, "attrs", None) or {}).get("площадка")
 
@@ -2148,8 +2022,6 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                 shot["закадр"] = pieces[pos]
                 pid = str(shot.get("parent_id") or "").strip()
                 if pos == 0 and (not pid or pid == sid or pid in shot_ids):
-                    # Первый кадр сцены — master: parent только кросс-ячеечный
-                    # (X1: master этой локации из прошлой ячейки).
                     shot["parent_id"] = None
                 shots.append(shot)
             scene_n: int | None = None
@@ -2196,8 +2068,6 @@ def promote_shots_to_vo_cells(frames: list[Any]) -> tuple[int, list[Any]]:
                         attrs.pop("биты", None)
                         attrs.pop("bits", None)
                 else:
-                    # Дочерний шот сцены: свой кадр, свой кусок закадра.
-                    # shot2-промт не трогаем — картинка из PNG родителя.
                     attrs["кадры"] = [shot] if shot else []
                     attrs["vo_cell_full"] = piece
                     attrs.pop("биты", None)
@@ -2246,7 +2116,6 @@ async def rebuild_vo_cells_from_shots(
     project: Project,
     frames: list[Any],
 ) -> tuple[list[Any], dict[str, Any]]:
-    """Пересобрать ячейки закадра 1:1 с кадрами. Лишние Frame удалить."""
     from sqlalchemy import delete, or_, update
 
     from app.models import Artifact, FrameEdge, FrameText, PromptVersion
@@ -2269,7 +2138,6 @@ async def rebuild_vo_cells_from_shots(
             vo or cell or str(cs.get("vo_shot") or "").strip() or has_kadry
             or is_shot_child(fr)
         )
-        # Пустой закадр сам по себе не повод сносить шот из кадры[].
         if not _is_pipeline_frame(fr) or not has_vo:
             drop.append(fr)
             seen.add(id(fr))
@@ -2351,11 +2219,6 @@ async def reseed_vo_cells_without_kadry(
     session: AsyncSession,
     project: Project,
 ) -> dict[str, Any]:
-    """Несколько ячеек без T/X кадры[] → снова 1 seed + биты.
-
-    Заглушки Bnn-K1 не считаются кадрами сцен: их снимаем и схлопываем.
-    Склейка split-ячеек не требуется — SoT закадра = script_text.
-    """
     from sqlalchemy import select as sel
 
     from app.services import db_v2
@@ -2422,11 +2285,6 @@ async def adopt_full_kadry_ladder(
     project: Project,
     frames: list[Any],
 ) -> int:
-    """Лестница кадры[] на одном uuid длиннее, чем кадров в БД — она SoT.
-
-    QC пишет все шоты на первый кадр. Старые vo_parent прошлого promote
-    иначе остаются, expand не восстанавливает недостающие строки.
-    """
     from sqlalchemy import delete, or_, update
 
     from app.models import Artifact, FrameEdge, FrameText, PromptVersion
@@ -2488,11 +2346,6 @@ async def adopt_full_kadry_ladder(
 
 
 def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
-    """После QC: перенести план/раскладка/ракурс из attrs.кадры на ячейки покрытия.
-
-    Не делает adopt/expand/rebuild — только обновляет meta уже существующих
-    vo_parent + shot кадров, чтобы shots_report видел то, что написал QC.
-    """
     updated = 0
     work = [f for f in frames if _is_pipeline_frame(f)]
     for members in _group_by_parent(work).values():
@@ -2511,10 +2364,8 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
         ordered.sort(
             key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0)
         )
-        # Ensure parent carries full ladder (QC SoT).
         pattrs = dict(getattr(parent, "attrs", None) or {})
         if planned_shots_from_attrs(parent) != planned:
-            # keep existing if already same length ids; otherwise write planned
             pattrs["кадры"] = [dict(s) for s in planned if isinstance(s, dict)]
             parent.attrs = pattrs
             _flag_attrs(parent)
@@ -2526,11 +2377,9 @@ def sync_qc_kadry_onto_coverage_frames(frames: list[Any]) -> int:
             before_plan = str(_cs(fr).get("план") or "")
             before_lay = str((getattr(fr, "attrs", None) or {}).get("раскладка") or "")
             _apply_shot_meta(fr, shot)
-            # Children keep single-shot кадры mirror for report overlays.
             if fr is not parent and is_shot_child(fr):
                 cattrs = dict(getattr(fr, "attrs", None) or {})
                 cattrs["кадры"] = [dict(shot)]
-                # раскладка already set by _apply_shot_meta on attrs
                 fr.attrs = cattrs
                 _flag_attrs(fr)
             after_plan = str(_cs(fr).get("план") or "")
@@ -2544,13 +2393,11 @@ async def apply_shot_coverage_to_vo_cells(
     session: AsyncSession,
     project: Project,
 ) -> dict[str, Any]:
-    """Хвост группы script_frames_qc: кадры[] → ячейки закадра 1:1 + R49."""
     from sqlalchemy import inspect as sa_inspect
     from sqlalchemy import select as sel
 
     from app.models import Frame
 
-    # После session.expire_all() sync доступ к project.* → MissingGreenlet.
     insp = sa_inspect(project)
     if insp.expired:
         pid = int(insp.identity[0]) if insp.identity else None
@@ -2596,7 +2443,7 @@ async def apply_shot_coverage_to_vo_cells(
         from app.services.db_apply import export_project_xlsx
 
         xlsx = export_project_xlsx(project, work)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("[#{}] coverage export xlsx skipped: {}", project.id, exc)
     out = {
         **rebuilt,
@@ -2618,11 +2465,6 @@ async def apply_shot_coverage_to_vo_cells(
 
 
 def distribute_coverage_prompts(frames: list[Any]) -> int:
-    """Промты покрытия: с родителя в shot2 детей. image_prompt детей не трогаем.
-
-    Классический shot2 на родителе не запускаем, если есть дети — иначе
-    дубль PNG. Статус shot2 переезжает на ребёнка.
-    """
     from app.services.plan_shot2 import (
         SHOT2_PROMPT_ATTR,
         SHOT2_STATUS_ATTR,
@@ -2685,11 +2527,6 @@ def distribute_coverage_prompts(frames: list[Any]) -> int:
 
 
 def inherit_camera_on_children(frames: list[Any]) -> int:
-    """Дети берут движение/набор с родителя; крупность уже из плана шота.
-
-    Сирота (vo_parent нет в группе): набор из ``место``, движение — статика.
-    Иначе добор меню съёмки их не видит (нет закадра) и нода падает 50/52.
-    """
     updated = 0
     for members in _group_by_parent(frames).values():
         parent = next(
@@ -2739,11 +2576,6 @@ async def expand_vo_cells_into_shots(
     project: Project,
     frames: list[Frame],
 ) -> tuple[list[Frame], dict[str, Any]]:
-    """Шоты внутри ячейки.
-
-    Без группы на канвасе — глобальный путь main (режем копию закадра).
-    С ``script_frames_qc`` — ячейка = сцена, дети = шаги действия.
-    """
     from app.services.node_groups import canvas_has_script_frames_qc
 
     if canvas_has_script_frames_qc(project):
@@ -2756,7 +2588,6 @@ async def _expand_vo_cells_into_shots_default(
     project: Project,
     frames: list[Frame],
 ) -> tuple[list[Frame], dict[str, Any]]:
-    """Глобальный пайплайн: закадр разбивки не меняем, режем копию."""
     report: dict[str, Any] = {
         "skipped": False,
         "parents": 0,
@@ -2857,7 +2688,6 @@ async def _expand_vo_cells_into_shots_group(
     project: Project,
     frames: list[Frame],
 ) -> tuple[list[Frame], dict[str, Any]]:
-    """Группа script_frames_qc: ячейка = сцена, дети = шаги действия."""
     report: dict[str, Any] = {
         "skipped": False,
         "parents": 0,

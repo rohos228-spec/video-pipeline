@@ -28,7 +28,6 @@ from app.orchestrator.auto_advance import (
 
 
 class _EmptyResult:
-    """Результат SELECT без строк (все способы чтения)."""
 
     def scalar_one_or_none(self):
         return None
@@ -53,16 +52,15 @@ class _EmptyResult:
 
 
 class _StubAsyncSession:
-    """Минимальный stub: `flush()` — no-op. `execute()` зовётся только
-    в excel-hero ветке, которую тут не проверяем."""
+    """Минимальный stub: `flush()` — no-op."""
 
     async def flush(self) -> None:
         return None
 
+    async def refresh(self, obj) -> None:
+        return None
+
     async def execute(self, *_args, **_kwargs):
-        # Продвижение теперь грузит граф проекта (load_graph_for_project ->
-        # WorkflowRun) и проверяет данные шага (step_data_guard): в этих кейсах
-        # БД «пуста» -> пустой результат, поведение parity-таблицы не меняется.
         return _EmptyResult()
 
 
@@ -102,7 +100,6 @@ def _make_hitl(kind: HITLKind, payload: dict | None = None) -> HITLRequest:
 
 
 def _enrich_chain_graph(last_slot: int):
-    """Граф канваса: enrich_1 -> ... -> enrich_<last_slot> -> image_prompts."""
     from app.orchestrator.graph.planner import WorkflowGraph
 
     types = [f"enrich_{i}" for i in range(1, last_slot + 1)] + ["image_prompts"]
@@ -121,31 +118,20 @@ def _use_graph(monkeypatch, graph) -> None:
 
     monkeypatch.setattr("app.orchestrator.graph.planner.load_graph_for_project", _load)
 
-    # Гейт данных (can_enter_running: нужен voiceover и т.п.) здесь не предмет теста:
-    # проверяем выбор следующего шага по графу, поэтому пропускаем любой target.
     async def _can_enter(_session, _project, _target):
         return True, "", None
 
     monkeypatch.setattr("app.orchestrator.auto_advance.can_enter_running", _can_enter)
 
 
-# Дизайн (6e3202c9 «remove graph_executor toggle, always follow canvas edges»):
-# следующий шаг после *_ready определяет ТОЛЬКО граф канваса; прежняя функция
-# `_next_running_with_enrich_cap` (parity #3, enrich_slots_count) больше не вызывается
-# (мёртвый код), число enrich-слотов задаётся цепочкой нод/disabled_nodes на канвасе.
-# Тесты parity #3 переписаны под это поведение.
 @pytest.mark.asyncio
 async def test_enrich_cap_2_skips_to_image_prompts(monkeypatch) -> None:
-    """Граф с цепочкой enrich_1..2 -> image_prompts: после enrich_2_ready проект
-    уходит в generating_image_prompts, а НЕ в enriching_3 (cap задан графом;
-    enrich_slots_count на выбор шага не влияет)."""
     _use_graph(monkeypatch, _enrich_chain_graph(2))
     project = _make_project(
         status=ProjectStatus.enrich_2_ready,
         enrich_slots_count=5,
     )
     transition = TRANSITIONS[ProjectStatus.enrich_2_ready]
-    # default-таблица говорит enriching_3, но граф канваса приоритетнее.
     assert transition.next_running is ProjectStatus.enriching_3
     hitl = _make_hitl(HITLKind.approve_hero)
     await _apply_approve(
@@ -157,8 +143,6 @@ async def test_enrich_cap_2_skips_to_image_prompts(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_enrich_cap_5_uses_full_chain(monkeypatch) -> None:
-    """Граф с цепочкой enrich_1..5: после enrich_2_ready идём в enriching_3
-    (даже при enrich_slots_count=2 - поле не участвует в выборе шага)."""
     _use_graph(monkeypatch, _enrich_chain_graph(5))
     project = _make_project(
         status=ProjectStatus.enrich_2_ready,
@@ -174,8 +158,7 @@ async def test_enrich_cap_5_uses_full_chain(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_no_next_node_in_graph_does_not_advance(monkeypatch) -> None:
-    """Пустой граф (нет ребра после enrich_2): статус не меняется (warning 'check canvas edges')."""
+async def test_enrich_no_next_node_in_graph_falls_back_to_linear_next(monkeypatch) -> None:
     from app.orchestrator.graph.planner import WorkflowGraph
 
     _use_graph(monkeypatch, WorkflowGraph([], []))
@@ -184,7 +167,7 @@ async def test_enrich_no_next_node_in_graph_does_not_advance(monkeypatch) -> Non
         _StubAsyncSession(), project, _make_hitl(HITLKind.approve_hero),
         TRANSITIONS[ProjectStatus.enrich_2_ready], bot=None, badge="",
     )
-    assert project.status is ProjectStatus.enrich_2_ready
+    assert project.status is ProjectStatus.enriching_3
 
 
 @pytest.mark.asyncio
@@ -197,8 +180,6 @@ async def test_hero_count_2_stays_in_generating_hero() -> None:
         hero_variations=[1, 1],
     )
     transition = TRANSITIONS[ProjectStatus.hero_ready]
-    # default → generating_items, parity #1 ДОЛЖЕН переписать на
-    # generating_hero.
     assert transition.next_running is ProjectStatus.generating_items
     hitl = _make_hitl(
         HITLKind.approve_hero,
@@ -297,9 +278,6 @@ async def test_auto_mode_advances_without_manual_approval(monkeypatch) -> None:
         AsyncMock(return_value=hitl),
     )
     monkeypatch.setattr("app.orchestrator.auto_advance._apply_approve", apply_mock)
-    # Тест проверяет только «pending HITL не блокирует auto_mode»: гейты данных
-    # (clamp_status_to_data сбрасывал frames_ready -> new на пустой БД, harness,
-    # gen_queue, ready_status_confirmed_by_data) в unit-тесте без БД отключаем.
     async def _noop(*_a, **_k):
         return None
 
@@ -320,7 +298,6 @@ async def test_auto_mode_advances_without_manual_approval(monkeypatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_managed_execution(monkeypatch):
-    """Observe-v1 managed-execution читает глобальную БД observer (в unit-тесте не поднята)."""
 
     async def _off(_pid):
         return False

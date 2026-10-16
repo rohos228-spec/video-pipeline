@@ -146,8 +146,18 @@ export function NodeModelPicker({
   const catalog = catalogForNodeType(catalogQuery.data?.catalog ?? localCatalog(), nodeType);
   const selected = findCatalogModel(catalog, selectedId) ?? findCatalogModel(localCatalog(), selectedId);
   const media = mediaOptionsForModel(selectedId);
+  const priceBit = selected?.pricing.usd_per_video
+    ? `${formatUsdPrice(selected.pricing.usd_per_video)}/клип`
+    : selected?.pricing.usd_per_image
+      ? `${formatUsdPrice(selected.pricing.usd_per_image)}/фото`
+      : null;
+  const isSelectedT2V =
+    selected?.kind === "video" &&
+    (selected.id.endsWith("-t2v") || Boolean(selected.api_model?.endsWith("-t2v")));
   const summaryBits = [
     selected?.label || selectedId,
+    isSelectedT2V ? "T2V" : null,
+    priceBit,
     media?.resolutions.length
       ? clampMediaOption(imageResolution, media.resolutions, media.defaultResolution)
       : null,
@@ -432,6 +442,9 @@ function ModelCard({
     typeof model.pricing.cache_read_usd_per_m === "number" ||
     typeof model.pricing.cache_create_usd_per_m === "number";
   const isImage = model.kind === "image";
+  const isT2V =
+    model.kind === "video" &&
+    (model.id.endsWith("-t2v") || Boolean(model.api_model?.endsWith("-t2v")));
   const hasMediaMenus = Boolean(
     media && (media.resolutions.length || media.qualities.length || media.aspects.length),
   );
@@ -466,11 +479,16 @@ function ModelCard({
         }
       >
         <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-1.5 truncate text-[13px] font-semibold tracking-tight text-white">
+          <div className="flex flex-wrap items-center gap-1.5 text-[13px] font-semibold tracking-tight text-white">
             <span className="truncate">{model.label.replace(/\s*\(1K\/2K\/4K\)\s*$/i, "")}</span>
             {model.is_top && (
               <span className="inline-flex shrink-0 items-center rounded-md border border-[#b49bff]/40 bg-[#b49bff]/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[#d9ccff]">
                 ТОП
+              </span>
+            )}
+            {isT2V && (
+              <span className="inline-flex shrink-0 items-center rounded-md border border-amber-400/50 bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.25)]">
+                Только текст (T2V)
               </span>
             )}
           </div>
@@ -484,7 +502,15 @@ function ModelCard({
       <div className="mt-3 rounded-xl border border-white/[0.04] bg-black/30 px-3 py-2.5">
         <div className="flex items-center justify-between text-[9px] font-semibold uppercase tracking-[0.14em] text-white/35">
           <span>Цена</span>
-          <span>{isImage ? "$ / фото" : model.kind === "video" ? "провайдер" : "$ / 1M токенов"}</span>
+          <span>
+            {isImage
+              ? "$ / фото"
+              : model.kind === "video"
+                ? model.id === "veo-3-1-lite"
+                  ? "$ / клип (~8с)"
+                  : "$ / клип (~5с)"
+                : "$ / 1M токенов"}
+          </span>
         </div>
         {isImage ? (
           <div className="mt-2">
@@ -494,12 +520,22 @@ function ModelCard({
             <div className="mt-1 text-[9px] uppercase tracking-wider text-white/35">за изображение</div>
           </div>
         ) : model.kind === "video" ? (
-          <div className="mt-2">
-            <div className="text-[16px] font-semibold leading-none text-[#c4b2ff]">
-              {model.provider === "kie" ? "Kie" : "Outsee"}
+          <div className="mt-2 flex items-end justify-between gap-2">
+            <div>
+              <div className="text-[22px] font-semibold tabular-nums leading-none text-[#c4b2ff]">
+                {formatUsdPrice(model.pricing.usd_per_video)}
+              </div>
+              <div className="mt-1 text-[9px] uppercase tracking-wider text-white/35">
+                {model.id === "veo-3-1-lite" ? "за 8с клип" : "за 5с клип"}
+              </div>
             </div>
-            <div className="mt-1 text-[9px] uppercase tracking-wider text-white/35">
-              {model.provider === "kie" ? "KIE_API_KEY" : "OUTSEE_API_KEY"}
+            <div className="text-right">
+              <div className="text-[13px] font-semibold leading-none text-white/80">
+                {model.provider === "kie" ? "Kie" : "Outsee"}
+              </div>
+              <div className="mt-1 text-[9px] uppercase tracking-wider text-white/35">
+                {model.provider === "kie" ? "KIE_API_KEY" : "OUTSEE_API_KEY"}
+              </div>
             </div>
           </div>
         ) : (
@@ -519,7 +555,7 @@ function ModelCard({
             </div>
           </div>
         )}
-        {hasCache && !isImage ? (
+        {hasCache && !isImage && model.kind !== "video" ? (
           <div
             className={cn(
               "grid transition-all duration-300",
@@ -559,6 +595,12 @@ function ModelCard({
           </div>
         ) : null}
       </div>
+
+      {isT2V && (
+        <div className="mt-2.5 rounded-xl border border-amber-400/25 bg-amber-500/10 p-2.5 text-[11px] leading-relaxed text-amber-200/90 shadow-[0_0_12px_rgba(245,158,11,0.1)]">
+          <span className="font-semibold text-amber-300">Внимание (T2V):</span> модель генерирует случайное видео только по тексту и <u>не оживляет</u> стартовый кадр персонажа.
+        </div>
+      )}
 
       {hasMediaMenus && media ? (
         <div className="mt-3 space-y-1.5" onClick={(e) => e.stopPropagation()}>

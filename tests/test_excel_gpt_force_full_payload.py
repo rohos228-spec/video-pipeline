@@ -116,7 +116,6 @@ def test_force_full_strip_keys_by_node() -> None:
 
 
 def test_group_rewrite_batches_include_already_filled() -> None:
-    """Группа action/shots/QC не skip-filled: новые ops должны перезаписать."""
     from app.services.apply_ops_batches import _pending_frames
 
     frames = [

@@ -51,7 +51,6 @@ _IMG_PR_ATTR_KEYS: tuple[str, ...] = (
 
 
 def _action_chain_score(text: str) -> tuple[int, int, int, int, int]:
-    """Полная цепь ОДНОЙ сцены (→), не stub и не dump всех сцен в main_action."""
     s = (text or "").strip()
     if not s:
         return (0, 0, 0, 0, 0)
@@ -82,7 +81,6 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
         val = src.get(key)
         if val is None:
             continue
-        # Биты/кадры — как JSON-массив в db_frames, не строка «[{…}]».
         if isinstance(val, (list, dict)):
             out[key] = val
             continue
@@ -98,8 +96,6 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
                 out[key] = parsed
                 continue
         out[key] = text
-    # Prefer полную цепь сцен (главное_действие с →) над stub main_action
-    # (часто первый шаг после expand) — иначе steps=0 и VO-cap схлопывает фильм.
     best = _prefer_full_action(
         str(out.get("main_action") or ""),
         str(src.get("main_action") or ""),
@@ -109,7 +105,6 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
     if best:
         out["main_action"] = best
         out["главное_действие"] = best
-    # Русский алиас для персонажей кадра (агенты часто ждут «персонажи»).
     if "characters" in out and "персонажи" not in out:
         out["персонажи"] = out["characters"]
     elif not out.get("characters"):
@@ -119,8 +114,6 @@ def _pick_attrs(attrs: dict[str, Any] | None) -> dict[str, Any]:
                 out["characters"] = str(raw).strip()
                 out["персонажи"] = out["characters"]
                 break
-    # Монтаж пишет «действие»; агент img_pr ждёт shot01_action (ACTION).
-    # Не берём главное_действие — это цепь всей сцены, не шота.
     if "shot01_action" not in out:
         for alt in ("действие", "action"):
             raw = src.get(alt)
@@ -263,12 +256,6 @@ def force_full_strip_output_keys(
     *,
     footer_kind: str | None = None,
 ) -> tuple[str, ...]:
-    """Поля, которые нельзя кормить GPT на прогоне ноды группы.
-
-    Выход самой ноды + протухший downstream (кадры на action, действие
-    на script). Иначе модель копирует прошлый прогон 1-в-1.
-    QC кадры не снимает — она читает то, что только что записали shots.
-    """
     kind = str(footer_kind or "").strip()
     if kind == "bits":
         return (
@@ -352,7 +339,6 @@ def build_excel_gpt_db_context(
         if strip_prompts:
             # Ручной ▶: не кормить старую аналитику/действие — модель копирует.
             # Биты / цепь сцен / кадры — вход следующих нод, не «старый промт».
-            # Выход самой ноды снимает strip_output_keys (▶ fw_action/shots/script).
             keep: dict[str, str] = {}
             for key in (
                 "characters",
@@ -409,10 +395,6 @@ def build_excel_gpt_check_context(
     scene_registry: list[Any] | None = None,
     full_vo: bool = False,
 ) -> dict[str, Any]:
-    """Снимок для checkMode db_check.json: slim attrs + scene_registry.
-
-    ``full_vo`` — только группа script_frames_qc (проверка читает целый закадр).
-    """
     ctx = build_excel_gpt_db_context(
         project_id=project_id,
         slug=slug,
@@ -425,7 +407,6 @@ def build_excel_gpt_check_context(
 
 
 def camera_chips_from_frame(frame: Any) -> dict[str, str]:
-    """Чипы доски: план / ракурс / движение. Не выдумывает значения."""
     cs = _camera_subdivide_from(frame)
     attrs = getattr(frame, "attrs", None)
     src = attrs if isinstance(attrs, dict) else {}
@@ -486,7 +467,6 @@ def _camera_description_from_chips(chips: dict[str, str]) -> str:
 
 
 def apply_camera_chips_to_row(row: dict[str, Any], frame: Any) -> None:
-    """Крупность и ракурс чипов — в карточку агента, description не затираем."""
     chips = camera_chips_from_frame(frame)
     plan = chips.get("план") or ""
     angle = chips.get("ракурс") or ""
@@ -529,7 +509,6 @@ def _coverage_parent_snapshot(parent: Any) -> dict[str, Any]:
 
 
 def _slim_img_pr_frame_row(row: dict[str, Any]) -> None:
-    """img_pr: действие/раскладка кадра, без 73 битов и всей площадки проекта."""
     row.pop("биты", None)
     shot_id = str(row.get("shot_id") or "").strip()
     kadry = row.get("кадры")
@@ -597,13 +576,6 @@ def build_img_pr_db_context(
     include_field_map: bool = False,
     all_frames: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """Полный снимок кадра из DB для агента промтов картинок.
-
-    SoT = База: uuid + закадр + meaning + scene_grammar attrs + animation_prompt
-    (если уже есть). Батчинг режет по числу кадров — VO не выкидываем.
-    ``all_frames``: все кадры проекта, чтобы K2/K3 видели coverage_parent,
-    даже если K1 в другом батче.
-    """
     from app.services.vo_shot_expand import (
         coverage_shot_id,
         find_coverage_parent_frame,
@@ -662,7 +634,6 @@ def build_img_pr_db_context(
     }
     gp = (general_plan or "").strip()
     if gp:
-        # Короткий кусок — эпоха, не простыня.
         out["general_plan"] = gp[:800]
     if include_characters:
         out["characters"] = list(characters or [])
@@ -685,7 +656,6 @@ def build_img_pr_db_context(
 
 
 def frame_visual_action(fr: Any) -> str:
-    """Кто физически в кадре: main_action / shot01_action."""
     attrs = getattr(fr, "attrs", None)
     if not isinstance(attrs, dict):
         return ""
@@ -707,7 +677,6 @@ def frame_visual_place(fr: Any) -> str:
     return ""
 
 
-# Индивидуальные роли из действия кадра. Группы (дети, сотрудники) сюда не входят.
 CHARACTER_REGISTRY_ROLE_MARKERS: tuple[str, ...] = (
     "следователь",
     "дежурный",
@@ -736,11 +705,6 @@ def build_character_registry_db_context(
     slug: str,
     frames: list[Any],
 ) -> dict[str, Any]:
-    """Снимок для агента персонажей: VO + действие.
-
-    Старый Entity и ID кадров не отдаём — иначе модель копирует c01–c04
-    и не создаёт следователя / эксперта из main_action.
-    """
     rows: list[dict[str, Any]] = []
     for fr in frames:
         uuid = str(getattr(fr, "uuid", None) or "").strip()
@@ -767,7 +731,6 @@ def build_character_registry_db_context(
 
 
 def _role_token_in_action(text: str, token: str) -> bool:
-    """Роль как отдельное слово, не «эксперта» из закадра и не «журналисты»."""
     if not token or not text:
         return False
     pat = rf"(?<![{_CYR_LETTER}]){re.escape(token)}(?![{_CYR_LETTER}])"
@@ -790,7 +753,6 @@ def character_registry_missing_visual_roles(
     frames: list[Any],
     cards: list[Any] | None,
 ) -> list[str]:
-    """Роли из действия кадров, которых нет ни на одной карточке."""
     cards_blob = _character_registry_card_blob(cards)
     missing: list[str] = []
     for role in CHARACTER_REGISTRY_ROLE_MARKERS:

@@ -1,4 +1,3 @@
-"""Caps on regeneration loops: post-step validation and the vision check loop stop honestly."""
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +18,6 @@ from app.services.excel_gpt_node import upload_dir
 def _caps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(app_settings.settings, "regen_max_per_frame", 3)
     monkeypatch.setattr(app_settings.settings, "regen_max_per_run", 12)
-    # the money cap has its own tests below; the attempt-cap tests run with it off
     monkeypatch.setattr(app_settings.settings, "regen_max_usd_per_run", 0.0)
     monkeypatch.setattr(app_settings.settings, "regen_estimate_usd_per_item", 0.0)
 
@@ -49,7 +47,6 @@ def test_per_frame_cap_blocks_the_fourth_regeneration_of_a_frame() -> None:
         assert regen_budget.charge(p, "video", [4, 5]).ok
     v = regen_budget.charge(p, "video", [4, 6])
     assert not v.ok and v.blocked == ["4"] and not v.run_exhausted
-    # a refused round is not counted
     assert p.meta["regen_budget"]["video"]["frames"] == {"4": 3, "5": 3}
     assert p.meta["regen_budget"]["video"]["rounds"] == 3
     assert "перегенерировали 3" in v.summary()
@@ -132,14 +129,14 @@ def test_finalize_or_retry_stops_after_the_cap_instead_of_looping(monkeypatch: p
             out.append(await psv.finalize_or_retry(
                 _Sess(), p, step="video", ready_status=ProjectStatus.videos_ready,
                 running_status=ProjectStatus.generating_videos))
-            assert p.status is ProjectStatus.generating_videos  # still looping, as before
+            assert p.status is ProjectStatus.generating_videos
         out.append(await psv.finalize_or_retry(
             _Sess(), p, step="video", ready_status=ProjectStatus.videos_ready,
             running_status=ProjectStatus.generating_videos))
         return out
 
     assert asyncio.run(run()) == [False, False, False, False]
-    assert queued == [[2], [2], [2]]  # the fourth round requeued nothing
+    assert queued == [[2], [2], [2]]
     assert p.status is ProjectStatus.paused
     assert "видео" in p.meta["auto_paused_reason"]
 
@@ -157,7 +154,7 @@ def test_finalize_or_retry_success_clears_the_counters(monkeypatch: pytest.Monke
 
     results = [asyncio.run(step()) for _ in range(6)]
     assert results == [False, False, True, False, False, False]
-    assert queued == [[2]] * 5  # a finished step starts the next run with a fresh budget
+    assert queued == [[2]] * 5
     assert p.status is ProjectStatus.generating_videos
 
 
@@ -200,10 +197,10 @@ def test_vision_loop_stops_with_a_pause_when_a_frame_keeps_failing(
         assert one_round() is True
         assert p.status is ProjectStatus.generating_images, n
         assert p.meta["vision_check_round"] == n
-    assert one_round() is True  # stopped, not started: the caller must not chain on
+    assert one_round() is True
     assert p.status is ProjectStatus.paused
     assert "f3" in p.meta["auto_paused_reason"] and "автоповтор остановлен" in p.meta["auto_paused_reason"]
-    assert not vcl.vision_check_loop_active(p)  # loop meta cleared, nothing silently "passed"
+    assert not vcl.vision_check_loop_active(p)
     assert p.meta["regen_budget"]["vision:scenes"]["frames"] == {"f3": 3}
 
 
@@ -250,7 +247,6 @@ def test_diagnosis_shows_the_stop_as_a_human_review_incident() -> None:
     assert item["recommendation"]["action"] == "human_review"
 
 
-# -- money cap -----------------------------------------------------------------
 
 def _money(monkeypatch: pytest.MonkeyPatch, cap: float, unit: float = 0.5) -> None:
     monkeypatch.setattr(app_settings.settings, "regen_max_usd_per_run", cap)
@@ -260,12 +256,11 @@ def _money(monkeypatch: pytest.MonkeyPatch, cap: float, unit: float = 0.5) -> No
 def test_money_cap_stops_a_loop_that_attempt_counters_would_still_allow(monkeypatch: pytest.MonkeyPatch) -> None:
     _money(monkeypatch, cap=3.0, unit=0.5)
     p = _project()
-    frames = [1, 2, 3, 4]  # $2 a round: well inside 3 attempts per frame and 12 per run
+    frames = [1, 2, 3, 4]
     assert regen_budget.charge(p, "video", frames).ok
     v = regen_budget.charge(p, "video", frames)
     assert v.usd_exhausted and not v.ok and not v.run_exhausted
     assert v.usd_spent == 2.0 and v.usd_round == 2.0 and v.usd_cap == 3.0 and v.blocked == ["1", "2", "3", "4"]
-    # a refused round changes nothing
     assert p.meta["regen_budget"]["video"]["usd"] == 2.0 and p.meta["regen_budget"]["video"]["rounds"] == 1
     assert "денежный лимит" in v.summary() and "$3.00" in v.summary()
 
@@ -273,16 +268,16 @@ def test_money_cap_stops_a_loop_that_attempt_counters_would_still_allow(monkeypa
 def test_money_is_summed_over_rounds_and_a_cheaper_round_may_still_fit(monkeypatch: pytest.MonkeyPatch) -> None:
     _money(monkeypatch, cap=3.0, unit=0.5)
     p = _project()
-    assert regen_budget.charge(p, "video", [1, 2, 3, 4]).ok  # 2.0
-    assert regen_budget.charge(p, "video", [5, 6]).ok        # 3.0, exactly at the cap is allowed
-    assert not regen_budget.charge(p, "video", [7]).ok       # 3.5 > 3.0
+    assert regen_budget.charge(p, "video", [1, 2, 3, 4]).ok
+    assert regen_budget.charge(p, "video", [5, 6]).ok
+    assert not regen_budget.charge(p, "video", [7]).ok
     assert p.meta["regen_budget"]["video"]["usd"] == 3.0
 
 
 def test_first_round_is_never_refused_by_money(monkeypatch: pytest.MonkeyPatch) -> None:
     _money(monkeypatch, cap=1.0, unit=0.5)
     p = _project()
-    big = regen_budget.charge(p, "images", list(range(1, 11)))  # $5 > $1, but nothing was spent yet
+    big = regen_budget.charge(p, "images", list(range(1, 11)))
     assert big.ok and p.meta["regen_budget"]["images"]["usd"] == 5.0
     assert regen_budget.charge(p, "images", [1]).usd_exhausted
 
@@ -311,7 +306,7 @@ def test_money_buckets_are_per_step_clear_and_reset_forget_them(monkeypatch: pyt
     p = _project()
     regen_budget.charge(p, "video", [1, 2])
     assert not regen_budget.charge(p, "video", [1]).ok
-    assert regen_budget.charge(p, "images", [1]).ok  # another step has its own budget
+    assert regen_budget.charge(p, "images", [1]).ok
     assert regen_budget.clear(p, "video")
     assert regen_budget.charge(p, "video", [1]).ok
 
@@ -350,7 +345,7 @@ def test_finalize_or_retry_stops_on_money_before_the_attempt_cap(monkeypatch: py
             running_status=ProjectStatus.generating_videos) for _ in range(3)]
 
     assert asyncio.run(run()) == [False, False, False]
-    assert queued == [[2]]  # one regeneration, the second would be $1.00 > $0.70
+    assert queued == [[2]]
     assert p.status is ProjectStatus.paused and "денежный лимит" in p.meta["auto_paused_reason"]
 
 

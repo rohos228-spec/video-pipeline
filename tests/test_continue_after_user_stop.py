@@ -1,9 +1,3 @@
-"""POST /projects/{id}/continue must really clear user_stop (found on the real worker).
-
-Regression: continue_project_pipeline popped user_stop from project.meta but did not flush,
-then maybe_auto_advance() ran session.refresh(project), which discarded the pending change.
-The endpoint answered cleared:["user_stop"] while the flag stayed set and nothing ran.
-"""
 from __future__ import annotations
 
 import pytest

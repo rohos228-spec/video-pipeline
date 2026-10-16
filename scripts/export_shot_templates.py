@@ -1,14 +1,3 @@
-"""Экспорт таблицы шаблонов сцена→кадры (T/X) в exports/ для скачивания.
-
-SoT — ``templates/shot_templates/shot_templates.json``. После правки таблицы:
-
-    python3 scripts/export_shot_templates.py
-
-Пересобирает ``exports/SCENE_SHOT_TEMPLATES.xlsx`` и
-``exports/scene_shot_templates_table.html`` (структура листов — как в
-эталонной «Сцены кадры база.xlsx»: Как читать / Каталог / Кадры / Сжатие /
-Выбор / Цепи / Parent + rules_ai).
-"""
 
 from __future__ import annotations
 

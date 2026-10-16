@@ -1,8 +1,3 @@
-"""CLI: montage HTML board for a scene.
-
-  python scripts/scene_space_board.py --scene SCENE_ID --out FILE.html
-  python scripts/scene_space_board.py --scene SCENE_ID --out FILE.html --from-json PATH
-"""
 
 from __future__ import annotations
 
@@ -18,12 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.services.scene_space.render_board import (  # noqa: E402
+from app.services.scene_space.render_board import (
     normalize_violations,
     try_call_validate,
     write_board,
 )
-from app.services.scene_space.render_plan import load_json_dump  # noqa: E402
+from app.services.scene_space.render_plan import load_json_dump
 
 STORE_MISSING = (
     "ERROR: cannot import app.services.scene_space.store (stream 1). "

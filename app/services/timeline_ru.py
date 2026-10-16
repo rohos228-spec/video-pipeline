@@ -1,31 +1,3 @@
-"""B04 / W3-1: единая таблица «вид записи журнала -> русская фраза» для ленты проекта.
-
-Один модуль, один язык для всех читателей журнала: лента (`timeline.py`), экспорт, Telegram и панель
-наблюдения. Тексты панели в `web/src/lib/observation-view.ts` (`EVENT_KIND_LABELS`) держатся равными
-`EVENT_LABELS_RU` отсюда: это проверяет тест `tests/w3_1_timeline_ru_test.py`.
-
-Главная функция: ``describe(row) -> (title_ru, detail_ru, severity)``.
-
-``row`` - любой словарь (строка таблицы-источника, превращённая в dict). Нужны ключи:
-
-* ``source_table`` (или ``source``) - таблица-источник. Для строк ``spend_ledger`` у таблицы есть своя колонка
-  ``source`` (кто списал): тогда таблица передаётся в ``source_table``, а колонка остаётся в ``source``
-  (или в ``spend_source``). Допустимые таблицы (``observation_events``, ``observation_incidents``, ``decision_records``,
-  ``action_v1_records``, ``action_layer_history``, ``spend_ledger``, ``provider_task_ledger``,
-  ``operator_audit``, ``publications``, ``notification_log``, ``node_runs``, ``jobs``). Есть и короткие имена
-  (``observe``, ``incident``, ``decision``, ``action``, ``plan``, ``spend``, ``task``, ``operator``, ``publication``,
-  ``notify``, ``job``);
-* ``kind`` (или ``event`` / ``type`` / ``action_kind`` - что есть в таблице);
-* остальные поля таблицы как есть (``payload``, ``status``, ``usd``, ``note``, ``error`` ...).
-
-Правила:
-
-* ничего не бросает наружу: любая строка получает текст; незнакомый вид получает
-  «Событие <вид> (подробности в журнале)» и попадает в отчёт покрытия (``unknown_report()``), а тест покрытия
-  падает, когда в коде появляется вид без фразы;
-* уровень только ``info`` / ``warn`` / ``error`` (контракт ленты);
-* секретов не добавляет: в detail идут только короткие поля, а ошибки и заметки режутся и проходят ``redact_text``.
-"""
 from __future__ import annotations
 
 import json
@@ -39,8 +11,6 @@ _UNKNOWN: dict[tuple[str, str], int] = {}
 _UNKNOWN_LOCK = threading.Lock()
 _DETAIL_LIMIT = 400
 
-# --- observation_events (все 49+ видов из record_fact / emit / stage / _queue_event) --------------------
-# Текст = короткое русское название вида без подробностей. Подробности добавляет event_title_ru().
 EVENT_LABELS_RU: dict[str, str] = {
     "node_start": "Исполнитель начал ноду",
     "node_end": "Исполнитель вернулся (запись данных не подтверждена)",
@@ -104,7 +74,6 @@ EVENT_LABELS_RU: dict[str, str] = {
     "decision_continuation_denied": "Продолжение по решению запрещено",
     "decision_gateway_ack": "Шлюз решений подтвердил приём",
     "decision_gateway_ack_error": "Шлюз решений не подтвердил приём",
-    # Этапы фонового цикла наблюдателя (имена этапов, показываются в панели как события обслуживания).
     "watchdog": "Сторожевая проверка зависших запросов",
     "reconcile": "Сверка журнала с состоянием БД",
     "reload": "Перечитана конфигурация наблюдения",
@@ -121,7 +90,6 @@ EVENT_LABELS_RU: dict[str, str] = {
     "operator_stub_output": "Ответ оператора подменён заглушкой: нет ключа GPT-провайдера",
 }
 
-# Виды, которые по умолчанию тревожные (если нет уточнения из полезной нагрузки).
 _EVENT_SEVERITY: dict[str, str] = {
     "node_error": SEV_ERROR, "model_error": SEV_ERROR, "apply_error": SEV_ERROR, "media_failure": SEV_ERROR,
     "decision_model_error": SEV_ERROR, "decision_gateway_ack_error": SEV_ERROR,
@@ -168,8 +136,6 @@ STATUS_WORDS_RU: dict[str, str] = {
     "unchecked": "не проверено", "performed": "выполнено", "filtered": "отфильтровано",
 }
 
-# --- инциденты (observation_incidents.type = ключи diagnosis.TITLES) ------------------------------------
-# Копия заголовков diagnosis.TITLES нужна, чтобы лента не тянула тяжёлый модуль; тест сверяет оба списка.
 INCIDENT_TITLES_RU: dict[str, str] = {
     "media_failure": "Результат медиа-задачи не подтверждён",
     "media_policy": "Отправка остановлена защитным ограничением",
@@ -193,7 +159,6 @@ INCIDENT_TITLES_RU: dict[str, str] = {
 INCIDENT_STATUS_RU = {"open": "открыт", "resolved": "закрыт", "closed": "закрыт", "acknowledged": "принят в работу",
                       "suppressed": "скрыт", "stale": "потерял актуальность"}
 
-# --- решения (decision_records.status) -------------------------------------------------------------------
 DECISION_STATUS_RU = {
     "ready": "Решение по инциденту готово к обработке",
     "waiting_worker": "Решение ждёт исполнителя",
@@ -210,7 +175,6 @@ DECISION_STATUS_RU = {
     "closed": "Решение закрыто",
 }
 
-# --- слой действий v1 (action_v1_records.action_kind) ---------------------------------------------------
 ACTION_V1_RU = {
     "enable": "Наблюдение включено",
     "resume": "Проект возобновлён",
@@ -240,13 +204,11 @@ INCIDENT_NOTIFY_STATUS_RU = {
 _ACTION_V1_SEVERITY = {"incident_notify": SEV_INFO, "incident_notify_off": SEV_WARN, "recovery_denied": SEV_WARN, "kill_switch_on": SEV_WARN, "watchdog_stalled": SEV_WARN,
                        "human_review": SEV_WARN, "hold": SEV_WARN}
 
-# --- журнал слоя действий (action_layer_history.event) --------------------------------------------------
-ACTION_LAYER_RU = HISTORY_EVENT_RU  # единственный источник фраз - action_layer/messages_ru.py
+ACTION_LAYER_RU = HISTORY_EVENT_RU
 _ACTION_LAYER_SEVERITY = {"step_failed": SEV_ERROR, "step_unknown": SEV_WARN, "budget_block": SEV_WARN,
                           "kill_switch_block": SEV_WARN, "resume_refused": SEV_WARN, "job_stop_after_failure": SEV_ERROR,
                           "step_cancelled": SEV_WARN, "step_skipped": SEV_WARN, "reserve_unresolved": SEV_WARN}
 
-# --- траты (spend_ledger.kind / source) -----------------------------------------------------------------
 SPEND_KIND_RU = {
     "reserve": "Зарезервирован бюджет под платный вызов",
     "settle": "Резерв закрыт по итогу вызова",
@@ -274,7 +236,6 @@ SPEND_SOURCE_RU = {
 _SPEND_EVENT_SEVERITY = {"credit_error": SEV_ERROR, "media_402": SEV_ERROR, "paid_gate_block": SEV_WARN,
                          "killswitch_guard": SEV_WARN, "write_failed": SEV_ERROR}
 
-# --- задачи провайдеров (provider_task_ledger.event / status) -------------------------------------------
 TASK_EVENT_RU = {
     "intent": "Намерение отправить задачу провайдеру записано",
     "intent_done": "Итог отправки задачи провайдеру записан",
@@ -296,7 +257,6 @@ TASK_STATUS_RU = {
     "processing": "в обработке",
 }
 
-# --- ноды запусков (node_runs.status) ---------------------------------------------------------------------
 NODE_RUN_STATUS_RU = {
     "pending": "Нода ждёт запуска",
     "queued": "Нода поставлена в очередь",
@@ -308,7 +268,6 @@ NODE_RUN_STATUS_RU = {
 }
 _NODE_RUN_SEVERITY = {"failed": SEV_ERROR, "waiting_hitl": SEV_WARN}
 
-# --- публикации ---------------------------------------------------------------------------------------------
 PUBLICATION_STATUS_RU = {
     "planned": "Публикация запланирована (намерение записано до клика)",
     "clicked": "Нажата кнопка публикации; итог ещё не подтверждён",
@@ -320,8 +279,6 @@ PUBLICATION_STATUS_RU = {
 }
 _PUBLICATION_SEVERITY = {"unconfirmed": SEV_WARN, "failed": SEV_ERROR, "rejected": SEV_ERROR, "clicked": SEV_WARN}
 
-# Причины в записях публикаций (publications.error_code): те же фразы, что оператор видит в панели «Публикации»
-# (web/src/lib/publication-text.ts, PUBLICATION_CODE_RU; равенство таблиц проверяет tests/w7_b_*).
 MANUAL_CONFIRMED_CODE = "manual_confirmed"
 MANUAL_NOT_PUBLISHED_CODE = "manual_not_published"
 _PUBLICATION_CODE_EXTRA_RU = {
@@ -330,23 +287,21 @@ _PUBLICATION_CODE_EXTRA_RU = {
     "publish_disabled": "Автопубликация выключена настройкой: ничего не отправлялось.",
     "confirm_timeout": "Площадка не подтвердила публикацию вовремя. Проверьте площадку вручную.",
 }
-try:  # те же фразы, что и в отказах площадок (publish_accounts.REFUSALS): один источник
+try:
     from app.services.publish_accounts import REFUSALS as _REFUSALS
-except Exception:  # noqa: BLE001
+except Exception:
     _REFUSALS = {}
 PUBLICATION_CODE_RU: dict[str, str] = {**_PUBLICATION_CODE_EXTRA_RU, **_REFUSALS}
 
 
 def publication_code_text(code: Any) -> str:
-    """Русская фраза для кода причины публикации; незнакомый код не показывается как есть."""
     c = str(code or "").strip()
     if not c:
         return ""
-    if c == "SOCIAL_PUBLISH_ENABLED=false":  # так шаг публикации пишет причину при выключенной автопубликации
+    if c == "SOCIAL_PUBLISH_ENABLED=false":
         c = "publish_disabled"
     return PUBLICATION_CODE_RU.get(c) or "Причина записана в журнале (код не расшифрован)."
 
-# --- уведомления (notification_log) ----------------------------------------------------------------------
 NOTIFICATION_STATUS_RU = {
     "sent": "доставлено", "delivered": "доставлено", "ok": "доставлено",
     "failed": "не доставлено", "error": "не доставлено", "skipped": "пропущено", "disabled": "отключено",
@@ -365,13 +320,11 @@ NOTIFICATION_KIND_RU = {
     "hero_failed": "Не удалось создать главное изображение",
     "image_capture_failed": "Не удалось получить изображение",
 }
-# Префиксные виды: kind начинается с ключа.
 NOTIFICATION_KIND_PREFIX_RU = {
     "step_failure": "Сбой шага", "excel_hero": "Главное изображение из таблицы",
     "test_prompt": "Проверка промпта",
 }
 
-# --- фоновые задачи (create_jobs / _JOBS) ---------------------------------------------------------------------
 JOB_STATUS_RU = {
     "queued": "Задача создания поставлена в очередь", "running": "Задача создания выполняется",
     "done": "Задача создания завершена", "failed": "Задача создания завершилась ошибкой",
@@ -381,7 +334,6 @@ JOB_STATUS_RU = {
 _JOB_SEVERITY = {"failed": SEV_ERROR, "error": SEV_ERROR, "interrupted": SEV_WARN, "cancelled": SEV_WARN}
 
 
-# --- состояния нод и инициаторы переходов (F10-D9: лента не должна говорить по-английски) -----------------------
 NODE_STATUS_RU = {
     "pending": "ожидает", "queued": "в очереди", "running": "выполняется", "waiting_hitl": "ждёт решения человека",
     "done": "готово", "failed": "ошибка", "skipped": "пропущено", "cancelled": "отменено",
@@ -396,13 +348,11 @@ INITIATOR_RU = {
     "native_split_verifier": "проверка разбивки", "native_sfx_plan_verifier": "проверка плана звуков",
 }
 
-# --- ручные действия оператора ---------------------------------------------------------------------------------
 _METHOD_RU = {"POST": "Оператор выполнил действие", "PUT": "Оператор изменил данные",
               "PATCH": "Оператор изменил данные", "DELETE": "Оператор удалил данные"}
 _OUTCOME_RU = {"ok": "выполнено", "denied": "отказано в доступе", "rejected": "запрос отклонён",
                "error": "ошибка сервера"}
 
-# Короткие имена источников -> таблицы; ленту строит timeline.py, но говорить должна одинаково.
 SOURCE_ALIASES = {
     "observe": "observation_events", "event": "observation_events", "observation": "observation_events",
     "incident": "observation_incidents", "decision": "decision_records",
@@ -415,7 +365,6 @@ SOURCE_ALIASES = {
 }
 
 
-# --------------------------------------------------------------------------------------------------------------
 def _get(row: Mapping[str, Any], *keys: str) -> Any:
     for key in keys:
         try:
@@ -442,7 +391,7 @@ def _clip(value: Any, limit: int = _DETAIL_LIMIT) -> str:
     try:
         from app.services.redact import redact_text
         text = redact_text(text)
-    except Exception:  # redact обязателен для секретов, но лента не должна падать из-за него
+    except Exception:
         pass
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
@@ -460,7 +409,6 @@ def _note_unknown(source: str, kind: str) -> None:
 
 
 def unknown_report() -> dict[str, int]:
-    """Какие (источник, вид) встретились без фразы: «источник:вид» -> сколько раз. Для отчёта покрытия."""
     with _UNKNOWN_LOCK:
         return {f"{s}:{k}": n for (s, k), n in sorted(_UNKNOWN.items())}
 
@@ -475,9 +423,7 @@ def _fallback(source: str, kind: str, label: str = "Событие") -> str:
     return f"{label} {kind or 'без вида'} (подробности в журнале)"
 
 
-# --- события наблюдения -----------------------------------------------------------------------------------------
 def event_title_ru(kind: str, payload: Mapping[str, Any] | None = None) -> str:
-    """Русский заголовок события панели. Порт ``eventLabel`` из observation-view.ts + все остальные виды."""
     p = payload if isinstance(payload, Mapping) else {}
     unknown = "неизвестно"
     if kind == "observer_control":
@@ -586,12 +532,10 @@ def _event_detail(kind: str, row: Mapping[str, Any], p: Mapping[str, Any]) -> st
     return _clip("; ".join(parts)) if parts else ""
 
 
-# --- публичная функция ----------------------------------------------------------------------------------------------
 def describe(row: Mapping[str, Any]) -> tuple[str, str, str]:
-    """(title_ru, detail_ru, severity) для строки любого источника ленты. Не бросает исключений."""
     try:
         return _describe(row)
-    except Exception as exc:  # лента должна показать строку, даже если текст собрать не вышло
+    except Exception as exc:
         kind = str(_get(row, "kind", "event", "type") or "")
         _note_unknown(str(_get(row, "source") or "?"), kind or type(exc).__name__)
         return (f"Запись журнала {kind or 'без вида'} (подробности в журнале)", "", SEV_INFO)
@@ -705,7 +649,6 @@ def _describe(row: Mapping[str, Any]) -> tuple[str, str, str]:
         title = (_get(row, "summary_ru") or operator_phrase(method, str(_get(row, "route_template", "path") or ""))
                  or _METHOD_RU.get(method) or _fallback(source, method, "Действие оператора"))
         outcome = str(_get(row, "outcome") or "")
-        # Настоящий путь запроса (в route_template лежит шаблон с {project_id}, человеку он ничего не говорит).
         detail = [f"{method} {_get(row, 'path', 'route_template') or ''}".strip()]
         code = _get(row, "status_code")
         if code is not None:
@@ -728,7 +671,6 @@ def _describe(row: Mapping[str, Any]) -> tuple[str, str, str]:
         if _get(row, "post_url"):
             detail.append(str(row["post_url"]))
         if code == MANUAL_NOT_PUBLISHED_CODE:
-            # Решение человека, а не сбой: не красная ошибка и не входит в счётчик ошибок.
             title, severity = "Закрыто человеком: публикация помечена как «не опубликовано»", SEV_INFO
         elif code == MANUAL_CONFIRMED_CODE:
             title, severity = "Подтверждено человеком вручную как опубликованное", SEV_INFO
@@ -783,13 +725,11 @@ def _describe(row: Mapping[str, Any]) -> tuple[str, str, str]:
     return _fallback(source, kind), "", SEV_INFO
 
 
-# --- что обязано иметь фразу (для теста покрытия и отчёта) ------------------------------------------------------------
 def covered_event_kinds() -> frozenset[str]:
     return frozenset(EVENT_LABELS_RU)
 
 
 def coverage_tables() -> dict[str, frozenset[str]]:
-    """Источник -> множество видов, у которых есть фраза (для теста и документации)."""
     return {
         "observation_events": frozenset(EVENT_LABELS_RU),
         "observation_incidents": frozenset(INCIDENT_TITLES_RU),

@@ -1,41 +1,3 @@
-"""Read-only contracts for ORIGINAL make_animation_prompts.run.
-
-Parent owns executed RED/GREEN, shared capability/observer/executor wiring and
-the actual worker fixture. No production helper may be added before parent RED.
-All app imports below are deferred until the parent runs the offline suite.
-
-Requested seam in app.services.native_animation_contracts:
-  animation_prompts_contract()
-  animation_prompt_input_snapshot(frames, *, project_id, project,
-                                  finalize_status=True)
-  verify_animation_prompts(frames, *, project_id, project, snapshot)
-
-The input snapshot is captured BEFORE the original executor and is provenance
-for bounded input/output comparison. Missing/incomplete input is unknown; it
-must never be reconstructed from output rows. Passed verifies native row
-integrity/coverage only. The parent's existing committed outbox independently
-proves application. Neither helper certifies a model, video, semantic quality,
-business commit, or managed admission.
-
-Native shot01: usable image_prompt -> DB animation_prompt, PNG optional. The
-parser's >=10/non-blob predicate and harness placeholder predicate both apply.
-The animation collector/harness have NO child exemption when a child itself
-has usable image_prompt (the img_pr parent threshold is a different rule).
-Native shot02: original frame_needs_shot2_video_prompt + its XLSX/disk inputs;
-finalize_status=False never queues shot02. Existing XLSX R64 precedence is
-retained, although shot01 readiness uses DB exclusively.
-
-Worker handoff: retain app.main._run_worker_loop and the existing pipeline
-dispatch to make_animation_prompts.run, _save_anim_pr_batch, db_apply.apply_ops
-with node_kind=anim_pr, and harness_gate_or_raise. Script only external GPT
-transport replies: reordered UUID JSON, partial replies followed by remainder,
-invalid/foreign/blob replies, and bounded outage/local fallback. Read committed
-Frame rows in a separate session. Capture input/parse/apply/gate/result facts;
-never set a NodeRun done or replace the executor/parser/writer/harness.
-Existing transport-only worker fixture: tests/observe_v1/group_acceptance.py
-with group_runner.py. Existing focused SQLite fixture: anim_pr_session in
-tests/test_animation_prompt_gpt.py. Parent extends the actual worker fixture.
-"""
 
 from __future__ import annotations
 
@@ -72,7 +34,6 @@ def native():
 
 
 def frames_fixture():
-    # Original Frame fields, including V2 order. No status or output is invented.
     return [
         SimpleNamespace(
             id=number, project_id=PROJECT_ID, uuid=f"{number:024x}",
@@ -127,7 +88,6 @@ class NativeAnimationContracts(unittest.TestCase):
         return proof
 
     def plan(self, *, declared=(), second_animation=None, primary_animation=None):
-        # Synthetic native XLSX only, created when the parent executes tests.
         from openpyxl import Workbook
         from app.services.xlsx_v8_import import ROW_IMAGE_PROMPT_V8, ROW_VOICEOVER_V8
 
@@ -174,7 +134,6 @@ class NativeAnimationContracts(unittest.TestCase):
         self.assertEqual(contract["shot2_min_characters"], native().MIN_SHOT2_VIDEO_PROMPT_LEN)
         self.assertFalse(contract["primary_png_required"])
         self.assertFalse(contract["child_exemption"])
-        # The description follows the capability: retry_same only, never a profile retry.
         self.assertTrue(contract["managed"])
         self.assertEqual(tuple(contract["actions"]), READ_ACTIONS + ("retry_same", "finish"))
         self.assertTrue(contract["payload_required"])
@@ -370,7 +329,7 @@ class NativeAnimationContracts(unittest.TestCase):
         self.plan(declared=(1,))
         self.assertFalse(native().frame_needs_shot2_video_prompt(self.project, self.frames[0]))
         self.check("passed", self.filled(), self.snapshot())
-        self.second_image(2)  # A disk image without a native declaration is insufficient.
+        self.second_image(2)
         self.assertFalse(native().frame_needs_shot2_video_prompt(self.project, self.frames[1]))
         self.assertFalse(self.snapshot()["frames"][1]["required_shot2"])
 
@@ -382,8 +341,6 @@ class NativeAnimationContracts(unittest.TestCase):
         self.check("failed", self.filled(), snapshot)
         changed = self.filled()
         changed[0].attrs["animation_prompt_shot2"] = SECOND_ANIMATION
-        # Preserve ORIGINAL XLSX R64 precedence, rather than pretending attrs
-        # have fixed that legacy predicate when project.xlsx exists.
         self.assertFalse(native().has_animation_prompt_shot2_for_frame(self.project, changed[0]))
         self.check("failed", changed, snapshot)
         self.plan(declared=(1,), second_animation=SECOND_ANIMATION)

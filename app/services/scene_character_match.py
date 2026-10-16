@@ -1,4 +1,3 @@
-"""Сверка персонажей сцены с реестром Entity (type=character)."""
 
 from __future__ import annotations
 
@@ -63,7 +62,6 @@ def registry_rows(entities: list[Entity]) -> list[dict[str, str]]:
 
 
 def match_registry_characters(text: str, entities: list[Entity]) -> list[dict[str, str]]:
-    """Кто из реестра назван в закадре/заказе. Нет в тексте — не подставляем."""
     folded = _fold_ru(text)
     if not folded:
         return []
@@ -158,7 +156,6 @@ async def load_character_registry(
 def intersect_codes_with_registry(
     raw: str, entities: list[Entity]
 ) -> list[dict[str, str]]:
-    """Коды из GPT/паспорта оставляем только если они есть в реестре."""
     wanted = {m.lower() for m in _CODE_RE.findall(raw or "")}
     if not wanted:
         return match_registry_characters(raw, entities)

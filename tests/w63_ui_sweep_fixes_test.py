@@ -1,4 +1,3 @@
-"""W63: правки по сквозному прогону API/UI (раскладка листов xlsx с «план», 4xx вместо 500 на xlsx/reload)."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -40,7 +39,6 @@ def test_reload_xlsx_turns_validation_error_into_400():
 
 
 def test_publications_router_reads_project_db():
-    """Финальное видео и публикации лежат в project.db: список читает её, а не master (иначе «нет финального видео»)."""
     import inspect
 
     from app.web.routers import publications
@@ -56,7 +54,6 @@ def test_skipped_publication_reason_has_russian_text():
 
 
 def test_deleted_frame_is_not_resurrected_by_xlsx_import():
-    """Кадр, удалённый на доске монтажа, не создаётся заново сверкой xlsx (иначе сборка падает без клипа)."""
     from app.services.frame_tombstones import deleted_numbers, forget_deleted, remember_deleted
 
     p = SimpleNamespace(meta={})
@@ -70,7 +67,6 @@ def test_deleted_frame_is_not_resurrected_by_xlsx_import():
 
 
 async def test_v8_import_skips_deleted_numbers(tmp_path):
-    """Настоящий импорт v8: удалённый номер не создаётся, остальные создаются."""
     from openpyxl import Workbook
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -103,7 +99,6 @@ async def test_v8_import_skips_deleted_numbers(tmp_path):
 
 
 def test_websocket_requires_login_when_web_auth_enabled(monkeypatch):
-    """A3: при WEB_AUTH событие-стрим без входа закрывается (1008), с кукой сессии работает."""
     from starlette.websockets import WebSocketDisconnect
 
     from app.settings import settings
@@ -124,7 +119,6 @@ def test_websocket_requires_login_when_web_auth_enabled(monkeypatch):
 
 
 async def test_inspector_title_edit_reaches_master_list(tmp_path, monkeypatch):
-    """Правка названия в project.db видна в списке проектов (он читает master)."""
     from contextlib import asynccontextmanager
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -154,7 +148,7 @@ async def test_inspector_title_edit_reaches_master_list(tmp_path, monkeypatch):
         ps.add(Project(id=7, slug="p7", title="новое", topic="т", status=ProjectStatus.new, meta={}))
         await ps.commit()
         project = await ps.get(Project, 7)
-        await project_db.push_display_fields_to_master(ps, project, ["meta"])  # не отображаемое поле: без изменений
+        await project_db.push_display_fields_to_master(ps, project, ["meta"])
         async with master_maker() as m:
             assert (await m.get(Project, 7)).title == "старое"
         await project_db.push_display_fields_to_master(ps, project, ["title"])
@@ -165,7 +159,6 @@ async def test_inspector_title_edit_reaches_master_list(tmp_path, monkeypatch):
 
 
 def test_slug_of_leftover_project_folder_is_taken(tmp_path, monkeypatch):
-    """Папка удалённого проекта остаётся на диске: новый проект с тем же названием получает другой slug."""
     from app.services.project_slug import slug_taken_on_disk
     from app.settings import settings
 
@@ -173,7 +166,7 @@ def test_slug_of_leftover_project_folder_is_taken(tmp_path, monkeypatch):
     assert slug_taken_on_disk("doch-1") is False
     folder = tmp_path / "videos" / "doch-1"
     folder.mkdir(parents=True)
-    assert slug_taken_on_disk("doch-1") is False  # пустая папка не мешает
+    assert slug_taken_on_disk("doch-1") is False
     (folder / "project.db").write_bytes(b"x")
     assert slug_taken_on_disk("doch-1") is True
 
@@ -188,7 +181,6 @@ def test_partial_hollow_image_prompts_also_block_paid_generation():
 
 
 async def test_public_image_hosts_are_off_by_default(monkeypatch):
-    """Без Yandex S3 кадр клиента не уходит на публичные файлообменники, пока владелец не разрешил."""
     import pytest
 
     from app.bots import outsee_http

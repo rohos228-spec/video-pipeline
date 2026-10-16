@@ -1,9 +1,3 @@
-"""Отложенный набор №5 планировщика: валидность, уникальность и изоляция от других наборов и от правил.
-
-Все проверки офлайн, без сети и без модели. Набор написан вслепую (до запуска планировщика на нём и без
-просмотра правил), поэтому тесты проверяют только форму, эталоны по схеме каталога, то, что фразы не
-повторяют другие наборы и не просочились в код правил, и что подключение ``--set heldout5`` работает.
-"""
 from __future__ import annotations
 
 import json
@@ -20,7 +14,7 @@ RULE_FILES = ("app/services/action_layer/planner_rules.py", "app/services/action
               "app/services/action_layer/planner_autofill.py", "app/services/action_layer/planner_uploads.py",
               "app/services/action_layer/planner.py")
 _QUOTED = "[\"'«]([^\"'»\n]{6,})[\"'»]"
-SHINGLE = 6  # слов подряд: совпадение такой длины с отложенной фразой считается просочившимся текстом
+SHINGLE = 6
 OTHER_SETS = ("action_planner_eval.json", "action_planner_heldout.json", "action_planner_heldout2.json",
               "action_planner_heldout3.json", "action_planner_heldout4.json")
 
@@ -86,7 +80,7 @@ def test_heldout5_every_expected_action_exists_in_the_catalog() -> None:
             props = (spec.params_schema or {}).get("properties", {})
             unknown = set(step["params"]) - set(props)
             assert not unknown, (case["id"], aid, sorted(unknown))
-            loose = {k: v for k, v in spec.params_schema.items() if k != "required"}  # сервер добавит недостающее
+            loose = {k: v for k, v in spec.params_schema.items() if k != "required"}
             errors = schema_mod.validate(loose, {k: v for k, v in step["params"].items() if k != "source_path"})
             assert not errors, (case["id"], aid, errors)
     assert len(used) >= 60, len(used)
@@ -117,7 +111,6 @@ def test_heldout5_has_no_text_shared_with_other_sets() -> None:
         grams |= _shingles(case["text"])
     ids_other = {c["id"] for name in OTHER_SETS for c in _cases(name)}
     assert {c["id"] for c in HELD5}.isdisjoint(ids_other)
-    # длинные куски (6 слов подряд) не должны повторять фразы других наборов
     for name in OTHER_SETS:
         other = set()
         for case in _cases(name):

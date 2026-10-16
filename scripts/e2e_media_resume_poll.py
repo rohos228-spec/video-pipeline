@@ -68,7 +68,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 
 def _load_sibling(name: str):
@@ -79,7 +79,7 @@ def _load_sibling(name: str):
     return mod
 
 
-music = _load_sibling("e2e_music_kie")   # env whitelist, base-url rule, audio fixture, ffprobe: imported, not edited
+music = _load_sibling("e2e_music_kie")
 
 BALANCE_PATH = music.BALANCE_PATH
 POLL_PATH = music.POLL_PATH
@@ -91,8 +91,8 @@ AUDIO_EXTS = music.AUDIO_EXTS
 MIN_DURATION_S = music.MIN_DURATION_S
 MAX_BALANCE_READS = music.MAX_BALANCE_READS
 MAX_DOWNLOADS = music.MAX_DOWNLOADS
-MAX_POLLS = 10                 # the resume asks ONCE per attempt; ten is far above any honest run
-INTERNAL_HOST = "action-layer.invalid"   # the in-process ASGI call of the action layer: no socket is ever opened
+MAX_POLLS = 10
+INTERNAL_HOST = "action-layer.invalid"
 ACTION_ID = "media.resume_poll"
 ASSESS_ID = "media.get_recovery_assessment"
 NODE = "music"
@@ -104,12 +104,11 @@ HARD_CEILING_USD = 0.25
 DRY_TASK_ID = "0123456789abcdef0123456789abcdef"
 TASK_ID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 DRY_SCENARIOS = ("ok", "resume_posts_again", "task_missing", "url_expired", "still_pending", "task_failed")
-RESUME_EVENTS = ("downloaded", "failed", "poll")     # the only rows a poll-only recovery may add for the known task
-SETTLE_WAIT_S = 5.0            # live: the balance is read again this long after the download
+RESUME_EVENTS = ("downloaded", "failed", "poll")
+SETTLE_WAIT_S = 5.0
 EXIT_PASS, EXIT_FAIL, EXIT_ARGS, EXIT_REFUSED = 0, 1, 2, 3
 
 
-# ───────────────────────────── pure helpers (unit-tested) ─────────────────────────────
 
 def load_env_whitelist(path: str, names: tuple[str, ...] = ENV_NAMES) -> dict[str, str]:
     return music.load_env_whitelist(path, names)
@@ -162,8 +161,8 @@ def final_verdict(mode: str, ok: bool) -> str:
 
 @dataclass
 class Judgement:
-    action: str            # pass | refuse
-    kind: str              # internal | balance | poll | download | write | other
+    action: str
+    kind: str
     reason: str = ""
 
 
@@ -176,17 +175,17 @@ class Gate:
     MAX_DOWNLOADS; same host as a learned URL) and the in-process ASGI calls of the action layer to
     http://action-layer.invalid/api/projects/<seeded project>/... (they never leave the process). A POST, PUT, PATCH or
     DELETE to anything else is refused AND counted in `write_attempts`: Kie must never see a write on this path."""
-    mode: str                                   # dry | live
+    mode: str
     host: str = "api.kie.ai"
     scheme: str = "https"
-    port: int | None = None                     # dry: the fake server's port
+    port: int | None = None
     task_id: str = ""
     project_id: int | None = None
     wire: list = field(default_factory=list)
     internal: list = field(default_factory=list)
     refused: list = field(default_factory=list)
     write_attempts: list = field(default_factory=list)
-    downloads: dict = field(default_factory=dict)   # learned result URL -> host
+    downloads: dict = field(default_factory=dict)
 
     def count(self, kind: str) -> int:
         return sum(1 for w in self.wire if w["kind"] == kind)
@@ -439,7 +438,6 @@ def reality_not_proven(mode: str) -> list[str]:
     return out
 
 
-# ───────────────────────────── fake Kie (dry) ─────────────────────────────
 
 class FakeKie:
     """A fake Kie server on 127.0.0.1 (dry only): balance, record-info for ONE known task, the mp3 file.
@@ -476,7 +474,7 @@ class FakeKie:
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_a, **_k) -> None:  # silence
+            def log_message(self, *_a, **_k) -> None:
                 return
 
             def _send(self, status: int, payload: Any = None, raw: bytes | None = None, ctype: str = "application/json"):
@@ -494,7 +492,7 @@ class FakeKie:
                     return False
                 return True
 
-            def do_GET(self) -> None:  # noqa: N802
+            def do_GET(self) -> None:
                 parts = urlsplit(self.path)
                 fake.requests.append(("GET", parts.path))
                 if parts.path == BALANCE_PATH:
@@ -524,16 +522,16 @@ class FakeKie:
                     return self._send(200, raw=fake.audio, ctype="audio/mpeg")
                 return self._send(404, {"code": 404, "msg": "fake kie: no such route"})
 
-            def do_POST(self) -> None:  # noqa: N802
+            def do_POST(self) -> None:
                 parts = urlsplit(self.path)
                 fake.requests.append(("POST", parts.path))
                 length = int(self.headers.get("Content-Length") or 0)
                 try:
                     body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-                except Exception:  # noqa: BLE001
+                except Exception:
                     body = {}
                 fake.posts.append({"path": parts.path, "body": body})
-                fake.credits -= music.CREDITS_PER_GENERATION_HINT      # a paid POST would show in the balance
+                fake.credits -= music.CREDITS_PER_GENERATION_HINT
                 return self._send(200, {"code": 200, "msg": "success", "data": {"taskId": "fake-new-task-should-not-exist"}})
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -547,7 +545,6 @@ class FakeKie:
             self._server = None
 
 
-# ───────────────────────────── arguments ─────────────────────────────
 
 def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -579,7 +576,6 @@ def _args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-# ───────────────────────────── records read by the stand ─────────────────────────────
 
 def _rows(state_db: Path, sql: str) -> list[dict]:
     """Plain read connection (a database in WAL mode needs it); a missing table reads as no rows."""
@@ -616,7 +612,6 @@ def music_files(data_dir: Path) -> list[dict]:
     return out
 
 
-# ───────────────────────────── runtime ─────────────────────────────
 
 async def _seed(task_id: str) -> tuple[int, Path]:
     """A throwaway project and the ledger rows of a run that died after the submit (the production ledger functions)."""
@@ -637,7 +632,6 @@ async def _seed(task_id: str) -> tuple[int, Path]:
     common = {"project_id": pid, "key": KEY, "model": MODEL, "api": API}
     async with SessionLocal() as s:
         await spend_guard.append_intent(s, **common, intent_id=intent, ph=ph)
-        # what media_spend._after_create_ok and media_resume.submit write once the provider has answered
         await spend_guard.append_task_event(s, project_id=pid, key=KEY, task_id=task_id, provider="kie", api=API, model=MODEL,
                                             event="submitted", status="submitted", run_id=run)
         await spend_guard.append_task_event(s, project_id=pid, key=KEY, task_id=task_id, provider="kie", api=API, model=MODEL,
@@ -693,7 +687,7 @@ async def main(argv: list[str] | None = None) -> int:
         return text
 
     work = Path(args.work_dir).resolve()
-    data = guard.reset_scratch_data(work)  # A19: refuses live data; removes only <work>/data made by these scripts
+    data = guard.reset_scratch_data(work)
     (work / "result.json").unlink(missing_ok=True)
     os.chdir(ROOT)
     cap = app_cap_usd(args.max_usd)
@@ -710,7 +704,6 @@ async def main(argv: list[str] | None = None) -> int:
     import httpx
     from app.bots import kie_http, kie_kling
     from app.settings import settings
-    # Belt and braces over environment precedence (a stray repository .env must not add a key or a route):
     settings.kie_api_key = key
     settings.kie_api_base_url = base_url
     settings.gpt_api_key = ""
@@ -718,7 +711,7 @@ async def main(argv: list[str] | None = None) -> int:
     settings.gpt_base_url = ""
     settings.media_spend_recording = True
     settings.spend_daily_cap_usd = settings.spend_project_cap_usd = settings.spend_run_cap_usd = cap
-    for guarded in (settings.data_dir, settings.sqlite_path):  # no write outside the work dir, ever
+    for guarded in (settings.data_dir, settings.sqlite_path):
         if not guard._inside(Path(guarded).resolve(), work):
             if fake:
                 fake.stop()
@@ -746,18 +739,18 @@ async def main(argv: list[str] | None = None) -> int:
         if judged.kind == "download":
             download_status.append(response.status_code)
         elif judged.kind == "poll":
-            try:  # learn what the provider itself named: the result URLs; keep the answer's code for an honest reason
+            try:
                 body = response.json()
                 inner = body.get("data") if isinstance(body.get("data"), dict) else {}
                 poll_answers.append({"http": response.status_code, "code": body.get("code"),
                                      "msg": str(body.get("msg"))[:100], "data_status": inner.get("status")})
                 gate.learn_downloads(kie_http._result_media_urls(inner))
-            except Exception:  # noqa: BLE001 - an unreadable answer simply teaches the Gate nothing
+            except Exception:
                 poll_answers.append({"http": response.status_code, "code": None, "msg": "unreadable answer"})
         return response
 
     httpx.AsyncClient.send = send
-    kie_kling._iter_kie_keys = lambda: [("KIE_API_KEY", key)]   # only the intended key, never a key from a repository .env
+    kie_kling._iter_kie_keys = lambda: [("KIE_API_KEY", key)]
     kie_kling.reset_working_kie_key()
     if mode == "dry":
         kie_http._POLL_INTERVAL_S = 0.05
@@ -774,7 +767,7 @@ async def main(argv: list[str] | None = None) -> int:
     original_reattach = None
     try:
         original_reattach = await _flow(snap, gate, state_db, data, args, mode, task_id, seam, kie_http, media_spend)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["error"] = scrub(f"{type(exc).__name__}: {exc}")
         import traceback
         result["traceback"] = scrub(traceback.format_exc())[-2500:]
@@ -806,7 +799,7 @@ async def _flow(snap, gate: Gate, state_db: Path, data: Path, args, mode: str, t
     from app.services.kie_catalog import CREDIT_USD
     from app.web.api import create_app
 
-    credits_before = await kie_http.get_credits()            # free read, before anything else
+    credits_before = await kie_http.get_credits()
     snap["credits_before"] = credits_before
     pid, project_dir = await _seed(task_id)
     gate.project_id = pid
@@ -822,7 +815,6 @@ async def _flow(snap, gate: Gate, state_db: Path, data: Path, args, mode: str, t
     ctx = ActionContext(app=app, operator="e2e_media_resume_poll")
     snap["assessment_before"] = _assessment_of(await assess_spec.executor(ctx.readonly_copy(), params))
 
-    # kill switch first: the action must be refused before a single request leaves
     wire_before = len(gate.wire)
     ks: dict[str, Any] = {"refused_status": None, "refused_code": None}
     await kill_switch.set_state(SessionLocal, active=True, actor="e2e_media_resume_poll", rationale="stand: kill switch check")
@@ -843,7 +835,6 @@ async def _flow(snap, gate: Gate, state_db: Path, data: Path, args, mode: str, t
     else:
         original = media_resume._reattach_one
 
-    # the REAL action: validation, the three preconditions, then the executor (the production recovery path)
     act: dict[str, Any] = {"validate_problems": registry.validate_params(ACTION_ID, params), "preconditions": {}}
     for pre in resume_spec.preconditions:
         act["preconditions"][pre.id] = await pre.check(ctx.readonly_copy(), params)
@@ -853,7 +844,7 @@ async def _flow(snap, gate: Gate, state_db: Path, data: Path, args, mode: str, t
             act["result"] = await resume_spec.executor(ctx, params)
         except ActionCallError as exc:
             act["error"] = f"HTTP {exc.status}: {str(exc.detail)[:200]}"
-        except Exception as exc:  # noqa: BLE001 - a poll error is a verdict, never a reason to submit
+        except Exception as exc:
             act["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
     else:
         act["error"] = "preconditions refused: " + "; ".join(f"{k}: {v}" for k, v in act["preconditions"].items() if v)
@@ -864,19 +855,18 @@ async def _flow(snap, gate: Gate, state_db: Path, data: Path, args, mode: str, t
     snap["assessment_after"] = _assessment_of(await assess_spec.executor(ctx.readonly_copy(), params))
     snap["project_after"] = await _project_after(pid)
 
-    # the production guard itself: a createTask inside the resume-only scope is refused before the wire
     writes_before = len(gate.write_attempts) + sum(1 for w in gate.wire if w["kind"] == "write")
     probe: dict[str, Any] = {"raised": None}
     try:
         with media_spend.resume_only():
             await kie_http.create_task(API, "/api/v1/generate", {"customMode": False, "instrumental": True,
                                                                   "model": music.MUSIC_MODEL, "prompt": music.MUSIC_PROMPT})
-    except Exception as exc:  # noqa: BLE001 - the paid seam (spend caps, kill switch, disk) may refuse first: recorded
+    except Exception as exc:
         probe["raised"] = type(exc).__name__
     try:
         with media_spend.resume_only():
-            media_spend.assert_submit_allowed("kie", "createTask")   # the resume-only scope itself, without the seam in front
-    except Exception as exc:  # noqa: BLE001
+            media_spend.assert_submit_allowed("kie", "createTask")
+    except Exception as exc:
         probe["scope_raised"] = type(exc).__name__
     probe["wire_writes_during"] = len(gate.write_attempts) - writes_before
     snap["probe"] = probe
@@ -905,13 +895,13 @@ def _install_post_seam(gate: Gate, kie_http, seam: dict):
     original = media_resume._reattach_one
 
     async def regressed(project, t, key, stats):
-        token = media_spend._resume_only.set(False)       # the guard "removed" by a bug
+        token = media_spend._resume_only.set(False)
         body = {"customMode": False, "instrumental": True, "model": music.MUSIC_MODEL, "prompt": music.MUSIC_PROMPT}
         try:
             seam["create_task_called"] = True
             try:
                 await kie_http.create_task(API, "/api/v1/generate", body)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 seam["error"] = type(exc).__name__
             if not gate.write_attempts:
                 import httpx
@@ -919,7 +909,7 @@ def _install_post_seam(gate: Gate, kie_http, seam: dict):
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         await client.post(f"{gate.scheme}://{gate.host}" + (f":{gate.port}" if gate.port else "") +
                                           "/api/v1/generate", json=body)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     seam["error"] = type(exc).__name__
         finally:
             media_spend._resume_only.reset(token)
@@ -929,7 +919,6 @@ def _install_post_seam(gate: Gate, kie_http, seam: dict):
     return original
 
 
-# ───────────────────────────── result ─────────────────────────────
 
 def _finish(args, mode, result, snap, gate: Gate, state_db, scrub, work) -> int:
     counters = {"wire_balance": gate.count("balance"), "wire_poll": gate.count("poll"), "wire_download": gate.count("download"),

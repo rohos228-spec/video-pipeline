@@ -4,7 +4,6 @@ import {observations,type ProfileState} from '@/lib/observations';
 import {profileStatus} from '@/lib/profiles-view';
 import {Button} from '@/components/ui/button';
 
-// Server sends provider and nullable knobs (Vibecode profiles have no reasoning/token cap).
 type Entry=Omit<ProfileState['catalog'][number],'reasoning_effort'|'max_output_tokens'>&{provider?:string;
   reasoning_effort?:string|null;max_output_tokens?:number|null;matches_source_provider?:boolean};
 type View=Omit<ProfileState,'catalog'>&{catalog:Entry[];source_provider?:string};
@@ -13,7 +12,6 @@ export function ProfilesSection({projectId,execution,nodes,managed}:{projectId:n
   const [node,setNode]=useState('');const [state,setState]=useState<View|null>(null);const [pid,setPid]=useState('');
   const [rationale,setRationale]=useState('');const [error,setError]=useState('');const [busy,setBusy]=useState(false);
   const selected=nodes.includes(node)?node:(nodes[0]??'');
-  // Only profiles of the failed attempt's provider can be approved; the server enforces it too.
   const options=state?.catalog.filter(c=>c.matches_source_provider!==false)??[];
   const chosen=options.find(c=>c.profile_id===pid)??options[0];
   useEffect(()=>{

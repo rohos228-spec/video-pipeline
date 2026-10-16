@@ -1,5 +1,3 @@
-"""W4-6 / C10: оператор-слой миграции enrich_N -> excel_gpt (сухой проход, --apply с копией, откат, защита боевой базы)
-и удаление мёртвого дубля improve_cell_scene. Все базы временные."""
 from __future__ import annotations
 
 import asyncio
@@ -86,7 +84,7 @@ def test_cli_apply_makes_verified_backup_then_rollback_restores(db):
     assert len(backups) == 1
     assert "enrich_1" in "".join(_types(backups[0])), "в копии исходные узлы"
     assert "enrich_" not in "".join(_types(db))
-    again = _cli("--db", str(db), "--apply")  # идемпотентность
+    again = _cli("--db", str(db), "--apply")
     assert again.returncode == 0 and "менять нечего" in again.stdout
     back = _cli("--db", str(db), "--rollback")
     assert back.returncode == 0, back.stderr
@@ -103,13 +101,12 @@ def test_cli_refuses_live_write_without_confirm(tmp_path):
 
 
 def test_cli_refuses_write_to_db_inside_repo_data_dir_without_confirm():
-    """Явный --db внутри data/ репозитория (боевая папка) не обходит защиту. Файл не создаётся: отказ раньше проверки."""
     probe = ROOT / "data" / "_c10_guard_probe.db"
     for flag in ("--apply", "--rollback"):
         r = _cli("--db", str(probe), flag)
         assert r.returncode == 2 and "--confirm-live" in r.stderr, r.stderr
     assert not probe.exists()
-    r = _cli("--db", str(probe))  # сухой проход не блокируется защитой (дойдёт до «не найден»)
+    r = _cli("--db", str(probe))
     assert r.returncode == 2 and "не найден" in r.stderr
 
 
@@ -129,7 +126,7 @@ async def test_run_migration_failed_verification_auto_rolls_back(db, monkeypatch
         calls["n"] += 1
         out = await real(session, dry_run=dry_run)
         if dry_run and calls["n"] == 2:
-            out["nodes_changed"] = 1  # проверка видит «остаток»
+            out["nodes_changed"] = 1
         return out
 
     monkeypatch.setattr(gm, "migrate_stores", flaky)

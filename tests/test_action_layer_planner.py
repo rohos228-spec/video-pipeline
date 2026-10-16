@@ -1,4 +1,3 @@
-"""Планировщик: заглушка транспорта, без сети и без реальной модели."""
 from __future__ import annotations
 
 import json
@@ -14,7 +13,7 @@ from app.services.action_layer.approval import OperatorIdentity
 from app.services.action_layer.spec import ensure_builtin_actions, registry
 from app.services.gpt_api import GptChatResult
 from app.settings import settings
-from tests.action_layer_support import env, make_spec  # noqa: F401
+from tests.action_layer_support import env, make_spec
 
 OP = "web_operator:test"
 
@@ -50,7 +49,7 @@ def step(action_id="zz.read", params=None, deps=None) -> dict:
 
 
 @pytest_asyncio.fixture
-async def stubs(env, monkeypatch):  # noqa: F811
+async def stubs(env, monkeypatch):
     ensure_builtin_actions()
 
     async def noop(ctx, params):
@@ -65,7 +64,6 @@ async def stubs(env, monkeypatch):  # noqa: F811
         registry.register(s)
     monkeypatch.setattr(settings, "vibecode_api_key", "vk-test-key")
     monkeypatch.setattr(settings, "vibecode_base_url", "https://vibecode.moe/v1")
-    # Эти тесты проверяют транспорт и строгую проверку: предфильтр каталога отключён (лимит >= реестра).
     monkeypatch.setattr(settings, "action_layer_planner_max_catalog", 500)
     yield env
     planner.set_transport(None)
@@ -129,7 +127,7 @@ async def test_extra_or_invalid_params_get_one_repair_then_reject(stubs) -> None
     fake = use(bad, res(reply([step(params={"project_id": 1, "evil": True})])), bad)
     with pytest.raises(planner.PlannerRejected) as err:
         await planner.plan_from_text("сделай", operator=OP)
-    assert err.value.code == "bad_params" and len(fake.calls) == 2  # один повтор, третий не запрошен
+    assert err.value.code == "bad_params" and len(fake.calls) == 2
     assert "validation_error" in fake.calls[1]["body"]["messages"][-1]["content"]
     assert "evil" in fake.calls[1]["body"]["messages"][-1]["content"]
     fake = use(res(reply([step(params={"project_id": 0})])), res(reply([step(params={"project_id": 0})])))
@@ -169,7 +167,7 @@ async def test_truncated_reply_gets_exactly_one_retry_with_error(stubs) -> None:
                res(reply([step()])))
     out = await planner.plan_from_text("прочитай", operator=OP)
     assert len(fake.calls) == 2 and out.meta["attempts"] == 2
-    assert out.meta["prompt_tokens"] == 2000  # суммируется по обоим вызовам
+    assert out.meta["prompt_tokens"] == 2000
     retry_msgs = fake.calls[1]["body"]["messages"]
     assert "validation_error" in retry_msgs[-1]["content"]
     assert "truncated" in retry_msgs[-1]["content"]
@@ -182,7 +180,7 @@ async def test_invalid_json_twice_fails_after_exactly_two_posts(stubs) -> None:
     with pytest.raises(planner.PlannerRejected) as err:
         await planner.plan_from_text("прочитай", operator=OP)
     assert err.value.code == "planner_bad_output"
-    assert len(fake.calls) == 2 and len(fake.replies) == 1  # третий ответ не запрашивался
+    assert len(fake.calls) == 2 and len(fake.replies) == 1
 
 
 async def test_wrong_top_level_shape_is_retried_once(stubs) -> None:
@@ -232,10 +230,9 @@ async def test_injection_text_cannot_add_tools_or_approval(stubs) -> None:
         await planner.plan_from_text(text, operator=OP)
     assert err.value.code == "unknown_action"
     msgs = fake.calls[0]["body"]["messages"]
-    assert text not in msgs[0]["content"]  # текст пользователя только в данных
+    assert text not in msgs[0]["content"]
     assert json.loads(msgs[1]["content"])["user_request"] == text
 
-    # Поля подтверждения/инструментов в ответе недопустимы на любом уровне.
     for bad in ({**reply([step()]), "approved": True},
                 {**reply([step()]), "tools": ["shell.exec"]},
                 reply([{**step(), "approval_id": "x"}]),
@@ -281,7 +278,7 @@ async def test_clarification_returns_no_steps(stubs) -> None:
     use(res(reply([], clar="Какой кадр?")))
     out = await planner.plan_from_text("поправь", operator=OP)
     assert out.reply.steps == [] and out.reply.needs_clarification == "Какой кадр?"
-    use(res(reply([step()], clar="Какой кадр?")))  # и шаги, и вопрос - формат неверен
+    use(res(reply([step()], clar="Какой кадр?")))
     use(res(reply([step()], clar="Какой кадр?")), res(reply([step()], clar="?")))
     with pytest.raises(planner.PlannerRejected):
         await planner.plan_from_text("поправь", operator=OP)
@@ -328,7 +325,7 @@ async def test_stale_context_is_detected_and_only_for_proposed_plans(stubs) -> N
         stubs.app, out.reply.steps, operator=OperatorIdentity(OP), request_text="x")
     assert plan_id
     await planner.link_plan(plan_id, OP, out)
-    await planner.check_plan_fresh(plan_id)  # состояние то же
+    await planner.check_plan_fresh(plan_id)
 
     async with stubs.factory() as s:
         s.add(Frame(project_id=pid, number=3, voiceover_text="новый", attrs={}))
@@ -336,13 +333,11 @@ async def test_stale_context_is_detected_and_only_for_proposed_plans(stubs) -> N
     with pytest.raises(planner.StalePlan):
         await planner.check_plan_fresh(plan_id)
 
-    # Не proposed (уже запускался) - проверка не применяется.
     async with stubs.factory() as s:
         row = await s.get(store.ActionPlan, plan_id)
         row.status = store.PLAN_STOPPED
         await s.commit()
     await planner.check_plan_fresh(plan_id)
-    # План без записи контекста (ручной preview) не проверяется.
     await planner.check_plan_fresh("0" * 32)
     assert [r.event for r in await history_rows(stubs, "planner_plan_linked")] == [
         "planner_plan_linked"]
@@ -354,7 +349,7 @@ async def test_context_version_depends_on_state_and_selection(stubs) -> None:
     b = await planner.load_context(pid)
     c = await planner.load_context(pid, selected_frame=2)
     assert a["version"] == b["version"] != c["version"]
-    assert "voiceover_text" not in json.dumps(a["facts"])  # тексты кадров в контекст не идут
+    assert "voiceover_text" not in json.dumps(a["facts"])
 
 
 async def test_rate_limit_per_operator_blocks_before_request(stubs, monkeypatch) -> None:
@@ -365,7 +360,6 @@ async def test_rate_limit_per_operator_blocks_before_request(stubs, monkeypatch)
     with pytest.raises(planner.PlannerRateLimited) as err:
         await planner.plan_from_text("c", operator=OP)
     assert err.value.code == "rate_limited" and len(fake.calls) == 2
-    # Другой оператор считается отдельно.
     await planner.plan_from_text("d", operator="web_operator:other")
     assert len(fake.calls) == 3
 
@@ -374,7 +368,7 @@ async def test_rate_limit_counts_retry_posts(stubs, monkeypatch) -> None:
     monkeypatch.setattr(settings, "action_layer_planner_calls_per_hour", 1)
     fake = use(res("not json"), res(reply([step()])))
     with pytest.raises(planner.PlannerRateLimited):
-        await planner.plan_from_text("a", operator=OP)  # повтор упёрся в лимит
+        await planner.plan_from_text("a", operator=OP)
     assert len(fake.calls) == 1
 
 

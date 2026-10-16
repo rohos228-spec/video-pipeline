@@ -1,8 +1,3 @@
-"""W4-2 / C03: проверка результата ноды `images` (и подключение проверки звука C04 к блоку audio).
-
-Класс доказательства U и D: настоящие sqlite-базы, настоящие файлы (PIL, wave), настоящие `verify_artifact`,
-журнал платных задач, хук-проверяющий и проекция диагностики. Ни сети, ни платных вызовов, ни живого прогона.
-"""
 from __future__ import annotations
 
 import os
@@ -30,7 +25,6 @@ FFPROBE = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
 
 def noise_png(path: Path, size=(640, 640)) -> bytes:
-    """Полноразмерный PNG: шум не сжимается, поэтому файл выше нативного порога сцены (200 КБ)."""
     rnd = random.Random(7)
     img = Image.frombytes("RGB", size, bytes(rnd.getrandbits(8) for _ in range(size[0] * size[1] * 3)))
     img.save(path, "PNG")
@@ -95,16 +89,16 @@ class Env(unittest.IsolatedAsyncioTestCase):
 
 class ImagesVerification(Env):
     async def test_images_are_a_media_node_with_the_same_named_hook(self):
-        import app.services.decision_v1  # noqa: F401
-        import app.services.node_capabilities  # noqa: F401
+        import app.services.decision_v1
+        import app.services.node_capabilities
         self.assertIn("images", media_verification.MEDIA_NODE_TYPES)
         self.assertIn("images", media_verification._COLLECTORS)
         spec = node_spec.verifier_spec_for("images")
         self.assertEqual(spec.name, "media_result")
-        self.assertFalse(spec.managed_only)  # наблюдение: проверка запуск не удерживает
+        self.assertFalse(spec.managed_only)
 
     async def test_every_frame_with_a_prompt_has_a_good_bound_image(self):
-        f1, f2, f3 = await self.frames(PROMPT, PROMPT, "")  # у кадра 3 промта нет: картинка не нужна
+        f1, f2, f3 = await self.frames(PROMPT, PROMPT, "")
         await self.image(f1)
         await self.image(f2)
         proof = await self.proof()
@@ -115,14 +109,14 @@ class ImagesVerification(Env):
         self.assertEqual((first["key"], first["format"], first["width"], first["height"]),
                          ("frame_001", "PNG", 640, 640))
         self.assertTrue(first["artifact_bound"])
-        self.assertEqual(first["provenance"]["reason"], "no_ledger_row")  # Outsee: id задачи нет, это факт, не провал
+        self.assertEqual(first["provenance"]["reason"], "no_ledger_row")
         self.assertFalse(proof["semantic_quality_verified"])
         self.assertIn("качество не оценивалось", proof["summary"])
 
     async def test_a_corrupt_png_is_a_failed_item_and_a_media_failure_incident(self):
         (f1,) = await self.frames(PROMPT)
         good = noise_png(self.root / "scenes" / "tmp.png")
-        await self.image(f1, data=good[:20] + os.urandom(len(good) - 20))  # заголовок PNG цел, содержимое нет
+        await self.image(f1, data=good[:20] + os.urandom(len(good) - 20))
         proof = await self.proof()
         self.assertEqual(proof["status"], "failed")
         self.assertEqual(proof["items"][0]["key"], "frame_001")
@@ -160,7 +154,7 @@ class ImagesVerification(Env):
     async def test_a_small_scene_image_below_the_native_threshold_fails(self):
         (f1,) = await self.frames(PROMPT)
         path = self.root / "scenes" / "frame_001_ab12cd34.png"
-        Image.new("RGB", (640, 640), "green").save(path)  # декодируется, но однотонная и в разы меньше 200 КБ
+        Image.new("RGB", (640, 640), "green").save(path)
         await self.add(Artifact(project_id=PID, frame_id=f1.id, kind=ArtifactKind.scene_image, uuid="i1",
                                 path=str(path), meta={"shot": 1}))
         proof = await self.proof()
@@ -186,14 +180,14 @@ class ImagesVerification(Env):
     async def test_an_artifact_of_another_frame_does_not_count_for_this_frame(self):
         f1, f2 = await self.frames(PROMPT, PROMPT)
         path = await self.image(f1)
-        async with self.sessions() as s:  # запись артефакта кадра 1 перепривязана к кадру 2, файл остался кадра 1
+        async with self.sessions() as s:
             art = await s.get(Artifact, 1)
             art.frame_id = f2.id
             await s.commit()
         proof = await self.proof()
         by_key = {i["key"]: i for i in proof["items"]}
         self.assertEqual(by_key["frame_002"]["reason"], "file_belongs_to_another_frame")
-        self.assertFalse(by_key["frame_001"]["artifact_bound"])  # у кадра 1 нет своей записи артефакта
+        self.assertFalse(by_key["frame_001"]["artifact_bound"])
         self.assertEqual(proof["status"], "failed")
         self.assertTrue(path.is_file())
 
@@ -240,7 +234,6 @@ class ImagesHook(Env):
 
 @unittest.skipUnless(FFPROBE, "ffmpeg/ffprobe are required for the audio fixture")
 class AudioContentCheckIsWired(Env):
-    """Блок аудио: проверку содержимого пишет W4-3 (audio_verification.verify_audio), здесь она только вызывается."""
 
     def wav(self, name, *, silent):
         path = self.root / "audio" / name

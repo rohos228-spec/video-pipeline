@@ -1,7 +1,3 @@
-"""Класс ошибок «уточняет вместо плана»: необязательное и то, что подставляет сервер, не выясняется.
-
-Проверки офлайн, по классам параметров (потолок, подпись, площадки), а не по фразам какого-либо набора.
-"""
 from __future__ import annotations
 
 from app.services.action_layer import planner, planner_rules
@@ -28,7 +24,6 @@ def test_question_about_caption_or_platforms_is_answered_by_the_server() -> None
     both = planner_rules.resolve_clarification(
         "На какие площадки опубликовать и какую подпись указать?", "опубликуй видео", FACTS)
     assert {r["param"] for r in both} == {"caption", "platforms"}
-    # текст подписи (тема проекта, недоверенный) в ответ не попадает
     assert all(r["value"] == "server-side" for r in both)
 
 
@@ -39,6 +34,5 @@ def test_publish_question_is_not_resolved_without_server_data_or_for_deletion() 
 
 
 def test_money_questions_still_go_to_the_human() -> None:
-    # потолок расхода сервер не выдумывает: автоповтор не подставляет сумму
     assert planner_rules.resolve_clarification(
         "Какой потолок в кредитах поставить?", "продолжи конвейер", FACTS) == []

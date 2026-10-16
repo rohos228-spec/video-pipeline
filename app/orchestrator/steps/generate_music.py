@@ -89,8 +89,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         voiceover_attached=voiceover_path.exists(),
     )
 
-    # Прерванная платная генерация (открытая задача Kie или submit без известного исхода) возобновляется
-    # только с тем же запросом: берём сохранённый промт Suno, GPT не вызываем, новый submit не создаётся.
     from app.services import media_resume
 
     prompt_cache = music_dir / ".suno_prompt.txt"
@@ -120,6 +118,16 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             project_id=project.id,
         )
         suno_prompt = (suno_prompt or "").strip()
+        if suno_prompt.startswith("```"):
+            lines = suno_prompt.splitlines()
+            if len(lines) >= 2 and lines[-1].strip().startswith("```"):
+                suno_prompt = "\n".join(lines[1:-1]).strip()
+        import re
+
+        suno_prompt = re.sub(
+            r"^(?:\*\*)?(?:prompt|промпт)(?:\*\*)?:\s*", "", suno_prompt, flags=re.IGNORECASE
+        ).strip()
+        suno_prompt = suno_prompt.strip('"`\' \n\r\t')
         if len(suno_prompt) < 20:
             raise RuntimeError("GPT вернул слишком короткий промт для музыки")
         try:

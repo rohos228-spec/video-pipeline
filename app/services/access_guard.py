@@ -1,21 +1,3 @@
-"""Защита локального API от чужих страниц и от чужих клиентов (шаги A04, A05).
-
-Что здесь есть:
-  * ``local_only_when_no_auth`` (и ``LocalOnlyDep``) - изменяющая ручка без веб-входа принимается
-    только с loopback; обратный прокси (заголовки X-Forwarded-*) локальным НЕ считается;
-  * ``local_only_for_mutations`` - то же, но только для POST/PUT/PATCH/DELETE (чтения не трогает);
-    вешается списком на целые роутеры в ``app/web/api.py``;
-  * ``SecurityGuardMiddleware`` - проверка ``Host`` (защита от DNS-rebinding) и ``Origin`` (CSRF)
-    на всех запросах ``/api`` и ``/ws``, плюс токен оператора на опасных изменяющих ручках;
-  * токен оператора: случайная строка, живёт в памяти процесса, выдаётся странице одним GET
-    ``/api/auth/operator-token`` (только своему origin), уходит в заголовке ``X-VP-Operator``;
-  * ``assert_safe_bind`` - отказ старта, если WEB_HOST не loopback, а входа нет.
-
-Настройки этого модуля читаются из окружения процесса (``app/settings.py`` не трогаем):
-  VP_OPERATOR_TOKEN_ENFORCE  (по умолчанию 1) - 0/false отключает требование токена (только отладка);
-  VP_ALLOWED_ORIGINS         - через запятую, дополнительные origin (схема://хост:порт), «*» не принимается;
-  VP_ALLOWED_HOSTS           - через запятую, дополнительные имена хоста в заголовке Host.
-"""
 from __future__ import annotations
 
 import contextvars
@@ -33,25 +15,20 @@ from loguru import logger
 
 from app.settings import settings
 
-# Имя хоста, которое подставляет тестовый клиент Starlette (сетевого пира нет).
 _IN_PROCESS_HOSTS = {"testclient"}
 
 OPERATOR_HEADER = "X-VP-Operator"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-# Внутренний вызов слоя действий (httpx.ASGITransport) ходит на этот несуществующий домен.
 _INTERNAL_HOSTS = frozenset({"action-layer.invalid"})
 _FORWARD_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "x-forwarded-host")
 
 _OPERATOR_TOKEN: str | None = None
-# True внутри запроса, у которого токен оператора проверен (ставит middleware).
 operator_token_verified: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "vp_operator_token_verified", default=False)
 
 
-# --- loopback ----------------------------------------------------------------------------------
 
 def is_loopback_host(host: str | None) -> bool:
-    """None (нет сетевого пира: in-process/unix-сокет) считается локальным."""
     if host is None:
         return True
     h = str(host).strip().lower()
@@ -93,7 +70,6 @@ async def local_only_when_no_auth(request: Request) -> None:
 
 
 async def local_only_for_mutations(request: Request) -> None:
-    """Как ``local_only_when_no_auth``, но чтение (GET/HEAD/OPTIONS) не ограничивает."""
     if request.method.upper() in SAFE_METHODS:
         return
     _local_only_check(request)
@@ -104,7 +80,6 @@ LocalOnly = Annotated[None, Depends(local_only_when_no_auth)]
 MutationLocalOnlyDep = Depends(local_only_for_mutations)
 
 
-# --- настройки из окружения ----------------------------------------------------------------------
 
 def _env_list(name: str) -> list[str]:
     raw = os.environ.get(name) or ""
@@ -117,7 +92,6 @@ def operator_token_enforced() -> bool:
 
 
 def _norm_origin(origin: str) -> str | None:
-    """'http://LocalHost:3000/' -> 'http://localhost:3000'; мусор и '*' -> None."""
     try:
         parts = urlsplit(origin.strip())
         port = parts.port
@@ -132,7 +106,6 @@ def _norm_origin(origin: str) -> str | None:
 
 
 def allowed_origins() -> list[str]:
-    """Явный список origin для CORS и проверки Origin (без '*')."""
     port = int(getattr(settings, "web_port", 8765) or 8765)
     out: list[str] = []
     for host in ("localhost", "127.0.0.1", "[::1]"):
@@ -161,7 +134,6 @@ def allowed_hostnames() -> set[str]:
 
 
 def _split_host_header(value: str) -> tuple[str, str]:
-    """'LocalHost:8765' -> ('localhost', '8765'); '[::1]:80' -> ('::1', '80')."""
     v = (value or "").strip().lower()
     if v.startswith("["):
         end = v.find("]")
@@ -176,12 +148,6 @@ def _split_host_header(value: str) -> tuple[str, str]:
 
 
 def host_allowed(host_header: str | None) -> bool:
-    """Защита от DNS-rebinding: имя в Host должно быть своим.
-
-    Свои: localhost и *.localhost, любой IP-литерал (перепривязать DNS на IP нельзя),
-    имя без точки (однозначная локальная метка; публичный домен атакующего содержит точку),
-    WEB_HOST и VP_ALLOWED_HOSTS. Остальные доменные имена - отказ.
-    """
     name, _port = _split_host_header(host_header or "")
     if not name:
         return False
@@ -196,7 +162,6 @@ def host_allowed(host_header: str | None) -> bool:
 
 
 def origin_allowed(origin: str | None, host_header: str | None) -> bool:
-    """Origin своей страницы: из явного списка либо совпадает с заголовком Host (тот же origin)."""
     if not origin or origin.strip().lower() == "null":
         return False
     norm = _norm_origin(origin)
@@ -213,7 +178,6 @@ def origin_allowed(origin: str | None, host_header: str | None) -> bool:
     return origin_host == host_name and origin_port == (host_port or origin_port)
 
 
-# --- токен оператора -----------------------------------------------------------------------------
 
 def get_operator_token() -> str:
     global _OPERATOR_TOKEN
@@ -234,34 +198,31 @@ def check_operator_token(candidate: str | None) -> bool:
     return hmac.compare_digest(candidate.encode("utf-8"), get_operator_token().encode("utf-8"))
 
 
-# Изменяющие ручки, для которых нужен токен оператора (путь без /api).
 _TOKEN_PATHS = [re.compile(p) for p in (
-    r"^/action-layer/",                                  # планы, approve, run, stop, макросы, вложения
+    r"^/action-layer/",
     r"^/change-control/",
-    r"^/projects/[^/]+/observations/kill-switch",        # рубильник
-    r"^/projects/[^/]+/media-recovery/",                 # release-unknown и др.
+    r"^/projects/[^/]+/observations/kill-switch",
+    r"^/projects/[^/]+/media-recovery/",
     r"^/projects/[^/]+/stop$",
     r"^/projects/[^/]+/steps/[^/]+/run$",
-    r"^/projects/[^/]+/(resume|continue)$",              # A9 (W71): продолжить/возобновить; UI шлёт токен, бот Telegram вызывает сервисы напрямую
-    r"^/hitl/[^/]+/decision$",                            # A9 (W71): решение человека (одобрить/отклонить/перегенерировать)
+    r"^/projects/[^/]+/(resume|continue)$",
+    r"^/hitl/[^/]+/decision$",
     r"^/projects/[^/]+/mass-lanes/start$",
     r"^/runs/[^/]+/cancel$",
-    r"^/projects/[^/]+/publications/",                    # подтверждение «да», ручные действия по публикациям
-    r".*publish.*",                                       # любая публикация
-    # Фаза 6 (Q-03): платные/опасные POST, которые раньше шли без токена. Страница шлёт заголовок
-    # на все изменяющие запросы (api-operator-token.ts), поэтому UI не ломается.
-    r"^/projects/[^/]+/finish/",                          # массовая генерация картинок/анимации/видео
+    r"^/projects/[^/]+/publications/",
+    r".*publish.*",
+    r"^/projects/[^/]+/finish/",
     r"^/projects/[^/]+/montage-board/(queue|montage|recover-outsee)$",
     r"^/projects/[^/]+/montage-board/frames/[^/]+/scene-(action-generate|generate-with-images|variants|improve)$",
-    r"^/projects/[^/]+/observations/(launch|auto)?$",     # запуск надзора (POST на корень тоже)
+    r"^/projects/[^/]+/observations/(launch|auto)?$",
     r"^/projects/[^/]+/observations/[^/]+/actions/(start|retry)$",
     r"^/outsee/generate$",
     r"^/kie-create/generate$",
     r"^/sidebar-layout/gen-queue/(enqueue|bulk-enqueue)$",
     r"^/runs/from-workflow/",
     r"^/prompt-studio/projects/[^/]+/gpt-verdict/[^/]+/run$",
-    r"^/fleet/(local|nodes/[^/]+)/powershell",            # выполнение команд на машине
-    r"^/db/projects/[^/]+/orchestrator/",                 # чат-оркестратор и его подтверждения
+    r"^/fleet/(local|nodes/[^/]+)/powershell",
+    r"^/db/projects/[^/]+/orchestrator/",
 )]
 
 
@@ -272,7 +233,6 @@ def path_needs_operator_token(path: str, method: str) -> bool:
     return any(rx.match(p) for rx in _TOKEN_PATHS)
 
 
-# --- middleware -------------------------------------------------------------------------------------
 
 def _hdr(scope, name: bytes) -> str | None:
     for k, v in scope.get("headers") or ():
@@ -282,7 +242,6 @@ def _hdr(scope, name: bytes) -> str | None:
 
 
 class SecurityGuardMiddleware:
-    """Чистый ASGI-слой (без BaseHTTPMiddleware: contextvar доходит до обработчика)."""
 
     def __init__(self, app):
         self.app = app
@@ -338,10 +297,8 @@ class SecurityGuardMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
-# --- старт ----------------------------------------------------------------------------------------------
 
 def warn_if_exposed_without_auth() -> bool:
-    """Предупреждение при старте: авторизации нет, а сервер слушает не loopback."""
     if settings.web_auth_enabled or is_loopback_bind(settings.web_host):
         return False
     logger.warning(
@@ -353,14 +310,10 @@ def warn_if_exposed_without_auth() -> bool:
 
 
 class UnsafeBindError(RuntimeError):
-    """WEB_HOST не loopback, а входа нет: сервер не запускается."""
+    pass
 
 
 def assert_safe_bind() -> None:
-    """Отказ старта: не-loopback WEB_HOST без входа.
-
-    Обходится только явным ORCHESTRATOR_ALLOW_REMOTE_WITHOUT_AUTH=true (тогда предупреждение).
-    """
     if settings.web_auth_enabled or is_loopback_bind(settings.web_host):
         return
     if settings.orchestrator_allow_remote_without_auth:

@@ -1,4 +1,3 @@
-"""Fixture e2e: three scenes, 2.9 coverage, rewrite/rebuild twice, isolated sqlite."""
 
 from __future__ import annotations
 

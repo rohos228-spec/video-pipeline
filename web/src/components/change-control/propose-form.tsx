@@ -43,7 +43,6 @@ export function ProposeForm({ projectId, allow, allowError, onCreated, onCancel 
   const [nodes, setNodes] = useState<NodeInfo[] | null>(null);
   const [nodeKey, setNodeKey] = useState("");
   const [rationale, setRationale] = useState("");
-  // кандидаты
   const [variant, setVariant] = useState("");
   const [variants, setVariants] = useState<string[] | null>(null);
   const [stepValues, setStepValues] = useState<Record<string, string>>({});
@@ -59,12 +58,10 @@ export function ProposeForm({ projectId, allow, allowError, onCreated, onCancel 
   const [summary, setSummary] = useState("");
   const [diff, setDiff] = useState("");
   const [path, setPath] = useState("");
-  // отправка
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [touched, setTouched] = useState(false);
 
-  // граф проекта: узлы и текущие значения
   useEffect(() => {
     let cancelled = false;
     setMeta(null); setNodes(null);
@@ -83,7 +80,7 @@ export function ProposeForm({ projectId, allow, allowError, onCreated, onCancel 
           : [];
         setNodes(list);
       } catch {
-        if (!cancelled) setNodes([]); // граф недоступен: узел вводится вручную
+        if (!cancelled) setNodes([]);
       }
     })();
     return () => { cancelled = true; };
@@ -105,12 +102,10 @@ export function ProposeForm({ projectId, allow, allowError, onCreated, onCancel 
     return all.filter((k) => onNode.includes(k)) as ProposalKind[];
   }, [allow, tier, needsNode, node]);
 
-  // вид по умолчанию при смене уровня/ноды
   useEffect(() => {
     if (tierKinds.length && !tierKinds.includes(kind)) setKind(tierKinds[0]);
   }, [tierKinds, kind]);
 
-  // варианты промпта для выбора
   useEffect(() => {
     setVariants(null); setVariant("");
     if (kind !== "prompt_variant" || !step) return;
@@ -124,7 +119,6 @@ export function ProposeForm({ projectId, allow, allowError, onCreated, onCancel 
     return () => { cancelled = true; };
   }, [kind, step]);
 
-  // сброс введённого при смене ноды
   useEffect(() => { setStepValues({}); setBase(null); setBaseError(""); setAckMissing(false); }, [nodeKey]);
 
   const limits = allow?.prompt_limits;
@@ -136,7 +130,6 @@ export function ProposeForm({ projectId, allow, allowError, onCreated, onCancel 
   };
   const factor = allow?.max_step_param_factor ?? 2;
 
-  /** Текущий базовый промпт ноды даёт сервер (то же разрешение варианта, что у проверок T2). */
   async function loadBase(overwrite: boolean) {
     if (!nodeKey) return;
     setBaseLoading(true); setBaseError(""); setAckMissing(false);
@@ -158,7 +151,6 @@ export function ProposeForm({ projectId, allow, allowError, onCreated, onCancel 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wantsBase, nodeKey, projectId]);
 
-  // ---- проверка и сборка candidate ----
   const problems: string[] = [];
   const rat = rationale.trim();
   if (!rat) problems.push("Обоснование обязательно.");
@@ -217,7 +209,6 @@ export function ProposeForm({ projectId, allow, allowError, onCreated, onCancel 
     candidate = { values };
   }
 
-  // Подсказка по подстановкам: только предупреждение, окончательно решает сервер.
   const warnings: string[] = [];
   if (tier === "T2" && kind === "prompt_text" && base && base.source !== "missing" && !base.truncated) {
     const ph = (t: string) => new Set([...(t.match(/\{\{[A-Za-z0-9_:]+\}\}/g) ?? []), ...["[ВСТАВЬ ТЕМУ]", "(тема ролика)"].filter((m) => t.includes(m))]);

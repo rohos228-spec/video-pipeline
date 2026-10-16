@@ -24,13 +24,10 @@ from loguru import logger
 
 from app.services.tracker_schema import ensure_tracker_schema
 
-# Путь к локальной базе API Tracker (API_TRACKER_DB переопределяет: песочницы и тесты не пишут в боевую базу)
 _TRACKER_DB = (Path(os.environ["API_TRACKER_DB"]) if os.environ.get("API_TRACKER_DB", "").strip()
                else Path(__file__).resolve().parent.parent.parent / "api-tracker" / "tracker.db")
 
-# Быстрый расчет тарифов
 _RATES: dict[str, tuple[float, float]] = {
-    # model: (input_usd_per_m, output_usd_per_m)
     "gemini-3.7-flash": (0.147622, 0.738108),
     "gemini-3.8-flash": (0.75, 3.75),
     "gemini-3.6-flash": (0.295243, 1.476216),
@@ -41,26 +38,23 @@ _RATES: dict[str, tuple[float, float]] = {
     "gpt-5.6-luna": (2.00, 8.00),
     "deepseek-v4-flash": (0.291896, 0.875687),
     "deepseek-v4-pro": (0.55, 2.19),
+    "gpt-6-astra": (0.852925, 4.264624),
+    "gpt-5.5": (0.426462, 2.558774),
+    "grok-4-6": (0.065610, 0.196829),
+    "grok-4-5": (0.065610, 0.196829),
+    "claude-sonnet-5": (0.196829, 0.984144),
+    "claude-opus-5": (0.492072, 2.460360),
+    "claude-opus-4-8": (0.492072, 2.460360),
+    "claude-fable-5-1": (1.968288, 9.841440),
+    "claude-fable-5": (4.705535, 23.527676),
 }
 
 
-# Calibrated against the real Kie credit balance (GET /api/v1/chat/credit, 1 credit = $0.005,
-# see scripts/calibrate_kie_cost.py and docs/KIE_COST_CALIBRATION.md, measured 2026-10-01 on 3 probe
-# shapes, reasoning tokens included in completion): cached input is effectively free, uncached
-# input ~$1.6/M, output ~$8.4/M. Max absolute error on the probes: ~$0.0003 per call.
-# (usd per M tokens: uncached input, output, cached input)
 _MEASURED_RATES: dict[str, tuple[float, float, float]] = {
     "gpt-5.6-sol": (1.6, 8.4, 0.0),
 }
 
 
-# Where Vibecode text prices come from, and how far they can be trusted.
-# NOT calibrated: unlike _MEASURED_RATES (Kie), nobody compared these figures with the
-# vibecode.moe balance. The snapshot pricing is the raw per-model list price; the app's own
-# catalog/UI shows it multiplied by vibecode_catalog.PRICE_MARKUP (x3). Which of the two
-# vibecode.moe really charges the key is UNKNOWN, so the raw snapshot price is the base
-# (cheaper, i.e. possibly an UNDER-estimate by up to the markup) and every row says so.
-# The snapshot file has no date, so its freshness is unknown too.
 VIBECODE_PRICE_SOURCE = "vibecode_models_snapshot.json raw list price per 1M tokens; not calibrated"
 VIBECODE_PRICING_BASIS = "vibecode_snapshot_list_price"
 
@@ -70,7 +64,6 @@ def _is_vibecode(provider: str | None) -> bool:
 
 
 def _vibecode_pricing(model: str | None) -> dict[str, Any] | None:
-    """Raw snapshot pricing of a Vibecode model id (exact id match, dots as in the catalog)."""
     try:
         from app.services.vibecode_catalog import load_snapshot
         wanted = str(model or "").strip().lower()
@@ -83,7 +76,6 @@ def _vibecode_pricing(model: str | None) -> dict[str, Any] | None:
 
 
 def vibecode_cost(model: str | None, p_tok: int, c_tok: int, cached_tok: int = 0) -> float | None:
-    """Estimated USD from the snapshot list price; None when the model has no known price."""
     pricing = _vibecode_pricing(model)
     if not pricing or pricing.get("input_usd_per_m") is None or pricing.get("output_usd_per_m") is None:
         return None
@@ -95,7 +87,6 @@ def vibecode_cost(model: str | None, p_tok: int, c_tok: int, cached_tok: int = 0
 
 
 def vibecode_cost_metadata(model: str | None, *, usage_known: bool) -> dict[str, Any]:
-    """Row metadata for a Vibecode call: states the basis and that it is not calibrated."""
     meta: dict[str, Any] = {"provider": "vibecode", "pricing_basis": VIBECODE_PRICING_BASIS,
         "calibrated": False, "price_source": VIBECODE_PRICE_SOURCE}
     try:
@@ -106,7 +97,6 @@ def vibecode_cost_metadata(model: str | None, *, usage_known: bool) -> dict[str,
     if _vibecode_pricing(model) is None:
         meta.update(cost_basis="unknown", price_known=False)
     if not usage_known:
-        # cost_usd is stored as 0.0 (NOT NULL-ish column); this flag says it is not a real zero.
         meta.update(cost_basis="unknown", usage_known=False)
     return meta
 
@@ -143,7 +133,6 @@ def _calc_cost(
     if cost_usd is not None and cost_usd >= 0:
         return round(cost_usd, 6)
     if _is_vibecode(provider):
-        # Never fall through to Kie's calibrated/generic tables: they are another channel's prices.
         est = vibecode_cost(model, p_tok, c_tok, cached_tok)
         return est if est is not None else 0.0
     m = (model or "").lower().replace("_", "-").replace(" ", "-").replace(".", "-")
@@ -152,9 +141,6 @@ def _calc_cost(
             cached = min(max(cached_tok, 0), p_tok)
             return round(((p_tok - cached) / 1e6) * in_r + (cached / 1e6) * cached_r + (c_tok / 1e6) * out_r, 6)
     for k, (in_r, out_r) in _RATES.items():
-        # Kie names models with dashes ("gpt-5-6-sol"), the table with dots
-        # ("gpt-5.6-sol"): compare in one form or the dashed name silently
-        # falls through to the generic default tier below.
         if k.replace(".", "-") in m:
             return round((p_tok / 1e6) * in_r + (c_tok / 1e6) * out_r, 6)
     for k, rate in _MEDIA_RATES.items():
@@ -170,7 +156,6 @@ def _calc_cost(
 
 
 def _get_identity() -> tuple[str, str]:
-    """Определить имя пользователя и ПК из сохранённого профиля или системы."""
     import getpass
     import os
     import socket
@@ -193,7 +178,6 @@ def _get_identity() -> tuple[str, str]:
 
 
 def _redact_value(value: Any) -> Any:
-    """Маскирует секреты тем же `redact`, что и журнал наблюдателя (fail-closed для текста)."""
     try:
         from app.services.observation import redact
         return redact(value)
@@ -202,9 +186,6 @@ def _redact_value(value: Any) -> Any:
 
 
 def _cloud_enabled() -> bool:
-    """Облако включено только явным API_TRACKER_CLOUD_ENABLED=true (по умолчанию false, A17).
-
-    Ошибка чтения настроек означает «выключено»: без явного согласия соединений не делаем."""
     try:
         from app.settings import settings
         return bool(settings.api_tracker_cloud_enabled)
@@ -214,14 +195,12 @@ def _cloud_enabled() -> bool:
 
 
 def _cloud_credentials() -> tuple[str, str]:
-    """URL и ключ облака из настроек (SUPABASE_URL, SUPABASE_KEY|SUPABASE_ANON_KEY). В исходниках их нет."""
     from app.settings import settings
     return (str(settings.api_tracker_supabase_url or "").strip(),
             str(settings.api_tracker_supabase_key or "").strip())
 
 
 def _cloud_salt() -> str:
-    """Локальная соль хэша имени: случайная на установку, лежит рядом с базой трекера и никуда не уходит."""
     try:
         path = _TRACKER_DB.parent / ".cloud_identity_salt"
         if path.is_file():
@@ -241,15 +220,11 @@ def _hash_identity(value: str, prefix: str) -> str:
     text = str(value or "").strip()
     salt = _cloud_salt() if text else ""
     if not text or not salt:
-        return ""  # без соли хэш подбирается по словарю: лучше пустая строка
+        return ""
     return prefix + hmac.new(salt.encode("utf-8"), text.encode("utf-8"), hashlib.sha256).hexdigest()[:12]
 
 
 def _cloud_identity(user_name: str, device_name: str) -> tuple[str, str]:
-    """Имя пользователя ОС и имя устройства для ОБЛАЧНОЙ строки: необратимый хэш с локальной солью.
-
-    Как есть имена уходят только при явном API_TRACKER_CLOUD_SEND_IDENTITY=true. Локальная строка
-    в tracker.db хранит имена как раньше."""
     try:
         from app.settings import settings
         if settings.api_tracker_cloud_send_identity:
@@ -263,7 +238,6 @@ _cloud_warned: set[str] = set()
 
 
 def _push_to_supabase(payload: dict[str, Any]) -> bool:
-    """Отправка записи в облако. Без явного включения не делает ни одного соединения."""
     if not _cloud_enabled():
         return False
     import httpx
@@ -292,7 +266,6 @@ def _push_to_supabase(payload: dict[str, Any]) -> bool:
         return False
 
 
-# -- запись строки: очередь не теряется, сбой оставляет след ---------------------------------
 
 _inflight = 0
 _inflight_cv = threading.Condition()
@@ -301,7 +274,6 @@ _spill_lock = threading.Lock()
 
 
 def write_failure_count() -> int:
-    """Сколько строк трекера не удалось записать с начала процесса (каждая оставила след и копию в spill)."""
     return _write_failures
 
 
@@ -310,7 +282,6 @@ def pending_writes() -> int:
 
 
 def flush(timeout: float = 15.0) -> bool:
-    """Дождаться уже запущенных записей (остановка, тесты). True, если очередь пуста."""
     import time
     deadline = time.monotonic() + max(0.0, timeout)
     with _inflight_cv:
@@ -327,7 +298,6 @@ def _spill_path() -> Path:
 
 
 def _spill_row(inputs: dict[str, Any]) -> bool:
-    """Копия невставленной строки: из неё replay_spill вернёт её в базу, когда база снова доступна."""
     try:
         with _spill_lock:
             path = _spill_path()
@@ -341,7 +311,6 @@ def _spill_row(inputs: dict[str, Any]) -> bool:
 
 
 def _build_rows(inputs: dict[str, Any]) -> tuple[float, dict[str, Any], dict[str, Any]]:
-    """(стоимость, облачная строка, локальная строка) из входных данных вызова."""
     cost = _calc_cost(
         inputs["model"],
         inputs["prompt_tokens"],
@@ -354,7 +323,6 @@ def _build_rows(inputs: dict[str, Any]) -> tuple[float, dict[str, Any], dict[str
         provider=inputs["provider"],
     )
     meta_dict = dict(inputs.get("metadata") or {})
-    # Оценка и факт раздельно: факт только если провайдер сам прислал сумму.
     reported = inputs["cost_usd"] is not None and inputs["cost_usd"] >= 0
     meta_dict.setdefault("cost_kind", "actual" if reported else "estimated")
     clean_prov = inputs["provider"] or "unknown"
@@ -409,7 +377,7 @@ def _insert_local(common: dict[str, Any], user_name: str, device_name: str, sync
     with closing(sqlite3.connect(str(_TRACKER_DB), timeout=5.0)) as conn:
         with conn:
             conn.execute("PRAGMA journal_mode=WAL;")
-            ensure_tracker_schema(conn, _TRACKER_DB)  # versioned migrations (tracker_schema.py)
+            ensure_tracker_schema(conn, _TRACKER_DB)
             conn.execute(_INSERT_SQL, (
                 common["timestamp"], user_name, device_name, common["provider"], "", common["model"],
                 common["call_type"], common["prompt_tokens"], common["completion_tokens"],
@@ -421,7 +389,6 @@ def _insert_local(common: dict[str, Any], user_name: str, device_name: str, sync
 
 
 def replay_spill() -> int:
-    """Вернуть в базу строки из spill-файла. Возвращает число вставленных; не вставленные остаются в файле."""
     path = _spill_path()
     if not path.is_file():
         return 0
@@ -454,7 +421,6 @@ def replay_spill() -> int:
 
 
 def _on_write_failed(inputs: dict[str, Any], exc: BaseException) -> None:
-    """Сбой записи строки трекера: лог с трассировкой, счётчик, копия в spill и строка-пробел в журнале трат."""
     global _write_failures
     _write_failures += 1
     logger.opt(exception=exc).error(
@@ -478,10 +444,6 @@ def _on_write_failed(inputs: dict[str, Any], exc: BaseException) -> None:
 
 
 def _with_correlation(metadata: dict[str, Any] | None, project_source: str) -> tuple[dict[str, Any] | None, str]:
-    """B02: put project/run/request/plan ids of the CALLER into the row (the write runs in another thread, where
-    contextvars are not inherited, so they are read here). Our own ids are added after redaction: they are
-    not secrets. An id the caller already set is kept. tracker.db has no columns for them yet: they live in
-    ``metadata_json`` (``json_extract``) until the integrator adds the columns (docs in the W2-3 report)."""
     try:
         from app.services import request_context
         corr = request_context.correlation()
@@ -498,7 +460,7 @@ def _with_correlation(metadata: dict[str, Any] | None, project_source: str) -> t
             if not project_source:
                 project_source = str(corr["project_id"])
         return (meta or metadata), project_source
-    except Exception:  # noqa: BLE001 - telemetry never breaks the call
+    except Exception:
         logger.opt(exception=True).warning("api_tracker: correlation ids unavailable, the row is written without them")
         return metadata, project_source
 
@@ -520,10 +482,6 @@ def record_api_call(
     metadata: dict[str, Any] | None = None,
     timestamp: str | None = None,
 ) -> None:
-    """Запись вызова API в базу трекера (и в облако, только если оно включено явно).
-
-    Запись идёт в фоновом потоке, который держит процесс до конца записи (не daemon): остановка не теряет
-    очередь. Сбой записи не глотается: лог, счётчик, копия строки в spill-файле и пробел в журнале трат."""
     global _inflight
     error_message = str(_redact_value(str(error_message or "")))
     project_source = str(_redact_value(str(project_source or "")))
@@ -541,7 +499,7 @@ def record_api_call(
         try:
             _, common, _ = _build_rows(inputs)
             u_name, d_name = _get_identity()
-            is_synced = True  # True: нечего досылать
+            is_synced = True
             if _cloud_enabled():
                 cu, cd = _cloud_identity(u_name, d_name)
                 is_synced = _push_to_supabase({**common, "user_name": cu, "device_name": cd})
@@ -575,7 +533,7 @@ def record_api_call(
 
 
 class ApiEmergencyBlockedError(RuntimeError):
-    """Вызов API отклонён: активирован аварийный рубильник."""
+    pass
 
 
 _KILLSWITCH_CACHE: dict[str, Any] = {
@@ -591,7 +549,7 @@ _KILLSWITCH_LOCK = threading.Lock()
 def _fetch_cloud_killswitch() -> tuple[bool, dict[str, Any]]:
     """Получить статус рубильника из облачной базы данных."""
     if not _cloud_enabled():
-        return False, {}  # облако выключено: соединений нет, рубильник читается из локальной базы
+        return False, {}
     url, key = _cloud_credentials()
     if not (url and key):
         return False, {}
@@ -617,7 +575,6 @@ def _fetch_cloud_killswitch() -> tuple[bool, dict[str, Any]]:
 
 
 def is_killswitch_active(force_refresh: bool = False) -> tuple[bool, dict[str, Any]]:
-    """Проверить статус аварийного рубильника (с кэшированием на 5 секунд)."""
     import time
     global _KILLSWITCH_CACHE
     now = time.time()
@@ -720,8 +677,7 @@ def toggle_killswitch(
         "metadata_json": {"action": model_action, "reason": reason},
     }
 
-    # 1. Запись в облако (только если оно включено явно; имена уходят хэшем)
-    is_synced = True  # True: нечего досылать
+    is_synced = True
     if _cloud_enabled():
         cu, cd = _cloud_identity(u_name, d_name)
         is_synced = _push_to_supabase({**payload, "user_name": cu, "device_name": cd})

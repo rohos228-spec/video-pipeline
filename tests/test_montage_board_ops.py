@@ -664,5 +664,4 @@ def test_purge_replaced_media_keeps_only_new(montage_project: Project) -> None:
     assert s2.is_file()
 
 
-# Env: нужен хотя бы фиктивный ключ провайдера (см. tests/conftest.py::fake_provider_keys).
 pytestmark = pytest.mark.usefixtures("fake_provider_keys")

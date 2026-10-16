@@ -39,8 +39,6 @@ def test_apply_shot_meta_sets_action_when_empty() -> None:
 
     fr = SimpleNamespace(attrs={})
     _apply_shot_meta(fr, {"действие": "у доски сверяют папки"})
-    # b1b8b454: действие шота НИКОГДА не пишется в main_action (иначе stub первого
-    # шага маскирует полное главное_действие); оно идёт только в shot01_action
     assert "main_action" not in fr.attrs
     assert fr.attrs["shot01_action"] == "у доски сверяют папки"
 
@@ -80,7 +78,6 @@ def test_inherit_camera_copies_move_set_to_child() -> None:
 
 
 def test_inherit_camera_orphan_uses_place_as_set() -> None:
-    """Родитель удалён — набор из место, движение не оставляем пустым."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import inherit_camera_on_children
@@ -295,7 +292,7 @@ def test_group_prompts_for_four_node_markup_exist() -> None:
     shots = _load_script_frames_qc_prompt("scenes_to_frames_ru")
     assert "главное_действие" in action
     assert "видимый шаг" in shots or "объект" in shots
-    assert "30°" in shots  # шаблон v14: «минимум на 30°» (12f4d347/23426a95)
+    assert "30°" in shots
     assert "`старт`" in shots and "`конец`" in shots
 
 
@@ -584,7 +581,6 @@ def test_distribute_coverage_prompts_fills_child_shot2() -> None:
 
 
 def test_distribute_coverage_prompts_all_children_from_list() -> None:
-    """K2 и K3 равноправны: каждый берёт свой элемент промты_детей, не _2."""
     from types import SimpleNamespace
 
     from app.services.plan_shot2 import SHOT2_PROMPT_ATTR
@@ -719,7 +715,6 @@ def test_promote_shots_makes_one_cell_per_kadr() -> None:
 
 
 def test_promote_parent_id_keeps_shot_children() -> None:
-    """Без ``сцена``, но с parent_id: K2 остаётся shot той же ячейки."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import is_shot_child, promote_shots_to_vo_cells
@@ -804,7 +799,6 @@ def test_promote_parent_id_keeps_shot_children() -> None:
 
 
 def test_relink_shot_roles_groups_parent_id_chain() -> None:
-    """После flatten 1 кадр = 1 vo_parent: склеить лестницу parent_id."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import is_shot_child, relink_shot_roles_by_scene
@@ -899,7 +893,6 @@ def test_relink_skips_existing_parent_child() -> None:
 
 
 def test_relink_groups_cell_prefix_not_reused_f1() -> None:
-    """``57-2``+``57-3`` — одна сцена; reused ``f1`` с разным местом — нет."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import is_shot_child, relink_shot_roles_by_scene
@@ -950,11 +943,6 @@ def test_relink_groups_cell_prefix_not_reused_f1() -> None:
 
 
 def test_relink_splits_existing_group_when_place_changes() -> None:
-    """Уже склеенная VO-ячейка: новое место = новый родитель, не ребёнок прошлого.
-
-    На доске иначе дети одного родителя сидят на двух соседних сценах, а
-    still вешается от чужого K1.
-    """
     from types import SimpleNamespace
 
     from app.services.montage_board import _shot_kind_payload
@@ -1024,11 +1012,6 @@ def test_relink_splits_existing_group_when_place_changes() -> None:
 
 
 def test_relink_merges_same_place_across_adjacent_vo_parents() -> None:
-    """Один кабинет на двух соседних VO-ячейках → одна семья, не два родителя.
-
-    Иначе дети still-лока сидят на сцене N, а следующий кадр той же комнаты
-    уже родитель сцены N+1.
-    """
     from types import SimpleNamespace
 
     from app.services.montage_board import _shot_kind_payload
@@ -1096,7 +1079,6 @@ def test_relink_merges_same_place_across_adjacent_vo_parents() -> None:
 
 
 def test_relink_splits_after_empty_inherit_place() -> None:
-    """Пустой sidecar между лабораторией и кабинетом не склеивает места."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import is_shot_child, relink_shot_roles_by_scene
@@ -1279,8 +1261,6 @@ def test_enrich_xlsx_coverage_hook_includes_shots_frames_qc() -> None:
     from pathlib import Path
 
     src = Path("app/orchestrator/steps/enrich_xlsx.py").read_text(encoding="utf-8")
-    # b1b8b454: QC вынесен в отдельную ветку (не пересобирает покрытие, только sync полей),
-    # покрытие по-прежнему строится на shots/frames
     assert 'endswith(("_fw_shots", "_fw_frames"))' in src
     assert 'nk_now.endswith("_fw_qc") and _canvas_has_fw_shots(project)' in src
     assert "apply_shot_coverage_to_vo_cells" in src
@@ -1289,7 +1269,6 @@ def test_enrich_xlsx_coverage_hook_includes_shots_frames_qc() -> None:
 
 
 def _scene_split_fixture():
-    """Seed: 4 кадра в 2 сценах + 3 слота от expand (role=shot)."""
     from types import SimpleNamespace
 
     pu, c2u, c3u, c4u = ("aa" * 12, "bb" * 12, "cc" * 12, "dd" * 12)
@@ -1345,7 +1324,6 @@ def test_promote_splits_by_scene_keeps_children() -> None:
     n, extra = promote_shots_to_vo_cells([parent, *children])
     assert extra == []
     assert n == 4
-    # Сцена 1: родитель + дочерний K2.
     pa = parent.attrs["camera_subdivide"]
     assert pa["role"] == "vo_parent" and pa["parent_uuid"] == parent.uuid
     assert pa["shots_in_beat"] == 2 and pa["scene_split"] == 1
@@ -1355,27 +1333,24 @@ def test_promote_splits_by_scene_keeps_children() -> None:
     assert parent.voiceover_text == "Фраза один про двор."
     assert parent.attrs["vo_cell_full"] == "Фраза один про двор. Фраза два про двор."
     assert parent.attrs["главное_действие"].startswith("1. двор — входит в ворота")
-    assert "биты" in parent.attrs  # первый родитель несёт биты
-    # Дочерний кадр сцены 1.
+    assert "биты" in parent.attrs
     c2a = c2.attrs["camera_subdivide"]
     assert c2a["role"] == "shot" and c2a["parent_uuid"] == parent.uuid
     assert c2a["shot_index"] == 2 and c2a["shots_in_beat"] == 2
     assert c2.voiceover_text == "Фраза два про двор."
     assert [s["id"] for s in c2.attrs["кадры"]] == ["1-K2"]
     assert "главное_действие" not in c2.attrs
-    # Сцена 2: новый родитель (новое место) + дочерний K4.
     c3a = c3.attrs["camera_subdivide"]
     assert c3a["role"] == "vo_parent" and c3a["parent_uuid"] == c3.uuid
     assert [s["id"] for s in c3.attrs["кадры"]] == ["1-K3", "1-K4"]
-    assert c3.attrs["кадры"][0]["parent_id"] is None  # новое место — master
+    assert c3.attrs["кадры"][0]["parent_id"] is None
     assert c3.attrs["кадры"][1]["parent_id"] == "1-K3"
     assert c3.voiceover_text == "Фраза три про архив."
     assert c3.attrs["главное_действие"].startswith("2. архив — берёт папку")
-    assert "биты" not in c3.attrs  # биты только на первом родителе
+    assert "биты" not in c3.attrs
     c4a = c4.attrs["camera_subdivide"]
     assert c4a["role"] == "shot" and c4a["parent_uuid"] == c3.uuid
     assert c4.voiceover_text == "Фраза четыре про архив."
-    # Склейка кусков всех ячеек = весь закадр исходной ячейки.
     joined = " ".join(
         (parent.voiceover_text, c2.voiceover_text,
          c3.voiceover_text, c4.voiceover_text)
@@ -1384,7 +1359,6 @@ def test_promote_splits_by_scene_keeps_children() -> None:
 
 
 def test_promote_does_not_give_next_scene_vo_to_shots() -> None:
-    """Кадры сцены N берут только VO этой сцены, даже если GPT сдвинул закадр."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import promote_shots_to_vo_cells
@@ -1399,7 +1373,6 @@ def test_promote_does_not_give_next_scene_vo_to_shots() -> None:
         "в понятную цепочку."
     )
     full = f"{s1} {s2} {s3}"
-    # GPT склеил куски в полный VO, но сдвиг: S1 забрал начало S2, S2 — S3.
     kadry = [
         {
             "id": "1-S1-K1",
@@ -1478,7 +1451,6 @@ def test_promote_does_not_give_next_scene_vo_to_shots() -> None:
             vo = " ".join(str(s.get("закадр") or "").split())
             if vo:
                 by_sc.setdefault(n, []).append(vo)
-    # уникальные куски по сцене (родитель держит всю лестницу)
     def uniq(n: int) -> str:
         seen: list[str] = []
         for p in by_sc.get(n) or []:
@@ -1531,7 +1503,6 @@ def test_planned_for_parent_expand_keeps_only_own_scene() -> None:
 
 
 def test_promote_drops_stale_scene_ladder() -> None:
-    """1-S3-K* остаётся, хвост старого expand 1-K7/K8 уходит в extra."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import promote_shots_to_vo_cells
@@ -1614,7 +1585,6 @@ def test_promote_scene_split_is_idempotent() -> None:
 
 
 def test_promote_keeps_all_kadry_when_vo_has_fewer_clauses() -> None:
-    """Клауз меньше кадров — лестницу не режем, слоты остаются."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import promote_shots_to_vo_cells
@@ -1658,7 +1628,6 @@ def test_promote_keeps_all_kadry_when_vo_has_fewer_clauses() -> None:
 
 
 def test_kadry_vo_partition_aligned_recovers_gpt_drift() -> None:
-    """Фрагменты GPT без запятых исходника — выравнивание режет по ним."""
     from app.services.vo_shot_expand import (
         kadry_vo_partition,
         kadry_vo_partition_aligned,
@@ -1672,7 +1641,6 @@ def test_kadry_vo_partition_aligned_recovers_gpt_drift() -> None:
         {"закадр": "рассказал дежурному о краже"},
         {"закадр": "и написал заявление."},
     ]
-    # Точная склейка ломается о запятые («полиции» vs «полиции,»).
     assert kadry_vo_partition(full, planned) is None
     parts = kadry_vo_partition_aligned(full, planned)
     assert parts is not None and len(parts) == 4
@@ -1754,7 +1722,6 @@ def test_coverage_parent_prefers_explicit_parent_id() -> None:
         is_coverage_child,
     )
 
-    # scene-split: parent_id=null у master нового места → без референса.
     master = SimpleNamespace(
         attrs={
             "кадры": [{"id": "1-K3", "parent_id": None}],
@@ -1764,7 +1731,6 @@ def test_coverage_parent_prefers_explicit_parent_id() -> None:
     )
     assert coverage_parent_shot_id(master) == ""
     assert not is_coverage_child(master)
-    # Кросс-сценовый parent (то же место) → референс на явный parent_id.
     cont = SimpleNamespace(
         attrs={
             "кадры": [{"id": "1-K5", "parent_id": "1-K1"}],
@@ -1775,7 +1741,6 @@ def test_coverage_parent_prefers_explicit_parent_id() -> None:
     )
     assert coverage_parent_shot_id(cont) == "1-K1"
     assert is_coverage_child(cont)
-    # Легаси-flatten без флага: прежняя эвристика prefix-K1.
     legacy = SimpleNamespace(
         attrs={
             "кадры": [{"id": "1-K2", "parent_id": None}],
@@ -1813,7 +1778,6 @@ async def mem_db(monkeypatch, tmp_path):
 
 
 async def test_apply_shot_coverage_splits_scenes_with_children(mem_db) -> None:
-    """Хвост группы: seed → ячейки по сценам, дочерние шоты в БД."""
     import uuid as _uuid
 
     from sqlalchemy import select
@@ -1887,9 +1851,8 @@ async def test_apply_shot_coverage_splits_scenes_with_children(mem_db) -> None:
         )
         parents = [f for f in frames if not is_shot_child(f)]
         children = [f for f in frames if is_shot_child(f)]
-        assert len(parents) == 2  # две сцены — две ячейки
-        assert len(children) == 2  # дочерние кадры на месте
-        # Родитель сцены 1 несёт полную лестницу, дочерний — свой кадр.
+        assert len(parents) == 2
+        assert len(children) == 2
         p1 = next(f for f in parents if "улица" in str(
             planned_shots_from_attrs(f)[0].get("место")))
         assert [s["id"] for s in planned_shots_from_attrs(p1)] == ["1-K1", "1-K2"]
@@ -1897,14 +1860,12 @@ async def test_apply_shot_coverage_splits_scenes_with_children(mem_db) -> None:
         p2 = next(f for f in parents if f is not p1)
         assert [s["id"] for s in planned_shots_from_attrs(p2)] == ["1-K3", "1-K4"]
         assert "2. отделение полиции" in str(p2.attrs.get("главное_действие") or "")
-        # Дети ссылаются на родителя сцены и несут свои куски закадра.
         by_child = {f.attrs["camera_subdivide"]["parent_uuid"]: f for f in children}
         assert set(by_child) == {p1.uuid, p2.uuid}
         joined = " ".join(
             (f.voiceover_text or "") for f in frames
         )
         assert " ".join(joined.split()) == " ".join(full.split())
-        # Повторный прогон хвоста — без изменений структуры.
         out2 = await apply_shot_coverage_to_vo_cells(session, project)
         assert out2["pipeline"] == 4
         frames2 = list(
@@ -1919,7 +1880,6 @@ async def test_apply_shot_coverage_splits_scenes_with_children(mem_db) -> None:
 
 
 async def test_apply_shot_coverage_keeps_all_kadry_when_vo_is_short(mem_db) -> None:
-    """5 строк кадры[] → 5 Frame, даже если закадр ячейки не режется на 5 фраз."""
     import uuid as _uuid
 
     from sqlalchemy import select
@@ -1992,7 +1952,6 @@ async def test_apply_shot_coverage_keeps_all_kadry_when_vo_is_short(mem_db) -> N
 
 
 async def test_group_rerun_drops_stale_ladder_without_second_copy(mem_db) -> None:
-    """Повторный fw_shots: не плодить сцену, удалить хвост 1-K7."""
     import uuid as _uuid
 
     from sqlalchemy import select
@@ -2237,7 +2196,6 @@ def test_character_sheet_lock_skips_when_parent_lock_present() -> None:
 
 
 def test_shot_child_locks_to_vo_parent_not_cross_scene_id() -> None:
-    """K2/K3 ячейки 5-* не берут PNG чужого 2-K1 из coverage_parent_id."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import find_coverage_parent_frame
@@ -2280,7 +2238,6 @@ def test_shot_child_locks_to_vo_parent_not_cross_scene_id() -> None:
 
 
 def test_vo_parent_with_x1_parent_id_is_not_shot_child() -> None:
-    """K1 новой ячейки с coverage_parent_id — не дочка: PNG-lock не вешаем."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import is_coverage_child, is_shot_child
@@ -2303,7 +2260,6 @@ def test_vo_parent_with_x1_parent_id_is_not_shot_child() -> None:
 
 
 def test_find_parent_skips_leftover_duplicate_shot_id() -> None:
-    """Leftover с тем же shot_id не подменяет still родителя с доски."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import find_coverage_parent_frame
@@ -2354,7 +2310,6 @@ def test_find_parent_skips_leftover_duplicate_shot_id() -> None:
 
 
 def test_find_parent_uses_board_number_not_vo_head() -> None:
-    """Явный родитель с доски важнее parent_uuid VO-ячейки."""
     from types import SimpleNamespace
 
     from app.services.vo_shot_expand import find_coverage_parent_frame

@@ -1,4 +1,3 @@
-"""img_pr must read/write isolated project.db, not stale state.db prompts."""
 
 from __future__ import annotations
 

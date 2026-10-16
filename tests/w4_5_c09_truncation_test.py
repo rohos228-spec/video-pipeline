@@ -1,9 +1,3 @@
-"""W4-5 / C09 (уровень U): усечение ответа LLM (finish_reason=length, status=incomplete).
-
-Сети и платных вызовов нет: HTTP-граница chat/completions подменена. Настоящими остаются gpt_api.chat
-(политика усечения), _chat_single, _parse_choice, llm_completion.response_truncated.
-Не доказывается: поведение реального провайдера и замер reasoning.effort (шаг F03, уровень L).
-"""
 import json
 from unittest.mock import patch
 
@@ -21,7 +15,6 @@ def _payload(text, finish):
 
 
 class FakeHttp:
-    """Скриптованная граница провайдера: ответы по очереди, тела запросов запоминаются."""
 
     def __init__(self, replies):
         self.replies, self.bodies = list(replies), []
@@ -64,7 +57,7 @@ def provider(monkeypatch):
     monkeypatch.setattr(gpt_api, "is_responses_mode", lambda: False)
     monkeypatch.setattr(gpt_api, "_node_vibecode_override", lambda: False)
     monkeypatch.setattr(gpt_api, "_node_kie_override", lambda: False)
-    monkeypatch.setattr(gpt_api, "_headers", lambda: {})
+    monkeypatch.setattr(gpt_api, "_headers", lambda *_a, **_k: {})
     monkeypatch.setattr(gpt_api, "_chat_url", lambda model: "http://127.0.0.1:1/v1/chat/completions")
     monkeypatch.setattr(gpt_api, "_ensure_url_host_resolves", no_dns)
     monkeypatch.setattr(gpt_api.spend_guard, "paid_call", lambda *a, **k: _Paid())
@@ -160,7 +153,6 @@ def test_raised_output_cap_rules():
 
 
 async def test_responses_status_incomplete_is_truncation_too(monkeypatch):
-    """Responses API: status=incomplete (а не finish_reason) тоже усечение; повтор идёт с max_output_tokens."""
     calls = []
 
     async def fake_single(**kw):
@@ -175,7 +167,6 @@ async def test_responses_status_incomplete_is_truncation_too(monkeypatch):
 
 
 async def test_body_field_name_follows_the_api_family(monkeypatch):
-    """Responses-режим кладёт max_output_tokens, chat/completions - max_tokens."""
     seen = {}
 
     async def fake_stream(**kw):
@@ -188,7 +179,7 @@ async def test_body_field_name_follows_the_api_family(monkeypatch):
     monkeypatch.setattr(gpt_api, "is_responses_mode", lambda: True)
     monkeypatch.setattr(gpt_api, "_node_vibecode_override", lambda: False)
     monkeypatch.setattr(gpt_api, "_node_kie_override", lambda: False)
-    monkeypatch.setattr(gpt_api, "_headers", lambda: {})
+    monkeypatch.setattr(gpt_api, "_headers", lambda *_a, **_k: {})
     monkeypatch.setattr(gpt_api, "_chat_url", lambda model: "http://127.0.0.1:1/v1/responses")
     monkeypatch.setattr(gpt_api, "_ensure_url_host_resolves", no_dns)
     monkeypatch.setattr(gpt_api, "_chat_responses_stream", fake_stream)

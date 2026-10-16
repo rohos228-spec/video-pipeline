@@ -1,4 +1,3 @@
-"""gen_assistant: парсинг ответа LLM и обвязка-валидация количества."""
 
 from __future__ import annotations
 
@@ -60,7 +59,6 @@ def test_sanitize_trims_extra():
 
 
 def test_sanitize_keeps_dupes_drops_short():
-    """Дубли разрешены (запрос «одинаковые/схожие»), короткие — отсев. Без заглушек."""
     dup = f"{CORE} — одинаковый промпт номер один"
     out, incomplete = sanitize_prompts(
         [dup, dup, "коротко"], count=3, core=CORE, request=REQ, aspect="9:16"
@@ -83,8 +81,6 @@ def test_sanitize_prepends_missing_core():
 
 
 def test_sanitize_keeps_llm_prompt_when_core_is_long_template():
-    """Длинный шаблон агента нельзя приклеивать в начало — иначе 4000-срез
-    съедает заполненный промпт и в генератор уходит пустой [ГЕРОЙ]."""
     core = "---\nname: infographic-hero-object\n" + ("шаблон слот [ГЕРОЙ] " * 400)
     filled = (
         "Magazine poster infographic, landscape sheet, editorial style. "
@@ -101,7 +97,6 @@ def test_sanitize_keeps_llm_prompt_when_core_is_long_template():
 
 
 def test_sanitize_rejects_template_echo_does_not_fill_stub():
-    """Эхо правил агента нельзя слать в генератор и нельзя подменять сырым запросом."""
     core = (
         "---\nname: infographic-hero-object\n"
         "**Герой любой:** початок, двигатель, кроссовок.\n"
@@ -116,7 +111,6 @@ def test_sanitize_rejects_template_echo_does_not_fill_stub():
 
 
 def test_sanitize_keeps_long_english_visual_without_russian_tokens():
-    """Английский visual-промпт нельзя выкидывать из‑за «приседает» → squat."""
     core = "---\nname: infographic-hero-object\n" + ("шаблон слот " * 400)
     filled = (
         "Minimal line-art presentation slide, 16:9. Background is one flat solid colour. "
@@ -159,7 +153,6 @@ class _ChatRes:
 
 @pytest.mark.asyncio
 async def test_generate_template_echo_does_not_start(monkeypatch):
-    """Эхо правил от LLM — ошибка, генерация не стартует."""
     from app.services import gpt_api
 
     core = (
@@ -191,7 +184,6 @@ async def test_generate_validates_empty_agent():
 
 @pytest.mark.asyncio
 async def test_generate_sends_agent_as_system(monkeypatch):
-    """Агент уходит system-текстом, без файлового вложения."""
     from app.services import gpt_api
 
     calls: list[dict] = []
@@ -216,7 +208,6 @@ async def test_generate_sends_agent_as_system(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_includes_ref_handles_in_master(monkeypatch):
-    """Имена @imageN уходят в мастер/user, чтобы агент оставлял теги в промпте."""
     from app.services import gpt_api
 
     calls: list[dict] = []
@@ -245,7 +236,6 @@ async def test_generate_includes_ref_handles_in_master(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_without_llm_does_not_start(monkeypatch):
-    """Без ключа/LLM — ошибка, генерация не стартует."""
     from app.services import gpt_api
 
     async def _boom(**kwargs):
@@ -311,7 +301,6 @@ def test_local_prompt_strips_reference_topic_and_builds_scene():
 
 @pytest.mark.asyncio
 async def test_generate_retry_recovers_real_prompt(monkeypatch):
-    """Первый ответ — эхо правил, повтор — готовый visual-промпт → генерация ок."""
     from app.services import gpt_api
 
     core = (

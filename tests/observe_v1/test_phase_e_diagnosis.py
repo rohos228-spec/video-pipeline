@@ -1,5 +1,3 @@
-"""Phase E: split_degraded incident, image_prompts hold explanation (read-only),
-rule diary / rule display. Stubs only; no network."""
 from __future__ import annotations
 
 import asyncio
@@ -29,7 +27,6 @@ def split_parse(**kw):
     return ev('parse_result', **{**base, **kw})
 
 
-# ---------- E1: split_degraded ----------
 
 def test_split_degraded_is_nonblocking_visible_and_not_invalid_json():
     rows = [ev('model_start'), ev('model_end', complete=True),
@@ -45,14 +42,13 @@ def test_split_degraded_is_nonblocking_visible_and_not_invalid_json():
 @pytest.mark.parametrize('rows', [
     [ev('model_end', complete=True), split_parse(frames_source='json_replace_frames', fallback_used=False)],
     [ev('model_end', complete=True), split_parse(frames_source='dash_blocks', fallback_used=False)],
-    [split_parse(frames_source='local_voiceover_fallback', fallback_used=True)],   # no complete model_end
-    [ev('model_end', complete=True), split_parse()],                               # legacy fact without the field
+    [split_parse(frames_source='local_voiceover_fallback', fallback_used=True)],
+    [ev('model_end', complete=True), split_parse()],
 ])
 def test_split_degraded_absent_on_normal_paths(rows):
     assert derive_incidents(SCOPE, rows, {}) == []
 
 
-# ---------- E2: image_prompts hold explanation ----------
 
 def _snapshot(n=3):
     return {'project_id': 2, 'frames': [{'project_id': 2, 'uuid': f'u{i}', 'number': i, 'voiceover_text': f'vo {i}',
@@ -134,8 +130,6 @@ def test_recompute_is_read_only_and_does_not_touch_hold(tmp_path):
 
 
 def test_capability_data_for_hold_stays_bounded():
-    """W5 D05: image_prompts may take one retry for a typed format incident; the hold itself (a failed or unknown
-    post-write check, verification_hold) is never retried: that stays a human decision (see actions_recovery gates)."""
     from app.services.node_capabilities import capability_for
     from app.services.diagnosis import INCIDENT_OUTCOMES
     cap = capability_for('image_prompts')
@@ -145,7 +139,6 @@ def test_capability_data_for_hold_stays_bounded():
     assert INCIDENT_OUTCOMES['verification_hold'].get('recovery_class') is None
 
 
-# ---------- E3: rule diary ----------
 
 def test_rule_diary_payload_is_bounded_and_reads_non_passstop_rule():
     from app.services.apply_ops_batches import PassStopError, rule_diary_payload
@@ -169,7 +162,7 @@ def test_emit_rule_diary_is_best_effort_and_skips_clean_calls():
         asyncio.run(aob._emit_rule_diary([{'kind': 'fix', 'rule': 'R-UUID'}], call=1, level=1))
         assert fact.call_args.args[0] == 'rule_diary'
     with patch('app.services.observation.record_fact', new_callable=AsyncMock, side_effect=RuntimeError('disk')):
-        asyncio.run(aob._emit_rule_diary([{'kind': 'fix', 'rule': 'R-UUID'}], call=1, level=1))  # must not raise
+        asyncio.run(aob._emit_rule_diary([{'kind': 'fix', 'rule': 'R-UUID'}], call=1, level=1))
 
 
 def test_diary_summary_merges_and_ignores_garbage():

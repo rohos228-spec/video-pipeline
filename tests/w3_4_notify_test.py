@@ -1,8 +1,3 @@
-"""W3-4 / B07: единая отправка Telegram `notify()` с записью доставки в `notification_log`.
-
-Класс доказательства U и D: настоящий код, SQLite во временной папке, бот - заменитель. Сети нет,
-живого Telegram не было.
-"""
 from __future__ import annotations
 
 import re
@@ -52,12 +47,11 @@ def _rows():
     return nl.list_rows(100)
 
 
-# --- DDL и append-only ------------------------------------------------------------------------------
 
 def test_ddl_constant_creates_expected_columns_and_is_append_only(tmp_path):
     con = sqlite3.connect(tmp_path / "x.db")
     con.executescript(nl.NOTIFICATION_LOG_DDL)
-    con.executescript(nl.NOTIFICATION_LOG_DDL)  # идемпотентно
+    con.executescript(nl.NOTIFICATION_LOG_DDL)
     cols = [r[1] for r in con.execute("PRAGMA table_info(notification_log)")]
     assert cols == ["id", "ts", "project_id", "run_id", "channel", "kind", "text_redacted", "ok", "error"]
     con.execute("INSERT INTO notification_log (ts, channel, kind, ok) VALUES ('2026-01-01 00:00:00','telegram','k',1)")
@@ -67,14 +61,12 @@ def test_ddl_constant_creates_expected_columns_and_is_append_only(tmp_path):
         con.execute("DELETE FROM notification_log")
 
 
-# --- notify ------------------------------------------------------------------------------------------
 
 async def test_success_is_logged_and_result_returned():
     bot = FakeBot()
     res = await nl.notify(bot, "send_message", 5, "привет", kind="step_done", project_id=12, run_id="r1",
                           parse_mode="HTML")
     assert res.message_id == 77
-    # служебные аргументы боту не уходят, остальные доходят как были
     assert bot.calls == [("send_message", (5, "привет"), {"parse_mode": "HTML"})]
     (row,) = _rows()
     assert (row["project_id"], row["run_id"], row["channel"], row["kind"], row["ok"], row["error"]) == \
@@ -115,12 +107,10 @@ async def test_secrets_are_redacted_and_text_is_truncated():
     (row,) = _rows()
     assert secret not in row["text_redacted"]
     assert len(row["text_redacted"]) <= nl.TEXT_LIMIT
-    # сам бот получил исходный текст: журнал не меняет отправку
     assert secret in bot.calls[0][1][1]
 
 
 async def test_log_failure_never_blocks_delivery(monkeypatch, tmp_path):
-    # путь БД - каталог: sqlite3.connect падает
     monkeypatch.setattr(nl, "_db_path", lambda: tmp_path)
     bot = FakeBot()
     res = await nl.notify(bot, "send_message", 5, "доставь", kind="x")
@@ -155,7 +145,6 @@ async def test_switch_off_env_skips_logging_but_still_sends(monkeypatch):
     assert len(bot.calls) == 1 and _rows() == []
 
 
-# --- реальные места отправки -------------------------------------------------------------------------
 
 async def test_hitl_text_goes_through_notify_with_project_id(monkeypatch):
     from app.models import HITLKind
@@ -183,10 +172,8 @@ async def test_hitl_text_goes_through_notify_with_project_id(monkeypatch):
     assert "Заголовок" in row["text_redacted"]
 
 
-# --- закон: прямых отправок нет -----------------------------------------------------------------------
 
 _DIRECT = re.compile(r"\.send_(?:message|photo|document|video|audio|voice|animation)\(")
-# Файлы ВНЕ границы W3-4: прямых отправок не осталось (wizard.py и test_prompt.py переведены интегратором).
 _OUTSIDE_BOUNDARY: dict[str, int] = {}
 
 
@@ -213,13 +200,11 @@ def test_outside_boundary_list_only_shrinks():
     for rel, n in found.items():
         if rel in _OUTSIDE_BOUNDARY:
             assert n <= _OUTSIDE_BOUNDARY[rel], f"в {rel} прибавились прямые отправки ({n})"
-    # устаревшая запись (файл уже переведён) - убрать из словаря
     for rel in _OUTSIDE_BOUNDARY:
         assert rel in found, f"{rel} больше не содержит прямых отправок: удалите из _OUTSIDE_BOUNDARY"
 
 
 def test_every_notify_call_site_names_kind_and_imports():
-    """Каждый вызов notify( в приложении указывает kind=, а модуль импортирует notify из notification_log."""
     sites = 0
     for path in (ROOT / "app").rglob("*.py"):
         rel = path.relative_to(ROOT).as_posix()
@@ -241,4 +226,4 @@ def test_every_notify_call_site_names_kind_and_imports():
                     break
             assert re.search(r"\bkind\s*=", text[pos:i]), f"{rel}: notify без kind= ({text[pos:pos + 80]!r})"
             sites += 1
-    assert sites == 42  # W70: -1 (удалён мёртвый app/worker.py); было 43: A18: +1 тревога сторожа (supervisor_heartbeat); 42 = 28 (граница W3-4) + 11 в wizard.py + 2 в test_prompt.py + 1 уведомление об инциденте (diagnosis, W4-4)
+    assert sites == 42

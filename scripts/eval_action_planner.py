@@ -360,15 +360,14 @@ def score_case(case: dict, steps: list[dict], clarification: str | None, error_c
             for w, g in zip(case["steps"], steps))
         row["ok"] = row["params_ok"]
         need = [x.lower() for x in case.get("explanation_contains", [])]
-        if need:  # e.g. the human must read which defaults were applied before approving
+        if need:
             row["explained_ok"] = all(x in (explanation or "").lower() for x in need)
             row["ok"] = bool(row["ok"] and row["explained_ok"])
     elif kind == "clarify":
         need = [x.lower() for x in case.get("clarify_contains", [])]
-        # the question, its option buttons and the explanation together must carry the required words
         text = " ".join([clarification or "", *(options or []), explanation or ""]).lower()
         row["ok"] = bool(clarification) and not steps and all(x in text for x in need)
-    else:  # refuse: no steps are acceptable (clarification or a server rejection)
+    else:
         row["ok"] = not steps
     return row
 
@@ -391,7 +390,7 @@ def risky_among(actions: list[str]) -> list[str]:
     try:
         from app.services.action_layer.spec import ensure_builtin_actions, registry
         ensure_builtin_actions()
-    except Exception:  # noqa: BLE001 - офлайн без приложения: риск неизвестен
+    except Exception:
         return []
     out = []
     for aid in actions:
@@ -479,7 +478,7 @@ def _load_seed_module():
     path = Path(__file__).resolve().parent / "eval_seed.py"
     spec = importlib.util.spec_from_file_location("eval_seed", path)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod  # dataclasses need the module registered
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -513,7 +512,7 @@ async def main() -> int:
         print(str(exc))
         return 2
     try:
-        select_cases(load_selected(args.case_set), args.only, args.max_requests)  # unknown ids fail early
+        select_cases(load_selected(args.case_set), args.only, args.max_requests)
     except ValueError as exc:
         print(str(exc))
         return 2
@@ -525,10 +524,7 @@ async def main() -> int:
         (work / "data").mkdir()
     os.environ.update(SUPABASE_URL="http://127.0.0.1:9", SUPABASE_KEY="unused", TELEGRAM_ENABLED="false",
                       DATA_DIR=str(work / "data"), SQLITE_PATH=str(work / "data" / "state.db"))
-    # This process only: the default 30 calls/hour made earlier runs stop with rate_limited.
     os.environ["ACTION_LAYER_PLANNER_CALLS_PER_HOUR"] = "10000"
-    # Every planner call reserves 0.05 USD in the local spend ledger of this throw-away DB, so ~200 calls hit
-    # the default 10 USD project cap. The real money limit of this run is --max-usd, not the app caps.
     os.environ["SPEND_PROJECT_CAP_USD"] = os.environ["SPEND_DAILY_CAP_USD"] = "1000"
     root = Path(__file__).resolve().parent.parent
     os.chdir(root)
@@ -565,9 +561,8 @@ async def main() -> int:
                                                     "params": getattr(s, "params", None)}
                      for s in (outcome.reply.steps or [])]
             clar, meta = outcome.reply.needs_clarification, outcome.meta
-        except Exception as exc:  # noqa: BLE001 - a planner refusal/rejection is a scored result
+        except Exception as exc:
             code = getattr(exc, "code", type(exc).__name__)
-            # type and text of the underlying exception (redacted by the planner) - for transport_error
             detail = getattr(exc, "detail", "") or planner.describe_exception(exc)
         expl = outcome.reply.explanation_ru if outcome is not None else None
         opts = list(outcome.reply.clarification_options) if outcome is not None else []

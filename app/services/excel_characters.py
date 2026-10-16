@@ -58,17 +58,11 @@ def is_polluted_character_field(text: str) -> bool:
 
 
 def character_blocks_hero(ch: "ExcelCharacter") -> bool:
-    """Не блокирует генерацию.
-
-    «оставь формат неизменный» — штатное имя вариации агента, не мусор.
-    Фразу по-прежнему не кладём в промт (`_field_for_prompt`).
-    """
     del ch
     return False
 
 
 def _field_for_prompt(text: str) -> str:
-    """Пусто, если в ячейке служебный маркер агента."""
     t = (text or "").strip()
     if not t or is_polluted_character_field(t):
         return ""

@@ -1,4 +1,3 @@
-"""Generic worker observation/diagnosis contracts on synthetic database state."""
 import unittest
 
 from test_media_jobs import MediaJobs
@@ -41,12 +40,6 @@ class MediaObservation(MediaJobs):
         await _maybe_auto_chain_excel_gpt(self.session,self.project,1,ProjectStatus.enrich_1_ready,finished_key="text")
 
     async def finished_recovery_fixture(self, *, error=False, change_config_before_finish=False):
-        """Reconciliation integration fixture, NOT a worker/exhaustion acceptance.
-
-        Seed committed completion evidence explicitly; run the real ticket finish,
-        restart reload, DB sync, verification, planner and FSM without substitutes.
-        Only the master connection factory points to this test's isolated SQLite.
-        """
         import json
         import uuid
         from datetime import datetime
@@ -79,7 +72,6 @@ class MediaObservation(MediaJobs):
                 project_id=7, node_key="text", attempt_id=ctx.attempt_id, action_kind="node_recovery",
                 initiator="fixture", rationale="committed recovery fixture", idempotency_key="fixture-recovery",
                 status="running", preconditions={}, evidence_ids=[], verification={}))
-            # These are test input facts, not claims that a model/worker ran here.
             for kind, payload in (
                 ("node_start", {}), ("model_start", {}), ("model_end", {"complete": True}),
                 ("parse_result", {"payload_present": True}), ("data_applied", {"transactional": True}),
@@ -100,8 +92,6 @@ class MediaObservation(MediaJobs):
 
     async def reconcile_after_context_loss(self):
         from app.services.actions_recovery import reconcile
-        # Drop live AttemptContext and replace Observer/permission cache. Only
-        # persisted ticket/config evidence can authorize the original successor.
         token = observation._attempt.set(None)
         try:
             restarted = observation.Observer(self.sessions, body_root=self.root / "bodies")
@@ -161,8 +151,6 @@ class MediaObservation(MediaJobs):
         from app.services.actions_recovery import RecoveryAction
         from app.models import NodeRunStatus
         await self.finished_recovery_fixture()
-        # Independent read-side contract: explicitly seed the future stored field
-        # so a write-side failure cannot mask failure to rehydrate it.
         async with self.sessions() as s:
             row = await s.get(RecoveryAction, self.recovery_id)
             row.result = {**row.result, "runtime_config_hash": self.captured_config_hash}
@@ -203,7 +191,7 @@ class MediaObservation(MediaJobs):
         await self.continue_native()
         self.assertEqual(self.project.status,ProjectStatus.generating_images)
         self.assertEqual(self.image_node.status,NodeRunStatus.running)
-        await self.continue_native()  # must not reset/restart the scheduled target
+        await self.continue_native()
         self.assertEqual(self.image_node.attempts,0)
         await self.session.commit()
         facts=(await self.session.scalars(select(observation.ObservationOutbox).where(
@@ -282,9 +270,6 @@ class MediaObservation(MediaJobs):
             self.assertFalse(capability_for(kind).managed, "unaccepted adapters stay disabled even if tools are later installed")
             with self.assertRaisesRegex(ValueError, "adapter"):
                 require_managed_capability(kind)
-        # videos/items/music are managed for supervised RECOVERY only: never startable by the supervisor
-        # assemble likewise: managed only for ONE local re-run under a claimed ticket, never a fresh managed start
-        # hero / audio / sfx_gen likewise (D06): a local resume of a recorded result, never a managed start
         for kind in ("videos", "items", "music", "assemble", "hero", "audio", "sfx_gen"):
             self.assertTrue(capability_for(kind).managed)
             with self.assertRaisesRegex(ValueError, "recovery only"):
@@ -361,7 +346,6 @@ class MediaObservation(MediaJobs):
         self.assertEqual(result["image"]["jobs"], [])
         self.assertFalse(result["image"]["production_profile_configured"])
         self.assertTrue(result["image"]["synthetic_only"])
-        # D06: the capability offers retry_same, but only as a local resume of a recorded result (media_local_resume)
         self.assertIn("retry_same", result["image"]["allowed_actions"])
         self.assertNotIn("retry_profile", result["image"]["allowed_actions"])
 
@@ -453,10 +437,8 @@ class MediaObservation(MediaJobs):
             await s.commit()
         supervisor = DecisionSupervisor(self.observer)
         from unittest.mock import patch
-        # Unit-level DB dependency binding only; no worker/HTTP replacement.
         with patch("app.project_db.project_db_session_scope", lambda _id: self.sessions()):
             context = await supervisor.context("media-decision")
-            # D06: no admitted operation for this image attempt, so no retry_same (a text-style restart is never offered)
             self.assertNotIn("retry_same", context["allowed_actions"])
             contract = await supervisor.read_contract("media-decision")
         self.assertEqual(contract["result_kind"], "image")

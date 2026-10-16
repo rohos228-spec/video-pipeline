@@ -1,8 +1,3 @@
-"""W40 фаза 1 (шлюзы денег): C-9 незакрытый резерв слоя действий получает метку и снимается оператором,
-C-17 потолки по умолчанию не упираются в нормальную работу (защита от зацикливания - счётчики regen_budget).
-
-Сети и денег нет: исполнитель подменён, база временная.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +8,7 @@ from sqlalchemy import select
 from app.services import spend_guard
 from app.services.action_layer import approval, budget, executor, service, store
 from app.services.action_layer.spec import JobState
-from tests.action_layer_support import env, fresh_registry, make_spec  # noqa: F401
+from tests.action_layer_support import env, fresh_registry, make_spec
 
 OP = approval.OperatorIdentity("web_operator:w40")
 PROJ_SCHEMA = {"type": "object", "properties": {"project_id": {"type": "integer", "minimum": 1}},
@@ -38,7 +33,6 @@ def _clean_executor_globals():
 
 
 class _StubbornJob:
-    """Платная серверная задача, которая не останавливается: стоп не подтверждён, факт неизвестен."""
 
     def __init__(self) -> None:
         self.stopped = 0
@@ -54,7 +48,6 @@ class _StubbornJob:
 
 
 async def _unresolved_step(env, monkeypatch) -> tuple[str, int]:
-    """Прогон до шага unknown с удержанным резервом (задача не остановилась); возвращает (plan_id, project_id)."""
     from app.settings import settings
     monkeypatch.setattr(settings, "action_layer_step_timeout_s", 0.3)
     monkeypatch.setenv("ACTION_LAYER_STOP_GRACE_S", "0.3")
@@ -73,12 +66,11 @@ async def _unresolved_step(env, monkeypatch) -> tuple[str, int]:
     await executor.wait(plan_id)
     view = await service.plan_view(plan_id)
     assert view["steps"][0]["status"] == "unknown"
-    assert view["spent_credits"] == pytest.approx(5.0)  # резерв удержан
+    assert view["spent_credits"] == pytest.approx(5.0)
     return plan_id, pid
 
 
 async def _end_orphan_watch() -> None:
-    """Процесс «перезапущен»: наблюдатель серверной задачи, жившей в памяти, потерян."""
     for info in list(executor._ORPHANS.values()):
         task = info.get("task")
         if task is not None:
@@ -89,7 +81,6 @@ async def _end_orphan_watch() -> None:
 
 async def test_unresolved_reserve_is_marked_once_and_stays_held(env, monkeypatch) -> None:
     plan_id, _pid = await _unresolved_step(env, monkeypatch)
-    # Пока серверная задача наблюдается, резерв не трогаем.
     async with env.factory() as s:
         rows = await budget.unresolved_reserves(s, skip_plans={plan_id})
     assert rows == []
@@ -101,11 +92,11 @@ async def test_unresolved_reserve_is_marked_once_and_stays_held(env, monkeypatch
     await asyncio.sleep(0.01)
     fresh = await executor.mark_stale_reserves()
     again = await executor.mark_stale_reserves()
-    assert [r["plan_id"] for r in fresh] == [plan_id] and again == []  # одна метка на шаг
+    assert [r["plan_id"] for r in fresh] == [plan_id] and again == []
     events = [h["event"] for h in (await service.history(plan_id=plan_id))["items"]]
     assert events.count("reserve_unresolved") == 1
     async with env.factory() as s:
-        assert await budget.spent(s, budget.session_key(plan_id)) == pytest.approx(5.0)  # консервативно: не снят
+        assert await budget.spent(s, budget.session_key(plan_id)) == pytest.approx(5.0)
 
 
 async def test_operator_releases_unresolved_reserve_with_a_reason(env, monkeypatch) -> None:
@@ -126,12 +117,11 @@ async def test_operator_releases_unresolved_reserve_with_a_reason(env, monkeypat
     async with env.factory() as s:
         assert await budget.spent(s, budget.session_key(plan_id)) == pytest.approx(0.0)
         assert await budget.unresolved_reserves(s) == []
-        # общий журнал: резерв закрыт нулём, запись только добавлена
         rows = (await s.scalars(select(spend_guard.SpendLedger).where(
             spend_guard.SpendLedger.run_id == f"plan:{plan_id}").order_by(spend_guard.SpendLedger.id))).all()
         assert sum(float(r.usd or 0.0) for r in rows) == pytest.approx(0.0)
         assert any("released_by_operator" in (r.note or "") for r in rows)
-        with pytest.raises(budget.BudgetError):  # второй раз снять нечего
+        with pytest.raises(budget.BudgetError):
             await budget.release_reserve(s, plan_id=plan_id, step_index=0, operator=OP.id, reason="повтор")
     events = [h["event"] for h in (await service.history(plan_id=plan_id))["items"]]
     assert "reserve_released" in events
@@ -156,7 +146,6 @@ async def test_reserve_routes_list_and_release(env, monkeypatch) -> None:
     assert dup.status_code == 409 and dup.json()["detail"]["code"] == "not_releasable"
 
 
-# --- C-17: потолки по умолчанию - высокие предохранители, от зацикливания защищают счётчики ----------------
 
 def test_default_caps_are_high_fuses_and_the_loop_counters_stay_on() -> None:
     from app.settings import Settings
@@ -164,7 +153,6 @@ def test_default_caps_are_high_fuses_and_the_loop_counters_stay_on() -> None:
     daily, project, run = (fields[k].default for k in ("spend_daily_cap_usd", "spend_project_cap_usd", "spend_run_cap_usd"))
     assert daily >= 200 and project >= 100 and run >= 50 and run <= project <= daily
     assert fields["action_layer_session_cap_credits"].default >= 10000
-    # «лимита нет, но без зацикливания»: счётчики брака и перезапуска включены по умолчанию
     assert fields["regen_max_per_frame"].default >= 1 and fields["regen_max_per_run"].default >= 1
 
 
@@ -178,4 +166,4 @@ def test_spend_limits_doc_table_matches_the_settings() -> None:
         row = re.search(rf"\| `{env_name}` \| ([0-9.]+) \|", doc)
         assert row, f"{env_name}: нет строки в docs/SPEND_LIMITS.md"
         assert float(row.group(1)) == float(Settings.model_fields[field].default), env_name
-    assert "никогда не отклоняются" not in doc  # C-25: нативные платные вызовы шлюз отклоняет
+    assert "никогда не отклоняются" not in doc

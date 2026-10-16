@@ -25,15 +25,11 @@ interface Props {
   busyElsewhere?: boolean;
   onStarted: (planId: string) => void;
   onDismiss: () => void;
-  /** Нажат вариант ответа на уточнение: родитель повторно отправляет запрос + вариант. */
   onClarify?: (option: string) => void;
   clarifying?: boolean;
   clarifyError?: string;
-  /** Есть готовые прикреплённые файлы: можно повторить исходный запрос вместе с ними. */
   hasFiles?: boolean;
-  /** Повторить исходный запрос с прикреплёнными файлами (без текста уточнения). */
   onResend?: () => void;
-  /** Планировщик ответил временным сбоем (retryable): повторить исходный запрос как есть. */
   onRetry?: () => void;
 }
 
@@ -97,7 +93,7 @@ function PlanCardInner({plan, preview, busyElsewhere, onStarted, onDismiss}: Pro
   async function go(withApproval: boolean) {
     setBusy(true); setError("");
     try {
-      if (withApproval) await approvePlan(planId as string); // только из клика оператора
+      if (withApproval) await approvePlan(planId as string);
       await runPlan(planId as string);
       onStarted(planId as string);
     } catch (e) {

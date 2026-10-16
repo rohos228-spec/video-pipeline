@@ -1,26 +1,3 @@
-"""TEST-ONLY launcher: real app in-process + fake paid/destructive actions (offline).
-
-Developer tool for checking the complete paid/destructive flow in the real UI
-(preview -> operator confirmation -> approve -> run -> live progress -> stop ->
-history/budget) WITHOUT any real spend. It refuses to do anything unless
-``ACTION_LAYER_TEST_ACTIONS=1`` is set, so the ``test.*`` actions can never
-appear in a normal run.
-
-    set ACTION_LAYER_TEST_ACTIONS=1
-    .venv/Scripts/python.exe scripts/e2e_action_layer_fake_paid.py [PORT] [--data-dir DIR]
-
-* PORT default 8796.
-* The data dir is an isolated temp copy of the live state.db (never the live
-  one). ``--data-dir`` reuses an existing isolated dir (restart scenarios).
-* No provider keys, Supabase points to a dead port, the fake actions make no
-  network call at all (a fake job is a record in process memory).
-* Fake job events are appended to ``<data dir>/fake_jobs.jsonl`` so a test can
-  prove that the "background job" really started / stopped / finished.
-
-Registered actions: test.fake_paid_job (paid+destructive, background, 40-60 cr,
-FAKE_JOB_SECONDS default 40), test.fake_paid_instant (paid, 30-50 cr, spends 42),
-test.fake_destructive (destructive, no money).
-"""
 from __future__ import annotations
 
 import json
@@ -33,15 +10,12 @@ from pathlib import Path
 
 ENV_FLAG = "ACTION_LAYER_TEST_ACTIONS"
 ROOT = Path(__file__).resolve().parents[1]
-# The seed (a data folder whose state.db is COPIED, never opened for writing) comes from --seed-dir or the
-# E2E_SEED_DATA_DIR variable. There is no hard-coded default path: A19.
 SEED_ENV = "E2E_SEED_DATA_DIR"
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
-# Test seams (tests replace these); production code path uses the real clock.
 _now = time.monotonic
 JOBS: dict[str, dict] = {}
 FAKE_ACTION_IDS = ("test.fake_paid_job", "test.fake_paid_instant", "test.fake_destructive")
@@ -92,7 +66,7 @@ def build_fake_specs():
 
     async def job_poll(ctx, params, started):
         job = JOBS.get(started["job_id"])
-        if job is None:  # lost (process restarted): never pretend success
+        if job is None:
             return JobState(done=True, ok=False, error="fake job not found (memory lost)")
         frac = min(1.0, (_now() - job["t0"]) / job["seconds"])
         if job["stopped"]:
@@ -148,7 +122,6 @@ def build_fake_specs():
 
 
 def register_fake_actions(registry=None) -> list[str]:
-    """Registers test.* actions; refuses unless ACTION_LAYER_TEST_ACTIONS=1."""
     if not _enabled():
         raise FakeActionsDisabled(f"set {ENV_FLAG}=1 to register test.* actions")
     from app.services.action_layer.spec import registry as default_registry
@@ -162,8 +135,6 @@ def register_fake_actions(registry=None) -> list[str]:
 
 
 def _prepare_data_dir(arg: str | None, seed: str | None = None) -> Path:
-    """Scratch data dir for the launcher. Never the live one: an existing --data-dir that is (or lies inside)
-    the live data folder is refused; the seed state.db is copied through the sqlite backup API (consistent)."""
     if arg:
         d = guard.assert_scratch_data_dir(Path(arg))
         if (d / "state.db").exists():

@@ -1,4 +1,3 @@
-"""rewrite / rebuild / manual=1 / input_hash."""
 
 from __future__ import annotations
 

@@ -39,9 +39,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     try:
         from app.services.nii67_card import skip_existing_voiceover_for_script
     except ImportError:
-        # upstream (b1b8b454) imports app.services.nii67_card but never committed it;
-        # without the module the nii67 shortcut does not exist, run the normal script step.
-        def skip_existing_voiceover_for_script(project, ready_len):  # noqa: ARG001
+        def skip_existing_voiceover_for_script(project, ready_len):
             return False
 
     if skip_existing_voiceover_for_script(project, len(ready)):
@@ -80,9 +78,19 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     await session.flush()
 
     try:
-        _sheet_for_project(project).write_general(status=project.status.value)
+        _sheet_for_project(project).write_general(
+            status=project.status.value,
+            script_text=voiceover_text,
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning("[#{}] project_sheet status write failed: {}", project.id, e)
+
+    try:
+        from app.services.node_xlsx_snapshot import snapshot_and_bind_node_xlsx
+
+        await snapshot_and_bind_node_xlsx(session, project, node_type="script")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] script xlsx snapshot bind failed: {}", project.id, e)
 
     try:
         from app.services.storage_step_sync import sync_storage_after_step

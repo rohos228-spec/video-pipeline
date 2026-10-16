@@ -1,7 +1,3 @@
-"""Фаза 3 (Q-12, Q-15): замок одного pytest, охрана боевой базы, явная метка ffmpeg.
-
-Замок проверяется на временном файле (не на настоящем замке этого прогона): тест не должен мешать ни себе, ни соседям.
-"""
 from __future__ import annotations
 
 import os
@@ -19,7 +15,6 @@ def _sleeper() -> subprocess.Popen:
     return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
 
 
-# --- замок запуска --------------------------------------------------------------------------------------------------
 
 def test_lock_is_taken_and_released_by_its_owner(tmp_path):
     lock = tmp_path / "run.lock"
@@ -82,19 +77,17 @@ def test_child_run_of_the_holder_skips_the_lock():
     me = str(os.getpid())
     assert guard.lock_wanted({}) is True
     assert guard.lock_wanted({"VP_PYTEST_NO_LOCK": "1"}) is False
-    assert guard.lock_wanted({guard.HELD_ENV: me}) is False  # дочерний pytest внутри теста держателя
-    assert guard.lock_wanted({guard.HELD_ENV: "999999999"}) is True  # держатель мёртв: замок снова нужен
+    assert guard.lock_wanted({guard.HELD_ENV: me}) is False
+    assert guard.lock_wanted({guard.HELD_ENV: "999999999"}) is True
 
 
 def test_this_run_holds_the_real_lock():
-    """Тест идёт под настоящим замком (если не выключен VP_PYTEST_NO_LOCK=1): файл есть и принадлежит процессу pytest."""
     if os.environ.get("VP_PYTEST_NO_LOCK") == "1" or not os.environ.get(guard.HELD_ENV):
         return
     holder = guard.read_holder(guard.DEFAULT_LOCK)
     assert holder is not None and holder["pid"] == int(os.environ[guard.HELD_ENV])
 
 
-# --- охрана боевой базы ---------------------------------------------------------------------------------------------
 
 def test_live_data_paths_are_rejected(tmp_path):
     live = tmp_path / "repo" / "data"
@@ -137,10 +130,8 @@ def test_this_session_engine_does_not_point_at_live_data():
     assert guard.live_db_violation(os.environ["SQLITE_PATH"]) is None
 
 
-# --- метка ffmpeg ---------------------------------------------------------------------------------------------------
 
 def test_tests_that_need_ffmpeg_carry_an_explicit_marker():
-    """conftest сам ставит метку ``ffmpeg`` на тесты со skipif по ffmpeg/ffprobe: ``-m ffmpeg`` выбирает именно их."""
     out = subprocess.run(
         [sys.executable, "-X", "utf8", "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "-p", "no:warnings",
          "-m", "ffmpeg", "tests/w5h_assemble_local_script_test.py"],

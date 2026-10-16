@@ -1,4 +1,3 @@
-"""Отклонение предложений, признак stale, базовый промпт ноды и читаемые тексты эффектов."""
 from __future__ import annotations
 
 import pytest
@@ -14,8 +13,8 @@ from app.services.change_control import store as cs
 from app.services.change_control.errors import ChangeRefused
 from app.services.change_control.gateway import CtxGateway
 from app.services.change_control.targets import target_title
-from tests.action_layer_support import env  # noqa: F401
-from tests.change_control_support import PLAN_PROMPT, ccenv, prompts_root  # noqa: F401
+from tests.action_layer_support import env
+from tests.change_control_support import PLAN_PROMPT, ccenv, prompts_root
 
 CC = "/api/change-control"
 AL = "/api/action-layer"
@@ -38,7 +37,6 @@ def _gw(env):
     return CtxGateway(ActionContext(app=env.app, operator="x"))
 
 
-# --- отклонение --------------------------------------------------------------------------------
 
 async def test_reject_closes_an_open_proposal_and_changes_nothing_else(ccenv) -> None:
     view = (await ccenv.client.post(f"{CC}/proposals", json=_body(ccenv.pid))).json()
@@ -57,7 +55,7 @@ async def test_reject_closes_an_open_proposal_and_changes_nothing_else(ccenv) ->
     assert hist[0].params["proposal_id"] == view["id"] and hist[0].actor == "local_web_operator"
     again = await ccenv.client.post(f"{CC}/proposals/{view['id']}/reject", json={"reason": "ещё раз"})
     assert again.status_code == 409 and again.json()["detail"]["code"] == "status_not_rejectable"
-    with pytest.raises(ChangeRefused) as exc:  # отклонённое применить нельзя
+    with pytest.raises(ChangeRefused) as exc:
         await service.apply(_gw(ccenv), view["id"], view["digest"], approved_by="local_web_operator")
     assert exc.value.code == "status_not_applicable"
 
@@ -111,7 +109,6 @@ async def test_list_marks_proposals_with_an_outdated_base_as_stale(ccenv) -> Non
     assert await _live_split(ccenv) == 600
 
 
-# --- базовый промпт ---------------------------------------------------------------------------------
 
 async def _prompt_base(env, node="n_plan"):
     r = await env.client.get(f"{CC}/prompt-base", params={"project_id": env.pid, "node_key": node})
@@ -124,7 +121,6 @@ async def test_prompt_base_default_global_slot_and_override_sources(ccenv) -> No
     assert (base["source"], base["variant"], base["text"]) == ("default", "default", PLAN_PROMPT)
     assert base["text_chars"] == len(PLAN_PROMPT) and "missing_reason" not in base
     assert base["step"] == "plan" and base["node_type"] == "plan"
-    # то же основание, что у проверок T2: хэш совпадает с base_text_sha256 предложения
     new_text = PLAN_PROMPT.replace("Keep the structure", "Keep strictly the structure")
     prop = (await ccenv.client.post(f"{CC}/proposals", json={
         "tier": "T2", "kind": "prompt_text", "project_id": ccenv.pid, "node_key": "n_plan",
@@ -147,6 +143,9 @@ async def test_prompt_base_default_global_slot_and_override_sources(ccenv) -> No
 
 async def test_prompt_base_reports_a_missing_file_and_bounds_the_text(ccenv) -> None:
     (ccenv.prompts / "01_plan" / "default.md").unlink()
+    fell_back = await _prompt_base(ccenv)
+    assert (fell_back["source"], fell_back["variant"]) == ("fallback", "plan_alt")
+    (ccenv.prompts / "01_plan" / "plan_alt.md").unlink()
     miss = await _prompt_base(ccenv)
     assert miss["source"] == "missing" and miss["text"] == "" and miss["text_chars"] == 0
     assert "default" in miss["missing_reason"]
@@ -172,7 +171,6 @@ async def test_prompt_base_is_read_only_and_checks_the_node(ccenv) -> None:
         assert (await getattr(ccenv.client, verb)(f"{CC}/prompt-base")).status_code in (404, 405)
 
 
-# --- тексты эффектов ---------------------------------------------------------------------------------
 
 async def test_effect_texts_are_readable_russian_without_internal_ids(ccenv) -> None:
     ensure_builtin_actions()

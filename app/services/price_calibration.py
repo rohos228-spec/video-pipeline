@@ -1,11 +1,3 @@
-"""F02 (часть без сети): реестр калибровки цен. Для каждой константы-оценки: значение в коде, сколько проб,
-чем подтверждено и честный статус. Сеть не ходит и деньги не тратятся; замеры лежат в docs/LIVE_RUNS.md и
-docs/KIE_COST_CALIBRATION.md. Закон-тест ``w51_findings_closure_test`` сверяет значения таблицы с кодом:
-поменяли константу, не обновив здесь статус, сборка падает.
-
-Статусы: ``measured`` (>=3 проб), ``single_probe`` (одна проба, ненадёжна), ``estimate`` (замера нет),
-``policy`` (выбрано, не измеряется).
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -32,7 +24,6 @@ def _suno_credits() -> float:
 
 
 def code_values() -> dict[str, object]:
-    """Текущие значения констант в коде (импорт по требованию)."""
     from app.services import api_tracker_hook, kie_catalog, media_spend, spend_guard, vibecode_catalog
     from app.services.action_layer import builtin_montage_more as bmm
     return {
@@ -81,12 +72,10 @@ def by_name() -> dict[str, Calibration]:
 
 
 def label_ru(name: str) -> str:
-    """Подпись для интерфейса: замер это или оценка. Неизвестная константа = «оценка»."""
     c = by_name().get(name)
     return c.label_ru if c else "оценка"
 
 
-# Откуда берётся баланс для автосверки (B10, ``balance_adapters``). Не константы-оценки, закон-тест их не читает.
 BALANCE_SOURCES = {
     "kie": "автоснимок: kie_http.get_credits() * CREDIT_USD (курс замерян)",
     "outsee": "автоснимок: outsee_http.fetch_balance(); в USD только при явной пометке единицы в ответе, "

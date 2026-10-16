@@ -31,7 +31,6 @@ _PRIVATE_NAMES = {"web_sessions", "sidebar_layout.json", ".env"}
 
 
 def _is_private_file(p: Path) -> bool:
-    """Базы состояния, логи и ключи лежат под data_dir, но наружу через /api/files не отдаются."""
     name = p.name.lower()
     return p.suffix.lower() in _PRIVATE_SUFFIXES or name.startswith(".env") or name in _PRIVATE_NAMES         or any(name.startswith(n) for n in ("web_sessions",))
 
@@ -109,8 +108,6 @@ async def get_artifact_file_session(
     request: Request,
     project_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> AsyncIterator[AsyncSession]:
-    # An explicit project never falls back to a master/other-project artifact.
-    # Retain the original master route for callers of legacy unscoped links.
     source = get_session() if project_id is None else get_project_session(request, project_id)
     async for session in source:
         yield session
@@ -129,8 +126,6 @@ async def download_artifact(
     if a is None:
         raise HTTPException(status_code=404, detail="Артефакт не найден")
     path = Path(a.path)
-    # Managed artifacts are shown only while their recorded structural proof
-    # still matches the file owned by this project. No caller-supplied path.
     managed = "orchestrator" in (a.meta or {})
     if managed:
         from app.models import Project

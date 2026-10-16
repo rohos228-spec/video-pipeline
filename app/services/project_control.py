@@ -320,7 +320,7 @@ async def stop_project_running(
         from app.project_db import sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, project)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] STOP: runtime sync master↔project.db failed",
             project.id,
@@ -357,7 +357,6 @@ async def pause_project(session: AsyncSession, project: Project) -> None:
         stop_active_running_node,
     )
 
-    # Пока status ещё running — иначе stop не находит excel_gpt / fw_*.
     await stop_active_running_node(session, project)
     try:
         from app.project_db import run_on_replica_project
@@ -366,7 +365,7 @@ async def pause_project(session: AsyncSession, project: Project) -> None:
             await stop_active_running_node(replica_session, replica)
 
         await run_on_replica_project(session, project, _stop)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] PAUSE: stop NodeRun on replica failed",
             project.id,
@@ -380,7 +379,7 @@ async def pause_project(session: AsyncSession, project: Project) -> None:
     await session.flush()
     try:
         await park_leftover_running_nodes(session, project, as_failed=False)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] PAUSE: park leftover NodeRuns failed",
             project.id,
@@ -390,7 +389,7 @@ async def pause_project(session: AsyncSession, project: Project) -> None:
         from app.project_db import sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, project)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] PAUSE: runtime sync master↔project.db failed",
             project.id,
@@ -407,7 +406,7 @@ async def pause_project(session: AsyncSession, project: Project) -> None:
             )
 
         await run_on_replica_project(session, project, _park)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] PAUSE: park leftover on replica failed",
             project.id,
@@ -421,7 +420,7 @@ async def resume_project(session: AsyncSession, project: Project) -> str:
     meta = dict(project.meta or {})
     from_status = meta.pop("paused_from_status", None)
     project.meta = meta
-    from app.services import restart_chain  # ручное возобновление = решение человека: счётчики цепочки заново
+    from app.services import restart_chain
     await restart_chain.release_for_human_everywhere(session, project)
     try:
         project.status = ProjectStatus(from_status) if from_status else ProjectStatus.new
@@ -433,7 +432,7 @@ async def resume_project(session: AsyncSession, project: Project) -> str:
         from app.project_db import sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, project)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] RESUME: runtime sync master↔project.db failed",
             project.id,

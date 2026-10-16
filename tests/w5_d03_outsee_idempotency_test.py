@@ -1,10 +1,3 @@
-"""W5-2 (D03): идемпотентность картинок Outsee по ключу запроса (проект, кадр, sha256 модели и промта).
-
-Класс доказательства: U/D на заменителе провайдера. Заменитель подставлен вместо HTTP-вызова Outsee
-(`outsee_http.generate_image`), настоящая лестница `generate_image_with_retries`, настоящий `outsee_guard`
-и настоящая таблица `outsee_idempotency` на временной SQLite. Сети, платных вызовов и боевой базы нет.
-Живого доказательства нет: ни один запрос в настоящий Outsee не отправлялся.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -28,11 +21,10 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 4096
 
 
 class ProcessDied(BaseException):
-    """Убитый процесс: не ловится ни одним `except Exception`."""
+    pass
 
 
 class Provider:
-    """Заменитель Outsee: считает платные запросы, ведёт сценарий ответов."""
 
     def __init__(self):
         self.calls = 0
@@ -105,7 +97,6 @@ def lost_answer():
     return OutseeSubmitUnknownError("no answer")
 
 
-# --------------------------------------------------------------------------- ключ запроса
 
 def test_request_key_is_sha256_of_project_frame_model_and_prompt():
     a = idem.request_sha(7, "frame_012", "nano-banana-2", "кот")
@@ -121,11 +112,10 @@ def test_request_key_is_sha256_of_project_frame_model_and_prompt():
 def test_context_key_drops_the_per_attempt_hex_and_rejects_unkeyed_files(tmp_path):
     ok = idem.make_ctx(7, tmp_path / "frame_012_ab12cd34.png", "m", "p")
     assert ok.key == "frame_012"
-    assert idem.make_ctx(7, tmp_path / "char_ab12cd34.png", "m", "p").key == ""  # нет устойчивого ключа
+    assert idem.make_ctx(7, tmp_path / "char_ab12cd34.png", "m", "p").key == ""
     assert idem.make_ctx(None, tmp_path / "frame_012_ab12cd34.png", "m", "p").project_id is None
 
 
-# --------------------------------------------------------------------------- критерий: падение после отправки
 
 async def test_answer_lost_after_send_blocks_a_second_paid_request(env):
     env.provider.script = [lost_answer()]
@@ -133,7 +123,7 @@ async def test_answer_lost_after_send_blocks_a_second_paid_request(env):
         await env.gen()
     assert env.provider.calls == 1
     with pytest.raises(idem.OutseeIdempotencyUncertainError) as caught:
-        await env.gen()  # тот же запрос после рестарта
+        await env.gen()
     assert env.provider.calls == 1, "второй платный запрос не должен уйти"
     assert is_no_resubmit(caught.value)
     assert caught.value.context["code"] == idem.CODE_UNCERTAIN and caught.value.context["human_decision"] is True
@@ -145,7 +135,7 @@ async def test_killed_process_after_intent_is_read_as_uncertain_and_blocks(env):
     env.provider.script = [ProcessDied()]
     with pytest.raises(ProcessDied):
         await env.gen()
-    assert [e for e, _ in await env.events()] == ["intent"]  # вердикта нет: процесс умер
+    assert [e for e, _ in await env.events()] == ["intent"]
     verdict = await idem.assess(PID, "frame_012")
     assert verdict["mode"] == "uncertain" and verdict["attempts"][0]["interrupted"] is True
     with pytest.raises(OutseeImageError) as caught:
@@ -158,7 +148,7 @@ async def test_other_prompt_of_the_same_frame_is_blocked_too(env):
     with pytest.raises(OutseeSubmitUnknownError):
         await env.gen("первый промт")
     with pytest.raises(idem.OutseeIdempotencyUncertainError):
-        await env.gen("совсем другой промт")  # кадр один, исход прошлой оплаты неизвестен
+        await env.gen("совсем другой промт")
     assert env.provider.calls == 1
 
 
@@ -171,7 +161,6 @@ async def test_other_frame_and_other_project_are_independent(env):
     assert env.provider.calls == 3
 
 
-# --------------------------------------------------------------------------- результат доступен восстановлению
 
 async def test_result_is_recorded_and_the_restart_takes_it_without_paying(env):
     first = await env.gen()
@@ -179,7 +168,6 @@ async def test_result_is_recorded_and_the_restart_takes_it_without_paying(env):
     atts = await env.attempts()
     assert [a["state"] for a in atts] == ["result"]
     assert atts[0]["file_path"] == str(first.file_path) and atts[0]["file_sha256"] == hashlib.sha256(PNG).hexdigest()
-    # шаг умер до сохранения артефакта и mark_consumed: перезапуск того же запроса
     again = await env.gen()
     assert env.provider.calls == 1, "второй платный запрос не должен уйти"
     assert Path(again.file_path) == Path(first.file_path)
@@ -191,7 +179,7 @@ async def test_consumed_result_is_not_reused_so_a_regeneration_is_a_new_request(
     assert await idem.mark_consumed(PID, "frame_012") == 1
     await env.gen()
     assert env.provider.calls == 2
-    assert await idem.mark_consumed(PID, "frame_012") == 1  # только новый результат
+    assert await idem.mark_consumed(PID, "frame_012") == 1
 
 
 async def test_changed_prompt_or_model_is_a_new_request(env):
@@ -227,7 +215,6 @@ async def test_recovery_verdict_assess_reports_the_adoptable_file(env):
     assert (await idem.assess(PID, "frame_099"))["mode"] == "free"
 
 
-# --------------------------------------------------------------------------- скачивание после готовой генерации
 
 async def test_download_failure_after_generation_is_uncertain_until_the_download_only_retry_records_it(env, monkeypatch):
     async def generated_but_not_downloaded(out_path):
@@ -260,7 +247,6 @@ async def test_download_failure_that_never_recovers_stays_uncertain(env, monkeyp
     assert env.provider.calls == 1
 
 
-# --------------------------------------------------------------------------- известный отказ не блокирует
 
 async def test_provider_declared_failure_is_a_known_outcome_and_the_next_call_may_pay(env):
     failed = OutseeApiError("Outsee generation failed", context={"id": "G-1", "status": {"status": "failed"}})
@@ -292,7 +278,6 @@ async def test_never_sent_error_does_not_block(env):
     assert env.provider.calls == 2
 
 
-# --------------------------------------------------------------------------- решение человека
 
 async def test_human_release_allows_a_new_request(env):
     env.provider.script = [lost_answer()]
@@ -305,7 +290,6 @@ async def test_human_release_allows_a_new_request(env):
 
 
 async def test_existing_ledger_release_by_a_human_also_unblocks(env):
-    """media_unknown.release снимает блокировку в журнале задач (outsee_guard): идемпотентность это признаёт."""
     env.provider.script = [lost_answer()]
     with pytest.raises(OutseeSubmitUnknownError):
         await env.gen()
@@ -326,7 +310,6 @@ async def test_human_names_the_found_file_and_the_next_call_takes_it(env):
     assert await idem.adopt_file(PID, "frame_012", env.tmp / "missing.png") is False
 
 
-# --------------------------------------------------------------------------- resume_only
 
 async def test_resume_only_returns_a_recorded_result_and_sends_nothing_otherwise(env):
     recorded = await env.gen()
@@ -339,7 +322,7 @@ async def test_resume_only_returns_a_recorded_result_and_sends_nothing_otherwise
     assert env.provider.calls == 1
     assert caught.value.context["code"] == idem.CODE_RESUME_ONLY and caught.value.context["request_sent"] is False
     assert is_no_resubmit(caught.value) and hits
-    assert await env.events("frame_050") == []  # намерение не записано: ничего не уходило
+    assert await env.events("frame_050") == []
 
 
 async def test_resume_only_with_an_uncertain_attempt_still_refuses(env):
@@ -352,7 +335,6 @@ async def test_resume_only_with_an_uncertain_attempt_still_refuses(env):
     assert env.provider.calls == 1
 
 
-# --------------------------------------------------------------------------- отказ закрыт, выключатели
 
 async def test_no_durable_intent_means_no_paid_request(env, monkeypatch):
     async def broken_write(ctx, attempt, event, **kw):
@@ -398,7 +380,6 @@ async def test_the_log_is_append_only(env):
 
 
 async def test_kie_slug_without_a_bot_keeps_its_typed_error_and_writes_nothing(env, monkeypatch):
-    """Решение владельца: маршрут не перенаправляется, тип ошибки остаётся."""
     from app.services import media_route
     monkeypatch.setattr(media_route, "image_provider_for", lambda slug: "kie")
     with pytest.raises(outsee_retry.KieSlugWithoutOutseeBotError):

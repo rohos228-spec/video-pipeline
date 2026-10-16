@@ -1,8 +1,3 @@
-"""W1-4 (A08 + A17): запись трат без молчаливых потерь; облачный трекер выключен по умолчанию.
-
-Класс доказательства: U/D на заменителе провайдера и сети. Живых прогонов нет: ни сети, ни платных вызовов,
-ни боевой базы. Тестовая БД лежит в tmp_path, трекер пишет в tmp_path.
-"""
 from __future__ import annotations
 
 import json
@@ -44,11 +39,10 @@ def log_lines():
 
 @pytest_asyncio.fixture
 async def ledger(tmp_path, monkeypatch):
-    """Настоящий spend_guard на временной SQLite; media_spend пишет в неё через app.db.SessionLocal."""
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'ledger.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     monkeypatch.setattr("app.db.SessionLocal", sessions)
-    monkeypatch.setattr(media_spend, "TEST_FORCE", True)  # эта БД своя: проверку «целевая ли БД» пропускаем
+    monkeypatch.setattr(media_spend, "TEST_FORCE", True)
     monkeypatch.setattr(settings, "elevenlabs_api_key", "real-looking-key")
     token = _cost_project.set(7)
     yield sessions
@@ -70,7 +64,6 @@ def _gap_file_rows() -> list[dict]:
     return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
-# ---------------------------------------------------------------- A08: потери записи видны
 
 async def test_failed_write_leaves_a_gap_row_with_the_lost_amount(ledger, log_lines):
     with patch.object(spend_guard, "_valid", side_effect=RuntimeError("db locked")):
@@ -81,7 +74,7 @@ async def test_failed_write_leaves_a_gap_row_with_the_lost_amount(ledger, log_li
     assert "usd=0.420000" in gaps[0].note and "RuntimeError" in gaps[0].note
     assert gaps[0].project_id == 7 and gaps[0].provider == "elevenlabs"
     assert media_spend.gap_count() == 1
-    assert any("record LOST" in ln for ln in log_lines)  # не молча: есть строка лога с трассировкой
+    assert any("record LOST" in ln for ln in log_lines)
 
 
 async def test_unreachable_database_spills_to_gap_file_and_counts(tmp_path, monkeypatch, log_lines):
@@ -116,7 +109,7 @@ def test_spawn_without_a_loop_is_traced_not_swallowed(log_lines):
     async def never():
         return None
 
-    media_spend._spawn(never())  # нет работающего цикла: раньше coro.close() молча
+    media_spend._spawn(never())
     assert media_spend.gap_count() == 1
     assert any(r["what"] == "spawn" for r in _gap_file_rows())
     assert any("record LOST" in ln for ln in log_lines)
@@ -129,12 +122,11 @@ async def test_record_internal_error_is_traced(ledger):
     assert [r["what"] for r in media_spend.recent_gaps()] == ["record"]
 
 
-# ---------------------------------------------------------------- A08: оценка и факт раздельно
 
 async def test_estimate_and_fact_are_separate_kinds(ledger):
-    media_spend.record("elevenlabs", usd=0.3, note="tts est")                   # посчитанная цена
-    media_spend.record("elevenlabs", usd=0.0, note="rejected", unknown=False)    # отказ: списания не было
-    media_spend.record("elevenlabs", usd=0.0, note="img", unknown=True)          # цена неизвестна
+    media_spend.record("elevenlabs", usd=0.3, note="tts est")
+    media_spend.record("elevenlabs", usd=0.0, note="rejected", unknown=False)
+    media_spend.record("elevenlabs", usd=0.0, note="img", unknown=True)
     rows = [r for r in await _rows(ledger) if r.source == "media_native"]
     by_note = {r.note.split(" cost_unknown")[0].split(" synthetic")[0]: r for r in rows}
     assert by_note["tts est"].kind == "estimated" and by_note["tts est"].usd == pytest.approx(0.3)
@@ -148,13 +140,12 @@ async def test_provider_reported_amount_is_a_settle_row_and_totals_still_sum(led
     rows = await _rows(ledger)
     assert [r.kind for r in rows] == ["estimated", "settle"]
     async with ledger() as s:
-        assert await spend_guard._sum(s, project_id=7) == pytest.approx(0.21)  # оценка + поправка = факт
+        assert await spend_guard._sum(s, project_id=7) == pytest.approx(0.21)
 
 
-# ---------------------------------------------------------------- A08: переключатели режима убраны
 
 def test_pytest_env_is_not_a_switch(monkeypatch):
-    assert "PYTEST_CURRENT_TEST" in os.environ  # мы под pytest
+    assert "PYTEST_CURRENT_TEST" in os.environ
     monkeypatch.setattr(media_spend, "TEST_FORCE", True)
     monkeypatch.setattr(settings, "elevenlabs_api_key", "real-looking-key")
     assert media_spend.disabled_reason("elevenlabs") is None
@@ -181,7 +172,7 @@ def test_explicit_setting_switches_recording_off_visibly(monkeypatch, log_lines)
 def test_sandbox_ledger_target_is_refused_and_counted(monkeypatch):
     monkeypatch.setattr(media_spend, "TEST_FORCE", False)
     monkeypatch.setattr(settings, "elevenlabs_api_key", "real-looking-key")
-    monkeypatch.setattr(settings, "sqlite_path", Path(settings.data_dir) / "other.db")  # движок смотрит в другую БД
+    monkeypatch.setattr(settings, "sqlite_path", Path(settings.data_dir) / "other.db")
     assert media_spend.disabled_reason("elevenlabs") == "ledger_target_mismatch"
     assert media_spend._enabled("elevenlabs") is False
     assert media_spend.skipped_counts()["elevenlabs:ledger_target_mismatch"] == 1
@@ -213,7 +204,6 @@ async def test_outsee_guard_intent_write_failure_is_traced(ledger):
     assert ctx.key == "frame_01"
 
 
-# ---------------------------------------------------------------- A08: трекер
 
 @pytest.fixture
 def tracker(tmp_path, monkeypatch):
@@ -236,10 +226,9 @@ def test_tracker_write_failure_is_not_silent_and_row_is_recoverable(tracker, log
     assert hook.write_failure_count() >= 1
     spilled = [json.loads(ln) for ln in (tracker.parent / "tracker_spill.jsonl").read_text("utf-8").splitlines()]
     assert spilled[-1]["model"] == "gpt-5.6-sol"
-    assert any(r["what"] == "api_calls_row" and r["usd"] > 0 for r in _gap_file_rows())  # пробел в журнале с суммой
+    assert any(r["what"] == "api_calls_row" and r["usd"] > 0 for r in _gap_file_rows())
     assert any("НЕ записана" in ln for ln in log_lines)
     assert not tracker.exists() or _tracker_rows(tracker) == []
-    # база снова доступна: следующая запись возвращает и потерянную строку
     hook.record_api_call(provider="kie", model="other-model")
     assert hook.flush(10)
     models = sorted(r[4] for r in _tracker_rows(tracker))
@@ -257,7 +246,7 @@ def test_tracker_queue_survives_shutdown_threads_are_not_daemon(tracker, monkeyp
 
     monkeypatch.setattr(hook.threading, "Thread", spy)
     hook.record_api_call(provider="kie", model="m")
-    assert seen.get("daemon") is False  # интерпретатор дожидается записи при остановке
+    assert seen.get("daemon") is False
     assert hook.flush(10) and hook.pending_writes() == 0
     assert len(_tracker_rows(tracker)) == 1
 
@@ -284,7 +273,7 @@ def test_cost_kind_estimated_vs_actual_in_row_metadata(tracker):
 def test_track_api_cost_failure_leaves_a_gap(monkeypatch):
     monkeypatch.setattr(settings, "gpt_api_key", "synthetic-key")
     with patch("app.services.api_tracker_hook.record_api_call", side_effect=RuntimeError("boom")):
-        _track_api_cost(model="m", usage=None, duration_sec=0.1, project_id=3)  # не бросает
+        _track_api_cost(model="m", usage=None, duration_sec=0.1, project_id=3)
     assert media_spend.gap_count() == 1
     assert media_spend.recent_gaps()[0]["what"] == "track_api_cost"
 
@@ -305,7 +294,6 @@ def test_track_api_cost_recording_setting_off_skips(monkeypatch):
     rec.assert_not_called()
 
 
-# ---------------------------------------------------------------- A17: облако
 
 def test_cloud_defaults_are_off_and_have_no_embedded_credentials(monkeypatch):
     for name in ("API_TRACKER_CLOUD_ENABLED", "SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_ANON_KEY"):
@@ -328,7 +316,6 @@ def test_settings_read_supabase_key_aliases(monkeypatch):
 
 
 def test_no_outgoing_connection_without_the_flag(tracker, monkeypatch):
-    """Перехват сокета и httpx: запись, проверка рубильника и его переключение не делают ни одного соединения."""
     monkeypatch.setattr(settings, "api_tracker_cloud_enabled", False)
     monkeypatch.setattr(settings, "api_tracker_supabase_url", "https://example.invalid")
     monkeypatch.setattr(settings, "api_tracker_supabase_key", "k")
@@ -397,7 +384,7 @@ def test_cloud_row_has_hashed_identity_but_local_row_keeps_names(tracker, monkey
     assert sent["json"]["user_name"].startswith("u-") and sent["json"]["device_name"].startswith("d-")
     assert sent["json"]["user_name"] != sent["json"]["device_name"]
     user, device, synced, *_ = _tracker_rows(tracker)[0]
-    assert (user, device, synced) == ("alice-os-user", "ALICE-PC", 1)  # локально имена как раньше
+    assert (user, device, synced) == ("alice-os-user", "ALICE-PC", 1)
 
 
 def test_hash_is_stable_per_install_and_salted(tracker, monkeypatch):
@@ -406,7 +393,7 @@ def test_hash_is_stable_per_install_and_salted(tracker, monkeypatch):
     salt_file = tracker.parent / ".cloud_identity_salt"
     assert salt_file.is_file()
     salt_file.write_text("another-salt", encoding="utf-8")
-    assert hook._cloud_identity("alice-os-user", "ALICE-PC") != a  # без соли хэш не восстановить подбором имени
+    assert hook._cloud_identity("alice-os-user", "ALICE-PC") != a
 
 
 def test_identity_without_salt_is_empty_not_plain(tracker, monkeypatch):
@@ -448,7 +435,6 @@ def test_unreadable_cloud_setting_means_off(monkeypatch):
 
 
 def _load_tracker_config(monkeypatch, env: dict):
-    """api-tracker/app/config.py без чтения .env: вызов загрузчика вырезан из исходника."""
     for name in ("API_TRACKER_CLOUD_ENABLED", "SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_ANON_KEY"):
         monkeypatch.delenv(name, raising=False)
     for k, v in env.items():
@@ -463,7 +449,7 @@ def _load_tracker_config(monkeypatch, env: dict):
 def test_standalone_tracker_config_is_off_without_the_flag(monkeypatch):
     ns = _load_tracker_config(monkeypatch, {"SUPABASE_URL": "https://x.invalid", "SUPABASE_KEY": "k"})
     assert ns["cloud_enabled"]() is False
-    assert ns["get_supabase_url"]() == "" and ns["get_supabase_key"]() == ""  # cloud_sync.py тогда не соединяется
+    assert ns["get_supabase_url"]() == "" and ns["get_supabase_key"]() == ""
 
 
 def test_standalone_tracker_config_with_flag_and_owner_credentials(monkeypatch):

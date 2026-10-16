@@ -1,4 +1,3 @@
-"""Правки покрытия (план / действие / родитель-дочерний) с панели монтажа."""
 
 from __future__ import annotations
 
@@ -236,7 +235,6 @@ async def test_apply_angle_move_stitch_and_scene_light(
 async def test_apply_scene_fields_write_board_keys(
     session: AsyncSession, project: Project
 ) -> None:
-    """«Применить правки» пишет те attrs, которые читает клетка сцены."""
     parent, child = _parent_child(project.id)
     stranger_uid = "cc" * 12
     stranger = Frame(
@@ -399,7 +397,6 @@ async def test_relink_and_delete_child(session: AsyncSession, project: Project) 
 async def test_vo_parent_can_become_child_of_its_shot(
     session: AsyncSession, project: Project
 ) -> None:
-    """Первый кадр сцены можно сделать дочерним — цикл still разрывается."""
     from app.services.vo_shot_expand import _cs
 
     parent, child = _parent_child(project.id)
@@ -444,7 +441,6 @@ async def test_vo_parent_can_become_child_of_its_shot(
 async def test_promote_child_to_parent_drops_parent_ref(
     session: AsyncSession, project: Project
 ) -> None:
-    """child→parent: still родителя с кадра снимается и не идёт в генерацию."""
     parent, child = _parent_child(project.id)
     parent_attrs = dict(parent.attrs or {})
     parent_attrs["characters"] = "c02"
@@ -526,7 +522,6 @@ async def test_promote_child_to_parent_drops_parent_ref(
 async def test_kind_change_does_not_split_vo_scene(
     session: AsyncSession, project: Project
 ) -> None:
-    """Родитель/дочерний меняет still, не членство в VO-сцене."""
     parent, child = _parent_child(project.id)
     sib_uid = "dd" * 12
     sibling = Frame(
@@ -780,7 +775,6 @@ async def test_apply_scene_action_rejects_empty(
 async def test_apply_scene_action_rewrites_arrows_and_clears_extra(
     session: AsyncSession, project: Project
 ) -> None:
-    """Новая цепь по ``→`` сменяет действия шотов; лишние не оставляют старый шаг."""
     parent_uid = "aa" * 12
     parent = Frame(
         project_id=project.id,
@@ -864,7 +858,6 @@ async def test_apply_scene_action_rewrites_arrows_and_clears_extra(
 async def test_apply_scene_action_grow_inserts_without_renumber(
     session: AsyncSession, project: Project
 ) -> None:
-    """Improve: новые шоты в конец ячейки, number соседей не двигаем."""
     from app.services.montage_coverage_ops import apply_coverage_scene_action
     from app.services.montage_scene_editor import scene_group
 
@@ -1033,7 +1026,6 @@ async def test_scene_action_keeps_medium_parent_plan(
 async def test_improve_does_not_turn_leftover_glue_into_new_scenes(
     session: AsyncSession, project: Project
 ) -> None:
-    """Хвост leftover другой ячейки не становится новыми «Сцена · кадр»."""
     from app.services.montage_coverage_ops import apply_coverage_scene_action
     from app.services.montage_scene_editor import scene_group
     from app.services.vo_shot_expand import _cs
@@ -1130,7 +1122,6 @@ async def test_improve_does_not_turn_leftover_glue_into_new_scenes(
         if int(m.number) != 1
     )
     assert all(_cs(m).get("role") != "vo_parent" or m.uuid == parent_uid for m in live)
-    # новые шоты стоят сразу после родителя, до соседней сцены
     assert ordered[:4] == [1, ordered[1], ordered[2], 2]
     assert not (_cs(glue).get("план") or _cs(glue).get("крупность"))
     assert not (_cs(glue).get("ракурс") or _cs(glue).get("движение"))
@@ -1140,7 +1131,6 @@ async def test_improve_does_not_turn_leftover_glue_into_new_scenes(
 async def test_scene_action_clears_leftover_chips(
     session: AsyncSession, project: Project
 ) -> None:
-    """Хвост leftover не держит старые крупность/ракурс после новой цепи."""
     from app.services.montage_coverage_ops import apply_coverage_scene_action
 
     parent_uid = "dd" * 12

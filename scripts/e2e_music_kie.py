@@ -58,22 +58,20 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 DEFAULT_BASE_URL = "https://api.kie.ai"
 BALANCE_PATH = "/api/v1/chat/credit"
 CREATE_PATH = "/api/v1/generate"
 POLL_PATH = "/api/v1/generate/record-info"
-CALLBACK_PLACEHOLDER = "https://localhost/kie-callback"   # kie_http puts it into the body; nobody ever calls it
+CALLBACK_PLACEHOLDER = "https://localhost/kie-callback"
 ENV_NAMES = ("KIE_API_KEY", "KIE_API_BASE_URL")
 SECRET_NAMES = ("KIE_API_KEY",)
 FAKE_KEY = "fake-kie-dry-key"
 
-# Catalog price of one Suno generation: the application's own UNCALIBRATED constants
-# (kie_catalog "suno-music": 122 credits = the 2026-10-12 live measurement, CREDIT_USD = 0.005; a test keeps them equal).
 CREDITS_PER_GENERATION_HINT = 122.0
 CREDIT_USD_HINT = 0.005
-MIN_BALANCE_CREDITS = 244.0    # twice the price of one generation: at or below this the run stops before any paid call
+MIN_BALANCE_CREDITS = 244.0
 MIN_DURATION_S = 5.0
 MUSIC_PROMPT = "Calm ambient instrumental, soft piano and warm pads, slow tempo, no vocals"
 MUSIC_PROMPT_MAX_CHARS = 200
@@ -82,14 +80,13 @@ DEFAULT_MAX_REAL_POSTS = 1
 DEFAULT_MAX_USD = 0.70
 HARD_CEILING_USD = 1.0
 MAX_BALANCE_READS = 3
-MAX_POLLS = 400                # free GETs; the step polls every 4 s for at most 900 s (~225 polls)
-MAX_DOWNLOADS = 3              # kie_http retries a failed download of an already paid task up to 3 times
+MAX_POLLS = 400
+MAX_DOWNLOADS = 3
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".ogg", ".flac")
 DRY_SCENARIOS = ("ok", "low_balance", "balance_missing", "balance_error", "task_failed", "create_rejected")
-SETTLE_WAIT_S = 8.0            # live: the balance is read again this long after the download
+SETTLE_WAIT_S = 8.0
 
 
-# ───────────────────────────── pure helpers (unit-tested) ─────────────────────────────
 
 def load_env_whitelist(path: str, names: tuple[str, ...] = ENV_NAMES) -> dict[str, str]:
     """Only `names` from an env file; everything else is ignored and nothing is printed."""
@@ -166,7 +163,7 @@ def probe_duration(path: Path) -> float | None:
                               str(path)], check=True, timeout=60, capture_output=True, text=True).stdout.strip()
         value = float(out)
         return value if value > 0 else None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -189,8 +186,8 @@ def final_verdict(mode: str, ok: bool) -> str:
 
 @dataclass
 class Judgement:
-    action: str            # pass | refuse
-    kind: str              # balance | create | poll | download | other
+    action: str
+    kind: str
     reason: str = ""
 
 
@@ -202,15 +199,15 @@ class Gate:
     (instrumental, V5_5, short prompt), GET <base>/api/v1/generate/record-info?taskId=<the created task> and GET of a result
     URL that the poll answer itself named (https, an audio file; same host as a learned URL). In dry mode the same list
     on http://127.0.0.1:<port>."""
-    mode: str                                   # dry | live
+    mode: str
     max_real_posts: int = DEFAULT_MAX_REAL_POSTS
     host: str = "api.kie.ai"
     scheme: str = "https"
-    port: int | None = None                     # dry: the fake server's port
+    port: int | None = None
     task_id: str = ""
     wire: list = field(default_factory=list)
     refused: list = field(default_factory=list)
-    downloads: dict = field(default_factory=dict)   # learned result URL -> host
+    downloads: dict = field(default_factory=dict)
 
     def count(self, kind: str) -> int:
         return sum(1 for w in self.wire if w["kind"] == kind)
@@ -280,7 +277,6 @@ class Gate:
         return [w for w in self.wire if w["kind"] == kind]
 
 
-# ───────────────────────────── audio fixture and fake Kie (dry) ─────────────────────────────
 
 _FIXTURES: dict[float, bytes] = {}
 
@@ -300,7 +296,7 @@ def make_audio(seconds: float) -> bytes:
                 subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=330:duration={key}",
                                 "-c:a", "libmp3lame", str(out)], check=True, timeout=60, capture_output=True)
                 data = out.read_bytes()
-            except Exception:  # noqa: BLE001 - no encoder: the WAV below
+            except Exception:
                 data = None
     if not data:
         import io
@@ -349,7 +345,7 @@ class FakeKie:
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_a, **_k) -> None:  # silence
+            def log_message(self, *_a, **_k) -> None:
                 return
 
             def _send(self, status: int, payload: Any = None, raw: bytes | None = None, ctype: str = "application/json"):
@@ -366,7 +362,7 @@ class FakeKie:
                     return False
                 return True
 
-            def do_GET(self) -> None:  # noqa: N802
+            def do_GET(self) -> None:
                 parts = urlsplit(self.path)
                 fake.requests.append(("GET", parts.path))
                 if parts.path == BALANCE_PATH:
@@ -398,13 +394,13 @@ class FakeKie:
                     return self._send(200, raw=fake.audio, ctype="audio/mpeg")
                 return self._send(404, {"code": 404, "msg": "fake kie: no such route"})
 
-            def do_POST(self) -> None:  # noqa: N802
+            def do_POST(self) -> None:
                 parts = urlsplit(self.path)
                 fake.requests.append(("POST", parts.path))
                 length = int(self.headers.get("Content-Length") or 0)
                 try:
                     body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-                except Exception:  # noqa: BLE001
+                except Exception:
                     body = {}
                 if parts.path != CREATE_PATH:
                     return self._send(404, {"code": 404, "msg": "fake kie: no such route"})
@@ -427,7 +423,6 @@ class FakeKie:
             self._server = None
 
 
-# ───────────────────────────── environment and honest reporting ─────────────────────────────
 
 def env_overrides(data: Path, *, cap: float, dry: bool) -> dict[str, str]:
     """Environment of the in-process app (applied BEFORE the application is imported). Never a real key here."""
@@ -442,7 +437,7 @@ def env_overrides(data: Path, *, cap: float, dry: bool) -> dict[str, str]:
         "WEB_ENABLED": "false", "HITL_AUTO_APPROVE": "false", "BROWSER_CDP_AUTO_RECOVER": "false",
         "NVIDIA_ASR_PRELOAD_ON_STARTUP": "false", "SUPABASE_URL": "http://127.0.0.1:9", "SUPABASE_KEY": "unused",
     }
-    if dry:  # a free-space threshold that does not depend on the machine
+    if dry:
         out.update({"DISK_GUARD_LOW_FREE_GB": "0.001", "DISK_GUARD_CRITICAL_FREE_GB": "0.0005"})
     return out
 
@@ -475,7 +470,6 @@ def reality_not_proven(mode: str) -> list[str]:
     return out
 
 
-# ───────────────────────────── runtime ─────────────────────────────
 
 def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -569,7 +563,7 @@ async def main(argv: list[str] | None = None) -> int:
         return text
 
     work = Path(args.work_dir).resolve()
-    data = guard.reset_scratch_data(work)  # A19: refuses live data; removes only <work>/data made by these scripts
+    data = guard.reset_scratch_data(work)
     os.chdir(ROOT)
     cap = app_cap_usd(args.max_usd)
     fake: FakeKie | None = None
@@ -585,7 +579,6 @@ async def main(argv: list[str] | None = None) -> int:
     import httpx
     from app.bots import kie_http, kie_kling
     from app.settings import settings
-    # Belt and braces over environment precedence (a stray repository .env must not add a key or a route):
     settings.kie_api_key = key
     settings.kie_api_base_url = base_url
     settings.gpt_api_key = ""
@@ -593,7 +586,7 @@ async def main(argv: list[str] | None = None) -> int:
     settings.gpt_base_url = ""
     settings.media_spend_recording = True
     settings.spend_daily_cap_usd = settings.spend_project_cap_usd = settings.spend_run_cap_usd = cap
-    for guarded in (settings.data_dir, settings.sqlite_path):  # no write outside the work dir, ever
+    for guarded in (settings.data_dir, settings.sqlite_path):
         if not guard._inside(Path(guarded).resolve(), work):
             if fake:
                 fake.stop()
@@ -614,25 +607,25 @@ async def main(argv: list[str] | None = None) -> int:
     async def send(client, request, **kwargs):
         try:
             body = json.loads(request.content.decode("utf-8") or "{}")
-        except Exception:  # noqa: BLE001
+        except Exception:
             body = {}
         judged = gate.judge(request.method, request.url.scheme, request.url.host, request.url.path, body,
                             port=request.url.port, params=dict(request.url.params), url=str(request.url))
         if judged.action == "refuse":
             raise RuntimeError("stand: " + judged.reason)
         response = await original_send(client, request, **kwargs)
-        try:  # learn what the provider itself named: the task id and the result URLs
+        try:
             if judged.kind == "create":
                 inner = (response.json().get("data") or {})
                 gate.task_id = str(inner.get("taskId") or "") if isinstance(inner, dict) else ""
             elif judged.kind == "poll":
                 gate.learn_downloads(kie_http._result_media_urls((response.json().get("data") or {})))
-        except Exception:  # noqa: BLE001 - an unreadable answer simply teaches the Gate nothing
+        except Exception:
             pass
         return response
 
     httpx.AsyncClient.send = send
-    kie_kling._iter_kie_keys = lambda: [("KIE_API_KEY", key)]   # only the intended key, never a key from a repository .env
+    kie_kling._iter_kie_keys = lambda: [("KIE_API_KEY", key)]
     kie_kling.reset_working_kie_key()
     gpt_client.get_gpt_client = lambda *a, **k: _FakeGpt()
     if mode == "dry":
@@ -647,7 +640,7 @@ async def main(argv: list[str] | None = None) -> int:
           f"max_real_posts={args.max_real_posts} base={gate.scheme}://{gate.host}", flush=True)
     state_db = data / "state.db"
     try:
-        credits_before = await kie_http.get_credits()   # Step A (free)
+        credits_before = await kie_http.get_credits()
         rec.facts["balance_before_credits"] = credits_before
         reason = balance_stop_reason(credits_before)
         rec.check("balance_read_before_any_paid_call", credits_before is not None, {"credits": credits_before})
@@ -660,7 +653,7 @@ async def main(argv: list[str] | None = None) -> int:
         else:
             await _music_flow(rec, gate, state_db, args, mode, credits_before, result, scrub)
         await media_spend.drain()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["error"] = scrub(f"{type(exc).__name__}: {exc}")
         import traceback
         result["traceback"] = scrub(traceback.format_exc())[-2500:]
@@ -675,7 +668,6 @@ async def main(argv: list[str] | None = None) -> int:
     return _finish(args, mode, result, rec, gate, state_db, scrub, work, fake)
 
 
-# ───────────────────────────── seeding and the paid flow ─────────────────────────────
 
 async def _seed() -> int:
     from app.db import session_scope
@@ -707,7 +699,7 @@ async def _run_music_step(pid: int) -> Exception | None:
                 project = await session.get(Project, pid)
                 await generate_music.run(session, project, None)
         return None
-    except Exception as exc:  # noqa: BLE001 - a timeout or any error is a verdict, never a reason to submit again
+    except Exception as exc:
         return exc
 
 
@@ -782,7 +774,6 @@ async def _music_flow(rec: Rec, gate: Gate, state_db: Path, args, mode: str, cre
               {"billed_usd": billed, "max_usd": args.max_usd})
 
 
-# ───────────────────────────── result ─────────────────────────────
 
 def _finish(args, mode, result, rec: Rec, gate: Gate, state_db, scrub, work, fake) -> int:
     counters = {"wire_create": gate.count("create"), "wire_balance": gate.count("balance"), "wire_poll": gate.count("poll"),

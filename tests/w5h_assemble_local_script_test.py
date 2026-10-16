@@ -1,7 +1,3 @@
-"""Guards for scripts/e2e_assemble_local.py (the local node `assemble`): pure helpers, the lavfi media makers, the checks and a
-real --dry run. Everything is local and free: there is no --live mode and no provider; the dry run starts the whole
-application in a SUBPROCESS (isolated memory and ports), so run this file alone: one pytest at a time.
-"""
 import asyncio
 import importlib.util
 import json
@@ -21,7 +17,7 @@ sys.modules[_spec.name] = script
 _spec.loader.exec_module(script)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _stand_workdir import make_workdir, remove_workdir  # noqa: E402
+from _stand_workdir import make_workdir, remove_workdir
 
 PORT = 18809
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
@@ -30,7 +26,6 @@ needs_ffmpeg = pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg/ffprobe are re
 
 @pytest.fixture
 def tmp_path():
-    """Outside the repository: the e2e guard refuses a work folder inside live data."""
     path = make_workdir()
     try:
         yield path
@@ -38,7 +33,6 @@ def tmp_path():
         remove_workdir(path)
 
 
-# ---------- arguments ----------
 
 def test_dry_is_the_only_mode_and_a_work_dir_is_required():
     with pytest.raises(SystemExit):
@@ -46,19 +40,19 @@ def test_dry_is_the_only_mode_and_a_work_dir_is_required():
     with pytest.raises(SystemExit):
         script._args(["--dry"])
     with pytest.raises(SystemExit):
-        script._args(["--work-dir", "w", "--dry", "--live"])  # there is no live mode: nothing paid exists on this node
+        script._args(["--work-dir", "w", "--dry", "--live"])
     assert script._args(["--work-dir", "w", "--dry"]).port == script.PORT
 
 
 def test_the_stand_refuses_to_start_when_the_application_settings_are_already_loaded(tmp_path, capsys):
-    import app.settings  # noqa: F401  (this very process has imported the application)
+    import app.settings
     assert asyncio.run(script.main(["--work-dir", str(tmp_path / "w"), "--dry"])) == 3
     assert "nothing was started" in capsys.readouterr().out and not (tmp_path / "w").exists()
 
 
 def test_the_node_is_the_assemble_node_with_its_native_step_code_and_admitted_for_a_local_rerun():
     from app.orchestrator.node_registry import WORK_NODES
-    from app.services import local_node_recovery, media_admission, node_capabilities  # noqa: F401  (registers the specs)
+    from app.services import local_node_recovery, media_admission, node_capabilities
     assert WORK_NODES[script.NODE].step_code == script.STEP_CODE
     assert local_node_recovery.spec_ok(script.NODE) and media_admission.local_worker(script.NODE)
     assert tuple(script.REQUIRED_TICKET_CHECKS) == ("artifact_row", "file_inside_project", "claimed_at_known",
@@ -71,10 +65,9 @@ def test_the_node_is_the_assemble_node_with_its_native_step_code_and_admitted_fo
 def test_the_forced_failure_looks_like_ffmpeg_to_the_node_so_the_node_calls_it_repeatable():
     from app.orchestrator.steps import assemble as asm
     assert asm._assemble_retryable(RuntimeError(script.FAULT))
-    assert not asm._assemble_retryable(RuntimeError("нет кадров с видео-клипами"))  # an input error is not repeatable
+    assert not asm._assemble_retryable(RuntimeError("нет кадров с видео-клипами"))
 
 
-# ---------- the lavfi media ----------
 
 @needs_ffmpeg
 def test_the_made_clip_and_voice_decode_and_have_the_expected_length(tmp_path):
@@ -109,7 +102,6 @@ def test_the_asr_probe_touches_no_network_and_loads_no_model():
     assert got["used_by_this_stand"] is False and "per-frame" in got["why"]
 
 
-# ---------- checks ----------
 
 def _good_snapshot(**over):
     ticket = {"status": "verified", "incident_id": "inc-1",
@@ -211,7 +203,6 @@ def test_the_verdict_and_the_reality_report_say_what_was_not_exercised():
     assert any("subtitles" in x for x in script.reality_not_proven())
 
 
-# ---------- a real dry run (whole app in a subprocess, nothing leaves the machine) ----------
 
 def _run(tmp_path: Path) -> tuple[int, dict, str]:
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}
@@ -234,7 +225,7 @@ def test_a_real_dry_run_reassembles_once_under_the_ticket_and_leaves_the_approva
     summary, counters = result["summary"], result["counters"]
     assert result["ok"] is True, result.get("failed")
     assert summary["verdict"].startswith("DRY OK") and "NOT exercised" in summary["verdict"]
-    assert counters["injected_failures"] >= 4 and counters["injected_failures"] % 2 == 0  # one in-node retry per attempt
+    assert counters["injected_failures"] >= 4 and counters["injected_failures"] % 2 == 0
     assert result["node_attempts"] >= 9 and result["state_at_exhaustion"]["final_files"] == []
     recoveries = result["actions"]["recoveries"]
     assert len(recoveries) == 1 and recoveries[0]["status"] == "verified"

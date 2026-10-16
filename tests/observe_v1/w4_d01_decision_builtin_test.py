@@ -1,7 +1,3 @@
-"""W4 / D01: Decision in production mode with the built-in profile catalog (no ORCHESTRATOR_RUNTIME_CONFIG
-hand-built profiles). Real Decision/Profiles/Actions code on the synthetic fixture database; the decision
-model is a scripted stand-in. Class D. Nothing here ran live.
-"""
 import importlib
 import json
 from unittest.mock import patch
@@ -34,7 +30,6 @@ class BuiltinCatalogDecision(base_tests.DecisionDurability):
         self.addCleanup(self.runtime.stop)
 
     async def record_source_body(self):
-        """The source request body the profile approval re-reads (as test_profiles_v1 prepares it)."""
         async with self.sessions() as s:
             event = await s.scalar(select(observation.ObservationEvent).where(
                 observation.ObservationEvent.kind == 'model_start'))
@@ -128,7 +123,6 @@ class BuiltinCatalogDecision(base_tests.DecisionDurability):
             self.assertEqual(await self.profiles.eligible_profiles(s, row, 'base'), [])
 
 
-# The base classes' own tests are not repeated under the production config (they have their own runs).
 for _name in dir(base_tests.DecisionDurability):
     if _name.startswith('test') and _name not in vars(BuiltinCatalogDecision):
         setattr(BuiltinCatalogDecision, _name, None)

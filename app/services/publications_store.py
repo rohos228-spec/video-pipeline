@@ -1,24 +1,3 @@
-"""Журнал публикаций: идемпотентность, намерение до клика, lease на проект x платформа (A14).
-
-Таблица `publications` создаётся здесь же (`CREATE TABLE IF NOT EXISTS`); регистрация в
-`schema_migrations` делается отдельно (волна W2). Ключ идемпотентности: (project_id, platform, sha256).
-
-Порядок для одной платформы (каждый шаг фиксируется commit-ом сразу, не ждёт конца шага):
-  1. claim()         — запись НАМЕРЕНИЯ (status=planned) и lease; второй воркер получает busy;
-  2. mark_clicked()  — status=clicked ДО реального клика; упали между кликом и записью итога
-                       -> в журнале остаётся clicked, автоповтора нет (ждёт человека);
-  3. record_result() — итог: confirmed / unconfirmed / failed / rejected.
-Автоповтор разрешён ТОЛЬКО при сбое до клика (failed без clicked_at, planned с истёкшим lease,
-skipped) и не более MAX_PRE_CLICK_ATTEMPTS раз.
-
-W6-1 (E01/E02/E11): к журналу добавлены ОТДЕЛЬНЫЕ таблицы (`_DDL_W6`, DDL `publications` не менялся,
-отпечаток миграции 0012 прежний): `publish_approvals` (одноразовое подтверждение человека на пару
-платформа x sha256 файла x sha256 подписи, тратится ПЕРЕД кликом) и `publication_manual_actions`
-(append-only журнал ручных подтверждений и пометок). Отображаемые состояния: publish_skipped, intent,
-unconfirmed, confirmed, failed_before_click, failed_after_click (`display_state`).
-
-Живой платформой не проверялось: только юнит и сухой прогон на SQLite.
-"""
 
 from __future__ import annotations
 
@@ -44,11 +23,10 @@ S_REJECTED = "rejected"
 S_SKIPPED = "skipped"
 ALL_STATUSES = (S_PLANNED, S_CLICKED, S_CONFIRMED, S_UNCONFIRMED, S_FAILED, S_REJECTED, S_SKIPPED)
 
-# claim-исходы
 ACQUIRED = "acquired"
-BUSY = "busy"  # другой воркер держит живой lease
-DONE = "done"  # уже confirmed
-NEEDS_HUMAN = "needs_human"  # клик мог состояться или попытки исчерпаны: автоповтор запрещён
+BUSY = "busy"
+DONE = "done"
+NEEDS_HUMAN = "needs_human"
 
 _DDL = (
     """CREATE TABLE IF NOT EXISTS publications (
@@ -77,7 +55,6 @@ _DDL = (
 _COLS = ("id, project_id, platform, artifact_uuid, sha256, account_id, status, post_url, post_id, "
          "attempts, screenshot, error_code, lease_owner, lease_until, clicked_at, updated_at")
 
-# --- W6-1: подтверждение человека и ручные действия (отдельные таблицы, миграция регистрируется интегратором) ---
 MANUAL_FAILED_CODE = "manual_not_published"
 MANUAL_CONFIRMED_ID = "manual-confirmed"
 MIN_REASON_CHARS = 5
@@ -166,13 +143,12 @@ async def sha256_of_file_async(path: str | Path) -> str:
 async def ensure_schema(session: AsyncSession) -> None:
     key = id(session.get_bind()) if session.bind is not None else 0
     if key in _schema_ready_for:
-        # В памяти (:memory:) таблица живёт с соединением, кэш по bind безопасен: bind тот же.
         try:
             await session.execute(text("SELECT 1 FROM publications LIMIT 0"))
             await session.execute(text("SELECT 1 FROM publish_approvals LIMIT 0"))
             await session.execute(text("SELECT 1 FROM publication_manual_actions LIMIT 0"))
             return
-        except Exception:  # noqa: BLE001
+        except Exception:
             _schema_ready_for.discard(key)
     for ddl in (*_DDL, *_DDL_W6):
         await session.execute(text(ddl))
@@ -184,7 +160,7 @@ async def _commit(session: AsyncSession) -> None:
     try:
         from app.db import commit_with_retry
         await commit_with_retry(session)
-    except ImportError:  # pragma: no cover
+    except ImportError:
         await session.commit()
 
 
@@ -195,15 +171,11 @@ async def _get(session: AsyncSession, project_id: int, platform: str, sha256: st
     return dict(row) if row else None
 
 
-# W6 интеграция: отказы ДО клика, после которых нужен человек (вход, капча, 2FA, лимит частоты, отклонение,
-# нет профиля или конфиг неверен). Автоповтор запрещён, выход - «Не опубликовано» с allow_republish в панели.
-# Совпадает с publish_accounts.NO_AUTO_RETRY_CODES (проверяет тест).
 HUMAN_HOLD_CODES = frozenset({"not_logged_in", "captcha", "two_factor", "rate_limited", "rejected",
                               "profile_missing", "accounts_config_invalid"})
 
 
 def is_auto_retryable(row: dict, now: float) -> bool:
-    """Можно ли автоматически взять платформу снова (клик гарантированно не был сделан)."""
     st = row["status"]
     if row.get("clicked_at"):
         return False
@@ -221,7 +193,6 @@ def is_auto_retryable(row: dict, now: float) -> bool:
 async def claim(session: AsyncSession, *, project_id: int, platform: str, sha256: str,
                 artifact_uuid: str | None, owner: str, account_id: str | None = None,
                 lease_s: float = LEASE_SECONDS, now: float | None = None) -> Claim:
-    """Записать намерение публикации и взять lease. Атомарно через UNIQUE + условный UPDATE."""
     await ensure_schema(session)
     now = time.time() if now is None else now
     ins = await session.execute(text(
@@ -236,8 +207,8 @@ async def claim(session: AsyncSession, *, project_id: int, platform: str, sha256
         return Claim(ACQUIRED, row["id"], owner, S_PLANNED, 1)
 
     row = await _get(session, project_id, platform, sha256)
-    await _commit(session)  # закрыть читающую транзакцию
-    if row is None:  # pragma: no cover
+    await _commit(session)
+    if row is None:
         return Claim(BUSY)
     if row["status"] == S_CONFIRMED:
         return Claim(DONE, row["id"], status=row["status"], attempts=row["attempts"])
@@ -246,7 +217,6 @@ async def claim(session: AsyncSession, *, project_id: int, platform: str, sha256
             return Claim(BUSY, row["id"], status=row["status"], attempts=row["attempts"])
         return Claim(NEEDS_HUMAN, row["id"], status=row["status"], attempts=row["attempts"])
 
-    # условный UPDATE: выигрывает ровно один из параллельных воркеров
     upd = await session.execute(text(
         "UPDATE publications SET status='planned', attempts=attempts+1, lease_owner=:o, lease_until=:lu, "
         "error_code=NULL, updated_at=:now "
@@ -260,7 +230,6 @@ async def claim(session: AsyncSession, *, project_id: int, platform: str, sha256
 
 
 async def mark_clicked(session: AsyncSession, pub_id: int, owner: str, *, now: float | None = None) -> bool:
-    """Зафиксировать «сейчас кликнем» ДО клика. False — клик делать нельзя (lease потерян)."""
     now = time.time() if now is None else now
     upd = await session.execute(text(
         "UPDATE publications SET status='clicked', clicked_at=:now, updated_at=:now "
@@ -274,10 +243,6 @@ async def record_result(session: AsyncSession, pub_id: int, owner: str, *, statu
                         post_url: str | None = None, post_id: str | None = None,
                         error_code: str | None = None, screenshot: str | None = None,
                         account_id: str | None = None, now: float | None = None) -> str:
-    """Записать итог платформы сразу. Возвращает фактически записанный статус.
-
-    confirmed без post_url и без post_id невозможен: понижается до unconfirmed.
-    """
     if status not in ALL_STATUSES:
         raise ValueError(f"unknown publication status {status!r}")
     now = time.time() if now is None else now
@@ -301,10 +266,6 @@ async def record_unclaimed(session: AsyncSession, *, project_id: int, platform: 
                            post_url: str | None = None, post_id: str | None = None,
                            error_code: str | None = None, screenshot: str | None = None,
                            account_id: str | None = None, now: float | None = None) -> str:
-    """Записать итог, пришедший без claim (например из старого вызова publish_everywhere).
-
-    Не затирает confirmed. Если клик был, ставим clicked_at, чтобы автоповтора не было.
-    """
     await ensure_schema(session)
     now = time.time() if now is None else now
     if status == S_CONFIRMED and not (post_url or post_id):
@@ -331,7 +292,6 @@ async def record_unclaimed(session: AsyncSession, *, project_id: int, platform: 
 
 async def mark_skipped(session: AsyncSession, *, project_id: int, platform: str, sha256: str,
                        artifact_uuid: str | None, reason: str, now: float | None = None) -> None:
-    """Публикация выключена флагом: пишем skipped (не published). Подтверждённое не трогаем."""
     await ensure_schema(session)
     now = time.time() if now is None else now
     await session.execute(text(
@@ -359,7 +319,6 @@ async def list_for(session: AsyncSession, project_id: int, sha256: str | None = 
 
 
 def summarize(rows: list[dict], platforms: list[str], now: float | None = None) -> dict:
-    """Итог по проекту: published разрешён только если все платформы confirmed с URL/ID."""
     now = time.time() if now is None else now
     by = {r["platform"]: r for r in rows}
     confirmed = [p for p in platforms
@@ -378,7 +337,7 @@ def summarize(rows: list[dict], platforms: list[str], now: float | None = None) 
         elif is_auto_retryable(r, now):
             retryable.append(p)
         elif r["status"] == S_FAILED and r.get("error_code") == MANUAL_FAILED_CODE:
-            manual_failed.append(p)  # человек сам закрыл платформу как «не опубликовано»: ждать нечего
+            manual_failed.append(p)
         else:
             human.append(p)
     return {"all_confirmed": len(confirmed) == len(platforms), "confirmed": confirmed,
@@ -386,12 +345,9 @@ def summarize(rows: list[dict], platforms: list[str], now: float | None = None) 
             "manual_failed": manual_failed}
 
 
-# ── W6-1: состояния, подтверждение человека (E01), ручные действия (E02) ─────────────────────────
 
 
 def display_state(row: dict) -> str:
-    """Одно из шести состояний записи: publish_skipped, intent, unconfirmed, confirmed,
-    failed_before_click, failed_after_click. `confirmed` только с post_url или post_id."""
     st = row["status"]
     clicked = bool(row.get("clicked_at"))
     if st == S_CONFIRMED:
@@ -402,11 +358,10 @@ def display_state(row: dict) -> str:
         return D_UNCONFIRMED if clicked else D_INTENT
     if st in (S_CLICKED, S_UNCONFIRMED):
         return D_UNCONFIRMED
-    return D_FAILED_AFTER if clicked else D_FAILED_BEFORE  # failed / rejected
+    return D_FAILED_AFTER if clicked else D_FAILED_BEFORE
 
 
 class PublicationRefused(Exception):
-    """Действие отклонено по правилам безопасности; code идёт в ответ API, message - человеку."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -428,11 +383,6 @@ def _clean_url(url: str | None) -> str | None:
 
 async def grant_approval(session: AsyncSession, *, project_id: int, platform: str, sha256: str,
                          caption_sha256: str, approved_by: str, now: float | None = None) -> None:
-    """Подтверждение человека на ОДНУ публикацию (платформа x файл x подпись). Одноразовое.
-
-    Повторная выдача на ту же пару сбрасывает «потрачено» (нужна, если человек сам разрешил повтор).
-    Не выдаётся на уже опубликованное и на запись, где клик мог состояться: там сначала решает человек
-    через ручное подтверждение или пометку «не опубликовано»."""
     await ensure_schema(session)
     now = time.time() if now is None else now
     row = await _get(session, project_id, platform, sha256)
@@ -456,9 +406,6 @@ async def grant_approval(session: AsyncSession, *, project_id: int, platform: st
 
 async def list_approvals(session: AsyncSession, project_id: int, sha256: str,
                          caption_sha256: str | None = None) -> dict[str, dict]:
-    """Подтверждения для файла: платформа -> запись с полем valid (не потрачено и подпись та же).
-
-    Если подпись изменилась после подтверждения (caption_sha256 передан и не совпал), оно недействительно."""
     await ensure_schema(session)
     rows = (await session.execute(text(
         "SELECT platform, caption_sha256, approved_by, approved_at, consumed_at FROM publish_approvals "
@@ -474,7 +421,6 @@ async def list_approvals(session: AsyncSession, project_id: int, sha256: str,
 
 async def consume_approval(session: AsyncSession, *, project_id: int, platform: str, sha256: str,
                            caption_sha256: str, now: float | None = None) -> bool:
-    """Потратить подтверждение ПЕРЕД кликом. Атомарно: два воркера не потратят одно подтверждение дважды."""
     await ensure_schema(session)
     now = time.time() if now is None else now
     upd = await session.execute(text(
@@ -487,10 +433,6 @@ async def consume_approval(session: AsyncSession, *, project_id: int, platform: 
 
 async def revoke_approval(session: AsyncSession, *, project_id: int, platform: str, sha256: str,
                           now: float | None = None) -> dict:
-    """Отозвать ещё не потраченное «да» (U-7). Атомарно: если шаг публикации уже потратил его, отзыв отклоняется.
-
-    Запись не удаляется, а помечается потраченной (consumed_at): шаг публикации видит её как недействительную
-    и не кликает. Новое «да» (grant_approval) сбрасывает пометку."""
     await ensure_schema(session)
     now = time.time() if now is None else now
     upd = await session.execute(text(
@@ -529,9 +471,6 @@ async def _log_manual(session: AsyncSession, row: dict, *, action: str, post_url
 async def confirm_manual(session: AsyncSession, *, project_id: int, platform: str, sha256: str, actor: str,
                          post_url: str | None = None, reason: str | None = None,
                          now: float | None = None) -> dict:
-    """Человек подтверждает «опубликовано». Нужны ссылка на пост ИЛИ причина. Клик не повторяется.
-
-    Уже подтверждённое не меняется (повтор запроса безопасен, changed=False)."""
     now = time.time() if now is None else now
     url, why = _clean_url(post_url), _clean_reason(reason)
     if url is None and len(why) < MIN_REASON_CHARS:
@@ -540,7 +479,6 @@ async def confirm_manual(session: AsyncSession, *, project_id: int, platform: st
     row = await _manual_target(session, project_id, platform, sha256, now)
     if row["status"] == S_CONFIRMED:
         return {"changed": False, "status": S_CONFIRMED, "state": display_state(row), "pub_id": row["id"]}
-    # Ссылки нет: честная пометка вместо старого post_url (он мог быть страницей загрузки, а не постом).
     post_id = None if url else MANUAL_CONFIRMED_ID
     upd = await session.execute(text(
         "UPDATE publications SET status='confirmed', post_url=:u, post_id=:pid, error_code='manual_confirmed', "
@@ -558,11 +496,6 @@ async def confirm_manual(session: AsyncSession, *, project_id: int, platform: st
 
 async def mark_failed_manual(session: AsyncSession, *, project_id: int, platform: str, sha256: str, actor: str,
                              reason: str | None, allow_republish: bool = False, now: float | None = None) -> dict:
-    """Человек проверил площадку и пометил «не опубликовано». Причина обязательна.
-
-    По умолчанию повторной публикации нет (попытки исчерпываются, отметка клика остаётся в записи).
-    allow_republish=True снимает отметку клика и обнуляет попытки: следующая публикация возможна, но только
-    с НОВЫМ подтверждением человека (подтверждение тратится перед кликом)."""
     now = time.time() if now is None else now
     why = _clean_reason(reason)
     if len(why) < MIN_REASON_CHARS:
@@ -598,7 +531,6 @@ async def list_manual_actions(session: AsyncSession, project_id: int) -> list[di
     return [dict(r) for r in rows]
 
 
-# Состояния проекта по записям журнала (после обхода всех площадок).
 PS_PUBLISHED = "published"
 PS_WORKING = "publishing"
 PS_NEEDS_HUMAN = "needs_human"
@@ -609,24 +541,12 @@ PS_CLOSED = "resolved_unpublished"
 def derive_project_state(rows: list[dict], platforms: list[str], approved: set[str], *,
                          legacy: dict[str, bool] | None = None, now: float | None = None,
                          publish_enabled: bool | None = None) -> dict:
-    """Статус проекта считается ТОЛЬКО из записей журнала (и «старых» отметок meta до появления журнала).
-
-    published: все площадки confirmed с URL/ID. publishing: есть работа, которую воркер доделает сам
-    (занято или повтор после сбоя ДО клика с действующим подтверждением). needs_human: есть
-    unconfirmed/сбой после клика/исчерпанные попытки: выход только через ручное подтверждение или пометку.
-    awaiting_approval: клика не было, но нет действующего подтверждения человека. resolved_unpublished:
-    остальное человек закрыл как «не опубликовано».
-
-    publish_enabled: настройка автопубликации. None (по умолчанию) - как раньше, настройка не учитывается.
-    False - шаг публикации не пойдёт, поэтому разрешённая человеком площадка НЕ «в работе»: состояние остаётся
-    awaiting_approval (публикация не начата), а такие площадки перечислены в `approved_publish_off`
-    (подтверждение есть, ждут включения настройки). Занятая площадка (busy) по-прежнему «в работе»."""
     summ = summarize(rows, platforms, now)
     confirmed = list(summ["confirmed"])
     human = list(summ["needs_human"])
     retry = list(summ["retryable"]) + list(summ["skipped"])
     for p in list(retry):
-        if legacy and p in legacy:  # итог из старого meta без строки журнала: автоповтор запрещён
+        if legacy and p in legacy:
             retry.remove(p)
             (confirmed if legacy[p] else human).append(p)
     publish_off = publish_enabled is False
@@ -639,7 +559,7 @@ def derive_project_state(rows: list[dict], platforms: list[str], approved: set[s
         state = PS_WORKING
     elif human:
         state = PS_NEEDS_HUMAN
-    elif awaiting:  # при выключенной настройке сюда попадают и разрешённые площадки: шаг публикации их не возьмёт
+    elif awaiting:
         state = PS_AWAITING_APPROVAL
     else:
         state = PS_CLOSED

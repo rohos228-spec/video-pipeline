@@ -41,10 +41,6 @@ from app.services.whisper import dump_words_json, load_words_json
 
 @asynccontextmanager
 async def _project_scope(project_id: int) -> AsyncIterator[AsyncSession]:
-    """Как ``session_scope()``, но в хранилище кадров проекта (D2): его ``project.db``, а не master.
-
-    Кадры, таймкоды и артефакты проекта из API лежат в ``project.db``; на master выравнивание не находило кадров
-    или писало таймкоды в чужую базу."""
     from app.db import commit_with_retry
     from app.services.frame_store import session_factory_for
 

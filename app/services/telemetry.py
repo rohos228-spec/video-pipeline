@@ -1,15 +1,3 @@
-"""Read-only aggregation over the existing Observe/Diagnose/Decision/Actions
-journal. This is NOT a new tracing/metrics pipeline — every number here is
-derived from rows app/services/observation.py, diagnosis.py, decision_v1.py
-and actions_v1.py already write for their own reasons. This module only
-summarizes what is already durably recorded; it never writes anything and
-never changes what gets recorded.
-
-Aggregation is split into pure functions that take already-fetched rows
-(trivially unit-testable, no DB) plus thin async query wrappers that fetch
-those rows and call them -- the same pattern app/services/human_review_summary.py
-uses.
-"""
 from __future__ import annotations
 
 import json
@@ -52,12 +40,6 @@ def decision_summary(records: Sequence[Any]) -> dict[str, Any]:
 
 
 def node_request_latency(events: Sequence[Any]) -> dict[str, Any]:
-    """Pairs model_start/model_end events by (node_key, request_id) and
-    reports per-node latency stats. A model_start with no matching
-    model_end is reported under `unmatched_requests` rather than silently
-    dropped -- an unmatched request is operationally significant (stuck or
-    uncertain), not merely missing data; hiding it would understate risk.
-    """
     pending: dict[tuple[str | None, str], datetime] = {}
     latencies_by_node: dict[str, list[float]] = {}
     for event in sorted(events, key=lambda e: e.id):
@@ -85,8 +67,6 @@ def node_request_latency(events: Sequence[Any]) -> dict[str, Any]:
     return {"by_node": by_node, "unmatched_requests": unmatched_requests}
 
 
-# How each provider's figures were obtained; shown next to the totals so a Vibecode
-# estimate is never read as calibrated like Kie's.
 COST_SOURCES = {
     "kie": "rates calibrated against Kie credit balance (2026-10-01)",
     "vibecode": "catalog list price from vibecode_models_snapshot.json (snapshot date unknown); "
@@ -94,8 +74,6 @@ COST_SOURCES = {
 }
 
 
-# Raw English source codes -> what the operator reads. The API keeps the raw string next to the label
-# (``source_raw`` / ``sources_raw``) so older readers keep working.
 COST_SOURCE_PRICED_AT_WRITE = "api_tracker_hook (pre-priced at write time)"
 COST_SOURCE_LABELS_RU = {
     COST_SOURCE_PRICED_AT_WRITE: "сумма из журнала запросов: цена посчитана при записи каждого вызова",
@@ -103,7 +81,6 @@ COST_SOURCE_LABELS_RU = {
     COST_SOURCES["vibecode"]: ("цена из снимка каталога vibecode_models_snapshot.json (дата снимка неизвестна); "
                                "не откалибрована по балансу vibecode.moe"),
 }
-# Where a spend-ledger row / refusal came from (spend_guard ``source``).
 SPEND_SOURCE_LABELS_RU = {
     "planner": "планировщик команд",
     "action_layer": "слой действий",
@@ -115,7 +92,6 @@ SPEND_SOURCE_LABELS_RU = {
 
 
 def cost_source_label_ru(raw: str | None) -> str:
-    """Russian label of a cost source code; an unknown code is returned unchanged (never hidden)."""
     text = str(raw or "")
     return COST_SOURCE_LABELS_RU.get(text, text)
 
@@ -138,7 +114,6 @@ def _provider_key(row: Any) -> str:
 
 
 def _cost_unknown(row: Any) -> bool:
-    """A successful call whose cost the tracker flagged as unknown (e.g. no usage returned)."""
     meta = _field(row, "metadata_json")
     if isinstance(meta, str):
         try:
@@ -149,13 +124,6 @@ def _cost_unknown(row: Any) -> bool:
 
 
 def cost_summary(rows: Sequence[Any]) -> dict[str, Any]:
-    """rows: api-tracker `api_calls` records (sqlite3.Row or dict-like, one
-    per tracked LLM call). Costs are never recomputed here --
-    app/services/api_tracker_hook.py already priced each call at write time
-    (its own rate table owns that); this only sums what's already stored,
-    per docs/ARCHITECTURE.md's "no dollar-cost model invented here" stance
-    carried forward to the one place a real tariff *is* known.
-    """
     total_cost = 0.0
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -212,12 +180,6 @@ def cost_summary(rows: Sequence[Any]) -> dict[str, Any]:
 
 
 def _query_cost_rows_sync(project_id: int, since: datetime | None) -> list[dict[str, Any]]:
-    """Synchronous sqlite3 read of api-tracker's own DB -- deliberately not
-    the SQLAlchemy session the rest of this module uses, since api-tracker
-    is a separate, pre-existing local tool (app/services/api_tracker_hook.py)
-    with its own SQLite file, not part of the Observe schema. Called via
-    asyncio.to_thread so it never blocks the event loop.
-    """
     import sqlite3
 
     from app.services.api_tracker_hook import _TRACKER_DB
@@ -230,7 +192,6 @@ def _query_cost_rows_sync(project_id: int, since: datetime | None) -> list[dict[
         tail += " AND timestamp >= ?"
         params.append(since.isoformat())
     base = "SELECT model, cost_usd, prompt_tokens, completion_tokens, cached_tokens, status_code"
-    # provider / metadata_json first; an older tracker DB without those columns still reads.
     for columns in (", provider, metadata_json", ""):
         try:
             with sqlite3.connect(str(_TRACKER_DB), timeout=5.0) as conn:
@@ -238,7 +199,7 @@ def _query_cost_rows_sync(project_id: int, since: datetime | None) -> list[dict[
                 return [dict(row) for row in conn.execute(base + columns + tail, params).fetchall()]
         except sqlite3.OperationalError:
             continue
-    return []  # Table not created yet (no call tracked for any project so far).
+    return []
 
 
 async def project_cost_summary(project_id: int, *, since: datetime | None = None) -> dict[str, Any]:
@@ -264,8 +225,6 @@ def budget_summary(control: Any) -> dict[str, Any]:
 
 
 def reconcile_summary(report: dict[str, Any] | None) -> dict[str, Any]:
-    """Сводка сверки денег для оператора (B10): отчёт ``spend_reconcile.project_report`` плюс русские строки.
-    Чистая функция; ничего не пересчитывает, только раскладывает уже записанное."""
     if not report:
         return {"available": False, "lines_ru": ["Сверка денег недоступна: журнал трат не прочитан."]}
     lines = [
@@ -286,11 +245,6 @@ def reconcile_summary(report: dict[str, Any] | None) -> dict[str, Any]:
 
 
 async def project_telemetry(session, project_id: int, *, since: datetime | None = None) -> dict[str, Any]:
-    """Project-wide summary across every execution this project has ever
-    had -- deliberately not scoped to one execution_id, unlike the rest of
-    app/web/routers/observations.py's endpoints, since telemetry is only
-    useful aggregated over time.
-    """
     from sqlalchemy import select
 
     from app.services.actions_v1 import ActionExecutionControl
@@ -321,7 +275,7 @@ async def project_telemetry(session, project_id: int, *, since: datetime | None 
     try:
         from app.services import spend_reconcile
         reconcile = reconcile_summary(await spend_reconcile.project_report(session, project_id, since=since))
-    except Exception:  # noqa: BLE001 - сверка не должна ронять общую телеметрию
+    except Exception:
         reconcile = reconcile_summary(None)
 
     return {

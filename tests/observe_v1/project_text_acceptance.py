@@ -1,4 +1,3 @@
-"""Existing group harness: native plan/script -> DB -> preserved HITL boundary."""
 import asyncio
 import hashlib
 import json
@@ -44,8 +43,6 @@ def prepare(fixtures,root,mode):
     path=root/'synthetic-project-text-runtime.json';path.write_text(json.dumps(cfg))
     os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
     if typ=='split':
-        # The original native executor intentionally prefers an existing usable
-        # file. Initialize the copied synthetic file consistently with its DB.
         (fixtures.DB.parent/'voiceover.txt').write_text(TEXT,encoding='utf-8')
     field='общий_план' if typ=='plan' else 'закадровый_текст'
     words=TEXT.split();mid=len(words)//2
@@ -147,13 +144,9 @@ async def run(client,fixtures,observer,root,result,prepared,*,browser=False):
     assert parsed[0]['payload']['sha256']==proofs[0]['payload']['sha256']
     assert any(e['kind']=='runtime_check' and e['payload']['check']=='native_'+prepared['node_type']+'_text_requirement'
         and e['payload']['status']=='passed' for e in facts)
-    # Current Observe stores these facts in the same business transaction:
-    # delivery from its outbox is commit proof (rollback produces no delivery).
     applied=[e for e in facts if e['kind']=='data_applied' and e.get('db_scope')=='project'
         and e['payload'].get('transactional') is True and e['payload'].get('result',{}).get('ok') is True]
     assert len(applied)==1,'one committed native apply required'
-    # Native project.db is the content source of truth. The original master
-    # projection deliberately copies runtime, not general_plan/script_text.
     detail=(await client.get(base)).json()
     assert detail[prepared['output_field']]==output,'API must expose the authoritative output'
     assert proofs[0]['payload']['sha256']==hashlib.sha256(output.encode()).hexdigest()
@@ -283,8 +276,6 @@ async def run_image_prompts(client,fixtures,observer,root,result,prepared,*,pref
     rejected=prepared['expect_image_prompt_loss'] or prepared['expect_image_prompt_short']
     assert (states[key]!='done' if rejected else states[key]=='done'),result['image_prompt_state']
     assert states[prepared['outside']]=='pending','outside image generation must not run'
-    # The original node has two attempts internally before returning an error.
-    # No supervisor retry, prompt/config change or manual repair is used.
     expected_requests=2 if prepared['expect_image_prompt_loss'] else 1
     assert len(requests)==expected_requests and all(r['node_key']==key for r in requests)
     assert all(r['body']['model']=='gpt-5-6-sol' for r in requests)

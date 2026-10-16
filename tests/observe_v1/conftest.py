@@ -1,20 +1,3 @@
-"""Makes tests/observe_v1 runnable with plain `pytest`, outside the Docker
-harness (scripts/test_observe_offline.ps1) it was originally written for.
-
-Three things the Docker entrypoint (container_test_entry.py) did implicitly:
-
-1. Synthetic loopback credentials -- decision_config.runtime_config() only
-   resolves to mode='synthetic' (the mode these tests exercise) when
-   GPT_API_KEY starts with 'synthetic' and GPT_BASE_URL is loopback.
-2. Skip modules that refuse to import outside the isolated runner (they
-   raise on purpose when /.dockerenv is absent).
-3. Run each test method once. Subclasses such as DecisionDurability and
-   Profiles inherit DurableActions' tests, but their own asyncSetUp already
-   consumes the single allowed recovery/enable for the fixture execution,
-   so re-running the inherited methods there fails with
-   "active observation required" -- an artifact of inheritance, not a
-   defect. The same methods already run (and pass) under DurableActions.
-"""
 from __future__ import annotations
 
 import inspect
@@ -30,10 +13,8 @@ _DOCKER_ONLY = {
     "test_gateway_route_policy.py",
     "test_hitl_project_authority.py",
     "test_managed_restart_safety.py",
-    # зовёт scripts/readonly_qc_pilot.py: без /.dockerenv он отвечает blocked/isolated_container_required, нужен и сокет /gateway
     "test_readonly_pilot.py",
 }
-# CI docker job (container with /.dockerenv) sets VP_RUN_DOCKER_ONLY=1 to collect these five modules.
 collect_ignore = (
     []
     if os.environ.get("VP_RUN_DOCKER_ONLY") == "1" and Path("/.dockerenv").exists()

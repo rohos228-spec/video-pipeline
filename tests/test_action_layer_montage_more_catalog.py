@@ -1,4 +1,3 @@
-"""Каталог остальных действий монтажной панели: флаги, схемы, оценка стоимости."""
 from __future__ import annotations
 
 import pytest
@@ -9,7 +8,6 @@ from app.services.action_layer.spec import ActionRegistry, ensure_builtin_action
 
 ensure_builtin_actions()
 
-# id: (risk, spends_money, destructive, reversible, idempotent, is_job)
 EXPECTED = {
     "montage.cancel_queue_ops": ("local_safe", False, False, False, True, False),
     "montage.apply_queue": ("destructive", True, True, False, False, True),
@@ -49,7 +47,6 @@ def test_all_actions_registered_with_expected_flags() -> None:
         got = (spec.risk, spec.spends_money, spec.destructive, spec.reversible,
                spec.idempotent, spec.is_job)
         assert got == flags, action_id
-    # + 6 montage.* волны 3 (builtin_wave3): 5 загрузок и set_send_to_main_pc
     assert len(registry.list(prefix="montage.")) == 8 + len(EXPECTED) + 6
 
 
@@ -100,12 +97,11 @@ def test_kie_unit_matches_catalog_and_is_unknown_for_outsee() -> None:
     spec = kie_catalog.get_model("flux-2-pro")
     assert unit == kie_catalog.estimate_credits(spec, {"resolution": "2K"})["credits"] == 7
     assert bm._kie_unit("image", "flux_2_pro", "1k")[0] == 5
-    # Outsee-модели (в том числе дефолты проекта): тарифа нет, оценка неизвестна
     assert bm._kie_unit("image", "gpt_image_2_vip", "2k")[0] is None
     assert bm._kie_unit("video", "veo_3_1_lite", "720p")[0] is None
     assert bm._kie_unit("video", "veo_3_fast", "1080p")[0] is None
     assert bm._kie_unit("image", "flux_2_pro", None)[0] is None
-    assert bm._kie_unit("video", "kling_2_6", "720p")[0] is None   # отдельный путь, не в каталоге
+    assert bm._kie_unit("video", "kling_2_6", "720p")[0] is None
     vunit, _ = bm._kie_unit("video", "kling_v3_turbo_i2v", "720p")
     vspec = kie_catalog.get_model("kling-v3-turbo-i2v")
     want = kie_catalog.estimate_credits(vspec, {"duration": 5, "resolution": "720p",

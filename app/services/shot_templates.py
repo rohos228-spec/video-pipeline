@@ -1,9 +1,3 @@
-"""Шаблоны сцена → кадры (T0–T10, X1/X2) для ноды script_frames_qc / shots.
-
-SoT — ``templates/shot_templates/shot_templates.json`` (v2: вопросы выбора,
-эталоны, именованные варианты сжатия, цепи, parent-сводка — по таблице
-«Сцены кадры база.xlsx»).
-"""
 
 from __future__ import annotations
 
@@ -52,7 +46,6 @@ def clear_shot_templates_cache() -> None:
 
 
 def parse_scene_chain(action: str) -> list[dict[str, Any]]:
-    """Сцены из главное_действие: N. место — действие + (закадр)."""
     text = (action or "").strip()
     if not text:
         return []
@@ -87,7 +80,6 @@ def parse_scene_chain(action: str) -> list[dict[str, Any]]:
 
 
 def format_scene_chain(scenes: list[dict[str, Any]]) -> str:
-    """Обратная сборка ``N. место — действие`` + ``(закадр)``."""
     lines: list[str] = []
     for item in scenes:
         if not isinstance(item, dict):
@@ -123,7 +115,6 @@ _ARROW_SPLIT_RE = re.compile(r"\s*→\s*|\s*->\s*")
 
 
 def _arrow_beats(text: str) -> list[str]:
-    """Шаги по ``→``. Короткие глаголы («вошёл») не склеиваем."""
     raw = " ".join((text or "").split())
     if not raw:
         return []
@@ -132,7 +123,6 @@ def _arrow_beats(text: str) -> list[str]:
 
 
 def split_scene_action_beats(text: str) -> list[str]:
-    """Проза или цепь → видимые шаги сцены, без режиссёрской мета-обёртки."""
     raw = (text or "").strip()
     if not raw:
         return []
@@ -178,7 +168,6 @@ def explode_scene_action_to_kadry(
     vo: str = "",
     cell_number: int = 1,
 ) -> list[dict[str, Any]]:
-    """Главное действие → по кадру на шаг. Закадр режется, шаги не выкидываются."""
     from app.services.scene_design.camera_expand import split_text_into_parts
 
     beats = split_scene_action_beats(action)
@@ -216,10 +205,6 @@ def normalize_scene_action_text(
     place: str = "",
     vo: str = "",
 ) -> str:
-    """Проза или уже цепь → канон ``1. место — действие`` + ``(закадр)``.
-
-    Не выдумывает сюжет: прозу кладёт в одну сцену, закадр — дословно.
-    """
     raw = (text or "").strip()
     if not raw:
         return ""
@@ -243,17 +228,12 @@ def normalize_scene_action_text(
 
 
 def plain_scene_vo(raw: str) -> str:
-    """Кусок закадра сцены без обёртки ``(...)``."""
     text = " ".join((raw or "").split())
     if len(text) >= 2 and text[0] == "(" and text[-1] == ")":
         return " ".join(text[1:-1].split())
     return text
 
 
-# Паттерны дерева «Выбор». Префиксные (re.search, без якорей): «счита»
-# ловит «считает/считал», «говор(и|ю)» — говорит/говорят/говорил.
-# T1 = только РЕЧЬ (диалог/спор/допрос). Молчаливая передача предмета —
-# T2; приказ/отказ/возврат — T7. T5 = только ДЛИТЕЛЬНАЯ работа руками.
 _RE_T0_TITR = r"титр|имя появляется"
 _RE_T1 = (
     r"говор(и|ю)|крич|ор(ёт|ут|ал)|спор(и|ят)|спрашива|отвеча|диалог|бесед|допрашива|допрос|"
@@ -272,8 +252,6 @@ _RE_T2_ITEM = (
     r"папк|документ|книг|схем|письм|дневник|фото|дело|архив|улик|карт|"
     r"журнал|протокол|запис|жалоб|прошен|заявлен|реестр|свод"
 )
-# Только прыжок жизни / новый мир. Запрещено: «долгие годы» в том же
-# кабинете, «служба» как метафора, голое «годы» в парадоксе.
 _RE_T8 = (
     r"родил(?:ся|ась|ись)?|вырос|"
     r"(?:служб[ауиеы]|служил)\s+в\s+арми|в\s+армии|арми[июяе]|"
@@ -318,56 +296,34 @@ _RE_T10 = (
 
 
 def select_template_when(scene: dict[str, Any], prev_place: str = "") -> str:
-    """Первое «да» по листу «Выбор» (Excel SoT).
-
-    Порядок проверок = дереву вопросов, но T3 («ТОЛЬКО смена места»)
-    срабатывает последним из содержательных: его вопрос содержит «только»,
-    т.е. все остальные ответы — «нет». Раньше ``if place → T3`` шёл до
-    проверок T4/T5/T7/T9/T10, и любая сцена с местом («пишет заявление»,
-    «смотрит на экран») становилась T3 — главный баг выбора.
-
-    Совпадение места с предыдущей сценой НЕ меняет шаблон — оно меняет
-    сжатие (см. :func:`compression_hint_for`). X1/X2 здесь не выбираются:
-    это стыки ячеек, а не сцен внутри ячейки.
-    """
     blob = str(scene.get("blob") or "")
     place = str(scene.get("place") or "").strip().casefold()
     prev = (prev_place or "").strip().casefold()
     same = bool(place and prev and place == prev)
     if _has(_RE_T0_TITR, blob) and not same:
         return "T0"
-    # 1. Двое говорят / слушают друг друга?
     if _has(_RE_T1, blob):
         return "T1"
-    # 2. Пришёл в новое место и нашёл / взял / прочитал?
     if _has(_RE_T2_VERB, blob) and ((not same) or _has(_RE_T2_ITEM, blob)):
         return "T2"
-    # 4. Смысл в том, на что смотрит?
     if _has(_RE_T4, blob):
         return "T4"
-    # 5. Руки делают работу? Реестр владений / «ей принадлежали» = T8.
     if _has(_RE_T5, blob):
         if _has(_RE_T8_HOLDINGS, blob):
             return "T8"
         return "T5"
-    # 6. Идёт / едет из A в B? «поехал служить в армию» = T8 (шаг 8).
     if _has(_RE_T6_VERB, blob) and _has(_RE_T6_DIR, blob):
         if _has(_RE_T8, blob):
             return "T8"
         return "T6"
-    # 7. Короткий удар: услышал, понял, получил?
     if _has(_RE_T7, blob):
         return "T7"
-    # 8. Прыжок жизни / новый мир (не «долгие годы» в том же кабинете).
     if _has(_RE_T8, blob):
         return "T8"
-    # 9. Один в комнате, быт или ожидание?
     if _has(_RE_T9, blob):
         return "T9"
-    # 10. Уходит / сцена кончилась?
     if _has(_RE_T10, blob):
         return "T10"
-    # 3. ТОЛЬКО смена места, без находки и без работы рук.
     if place:
         return "T3"
     return "T0"
@@ -387,7 +343,6 @@ _SAME_PLACE_HINT = {
 
 
 def compression_hint_for(tid: str, *, same_place: bool) -> str:
-    """То же место, что у прошлой сцены → вариант сжатия «место уже было»."""
     if not same_place:
         return ""
     base = normalize_template_id(tid)
@@ -402,12 +357,10 @@ def normalize_template_id(tid: str) -> str:
     return match.group(1) if match else raw
 
 
-_DYNAMIC_LEN = {"T8"}  # лестница = числу мест в закадре, фикс. лимита нет
+_DYNAMIC_LEN = {"T8"}
 
 
 def template_max_shots(tid: str) -> int:
-    """Сколько строк shots у шаблона. 0 если id нет в каталоге или лимит
-    динамический (T8: сколько мест назвал закадр — столько кадров)."""
     base = normalize_template_id(tid)
     if not base or base in _DYNAMIC_LEN:
         return 0
@@ -420,10 +373,6 @@ def template_max_shots(tid: str) -> int:
 
 
 def template_required_shots(tid: str) -> int:
-    """Сколько кадров required=1 у шаблона — минимум лестницы.
-
-    T8/X2 — динамические (по числу мест/ячеек), минимума нет → 0.
-    """
     base = normalize_template_id(tid)
     if not base or base in _DYNAMIC_LEN or base.startswith("X"):
         return 0
@@ -436,16 +385,11 @@ def template_required_shots(tid: str) -> int:
 
 
 def _first_alternative(raw: Any) -> str:
-    """Первый вариант из «ОБЩИЙ / ДАЛЬНИЙ».
-
-    Разделитель — слэш **с пробелами**: иначе ракурс «3/4» превращается в «3».
-    """
     text = " ".join(str(raw or "").split())
     return re.split(r"\s+/\s+", text)[0].strip() if text else ""
 
 
 def template_choices_for_ui() -> list[dict[str, Any]]:
-    """Компактный каталог T/X для пикера «формат сцены» на доске монтажа."""
     out: list[dict[str, Any]] = []
     for row in load_shot_templates().get("templates") or []:
         tid = normalize_template_id(str(row.get("id") or ""))
@@ -470,7 +414,6 @@ def template_choices_for_ui() -> list[dict[str, Any]]:
 
 
 def template_ladder_for_ui(tid: str, *, same_place: bool = False) -> list[dict[str, Any]]:
-    """Строки лестницы шаблона для превью в редакторе кадра."""
     out: list[dict[str, Any]] = []
     for row in catalog_shot_rows(tid, same_place=same_place):
         out.append(
@@ -498,7 +441,6 @@ def template_exists(tid: str) -> bool:
 
 
 def _select_keys() -> dict[str, str]:
-    """template_id → короткий ключ вопроса (select.if)."""
     return {
         str(r.get("then_template") or ""): str(r.get("if") or "")
         for r in (load_shot_templates().get("select") or [])
@@ -506,12 +448,6 @@ def _select_keys() -> dict[str, str]:
 
 
 def plan_templates_for_action(action: str) -> list[dict[str, Any]]:
-    """Предвыбор T/X по дереву «Выбор» + подсказка сжатия на том же месте.
-
-    Повтор одного T* на соседних сценах разрешён (Excel «Цепи»:
-    T8>T8>T8 для биографии) — шаблон отвечает на вопрос дерева, а не
-    чередуется ради разнообразия.
-    """
     plan: list[dict[str, Any]] = []
     prev_place = ""
     keys = _select_keys()
@@ -538,7 +474,6 @@ def plan_templates_for_action(action: str) -> list[dict[str, Any]]:
 
 
 def assign_templates_for_action(action: str) -> dict[int, str]:
-    """Сцена → template_id (краткий вид plan_templates_for_action)."""
     return {row["n"]: row["template"] for row in plan_templates_for_action(action)}
 
 
@@ -552,7 +487,6 @@ _SAME_PLACE_DROP = {
 
 
 def catalog_shot_rows(tid: str, *, same_place: bool = False) -> list[dict[str, Any]]:
-    """Строки SHOTS шаблона. То же место — без нового ОБЩЕГО."""
     base = normalize_template_id(tid)
     if not base or base.startswith("X"):
         return []
@@ -598,7 +532,6 @@ def _visible_len(text: str) -> int:
 
 
 def is_stub_shot_action(text: str) -> bool:
-    """Каталожный слоган / слишком короткое «действие», не описание кадра."""
     t = " ".join((text or "").split())
     if not t:
         return True
@@ -626,7 +559,6 @@ def compose_shot_action(
     catalog_action: str = "",
     catalog_role: str = "",
 ) -> str:
-    """Действие ЭТОГО кадра: роль из каталога SHOTS, не копия сцены + штамп плана."""
     place_s = " ".join((place or "").split()) or "место сцены"
     act = " ".join((scene_action or "").split()) or "действие сцены"
     filled = (
@@ -682,10 +614,6 @@ def _ensure_full_shot_action(
     catalog_role: str = "",
     force: bool = False,
 ) -> None:
-    """Слоган каталога чиним. Уникальное описание GPT не затираем.
-
-    ``force`` только для заглушек (попробовать ещё раз), не для полного текста.
-    """
     raw = str(shot.get("действие") or shot.get("action") or "")
     if not is_stub_shot_action(raw):
         return
@@ -717,7 +645,6 @@ def _drop_extra_shots(
     keep_n: int,
     catalog_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Лишние кадры: сначала drop_order / required=0, потом с конца."""
     if keep_n >= len(shots) or not shots:
         return shots
     if keep_n < 1:
@@ -729,7 +656,6 @@ def _drop_extra_shots(
     order = _template_drop_ids(tid)
     drop_set: set[int] = set()
     need_drop = len(shots) - keep_n
-    # С конца: сначала required=0 (не трогаем K1 / master), потом drop_order.
     for i in range(len(shots) - 1, 0, -1):
         if need_drop <= 0:
             break
@@ -766,7 +692,6 @@ def _assign_scene_vo(
     *,
     catalog_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Каждый кадр — свой кусок закадра. Пустой кадр выкидываем, не оставляем."""
     vo = plain_scene_vo(vo)
     if not shots:
         return []
@@ -809,11 +734,6 @@ def fill_kadry_from_catalog(
     *,
     cell_number: int = 1,
 ) -> list[dict[str, Any]]:
-    """GPT написал 1 кадр на сцену → полная лестница T/X из таблицы.
-
-    Эталон: полиция T6→T3→T1→T5, дети = шаги одного действия.
-    X1/X2 из GPT на сценах внутри ячейки сбрасываются на дерево.
-    """
     chain = parse_scene_chain(action)
     plan = plan_templates_for_action(action)
     plan_by_n = {int(row["n"]): row for row in plan}
@@ -935,10 +855,6 @@ def fill_kadry_from_catalog(
 
 
 def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str | None:
-    """Один T на сцену, без удлинения лестницы, T8 — один кадр на место.
-
-    Повтор одного T* на соседних сценах НЕ брак (Excel «Цепи»: T8>T8>T8).
-    """
     prefix = f"uuid {uid[:8]}: " if uid else ""
     blocks: list[tuple[str, str, int, list[str]]] = []
     for shot in shots:
@@ -979,7 +895,6 @@ def coverage_template_reason(shots: list[dict[str, Any]], uid: str = "") -> str 
                 f"{prefix}сцена {key}: {tid} сжали до {n} кадров — "
                 f"минимум лестницы {required} (required=1 не удаляют)"
             )
-    # Кадры-вариации одной позы: одинаковое действие у кадров одной сцены.
     by_scene: dict[str, set[str]] = {}
     for shot in shots:
         if not isinstance(shot, dict):
@@ -1009,14 +924,12 @@ _GENERIC_PLAN_RE = re.compile(
 
 
 def _action_stem(text: str) -> str:
-    """Срезает штамп плана, чтобы «место. сцена. Средний план…» = копия."""
     t = " ".join((text or "").split()).casefold()
     t = _GENERIC_PLAN_RE.sub("", t).strip(" .")
     return t
 
 
 def format_when_assignments(frames: list[Any]) -> str:
-    """Предвыбор T/X по дереву + сжатие. GPT может поправить с select_fix."""
     lines = [
         "# ПРЕДВЫБОР T/X ПО ДЕРЕВУ (по каждой сцене главное_действие)",
         "Строка: сцена | место | действие → T* (ключ вопроса) · сжатие.",
@@ -1051,7 +964,6 @@ def format_when_assignments(frames: list[Any]) -> str:
                 line += f" · сжатие: {row['compression']}"
             lines.append(line)
             any_row = True
-        # Один T* 3+ раза в цепи — почти всегда ошибка чтения дерева.
         counts: dict[str, int] = {}
         for row in plan:
             counts[row["template"]] = counts.get(row["template"], 0) + 1
@@ -1070,7 +982,6 @@ def format_when_assignments(frames: list[Any]) -> str:
 
 
 def format_shot_templates_catalog(*, max_chars: int = 24000) -> str:
-    """Компактный каталог v2 для accompanying ноды shots."""
     data = load_shot_templates()
     lines: list[str] = [
         "# ШАБЛОНЫ СЦЕНА→КАДРЫ (SoT v2)",
@@ -1177,7 +1088,6 @@ def format_shot_templates_catalog(*, max_chars: int = 24000) -> str:
 
 
 def neighbor_place_hints(frames: list[Any]) -> str:
-    """Для X1/X2: место предыдущей ячейки в батче (по number)."""
     rows: list[tuple[int, str, str, str]] = []
     for fr in frames:
         uid = str(getattr(fr, "uuid", None) or "").strip()
@@ -1206,7 +1116,6 @@ def neighbor_place_hints(frames: list[Any]) -> str:
             line = line.strip()
             if not line or line.startswith("("):
                 continue
-            # «1. двор — действие» / «двор — действие»
             body = line.split(".", 1)[-1].strip() if line[:1].isdigit() else line
             if "—" in body:
                 place = body.split("—", 1)[0].strip()

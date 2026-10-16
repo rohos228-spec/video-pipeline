@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""Ingest live pipeline scenes into scenes_space / frames_space (overlay).
-
-  python scripts/scene_space_sync.py --project 13
-  python scripts/scene_space_sync.py --scene p13:s4
-
-Does not insert Frame rows. After overlay:
-
-  python scripts/scene_space_plan.py --scene p13:s4 --out tasks/out/p13-s4
-  python scripts/scene_space_board.py --scene p13:s4 --out tasks/out/p13-s4/board.html
-  python scripts/scene_space_validate.py --scene p13:s4
-"""
 
 from __future__ import annotations
 

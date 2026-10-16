@@ -1,18 +1,17 @@
-"""GET/POST/DELETE /macros и POST /plans/from-macro через ASGI-клиент."""
 from __future__ import annotations
 
 import pytest_asyncio
 
 from app.models import Frame
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env, make_spec  # noqa: F401
+from tests.action_layer_support import env, make_spec
 from tests.test_action_layer_macros import PARAMS, SCHEMA, good_steps
 
 BASE = "/api/action-layer"
 
 
 @pytest_asyncio.fixture
-async def reg(env):  # noqa: F811
+async def reg(env):
     ensure_builtin_actions()
     ran: list = []
 
@@ -81,7 +80,7 @@ async def test_from_macro_builds_preview_only(reg) -> None:
     assert view["steps"][1]["params"] == {"project_id": pid, "n": 2}
     assert reg.ran == []
     r = await reg.client.post(f"{BASE}/plans/{out['plan_id']}/run")
-    assert r.status_code == 403  # платный макрос тоже требует подтверждения оператора
+    assert r.status_code == 403
 
 
 async def test_from_macro_error_cases(reg) -> None:
@@ -94,7 +93,7 @@ async def test_from_macro_error_cases(reg) -> None:
     assert r.status_code == 422 and r.json()["detail"]["code"] == "macro_params_invalid"
     r = await reg.client.post(f"{BASE}/plans/from-macro", json={
         "macro_id": mid, "params": {"project_id": 99999}})
-    assert r.status_code == 404  # проекта нет
+    assert r.status_code == 404
     r = await reg.client.post(f"{BASE}/plans/from-macro", json={
         "macro_id": mid, "params": {"project_id": pid}, "approved": True})
     assert r.status_code == 422

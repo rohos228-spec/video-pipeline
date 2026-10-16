@@ -1,4 +1,3 @@
-"""Общие фикстуры тестов слоя действий: временная БД, приложение, заглушки."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

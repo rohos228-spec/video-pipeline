@@ -1,4 +1,3 @@
-"""CANON §7 property tests 9–10 (store/rewrite). Tests 1–8 are in test_scene_space_geom.py."""
 
 from __future__ import annotations
 
@@ -44,7 +43,6 @@ def _frame_row(uuid: str, order: int, delta: dict | None = None, **extra) -> dic
 
 
 async def test_delete_middle_frame_state_stable():
-    """§7.9 Removing a middle frame: later state = replay of remaining deltas."""
     store = pytest.importorskip("app.services.scene_space.store")
     models = pytest.importorskip("app.services.scene_space.models")
     migrate = pytest.importorskip("app.services.scene_space.migrate")
@@ -87,7 +85,6 @@ async def test_delete_middle_frame_state_stable():
 
 
 async def test_rebuild_idempotent():
-    """§7.10 Second rebuild on unchanged input writes 0 INSERT/UPDATE."""
     rewrite = pytest.importorskip("app.services.scene_space.rewrite")
     store = pytest.importorskip("app.services.scene_space.store")
     migrate = pytest.importorskip("app.services.scene_space.migrate")

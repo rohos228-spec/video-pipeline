@@ -1,7 +1,3 @@
-"""W6-2: конфиг аккаунтов публикации, выбор профиля, подпись, лимиты, MoreLogin (класс доказательств U).
-
-Сеть и живые площадки не используются.
-"""
 from __future__ import annotations
 
 import json
@@ -27,7 +23,6 @@ def _cfg(platforms: dict, **extra) -> pa.AccountsConfig:
     return pa.parse_config({"platforms": platforms, **extra})
 
 
-# ── конфиг ───────────────────────────────────────────────────────────────────────
 
 
 def test_no_config_is_empty_legacy_mode(workdir):
@@ -42,7 +37,6 @@ def test_profile_chosen_by_platform_without_fallback_to_foreign_profile():
                 "vk_clips": {"profile_id": "prof-vk-0002"}})
     assert pa.select_profile("tiktok", cfg) == "prof-tt-0001"
     assert pa.select_profile("vk_clips", cfg) == "prof-vk-0002"
-    # площадка без профиля при заданном конфиге: чужой профиль НЕ подставляется
     assert pa.select_profile("likee", cfg, legacy_profile_id="legacy-9999") is None
 
 
@@ -88,7 +82,6 @@ def test_success_markers_default_empty():
     assert a.success_selectors == [] and a.success_url_markers == [] and a.post_url_regex == ""
 
 
-# ── подпись ──────────────────────────────────────────────────────────────────────
 
 
 def test_caption_hashtags_suffix_and_limit_reject():
@@ -115,7 +108,6 @@ def test_caption_empty_and_title():
     assert pa.make_title("Заголовок очень длинный\nвторая строка", a) == "Заголовок…"
 
 
-# ── лимиты и окно ────────────────────────────────────────────────────────────────
 
 
 def test_daily_limit_rolling_24h():
@@ -123,9 +115,9 @@ def test_daily_limit_rolling_24h():
     d = pa.daily_limit_decision([now - 100, now - 200], 2, now)
     assert not d.allowed and d.code == "daily_limit" and d.used == 2
     assert d.retry_after == pytest.approx(now - 200 + pa.DAY_S)
-    assert pa.daily_limit_decision([now - 100, now - pa.DAY_S - 5], 2, now).allowed  # старое не считается
-    assert pa.daily_limit_decision(None, 2, now).allowed  # журнал не дал данных: лимит не проверяем
-    assert pa.daily_limit_decision([now] * 9, None, now).allowed  # лимит не задан
+    assert pa.daily_limit_decision([now - 100, now - pa.DAY_S - 5], 2, now).allowed
+    assert pa.daily_limit_decision(None, 2, now).allowed
+    assert pa.daily_limit_decision([now] * 9, None, now).allowed
 
 
 def test_window_decision_normal_and_overnight():
@@ -154,7 +146,7 @@ async def test_recent_click_times_counts_journal(workdir):
             for i, plat in enumerate(["tiktok", "tiktok", "vk_clips"]):
                 c = await ps.claim(s, project_id=i + 1, platform=plat, sha256="h", artifact_uuid=None, owner="o")
                 await ps.mark_clicked(s, c.pub_id, "o", now=now - 60)
-            await ps.claim(s, project_id=9, platform="tiktok", sha256="h", artifact_uuid=None, owner="o")  # без клика
+            await ps.claim(s, project_id=9, platform="tiktok", sha256="h", artifact_uuid=None, owner="o")
             times = await pa.recent_click_times(s, "tiktok", now=now)
             assert len(times) == 2
             assert not pa.daily_limit_decision(times, 2, now).allowed
@@ -162,7 +154,6 @@ async def test_recent_click_times_counts_journal(workdir):
         await eng.dispose()
 
 
-# ── MoreLogin ────────────────────────────────────────────────────────────────────
 
 
 async def test_start_profile_parses_cdp_and_masks_failures(monkeypatch):

@@ -46,7 +46,6 @@ def test_get_project_prompt_blocks_v2_no_nameerror() -> None:
 
 
 def test_nii67_prompt_is_the_file_even_with_blocks_v2() -> None:
-    """Шаблон blocks запрещает выдумку. НИИ 67 читается своим файлом."""
     project = Project(
         slug="nii",
         topic="НИИ 67",

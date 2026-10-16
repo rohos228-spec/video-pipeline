@@ -8,11 +8,9 @@ import { cn } from "@/lib/utils";
 
 interface Props {
   target: string;
-  /** Меняется после применения/отката: список читается заново. */
   refreshKey?: number;
 }
 
-/** История версий цели (новые сверху): версия, вид, родитель, хэш, кто и когда. */
 export function VersionsList({ target, refreshKey = 0 }: Props) {
   const [items, setItems] = useState<ConfigVersion[] | null>(null);
   const [current, setCurrent] = useState<number | null>(null);

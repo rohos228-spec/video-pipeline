@@ -1,19 +1,3 @@
-"""D11: история с прежними значениями и откат по журналу.
-
-Каждое действие из ``HANDLERS`` обёрнуто: до записи читается прежнее значение, после записи -
-новое, оба сохраняются снимком (``store.ActionSnapshot``). Чтение идёт теми же эндпоинтами, что
-показывает интерфейс (доска монтажа, граф проекта, файл промта), запись отката - теми же
-эндпоинтами, что и сама правка. Откат (``history.rollback``) сам оставляет снимок, поэтому он
-тоже обратим.
-
-Что откатывается автоматически, а что только записывается (``restorable=False``) - по смыслу:
-- закадр кадра, закадр ячейки, поля шота, четыре поля покрытия (план, ракурс, движение, действие),
-  мастер-промт: откат записывает прежнее значение тем же эндпоинтом;
-- структурные правки (якоря, цепочка сцены): прежнее состояние ячейки записано в журнал, но шоты
-  пересобираются и номера кадров могут сдвинуться, поэтому автоматический откат не обещается;
-- озвучка и музыка: файл перед заменой копируется в ``DATA_DIR/action_layer_snapshots``; откат
-  загружает копию обратно. Если прежнего файла не было, откат невозможен (удалить файл эндпоинтом нельзя).
-"""
 from __future__ import annotations
 
 import hashlib
@@ -42,7 +26,6 @@ class Handler:
     target_of: Callable[[dict], dict]
     read: Callable[[ActionContext, dict], Awaitable[Any]]
     write: Callable[[ActionContext, dict, Any], Awaitable[None]] | None
-    # (target, before) -> (можно ли откатить, пояснение)
     restorable: Callable[[dict, Any], tuple[bool, str]]
     scope_project: bool = True
 
@@ -51,7 +34,6 @@ def _always(ok: bool, note: str = "") -> Callable[[dict, Any], tuple[bool, str]]
     return lambda _t, _b: (ok, note)
 
 
-# --- чтение состояния ----------------------------------------------------------------------
 
 async def _board_frames(ctx: ActionContext, pid: int) -> list[dict]:
     board = await ctx.call("GET", _base(pid))
@@ -66,7 +48,6 @@ async def _graph_frame(ctx: ActionContext, pid: int, uuid_: str) -> dict | None:
     return None
 
 
-# --- закадр кадра ----------------------------------------------------------------------------
 
 async def _vo_read(ctx, t):
     for fr in await _board_frames(ctx, t["project_id"]):
@@ -80,7 +61,6 @@ async def _vo_write(ctx, t, value):
                    json={"text": value})
 
 
-# --- покрытие кадра ----------------------------------------------------------------------------
 
 _COVERAGE_FIELD = {"coverage_plan": "shot_plan", "coverage_action": "shot_action",
                    "coverage_angle": "shot_angle", "coverage_move": "shot_move",
@@ -113,7 +93,6 @@ def _cov_restorable(t: dict, before: Any) -> tuple[bool, str]:
     return True, ""
 
 
-# --- структура ячейки (якоря, цепочка) -------------------------------------------------------
 
 _STRUCT_PREFIXES = ("scene_", "shot_", "anchor", "vo_scene")
 
@@ -125,7 +104,6 @@ async def _struct_read(ctx, t):
     raise RuntimeError(f"кадра {t['frame_number']} нет на доске")
 
 
-# --- меню съёмки -----------------------------------------------------------------------------
 
 async def _cell_read(ctx, t):
     fr = await _graph_frame(ctx, t["project_id"], t["parent_uuid"])
@@ -179,7 +157,6 @@ def _field_restorable(t: dict, before: Any) -> tuple[bool, str]:
     return True, ""
 
 
-# --- мастер-промт ----------------------------------------------------------------------------
 
 async def _prompt_read(ctx, t):
     from app.services.action_layer.builtin_wave3 import _read_prompt
@@ -196,7 +173,6 @@ async def _prompt_write(ctx, t, value):
     await ctx.call("PUT", _prompt_path(t), json={"content": value})
 
 
-# --- озвучка и музыка (файл) -----------------------------------------------------------------
 
 _FILE_SLOTS = {
     "voice": ("montage_voice_path", "upload-voice", "voice"),
@@ -219,7 +195,6 @@ def _sha256_file(path: Path) -> str:
 
 
 async def _file_read(ctx, t):
-    """Состояние слота: путь из meta проекта, хэш и размер файла. Копия снимается отдельно."""
     meta_key = _FILE_SLOTS[t["slot"]][0]
     proj = await _get_project(ctx, t["project_id"])
     raw = (proj.get("meta") or {}).get(meta_key)
@@ -238,7 +213,6 @@ async def _file_read(ctx, t):
 
 
 def _backup_file(state: dict) -> dict:
-    """Копия прежнего файла в DATA_DIR/action_layer_snapshots/<id>/<имя>; ссылка идёт в снимок."""
     src = Path(state["real_path"])
     folder = _data_root() / SNAPSHOT_DIR / uuid.uuid4().hex
     folder.mkdir(parents=True, exist_ok=True)
@@ -312,7 +286,6 @@ _FILE_KINDS = frozenset({"file_voice", "file_music"})
 
 
 def _compare_value(kind: str, value: Any) -> Any:
-    """Что сравнивается при проверке «после правки значение не менялось»: для файла - хэш."""
     if kind in _FILE_KINDS and isinstance(value, dict):
         return {"exists": value.get("exists"), "sha256": value.get("sha256")}
     return value
@@ -321,14 +294,11 @@ def _compare_value(kind: str, value: Any) -> Any:
 def _wrap_executor(action_id: str, h: Handler, orig):
     async def executor(ctx: ActionContext, params: dict) -> dict:
         if not isinstance(ctx, ActionContext):
-            # Заглушка контекста в юнит-тестах исполнителей: журнала и БД слоя у неё нет, снимок
-            # не пишется (иначе тест записал бы строку в настоящую базу). Боевой путь всегда
-            # идёт через ActionContext.
             return await orig(ctx, params)
         target = h.target_of(params)
         try:
             before = await h.read(ctx, target)
-        except Exception as exc:  # noqa: BLE001 - без прежнего значения правку не начинаем
+        except Exception as exc:
             raise RuntimeError(f"не удалось прочитать прежнее значение, правка не начата: "
                                f"{type(exc).__name__}: {exc}") from exc
         stored_before = before
@@ -339,7 +309,7 @@ def _wrap_executor(action_id: str, h: Handler, orig):
         result = await orig(ctx, params)
         try:
             after = await h.read(ctx, target)
-        except Exception:  # noqa: BLE001 - запись уже выполнена; снимок без «после»
+        except Exception:
             after = None
         if isinstance(after, dict):
             after = _public_file_state(after)
@@ -357,7 +327,6 @@ def _wrap_executor(action_id: str, h: Handler, orig):
 
 
 def wrap_catalog(registry: ActionRegistry) -> list[str]:
-    """Заменяет исполнители перечисленных действий версиями со снимком. Возвращает их id."""
     done: list[str] = []
     for action_id, h in HANDLERS.items():
         spec = registry.find(action_id)
@@ -370,7 +339,7 @@ def wrap_catalog(registry: ActionRegistry) -> list[str]:
         effects = spec.destructive_effects
         if action_id == "prompt.save_master" and effects is not None:
             inner = effects
-            effects = lambda p, _inner=inner: (  # noqa: E731
+            effects = lambda p, _inner=inner: (
                 _inner(p).replace("; прежняя версия остаётся только в истории версий Studio.", "")
                 + "; прежний текст сохраняется снимком слоя, откат: history.rollback.")
         registry.unregister(action_id)
@@ -381,7 +350,6 @@ def wrap_catalog(registry: ActionRegistry) -> list[str]:
     return done
 
 
-# --- history.* ---------------------------------------------------------------------------------
 
 def _snapshot_json(row) -> dict:
     return {"snapshot_id": row.id, "created_at": row.created_at.isoformat() if row.created_at else None,

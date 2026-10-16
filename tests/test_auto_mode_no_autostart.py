@@ -118,7 +118,6 @@ async def test_start_step_clears_gate_then_auto_can_continue(
 async def test_start_step_does_not_enable_auto_mode(
     session: AsyncSession, tmp_path, monkeypatch
 ) -> None:
-    """Ручной ▶ не включает автопродвижение пайплайна."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     from app import settings as app_settings
 
@@ -146,7 +145,6 @@ async def test_start_step_does_not_enable_auto_mode(
 async def test_excel_gpt_to_hero_holds_pipeline_when_auto_mode_on(
     session: AsyncSession,
 ) -> None:
-    """После GPT со стрелкой на hero не стартуем персонажей сами."""
     from app.orchestrator.steps.enrich_xlsx import _maybe_auto_chain_excel_gpt
 
     nodes = [

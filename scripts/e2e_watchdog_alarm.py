@@ -31,7 +31,7 @@ def _env(port: int, work: Path, window: float) -> dict[str, str]:
     env.update({"WEB_HOST": "127.0.0.1", "WEB_PORT": str(port), "TELEGRAM_ENABLED": "false",
                 "SQLITE_PATH": str(work / "state.db"), "PYTHONUTF8": "1",
                 "VP_HEARTBEAT_INTERVAL_S": "1", "VP_WATCHDOG_HEARTBEAT_WINDOW_S": str(window),
-                "VP_WATCHDOG_CHECK_INTERVAL_S": "3600"})  # в стенде тревогу даёт только автономный скрипт
+                "VP_WATCHDOG_CHECK_INTERVAL_S": "3600"})
     return env
 
 
@@ -100,7 +100,7 @@ def run(port: int, work: Path, window: float) -> int:
         code, res = _check(env)
         check("no_alarm_while_alive", code == 0 and res.get("decision") == "ok", res)
 
-        proc.kill()  # os-уровень: без чистой остановки
+        proc.kill()
         proc.wait(timeout=20)
         killed_at = time.time()
         time.sleep(window + 2)
@@ -124,7 +124,7 @@ def run(port: int, work: Path, window: float) -> int:
             check("server_restarted", False, f"см. {work / 'server_2.log'}")
             return 1
         time.sleep(2.5)
-        code, res = _check(env)  # тревогу мог снять уже первый проход встроенной проверки нового процесса
+        code, res = _check(env)
         check("resolved_after_restart", code == 0 and res.get("decision") in {"resolve", "ok"}, res)
         rs = _rows(work, "notification_log", "kind='observer_silent_resolved'")
         check("resolved_row_written_once", len(rs) == 1 and rs[0]["ok"] == 0, rs)
@@ -132,7 +132,7 @@ def run(port: int, work: Path, window: float) -> int:
         code, res = _check(env)
         check("quiet_after_resolve", code == 0 and res.get("decision") == "ok", res)
 
-        proc2.terminate()  # на Windows это тоже жёсткая остановка; чистую остановку проверяют юнит-тесты
+        proc2.terminate()
         proc2.wait(timeout=30)
     finally:
         for p, lg in procs:

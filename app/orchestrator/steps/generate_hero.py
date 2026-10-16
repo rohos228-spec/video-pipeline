@@ -107,13 +107,12 @@ def _hero_canvas_node_key(project: Project) -> str | None:
                 key = str(n.get("id") or "").strip()
                 if key:
                     return key
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("[#{}] hero node_key from canvas failed", project.id, exc_info=True)
     return "n_hero"
 
 
 def _read_hero_style(project: Project) -> tuple[str, str]:
-    """(текст лока стиля, имя варианта). Пустой текст — стиля нет."""
     from app.services.prompt_library import read_resolved_project_prompt
 
     node_key = _hero_canvas_node_key(project)
@@ -124,7 +123,7 @@ def _read_hero_style(project: Project) -> tuple[str, str]:
     except FileNotFoundError:
         logger.warning("[#{}] hero_style файл не найден", project.id)
         return "", "default"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("[#{}] hero_style read failed: {}", project.id, e)
         return "", "default"
     clean = (text or "").strip()
@@ -237,7 +236,6 @@ async def _approved_excel_ids(
 
 
 def _excel_disk_png(project: Project, excel_id: str) -> Path | None:
-    """characters/<id>.png, если файл на диске уже есть."""
     cid = (excel_id or "").strip()
     if not cid:
         return None
@@ -253,7 +251,6 @@ def _excel_disk_png(project: Project, excel_id: str) -> Path | None:
 async def _excel_ids_with_artifact(
     session: AsyncSession, project: Project
 ) -> set[str]:
-    """ID персонажей, для которых уже есть PNG (артефакт или файл на диске)."""
     rows = (
         await session.execute(
             select(Artifact)
@@ -286,7 +283,6 @@ async def _excel_ids_with_artifact(
 async def _excel_png_for_id(
     session: AsyncSession, project: Project, excel_id: str
 ) -> Path | None:
-    """Путь к PNG рефа: артефакт, иначе characters/<id>.png."""
     art = await _excel_artifact_for_id(session, project, excel_id)
     if art is not None and art.path:
         path = Path(art.path)
@@ -432,35 +428,67 @@ async def _load_excel_hero_from_xlsx(
     if project.hero_mode == "no_hero":
         return None
 
-    has_manual_hero = bool(
-        (project.hero_description or "").strip()
-        or (project.hero_count and project.hero_count > 0)
-        or any((d or "").strip() for d in (project.hero_descriptions or []))
+    from app.services.excel_characters import (
+        is_polluted_character_field,
+        parse_persons_sheet,
     )
-    if has_manual_hero and not meta.get("excel_hero_enabled"):
-        return None
-
-    from app.services.excel_characters import parse_persons_sheet
 
     chars = await _load_entity_characters(session, project)
     source = "entity"
     if not chars:
         xlsx = project.data_dir / "project.xlsx"
-        if not xlsx.exists():
-            return None
-        try:
-            chars = parse_persons_sheet(xlsx)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[#{}] excel_hero load: parse failed: {}", project.id, e)
-            return None
-        source = "xlsx"
+        if xlsx.exists():
+            try:
+                chars = parse_persons_sheet(xlsx)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[#{}] excel_hero load: parse failed: {}", project.id, e)
+                chars = []
+            if chars:
+                source = "xlsx"
 
+    # Если в Entity или xlsx ничего нет — проверяем, задан ли ручной hero
     if not chars:
         return None
 
+    # Если пользователь ЯВНО отключил excel_hero_enabled в meta (meta["excel_hero_enabled"] is False)
+    if meta.get("excel_hero_enabled") is False:
+        has_manual_hero = bool(
+            (project.hero_description or "").strip()
+            or (project.hero_count and project.hero_count > 0)
+            or any((d or "").strip() for d in (project.hero_descriptions or []))
+        )
+        if has_manual_hero:
+            return None
+
+    # Авто-исцеление загрязненных имен персонажей (например, c02 'оставь формат неизменным')
+    id_to_name = {c.id: c.name for c in chars if not is_polluted_character_field(c.name)}
+    for c in chars:
+        if is_polluted_character_field(c.name):
+            parent_name = ""
+            for rid in getattr(c, "ref_ids", []):
+                if rid in id_to_name:
+                    parent_name = id_to_name[rid]
+                    break
+            old_name = c.name
+            if parent_name:
+                c.name = f"{parent_name} (вариация {c.id})"
+            else:
+                c.name = f"Персонаж {c.id}"
+            logger.warning(
+                "[#{}] excel_hero {}: авто-исправление служебного имени {!r} -> {!r}",
+                project.id,
+                c.id,
+                old_name,
+                c.name,
+            )
+
     cfg = {"characters": [c.to_dict() for c in chars], "source": source}
     meta["excel_hero"] = cfg
+    meta["excel_hero_enabled"] = True
     project.meta = meta
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(project, "meta")
     await session.flush()
     logger.info(
         "[#{}] excel_hero load: {} персонаж(ей) из {} ",
@@ -476,7 +504,6 @@ _bootstrap_excel_hero_from_xlsx = _load_excel_hero_from_xlsx
 
 
 def _saved_hero_prompt_path(project: Project, hero_idx: int, v_idx: int) -> Path:
-    """Where the hero prompt is kept BEFORE the paid call (like music/.suno_prompt.txt)."""
     return project.data_dir / "characters" / f".hero_prompt_{hero_idx}_v{v_idx}.txt"
 
 
@@ -489,7 +516,6 @@ def _read_saved_hero_prompt(path: Path) -> str:
 
 
 def _save_hero_prompt(path: Path, prompt: str) -> None:
-    """Best effort: a failed write only means a later repeat builds a new prompt, as it always did."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(prompt, encoding="utf-8")
@@ -501,8 +527,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_hero:
         return
 
-    # Excel-режим: если юзер запустил генерацию из листа «Персонажи»
-    # (кнопка «🧾 Из EXCEL»), в project.meta['excel_hero'] лежит список
     # персонажей. Идём по отдельной ветке — hero_descriptions/hero_count
     # в этом режиме не используются.
     meta = dict(project.meta or {})
@@ -661,9 +685,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         #     переписать промт без триггеров модерации).
         gpt = get_gpt_client()
 
-        # 0) Прерванная платная генерация (открытая задача Kie или submit без известного исхода) повторяется
-        #    только с тем же запросом: берём промт, сохранённый ДО платного вызова, GPT заново не спрашиваем
-        #    (он написал бы другой промт, и тот же запрос уже не воспроизвести). Как music/.suno_prompt.txt.
         prompt_cache = _saved_hero_prompt_path(project, hero_idx, v_idx)
         if not hero_prompt and v_idx == 1:
             from app.services import media_resume
@@ -671,9 +692,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             hero_key = f"hero_{hero_idx}_v{v_idx}"
             resume_same_request = await media_resume.pending_for_key(project.id, hero_key)
             if not resume_same_request:
-                # Платный результат Outsee этого героя уже записан, но шаг его не забрал (упал после скачивания):
-                # новый ответ GPT дал бы другой промт = другой запрос = второе списание. Берём сохранённый промт,
-                # тогда тот же запрос подхватит записанный файл без платной отправки.
                 resume_same_request = (await outsee_idempotency.assess(project.id, hero_key)).get("mode") == "adopt"
             if resume_same_request:
                 hero_prompt = _read_saved_hero_prompt(prompt_cache)
@@ -684,13 +702,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         project.id, hero_idx, v_idx, len(hero_prompt),
                     )
 
-        # 1) ChatGPT — нужен только для v=1 (или если кеш не нашёлся).
         if not hero_prompt:
-            # Текст «сопр. сообщения» берём из gpt_text_builder — там же
-            # лежит выбор между юзерским override и дефолтом. Обязательно
-            # прогоняем через `render_hero_text` — в шаблоне живут литеральные
-            # плейсхолдеры `{{BRIEF}}` и `{{HERO_STYLE}}`, заполняем их
-            # отдельно для этого героя.
             hero_template = gtb.get_effective_text(project, "hero")
             hero_ask = gtb.render_hero_text(
                 hero_template, brief=user_brief, hero_style=hero_style_content,
@@ -750,7 +762,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     project.id, len(hero_prompt), OUTSEE_PROMPT_MAX_CHARS,
                 )
             if v_idx == 1:
-                # Сохраняем ДО платного вызова: после рестарта тот же запрос воспроизводим.
                 _save_hero_prompt(prompt_cache, hero_prompt)
 
         # 2) Сборка финального prompt_text.
@@ -880,8 +891,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     e.reason if hasattr(e, "reason") else str(e),
                 )
                 # Откатываем статус ровно туда, откуда юзер тыкнул
-                # «4. Hero» — это `frames_ready`. Все остальные шаги
-                # тогда не блокируются 🔒 (как при `failed`), и юзер
                 # может просто исправить описание героя и снова нажать
                 # «4. Hero». Никакого «вытащить проект из failed».
                 project.status = ProjectStatus.frames_ready
@@ -928,12 +937,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "[#{}] не удалось отправить TG-ошибку пользователю",
                         project.id,
                     )
-                # Выходим ЧИСТО — без raise. worker loop увидит
-                # status=frames_ready (не «active» в его списке) и проект
                 # больше не будет автоматически брать на этой итерации.
                 return
 
-    # 5) Сохраняем артефакт ОДНОЙ вариации.
     file_path = Path(result.file_path)
     art_meta: dict = {
         "hero_index": hero_idx,
@@ -1007,8 +1013,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "hero_style": style_chosen,
         },
     )
-    # Результат взят в проект и закоммичен: только теперь платный файл больше не предлагается для повторного
-    # использования (как в generate_images). До этого места его подберёт рестарт, а не новая платная отправка.
     await session.commit()
     await outsee_idempotency.mark_consumed(project.id, f"hero_{hero_idx}_v{v_idx}")
 
@@ -1173,7 +1177,6 @@ async def _run_excel(
             streams,
         )
 
-        # Отпустить write-txn на время параллельной генерации.
         await session.commit()
 
         async def _one(ch: ExcelCharacter) -> str:
@@ -1217,10 +1220,9 @@ async def _run_excel(
                 f"excel_hero: волна упала без успехов: {errors[0]!r}"
             )
 
+        await session.commit()
         await session.refresh(project)
         if project.status is ProjectStatus.frames_ready:
-            # Дочерняя сессия откатила статус (нет файлов рефов и т.п.) -
-            # не перезаписываем его и не крутим цикл волн вечно.
             return
         project.status = ProjectStatus.generating_hero
 
@@ -1249,17 +1251,13 @@ async def _run_excel(
 
 
 def _sibling_session(session: AsyncSession) -> AsyncSession:
-    """Новая сессия на том же движке, что и сессия шага (D2).
-
-    Раньше параллельные задачи героев открывали ``SessionLocal()`` (master) и читали проект там, хотя шаг
-    работает в ``project.db`` проекта: герой, артефакты и статус уходили в чужую базу."""
     from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
     from app import db as app_db
 
     bind = getattr(session, "bind", None)
     if not isinstance(bind, AsyncEngine) or bind is app_db.engine:
-        return app_db.SessionLocal()  # master (и подмена SessionLocal в тестах)
+        return app_db.SessionLocal()
     return async_sessionmaker(bind, expire_on_commit=False, class_=AsyncSession)()
 
 
@@ -1273,11 +1271,9 @@ async def _generate_one_excel_character(
     approved: set[str],
     batch_auto: bool = False,
 ) -> None:
-    """Генерирует одну картинку для excel-персонажа `ch` и шлёт HITL."""
     is_regen = await _is_regen_for_excel_id(session, project, ch.id)
     used_refs = bool(ch.ref_ids)
 
-    # Reference image(s): артефакт или characters/<id>.png на диске.
     ref_paths: list[Path] = []
     if used_refs:
         for rid in ch.ref_ids:
@@ -1334,13 +1330,34 @@ async def _generate_one_excel_character(
             )
 
         # Сборка промта.
+        from app.services.excel_characters import is_polluted_character_field
+
+        if is_polluted_character_field(ch.name):
+            parent_name = ""
+            for p in chars:
+                if p.id in ch.ref_ids and not is_polluted_character_field(p.name):
+                    parent_name = p.name
+                    break
+            old_name = ch.name
+            if parent_name:
+                ch.name = f"{parent_name} (вариация {ch.id})"
+            else:
+                ch.name = f"Персонаж {ch.id}"
+            logger.warning(
+                "[#{}] excel_hero {}: авто-исцеление служебного имени {!r} -> {!r}",
+                project.id,
+                ch.id,
+                old_name,
+                ch.name,
+            )
+
         if used_refs:
-            # Реф = картинка (CDP attach) + короткий текст. Без длинного style:
-            # иначе Outsee/модель игнорит reference. Changes — по-английски,
-            # без кириллических подписей (иначе текст рисуется на листе).
+            # Реф = картинка (CDP attach) + короткий текст. Style передаём компактно (до 300 симв),
+            # чтобы сохранить визуальную эстетику и не сбить reference.
             from app.services.excel_characters import build_ref_variation_sheet_prompt
 
-            prompt_text = build_ref_variation_sheet_prompt(ch, style="")
+            style_for_ref = (hero_style_content or "").strip()[:300]
+            prompt_text = build_ref_variation_sheet_prompt(ch, style=style_for_ref)
             # Дополнительно усиливаем identity lock.
             prompt_text = (
                 "CRITICAL: The attached reference image is the SAME person. "
@@ -1498,6 +1515,23 @@ async def _generate_one_excel_character(
         meta=art_meta,
     )
     session.add(art)
+    # Синхронизируем Artifact в master state.db для веб-UI студии
+    try:
+        from app.db import SessionLocal
+
+        async with SessionLocal() as master_sess:
+            m_art = Artifact(
+                project_id=project.id,
+                kind=ArtifactKind.hero_reference,
+                uuid=art.uuid,
+                path=str(file_path),
+                meta=art_meta,
+            )
+            master_sess.add(m_art)
+            await master_sess.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] master artifact sync: {}", project.id, exc)
+
     # Без HITL: всегда продолжаем batch/wave в _run_excel.
     project.status = ProjectStatus.generating_hero
     await session.flush()

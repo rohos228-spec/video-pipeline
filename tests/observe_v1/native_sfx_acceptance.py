@@ -1,16 +1,3 @@
-"""Native SFX helper for the existing group_acceptance prepare/run seam.
-
-Parent integration: call prepare before importing app.main, retain the existing
-loopback FixtureHandler/send hook, then await run with the existing app/client.
-There is no standalone runner or executor here. auto_mode remains false: two
-ordinary step API starts exercise native plan -> generation without claiming
-automatic continuation, managed admission, recovery or factory completion.
-
-Mode: native-sfx. Cached rejection stays in the existing six persisted native
-checkpoint tests. Ordinary sfx_plan API start wipes that cache even with
-force_wipe=false, so this helper cannot prove worker checkpoint rejection.
-The parent runner owns application cancellation and the diagnostic image/tools.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -65,7 +52,6 @@ def _snapshot(path):
 
 
 def prepare(fixtures, root, mode):
-    """Initialize only the copied synthetic input before the original app starts."""
     assert mode == "native-sfx", mode
     assert "app.settings" not in sys.modules, "prepare before application imports/startup"
     root = Path(root)
@@ -136,7 +122,6 @@ def prepare(fixtures, root, mode):
 
     fixtures.NODES = (PLAN, GEN, OUTSIDE)
     fixtures.synthetic_answer = answer
-    # These are synthetic parent-container settings, established before imports.
     os.environ["SFX_ENABLED"] = "true"
     os.environ["ELEVENLABS_API_KEY"] = ""
     prepared = {
@@ -188,8 +173,6 @@ def _assert_inputs_and_boundary(state, prepared):
         assert current["run"] == initial["run"], (name, "immutable graph changed")
         assert not current["project"]["auto_mode"], "ordinary scope is not an automatic boundary"
         if name == "master":
-            # _apply_runtime_fields copies its explicit runtime keys. Native
-            # SFX content is authoritative in project.db, not this projection.
             current_meta = current["project"]["meta"]
             initial_meta = initial["project"]["meta"]
             for key in ("sfx_plan", "sfx_ready", "sfx_generated", "ai_jobs"):
@@ -269,7 +252,6 @@ async def _file_proof(path, event, frame):
 
 
 async def run(client, fixtures, observer, root, result, prepared, *, browser=False, timeout_s=120):
-    """Observe original workers and verify their outputs without managed controls."""
     from app.services.step_cancel import is_generation_active
     from app.settings import settings
 

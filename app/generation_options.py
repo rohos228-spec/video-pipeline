@@ -91,7 +91,6 @@ ASPECT_RATIOS: list[OptionChoice] = [
 IMAGE_RESOLUTIONS: list[OptionChoice] = [
     OptionChoice("1k", "1K", "1K", "1K — компактное разрешение"),
     OptionChoice("2k", "2K", "2K", "2K — стандартное разрешение"),
-    OptionChoice("3k", "3K", "3K", "3K — Seedream 5 Lite"),
     OptionChoice("4k", "4K", "4K", "4K — максимальное качество"),
 ]
 
@@ -103,7 +102,7 @@ IMAGE_RESOLUTIONS_BY_GENERATOR: dict[str, tuple[str, ...]] = {
     "nano_banana_fast": ("1k", "2k"),
     "nano_banana": ("1k", "2k"),
     "seedream_4_5": ("2k", "4k"),
-    "seedream_5_0_lite": ("2k", "3k"),
+    "seedream_5_0_lite": ("2k",),
     "seedream_5_pro": ("1k", "2k"),
     "gpt_image_1_5": ("2k",),
     "gpt_image_2": ("1k",),
@@ -150,7 +149,7 @@ def clamp_image_resolution_id(
     rid = (resolution_id or "2k").lower()
     if rid in allowed:
         return rid
-    order = ("1k", "2k", "3k", "4k")
+    order = ("1k", "2k", "4k")
     try:
         want = order.index(rid) if rid in order else order.index("2k")
     except ValueError:
@@ -427,18 +426,15 @@ def _normalize_prompt_ws(text: str) -> str:
 
 
 def placeholder_count(prompt: str) -> int:
-    """Сколько раз в промте стоит заглушка «нет исходных данных…» (поля сцены без содержания)."""
     low = (prompt or "").lower()
     return sum(low.count(p) for p in _PLACEHOLDER_PHRASES)
 
 
 def is_scene_prompt_hollow(prompt: str, *, min_placeholders: int = 3) -> bool:
-    """Промт формально длинный (шаблон стиля), но поля сцены пустые: платить за такую картинку нельзя."""
     return placeholder_count(prompt) >= min_placeholders
 
 
 def is_skippable_empty_prompt(prompt: str) -> bool:
-    """True — промт пустой или заглушка; в outsee не отправляем."""
     body = strip_prompt_id_lines((prompt or "").strip())
     if not body:
         return True

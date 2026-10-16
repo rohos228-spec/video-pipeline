@@ -1,9 +1,3 @@
-"""The code revision of a node covers a whole package directory named by its executor ('pkg:<name>').
-
-sd_agent runs the scene_design/* package (cells, runner, agents, ...): an edit of any file in it must move the
-node's code revision, two computations of an unchanged tree must agree, and a package that cannot be resolved is
-still fail-closed. Real temporary files; no provider, no network.
-"""
 import copy
 import tempfile
 import unittest
@@ -80,7 +74,6 @@ class PackageResolver(unittest.TestCase):
 
 
 class SceneDesignPackageRevision(unittest.IsolatedAsyncioTestCase):
-    """sd_agent's real code list and real input revision."""
 
     def test_sd_agent_code_files_cover_the_whole_scene_design_package(self):
         files = revisions.code_files("sd_agent", capability_for("sd_agent"))

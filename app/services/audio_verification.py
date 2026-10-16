@@ -1,12 +1,3 @@
-"""Независимая проверка аудио-результата и типизация сбоев звука (шаг C04).
-
-Проверяет файл так, как его увидит монтаж, а не по словам шага: файл есть и не пуст, формат
-из разрешённого набора, поток звука читается, длительность положительная и в допуске, амплитуда
-не нулевая. Без сети и платных вызовов: только ffprobe/ffmpeg и стандартный ``wave``.
-
-``classify_audio_failure`` даёт сбою звука тип и русский текст для оператора; ``AudioStepError``
-несёт тот же тип и используется там, где шаг сам обнаружил брак.
-"""
 
 from __future__ import annotations
 
@@ -17,10 +8,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-# Форматы (ffprobe format_name содержит любое из имён), которые принимает монтаж.
 ALLOWED_FORMATS = ("mp3", "wav", "ogg", "flac", "mov", "mp4", "m4a", "aac", "matroska", "webm")
 MIN_FILE_BYTES = 1000
-SILENT_PEAK_DB = -80.0  # ниже: практически цифровая тишина
+SILENT_PEAK_DB = -80.0
 SILENT_RMS_DB = -60.0
 
 FAILURE_TEXTS_RU = {
@@ -54,7 +44,6 @@ class AudioVerdict:
 
 
 class AudioStepError(RuntimeError):
-    """Типизированный сбой звука: ``failure_class`` и русский ``operator_text``."""
 
     def __init__(self, failure_class: str, message: str, *, verdict: AudioVerdict | None = None):
         super().__init__(message)
@@ -70,7 +59,7 @@ def _ffprobe(path: Path) -> dict[str, Any] | None:
             capture_output=True, text=True, timeout=30)
         data = json.loads(out.stdout or "{}")
         return data if isinstance(data, dict) and data.get("format") else None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -78,7 +67,7 @@ def _levels_ffmpeg(path: Path) -> tuple[float | None, float | None]:
     try:
         out = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(path), "-af", "astats", "-f", "null", "-"],
                              capture_output=True, text=True, timeout=120)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None, None
     peak = rms = None
     for line in out.stderr.splitlines():
@@ -95,7 +84,6 @@ def _levels_ffmpeg(path: Path) -> tuple[float | None, float | None]:
 
 
 def _levels_wav(path: Path) -> tuple[float | None, float | None]:
-    """Пик и RMS PCM16 wav стандартной библиотекой (без внешних программ)."""
     import array
     import math
     try:
@@ -103,7 +91,7 @@ def _levels_wav(path: Path) -> tuple[float | None, float | None]:
             if w.getsampwidth() != 2:
                 return None, None
             raw = w.readframes(w.getnframes())
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None, None
     a = array.array("h")
     a.frombytes(raw[: len(raw) // 2 * 2])
@@ -111,14 +99,13 @@ def _levels_wav(path: Path) -> tuple[float | None, float | None]:
         return None, None
     peak = max(abs(x) for x in a)
     rms = math.sqrt(sum(x * x for x in a) / len(a))
-    db = lambda v: -120.0 if v <= 0 else 20 * math.log10(v / 32768.0)  # noqa: E731
+    db = lambda v: -120.0 if v <= 0 else 20 * math.log10(v / 32768.0)
     return db(peak), db(rms)
 
 
 def verify_audio(path: Path | str, *, expect_duration: float | None = None, duration_tol: float = 0.5,
                  allowed_formats: tuple[str, ...] = ALLOWED_FORMATS,
                  min_duration: float = 0.05) -> AudioVerdict:
-    """Проверить аудио-файл. ``ok`` только когда все проверки пройдены; коды в ``codes``."""
     p = Path(path)
     v = AudioVerdict(path=str(p))
 
@@ -172,7 +159,6 @@ def verify_audio(path: Path | str, *, expect_duration: float | None = None, dura
 
 
 def classify_audio_failure(exc: BaseException) -> tuple[str, str]:
-    """(тип сбоя, русский текст оператору) для исключения шага озвучки."""
     cls = getattr(exc, "failure_class", None)
     if isinstance(cls, str) and cls in FAILURE_TEXTS_RU:
         return cls, FAILURE_TEXTS_RU[cls]

@@ -1,4 +1,3 @@
-"""Local money caps: refusal at each level, read-only unaffected, charge_request wiring."""
 from unittest.mock import patch
 
 import test_actions_v1_contract as actions_tests
@@ -31,7 +30,7 @@ class Caps(actions_tests.DurableActions):
             self.assertEqual(exc.code, "spend_cap_run")
             self.assertAlmostEqual(exc.spent, 0.6)
             self.assertEqual(exc.cap, 1.0)
-            await self.reserve(0.6, run="r2")  # another run is independent
+            await self.reserve(0.6, run="r2")
 
     async def test_project_cap(self):
         a, b, c = caps(daily=100, project=1.0, run=100)
@@ -39,7 +38,7 @@ class Caps(actions_tests.DurableActions):
             await self.reserve(0.6, run="r1")
             exc = await self._refused(0.6, run="r2")
             self.assertEqual(exc.code, "spend_cap_project")
-            await self.reserve(0.6, pid=8, run="r3")  # another project
+            await self.reserve(0.6, pid=8, run="r3")
 
     async def test_daily_cap_is_global(self):
         a, b, c = caps(daily=1.0, project=100, run=100)
@@ -69,7 +68,7 @@ class Caps(actions_tests.DurableActions):
     async def test_charge_request_refuses_before_reservation_on_run_cap(self):
         await self.supervisor.enable(project_id=7, execution_id="exec-durable", group_id="g1", node_keys=["n1"],
             graph_version=self.graph, initiator="test-operator", rationale="spend fixture", request_limit=8)
-        a, b, c = caps(daily=100, project=100, run=0.12)  # two default estimates (0.05) fit, third does not
+        a, b, c = caps(daily=100, project=100, run=0.12)
         with a, b, c:
             self.assertEqual(await self.supervisor.charge_request("exec-durable"), 1)
             self.assertEqual(await self.supervisor.charge_request("exec-durable"), 2)
@@ -81,14 +80,12 @@ class Caps(actions_tests.DurableActions):
             self.assertEqual((await s.get(ActionExecutionControl, "exec-durable")).requests_used, 2)
 
     async def test_defaults_do_not_affect_current_workflow(self):
-        # C-17 (W42): потолки по умолчанию подняты до высоких предохранителей ($200 / $100 / $50). Смысл теста прежний:
-        # значения по умолчанию не ниже прежних $25 / $10 / $5 и не мешают обычному прогону.
         for value, previous in ((settings.spend_daily_cap_usd, 25.0), (settings.spend_project_cap_usd, 10.0),
                                 (settings.spend_run_cap_usd, 5.0)):
             self.assertGreaterEqual(value, previous)
         await self.supervisor.enable(project_id=7, execution_id="exec-durable", group_id="g1", node_keys=["n1"],
             graph_version=self.graph, initiator="test-operator", rationale="spend fixture", request_limit=40)
-        for expected in range(1, 41):  # a 40-request live run fits under the default run cap
+        for expected in range(1, 41):
             self.assertEqual(await self.supervisor.charge_request("exec-durable"), expected)
 
 
@@ -98,7 +95,7 @@ class ActionLayerBudget(actions_tests.DurableActions):
         from app.services.action_layer.spec import CostEstimate
         async with self.engine.begin() as conn:
             await store.ensure_action_layer_schema(conn)
-        est = CostEstimate(low=100.0, high=200.0)  # 200 credits = $1.00
+        est = CostEstimate(low=100.0, high=200.0)
         a, b, c = caps(daily=100, project=100, run=1.5)
         with a, b, c:
             async with self.sessions() as s:
@@ -109,7 +106,7 @@ class ActionLayerBudget(actions_tests.DurableActions):
                     await budget.reserve(s, key="plan:p1", plan_id="p1", step_index=1, estimate=est, cap=10000.0)
                 self.assertEqual(cm.exception.code, "spend_cap_run")
                 await s.rollback()
-                self.assertEqual(await budget.spent(s, "plan:p1"), 200.0)  # credit row of the refused step rolled back
+                self.assertEqual(await budget.spent(s, "plan:p1"), 200.0)
 
 
 class SpendEndpointRuns(actions_tests.DurableActions):
@@ -129,7 +126,6 @@ class SpendEndpointRuns(actions_tests.DurableActions):
             self.assertEqual([r["run_id"] for r in default["runs"]], ["exec-durable"])
             self.assertAlmostEqual(default["runs"][0]["run_spent"], 0.4)
             self.assertTrue(default["runs"][0]["enabled"])
-            # an id that is not a run of this project is ignored, never trusted
             foreign = await router.spend_state(7, run_id="other-run")
             self.assertEqual(foreign["run_id"], "exec-durable")
             self.assertAlmostEqual(foreign["run_spent"], 0.4)

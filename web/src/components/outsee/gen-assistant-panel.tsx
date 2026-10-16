@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * Помощник: одно большое поле, три вкладки.
- * Запрос — вход. Агент — стиль (не в картинку). Промпт — результат, уходит в GPT.
- * По умолчанию открыт Промпт — это главное, что смотришь и правишь.
- */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -34,9 +29,7 @@ import { GenStyleArt as GenStyleArtView } from "@/components/outsee/gen-style-ar
 
 type Props = {
   onClose: () => void;
-  /** Промпт из двойного клика по истории — подставляется в слот 1. */
   appliedPrompt?: { text: string; ts: number } | null;
-  /** Текущая image-модель окна (slug) — для списков форматов/разрешений. */
   imageSlug: string;
   modelName: string;
   aspect: string;
@@ -47,14 +40,11 @@ type Props = {
   onResolutionChange: (v: string) => void;
   onDetailChange: (v: string) => void;
   onOpenModelPicker: () => void;
-  /** Иконка модели картинки (как в доке генерации), не подпись GPT. */
   modelIcon?: string | null;
   onApplyPrompt: (text: string) => void;
   onGenerate: (text: string) => void;
-  /** Сразу карточки в «Генерации», ещё до ответа LLM. */
   onPrepareGenerate: (preview: string, count: number) => string[];
   onFailGenerate: (draftIds: string[]) => void;
-  /** Агент написал N промптов → сразу генерация всех (по одной на промпт). */
   onGenerateAll: (texts: string[], draftIds?: string[]) => void;
   expanded: boolean;
   onExpandedChange: (v: boolean) => void;
@@ -131,7 +121,6 @@ function lsRemove(key: string) {
   }
 }
 
-/** Все сохранённые превью стилей: styleId → url картинки. */
 function readArtUrls(): Record<string, string> {
   const out: Record<string, string> = {};
   if (typeof window === "undefined") return out;
@@ -212,7 +201,6 @@ function styleTileSrcs(
   return out;
 }
 
-/** Фото обложки поверх SVG. JPG/PNG — слой z-10; эскиз только пока фото не загрузилось. */
 function TileBg({
   art,
   color,
@@ -229,7 +217,6 @@ function TileBg({
     <>
       {!photoOk ? <GenStyleArtView art={art} color={color} /> : null}
       {src ? (
-        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={src}
           alt=""
@@ -285,10 +272,8 @@ export function GenAssistantPanel({
   const [agentError, setAgentError] = useState("");
   const [catMenuOpen, setCatMenuOpen] = useState(false);
   const [previewCat, setPreviewCat] = useState<string | null>(null);
-  // Позиция курсора (относительно поповера категорий) — окно стилей открывается поверх, у курсора
   const [stylesPos, setStylesPos] = useState<{ x: number; y: number; w: number } | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
-  // Окно стилей живёт, пока курсор над категорией/окном; ушёл — исчезает (с задержкой на переход через зазор)
   const hideTimer = useRef<number | null>(null);
   const cancelHide = () => {
     if (hideTimer.current !== null) {
@@ -326,14 +311,12 @@ export function GenAssistantPanel({
     }
   });
 
-  // добавление стиля
   const [addOpen, setAddOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [newColor, setNewColor] = useState<GenStyleDef["color"]>("cyan");
   const [newArt, setNewArt] = useState<GenStyleArt>("infographic");
   const [newAgent, setNewAgent] = useState("");
-  // Референсы и пожелание пользователя → агент собирает LLM по картинкам
   const [newRefs, setNewRefs] = useState<File[]>([]);
   const [newHint, setNewHint] = useState("");
   const [buildBusy, setBuildBusy] = useState(false);
@@ -346,7 +329,6 @@ export function GenAssistantPanel({
     return () => refPreviews.forEach((u) => URL.revokeObjectURL(u));
   }, [refPreviews]);
 
-  // LLM (текстовая модель Studio, как в топбаре)
   const [llmModels, setLlmModels] = useState<TextLlmModel[]>([]);
   const [llmBusy, setLlmBusy] = useState(false);
 
@@ -364,7 +346,6 @@ export function GenAssistantPanel({
   const diskStylesReady = useRef(false);
   const diskAgentsReady = useRef(false);
   useEffect(() => {
-    // Не затирать LS пустым [] при гидрации (window на SSR нет → стейт []).
     if (!customStylesHydrated.current) {
       customStylesHydrated.current = true;
       try {
@@ -505,7 +486,6 @@ export function GenAssistantPanel({
     return () => window.removeEventListener("mousedown", onDown);
   }, [menu]);
 
-  // Категории + пользовательские стили
   const categories = useMemo(
     () =>
       GEN_ASSISTANT_CATEGORIES.map((c) => ({
@@ -518,8 +498,6 @@ export function GenAssistantPanel({
   const style: GenStyleDef | null = category.styles.find((s) => s.id === styleId) ?? null;
   const agentText = style ? (agentOverrides[style.id] ?? style.promptCore) : "";
 
-  // Двойной клик по картинке в истории: промпт → слот «Промпт 1» (как ручная
-  // правка, с кнопкой сброса), плюс пытаемся распознать стиль по ядру агента.
   useEffect(() => {
     if (!appliedPrompt?.text) return;
     const text = appliedPrompt.text;
@@ -560,7 +538,6 @@ export function GenAssistantPanel({
     const opts = chipOptions(imageSlug, "resolution");
     return opts.includes(resolution) ? opts : [resolution, ...opts];
   }, [imageSlug, resolution]);
-  // Детализация есть не у всех моделей (только gpt-image) — как в доке генерации
   const detailOptions = useMemo(() => chipOptions(imageSlug, "detail"), [imageSlug]);
 
   const promptText = (idx: number) =>
@@ -684,7 +661,6 @@ export function GenAssistantPanel({
     );
   };
 
-  // Поллинг истории: первая успешная генерация → /gen-styles/{id} на плитке
   useEffect(() => {
     if (!pendingArt) return;
     let stopped = false;
@@ -730,7 +706,6 @@ export function GenAssistantPanel({
     };
   }, [pendingArt, artUrls]);
 
-  // Референсы + пожелание → готовый текст агента (vision-LLM разбирает стиль).
   const buildAgentFromRefs = async () => {
     if (!newRefs.length) {
       toast.error("Приложите хотя бы одну картинку-референс");
@@ -803,7 +778,6 @@ export function GenAssistantPanel({
   };
 
   const activeLlm = llmModels.find((m) => m.active) ?? llmModels[0];
-  // Стили в выпадашке показываем только при наведении на категорию
   const menuCat = previewCat ? (categories.find((c) => c.id === previewCat) ?? null) : null;
 
   return (
@@ -1347,7 +1321,6 @@ export function GenAssistantPanel({
 
           <div className="flex w-fit min-w-0 flex-wrap items-center gap-1">
             {modelIcon ? (
-              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={modelIcon}
                 alt=""

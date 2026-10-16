@@ -1,4 +1,3 @@
-"""Offline denial checks for the existing diagnostic gateway's independent route gate."""
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace

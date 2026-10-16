@@ -40,7 +40,6 @@ class _LocalFallbackNeeded(RuntimeError):
 
 
 async def _animation_fact(callback, *args, **kwargs):
-    """Diagnostic failure is a journal gap, never a replacement native error."""
     from app.services.observation import _attempt
 
     ctx = _attempt.get()
@@ -55,12 +54,6 @@ async def _animation_fact(callback, *args, **kwargs):
 
 
 async def _record_degradation(reason: str, shot: int, frames, cause: BaseException | None) -> None:
-    """Visible fact for a silent degradation of this node (journal gap never replaces the native flow).
-
-    reason: ``local_fallback`` (provider outage, the rest of shot_01 is filled by the local
-    composer without the model or images) or ``shot2_skipped`` (provider outage, the remaining
-    shot_02 prompts are not made and the step goes on). Diagnosis types it as ``animation_degraded``.
-    """
     from app.services.observation import record_fact
 
     numbers = sorted(int(n) for n in frames if n is not None)
@@ -72,7 +65,6 @@ async def _record_degradation(reason: str, shot: int, frames, cause: BaseExcepti
 
 
 async def _gate_then_mark_anim_ready(session: AsyncSession, project: Project) -> None:
-    """Harness N/N first; animation_prompts_ready only if the gate passes."""
     from app.services.agent_harness import harness_gate_or_raise
     from app.services.observation import _attempt, record_fact
 

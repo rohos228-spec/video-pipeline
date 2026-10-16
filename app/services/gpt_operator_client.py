@@ -40,18 +40,10 @@ class OperatorApiResult:
     apply_ops: dict | None = None
     applied_in_runner: bool = False
     empty_ops_accepted: bool = False
-    # Request id of this call's last model answer (task-local; None outside an
-    # observed attempt). Lets callers link facts to the right pack request.
     request_id: str | None = None
 
 
 def _qc_response_complete(result) -> bool:
-    """Strict completeness of one model answer, for every transport.
-
-    Kie Responses carry ``raw.status``; Vibecode chat/completions have no
-    ``status`` and finish with ``finish_reason`` (``stop``). A truncated
-    (``length``), SSE-salvaged or CF-continued answer is never complete.
-    """
     from app.services.llm_completion import response_complete, response_truncated
 
     raw = getattr(result, 'raw', None) or {}
@@ -60,12 +52,6 @@ def _qc_response_complete(result) -> bool:
 
 
 def _task_request_id() -> str | None:
-    """Request id of the model call completed by *this* task.
-
-    ``ctx.last_request_id`` is shared by all parallel packs of an attempt and
-    may already point at another pack's request; the completion identity is
-    task-local. Falls back to the shared value when there is none.
-    """
     from app.services.observation import _attempt, completed_model_request_id
 
     ctx = _attempt.get()
@@ -75,7 +61,6 @@ def _task_request_id() -> str | None:
 
 
 async def _record_parse_for_task_request(*args, **kwargs) -> None:
-    """``record_parse`` bound to this task's request instead of the shared one."""
     import copy
     import inspect
 
@@ -89,8 +74,6 @@ async def _record_parse_for_task_request(*args, **kwargs) -> None:
     if 'request_id' in inspect.signature(observation.record_parse).parameters:
         await observation.record_parse(*args, request_id=request_id, **kwargs)
         return
-    # record_parse reads ``ctx.last_request_id``: give it a task-local copy of the
-    # attempt context. The shared context (and other packs) are never mutated.
     local = copy.copy(ctx)
     local.last_request_id = request_id
     token = observation._attempt.set(local)
@@ -113,7 +96,6 @@ async def _require_completed_qc_response(result) -> None:
 
 
 def _needs_check_writeback_retry(reply_text: str) -> bool:
-    """True если check+fix ответ без пригодного TSV writeback."""
     from app.services.check_analysis import CHECK_WRITEBACK_MARKER
     from app.services.xlsx_text_writeback import extract_sheet_blocks
 
@@ -125,7 +107,6 @@ def _needs_check_writeback_retry(reply_text: str) -> bool:
 
 
 def _apply_ops_has_payload(data: dict | None) -> bool:
-    """Есть что писать в DB (не пустой отказ модели)."""
     if not isinstance(data, dict):
         return False
     return bool(
@@ -137,7 +118,6 @@ def _apply_ops_has_payload(data: dict | None) -> bool:
 
 
 def _accepted_empty_ops(result, data, *, allowed=False) -> bool:
-    """Explicit old no-change contract only; no salvage/refusal/unknown response."""
     if not allowed or data != {'ops': []}:
         return False
     if not _qc_response_complete(result):
@@ -162,7 +142,6 @@ def _log_apply_ops_coverage(
     apply_ops: dict | None,
     input_paths: list[Path],
 ) -> None:
-    """Дешёвый лог покрытия uuid из db_frames*. Не raise — гейт в enrich_xlsx."""
     if not isinstance(apply_ops, dict):
         return
     ops = [o for o in (apply_ops.get("ops") or []) if isinstance(o, dict)]
@@ -171,7 +150,7 @@ def _log_apply_ops_coverage(
     try:
         from app.services.node_write_contract import coverage_report
         from app.services.volume_batches import load_expected_frame_uuids
-    except Exception:  # noqa: BLE001
+    except Exception:
         return
     expected = load_expected_frame_uuids(input_paths)
     if not expected:
@@ -207,22 +186,16 @@ def stub_strict() -> bool:
 
 
 def _stub_analysis(*, role: str, prompt: str, accompanying: str) -> CheckAnalysis:
-    """Stub-вердикт vp.check.v1: всегда ``not_checked``, никогда «pass».
-
-    Раньше stub выдавал «pass» на любой текст без слов-маркеров, и пустой ключ превращал QC-гейт в
-    всегда зелёный. Теперь вердикт честный: проверка не проводилась. ``CheckAnalysis.ok`` для него ложно,
-    а разбор такого отчёта (``_norm_verdict``) даёт «fail», то есть любой повторный разбор тоже закрыт."""
     from app.services.check_analysis import CheckItem
 
     return CheckAnalysis(
-        verdict=VERDICT_NOT_CHECKED,  # type: ignore[arg-type]
+        verdict=VERDICT_NOT_CHECKED,
         summary=NOT_CHECKED_SUMMARY_RU,
         checks=[CheckItem(id="not_checked", ok=False, note=NOT_CHECKED_SUMMARY_RU)],
     )
 
 
 async def _record_stub_use(*, node_key: str, role: str, is_check: bool) -> None:
-    """Явное событие журнала + предупреждение: оператор работал без провайдера."""
     logger.warning(
         "gpt_operator/api: нет ключа провайдера, node={} role={} → {}",
         node_key,
@@ -244,7 +217,7 @@ async def _record_stub_use(*, node_key: str, role: str, is_check: bool) -> None:
                 "semantic_quality_verified": False,
             },
         )
-    except Exception:  # noqa: BLE001 - журнал не должен ломать шаг, предупреждение уже в логе
+    except Exception:
         logger.debug("gpt_operator/api: событие о заглушке не записано", exc_info=True)
 
 
@@ -547,7 +520,6 @@ async def _run_operator_api_real(
                 len(apply_ops.get("scenes") or []),
             )
 
-    # check+fix legacy Excel: retry на XLSX_WRITEBACK. DB SoT — skip.
     if (
         check_mode
         and check_fix
@@ -653,8 +625,6 @@ async def _run_operator_api_real(
 
         from app.services.db_apply import extract_apply_ops_json
 
-        # Первый ответ часто почти верный, но extract не взял (обрезанный JSON).
-        # Сохраняем до overwrite — иначе диагностика «модель же ответила» теряется.
         pre_retry_text = reply_text or ""
         pre_retry_path = out_dir / "gpt_reply_pre_retry.txt"
         try:
@@ -1019,9 +989,6 @@ def _apply_check_fix_writeback(
             downloaded_paths=downloaded,
         )
     except RuntimeError as e:
-        # Excel writeback отключён намеренно (bd038612: DB - единственный SoT,
-        # xlsx только через Import/Export). Отчёт проверки не должен падать из-за
-        # устаревшего XLSX_WRITEBACK в ответе модели: правку игнорируем.
         logger.warning(
             "gpt_operator/api: check fix writeback отключён, игнорирую node={}: {}",
             node_key,

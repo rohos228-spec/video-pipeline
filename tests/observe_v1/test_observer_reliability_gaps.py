@@ -1,4 +1,3 @@
-"""A1: observer degradation is isolated per execution and reversible without erasing the fact."""
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +15,6 @@ from app.services import observation
 from app.services.observation import ExecutionControl, ObservationDegradation, ObservationEvent
 
 class Fixture(unittest.IsolatedAsyncioTestCase):
-    """Same wiring as test_journal.JournalAcceptance, without re-running its tests."""
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -74,7 +72,6 @@ class ObserverRecovery(Fixture):
             return (await session.scalars(select(ObservationDegradation).order_by(ObservationDegradation.id))).all()
 
     async def degrade_a(self):
-        """One failed pass, then a successful one that makes the gap durable."""
         with self.consume_fails_for(self.a.execution_id):
             await self.observer.catch_up()
         await self.observer.catch_up()
@@ -101,7 +98,7 @@ class ObserverRecovery(Fixture):
         self.assertTrue(stored.gaps[0]["recoverable"])
         self.assertEqual(stored.gaps[0]["error_type"], "OSError")
         self.assertNotIn(self.a.execution_id, self.observer.failures)
-        self.assertEqual(self.a.observer_state, "degraded")  # still fail-closed
+        self.assertEqual(self.a.observer_state, "degraded")
         rows = await self.degradations()
         self.assertEqual([(r.execution_id, r.error_type, r.attempts) for r in rows],
                          [(self.a.execution_id, "OSError", 1)])
@@ -111,7 +108,7 @@ class ObserverRecovery(Fixture):
 
     async def test_recovery_needs_clean_passes_and_time_then_keeps_history(self):
         await self.degrade_a()
-        for _ in range(4):  # enough passes, but no time has elapsed
+        for _ in range(4):
             await self.observer.catch_up()
         self.assertEqual((await self.stored(self.a.execution_id)).observer_state, "degraded")
         self.assertEqual(len((await self.stored(self.a.execution_id)).gaps), 1)
@@ -121,7 +118,7 @@ class ObserverRecovery(Fixture):
         self.assertEqual((stored.observer_state, stored.gaps), ("active", []))
         self.assertEqual((self.a.observer_state, self.a.gaps), ("active", []))
         rows = await self.degradations()
-        self.assertEqual(len(rows), 1)  # the fact is kept, only closed
+        self.assertEqual(len(rows), 1)
         self.assertIsNotNone(rows[0].cleared_at)
         self.assertTrue(rows[0].cleared_reason.startswith("consumer_clean_"))
         kinds = await self.kinds(self.a.execution_id)
@@ -135,7 +132,7 @@ class ObserverRecovery(Fixture):
         with self.consume_fails_for(self.a.execution_id):
             await self.observer.catch_up()
         await self.observer.catch_up()
-        await self.observer.catch_up()  # would have recovered without the second failure
+        await self.observer.catch_up()
         stored = await self.stored(self.a.execution_id)
         self.assertEqual(stored.observer_state, "degraded")
         self.assertEqual(len(stored.gaps), 1)
@@ -144,9 +141,9 @@ class ObserverRecovery(Fixture):
     async def test_failing_execution_is_retried_with_backoff_not_every_pass(self):
         with self.consume_fails_for(self.a.execution_id):
             await self.observer.catch_up()
-            await self.observer.catch_up()  # second try is immediate
+            await self.observer.catch_up()
             self.assertEqual(self.calls[self.a.execution_id], 2)
-            await self.observer.catch_up()  # now backing off: not called
+            await self.observer.catch_up()
             self.assertEqual(self.calls[self.a.execution_id], 2)
             self.now[0] += 1.1
             await self.observer.catch_up()
@@ -156,7 +153,6 @@ class ObserverRecovery(Fixture):
             self.now[0] += 2.1
             await self.observer.catch_up()
             self.assertEqual(self.calls[self.a.execution_id], 4)
-            # b is never delayed by a's backoff
             self.assertGreaterEqual(self.calls[self.b.execution_id], 6)
 
     async def test_gap_from_lost_data_is_never_cleared_automatically(self):
@@ -228,7 +224,7 @@ class ObserverRecovery(Fixture):
                 await task
         self.assertGreater(counts["consumer"], 3)
         self.assertGreater(counts["decision"], 3)
-        self.assertEqual(counts["reconcile"], 1)  # backing off
+        self.assertEqual(counts["reconcile"], 1)
         self.assertEqual(self.observer.failures, {})
         self.assertEqual((self.a.observer_state, self.b.observer_state), ("active", "active"))
         self.assertEqual(self.observer.stage_errors, {"reconcile": "RuntimeError"})
@@ -243,7 +239,7 @@ class ObserverRecovery(Fixture):
         await self.observer._run_stage("reconcile", broken)
         rows = await self.degradations()
         self.assertEqual([(r.execution_id, r.stage, r.cleared_at) for r in rows], [("", "reconcile", None)])
-        await self.observer._run_stage("reconcile", fine)  # inside backoff: skipped
+        await self.observer._run_stage("reconcile", fine)
         self.assertEqual(self.observer.stage_errors, {"reconcile": "OSError"})
         self.now[0] += 2
         await self.observer._run_stage("reconcile", fine)

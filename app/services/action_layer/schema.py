@@ -1,9 +1,3 @@
-"""Минимальный валидатор JSON-Schema для параметров действий.
-
-Зависимости ``jsonschema`` в проекте нет, поэтому поддерживается строгое
-подмножество. Неизвестное ключевое слово в схеме = ошибка регистрации
-(fail-closed), а не молчаливый пропуск проверки.
-"""
 from __future__ import annotations
 
 import re
@@ -19,7 +13,6 @@ _TYPES = {"string", "integer", "number", "boolean", "object", "array", "null"}
 
 
 def check_schema(schema: Any, path: str = "$") -> list[str]:
-    """Проверка самой схемы: только известные ключевые слова и типы."""
     if not isinstance(schema, dict):
         return [f"{path}: schema must be an object"]
     errors: list[str] = []
@@ -66,7 +59,6 @@ def _is_type(value: Any, name: str) -> bool:
 
 
 def validate(schema: dict, value: Any, path: str = "$") -> list[str]:
-    """Список ошибок (пустой = валидно). Ничего не бросает."""
     errors: list[str] = []
     types = schema.get("type")
     if types is not None:

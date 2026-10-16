@@ -1,12 +1,3 @@
-"""Общие исправления по разбору живого прогона heldout6 (офлайн, без сети и без модели).
-
-Классы: (1) защита от лишнего больше не отказывает, а задаёт вопрос с подтверждением человека, и платное
-или разрушающее действие без слов запроса не становится планом; (2) чужие аккаунты: родственники и роли
-сообществ; (3) расплывчатые просьбы (отмена «последнего действия», публикация «в соцсетях») - вопрос;
-(4) названные в запросе пределы (картинок сцены, токенов ноды) доходят до шага; (5) предфильтр каталога
-(опечатки, синонимы, вложения); (6) близкие действия. Фразы здесь свои, не из набора heldout6; у каждого
-правила есть отрицательные примеры, чтобы обычные просьбы не срабатывали.
-"""
 from __future__ import annotations
 
 import json
@@ -46,7 +37,6 @@ def _validate(steps, text, **kw):
                                   request_text=text, **kw)
 
 
-# --- (1) все шаги убраны защитой: вопрос с подтверждением вместо отказа -------------------------------------
 
 def test_guard_dropping_every_step_asks_instead_of_raising() -> None:
     out = _validate([_step("montage.delete_frame", {"frame_id": 1207})], "кадр 7 больше не нужен")
@@ -86,7 +76,7 @@ def test_no_hint_paid_or_destructive_action_never_becomes_an_executable_plan() -
         for key in spec.params_schema.get("required") or []:
             params.setdefault(key, _placeholder(props[key]))
         if registry.validate_params(spec.id, params):
-            continue  # шаг с такими заглушками не собрать: он и так не дошёл бы до плана
+            continue
         text = "а как у нас дела"
         if rules.request_hints_action(text, spec):
             continue
@@ -146,7 +136,6 @@ def test_describe_step_hides_service_params_and_maps_frame_ids() -> None:
     assert "...»" in cut and long_title not in cut
 
 
-# --- (2) чужие аккаунты: родственники, роли сообществ --------------------------------------------------------
 
 @pytest.mark.parametrize("text", [
     "опубликуй от лица моей сестры на её странице",
@@ -190,7 +179,6 @@ def test_button_phrase_without_confirmation_is_a_bypass() -> None:
     assert not planner.approval_bypass_intent("нажми кнопку подтвердить на плане")
 
 
-# --- (3) расплывчатые просьбы -------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("text", ["отмени последнее действие", "верни предыдущее изменение", "отмени", "undo",
                                   "убери мою последнюю правку"])
@@ -243,7 +231,6 @@ def test_project_create_without_creation_words_edits_the_open_project() -> None:
     assert [s["action_id"] for s in nothing_open.steps] == ["project.create"]
 
 
-# --- (4) пределы, названные в запросе -----------------------------------------------------------------------
 
 @pytest.mark.parametrize("words,num", [
     (["пятьдесят", "тысяч"], 50000), (["50", "тысяч"], 50000), (["50к"], 50000), (["двадцать", "пять"], 25),
@@ -310,7 +297,6 @@ def test_apply_queue_named_limit_drops_the_stale_default_note() -> None:
     assert not any(n.startswith("max_image_ops=") for n in out.applied_defaults)
 
 
-# --- (5) предфильтр каталога и защита: опечатки, синонимы, вложения -------------------------------------------
 
 @pytest.mark.parametrize("text,aid", [
     ("проэкт возабнови", "project.resume"),
@@ -332,7 +318,7 @@ def test_typo_tolerance_is_a_fallback_and_does_not_pull_in_unrelated_actions() -
     sel = planner_catalog.select_catalog("покажи доску монтажа", {"project_id": 2}, _reg(), 24)
     assert "project.resume" not in sel.ids and "montage.get_board" in sel.ids
     short = planner_catalog.select_catalog("удоли кадр 4", {"project_id": 2}, _reg(), 24)
-    assert "montage.delete_frame" in short.ids  # короткие основы идут обычным путём, не через опечатки
+    assert "montage.delete_frame" in short.ids
 
 
 @pytest.mark.parametrize("aid,text", [
@@ -375,7 +361,7 @@ def test_attachment_kind_adds_matching_upload_actions_to_the_catalog() -> None:
     with_file = planner.build_prompt(text, ctx, reg, 5, max_catalog=24, attachments=[audio])[1]["offered"]
     assert "montage.upload_music" in with_file and "montage.upload_voice" in with_file
     assert "montage.upload_music" not in without
-    assert "hero.replace_image" not in with_file  # вид файла - аудио, картинкам загрузки не нужны
+    assert "hero.replace_image" not in with_file
 
 
 def test_picture_noun_and_slot_without_verb_passes_the_guard_only_with_a_slot() -> None:
@@ -387,7 +373,6 @@ def test_picture_noun_and_slot_without_verb_passes_the_guard_only_with_a_slot() 
     assert out2.steps == [] and out2.guard_question
 
 
-# --- (6) близкие действия: подсказки модели ------------------------------------------------------------------
 
 def test_notes_separate_the_close_actions() -> None:
     n = rules.notes_for(["montage.apply_status", "montage.get_cost_basis", "node.get_run_cost_basis",
@@ -411,7 +396,6 @@ def test_video_noun_and_reset_words_reach_their_actions() -> None:
     assert not rules.request_hints_action("покажи шаги ноды", _reg().get("node.reset_from_step"))
 
 
-# --- фикстура heldout6: правки после живого прогона записаны ------------------------------------------------
 
 def test_fixture_edits_after_the_live_run_are_documented() -> None:
     from pathlib import Path

@@ -37,7 +37,6 @@ def test_ensure_mono_converts_stereo(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
         mock_run.side_effect = fake_run
         out = nvidia_asr._ensure_mono_for_nemo(audio)
-    # имя содержит короткий хэш исходника: voice_<hash>_mono16k.wav (без коллизий)
     import re
 
     assert re.fullmatch(r"voice_[0-9a-f]+_mono16k\.wav", out.name), out.name

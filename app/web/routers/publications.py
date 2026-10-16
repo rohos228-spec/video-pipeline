@@ -1,14 +1,3 @@
-"""Публикации проекта: список по площадкам, подтверждение человека и ручные действия (W6-1: E01, E02, E11).
-
-GET  /projects/{id}/publications                        - факты: файл (sha256), подпись, площадки, статусы, ссылки.
-POST /projects/{id}/publications/approve                - подтверждение человека на публикацию (площадка x sha256 x подпись).
-POST /projects/{id}/publications/{platform}/confirm-manual - «опубликовано» по проверке человека (ссылка ИЛИ причина).
-POST /projects/{id}/publications/{platform}/mark-failed    - «не опубликовано» по проверке человека (причина).
-
-Ни один из обработчиков не открывает браузер, не кликает и не обращается к площадкам. Изменяющие ручки
-требуют токен оператора (X-VP-Operator); каждый POST попадает в operator_audit (слой аудита), а причина
-и ссылка - в publication_manual_actions. Живой платформой не проверялось.
-"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -32,7 +21,6 @@ _APPROVABLE_STATUSES = (ProjectStatus.assembled, ProjectStatus.publishing, Proje
 
 
 def require_operator_token(token: str | None = Header(default=None, alias=access_guard.OPERATOR_HEADER)) -> None:
-    """Изменяющие ручки публикации всегда требуют токен оператора (в том числе когда общий слой его не требует)."""
     if not access_guard.check_operator_token(token):
         raise HTTPException(status_code=403, detail={
             "code": "operator_token_required",
@@ -61,7 +49,6 @@ def _refused(exc: pstore.PublicationRefused) -> HTTPException:
 
 
 async def _current_sha(session: AsyncSession, project: Project, sent: str) -> str:
-    """Человек действует над конкретным файлом: sha256 из тела должен совпасть с текущим финальным видео."""
     final = await publish_step._latest_final(session, project)
     if final is None:
         raise HTTPException(status_code=409, detail={"code": "no_final_video",
@@ -101,7 +88,6 @@ class MarkFailedIn(BaseModel):
 
 @router.get("")
 async def list_publications(project_id: int, session: AsyncSession = Depends(get_project_session)) -> dict:
-    """Только чтение: файл, подпись, площадки со статусом, ссылкой на пост, ошибкой и ручными отметками."""
     project = await _project(session, project_id)
     return await publish_step.publication_facts(session, project)
 
@@ -111,7 +97,6 @@ async def _recompute(session: AsyncSession, project: Project, sha: str) -> dict:
 
 
 def _approve_message(queued: bool, publish_enabled: bool) -> str:
-    """Один честный итог после «Разрешить публикацию»: поставлено в очередь, выключено настройкой или шаг уже идёт."""
     if queued:
         return "Разрешено и поставлено в очередь: публикацию выполнит шаг публикации."
     if not publish_enabled:
@@ -123,10 +108,6 @@ def _approve_message(queued: bool, publish_enabled: bool) -> str:
 @router.post("/approve", dependencies=[Depends(require_operator_token)])
 async def approve_publication(project_id: int, body: ApproveIn, session: AsyncSession = Depends(get_project_session),
                               operator: str | None = Header(default=None, alias="X-Action-Layer-Operator")) -> dict:
-    """Подтверждение человека: «да» на каждую площадку отдельно, для ЭТОГО файла и ЭТОЙ подписи, одноразово.
-
-    Сама публикация здесь не выполняется. Если автопубликация включена и проект ждёт, он ставится в очередь
-    шага публикации; если выключена, подтверждение лишь записывается."""
     project = await _project(session, project_id)
     if project.status not in _APPROVABLE_STATUSES:
         raise HTTPException(status_code=409, detail={"code": "project_not_ready", "status": project.status.value,
@@ -154,9 +135,6 @@ async def approve_publication(project_id: int, body: ApproveIn, session: AsyncSe
 async def revoke_publication(project_id: int, platform: str, body: RevokeIn,
                              session: AsyncSession = Depends(get_project_session),
                              operator: str | None = Header(default=None, alias="X-Action-Layer-Operator")) -> dict:
-    """U-7: отозвать выданное «да» до того, как шаг публикации его потратил. После отзыва клика не будет.
-
-    Если «да» уже потрачено (идёт или прошла публикация), отзыв отклоняется кодом no_active_approval."""
     project = await _project(session, project_id)
     platform = _platform(platform)
     sha = await _current_sha(session, project, body.sha256)
@@ -174,7 +152,6 @@ async def revoke_publication(project_id: int, platform: str, body: RevokeIn,
 async def confirm_manual(project_id: int, platform: str, body: ConfirmManualIn,
                          session: AsyncSession = Depends(get_project_session),
                          operator: str | None = Header(default=None, alias="X-Action-Layer-Operator")) -> dict:
-    """Человек проверил площадку и подтверждает «опубликовано». Нужна ссылка на пост ИЛИ причина. Клик не повторяется."""
     project = await _project(session, project_id)
     platform = _platform(platform)
     sha = await _current_sha(session, project, body.sha256)
@@ -195,7 +172,6 @@ async def confirm_manual(project_id: int, platform: str, body: ConfirmManualIn,
 async def mark_failed(project_id: int, platform: str, body: MarkFailedIn,
                       session: AsyncSession = Depends(get_project_session),
                       operator: str | None = Header(default=None, alias="X-Action-Layer-Operator")) -> dict:
-    """Человек проверил площадку и помечает «не опубликовано». Причина обязательна. Клик не повторяется."""
     project = await _project(session, project_id)
     platform = _platform(platform)
     sha = await _current_sha(session, project, body.sha256)

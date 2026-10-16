@@ -1,33 +1,3 @@
-"""Dry run of the supervised retry of the local media nodes: assemble is ADMITTED, audio and sfx_gen are decided here.
-
-No network, no provider, no paid call. REAL: observe_attempt and the journal, the media_result verifier, the
-Diagnoser, the DecisionSupervisor, ActionSupervisor.enable / recover_node and its gates, the claim, the reconcile
-verification, media_admission, local_node_recovery, media_recovery.assess, the real ``assemble._assemble_body``
-(atomic write, ``verify_artifact`` with ffprobe on real files, in-node retry, approve_final barrier). SCRIPTED: the
-montage engine ``_assemble_core`` (a local ffmpeg pipeline, not a provider: here it writes a real small mp4 or fails
-like ffmpeg), the Telegram sender and the mass-factory hook. Nothing here can reach a provider; the file also proves
-that by guard and by scan.
-
-PROVEN SAFE (the base the admission rests on)
-* in-node retry: exactly one, only for ffmpeg errors and failed verification, never for input errors or a cancel;
-* atomic output: the previous final survives every failed attempt, a part file never lingers;
-* ``verify_artifact`` runs on the NEW file before it replaces the old one; a failed or unknown proof changes nothing;
-* approve_final is created once per (project, sha256), stays ``pending`` for a human, nothing here approves it;
-* no paid request is reachable on the assemble path (guard + scan).
-
-THE THREE CORE GAPS, CLOSED (each was pinned by a test that flipped)
-1. a general non-model worker recovery: ``recover_node`` dispatches the original worker for a local node
-   (``CapabilitySpec.local_recovery``) under a ticket; the attempt runs inside ``media_spend.resume_only`` and counts
-   any refused paid seam; ``reconcile`` verifies the ticket by its OWN rule from independent facts (the new file is
-   newer than the claim, ``verify_artifact`` again, the digest equals the artifact, the ``approve_final`` of that file
-   is still pending, the provider ledger is unchanged, no paid seam hit, no model request, no part file);
-   the same caps as the text nodes (kill switch, one ticket per node and execution, budget, input revision,
-   user_stop, decision owner) and the same fail-closed behaviour;
-2. a failed assemble is typed by the attempt's OWN outcome (a typed media failure with ``attempt_failure``), never by
-   an old final that happens to pass;
-3. the input baseline is recorded for the unmanaged attempt and covers the true inputs (voiceover, frame set, clip /
-   voice / music / sfx files, assembly parameters), not progress counters or the attempt's own outputs.
-"""
 import ast
 import hashlib
 import inspect
@@ -62,7 +32,6 @@ _VIDEO: dict[str, bytes] = {}
 
 
 def final_bytes(tag: str, scratch: Path, seconds: int = 3) -> bytes:
-    """A real small mp4 with a video and an audio stream (what verify_artifact(kind='assembly') requires)."""
     if tag not in _VIDEO:
         scratch.mkdir(parents=True, exist_ok=True)
         path = scratch / f"{tag}.mp4"
@@ -81,7 +50,6 @@ class AssembleDryRun(base.MediaDryRun):
     api = "none"
     key = "final"
 
-    # the Kie scenarios of the base class are about provider tasks: not applicable to a local node
     for _name in [n for n in dir(base.MediaDryRun) if n.startswith("test")]:
         locals()[_name] = None
     del _name
@@ -89,7 +57,7 @@ class AssembleDryRun(base.MediaDryRun):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.core_calls = 0
-        self.core_hook = None  # an awaitable run inside the montage engine (a node that misbehaves)
+        self.core_hook = None
         self.in_resume_only: list = []
         self.core_script: list = []
         self.sent: list[dict] = []
@@ -105,7 +73,6 @@ class AssembleDryRun(base.MediaDryRun):
         import app.services.mass_factory as mass_factory
         self.stack.enter_context(patch.object(mass_factory, "on_child_montage_complete", child))
 
-    # ---------------------------------------------------------------- the scripted montage engine
     @property
     def final_path(self) -> Path:
         return self.data / "final" / "actions-fixture.mp4"
@@ -118,7 +85,7 @@ class AssembleDryRun(base.MediaDryRun):
         self.final_during_core.append(self.final_path.read_bytes() if self.final_path.exists() else None)
         step = self.core_script.pop(0) if self.core_script else "good"
         if isinstance(step, BaseException):
-            out_path.write_bytes(b"half written output")  # a killed ffmpeg leaves a part file
+            out_path.write_bytes(b"half written output")
             raise step
         if step == "garbage":
             out_path.write_bytes(b"this is not a video")
@@ -139,9 +106,7 @@ class AssembleDryRun(base.MediaDryRun):
     def result_files(self):
         return self.final_path.parent.glob("*.mp4")
 
-    # ---------------------------------------------------------------- facts
     async def seed_old_final(self) -> bytes:
-        """A previous, verified final: file, artifact row and recorded digest."""
         old = final_bytes("blue", self.scratch, seconds=4)
         self.final_path.parent.mkdir(parents=True, exist_ok=True)
         self.final_path.write_bytes(old)
@@ -168,13 +133,11 @@ class AssembleDryRun(base.MediaDryRun):
     def project_stub(self):
         return SimpleNamespace(id=base.PID, data_dir=self.data)
 
-    # ================================================================ 1. what is PROVEN SAFE
     async def test_one_in_node_retry_replaces_the_old_final_only_after_verification_and_leaves_one_pending_approval(self):
         old = await self.seed_old_final()
         self.core_script = [RuntimeError("ffmpeg exited with 1")]
         await self.worker()
         self.assertEqual(self.core_calls, 2, "first attempt + exactly one retry")
-        # the previous final survived the failed first attempt and was still there when the retry started
         self.assertEqual(self.final_during_core, [old, old])
         new = self.final_path.read_bytes()
         self.assertEqual(new, final_bytes("red", self.scratch))
@@ -224,7 +187,7 @@ class AssembleDryRun(base.MediaDryRun):
     async def test_a_second_assemble_of_the_same_output_does_not_create_a_second_approval(self):
         await self.worker()
         first = await self.approvals()
-        async with self.business() as session:  # the same output assembled again (a human re-runs the node)
+        async with self.business() as session:
             project = await session.get(Project, base.PID)
             project.status = ProjectStatus.assembling
             await asm._assemble_body(session, project, None)
@@ -268,15 +231,12 @@ class AssembleDryRun(base.MediaDryRun):
                          [node.module or ""] + [a.name for a in node.names] if isinstance(node, ast.ImportFrom) else [])
                 offenders += [(rel, n) for n in names if any(b in n for b in banned)]
         self.assertEqual(offenders, [])
-        # the one helper that talks to Outsee (hero restore) is NOT part of recover_before_assemble
         from app.services import artifact_recovery
         source = inspect.getsource(artifact_recovery.recover_before_assemble)
         for forbidden in ("hero", "outsee", "synthesize", "generate"):
             self.assertNotIn(forbidden, source.lower())
 
-    # ================================================================ 2. the three core gaps, closed
     async def failed_assemble(self, script=None, *, old_final=True):
-        """The native attempt fails (ffmpeg twice by default), the native retries are exhausted, diagnosis ran."""
         if old_final:
             await self.seed_old_final()
         self.core_script = list(script) if script is not None else [RuntimeError("ffmpeg exited with 1")] * 2
@@ -302,8 +262,6 @@ class AssembleDryRun(base.MediaDryRun):
         return loop, record, await loop.context(record["decision_id"])
 
     async def settle(self, *, rejected=False):
-        """What the observer loop does after the worker returns: deliver the journal, reconcile the ticket.
-        ``rejected``: the evidence is final-negative, so the late-evidence window is over before the last pass."""
         await self.sync()
         await self.deliver()
         await reconcile(self.observer)
@@ -312,7 +270,6 @@ class AssembleDryRun(base.MediaDryRun):
             await reconcile(self.observer)
 
     async def age_ticket(self):
-        """The 30 s window in which reconcile still waits for late evidence is over."""
         async with self.sessions() as session:
             row = (await session.scalars(select(RecoveryAction))).one()
             row.result = {**row.result, "worker_returned_at": "2020-01-01T00:00:00"}
@@ -455,7 +412,6 @@ class AssembleDryRun(base.MediaDryRun):
         self.assertEqual(context["media_recovery"]["denied"], "failure_not_retryable")
         self.assertNotIn("retry_same", context["allowed_actions"])
 
-    # ================================================================ 3. gap 1: the non-model worker recovery
     async def test_failed_attempt_to_decision_to_one_verified_worker_retry(self):
         old = final_bytes("blue", self.scratch, seconds=4)
         incident = await self.failed_assemble()
@@ -464,7 +420,6 @@ class AssembleDryRun(base.MediaDryRun):
         loop, record, context = await self.decide(incident)
         with self.decision_model(["retry_same"]):
             await loop.step(record["decision_id"])
-        # the ticket: ONE, queued for the ORIGINAL worker (not executed in the supervisor process)
         ticket = await self.only_ticket()
         self.assertEqual(ticket.status, "queued")
         pre = ticket.preconditions
@@ -478,14 +433,12 @@ class AssembleDryRun(base.MediaDryRun):
         async with self.sessions() as session:
             row = await session.get(decision_v1.DecisionRecord, record["decision_id"])
             self.assertEqual((row.status, row.action_id), ("waiting_worker", ticket.action_id))
-        # the original worker runs it once, inside the resume-only scope
         await self.run_queued_retry()
         self.assertEqual(self.core_calls, 3)
         self.assertEqual(self.in_resume_only, [False, False, True], "only the supervised attempt is guarded")
         self.assertEqual(self.final_during_core[-1], old, "the old final stayed in place until the new one verified")
         new = self.final_path.read_bytes()
         self.assertEqual(new, final_bytes("red", self.scratch))
-        # verification from independent facts: a verified ticket with every check true
         ticket = await self.only_ticket()
         self.assertEqual(ticket.status, "verified", ticket.verification_result)
         checks = ticket.verification_result
@@ -512,7 +465,6 @@ class AssembleDryRun(base.MediaDryRun):
                   if f.attempt_id == ticket.new_attempt_id]
         self.assertEqual([p["status"] for p in proofs], ["passed"])
         self.assertNotIn("attempt_failure", proofs[0])
-        # the human barrier and the ledger
         approvals = await self.approvals()
         self.assertEqual(len(approvals), 1)
         self.assertIs(approvals[0].decision, HITLDecision.pending, "the supervisor never approves the final")
@@ -525,13 +477,11 @@ class AssembleDryRun(base.MediaDryRun):
         self.assertFalse(kinds & {"model_start", "model_end", "parse_result", "data_applied"}, kinds)
         guard = [f for f in facts if f.kind == "local_recovery_guard"][-1].payload
         self.assertEqual((guard["resume_only"], guard["paid_seam_hits"]), (True, 0))
-        # the decision completes from the persisted verification, without another model step
         await loop.tick()
         async with self.sessions() as session:
             row = await session.get(decision_v1.DecisionRecord, record["decision_id"])
             self.assertEqual(row.status, "done")
             self.assertTrue(row.verification["verified"])
-        # cap: the decision owner refuses a competing recovery; the database refuses a second ticket
         with self.assertRaisesRegex(ValueError, "decision owner"):
             await self.recover(incident, "second-local-0001")
         from sqlalchemy.exc import IntegrityError
@@ -564,7 +514,7 @@ class AssembleDryRun(base.MediaDryRun):
             try:
                 media_spend.assert_submit_allowed("elevenlabs", "tts post")
             except media_spend.ResumeOnlyBlocked:
-                pass  # a node swallowing the refusal and finishing anyway
+                pass
 
         self.core_hook = node_that_tries_to_pay_and_ignores_the_refusal
         await self.run_queued_retry(rejected=True)
@@ -692,7 +642,7 @@ class AssembleDryRun(base.MediaDryRun):
             await session.commit()
         calls = self.core_calls
         with self.assertRaisesRegex(ValueError, "recovery only"):
-            await self.worker(start=False)  # a managed attempt WITHOUT a claimed ticket
+            await self.worker(start=False)
         self.assertEqual((self.core_calls, await self.tickets()), (calls, []))
         with self.assertRaisesRegex(ValueError, "recovery only"):
             node_capabilities.require_managed_capability("assemble")
@@ -702,7 +652,7 @@ class AssembleDryRun(base.MediaDryRun):
         incident = await self.failed_assemble()
         await self.enable()
         await self.recover(incident)
-        async with self.sessions() as session:  # the process died after the claim: no worker end ever arrives
+        async with self.sessions() as session:
             ticket = (await session.scalars(select(RecoveryAction))).one()
             ticket.status, ticket.created_at = "claimed", datetime(2020, 1, 1)
             await session.commit()
@@ -723,7 +673,6 @@ class AssembleDryRun(base.MediaDryRun):
         self.assertEqual(await self.tickets(), [])
         self.assertTrue(incident)
 
-    # ================================================================ 4. what changed in the registries
     def test_assemble_is_admitted_as_a_local_worker_node_not_as_a_provider_resume(self):
         self.assertIn("assemble", media_admission.ADMITTED_NODES)
         self.assertIn("assemble", media_admission.LOCAL_NODES)
@@ -765,7 +714,6 @@ class AssembleDryRun(base.MediaDryRun):
         self.assertIn("required_checks", source)
         self.assertIn('(row.preconditions or {}).get("local_worker")', source)
         self.assertIn("local_node_recovery.verify", source)
-        # the node itself still emits no model facts
         run_source = inspect.getsource(asm)
         for fact in ("data_applied", "parse_result", "model_start"):
             self.assertNotIn(fact, run_source)
@@ -784,13 +732,10 @@ class AssembleDryRun(base.MediaDryRun):
         dispatch_at = source.index("start_node_running(node")
         self.assertLess(media_at, dispatch_at, "provider resumes still return BEFORE the worker dispatch line")
         self.assertIn("local = bool(media and media_admission.local_worker(node_type))", source)
-        # W4-4: the text-style incident check is now the retry class (recovery_class), still only when not media
         self.assertIn("(rclass is None and not media)", source)
 
 
 class FinishedFileNodes(unittest.IsolatedAsyncioTestCase):
-    """audio and sfx_gen: only the already-finished-file / local parts could ever be resumed by a supervisor,
-    never a new TTS or sound-effect request. Whether that is admissible is decided here, from facts."""
 
     async def asyncSetUp(self):
         import tempfile
@@ -806,7 +751,7 @@ class FinishedFileNodes(unittest.IsolatedAsyncioTestCase):
 
     async def test_audio_finished_file_is_a_resume_local_verdict_but_the_node_is_not_admitted(self):
         marker = self.project.data_dir / "audio" / ".tts_uncertain_deadbeef"
-        marker.write_text("x", encoding="utf-8")  # a stale marker of an earlier timeout
+        marker.write_text("x", encoding="utf-8")
         report = await media_recovery.assess(self.project, "audio")
         self.assertEqual((report["verdict"]["mode"], report["verdict"]["code"]), ("resume_local", "finished_file_on_disk"))
         self.assertEqual(report["keys"][0]["stale_markers"], [marker.name])
@@ -814,7 +759,6 @@ class FinishedFileNodes(unittest.IsolatedAsyncioTestCase):
             await media_admission.admit(self.project, "audio")
         self.assertEqual(caught.exception.code, "node_not_admitted")
         self.assertNotIn("audio", media_admission.ADMITTED_NODES)
-        # D06: the finished file IS admitted for a supervised resume, but by media_local_resume (not media_admission)
         from app.services import media_local_resume
         self.assertTrue(media_local_resume.admitted("audio"))
         self.assertTrue(node_capabilities.capability_for("audio").managed)
@@ -828,8 +772,6 @@ class FinishedFileNodes(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(media_admission, "task_fingerprint", fingerprint):
             outcome = await media_admission.run_and_verify(self.project, "audio", admission)
-        # the operation asks nobody and writes nothing: the Artifact / frame timings that make the file the
-        # node's result are created only by the node's own run (generate_audio disk branch), which needs the worker
         self.assertEqual((outcome["resumed"], outcome["new_paid_requests"], outcome["node_started"]), ([], 0, False))
         self.assertFalse(outcome["verified"])
         self.assertIn("audio:not_resumed", outcome["problems"])
@@ -850,20 +792,17 @@ class FinishedFileNodes(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(media_spend.ResumeOnlyBlocked):
                 await media_spend.track_eleven_sfx(sfx)("p", 1.0, self.root / "x.wav")
         self.assertEqual(sent, [])
-        # outside the scope the same wrapper does call through: the guard is the scope, not a stub
         await media_spend.track_eleven_sfx(sfx)("p", 1.0, self.root / "x.wav")
         self.assertEqual(sent, ["sfx post"])
 
     async def test_sfx_gen_has_no_resume_local_verdict_at_all(self):
         from app.services.ai_result_io import save_ai_job_checkpoint
-        # finished files, no fallback: nothing for a supervisor to do (the node reuses its checkpoint by itself)
         self.project.meta = {}
         save_ai_job_checkpoint(self.project, "sfx_files", {"files": [
             {"idx": 0, "provider": "elevenlabs", "path": "sfx/a.wav"},
             {"idx": 1, "provider": "elevenlabs", "path": "sfx/b.wav"}]})
         report = await media_recovery.assess(self.project, "sfx_gen")
         self.assertEqual(report["verdict"]["mode"], "nothing_to_do")
-        # degraded events: a native bounded retry (retry_same) or a human (denied), never a local resume
         save_ai_job_checkpoint(self.project, "sfx_files", {"files": [
             {"idx": 0, "provider": "local_synth", "provider_fallback": {"may_have_charged": "no", "error_class": "http_500"}},
             {"idx": 1, "provider": "local_synth", "provider_fallback": {"may_have_charged": "uncertain", "error_class": "timeout"}},
@@ -877,13 +816,11 @@ class FinishedFileNodes(unittest.IsolatedAsyncioTestCase):
 
     def test_the_local_nodes_keep_their_honest_forbidden_codes(self):
         from app.orchestrator.node_spec import capability_spec_for
-        # D06: no forbidden code any more; the recovery is a LOCAL resume of a finished file only
         for node_type in ("audio", "sfx_gen"):
             spec = capability_spec_for(node_type)
             self.assertIsNone(spec.forbidden_code)
             self.assertTrue(spec.recovery_only and spec.effective_managed)
             self.assertEqual(spec.recovery_actions, ("retry_same",))
-        # assemble was promoted by this dry run: no forbidden code any more
         self.assertIsNone(capability_spec_for("assemble").forbidden_code)
         self.assertNotIn("media_recovery_not_admitted", KNOWN_FORBIDDEN_CODES)
 

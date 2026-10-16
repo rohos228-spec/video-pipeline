@@ -1,4 +1,3 @@
-"""Safety contracts for the actions-v1 execution permission layer."""
 import unittest
 import tempfile
 import uuid
@@ -92,7 +91,6 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(Base.metadata.create_all)
             await observation.migrate_observation_schema(conn)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
-        # Recovery evidence below is the structured Excel/mandatory JSON contract.
         fixture_type = getattr(self, "fixture_node_type", "excel_gpt")
         self.nodes = [{"id":"n1","type":fixture_type,"data":{"groupId":"g1"}},
                       {"id":"n2","type":"script","data":{"groupId":"g2"}}]
@@ -394,7 +392,7 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
         from app.web.routers import db_browser as api
         from app.web.deps import get_project_session
         await self.exhausted_fixture()
-        clear_permission(7)  # Simulate volatile registry loss, not revocation.
+        clear_permission(7)
         app=FastAPI();app.include_router(api.router,prefix='/api')
         async def dependency():
             async with self.sessions() as session: yield session
@@ -444,7 +442,6 @@ class DurableActions(unittest.IsolatedAsyncioTestCase):
 
 
 class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
-    # Reuse isolated persistence fixtures without inheriting unrelated test cases.
     asyncSetUp = DurableActions.asyncSetUp
     asyncTearDown = DurableActions.asyncTearDown
     exhausted_fixture = DurableActions.exhausted_fixture
@@ -468,7 +465,6 @@ class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
                 node.node_type = node_type if node.node_key == 'n1' else 'excel_gpt'
             await session.commit()
         await self.exhausted_fixture(node_keys=['n1', 'n2'])
-        # A second structured node gives the mixed scope its persisted retry grant.
         actions = list(capability_for('excel_gpt').actions) if grant is None else grant
         async with self.sessions() as session:
             session.add(ManagedLaunch(launch_id='mixed-launch', execution_id='exec-durable',
@@ -533,20 +529,12 @@ class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(get_permission(7), permission)
         self.assertIsNone(restricted_node(7))
 
-    # plan/script, and since W5 D05 also split/image_prompts/sfx_plan/sd_assemble, were denied here until their native
-    # executors were shown sound for the bounded recovery. Their admission (retry_same/retry_profile, no inner
-    # json_retry, body identity modulo attachment stamps) is asserted in tests/observe_v1/test_text_nodes_recovery.py
-    # and tests/observe_v1/w5_d05_split_image_prompts_admission_test.py. Nodes that stay denied are used below.
-    # D06: audio / sfx_gen / images are admitted for MEDIA incidents only (a local resume of a recorded result); a
-    # text-style (invalid_json) restart or a profile retry never reaches them.
     async def test_retry_same_denies_audio_with_inherited_grant(self):
         await self.assert_retry_denied('audio', reason='admitted for media incidents only')
 
     async def test_retry_profile_denies_audio_with_inherited_grant(self):
         await self.assert_retry_denied('audio', profile=True, reason='admitted for media incidents only')
 
-    # sd_agent is managed per type and admitted per agent: a refused agent (camera) never enters a managed
-    # scope at all, so it has no inherited grant to retry with (the refusal is the denial).
     async def test_retry_same_denies_marked_scene_with_inherited_grant(self):
         with self.assertRaisesRegex(ValueError, "scene agent 'camera' is not admitted"):
             await self.mixed_recovery_fixture('excel_gpt', marker='camera')
@@ -600,7 +588,6 @@ class RecoveryCapabilityAdmission(unittest.IsolatedAsyncioTestCase):
 
 
 class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
-    # Old queued rows must be exercised without passing through new admission.
     asyncSetUp = DurableActions.asyncSetUp
     asyncTearDown = DurableActions.asyncTearDown
     exhausted_fixture = DurableActions.exhausted_fixture
@@ -638,7 +625,6 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
                 overlay.status = 'reserved'
                 overlay.history = [{'kind': 'recovery_reserved', 'action_id': 'legacy-recovery',
                                     'attempt_id': 'legacy-attempt'}]
-                # Historical profile tickets already recorded the strategy and overlay.
                 preconditions.update(action_type='retry_profile', profile_overlay_id=overlay_id,
                     candidate_hash=overlay.candidate_hash, source_body_hash=overlay.source_body_hash,
                     first_body_hash=overlay.expected_body_hash)
@@ -660,7 +646,6 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
                 preconditions=dict(preconditions), idempotency_key='legacy-ticket-key',
                 status='queued', verification={}))
             await session.commit()
-        # Recreate volatile state from the persisted submitted launch and ticket.
         clear_permission(7)
         finish_job_tracking(7)
         await reload_permissions(self.sessions)
@@ -725,8 +710,6 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restricted_node(7), 'n1')
         self.assertNotIn(7, _inflight_projects)
 
-    # plan/script now carry retry capabilities (they cannot have legacy denied tickets);
-    # a queued ticket for them follows the same single-claim rule as excel_gpt.
     async def test_old_retry_same_plan_claims_once_after_restart(self):
         await self.assert_old_excel_claims_once(node_type='plan')
 
@@ -739,8 +722,6 @@ class LegacyQueuedRecoveryClaims(unittest.IsolatedAsyncioTestCase):
     async def test_old_retry_profile_script_claims_once_after_restart(self):
         await self.assert_old_excel_claims_once(profile=True, node_type='script')
 
-    # W5 D05: split and image_prompts carry retry capabilities now; a queued ticket for them follows the same
-    # single-claim rule as plan/script (the incident / partial-apply / revision gates stay in recover_node).
     async def test_old_retry_same_split_claims_once_after_restart(self):
         await self.assert_old_excel_claims_once(node_type='split')
 

@@ -120,8 +120,6 @@ async def _lifespan(app: FastAPI):
     Безопасно повторно вызывается. В дев-режиме (uvicorn `--reload` без app.main)
     этот lifespan единственный гарантирует наличие новых таблиц.
     """
-    # A05: не-loopback WEB_HOST без входа - отказ старта (исключение пробрасывается намеренно;
-    # обход только явным ORCHESTRATOR_ALLOW_REMOTE_WITHOUT_AUTH=true, тогда предупреждение).
     from app.services.access_guard import assert_safe_bind
 
     assert_safe_bind()
@@ -130,7 +128,7 @@ async def _lifespan(app: FastAPI):
         from app.models import Base
 
         async with engine.begin() as conn:
-            from app.services.scene_space import models as _scene_space_models  # noqa: F401
+            from app.services.scene_space import models as _scene_space_models
 
             await conn.run_sync(Base.metadata.create_all)
             from app.services.db_v2 import migrate_db_v2_schema
@@ -141,7 +139,7 @@ async def _lifespan(app: FastAPI):
             from app.services.schema_migrations import migrate_orchestrator_schema
 
             await migrate_orchestrator_schema(conn)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("create_all failed (non-fatal — possibly already exists)")
     try:
         from app.db import session_scope
@@ -192,7 +190,7 @@ async def _lifespan(app: FastAPI):
 
     from app.services.redact import install_log_redaction
 
-    install_log_redaction()  # A16: секреты не попадают в studio-live.log
+    install_log_redaction()
     live_log_path = settings.data_dir / "studio-live.log"
     live_log_path.parent.mkdir(parents=True, exist_ok=True)
     live_log_sink = logger.add(
@@ -202,7 +200,7 @@ async def _lifespan(app: FastAPI):
         enqueue=True,
         rotation="30 MB",
         retention=2,
-        diagnose=False,  # A16: без значений локальных переменных
+        diagnose=False,
     )
     logger.info("studio live log → {}", live_log_path)
 
@@ -229,14 +227,11 @@ async def _lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("montage job reconcile failed (non-fatal)")
 
-    try:
-        from app.project_db import auto_migrate_legacy_projects_if_needed
-
-        migrated_n = await auto_migrate_legacy_projects_if_needed()
-        if migrated_n > 0:
-            logger.info("web lifespan: auto-migrated {} legacy projects to project.db", migrated_n)
-    except Exception:  # noqa: BLE001
-        logger.exception("auto_migrate_legacy_projects failed (non-fatal)")
+    if settings.vps_relay_base_url:
+        logger.warning(
+            "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
+            settings.vps_relay_base_url,
+        )
 
     try:
         from app.services.project_db_guard import migrate_existing_project_dbs
@@ -244,14 +239,14 @@ async def _lifespan(app: FastAPI):
         schema_report = await migrate_existing_project_dbs()
         if schema_report["failed"]:
             logger.error("web lifespan: project.db schema migration failed for {}", schema_report["failed"])
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("migrate_existing_project_dbs failed (non-fatal)")
 
     try:
         from app.services.diagnosis import register_default_escalation_notifier
 
         register_default_escalation_notifier()
-    except Exception:  # noqa: BLE001 - уведомление не должно мешать запуску
+    except Exception:
         logger.exception("escalation notifier registration failed (non-fatal)")
 
     from app.services.observation import get_observer
@@ -259,16 +254,14 @@ async def _lifespan(app: FastAPI):
     from app.services import supervisor_heartbeat
 
     observer_task = asyncio.create_task(get_observer().loop(), name="observation-consumer")
-    # A18: независимая от цикла надзора задача проверки пульса (второй рубеж - scripts/watchdog_check.py).
     checker_task = asyncio.create_task(supervisor_heartbeat.run_checker(), name="observer-heartbeat-checker")
-    # S-3: плановый бэкап state.db, tracker.db и project.db каждого проекта (копия + проверка восстановления).
     backup_stop = asyncio.Event()
     backup_task = None
     try:
         from app.services.project_db_guard import start_scheduled_backups
 
         backup_task = start_scheduled_backups(stop=backup_stop)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("scheduled backups failed to start (non-fatal)")
     try:
         yield
@@ -303,8 +296,6 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    # A04: сначала защитный слой (Host/Origin/токен оператора), поверх него CORS по явному
-    # списку (последний добавленный слой - внешний, поэтому и отказы получают CORS-заголовки).
     from app.services import access_guard
 
     app.add_middleware(access_guard.SecurityGuardMiddleware)
@@ -316,15 +307,9 @@ def create_app() -> FastAPI:
         allow_headers=["Content-Type", "Authorization", access_guard.OPERATOR_HEADER,
                        "Idempotency-Key", "X-Action-Layer-Operator"],
     )
-    # B01: самый внешний слой - request_id для /api и строка аудита на каждый POST/PUT/PATCH/DELETE
-    # (в том числе отказанный защитным слоем).
     from app.services.operator_audit import OperatorAuditMiddleware
 
     app.add_middleware(OperatorAuditMiddleware)
-    # Изменяющие ручки Studio без веб-входа принимаются только с loopback (чтения не трогаем).
-    # Фаза 6 (Q-01): при WEB_AUTH вход нужен на КАЖДОМ роутере /api, кроме /api/auth/*
-    # (login/status/logout; operator-token внутри сам требует AuthDep). Без WEB_AUTH require_web_user
-    # пропускает всех - поведение по умолчанию (loopback без входа) не меняется.
     from app.web.auth_sessions import require_web_user
 
     auth = Depends(require_web_user)
@@ -358,7 +343,7 @@ def create_app() -> FastAPI:
     from app.web.routers import media_recovery as media_recovery_router
 
     app.include_router(media_recovery_router.router, prefix=API_PREFIX, dependencies=[auth])
-    from app.web.routers import publications as publications_router  # W6-1: E01/E02/E11
+    from app.web.routers import publications as publications_router
 
     app.include_router(publications_router.router, prefix=API_PREFIX, dependencies=mut)
     app.include_router(prompts_router.router, prefix=API_PREFIX, dependencies=[auth])
@@ -379,7 +364,6 @@ def create_app() -> FastAPI:
 
     @app.api_route(f"{API_PREFIX}/{{rest:path}}", methods=["POST", "PUT", "PATCH", "DELETE"])
     async def api_write_not_found(rest: str) -> None:
-        """Не даём GET catch-all отвечать 405 на неизвестные POST /api/*."""
         from fastapi import HTTPException
 
         raise HTTPException(
@@ -387,7 +371,6 @@ def create_app() -> FastAPI:
             detail="API route not found — перезапустите Studio (STUDIO.cmd → [1])",
         )
 
-    # ── WebSocket: live-стрим событий выбранного канала ──
     # Лимит: утечки на клиенте (до WS-hub) иначе копят 200+ сокетов и
     # душат event loop — anim_pr / GPT API выглядят «зависшими».
     _ws_active = {"n": 0}
@@ -405,7 +388,7 @@ def create_app() -> FastAPI:
 
             bearer = (ws.headers.get("authorization") or "").removeprefix("Bearer ").strip()
             if not validate_session_token(bearer or ws.cookies.get("vp_session")):
-                await ws.close(code=1008)  # без входа события проектов не отдаём
+                await ws.close(code=1008)
                 return
         if _ws_active["n"] >= _WS_MAX:
             await ws.accept()
@@ -564,7 +547,7 @@ def _mount_frontend(app: FastAPI) -> None:
 
         candidate = out_dir / full_path
         if not _inside(candidate):
-            return _html_response(out_dir / "index.html")  # выход из web/out запрещён
+            return _html_response(out_dir / "index.html")
         if candidate.is_file():
             if candidate.suffix.lower() in {".html", ".htm"}:
                 return _html_response(candidate)
@@ -581,7 +564,6 @@ def _mount_frontend(app: FastAPI) -> None:
 
 
 def _mount_frontend_missing_help(app: FastAPI, out_dir: Path) -> None:
-    """Показываем понятную страницу, если web/out ещё не собран."""
     from fastapi.responses import HTMLResponse
 
     html = f"""<!DOCTYPE html>

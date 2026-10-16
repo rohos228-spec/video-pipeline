@@ -40,7 +40,6 @@ async def test_concurrent_agent_checkpoint_writes_preserve_all_agents(tmp_path: 
 
 
 def test_load_checkpoint_legacy_style_does_not_keyerror(tmp_path: Path):
-    """Старый style.json: сборка не должна падать KeyError LIST_KEY['style']."""
     import json
 
     project = SimpleNamespace(

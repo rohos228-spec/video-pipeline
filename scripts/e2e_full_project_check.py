@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -24,8 +24,6 @@ from app.models import Base, Frame, FrameStatus, Project, ProjectStatus
 from app.services import db_apply, db_v2
 from app.settings import settings
 
-# A19: no fixed /tmp path and no deleting of state.db by name. The scratch folder is E2E_DATA_DIR when given
-# (must not be the live data folder) or a fresh temp folder; the old state.db is removed only inside it.
 DATA = (guard.assert_scratch_data_dir(Path(os.environ["E2E_DATA_DIR"])) if os.environ.get("E2E_DATA_DIR")
         else Path(tempfile.mkdtemp(prefix="e2e_full_project_")))
 DATA.mkdir(parents=True, exist_ok=True)

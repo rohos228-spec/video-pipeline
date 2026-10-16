@@ -1,4 +1,3 @@
-"""Исполнители платных и фоновых действий на заглушке ctx.call: сети и денег нет."""
 from __future__ import annotations
 
 import pytest
@@ -13,7 +12,6 @@ KLING = {"video_generator": "kling_v3_turbo_i2v", "video_resolution": "720p"}
 
 
 class FakeCtx:
-    """Подменяет ActionContext: отвечает по (метод, путь), пишет все вызовы."""
 
     def __init__(self, routes: dict) -> None:
         self.routes = routes
@@ -123,14 +121,13 @@ async def test_apply_poll_maps_job_states_and_reports_no_credits() -> None:
     assert not st.done and st.progress == 0.25 and st.note == "1/4"
     st = await s.poll(job(status="done", done_ops=4, total_ops=4), p, started)
     assert st.done and st.ok and st.progress == 1.0
-    assert st.credits_spent is None            # apply-status стоимость не отдаёт
+    assert st.credits_spent is None
     st = await s.poll(job(status="error", error="Outsee 500"), p, started)
     assert st.done and not st.ok and st.error == "Outsee 500"
     st = await s.poll(job(status="cancelled"), p, started)
     assert st.done and not st.ok and "остановлено" in st.error
     st = await s.poll(job(status="idle"), p, started)
     assert st.done and not st.ok
-    # без запущенного apply опрашивать нечего
     st = await s.poll(FakeCtx({}), p, {"apply_started": False})
     assert st.done and st.ok
 
@@ -158,14 +155,13 @@ async def test_improve_scene_runs_llm_then_queues_and_applies_scene_images() -> 
     ops = [{"type": "image_ai_change", "frame_number": 1, "shot": 1, "slot": "parent",
             "instruction": "a"},
            {"type": "image_ai_change", "frame_number": 1, "shot": 1, "instruction": "b"},
-           {"type": "video_regen", "frame_number": 9}]  # не image_ - отбрасывается
+           {"type": "video_regen", "frame_number": 9}]
     ctx = FakeCtx(improve_routes(ops, queue=[IMG1, {"type": "image_regen", "frame_number": 7}]))
     out = await spec("montage.improve_scene").executor(ctx, IMPROVE)
     assert out["improved"] and out["applied"] and out["apply_started"] and out["image_ops"] == 2
     improve_body = ctx.posted("/scene-improve")[0][3]
     assert improve_body == {"prompt": "ночь", "anchors": []}
     queue = ctx.posted("/queue")[0][3]["pending_ops"]
-    # прежняя картинка кадра 1 заменена, кадр 7 остался
     assert [(o["frame_number"], o.get("slot")) for o in queue] == [(7, None), (1, "parent"), (1, None)]
     apply_body = ctx.posted("/apply")[0][3]
     assert apply_body["frame_numbers"] == [1]
@@ -202,7 +198,7 @@ async def test_generate_scene_images_builds_ops_from_board_and_applies() -> None
     ctx = FakeCtx(routes(frames=frames))
     out = await spec("montage.generate_scene_images").executor(
         ctx, {"project_id": 1, "frame_numbers": [1, 2], "scene_prompt": "утро", **FLUX})
-    assert out["applied"] and out["image_ops"] == 4   # parent still + 1 + 1(end) + 2
+    assert out["applied"] and out["image_ops"] == 4
     assert ctx.posted("/apply")[0][3]["frame_numbers"] == [1, 2]
 
 

@@ -34,39 +34,17 @@ from app.models import (
     ProjectStatus,
 )
 from app.services.plan_validation import is_meaningful_general_plan
+from app.services.step_registry import running_statuses
 
 # Промежуточные «running» статусы — их при перевычислении не учитываем
 # (не зафиксированы в БД). Если статус сейчас `generating_X` — мы вернём
 # либо его prerequisite, либо его ready_status (зависит от данных).
-_RUNNING_STATUSES = {
-    ProjectStatus.planning,
-    ProjectStatus.scripting,
-    ProjectStatus.splitting,
-    ProjectStatus.scene_designing,
-    ProjectStatus.scene_assembling,
-    ProjectStatus.generating_hero,
-    ProjectStatus.generating_items,
-    ProjectStatus.enriching_1,
-    ProjectStatus.enriching_2,
-    ProjectStatus.enriching_3,
-    ProjectStatus.enriching_4,
-    ProjectStatus.enriching_5,
-    ProjectStatus.generating_image_prompts,
-    ProjectStatus.generating_images,
-    ProjectStatus.generating_animation_prompts,
-    ProjectStatus.generating_videos,
-    ProjectStatus.generating_audio,
-    ProjectStatus.generating_music,
-    ProjectStatus.sfx_planning,
-    ProjectStatus.generating_sfx,
-    ProjectStatus.assembling,
-    ProjectStatus.publishing,
-}
-
-
 def is_running_status(status: ProjectStatus) -> bool:
     """True если статус — «running» (шаг сейчас выполняется воркером)."""
-    return status in _RUNNING_STATUSES
+    return status in running_statuses()
+
+
+_RUNNING_STATUSES = running_statuses()
 
 
 def _nonempty_item_descriptions(project: Project) -> list[str]:
@@ -633,18 +611,12 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
 
 
 def meta_diff(before: dict, after: dict) -> tuple[dict, list[str]]:
-    """Что поменялось между двумя снимками meta: (изменённые/добавленные ключи, удалённые ключи)."""
     set_keys = {k: v for k, v in after.items() if k not in before or before[k] != v}
     del_keys = [k for k in before if k not in after]
     return set_keys, del_keys
 
 
 async def apply_meta_diff(session, project: Project, set_keys: dict, del_keys: list[str]) -> bool:
-    """Записать в meta ТОЛЬКО изменённые ключи поверх свежей версии из БД.
-
-    Раньше устаревший снимок meta целиком затирал ключи, которые параллельно
-    поставили воркер или оператор (user_stop, step_failure и т.п.).
-    """
     if not set_keys and not del_keys:
         return False
     from sqlalchemy.orm.attributes import flag_modified
@@ -812,11 +784,16 @@ async def recompute_status(
     return old, new, True
 
 
-async def recompute_all(session, *, dry_run: bool = False) -> dict[int, tuple[str, str]]:
+async def recompute_all(
+    session, *, dry_run: bool = False, skip_assembled: bool = False
+) -> dict[int, tuple[str, str]]:
     """Прогон рекомпьюта по всем проектам. Возвращает {pid: (old, new)}
     только для тех, у кого статус изменился.
     """
-    rows = (await session.execute(select(Project))).scalars().all()
+    stmt = select(Project)
+    if skip_assembled:
+        stmt = stmt.where(Project.status != ProjectStatus.assembled)
+    rows = (await session.execute(stmt)).scalars().all()
     changes: dict[int, tuple[str, str]] = {}
     for p in rows:
         old, new, changed = await recompute_status(session, p, dry_run=dry_run)

@@ -1,11 +1,3 @@
-"""Dev-сид для ручной проверки панели «Сцена» на доске монтажа.
-
-Не часть пайплайна: создаёт в проекте ячейку закадра с лестницей T/X
-(родитель + два дочерних шота), биты с якорями и ставит на канвас группу
-``script_frames_qc``, иначе строка «Сцена» на доске скрыта.
-
-    python3 scripts/dev_seed_montage_scene.py [project_id]
-"""
 
 from __future__ import annotations
 
@@ -60,7 +52,6 @@ CELLS = [
 ]
 
 
-#: Готовые рефы проекта для окна «приложить»: код → (вид, имя, цвет).
 ASSETS = [
     ("characters", "c01", "character", "следователь Лавров", (74, 92, 122)),
     ("characters", "c02", "character", "курьер", (122, 88, 74)),
@@ -69,7 +60,6 @@ ASSETS = [
 
 
 def _seed_assets(data_dir) -> None:
-    """PNG персонажей и предметов + имена в Entity — иначе окно рефов пустое."""
     from PIL import Image
 
     for folder, code, _kind, _name, color in ASSETS:
@@ -93,8 +83,6 @@ async def main(project_id: int) -> None:
         meta = dict(project.meta or {})
         graph = dict(meta.get("canvas_graph") or {})
         nodes = [n for n in (graph.get("nodes") or []) if isinstance(n, dict)]
-        # script_frames_qc включает строку «Сцена»; assemble даёт кнопку,
-        # которой доска монтажа вообще открывается.
         wanted = [
             {
                 "id": "n_dev_script_frames_qc",

@@ -1,15 +1,3 @@
-"""Файлы, прикреплённые к командной строке слоя действий.
-
-Файл загружается отдельной ручкой (POST /attachments) и лежит в DATA_DIR/attachments/<проект>/
-<uuid>_<безопасное имя>. Планировщик (модель) видит только {id, name, kind, size}: путь никогда не
-попадает в промпт и не берётся из ответа модели. Сервер сам подставляет путь в шаг загрузки по
-id вложения (``planner_uploads``) после проверки: вид файла подходит действию, вложение принадлежит
-этому проекту и ещё не использовано в другом плане.
-
-Вложение «использовано» (consumed), когда по нему создан план: так один файл не уходит в два
-плана. Неиспользованные вложения старше срока хранения удаляются (``cleanup_unused``).
-Таблица создаётся миграцией 0006 (schema_migrations).
-"""
 from __future__ import annotations
 
 import hashlib
@@ -32,23 +20,21 @@ from app.services.action_layer.context import _magic_ok
 
 MIB = 1024 * 1024
 CHUNK = MIB
-MAX_PER_REQUEST = 5          # вложений в одном запросе к планировщику
+MAX_PER_REQUEST = 5
 MAX_NAME_LEN = 100
-HEADROOM = 256 * 1024        # служебные байты multipart сверх файла
+HEADROOM = 256 * 1024
 ATTACH_DIR = "attachments"
 _TMP_MAX_AGE_S = 3600
 _CLEANUP_EVERY_S = 3600
 
 
 class AttachmentError(Exception):
-    """Отказ с кодом и русским текстом; ``status`` - код HTTP для ручек."""
 
     def __init__(self, code: str, message: str, status: int = 422):
         self.code, self.status = code, status
         super().__init__(message)
 
 
-# --- виды файлов ------------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class KindRule:
@@ -85,13 +71,11 @@ _ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 def max_bytes_for(kind: str) -> int:
-    """Потолок размера: меньшее из лимита вида и общей настройки (МБ)."""
     from app.settings import settings
     return min(KINDS[kind].max_bytes, int(settings.action_layer_attachment_max_mb) * MIB)
 
 
 def rules_view() -> dict:
-    """Что принимает ручка загрузки (для кнопки выбора файла)."""
     return {"kinds": {k: {"title_ru": r.title_ru, "extensions": list(r.extensions),
                           "max_bytes": max_bytes_for(k)} for k, r in KINDS.items()}}
 
@@ -100,7 +84,6 @@ def max_request_bytes() -> int:
     return max(max_bytes_for(k) for k in KINDS) + HEADROOM
 
 
-# --- таблица ------------------------------------------------------------------------------------
 
 class ActionAttachment(Base):
     __tablename__ = "action_layer_attachments"
@@ -124,14 +107,12 @@ _TABLES = [ActionAttachment.__table__]
 
 
 async def ensure_attachments_schema(conn) -> None:
-    """Идемпотентно создаёт таблицу вложений (миграция 0006 и тестовые базы)."""
     await conn.run_sync(lambda sync_conn: Base.metadata.create_all(
         sync_conn, tables=_TABLES, checkfirst=True))
 
 
 @dataclass(frozen=True)
 class AttachmentRef:
-    """Проверенное вложение для планировщика. Путь только серверный (относительно DATA_DIR)."""
     id: str
     project_id: int
     name: str
@@ -142,7 +123,6 @@ class AttachmentRef:
     rel_path: str
 
     def prompt_view(self) -> dict:
-        """Единственное, что видит модель."""
         return {"id": self.id, "name": self.name, "kind": self.kind, "size": self.size}
 
 
@@ -153,7 +133,6 @@ def _ref(row: ActionAttachment) -> AttachmentRef:
 
 def synthetic_ref(project_id: int, kind: str, name: str, size: int = 1024, *,
                   att_id: str | None = None) -> AttachmentRef:
-    """Вложение без файла (оценка планировщика и тесты): та же форма, что у настоящего."""
     clean = sanitize_name(name)
     ext = Path(clean).suffix.lower()
     aid = att_id or uuid.uuid4().hex
@@ -161,10 +140,8 @@ def synthetic_ref(project_id: int, kind: str, name: str, size: int = 1024, *,
                          f"{ATTACH_DIR}/{project_id}/{aid}_{clean}")
 
 
-# --- имена и пути -------------------------------------------------------------------------------
 
 def sanitize_name(raw: Any) -> str:
-    """Безопасное имя: без путей, управляющих символов, зарезервированных имён Windows."""
     text = unicodedata.normalize("NFC", str(raw or ""))
     if "\x00" in text:
         raise AttachmentError("bad_name", "В имени файла недопустимый символ.")
@@ -189,7 +166,6 @@ def attachments_root() -> Path:
 
 
 def abs_path(rel_path: str) -> Path:
-    """Абсолютный путь вложения; строго внутри DATA_DIR/attachments."""
     from app.settings import settings
     root = attachments_root()
     real = (Path(settings.data_dir).resolve() / rel_path).resolve()
@@ -204,7 +180,6 @@ def _mime_ok(kind: str, content_type: str) -> bool:
 
 
 def _content_ok(ext: str, head: bytes, path: Path) -> bool:
-    """Содержимое соответствует расширению (по сигнатуре; текст и JSON читаются целиком, они малы)."""
     if ext in (".txt", ".md", ".json"):
         data = path.read_bytes()
         if not _magic_ok(".txt", head, data):
@@ -224,13 +199,8 @@ def _content_ok(ext: str, head: bytes, path: Path) -> bool:
     return _magic_ok(ext, head, b"")
 
 
-# --- загрузка ----------------------------------------------------------------------------------
 
 async def save_upload(upload, *, project_id: int, operator: str) -> dict:
-    """Сохраняет загруженный файл (потоком, с потолком) и пишет строку в таблицу.
-
-    ``upload``: starlette UploadFile. Размер, расширение, MIME и сигнатура проверяются до записи
-    строки; при любом отказе файл удаляется."""
     name = sanitize_name(getattr(upload, "filename", ""))
     ext = Path(name).suffix.lower()
     kind = EXT_KIND.get(ext)
@@ -284,10 +254,8 @@ async def save_upload(upload, *, project_id: int, operator: str) -> dict:
             "sha256": digest.hexdigest()}
 
 
-# --- чтение, использование -------------------------------------------------------------------------
 
 async def resolve(ids: list[str] | None, project_id: int | None) -> list[AttachmentRef]:
-    """Вложения запроса к планировщику: существуют, этого проекта, не использованы, файл на месте."""
     ids = list(dict.fromkeys(ids or []))
     if not ids:
         return []
@@ -321,7 +289,6 @@ async def resolve(ids: list[str] | None, project_id: int | None) -> list[Attachm
 
 
 async def claim(ids: list[str], project_id: int) -> None:
-    """Атомарно помечает вложения использованными; если хоть одно уже занято - ничего не меняет."""
     if not ids:
         return
     async with store.sessions()() as s:
@@ -336,7 +303,6 @@ async def claim(ids: list[str], project_id: int) -> None:
 
 
 async def release(ids: list[str]) -> None:
-    """Снимает пометку, если план не создался (файл можно использовать снова)."""
     if not ids:
         return
     async with store.sessions()() as s:
@@ -355,7 +321,6 @@ async def bind_plan(ids: list[str], plan_id: str) -> None:
 
 
 async def delete_unused(att_id: str, project_id: int | None = None) -> bool:
-    """Убирает неиспользованное вложение (кнопка «убрать»). False, если такого нет."""
     async with store.sessions()() as s:
         row = await s.get(ActionAttachment, att_id) if _ID_RE.match(att_id or "") else None
         if row is None or (project_id is not None and row.project_id != project_id):
@@ -372,16 +337,11 @@ async def delete_unused(att_id: str, project_id: int | None = None) -> bool:
     return True
 
 
-# --- уборка ------------------------------------------------------------------------------------
 
 _last_cleanup = 0.0
 
 
 async def cleanup_unused(*, max_age_days: float | None = None, now: datetime | None = None) -> dict:
-    """Удаляет неиспользованные вложения старше срока (настройка или ``max_age_days``) и их файлы.
-
-    Использованные (по ним есть план) не трогаются. Заодно удаляются брошенные ``.part``-файлы.
-    0 дней в настройке = не удалять. Возвращает {removed, bytes, orphans}."""
     from app.settings import settings
     days = float(settings.action_layer_attachment_retention_days if max_age_days is None else max_age_days)
     out = {"removed": 0, "bytes": 0, "orphans": 0}
@@ -416,12 +376,11 @@ async def cleanup_unused(*, max_age_days: float | None = None, now: datetime | N
 
 
 async def cleanup_throttled() -> None:
-    """Уборка не чаще раза в час (вызывается при загрузке); ошибки не мешают загрузке."""
     global _last_cleanup
     if time.monotonic() - _last_cleanup < _CLEANUP_EVERY_S and _last_cleanup:
         return
     _last_cleanup = time.monotonic()
     try:
         await cleanup_unused()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass

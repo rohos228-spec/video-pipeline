@@ -1,13 +1,3 @@
-"""W4-2 / C02: проверка результата вне управляемого режима (observe).
-
-`plan`, `script`, `split`, `image_prompts` и `excel_gpt`: в режиме наблюдения битый результат даёт запись
-проверки и инцидент, а запуск не удерживается и не падает. В управляемом режиме поведение прежнее.
-`sd_agent`/`sd_assemble` в режиме observe уже закрыты `scene_contracts.observe_scene_result` (тест
-`tests/observe_v1/test_native_scene_observation.py`, `mode="observe"`); здесь это не дублируется.
-
-Класс доказательства U и D: настоящие хуки и проверки, sqlite во временной папке, диагностика настоящая,
-журнал фактов перехвачен. Ни сети, ни модели, ни платных вызовов, ни живого прогона.
-"""
 from __future__ import annotations
 
 import tempfile
@@ -18,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import app.services.decision_v1  # noqa: F401  (реестры контрактов)
+import app.services.decision_v1
 from app.models import Base, Frame, Project, ProjectStatus
 from app.orchestrator import node_spec
 from app.services import node_capabilities as nc
@@ -29,7 +19,6 @@ LONG_PROMPT = ("Широкий план: пустая читальная ком�
 
 
 class Journal:
-    """Перехватчик record_fact и привязанная к нему попытка в режиме observe или managed."""
 
     def __init__(self, mode="observe", exc=None):
         self.facts = []
@@ -73,11 +62,11 @@ class Registry(unittest.TestCase):
             spec = node_spec.verifier_spec_for(node_type)
             self.assertIsNotNone(spec, node_type)
             self.assertFalse(spec.managed_only, node_type)
-            self.assertEqual(spec.success_errors, "raise")  # управляемый режим по-прежнему падает/удерживает
+            self.assertEqual(spec.success_errors, "raise")
         excel = node_spec.verifier_spec_for("excel_gpt")
         self.assertEqual(excel.name, "excel_gpt_result")
         self.assertFalse(excel.managed_only)
-        self.assertEqual(excel.success_errors, "gap")  # сбой самой проверки: пробел журнала, не отказ ноды
+        self.assertEqual(excel.success_errors, "gap")
         self.assertTrue(callable(excel.resolve()))
         self.assertEqual(node_spec.coverage_level(node_spec.capability_spec_for("excel_gpt")), "managed")
         self.assertIn("verifier:excel_gpt_result", node_spec.coverage_evidence(node_spec.capability_spec_for("excel_gpt")))
@@ -87,7 +76,6 @@ class ProjectText(unittest.IsolatedAsyncioTestCase):
     async def test_a_broken_plan_in_observe_mode_is_an_incident_and_does_not_stop_the_run(self):
         project = SimpleNamespace(general_plan="коротко", script_text="")
         with Journal() as j:
-            # через общий диспетчер реестра, как это делает observe_attempt после шага
             await node_spec.run_verifier_after_success(j.ctx, SimpleNamespace(), project, "plan")
         self.assertEqual(j.kinds(), ["node_result_verification", "runtime_check"])
         self.assertTrue(j.facts[0][1]["observe_only"] and j.facts[0][1]["run_held"] is False)
@@ -99,7 +87,7 @@ class ProjectText(unittest.IsolatedAsyncioTestCase):
     async def test_a_broken_script_in_observe_mode_does_not_raise(self):
         project = SimpleNamespace(general_plan="x", script_text="мало")
         with Journal() as j:
-            await nc.observe_project_text_result(project, "script")  # не должно бросать
+            await nc.observe_project_text_result(project, "script")
         self.assertEqual(j.kinds(), ["node_result_verification", "runtime_check"])
         self.assertEqual(j.facts[1][1]["status"], "failed")
 
@@ -123,7 +111,7 @@ class ProjectText(unittest.IsolatedAsyncioTestCase):
         project = SimpleNamespace(general_plan="x", script_text="")
         with Journal(exc=ValueError("native failure")) as j:
             await nc.observe_project_text_result(project, "script")
-        self.assertEqual(j.facts, [])  # у упавшей попытки уже есть свой инцидент node_error
+        self.assertEqual(j.facts, [])
 
     async def test_a_journal_failure_is_a_gap_not_a_node_failure(self):
         project = SimpleNamespace(general_plan="x", script_text="")
@@ -267,7 +255,7 @@ class ImagePrompts(Db):
 
 class ExcelGpt(Db):
     def test_frame_structure_catches_duplicates_and_empty_ids(self):
-        mk = lambda n, u, pid=PID: SimpleNamespace(number=n, uuid=u, project_id=pid)  # noqa: E731
+        mk = lambda n, u, pid=PID: SimpleNamespace(number=n, uuid=u, project_id=pid)
         self.assertEqual(nc.verify_frame_structure([mk(1, "a"), mk(2, "b")], project_id=PID)["status"], "passed")
         self.assertEqual(nc.verify_frame_structure([mk(1, "a"), mk(1, "b")], project_id=PID)["reason"],
                          "duplicate_number")
@@ -277,7 +265,7 @@ class ExcelGpt(Db):
         self.assertEqual(nc.verify_frame_structure([mk(0, "a")], project_id=PID)["reason"], "bad_number")
         self.assertEqual(nc.verify_frame_structure([mk(1, "a", pid=99)], project_id=PID)["reason"], "project_scope")
         none = nc.verify_frame_structure([], project_id=PID)
-        self.assertEqual((none["status"], none["reason"]), ("unknown", "no_frames_yet"))  # не «прошла»
+        self.assertEqual((none["status"], none["reason"]), ("unknown", "no_frames_yet"))
 
     async def test_hook_records_a_passed_structure_and_no_incident(self):
         await self.put_frames([(1, "a", ""), (2, "b", "")])

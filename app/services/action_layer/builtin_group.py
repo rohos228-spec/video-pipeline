@@ -1,12 +1,3 @@
-"""Каталог действий вне панели монтажа: меню съёмки, группы нод, ноды, стоп проекта.
-
-Префиксы: ``shot.*``, ``group.*``, ``node.*`` и ``project.stop``. Исполнители зовут
-существующие эндпоинты через ``ctx.call``.
-
-Не заводятся (нет JSON-эндпоинта или это глобальная правка): загрузка файлов в ноду,
-правка мастер-промтов (общие файлы для всех проектов), открепление и удаление ноды
-(локальные события канваса без бэкенда), смена модели ноды (см. ``node.get_llm_route``).
-"""
 from __future__ import annotations
 
 import re
@@ -37,7 +28,6 @@ def _schema(props: dict, required: list[str]) -> dict:
             "additionalProperties": False}
 
 
-# --- общие проверки ---------------------------------------------------------
 
 async def _get_project(ctx: ActionContext, pid: int) -> dict:
     return await ctx.call("GET", f"/projects/{pid}")
@@ -76,11 +66,10 @@ async def _no_montage_jobs(ctx: ActionContext, params: dict) -> str | None:
 
 
 async def _not_managed(ctx: ActionContext, params: dict) -> str | None:
-    """Ручной запуск шага при managed-режиме Actions-v1 даёт 409: отказ заранее."""
     try:
         from app.services.actions_v1 import managed_project_enabled
         managed = await managed_project_enabled(params["project_id"])
-    except Exception as exc:  # noqa: BLE001 - не смогли проверить: отказ (fail-closed)
+    except Exception as exc:
         return f"не удалось проверить managed-режим ({type(exc).__name__})"
     if managed:
         return ("проект под управляемым исполнением Actions-v1: ручной запуск шага "
@@ -129,10 +118,8 @@ _PRE_NODE_GPT = Precondition("node_runnable", "Нода «Работа с GPT» 
                              _node_is_gpt)
 
 
-# --- project.stop -----------------------------------------------------------
 
 async def _stop_project(ctx: ActionContext, params: dict) -> dict:
-    """Глобальный стоп проекта; «нечего останавливать» (400) не ошибка."""
     try:
         data = await ctx.call("POST", f"/projects/{params['project_id']}/stop")
     except ActionCallError as exc:
@@ -144,7 +131,6 @@ async def _stop_project(ctx: ActionContext, params: dict) -> dict:
             "xlsx_stopped": data.get("xlsx_stopped")}
 
 
-# --- shot.* (меню съёмки) ---------------------------------------------------
 
 def _shot_base(pid: int) -> str:
     return f"/db/projects/{pid}/shot-menu"
@@ -179,7 +165,6 @@ async def _shot_edit_field(ctx: ActionContext, params: dict) -> dict:
     return data if isinstance(data, dict) else {"ok": True}
 
 
-# --- group.* ----------------------------------------------------------------
 
 async def _group_list(ctx: ActionContext, params: dict) -> dict:
     groups = await ctx.call("GET", "/node-groups")
@@ -256,7 +241,6 @@ async def _group_shots_report(ctx: ActionContext, params: dict) -> dict:
     return {"chars": len(text), "html_head": text[:3000], "truncated": len(text) > 3000}
 
 
-# --- node.* -----------------------------------------------------------------
 
 async def _node_get_config(ctx: ActionContext, params: dict) -> dict:
     data = await ctx.call("GET", f"/projects/{params['project_id']}/gpt-operator/"
@@ -373,7 +357,6 @@ async def _node_reset(ctx: ActionContext, params: dict) -> dict:
     return {"step_code": params["step_code"], "status": data.get("status")}
 
 
-# --- каталог ----------------------------------------------------------------
 
 def _specs() -> list[ActionSpec]:
     pid_only = _schema({"project_id": _PID}, ["project_id"])
@@ -388,7 +371,6 @@ def _specs() -> list[ActionSpec]:
             params_schema=pid_only, executor=_stop_project, risk=RISK_LOCAL_SAFE,
             idempotent=True, preconditions=(_PRE_PROJECT,), tags=("project", "stop")),
 
-        # shot.*
         ActionSpec(
             id="shot.get_menu", title_ru="Прочитать меню съёмки",
             description_ru="Ячейки закадра и шоты. На пустой БД старого проекта один раз "
@@ -426,7 +408,6 @@ def _specs() -> list[ActionSpec]:
             executor=_shot_edit_field, risk=RISK_LOCAL_SAFE, idempotent=True,
             preconditions=(_PRE_PROJECT,), tags=("shot", "text")),
 
-        # group.*
         ActionSpec(
             id="group.list", title_ru="Каталог групп нод",
             description_ru="Встроенные и пользовательские группы нод.",
@@ -496,7 +477,6 @@ def _specs() -> list[ActionSpec]:
                                         _group_is_custom),),
             tags=("group",)),
 
-        # node.*
         ActionSpec(
             id="node.get_config", title_ru="Настройки ноды «Работа с GPT»",
             description_ru="Роль, режим выхода, виды выхода, режим проверки и признак принудительного "

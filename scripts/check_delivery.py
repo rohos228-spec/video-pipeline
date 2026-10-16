@@ -48,12 +48,9 @@ REQUIRED_DOCS = (
     "docs/audit/W49_DELIVERY_CLEANUP.md",
 )
 
-# Запрещённые каталоги (по компоненту пути, на любой глубине, если не сказано иное).
 FORBIDDEN_DIR_NAMES = {"__pycache__", "node_modules", ".next", ".ai-orchestra-mcp"}
-# Запрещённые каталоги только в корне.
 FORBIDDEN_TOP_DIRS = {"data", "exports", "logs"}
 FORBIDDEN_DIR_SUFFIXES = (".egg-info",)
-# Запрещённые файлы по маске имени.
 FORBIDDEN_FILE_GLOBS = (
     ".env", ".env.*", "*.db", "*.db-shm", "*.db-wal", "*.sqlite", "*.sqlite3", "*.pem", "*.pyc",
     ".clinerules", ".clineignore", ".skill*.txt", "START_AI_ORCHESTRA_PROMPT.txt",
@@ -61,7 +58,6 @@ FORBIDDEN_FILE_GLOBS = (
 )
 ENV_ALLOWED_SUFFIXES = (".example", ".sample", ".template")
 
-# Личные пути собираются из частей, чтобы сам скрипт и его тест не срабатывали на себя.
 _OWNER = "Ник" + "ита"
 PERSONAL_PATTERNS: dict[str, re.Pattern[str]] = {
     "owner_profile_path": re.compile(r"Users[\\/]+" + _OWNER),
@@ -69,7 +65,6 @@ PERSONAL_PATTERNS: dict[str, re.Pattern[str]] = {
     "codex_documents": re.compile(r"Documents[\\/]+Cod" + "ex[\\\\/]"),
 }
 FOREIGN_USER_PATH = re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+(?!<|\{|%|\$|Public\b|Default\b|All Users\b)[^\\/\s`'\"<>*]+")
-# Имена проектов заказчика в пути файла (данные заказчика не поставляются).
 CUSTOMER_PATH_RE = re.compile(r"(?i)spesiv|спесив|tkach|ткач")
 
 TEXT_SUFFIX_SKIP = {
@@ -83,7 +78,7 @@ def _load_scanner():
     spec = importlib.util.spec_from_file_location("_vp_scan_secrets", Path(__file__).with_name("scan_secrets.py"))
     mod = importlib.util.module_from_spec(spec)
     sys.modules.setdefault("_vp_scan_secrets", mod)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    spec.loader.exec_module(mod)
     return mod
 
 
@@ -183,7 +178,6 @@ def run_checks(root: Path, files: list[str], *, max_total_mb: float = 150.0, max
         if reason:
             errors.append(f"запрещённый файл: {rel} ({reason})")
         if CUSTOMER_PATH_RE.search(rel):
-            # код/тесты с именем проекта заказчика - предупреждение; любые другие файлы (данные) - ошибка
             if rel.split("/")[0] in ("scripts", "tests"):
                 warnings.append(f"имя проекта заказчика в имени кода: {rel}")
             else:
@@ -199,11 +193,10 @@ def run_checks(root: Path, files: list[str], *, max_total_mb: float = 150.0, max
         if size > max_file_mb * 2**20:
             errors.append(f"файл больше {max_file_mb:g} МБ: {rel} ({size // 2**20} МБ)")
         if reason:
-            continue  # содержимое запрещённых файлов (в первую очередь .env) не читаем
+            continue
         c = check_content(root, rel, scanner)
         if c["secrets"]:
             msg = f"возможный секрет в {rel}: {', '.join(c['secrets'])}"
-            # в тестах лежат синтетические ключи (проверки редакции) - предупреждение, если не --strict-tests
             if rel.startswith("tests/") and not strict_tests:
                 warnings.append(msg + " (тест, вероятно синтетический ключ)")
             else:

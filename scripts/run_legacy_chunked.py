@@ -1,13 +1,4 @@
 #!/usr/bin/env python
-"""Legacy and observe suites in chunks: one fresh pytest process per chunk, ONE at a time.
-
-    python scripts/run_legacy_chunked.py [--suite legacy|observe|all] [--chunk 40] [--only-chunk N] [--junit-dir reports/legacy]
-
-legacy  = tests/test_*.py and tests/*_test.py (top level); observe = tests/observe_v1 (without the four docker-only modules).
-Default is ``all``: legacy first, then observe, so no test file stays outside an automatic suite (scripts/test_suites.py).
-Never spends money. With --junit-dir legacy chunks write chunk_NN.xml and observe chunks write observe_NN.xml,
-which scripts/test_report.py turns into the numbers block.
-"""
 from __future__ import annotations
 
 import argparse
@@ -18,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_suites import legacy_files, observe_files  # noqa: E402
+from test_suites import legacy_files, observe_files
 
 
 def main() -> int:
@@ -34,7 +25,7 @@ def main() -> int:
         groups.append(("chunk", legacy_files()))
     if args.suite in ("observe", "all"):
         groups.append(("observe", observe_files()))
-    chunks = []  # (junit file prefix, files)
+    chunks = []
     for prefix, files in groups:
         chunks += [(prefix, files[i:i + args.chunk]) for i in range(0, len(files), args.chunk)]
     junit = Path(args.junit_dir) if args.junit_dir else None

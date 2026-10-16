@@ -1,7 +1,3 @@
-"""F10-D1: автопродвижение воркера на сессии project.db за флагом WORKER_USE_PROJECT_DB.
-
-Без флага воркер идёт по master, как раньше. С флагом та же функция работает на сессии project.db: рантайм
-подтягивается из master до тика и возвращается после; если строки проекта в project.db нет, возврат на master."""
 from __future__ import annotations
 
 import contextlib
@@ -82,8 +78,8 @@ async def test_flag_on_runs_on_project_db_between_pull_and_push(monkeypatch, cal
     assert await auto_advance.maybe_auto_advance_for_worker(master, project, None, force=True) is True
     assert calls == [("scope", 7), ("pull", "project", "project-row"),
                      ("advance", "project", "project-row", True), ("push", "project", "project-row")]
-    assert ps.commits == 1            # данные тика сохранены до возврата рантайма в master
-    assert master.refreshed == 1      # строка master обновлена после тика
+    assert ps.commits == 1
+    assert master.refreshed == 1
 
 
 async def test_flag_on_without_project_row_falls_back_to_master(monkeypatch, calls):

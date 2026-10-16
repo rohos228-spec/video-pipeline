@@ -28,7 +28,6 @@ from app.services.excel_gpt_node import (
 )
 from app.services.project_steps import start_step
 
-# Группа «Сценарий → промпты кадров + QC» на канвасе: overflow.
 _OVERFLOW_GROUP = (
     ("n_excel_gpt_fw_script", "GPT: сценарист"),
     ("n_excel_gpt_fw_check_script", "Проверка: сценарий"),
@@ -80,7 +79,6 @@ def test_overflow_slot_is_zero() -> None:
 
 
 def test_backfill_puts_script_in_completed_when_check_starts(tmp_path) -> None:
-    """#63: ⏹ снял сценариста с completed_keys, проверка стартовала без него."""
     from app.services.excel_gpt_node import backfill_overflow_completed_predecessors
 
     script = "n_excel_gpt_fw_script"
@@ -108,7 +106,6 @@ def test_backfill_puts_script_in_completed_when_check_starts(tmp_path) -> None:
 
 
 def test_running_status_for_overflow_slot_does_not_raise() -> None:
-    """Раньше KeyError: 0 → HTTP 500 на ▶ overflow-ноды."""
     assert running_status_for_slot(0) is ProjectStatus.enriching_1
     assert ready_status_for_slot(0) is ProjectStatus.enrich_1_ready
     assert running_status_for_slot(99) is ProjectStatus.enriching_1
@@ -167,7 +164,6 @@ def test_prepare_overflow_chain_advances_to_next() -> None:
 
 
 def test_overflow_script_clears_stale_tail_completed_keys() -> None:
-    """Новые биты: старые action/shots/QC не остаются «готовыми»."""
     from app.services.excel_gpt_node import (
         overflow_excel_gpt_successors,
         prepare_enrich_chain_for_auto_advance,
@@ -207,7 +203,6 @@ def test_overflow_script_clears_stale_tail_completed_keys() -> None:
 
 
 def test_overflow_qc_does_not_chain_into_scene_agent() -> None:
-    """После QC overflow-группы не хватать world/style как excel_gpt slot 1."""
     from app.models import ProjectStatus
     from app.services.excel_gpt_node import (
         first_work_successor_along_edges,
@@ -259,12 +254,6 @@ def test_overflow_qc_does_not_chain_into_scene_agent() -> None:
 
 
 def test_overflow_qc_does_not_start_stray_slot1_then_hero() -> None:
-    """После QC overflow-группы не хватать чужой excel_gpt slot=1 → hero.
-
-    Канвас #60: группа fw_* (slotOverflow) без исходящего ребра с QC,
-    плюс leftover n_excel_gpt_* slot=1 → персонажи → промты картинок.
-    enrich_1_ready раньше делал BFS от slot=1 и запускал hero.
-    """
     from app.models import Project
     from app.services.excel_gpt_node import prepare_enrich_chain_for_auto_advance
 
@@ -468,7 +457,6 @@ async def test_start_step_overflow_group_nodes(
 async def test_start_step_after_drop_check_runs_script(
     mem_db, tmp_path, monkeypatch
 ) -> None:
-    """После снятия check ▶ сценариста всё ещё ставит NodeRun running."""
     from app.services import node_groups as ng
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
@@ -517,7 +505,6 @@ async def test_start_step_after_drop_check_runs_script(
 
 
 def test_overflow_successor_after_check_stays_enriching_1() -> None:
-    """check → action: slot 0, running = enriching_1, не слот 2."""
     from app.services.excel_gpt_node import (
         first_work_successor_from_excel_slot,
         running_status_for_slot,
@@ -583,7 +570,6 @@ async def test_clear_overflow_slot_only_clears_clicked_node(mem_db) -> None:
 
 
 async def _seed_overflow_plus_linear_slot1(scope):
-    """Как #63: overflow fw_* + линейный excel_gpt slotIndex=1."""
     overflow = "n_excel_gpt_fw_report"
     leftover = "n_excel_gpt_fw_script"
     slot1 = "n_excel_gpt_1788694559747"
@@ -668,10 +654,6 @@ async def _seed_overflow_plus_linear_slot1(scope):
 async def test_worker_prepare_does_not_steal_overflow_while_enriching(
     mem_db, monkeypatch
 ) -> None:
-    """Лог #63: leftover enriching_1 + completed_keys — не re-resolve на slot 1
-    и не pop ключа (иначе воркер заново гоняет GPT). Явный ▶ снимает ключ
-    в start_step (test_start_step_pops_overflow_key_then_worker_keeps_it).
-    """
     from app.orchestrator.auto_advance import _prepare_node_run_for_status
 
     project_id, wf_id, nr_ids, overflow, leftover, slot1 = (
@@ -688,7 +670,6 @@ async def test_worker_prepare_does_not_steal_overflow_while_enriching(
         assert ok is False
         assert (project.meta or {}).get("active_excel_gpt_node_key") == overflow
         keys = (project.meta or {}).get("excel_gpt_completed_keys") or []
-        # Leftover tick: ключ НЕ снимаем — иначе воркер заново гоняет GPT.
         assert overflow in keys
 
     async with mem_db() as session:
@@ -711,7 +692,6 @@ async def test_worker_prepare_does_not_steal_overflow_while_enriching(
 async def test_prepare_from_ready_overflow_stale_resolves_to_slot1(
     mem_db, monkeypatch
 ) -> None:
-    """Со ready (ещё не running) stale overflow-ключ — re-resolve на slot 1 ок."""
     from app.orchestrator.auto_advance import _prepare_node_run_for_status
 
     project_id, wf_id, nr_ids, overflow, leftover, slot1 = (
@@ -734,7 +714,6 @@ async def test_prepare_from_ready_overflow_stale_resolves_to_slot1(
 async def test_start_step_pops_overflow_key_then_worker_keeps_it(
     mem_db, tmp_path, monkeypatch
 ) -> None:
-    """▶ уже готового fw_report: ключ снимаем, воркер не прыгает на персонажей."""
     from app.orchestrator.auto_advance import _prepare_node_run_for_status
     from app.services.run_sync import sync_run_for_project
 

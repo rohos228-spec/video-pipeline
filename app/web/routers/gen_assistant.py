@@ -1,4 +1,3 @@
-"""Помощник генерации: LLM-агент промптов с обвязкой-валидатором."""
 
 from __future__ import annotations
 
@@ -72,7 +71,6 @@ class AnalyzeStyleBody(BaseModel):
 
 @router.post("/analyze-style")
 async def post_analyze_style(body: AnalyzeStyleBody) -> dict[str, Any]:
-    """Референсы → запись стиля (name/desc/category/prompt_core)."""
     try:
         return await analyze_style_images(body.paths, name_hint=body.name_hint)
     except ValueError as e:
@@ -80,12 +78,11 @@ async def post_analyze_style(body: AnalyzeStyleBody) -> dict[str, Any]:
 
 
 @router.post("/build-agent")
-async def post_build_agent(  # noqa: B008
+async def post_build_agent(
     files: list[UploadFile] = File(..., description="Референсные изображения"),
     request: str = Form("", description="Пожелание/правка пользователя"),
     name_hint: str = Form(""),
 ) -> dict[str, Any]:
-    """Картинки + пожелание → готовый текст агента стиля (окно «+» в помощнике)."""
     uploads = [f for f in files if f and f.filename]
     if not uploads:
         raise HTTPException(status_code=400, detail="Не приложено ни одного изображения")
@@ -129,7 +126,6 @@ class CategorizeStylesBody(BaseModel):
 
 @router.post("/categorize-styles")
 async def post_categorize_styles(body: CategorizeStylesBody) -> dict[str, Any]:
-    """Список стилей → категории по общим критериям."""
     try:
         return await categorize_styles(body.entries)
     except ValueError as e:
@@ -148,7 +144,6 @@ def gen_styles_dir() -> Path:
 
 
 def resolve_style_cover(name: str) -> Path | None:
-    """Файл обложки: сначала data/gen_styles, потом собранный web/out и public."""
     safe = Path(name or "").name
     if not safe or safe != name or ".." in name:
         return None
@@ -181,7 +176,6 @@ def _safe_cover_source(path: str) -> Path:
 
 
 def save_style_cover(*, style_id: str, src: Path) -> str:
-    """Копирует картинку в data/gen_styles + web/out|public и пишет cover в JSON."""
     if not _STYLE_ID_RE.match(style_id):
         raise ValueError("Некорректный id стиля")
     suffix = src.suffix.lower() if src.suffix.lower() in IMG_EXTS else ".png"
@@ -265,7 +259,6 @@ def _merge_style(old: dict[str, Any] | None, new: dict[str, Any]) -> dict[str, A
 
 
 def _read_custom_styles() -> list[dict[str, Any]]:
-    """Свои стили: seed из репо + data/*.json. Обложки /gen-styles/ важнее локальных путей."""
     by_id: dict[str, dict[str, Any]] = {}
     for s in _load_styles_file(_seed_styles_path()) + _load_styles_file(_custom_styles_path()):
         sid = str(s.get("id") or "")
@@ -302,7 +295,6 @@ def _load_agents_file(path: Path) -> dict[str, str]:
 
 
 def _read_agent_overrides() -> dict[str, str]:
-    """Правки вкладки «Агент»: seed + promptCore стилей + диск."""
     out = dict(_load_agents_file(_seed_agents_path()))
     for s in _read_custom_styles():
         sid = str(s.get("id") or "")
@@ -315,7 +307,6 @@ def _read_agent_overrides() -> dict[str, str]:
 
 @router.get("/custom-styles")
 async def get_custom_styles() -> dict[str, Any]:
-    """Свои стили помощника: диск, не только localStorage браузера."""
     styles = _read_custom_styles()
     return {"styles": styles, "count": len(styles)}
 
@@ -326,7 +317,6 @@ class CustomStylesBody(BaseModel):
 
 @router.put("/custom-styles")
 async def put_custom_styles(body: CustomStylesBody) -> dict[str, Any]:
-    """Сохранить свои стили на диск (не затираем пустым списком, если на диске уже есть)."""
     incoming = [
         s
         for s in body.styles
@@ -355,12 +345,11 @@ async def put_custom_styles(body: CustomStylesBody) -> dict[str, Any]:
 
 
 @router.post("/style-cover")
-async def post_style_cover(  # noqa: B008
+async def post_style_cover(
     style_id: str = Form(..., description="id стиля"),
     file: UploadFile | None = File(None),
     source_path: str = Form(""),
 ) -> dict[str, Any]:
-    """Первая картинка стиля / готовая генерация → обложка /gen-styles/{id}.*"""
     sid = (style_id or "").strip()
     if not _STYLE_ID_RE.match(sid):
         raise HTTPException(status_code=400, detail="Некорректный id стиля")

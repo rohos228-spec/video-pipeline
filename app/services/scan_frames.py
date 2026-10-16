@@ -88,7 +88,6 @@ def disk_has_valid_shot2_image(scenes_dir: Path, frame_number: int) -> bool:
 def frame_image_prompt_text(
     fr: Frame, frames: list[Frame] | None = None
 ) -> str:
-    """Промт кадра для outsee: свой, иначе промт VO-родителя у K2/K3."""
     from app.services.vo_shot_expand import effective_image_prompt
 
     return effective_image_prompt(fr, frames)
@@ -97,12 +96,6 @@ def frame_image_prompt_text(
 def frame_needs_shot1_image(
     fr: Frame, scenes_dir: Path, frames: list[Frame] | None = None
 ) -> bool:
-    """Кадр должен пройти outsee: есть промт, нет валидного PNG на диске.
-
-    Дочерние шоты (K2/K3) — отдельные кадры со своим куском закадра.
-    Им нужна своя картинка, не shot2 родителя. Пустой свой image_prompt
-    не отменяет очередь, если у родителя промт уже есть.
-    """
     if is_skippable_empty_prompt(frame_image_prompt_text(fr, frames)):
         return False
     from app.services.vo_shot_expand import is_coverage_leftover

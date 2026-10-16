@@ -255,7 +255,6 @@ async def test_insert_fanout_after_split(mem_db) -> None:
 
 
 async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
-    """Группа «Каркас → площадка → шоты + QC»: вставка после plan, без ноды промтов."""
     async with mem_db() as session:
         project = await _mk_project(session)
         res = await insert_node_group(session, project, "script_frames_qc")
@@ -279,7 +278,6 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert cfg["outputMode"] == "project_file"
     assert cfg["transport"] == "api"
 
-    # проверки каркаса в группе больше нет: каркас → площадка → шоты
     assert "n_excel_gpt_fw_check_script" not in by_id
     assert "n_excel_gpt_fw_check_script" not in project.meta["excel_gpt_nodes"]
 
@@ -305,7 +303,6 @@ async def test_insert_script_frames_qc_after_plan(mem_db) -> None:
     assert ("n_excel_gpt_fw_shots", "n_excel_gpt_fw_frames") not in pairs
     assert ("n_excel_gpt_fw_frames", "n_excel_gpt_fw_qc") not in pairs
     assert ("n_excel_gpt_fw_qc", "n_excel_gpt_fw_report") in pairs
-    # выход группы → старая цель plan (script)
     assert ("n_excel_gpt_fw_report", "n_script") in pairs
     assert "n_excel_gpt_fw_report" not in project.meta["prompt_slot_variants"]
     assert project.meta["excel_gpt_nodes"]["n_excel_gpt_fw_report"]["transport"] == "code"
@@ -873,7 +870,6 @@ def test_drop_script_frames_qc_check_graph() -> None:
 
 
 def test_restore_script_frames_qc_puts_whole_group_back() -> None:
-    """Срез до 4 нод → снова цепочка: каркас → площадка → шоты → qc → report."""
     gid = {"groupId": "script_frames_qc"}
     meta = {
         "canvas_graph": {
@@ -914,7 +910,6 @@ def test_restore_script_frames_qc_puts_whole_group_back() -> None:
 
 
 def test_restore_keeps_existing_check_edges() -> None:
-    """Старый канвас с проверкой: проверка «Ок» → площадка, не прямо в шоты."""
     gid = {"groupId": "script_frames_qc"}
     meta = {
         "canvas_graph": {
@@ -938,7 +933,6 @@ def test_restore_keeps_existing_check_edges() -> None:
 
 
 def test_relabel_script_frames_qc_chain() -> None:
-    """Старые подписи/промты по умолчанию → Каркас / Площадка / Шоты; свои не трогаем."""
     gid = {"groupId": "script_frames_qc"}
     meta = {
         "canvas_graph": {

@@ -1,4 +1,3 @@
-"""Native file/ACL probe only; does not import or start the application."""
 import hashlib
 import json
 import os

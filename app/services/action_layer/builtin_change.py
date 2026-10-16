@@ -1,11 +1,3 @@
-"""Каталог: контролируемые изменения настроек и промптов (контур ``change_control``).
-
-``change.propose`` только записывает предложение (в том числе от планировщика) и
-ничего не применяет. ``change.apply`` и ``change.rollback`` разрушающие: план с ними
-не запустится без подтверждения оператора, привязанного к хэшу плана. Кто предложил,
-определяет сервер (план планировщика -> ``planner:<оператор>``), а не параметры.
-Для T0/T3 исполнителя применения нет вообще.
-"""
 from __future__ import annotations
 
 from app.services.action_layer import store
@@ -33,7 +25,7 @@ _STATUS = {"type": "string", "enum": [
 _KIND = {"type": "string", "enum": [
     "suggestion", "prompt_variant", "node_options", "step_params", "prompt_text",
     "developer_review"]}
-_FREE = lambda p: CostEstimate.free("изменение настроек: платных вызовов нет")  # noqa: E731
+_FREE = lambda p: CostEstimate.free("изменение настроек: платных вызовов нет")
 
 
 def _target_title(target: str) -> str:
@@ -47,7 +39,6 @@ def _gateway(ctx: ActionContext):
 
 
 async def _proposer(ctx: ActionContext) -> str:
-    """Предложение из плана планировщика помечается ``planner:``; человек - своей личностью."""
     if ctx.plan_id:
         async with store.sessions()() as s:
             row = await s.get(store.ActionPlanContext, ctx.plan_id)
@@ -57,7 +48,6 @@ async def _proposer(ctx: ActionContext) -> str:
 
 
 async def _approver(ctx: ActionContext) -> str:
-    """Кто подтвердил план: берётся из израсходованного подтверждения, а не из параметров."""
     if not ctx.plan_id:
         raise RuntimeError("approval_missing: the action runs only inside an approved plan")
     async with store.sessions()() as s:

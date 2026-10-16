@@ -1,4 +1,3 @@
-"""Исполнитель, бюджет, kill switch, журнал, остановка и возобновление."""
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +9,7 @@ from sqlalchemy.exc import DBAPIError
 from app.services import kill_switch
 from app.services.action_layer import approval, budget, executor, service, store
 from app.services.action_layer.spec import CostEstimate, JobState
-from tests.action_layer_support import env, fresh_registry, make_spec  # noqa: F401
+from tests.action_layer_support import env, fresh_registry, make_spec
 
 OP = approval.OperatorIdentity("web_operator:abc123")
 
@@ -35,7 +34,6 @@ def _statuses(view):
     return [s["status"] for s in view["steps"]]
 
 
-# --- бюджет ----------------------------------------------------------------
 
 async def test_budget_cap_stops_before_the_step_that_would_exceed(env, monkeypatch) -> None:
     from app.settings import settings
@@ -48,14 +46,14 @@ async def test_budget_cap_stops_before_the_step_that_would_exceed(env, monkeypat
 
     reg = fresh_registry(make_spec("t.paid", paid, risk="paid", spends=True, cost=(5, 10)))
     pid = await _plan(env, reg, {"action_id": "t.paid"}, {"action_id": "t.paid", "params": {"n": 1}})
-    await service.approve_plan(env.app, pid, OP, registry=reg)  # 20 <= 25
-    monkeypatch.setattr(settings, "action_layer_session_cap_credits", 15.0)  # потолок снизили
+    await service.approve_plan(env.app, pid, OP, registry=reg)
+    monkeypatch.setattr(settings, "action_layer_session_cap_credits", 15.0)
     view = await _run(env, reg, pid)
     assert view["status"] == "failed"
     assert _statuses(view) == ["succeeded", "failed"]
     assert len(calls) == 1
     assert "budget_exceeded" in view["error"] or "budget" in view["error"]
-    assert view["spent_credits"] == pytest.approx(9.5)  # резерв 10 сверен с фактом 9.5
+    assert view["spent_credits"] == pytest.approx(9.5)
     assert view["steps"][0]["cost"]["actual"] == 9.5
     hist = await service.history(plan_id=pid)
     assert "budget_block" in [h["event"] for h in hist["items"]]
@@ -87,7 +85,6 @@ async def test_unknown_estimate_is_refused(env) -> None:
         assert e.value.code == "estimate_unknown"
 
 
-# --- kill switch -----------------------------------------------------------
 
 async def test_kill_switch_refuses_run_and_blocks_between_steps(env) -> None:
     ran: list = []
@@ -102,7 +99,7 @@ async def test_kill_switch_refuses_run_and_blocks_between_steps(env) -> None:
         return {}
 
     reg = fresh_registry(make_spec("t.first", first, risk="local_safe"),
-                         make_spec("t.second", second))  # даже read-шаг блокируется
+                         make_spec("t.second", second))
     pid = await _plan(env, reg, {"action_id": "t.first"}, {"action_id": "t.second"})
     view = await _run(env, reg, pid)
     assert ran == ["first"]
@@ -111,7 +108,6 @@ async def test_kill_switch_refuses_run_and_blocks_between_steps(env) -> None:
     events = [h["event"] for h in (await service.history(plan_id=pid))["items"]]
     assert "kill_switch_block" in events
 
-    # Пока переключатель включён, новый запуск отклоняется сразу.
     pid2 = await _plan(env, reg, {"action_id": "t.second"})
     with pytest.raises(service.RunRefused) as e:
         await service.prepare_run(pid2, OP, registry=reg)
@@ -120,7 +116,6 @@ async def test_kill_switch_refuses_run_and_blocks_between_steps(env) -> None:
     assert (await _run(env, reg, pid2))["status"] == "succeeded"
 
 
-# --- журнал -----------------------------------------------------------------
 
 async def test_history_is_append_only_and_records_estimate_vs_recorded(env) -> None:
     async def paid(ctx, params):
@@ -150,7 +145,6 @@ async def test_history_is_append_only_and_records_estimate_vs_recorded(env) -> N
     assert (await service.history(plan_id=pid))["total"] == len(items)
 
 
-# --- исполнитель --------------------------------------------------------------
 
 async def test_step_failure_stops_plan_and_never_retries(env) -> None:
     calls: list = []
@@ -203,7 +197,7 @@ async def test_dependency_not_satisfied_skips_step(env) -> None:
 
     reg = fresh_registry(make_spec("t.ex", ex))
     pid = await _plan(env, reg, {"action_id": "t.ex"}, {"action_id": "t.ex", "depends_on": [0]})
-    async with env.factory() as s:  # шаг 0 «не удался» заранее
+    async with env.factory() as s:
         await s.execute(update(store.ActionPlanStep).where(
             store.ActionPlanStep.plan_id == pid, store.ActionPlanStep.idx == 0
         ).values(status="failed"))
@@ -307,7 +301,6 @@ async def test_job_runs_to_completion(env) -> None:
 
 
 async def _interrupt(env, pid, *, done=(), running=()):
-    """Имитация падения процесса: план running, часть шагов завершена, часть в полёте."""
     async with env.factory() as s:
         await s.execute(update(store.ActionPlan).where(store.ActionPlan.id == pid).values(
             status="running"))
@@ -375,7 +368,7 @@ async def test_resume_of_paid_plan_needs_prior_approval_record(env) -> None:
 
     reg = fresh_registry(make_spec("t.paid", paid, risk="paid", spends=True, cost=(1, 2)))
     pid = await _plan(env, reg, {"action_id": "t.paid"})
-    await _interrupt(env, pid)  # «running», но подтверждение не расходовалось
+    await _interrupt(env, pid)
     with pytest.raises(approval.ApprovalError):
         await service.prepare_run(pid, OP, registry=reg)
 

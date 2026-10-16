@@ -1,21 +1,3 @@
-"""Dry run of the sd_assemble supervised retry: observation -> diagnosis -> decision -> action -> verification.
-
-No network, no provider, no paid call. REAL: scene_design.run_assemble (cell backfill, chronology, camera
-subdivision, the chunked assembler with its chunk checkpoints, validation, apply_scene_design through
-db_apply.apply_ops, the transactional `data_applied` fact, the failure handler with its rollback), the
-observe_model wrapper, observe_attempt, the managed result gate (independent read session), the journal,
-the Diagnoser, the DecisionSupervisor and its policy, ActionSupervisor.enable / recover_node, the claim, the
-reconcile verification and the recovery cap. SCRIPTED: the model boundary only (the assembler chunk replies:
-the "good" reply of a chunk is built by the application's own local assembler from the chunk's own request)
-and the Decision model (canned proposals). SEEDED: the agents' checkpoints and cells (what the earlier steps
-leave) and the native step-failure counter, by the application's own writers.
-
-The two facts that made sd_assemble unmanaged are removed and proven here:
-  1. a failed attempt no longer commits the camera-subdivision child frames (the failure handler rolls the
-     attempt's uncommitted work back), so the input revision of the retry equals the attempt's;
-  2. the child frames get a uuid derived from the parent and the shot number, so the rebuilt frames, and with
-     them the chunked assembler requests, are identical across the failed attempt and the retry.
-"""
 import json
 import unittest
 from datetime import datetime
@@ -41,7 +23,6 @@ from app.services.scene_design.agents import ASSEMBLER
 from app.settings import settings
 
 EXECUTION = sd.EXECUTION
-# Two narrative scenes (one per voiceover parent): the registry ids stay unique across the assembler chunks.
 ACTION = {"scenes": [
     {**asm.ACTION["scenes"][0], "id_scene": "scene_01", "start_words": "Альфа долго открывает",
      "end_words": "читает вслух первую главу.", "время_сек": 8, "цепь_действия": "открывает книгу; читает"},
@@ -55,7 +36,6 @@ BAD = "I cannot produce JSON for this."
 
 
 class ManagedAssembleFixture(asm.AssembleFixture):
-    """The real-step assembly fixture plus a managed execution, the Decision layer and a smart model."""
 
     async def asyncSetUp(self):
         self.stack_seed = [patch.object(asm, "ACTION", ACTION), patch.object(asm, "CAMERA", CAMERA)]
@@ -76,7 +56,6 @@ class ManagedAssembleFixture(asm.AssembleFixture):
             graph_version=self.graph, initiator="dry-run", rationale="sd_assemble dry run", request_limit=20)
         await self.observer.reload()
 
-    # ---- the model boundary -----------------------------------------------------------------
     @staticmethod
     def chunk_input(text):
         start = text.index("# ЯЧЕЙКИ АГЕНТОВ")
@@ -85,7 +64,6 @@ class ManagedAssembleFixture(asm.AssembleFixture):
         return value
 
     def good_chunk(self, text):
-        """What a valid model would answer to THIS chunk: the application's own local assembler."""
         chunk = self.chunk_input(text)
         frames = [SimpleNamespace(uuid=kid["uuid"], voiceover_text=kid.get("закадр") or "", number=kid["number"])
                   for scene in chunk["scenes_chrono"] for kid in scene["кадры"]]
@@ -96,7 +74,6 @@ class ManagedAssembleFixture(asm.AssembleFixture):
             sd.SCRIPT["replies"][0] = json.dumps(self.good_chunk(text), ensure_ascii=False)
         return await sd.fake_ask_fresh(text, **kwargs)
 
-    # ---- the worker, as the runtime drives it (start=False: the recovery attempt) -------------
     async def run_step(self, replies, *, start=True):
         sd.SCRIPT["replies"] = list(replies)
         async with self.business() as session:
@@ -221,13 +198,11 @@ class SceneAssembleRetry(ManagedAssembleFixture):
     async def test_failure_in_the_first_chunk_then_one_verified_retry_with_identical_first_request(self):
         from app.services import decision_v1
         rows_before = await self.frame_rows()
-        # 1. observation + diagnosis: the failed attempt asked once (first chunk) and got no JSON.
         await self.failed_native_attempts([BAD])
         first_bodies = list(sd.SCRIPT["bodies"])
         self.assertEqual(len(first_bodies), 1)
         self.assertEqual(await self.frame_rows(), rows_before)
         incident = await self.typed_incident()
-        # 2. decision -> exactly one ticket, queued for the original worker.
         record = await self.decide_retry(incident)
         ticket = await self.ticket()
         self.assertEqual(ticket.status, "queued")
@@ -237,14 +212,12 @@ class SceneAssembleRetry(ManagedAssembleFixture):
         async with self.sessions() as session:
             row = await session.get(decision_v1.DecisionRecord, record["decision_id"])
             self.assertEqual((row.status, row.action_id), ("waiting_worker", ticket.action_id))
-        # 3. the original worker runs the retry: chunk 1 and chunk 2, both valid.
         await self.run_step([GOOD, GOOD], start=False)
         finish_job_tracking(7)
         retry_bodies = sd.SCRIPT["bodies"][len(first_bodies):]
         self.assertEqual(len(retry_bodies), 2, "two chunk requests")
         self.assertEqual(retry_bodies[0], first_bodies[0], "the first request of the retry equals the failed one")
         self.assertNotEqual(retry_bodies[0], retry_bodies[1])
-        # 4. data applied exactly once: four frames, no duplicate children.
         frames = await self.frames()
         self.assertEqual(len(frames), 4)
         self.assertEqual(len({f.uuid for f in frames}), 4)
@@ -260,7 +233,6 @@ class SceneAssembleRetry(ManagedAssembleFixture):
         self.assertIs(applied[0].payload["transactional"], True)
         self.assertTrue(applied[0].payload["result"], "the result of the original apply_ops")
         self.assertEqual(applied[0].db_scope, "project")
-        # 5. independent verification of the result.
         proof = (await self.facts("node_result_verification"))[-1].payload
         self.assertEqual((proof["status"], proof["failure_class"], proof["agent"]), ("passed", None, "assemble"))
         async with self.business() as session:
@@ -277,7 +249,6 @@ class SceneAssembleRetry(ManagedAssembleFixture):
         self.assertTrue(checks["data_applied"] and checks["accepted_payload"] and checks["result_confirmed"])
         self.assertTrue(checks["node_done"] and checks["transactional_done"] and checks["requests_complete"])
         self.assertFalse(await self.held())
-        # 6. cap: a competing recovery is refused, the database refuses a second ticket.
         with self.assertRaisesRegex(ValueError, "decision owner"):
             await self.supervisor.recover_node(project_id=7, execution_id=EXECUTION,
                 incident_id=incident.incident_id, node_key="n1", idempotency_key="second-retry-0001",
@@ -354,7 +325,6 @@ class SceneAssembleRetry(ManagedAssembleFixture):
                 initiator="dry-run", rationale="apply evidence must block the retry")
 
     async def test_profile_retry_with_an_unapproved_overlay_is_refused_without_a_ticket(self):
-        # W5 D05: sd_assemble is profile compatible, so the capability no longer denies a profile retry; an unapproved overlay is still refused and no ticket is issued
         await self.failed_native_attempts([BAD])
         incident = await self.typed_incident()
         with self.assertRaisesRegex(ValueError, "execution grant|profile outside|unknown or incompatible"):

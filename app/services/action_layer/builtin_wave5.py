@@ -1,27 +1,3 @@
-"""Каталог, волна 5 (W5-4): запуск шагов конвейера, HITL, проект, фабрика, загрузки, откат.
-
-Каждое действие вызывает существующий эндпоинт через ``ctx.call``:
-- ``step.run_step``        POST /projects/{id}/steps/{step}/run
-- ``hitl.*``               GET /hitl/project/{id}, POST /hitl/{hitl_id}/decision
-- ``project.create``       POST /projects;  ``project.create_child``  POST /projects/{id}/child
-- ``project.patch_settings`` PATCH /projects/{id}
-- ``massfactory.start``    POST /projects/{id}/mass-lanes/start
-- ``kill_switch.engage``   POST /projects/{id}/observations/kill-switch (active=true)
-- ``project.upload_xlsx``  POST /projects/{id}/xlsx/upload
-- ``hero.replace_image``   POST /projects/{id}/assets/hero/replace
-- ``storage.*``            POST .../storage/{node}/upload, DELETE .../storage/{node}/files
-Исключения: ``history.list_snapshots`` и ``history.rollback`` работают с журналом слоя (своя БД, REST
-для снимков нет), откат при этом пишет через те же эндпоинты, что и правка.
-
-Деньги. Шаги ``img``/``video`` оцениваются по каталогу Kie (``node_run_cost``), остальные платные
-пути (Outsee, озвучка, музыка, LLM-шаги, HITL-перегенерация, фабрика) по коду не оцениваются:
-запуск возможен только с ``ceiling_credits`` - потолком оператора. Потолок входит в параметры
-плана, поэтому подтверждение привязано к хэшу плана вместе с ним; потолок резервируется в бюджете
-слоя. Воркер сам потолок не знает: предел расхода держат лимиты spend_guard и аварийный стоп.
-
-Не входит в каталог (осознанно, см. ``EXCLUDED_CONTROLS``): публикация, снятие аварийного стопа,
-удаление проекта, граф холста и воркфлоу.
-"""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -42,7 +18,6 @@ from app.services.action_layer.spec import (
     RISK_DESTRUCTIVE, RISK_LOCAL_SAFE, RISK_READ, ActionRegistry, ActionSpec, CostEstimate,
     Precondition)
 
-# Действия, добавленные волной 5 (сверяются с docs/ACTION_LAYER_WAVE5.md).
 WAVE5_IDS: tuple[str, ...] = (
     "step.get_run_cost_basis", "step.run_step",
     "hitl.list_pending", "hitl.approve", "hitl.reject", "hitl.regenerate",
@@ -51,14 +26,12 @@ WAVE5_IDS: tuple[str, ...] = (
     "project.upload_xlsx", "hero.replace_image", "storage.upload_file", "storage.clear_files",
     "history.list_snapshots", "history.rollback",
 )
-# Действия прежних волн, у которых волна 5 меняет поведение (то же id).
 WAVE5_CHANGED_IDS: tuple[str, ...] = (
     "project.resume", "project.continue_pipeline",
     "montage.set_voiceover", "montage.set_coverage", "montage.set_anchors",
     "montage.set_scene_chain", "shot.edit_cell_voiceover", "shot.edit_field",
     "montage.upload_voice", "montage.upload_music", "prompt.save_master",
 )
-# Контролы Студии без действия: контрол -> причина. Проверяется тестом (D09: «действие или исключение»).
 EXCLUDED_CONTROLS: dict[str, str] = {
     "Публикация на площадки": "остаётся действием человека (node_capabilities: publish human_only, "
                               "управляемый агентский режим запрещён); в каталог не входит",
@@ -87,10 +60,8 @@ _TOPIC = {"type": "string", "maxLength": 2000}
 _TITLE = {"type": "string", "minLength": 1, "maxLength": 200}
 
 
-# --- общие проверки ----------------------------------------------------------------------------
 
 async def _no_auto_chain(ctx, params):
-    """Пока включено автопродвижение, воркер после шага идёт по цепочке сам: потолок покрывает один шаг."""
     proj = await _get_project(ctx, params["project_id"])
     if proj.get("auto_mode"):
         return ("включено автопродвижение: после этого шага воркер сам запустит следующие, "
@@ -106,7 +77,6 @@ def _ceiling_estimate(base: CostEstimate, params: dict) -> CostEstimate:
     return nrc.apply_ceiling(base, params.get("ceiling_credits"))
 
 
-# --- step.get_run_cost_basis / step.run_step ----------------------------------------------------
 
 async def _step_basis(ctx: ActionContext, params: dict) -> dict:
     code = params["step_code"]
@@ -157,7 +127,6 @@ def _estimate_step(params: dict) -> CostEstimate:
 
 
 async def _verify_step_cost(ctx: ActionContext, params: dict) -> str | None:
-    """Заявленное совпадает с проектом, итоговая оценка известна и потолок не ниже расчёта."""
     code = params["step_code"]
     basis = await _step_basis(ctx, params)
     kind = basis["kind"]
@@ -223,7 +192,6 @@ async def _poll_step(ctx, params, started):
     if final == "failed":
         return replace(state, ok=False, error="шаг завершился с ошибкой (статус проекта failed)")
     if final == "paused":
-        # Сбой шага ставит проект на паузу: это не успех плана (F09-D3).
         return replace(state, ok=False, error="шаг не завершён: проект поставлен на паузу (статус paused)")
     return state
 
@@ -235,7 +203,6 @@ def _step_effects(params: dict) -> str:
             "Остановить: project.stop или аварийный стоп.")
 
 
-# --- HITL -------------------------------------------------------------------------------------
 
 async def _hitl_rows(ctx, project_id: int) -> list[dict]:
     rows = await ctx.call("GET", f"/hitl/project/{project_id}")
@@ -268,7 +235,7 @@ def _decide(decision: str):
     async def executor(ctx, params):
         body = {"decision": decision, "project_id": params.get("project_id")}
         if decision == "approve":
-            body["advance"] = False  # C-14: решение записывается, следующий платный шаг запускается отдельным действием
+            body["advance"] = False
         data = await ctx.call("POST", f"/hitl/{params['hitl_id']}/decision", json=body)
         return {"hitl_id": params["hitl_id"], "decision": (data or {}).get("decision"),
                 "kind": (data or {}).get("kind"), "frame_id": (data or {}).get("frame_id")}
@@ -279,7 +246,6 @@ _HITL_PARAMS = {"hitl_id": {"type": "integer", "minimum": 1,
                             "description": "id запроса из hitl.list_pending"}}
 
 
-# --- проект -----------------------------------------------------------------------------------
 
 async def _create_project(ctx, params):
     body = {"title": params["title"].strip()}
@@ -316,7 +282,6 @@ async def _patch_settings(ctx, params):
     body = {k: params[k] for k in _SETTINGS_KEYS if k in params}
     data = await ctx.call("PATCH", f"/projects/{params['project_id']}", json=body)
     data = data if isinstance(data, dict) else {}
-    # Сервер может поправить значение (разрешение под модель): отличие - не молчаливый успех.
     changed = {k: data.get(k) for k, v in body.items()
                if str(data.get(k) if data.get(k) is not None else "") != str(v).strip()}
     if changed:
@@ -324,7 +289,6 @@ async def _patch_settings(ctx, params):
     return {"updated": sorted(body)}
 
 
-# --- фабрика ----------------------------------------------------------------------------------
 
 async def _mass_start(ctx, params):
     data = await ctx.call("POST", f"/projects/{params['project_id']}/mass-lanes/start",
@@ -340,7 +304,6 @@ def _mass_estimate(params: dict) -> CostEstimate:
         f"{n} видео по полному конвейеру в дочерних проектах: цена по коду не определяется"), params)
 
 
-# --- аварийный стоп -----------------------------------------------------------------------------
 
 async def _kill_engage(ctx, params):
     data = await ctx.call("POST", f"/projects/{params['project_id']}/observations/kill-switch",
@@ -351,7 +314,6 @@ async def _kill_engage(ctx, params):
     return {"active": True}
 
 
-# --- загрузки ----------------------------------------------------------------------------------
 
 async def _upload_xlsx(ctx, params):
     data, info = await _post_file(
@@ -378,7 +340,6 @@ async def _storage_clear(ctx, params):
     return {"ok": bool((data or {}).get("ok")), "removed": (data or {}).get("removed")}
 
 
-# --- каталог ------------------------------------------------------------------------------------
 
 def _specs() -> list[ActionSpec]:
     S = ActionSpec
@@ -419,7 +380,6 @@ def _specs() -> list[ActionSpec]:
                                       "Заявленные число, модель и потолок покрывают расчёт по проекту",
                                       _pre_step_cost)),
           tags=("step", "run")),
-        # --- HITL
         S(id="hitl.list_pending", title_ru="Показать ожидающие подтверждения",
           description_ru="Запросы подтверждения проекта (HITL), по которым решение ещё не принято: "
                          "id, вид и кадр. Ничего не меняет.",
@@ -460,7 +420,6 @@ def _specs() -> list[ActionSpec]:
                                          "«перегенерировать»; прежний результат кадра заменится."),
           preconditions=(_PRE_PROJECT, _PRE_NOT_MANAGED, _PRE_HITL, _PRE_NO_AUTO_CHAIN),
           tags=("hitl", "run")),
-        # --- проект
         S(id="project.create", title_ru="Создать проект",
           description_ru="Новый проект с названием, темой и режимом героя. Автопродвижение не "
                          "включается (если стоит серверная настройка «автопродвижение новых "
@@ -522,7 +481,6 @@ def _specs() -> list[ActionSpec]:
                              ["rationale"]),
           executor=_kill_engage, risk=RISK_LOCAL_SAFE, idempotent=True,
           preconditions=(_PRE_PROJECT,), tags=("safety", "kill_switch")),
-        # --- загрузки
         S(id="project.upload_xlsx", title_ru="Загрузить Excel проекта",
           description_ru="Заменяет project.xlsx файлом .xlsx (проверяется сервером) и перечитывает "
                          "его в базу: поля проекта, закадр и кадры перезаписываются значениями из "
@@ -562,7 +520,6 @@ def _specs() -> list[ActionSpec]:
     ]
 
 
-# --- замена существующих: потолок для resume/continue --------------------------------------------
 
 def _with_ceiling(spec: ActionSpec) -> ActionSpec:
     schema = {**spec.params_schema,

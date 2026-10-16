@@ -1,4 +1,3 @@
-"""Cost estimate, telemetry, error codes and diagnosis for Vibecode text requests (stubs only)."""
 import json
 import sqlite3
 import tempfile
@@ -20,7 +19,6 @@ REAL_KIE = "sk-real-looking-kie-key"
 
 
 class SyncThread:
-    """Runs the tracker's write immediately so the SQLite row can be read back."""
     def __init__(self, target=None, daemon=None, **_):
         self.target = target
 
@@ -46,14 +44,12 @@ class TrackApiCost(unittest.TestCase):
         self.assertNotIn("usage_known", kwargs["metadata"])
 
     def test_gate_is_the_vibecode_key_not_gpt_api_key(self):
-        # A real Kie key must not enable Vibecode rows, and vice versa.
         self.track(vk="", kie=REAL_KIE).assert_not_called()
         self.track(vk=REAL_VK, kie="").assert_called_once()
         self.track(provider="kie", vk=REAL_VK, kie="").assert_not_called()
         self.track(provider="kie", vk="", kie=REAL_KIE).assert_called_once()
 
     def test_synthetic_vibecode_key_is_recorded_and_tagged(self):
-        # A08: a synthetic* key no longer switches accounting off; the row is tagged.
         meta = self.track(vk="synthetic-vibecode-key").call_args.kwargs["metadata"]
         self.assertIs(meta["synthetic_key"], True)
 
@@ -74,7 +70,7 @@ class TrackApiCost(unittest.TestCase):
         record = self.track(provider="kie", vk="", kie=REAL_KIE, model="gpt-5-6-sol", usage={"input_tokens": 1, "output_tokens": 1})
         self.assertEqual(record.call_args.kwargs["provider"], "kie")
         meta = record.call_args.kwargs["metadata"]
-        self.assertEqual(meta, {"cost_kind": "estimated"})  # no Vibecode pricing fields on a Kie row
+        self.assertEqual(meta, {"cost_kind": "estimated"})
 
 
 class CalcCost(unittest.TestCase):
@@ -90,7 +86,6 @@ class CalcCost(unittest.TestCase):
 
     def test_vibecode_unknown_model_is_zero_never_a_kie_or_default_rate(self):
         self.assertEqual(api_tracker_hook._calc_cost("mystery-model", 10**6, 10**6, "text", 1.0, provider="vibecode"), 0.0)
-        # a Kie-looking name sent through Vibecode still must not match Kie's measured table
         self.assertEqual(api_tracker_hook._calc_cost("gpt-5-6-sol", 10**6, 10**6, "text", 1.0, provider="vibecode"), 0.0)
 
     def test_price_source_constant_documents_the_uncertainty(self):
@@ -125,15 +120,15 @@ class TelemetryCost(unittest.TestCase):
         from app.services.telemetry import cost_summary
         rows = [self.row(cost_usd=0.002, prompt_tokens=100, completion_tokens=20),
                 self.row(metadata_json=json.dumps({"cost_basis": "unknown", "usage_known": False})),
-                self.row(status_code=402, metadata_json=json.dumps({"cost_basis": "unknown"})),  # failed: not "unknown cost"
+                self.row(status_code=402, metadata_json=json.dumps({"cost_basis": "unknown"})),
                 self.row(model="gpt-5-6-sol", provider="Kie.ai", cost_usd=0.01)]
         summary = cost_summary(rows)
         self.assertEqual(summary["by_provider"]["vibecode"]["calls"], 3)
         self.assertEqual(summary["by_provider"]["kie"]["calls"], 1)
         self.assertEqual(summary["unknown_cost_calls"], 1)
         self.assertEqual(summary["by_provider"]["vibecode"]["unknown_cost_calls"], 1)
-        self.assertIn("не откалибрована", summary["sources"]["vibecode"])  # operator sees Russian
-        self.assertIn("NOT calibrated", summary["sources_raw"]["vibecode"])  # raw string kept for old readers
+        self.assertIn("не откалибрована", summary["sources"]["vibecode"])
+        self.assertIn("NOT calibrated", summary["sources_raw"]["vibecode"])
         self.assertIn("откалиброваны", summary["sources"]["kie"])
 
     def test_sources_only_list_providers_that_are_present(self):
@@ -251,7 +246,7 @@ class StepFailurePolicyCredits(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed.await_args.kwargs["error_code"], "gpt_credits")
         state = project.meta["step_failure"]
         self.assertEqual(state["last_error_code"], "gpt_credits")
-        self.assertNotIn("GPT HTTP", state["last_error"])  # fixed text, not the provider body
+        self.assertNotIn("GPT HTTP", state["last_error"])
 
     async def test_non_numeric_provider_code_does_not_break_the_policy(self):
         from app.models import Project, ProjectStatus
@@ -265,7 +260,7 @@ class StepFailurePolicyCredits(unittest.IsolatedAsyncioTestCase):
                 patch("app.services.run_sync.prepare_node_for_step_start", new_callable=AsyncMock), \
                 patch("app.project_db.run_on_replica_project", new_callable=AsyncMock):
             action = await record_step_failure(session, project, error=error)
-        self.assertEqual(action, "retry")  # not a crash inside is_credits_failure(int("insufficient_quota"))
+        self.assertEqual(action, "retry")
 
 
 SCOPE = SimpleNamespace(execution_id="execution", project_id=2, node_keys=["script"], observer_state="active", gaps=[])

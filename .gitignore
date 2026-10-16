@@ -43,6 +43,13 @@ browser_profile/
 scratch/
 .worktrees/
 tasks/out/
+*.db
+*.db-shm
+*.db-wal
+*.spec
+api-tracker/*.db
+api-tracker/*.db-shm
+api-tracker/*.db-wal
 
 # OS
 .DS_Store
@@ -77,3 +84,17 @@ api-tracker/backups/
 /.clineignore
 /.skill*.txt
 /START_AI_ORCHESTRA_PROMPT.txt
+# Все промты — только локально (не тянуть с GitHub при install/update)
+prompts/*
+!prompts/.gitkeep
+# Промпты scene_design — часть кода ноды, без них load_prompt падает: держим в git
+!prompts/scene_design/
+!prompts/02_script/
+!prompts/02_script/default.md
+!prompts/03_razbivka/
+!prompts/03_razbivka/default.md
+!prompts/04_hero/
+!prompts/04_hero/default.md
+!prompts/04_hero/character_model_sheet_16x9.md
+!prompts/07_animation/
+!prompts/07_animation/default.md

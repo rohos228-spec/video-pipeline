@@ -16,7 +16,6 @@ def test_polluted_character_name_detected() -> None:
 
 
 def test_variation_marker_name_never_blocks_hero() -> None:
-    """Имя-маркер вариации — не стоп генерации, даже без ref_ids."""
     variation = ExcelCharacter(
         id="c07",
         name="оставь формат неизменный",

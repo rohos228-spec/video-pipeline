@@ -1,4 +1,3 @@
-"""Scene-space validator (CANON §6). One function, frozen rule_id list."""
 
 from __future__ import annotations
 
@@ -88,7 +87,7 @@ _FALLBACK_FORBIDDEN = (
 
 
 class DegenerateAxisError(ValueError):
-    """Camera on the action axis (cross == 0). Local fallback if stream 1 is absent."""
+    pass
 
 
 def _bind_geom() -> tuple[Any, Any, Any, type[Exception]]:
@@ -191,7 +190,6 @@ def forbidden_phrases_path() -> Path:
 
 
 def load_forbidden_phrases(path: Path | None = None) -> list[str]:
-    """Phrases in «ёлочки» and after «Не использовать штампы:» (CONTRACTS §4)."""
     target = path if path is not None else forbidden_phrases_path()
     text = ""
     if target.is_file():
@@ -221,7 +219,6 @@ def load_forbidden_phrases(path: Path | None = None) -> list[str]:
 
 
 def split_prompt_positive(text: str) -> str:
-    """Positive part: everything before NEGATIVE PROMPT / NEGATIVE:."""
     if not text:
         return ""
     match = _NEG_RE.search(text)
@@ -315,12 +312,6 @@ def _plan_item(plan: Sequence[Mapping[str, Any]], item_id: str) -> dict | None:
 def compute_screen_pos_map(
     plan: Sequence[Mapping[str, Any]], lo: str, hi: str
 ) -> dict[str, str]:
-    """L/R from camera look: clockwise perp of (mid-cam) is screen-right.
-
-    CANON §2.5 axis-perp cannot split the two endpoints (they share the same
-    projection on a vector perpendicular to the axis). Screen x is the
-    projection of (pos − cam) onto that look-derived right.
-    """
     a = _plan_item(plan, lo)
     b = _plan_item(plan, hi)
     if a is None or b is None:
@@ -500,7 +491,6 @@ def validate_scene(
     space_json: Mapping[str, Any] | None,
     frames_by_uuid: Mapping[str, Any] | None,
 ) -> list[Issue]:
-    """Run every CANON §6 check. Returns ``{level, rule_id, shot_order, message}``."""
     issues: list[Issue] = []
     space = dict(space_json or {})
     frames_by_uuid = frames_by_uuid or {}
@@ -963,7 +953,6 @@ def validate_scene(
             )
         )
 
-    # 2.8 / 2.9 warnings
     charge = space.get("value_charge") or {}
     if isinstance(charge, str):
         charge = _parse_json(charge) or {}

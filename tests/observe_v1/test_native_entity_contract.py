@@ -1,36 +1,3 @@
-"""Bounded, read-only contracts for the ORIGINAL Entity/Excel hero path.
-
-Parent owns Docker RED/GREEN, shared observer/capability wiring, and the actual
-worker fixture. This file does not execute an outbound executor or enable hero.
-The requested helper is intentionally absent until parent supplies captured RED.
-
-Native route: generate_hero.run -> _load_entity_characters -> _run_excel ->
-_generate_one_excel_character -> original GPT/Outsee -> hero_reference Artifact.
-Entity/Excel is a batch WITHOUT HITL; legacy hero approves each hero/variation.
-GenerationResult.gen_id identifies a native attempt; it is not proof of a
-durable provider job, request budget, business commit, or managed admission.
-
-Proposed helper seam (app.services.native_entity_contracts):
-  hero_entity_contract()
-  hero_entity_input_snapshot(entities, *, project_id)
-  async verify_hero_entity_results(artifacts, *, project_id, snapshot, root,
-                                  scope, provenance=None)
-
-Snapshots retain raw Entity identities/fields in deterministic native order
-and the original parser's characters, augmented only with entity_id and role.
-Provenance is an explicit
-observation input, never synthesized from Artifact.meta.hero_prompt or a PNG.
-Each provenance entry binds scope, input hash, entity/role, Artifact UUID, a
-completed native generation request/result, file hash, and reference UUIDs.
-Base characters additionally bind the completed GPT request/response and the
-cached hero_prompt hash. Reference variations use the original local prompt;
-their base-model request is absent, rather than copied from a previous task.
-
-Items are deferred: their executor reads Project.item_descriptions, filters
-empty values and renumbers the remainder. Empty items succeed without work;
-generation errors raise after reverting to hero_ready. Entity props cannot be
-substituted for that different input contract.
-"""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -60,7 +27,6 @@ def contracts():
 
 
 def entities():
-    # Same field names as app.models.Entity, including the native Russian aliases.
     return [
         SimpleNamespace(id=12, project_id=PROJECT_ID, type="character", code="c02",
             name="Mira in a coat", sort_key=2.0,
@@ -100,8 +66,6 @@ class NativeHeroInputContract(unittest.TestCase):
         self.assertFalse(contract["managed"])
         self.assertEqual(tuple(contract["actions"]), READ_ACTIONS)
         self.assertFalse(contract["semantic_quality_verified"])
-        # D06: hero is managed for supervised recovery ONLY (a local resume of a recorded result); the supervisor
-        # still never starts it, and this entity contract grants no execution path.
         self.assertTrue(capability_for("hero").managed)
         with self.assertRaises(ValueError):
             require_managed_capability("hero")
@@ -209,8 +173,6 @@ class HeroResultFixture:
             artifact = SimpleNamespace(id=100 + index, project_id=PROJECT_ID, frame_id=None,
                 kind=ArtifactKind.hero_reference, uuid=f"{index:032x}", path=str(path), meta=metadata)
             self.artifacts.append(artifact)
-            # Synthetic observation input for this read-only seam; parent must
-            # separately capture it from the actual native executor/worker.
             self.provenance.append({
                 **SCOPE, "project_id": PROJECT_ID, "input_sha256": digest(self.snapshot),
                 "entity_id": ch["entity_id"], "entity_code": ch["id"], "role": ch["role"],
@@ -278,7 +240,6 @@ class NativeHeroResultContract(HeroResultFixture, unittest.IsolatedAsyncioTestCa
         await self.check("unknown", snapshot=snapshot)
 
     async def test_empty_entity_source_does_not_invent_a_native_optional_hero_skip(self):
-        # Native loader may still read XLSX or fall back to legacy descriptions.
         snapshot = contracts().hero_entity_input_snapshot([], project_id=PROJECT_ID)
         await self.check("unknown", artifacts=[], snapshot=snapshot, provenance=[])
 
@@ -446,11 +407,9 @@ class NativeHeroResultContract(HeroResultFixture, unittest.IsolatedAsyncioTestCa
         previous = deepcopy(self.artifacts[0])
         previous.id, previous.uuid = 50, "a" * 32
         previous.meta["hero_prompt"] = "An earlier native cached prompt."
-        # Native _excel_artifact_for_id orders by descending Artifact.id.
         await self.check("passed", artifacts=[previous, *self.artifacts])
         latest = deepcopy(self.artifacts[0])
         latest.id, latest.uuid = 150, "b" * 32
-        # A newer row with no captured request/result cannot borrow old evidence.
         await self.check("unknown", artifacts=[*self.artifacts, latest])
 
 
@@ -536,7 +495,6 @@ class NativeHeroSQLiteContract(HeroResultFixture, unittest.IsolatedAsyncioTestCa
             await session.commit()
         async with self.sessions() as session:
             project = await session.get(Project, PROJECT_ID)
-            # Use the native helper's actual data directory in this fixture only.
             from unittest.mock import patch
             with patch.object(Project, "data_dir", new=property(lambda _: self.root)):
                 generated = await _excel_ids_with_artifact(session, project)

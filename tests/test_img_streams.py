@@ -135,7 +135,6 @@ def test_claim_shot1_batch_marks_inflight(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_claim_shot1_waits_for_cell_parent_png(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """K2 не в батч, пока PNG K1 этой ячейки нет на диске."""
     from unittest.mock import MagicMock
 
     monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")

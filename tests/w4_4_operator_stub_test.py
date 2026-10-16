@@ -1,7 +1,3 @@
-"""W4-4 (C05): оператор GPT без ключа не выдаёт «pass». Без сети, без платных вызовов.
-
-Файл назван ``*_test.py``, чтобы pytest его собирал при префиксе ``w4_4_``.
-"""
 
 from __future__ import annotations
 
@@ -56,7 +52,6 @@ async def test_the_written_files_say_not_checked_in_russian(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_failure_marker_words_no_longer_change_the_verdict(tmp_path: Path) -> None:
-    """Прежний stub угадывал «fail» по словам «fail/стоп/ошибк» и «pass» по их отсутствию: оба были выдумкой."""
     for prompt in ("всё хорошо", "fail: стоп, ошибка"):
         res = await _run(tmp_path, role="review", prompt=prompt)
         assert res.gate_status == "not_checked", prompt
@@ -83,8 +78,8 @@ async def test_a_not_checked_gate_opens_no_branch(tmp_path: Path, monkeypatch) -
     entry = save_operator_result(p, a, input_paths=[], output_paths=list(res.output_paths), reply_text=res.reply_text,
                                  gate_status=res.gate_status, analysis=res.analysis.to_dict())
     assert entry["gateStatus"] == "not_checked"
-    assert gate_allows_successors(p, a) is None  # ни pass, ни fail
-    assert verdict_edge_blocks(p, a, "pass") is True  # ни одна ветка не открыта
+    assert gate_allows_successors(p, a) is None
+    assert verdict_edge_blocks(p, a, "pass") is True
     assert verdict_edge_blocks(p, a, "fail") is True
 
 
@@ -112,7 +107,7 @@ async def test_a_text_step_without_a_key_records_a_stub_output_event(tmp_path: P
 
     monkeypatch.setattr("app.services.observation.record_fact", record_fact)
     res = await _run(tmp_path, role="transform")
-    assert res.gate_status is None and res.analysis is None  # шаг без проверки: вердикта нет вообще
+    assert res.gate_status is None and res.analysis is None
     ((kind, payload),) = facts
     assert kind == "operator_stub_output" and payload["verdict"] is None
     assert "заглушкой" in payload["summary_ru"]
@@ -148,6 +143,6 @@ async def test_a_real_key_still_goes_to_the_real_path_not_the_stub(tmp_path: Pat
 
     monkeypatch.setattr("app.services.gpt_api.gpt_api_enabled", lambda: True)
     monkeypatch.setattr(client, "_run_operator_api_real", fake_real)
-    monkeypatch.setenv(client.STUB_STRICT_ENV, "1")  # строгий режим не мешает боевому пути
+    monkeypatch.setenv(client.STUB_STRICT_ENV, "1")
     res = await _run(tmp_path, role="review")
     assert called == ["n_check"] and res.gate_status == "pass"

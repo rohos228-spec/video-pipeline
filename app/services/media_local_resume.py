@@ -1,26 +1,3 @@
-"""D06: supervised reconcile / resume-local admission for paid nodes WITHOUT a provider task id.
-
-``media_admission`` admits a resume only where a provider holds a task id (Kie: videos, items, music) and for the
-local node ``assemble``. The paid nodes ``images``, ``hero``, ``items`` (Outsee), ``audio`` (TTS) and ``sfx_gen`` have no
-task id, so until now every incident of them ended in a blanket stop (``no_resumable_task``, ``paid_no_idempotency``,
-``paid_uncertain_submit``). This module re-judges them from the facts that exist since D03 and the earlier checkpoints:
-
-``images`` / ``hero`` / ``items``  the Outsee request-key record (``outsee_idempotency``): a paid result on record whose file is
-                                   intact is ``resume_local`` (the node takes the file, no request); an attempt without a
-                                   verdict is ``denied`` (``unknown_outcome_outsee``, a human decides); plus everything
-                                   ``media_recovery`` already knows (Kie tasks, ledger intents);
-``audio``                          a finished file on disk (``media_recovery.assess_audio``);
-``sfx_gen``                        the ElevenLabs event files in the checkpoint ``sfx_files`` that exist and decode; an event
-                                   whose request left without an answer (``inflight``) stays ``denied``.
-
-What is NEVER done here: a paid request. A paid RE-send stays native or human (``retry_same`` is typed
-``retry_same_not_admitted``). The operation runs in the supervisor process inside ``media_spend.resume_only()``;
-the result is verified from independent facts: every file is re-read and decoded inside the project folder, and neither
-the provider-task ledger nor the request-key log may hold one new row compared with before.
-
-The API is the shape of ``media_admission`` (``admitted``, ``admit``, ``run_and_verify``) so the caller can route by node
-type: ``actions_recovery`` does this for the media block.
-"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -93,7 +70,6 @@ def _sfx_items(project) -> list[dict[str, Any]]:
 
 
 async def assess(project, node_type: str) -> dict[str, Any]:
-    """Read-only. Same shape as ``media_recovery.assess``; never submits, never writes."""
     if node_type not in NODES:
         raise ValueError(f"no local-resume profile for node type {node_type!r}")
     report = await media_recovery.assess(project, node_type)
@@ -101,10 +77,10 @@ async def assess(project, node_type: str) -> dict[str, Any]:
     verdict = report["verdict"]
     if node_type in OUTSEE_NODES and report.get("ledger") in ("ok", "disabled") and _request_keys_usable():
         if report.get("ledger") == "disabled":
-            items = []  # the Kie task ledger is off (no Kie key): no Kie task exists, the request-key log decides
+            items = []
         try:
             items += await _outsee_items(project, node_type)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("media_local_resume: request-key log unreadable: {}", type(exc).__name__)
             items.append(_item("", "denied", "request_key_log_unavailable"))
         verdict = media_recovery.aggregate(items)
@@ -115,7 +91,6 @@ async def assess(project, node_type: str) -> dict[str, Any]:
 
 
 async def admit(project, node_type: str) -> dict[str, Any]:
-    """The admitted operation and the full assessment, or a typed refusal. Read-only."""
     if not admitted(node_type):
         raise MediaAdmissionDenied("node_not_admitted", str(node_type))
     report = await assess(project, node_type)
@@ -131,7 +106,6 @@ async def admit(project, node_type: str) -> dict[str, Any]:
 
 
 async def request_key_fingerprint(project_id: int) -> int:
-    """Number of rows of the request-key log of the project: a verified operation must not change it."""
     from app.db import SessionLocal
     await media_spend.drain()
     async with SessionLocal() as session:
@@ -148,7 +122,7 @@ def _audio_paths(project) -> list[Path]:
     try:
         out += [p.with_name(p.name[: -len(_SIDECAR_SUFFIX)]) for p in sorted((root / "audio").glob("*" + _SIDECAR_SUFFIX))]
         voice = find_voice_full_on_disk(root, meta=project.meta if isinstance(project.meta, dict) else None)
-    except Exception:  # noqa: BLE001
+    except Exception:
         voice = None
     if voice is not None:
         out.append(Path(voice))
@@ -162,7 +136,6 @@ def _files_to_verify(project, node_type: str, items: list[dict[str, Any]]) -> li
 
 
 async def run_and_verify(project, node_type: str, admission: dict[str, Any]) -> dict[str, Any]:
-    """Execute the admitted operation and verify it from facts outside the executor. Never submits."""
     if node_type not in NODES:
         raise ValueError(f"{node_type!r} is not a local-resume node")
     operation = admission["operation"]
@@ -174,7 +147,7 @@ async def run_and_verify(project, node_type: str, admission: dict[str, Any]) -> 
     root = Path(project.data_dir)
     items = [i for i in admission["report"]["keys"] if i["mode"] == "resume_local"]
     files: list[dict[str, Any]] = []
-    with media_spend.resume_only():  # even a coding mistake cannot reach a paid seam from here
+    with media_spend.resume_only():
         for key, path in _files_to_verify(project, node_type, items):
             probe = await _probe(path, root=root, kind=PROBE_KIND[node_type])
             files.append({"key": key, "path": str(path.relative_to(root)) if path.is_relative_to(root) else path.name,

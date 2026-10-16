@@ -1,4 +1,3 @@
-"""Tests of the SAFETY part of ``scripts/e2e_full_chain_live.py`` (F10 live). No server, no network, nothing paid."""
 from __future__ import annotations
 
 import importlib.util
@@ -11,7 +10,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "e2e_full_chain_live.py"
 
-# built from parts so that no secret-shaped literal sits in the test source
 SECRET_A = "kie" + "_" + "SECRETVALUE1234567890"
 SECRET_B = "vb" + "_" + "SECRETVALUE0987654321"
 
@@ -35,7 +33,6 @@ def _full_env(tmp_path, extra=()):
                                 f"ELEVENLABS_API_KEY=eleven{SECRET_A}", "UNRELATED_TOKEN=must-not-be-read-at-all", *extra])
 
 
-# ───────── arguments ─────────
 
 def test_arguments_defaults_and_modes(mod):
     a = mod.parse_args(["--live", "--work-dir", "x"])
@@ -47,12 +44,12 @@ def test_arguments_defaults_and_modes(mod):
 
 
 @pytest.mark.parametrize("argv", [
-    [],                                                                    # one of the modes is required
-    ["--live", "--live-preflight", "--work-dir", "x"],                     # exclusive
-    ["--live"],                                                            # --live needs --work-dir
+    [],
+    ["--live", "--live-preflight", "--work-dir", "x"],
+    ["--live"],
     ["--live", "--work-dir", "x", "--frames", "0"],
     ["--live", "--work-dir", "x", "--frames", "6"],
-    ["--live", "--work-dir", "x", "--max-text-usd", "2.5"],                # above the owner's rule
+    ["--live", "--work-dir", "x", "--max-text-usd", "2.5"],
     ["--live", "--work-dir", "x", "--max-media-usd", "1.01"],
     ["--live", "--work-dir", "x", "--max-media-usd", "0"],
     ["--live", "--work-dir", "x", "--video-provider", "seedance"],
@@ -66,7 +63,6 @@ def test_bad_level_is_a_refusal_not_a_crash(mod):
     assert mod.main(["--live-preflight", "--until", "Z"]) == mod.EXIT_ARGS
 
 
-# ───────── the whitelisted loader never prints ─────────
 
 def test_loader_keeps_only_whitelisted_names_and_prints_nothing(mod, tmp_path, capsys):
     got = mod.load_env_whitelist(str(_full_env(tmp_path, ["# KIE_API_KEY=commented", 'GPT_PROXY_URL="http://p"'])))
@@ -96,7 +92,6 @@ def test_preflight_output_has_no_secret_values(mod, tmp_path, capsys):
     assert "оценка:" in out.out and "потолк" in out.out
 
 
-# ───────── refusal without keys / above the ceiling ─────────
 
 def test_refuses_without_env_file_and_without_keys(mod, tmp_path, capsys, monkeypatch):
     monkeypatch.delenv(mod.ENV_FILE_VAR, raising=False)
@@ -109,7 +104,7 @@ def test_refuses_without_env_file_and_without_keys(mod, tmp_path, capsys, monkey
     for name in ("OUTSEE_API_KEY", "ELEVENLABS_API_KEY"):
         assert name in cap.err
     assert SECRET_B not in cap.out + cap.err
-    assert not (tmp_path / "w").exists()                      # refused BEFORE anything was created or started
+    assert not (tmp_path / "w").exists()
 
 
 def test_required_keys_follow_level_and_providers(mod):
@@ -129,11 +124,10 @@ def test_default_estimate_fits_the_ceilings_and_music_does_not(mod, tmp_path, ca
     assert est["requests"]["llm"] == 10 and "music_prompt" not in est["llm_by_node"] and "sfx_plan" not in est["llm_by_node"]
     assert mod.estimate_problem(est, 2.0, 1.0) is None
     m = mod.parse_args(["--live-preflight", "--until", "E", "--with-music", "--with-sfx"])
-    assert mod.estimate_problem(mod.estimate(m), 2.0, 1.0)     # Suno eats the media ceiling
+    assert mod.estimate_problem(mod.estimate(m), 2.0, 1.0)
     f = _full_env(tmp_path)
     assert mod.main(["--live-preflight", "--until", "E", "--with-music", "--with-sfx", "--env-file", str(f)]) == mod.EXIT_ARGS
     assert "выше потолка" in capsys.readouterr().err
-    # a tiny ceiling refuses even the default run
     assert mod.main(["--live-preflight", "--until", "C", "--max-media-usd", "0.1", "--env-file", str(f)]) == mod.EXIT_ARGS
 
 
@@ -155,7 +149,6 @@ def test_wire_caps_have_slack_but_no_music_or_sfx_unless_asked(mod):
     assert cb["kie_music"] == 1 and cb["sfx"] == 9 and cb["kie_media"] == 2 and cb["outsee_video"] == 0
 
 
-# ───────── no network at all in the preflight ─────────
 
 def test_preflight_makes_no_network_calls(mod, tmp_path, monkeypatch):
     def boom(*a, **k):
@@ -164,7 +157,7 @@ def test_preflight_makes_no_network_calls(mod, tmp_path, monkeypatch):
     monkeypatch.setattr(socket.socket, "connect_ex", boom)
     monkeypatch.setattr(socket, "getaddrinfo", boom)
     import subprocess
-    monkeypatch.setattr(subprocess, "Popen", boom)           # no server child either
+    monkeypatch.setattr(subprocess, "Popen", boom)
     f = _full_env(tmp_path)
     assert mod.main(["--live-preflight", "--until", "E", "--env-file", str(f)]) == mod.EXIT_PASS
 
@@ -176,7 +169,6 @@ def test_url_problems(mod):
     assert mod.url_problem("X", "https://u:p@host.example")
 
 
-# ───────── the child's send hook ─────────
 
 ALLOWED = ["vibecode.moe", "api.kie.ai", "outsee.io", "api.elevenlabs.io", "catbox.moe"]
 CAPS = {"llm": 2, "outsee_image": 1, "outsee_video": 1, "tts": 1, "sfx": 0, "kie_music": 0, "kie_media": 1}
@@ -191,8 +183,8 @@ def test_hook_counts_paid_posts_and_refuses_over_the_cap(mod):
     assert _judge(mod, "POST", "outsee.io", "/api/v1/images/generate", counts=counts)[:2] == ("pass", "outsee_image")
     act, bucket, why = _judge(mod, "POST", "outsee.io", "/api/v1/images/generate", counts=counts)
     assert (act, bucket, why) == ("refuse", "outsee_image", "cap_exceeded") and counts == {"outsee_image": 1}
-    assert _judge(mod, "POST", "api.kie.ai", "/api/v1/generate", counts=counts)[2] == "cap_exceeded"       # music cap is 0
-    assert _judge(mod, "POST", "api.elevenlabs.io", "/v1/sound-generation", counts=counts)[2] == "cap_exceeded"  # sfx cap is 0
+    assert _judge(mod, "POST", "api.kie.ai", "/api/v1/generate", counts=counts)[2] == "cap_exceeded"
+    assert _judge(mod, "POST", "api.elevenlabs.io", "/v1/sound-generation", counts=counts)[2] == "cap_exceeded"
     assert _judge(mod, "POST", "api.elevenlabs.io", "/v1/text-to-speech/abc123", counts=counts)[0] == "pass"
     assert _judge(mod, "POST", "vibecode.moe", "/v1/chat/completions", counts=counts)[1] == "llm"
 
@@ -203,9 +195,9 @@ def test_hook_refuses_foreign_hosts_unknown_posts_and_plain_http(mod):
     assert _judge(mod, "POST", "outsee.io", "/api/v1/images/generate", scheme="http")[2] == "not_https"
     assert _judge(mod, "PUT", "outsee.io", "/x")[2] == "method_not_allowed"
     assert _judge(mod, "DELETE", "outsee.io", "/x")[2] == "method_not_allowed"
-    assert _judge(mod, "GET", "cdn.example", "/clip.mp4")[0] == "pass"                  # result downloads go anywhere over https
+    assert _judge(mod, "GET", "cdn.example", "/clip.mp4")[0] == "pass"
     assert _judge(mod, "GET", "cdn.example", "/clip.mp4", scheme="http")[2] == "http_get_non_loopback"
-    assert _judge(mod, "POST", "127.0.0.1", "/anything")[0] == "pass"                  # the server's own loopback
+    assert _judge(mod, "POST", "127.0.0.1", "/anything")[0] == "pass"
 
 
 def test_hook_free_uploads_pass_without_a_cap(mod):
@@ -224,7 +216,6 @@ def test_hook_blocks_seedance_2_5_but_not_1_5(mod):
     assert not mod.FORBIDDEN_MODEL_RE.search("seedance-1-5-pro") and not mod.FORBIDDEN_MODEL_RE.search("veo-3-1-lite")
 
 
-# ───────── child settings: explicit, nothing inherited from a repository .env ─────────
 
 def _cfg(mod, **kw):
     base = {"text_provider": "vibecode", "image_provider": "outsee", "video_provider": "outsee", "with_sfx": False,
@@ -244,7 +235,6 @@ def test_settings_plan_blanks_unneeded_routes_and_disables_publish(mod):
     assert kie["vibecode_api_key"] == "" and kie["gpt_api_key"] == SECRET_A and kie["text_llm_provider"] == "kie"
 
 
-# ───────── ledger fact and ceilings ─────────
 
 def test_ledger_spend_splits_text_and_media_and_counts_unknown_rows(mod):
     rows = [
@@ -284,9 +274,9 @@ def test_dead_api_keeps_mutations_and_answers_nothing(mod):
 def test_silent_mp3_is_a_real_nonempty_file(mod):
     try:
         data = mod.make_silent_mp3(2)
-    except Exception as exc:  # noqa: BLE001 - only a missing ffmpeg may excuse it
+    except Exception as exc:
         pytest.skip(f"ffmpeg not available: {exc}")
-    assert len(data) > 1000      # generate_music takes a music/*.mp3 above 1000 bytes from disk
+    assert len(data) > 1000
 
 
 def test_dry_script_delegates_live_calls(mod):

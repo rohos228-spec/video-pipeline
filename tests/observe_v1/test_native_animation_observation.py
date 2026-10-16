@@ -1,23 +1,3 @@
-"""Tests-first journal seams for the ORIGINAL animation prompt executor.
-
-Parent owns production helpers/hooks and captured Docker RED/GREEN. This file
-does not enable managed animation, call an API/provider, or replace the native
-parser/writer/harness. Running Project/NodeRun values are unit fixture inputs;
-these cases make no actual worker or API acceptance claim.
-
-Planned public APIs in app.services.native_animation_contracts:
-  async record_animation_input(project, frames, finalize_status=True)
-  async record_animation_parse(reply, pairs, ops, *, shot, target_uuids)
-  async observe_animation_result(session, project, node_type='animation_prompts')
-
-Journal contract follows existing node_input/parse_result/runtime_check/
-node_output/node_result_verification facts. Parse schema_valid describes native
-extracted operations inside the supplied targets; partial extraction is valid
-but batch_coverage_complete is false. sha256 binds the actual extracted ops.
-Output verifies independently read committed rows against captured input; it
-never creates input provenance from output or repairs a failed native session.
-All app/SQLAlchemy imports are deferred until the parent executes this suite.
-"""
 from __future__ import annotations
 from app.services import revisions
 
@@ -44,7 +24,6 @@ OUTPUT_FIELDS = ("id", "project_id", "uuid", "number", "sort_key", "scene_id",
 
 
 class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
-    # Reuse just the async fixture methods, never inherit DurableActions tests.
     fixture_node_type = "animation_prompts"
 
     async def asyncSetUp(self):
@@ -68,7 +47,7 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
             queue_node_for_start(node, project_id=7, initiator="worker")
             start_node_running(node, project_id=7, initiator="worker")
             scope = await master.get(observation.ExecutionControl, "exec-durable")
-            scope.execution_id = EXECUTION  # Original body store requires a UUID.
+            scope.execution_id = EXECUTION
             scope.node_keys = ["n1"]
             run = await master.get(WorkflowRun, scope.workflow_run_id)
             self.native_node_type = next(item["type"] for item in run.nodes_snapshot
@@ -145,8 +124,6 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
 
         ctx = observation.AttemptContext(self.observer, self.scope, session,
                                         "project", "n1", ATTEMPT)
-        # Direct helper cases use the same identity as the persisted native run.
-        # This supplies no managed permission or result/commit provenance.
         ctx.native_node_type = self.native_node_type
         ctx.last_request_id = REQUEST_RACE
         attempt_token = observation._attempt.set(ctx)
@@ -226,7 +203,6 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
         from app.services.node_capabilities import capability_for
         from app.services.observation import ExecutionControl
 
-        # The capability allows a bounded retry_same, but observing grants no authority.
         self.assertNotIn("retry_profile", capability_for("animation_prompts").actions)
         self.assertIsNone(get_permission(7))
         async with self.sessions() as reader:
@@ -248,8 +224,6 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
         from openpyxl import Workbook
         from app.services.xlsx_v8_import import ROW_IMAGE_PROMPT_V8, ROW_VOICEOVER_V8
 
-        # Same native plan/disk inputs as the original animation contract tests.
-        # These are initial unit inputs, never a repair of executor output.
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "план"
@@ -430,7 +404,6 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
             for key in ("parsed", "schema_valid", "batch_coverage_complete"):
                 self.assertIs(fact.payload[key], False)
             self.assertEqual(self.body(fact)["extracted_ops"], [])
-            # Typed for diagnosis: a batch needs usable pairs; none came back.
             self.assertIs(fact.payload["payload_required"], True)
             self.assertIs(fact.payload["payload_present"], False)
         from types import SimpleNamespace
@@ -674,8 +647,6 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
             batch = native.collect_batch_items(project, frames)
             self.assertTrue(native.is_apply_ops_blob(reply))
             self.assertEqual(native.parse_apply_ops_animation_reply(reply, frames), [])
-            # Obtain the original executor's error through its ordinary no-ctx path.
-            # Neither invocation sends a model request or reaches native apply.
             with self.assertRaises(RuntimeError) as original:
                 await step._save_anim_pr_batch(
                     business, project, frames, batch, reply, None, shot=1)
@@ -712,8 +683,6 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
         record_parse = self.api("record_animation_parse")
         observe_result = self.api("observe_animation_result")
         image_nodes = [{"id": "image-node", "type": "images", "data": {"groupId": "images"}}]
-        # A separate initial native graph; the animation run's immutable snapshot
-        # and NodeRun remain untouched. No done states or managed grants are seeded.
         async with self.sessions() as master:
             image_node = NodeRun(workflow_run_id=21, node_key="image-node", node_type="images",
                                  status=NodeRunStatus.pending)
@@ -741,7 +710,7 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
             project = await business.get(Project, 8)
             project.status = ProjectStatus.generating_images
             project.meta = {"canvas_graph": {"nodes": image_nodes, "edges": []}}
-            await business.commit()  # Initial unit fixture input, before observation.
+            await business.commit()
             frames = list((await business.scalars(select(Frame).where(
                 Frame.project_id == 8).order_by(Frame.number))).all())
             reply, pairs, ops = self.parsed(project, frames)
@@ -774,14 +743,12 @@ class NativeAnimationObservation(unittest.IsolatedAsyncioTestCase):
             or fact.payload.get("node_type") == "animation_prompts"
             or fact.payload.get("check") == "native_animation_prompt_batch"
             or fact.kind in {"parse_result", "node_output", "node_result_verification"})
-            # W4-2 (C03): the images node now has its OWN media verification; it is the images attempt's fact
             and fact.payload.get("contract") != "native_media"]
         self.assertEqual(animation_facts, [],
                          "sidecar capture/result must not be attributed to an images NodeRun")
         self.assertEqual(getattr(image_ctx, "native_node_type", None), "images")
         self.assertFalse(hasattr(image_ctx, "animation_prompt_input"))
         self.assertFalse(getattr(image_ctx, "animation_verification_recorded", False))
-        # W4-2 (C03): the only new bodies are the images node's own media verification (node_type images).
         import json as _json
         new_bodies = set(self.observer.body_root.glob("**/*.json")) - set(bodies)
         for body in new_bodies:

@@ -1,4 +1,3 @@
-"""Вставка / удаление кадров и правка закадра в монтаже."""
 
 from __future__ import annotations
 
@@ -98,7 +97,6 @@ async def test_insert_between_keeps_neighbor_numbers(
 async def test_insert_between_when_sort_key_missing(
     session: AsyncSession, project: Project
 ) -> None:
-    """Старые кадры без sort_key не должны выталкивать вставку в конец."""
     session.add(project)
     a = _vo_parent(project.id, 1, "aa" * 12, "первый")
     b = _vo_parent(project.id, 2, "bb" * 12, "второй")
@@ -232,7 +230,6 @@ async def test_delete_parent_keeps_children(
 async def test_insert_does_not_steal_neighbor_image(
     session: AsyncSession, project: Project
 ) -> None:
-    """Новый кадр пустой: PNG соседа остаются на соседе, номер не сдвигается."""
     from app.services.montage_board import build_montage_board
 
     session.add(project)
@@ -566,7 +563,6 @@ async def test_delete_other_frame_keeps_pending_ops(
     assert ops[0]["action"] == "оставить"
 
 
-# --- W50: U-2 хронологические номера сцен, U-3 отмена деления -----------------------------------------
 
 
 def _three_frame_scene(project_id: int) -> tuple[Frame, Frame, Frame]:
@@ -628,7 +624,6 @@ async def test_split_undo_restores_scenes_and_keeps_paid_media(
     assert out["ok"] and out["paid_media_kept"] == {"images": 1, "videos": 1, "total": 2}
     assert await _attrs_by_number(session, project.id) == before
     assert split_undo_info(project)["can_undo"] is False
-    # платные файлы на месте и привязаны к тем же кадрам
     arts = (await session.execute(select(Artifact).where(Artifact.project_id == project.id))).scalars().all()
     assert {(x.uuid, x.frame_id) for x in arts} == {("img-b", b.id), ("vid-c", c.id)}
     with pytest.raises(RuntimeError):
@@ -655,7 +650,7 @@ async def test_split_undo_refuses_when_frames_were_edited_after_split(
     snapshot = await _attrs_by_number(session, project.id)
     with pytest.raises(RuntimeError, match="правили"):
         await undo_montage_split(session, project, undo_id=res["undo_id"])
-    assert await _attrs_by_number(session, project.id) == snapshot  # ничего не затёрто
+    assert await _attrs_by_number(session, project.id) == snapshot
 
 
 @pytest.mark.asyncio
@@ -696,9 +691,8 @@ async def test_board_shows_scene_ordinal_field(session: AsyncSession, project: P
     board = await build_montage_board(session, project)
     by_n = {fr["number"]: fr for fr in board["frames"]}
     keys = [by_n[n]["vo_scene_number"] for n in (5, 6, 41)]
-    assert keys[-1] == 41  # внутренний ключ (головной кадр) не менялся
+    assert keys[-1] == 41
     distinct = list(dict.fromkeys(keys))
-    # показываемый номер = позиция сцены по порядку; кадры одной сцены делят номер
     assert [by_n[n]["vo_scene_ordinal"] for n in (5, 6, 41)] == [distinct.index(k) + 1 for k in keys]
     assert by_n[41]["vo_scene_ordinal"] == len(distinct)
 
@@ -709,7 +703,7 @@ def test_scene_display_ordinals_follow_timeline_not_historical_number() -> None:
     f5 = _vo_parent(1, 5, "a5" * 12, "пять")
     f6 = _vo_parent(1, 6, "a6" * 12, "шесть")
     f41 = _vo_parent(1, 41, "a9" * 12, "вставка")
-    f41.sort_key = 55.0  # вставлен между 5 и 6, номер остался историческим
+    f41.sort_key = 55.0
     for i, fr in enumerate((f5, f6, f41), start=1):
         fr.id = i
     got = scene_display_ordinals([f6, f41, f5])

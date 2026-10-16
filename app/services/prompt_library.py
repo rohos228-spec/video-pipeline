@@ -127,11 +127,6 @@ def excel_gpt_template_dir() -> Path:
     return find_project_root() / "templates" / "excel_gpt_agents"
 
 
-# Промты группы — только templates/node_groups/script_frames_qc/,
-# и только когда группа применена (group_id / нода группы).
-# Промты агентов scene_design, на которые смотрят ноды группы:
-# каркас (fw_script) и площадка (fw_action). Файл один — в prompts/scene_design/,
-# копию в папку группы не кладём (правка в Studio пишет туда же).
 SCRIPT_FRAMES_QC_SHARED_PROMPTS: dict[str, str] = {
     "scene_skeleton_agent": "prompts/scene_design/scene_skeleton_agent.md",
     "action": "prompts/scene_design/action.md",
@@ -170,8 +165,6 @@ def script_frames_qc_group_id(group_id: str | None) -> str | None:
     return base if base == "script_frames_qc" else None
 
 
-# Ноды группы на канвасе: раннер обязан брать
-# templates/node_groups/script_frames_qc/, не excel_gpt_agents (main v6).
 _SCRIPT_FRAMES_QC_NODE_SUFFIXES = (
     "_fw_script",
     "_fw_check_script",
@@ -209,11 +202,6 @@ def uses_script_frames_qc_prompts(
     project: Any = None,
     node_key: str | None = None,
 ) -> bool:
-    """Промты группы — только если группа на канвасе / это нода группы.
-
-    Иначе ``scenes_to_frames_ru`` и соседние имена резолвятся в main
-    ``templates/excel_gpt_agents`` (v6 «одна сцена = один кадр»).
-    """
     if script_frames_qc_group_id(group_id) is not None:
         return True
     if script_frames_qc_group_id(_group_id_from_canvas_node(project, node_key)):
@@ -229,7 +217,6 @@ def uses_script_frames_qc_prompts(
 
 
 def list_group_owned_prompts(group_id: str | None) -> list[str] | None:
-    """Промты группы. None — общий список «Работа с GPT»."""
     if script_frames_qc_group_id(group_id) is None:
         return None
     return sorted(
@@ -240,7 +227,6 @@ def list_group_owned_prompts(group_id: str | None) -> list[str] | None:
 
 
 def script_frames_qc_prompt_relpath(name: str) -> str:
-    """Путь промта группы от корня репо (для UI / библиотеки)."""
     clean = (name or "").strip()
     if clean.lower().endswith(".md"):
         clean = clean[:-3].rstrip()
@@ -251,11 +237,6 @@ def script_frames_qc_prompt_relpath(name: str) -> str:
 
 
 def resolve_script_frames_qc_prompt_path(name: str) -> Path:
-    """Промт группы: templates/node_groups/script_frames_qc/.
-
-    Каркас и площадка — общие промты scene_design
-    (``SCRIPT_FRAMES_QC_SHARED_PROMPTS``).
-    """
     from app.project_root import find_project_root
 
     clean = (name or "").strip()
@@ -291,8 +272,6 @@ def excel_gpt_prompt_exists(name: str) -> bool:
     return (excel_gpt_template_dir() / f"{clean}.md").is_file()
 
 
-# Локальная копия 05_excel_gpt иногда остаётся v1 (пишет закадр) или
-# «1 сцена = 1 кадр». Git-шаблон — SoT для цепочки script_frames_qc.
 _STALE_EXCEL_GPT_MARKERS: dict[str, tuple[str, ...]] = {
     "script_writer_ru": (
         "Агент: сценарист закадра",
@@ -327,12 +306,6 @@ def resolve_excel_gpt_prompt_path(
     project: Any = None,
     node_key: str | None = None,
 ) -> Path:
-    """Общий excel_gpt — 05_excel_gpt / excel_gpt_agents.
-
-    Промты группы script_frames_qc — если группа на канвасе, нода ``_fw_*``,
-    или явно передан ``group_id``. Раннер должен передать project/node_key:
-    без них те же имена молча берутся из main (v6).
-    """
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
@@ -368,8 +341,6 @@ def resolve_excel_gpt_prompt_path(
         return tmpl
     return primary
 
-# Макс. длина имени варианта на диске (UTF-8 байты). Раньше было 40 из‑за TG callback_data;
-# в веб-студии нужны длинные осмысленные имена файлов.
 MAX_PROMPT_NAME_BYTES = 255
 
 # Для inline-кнопок Telegram (callback_data ≤ 64 байта с префиксом).
@@ -493,11 +464,6 @@ def list_prompts(step_code: str) -> list[str]:
 
 
 def list_excel_gpt_prompts() -> list[str]:
-    """Список «Работа с GPT»: 05_excel_gpt + git-шаблоны excel_gpt_agents.
-
-    Имена группы script_frames_qc сюда не входят — даже если копии лежат
-    в excel_gpt_agents (main v6). Их список только по group_id.
-    """
     names = _list_prompts_in_dir(EXCEL_GPT_UNIFIED_STEP)
     seen = set(names)
     tmpl = excel_gpt_template_dir()
@@ -525,7 +491,6 @@ def _list_prompts_in_dir(step_code: str) -> list[str]:
 
 
 def prompt_path(step_code: str, name: str) -> Path:
-    """Путь к файлу `<step_dir>/<name>.md`. Не проверяет существование."""
     clean = _sanitize_name(name) if not is_valid_prompt_name(name) else name
     if not clean:
         raise ValueError(f"некорректное имя промта: {name!r}")
@@ -549,6 +514,16 @@ def read_prompt(
         return p.read_text(encoding="utf-8")
     p = prompt_path(step_code, name)
     if not p.exists():
+        if name == DEFAULT_NAME:
+            available = _list_prompts_in_dir(step_code)
+            if available:
+                fallback_p = prompt_path(step_code, available[0])
+                if fallback_p.is_file():
+                    logger.warning(
+                        "read_prompt: '{}' not found in {}, falling back to '{}'",
+                        name, step_dir(step_code), available[0],
+                    )
+                    return fallback_p.read_text(encoding="utf-8")
         raise FileNotFoundError(f"prompt file not found: {p}")
     return p.read_text(encoding="utf-8")
 
@@ -611,7 +586,6 @@ def _clean_variant_name(raw: str) -> str:
 _STEP_PREFERRED_SLOT: dict[str, str] = {
     "hero_style": "style",
 }
-# Если в 04_hero нет default.md / туда скопировали агент реестра.
 _HERO_SHEET_FALLBACKS = (
     "character_model_sheet_16x9",
     "агент_лист_персонажа_со_всех_сторон.txt",
@@ -619,7 +593,6 @@ _HERO_SHEET_FALLBACKS = (
 
 
 def _node_key_belongs_to_step(node_key: str, step_code: str) -> bool:
-    """Слот ноды excel_gpt не должен становиться промтом hero/img_pr/…"""
     key = str(node_key or "").strip().lower()
     if not key:
         return False
@@ -627,7 +600,6 @@ def _node_key_belongs_to_step(node_key: str, step_code: str) -> bool:
     if is_excel_gpt_prompt_step(step_code):
         if "excel_gpt" in key:
             return True
-        # enrich_1…5 на канвасе: n_enrich_1, не n_excel_gpt_*.
     if sc == "hero_style":
         return key == "n_hero" or key.startswith("n_hero_")
     prefixes = [f"n_{sc}", sc]
@@ -656,15 +628,6 @@ def _node_key_belongs_to_step(node_key: str, step_code: str) -> bool:
 
 
 def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
-    """Вариант из Node Studio: `meta.prompt_slot_variants[node][slot]`.
-
-    Зеркало `web/src/lib/prompt-slot-storage.ts` → `activeVariantForSlot`:
-    для hero_style — слот `style`; иначе сначала `main`, потом любой
-    существующий файл шага.
-
-    Только слоты нод этого шага: иначе excel_gpt «агент персонажей»
-    (копия файла в 04_hero/) подменяется в Hero и генерация падает.
-    """
     if not meta or step_code not in STEP_FOLDERS:
         return None
     slot_variants = meta.get("prompt_slot_variants")
@@ -700,7 +663,6 @@ def _variant_from_studio_meta(meta: dict | None, step_code: str) -> str | None:
 
 
 def _coerce_hero_sheet_variant(name: str, source: str) -> tuple[str, str]:
-    """Hero = turnaround sheet. Агент реестра / пустой default → лист 16:9."""
     from app.services.hero_prompt_contract import (
         hero_master_looks_like_registry_agent,
         hero_master_looks_like_sheet,
@@ -747,7 +709,6 @@ def _hero_style_file_ok(variant: str) -> bool:
 
 
 def _hero_style_fallback_names() -> list[str]:
-    """Сначала «ДЛЯ ПЕРСОНАЖА», потом любой лок в 04_hero_style/."""
     names = _list_prompts_in_dir("hero_style")
     preferred = [n for n in names if "персонаж" in n.lower()]
     rest = [n for n in names if n not in preferred and n != DEFAULT_NAME]
@@ -755,7 +716,6 @@ def _hero_style_fallback_names() -> list[str]:
 
 
 def _coerce_hero_style_variant(name: str, source: str) -> tuple[str, str]:
-    """Hero style = visual lock для листа. Шаблон кадров / пустой default → лок персонажа."""
     clean = _clean_variant_name(name)
     if clean and _hero_style_file_ok(clean):
         return clean, source
@@ -778,7 +738,6 @@ def resolve_project_prompt_name(
     *,
     meta: dict | None = None,
 ) -> str:
-    """Какой вариант .md использовать для шага."""
     return resolve_project_prompt_with_source(overrides, step_code, meta=meta)[0]
 
 
@@ -788,6 +747,7 @@ PROMPT_SOURCE_LABELS: dict[str, str] = {
     "override": "оверрайд проекта",
     "global": "глобально активный",
     "default": "default",
+    "fallback": "фоллбэк",
 }
 
 
@@ -799,12 +759,6 @@ def resolve_project_prompt_with_source(
     node_key: str | None = None,
     slot_id: str | None = None,
 ) -> tuple[str, str]:
-    """(имя варианта, источник: slot|preferred|override|global|default).
-
-    Для excel_gpt при нескольких нодах обязателен node_key: иначе все слоты
-    получают один prompt_overrides["excel_gpt"]. Node Studio пишет выбор в
-    meta.prompt_slot_variants[node_key]["main"].
-    """
     name, source = _resolve_prompt_variant_raw(
         overrides,
         step_code,
@@ -903,6 +857,13 @@ def _resolve_prompt_variant_raw(
     if global_name:
         return global_name, "global"
 
+    if prompt_path(step_code, DEFAULT_NAME).exists():
+        return DEFAULT_NAME, "default"
+
+    available = _list_prompts_in_dir(step_code)
+    if available:
+        return available[0], "fallback"
+
     return DEFAULT_NAME, "default"
 
 
@@ -935,7 +896,6 @@ def read_resolved_project_prompt(
 
 
 def _render_enrich_template(project, step_code: str, text: str, topic: str) -> str:
-    """enrich_*/excel_gpt читаются файлом: подставляем {{VAR}}/{{BLOCK}} и не пускаем остатки к модели."""
     from app.services.prompt_composer import (
         assert_prompt_resolved,
         merge_project_prompt_config,
@@ -972,9 +932,6 @@ def get_project_prompt(project, step_code: str) -> str:
         project_uses_blocks_v2,
     )
 
-    # enrich_* всегда из выбранного .md в Studio — не из blocks/steps template.
-    # Пресет с compose=file (НИИ 67) тоже читается файлом: шаблон blocks
-    # запрещает выдумывать факты, а этот агент как раз достраивает пустые поля.
     full_file = False
     if step_code not in ENRICH_STEP_CODES and project_uses_blocks_v2(overrides):
         meta = getattr(project, "meta", None) or {}
@@ -1024,7 +981,6 @@ def get_project_prompt(project, step_code: str) -> str:
 
 
 def make_template_for_new(step_code: str, name: str) -> str:
-    """Стартовый шаблон для нового файла, чтобы юзеру было что заполнять."""
     folder = STEP_FOLDERS.get(step_code, "?")
     return (
         f"# Master-prompt для шага «{step_code}» (вариант: {name})\n"
@@ -1039,7 +995,6 @@ def make_template_for_new(step_code: str, name: str) -> str:
     )
 
 
-# Registered developer variants after original resolution. Never write templates.
 APPROVED_PROFILE_PROMPTS={
     'original-contract-v1':'',
     'repair-json-only-v1':'\n\n[Approved profile: repair-json-only-v1] Repair formatting only. Return one JSON value conforming to the ORIGINAL node schema. Preserve source facts and identifiers; do not invent missing information or bypass validation.',

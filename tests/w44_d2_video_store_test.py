@@ -1,8 +1,3 @@
-"""D2: шот-задачи видео работают в хранилище кадров проекта (project.db), а не в master.
-
-Раньше ``_shot1_job`` открывал ``SessionLocal()`` (master). Кадры проекта лежат в его ``project.db``, поэтому
-кадр не находился, а оплаченный клип записывался бы в чужую базу. Все базы временные, вне репозитория.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -42,7 +37,6 @@ async def stand(outside_tmp, monkeypatch):
 
 
 async def _make_project_db(project: Project, *, frame_id: int = 1):
-    """project.db с проектом и одним кадром; в master кадров нет."""
     peng = await get_project_engine(project.data_dir)
     async with peng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -94,7 +88,7 @@ async def test_frame_store_falls_back_to_master_without_project_db(stand):
 
 async def test_frame_store_refuses_paid_step_on_id_collision(stand):
     await _make_project_db(stand.project, frame_id=1)
-    async with stand.master() as s:  # кадр с тем же id, но чужого проекта
+    async with stand.master() as s:
         s.add(Project(id=2, slug="p2", topic="t", status=ProjectStatus.new, meta={}))
         await s.flush()
         s.add(Frame(id=1, project_id=2, number=1, voiceover_text="other", attrs={}))
@@ -109,7 +103,7 @@ async def test_shot1_job_writes_clip_into_project_db_not_master(stand, fake_prov
     kw = _job_kwargs(stand.project, stand.project.data_dir / "videos")
     ok = await gv._shot1_job(**kw, session_factory=pm)
     assert ok is True and len(fake_provider) == 1
-    assert fake_provider[0]["prompt"] == "slow pan"  # промт кадра взят из project.db
+    assert fake_provider[0]["prompt"] == "slow pan"
     async with pm() as s:
         assert (await s.scalar(select(func.count()).select_from(Artifact).where(Artifact.kind == ArtifactKind.scene_video))) == 1
         assert (await s.get(Frame, 1)).status is FrameStatus.video_generated
@@ -118,7 +112,6 @@ async def test_shot1_job_writes_clip_into_project_db_not_master(stand, fake_prov
 
 
 async def test_shot1_job_in_master_cannot_see_project_db_frame(stand, fake_provider):
-    """Старое поведение (SessionLocal): кадра в master нет, платный запрос не уходит и ничего не пишется."""
     await _make_project_db(stand.project)
     kw = _job_kwargs(stand.project, stand.project.data_dir / "videos")
     assert await gv._shot1_job(**kw) is False

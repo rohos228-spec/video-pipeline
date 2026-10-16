@@ -1,9 +1,3 @@
-"""W7-A: вид HITL approve_publish - «да» на публикацию из Telegram.
-
-Бот - заменитель (ничего не уходит в сеть), площадки и браузер - фейковый реестр, файл ролика синтетический,
-рабочая папка и БД вне репозитория (tests/_stand_workdir.py). Класс доказательства: U. Реальным Telegram не
-проверялось.
-"""
 from __future__ import annotations
 
 import html
@@ -29,7 +23,6 @@ CAPTION = "Тема ролика про тест"
 
 
 class TgBot:
-    """Заменитель aiogram.Bot: запоминает отправленное, номера сообщений идут по порядку."""
 
     def __init__(self) -> None:
         self.sent: list[dict] = []
@@ -66,7 +59,6 @@ def _flags(monkeypatch, env):
     monkeypatch.setattr(settings, "telegram_bot_token", "123:test", raising=False)
     monkeypatch.setattr(settings, "telegram_owner_chat_id", OWNER)
     monkeypatch.setattr(settings, "hitl_auto_approve", False)
-    # аудит и журнал уведомлений пишут в рабочую папку вне репозитория
     monkeypatch.setattr(settings, "sqlite_path", env.workdir / "state.db")
     monkeypatch.delenv("VP_OPERATOR_AUDIT", raising=False)
     monkeypatch.delenv("VP_NOTIFICATION_LOG", raising=False)
@@ -102,7 +94,6 @@ async def _valid(db, p):
     return {k for k, v in (await ps.list_approvals(db, p.id, sha, csha)).items() if v["valid"]}
 
 
-# ── создание запроса и сообщение ────────────────────────────────────────────────
 
 
 async def test_awaiting_approval_sends_one_request_per_platform_with_caption_sha_and_buttons(db, env, monkeypatch):
@@ -120,7 +111,6 @@ async def test_awaiting_approval_sends_one_request_per_platform_with_caption_sha
         assert [b.text for b in buttons] == ["Разрешить публикацию", "Не публиковать"]
         assert [b.callback_data for b in buttons] == [f"hpub:{req.id}:yes", f"hpub:{req.id}:no"]
         assert all(len(b.callback_data.encode()) <= 64 for b in buttons)
-    # само по себе сообщение ничего не разрешает
     assert clicks == [] and clicks.opened == [] and await _valid(db, p) == set()
     assert p.status is ProjectStatus.assembled
 
@@ -134,7 +124,7 @@ async def test_caption_is_verbatim_even_with_markup_characters(db, env, monkeypa
 
 
 async def test_long_caption_goes_verbatim_in_chunks_with_buttons_only_on_the_last(db, env, monkeypatch):
-    topic = "&<" * 1100  # 2200 символов, после экранирования заметно длиннее лимита Telegram
+    topic = "&<" * 1100
     p, bot, _ = await _setup(db, env, monkeypatch, topic=topic)
     assert all(len(m["text"]) <= 4096 for m in bot.sent)
     assert len(bot.with_buttons()) == len(PLATFORMS)
@@ -145,7 +135,7 @@ async def test_long_caption_goes_verbatim_in_chunks_with_buttons_only_on_the_las
             break
     assert len(first_chunks) >= 2 and all(m.get("reply_markup") is None for m in first_chunks[:-1])
     joined = html.unescape("".join(re.sub(r"<[^>]+>", "", m["text"]) for m in first_chunks))
-    assert topic in joined  # ни одна сущность &amp; / &lt; не порвана на границе кусков
+    assert topic in joined
 
 
 async def test_no_telegram_no_request_and_panel_path_is_untouched(db, env, monkeypatch):
@@ -179,10 +169,9 @@ async def test_failed_send_leaves_no_orphan_request(db, env, monkeypatch):
 
     await step.run(db, p, Broken())
     assert await _requests(db, p.id) == []
-    assert p.status is ProjectStatus.assembled  # шаг не сломан, «да» остаётся в панели
+    assert p.status is ProjectStatus.assembled
 
 
-# ── автоодобрение «да» не создаёт ──────────────────────────────────────────────
 
 
 async def test_auto_mode_and_hitl_auto_approve_do_not_decide_or_grant(db, env, monkeypatch):
@@ -199,11 +188,8 @@ async def test_auto_mode_and_hitl_auto_approve_do_not_decide_or_grant(db, env, m
     await db.commit()
     assert len(await _requests(db, p.id, HITLDecision.pending)) == len(PLATFORMS)
     assert await _valid(db, p) == set() and clicks == [] and clicks.opened == []
-    # (статус после maybe_auto_advance не проверяем: у синтетического проекта нет данных шагов, и его
-    # собственный clamp_status_to_data опускает статус; важно, что «да» и решения по запросам не появились)
 
 
-# ── «Разрешить публикацию» ────────────────────────────────────────────────────
 
 
 async def test_owner_yes_grants_exactly_one_platform_with_telegram_actor_and_audit(db, env, monkeypatch):
@@ -223,7 +209,6 @@ async def test_owner_yes_grants_exactly_one_platform_with_telegram_actor_and_aud
     assert len(rows) == 1 and rows[0]["actor"] == f"telegram:{OWNER}" and rows[0]["outcome"] == "ok"
     assert rows[0]["status_code"] == 200 and rows[0]["project_id"] == p.id
     assert rows[0]["route_template"] == "telegram:approve_publish" and str(req.id) in rows[0]["path"]
-    # «да» только записано; шаг публикации поставлен в очередь, кликов ещё нет
     assert clicks == [] and p.status is ProjectStatus.publishing
 
 
@@ -234,20 +219,19 @@ async def test_yes_then_publish_step_clicks_only_the_approved_platform_once(db, 
     await step.run(db, p, bot)
     await db.commit()
     assert list(clicks) == [PLATFORMS[1]]
-    assert await _valid(db, p) == set()  # «да» потрачено перед кликом
+    assert await _valid(db, p) == set()
 
 
 async def test_second_press_does_not_create_a_second_yes_even_after_the_first_was_spent(db, env, monkeypatch):
     p, bot, clicks = await _setup(db, env, monkeypatch)
     req = _by_platform(await _requests(db, p.id))[PLATFORMS[0]]
     assert (await hitl_svc.handle_publish_approval_callback(db, f"hpub:{req.id}:yes", OWNER)).ok
-    await step.run(db, p, bot)  # «да» потрачено кликом
+    await step.run(db, p, bot)
     await db.commit()
     assert list(clicks) == [PLATFORMS[0]] and await _valid(db, p) == set()
     again = await hitl_svc.handle_publish_approval_callback(db, f"hpub:{req.id}:yes", OWNER)
     assert not again.ok and again.code == "already_decided"
-    assert await _valid(db, p) == set() and list(clicks) == [PLATFORMS[0]]  # второго «да» и клика нет
-    # и кнопка «Не публиковать» на том же уже обработанном сообщении тоже ничего не делает
+    assert await _valid(db, p) == set() and list(clicks) == [PLATFORMS[0]]
     no = await hitl_svc.handle_publish_approval_callback(db, f"hpub:{req.id}:no", OWNER)
     assert not no.ok and no.code == "already_decided"
     rows = [r for r in oa.list_rows(50, p.id) if r["method"] == "TELEGRAM"]
@@ -262,10 +246,9 @@ async def test_double_press_before_spending_gives_one_yes(db, env, monkeypatch):
     stamp = (await ps.list_approvals(db, p.id, sha))[PLATFORMS[2]]["approved_at"]
     second = await hitl_svc.handle_publish_approval_callback(db, f"hpub:{req.id}:yes", OWNER)
     assert first.ok and not second.ok and second.code == "already_decided"
-    assert (await ps.list_approvals(db, p.id, sha))[PLATFORMS[2]]["approved_at"] == stamp  # «да» не перевыдано
+    assert (await ps.list_approvals(db, p.id, sha))[PLATFORMS[2]]["approved_at"] == stamp
 
 
-# ── чужие пользователи ────────────────────────────────────────────────────────
 
 
 async def test_stranger_is_rejected_for_both_buttons_and_the_request_stays_open(db, env, monkeypatch):
@@ -278,11 +261,10 @@ async def test_stranger_is_rejected_for_both_buttons_and_the_request_stays_open(
     await db.refresh(req)
     assert req.decision is HITLDecision.pending
     sha = await sha_of(db, p)
-    assert await ps.list_for(db, p.id, sha) == []  # площадка не закрыта чужим
+    assert await ps.list_for(db, p.id, sha) == []
     rows = [r for r in oa.list_rows(50) if r["method"] == "TELEGRAM"]
     assert len(rows) == 2 and all(r["actor"] == f"telegram:{STRANGER}" and r["outcome"] == "denied"
                                   and r["status_code"] == 403 for r in rows)
-    # владелец после этого может решить
     assert (await hitl_svc.handle_publish_approval_callback(db, f"hpub:{req.id}:yes", OWNER)).ok
 
 
@@ -296,7 +278,6 @@ async def test_missing_user_and_garbage_callback_are_refused(db, env, monkeypatc
     assert await _valid(db, p) == set()
 
 
-# ── устаревшее сообщение ──────────────────────────────────────────────────────
 
 
 async def test_rebuilt_video_makes_the_old_message_stale_and_a_new_one_is_sent(db, env, monkeypatch):
@@ -310,7 +291,6 @@ async def test_rebuilt_video_makes_the_old_message_stale_and_a_new_one_is_sent(d
     assert await _valid(db, p) == set() and (await ps.list_approvals(db, p.id, old_sha)) == {}
     await db.refresh(old)
     assert old.decision is HITLDecision.rejected and old.payload["superseded"] == "stale_artifact"
-    # шаг публикации на новом файле просит новое «да»; старые ожидающие запросы закрыты как устаревшие
     p.status = ProjectStatus.publishing
     await step.run(db, p, bot)
     await db.commit()
@@ -355,7 +335,6 @@ async def test_project_not_ready_gives_no_yes_and_keeps_the_request(db, env, mon
     assert req.decision is HITLDecision.pending
 
 
-# ── «Не публиковать» ──────────────────────────────────────────────────────────
 
 
 async def test_no_closes_the_platform_for_this_file_without_a_yes(db, env, monkeypatch):
@@ -369,7 +348,6 @@ async def test_no_closes_the_platform_for_this_file_without_a_yes(db, env, monke
     actions = await ps.list_manual_actions(db, p.id)
     assert [(a["platform"], a["action"], a["actor"]) for a in actions] == [(PLATFORMS[0], "mark_failed", f"telegram:{OWNER}")]
     assert await _valid(db, p) == set()
-    # даже если потом «да» придёт из другого места, закрытая площадка сама не публикуется
     assert not ps.is_auto_retryable(row, 0.0)
     audit = [r for r in oa.list_rows(50, p.id) if r["method"] == "TELEGRAM"]
     assert len(audit) == 1 and audit[0]["actor"] == f"telegram:{OWNER}" and audit[0]["outcome"] == "ok"
@@ -387,7 +365,6 @@ async def test_no_on_every_platform_ends_as_closed_by_human_not_published(db, en
 
 
 async def test_no_after_yes_was_already_spent_by_panel_is_refused_not_silent(db, env, monkeypatch):
-    """Площадка уже подтверждена: «Не публиковать» не может её «закрыть»; запрос не остаётся одобренным."""
     p, bot, clicks = await _setup(db, env, monkeypatch)
     req = _by_platform(await _requests(db, p.id))[PLATFORMS[0]]
     sha = await sha_of(db, p)
@@ -401,7 +378,6 @@ async def test_no_after_yes_was_already_spent_by_panel_is_refused_not_silent(db,
     assert req.decision is HITLDecision.rejected and req.payload["refused"] == "already_confirmed"
 
 
-# ── обработчик бота (заменитель CallbackQuery) ───────────────────────────────
 
 
 class FakeCb:

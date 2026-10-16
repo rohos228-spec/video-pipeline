@@ -1,9 +1,3 @@
-"""W5-2 (D06): допуск надзорного возобновления и сверки для images, hero, items, audio, sfx_gen.
-
-Класс доказательства: U/D на заменителе провайдера и временной SQLite. Ни сети, ни платных вызовов нет, живого
-доказательства нет. Что НЕ проверено здесь: допуск этих нод в `revisions` / `node_capabilities` /
-`decision_v1` (чужие файлы, см. отчёт): тест фиксирует поведение `media_local_resume` и маршрут в `actions_recovery`.
-"""
 from __future__ import annotations
 
 import os
@@ -42,7 +36,7 @@ async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(idem, "_ensured", set())
     paid: list = []
 
-    async def forbidden(*a, **k):  # any provider contact from the recovery is a defect
+    async def forbidden(*a, **k):
         paid.append((a, k))
         raise AssertionError("a provider was contacted by the supervised recovery")
 
@@ -59,7 +53,7 @@ async def env(tmp_path, monkeypatch):
 
     def png(path: Path, size=(320, 320)):
         path.parent.mkdir(parents=True, exist_ok=True)
-        Image.frombytes("RGB", size, os.urandom(size[0] * size[1] * 3)).save(path, "PNG")  # noise: not tiny
+        Image.frombytes("RGB", size, os.urandom(size[0] * size[1] * 3)).save(path, "PNG")
         return path
 
     async def record(key, file: Path, prompt="p", model="nano-banana-2", *, consume=False):
@@ -89,7 +83,6 @@ async def env(tmp_path, monkeypatch):
     await engine.dispose()
 
 
-# --------------------------------------------------------------------------- допуск и запрет на каждую ноду
 
 @pytest.mark.parametrize("node,expected_gate", [
     ("images", "local"), ("hero", "local"), ("items", "local"), ("audio", "local"), ("sfx_gen", "local"),
@@ -111,7 +104,6 @@ async def test_a_text_node_is_never_admitted_by_the_local_resume(env, node):
         await local.assess(env.project, node)
 
 
-# --------------------------------------------------------------------------- images / hero / items
 
 @pytest.mark.parametrize("node,key,folder", [("images", "frame_012", "scenes"), ("hero", "hero_1_v1", "characters"),
                                              ("items", "predmet2", "items")])
@@ -173,7 +165,7 @@ async def test_a_corrupt_picture_fails_the_verification(env):
     file = env.png(env.data / "scenes" / "frame_005_0a1b2c3d.png")
     await env.record("frame_005", file)
     admission = await local.admit(env.project, "images")
-    file.write_bytes(file.read_bytes()[:40] + b"x" * 2000)  # sha changed after the admission read
+    file.write_bytes(file.read_bytes()[:40] + b"x" * 2000)
     outcome = await local.run_and_verify(env.project, "images", admission)
     assert outcome["verified"] is False and outcome["problems"]
 
@@ -192,11 +184,10 @@ async def test_a_known_kie_task_still_resumes_by_polling_and_a_failed_one_is_not
     await env.kie_row("hero_1_v1", "kie-task-2", "failed", event="failed")
     with pytest.raises(MediaAdmissionDenied) as caught:
         await local.admit(env.project, "hero")
-    assert caught.value.code == "retry_same_not_admitted"  # платный повтор остаётся нативным или человеческим
+    assert caught.value.code == "retry_same_not_admitted"
 
 
 async def test_without_a_kie_key_the_request_key_log_still_decides(env, monkeypatch):
-    """Только Outsee: журнал задач Kie выключен, это не должно скрывать записанный результат."""
     monkeypatch.setattr(media_spend, "_enabled", lambda p: p != "kie")
     await env.record("frame_030", env.png(env.data / "scenes" / "frame_030_0a1b2c3d.png"))
     assert media_resume.enabled() is False
@@ -222,7 +213,6 @@ async def test_a_human_decision_unblocks_and_the_result_becomes_resumable(env):
     assert outcome["verified"] is True
 
 
-# --------------------------------------------------------------------------- audio
 
 def _wav(path: Path, seconds=0.5):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -260,7 +250,6 @@ async def test_audio_with_nothing_on_disk_is_a_paid_resend_that_the_supervisor_d
     assert caught.value.code == "retry_same_not_admitted"
 
 
-# --------------------------------------------------------------------------- sfx_gen
 
 def _sfx_project(env, files, inflight=None):
     jobs = {"sfx_files": {"files": files}}
@@ -311,7 +300,6 @@ async def test_sfx_without_files_is_not_admitted_as_a_resume(env):
     assert caught.value.code == "nothing_to_do"
 
 
-# --------------------------------------------------------------------------- resume_only: ни одного платного шва
 
 async def test_the_local_verification_runs_inside_the_resume_only_scope(env, monkeypatch):
     file = env.png(env.data / "scenes" / "frame_040_0a1b2c3d.png")

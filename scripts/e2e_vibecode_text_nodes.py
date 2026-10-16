@@ -56,7 +56,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 
 def _load_sibling(name: str):
@@ -67,7 +67,7 @@ def _load_sibling(name: str):
     return mod
 
 
-qc = _load_sibling("e2e_vibecode_script_frames_qc")  # pure helpers and constants, imported not edited
+qc = _load_sibling("e2e_vibecode_script_frames_qc")
 
 PORT = 18767
 MALFORMED = qc.MALFORMED
@@ -77,8 +77,6 @@ TERMINAL_DECISION = qc.TERMINAL_DECISION
 LIVE_ENV_NAMES = qc.LIVE_ENV_NAMES
 COST_MARKUP = qc.COST_MARKUP
 RECOVERY_INCIDENTS = {"invalid_json", "missing_payload"}
-# The mandatory human approval that the ORIGINAL runtime opens when the recovered node finishes (plan: the plan
-# approval). It is not created by the supervisor and is not a stuck run, so it does not fail "hitl_none_pending".
 EXPECTED_HITL: dict[str, tuple[str, ...]] = {"plan": ("approve_plan",), "script": ("approve_script",)}
 
 TEXT = ("Синтетический текст: человек находит папку, читает записку и возвращает её на стол. " * 6).strip()
@@ -91,7 +89,6 @@ SCENE_VO = ("Альфа долго открывает старую книгу и
 NODES = ("plan", "script", "split", "image_prompts", "sfx_plan", "animation_prompts", "sd_agent", "sd_assemble")
 SD_AGENTS = ("characters", "world")
 
-# Nodes this stand cannot run, with the reason (shown by --list-nodes, pinned by the test). Filled by SPEC below.
 UNSUPPORTED: dict[str, str] = {
     "split": ("при неразбираемом ответе нативный split сам делит текст локально (в журнале «кадров из GPT/fallback»), "
               "нода завершается done без инцидента invalid_json: сценарий «сломанная первая попытка, Decision, "
@@ -104,16 +101,8 @@ UNSUPPORTED: dict[str, str] = {
                       "Это поведение приложения, а не стенда."),
 }
 
-# Nodes that run (offline and dry) but whose full chain does NOT reach "recovery verified" today, with the reason.
-# --live is refused for them unless --allow-known-blocker is given (a paid Decision would be spent on a chain that
-# cannot finish). EMPTY since the echo fix: plan, script and animation_prompts used to leave two incidents per
-# failed attempt (invalid_json plus the generic contract_rejected echo), the Decision opened a second competing
-# record for the echo, escalated it and held the run, so the recovery never started. diagnosis.bind_echo_incidents
-# now binds the echo to its primary incident (echo_of) and decision_v1 opens no record for an echo. A node must be
-# listed here again only with an observed, reproducible reason.
 KNOWN_BLOCKERS: dict[str, str] = {}
 
-# ───────────────────────────── node specs (pure data, unit-tested) ─────────────────────────────
 
 def _frame(number: int, vo: str, *, image_prompt: str | None = None, duration: float | None = None) -> dict:
     return {"number": number, "uuid": (f"{number:02x}" * 12), "voiceover_text": vo, "image_prompt": image_prompt,
@@ -144,9 +133,6 @@ def _ans_sfx(frames: list[dict]) -> str:
 
 GOOD_CHARACTERS = {"characters": [{"id": "c01", "имя": "Альфа", "внешность": "высокий, около 45",
                                    "одежда": "серое пальто", "характер": "сдержанный"}]}
-# The skeleton checkpoint the application's wave 0 leaves. runner.load_checkpoint treats a skeleton with an
-# empty ``scenes`` list as "no checkpoint" (agents.LIST_KEY["skeleton"] == "scenes"), so the world request would
-# carry no SKELETON block; one scene per stand frame (frame numbers 1 and 2), both placed in loc01.
 WORLD_SKELETON = {
     "scenes": [
         {"id_scene": "scene_01", "id_cell": "cell_01", "кадры": [1], "место_id": "loc01", "суть": "чтение",
@@ -170,7 +156,6 @@ ASM_CHARACTERS = {"characters": [{"id": "c01", "имя": "Альфа", "внеш
 ASM_WORLD = {"locations": [{"id": "loc01", "name": "Зал", "описание": "высокие окна"}]}
 ASM_SCENE = {"время_сек": 8, "структура_сцены": "continuity", "тип_стыка": "none", "переход_в_сцену": "cut",
              "смысл_сцены": "чтение", "location": "loc01", "кто_в_кадре": "c01"}
-# Two narrative scenes (one per voiceover parent) so that the assembler runs two chunks (chunk size 2 frames).
 ASM_ACTION = {"scenes": [
     {**ASM_SCENE, "id_scene": "scene_01", "start_words": "Альфа долго открывает",
      "end_words": "читает вслух первую главу.", "цепь_действия": "открывает книгу; читает"},
@@ -183,7 +168,6 @@ ASM_CAMERA = {"shot_plan": [
      "цитата": "Альфа долго открывает старую книгу", "крупность": "VLS→MS→CU"},
     {**_ASM_SHOT, "id_scene": "scene_02", "phase_index": 1, "beat": "закрывает",
      "цитата": "Бета медленно закрывает книгу", "крупность": "MS→CU"}]}
-# style_arc with lighting: the assembler then adds "освещение" to every op (as for real projects); the verifier must accept it.
 ASM_STYLE = {"style_arc": [
     {"scene_hint": "Альфа долго открывает", "тип_сцены": "continuity", "освещение": "тёплый свет из окон",
      "палитра": "охра", "тон": "спокойный", "сдвиг": "нет", "сцены": ["scene_01", "scene_02"]}]}
@@ -196,13 +180,13 @@ class NodeSpec:
     node: str
     canvas_type: str
     frames: tuple = ()
-    script_text: bool = False        # project.script_text + voiceover.txt present before the node starts
-    general_plan: bool = False       # project.general_plan present before the node starts
+    script_text: bool = False
+    general_plan: bool = False
     meta: dict = field(default_factory=dict)
     env: dict = field(default_factory=dict)
-    settings: dict = field(default_factory=dict)   # application settings overridden in-process (not env)
+    settings: dict = field(default_factory=dict)
     answer: Callable[[list[dict]], str] | None = None
-    output: str = ""                 # what the node writes (for the human-readable post-condition)
+    output: str = ""
     note: str = ""
 
 
@@ -275,7 +259,7 @@ def canvas_node(node: str, agent: str = "characters") -> dict:
     if node == "sd_agent":
         data["sd_agent"] = agent
     elif node == "sd_assemble":
-        data["sd_agent"] = "assemble"  # the scene-contract hook resolves the agent from the node marker
+        data["sd_agent"] = "assemble"
     return {"id": node_key_for(node, agent), "type": spec.canvas_type, "position": {"x": 100.0, "y": 100.0}, "data": data}
 
 
@@ -283,7 +267,6 @@ def supported_nodes() -> tuple[str, ...]:
     return tuple(n for n in NODES if n not in UNSUPPORTED)
 
 
-# ───────────────────────────── pure helpers reused from the sibling ─────────────────────────────
 
 is_loopback = qc.is_loopback
 refusal_reason = qc.refusal_reason
@@ -338,7 +321,6 @@ def reality_report(mode: str, counters: dict, node: str) -> dict:
     }
 
 
-# ───────────────────────────── checks (pure, unit-tested) ─────────────────────────────
 
 def evaluate(snapshot: dict, *, node: str, target: str, live_hosts: frozenset[str] | None = None,
              recovery_is_real: bool = False) -> list[dict]:
@@ -417,7 +399,6 @@ def dry_ok(counters: dict) -> bool:
             and counters.get("refused_dry", 0) >= 1 and counters.get("refused_cap", 0) == 0)
 
 
-# ───────────────────────────── runtime ─────────────────────────────
 
 def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -519,13 +500,15 @@ async def _seed(node: str, agent: str) -> tuple[int, str, str]:
     cnode = canvas_node(node, agent)
     nodes, edges = [cnode], []
     slug = f"vibecode-{node.replace('_', '-')}-{_uuid.uuid4().hex[:6]}"
+    from app.web.settings_default import seed_default_workflow
     async with session_scope() as session:
+        await seed_default_workflow(session)
         wf = Workflow(name=f"wf-{slug}", is_default=False, nodes=nodes, edges=edges)
         session.add(wf)
         await session.flush()
         meta = {"canvas_graph": {"workflow_id": wf.id, "nodes": nodes, "edges": edges}, **spec.meta}
         if node == "sd_agent" and agent == "world":
-            meta["scene_design_skeleton"] = True  # the world prompt reads the skeleton the earlier wave leaves
+            meta["scene_design_skeleton"] = True
         if node == "sd_agent":
             meta["scene_design"] = {"only_agent": agent}
         project = Project(slug=slug, topic=f"vibecode {node} e2e", status=ProjectStatus.new, auto_mode=False,
@@ -565,7 +548,7 @@ async def _post_seed(node: str, pid: int, agent: str = "characters") -> None:
             runner.save_checkpoint(project, "skeleton", WORLD_SKELETON)
             await session.commit()
         from app.db import session_scope
-        async with session_scope() as session:  # the master row carries the same agent status
+        async with session_scope() as session:
             project = await session.get(Project, pid)
             runner.save_checkpoint(project, "skeleton", WORLD_SKELETON)
             await session.commit()
@@ -619,13 +602,13 @@ async def main(argv: list[str] | None = None) -> int:
     mode = "live" if early.live else "dry" if early.dry else "offline"
     live_env: dict[str, str] = {}
     if mode != "offline" and early.env_file:
-        live_env = load_env_whitelist(early.env_file)  # values stay in this dict and the process environment
+        live_env = load_env_whitelist(early.env_file)
     if mode == "live" and (not live_env.get("VIBECODE_API_KEY") or live_env["VIBECODE_API_KEY"].startswith("synthetic")):
         print("env file has no VIBECODE_API_KEY; nothing sent")
         return 3
     hosts = allowed_hosts(live_env)
     work = Path(early.work_dir).resolve()
-    data = guard.reset_scratch_data(work)  # A19: refuses live data; removes only <work>/data made by these scripts
+    data = guard.reset_scratch_data(work)
     endpoint = live_endpoint(live_env) if mode != "offline" else None
     runtime_path = work / "runtime.json"
     runtime_path.write_text(json.dumps(_runtime_config(early.port, early.request_limit, endpoint), indent=2),
@@ -646,8 +629,6 @@ async def main(argv: list[str] | None = None) -> int:
 
     import httpx
     from app.settings import settings
-    # Belt and braces over environment precedence: offline nothing may route through a relay/proxy; live/dry use
-    # exactly the whitelisted env-file values (a stray repository .env cannot add a route).
     settings.gpt_relay_token = live_env.get("GPT_RELAY_TOKEN", "") if mode != "offline" else ""
     settings.gpt_proxy_url = (live_env.get("GPT_PROXY_URL") or None) if mode != "offline" else None
     if mode != "offline":
@@ -666,8 +647,6 @@ async def main(argv: list[str] | None = None) -> int:
     from app.services.decision_transport import current as decision_hook
     step_failure_policy.SLEEP_MINUTES = args.sleep_minutes
     step_failure_policy.XLSX_SHEET_FORMAT_SLEEP_MINUTES = args.sleep_minutes
-    # Speed-up only (state and rules are untouched): the img_pr batch backoff of 5/10/15 s per attempt would make the
-    # native retries of image_prompts last tens of minutes. Same idea as step_failure_policy.SLEEP_MINUTES above.
     import app.services.xlsx_step_runners as xlsx_step_runners
     if hasattr(xlsx_step_runners, "_EMPTY_OPS_BACKOFF_S"):
         xlsx_step_runners._EMPTY_OPS_BACKOFF_S = (0.2, 0.2, 0.2)
@@ -829,7 +808,7 @@ async def main(argv: list[str] | None = None) -> int:
 
     async def counted_admission(project_id):
         decision = await original_admission(project_id)
-        if not decision.allowed:  # diagnostic only: why the worker tick did nothing
+        if not decision.allowed:
             reason = str(getattr(decision, "reason", decision))
             admission_reasons[reason] = admission_reasons.get(reason, 0) + 1
         return decision

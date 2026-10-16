@@ -1,8 +1,3 @@
-"""Действия слоя действий media.get_recovery_assessment и media.resume_poll.
-
-Настоящие эндпоинты и временная БД; заглушены только оценка журнала задач и опрос провайдера
-(media_recovery.assess / resume_poll): сеть и платные запросы не используются.
-"""
 from __future__ import annotations
 
 import pytest
@@ -12,7 +7,7 @@ from app.services import kill_switch, media_admission, media_recovery
 from app.services.action_layer import executor
 from app.services.action_layer import planner_rules as rules
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 OPEN = {"node_type": "videos", "project_id": 1, "profile": None, "retry_same_max": 1,
@@ -29,7 +24,6 @@ def _builtin():
 
 @pytest.fixture
 def provider(monkeypatch):
-    """The provider boundary: an open Kie task that finishes on the status request."""
     state = {"report": dict(OPEN), "resume_calls": 0, "fingerprints": [frozenset({"T-9"})] * 2}
 
     async def assess(project, node_type):
@@ -78,7 +72,6 @@ def test_both_actions_are_registered_with_honest_tiers_and_guard_hints() -> None
     read = registry.get("media.get_recovery_assessment")
     resume = registry.get("media.resume_poll")
     assert (read.risk, read.spends_money, read.destructive) == ("read", False, False)
-    # local_safe, not paid: the service refuses every new paid submit and compares the task ledger afterwards
     assert (resume.risk, resume.spends_money, resume.destructive) == ("local_safe", False, False)
     assert resume.idempotent and not resume.needs_approval and resume.estimator is None
     assert "новых платных запросов не отправляет" in resume.description_ru.lower()
@@ -162,7 +155,7 @@ async def test_preview_is_refused_while_a_step_runs_and_for_unadmitted_nodes(env
     for node in ("hero", "audio", "sfx_gen", "assemble", "images"):
         bad = await _preview(env, [{"action_id": "media.resume_poll",
                                     "params": {"project_id": pid, "node_type": node}}])
-        assert bad.status_code == 422, node  # not in the schema enum: the model cannot even ask for it
+        assert bad.status_code == 422, node
     assert provider["resume_calls"] == 0
 
 

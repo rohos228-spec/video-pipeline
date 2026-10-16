@@ -1,4 +1,3 @@
-"""W6 интеграция: миграция 0017 (publish_approvals, publication_manual_actions) идемпотентна и совместима с ленивым ensure_schema."""
 from __future__ import annotations
 
 import sqlite3

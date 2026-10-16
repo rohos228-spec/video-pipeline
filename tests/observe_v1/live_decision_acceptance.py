@@ -1,7 +1,3 @@
-"""Observe the live app only: browser enables/starts, application owns every turn.
-
-No call to tick/step/recover/verify, no business mutation, no history replay.
-"""
 import asyncio,hashlib,json,re,time
 from sqlalchemy import select
 

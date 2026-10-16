@@ -1,4 +1,3 @@
-"""scripts/eval_action_planner.py: шарды, параллельность, потолок трат, плейсхолдеры, оценка уточнений."""
 from __future__ import annotations
 
 import asyncio
@@ -52,11 +51,11 @@ def test_score_case_resolves_placeholders_and_checks_extra_expectations() -> Non
     assert ok["ok"] and ok["explained_ok"]
     assert not m.score_case(plan, step, None, None, "Удаляю.", {"frame.22": 1222})["ok"]
     assert not m.score_case(plan, step, None, None, "По умолчанию.", {"frame.22": 1})["ok"]
-    assert not m.score_case(plan, step, None, None, "По умолчанию.", None)["ok"]  # плейсхолдер не раскрыт
+    assert not m.score_case(plan, step, None, None, "По умолчанию.", None)["ok"]
     up = {"id": "u", "outcome": "clarify", "steps": [], "clarify_contains": ["прикрепите файл"]}
     assert m.score_case(up, [], "Прикрепите файл кнопкой загрузки. Он нужен для ...", None)["ok"]
     assert not m.score_case(up, [], "Укажите путь к файлу", None)["ok"]
-    assert not m.score_case(up, step, "Прикрепите файл", None)["ok"]  # шаги вместе с вопросом нельзя
+    assert not m.score_case(up, step, "Прикрепите файл", None)["ok"]
     plain = {"id": "c", "outcome": "clarify", "steps": []}
     assert m.score_case(plain, [], "Что именно?", None)["ok"] and not m.score_case(plain, [], None, None)["ok"]
 
@@ -64,14 +63,14 @@ def test_score_case_resolves_placeholders_and_checks_extra_expectations() -> Non
 def test_budget_never_overshoots_when_every_request_costs_the_assumed_amount() -> None:
     m = script()
     b = m.SpendBudget(0.07, floor_usd=0.02)
-    assert [b.try_start() for _ in range(4)] == [True, True, True, False]  # 3 * 0.02 <= 0.07 < 4 * 0.02
+    assert [b.try_start() for _ in range(4)] == [True, True, True, False]
     for _ in range(3):
         b.finish(0.02)
-    assert b.spent == pytest.approx(0.06) and b.stopped and not b.try_start()  # после отказа новых нет
+    assert b.spent == pytest.approx(0.06) and b.stopped and not b.try_start()
     c = m.SpendBudget(1.0, floor_usd=0.01)
     assert c.try_start()
-    c.finish(0.5)  # дорогой запрос поднимает оценку для следующих
-    assert c.try_start() and not c.try_start()  # 0.5 потрачено + 2 x 0.5 не помещается в 1.0
+    c.finish(0.5)
+    assert c.try_start() and not c.try_start()
 
 
 def run(coro):
@@ -85,7 +84,7 @@ def test_run_cases_limits_concurrency_and_keeps_case_order() -> None:
     async def one(case):
         state["now"] += 1
         state["max"] = max(state["max"], state["now"])
-        await asyncio.sleep(0.01 * (5 - case["n"] % 5))  # завершаются не по порядку
+        await asyncio.sleep(0.01 * (5 - case["n"] % 5))
         state["now"] -= 1
         return {"id": case["id"], "est_cost_usd": 0.001, "ok": True}
 
@@ -109,7 +108,7 @@ def test_run_cases_stops_starting_new_requests_at_the_cap() -> None:
     cases = [{"id": f"c{i}"} for i in range(10)]
     rows = run(m.run_cases(cases, one, concurrency=4, budget=budget))
     assert len(rows) == 3 and budget.stopped and budget.spent <= 0.07 + 1e-9
-    assert started == ["c0", "c1", "c2"]  # остальные не стартовали
+    assert started == ["c0", "c1", "c2"]
 
 
 def test_run_cases_releases_the_slot_when_a_case_raises() -> None:
@@ -143,12 +142,12 @@ def test_script_options_and_rate_limit_override_are_in_place(tmp_path) -> None:
         assert flag in help_text, flag
     src = SCRIPT.read_text(encoding="utf-8")
     rate = src.index('os.environ["ACTION_LAYER_PLANNER_CALLS_PER_HOUR"]')
-    assert rate < src.index("from app.main import _init_db")  # до загрузки настроек приложения
+    assert rate < src.index("from app.main import _init_db")
     env_file = tmp_path / "e.env"
     env_file.write_text("VIBECODE_API_KEY=k\n", encoding="utf-8")
     p = subprocess.run([sys.executable, str(SCRIPT), "--live", "--env-file", str(env_file), "--shard", "5/3"],
                        capture_output=True, text=True, encoding="utf-8")
-    assert p.returncode == 2 and "--shard" in p.stdout  # плохой шард отклоняется до любых запросов
+    assert p.returncode == 2 and "--shard" in p.stdout
     p = subprocess.run([sys.executable, str(SCRIPT), "--env-file", str(env_file)],
                        capture_output=True, text=True, encoding="utf-8")
     assert p.returncode == 2 and "needs --live" in p.stdout
@@ -159,8 +158,8 @@ def test_only_selects_exact_cases_in_fixture_order_and_rejects_unknown_ids() -> 
     cases = m.load_cases()
     got = m.select_cases(cases, "swap_shots, board_0 ,read_board", 3)
     assert [c["id"] for c in got] == [c["id"] for c in cases if c["id"] in {"swap_shots", "board_0", "read_board"}]
-    assert len(m.select_cases(cases, "", 10)) == 10  # без --only прежняя выборка
-    assert len(m.select_cases(cases, "read_board", 0)) == 1  # --only не режется --max-requests
+    assert len(m.select_cases(cases, "", 10)) == 10
+    assert len(m.select_cases(cases, "read_board", 0)) == 1
     with pytest.raises(ValueError, match="nope"):
         m.select_cases(cases, "read_board,nope", 10)
 

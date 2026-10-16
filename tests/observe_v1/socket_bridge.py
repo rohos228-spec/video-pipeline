@@ -1,8 +1,3 @@
-"""Test-only full-duplex forwarding to the fixed container loopback UI port.
-
-Runs via docker exec in the existing network-none test container. No external
-destination, credential, Docker socket or filesystem body access is accepted.
-"""
 import os
 import selectors
 import socket

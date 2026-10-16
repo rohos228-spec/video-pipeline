@@ -27,6 +27,7 @@ from app.services.run_sync import (
 from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
+from app.project_db import sync_project_row_to_master_db
 from app.web.deps import get_project_session, get_session
 from app.web.project_dto import project_to_detail
 from app.web.schemas import ProjectDetail
@@ -41,14 +42,13 @@ def _project_or_404(project: Project | None) -> Project:
 
 
 async def _with_master_project(project_id: int, fallback: Project, fn):
-    """``fn(project)`` по строке проекта из master state.db (там живёт состояние фоновых задач); при сбое - по ``fallback``."""
     from app.db import session_scope
 
     try:
         async with session_scope() as master:
             mp = await master.get(Project, project_id)
             return fn(mp if mp is not None else fallback)
-    except Exception:  # noqa: BLE001 - статус не должен падать из-за чтения master
+    except Exception:
         return fn(fallback)
 
 
@@ -328,7 +328,7 @@ async def reset_project_step(
         from app.project_db import sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, p)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "reset_step #{}: runtime sync master↔project.db failed",
             project_id,
@@ -521,7 +521,7 @@ async def upload_xlsx(
     tmp_path.replace(dest)
     from app.services.frame_tombstones import forget_deleted
 
-    forget_deleted(p)  # новый xlsx загружен человеком: удалённые на доске кадры снова берутся из файла
+    forget_deleted(p)
     if node_key:
         from app.services.node_xlsx_snapshot import clear_bound_snapshot
 
@@ -759,7 +759,7 @@ async def montage_board(
 
     try:
         board = await build_montage_board(session, p)
-        # get_session не коммитит сам — без commit кэш R15/meta откатывается,
+        # get_project_session не коммитит сам — без commit кэш R15/meta откатывается,
         # и каждый GET снова пишет сотни кадров → database is locked + Failed to fetch.
         await session.commit()
         return board
@@ -779,7 +779,6 @@ async def montage_board_insert_frame(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Вставить кадр между колонками монтажа (дробный sort_key → перенумерация)."""
     from app.services.montage_board_frames import insert_montage_frame
 
     p = _project_or_404(await session.get(Project, project_id))
@@ -819,7 +818,6 @@ async def montage_board_merge_scenes(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Склеить две соседние VO-ячейки в одну сцену (без перенумерации)."""
     from app.services.montage_board_frames import merge_montage_scenes
 
     p = _project_or_404(await session.get(Project, project_id))
@@ -845,7 +843,6 @@ async def montage_board_merge_scenes(
 
 
 def _refuse_if_project_busy(p: Project) -> None:
-    """U-3: правка структуры сцен при идущем шаге (генерация, монтаж) отклоняется."""
     from app.services.project_state import is_running_status
 
     if is_running_status(p.status):
@@ -861,7 +858,6 @@ async def montage_board_undo_split(
     body: dict = Body(default_factory=dict),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Отменить последнее деление сцены: вернуть сцены к состоянию до деления, ничего не удаляя."""
     from app.services.montage_board_frames import undo_montage_split
 
     p = _project_or_404(await session.get(Project, project_id))
@@ -885,7 +881,6 @@ async def montage_board_split_scenes(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Разделить VO-ячейку: кадр и правее — новая сцена, или каждый кадр — сцена."""
     from app.services.montage_board_frames import (
         split_montage_scene_at,
         split_montage_scene_frames,
@@ -1036,7 +1031,6 @@ async def montage_board_scene_editor(
     frame_id: int,
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Всё редактируемое у кадра: роль, формат сцены, план, действие, якоря."""
     p = _project_or_404(await session.get(Project, project_id))
     return await _scene_editor_state(session, p, frame_id)
 
@@ -1048,7 +1042,6 @@ async def montage_board_scene_action_generate(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Сгенерировать сцены одной VO-ячейки промтом action (или пересобрать куски N.)."""
     from app.services.montage_action_gpt import generate_cell_scene_action, parse_replace_ns
 
     p = _project_or_404(await session.get(Project, project_id))
@@ -1066,7 +1059,7 @@ async def montage_board_scene_action_generate(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.exception(
             "scene-action-generate failed project={} frame={}", project_id, frame_id
         )
@@ -1094,7 +1087,6 @@ async def montage_board_scene_generate_with_images(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """GPT-сцены ячейки. Картинки ставит очередь: сцена → кадры."""
     from app.services.montage_action_gpt import generate_cell_scene_with_images
 
     p = _project_or_404(await session.get(Project, project_id))
@@ -1121,7 +1113,7 @@ async def montage_board_scene_generate_with_images(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.exception(
             "scene-generate-with-images failed project={} frame={}", project_id, frame_id
         )
@@ -1164,7 +1156,6 @@ async def montage_board_scene_improve(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """fw_action → fw_shots → fw_qc на одну ячейку, затем очередь картинок: сцена → кадры."""
     payload = dict(body or {})
     payload["mode"] = "improve"
     return await montage_board_scene_generate_with_images(
@@ -1179,7 +1170,6 @@ async def montage_board_scene_variants(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Подобрать варианты действия / формата сцены / якорей знанием нод сцен."""
     from app.services.montage_scene_editor import VARIANT_KINDS, generate_scene_variants
 
     p = _project_or_404(await session.get(Project, project_id))
@@ -1195,7 +1185,7 @@ async def montage_board_scene_variants(
             count=int(body.get("count") or 3),
             project_id=project_id,
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.exception(
             "scene-variants failed project={} frame={} kind={}", project_id, frame_id, kind
         )
@@ -1210,7 +1200,6 @@ async def montage_board_apply_coverage(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Записать роль / план сразу в БД — без очереди «Применить правки»."""
     from app.services.montage_board import build_montage_board
     from app.services.montage_board_meta import normalize_queue_ops
     from app.services.montage_coverage_ops import COVERAGE_OP_TYPES, apply_coverage_op
@@ -1254,10 +1243,6 @@ async def montage_board_save_queue(
     body: dict = Body(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Сохранить очередь pending_ops на сервер (без запуска apply).
-
-    Иначе очередь живёт только в React state и слетает при refresh/рестарте.
-    """
     from app.services.montage_board_apply_job import get_apply_job
     from app.services.montage_board_meta import (
         montage_meta,
@@ -1297,6 +1282,10 @@ async def montage_board_save_queue(
         board["video_trims"] = body["video_trims"]
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": True, "pending_ops": cleaned, "meta": public_board_meta(board)}
 
 
@@ -1351,6 +1340,10 @@ async def montage_board_apply(
         }
         set_montage_meta(p, board)
         await session.commit()
+        try:
+            await sync_project_row_to_master_db(p)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sync_project_row_to_master_db failed: {}", exc)
         spawn_apply_job(
             project_id, video_trims=trims, pending_ops=ops, keep_ops=keep_ops
         )
@@ -1369,6 +1362,10 @@ async def montage_board_apply(
         keep_ops=keep_ops,
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     await publish_project_event(
         project_id,
         event_type="project_updated",
@@ -1425,7 +1422,6 @@ async def montage_board_montage_status(
     from app.services.montage_board_montage_job import get_montage_job
 
     p = _project_or_404(await session.get(Project, project_id))
-    # Фоновая задача пишет своё состояние в master state.db, а не в project.db: читаем оттуда (иначе после конца видно "idle").
     return {"job": await _with_master_project(project_id, p, get_montage_job)}
 
 
@@ -1498,6 +1494,10 @@ async def montage_board_swap_shots(
         session, p, frame_number, kind=kind  # type: ignore[arg-type]
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -1530,6 +1530,10 @@ async def montage_board_swap_slots(
         b_shot=b_shot,
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -1564,6 +1568,10 @@ async def montage_board_move_image(
         to_slot=to_slot,
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -1589,6 +1597,10 @@ async def montage_board_delete_image(
     mark_stale_videos(board, frame_number, shot=shot)
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": deleted, "frame_number": frame_number, "shot": shot}
 
 
@@ -1604,6 +1616,10 @@ async def montage_board_delete_video(
     p = _project_or_404(await session.get(Project, project_id))
     deleted = await delete_scene_video(session, p, frame_number, shot=shot)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": deleted, "frame_number": frame_number, "shot": shot}
 
 
@@ -1629,7 +1645,6 @@ async def montage_board_ref_assets(
     project_id: int,
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Готовые рефы проекта: персонажи и предметы, которые можно приложить."""
     from app.services.montage_board import _entity_name_maps
     from app.services.montage_frame_refs import list_ref_assets
 
@@ -1650,7 +1665,6 @@ async def montage_board_add_ref(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Загрузить новый референс кадру: файл + вид + имя."""
     from app.services.montage_frame_refs import add_manual_ref, manual_refs_for_board
 
     p = _project_or_404(await session.get(Project, project_id))
@@ -1685,7 +1699,6 @@ async def montage_board_link_ref(
     name: str = Query(""),
     session: AsyncSession = Depends(get_project_session),
 ) -> dict:
-    """Приложить кадру готовый реф проекта — без загрузки файла."""
     from app.services.montage_frame_refs import link_ref_asset, manual_refs_for_board
 
     p = _project_or_404(await session.get(Project, project_id))
@@ -1763,6 +1776,10 @@ async def montage_board_upload_image(
     mark_stale_videos(board, frame_number, shot=shot)
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {
         "ok": True,
         "path": str(path),
@@ -1795,6 +1812,10 @@ async def montage_board_upload_video(
     clear_stale_video(board, frame_number, shot)
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {
         "ok": True,
         "path": str(path),
@@ -1830,6 +1851,10 @@ async def montage_board_upload_voice(
     p.meta = meta
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": True, "path": str(dest), "filename": dest.name}
 
 
@@ -1858,6 +1883,10 @@ async def montage_board_upload_music(
     p.meta = meta
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": True, "path": str(dest), "filename": dest.name}
 
 
@@ -2159,6 +2188,10 @@ async def gpt_operator_patch(
                 "Подождите 10–30 с и нажмите роль ещё раз — бэкенд жив."
             ),
         ) from last_err
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] gpt_operator_patch sync to master: {}", project_id, exc)
     return {"ok": True, "resolve": resolved}
 
 
@@ -2347,6 +2380,10 @@ async def upload_check_agent_file(
         raise HTTPException(status_code=400, detail=str(e)) from e
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] upload_check_agent_file sync to master: {}", project_id, exc)
     return result
 
 
@@ -2365,6 +2402,10 @@ async def delete_check_agent_file(
     result = clear_check_agent_file(p, node_key)
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] delete_check_agent_file sync to master: {}", project_id, exc)
     return result
 
 
@@ -2667,14 +2708,13 @@ async def project_asr_words(
     _project_or_404(await session.get(Project, project_id))
     rows = await load_project_asr_words(session, project_id)
     if not rows:
-        # Монтаж и разбор аудио пишут слова в master state.db; в project.db их может не быть - читаем master.
         from app.db import session_scope
 
         try:
             async with session_scope() as master:
                 rows = await load_project_asr_words(master, project_id)
                 words = asr_words_to_dicts(rows)
-        except Exception:  # noqa: BLE001
+        except Exception:
             words = []
     else:
         words = asr_words_to_dicts(rows)

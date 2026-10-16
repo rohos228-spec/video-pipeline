@@ -38,11 +38,6 @@ def step_code_for_running_status(status: ProjectStatus | None) -> str | None:
 async def _keep_fresh_sidecar_anim_pr(
     session: AsyncSession, project: Project
 ) -> dict[str, Any] | None:
-    """Если sidecar уже получил видеопромты для тех же входов - не стирать (иначе повторный платный вызов).
-
-    Записи sidecar снимаются при входе: следующий явный ▶ шага снова пересоберёт всё с нуля.
-    Кадры без свежего результата sidecar очищаются как обычно (промт и shot2).
-    """
     from sqlalchemy import select
 
     from app.models import Frame, FrameStatus
@@ -87,7 +82,7 @@ async def replace_step_outputs_on_enter(
     if step_code == "anim_pr":
         try:
             kept = await _keep_fresh_sidecar_anim_pr(session, project)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("[#{}] replace_step_outputs_on_enter: sidecar keep failed", project.id)
             kept = None
         if kept is not None:
@@ -101,7 +96,7 @@ async def replace_step_outputs_on_enter(
         summary = await clear_step_outputs_for_rerun(
             session, project, step_code, force_wipe=True
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception(
             "[#{}] replace_step_outputs_on_enter: wipe {} failed",
             project.id,

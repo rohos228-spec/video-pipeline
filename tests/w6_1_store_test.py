@@ -1,7 +1,3 @@
-"""W6-1 (E01/E02): журнал публикаций. Состояния, подтверждение человека, ручные действия, вывод статуса проекта.
-
-Без сети и площадок. Класс доказательства: U (юнит на SQLite); живой публикации нет.
-"""
 from __future__ import annotations
 
 import pytest
@@ -33,7 +29,6 @@ def _row(**kw):
     return {**base, **kw}
 
 
-# ── шесть состояний ──────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("row,expected", [
@@ -43,7 +38,7 @@ def _row(**kw):
     (_row(status=ps.S_UNCONFIRMED, clicked_at=1.0, post_url="https://up"), ps.D_UNCONFIRMED),
     (_row(status=ps.S_CONFIRMED, clicked_at=1.0, post_url="https://p/1"), ps.D_CONFIRMED),
     (_row(status=ps.S_CONFIRMED, clicked_at=1.0, post_id="77"), ps.D_CONFIRMED),
-    (_row(status=ps.S_CONFIRMED, clicked_at=1.0), ps.D_UNCONFIRMED),  # confirmed без URL/ID не считается
+    (_row(status=ps.S_CONFIRMED, clicked_at=1.0), ps.D_UNCONFIRMED),
     (_row(status=ps.S_FAILED), ps.D_FAILED_BEFORE),
     (_row(status=ps.S_FAILED, clicked_at=1.0), ps.D_FAILED_AFTER),
     (_row(status=ps.S_REJECTED, clicked_at=1.0), ps.D_FAILED_AFTER),
@@ -53,7 +48,6 @@ def test_display_state_covers_all_six(row, expected):
     assert expected in ps.DISPLAY_LABELS_RU
 
 
-# ── подтверждение человека: одноразовое, привязано к файлу и подписи ──────────────
 
 
 async def test_approval_is_consumed_exactly_once(db):
@@ -69,14 +63,14 @@ async def test_approval_does_not_cover_other_file_other_caption_other_platform(d
     assert await ps.consume_approval(db, project_id=1, platform="tiktok", sha256="b" * 64, caption_sha256=CSHA) is False
     assert await ps.consume_approval(db, project_id=1, platform="tiktok", sha256=SHA, caption_sha256="d" * 64) is False
     assert await ps.consume_approval(db, project_id=1, platform="vk_clips", sha256=SHA, caption_sha256=CSHA) is False
-    assert (await ps.list_approvals(db, 1, SHA, "d" * 64))["tiktok"]["valid"] is False  # подпись изменилась
+    assert (await ps.list_approvals(db, 1, SHA, "d" * 64))["tiktok"]["valid"] is False
     assert await ps.consume_approval(db, project_id=1, platform="tiktok", sha256=SHA, caption_sha256=CSHA) is True
 
 
 async def test_grant_refused_on_confirmed_and_on_possible_click(db):
     c = await ps.claim(db, project_id=1, platform="tiktok", sha256=SHA, artifact_uuid="u", owner="w")
     await ps.mark_clicked(db, c.pub_id, "w")
-    with pytest.raises(ps.PublicationRefused) as e:  # клик мог состояться: сначала решает человек
+    with pytest.raises(ps.PublicationRefused) as e:
         await ps.grant_approval(db, project_id=1, platform="tiktok", sha256=SHA, caption_sha256=CSHA, approved_by="op")
     assert e.value.code == "needs_human_first"
     await ps.record_result(db, c.pub_id, "w", status=ps.S_CONFIRMED, post_url="https://p/1")
@@ -85,7 +79,6 @@ async def test_grant_refused_on_confirmed_and_on_possible_click(db):
     assert e.value.code == "already_confirmed"
 
 
-# ── ручное подтверждение ─────────────────────────────────────────────────────
 
 
 async def _unconfirmed(db, platform="tiktok", url="https://upload.page"):
@@ -104,7 +97,7 @@ async def test_confirm_manual_needs_url_or_reason(db):
     with pytest.raises(ps.PublicationRefused) as e:
         await ps.confirm_manual(db, project_id=1, platform="tiktok", sha256=SHA, actor="operator", post_url="javascript:1")
     assert e.value.code == "bad_post_url"
-    assert (await ps.list_for(db, 1, SHA))[0]["status"] == ps.S_UNCONFIRMED  # ничего не изменилось
+    assert (await ps.list_for(db, 1, SHA))[0]["status"] == ps.S_UNCONFIRMED
     assert await ps.list_manual_actions(db, 1) == []
 
 
@@ -149,18 +142,17 @@ async def test_manual_actions_refused_for_missing_record_and_live_lease(db):
                  ps.mark_failed_manual(db, project_id=1, platform="tiktok", sha256=SHA, actor="op", reason="проверил, нет")):
         with pytest.raises(ps.PublicationRefused) as e:
             await call
-        assert e.value.code == "busy"  # воркер держит живой lease
+        assert e.value.code == "busy"
 
 
 async def test_confirm_manual_works_for_a_crash_after_click(db):
     c = await ps.claim(db, project_id=1, platform="tiktok", sha256=SHA, artifact_uuid="u", owner="w")
-    await ps.mark_clicked(db, c.pub_id, "w")  # процесс упал: итога нет, в журнале clicked
+    await ps.mark_clicked(db, c.pub_id, "w")
     assert (await ps.list_for(db, 1, SHA))[0]["status"] == ps.S_CLICKED
     await ps.confirm_manual(db, project_id=1, platform="tiktok", sha256=SHA, actor="op", reason="виден в кабинете")
     assert (await ps.list_for(db, 1, SHA))[0]["status"] == ps.S_CONFIRMED
 
 
-# ── «не опубликовано» ─────────────────────────────────────────────────────────
 
 
 async def test_mark_failed_requires_reason_and_closes_without_republish(db):
@@ -187,7 +179,7 @@ async def test_mark_failed_with_republish_reopens_but_only_via_new_approval(db):
     row = (await ps.list_for(db, 1, SHA))[0]
     assert row["clicked_at"] is None and row["attempts"] == 0 and ps.display_state(row) == ps.D_FAILED_BEFORE
     state = ps.derive_project_state([row], ["tiktok"], approved=set())
-    assert state["state"] == ps.PS_AWAITING_APPROVAL  # автоповтора нет: нужно новое «да»
+    assert state["state"] == ps.PS_AWAITING_APPROVAL
     await ps.grant_approval(db, project_id=1, platform="tiktok", sha256=SHA, caption_sha256=CSHA, approved_by="op")
     assert ps.derive_project_state([row], ["tiktok"], approved={"tiktok"})["state"] == ps.PS_WORKING
 
@@ -210,13 +202,11 @@ async def test_manual_actions_log_is_append_only(db):
 
 
 def test_publications_ddl_for_migration_0012_is_unchanged():
-    """Отпечаток миграции 0012 завязан на _DDL: новые таблицы живут в отдельном _DDL_W6."""
     joined = " ".join(ps._DDL)
     assert "publish_approvals" not in joined and "publication_manual_actions" not in joined
     assert len(ps._DDL) == 3
 
 
-# ── статус проекта считается из записей ─────────────────────────────────────────
 
 
 def _rows(spec: dict[str, dict]):
@@ -229,24 +219,15 @@ def _conf(**kw):
 
 @pytest.mark.parametrize("spec,approved,expected", [
     ({p: _conf() for p in PLATFORMS}, set(), ps.PS_PUBLISHED),
-    # есть unconfirmed: «ждёт проверки человека»
     ({**{p: _conf() for p in PLATFORMS[1:]}, PLATFORMS[0]: {"status": ps.S_UNCONFIRMED, "clicked_at": 1.0}}, set(), ps.PS_NEEDS_HUMAN),
-    # сбой после клика: тоже человек
     ({**{p: _conf() for p in PLATFORMS[1:]}, PLATFORMS[0]: {"status": ps.S_FAILED, "clicked_at": 1.0}}, set(), ps.PS_NEEDS_HUMAN),
-    # clicked без итога (убитый процесс): человек
     ({**{p: _conf() for p in PLATFORMS[1:]}, PLATFORMS[0]: {"status": ps.S_CLICKED, "clicked_at": 1.0}}, set(), ps.PS_NEEDS_HUMAN),
-    # клика не было, подтверждения нет: ждёт подтверждения
     ({**{p: _conf() for p in PLATFORMS[1:]}, PLATFORMS[0]: {"status": ps.S_FAILED, "attempts": 1}}, set(), ps.PS_AWAITING_APPROVAL),
-    # сбой до клика, подтверждение действует: воркер повторит
     ({**{p: _conf() for p in PLATFORMS[1:]}, PLATFORMS[0]: {"status": ps.S_FAILED, "attempts": 1}}, {PLATFORMS[0]}, ps.PS_WORKING),
-    # попытки до клика исчерпаны: человек
     ({**{p: _conf() for p in PLATFORMS[1:]}, PLATFORMS[0]: {"status": ps.S_FAILED, "attempts": ps.MAX_PRE_CLICK_ATTEMPTS}}, {PLATFORMS[0]}, ps.PS_NEEDS_HUMAN),
-    # публикация выключена (skipped), подтверждения нет
     ({p: {"status": ps.S_SKIPPED, "attempts": 0} for p in PLATFORMS}, set(), ps.PS_AWAITING_APPROVAL),
-    # человек закрыл оставшуюся как «не опубликовано»
     ({**{p: _conf() for p in PLATFORMS[1:]},
       PLATFORMS[0]: {"status": ps.S_FAILED, "clicked_at": 1.0, "attempts": 3, "error_code": ps.MANUAL_FAILED_CODE}}, set(), ps.PS_CLOSED),
-    # unconfirmed важнее ожидания подтверждения
     ({PLATFORMS[0]: {"status": ps.S_UNCONFIRMED, "clicked_at": 1.0}, **{p: _conf() for p in PLATFORMS[2:]}}, set(), ps.PS_NEEDS_HUMAN),
 ])
 def test_project_state_is_derived_from_records(spec, approved, expected):
@@ -261,10 +242,9 @@ def test_project_state_without_any_records_awaits_approval_and_busy_is_working()
 
 
 def test_publish_off_never_reports_publishing_for_an_approved_platform():
-    """Публикация не бывает автоматической: при выключенной настройке «да» человека не делает состояние «в работе»."""
     rows = _rows({p: {"status": ps.S_FAILED, "attempts": 1} for p in PLATFORMS})
     approved = {PLATFORMS[0]}
-    assert ps.derive_project_state(rows, PLATFORMS, approved)["state"] == ps.PS_WORKING  # как раньше (настройка не передана)
+    assert ps.derive_project_state(rows, PLATFORMS, approved)["state"] == ps.PS_WORKING
     assert ps.derive_project_state(rows, PLATFORMS, approved, publish_enabled=True)["state"] == ps.PS_WORKING
     off = ps.derive_project_state(rows, PLATFORMS, approved, publish_enabled=False)
     assert off["state"] == ps.PS_AWAITING_APPROVAL

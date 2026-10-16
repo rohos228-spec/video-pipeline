@@ -33,7 +33,7 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parent.parent
 SELF = Path(__file__).resolve()
 DEFAULT_PORT = 18811
-DEFAULT_VOICE = os.environ.get("VP_STAND_VOICE_WAV", "")  # wav с русской речью (SAPI); путь задаёт вызывающий
+DEFAULT_VOICE = os.environ.get("VP_STAND_VOICE_WAV", "")
 DEFAULT_ASR = "medium"
 VERDICT_OK = "LOCAL OK (live server process, no provider involved)"
 VERDICT_FAIL = "LOCAL FAIL (live server process, no provider involved)"
@@ -45,7 +45,6 @@ NODE_KEY = "n_gpt_1"
 HISTORY_TERMINAL = ("succeeded", "failed", "stopped")
 
 
-# ───────────────────────────── чистые помощники (проверяются юнит-тестами) ─────────────────────────────
 
 def inside_repo(path: Path, repo: Path = ROOT) -> bool:
     p, r = Path(path).resolve(), Path(repo).resolve()
@@ -231,7 +230,6 @@ def reality_lists() -> dict[str, list[str]]:
     }
 
 
-# ───────────────────────────── ffmpeg и сид проекта ─────────────────────────────
 
 def ffmpeg_exe() -> str:
     exe = shutil.which("ffmpeg")
@@ -279,7 +277,9 @@ async def seed_project(work: Path, voice_wav: Path, asr_model: str) -> dict:
     nodes = [{"id": NODE_KEY, "type": "excel_gpt", "position": {"x": 100.0, "y": 100.0}, "data": {"label": "GPT"}}]
     edges: list = []
     frame_uuids: list[str] = []
+    from app.web.settings_default import seed_default_workflow
     async with session_scope() as session:
+        await seed_default_workflow(session)
         wf = Workflow(name=f"wf-{slug}", is_default=False, nodes=nodes, edges=edges)
         session.add(wf)
         await session.flush()
@@ -342,7 +342,6 @@ def seed_main(argv: list[str]) -> int:
     return 0
 
 
-# ───────────────────────────── запуск сервера со сторожем сети ─────────────────────────────
 
 def serve_main() -> int:
     """Тонкий запуск ``python -m app.main``: сторож сети, каталог промтов в рабочей папке, обнулённые ключи."""
@@ -401,7 +400,7 @@ def serve_main() -> int:
                 blanked.append(name)
             try:
                 object.__setattr__(settings, name, "")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
     (work / "blanked_settings.json").write_text(json.dumps(sorted(blanked)), encoding="utf-8")
     import runpy
@@ -409,7 +408,6 @@ def serve_main() -> int:
     return 0
 
 
-# ───────────────────────────── HTTP-клиент и чтение базы ─────────────────────────────
 
 class Api:
     def __init__(self, base: str) -> None:
@@ -479,20 +477,17 @@ def money_snapshot(db: Db) -> dict:
     return {t: db.digest(t) for t in MONEY_TABLES}
 
 
-# ───────────────────────────── сценарий ─────────────────────────────
 
 class Stand:
     def __init__(self, args, work: Path, seed: dict, api: Api, db: Db, report: Report) -> None:
         self.args, self.work, self.seed, self.api, self.db, self.R = args, work, seed, api, db, report
-        # база проекта (project.db): из неё читают HTTP-ручки проекта; state.db - мастер (журналы слоя, аудит, траты, фоновые задачи)
         self.pdb = Db(Path(seed["data_dir"]) / "project.db")
         self.pid = int(seed["project_id"])
         self.catalog: dict[str, dict] = {}
-        self.plans: list[dict] = []          # что прогнано: для аудита и сводки
+        self.plans: list[dict] = []
         self.exercised: dict[str, list[str]] = {}
         self.operator_id = ""
 
-    # --- чтение состояния проекта ---
     def project(self) -> dict:
         st, body = self.api.get(f"/api/projects/{self.pid}")
         return body if st == 200 and isinstance(body, dict) else {}
@@ -522,7 +517,6 @@ class Stand:
                 return f
         return {}
 
-    # --- план ---
     def preview(self, steps: list[dict], text: str) -> tuple[int, Any]:
         return self.api.post("/api/action-layer/plans/preview", {"steps": steps, "request_text": text})
 
@@ -557,7 +551,6 @@ class Stand:
         self.plans.append(rec)
         for s in steps:
             self.exercised.setdefault(s["action_id"], []).append(plan_id)
-        # превью берётся из каталога, не от модели
         for step in prev["steps"]:
             cat = self.catalog.get(step["action_id"], {})
             R.check(f"{label}: превью шага {step['action_id']} совпадает с каталогом (название, риск, цена 0)",
@@ -637,13 +630,12 @@ def st(action_id: str, **params) -> dict:
     return {"action_id": action_id, "params": params, "depends_on": []}
 
 
-def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сценарий, читается сверху вниз
+def run_scenario(S: Stand) -> None:
     R, api, db, pid, seed = S.R, S.api, S.db, S.pid, S.seed
     data_dir = Path(seed["data_dir"])
     repo_prompts_before = tree_digest(ROOT / "prompts")
     money0 = money_snapshot(db)
 
-    # --- каталог ---
     code, cat = api.get("/api/action-layer/catalog")
     S.catalog = {a["id"]: a for a in (cat or {}).get("actions", [])} if code == 200 else {}
     R.check("каталог слоя читается и не пуст", code == 200 and len(S.catalog) > 50, len(S.catalog))
@@ -661,26 +653,22 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
         R.check(f"каталог: {aid} уровень {tier}, денег не тратит",
                 a.get("risk") == tier and a.get("spends_money") is spends, {k: a.get(k) for k in ("risk", "spends_money")})
 
-    # --- защита: без токена оператора подтверждение невозможно ---
     code, body = S.preview([st("project.set_auto_mode", project_id=pid, enabled=False)], "F08 probe token")
     probe_id = (body or {}).get("plan_id")
     code2, body2 = api.post(f"/api/action-layer/plans/{probe_id}/approve", operator=False) if probe_id else (0, None)
     R.check("контроль: запрос без токена оператора не проходит (403)", code2 == 403, (code2, body2))
 
-    # --- 1. автопродвижение ---
     v = S.run_plan("auto_mode включить", [st("project.set_auto_mode", project_id=pid, enabled=True)], expect_tier="local_safe")
     R.check("auto_mode: в проекте стало true", S.project().get("auto_mode") is True, S.project().get("auto_mode"))
     v = S.run_plan("auto_mode выключить", [st("project.set_auto_mode", project_id=pid, enabled=False)], expect_tier="local_safe")
     R.check("auto_mode: в проекте снова false", S.project().get("auto_mode") is False, S.project().get("auto_mode"))
 
-    # --- 2. пульт ноды ---
     v = S.run_plan("node.set_config", [st("node.set_config", project_id=pid, node_key=NODE_KEY, role="review")],
                    expect_tier="local_safe")
     code, res = api.get(f"/api/projects/{pid}/gpt-operator/{NODE_KEY}/resolve")
     cfg = ((res or {}).get("config") or {}) if code == 200 else {}
     R.check("node.set_config: роль ноды в проекте стала review", cfg.get("role") == "review", (code, str(res)[:300]))
 
-    # --- 3. закадр кадра + снимок + откат ---
     fr1 = S.frame(1)
     frame_id, old_text = fr1.get("frame_id"), fr1.get("voiceover_text")
     new_text = "Проверка слоя действий: новый текст закадра."
@@ -703,7 +691,6 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
             bool(snaps) and snaps[0]["restored_at"] and snaps[0]["restored_by"], snaps[:1])
     v = S.run_plan("history.list_snapshots", [st("history.list_snapshots", project_id=pid)], expect_tier="read")
 
-    # --- 4. покрытие кадра: первая правка (прежнее пустое) и вторая (откат возможен) ---
     v = S.run_plan("set_coverage 1", [st("montage.set_coverage", project_id=pid, frame_number=2, type="coverage_plan", value="общий план")],
                    expect_tier="local_safe")
     first = S.step_result(v)
@@ -720,7 +707,6 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
     R.check("D11 set_coverage: откат вернул «общий план»", "общий" in str(S.frame(2).get("shot_plan")) and cov_now != S.frame(2).get("shot_plan"),
             (cov_now, S.frame(2).get("shot_plan")))
 
-    # --- 5. поле шота (меню съёмки) ---
     gf_before = S.graph_frame(1)
     old_prompt = gf_before.get("animation_prompt")
     v = S.run_plan("shot.edit_field", [st("shot.edit_field", project_id=pid, frame_uuid=seed["frame_uuids"][0], field="video_prompt", value="новый промт видео от слоя")],
@@ -735,7 +721,6 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
     R.check("D11 shot.edit_field: откат вернул прежний промт", S.graph_frame(1).get("animation_prompt") == old_prompt,
             (S.graph_frame(1).get("animation_prompt"), old_prompt))
 
-    # --- 6. мастер-промт (копия каталога в рабочей папке) ---
     code, files = api.get("/api/prompt-files/plan")
     pname = next((f["name"] for f in files if isinstance(f, dict)), None) if code == 200 and isinstance(files, list) else None
     R.check("prompt.save_master: есть существующий промт шага plan для проверки", bool(pname), (code, str(files)[:200]))
@@ -755,7 +740,6 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
         code, back = api.get(f"/api/prompt-files/plan/{pname}/content")
         R.check("D11 prompt.save_master: откат вернул прежний текст промта", (back or {}).get("content") == original, str(back)[:200])
 
-    # --- 7. очередь правок: поставить и убрать, apply не запускается ---
     ops = [{"type": "image_regen_prompt", "frame_number": 1, "prompt": "очередь: проверка"}]
     v = S.run_plan("queue_ops", [st("montage.queue_ops", project_id=pid, ops=ops)], expect_tier="local_safe")
     queue = ((S.board().get("meta") or {}).get("pending_ops")) or []
@@ -769,7 +753,6 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
     R.check("queue: ни одной картинки/видео не появилось на диске",
             not list((data_dir / "scenes").glob("*")) if (data_dir / "scenes").exists() else True, None)
 
-    # --- 8. разбор аудио: методом по умолчанию (NeMo нет) и методом silence ---
     v = S.run_plan("align_audio (метод по умолчанию nemo_auto, NeMo не установлен)", [st("montage.align_audio", project_id=pid)],
                    expect_tier="local_safe", expect_status="failed", timeout=180)
     R.check("align_audio nemo_auto: ошибка честная (NeMo недоступен), деньги 0",
@@ -791,7 +774,6 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
             and all(spans[i][0] >= spans[i - 1][1] - 0.01 for i in (1, 2)) and spans[-1][1] <= (mjob.get("result") or {}).get("master_s", 0) + 0.05,
             spans)
 
-    # --- 9. контроли: подмена плана после подтверждения, чужой хэш, аварийный стоп ---
     mont = [st("montage.run_montage", project_id=pid)]
     final_sha_before = sha256_file(Path(seed["old_final"]))
 
@@ -831,11 +813,10 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
     R.check("аварийный стоп снят (active=false)", code == 200 and (ks_state or {}).get("active") is False, (code, ks_state))
     R.check("контроли не запускали монтаж: прежний final.mp4 не изменился", sha256_file(Path(seed["old_final"])) == final_sha_before, None)
 
-    # --- 10. два плана на одном проекте: пока идёт монтаж, второй не стартует ---
     code, pv2 = S.preview([st("project.set_auto_mode", project_id=pid, enabled=False)], "F08 second plan")
     plan_2 = (pv2 or {}).get("plan_id")
     snd_ready = bool(plan_2)
-    st_run, body = api.post(f"/api/action-layer/plans/{plan_k}/run")  # тот же план с живым подтверждением: основной запуск монтажа
+    st_run, body = api.post(f"/api/action-layer/plans/{plan_k}/run")
     R.check("монтаж: запуск с действующим подтверждением принят (200 running)", st_run == 200 and (body or {}).get("status") == "running", (st_run, body))
     S.plans.append({"label": "run_montage (основной)", "plan_id": plan_k, "actions": ["montage.run_montage"]})
     S.exercised.setdefault("montage.run_montage", []).append(plan_k)
@@ -875,7 +856,6 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
             all(sha256_file(Path(c)) == h for c, h in seed["clip_sha"].items()) and sha256_file(Path(seed["voice"])) == seed["voice_sha"], None)
     mid_frames = [S.frame(i).get("voiceover_text") for i in (1, 2, 3)]
     R.check("run_montage: тексты кадров после повторной синхронизации с xlsx равны исходным", mid_frames == list(FRAME_TEXTS), mid_frames)
-    # второй план теперь запускается (проект свободен)
     if snd_ready:
         code, body = api.post(f"/api/action-layer/plans/{plan_2}/run")
         R.check("два плана на проекте: после конца монтажа второй план запускается (200)", code == 200, (code, body))
@@ -883,7 +863,6 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
         S.plans.append({"label": "второй план после монтажа", "plan_id": plan_2, "actions": ["project.set_auto_mode"]})
         S.exercised.setdefault("project.set_auto_mode", []).append(plan_2)
 
-    # --- 11. сброс шага assemble: стёрто ровно заявленное ---
     def arts() -> dict:
         return {"master": {r["kind"]: r["n"] for r in db.q("SELECT kind, COUNT(*) AS n FROM artifacts WHERE project_id=? GROUP BY kind", (pid,))},
                 "project": {r["kind"]: r["n"] for r in S.pdb.q("SELECT kind, COUNT(*) AS n FROM artifacts WHERE project_id=? GROUP BY kind", (pid,))}}
@@ -904,7 +883,6 @@ def run_scenario(S: Stand) -> None:  # noqa: C901 - линейный сцена�
     R.check("reset assemble: статус проекта пересчитан и не «выполняется»", S.project().get("status") in ("audio_ready", "video_ready", "music_ready"),
             S.project().get("status"))
 
-    # --- итоги: деньги, сеть, репозиторий, аудит оператора, лента ---
     money1 = money_snapshot(db)
     R.check("деньги: журнал трат (spend_ledger), задач провайдеров и резервов слоя до и после побайтно одинаков",
             money0 == money1, {"before": money0, "after": money1})
@@ -989,7 +967,6 @@ def skipped_actions(catalog: dict[str, dict], exercised: set[str]) -> list[dict]
     return out
 
 
-# ───────────────────────────── главная ─────────────────────────────
 
 def wait_ready(base: str, proc: subprocess.Popen, seconds: float = 180.0) -> bool:
     import httpx
@@ -1080,7 +1057,7 @@ def main(argv: list[str] | None = None) -> int:
                        "timeline_sample": S.timeline_sample,
                        "blanked_settings_count": len(json.loads((work / "blanked_settings.json").read_text(encoding="utf-8")))
                        if (work / "blanked_settings.json").exists() else None})
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         R.check("сценарий дошёл до конца без исключений", False, f"{type(exc).__name__}: {exc}")
         import traceback
         traceback.print_exc()

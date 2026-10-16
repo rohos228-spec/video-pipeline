@@ -1,4 +1,3 @@
-"""VO-родитель без STYLE-lock не должен уходить в генератор голым."""
 
 from types import SimpleNamespace
 

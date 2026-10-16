@@ -1,7 +1,3 @@
-"""Structural graph hash, per-node configuration revision and stored-value schemes.
-
-Pure functions only: no database, no provider.
-"""
 import copy
 import hashlib
 import json
@@ -122,7 +118,6 @@ class NodeConfigRevision(unittest.TestCase):
         cosmetic["data"]["description"] = "x"
         cosmetic["position"] = {"x": 0, "y": 0}
         self.assertEqual(base, revisions.node_config_revision(cosmetic, {}))
-        # Another node's configuration is outside this node's revision.
         meta = {"excel_gpt_nodes": {"n_gpt": {"outputMode": "text"}},
                 "prompt_slot_variants": {"n_gpt": {"main": "v2"}}}
         self.assertEqual(base, revisions.node_config_revision(NODES[0], meta))
@@ -160,7 +155,6 @@ class StoredValues(unittest.TestCase):
 
 
 class ActionLayerPlanHashesAreIndependent(unittest.TestCase):
-    """The approval plan hash must not depend on revisions or on any configuration hash."""
 
     GOLDEN = None
 
@@ -187,7 +181,6 @@ class ActionLayerPlanHashesAreIndependent(unittest.TestCase):
                                              separators=(",", ":")).encode("utf-8")).hexdigest()
         before = plan_hash(self.plan(), self.registry())
         self.assertEqual(before, expected)
-        # Changing the revision scheme constants must not move it.
         original = (revisions.REVISION_SCHEME, revisions.GRAPH_SCHEME)
         revisions.REVISION_SCHEME, revisions.GRAPH_SCHEME = 77, 77
         try:

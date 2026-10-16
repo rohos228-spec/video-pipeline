@@ -128,10 +128,6 @@ async def start_step(
 
         clear_user_stop_gate(project)
         clear_auto_await_manual_start(project)
-        # ▶ не включает auto_mode. Цепочка excel_gpt→excel_gpt идёт по
-        # стрелкам канваса; прыжок на следующий шаг пайплайна — только если
-        # тумблер уже включён пользователем.
-        # Явный ▶ снимает глобальный halt очереди и family-halt родителя.
         clear_gen_queue_halted(reason=f"start_step #{project.id}")
         parent_id = mass_parent_id(project)
         if parent_id is not None:
@@ -372,13 +368,10 @@ async def start_step(
             ", ".join(cleared),
         )
     try:
-        # Wipe только по явному force_wipe=True. Обычный ▶ не жжёт готовое.
         if force_wipe is None:
             force_wipe = False
 
-        # ▶ одной sd_agent-ноды: invalidate_agent уже сбросил чекпоинт.
         # Полный wipe scene_d удаляет meta.scene_design целиком — вместе с
-        # only_agent → worker prepare без only_agent зажигает весь веер.
         if sd_agent_name and step_code == "scene_d":
             wiped = {}
             logger.info(
@@ -467,18 +460,12 @@ async def start_step(
                     added_preds,
                 )
                 meta = dict(project.meta or {})
-        # Всегда снять именно эту ноду из completed_keys. Иначе воркер в
-        # _prepare_node_run_for_status видит stale active и re-resolve на
-        # чужой slot 1 (#63: fw_report → n_excel_gpt_1788694559747).
         keys = [str(k) for k in (meta.get("excel_gpt_completed_keys") or [])]
         self_cleared = [nk] if nk in keys else []
         if self_cleared:
             meta["excel_gpt_completed_keys"] = [k for k in keys if k != nk]
             project.meta = meta
         if started_slot < 1:
-            # overflow: не трактовать слот 0 как «сбросить enrich 1..5».
-            # Потомков группы снимаем — иначе heal считает action/QC done
-            # по ключам прошлого прогона и новые биты не записываются.
             succ_cleared = clear_overflow_excel_gpt_successors(project, nk)
             cleared = {
                 "from_slot": 0,
@@ -580,8 +567,6 @@ async def start_step(
         prepare_key = str(
             node_key or meta.get("active_excel_gpt_node_key") or ""
         ) or None
-        # Ручной ▶ с wipe: GPT обязан отработать, даже если поля уже заполнены.
-        # mode=resume / force_wipe=False — skip filled, не переписывать всё.
         if explicit_ui_start and prepare_key and force_wipe:
             meta["excel_gpt_ui_force_full"] = True
             meta["excel_gpt_force_full_rerun"] = prepare_key
@@ -611,7 +596,7 @@ async def start_step(
         from app.project_db import sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, project)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "[#{}] start_step: runtime sync master↔project.db failed",
             project.id,

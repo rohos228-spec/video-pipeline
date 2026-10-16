@@ -1,4 +1,3 @@
-"""Bind the existing diagnostic gateway to the authorized Decision pilot."""
 import importlib.util
 import json
 import os
@@ -33,8 +32,6 @@ class Handler(base.Handler):
         super().do_POST()
 
     def forward(self, body):
-        # Any implicit continuation or salvage POST lacks the Decision context.
-        # It must fail before the gateway reserves/sends a paid request.
         if self.command != 'POST' or not all(part in body for part in
                 (b'bounded diagnostic supervisor', b'context_version', b'allowed_actions')):
             self.reject(403, 'non_decision_post_forbidden')
@@ -44,7 +41,7 @@ class Handler(base.Handler):
 if __name__ == '__main__':
     from gateway_egress_probe import run as verify_network
     verify_network(os.environ['PINNED_KIE_IPV4'])
-    base.EXTERNAL_CALLS_ALLOWED = True  # After local policy and process probes, before serving.
+    base.EXTERNAL_CALLS_ALLOWED = True
     base.SOCKET.parent.mkdir(parents=True, exist_ok=True)
     if base.SOCKET.exists():
         raise SystemExit('Socket already exists; refusing to replace it')

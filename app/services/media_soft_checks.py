@@ -1,11 +1,3 @@
-"""Мягкие проверки музыки, клипов и финала (W70, M7-M9 из W56).
-
-Правило: брак, найденный здесь, НИКОГДА не запускает повторную платную генерацию. Проверка только
-возвращает коды предупреждений; вызывающий записывает их в журнал (статус пункта ``unknown`` с причиной
-``soft_<код>`` -> диагностика ``media_failure`` с действием ``human_review``) и не даёт автоодобрить финал.
-Пороги консервативные: сомнение или невозможность измерить - не предупреждение. Только чтение файла
-(ffprobe/ffmpeg), без сети и без платных вызовов.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -15,21 +7,20 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-ASPECT_TOLERANCE = 0.06          # относительное расхождение сторон кадра (9:16 против 1080x1920 = 0)
-CLIP_MIN_SECONDS = 0.5           # клип короче - не результат генерации
-CLIP_MAX_SECONDS = 120.0         # клип длиннее - не результат генерации одной сцены
-BLACK_SHARE = 0.95               # доля длительности, занятая чёрным кадром, от которой клип считается чёрным
-FINAL_MIN_RATIO = 0.7            # финал короче 70% суммы длительностей сцен
-FINAL_MAX_RATIO = 1.5            # финал длиннее 150% суммы + запас
+ASPECT_TOLERANCE = 0.06
+CLIP_MIN_SECONDS = 0.5
+CLIP_MAX_SECONDS = 120.0
+BLACK_SHARE = 0.95
+FINAL_MIN_RATIO = 0.7
+FINAL_MAX_RATIO = 1.5
 FINAL_MAX_SLACK_S = 10.0
-FINAL_MIN_COVERAGE = 0.8         # сравнение только если длительность известна у 80% сцен
+FINAL_MIN_COVERAGE = 0.8
 SOFT_PREFIX = "soft_"
 
 _ASPECT = re.compile(r"^\s*(\d{1,3})\s*[:_x/]\s*(\d{1,3})\s*$")
 
 
 def parse_aspect(value: Any) -> float | None:
-    """'9:16' / '9_16' -> ширина/высота; всё непонятное (auto, square...) -> None (проверка пропускается)."""
     m = _ASPECT.match(str(value or ""))
     if not m:
         return None
@@ -38,8 +29,6 @@ def parse_aspect(value: Any) -> float | None:
 
 
 def explicit_aspect(project: Any) -> float | None:
-    """Соотношение сторон, заданное проектом ЯВНО (нода или поле проекта). Умолчание шагов (9:16) не берём:
-    ложное предупреждение хуже пропуска."""
     try:
         from app.services.vibecode_catalog import find_canvas_node, read_node_media_fields
         meta = getattr(project, "meta", None)
@@ -48,7 +37,7 @@ def explicit_aspect(project: Any) -> float | None:
             slug = read_node_media_fields(node).get("aspect_slug")
             if parse_aspect(slug):
                 return parse_aspect(slug)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return parse_aspect(getattr(project, "aspect_ratio", None))
 
@@ -64,7 +53,6 @@ def aspect_mismatch(width: Any, height: Any, expected: float | None) -> bool:
 
 
 async def black_share(path: Path, duration: float, *, timeout: float = 30.0) -> float | None:
-    """Доля длительности, где кадр целиком чёрный (ffmpeg blackdetect). None - измерить не удалось."""
     if not shutil.which("ffmpeg") or not duration or duration <= 0:
         return None
     try:
@@ -89,11 +77,10 @@ async def black_share(path: Path, duration: float, *, timeout: float = 30.0) -> 
 
 
 async def music_soft_issues(path: Path) -> list[str]:
-    """Музыка: тишина или недопустимый формат. Нет дорожки/длительности ловит жёсткая проверка выше."""
     from app.services.audio_verification import verify_audio
     try:
         verdict = await asyncio.wait_for(asyncio.to_thread(verify_audio, path), 150)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
     out = []
     if verdict.silent:
@@ -104,7 +91,6 @@ async def music_soft_issues(path: Path) -> list[str]:
 
 
 async def clip_soft_issues(path: Path, probe: dict, expected_aspect: float | None) -> list[str]:
-    """Клип: размер кадра не по соотношению сторон проекта, подозрительная длительность, сплошной чёрный."""
     out = []
     if aspect_mismatch(probe.get("width"), probe.get("height"), expected_aspect):
         out.append("clip_aspect_mismatch")
@@ -122,7 +108,6 @@ async def clip_soft_issues(path: Path, probe: dict, expected_aspect: float | Non
 
 
 def final_soft_issues_from(probe: dict, expected_aspect: float | None, scene_seconds: list[float | None]) -> list[str]:
-    """Финал: соотношение сторон и длительность против суммы длительностей сцен (если она известна)."""
     out = []
     if aspect_mismatch(probe.get("width"), probe.get("height"), expected_aspect):
         out.append("final_aspect_mismatch")
@@ -149,7 +134,6 @@ async def project_scene_seconds(reader, project_id: int) -> list[float | None]:
 
 
 async def final_soft_issues(reader, project: Any, path: Path, probe: dict | None = None) -> list[str]:
-    """Для автоодобрения финала: сам читает файл (если probe не дан). Любой сбой самой проверки - пустой список."""
     try:
         if probe is None:
             if not shutil.which("ffprobe"):
@@ -163,5 +147,5 @@ async def final_soft_issues(reader, project: Any, path: Path, probe: dict | None
             probe = {"width": video.get("width"), "height": video.get("height"),
                      "duration": (data.get("format") or {}).get("duration")}
         return final_soft_issues_from(probe, explicit_aspect(project), await project_scene_seconds(reader, project.id))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []

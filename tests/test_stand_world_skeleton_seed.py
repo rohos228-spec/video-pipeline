@@ -1,8 +1,3 @@
-"""The vibecode text-node stand seeds a skeleton checkpoint for ``sd_agent --sd-agent world``.
-
-The application only injects the SKELETON block into the world request when ``runner.load_checkpoint`` returns the
-skeleton, and that requires a non-empty ``scenes`` list (agents.LIST_KEY). Offline, no network, no model.
-"""
 from __future__ import annotations
 
 import importlib.util

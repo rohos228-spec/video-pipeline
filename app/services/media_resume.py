@@ -1,19 +1,3 @@
-"""Resume, never resubmit: durable guard around paid Kie createTask (native pipeline).
-
-State lives in the append-only ``provider_task_ledger`` (see spend_guard). Before a createTask an
-``intent`` row (status ``submit_unknown``) is written and awaited; once the provider answers it is
-resolved to ``bound`` (task id received) or ``rejected`` (not accepted / never sent). A later call
-for the same (project, frame key, model, prompt hash) inside ``MEDIA_RESUME_WINDOW_S``:
-
-* finds an open task (submitted, pending, succeeded but not downloaded) -> polls that task id;
-* finds an unresolved intent -> ``KieSubmitUnknownError`` (no automatic resubmit, a human decides);
-* finds nothing, or only failed / downloaded tasks -> a new submit is allowed.
-
-Kie has no list endpoint, so an unresolved intent cannot be proven either way by the provider.
-Recording is awaited (crash safety) but a database error never blocks the provider call.
-Outsee exposes no task id to the client, so it cannot be resumed; its unknown submits are held by
-``outsee_guard`` (same ledger, intent rows only, api ``outsee``).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -32,8 +16,6 @@ from loguru import logger
 
 from app.services import media_spend, spend_guard
 
-# Frame images, clips, heroes, items (``predmet1``) and the single project track (``music``).
-# Characters named ``<id>.png`` have no stable key and stay outside the ledger guard.
 _RESUMABLE_KEY = re.compile(r"^(?:(?:frame|clip|hero)_|predmet\d|music$)")
 _NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, ConnectionRefusedError, socket.gaierror)
 
@@ -55,7 +37,7 @@ def window_s() -> int:
     try:
         from app.settings import settings
         return int(settings.media_resume_window_s)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 3600
 
 
@@ -70,7 +52,6 @@ def _urlish(v: Any) -> bool:
 
 
 def prompt_hash(model: str, payload: dict | None) -> str:
-    """Stable over restarts: reference urls are re-uploaded each time, so url-valued fields are left out."""
     inp = payload.get("input") if isinstance((payload or {}).get("input"), dict) else (payload or {})
     stable = {k: v for k, v in inp.items() if not _urlish(v)}
     raw = json.dumps({"m": model, "i": stable}, sort_keys=True, default=str, ensure_ascii=False)
@@ -81,7 +62,6 @@ def make_ctx(project_id: int | None, out_path: Any, model: str, api: str, payloa
     key = media_spend._task_key(out_path)
     if not _RESUMABLE_KEY.match(key):
         key = ""
-    # only calls that name their project are resumable (music, the Create tab and other ad-hoc calls are not)
     return Ctx(project_id, key, model, api, prompt_hash(model, payload))
 
 
@@ -92,7 +72,7 @@ async def _append(fn, **kw) -> bool:
             await fn(s, **kw)
             await s.commit()
         return True
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("media_resume: ledger write failed ({}): {}", fn.__name__, type(e).__name__)
         return False
 
@@ -111,14 +91,12 @@ async def _states(ctx: Ctx) -> list[dict]:
 
 
 async def begin(ctx: Ctx) -> str | None:
-    """Task id to resume, or None when a new submit is allowed. Raises KieSubmitUnknownError if an
-    earlier submit of the same request has no known outcome."""
     if not ctx.usable:
         return None
-    await media_spend.drain()  # poll rows of a previous attempt must be visible
+    await media_spend.drain()
     try:
         states = await _states(ctx)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("media_resume: ledger read failed: {}", type(e).__name__)
         return None
     open_tasks = [t for t in states if not t["intent"] and t["status"] in spend_guard.OPEN_TASK_STATUSES]
@@ -137,7 +115,6 @@ async def begin(ctx: Ctx) -> str | None:
 
 
 def classify_submit_error(exc: BaseException) -> str:
-    """not_sent (safe to retry) | rejected (provider answered, nothing accepted) | unknown (may be billed)."""
     if isinstance(exc, _NOT_SENT):
         return "not_sent"
     if isinstance(exc, (httpx.HTTPError, OSError, asyncio.TimeoutError, TimeoutError)):
@@ -152,9 +129,8 @@ def classify_submit_error(exc: BaseException) -> str:
 
 
 async def submit(ctx: Ctx, create: Callable[[], Awaitable[str]]) -> str:
-    """Run ``create`` (the createTask POST) under an intent row. Post-send failures become KieSubmitUnknownError."""
     from app.bots.kie_http import KieSubmitUnknownError
-    media_spend.assert_submit_allowed("kie", "createTask")  # resume-only scope: nothing sent, no intent row
+    media_spend.assert_submit_allowed("kie", "createTask")
     usable = ctx.usable
     intent = uuid.uuid4().hex[:16]
     if usable:
@@ -162,7 +138,7 @@ async def submit(ctx: Ctx, create: Callable[[], Awaitable[str]]) -> str:
     try:
         task_id = await create()
     except asyncio.CancelledError:
-        raise  # intent stays unresolved: the POST may have gone out
+        raise
     except Exception as exc:
         kind = classify_submit_error(exc)
         if kind != "unknown":
@@ -184,7 +160,6 @@ async def submit(ctx: Ctx, create: Callable[[], Awaitable[str]]) -> str:
 
 
 async def mark(ctx: Ctx, task_id: str, status: str, note: str = "") -> None:
-    """Terminal or progress row for a task whose poll rows are not written by media_spend (Kling client)."""
     if not ctx.usable:
         return
     await media_spend.drain()
@@ -197,8 +172,6 @@ async def mark_downloaded(ctx: Ctx, task_id: str) -> None:
 
 
 async def release_unknown(project_id: int, key: str) -> int:
-    """Human action: the provider showed no charge for this key, so a new submit is allowed.
-    Resolves every unresolved intent of the key (any model) as rejected; returns how many."""
     from app.db import SessionLocal
     since = datetime.utcnow() - timedelta(seconds=window_s())
     async with SessionLocal() as s:
@@ -213,7 +186,6 @@ async def release_unknown(project_id: int, key: str) -> int:
 
 
 def result_dir(data_dir: Path, key: str) -> Path:
-    """Where a native step writes the result file of this ledger key."""
     if key.startswith("frame_"):
         return data_dir / "scenes"
     if key.startswith("hero_"):
@@ -232,8 +204,6 @@ def _default_ext(key: str) -> str:
 
 
 async def pending_for_key(project_id: int | None, key: str) -> bool:
-    """True when the ledger holds an open Kie task or an unresolved submit intent of this key inside
-    the resume window (any model, any prompt hash). Read-only; False when the ledger is unavailable."""
     if project_id is None or not key or window_s() <= 0 or media_spend._managed():
         return False
     try:
@@ -241,7 +211,7 @@ async def pending_for_key(project_id: int | None, key: str) -> bool:
         since = datetime.utcnow() - timedelta(seconds=window_s())
         async with SessionLocal() as s:
             found = await spend_guard.find_task_states(s, project_id=project_id, key=key, model=None, since=since)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     return any((not t["intent"] and t["status"] in spend_guard.OPEN_TASK_STATUSES)
                or (t["intent"] and t["status"] == "submit_unknown") for t in found)
@@ -264,16 +234,13 @@ def _have_result_file(directory: Path, key: str) -> bool:
 
 
 async def _reattach_one(project, t: dict, key: str, stats: dict) -> str:
-    """One status request for a known task, download when it finished. Never submits.
-
-    Returns the outcome: pending | failed | file_present | no_result_urls | invalid_file | downloaded."""
     from app.bots import kie_http
     api, task_id = t["api"] or "jobs", t["task_id"]
     ctx = Ctx(project.id, key, t["model"], api, t["ph"])
     stats["checked"] += 1
     state, inner = await asyncio.wait_for(kie_http.task_status(api, task_id), 30)
     if state == "pending":
-        stats["pending"] += 1  # the step resumes polling this task id through begin()
+        stats["pending"] += 1
         return "pending"
     if state == "fail":
         await mark(ctx, task_id, "failed", "reconcile: provider fail")
@@ -293,8 +260,8 @@ async def _reattach_one(project, t: dict, key: str, stats: dict) -> str:
         from app.services.scan_frames import is_valid_scene_image
         if not is_valid_scene_image(out):
             out.unlink(missing_ok=True)
-            return "invalid_file"  # stays succeeded: the step retries the download
-    elif out.stat().st_size < 1024:  # same threshold as _have_result_file: a stub is not a result
+            return "invalid_file"
+    elif out.stat().st_size < 1024:
         out.unlink(missing_ok=True)
         return "invalid_file"
     await mark(ctx, task_id, "downloaded", "reconcile: downloaded")
@@ -307,12 +274,6 @@ _GENERATING_STATUSES = ("generating_images", "generating_videos", "generating_he
 
 
 async def outsee_startup_report(stats: dict) -> None:
-    """D04: after a restart, say which Outsee frames of running projects must NOT be sent again. Read-only.
-
-    Outsee has no task id to poll, so there is nothing to reattach; the request-key record (outsee_idempotency) is the
-    only proof. ``outsee_uncertain``: an attempt without a verdict (a human decides, a second request is refused);
-    ``outsee_result_on_record``: a paid picture that is on disk and not yet taken by the step (the step takes it
-    without a request). Counts are added to ``stats``; every uncertain key is logged."""
     stats.setdefault("outsee_uncertain", 0)
     stats.setdefault("outsee_result_on_record", 0)
     if window_s() <= 0 or media_spend._managed() or media_spend.disabled_reason("browser") is not None:
@@ -340,13 +301,10 @@ async def outsee_startup_report(stats: dict) -> None:
 
 
 async def reconcile_on_startup(budget_s: float = 90.0) -> dict:
-    """One-shot, before the worker re-queues: for projects found in generating_images/videos reattach
-    ledger tasks that are open. One status request per task, results downloaded; never submits.
-    Outsee frames (no task id) are only reported, see ``outsee_startup_report``."""
     stats = {"checked": 0, "downloaded": 0, "failed": 0, "pending": 0, "errors": 0}
     try:
         await asyncio.wait_for(outsee_startup_report(stats), min(budget_s, 30.0))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("media_resume startup: Outsee report skipped ({})", type(e).__name__)
     if not enabled():
         return stats
@@ -375,13 +333,13 @@ async def reconcile_on_startup(budget_s: float = 90.0) -> dict:
         for pr, t, key in work:
             try:
                 await _reattach_one(pr, t, key, stats)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 stats["errors"] += 1
                 logger.warning("media_resume reconcile: task {} skipped ({})", t["task_id"], type(e).__name__)
 
     try:
         await asyncio.wait_for(_run(), budget_s)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         stats["errors"] += 1
         logger.warning("media_resume reconcile aborted: {}", type(e).__name__)
     if stats["checked"]:

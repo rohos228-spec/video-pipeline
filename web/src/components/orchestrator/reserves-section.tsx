@@ -4,9 +4,6 @@ import {ApiError} from "@/lib/api";
 import {listUnresolvedReserves, releaseReserve, type UnresolvedReserve} from "@/lib/action-layer";
 import {Button} from "@/components/ui/button";
 
-// Резервы потолка слоя действий, не закрытые фактом (hitl.regenerate, massfactory.start: платит воркер позже).
-// «Снять резерв» не отменяет работу и не возвращает деньги: оно убирает сумму из удерживаемого потолка
-// после того, как человек сверил кабинет провайдера. Сервер: POST /api/action-layer/reserves/release (токен оператора).
 function errorText(e: unknown): string {
   if (e instanceof ApiError && e.detail && typeof e.detail === "object") {
     const d = (e.detail as {detail?: {message?: string}}).detail ?? (e.detail as {message?: string});

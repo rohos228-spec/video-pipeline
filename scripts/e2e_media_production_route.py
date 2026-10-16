@@ -83,7 +83,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 
 def _load_sibling(name: str):
@@ -94,12 +94,12 @@ def _load_sibling(name: str):
     return mod
 
 
-qc = _load_sibling("e2e_vibecode_script_frames_qc")  # pure helpers and constants, imported not edited
+qc = _load_sibling("e2e_vibecode_script_frames_qc")
 
 PORT = 18768
 FAKE_PORT = 18769
 NODE = "images"
-STEP_CODE = "img"                    # node_registry.WORK_NODES["images"].step_code
+STEP_CODE = "img"
 TARGET = "media-images-A"
 GROUP_ID = "media-g1"
 FRAME_KEY = "frame_001"
@@ -113,12 +113,12 @@ OUTSEE_ENV_NAMES = ("OUTSEE_API_KEY", "OUTSEE_API_BASE_URL", "OUTSEE_DEFAULT_IMA
 DECISION_ENV_NAMES = tuple(qc.LIVE_ENV_NAMES)
 SECRET_NAMES = ("OUTSEE_API_KEY", "VIBECODE_API_KEY", "GPT_RELAY_TOKEN", "GPT_PROXY_URL")
 DEFAULT_OUTSEE_BASE = "https://outsee.io"
-IMAGE_GENERATORS = ("gpt_image_2_vip", "nano_banana_2")  # Outsee-routed only (Kie slugs never reach Kie)
-PRICE_HINT_USD = 0.10                # conservative price of ONE Outsee image (live probe: about $0.03, probe step cap $0.10)
+IMAGE_GENERATORS = ("gpt_image_2_vip", "nano_banana_2")
+PRICE_HINT_USD = 0.10
 DEFAULT_MAX_REAL_POSTS = 1
 DEFAULT_MAX_USD = 0.25
 DEFAULT_MAX_DECISION_POSTS = 3
-GATE_CAP_FACTOR = 1.5                # application caps = 1.5 estimates of one submit: one passes, the second is refused
+GATE_CAP_FACTOR = 1.5
 TERMINAL_DECISION = set(qc.TERMINAL_DECISION)
 
 IMAGE_PROMPT = ("A calm still life photograph: a wooden desk by a large window, a blue paper folder, a ceramic mug and an "
@@ -130,7 +130,6 @@ FAULT_HITL = "simulated outcome loss: the HITL card of the new image could not b
 FAULT_TAIL = "simulated outcome loss: the post-step validation of the images step crashed"
 
 
-# ───────────────────────────── pure helpers (unit-tested) ─────────────────────────────
 
 def load_env_whitelist(path: str, names: tuple[str, ...]) -> dict[str, str]:
     """Only `names` from an env file; everything else is ignored and nothing is printed."""
@@ -201,8 +200,8 @@ def hosts_in_text(text: str) -> set[str]:
 
 @dataclass
 class Judgement:
-    action: str            # pass | stub_decision | real_decision | refuse
-    kind: str              # what the request is, for the report
+    action: str
+    kind: str
     reason: str = ""
 
 
@@ -212,15 +211,15 @@ class Gate:
 
     `phase` is "main" while the production flow runs and "probe" while guard probes run. A POST to the fake
     submit path during a probe is a guard failure (counted in `probe_posts`), never a real request."""
-    mode: str                                   # dry | live
+    mode: str
     max_paid_posts: int = DEFAULT_MAX_REAL_POSTS
-    outsee_host: str = ""                       # live: the real host that may receive the one paid submit
+    outsee_host: str = ""
     fake_port: int = FAKE_PORT
     real_decision: bool = False
     decision_hosts: frozenset = frozenset()
     max_decision_posts: int = DEFAULT_MAX_DECISION_POSTS
     phase: str = "probe"
-    paid_posts: int = 0                         # main-phase submits that were let through
+    paid_posts: int = 0
     probe_posts: int = 0
     decision_posts: int = 0
     refused_cap: int = 0
@@ -295,7 +294,6 @@ def balance_delta(before: dict[str, float], after: dict[str, float]) -> dict[str
     return {k: round(before[k] - after[k], 6) for k in before if k in after and before[k] != after[k]}
 
 
-# ───────────────────────────── the fake Outsee API (dry mode, and guard probes in both modes) ─────────────────────────────
 
 def make_png(side: int = 512) -> bytes:
     """A real, decodable PNG above the native scene threshold (200 KB): noise does not compress."""
@@ -320,7 +318,7 @@ class FakeOutsee:
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
-            def log_message(self, *a, **k):  # quiet
+            def log_message(self, *a, **k):
                 pass
 
             def _send(self, code: int, body: bytes, ctype: str = "application/json"):
@@ -342,7 +340,7 @@ class FakeOutsee:
                 self._json(401, {"error": "bad key"})
                 return False
 
-            def do_POST(self):  # noqa: N802
+            def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(length) if length else b""
                 if self.path != GENERATE_PATH:
@@ -360,7 +358,7 @@ class FakeOutsee:
                                          "prompt_chars": len(str(body.get("prompt") or ""))})
                 self._json(200, {"id": f"fake-{n:04d}", "status": "queued"})
 
-            def do_GET(self):  # noqa: N802
+            def do_GET(self):
                 if self.path.startswith(STATUS_PREFIX):
                     if not self._auth():
                         return
@@ -404,7 +402,6 @@ class FakeOutsee:
         return {"posts": self.posts, "polls": self.polls, "downloads": self.downloads, "auth_failures": self.auth_failures}
 
 
-# ───────────────────────────── environment and honest reporting ─────────────────────────────
 
 def env_overrides(data: Path, port: int, *, fake_base: str, gate_cap: float, dry: bool) -> dict[str, str]:
     """Environment of the in-process app: the sibling's synthetic loopback one plus the media switches."""
@@ -416,7 +413,7 @@ def env_overrides(data: Path, port: int, *, fake_base: str, gate_cap: float, dry
         "MEDIA_SPEND_RECORDING": "true", "KIE_API_KEY": "", "ELEVENLABS_API_KEY": "",
         "NO_PROXY": "127.0.0.1,localhost,::1", "no_proxy": "127.0.0.1,localhost,::1",
     })
-    if dry:  # a free-space threshold that does not depend on the machine; the disk guard itself is probed below
+    if dry:
         out.update({"DISK_GUARD_LOW_FREE_GB": "0.001", "DISK_GUARD_CRITICAL_FREE_GB": "0.0005"})
     return out
 
@@ -454,7 +451,6 @@ def reality_not_proven(mode: str) -> list[str]:
     return out
 
 
-# ───────────────────────────── checks (pure, unit-tested) ─────────────────────────────
 
 def check(name: str, ok: bool, detail: Any = None, *, needs: str | None = None) -> dict:
     return qc.check(name, ok, detail, needs=needs)
@@ -590,7 +586,6 @@ def final_verdict(mode: str, ok: bool) -> str:
     return "DRY OK (fake provider and stub Decision: machinery proven offline, NOT a live proof)"
 
 
-# ───────────────────────────── runtime ─────────────────────────────
 
 def _args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -666,7 +661,9 @@ async def _seed(args: argparse.Namespace) -> tuple[int, str]:
             "data": {"label": "Native images", "groupId": GROUP_ID}}
     nodes, edges = [node], []
     slug = f"media-images-{_uuid.uuid4().hex[:6]}"
+    from app.web.settings_default import seed_default_workflow
     async with session_scope() as session:
+        await seed_default_workflow(session)
         wf = Workflow(name=f"wf-{slug}", is_default=False, nodes=nodes, edges=edges)
         session.add(wf)
         await session.flush()
@@ -724,7 +721,7 @@ async def main(argv: list[str] | None = None) -> int:
         return text
 
     work = Path(args.work_dir).resolve()
-    data = guard.reset_scratch_data(work)  # A19: refuses live data; removes only <work>/data made by these scripts
+    data = guard.reset_scratch_data(work)
     os.chdir(ROOT)
     fake = FakeOutsee(args.fake_port).start()
     decision_endpoint = qc.live_endpoint(live_env) if (mode == "live" and args.real_decision) else None
@@ -732,14 +729,12 @@ async def main(argv: list[str] | None = None) -> int:
     runtime_path.write_text(json.dumps(_runtime_config(args.port, args.request_limit, decision_endpoint), indent=2),
                             encoding="utf-8")
 
-    # the application's estimate of one submit decides the caps (read before the environment is applied)
     os.environ.update(env_overrides(data, args.port, fake_base=fake.base_url, gate_cap=0.45, dry=(mode == "dry")))
     from app.services import spend_guard
     estimate = float(spend_guard.MEDIA_SUBMIT_ESTIMATE_USD)
     cap = gate_cap_usd(estimate)
     os.environ.update({"SPEND_DAILY_CAP_USD": str(cap), "SPEND_PROJECT_CAP_USD": str(cap), "SPEND_RUN_CAP_USD": str(cap)})
     if mode == "live":
-        # the real values only from the whitelisted env file; the fake stays reachable for the guard probes
         os.environ["OUTSEE_API_KEY"] = live_env["OUTSEE_API_KEY"]
         os.environ["OUTSEE_API_BASE_URL"] = outsee_base(live_env)
         if live_env.get("OUTSEE_DEFAULT_IMAGE_MODEL"):
@@ -753,7 +748,6 @@ async def main(argv: list[str] | None = None) -> int:
 
     import httpx
     from app.settings import settings
-    # Belt and braces over environment precedence (a stray repository .env must not add a route or a key):
     settings.gpt_relay_token = live_env.get("GPT_RELAY_TOKEN", "") if args.real_decision else ""
     settings.gpt_proxy_url = (live_env.get("GPT_PROXY_URL") or None) if args.real_decision else None
     settings.vibecode_api_key = (live_env.get("VIBECODE_API_KEY") if args.real_decision else None) or qc.SYNTHETIC_KEY
@@ -790,7 +784,7 @@ async def main(argv: list[str] | None = None) -> int:
                 max_decision_posts=args.max_decision_posts)
     counters: dict[str, Any] = {"injected_hitl": 0, "injected_tail": 0, "decision_stub": 0}
     decision_contexts: list[dict] = []
-    seen_prompts: list[dict] = []   # what the real step handed to the request-key layer (to repeat the request exactly)
+    seen_prompts: list[dict] = []
     original_send = httpx.AsyncClient.send
     original_make_ctx = outsee_idempotency.make_ctx
 
@@ -830,11 +824,10 @@ async def main(argv: list[str] | None = None) -> int:
         if judged.kind in ("outsee_get", "paid_post_real"):
             try:
                 gate.learn(response.text)
-            except Exception:  # noqa: BLE001 - streaming/closed bodies: the hosts are simply not learned
+            except Exception:
                 pass
         return response
 
-    # Faults (the outcome loss) and the curl fallbacks that would bypass the send hook: stand-level patches only.
     from app.bots import outsee_http
     from app.orchestrator.steps import generate_images
     from app.services import post_step_validate
@@ -848,7 +841,7 @@ async def main(argv: list[str] | None = None) -> int:
         raise RuntimeError(FAULT_TAIL)
 
     async def no_curl_post(*_a, **_k):
-        return None  # the curl submit fallback is a second transport the hook cannot count: the stand never uses it
+        return None
 
     original_download_curl = outsee_http._download_via_curl
     original_post_curl = outsee_http._post_generate_via_curl
@@ -886,7 +879,7 @@ async def main(argv: list[str] | None = None) -> int:
         print(f"preflight: mode={mode} model={slug_sent} app_estimate=${estimate} app_caps=${cap} "
               f"worst_case=${result['worst_case_usd']} disk_free_gb={result['disk_free_gb']}", flush=True)
         from app.services import access_guard
-        operator = {"x-vp-operator": access_guard.get_operator_token()}  # the token the Studio page carries
+        operator = {"x-vp-operator": access_guard.get_operator_token()}
         async with httpx.AsyncClient(timeout=30, trust_env=False, headers=operator,
                                      limits=httpx.Limits(max_keepalive_connections=0)) as client:
             await _run_flow(args, mode, client, base, fake, gate, counters, probes, result, advisories, project_db, state_db,
@@ -920,14 +913,12 @@ async def _run_flow(args, mode, client, base, fake, gate, counters, probes, resu
     from app.settings import settings
     prefix = base + "/observations"
 
-    # 1. guard probes against the loopback fake: every paid-seam guard refuses BEFORE the first byte -------------------
     settings.outsee_api_base_url = fake.base_url
     gate.phase = "probe"
     await _probe_guards(client, base, fake, gate, probes, project_root, pid)
     settings.outsee_api_base_url = real_base
     gate.phase = "main"
 
-    # 2. observe-only scope (as the owner enables it), then the UI start of the node -----------------------------------
     r = await client.post(prefix, json={"node_keys": [TARGET]})
     print("observation:", r.status_code, flush=True)
     r.raise_for_status()
@@ -938,7 +929,6 @@ async def _run_flow(args, mode, client, base, fake, gate, counters, probes, resu
     print("start images:", r.status_code, (r.text[:300] if r.status_code >= 300 else "ok"), flush=True)
     r.raise_for_status()
 
-    # 3. native attempts: one paid submit, the loss, native retries until they are exhausted --------------------------
     await _wait_exhausted(args, project_db, counters, gate, fake)
     result["native_exhausted_at"] = time.strftime("%H:%M:%S")
     balance_after = await _balance(outsee_http) if mode == "live" else {}
@@ -947,13 +937,11 @@ async def _run_flow(args, mode, client, base, fake, gate, counters, probes, resu
         result["balance"] = {"before": balance_before, "after": balance_after, "delta": delta}
         advisories.append(f"Outsee balance fields before/after the run (unit not documented): delta={delta or 'not measurable'}")
 
-    # 4. diagnosis -> media incident -----------------------------------------------------------------------------------
     incident = await _wait_incident(client, prefix + f"/{execution}", args.timeout_s)
     result["incident_id"] = incident["incident_id"] if incident else None
     if not incident:
         raise RuntimeError("no current media incident of the images node after the native retries were exhausted")
 
-    # 5. while the scope is still observe-only: repeat the request / other request under resume-only / second submit ---
     await media_spend.drain()
     settings.outsee_api_base_url = fake.base_url
     gate.phase = "probe"
@@ -962,7 +950,6 @@ async def _run_flow(args, mode, client, base, fake, gate, counters, probes, resu
     gate.phase = "main"
     result["fake_after_probes"] = fake.counts()
 
-    # 6. enable the actions, probe the kill switch against the recovery, enable the Decision loop -----------------------
     r = await client.post(prefix + f"/{execution}/actions/enable", json={
         "group_id": GROUP_ID, "node_keys": [TARGET], "rationale": "media production route e2e: supervised recovery",
         "request_limit": min(args.request_limit, 60)})
@@ -979,7 +966,7 @@ async def _run_flow(args, mode, client, base, fake, gate, counters, probes, resu
 async def _balance(outsee_http) -> dict[str, float]:
     try:
         return numeric_fields(await outsee_http.fetch_balance())
-    except Exception as exc:  # noqa: BLE001 - informational only
+    except Exception as exc:
         print("balance not readable:", type(exc).__name__, flush=True)
         return {}
 
@@ -991,7 +978,7 @@ async def _probe_one(name: str, probes: dict, fake, gate, coro_factory, blocked_
         await coro_factory()
     except blocked_types as exc:
         entry.update(blocked=True, code=getattr(exc, "code", type(exc).__name__))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         entry.update(blocked=False, code=type(exc).__name__, error=str(exc)[:160])
     entry["posts_delta"] = fake.posts + gate.paid_posts + gate.probe_posts - before
     probes[name] = entry
@@ -1009,13 +996,11 @@ async def _probe_guards(client, base, fake, gate, probes, project_root, pid) -> 
                                           project_id=None)
 
     prefix = base + "/observations"
-    # kill switch (the owner's emergency stop, through the production route)
     r = await client.post(prefix + "/kill-switch", json={"active": True, "rationale": "e2e probe: kill switch on"})
     r.raise_for_status()
     await _probe_one("kill_switch", probes, fake, gate, call, (spend_guard.PaidCallBlocked,))
     r = await client.post(prefix + "/kill-switch", json={"active": False, "rationale": "e2e probe: kill switch off"})
     r.raise_for_status()
-    # disk guard (threshold above any disk)
     saved = {k: os.environ.get(k) for k in ("DISK_GUARD_LOW_FREE_GB", "DISK_GUARD_CRITICAL_FREE_GB")}
     os.environ["DISK_GUARD_LOW_FREE_GB"] = os.environ["DISK_GUARD_CRITICAL_FREE_GB"] = "1000000000"
     try:
@@ -1026,14 +1011,12 @@ async def _probe_guards(client, base, fake, gate, probes, project_root, pid) -> 
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-    # spend cap (daily cap below one submit estimate)
     saved_cap = settings.spend_daily_cap_usd
     settings.spend_daily_cap_usd = 0.01
     try:
         await _probe_one("spend_cap", probes, fake, gate, call, (spend_guard.PaidCallBlocked,))
     finally:
         settings.spend_daily_cap_usd = saved_cap
-    # a clean state again: with all guards off the same call WOULD be let through (control): not executed on purpose.
     probes["guards_restored"] = {"kill_switch_off": True, "disk_env_restored": True, "cap_restored": saved_cap}
 
 
@@ -1062,7 +1045,6 @@ async def _probe_after(fake, gate, probes, project_root, pid, seen_prompts) -> N
     from app.bots import outsee_http
     from app.services import media_spend, outsee_idempotency, outsee_retry, spend_guard
     scenes = project_root / "scenes"
-    # (a) the SAME request again (prompt, model, frame): answered from the record, no POST
     entry: dict[str, Any] = {"adopted": False}
     before = fake.posts + gate.paid_posts + gate.probe_posts
     if seen_prompts:
@@ -1072,13 +1054,12 @@ async def _probe_after(fake, gate, probes, project_root, pid, seen_prompts) -> N
                 None, None, prompt=seen["prompt"], out_path=scenes / "frame_001_deadbeef.png", model_slug=seen["model"],
                 project_id=pid, gpt_rewrite=False, idempotent=True)
             entry.update(adopted=str(getattr(res, "gen_id", "")).startswith("idem:"), file=Path(str(res.file_path)).name)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             entry.update(error=f"{type(exc).__name__}: {str(exc)[:120]}")
     else:
         entry["error"] = "the request of the step was not captured"
     entry["posts_delta"] = fake.posts + gate.paid_posts + gate.probe_posts - before
     probes["identical_request"] = entry
-    # (b) ANOTHER prompt for the same frame under resume-only: refused before any byte
     entry = {"refused": False}
     before = fake.posts + gate.paid_posts + gate.probe_posts
     try:
@@ -1089,12 +1070,11 @@ async def _probe_after(fake, gate, probes, project_root, pid, seen_prompts) -> N
                 idempotent=True)
     except outsee_idempotency.OutseeResumeOnlyError:
         entry["refused"] = True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         entry["error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
     entry["posts_delta"] = fake.posts + gate.paid_posts + gate.probe_posts - before
     probes["resume_only_other"] = entry
 
-    # (c) a second paid submit of ANOTHER frame: the application's own spend cap refuses (the first one is on the books)
     def call():
         return outsee_http.generate_image("another frame", scenes / "frame_002_aaaaaaaa.png", model_slug="nano-banana-2",
                                           project_id=None)

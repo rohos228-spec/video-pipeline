@@ -10,7 +10,6 @@ import {
   type JournalPage,
 } from "./journal-view";
 
-/** Страница ленты проекта. Чтение без токена оператора и без побочных эффектов. */
 export async function fetchJournalPage(
   projectId: number,
   filters: JournalFilters,
@@ -21,12 +20,10 @@ export async function fetchJournalPage(
   return normalizePage(raw);
 }
 
-/** Итоги по всему проекту (деньги, ошибки, пробелы, диск). */
 export async function fetchJournalTotals(projectId: number, signal?: AbortSignal): Promise<ServerTotals> {
   return normalizeTotals(await http<unknown>(`/api/projects/${projectId}/timeline/totals`, { signal }));
 }
 
-/** Скачивает экспорт ленты файлом. При ошибке бросает Error с числовым полем `status`. */
 export async function downloadJournalExport(
   projectId: number,
   filters: JournalFilters,

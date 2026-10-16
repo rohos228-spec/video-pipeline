@@ -1,29 +1,3 @@
-"""W4-5 / C07: shared pieces of the media dry runs that execute the REAL node step.
-
-Used with media_dry_run_base.MediaDryRun (which is not edited here): ``class X(RealStepStand, base.MediaDryRun)``.
-
-What is REAL in a stand built from this mixin: the step body itself (``generate_videos.run`` /
-``generate_items.run``) with its claim loop, ladder, own database sessions and post-step validation, the paid
-ladder, the guard rows, kie_http, the provider task ledger, the observation / verification / diagnosis /
-recovery chain of the base harness.
-What is SCRIPTED (the provider substitute only): the Kie HTTP boundary (createTask / status / download, from the
-base), the public upload of a start frame, the Outsee browser page work (items), the Decision model and the
-Telegram send of the step.
-
-Honest limits, stated once:
-* The step's own ``SessionLocal()`` sessions read the master copy of Project/Frame; in a stand that copy is the
-  ledger database, into which the rows of the fixture are mirrored once at set-up. The real project.db / master
-  routing of production is not reproduced.
-* A killed process is modelled by ``ProcessDied`` (BaseException): ``asyncio.gather(return_exceptions=True)``
-  would otherwise keep a BaseException as an ordinary "result" and the step would go on living, so the stand's
-  ``gather`` re-raises it (a dead process ends the whole step).
-* ``surface_failures`` (videos only): the real step swallows every per-frame provider failure in its job and
-  returns without raising, so the observed attempt has no ``node_error`` fact and the supervised recovery
-  refuses it ("unfinished attempt"). That is a REAL gap (pinned by a test). To still exercise the recovery
-  chain behind it, the stand can re-raise the swallowed failure after the step returned; this adapter is a
-  stand-side assumption about a future fix, not production behaviour.
-* No live proof: nothing here touches a network, a paid provider or real data.
-"""
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -39,7 +13,6 @@ from app.services.node_status_machine import complete_node, fail_node, queue_nod
 
 
 class DyingAsyncio:
-    """``asyncio`` as seen by a step module in a stand: gather lets a dead process stop the step."""
 
     def __getattr__(self, name):
         return getattr(asyncio, name)
@@ -63,13 +36,9 @@ def clone_row(model, source):
 
 
 class RealStepStand:
-    """Mixin: mirrors the fixture into the step's own database and runs the node worker like the runtime."""
 
-    # Project columns the stand sets before the mirror is taken (e.g. the video generator).
     project_fields: dict = {}
-    # extra project.meta keys (e.g. the outsee streams of the step)
     project_meta: dict = {"outsee_streams": 1, "img_streams": 1}
-    # re-raise a failure the step swallowed (see the module docstring); False = the step as it really behaves
     surface_failures = True
 
     async def asyncSetUp(self):
@@ -94,14 +63,10 @@ class RealStepStand:
             await session.commit()
 
     async def step_database_frame(self, number=1):
-        # D2: the step writes frame state into the store it runs in (the worker's session), not the master ledger
         async with self.business() as session:
             return await session.scalar(select(Frame).where(Frame.project_id == base.PID, Frame.number == number))
 
     async def worker(self, *, start=True):
-        """One advance tick of the original step under observe_attempt, as advance_project_job does it:
-        the node is completed only when the project status moved on; a step that returns without moving
-        the status is NOT a completed node (and not an exception either)."""
         async with self.business() as session:
             project = await session.get(Project, base.PID)
             node = await session.scalar(select(NodeRun).where(NodeRun.node_key == "n1"))
@@ -127,11 +92,10 @@ class RealStepStand:
             await session.commit()
 
     def record_swallowed(self, real):
-        """Wrap the ladder the step calls: the step still swallows the failure, the stand only remembers it."""
         async def recording(*args, **kwargs):
             try:
                 return await real(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001 - re-raised unchanged
+            except Exception as exc:
                 self.swallowed.append(exc)
                 raise
         return recording
@@ -141,9 +105,6 @@ class RealStepStand:
             raise self.swallowed[-1]
 
     async def fail_natively(self, error_type=Exception):
-        """A failed native attempt. With ``surface_failures`` the swallowed failure reaches observe_attempt as
-        an exception of the expected type; without it the step returns quietly (its real behaviour) and the
-        runtime only counts the stalled step."""
         self.swallowed = []
         if self.surface_failures:
             with self.assertRaises(error_type) as caught:

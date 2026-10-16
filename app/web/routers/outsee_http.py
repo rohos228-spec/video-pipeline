@@ -114,8 +114,6 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
             detail="Outsee Developer API не поддерживает audio",
         )
 
-    # Рубильник, диск и денежный потолок ДО постановки в очередь: оператор сразу видит отказ,
-    # а не пустую «ожидающую» карточку. Сам запрос к провайдеру проверяется ещё раз перед отправкой.
     verdict = await spend_guard.paid_precheck(
         "outsee", f"create {media}",
         estimate_usd=(spend_guard.OUTSEE_VIDEO_ESTIMATE_USD if media == "video"
@@ -139,8 +137,6 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
     if media == "video":
         model = oh.studio_id_to_outsee_video_slug(body.model)
 
-        # A09: this seam used to call the provider with no ledger row (the image branch is recorded inside
-        # generate_image_with_retries). outsee_tracked writes one row per call and honours resume-only.
         tracked_generate_video = media_spend.outsee_tracked(oh.generate_video, "video")
 
         async def run(out_path):
@@ -181,7 +177,7 @@ async def outsee_generate(body: OutseeGenerateBody) -> dict[str, Any]:
             gpt = None
             try:
                 gpt = get_gpt_client()
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.warning("outsee generate: GPT недоступен для rewrite: {}", e)
             refs = body.reference_images or (
                 [body.first_frame_url] if body.first_frame_url else None

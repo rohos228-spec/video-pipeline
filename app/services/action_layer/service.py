@@ -1,8 +1,3 @@
-"""Прикладной слой: создание плана, подтверждение, запуск, просмотр, журнал.
-
-Роутер тонкий и только вызывает эти функции. Здесь нет ни одного места, где
-подтверждение создаётся без ``OperatorIdentity``.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -41,11 +36,6 @@ def store_step_to_plan(s: "store.ActionPlanStep"):
 async def create_plan(app: Any, steps_json: Any, *, operator: approval.OperatorIdentity,
                       request_text: str = "",
                       registry: ActionRegistry | None = None) -> tuple[str | None, dict]:
-    """Строит preview и, если план валиден, сохраняет его как ``proposed``.
-
-    Побочных эффектов действий нет: контекст read-only. Возвращает
-    (plan_id | None, preview).
-    """
     registry = registry or default_registry
     ensure_builtin_actions()
     plan = Plan.from_json(steps_json, max_steps=_max_steps(), request_text=request_text)
@@ -88,11 +78,10 @@ async def _load(s, plan_id: str) -> tuple["store.ActionPlan", list["store.Action
 async def approve_plan(app: Any, plan_id: str, operator: approval.OperatorIdentity, *,
                        registry: ActionRegistry | None = None,
                        ttl_s: int | None = None) -> dict:
-    """Единственный путь создания подтверждения (вызывается из операторского эндпоинта)."""
     registry = registry or default_registry
     ensure_builtin_actions()
     from app.services.action_layer import planner
-    await planner.check_plan_fresh(plan_id)  # StalePlan: контекст изменился
+    await planner.check_plan_fresh(plan_id)
     async with store.sessions()() as s:
         row, steps = await _load(s, plan_id)
         plan = _plan_from_rows(row, steps)
@@ -118,7 +107,6 @@ _PREPARE_LOCKS: dict[int, asyncio.Lock] = {}
 
 
 def _prepare_lock() -> asyncio.Lock:
-    """Один замок на цикл событий: проверка project_busy и перевод в running атомарны."""
     key = id(asyncio.get_running_loop())
     lock = _PREPARE_LOCKS.get(key)
     if lock is None:
@@ -129,11 +117,6 @@ def _prepare_lock() -> asyncio.Lock:
 
 async def prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
                       registry: ActionRegistry | None = None) -> "store.ActionPlan":
-    """Проверки и перевод плана в running (с расходом подтверждения).
-
-    Под замком: две одновременные заявки на один проект не проходят обе, а проект
-    удерживается заявкой до ``launch``, пока задача плана не стала живой.
-    """
     async with _prepare_lock():
         try:
             return await _prepare_run(plan_id, operator, registry=registry)
@@ -147,7 +130,7 @@ async def _prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
     registry = registry or default_registry
     ensure_builtin_actions()
     from app.services.action_layer import planner
-    await planner.check_plan_fresh(plan_id)  # StalePlan: контекст изменился
+    await planner.check_plan_fresh(plan_id)
     async with store.sessions()() as s:
         row, steps = await _load(s, plan_id)
         if executor.is_live(plan_id):
@@ -190,12 +173,9 @@ async def _prepare_run(plan_id: str, operator: approval.OperatorIdentity, *,
         interrupted = row.status == store.PLAN_RUNNING
         if row.needs_approval:
             if interrupted:
-                # Подтверждение уже израсходовано этим запуском: продолжаем без нового,
-                # но только в пределах окна возобновления.
                 if not row.approval_id:
                     raise approval.ApprovalError("approval_required", "Запуск не был подтверждён оператором.")
                 if _resume_expired(row, steps):
-                    # Закрываем как остановленный: тогда его можно подтвердить заново.
                     row.status = store.PLAN_STOPPED
                     row.stop_reason = "resume_window_expired"
                     row.updated_at = row.finished_at = datetime.utcnow()
@@ -268,8 +248,6 @@ async def plan_view(plan_id: str) -> dict:
         "cost_estimate": {"low": row.cost_low, "high": row.cost_high,
                           "unknown_steps": row.cost_unknown_steps},
         "spent_credits": spent, "budget_cap_credits": budget.session_cap(),
-        # spent_credits = резерв/факт по журналу расходов (верхняя граница); actual - только
-        # то, что действия сами сообщили как credits_spent (None, если ничего не сообщено).
         "reserved_credits": spent, "actual_credits": sum(actuals) if actuals else None,
         "resume_window_s": _resume_window_s(),
         "resume_expired": (row.status == store.PLAN_RUNNING and not live
@@ -295,7 +273,6 @@ async def plan_view(plan_id: str) -> dict:
 
 async def list_plans(*, status: str | None = None, project_id: int | None = None,
                      limit: int = 20) -> dict:
-    """Короткий список планов (для восстановления экрана выполнения после перезагрузки)."""
     limit = max(1, min(int(limit), 100))
     async with store.sessions()() as s:
         q = select(store.ActionPlan).order_by(store.ActionPlan.created_at.desc()).limit(limit)

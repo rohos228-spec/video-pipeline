@@ -1,4 +1,3 @@
-"""Exercise the exact online pilot Handler over its Unix socket, offline."""
 import importlib.util
 import json
 import sqlite3

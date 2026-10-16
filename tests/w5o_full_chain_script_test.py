@@ -1,4 +1,3 @@
-"""Tests of the pure part of ``scripts/e2e_full_chain.py`` (F10 dry). No server process, no network, nothing paid."""
 from __future__ import annotations
 
 import importlib.util
@@ -40,7 +39,6 @@ def _req(url: str, *, method: str = "GET", body: bytes | None = None, headers: d
         return exc.code, exc.read(), dict(exc.headers)
 
 
-# ───────── levels and statuses ─────────
 
 def test_levels_parse_and_scope(mod):
     assert mod.LEVELS == ("A", "B", "C", "D", "E")
@@ -51,7 +49,7 @@ def test_levels_parse_and_scope(mod):
     assert mod.node_in_scope("images", "B") and not mod.node_in_scope("videos", "B")
     assert mod.node_in_scope("sfx_gen", "D") and not mod.node_in_scope("assemble", "D")
     assert mod.node_in_scope("assemble", "E")
-    assert not mod.node_in_scope("topic", "E")      # the config node is not a work node
+    assert not mod.node_in_scope("topic", "E")
 
 
 def test_every_work_node_of_the_default_graph_has_a_level(mod):
@@ -73,7 +71,6 @@ def test_status_table_is_real_and_in_graph_order(mod):
         assert end in table
     ends = [mod.status_rank(mod.STATUS_END[lvl]) for lvl in mod.LEVELS]
     assert ends == sorted(ends) and len(set(ends)) == 5
-    # the graph order of the default workflow: excel_gpt(1) before hero, hero -> items -> excel_gpt(2) -> image prompts
     r = mod.status_rank
     assert r("frames_ready") < r("enriching_1") < r("generating_hero") < r("generating_items") < r("enriching_2") \
         < r("generating_image_prompts") < r("generating_images") < r("generating_animation_prompts") \
@@ -88,20 +85,17 @@ def test_level_reached_and_final_needs_a_human(mod):
     assert mod.level_reached(["videos_ready", "images_ready"]) == "C"
     assert mod.level_reached(["sfx_ready"]) == "D"
     assert mod.level_reached(["assembled"]) == "E"
-    # E only counts with a verified final AND a human approval
     assert mod.level_after(["assembled"], True, True) == "E"
     assert mod.level_after(["assembled"], True, False) == "D"
     assert mod.level_after(["assembled"], False, True) == "D"
 
 
 def test_manual_start_map_matches_the_production_hold(mod):
-    """After an excel_gpt node the production code parks the pipeline for the operator's start (by design)."""
     src = (ROOT / "app" / "orchestrator" / "steps" / "enrich_xlsx.py").read_text(encoding="utf-8")
     assert "def _hold_pipeline_after_excel_gpt" in src and "arm_auto_await_manual_start(project)" in src
     assert mod.Chain.MANUAL_START_AFTER == {"enrich_1_ready": "hero", "enrich_2_ready": "img_pr"}
 
 
-# ───────── pure helpers ─────────
 
 def test_russian_titles_and_counts(mod):
     assert mod.has_russian("Запуск ноды") and not mod.has_russian("Node started")
@@ -119,7 +113,6 @@ def test_expected_counts_are_one_paid_request_per_unit(mod):
     assert b["outsee_image"] == 3 and b["outsee_video"] == 0 and b["tts"] == 0
     c = mod.expected_counts_for("C", 3, 3)
     assert c["outsee_video"] == 3 and c["tts"] == 0
-    # the live estimate gives the owner ceilings from the same numbers
     est = mod.live_estimate(3, 3)
     assert est["outsee_image"] == 3 and est["outsee_video"] == 3 and est["elevenlabs_tts"] == 1
     assert est["elevenlabs_sfx"] == 3 and est["kie_suno_music"] == 1
@@ -149,7 +142,6 @@ def test_audit_gaps_match_method_path_and_status(mod):
     gaps = mod.audit_gaps(muts, audit)
     assert gaps == [muts[2]]
     assert mod.audit_gaps(muts[:2], audit) == []
-    # one audit row cannot cover two identical calls
     assert len(mod.audit_gaps([muts[0], muts[0]], audit)) == 1
     assert mod.audit_unattributed([{"actor": "", "outcome": "ok"}, {"actor": "operator", "outcome": "ok"}]) == \
         [{"actor": "", "outcome": "ok"}]
@@ -176,21 +168,20 @@ def test_verdict_text(mod):
     assert mod.verdict_of([], {}, "E", "E") == "PASS"
     assert mod.verdict_of([], {"F10-D3": ["x"]}, "E", "E").startswith("PASS (with 1 KNOWN")
     assert mod.verdict_of(["x"], {}, "E", "E") == "FAIL"
-    assert mod.verdict_of([], {}, "C", "E") == "FAIL"         # a lower level than asked is never a pass
+    assert mod.verdict_of([], {}, "C", "E") == "FAIL"
     assert mod.verdict_of([], {}, None, "A") == "FAIL"
 
 
 def test_report_known_defects_do_not_fail_unless_strict(mod):
     R = mod.Report()
     assert R.check("ordinary", True)
-    assert R.check("known broken", False, "x", known="F10-D3")           # KNOWN is tolerated
+    assert R.check("known broken", False, "x", known="F10-D3")
     assert R.failed == [] and list(R.known_defects) == ["F10-D3"]
     strict = mod.Report(strict=True)
     strict.check("known broken", False, "x", known="F10-D3")
     assert strict.failed == ["known broken"]
 
 
-# ───────── request classification and fake credentials ─────────
 
 def test_classify_request(mod):
     c = mod.classify_request
@@ -204,7 +195,7 @@ def test_classify_request(mod):
     assert c("GET", "x", "/api/v1/generate/record-info") == "kie_free"
     assert c("GET", "x", "/files/x.png") == "download"
     assert c("POST", "x", "/hostfake/catbox.moe") == "upload"
-    assert c("GET", "x", "/api/v1/images/generate") == "other"          # a GET is not a paid POST
+    assert c("GET", "x", "/api/v1/images/generate") == "other"
 
 
 def test_fake_keys_are_not_secret_shaped(mod, tmp_path):
@@ -214,7 +205,6 @@ def test_fake_keys_are_not_secret_shaped(mod, tmp_path):
 
 
 def test_child_endpoints_are_the_production_ones(mod):
-    """The paths the fake serves are the paths the production clients use (guards against drift)."""
     outsee = (ROOT / "app" / "bots" / "outsee_http.py").read_text(encoding="utf-8")
     assert mod.OUTSEE_IMAGES in outsee and mod.OUTSEE_VIDEOS in outsee and mod.OUTSEE_STATUS in outsee
     eleven = (ROOT / "app" / "services" / "elevenlabs_api.py").read_text(encoding="utf-8")
@@ -224,7 +214,6 @@ def test_child_endpoints_are_the_production_ones(mod):
         assert host in outsee, host
 
 
-# ───────── the fake provider server ─────────
 
 @pytest.fixture()
 def fake(mod, tmp_path):
@@ -245,7 +234,6 @@ def test_fake_chat_streams_and_counts(mod, fake):
     assert fake.counts["llm"] == 1
     code, raw, _ = _req(fake.base + "/v1/chat/completions", method="POST", body=body, headers=_bearer("wrong"))
     assert code == 401 and fake.counts["llm"] == 1 and fake.extra["auth_failures"] == 1
-    # the request text was written for the report
     assert (fake.work / "llm_requests" / "0001.json").is_file()
 
 
@@ -286,8 +274,7 @@ def test_fake_elevenlabs_sfx_and_tts(mod, fake):
     assert code == 200 and len(data) > 500 and fake.counts["sfx"] == 1
     clip = fake.work / "sfx_probe.mp3"
     clip.write_bytes(data)
-    assert abs(mod.loc.ffprobe(clip)["duration"] - 1.0) < 0.35          # production verifies the clip length it asked for
-    # the music clip is a different, longer file (they used to share one cache: SFX came back 12 s long)
+    assert abs(mod.loc.ffprobe(clip)["duration"] - 1.0) < 0.35
     code, music, _ = _req(fake.base + "/files/music.mp3")
     clip.write_bytes(music)
     assert mod.loc.ffprobe(clip)["duration"] > 10
@@ -304,7 +291,7 @@ def test_fake_public_image_host_answers_every_upload_shape(mod, fake):
     assert code == 200 and data[:4] == b"\x89PNG"
     code, raw, _ = _req(fake.base + "/hostfake/uguu.se", method="POST", body=b"--x\r\n")
     assert json.loads(raw)["files"][0]["url"].startswith("http://127.0.0.1:")
-    assert fake.extra["upload"] == 2 and sum(fake.counts.values()) == 0     # uploads are free, never a paid bucket
+    assert fake.extra["upload"] == 2 and sum(fake.counts.values()) == 0
 
 
 def test_fake_unknown_path_is_counted_not_silent(mod, fake):
@@ -325,7 +312,6 @@ def test_oracle_error_is_visible_not_silent(mod, tmp_path):
         f.stop()
 
 
-# ───────── the text oracle answers in the shape production parses ─────────
 
 def test_oracle_plan_script_split_shapes(mod):
     o = mod.TextOracle()
@@ -334,11 +320,10 @@ def test_oracle_plan_script_split_shapes(mod):
     from app.services import xlsx_step_runners as xsr
     assert len(xsr.extract_general_plan_from_gpt_reply(o.answer_plan("", {}))) > 200
     script = json.loads(o.answer_script("", {}))
-    assert len(script["ops"][0]["fields"]["закадровый_текст"]) >= 200      # make_script refuses shorter
+    assert len(script["ops"][0]["fields"]["закадровый_текст"]) >= 200
     split = json.loads(o.answer_split("", {}))
     frames = split["ops"][0]["frames"]
     assert split["ops"][0]["target"] == "replace_frames" and len(frames) == 3 and all(f["закадр"] for f in frames)
-    # the split covers the script word for word (production checks coverage)
     assert " ".join(f["закадр"] for f in frames) == mod.SCRIPT_TEXT
 
 
@@ -351,7 +336,7 @@ def test_oracle_classifies_by_the_hints_production_appends(mod):
     assert c("тема\n" + xsr._IMG_PR_DB_HINT) == "image_prompts"
     assert c("# Доп. работа с Excel #\n\nx") == "excel_gpt"
     assert c("# Агент: промты анимации Veo 3.1 Fast (Relax) → DB\nx") == "animation_prompts"
-    assert c('{"decision": "approved" | "regen"}') == "unknown"            # needs its criteria block too
+    assert c('{"decision": "approved" | "regen"}') == "unknown"
     assert c('"decision": "approved" ... "criteria": {...}') == "verdict"
     assert c("что-то другое") == "unknown"
 
@@ -388,12 +373,11 @@ def test_oracle_verdict_quotes_the_checked_text_literally(mod):
 def test_stand_text_is_not_rejected_by_production_validators(mod):
     from app.services.plan_validation import is_meaningful_general_plan
     assert is_meaningful_general_plan(mod.PLAN_TEXT)
-    assert '"' not in mod.IMAGE_PROMPT_TEXT                       # the img_pr contract forbids ASCII double quotes
+    assert '"' not in mod.IMAGE_PROMPT_TEXT
     assert len(mod.IMAGE_PROMPT_TEXT) >= 200
     assert "NO VOICE" in mod.ANIMATION_PROMPT_TEXT
 
 
-# ───────── the seams of the stand are bound to real production names ─────────
 
 def test_seam_targets_exist_in_production(mod):
     from app.orchestrator import auto_advance, pipeline
@@ -410,13 +394,10 @@ def test_seam_targets_exist_in_production(mod):
 
 
 def test_findings_point_at_lines_that_still_say_that(mod):
-    """A finding without a living reference is noise: each ``where`` line must still contain the quoted code."""
-    # F10-D3, D4, D9 и D10 исправлены (W32): ссылки на строки больше не нужны, стенд сам покажет возврат дефекта.
     checks = {
         "F10-D1": [("app/main.py", "maybe_auto_advance_for_worker(s, ap, bot)"),
                    ("app/orchestrator/auto_advance.py", "await clamp_status_to_data(session, project)"),
                    ("app/services/step_data_guard.py", "статус опережал данные")],
-        # F10-D5 исправлен (W44): решение идёт в проектную базу, ссылки на строки больше не нужны
         "F10-D6": [("app/orchestrator/auto_advance.py", "visual, no GPT check"),
                    ("app/orchestrator/auto_advance.py", "async def _record_unchecked_auto_approve")],
         "F10-D8": [("app/web/routers/projects.py", "pulled = await _heal_get_runtime_from_master(session, p)"),
@@ -441,10 +422,9 @@ def test_findings_point_at_lines_that_still_say_that(mod):
                 assert any(abs(h - c) <= 30 for h in hits for c in cited_lines), (fid, rel, hits, cited_lines)
 
 
-# ───────── safety of the launcher ─────────
 
 def test_preflight_refuses_unsafe_work_dirs(mod, tmp_path, monkeypatch):
-    class A:  # noqa: D401
+    class A:
         until = "A"
         asr_model = "medium"
         work_dir = str(ROOT / "_f10_inside")
@@ -459,7 +439,7 @@ def test_preflight_refuses_unsafe_work_dirs(mod, tmp_path, monkeypatch):
     ok = tmp_path / "fresh"
     A.work_dir = str(ok)
     work, why = mod.preflight(A())
-    if work is None:                       # only a missing ffmpeg / ffprobe may refuse a fresh folder
+    if work is None:
         assert "ffmpeg" in why.lower() or "ffprobe" in why.lower()
     else:
         assert work == ok.resolve() and why == ""
@@ -467,7 +447,6 @@ def test_preflight_refuses_unsafe_work_dirs(mod, tmp_path, monkeypatch):
 
 def test_no_dotenv_and_no_env_file_option_in_the_stand_source(mod):
     src = SCRIPT.read_text(encoding="utf-8")
-    # the DRY stand never reads an env file; the live part (keys, money) is a separate sibling script it only delegates to
     assert "load_env_whitelist" not in src and "--env-file" not in src
     assert "e2e_full_chain_live" in src
     assert not re.search(r"open\([^)]*\.env", src)
@@ -481,7 +460,7 @@ def test_arguments(mod):
     with pytest.raises(SystemExit):
         mod.parse_args(["--dry", "--without-seam", "no_such_seam"])
     with pytest.raises(SystemExit):
-        mod.parse_args(["--until", "A"])                   # --dry is mandatory: there is no live mode here
+        mod.parse_args(["--until", "A"])
     with pytest.raises(ValueError):
         mod.parse_args(["--dry", "--work-dir", "x", "--until", "Z"])
     assert mod.main(["--dry", "--work-dir", "x", "--until", "Z"]) == mod.EXIT_ARGS
@@ -545,10 +524,10 @@ def test_operator_start_only_when_the_production_hold_flag_is_set(mod, monkeypat
     mod.Chain.operator_start_if_held(chain, {"meta": {"auto_await_manual_start": True}}, "plan_ready")
     assert calls == []
     mod.Chain.operator_start_if_held(chain, {"meta": {"auto_await_manual_start": True}}, "enrich_1_ready")
-    mod.Chain.operator_start_if_held(chain, {"meta": {"auto_await_manual_start": True}}, "enrich_1_ready")   # once
+    mod.Chain.operator_start_if_held(chain, {"meta": {"auto_await_manual_start": True}}, "enrich_1_ready")
     mod.Chain.operator_start_if_held(chain, {"meta": {"auto_await_manual_start": True}}, "enrich_2_ready")
     assert calls == ["/api/projects/7/steps/hero/run", "/api/projects/7/steps/img_pr/run"]
-    assert waited == ["n_excel_gpt_1", "n_excel_gpt_2"]       # the next start waits until the previous node is done
+    assert waited == ["n_excel_gpt_1", "n_excel_gpt_2"]
 
 
 def test_sfx_plan_answer_is_valid_for_the_production_validator(mod):
@@ -564,7 +543,7 @@ def test_sfx_plan_answer_is_valid_for_the_production_validator(mod):
     assert len(events) == 3 and o.sfx_events == 3
     assert sfx_plan.validate_events(events, total_duration=18.0) == []
     assert mod.TextOracle.classify("Верни ТОЛЬКО текст. составь один промт для генерации фоновой инструментальной музыки в Suno x") == "music_prompt"
-    assert len(mod.MUSIC_PROMPT_TEXT) >= 20            # generate_music refuses a shorter Suno prompt
+    assert len(mod.MUSIC_PROMPT_TEXT) >= 20
 
 
 def test_expected_llm_calls_match_the_default_graph(mod):
@@ -573,7 +552,7 @@ def test_expected_llm_calls_match_the_default_graph(mod):
     e = mod.expected_llm_calls("E", 3)
     assert e["excel_gpt"] == 6 and e["image_prompts"] == 1 and e["animation_prompts"] == 2
     assert e["music_prompt"] == 1 and e["sfx_plan"] == 1
-    assert mod.expected_llm_calls("C", 7)["animation_prompts"] == 3          # a ready + two batches of up to 5 frames
+    assert mod.expected_llm_calls("C", 7)["animation_prompts"] == 3
 
 
 def test_scope_is_per_node_key_in_the_default_graph(mod):
@@ -587,13 +566,12 @@ def test_scope_is_per_node_key_in_the_default_graph(mod):
     assert mod.node_in_scope("excel_gpt", "B", "n_excel_gpt_2")
     assert not mod.node_in_scope("image_prompts", "A", "n_image_prompts") and mod.node_in_scope("image_prompts", "B", "n_image_prompts")
     assert not mod.node_in_scope("sfx_plan", "C", "n_sfx_plan") and mod.node_in_scope("sfx_plan", "D", "n_sfx_plan")
-    assert mod.node_in_scope("plan", "A")                    # without a key the type level is used
+    assert mod.node_in_scope("plan", "A")
 
 
 def test_last_running_status_ends_each_level(mod):
     for lvl, running in mod.LAST_RUNNING.items():
         assert mod.status_rank(running) < mod.status_rank(mod.STATUS_END[lvl])
-        # the node that runs in that status is the last one of the level: nothing of the level runs after it
         assert mod.status_rank(running) > mod.status_rank(mod.STATUS_END[mod.LEVELS[mod.LEVELS.index(lvl) - 1]])             if lvl != "A" else True
 
 
@@ -633,7 +611,7 @@ def test_with_hero_adds_one_reference_image_and_one_prompt_request(mod):
     plain = json.loads(mod.TextOracle().answer_excel_gpt(ATTACH, {}))
     assert "characters" not in plain and "персонажи" not in plain["ops"][0]["fields"]
     assert mod.TextOracle.classify("Сделай промт для генерации персонажа, который описан ниже. x") == "hero_prompt"
-    assert 100 <= len(mod.HERO_PROMPT_TEXT) <= 4900          # excel_hero refuses a reply under 100 chars or over the Outsee limit
+    assert 100 <= len(mod.HERO_PROMPT_TEXT) <= 4900
 
 
 def test_uploads_expected(mod):

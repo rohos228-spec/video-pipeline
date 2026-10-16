@@ -1,18 +1,3 @@
-"""Independent result verification for paid media nodes (observation level, read-only).
-
-After a native step returns (or fails) the supervisor re-reads what the step left behind with a
-separate session and checks it structurally: the file exists, is not empty, decodes (image) or
-probes (video/audio: streams, duration), lies inside the project folder, and has a provider trail.
-``images`` is checked per frame (one image per frame with an image prompt, bound to the frame by an
-Artifact row, decodes, size and dimensions at the native scene threshold); the voice file is
-additionally checked by app/services/audio_verification.py (silence, format, zero duration).
-It never changes a row or a file, never starts a provider request and never holds the run: it only
-journals ``node_output`` and ``node_result_verification`` so diagnosis can show a typed incident.
-
-What it does NOT prove: that the picture, clip or voice is any good (semantic_quality_verified is
-always False), nor that a provider charged exactly once. The provider trail is the append-only
-``provider_task_ledger``; a Kie task has a durable id there, an Outsee call has none.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -26,7 +11,7 @@ from loguru import logger
 from app.services import spend_guard
 
 MEDIA_NODE_TYPES = ("images", "videos", "hero", "items", "music", "audio", "assemble")
-MIN_IMAGE_SIDE = 256  # shorter side in pixels below which a "scene image" cannot be a real generation result
+MIN_IMAGE_SIDE = 256
 VERIFY_BUDGET_S = 90.0
 PER_FILE_TIMEOUT_S = 25.0
 MAX_ITEMS = 200
@@ -51,12 +36,11 @@ def _rel(path: Path, root: Path) -> str:
 
 
 async def _ledger(project_id: int) -> dict[str, Any]:
-    """Tasks per key and unresolved submit intents. Never raises: 'unavailable' is a fact, not a pass."""
     try:
         from app.db import SessionLocal
         async with SessionLocal() as session:
             rows = await spend_guard.list_provider_tasks(session, project_id, limit=2000)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("media_verification: ledger unavailable: {}", type(exc).__name__)
         return {"state": "unavailable", "tasks": {}, "unresolved": []}
     tasks: dict[str, list[dict]] = {}
@@ -72,7 +56,6 @@ async def _ledger(project_id: int) -> dict[str, Any]:
 
 
 def provenance(ledger: dict[str, Any], key: str) -> dict[str, Any]:
-    """Who made this file, as far as the ledger can tell."""
     if ledger["state"] != "ok":
         return {"provider": "unknown", "durable_task_id": False, "reason": "ledger_unavailable"}
     rows = ledger["tasks"].get(key) or []
@@ -85,7 +68,6 @@ def provenance(ledger: dict[str, Any], key: str) -> dict[str, Any]:
             out["note"] = "file is present but the task is not marked downloaded"
         return out
     if any(u["key"] == key and u["provider"] == "outsee" for u in ledger["unresolved"]) or key.startswith("clip_"):
-        # an Outsee call writes an intent row only: no task id exists to resume or reconcile
         return {"provider": "outsee_or_untracked", "durable_task_id": False, "reason": "no_task_id_in_ledger"}
     return {"provider": "unknown", "durable_task_id": False, "reason": "no_ledger_row"}
 
@@ -99,16 +81,13 @@ async def _probe(path: Path, *, root: Path, kind: str, expected: dict | None = N
         return {"status": "failed", "reason": "path_outside_project"}
     except asyncio.TimeoutError:
         return {"status": "unknown", "reason": "probe_timeout"}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"status": "unknown", "reason": type(exc).__name__}
     keep = ("status", "reason", "bytes", "sha256", "duration", "width", "height", "streams", "format")
     return {k: res[k] for k in keep if k in res}
 
 
 def _soften(probe: dict, issues: list[str]) -> dict:
-    """W70 (M7-M9): a content defect found by a soft check never becomes ``failed`` (nothing may start a repeat
-    paid generation from it): the item is ``unknown`` with ``soft_<code>``, which diagnosis types as media_failure
-    with action human_review, and the final is kept out of auto-approve."""
     if not issues or probe.get("status") != "passed":
         return probe
     return {**probe, "status": "unknown", "reason": "soft_" + issues[0], "soft_warnings": list(issues)}
@@ -141,14 +120,6 @@ async def _artifacts(reader, project_id: int, kind):
 
 
 async def _images(reader, project, ledger, budget) -> tuple[list[dict], dict]:
-    """Scene images (shot 1) of every frame that has an image prompt: one item per frame.
-
-    Per frame: an Artifact row of kind scene_image bound to THAT frame whose file exists (the business
-    record), the file is not empty, decodes as PNG/JPEG/WEBP/GIF, is not smaller than the native scene
-    threshold (scan_frames.is_valid_scene_image) nor than MIN_IMAGE_SIDE pixels, and the ledger trail
-    is reported (a Kie task id, or none for Outsee). A file on disk without an Artifact row is
-    ``unknown`` (the business record is missing), a frame without any file is ``failed``.
-    """
     from pathlib import Path as _P
     from sqlalchemy import select
     from app.generation_options import is_skippable_empty_prompt
@@ -224,7 +195,7 @@ async def _videos(reader, project, ledger, budget) -> tuple[list[dict], dict]:
             try:
                 from app.services import media_soft_checks as soft
                 probe = _soften(probe, await soft.clip_soft_issues(path, probe, soft.explicit_aspect(project)))
-            except Exception:  # noqa: BLE001 - a soft check that cannot run is not a verdict
+            except Exception:
                 pass
         items.append(_item(key, path, root, probe, provenance(ledger, key), frame_number=frame.number))
     return items, {"targets": len(targets), "frames": len(frames), "clips_total": len(arts)}
@@ -252,8 +223,6 @@ async def _heroes(reader, project, ledger, budget) -> tuple[list[dict], dict]:
             break
     if not items:
         meta = project.meta if isinstance(getattr(project, "meta", None), dict) else {}
-        # Шаг героя законно пропущен: флаг шага, режим «без героя» или нулевое число героев - ровно те
-        # условия, по которым сам шаг generate_hero ничего не создаёт. Нет файла - не сбой (F10-D3, N-13).
         if (meta.get("hero_skipped_empty") or getattr(project, "hero_mode", None) == "no_hero"
                 or getattr(project, "hero_count", None) == 0):
             return items, {"artifacts": len(arts), "skipped": "hero_skipped_empty"}
@@ -299,20 +268,18 @@ async def _music(reader, project, ledger, budget) -> tuple[list[dict], dict]:
         try:
             from app.services import media_soft_checks as soft
             probe = _soften(probe, await soft.music_soft_issues(path))
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     return [_item("music", path, root, probe, provenance(ledger, "music"))], {"artifacts": len(arts)}
 
 
 async def _audio_content_check(path: Path, probe: dict) -> tuple[dict, dict | None]:
-    """Content check of the voice file (owned by app/services/audio_verification.py, step C04): silence,
-    format, zero duration. Only runs on a file that already probed; a checker failure is never a pass."""
     if probe.get("status") != "passed":
         return probe, None
     try:
         from app.services.audio_verification import verify_audio
         verdict = await asyncio.wait_for(asyncio.to_thread(verify_audio, path), PER_FILE_TIMEOUT_S * 6)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {**probe, "status": "unknown", "reason": f"audio_check_{type(exc).__name__}"}, None
     data = {"ok": verdict.ok, "codes": list(verdict.codes), "silent": verdict.silent,
             "peak_db": verdict.peak_db, "rms_db": verdict.rms_db}
@@ -353,7 +320,7 @@ def _tts_markers(project) -> list[dict]:
         directory = Path(project.data_dir) / "audio"
         return [{"key": p.name, "provider": "elevenlabs", "intent_id": p.name[len(_UNCERTAIN_PREFIX):]}
                 for p in sorted(directory.glob(_UNCERTAIN_PREFIX + "*"))][:20]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -378,7 +345,7 @@ async def _assemble(reader, project, ledger, budget) -> tuple[list[dict], dict]:
             from app.services import media_soft_checks as soft
             probe = _soften(probe, soft.final_soft_issues_from(
                 probe, soft.explicit_aspect(project), await soft.project_scene_seconds(reader, project.id)))
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     requests = list((await reader.scalars(select(HITLRequest).where(
         HITLRequest.project_id == project.id, HITLRequest.kind == HITLKind.approve_final))).all())
@@ -413,9 +380,8 @@ def _summary(node_type: str, status: str, items: list[dict], unknown: list[dict]
 
 
 async def build_proof(reader, project, node_type: str) -> dict[str, Any]:
-    """The verification proof of one media node. ``reader`` is an independent read-only session."""
     started = time.monotonic()
-    budget = lambda: time.monotonic() - started < VERIFY_BUDGET_S  # noqa: E731
+    budget = lambda: time.monotonic() - started < VERIFY_BUDGET_S
     ledger = await _ledger(project.id)
     items, counts = await _COLLECTORS[node_type](reader, project, ledger, budget)
     keys = {i["key"] for i in items}
@@ -428,9 +394,9 @@ async def build_proof(reader, project, node_type: str) -> dict[str, Any]:
     soft_warnings = sorted({w for i in items for w in (i.get("soft_warnings") or [])})
     if not items:
         if node_type == "items" and not counts.get("descriptions"):
-            status, reason = "passed", "no_item_descriptions"  # the step had nothing to generate
+            status, reason = "passed", "no_item_descriptions"
         elif node_type == "hero" and counts.get("skipped") == "hero_skipped_empty":
-            status, reason = "passed", "hero_skipped_empty"  # законно пропущенный шаг: нет описания героя
+            status, reason = "passed", "hero_skipped_empty"
         else:
             reason = "no_targets"
     return {"contract": "native_media", "node_type": node_type, "status": status,
@@ -450,26 +416,20 @@ def _family_match(node_type: str, key: str) -> bool:
     return bool(family and family.match(key or ""))
 
 
-# Local nodes (no provider job) whose failure is typed by the attempt's OWN outcome, not by the files on disk.
 LOCAL_ATTEMPT_NODES = ("assemble",)
 
 
 def _retryable_by_node(node_type: str, exc: BaseException) -> bool:
-    """Does the node itself treat this failure as repeatable (the same rule as its in-node retry)? Fail-closed."""
     try:
         if node_type == "assemble":
             from app.orchestrator.steps.assemble import _assemble_retryable
             return bool(_assemble_retryable(exc))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     return False
 
 
 def typed_attempt_failure(proof: dict[str, Any], exc: BaseException, node_type: str) -> dict[str, Any]:
-    """The failed attempt produced NO new verified artifact. A file an earlier run left behind (a final.mp4 that
-    passes verify_artifact) is not its result: the proof says ``failed`` with the attempt's own error type, and
-    the files read back are marked as stale. Without this the proof would pass on the old file and the failure
-    would reach diagnosis as a plain contract_rejected instead of a typed media failure."""
     label = NODE_LABEL.get(node_type, node_type)
     error_type = type(exc).__name__
     items = [{**i, "stale_earlier_result": True} for i in proof.get("items", [])]
@@ -482,7 +442,6 @@ def typed_attempt_failure(proof: dict[str, Any], exc: BaseException, node_type: 
 
 
 async def observe_media_result(session, project, node_type):
-    """Verifier hook (named registry): journals the proof; never raises, never holds the run."""
     from app.services.observation import _attempt, record_fact
     if node_type not in _COLLECTORS:
         return None
@@ -503,12 +462,6 @@ async def observe_media_result(session, project, node_type):
         failure = getattr(ctx, "attempt_exception", None)
         from sqlalchemy.ext.asyncio import AsyncSession
         if failure is None and isinstance(session, AsyncSession) and project is not None:
-            # A successful step writes its result rows (final artifact, clip/item artifacts recovered from disk,
-            # approve requests) in the worker's own transaction, which commits only after this hook returns (the
-            # step only flushes). An independent connection would still see the EARLIER rows and call a successful
-            # step failed (missing_clip / missing_item). Read the flushed rows of this attempt through its own
-            # session, without flushing anything (the files are probed from disk either way). A failed attempt keeps
-            # the independent read: its uncommitted rows may be rolled back and must not count as proof.
             with session.no_autoflush:
                 proof = await build_proof(session, project, node_type)
         else:
@@ -520,7 +473,7 @@ async def observe_media_result(session, project, node_type):
             if failure is not None and node_type in LOCAL_ATTEMPT_NODES:
                 proof = typed_attempt_failure(proof, failure, node_type)
         full["items"] = proof["items"]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         proof.update(reason=f"{type(exc).__name__}", error_type=type(exc).__name__)
     await record_fact("node_output", {"contract": "native_media", "node_type": node_type,
                                       "items_total": proof.get("items_total"),

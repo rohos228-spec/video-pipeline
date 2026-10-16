@@ -378,11 +378,6 @@ def _scene_journal_open(attempt) -> bool:
 
 
 async def _scene_journal_attempt(project: Project, marker: str):
-    """Resolve only the original run node, before awaiting a model or input read.
-
-    ``marker`` is an agent name (the node must be that agent's node, or the legacy scene_design
-    node that stands for every agent), ``assemble``, or ``agent`` (whichever agent this attempt's
-    own node is)."""
     if marker not in {*ag.ALL_AGENTS, ag.ASSEMBLER, "agent"}:
         return None
     observation = sys.modules.get("app.services.observation")
@@ -415,7 +410,6 @@ async def _scene_journal_attempt(project: Project, marker: str):
 async def _record_scene_parse(attempt, reply, parsed, *, validation_performed,
                             problems=(), error=None, origin="model",
                             link_model_request=True, agent=None) -> None:
-    """Observe the actual parser/validator outcome without changing native flow."""
     if attempt is None:
         return
     ctx, node, _ = attempt
@@ -425,7 +419,6 @@ async def _record_scene_parse(attempt, reply, parsed, *, validation_performed,
         from app.services import scene_contracts
         from app.services.observation import _completed_model_request, _request
 
-        # A validated merge has no single raw response or model request identity.
         completed_token = request_token = None
         if not link_model_request:
             completed_token = _completed_model_request.set(None)
@@ -484,7 +477,6 @@ async def _run_one_agent(
         return _finalize_agent_slice(project, name, data)
     except ag.SceneDesignAgentError as e:
         dump = _dump_agent_fail(project, name, reply, e)
-        # Скелет: один repair-pass — модель часто копирует stub scenes: [].
         if name != ag.SKELETON:
             if dump is not None:
                 raise ag.SceneDesignAgentError(f"{e} | dump={dump}") from e

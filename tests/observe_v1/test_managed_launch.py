@@ -1,8 +1,3 @@
-"""Unified launch API contracts; isolated SQLite, no worker or provider here.
-
-The worker acceptance is separate. These tests exercise permission persistence,
-the real initial FSM transition, rejection and replay through the ASGI API.
-"""
 import asyncio
 import sqlite3
 from pathlib import Path
@@ -32,7 +27,6 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
         self.nodes = [
             {'id':'draft-A','type':'excel_gpt','data':{'slot':0}},
             {'id':'report-Z','type':'excel_gpt','data':{'slot':0}},
-            # images stays managed but read-only (no retry): split/image_prompts gained a bounded recovery in W5 D05
             {'id':'outside','type':'images','data':{}},
         ]
         self.edges = [{'id':'a-z','source':'draft-A','target':'report-Z'}]
@@ -156,7 +150,6 @@ class ManagedLaunchAPI(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({n['node_key'] for n in data['nodes'] if n['supported']},{'draft-A','report-Z','outside'})
         native=next(n for n in data['nodes'] if n['node_key']=='outside')
         self.assertEqual(native['result_kind'],'image')
-        # D06: images offers retry_same ONLY as a local resume of a recorded result; a profile retry is never offered
         self.assertNotIn('retry_profile',native['actions'])
         self.assertEqual(data['request_limit_max'],100)
         self.assertEqual(data['online_authorized'],False)

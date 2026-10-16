@@ -1,8 +1,3 @@
-"""Actual API -> worker -> six-node group; only the external HTTP transport is synthetic.
-
-The test runner stops the app at the group boundary. Observation itself does not.
-Prepared answers are reused unchanged from the versioned group_runner.py.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -66,9 +61,8 @@ async def run():
             assert set(json.loads(control[2]))==set(fixtures.NODES)
             b=plan['budget'];assert b['new_request_limit']==b['decision_max_posts']+b['worker_base_posts']+b['worker_json_retry_slots']
             assert b['managed_request_limit']==18+b['new_request_limit']
-            # Authorized service-budget setup on this fresh copy only; no attempts/business writes.
             db.execute('UPDATE action_execution_controls SET request_limit=? WHERE execution_id=?',(b['managed_request_limit'],execution))
-        cfg=plan['runtime'];cfg['online_enabled']=True  # loopback fixture only
+        cfg=plan['runtime'];cfg['online_enabled']=True
         cfg['incident_scope'].update(execution_id=execution,incident_id=incident,source_attempt_id=attempt)
         path=ROOT/'synthetic-managed-runtime.json';path.write_text(json.dumps(cfg,indent=2))
         os.environ['ORCHESTRATOR_RUNTIME_CONFIG']=str(path)
@@ -119,8 +113,6 @@ async def run():
         ) if node == fixtures.NODES[0] else original_answer(node, attempt)
     if mode == "media-recovery":
         original_answer = fixtures.synthetic_answer
-        # Same malformed JSON as the existing exhaustion fixture, but at the
-        # last model node (QC). Only the external answer changes for recovery.
         fixtures.synthetic_answer = lambda node, attempt: '{"ops": }' if (
             node == fixtures.NODES[4] and not recovery_transport["active"]
         ) else original_answer(node, attempt)
@@ -162,8 +154,6 @@ async def run():
                 assert ctx and ctx.node_key == "n_images", "media call outside observed image worker"
                 return await original_send(client, request, **kwargs)
             if native_family_mode and request.url.path!='/codex/v1/responses':
-                # Original media clients may submit multipart uploads or jobs.
-                # Keep their HTTP body untouched; do not label them model POST.
                 assert ctx and ctx.node_key in fixtures.NODES[:-1], 'native media outside scoped worker'
                 request.headers['x-diagnostic-node']=ctx.node_key
                 request.headers['x-diagnostic-attempt']=ctx.attempt_id
@@ -193,21 +183,16 @@ async def run():
                 assert noop_before is None, 'QC no-op must not retry'
                 noop_before = fixtures.frames()
             if (recovery_mode or live_decision) and recovery_transport['active']:
-                # Synthetic external transport latency only, allowing capture
-                # of a real running action for later offline browser checks.
                 await asyncio.sleep(10 if live_decision else 3)
         return await original_send(client, request, **kwargs)
 
-    httpx.AsyncClient.send = send  # External transport only; no worker/planner/DB replacements.
+    httpx.AsyncClient.send = send
     from app import main
     task = asyncio.create_task(main.main())
     result = {"run_id": "observe-20260928-" + str(uuid.uuid4()), "mode": mode, "paid_calls": 0,
               "network": "none", "operator_starts": 1, "scope_boundary": "test runner"}
     try:
         await fixtures.wait_api()
-        # A busy synchronous node can outlive Uvicorn's idle keepalive window.
-        # Fresh control-plane connections avoid reusing a server-closed socket;
-        # there is no retry or exception suppression (including for POST).
         async with httpx.AsyncClient(timeout=30, trust_env=False,
                 limits=httpx.Limits(max_keepalive_connections=0)) as client:
             base = "http://127.0.0.1:18765/api/projects/2"
@@ -271,8 +256,6 @@ async def run():
                 return
             execution_id = None
             if browser_mode and not recovery_mode and not unified_launch:
-                # User enables observation in the real panel. No node is started
-                # until the explicit test-runner signal is written via docker exec.
                 (ROOT / "browser-ready.json").write_text(json.dumps({"project_id":2,"nodes":list(fixtures.NODES),"state":fixtures.snapshot()}))
                 while not (ROOT / "browser-run-requested").exists():
                     await asyncio.sleep(0.2)
@@ -296,9 +279,6 @@ async def run():
                 if browser_mode:
                     (ROOT/'browser-ready.json').write_text(json.dumps({'project_id':2,'mode':mode,'state':'awaiting one UI launch'}))
                     deadline=time.monotonic()+300
-                    # Launch permissions are persisted before native dispatch.
-                    # Seeing `dispatching` is expected while the UI POST is in
-                    # flight, not a failed acceptance or a reason to cancel it.
                     while (not options['latest_launch'] or options['latest_launch']['status']=='dispatching') and time.monotonic()<deadline:
                         await asyncio.sleep(.5)
                         response=await client.get(base+'/observations/launch-options');response.raise_for_status()
@@ -404,8 +384,6 @@ async def run():
                 await asyncio.sleep(0.1)
             result.update({"execution_id":execution_id,"state":state})
             if mode in {'actions','qc-noop','recovery-a','recovery-b','launch-text'}:
-                # Do not manufacture a group boundary by stopping the runner
-                # immediately after HTML/error. Four normal five-second cycles.
                 before_posts = sum(fixtures.FixtureHandler.counts.values())
                 samples = []
                 for _ in range(4):
@@ -566,8 +544,6 @@ async def run():
     finally:
         finish_coverage(ROOT)
         result["fixture_counts"] = dict(fixtures.FixtureHandler.counts)
-        # Persist the reached group boundary before cancellation. A shutdown
-        # failure must not hide completed nodes or already-written evidence.
         (ROOT / "group-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         task.cancel()
         done, pending = await asyncio.wait({task}, timeout=10)
@@ -596,26 +572,14 @@ async def run():
         (ROOT / "loaded-modules.json").write_text(json.dumps(loaded, indent=2))
         (ROOT / "group-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         if pending:
-            # Only this synthetic runner process; preserve data, do not claim a
-            # clean application shutdown. Prevent infinite cancellation loops.
             sys.stdout.flush()
             sys.stderr.flush()
             os._exit(3)
         if browser_mode and result.get("accepted") and not live_decision and mode!='decision-runtime-bad' and not mode.startswith('decision-managed-'):
-            # At the boundary app.main is cancelled. Replay saved history in
-            # the dedicated history_replay.py process. Binding in this process
-            # races the original HTTP socket's shutdown (captured Errno 98).
             (ROOT / "browser-history-mode.json").write_text(json.dumps({"worker":"stopped by test runner at group boundary", "lifespan":"off", "frontend_sha256":hashlib.sha256((SOURCE / "web/out/index.html").read_bytes()).hexdigest()}))
         if not pending:
-            # Background executor threads may outlive the cancelled synthetic
-            # app even after all test-owned artifacts and hashes are flushed.
-            # Exit this disposable runner cleanly only after acceptance evidence
-            # and loaded-module verification have been persisted.
             sys.stdout.flush()
             sys.stderr.flush()
-            # A failed assertion must remain a failed container exit. Avoid
-            # asyncio.run waiting indefinitely for cancelled app executor
-            # threads after the complete failure evidence has been saved.
             os._exit(0 if result.get("accepted") else 1)
 
 

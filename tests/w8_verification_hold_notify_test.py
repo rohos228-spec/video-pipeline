@@ -1,7 +1,3 @@
-"""verification_hold: оператору уходит уведомление через notification_log (animation_prompts и другие текстовые ноды).
-
-Настоящие Diagnoser.update/escalate и настоящий notify(); бот и build_bot подменены, сети нет. Класс доказательства: U.
-"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -33,7 +29,7 @@ class FakeBot:
 
 @pytest.fixture
 async def world(monkeypatch, tmp_path):
-    from app.services import actions_v1  # noqa: F401
+    from app.services import actions_v1
 
     monkeypatch.delenv(diagnosis.NOTIFY_ENV, raising=False)
     monkeypatch.delenv("VP_NOTIFICATION_LOG", raising=False)
@@ -77,7 +73,7 @@ async def test_animation_prompts_hold_writes_one_notification_log_row(world, mon
     monkeypatch.setattr(settings, "telegram_bot_token", "123:fake")
     monkeypatch.setattr(settings, "telegram_owner_chat_id", 4242)
     await _seed(world, "animation_prompts", status)
-    for _ in range(3):  # повторные проходы журнала не дублируют уведомление
+    for _ in range(3):
         await world.diagnoser.update("execution", snapshot=dict(SNAPSHOT, gaps=[]))
     async with world.factory() as s:
         rows = (await s.scalars(select(diagnosis.Incident))).all()
@@ -104,7 +100,7 @@ async def test_without_telegram_other_incident_types_still_write_nothing(world, 
 
     monkeypatch.setattr(settings, "telegram_enabled", False)
     diagnosis.set_escalation_notifier(None)
-    await _add_incident(world)  # api_error: поведение прежнее, строк нет
+    await _add_incident(world)
     assert await world.diagnoser.escalate("execution") == 0
     assert nl.list_rows(10) == []
 

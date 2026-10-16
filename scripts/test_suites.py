@@ -1,14 +1,3 @@
-"""Единый перечень наборов тестов: какие файлы в каком наборе, и что ни один тестовый файл не выпадает.
-
-Наборы:
-  orchestrator - фиксированный список в scripts/run_orchestrator_tests.py (быстрые + приёмочные).
-  legacy       - остальные tests/test_*.py и tests/*_test.py (верхний уровень).
-  observe      - tests/observe_v1/ (test_*.py и *_test.py), кроме пяти docker-модулей.
-  docker       - пять модулей tests/observe_v1, которым нужен /.dockerenv (гоняет задача docker в CI).
-
-Раньше около 60 модулей observe_v1 не входили ни в один автоматический набор: красный тест там никто не видел.
-Тест tests/w40_test_infra_test.py требует, чтобы любой тестовый файл попадал хотя бы в один набор.
-"""
 from __future__ import annotations
 
 import importlib.util
@@ -35,7 +24,6 @@ def _rel(path: Path) -> str:
 
 
 def all_test_files() -> list[str]:
-    """Каждый тестовый файл под tests/ на любой глубине (кроме fixtures)."""
     out = []
     for p in TESTS.rglob("*.py"):
         if any(part in SKIP_DIRS for part in p.relative_to(TESTS).parts) or not is_test_file(p):
@@ -70,6 +58,5 @@ def suites() -> dict[str, list[str]]:
 
 
 def uncovered() -> list[str]:
-    """Тестовые файлы, которых нет ни в одном наборе."""
     covered = {f for files in suites().values() for f in files}
     return [f for f in all_test_files() if f not in covered]

@@ -1,8 +1,3 @@
-"""input_revision scoping: irrelevant changes keep it, relevant changes move it.
-
-Real project/session objects on a temporary database and a temporary prompts
-directory. No provider, no worker, no network.
-"""
 import copy
 import tempfile
 import unittest
@@ -77,7 +72,6 @@ class InputRevisionScope(unittest.IsolatedAsyncioTestCase):
         (self.prompts / rel).parent.mkdir(parents=True, exist_ok=True)
         (self.prompts / rel).write_text(text, encoding="utf-8")
 
-    # ---- stability ------------------------------------------------------------------
     async def test_same_inputs_give_the_same_revision_and_recorded_parts(self):
         parts = {}
         first = await self.rev(parts=parts)
@@ -88,7 +82,6 @@ class InputRevisionScope(unittest.IsolatedAsyncioTestCase):
         for key in ("structure", "node_config", "prompts", "model_route", "contract", "node_code", "topic"):
             self.assertIn(key, parts)
 
-    # ---- irrelevant changes do not invalidate ---------------------------------------
     async def test_unrelated_prompt_files_do_not_invalidate(self):
         base = await self.rev()
         self.write("01_plan/other.md", "edited alternative of the same step")
@@ -117,7 +110,6 @@ class InputRevisionScope(unittest.IsolatedAsyncioTestCase):
                                prompt_slot_variants={"n_gpt": {"main": "v3"}}, telegram_note="free text")
         self.assertEqual(base, await self.rev())
 
-    # ---- relevant changes invalidate -------------------------------------------------
     async def test_own_prompt_file_invalidates(self):
         base = await self.rev()
         self.write("01_plan/default.md", "plan master, edited")
@@ -177,7 +169,6 @@ class InputRevisionScope(unittest.IsolatedAsyncioTestCase):
         self.write("blocks/b.md", "block, edited again")
         self.assertNotEqual(composed, await self.rev())
 
-    # ---- code modules ----------------------------------------------------------------
     def patch_code(self, changed):
         real = revisions._file_hash
         return patch.object(revisions, "_file_hash",
@@ -206,12 +197,10 @@ class InputRevisionScope(unittest.IsolatedAsyncioTestCase):
                        "app/services/db_apply.py", "app/services/node_capabilities.py"):
             with self.subTest(module), self.patch_code({module}):
                 self.assertNotEqual(base, await self.rev())
-        # enrich_xlsx is the executor of excel_gpt only.
         with self.patch_code({"app/orchestrator/steps/enrich_xlsx.py"}):
             self.assertEqual(base, await self.rev())
             self.assertNotEqual(base_gpt, await self.rev("n_gpt"))
 
-    # ---- fail-closed ------------------------------------------------------------------
     async def test_whatever_cannot_be_determined_is_never_equal(self):
         with patch.object(revisions, "_file_hash", side_effect=OSError("unreadable")):
             self.assertNotEqual(await self.rev(), await self.rev())

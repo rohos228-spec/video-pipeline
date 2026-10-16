@@ -1,8 +1,3 @@
-"""CLI: top-down plan SVG (and PNG) per frame.
-
-  python scripts/scene_space_plan.py --scene SCENE_ID --out DIR
-  python scripts/scene_space_plan.py --scene SCENE_ID --out DIR --from-json PATH
-"""
 
 from __future__ import annotations
 
@@ -18,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.services.scene_space.render_plan import load_json_dump, write_plans  # noqa: E402
+from app.services.scene_space.render_plan import load_json_dump, write_plans
 
 STORE_MISSING = (
     "ERROR: cannot import app.services.scene_space.store (stream 1). "

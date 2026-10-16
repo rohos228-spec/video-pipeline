@@ -145,7 +145,7 @@ async def add_group_to_canvas(
         from app.project_db import sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, project)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     await publish_project_event(
         project_id,

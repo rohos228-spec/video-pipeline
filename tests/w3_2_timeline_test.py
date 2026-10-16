@@ -1,4 +1,3 @@
-"""W3-2 / B05: лента проекта. Сети нет: временная SQLite с настоящими моделями, ASGI-клиент без токена."""
 from __future__ import annotations
 
 import csv
@@ -25,14 +24,14 @@ def _t(minutes: int) -> str:
 
 
 async def _make_db(tmp_path, *, drop=(), with_notifications=True):
-    import app.models  # noqa: F401
-    import app.services.action_layer.store  # noqa: F401
-    import app.services.actions_v1  # noqa: F401
-    import app.services.decision_state  # noqa: F401
-    import app.services.diagnosis  # noqa: F401
-    import app.services.observation  # noqa: F401
-    import app.services.operator_audit  # noqa: F401
-    import app.services.spend_guard  # noqa: F401
+    import app.models
+    import app.services.action_layer.store
+    import app.services.actions_v1
+    import app.services.decision_state
+    import app.services.diagnosis
+    import app.services.observation
+    import app.services.operator_audit
+    import app.services.spend_guard
     from app.models import Base
     from app.services import publications_store
 
@@ -42,7 +41,7 @@ async def _make_db(tmp_path, *, drop=(), with_notifications=True):
     sm = async_sessionmaker(eng, expire_on_commit=False)
     async with sm() as s:
         await publications_store.ensure_schema(s)
-    if with_notifications:  # как после миграции 0013_notification_log
+    if with_notifications:
         from app.services import notification_log, schema_migrations
         async with eng.begin() as c:
             for ddl in schema_migrations._ddl_statements(notification_log.NOTIFICATION_LOG_DDL):
@@ -55,7 +54,6 @@ async def _seed(sm):
         async def run(sql, **kw):
             await s.execute(text(sql), kw)
 
-        # node_runs: нужен workflow_runs(project_id); внешние ключи SQLite не проверяет без PRAGMA
         await run("INSERT INTO workflow_runs(id,workflow_id,project_id,status,nodes_snapshot,edges_snapshot,meta,"
                   "created_at,updated_at) VALUES (1,1,:p,'running','[]','[]','{}',:t,:t)", p=P, t=_t(0))
         await run("INSERT INTO workflow_runs(id,workflow_id,project_id,status,nodes_snapshot,edges_snapshot,meta,"
@@ -154,9 +152,8 @@ async def test_all_sources_merged_in_order(db):
     assert len(srcs) == 13 and res["sources_missing"] == []
     ts = [i["ts"] for i in res["items"]]
     assert ts == sorted(ts, reverse=True)
-    assert len(ids) == len(set(ids)) == 15  # 13 источников; слой действий 2 строки (напрямую и через план), уведомления 2
+    assert len(ids) == len(set(ids)) == 15
     assert all(i["project_id"] == P for i in res["items"])
-    # чужой проект не виден
     assert not any("чужое" in i["title_ru"] for i in res["items"])
     assert all(i["amount_usd"] != 9 for i in res["items"])
     assert res["next_cursor"] is None and res["total_hint"] is None
@@ -244,7 +241,6 @@ async def test_missing_source_goes_to_sources_missing_not_error(tmp_path):
 
 
 async def test_old_schema_without_correlation_columns(tmp_path):
-    """spend_ledger / provider_task_ledger / action_layer_history без колонок B02 читаются."""
     eng, sm = await _make_db(tmp_path)
     async with sm() as s:
         await s.execute(text("DROP TABLE spend_ledger"))
@@ -298,8 +294,8 @@ async def test_describe_hook_with_fallback(db, monkeypatch):
     by = {i["source"]: i for i in (await _all(db))["items"]}
     assert by["spend_ledger"]["title_ru"] == "Трата (из timeline_ru)"
     assert by["spend_ledger"]["severity"] == "warn" and by["spend_ledger"]["detail_ru"] == "d"
-    assert by["node_runs"]["title_ru"].startswith("Шаг «n1»")  # ошибка describe не роняет
-    assert by["publications"]["title_ru"].startswith("Публикация")  # None -> запасной текст
+    assert by["node_runs"]["title_ru"].startswith("Шаг «n1»")
+    assert by["publications"]["title_ru"].startswith("Публикация")
     assert calls
 
 
@@ -313,7 +309,6 @@ async def test_validation_errors(db):
 
 
 async def test_http_totals_cover_whole_project(db, monkeypatch):
-    """B06: итоги вкладки считаются по всему проекту, а не по странице; деньги, диск и счётчики на месте."""
     async with db() as s:
         want_err = len((await tl.timeline(s, P, severity="error", limit=500))["items"])
         want_warn = len((await tl.timeline(s, P, severity="warn", limit=500))["items"])
@@ -342,7 +337,6 @@ async def test_http_timeline_and_export(db, monkeypatch):
         assert (await c.get(f"/api/projects/{P}/timeline", params={"limit": 501})).status_code == 422
         assert (await c.get(f"/api/projects/{P}/timeline", params={"severity": "x"})).status_code == 422
         assert (await c.get(f"/api/projects/{P}/timeline", params={"cursor": "zz"})).status_code == 422
-        # без токена оператора (raw_client), POST не существует
         assert (await c.post(f"/api/projects/{P}/timeline")).status_code == 405
 
         e = await c.get(f"/api/projects/{P}/timeline/export", params={"format": "csv", "kinds": "spend,task"})
@@ -386,7 +380,6 @@ async def test_speed_on_many_rows(db):
     assert time.perf_counter() - t < 15
 
 
-# --- интеграция: все 13 источников -> русские тексты через timeline_ru.describe ----------------------------------
 _RAW_KINDS = ("request_failed", "hitl_request", "step_done", "telegram_off", "api_error", "NodeRunStatus")
 
 
@@ -432,7 +425,6 @@ async def test_http_timeline_filters_and_export_russian(db, monkeypatch):
 
 
 async def test_layer_history_scoped_via_plan_project_without_context(tmp_path):
-    """План из /plans/preview: ни контекста, ни project_id в истории, но проект записан в самом плане (D-3)."""
     eng, sm = await _make_db(tmp_path)
     try:
         async with sm() as s:
@@ -452,6 +444,6 @@ async def test_layer_history_scoped_via_plan_project_without_context(tmp_path):
         async with sm() as s:
             page = await tl.timeline(s, P, limit=50)
         layer = [i for i in page["items"] if i.get("kind") == "action" and "executed" in (i.get("title_ru") or "")]
-        assert len(layer) == 1  # план своего проекта виден, план проекта 99 - нет
+        assert len(layer) == 1
     finally:
         await eng.dispose()

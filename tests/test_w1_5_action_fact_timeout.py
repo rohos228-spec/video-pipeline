@@ -1,8 +1,3 @@
-"""W1-5: факт трат и сверка резерва, остановка платной задачи при таймауте/сбое опроса,
-замок и версия очереди pending_ops, sha256 вложения при запуске, мелкие дефекты слоя.
-
-Сети и денег нет: исполнители подменены, нативные траты имитируются строками spend_ledger.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -16,14 +11,13 @@ from app.services.action_layer import (
     approval, attachments, budget, builtin_montage as bm, executor, service, store)
 from app.services.action_layer import builtin_montage_more as bmm
 from app.services.action_layer.spec import ActionSpec, JobState, ensure_builtin_actions, registry
-from tests.action_layer_support import env, fresh_registry, make_spec  # noqa: F401
+from tests.action_layer_support import env, fresh_registry, make_spec
 
 OP = approval.OperatorIdentity("web_operator:w15")
 
 
 @pytest.fixture(autouse=True)
 def _clean_executor_globals():
-    """Заявки и «осиротевшие» задачи глобальны на процесс: между тестами (разные БД) сбрасываем."""
     executor._CLAIMS.clear()
     for info in list(executor._ORPHANS.values()):
         task = info.get("task")
@@ -79,7 +73,6 @@ async def _native_row(env, project_id, credits, note="kie submit"):
         await s.commit()
 
 
-# --- A11: факт трат и сверка резерва -----------------------------------------------------------
 
 async def test_measured_native_spend_closes_reserve_without_double_counting(env) -> None:
     pid = await env.add_project()
@@ -96,8 +89,7 @@ async def test_measured_native_spend_closes_reserve_without_double_counting(env)
     step = view["steps"][0]
     assert step["cost"]["actual"] == pytest.approx(4.0)
     assert view["actual_credits"] == pytest.approx(4.0)
-    assert view["spent_credits"] == pytest.approx(4.0)  # резерв 10 закрыт фактом 4
-    # В общем журнале проекта один раз: нативные 4 кр., резерв слоя закрыт в ноль.
+    assert view["spent_credits"] == pytest.approx(4.0)
     assert await _ledger_sum(env, source="action_layer", run_id=f"plan:{plan_id}") == pytest.approx(0.0)
     assert await _ledger_sum(env, project_id=pid) == pytest.approx(4.0)
     hist = (await service.history(plan_id=plan_id))["items"]
@@ -120,8 +112,6 @@ async def test_action_reported_credits_win_and_are_settled(env) -> None:
 
 
 async def test_unknown_cost_row_closes_reserve_but_keeps_actual_unknown(env) -> None:
-    """F09-D1: цена неизвестна (Outsee), но трата записана строкой cost_unknown, которую потолки уже считают оценкой:
-    резерв слоя закрывается (иначе копится поверх строки и запирает потолки), факт плана остаётся неизвестным."""
     pid = await env.add_project()
 
     async def paid(ctx, params):
@@ -138,7 +128,6 @@ async def test_unknown_cost_row_closes_reserve_but_keeps_actual_unknown(env) -> 
 
 
 async def test_write_gap_keeps_reserve_conservatively(env) -> None:
-    """Если запись траты потеряна (write_failed), резерв остаётся: деньги могли уйти, а следа нет."""
     pid = await env.add_project()
 
     async def paid(ctx, params):
@@ -166,11 +155,9 @@ async def test_failed_paid_step_releases_reserve_so_cap_does_not_self_block(env,
     plan_id = await _plan(env, reg, {"action_id": "t.paid", "params": {"project_id": pid}})
     view = await _go(env, reg, plan_id, approve=True)
     assert view["status"] == "failed"
-    assert view["spent_credits"] == pytest.approx(0.0)  # ничего не потрачено: резерв закрыт
+    assert view["spent_credits"] == pytest.approx(0.0)
     assert view["steps"][0]["cost"]["actual"] == pytest.approx(0.0)
-    # Локальный журнал по проекту тоже не копит резервы мёртвых планов.
     assert await _ledger_sum(env, project_id=pid) == pytest.approx(0.0)
-    # Второй такой же план проходит под тем же потолком.
     plan2 = await _plan(env, reg, {"action_id": "t.paid", "params": {"project_id": pid}})
     await service.approve_plan(env.app, plan2, OP, registry=reg)
 
@@ -190,7 +177,6 @@ async def test_measure_helper_ignores_other_projects_and_old_rows(env) -> None:
         assert await budget.measure_native_credits(s, project_id=p2, since=datetime.utcnow()) is None
 
 
-# --- A10: таймаут и сбой опроса останавливают платную задачу -----------------------------------
 
 class _Job:
     def __init__(self, *, finish_on_stop: bool) -> None:
@@ -231,11 +217,10 @@ async def test_timeout_stops_paid_job_and_frees_project(env, monkeypatch) -> Non
     assert view["status"] == "failed"
     assert view["steps"][0]["status"] == "unknown"
     assert "не подтверждена" not in view["steps"][0]["error"]
-    assert view["spent_credits"] == pytest.approx(0.0)  # задача остановлена, ничего не записано
+    assert view["spent_credits"] == pytest.approx(0.0)
     assert executor.orphan_busy(pid) is None
     events = [h["event"] for h in (await service.history(plan_id=plan_id))["items"]]
     assert "job_stop_after_failure" in events
-    # Проект свободен: второй план стартует.
     plan2 = await _plan(env, reg, {"action_id": "t.job", "params": {"project_id": pid}})
     await service.approve_plan(env.app, plan2, OP, registry=reg)
     await service.prepare_run(plan2, OP, registry=reg)
@@ -246,20 +231,19 @@ async def test_unconfirmed_stop_keeps_project_busy_until_server_job_ends(env, mo
     monkeypatch.setattr(settings, "action_layer_step_timeout_s", 0.3)
     monkeypatch.setenv("ACTION_LAYER_STOP_GRACE_S", "0.3")
     pid = await env.add_project()
-    job = _Job(finish_on_stop=False)  # упрямая серверная задача: стоп не помогает
+    job = _Job(finish_on_stop=False)
     reg = fresh_registry(_job_spec(job))
     plan_id = await _plan(env, reg, {"action_id": "t.job", "params": {"project_id": pid}})
     view = await _go(env, reg, plan_id, approve=True)
     assert job.stopped == 1
     assert "не подтверждена" in view["steps"][0]["error"]
-    assert view["spent_credits"] == pytest.approx(5.0)  # резерв удержан: факт ещё растёт
+    assert view["spent_credits"] == pytest.approx(5.0)
     assert executor.orphan_busy(pid) is not None
     plan2 = await _plan(env, reg, {"action_id": "t.job", "params": {"project_id": pid}})
     await service.approve_plan(env.app, plan2, OP, registry=reg)
     with pytest.raises(service.RunRefused) as e:
         await service.prepare_run(plan2, OP, registry=reg)
     assert e.value.code == "project_busy"
-    # Серверная задача наконец закончилась: наблюдатель освобождает проект и сверяет резерв.
     await _native_row(env, pid, 2.0)
     job.done = True
     for _ in range(100):
@@ -285,7 +269,6 @@ async def test_poll_exception_stops_started_job(env) -> None:
 
 
 async def test_job_error_state_does_not_call_stop(env) -> None:
-    """Задача сама завершилась ошибкой: останавливать нечего."""
     pid = await env.add_project()
     job = _Job(finish_on_stop=True)
     job.done = True
@@ -295,10 +278,8 @@ async def test_job_error_state_does_not_call_stop(env) -> None:
     assert job.stopped == 0 and view["steps"][0]["status"] == "failed"
 
 
-# --- A12: очередь pending_ops ------------------------------------------------------------------
 
 class QueueServer:
-    """Состояние очереди на «сервере» и вызовы слоя; человек правит между вызовами."""
 
     def __init__(self, ops=None, rev=None) -> None:
         self.ops = list(ops or [])
@@ -335,14 +316,14 @@ MINE = {"type": "image_regen", "frame_number": 1, "shot": 1}
 async def test_human_edit_between_read_and_write_is_kept() -> None:
     srv = QueueServer()
 
-    def human_adds_once(n):  # второе чтение (повторная сверка) видит правку человека
+    def human_adds_once(n):
         if n == 2 and HUMAN not in srv.ops:
             srv.ops.append(HUMAN)
 
     srv.on_get = human_adds_once
     out = await bm._queue_ops(srv, {"project_id": 1, "ops": [MINE]})
     assert out["queued"] == 1
-    assert HUMAN in srv.ops and MINE in srv.ops  # обе правки сохранены
+    assert HUMAN in srv.ops and MINE in srv.ops
 
 
 async def test_two_layer_edits_in_parallel_keep_both() -> None:
@@ -368,7 +349,7 @@ async def test_rev_mismatch_retries_on_fresh_queue() -> None:
     bumped = {"done": False}
 
     def human_saves(n):
-        if n == 2 and not bumped["done"]:  # после нашего чтения человек сохранил очередь (rev+1)
+        if n == 2 and not bumped["done"]:
             bumped["done"] = True
             srv.rev += 1
             srv.ops.append({"type": "image_regen", "frame_number": 5, "shot": 1})
@@ -392,7 +373,6 @@ async def test_endless_conflict_gives_clear_error_and_never_overwrites() -> None
     assert srv.posts == []
 
 
-# --- A06/A10: sha256 вложения проверяется при запуске ------------------------------------------
 
 async def _attachment(env, content: bytes, pid: int) -> tuple[str, str]:
     rel = f"{attachments.ATTACH_DIR}/{pid}/abc_pic.png"
@@ -426,7 +406,7 @@ async def test_attachment_swap_after_upload_is_refused_at_run(env) -> None:
     plan_ok = await _plan(env, reg, step)
     assert (await _go(env, reg, plan_ok))["status"] == "succeeded" and ran == [1]
 
-    with open(abs_path, "wb") as fh:  # подмена файла того же размера
+    with open(abs_path, "wb") as fh:
         fh.write(b"\x89PNG\r\n\x1a\n" + b"y" * 64)
     assert "sha256" in (await executor.verify_attachments({"source_path": rel}))
     plan_bad = await _plan(env, reg, step)
@@ -468,7 +448,6 @@ async def test_unregistered_attachment_path_and_non_attachment_path(env) -> None
     assert await executor.verify_attachments({"data_base64": "AAAA"}) is None
 
 
-# --- A22: мелкие дефекты ----------------------------------------------------------------------
 
 async def test_parallel_prepare_run_on_one_project_lets_only_one_through(env) -> None:
     pid = await env.add_project()
@@ -532,7 +511,7 @@ async def test_unlink_ref_cannot_delete_files_and_delete_manual_ref_cannot_unlin
 
     ctx = Ctx()
     with pytest.raises(ValueError):
-        await bmm._unlink_ref(ctx, {**base, "kind": "manual"})  # мимо схемы
+        await bmm._unlink_ref(ctx, {**base, "kind": "manual"})
     with pytest.raises(ValueError):
         await bmm._delete_manual_ref(ctx, {**base, "kind": "character"})
     assert ctx.calls == []
@@ -544,7 +523,6 @@ async def test_unlink_ref_cannot_delete_files_and_delete_manual_ref_cannot_unlin
 
 
 def test_change_propose_has_no_hidden_llm_call() -> None:
-    """Контур change_control и действие change.propose не импортируют LLM/сеть."""
     import pathlib
     import re
     root = pathlib.Path(__file__).resolve().parents[1] / "app" / "services"

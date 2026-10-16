@@ -1,4 +1,3 @@
-"""Редактор сцены на доске монтажа: состояние, формат сцены, якоря, варианты."""
 
 from __future__ import annotations
 
@@ -54,7 +53,6 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Project:
 
 
 def _group(project_id: int) -> tuple[Frame, Frame]:
-    """VO-родитель ячейки + один дочерний шот с кусками закадра."""
     parent_uid = "aa" * 12
     child_uid = "bb" * 12
     parent = Frame(
@@ -166,7 +164,6 @@ async def _frames(session: AsyncSession, project: Project) -> list[Frame]:
     )
 
 
-# --- нарезка по якорям -------------------------------------------------
 
 
 def test_split_vo_by_anchors_keeps_whole_text() -> None:
@@ -179,7 +176,6 @@ def test_split_vo_by_anchors_keeps_whole_text() -> None:
 
 
 def test_split_vo_by_anchors_first_part_starts_at_text_start() -> None:
-    # Якорь стоит не на первом слове — начало ячейки всё равно не теряется.
     parts = split_vo_by_anchors(VO_CELL, ["Достал из портфеля папку", "Открыл её"])
     assert parts[0].startswith("Он вошёл")
     assert " ".join(" ".join(parts).split()) == VO_CELL
@@ -204,7 +200,6 @@ def test_normalize_anchor_rows_single_main() -> None:
     assert [r["главный"] for r in rows] == [True, False]
 
 
-# --- состояние редактора ------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -269,7 +264,6 @@ async def test_state_for_child_points_to_parent(
     assert state["frame"]["role"] == "child"
     assert state["parent"]["number"] == 1
     assert state["plan"]["current"] == "ДЕТАЛЬ"
-    # Полный текст ячейки — со сцены; якорь — только этого кадра.
     assert state["vo"]["cell_full"] == VO_CELL
     assert [b["якорь"] for b in state["anchors"]["bits"]] == ["Достал из портфеля папку"]
     assert state["anchors"]["bits"][0]["frame_number"] == 2
@@ -353,19 +347,15 @@ def test_frame_board_scene_cell_is_this_shot_not_whole_cell() -> None:
 
 
 def test_frame_board_scene_cell_carries_inline_row_payload() -> None:
-    """Строки сцены на доске правятся без запроса за карточкой кадра."""
     parent, child = _group(41)
     frames = [parent, child]
     cell = frame_board_scene_cell(frames, child)
 
-    # Якорь этого шота правится инлайном: строка + «было → стало» + позиция.
     assert [row["якорь"] for row in cell["shot_anchor_rows"]] == [
         "Достал из портфеля папку"
     ]
     assert cell["shot_anchor_change"] == cell["shot_anchor_rows"][0]["изменение"]
     assert cell["shot_anchor_found"] is True
-    # Мультишот: якоря нельзя добавлять шоту, но соседние биты ячейки видны,
-    # иначе правка одного кадра стёрла бы разметку остальных.
     assert cell["anchor_can_add"] is False
     assert [row["якорь"] for row in cell["scene_anchor_rows"]] == [
         "Он вошёл в кабинет",
@@ -374,7 +364,6 @@ def test_frame_board_scene_cell_carries_inline_row_payload() -> None:
     assert cell["scene_anchor_rows"][0]["cell_index"] == 0
     assert cell["vo_cell_full"] == VO_CELL
 
-    # Паспорт сцены с доски снят — этих полей в монтаже нет.
     assert cell["scene_lighting"] == ""
     assert cell["scene_sense"] == ""
     assert cell["scene_props"] == ""
@@ -409,7 +398,6 @@ def test_shot_sequence_text_joins_frame_actions() -> None:
 
 
 def test_shot_sequence_text_ignores_stale_extra_shots() -> None:
-    """Короткая кадры[] не склеивается со старыми действиями хвоста ячейки."""
     parent, child = _group(41)
     extra = Frame(
         project_id=41,
@@ -434,7 +422,6 @@ def test_shot_sequence_text_ignores_stale_extra_shots() -> None:
     assert "следователь перелистывает" not in seq
 
 
-# --- формат сцены -------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -463,14 +450,12 @@ async def test_coverage_template_rewrites_ladder(
     cs_child = (frames[1].attrs or {})["camera_subdivide"]
     assert cs_parent["шаблон"] == "T1"
     assert cs_child["шаблон"] == "T1"
-    # T1: K1 = ОБЩИЙ master, K2 = СРЕДНИЙ сторона A.
     assert cs_parent["план"] == "ОБЩИЙ"
     assert cs_child["план"] == "СРЕДНИЙ"
     assert (frames[1].attrs or {})["крупность"] == "СРЕДНИЙ"
     ladder = (frames[0].attrs or {})["кадры"]
     assert [row["план"] for row in ladder] == ["ОБЩИЙ", "СРЕДНИЙ"]
     assert all(row["шаблон"] == "T1" for row in ladder)
-    # Написанное вручную действие формат не затирает.
     assert "папку из портфеля" in (frames[1].attrs or {})["shot01_action"]
 
 
@@ -503,7 +488,6 @@ def test_preview_template_ladder_marks_missing_frames() -> None:
     assert preview["rows"][0]["действие"], "превью действия не должно быть пустым"
 
 
-# --- якоря --------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -527,7 +511,6 @@ async def test_coverage_anchors_recut_voiceover(
         },
     )
     assert result["highlight"] == "1:anchors"
-    # Якоря не меняют картинку — только нарезку закадра.
     assert result["regen_image"] is False
     assert result["report"]["assigned"] == 2
 
@@ -550,12 +533,10 @@ async def test_coverage_anchors_recut_voiceover(
 async def test_coverage_anchors_extra_anchor_creates_shot(
     session: AsyncSession, project: Project
 ) -> None:
-    """Дописал якорь — в ячейке сам появляется шот, без отдельной кнопки."""
     parent, child = _group(project.id)
     session.add_all([project, parent, child])
     await session.flush()
 
-    # Правим последний кадр ячейки: там дописан третий якорь.
     result = await apply_coverage_op(
         session,
         project,
@@ -574,7 +555,6 @@ async def test_coverage_anchors_extra_anchor_creates_shot(
     assert report["inserted_frames"] == 1
     assert report["frames"] == 3
     assert report["missing_frames"] == 0
-    # Кадров стало больше — доска обязана перечитать структуру.
     assert result["refresh_board"] is True
 
     frames = await _frames(session, project)
@@ -584,12 +564,10 @@ async def test_coverage_anchors_extra_anchor_creates_shot(
     assert frames[0].voiceover_text.startswith("Он вошёл в кабинет")
     assert frames[1].voiceover_text.startswith("Достал из портфеля папку")
     assert frames[2].voiceover_text.startswith("Открыл её")
-    # Новый кадр — шот той же ячейки, а не самостоятельный VO-родитель.
     new_cs = (frames[2].attrs or {})["camera_subdivide"]
     assert new_cs["role"] == "shot"
     assert new_cs["parent_uuid"] == parent.uuid
     assert new_cs["shots_in_beat"] == 3
-    # Аудиометки остаются у родителя ячейки.
     assert frames[2].start_ts is None
 
 
@@ -597,7 +575,6 @@ async def test_coverage_anchors_extra_anchor_creates_shot(
 async def test_coverage_anchors_insert_shifts_queue_numbers(
     session: AsyncSession, project: Project
 ) -> None:
-    """Шот вставлен в середину — apply должен знать, куда уехали номера."""
     parent, child = _group(project.id)
     session.add_all([project, parent, child])
     await session.flush()
@@ -616,7 +593,6 @@ async def test_coverage_anchors_insert_shifts_queue_numbers(
         },
     )
     assert result["report"]["inserted_frames"] == 1
-    # Вставка после кадра 1: бывший кадр 2 стал третьим.
     assert result["renumber"] == {2: 3}
     frames = await _frames(session, project)
     joined = " ".join(" ".join(fr.voiceover_text for fr in frames).split())
@@ -627,7 +603,6 @@ async def test_coverage_anchors_insert_shifts_queue_numbers(
 async def test_coverage_anchors_out_of_order_rejected(
     session: AsyncSession, project: Project
 ) -> None:
-    """Якорь не по порядку молча ломал нарезку — теперь честная ошибка."""
     parent, child = _group(project.id)
     session.add_all([project, parent, child])
     await session.flush()
@@ -646,7 +621,6 @@ async def test_coverage_anchors_out_of_order_rejected(
             },
         )
     frames = await _frames(session, project)
-    # Ни текст кадров, ни биты не тронуты.
     assert frames[0].voiceover_text == "Он вошёл в кабинет следователя."
     assert [b["якорь"] for b in (frames[0].attrs or {})["биты"]] == [
         "Он вошёл в кабинет",
@@ -658,7 +632,6 @@ async def test_coverage_anchors_out_of_order_rejected(
 async def test_coverage_anchors_fewer_parts_keeps_frame_texts(
     session: AsyncSession, project: Project
 ) -> None:
-    """Кусков меньше, чем кадров: режем — соседи получили бы чужой текст."""
     parent, child = _group(project.id)
     session.add_all([project, parent, child])
     await session.flush()
@@ -680,7 +653,6 @@ async def test_coverage_anchors_fewer_parts_keeps_frame_texts(
 
     frames = await _frames(session, project)
     assert [frames[1].voiceover_text, frames[0].voiceover_text] == before
-    # Сам якорь при этом сохранён — оператор правил именно его.
     bits = (frames[0].attrs or {})["биты"]
     assert [b["якорь"] for b in bits] == ["Он вошёл в кабинет"]
     assert bits[0]["изменение"] == "снаружи → внутри"
@@ -707,7 +679,6 @@ async def test_coverage_anchors_empty_clears_bits(
     assert not (child.attrs or {}).get("биты")
 
 
-# --- очередь ------------------------------------------------------------
 
 
 def test_new_ops_are_coverage_phase() -> None:
@@ -724,7 +695,6 @@ def test_new_ops_are_coverage_phase() -> None:
     assert ordered[-1]["type"] == "image_regen"
 
 
-# --- варианты -----------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -779,7 +749,6 @@ async def test_parse_variants_filters_garbage(
     got = parse_variants(reply, kind="action", state=state)
     assert len(got) == 2
     assert got[0]["план"] == "СРЕДНИЙ"
-    # Неизвестная крупность отбрасывается, само действие остаётся.
     assert got[1]["план"] == ""
 
     tpl = parse_variants(
@@ -808,7 +777,6 @@ async def test_parse_variants_filters_garbage(
         state=state,
     )
     assert len(anchors) == 1
-    # У кадра-родителя якорь ищется в его куске закадра, не во всей ячейке.
     assert [b["якорь"] for b in anchors[0]["биты"]] == ["Он вошёл в кабинет"]
     assert anchors[0]["dropped"] == 2
 
@@ -883,7 +851,6 @@ def test_cell_vo_skipped_empty_when_parent_holds_full() -> None:
 
 
 def test_cell_vo_skipped_uses_excel_when_cell_was_rewritten() -> None:
-    """vo_cell_full уже урезан — дыру ищем по исходному Excel ячейки."""
     parent_uid = "aa" * 12
     parent = Frame(
         project_id=41,
@@ -1007,7 +974,6 @@ def test_cell_vo_skipped_ignores_leftover_cover() -> None:
 
 
 def test_scene_vo_unused_gap_is_shared_by_adjacent_scenes() -> None:
-    """Пропущенный кусок между сценами: у первой «после», у второй «до» — один текст."""
     a_uid = "aa" * 12
     b_uid = "bb" * 12
     a_full = "Он вошёл в архив."
@@ -1088,7 +1054,6 @@ def test_cell_vo_skipped_matches_piece_without_space_after_colon() -> None:
 
 
 def test_cell_vo_skipped_parent_excel_is_not_the_whole_cell_again() -> None:
-    """Excel родителя = вся ячейка. Живой ребёнок уже держит хвост — это не пропуск."""
     full = "Банди учился в университете, интересовался психологией, строил юридическую карьеру,"
     parent_uid = "aa" * 12
     parent = Frame(

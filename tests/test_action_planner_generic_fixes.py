@@ -1,9 +1,3 @@
-"""Общие исправления планировщика по разбору отложенных наборов №1 и №2 (офлайн, без модели).
-
-Классы ошибок: (A) нужное действие убрано защитой как «не запрошенное» из-за разговорного глагола;
-(B) модель взяла не то из двух близких действий; (C) лишний вопрос вместо плана; (D) не хватает второго
-шага составного запроса; (E) загрузка без пути вложения. Фразы здесь свои, не из отложенных наборов.
-"""
 from __future__ import annotations
 
 import json
@@ -30,7 +24,6 @@ def _kept(aid: str, text: str) -> bool:
     return bool(kept) and not dropped
 
 
-# --- (A) разговорные глаголы не должны убирать нужное действие ------------------------------------
 
 @pytest.mark.parametrize("aid,text", [
     ("montage.improve_scene", "прокачай эту сцену, пусть будет ярче"),
@@ -61,7 +54,6 @@ def test_unrelated_requests_still_drop_the_risky_action(aid: str, text: str) -> 
     assert not _kept(aid, text), (aid, text)
 
 
-# --- (B) близкие действия -------------------------------------------------------------------------
 
 def test_kill_switch_without_emergency_words_becomes_project_stop() -> None:
     reg = _reg()
@@ -72,7 +64,6 @@ def test_kill_switch_without_emergency_words_becomes_project_stop() -> None:
                  "включи рубильник: утечка ключа"):
         assert rules.pick_similar_action("kill_switch.engage", {"project_id": 2, "rationale": "x"},
                                          text, FACTS, None, reg) is None, text
-    # project.stop не показан модели: не подменяем
     assert rules.pick_similar_action("kill_switch.engage", {"project_id": 2, "rationale": "x"},
                                      "останови всё", FACTS, {"kill_switch.engage"}, reg) is None
 
@@ -87,7 +78,7 @@ def test_menu_field_without_menu_words_becomes_coverage() -> None:
     assert reg.validate_params(swap[0], swap[1]) == []
     assert rules.pick_similar_action("shot.edit_field", params, "в меню съёмки у кадра 3 крупность",
                                      FACTS, None, reg) is None
-    other = {**params, "field": "action"}  # поле без пары в покрытии остаётся как есть
+    other = {**params, "field": "action"}
     assert rules.pick_similar_action("shot.edit_field", other, "в кадре 3 действие", FACTS, None, reg) is None
 
 
@@ -104,7 +95,6 @@ def test_validate_reply_swaps_and_explains() -> None:
     assert "другое действие" in out.explanation_ru
 
 
-# --- (C) лишние вопросы ---------------------------------------------------------------------------
 
 def test_hero_mode_question_is_resolved_by_the_server() -> None:
     found = rules.resolve_clarification("Какой режим главного героя выбрать для нового проекта?",
@@ -118,8 +108,8 @@ def test_hero_mode_question_is_resolved_by_the_server() -> None:
 def test_deictic_placement_without_a_file_asks_for_the_file() -> None:
     ask = rules.deictic_file_request("положи вот это в кадр 12")
     assert "файл" in ask and "кадр 12" in ask
-    assert rules.deictic_file_request("положи эту музыку в проект") == ""      # музыка названа
-    assert rules.deictic_file_request("поставь этот проект на паузу") == ""     # нет цели «в кадр»
+    assert rules.deictic_file_request("положи эту музыку в проект") == ""
+    assert rules.deictic_file_request("поставь этот проект на паузу") == ""
     assert rules.deictic_file_request("покажи кадр 5") == ""
 
 
@@ -136,7 +126,6 @@ def test_clarification_for_deictic_placement_mentions_the_file() -> None:
     assert with_file.needs_clarification == "Что именно положить?"
 
 
-# --- (D) составной запрос -------------------------------------------------------------------------
 
 def test_prompt_rules_cover_compound_requests_and_apply_queue_note() -> None:
     assert "Составной запрос" in planner.SYSTEM
@@ -145,7 +134,6 @@ def test_prompt_rules_cover_compound_requests_and_apply_queue_note() -> None:
     assert _kept("montage.apply_queue", "в очередь перерисовку кадра 3 и выполнить очередь")
 
 
-# --- (E) загрузки Excel, героя и хранилища получают путь вложения ---------------------------------
 
 @pytest.mark.parametrize("aid,kind,name,params", [
     ("project.upload_xlsx", "excel", "table.xlsx", {}),

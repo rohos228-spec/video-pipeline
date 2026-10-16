@@ -31,18 +31,16 @@ class ElevenLabsApiError(RuntimeError):
 
 
 class ElevenLabsUncertainError(ElevenLabsApiError):
-    """Таймаут или обрыв после отправки: запрос мог быть принят и оплачен."""
+    pass
 
 
 def _blocked_as_eleven(blocked: spend_guard.PaidCallBlocked) -> "ElevenLabsApiError":
-    """The gate's refusal as this module's error (nothing was sent, so it is NOT an uncertain outcome)."""
     err = ElevenLabsApiError(blocked.message_ru)
-    err.context = dict(blocked.context)  # type: ignore[attr-defined]
+    err.context = dict(blocked.context)
     return err
 
 
 _UNCERTAIN_CAUSES = (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError)
-# Сбои, после которых запрос заведомо не отправлен (соединения не было).
 _PRE_SEND_CAUSES = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError, httpx.PoolTimeout)
 
 MAX_POSTS_PER_SEGMENT = 2
@@ -54,7 +52,6 @@ _run_budget: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def tts_run_budget(limit: int | None = None):
-    """Счётчик платных POST на один запуск ноды; 0 или меньше = без потолка."""
     if limit is None:
         limit = int(getattr(settings, "audio_max_tts_posts_per_run", 60) or 0)
     token = _run_budget.set([0, int(limit)])
@@ -109,7 +106,6 @@ SFX_MAX_PROMPT_CHARS = 450
 
 
 def sfx_request_key(prompt: str, duration: float) -> str:
-    """Ключ платного запроса SFX: тот же текст, длительность и параметры = тот же ключ = повторный POST не нужен."""
     raw = json.dumps(["sfx", (prompt or "")[:SFX_MAX_PROMPT_CHARS],
                       round(min(max(float(duration), 0.5), 22.0), 3), SFX_PROMPT_INFLUENCE], ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -123,7 +119,6 @@ def sfx_write_sidecar(sound: Path, key: str) -> None:
 
 
 def sfx_find_cached(directory: Path, key: str) -> Path | None:
-    """Уже оплаченный файл SFX с тем же ключом запроса (метка рядом с файлом), либо None."""
     try:
         for side in directory.glob("*" + _SFX_SIDECAR_SUFFIX):
             try:
@@ -140,7 +135,6 @@ def sfx_find_cached(directory: Path, key: str) -> Path | None:
 
 
 def elevenlabs_api_configured() -> bool:
-    """Проверяет наличие API-ключа ElevenLabs в настройках или переменных окружения."""
     key = getattr(settings, "elevenlabs_api_key", None) or os.environ.get("ELEVENLABS_API_KEY", "")
     return bool(key and str(key).strip())
 
@@ -266,6 +260,9 @@ async def synthesize_speech(
         or "eleven_multilingual_v2"
     ).strip()
 
+    from app.services.api_tracker_hook import check_api_allowed
+    check_api_allowed(provider="ElevenLabs", model=effective_model)
+
     url = f"{ELEVENLABS_API_BASE_URL}/text-to-speech/{effective_voice_id}"
     headers = {
         "xi-api-key": api_key,
@@ -292,13 +289,13 @@ async def synthesize_speech(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     async def _do_post(active_proxy: str | None) -> httpx.Response:
+        req_timeout = httpx.Timeout(10.0, connect=5.0) if active_proxy else httpx.Timeout(timeout)
         client_kwargs: dict[str, Any] = {
-            "timeout": timeout,
+            "timeout": req_timeout,
             "follow_redirects": True,
         }
         if active_proxy:
             client_kwargs["proxy"] = active_proxy
-        # Kill switch, disk and money cap before EVERY post (retries and the no-proxy repeat are posts too).
         async with spend_guard.paid_call(
             "elevenlabs", "tts post",
             estimate_usd=len(clean_text) * media_spend.ELEVENLABS_USD_PER_CHAR,
@@ -335,7 +332,6 @@ async def synthesize_speech(
         try:
             resp = await _do_post(route_proxy)
         except _PRE_SEND_CAUSES as exc:
-            # Запрос заведомо не ушёл: можно повторить, но не более лимита на сегмент.
             if posts >= MAX_POSTS_PER_SEGMENT:
                 raise ElevenLabsApiError(
                     f"11Labs API: ошибка сетевого соединения: {exc}"
@@ -347,7 +343,6 @@ async def synthesize_speech(
                 await asyncio.sleep(2.0 * posts)
             continue
         except httpx.RequestError as exc:
-            # Таймаут чтения, обрыв и т.п. после отправки: запрос мог быть принят и оплачен.
             try:
                 marker.write_text(type(exc).__name__, encoding="utf-8")
             except OSError:
@@ -379,6 +374,23 @@ async def synthesize_speech(
                 err_msg = f"HTTP {resp.status_code}: {resp.text[:300]}"
         except Exception:  # noqa: BLE001
             err_msg = f"HTTP {resp.status_code}: {resp.text[:300]}"
+
+        try:
+            from app.services.api_tracker_hook import record_api_call
+            record_api_call(
+                provider="ElevenLabs",
+                model=effective_model,
+                call_type="audio",
+                prompt_tokens=len(clean_text),
+                duration_sec=0.0,
+                cost_usd=0.0,
+                status_code=resp.status_code,
+                error_message=err_msg[:300],
+                project_source="elevenlabs_tts",
+                metadata={"voice_id": effective_voice_id},
+            )
+        except Exception:
+            pass
 
         if resp.status_code == 401:
             raise ElevenLabsApiError(
@@ -414,4 +426,22 @@ async def synthesize_speech(
         out_path.name,
         len(audio_bytes),
     )
+    try:
+        from app.services.api_tracker_hook import record_api_call
+        char_count = len(clean_text)
+        cost_est = round(char_count * 0.00015, 6)
+        record_api_call(
+            provider="ElevenLabs",
+            model=effective_model,
+            call_type="audio",
+            prompt_tokens=char_count,
+            duration_sec=0.0,
+            cost_usd=cost_est,
+            media_count=1,
+            status_code=200,
+            project_source="elevenlabs_tts",
+            metadata={"voice_id": effective_voice_id, "chars": char_count},
+        )
+    except Exception:
+        pass
     return out_path

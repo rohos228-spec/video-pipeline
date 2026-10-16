@@ -1,30 +1,3 @@
-"""Original API -> worker -> anim_pr acceptance for the group runner.
-
-Parent wires prepare(fixtures, root, mode), handler_for(fixtures, root, mode),
-and await run(client, fixtures, observer, root, result, prepared). Modes are
-native-animation and native-animation-corrupt. Configure/prepare BEFORE app
-imports/startup. The shared runner supplies its existing loopback-only HTTP
-transport and x-diagnostic-node binding; no GPT methods are replaced here.
-
-This initial fixture uses observation-only scope and the original step API.
-It does NOT enable Actions or admit a managed animation executor. Parent must
-capture native input/parse/result facts also in observation mode. Positive
-execution must expose the original anim_pr harness result as a runtime_check
-with payload.step == 'anim_pr', performed == True, status == 'passed'.
-Native input capture is AFTER backfill/unpack and BEFORE pending collection.
-The synthetic Scene and Frame links are initialized before startup, so that
-backfill preserves every asserted Frame field. Both actual HTTP input phases
-are calibrated against original message builders and gpt_api.build_input.
-Startup may derive script_ready from the seeded script/frames. That is an
-input baseline, not an animation success. Calibrate that baseline and the
-original can_enter_running guard without writing statuses or progress flags.
-
-Corruption is a completed HTTP 200 carrying malformed apply-ops, not a provider
-outage. After the first real parser/node error the runner calls the original
-stop API once to bound native retries. Exact one-attempt/two-POST assertions
-must hold; a race or repeated attempt fails this fixture. Native exhaustion,
-outage backoff, local fallback, shot02 and managed guards are separate work.
-"""
 
 from __future__ import annotations
 
@@ -157,8 +130,6 @@ def prepare(fixtures, root, mode):
                     "created_at,updated_at) VALUES(?,?,?,'pending',0,0,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
                     (run_id, node["id"], node["type"]),
                 )
-    # Only routing and manual advancement are configured. Native prompt text,
-    # parser thresholds, model, retries and harness behavior are retained.
     os.environ["HARNESS_GATE_DISABLED"] = "false"
     config = {"version": 1, "mode": "synthetic", "online_enabled": False,
               "endpoint": "http://127.0.0.1:18766/codex/v1/responses",

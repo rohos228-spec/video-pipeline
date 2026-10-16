@@ -44,8 +44,6 @@ from app.services.scene_shot_grammar import (
 )
 from app.services.shot_templates import fill_kadry_from_catalog
 
-# Плотный выход (shot_01 + главное_действие): 102+ кадров одним ответом
-# рвёт SSE (~90с timeout) и подмешивает фейковые uuid. 10 пачек параллельно.
 DENSE_TARGET_BATCHES = 10
 DENSE_PARALLEL_MAX = 10
 _DENSE_TARGET_BATCHES = DENSE_TARGET_BATCHES
@@ -56,10 +54,6 @@ _LIGHT_FRAMES_PER_BATCH = 120
 _LIGHT_JSON_BYTES_PER_BATCH = 180_000
 # Сценарист / закадр (прочие ноды): пачка = 6 ячеек VO.
 VO_UNITS_PER_BATCH = 6
-# Группа script_frames_qc (биты → действие → кадры-шаги → QC):
-# биты/действие/кадры — по 8 отрезков, до 10 пачек параллельно, сдвиг 0.5 с.
-# fw_frames (старые канвасы) — по 6 кадров (тяжёлые image+anim).
-# Из main: соло-пачка жирного K1, автопочинка UUID, не резать пачку на salvage.
 SCRIPT_FRAMES_QC_UNITS_PER_BATCH = 8
 SCRIPT_FRAMES_QC_PARALLEL_BATCHES = 10
 FW_FRAMES_PER_BATCH = 6
@@ -68,7 +62,6 @@ FW_FRAMES_PARALLEL_BATCHES = 10
 VO_STAGGER_SEC = 0.5
 SHOT_VO_MIN_CHARS = SHOT_VO_MIN
 SHOT_VO_MAX_CHARS = SHOT_VO_MAX
-# Жирная ячейка кадров: длинная цепь действия → соло-пачка (не схлопывать в 1–5).
 HEAVY_ACTION_STEPS = 12
 HEAVY_ACTION_CHARS = 1200
 HEAVY_VO_CHARS = 5000
@@ -80,12 +73,10 @@ _COMPLETE_ATTRS_DENSE = ("main_action", "shot01_description")
 _IMG_SKIP_KEYS = ("image_prompt", "промт_картинки")
 _ANIM_SKIP_KEYS = ("animation_prompt", "промт_видео")
 _ACTION_SKIP_KEYS = ("shot01_action", "main_action", "действие")
-# fw_frames: кадр готов только если картинка + видео + действие.
 SKIP_PROMPTS_AND_ACTION = "prompts_and_action"
 # Добор меню съёмки: крупность + движение + набор (по 6).
 SKIP_CAMERA_MENU = "camera_menu"
 CAMERA_MENU_UNITS_PER_BATCH = 6
-# Стена на пачку = GPT_TIMEOUT_S. 90с резало script/shots на Салтыковой.
 _SIZE_SKIP_KEYS = ("крупность", "size", "shot_size")
 _MOVE_SKIP_KEYS = ("движение", "движение_камеры", "move", "shot_move")
 _SET_SKIP_KEYS = ("набор", "set", "shot_set")
@@ -95,14 +86,6 @@ ProgressFn = Callable[[str], Awaitable[None]]
 
 
 def pack_call_timeout_s(footer_kind: str | None = None) -> float:
-    """Стена на одну apply-ops пачку: GPT_TIMEOUT_S × 3.
-
-    Внутри ``run_operator_api`` JSON-retry — второй полный chat.
-    CF-continue к каждому chat добавляет ещё до 300с×2. Одна стена
-    ``GPT_TIMEOUT_S`` убивает retry после длинного первого стрима
-    (fw_script: L1 timeout 600s при уже готовом salvage).
-    ``footer_kind`` оставлен в сигнатуре — все виды пачек ждут одну стену.
-    """
     del footer_kind
     from app.settings import settings
 
@@ -118,14 +101,12 @@ def frames_per_batch(
     skip_if_field: str | None = None,
     target_batches: int | None = None,
 ) -> int:
-    """Сколько кадров в одном GPT-вызове. 0 кадров → 1 (не делить на ноль)."""
     n = max(int(n_frames), 0)
     if n <= 0:
         return 1
     if target_batches and int(target_batches) > 0:
         from math import ceil
 
-        # Добор хвоста (≤32 кадра) — один вызов, не 5 крошечных пачек.
         if dense and n <= 32:
             return n
         return max(1, int(ceil(n / int(target_batches))))
@@ -167,8 +148,6 @@ def split_frames(frames: list[Any], size: int) -> list[list[Any]]:
         size = 1
     if not frames:
         return []
-    # Соло: VO>=5000 ИЛИ длинная цепь действия. attrs/кадры/площадка
-    # в len(str(frame)) не считаем. Жирные — любая позиция, не только первая.
     heavy: list[Any] = []
     light: list[Any] = []
     for fr in frames:
@@ -182,12 +161,10 @@ def split_frames(frames: list[Any], size: int) -> list[list[Any]]:
 
 
 def _frame_vo_chars(frame: dict[str, Any]) -> int:
-    """Длина закадра, без attrs/кадры/площадка."""
     return len(str(frame.get("voiceover_text") or frame.get("закадр") or ""))
 
 
 def _frame_main_action(frame: dict[str, Any]) -> str:
-    """главное_действие ячейки (top-level или attrs)."""
     if not isinstance(frame, dict):
         return ""
     action = str(
@@ -208,7 +185,6 @@ def _frame_main_action(frame: dict[str, Any]) -> str:
 
 
 def _frame_action_steps(frame: dict[str, Any]) -> int:
-    """Сколько видимых шагов действия (0 если пусто/не разобрали)."""
     action = _frame_main_action(frame)
     if not action:
         return 0
@@ -221,7 +197,6 @@ def _frame_action_steps(frame: dict[str, Any]) -> int:
 
 
 def _frame_expected_shots(frame: dict[str, Any]) -> int:
-    """Ожидаемое N кадров: min(шаги, VO-cap). Для footer и heavy."""
     action = _frame_main_action(frame)
     vo = str(frame.get("voiceover_text") or frame.get("закадр") or "")
     try:
@@ -233,7 +208,6 @@ def _frame_expected_shots(frame: dict[str, Any]) -> int:
 
 
 def _frame_is_heavy_shots_cell(frame: dict[str, Any]) -> bool:
-    """Длинная цепь / большой VO-cap → соло-пачка (GPT схлопывает)."""
     if not isinstance(frame, dict):
         return False
     if _frame_vo_chars(frame) >= HEAVY_VO_CHARS:
@@ -243,7 +217,6 @@ def _frame_is_heavy_shots_cell(frame: dict[str, Any]) -> bool:
         return True
     if _frame_action_steps(frame) >= HEAVY_ACTION_STEPS:
         return True
-    # VO-capacity expected N тоже жирный: GPT иначе отдаёт 1–5 вместо ~N
     return _frame_expected_shots(frame) >= HEAVY_ACTION_STEPS
 
 
@@ -252,7 +225,6 @@ def _unit_is_heavy(unit: list[dict[str, Any]]) -> bool:
 
 
 def _vo_unit_key(frame: dict[str, Any]) -> str:
-    """Ячейка закадра: parent_uuid шота или свой uuid."""
     uid = str(frame.get("uuid") or "").strip()
     cs = frame.get("camera_subdivide")
     if not isinstance(cs, dict):
@@ -265,7 +237,6 @@ def _vo_unit_key(frame: dict[str, Any]) -> str:
 
 
 def group_vo_units(frames: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """Кадры одной VO-ячейки (родитель + шоты) держатся вместе."""
     order: list[str] = []
     buckets: dict[str, list[dict[str, Any]]] = {}
     for fr in frames:
@@ -290,7 +261,6 @@ def split_vo_units(
         return [list(frames)]
     packs: list[list[dict[str, Any]]] = []
     light_units: list[list[dict[str, Any]]] = []
-    # Соло: VO>=5000 или длинная цепь действия — любая позиция в списке.
     for unit in units:
         vo_len = sum(_frame_vo_chars(f) for f in unit)
         if vo_len >= HEAVY_VO_CHARS or _unit_is_heavy(unit):
@@ -307,7 +277,6 @@ def split_vo_units(
 
 
 def split_into_n_packs(frames: list[dict[str, Any]], n: int) -> list[list[dict[str, Any]]]:
-    """Ровно n пачек. VO-ячейка (родитель+шоты) не режется пополам."""
     if not frames:
         return []
     n = max(1, int(n))
@@ -397,7 +366,6 @@ def _has_voiceover(frame: dict[str, Any]) -> bool:
 
 
 def _is_coverage_shot(frame: dict[str, Any]) -> bool:
-    """Визуальный шот лестницы — даже без своего куска закадра."""
     attrs = frame.get("attrs") if isinstance(frame.get("attrs"), dict) else {}
     blob = _camera_menu_attrs(frame, attrs)
     role = str(blob.get("role") or "").strip()
@@ -421,7 +389,6 @@ def _pending_frames(
     for fr in frames:
         if not _has_uuid(fr):
             continue
-        # Меню съёмки и промты нужны и молчаливому покрытию (K3/K4 без vo_shot).
         if (
             skip_if_field != SKIP_CAMERA_MENU
             and not _has_voiceover(fr)
@@ -574,11 +541,6 @@ def _shot_independent(shot: dict[str, Any]) -> bool:
 
 
 def repair_same_place_shot_parents(ops: list[Any]) -> int:
-    """Одно место: первый кадр master, остальные parent_id = его id.
-
-    GPT часто ставит всем parent_id=null — валидатор валит весь шаг.
-    Правило таблицы: дети одного сетапа не все самостоятельные.
-    """
     fixed = 0
     for op in ops:
         if not isinstance(op, dict):
@@ -614,7 +576,6 @@ def repair_same_place_shot_parents(ops: list[Any]) -> int:
 def fill_kadry_ops_from_catalog(
     ops: list[Any], frames: list[dict[str, Any]]
 ) -> int:
-    """Дописать fields.кадры до лестницы каталога (полиция T6→T3→T1→T5)."""
     by_uid = {
         str(fr.get("uuid") or "").strip(): fr
         for fr in (frames or [])
@@ -653,7 +614,6 @@ def fill_kadry_ops_from_catalog(
 
 
 def _vo_visible_len(text: str) -> int:
-    """Длина закадра без комбинирующих ударений (символы как в речи)."""
     return len(
         "".join(c for c in (text or "") if unicodedata.category(c) != "Mn")
     )
@@ -664,7 +624,6 @@ def _shot_vo_chunk(shot: dict[str, Any]) -> str:
 
 
 def _is_special_short_vo(chunk: str, plan: str) -> bool:
-    """1–2 слова отдельным кадром только как титр/имя/ударная деталь."""
     compact = re.sub(r"\s+", " ", chunk or "").strip()
     if not compact:
         return False
@@ -689,7 +648,7 @@ def _shot_vo_len_reason(
     for shot in shots:
         chunk = _shot_vo_chunk(shot)
         if not chunk:
-            continue  # пустая перебивка — норма
+            continue
         sid = str(shot.get("id") or "")
         plan = str(shot.get("план") or "")
         if vo_chunk_is_dangling(chunk):
@@ -732,7 +691,6 @@ def _shot_vo_len_reason(
 
 
 def _place_attested_in_vo(place: str, vo: str) -> bool:
-    """Место из кадра должно читаться в закадре, иначе это выдуманный сетап."""
     vo_cf = (vo or "").casefold()
     place_cf = (place or "").strip().casefold()
     if not place_cf or not vo_cf:
@@ -753,7 +711,6 @@ def _place_attested_in_vo(place: str, vo: str) -> bool:
 
 
 def _snap_anchor_to_vo(anchor: str, vo: str) -> str:
-    """Якорь должен читаться в закадре. Кривой якорь — подтянуть к фразе VO."""
     vo = (vo or "").strip()
     anchor = (anchor or "").strip()
     if not vo:
@@ -785,7 +742,6 @@ def _snap_anchor_to_vo(anchor: str, vo: str) -> str:
 
 
 def infer_bit_verb(bit: dict[str, Any], vo: str = "") -> str:
-    """Real verb from bit sense; not default говорит."""
     change = str(bit.get("изменение") or "").strip()
     anchor = str(bit.get("якорь") or "").strip()
     blob = f"{change} {anchor} {vo}".casefold()
@@ -834,7 +790,6 @@ def infer_bit_verb(bit: dict[str, Any], vo: str = "") -> str:
 
 
 def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
-    """Починить биты на месте: слоган → объект, якорь → кусок закадра."""
     by_uid = _frames_by_uuid(frames)
     fixed = 0
     for op in ops or []:
@@ -887,7 +842,6 @@ def repair_bits_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
 
 
 def repair_action_ops(ops: list[Any]) -> int:
-    """Нет «1. место — действие» — обернуть, чтобы нода не падала."""
     fixed = 0
     for op in ops or []:
         if not isinstance(op, dict):
@@ -915,7 +869,6 @@ def repair_action_ops(ops: list[Any]) -> int:
 
 
 def repair_shot_vo_ops(ops: list[Any], frames: list[dict[str, Any]]) -> int:
-    """Пустой закадр перебивки — норма. Хвост ячейки кладём на покрывающий кадр."""
     from app.services.scene_shot_grammar import _assign_vo_by_steps
 
     by_uid = _frames_by_uuid(frames)
@@ -956,7 +909,6 @@ def bits_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Биты — массив объектов по числу изменений, не строка и не единица на ячейку."""
     by_uid = _frames_by_uuid(frames)
     for op in ops:
         if not isinstance(op, dict):
@@ -990,7 +942,6 @@ def bits_ops_reason(
                 return f"uuid {uid[:8]}: бит {i} без глагола"
             if not str(bit.get("изменение") or "").strip():
                 return f"uuid {uid[:8]}: бит {i} без изменения"
-            # глагол рядом с якорем; якорь — дословный кусок VO, глагол в якорь не подставлять
             if not str(bit.get("глагол") or "").strip():
                 bit["глагол"] = infer_bit_verb(bit, vo)
             anchor = str(bit.get("якорь") or "").strip()
@@ -1036,7 +987,6 @@ def auto_repair_action_chain_ops(
         text = _op_field(fields, "главное_действие", "main_action")
         if not text:
             continue
-        # Если есть «место — действие», но нет «1. »
         if "—" in text and not _SCENE_NUM_RE.search(text):
             text = f"1. {text}"
             if "главное_действие" in fields:
@@ -1092,12 +1042,6 @@ def _same_place_plan_ladder_reason(
     shots: list[dict[str, Any]],
     uid: str,
 ) -> str | None:
-    """Одно место — лестница планов (Excel: «нельзя все ОБЩИЙ/фронт»).
-
-    Два СРЕДНИХ с плеча в диалоге (T1-c2) — норма, не брак. Брак: всё
-    покрытие места в одном плане — все ОБЩИЕ (любое число) или 3+ кадров
-    одного плана без лестницы. T8 не покрывает одно место дважды.
-    """
     by_place: dict[str, list[dict[str, Any]]] = {}
     t8_places: list[str] = []
     for shot in shots:
@@ -1142,7 +1086,6 @@ def _frame_plan(fr: dict[str, Any] | None) -> Any:
 
 
 def normalize_action_plan_ops(ops: list[Any]) -> int:
-    """fw_action: площадка ячейки → канон (зоны/проходы/люди по компасу)."""
     from app.services.scene_plan import apply_scene_plan
 
     n = 0
@@ -1174,13 +1117,6 @@ def apply_scene_plan_ops(
     issues_out: list[dict[str, Any]] | None = None,
     decisions_out: list[dict[str, Any]] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Кадры ячейки через план площадки: состояния, порог, путь, экран.
-
-    Пишет fields.площадка (канон + выведенное кодом) и ``раскладка`` в
-    каждый кадр. Возвращает (исправлено, не исправлено).
-    ``issues_out`` / ``decisions_out`` — для дневника: проблемы площадки и
-    решения СТАРТ/КОНЕЦ с ``frame_uuid``.
-    """
     from app.services.scene_plan import (
         FREEZE_DECISIONS,
         apply_scene_plan_cells,
@@ -1199,7 +1135,6 @@ def apply_scene_plan_ops(
             op_by_uid[uid] = op
     if not op_by_uid:
         return [], []
-    # Соседние ячейки чанка — контекст (дверь открыта там? где стоял герой?).
     parents: list[dict[str, Any]] = []
     seen: set[str] = set()
     for fr in frames or []:
@@ -1312,7 +1247,6 @@ def shots_coverage_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Кадры = шаги, что иллюстрируют смысл закадра; без равномерной нарезки."""
     apply_grammar_to_ops(ops, frames)
     repair_shot_vo_ops(ops, frames)
     by_uid_pre = _frames_by_uuid(frames)
@@ -1325,8 +1259,6 @@ def shots_coverage_ops_reason(
             continue
         uid = str(op.get("frame_uuid") or "").strip()
         vo = _frame_vo(by_uid_pre.get(uid) or {})
-        # репейр склеивает/удаляет кадры (pop) - ему нужен сам список op, а не копия,
-        # иначе текст соседа меняется, а «пустышка» остаётся и закадр дублируется
         if all(isinstance(s, dict) for s in shots):
             notes = repair_shot_vo_lengths(shots, vo)
         else:
@@ -1367,7 +1299,6 @@ def prompts_ops_reason(
     ops: list[Any],
     frames: list[dict[str, Any]],
 ) -> str | None:
-    """Промты картинок: нужен промт_картинки, не fields.кадры."""
     del frames
     for op in ops:
         if not isinstance(op, dict):
@@ -1555,7 +1486,6 @@ def _batch_footer(
 
 @dataclass
 class PassCtx:
-    """Для логов: те же ``[#проект] node call L`` что и раньше."""
 
     project_id: int
     node_key: str
@@ -1570,7 +1500,6 @@ class CodePassesResult:
 
 
 class PassStopError(RuntimeError):
-    """Проверка кода остановила пачку. Текст — как раньше; + дневник до остановки."""
 
     def __init__(self, message: str, *, rule: str, diary: list[dict[str, Any]]) -> None:
         super().__init__(message)
@@ -1579,11 +1508,6 @@ class PassStopError(RuntimeError):
 
 
 def pass_stop_rule(exc: BaseException | None) -> str | None:
-    """Rule id (``R-...``) of an exhausted PassStop, looking through wrappers.
-
-    The journal's ``node_error`` fact carries it as the optional string key
-    ``rule``; ``None`` when the failure is not a PassStop.
-    """
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
@@ -1605,9 +1529,6 @@ def rule_diary_payload(
     level: int,
     stop_exc: BaseException | None = None,
 ) -> dict[str, Any]:
-    """Bounded journal payload of one call's rule diary: counts per kind, top rules,
-    the stop rule (also for exceptions that are not a PassStop) and a short note.
-    The full diary stays on disk (node_trace)."""
     import re as _re
 
     counts: dict[str, int] = {}
@@ -1642,8 +1563,6 @@ async def _emit_rule_diary(
     level: int,
     stop_exc: BaseException | None = None,
 ) -> None:
-    """Best-effort `rule_diary` journal fact; never raises into the node.
-    An empty diary on a clean call is not journaled."""
     if not entries and stop_exc is None:
         return
     try:
@@ -1651,7 +1570,7 @@ async def _emit_rule_diary(
 
         await record_fact("rule_diary", rule_diary_payload(
             entries, call=call, level=level, stop_exc=stop_exc))
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("rule_diary fact skipped", exc_info=True)
 
 
@@ -1680,11 +1599,6 @@ def coalesce_cell_shot_ops(
     *,
     patch: bool,
 ) -> list[dict[str, Any]]:
-    """Несколько ops на один uuid не затирают кадры[].
-
-    Обычная нода кадров склеивает списки подряд. QC (``patch``) правит
-    кадр по id поверх списка, который уже есть у ячейки.
-    """
     existing = {
         str(fr.get("uuid") or "").strip(): _frame_shot_rows(fr)
         for fr in frames or []
@@ -1721,7 +1635,6 @@ def coalesce_cell_shot_ops(
                 sid = str(shot.get("id") or "")
                 if sid and sid in index:
                     slot["shots"][index[sid]] = shot
-            # QC вернул меньше хороших: не держим пустые оболочки от старого списка.
             if incoming:
                 from app.services.scene_shot_grammar import is_cutaway_shot
 
@@ -1733,7 +1646,6 @@ def coalesce_cell_shot_ops(
                     and not is_cutaway_shot(s)
                 )
                 if existing_empty and len(incoming) < len(slot["shots"]):
-                    # REPLACE: QC-список — источник истины
                     slot["shots"] = [dict(s) for s in incoming]
                 else:
                     slot["shots"] = [
@@ -1763,10 +1675,6 @@ def run_code_passes(
     all_frames: list[dict[str, Any]] | None = None,
     ctx: PassCtx | None = None,
 ) -> CodePassesResult:
-    """Все правки программы после ответа GPT, по порядку. Пишет дневник.
-
-    Один и тот же код для живой ноды и для ``scripts/replay_node.py``.
-    """
     from app.services.db_apply import remap_frame_number_uuids, repair_near_miss_frame_uuids
     from app.services.node_rules import PASS_RULES, PLAN_FIELD_RULES, PLAN_ISSUE_RULES
 
@@ -1807,7 +1715,6 @@ def run_code_passes(
             diary=list(entries),
         )
 
-    # Автопочинка UUID: remap по номеру кадра + repair near-miss (опечатки hex)
     known = set(known_list)
     num_to_uuid: dict[int, str] = {}
     for fr in chunk:
@@ -2021,7 +1928,6 @@ def run_code_passes(
                 my_i,
                 repaired_vo,
             )
-        # Soft underproduction WARN (GPT≥1 < expected): не stop — уже оставили кадры.
         if kind not in {"shots_qc", "qc_shots"}:
             for op in ops:
                 if not isinstance(op, dict):
@@ -2042,8 +1948,6 @@ def run_code_passes(
                         level,
                         warn,
                     )
-        # Неполный GPT → без молчаливого fill. Одна ячейка / все плохие → stop.
-        # Несколько ячеек и часть ок → оставляем хорошие, плохие уйдут в missing/retry.
         if kind not in {"shots_qc", "qc_shots"}:
             incomplete_notes: list[str] = []
             incomplete_uids: list[str] = []
@@ -2090,14 +1994,10 @@ def run_code_passes(
                     if isinstance(op.get("fields"), dict):
                         op["fields"].pop("_shots_incomplete", None)
                         op["fields"].pop("_shots_under_warn", None)
-        # shots_coverage_ops_reason сам ещё раз гоняет грамматику — это тоже правка.
         bad_shots = _traced("shots_check", lambda: shots_coverage_ops_reason(ops, chunk))
-        # shots_coverage снова зовёт apply_grammar — снимаем internal markers,
-        # иначе db_apply падает на неизвестном поле _shots_under_warn.
         for op in ops:
             if not isinstance(op, dict):
                 continue
-            # soft WARNs, которые grammar повесил повторно на op (до strip)
             warn2 = str(op.pop("_shots_under_warn", None) or "").strip()
             fields = op.get("fields") if isinstance(op.get("fields"), dict) else None
             if isinstance(fields, dict):
@@ -2105,7 +2005,6 @@ def run_code_passes(
                     warn2 = str(fields.pop("_shots_under_warn", None) or "").strip()
                 else:
                     fields.pop("_shots_under_warn", None)
-                # incomplete уже обработан выше; не тащим в DB
                 fields.pop("_shots_incomplete", None)
             if warn2:
                 _warn("shots_check", warn2)
@@ -2118,12 +2017,9 @@ def run_code_passes(
                     warn2,
                 )
         if bad_shots:
-            # Soft: action-step undercount WARN уже не в bad_shots как hard;
-            # hard stop только zero/empty catastrophic.
             if ("нужен добор" in bad_shots or "не вернул кадры" in bad_shots) and (
                 "WARN underproduction" not in bad_shots
             ):
-                # если в тексте всё же soft — не stop
                 raise _stop("shots_check", bad_shots)
             _warn("shots_check", bad_shots)
             logger.warning(
@@ -2135,8 +2031,6 @@ def run_code_passes(
                 level,
                 bad_shots,
             )
-        # coverage/VO-repair может добавить оболочки без раскладки —
-        # R-LAYOUT ещё раз после coverage (идемпотентно).
         plan_before2 = snapshot(ops)
         plan_issues2: list[dict[str, Any]] = []
         plan_decisions2: list[dict[str, Any]] = []
@@ -2204,7 +2098,6 @@ def _scene_plan_entries(
     field_rules: dict[str, str],
     issue_rules: dict[str, str],
 ) -> list[dict[str, Any]]:
-    """Правки площадки: «что поменялось» + «почему» из заметок площадки."""
     out: list[dict[str, Any]] = []
     for c in changes:
         base = c.field.split(".", 1)[0]
@@ -2299,14 +2192,6 @@ async def run_apply_ops_batched(
     on_progress: ProgressFn | None = None,
     allow_empty_ops: bool = False,
 ) -> OperatorApiResult:
-    """Один GPT-вызов на пачку. Ошибка внутри пачки → 2, затем 4.
-
-    ``chunk_size`` — заранее резать pending (script_frames_qc: 8
-    отрезков закадра). ``chunk_by_vo_unit`` — пачка = N ячеек закадра
-    (родитель + его шоты вместе), не N строк кадров. ``parallel_max`` —
-    сколько пачек стартовать сразу (10), со сдвигом ``stagger_sec`` (0.5 с).
-    Без chunk_size — ``target_batches`` (dense: 10) или все pending.
-    """
     from app.services.adaptive_llm_batches import next_split_level, split_in_half
 
     all_frames = list(db_ctx.get("frames") or [])
@@ -2562,11 +2447,9 @@ async def run_apply_ops_batched(
             missing = await _one_chunk(chunk, level)
         except Exception as exc:
             if allow_empty_ops:
-                # No-op is a validated result, never an exception fallback.
                 raise
             nxt = next_split_level(level)
             if nxt is None or len(chunk) <= 1:
-                # Retry up to under_retries on severe undercount/PassStop.
                 msg = str(exc)
                 under = (
                     "GPT кадров" in msg
@@ -2606,7 +2489,6 @@ async def run_apply_ops_batched(
             return
         if not missing:
             return
-        # 1 пропущенный uuid: ещё раз только его. Раньше len<=1 сразу
         # валил всю пачку (7/8 → RuntimeError → soft retry всех 188).
         if len(missing) == 1:
             uid = str(missing[0].get("uuid") or "")[:8]

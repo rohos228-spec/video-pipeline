@@ -1,4 +1,3 @@
-"""Дневник кадра, сохранение ответов GPT, повтор без GPT, дневник в отчёте."""
 
 from __future__ import annotations
 
@@ -96,7 +95,6 @@ def test_code_passes_diary_explains_scene_plan_fixes() -> None:
 
 
 def test_code_passes_same_result_as_before_refactor() -> None:
-    """Дневник не меняет ops: два прогона с одного ответа GPT дают одно и то же."""
     a = run_code_passes(_gpt_ops(), _chunk(), kind="shots", all_frames=_chunk())
     b = run_code_passes(_gpt_ops(), _chunk(), kind="shots", all_frames=_chunk())
     assert a.ops == b.ops and a.entries == b.entries

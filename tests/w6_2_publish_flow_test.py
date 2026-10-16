@@ -1,8 +1,3 @@
-"""W6-2: сценарий публикации на ФЕЙКОВОЙ странице (локальный Chromium через Playwright, страницы подменяются
-маршрутом https://fake.test/**, сеть не используется) и publish_everywhere на заменителях (класс доказательств U).
-
-Это синтетический HTML, не интерфейс реальных площадок: селекторы и признаки успеха площадок не проверены.
-"""
 from __future__ import annotations
 
 import time
@@ -19,7 +14,6 @@ from tests._stand_workdir import make_workdir, remove_workdir
 
 SITE = "https://fake.test"
 
-# Общий каркас: файл -> «обработка» 300 мс -> кнопка активна; клик -> /post/777 и тост.
 _BASE = """<!doctype html><meta charset=utf-8><title>fake</title><body>
 <input type=file id=f>
 <div id=cap contenteditable=true style="min-height:30px;border:1px solid #000">&nbsp;</div>
@@ -125,7 +119,6 @@ class Counter:
 MARKERS = dict(success_selectors=[".toast"], post_url_regex=r"https://fake\.test/post/(?P<id>\d+)")
 
 
-# ── критерии задачи ──────────────────────────────────────────────────────────────
 
 
 async def test_success_by_configured_markers_is_confirmed_with_post_url_and_screenshot(browser, workdir):
@@ -141,7 +134,7 @@ async def test_success_by_configured_markers_is_confirmed_with_post_url_and_scre
 
 
 async def test_without_markers_unconfirmed_even_though_clicked(browser, workdir):
-    pub = make(browser, workdir, page_html())  # признаки успеха не настроены
+    pub = make(browser, workdir, page_html())
     res = await pub.publish(workdir / "v.mp4", "Привет")
     assert res.status == "unconfirmed" and not res.ok and res.clicked
     assert res.error_code == "no_success_marker" and res.url is None
@@ -149,7 +142,6 @@ async def test_without_markers_unconfirmed_even_though_clicked(browser, workdir)
 
 
 async def test_caption_not_filled_refuses_before_click(browser, workdir):
-    # страница стирает введённый текст: поле «заполнено» только формально
     html = page_html(script="document.getElementById('cap').addEventListener('input', e => { e.target.textContent = ''; });")
     pub = make(browser, workdir, html, **MARKERS)
     bc = Counter()
@@ -166,7 +158,7 @@ async def test_captcha_refuses_with_code_before_upload(browser, workdir):
     res = await pub.publish(workdir / "v.mp4", "x", before_click=bc)
     assert res.error_code == "captcha" and res.status == "failed" and not res.clicked and res.needs_human
     assert "капч" in res.error.lower() and bc.n == 0
-    assert await type(pub).last_page.evaluate("window.__uploaded") == 0  # файл даже не выбирался
+    assert await type(pub).last_page.evaluate("window.__uploaded") == 0
 
 
 async def test_configured_captcha_selector(browser, workdir):
@@ -206,7 +198,7 @@ async def test_waits_for_processing_then_enables_button(browser, workdir):
     pub = make(browser, workdir, page_html(delay=900), **MARKERS)
     t0 = time.monotonic()
     res = await pub.publish(workdir / "v.mp4", "x")
-    assert res.status == "confirmed" and time.monotonic() - t0 >= 0.8  # клик не раньше конца «обработки»
+    assert res.status == "confirmed" and time.monotonic() - t0 >= 0.8
 
 
 async def test_processing_timeout_never_clicks(browser, workdir):
@@ -217,7 +209,6 @@ async def test_processing_timeout_never_clicks(browser, workdir):
 
 
 async def test_configured_busy_selector_blocks_until_gone(browser, workdir):
-    # кнопка уже активна, но индикатор занятости виден -> ждём (таймаут), не кликаем
     html = page_html(on_file="pub.disabled = false;", extra="")
     pub = make(browser, workdir, html, processing_timeout_s=0.6, processing_busy_selectors=[".progress"])
     res = await pub.publish(workdir / "v.mp4", "x")
@@ -240,7 +231,6 @@ async def test_missing_file_input_and_missing_button_are_selector_not_found(brow
 
 
 async def test_marker_without_post_url_is_unconfirmed(browser, workdir):
-    # тост есть, адрес страницы не изменился и ссылки на пост нет -> не confirmed
     html = page_html(on_click="document.body.insertAdjacentHTML('beforeend', '<div class=toast>ok</div>');")
     pub = make(browser, workdir, html, success_selectors=[".toast"])
     res = await pub.publish(workdir / "v.mp4", "x")
@@ -276,7 +266,6 @@ async def test_hashtags_from_config_are_typed(browser, workdir):
     pub = make(browser, workdir, page_html(), hashtags=["#ai", "видео"], **MARKERS)
     res = await pub.publish(workdir / "v.mp4", "Текст")
     assert res.ok
-    # подпись на странице после клика: основной текст + хэштеги
     text = await type(pub).last_page.evaluate("document.getElementById('cap').innerText")
     assert "Текст" in text and "#ai" in text and "#видео" in text
 
@@ -301,13 +290,13 @@ async def test_verify_post_and_feed_check(browser, workdir):
     ok_page = page_html(extra='<div class="video-ok">пост</div>')
     pub = make(browser, workdir, ok_page, verify_ok_selectors=[".video-ok"], verify_gone_selectors=[".gone"],
                feed_url=f"{SITE}/feed", feed_item_selector=".item")
-    await pub._open()  # создаёт контекст с маршрутом фейкового сайта
+    await pub._open()
     assert await pub.verify_post(f"{SITE}/post/1") == "ok"
     gone = make(browser, workdir, page_html(extra='<div class="gone">снято модерацией</div>'),
                 verify_ok_selectors=[".video-ok"], verify_gone_selectors=[".gone"])
     await gone._open()
     assert await gone.verify_post(f"{SITE}/post/1") == "gone"
-    unknown = make(browser, workdir, page_html())  # признаки не настроены
+    unknown = make(browser, workdir, page_html())
     await unknown._open()
     assert await unknown.verify_post(f"{SITE}/post/1") == "unknown"
     feed = make(browser, workdir, page_html(extra='<div class="item">Привет, мир #ai</div>'),
@@ -315,18 +304,16 @@ async def test_verify_post_and_feed_check(browser, workdir):
     await feed._open()
     assert await feed.feed_has_post("Привет, мир") is True
     assert await feed.feed_has_post("Совсем другой текст") is False
-    assert await unknown.feed_has_post("Привет") is None  # сверка не настроена
+    assert await unknown.feed_has_post("Привет") is None
 
 
 async def test_empty_account_still_unconfirmed_and_caption_checked(browser, workdir):
-    """publish_everywhere всегда задаёт аккаунт, даже пустой: поведение по умолчанию безопасное."""
     pub = make(browser, workdir, page_html())
     pub.account = pa.PlatformAccount(platform="tiktok")
     res = await pub.publish(workdir / "v.mp4", "x")
     assert res.status == "unconfirmed" and res.clicked
 
 
-# ── publish_everywhere: профиль по площадке, лимиты, окно (заменители, без браузера) ──
 
 
 PLATFORMS = ["tiktok", "yt_shorts", "ig_reels", "vk_clips", "likee"]
@@ -394,7 +381,7 @@ async def test_each_platform_gets_its_own_profile(monkeypatch, workdir):
         "likee": {"profile_id": "prof-C-0003"}}})
     res = await pubmod.publish_everywhere(workdir / "v.mp4", "x", accounts=cfg, project_label=5)
     assert [r.status for r in res] == ["confirmed"] * 5
-    assert opened == ["prof-A-0001", "prof-B-0002", "prof-C-0003"]  # профиль на площадку, не больше одного раза
+    assert opened == ["prof-A-0001", "prof-B-0002", "prof-C-0003"]
     by = {p[0]: p[1] for p in published}
     assert by["tiktok"] == by["yt_shorts"] == "browser[prof-A-0001]" and by["ig_reels"] == "browser[prof-B-0002]"
     assert all(p[3] == 5 for p in published)
@@ -410,8 +397,8 @@ async def test_missing_and_unavailable_profile_codes(monkeypatch, workdir):
     codes = {r.platform: r.error_code for r in res}
     assert codes["yt_shorts"] == "profile_unavailable" and codes["ig_reels"] == "profile_unavailable"
     assert codes["vk_clips"] == "profile_missing" and codes["likee"] == "profile_missing"
-    assert [p[0] for p in published] == ["tiktok"]  # чужой профиль никому не подставлен
-    assert "yt_shorts" not in gate.claimed and "vk_clips" not in gate.claimed  # отказ до claim
+    assert [p[0] for p in published] == ["tiktok"]
+    assert "yt_shorts" not in gate.claimed and "vk_clips" not in gate.claimed
     assert all(not r.clicked for r in res if r.error_code)
     assert next(r for r in res if r.platform == "vk_clips").needs_human
 
@@ -427,8 +414,8 @@ async def test_daily_limit_skips_before_claim_with_retry_after(monkeypatch, work
     assert by["tiktok"].retry_after == pytest.approx(now - 600 + pa.DAY_S) and not by["tiktok"].clicked
     assert "tiktok" not in gate.claimed and "tiktok" not in [p[0] for p in published]
     assert by["yt_shorts"].status == "confirmed" and by["ig_reels"].status == "confirmed"
-    assert by["vk_clips"].status == "confirmed"  # журнал не дал данных -> лимит не проверяется
-    assert any(r.platform == "tiktok" for r in gate.records)  # перенос записан в журнал, не потерян
+    assert by["vk_clips"].status == "confirmed"
+    assert any(r.platform == "tiktok" for r in gate.records)
 
 
 async def test_publish_window_postpones(monkeypatch, workdir):
@@ -456,7 +443,7 @@ async def test_legacy_mode_without_config_uses_single_default_profile(monkeypatc
     monkeypatch.setenv("DATA_DIR", str(workdir))
     monkeypatch.delenv(pa.ENV_JSON, raising=False)
     res = await pubmod.publish_everywhere(workdir / "v.mp4", "x")
-    assert len(res) == 5 and opened == [None]  # morelogin_browser() без id: профиль берётся из MORELOGIN_PROFILE_ID
+    assert len(res) == 5 and opened == [None]
 
 
 async def test_preflight_everywhere_uses_fake_pages_and_reports_codes(monkeypatch, workdir):

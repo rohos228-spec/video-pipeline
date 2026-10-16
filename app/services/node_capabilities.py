@@ -1,4 +1,3 @@
-"""Capabilities of existing registry nodes, not a new executor or workflow."""
 from dataclasses import asdict, dataclass
 
 
@@ -15,18 +14,6 @@ class NodeCapability:
     actions: tuple[str, ...]
     managed: bool = False
     approval: tuple[str, ...] = ("scope", "budget", "provider_profile")
-    # Recovery-readiness data. Defaults are the conservative ones; a node opts in
-    # only after its native executor/verifier path has been shown to be sound.
-    # profile_compatible: an approved provider profile (effective_body overlay on the
-    #   original single text Responses request) may be applied to this node's attempt.
-    # native_json_retry: the native executor emits a `json_retry` fact before it fails
-    #   (excel_gpt). Nodes without such an inner retry are proven exhausted by the
-    #   runtime failure counter alone (step_failure total_fails/abandoned_at).
-    # recovery_continuation: what the supervisor may do after a verified recovery.
-    #   'excel_gpt_chain' = original excel_gpt chain continuation; 'none' = nothing,
-    #   the original runtime (and any mandatory HITL) continues by itself.
-    # volatile_attachment_names: the request text embeds wall-clock-stamped attachment file
-    #   names, so the recovery's first-body identity check masks exactly those stamps.
     profile_compatible: bool = False
     volatile_attachment_names: bool = False
     native_json_retry: bool = True
@@ -40,18 +27,10 @@ class NodeCapability:
 
 _JOB_PHASES = ("reserved", "submitted", "queued", "running", "completed",
                "downloading", "verifying", "verified", "failed", "cancelled", "unknown")
-# Declarative capability data, one CapabilitySpec per node type (see
-# app/orchestrator/node_spec.py). NodeCapability payloads (asdict/contract) are
-# unchanged: acceptance/verifier/contract/successor live only in the spec.
-# `acceptance` names the accepted-evidence scenario; managed is forced False
-# without it. `verifier` / `contract` are NAMES in the registries populated
-# below / in decision_v1.py.
 _CAPABILITIES: dict[str, NodeCapability] = {}
 
 
 def register_capability_spec(spec, *, replace: bool = False) -> None:
-    """Add one node's capability data to the registry (and the derived
-    NodeCapability view used by capability_for)."""
     from app.orchestrator import node_spec
     if spec.node_type in node_spec._CAPABILITY_SPECS and not replace:
         raise ValueError(f"capability already registered: {spec.node_type!r}")
@@ -379,9 +358,6 @@ def _register_builtin_capabilities() -> None:
 
 
 def _watch(node_type, code, reason, *, verifies=(), hook=None):
-    """Coverage-only entry: the node type is registered and visible, but the supervisor offers
-    nothing beyond reading. Same payload as an unregistered type (result_kind 'unsupported',
-    read-only actions), so behaviour is unchanged; the entry only carries WHY."""
     from app.orchestrator.node_spec import CapabilitySpec as C
     return C(node_type, 'unsupported', '', ('unknown',), (),
              ('read_events', 'read_contract', 'human_review'),
@@ -456,15 +432,6 @@ def _coverage_only_specs():
     )
 
 
-# Recovery decisions for media/paid-or-external node types. Pure declarative data kept OUTSIDE
-# NodeCapability on purpose: contract() is built with asdict() and is persisted/sent to the
-# decision layer, so a new dataclass field would change those payloads. Nothing reads this
-# table at runtime; docs/MEDIA_NODES_READINESS.md and tests/test_media_nodes_recovery_decision.py
-# are its only consumers. Every entry is human-only (no supervisor retry) except the local-resume ones (hero, images,
-# audio, sfx_gen: only a recorded result is resumed, never a paid resend) and the resume-only ones
-# (videos, items, music): the supervisor may only resume a known provider task, never submit a new one, and
-# the local-retry one (assemble): a single re-run of a node without any provider call through the original worker.
-# Facts are code-grounded (file:line in the doc); "reason" is the honest short justification.
 _MEDIA_HUMAN_ONLY = "human_only"
 _MEDIA_RESUME_ONLY = "resume_only"
 _MEDIA_LOCAL_RETRY = "local_retry"
@@ -528,7 +495,6 @@ MEDIA_RECOVERY_DECISIONS = {
 
 
 def media_recovery_decision(node_type: str):
-    """Declarative human-only decision for a media node, or None for any other type."""
     return MEDIA_RECOVERY_DECISIONS.get(node_type)
 
 
@@ -543,9 +509,6 @@ def capability_for(node_type: str) -> NodeCapability:
 
 
 def require_managed_capability(node_type: str, *, recovery_claim: bool = False):
-    """The managed capability of a node a supervisor may START. ``recovery_claim=True`` is passed only by a worker
-    attempt that has just claimed a recovery ticket: a local_recovery node (assemble) is admitted for it and for
-    nothing else, so a fresh managed start of such a node stays refused."""
     capability = capability_for(node_type)
     if not capability.managed:
         raise ValueError("node adapter has no accepted managed executor")
@@ -560,8 +523,6 @@ def require_managed_capability(node_type: str, *, recovery_claim: bool = False):
 
 
 def require_managed_node(node):
-    """require_managed_capability for a GRAPH NODE: the capability of its effective type plus the per-node
-    admission rule of that type (an sd_agent node of a refused agent may not enter a managed scope)."""
     from app.orchestrator.node_spec import node_admission_problem
     from app.services.excel_gpt_node import effective_node_type
     capability = require_managed_capability(effective_node_type(node))
@@ -572,7 +533,6 @@ def require_managed_node(node):
 
 
 def image_prompts_contract():
-    """Original img_pr parent/child and write rules, without recovery authority."""
     from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
     return {'node_type':'image_prompts','input':'original scoped Frame rows and resolved native prompt',
         'output':'same scoped rows; primary image_prompt and native second-shot attrs',
@@ -594,7 +554,6 @@ def image_prompt_input_snapshot(frames,*,project_id):
 
 
 def verify_image_prompts(frames,*,project_id,snapshot):
-    """Read-only native output integrity; no semantic/model quality claim."""
     from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
     from app.services.plan_shot2 import SHOT2_PROMPT_ATTR
     from app.services.observation import digest
@@ -662,8 +621,6 @@ _IMAGE_PROMPT_CRITERIA={
 
 
 def explain_image_prompt_verification(proof):
-    """Human-readable reason a native verifier put the run on hold. Pure; reads only
-    the recorded proof. Releasing the hold stays a human action."""
     from app.services.img_pr_batches import IMG_PR_MIN_WRITE_CHARS
     if not isinstance(proof,dict):return None
     status=proof.get('status')
@@ -710,8 +667,6 @@ def explain_image_prompt_verification(proof):
 
 
 async def recompute_image_prompt_verification(bind,*,project_id,snapshot):
-    """Read-only recomputation of the native verifier from the committed rows
-    (independent session, no flush, no write, no hold change)."""
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
     from app.models import Frame
@@ -760,9 +715,6 @@ async def record_image_prompt_parse(reply,ops,*,batch_i,target_uuids):
 
 
 def note_image_prompt_unusable(reply,*,batch_i=None):
-    """A batch gave no writeable operation and the node cannot split further. Only remembered on the attempt:
-    the typed fact is written by record_image_prompt_unusable when the whole step finally fails, so a native
-    second attempt that succeeds never leaves an open incident behind."""
     from app.services.observation import _attempt
     ctx=_attempt.get()
     if ctx is not None:ctx.image_prompt_unusable={'reply':reply or '','batch':batch_i}
@@ -775,9 +727,6 @@ def clear_image_prompt_unusable():
 
 
 async def record_image_prompt_unusable():
-    """Terminal typed failure of image_prompts: no batch produced a writeable operation, so nothing was written.
-    payload_required makes diagnosis derive invalid_json (reply is not JSON) or missing_payload (JSON without
-    usable prompt operations); the step has failed and a supervised retry is idempotent. Journal only, never raises."""
     import json
     from app.services.observation import _attempt,record_fact
     ctx=_attempt.get();note=getattr(ctx,'image_prompt_unusable',None) if ctx else None
@@ -810,8 +759,6 @@ async def observe_image_prompt_result(session,project,node_type):
     project_id=ctx.scope.project_id
     read_error=None
     try:
-        # Bind to the existing business DB without initialization, migration,
-        # autoflush, commit, or repair of a failed native session.
         async with async_sessionmaker(session.bind,expire_on_commit=False,autoflush=False)() as reader:
             frames=(await reader.scalars(select(Frame).where(Frame.project_id==project_id)
                 .order_by(Frame.number))).all()
@@ -830,7 +777,7 @@ async def observe_image_prompt_result(session,project,node_type):
     await record_fact('node_result_verification',proof,body=proof)
     ctx.image_prompt_verification_recorded=True
     if read_error:ctx.observer.mark_gap(ctx.scope.execution_id,read_error)
-    if observe_only:return  # observe scope: the incident is the result; nothing is held, nothing raised
+    if observe_only:return
     if proof['status']!='passed':
         from app.services.actions_v1 import ActionSupervisor
         try:
@@ -845,7 +792,6 @@ async def observe_image_prompt_result(session,project,node_type):
 
 
 def project_text_contract(node_type):
-    """Exact native contracts; no generic write/retry permission for text nodes."""
     from app.services.plan_validation import MIN_GENERAL_PLAN_CHARS
     if node_type not in {'plan','script'}:raise ValueError('unsupported project text contract')
     return {'node_type':node_type,'input_field':'topic' if node_type=='plan' else 'general_plan',
@@ -861,7 +807,6 @@ def project_text_contract(node_type):
 
 
 def project_text_parse_evidence(reply, text, node_type):
-    """Report actual extraction and native validation, without requiring JSON for VO."""
     import json
     from types import SimpleNamespace
     from app.services import db_apply
@@ -880,10 +825,6 @@ def project_text_parse_evidence(reply, text, node_type):
         'syntax_valid': syntax_valid,
         'parsed': isinstance(parsed, dict) or (node_type == 'script' and bool(text)),
         'payload_present': bool(text),
-        # plan always needs the JSON field. script accepts JSON, a VOICEOVER block or plain
-        # text, so a payload is "required" in the diagnostic sense only when NOTHING usable
-        # was extracted (e.g. malformed JSON and no voiceover): that is the typed
-        # invalid_json/missing_payload failure; a valid non-JSON voiceover never is.
         'payload_required': node_type == 'plan' or (node_type == 'script' and not text),
         'nonempty_payload_required': True,
         'schema_valid': proof['status'] == 'passed',
@@ -934,9 +875,6 @@ def verify_project_text(project,node_type):
 
 
 async def record_observe_only_proof(ctx,node_type,proof,*,body=None,incident=True):
-    """Observe-mode result check (C02): journal the proof and, when it failed, a failed ``runtime_check`` that
-    diagnosis turns into a ``contract_rejected`` incident. Never raises, never holds, never retries: the run
-    goes on, a human sees the incident. A journal failure is an audit gap, not a failure of the node."""
     from app.services.observation import record_fact
     proof={**proof,'observe_only':True,'run_held':False}
     try:
@@ -951,7 +889,6 @@ async def record_observe_only_proof(ctx,node_type,proof,*,body=None,incident=Tru
 
 
 def _observe_only_applies(ctx):
-    """Observe scope, successful native attempt. A failed attempt already has its own node_error incident."""
     return bool(ctx) and ctx.scope.mode!='managed' and getattr(ctx,'attempt_exception',None) is None
 
 
@@ -987,7 +924,6 @@ def split_contract():
 
 
 def verify_split_frames(frames, *, project_id, voiceover):
-    """Verify actual frame rows against the captured input, without changing them."""
     import hashlib
     from app.services.observation import digest
     rows=[{'project_id':fr.project_id,'uuid':fr.uuid,'number':fr.number,
@@ -1022,7 +958,6 @@ async def record_split_input(voiceover):
 
 
 class SplitContractRejected(RuntimeError):
-    """The model's split answer violates the split contract; raised BEFORE any DB write (E1b)."""
     failure_class='contract_rejected'
     def __init__(self,errors,reason):
         self.errors=list(errors);super().__init__('split answer rejected before write: '+str(reason))
@@ -1036,9 +971,6 @@ def _split_spec_frames(frames_spec,project_id):
 
 
 async def enforce_split_contract_before_write(frames_spec):
-    """Managed runs only: validate the extracted frames against the split contract before
-    anything reaches the DB. An invalid answer raises SplitContractRejected and the project
-    stays untouched. Outside a managed attempt the native behaviour is unchanged."""
     from app.services.observation import _attempt
     ctx=_attempt.get()
     if ctx is None or ctx.scope.mode!='managed':return
@@ -1047,8 +979,6 @@ async def enforce_split_contract_before_write(frames_spec):
     if proof['status']=='failed':raise SplitContractRejected(proof['errors'],proof['reason'])
 
 
-# --- D05: safe split retry (preflight over manual work) and rollback to the pre-replacement frames -------------------
-# Project.meta keys that split_frames.run resets after a replacement; the snapshot keeps their previous values.
 SPLIT_SNAPSHOT_META_KEYS=('split_completed','split_params_applied','enrich_completed_slots','excel_gpt_completed_keys',
     'active_excel_gpt_node_key','scene_design','scene_registry')
 _SPLIT_SNAPSHOT_COLUMNS=('id','number','voiceover_text','meaning','transition_from','transition_to','duration_seconds',
@@ -1056,12 +986,10 @@ _SPLIT_SNAPSHOT_COLUMNS=('id','number','voiceover_text','meaning','transition_fr
 
 
 class SplitRetryRefused(RuntimeError):
-    """A supervised split retry would replace frames that carry work. Raised BEFORE any model request or write."""
     failure_class='retry_refused'
 
 
 def is_supervised_retry():
-    """True inside the worker attempt of a supervisor recovery ticket (retry_same / retry_profile)."""
     from app.services.observation import _attempt
     ctx=_attempt.get()
     attempt_id=getattr(ctx,'attempt_id',None)
@@ -1070,7 +998,6 @@ def is_supervised_retry():
 
 
 def frame_has_manual_work(frame):
-    """A frame that is more than a bare split result: a prompt, a non-initial status or attributes of a later step."""
     attrs=frame.attrs if isinstance(getattr(frame,'attrs',None),dict) else {}
     status=getattr(frame.status,'value',frame.status)
     return bool((frame.image_prompt or '').strip() or (getattr(frame,'animation_prompt',None) or '').strip()
@@ -1078,10 +1005,6 @@ def frame_has_manual_work(frame):
 
 
 def split_retry_refusal(frames,meta):
-    """Russian reason why a repeated split must not run over the existing frames, or None. Pure.
-
-    A completed split (>=2 frames and split_completed) is skipped by the executor itself, so it is not a refusal.
-    Otherwise existing frames carrying work (prompts, statuses, attributes) would be replaced by the new answer."""
     frames=list(frames or [])
     if len(frames)>=2 and (meta or {}).get('split_completed'):return None
     worked=[f for f in frames if frame_has_manual_work(f)]
@@ -1097,8 +1020,6 @@ def _jsonable(value):
 
 
 async def capture_split_snapshot(session,project):
-    """Snapshot of the project's frames, their artifact links and the meta keys a split resets, taken before the
-    replacement. None when the project has no frames (nothing to give back). Read-only; the file copy is best effort."""
     import json
     from sqlalchemy import select
     from app.models import Artifact,Frame
@@ -1123,9 +1044,6 @@ async def capture_split_snapshot(session,project):
 
 
 async def rollback_split(session,project,snapshot):
-    """Give back the frames of a snapshot (same ids, uuids, numbers, text, prompts, attributes), re-link their
-    artifacts and restore the meta keys the split reset. The frames of the rejected replacement are removed.
-    Prompt versions, texts and edges are derived again from the frame fields (backfill), not restored from history."""
     from sqlalchemy import delete,select,update
     from app.models import Artifact,Frame,FrameEdge,FrameStatus,FrameText,PromptVersion
     from app.services import db_v2
@@ -1139,7 +1057,6 @@ async def rollback_split(session,project,snapshot):
         await session.execute(delete(FrameText).where(FrameText.frame_id.in_(current)))
         await session.execute(delete(Frame).where(Frame.project_id==project.id))
     await session.flush()
-    # bulk deletes leave the removed rows in the identity map; a restored row has the old primary key
     for obj in list(session.identity_map.values()):
         if (isinstance(obj,(Frame,FrameEdge)) and obj.project_id==project.id) or (
                 isinstance(obj,(FrameText,PromptVersion)) and obj.frame_id in current):
@@ -1172,9 +1089,6 @@ async def rollback_split(session,project,snapshot):
 
 
 async def prepare_split_replacement(session,project):
-    """Called by split_frames.run right before the model is asked. In a supervised retry it refuses to run over
-    frames with work (no request, no write). In a managed attempt it keeps the pre-replacement snapshot on the
-    attempt context for rollback_split. Outside a managed scope nothing changes."""
     from sqlalchemy import select
     from app.models import Frame
     from app.services.observation import _attempt
@@ -1197,9 +1111,6 @@ async def record_split_parse(reply,frames_spec,*,frames_source=None,dash_rejecte
     except (ValueError,TypeError):syntax_valid=False
     frames=_split_spec_frames(frames_spec,ctx.scope.project_id)
     proof=verify_split_frames(frames,project_id=ctx.scope.project_id,voiceover=ctx.split_input_voiceover)
-    # payload_required only when NOTHING usable exists (not even the native local fallback): then nothing is
-    # written, the step fails and diagnosis types it invalid_json / missing_payload (a retry is idempotent).
-    # A usable answer or the accepted local fallback never opens such an incident (split_degraded covers it).
     await record_fact('parse_result',{'contract':'native_split','syntax_valid':syntax_valid,
         'parsed':bool(frames_spec),'payload_present':bool(frames_spec),'payload_required':not frames_spec,
         'schema_valid':proof['status']=='passed','frame_count':len(frames_spec),
@@ -1238,8 +1149,6 @@ async def observe_split_result(session,project,node_type):
         rationale=str(proof['reason'])
         snapshot=getattr(ctx,'split_pre_snapshot',None)
         if snapshot:
-            # D05: the replacement is already committed. Give the previous frames back, then hold. The run is
-            # never retried by the supervisor (data_applied exists); a human decides what happens next.
             try:
                 outcome=await rollback_split(session,project,snapshot)
                 await session.commit()
@@ -1259,18 +1168,12 @@ async def observe_split_result(session,project,node_type):
 
 
 async def _observe_project_text(session, project, node_type):
-    # Adapter to the common verifier signature; resolves the module global at
-    # call time so the original function stays the single implementation.
     await observe_project_text_result(project, node_type)
 
 
 def _register_builtin_verifiers() -> None:
-    """Name the existing result-observation hooks (observation.observe_attempt
-    looks them up by node type instead of an if-chain)."""
     from app.orchestrator.node_spec import VerifierSpec, register_verifier
     me = 'app.services.node_capabilities:'
-    # plan/script/split/image_prompts (C02): the same hook runs in observe scope too. There it only journals the
-    # proof and an incident (record_observe_only_proof); the hold/raise stays managed-only inside the hook.
     register_verifier(VerifierSpec('project_text_result', me + '_observe_project_text',
         success_errors='raise'))
     register_verifier(VerifierSpec('split_result', me + 'observe_split_result',
@@ -1284,13 +1187,9 @@ def _register_builtin_verifiers() -> None:
     register_verifier(VerifierSpec('sfx_result', 'app.services.sfx_plan:observe_sfx_result',
         success_errors='gap', success_flag='sfx_result_observed', on_error=True,
         error_done_flag='sfx_result_observed'))
-    # sfx_plan: the same journal hook plus the managed-scope gate (observe_sfx_plan_result).
-    # It never raises in an observation scope; on a native failure it only records.
     register_verifier(VerifierSpec('sfx_plan_result', 'app.services.sfx_plan:observe_sfx_plan_result',
         success_errors='raise', success_flag='sfx_result_observed', on_error=True,
         error_done_flag='sfx_result_observed'))
-    # Paid media nodes: the same read-only hook for all, bound per node type (hero, items and music are
-    # coverage-only entries without a CapabilitySpec verifier name). Observation only, never holds a run.
     register_verifier(VerifierSpec('media_result', 'app.services.media_verification:observe_media_result',
         success_errors='gap', success_flag='media_result_observed', on_error=True,
         error_done_flag='media_result_observed'))
@@ -1303,7 +1202,6 @@ def _register_builtin_verifiers() -> None:
 
 
 def _register_scene_agent_admission() -> None:
-    """sd_agent is managed per TYPE but admitted per AGENT (scene_contracts.RETRY_ADMITTED_AGENTS)."""
     from app.orchestrator import node_spec
     from app.orchestrator.node_spec import VerifierSpec, register_verifier
     from app.services import scene_contracts
@@ -1319,16 +1217,8 @@ _register_builtin_verifiers()
 _register_scene_agent_admission()
 
 
-# ---------------------------------------------------------------------------
-# C02: named result check of excel_gpt (observation only: it never holds or retries)
-# ---------------------------------------------------------------------------
 
 def verify_frame_structure(frames, *, project_id):
-    """Structural integrity of the project's Frame rows after an excel_gpt step (read-only, no quality claim).
-
-    ``failed``: a frame of another project, an empty or repeated uuid, a missing, non-positive or repeated
-    number. ``unknown``: no frames yet (nothing to check, not a pass). It does NOT prove that the step covered
-    the frames it had to (script_frames_qc coverage stays with the original runtime)."""
     rows = [{'uuid': f.uuid, 'number': f.number, 'project_id': f.project_id} for f in frames]
     errors = []
     if any(r['project_id'] != project_id for r in rows):
@@ -1351,8 +1241,6 @@ def verify_frame_structure(frames, *, project_id):
 
 
 async def observe_excel_gpt_result(session, project, node_type):
-    """Verifier hook of excel_gpt (named ``excel_gpt_result``), observation only. Runs after a successful native
-    attempt in every scope: journals the proof, a failed one also as an incident. Never raises or holds."""
     from sqlalchemy import select
     from app.models import Frame
     from app.services.observation import _attempt
@@ -1364,20 +1252,12 @@ async def observe_excel_gpt_result(session, project, node_type):
             frames = (await session.scalars(select(Frame).where(Frame.project_id == ctx.scope.project_id)
                                             .order_by(Frame.number))).all()
         proof = verify_frame_structure(frames, project_id=ctx.scope.project_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         ctx.observer.mark_gap(ctx.scope.execution_id, exc)
         return
     await record_observe_only_proof(ctx, 'excel_gpt', proof, body=proof)
 
 
-# ---------------------------------------------------------------------------
-# C11: per-node proof registry ("what is in the data" vs "what a run confirmed")
-# ---------------------------------------------------------------------------
-# U unit test, D dry run through the real code with a replaced model, L live run on a real provider
-# (docs/LIVE_RUNS.md), H manual check by a human. ``proof`` is the text of the confirmation column and is
-# checked against the registry and docs/LIVE_RUNS.md by tests/w4_2_c11_proof_registry_test.py.
-# ``live_node`` lists dates of a live run of THE NODE; ``live_seam`` of a seam only (one provider call);
-# a node with no live run of its own says why in ``why_no_live`` (shown as "только сухо: причина").
 _NO_LIVE_ROW = 'в реестре живых прогонов строки по этой ноде нет'
 _RESUME_REASON = 'возобновление нужно проверять на реально оплаченной задаче провайдера, такого прогона не было'
 _LEGACY_REASON = 'устаревший тип: живой прогон не планируется, граф переносится миграцией'
@@ -1430,7 +1310,6 @@ PROOF_TABLE_HEADER = ('| Нода | Есть в данных (уровень) | 
 
 
 def node_proof_rows():
-    """One row per registered node type: level from coverage_level() and the proof entry above."""
     from app.orchestrator.node_spec import coverage_level, registered_capability_specs
     from app.services.node_coverage import registry_node_types
     specs = registered_capability_specs()
@@ -1448,7 +1327,6 @@ def node_proof_rows():
 
 
 def render_proof_table() -> str:
-    """The markdown table of docs/NODE_COVERAGE.md (section "Подтверждено по нодам"), generated from the registry."""
     lines = [PROOF_TABLE_HEADER, '|---|---|---|---|']
     rows = {r['node_type']: r for r in node_proof_rows()}
     for node_type in NODE_PROOF:

@@ -1,8 +1,3 @@
-"""W3-1 / B04: русские тексты ленты. Сети и платных вызовов нет; БД не нужна (только чтение исходников).
-
-Закон покрытия: каждый вид события, который код умеет записать (record_fact / emit / stage /
-stage_project_fact / _queue_event ...), имеет русскую фразу. Новый вид без фразы валит этот тест.
-"""
 from __future__ import annotations
 
 import ast
@@ -21,7 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app"
 CYR = re.compile(r"[А-Яа-яЁё]")
 
-# Список видов событий observation, зафиксированный в тесте (по коду на HEAD волны W3).
 EXPECTED_EVENT_KINDS = frozenset("""
 action_blocked animation_degraded apply_error apply_input artifact_created artifact_saved artifact_verified
 assemble_retry body_cleanup body_quota_blocked data_applied decision_continuation_denied decision_gateway_ack
@@ -53,7 +47,6 @@ def _calls(path: Path):
 
 
 def _strings(node):
-    """Все строковые константы выражения (учитывает `a if c else b`)."""
     return [n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
 
 
@@ -69,7 +62,6 @@ def _event_kinds_in_code() -> dict[str, str]:
     return found
 
 
-# --- покрытие --------------------------------------------------------------------------------------------
 def test_every_event_kind_in_code_has_a_phrase():
     in_code = _event_kinds_in_code()
     assert len(in_code) >= 55, "сканер перестал находить виды событий: поправьте тест"
@@ -172,7 +164,6 @@ def test_every_covered_table_kind_describes_without_fallback():
     assert tr.unknown_report() == {}, tr.unknown_report()
 
 
-# --- поведение describe ----------------------------------------------------------------------------------------
 def test_unknown_kind_gets_fallback_and_is_reported():
     tr.reset_unknown_report()
     title, detail, severity = tr.describe({"source": "observation_events", "kind": "brand_new_kind", "payload": {}})
@@ -204,7 +195,7 @@ def test_event_severity_and_details():
     t, _, _ = tr.describe({"kind": "runtime_check", "payload": {"check": "regen_budget", "status": "failed"}})
     assert t == "лимит повторных генераций: не пройдена"
     t, _, _ = tr.describe({"kind": "runtime_check", "payload": {"check": "schema"}})
-    assert "неизвестно" in t  # контракт с web/tests/observe_v1/frontend_contract.mjs
+    assert "неизвестно" in t
 
 
 def test_money_rows_and_secrets_are_not_leaked():
@@ -223,7 +214,7 @@ def test_operator_and_notification_and_publication_rows():
     t, d, s = tr.describe({"source": "operator_audit", "method": "POST", "route_template": "/api/projects/{id}/stop",
                            "outcome": "denied", "actor": "operator"})
     assert t == "Оператор остановил: проект" and s == "warn" and "отказано в доступе" in d
-    t, _, _ = tr.describe({"source": "operator_audit", "method": "POST"})  # маршрут неизвестен - общая фраза
+    t, _, _ = tr.describe({"source": "operator_audit", "method": "POST"})
     assert t == "Оператор выполнил действие"
     t, _, _ = tr.describe({"source": "operator_audit", "method": "POST", "summary_ru": "Нажата кнопка «Стоп»"})
     assert t == "Нажата кнопка «Стоп»"
@@ -240,7 +231,6 @@ def test_operator_and_notification_and_publication_rows():
 
 
 def test_archive_rollup_row_has_a_human_title():
-    """B09: свёртка архива не показывается как «Запись расходов archive»."""
     title, detail, sev = tr.describe({"source": "spend_ledger", "kind": "archive", "usd": 1.21, "provider": "kie"})
     assert title.startswith("Свёртка архива") and "archive" not in title and "$1.2100" in detail and sev == "info"
 
@@ -254,10 +244,9 @@ def test_short_source_aliases_work():
 def test_messages_ru_history_helper():
     assert messages_ru.history_event_ru("step_succeeded") == "Шаг плана выполнен"
     assert messages_ru.history_event_ru("new_unknown_code") == "new_unknown_code"
-    assert messages_ru.validation_ru("$.x: required") == "$.x: обязательное поле не заполнено"  # старое не сломано
+    assert messages_ru.validation_ru("$.x: required") == "$.x: обязательное поле не заполнено"
 
 
-# --- паритет с web/src/lib/observation-view.ts -----------------------------------------------------------------------
 TS_FILE = ROOT / "web" / "src" / "lib" / "observation-view.ts"
 
 
@@ -319,7 +308,6 @@ def test_frontend_event_label_equals_server_for_samples(tmp_path):
     assert got == want
 
 
-# --- русские detail в роутерах --------------------------------------------------------------------------------------
 ROUTERS = ("projects", "prompt_files", "artifacts", "project_ops", "hitl")
 
 
@@ -339,10 +327,10 @@ def test_router_http_details_are_russian():
         path = APP / "web" / "routers" / f"{name}.py"
         for line, value in _http_detail_literals(path):
             if not isinstance(value, (ast.Constant, ast.JoinedStr, ast.BoolOp)):
-                continue  # словарь с кодом причины, str(e), info["message"]: текст рождается в сервисе
+                continue
             texts = [n.value for n in ast.walk(value) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
             if not texts:
-                continue  # detail из переменной/исключения: текст рождается в сервисе (список у интегратора)
+                continue
             total += 1
             if not any(CYR.search(t) for t in texts):
                 bad.append(f"{name}.py:{line}: {texts}")
@@ -355,10 +343,9 @@ def test_router_status_codes_are_unchanged_for_not_found():
     src = (APP / "web" / "routers" / "hitl.py").read_text(encoding="utf-8")
     assert 'status_code=404, detail="Запрос подтверждения не найден"' in src
     assert 'status_code=400, detail="Решение по этому запросу уже принято"' in src
-    assert HTTPException  # импорт нужен только чтобы тест падал при смене фреймворка
+    assert HTTPException
 
 
-# --- W4: новые виды событий, проверки и статусы -------------------------------------------------------------------
 def test_w4_new_event_kinds_check_names_and_notify_statuses():
     tr.reset_unknown_report()
     for kind in ("sfx_skipped", "sfx_node_degraded", "audio_step_failure", "audio_result_verification",

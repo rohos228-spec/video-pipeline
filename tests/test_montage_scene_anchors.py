@@ -1,4 +1,3 @@
-"""Якоря сцены на доске = все якоря, чей текст лежит в закадре этой сцены."""
 
 from __future__ import annotations
 
@@ -136,7 +135,6 @@ async def test_split_sends_each_anchor_to_scene_with_its_text(
 async def test_legacy_orphan_anchor_is_shown_in_scene_with_its_text(
     session: AsyncSession, project: Project
 ) -> None:
-    """Старые данные: после разделения якорь второй сцены остался на первой."""
     session.add(project)
     a = _frame(
         project,

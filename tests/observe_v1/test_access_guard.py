@@ -1,4 +1,3 @@
-"""Доступ к изменяющим ручкам без веб-авторизации: только loopback (без сети)."""
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI
@@ -10,7 +9,7 @@ from app.services import access_guard
 from app.services.access_guard import local_only_when_no_auth
 from app.settings import settings
 from app.web.auth_sessions import require_web_user
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 REMOTE = ("203.0.113.5", 5555)
 

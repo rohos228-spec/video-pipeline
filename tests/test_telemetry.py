@@ -59,7 +59,6 @@ def test_incident_summary_counts_by_type_status_severity():
     assert summary["total"] == 4
     assert summary["by_type"] == {"invalid_json": 2, "api_error": 1, "runtime_wait": 1}
     assert summary["resolved_confirmed"] == 1
-    # blocking_open: not resolved AND blocking=True -> invalid_json/human_review + api_error/human_review
     assert summary["blocking_open"] == 2
 
 
@@ -73,7 +72,7 @@ def test_decision_summary_human_review_rate_and_model_steps():
     records = [
         FakeDecisionRecord("done", model_steps=1),
         FakeDecisionRecord("human_review", model_steps=3),
-        FakeDecisionRecord("ready", model_steps=0),  # not terminal, excluded from rate/steps
+        FakeDecisionRecord("ready", model_steps=0),
     ]
     summary = decision_summary(records)
     assert summary["total"] == 3
@@ -98,7 +97,6 @@ def test_node_request_latency_pairs_start_and_end_by_request_id():
         FakeEvent(3, "model_start", "n1", "req-2", t0),
         FakeEvent(4, "model_end", "n1", "req-2", t0 + timedelta(seconds=15)),
         FakeEvent(5, "model_start", "n2", "req-3", t0),
-        # req-3 never completes -> unmatched
     ]
     result = node_request_latency(events)
     assert result["by_node"]["n1"]["count"] == 2
@@ -164,7 +162,7 @@ def test_cost_source_labels_are_russian_and_the_raw_code_is_kept():
 
     for raw in (*COST_SOURCES.values(), "api_tracker_hook (pre-priced at write time)"):
         assert any("а" <= ch.lower() <= "я" for ch in cost_source_label_ru(raw)), raw
-    assert cost_source_label_ru("something new") == "something new"  # unknown codes are never hidden
+    assert cost_source_label_ru("something new") == "something new"
     assert cost_source_label_ru(None) == ""
     assert spend_source_label_ru("media_native") == "платный вызов медиа-провайдера"
     assert spend_source_label_ru("odd") == "odd"
@@ -184,7 +182,7 @@ def test_spend_refusal_dict_carries_a_russian_source_next_to_the_code():
 def test_cost_summary_counts_failed_calls():
     rows = [_row(status_code=200), _row(status_code=429), _row(status_code=0)]
     summary = cost_summary(rows)
-    assert summary["failed_calls"] == 2  # 429 (>=400) and 0 (request never completed)
+    assert summary["failed_calls"] == 2
 
 
 def test_cost_summary_empty():
@@ -210,18 +208,18 @@ async def test_project_cost_summary_filters_by_project_and_since(tmp_path, monke
         conn.execute("INSERT INTO api_calls (timestamp, model, cost_usd, project_source) "
             "VALUES (?, 'gpt-5-6-sol', 0.001, '7')", (new,))
         conn.execute("INSERT INTO api_calls (timestamp, model, cost_usd, project_source) "
-            "VALUES (?, 'gpt-5-6-sol', 0.001, '7')", (old,))  # outside since window
+            "VALUES (?, 'gpt-5-6-sol', 0.001, '7')", (old,))
         conn.execute("INSERT INTO api_calls (timestamp, model, cost_usd, project_source) "
-            "VALUES (?, 'gpt-5-6-sol', 0.001, '8')", (new,))  # different project
+            "VALUES (?, 'gpt-5-6-sol', 0.001, '8')", (new,))
         conn.commit()
     import app.services.api_tracker_hook as hook
     monkeypatch.setattr(hook, "_TRACKER_DB", db_path)
 
     unbounded = await project_cost_summary(7, since=None)
-    assert unbounded["total_calls"] == 2  # both project 7 rows, no time filter
+    assert unbounded["total_calls"] == 2
 
     windowed = await project_cost_summary(7, since=datetime.utcnow() - timedelta(hours=1))
-    assert windowed["total_calls"] == 1  # only the recent project-7 row
+    assert windowed["total_calls"] == 1
 
     other_project = await project_cost_summary(8, since=None)
     assert other_project["total_calls"] == 1

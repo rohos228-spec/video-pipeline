@@ -1,4 +1,3 @@
-"""Real status machine, startup migration and durable observation REST API."""
 from __future__ import annotations
 
 import unittest
@@ -38,8 +37,6 @@ class RuntimeAcceptance(test_journal.JournalAcceptance):
             await session.commit()
         await self.observer.consume(self.scope.execution_id,'master',self.master)
         async with self.master() as session:
-            # Context's ordinary timeline page remains bounded at 500. An
-            # older pending approval must still be read by exact scoped ID.
             session.add_all([observation.ObservationEvent(event_id='approval-noise-'+str(i),
                 execution_id=self.scope.execution_id,project_id=2,workflow_run_id=7,
                 node_key='report',attempt_id='noise',db_scope='master',kind='runtime_check',payload={},
@@ -160,8 +157,6 @@ class RuntimeAcceptance(test_journal.JournalAcceptance):
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
-        # ASGITransport skips lifespan; use the same additive migration as
-        # app startup instead of depending on model import order in create_all.
         for engine in (self.master_engine, self.project_engine):
             async with engine.begin() as conn:
                 await observation.migrate_observation_schema(conn)
@@ -250,7 +245,6 @@ class RuntimeAcceptance(test_journal.JournalAcceptance):
         await self.observer.consume(self.scope.execution_id, "master", self.master)
         async with self.master() as session:
             rows = (await session.scalars(select(observation.ObservationEvent))).all()
-            # между началом и концом попытки нода текстового типа журналирует проверку результата
             self.assertEqual([row.kind for row in rows], ["node_start", "node_result_verification", "node_end"])
             self.assertEqual(len({row.attempt_id for row in rows}), 1)
             self.assertIsNotNone(rows[0].attempt_id)
@@ -280,8 +274,6 @@ class RuntimeAcceptance(test_journal.JournalAcceptance):
         await engine.dispose()
 
     async def test_force_kill_preserves_written_stream_and_marks_missing_end(self):
-        # Storage/crash probe, separately from the six-node worker acceptance.
-        # Kill only the child started by this test; no model/HTTP operation occurs.
         ready = self.root / "child-ready"
         program = '''
 import asyncio, sys

@@ -36,17 +36,17 @@ from pathlib import Path
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-import e2e_guard as guard  # noqa: E402  (A19: refuses to touch live data)
+import e2e_guard as guard
 
 _ENV_WHITELIST = ("GPT_API_KEY", "GPT_BASE_URL", "GPT_CHAT_PATH", "GPT_API_MODE", "GPT_PROXY_URL",
                   "GPT_RELAY_TOKEN", "GPT_TIMEOUT_S")
-SLUG = "diagnostic-synthetic-scene-2026-09-24"  # default fixture slug of the seed; override with --slug
+SLUG = "diagnostic-synthetic-scene-2026-09-24"
 NODE = "n_excel_gpt_fw_script"
 PROFILE_ID = "production-json-repair-v1"
 MALFORMED = '{"ops": }'
 PORT = 18765
-PROJECT_ID: int | None = None  # resolved from the seed copy by configure(); never hard-coded
-BASE: str | None = None  # http://127.0.0.1:<port>/api/projects/<PROJECT_ID>, set by configure()
+PROJECT_ID: int | None = None
+BASE: str | None = None
 
 
 def api_base(project_id: int, port: int = PORT) -> str:
@@ -89,7 +89,7 @@ def _load_env(path: str) -> dict:
 
 
 def _prepare_data(seed: Path, work: Path, slug: str | None = None, project_id: int | None = None) -> Path:
-    data = guard.prepare_scratch_data(seed, work)  # refuses live data / overlapping folders; removes only <work>/data
+    data = guard.prepare_scratch_data(seed, work)
     pid = configure(data, slug, project_id)
     db_paths = [data / "state.db", data / "videos" / SLUG / "project.db"]
     node = None
@@ -176,7 +176,7 @@ async def main() -> int:
     tracker_db = work / "tracker.db"
     if tracker_db.exists():
         tracker_db.unlink()
-    tracker._TRACKER_DB = tracker_db  # never touch the operator's own tracker
+    tracker._TRACKER_DB = tracker_db
     from app.services import observation
     from app.services.decision_transport import current as decision_hook
 

@@ -1,12 +1,3 @@
-"""Guards for scripts/e2e_vibecode_text_nodes.py (pure helpers + a real --dry run per node).
-
-Nothing here sends anything: the dry runs refuse every non-loopback request inside the httpx send hook and use a
-synthetic key. Each dry run starts the whole application in a SUBPROCESS (isolated memory and port), so run this
-file alone: one pytest at a time.
-
-Nodes that the stand cannot run in dry are listed in UNSUPPORTED with the reason; the test pins that list so an
-unsupported node cannot silently turn into a green one.
-"""
 import importlib.util
 import json
 import os
@@ -26,12 +17,11 @@ _spec.loader.exec_module(script)
 WANTED = ("plan", "script", "split", "image_prompts", "sfx_plan", "animation_prompts", "sd_agent", "sd_assemble")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _stand_workdir import make_workdir, remove_workdir  # noqa: E402
+from _stand_workdir import make_workdir, remove_workdir
 
 
 @pytest.fixture
 def tmp_path():
-    """Outside the repository: the e2e guard refuses a work folder inside live data."""
     path = make_workdir()
     try:
         yield path
@@ -39,16 +29,14 @@ def tmp_path():
         remove_workdir(path)
 
 
-# ---------- the node list ----------
 
 def test_node_list_is_the_requested_eight():
     assert script.NODES == WANTED
 
 
 def test_unsupported_and_blocked_lists_are_pinned():
-    """A node cannot silently move between 'unsupported', 'live refused' and 'fully supported'."""
     assert set(script.UNSUPPORTED) == {"split", "image_prompts"}
-    assert set(script.KNOWN_BLOCKERS) == set()  # the double-incident blocker of plan/script/animation_prompts is fixed
+    assert set(script.KNOWN_BLOCKERS) == set()
     assert not set(script.UNSUPPORTED) & set(script.KNOWN_BLOCKERS)
     assert all(len(r) > 80 for r in script.KNOWN_BLOCKERS.values())
 
@@ -118,7 +106,6 @@ def test_sd_agent_answers_differ_per_agent():
     assert "locations" in json.loads(script.build_answer(spec, [], "world"))
 
 
-# ---------- argument handling and safety ----------
 
 def test_default_mode_is_offline_and_live_is_opt_in():
     args = script._args(["--node", "plan", "--work-dir", "w"])
@@ -197,7 +184,6 @@ def test_runtime_config_is_the_vibecode_production_shape():
     assert script._runtime_config(18767, 60, None)["endpoint"].startswith("http://127.0.0.1:")
 
 
-# ---------- honest reporting ----------
 
 def test_reality_report_separates_real_from_local():
     live = script.reality_report("live", {"real_decision": 2, "real_worker_recovery": 1}, "split")
@@ -264,7 +250,6 @@ def test_evaluate_live_adds_cap_and_real_post_checks():
         snap, node="plan", target="native-plan-A", hosts=frozenset({"vibecode.moe"}), max_real_posts=6, max_usd=0.1))[1]
 
 
-# ---------- a real dry run per node (whole app in a subprocess, nothing is sent) ----------
 
 def _run_dry(node: str, tmp_path: Path, *extra: str) -> tuple[int, dict, str]:
     env = {**os.environ, "PYTHONUTF8": "1", "NO_COLOR": "1"}

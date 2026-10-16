@@ -1,8 +1,3 @@
-"""Durable, explicitly scoped observation. No scheduling or recovery tools.
-
-Outbox rows share the business session/transaction. Delivery to the master
-journal is a separate transaction; there is no cross-database atomicity claim.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -77,10 +72,6 @@ class ObservationEvent(Base):
 
 
 class ObservationDegradation(Base):
-    """History of observer degradations. Rows are closed, never deleted.
-
-    execution_id is "" for a loop stage failure that concerns no single execution.
-    """
     __tablename__ = "observation_degradations"
     id: Mapped[int] = mapped_column(primary_key=True)
     gap_id: Mapped[str] = mapped_column(String(36), unique=True)
@@ -97,7 +88,6 @@ class ObservationDegradation(Base):
 
 
 class CommitUncertaintyMarker(Base):
-    """Business commit not confirmed. Open until a person clears it; survives restart."""
     __tablename__ = "observation_commit_uncertainty"
     id: Mapped[int] = mapped_column(primary_key=True)
     execution_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -109,7 +99,7 @@ class CommitUncertaintyMarker(Base):
     clear_reason: Mapped[str | None] = mapped_column(String(500), default=None)
 
 
-from app.services.redact import (  # noqa: E402  (A16: единый redact)
+from app.services.redact import (
     CREDENTIAL_FIELDS as _CREDENTIAL_FIELDS,
     _CREDENTIAL_TEXT,
     redact,
@@ -134,8 +124,6 @@ class AttemptContext:
 
 
 _attempt = contextvars.ContextVar("observation_attempt", default=None)
-# Project id of the native step in flight (set by advance_runner); used only as
-# the cost-tracking fallback for calls made outside an observation scope.
 _cost_project = contextvars.ContextVar("observation_cost_project", default=None)
 _request = contextvars.ContextVar("observation_request", default=None)
 _completed_model_request = contextvars.ContextVar("observation_completed_model_request", default=None)
@@ -143,7 +131,6 @@ _observer = None
 
 
 def completed_model_request_id():
-    """Task-local completion identity; shared attempt.last_request_id may race."""
     completed=_completed_model_request.get()
     return completed[1] if completed and completed[0] is _attempt.get() else _request.get()
 
@@ -158,11 +145,6 @@ def bind_image_prompt_batch_request(batch_i):
 
 
 def auto_observe_enabled(project=None) -> bool:
-    """C01: observation starts by itself for every project (no explicit observer.enable).
-
-    Off switches: env OBSERVER_AUTO_ENABLE=0 (whole app) or project.meta["observer_auto"] = false (one project).
-    The behaviour is controlled only by the setting / env; tests switch it off in tests/conftest.py.
-    """
     raw = os.environ.get("OBSERVER_AUTO_ENABLE")
     if raw is not None and raw.strip().lower() in {"0", "false", "no", "off", ""}:
         return False
@@ -174,12 +156,11 @@ def auto_observe_enabled(project=None) -> bool:
 
 class Observer:
     MAX_BODY = 1024 * 1024
-    MAX_TOTAL = 32 * 1024 * 1024  # per project (settings: observer_body_quota_bytes)
-    RETENTION_SECONDS = 7 * 24 * 3600  # closed executions only (settings: observer_body_retention_seconds)
+    MAX_TOTAL = 32 * 1024 * 1024
+    RETENTION_SECONDS = 7 * 24 * 3600
     LOOP_INTERVAL = 1
     CLEANUP_INTERVAL = 300
     QUOTA_EVENT_INTERVAL = 60
-    # A recoverable gap is closed only after the consumer has been clean this long.
     RECOVERY_CLEAN_PASSES = 5
     RECOVERY_MIN_SECONDS = 15
     MAX_BACKOFF = 30
@@ -198,13 +179,11 @@ class Observer:
         self.commit_uncertainty: dict[str, str] = {}
         self.last_project_facts: dict[tuple, str] = {}
         self._clock = time.monotonic
-        # Failure state per execution: a failure of one never touches another.
-        self._permanent: set[str] = set()  # pending failure that lost data: never auto-cleared
+        self._permanent: set[str] = set()
         self._retry: dict[str, tuple[int, float]] = {}
         self._clean: dict[str, tuple[int, float]] = {}
         self._stages: dict[str, dict] = {}
         self._execution_project: dict[str, int] = {}
-        # Body store index: one scan per process, then maintained on write/purge.
         self._body_lock = threading.Lock()
         self._body_index: dict[str, dict] | None = None
         self._cleanup_requested = False
@@ -250,12 +229,6 @@ class Observer:
             return scope
 
     async def ensure_auto_scope(self, project, *, force=False):
-        """C01: an observe-mode scope over every node of the project's run, created at the first node start.
-
-        Never raises and never blocks native work: a failure is logged and kept in ``auto_failures``.
-        A scope that already exists (any state, including one the operator stopped) is never replaced,
-        unless ``force`` (the operator switched auto-observation back on) and no active scope remains.
-        """
         existing = next((s for s in self.scopes.values() if s.project_id == project.id), None)
         if existing is not None or not auto_observe_enabled(project):
             return existing
@@ -292,14 +265,12 @@ class Observer:
                 self._auto_decided.add(decided)
                 self.auto_failures.pop(project.id, None)
                 return scope
-            except Exception as exc:  # noqa: BLE001 - observation must never stop the node
+            except Exception as exc:
                 self.auto_failures[project.id] = type(exc).__name__
                 logger.warning("observation: auto-enable failed for project {}: {}", project.id, type(exc).__name__)
                 return None
 
     async def ensure_project_schema(self, project_id):
-        # Existing project.db files bypass init_project_db at application startup.
-        # Migrate only the explicitly observed source before installing its scope.
         async with self.master() as session:
             project = await session.get(Project, project_id)
             directory = project.data_dir if project else None
@@ -311,7 +282,6 @@ class Observer:
                 await migrate_orchestrator_schema(conn, scope=SCOPE_PROJECT)
 
     async def reload(self):
-        # Before any scope or diagnosis: an unconfirmed commit must outlive a restart.
         await self.restore_commit_uncertainty()
         async with self.master() as session:
             scopes = (await session.scalars(select(ExecutionControl).where(
@@ -342,7 +312,6 @@ class Observer:
 
     def stage(self, session, scope, kind, *, db_scope, node_key=None, attempt_id=None,
               request_id=None, project_id=None, payload=None):
-        """No commit here. A rollback removes this event with the business change."""
         if scope.mode not in {"observe", "managed"} or scope.observer_state not in {"active", "degraded"}:
             return False
         if project_id is not None and project_id != scope.project_id:
@@ -368,7 +337,6 @@ class Observer:
         return (self.body_root / str(uuid.UUID(execution_id)) / ".pinned").is_file()
 
     def save_body(self, execution_id, value):
-        # UUID is validated before any path construction; callers cannot escape body_root.
         execution_id = str(uuid.UUID(execution_id))
         raw = json.dumps(redact(value), ensure_ascii=False, default=str).encode()
         if len(raw) > self.MAX_BODY:
@@ -378,8 +346,6 @@ class Observer:
         secure_directory(folder)
         sha = hashlib.sha256(raw).hexdigest()
         path = folder / (sha + ".json")
-        # Quota is per project and read from the in-memory index, not the disk.
-        # Bodies are removed only by cleanup_bodies (closed, expired, unreferenced).
         blocked = None
         with self._body_lock:
             index = self._ensure_body_index()
@@ -409,7 +375,6 @@ class Observer:
             self._ensure_body_index()
 
     def _ensure_body_index(self):
-        # Caller holds _body_lock.
         if self._body_index is None:
             index = {}
             if self.body_root.is_dir():
@@ -440,7 +405,6 @@ class Observer:
         return sum(info["bytes"] for eid, info in self._body_index.items() if self._project_of(eid) == project)
 
     def body_usage(self):
-        """Bytes of stored bodies per project (None = execution not known to this process)."""
         with self._body_lock:
             index = self._ensure_body_index()
             usage = {}
@@ -455,7 +419,6 @@ class Observer:
                        execution_id, details["project_id"], details["project_bytes"], details["limit"])
         scope = next((s for s in self.scopes.values() if s.execution_id == execution_id), None)
         if scope is not None and scope.mode == "managed":
-            # Mandatory audit body is missing: fail closed, never silently.
             self.mark_gap(execution_id, RuntimeError("body_total_limit"))
         last, suppressed = self._quota_notified.get(execution_id, (None, 0))
         now = self._clock()
@@ -470,7 +433,6 @@ class Observer:
         self._pending_events.append((execution_id, kind, payload))
 
     async def flush_events(self):
-        """Durable, visible journal events raised from synchronous code paths."""
         async with self._events_lock:
             batch = list(self._pending_events)
             if not batch:
@@ -486,19 +448,12 @@ class Observer:
 
     @staticmethod
     def _journal_event(session, scope, kind, payload):
-        """Observer-originated fact written straight to the master journal."""
         session.add(ObservationEvent(event_id=str(uuid.uuid4()), execution_id=scope.execution_id,
             project_id=scope.project_id, workflow_run_id=scope.workflow_run_id, node_key=None,
             attempt_id=None, request_id=None, db_scope="master", kind=kind,
             payload=redact(payload), created_at=datetime.utcnow()))
 
     async def cleanup_bodies(self, *, force=False):
-        """Tombstone bodies of old, closed, unreferenced executions; report each as an event.
-
-        Files stay (tiny tombstones with the original sha/size) so journal references
-        do not turn into new body_not_available gaps. Live, pinned and referenced
-        executions are never touched.
-        """
         now = self._clock()
         due = self._cleanup_last is None or now - self._cleanup_last >= self.CLEANUP_INTERVAL
         if not (force or self._cleanup_requested or due):
@@ -532,7 +487,7 @@ class Observer:
         try:
             return self.is_pinned(execution_id)
         except ValueError:
-            return True  # not an execution folder: leave it alone
+            return True
 
     @staticmethod
     async def _has_open_references(session, execution_id):
@@ -572,7 +527,6 @@ class Observer:
         return before, after, files
 
     async def consume(self, execution_id, db_scope, source_factory):
-        """Cursor and journal entries commit together. Serialized in this one-process runtime."""
         async with self._delivery_lock:
             async with self.master() as dest:
                 scope = await dest.get(ExecutionControl, execution_id)
@@ -600,7 +554,6 @@ class Observer:
                         delivered += 1
                 scope.cursors = {**(scope.cursors or {}), db_scope: rows[-1].id}
                 await dest.commit()
-            # Notification follows durable delivery; missing notification is repaired by API history.
             from app.services.event_bus import get_bus
             await get_bus().publish(f"projects.{scope.project_id}", {
                 "type": "observation_updated", "execution_id": execution_id,
@@ -608,12 +561,6 @@ class Observer:
             return delivered
 
     def mark_gap(self, execution_id, error, *, recoverable=False):
-        """Fail closed for this execution only.
-
-        recoverable=True is for consumer-side unavailability (nothing was lost: the
-        outbox is durable and replayed). Any other gap means evidence may be missing
-        and is never cleared automatically.
-        """
         self.failures[execution_id] = type(error).__name__
         if not recoverable:
             self._permanent.add(execution_id)
@@ -634,8 +581,6 @@ class Observer:
 
     async def catch_up(self):
         from app.project_db import get_project_sessionmaker
-        # Stopped scopes may still have a transaction committing its recorded
-        # tail. Delivery remains enabled; production hooks stay disabled.
         async with self.master() as session:
             deliveries = (await session.scalars(select(ExecutionControl))).all()
         for scope in deliveries:
@@ -660,7 +605,6 @@ class Observer:
                 self._consumer_failed(scope.execution_id, exc)
 
     async def _settle(self, scope):
-        """After a fully successful pass: make a pending failure durable, or count towards recovery."""
         execution_id = scope.execution_id
         self._retry.pop(execution_id, None)
         if execution_id in self.failures:
@@ -710,7 +654,6 @@ class Observer:
         self._clean.pop(execution_id, None)
 
     async def _recover(self, execution_id):
-        """Close recoverable gaps after the cause stayed gone. The fact stays in history."""
         now = datetime.utcnow()
         async with self.master() as session:
             stored = await session.get(ExecutionControl, execution_id)
@@ -742,12 +685,11 @@ class Observer:
         logger.info("observer recovered: execution={} remaining_gaps={}", execution_id, len(rest))
 
     async def _run_stage(self, name, call):
-        """One loop stage. A failure here concerns no single execution, so it marks none."""
         state = self._stages.get(name)
         if state and self._clock() < state["next_at"]:
             return
         from app.services import supervisor_heartbeat
-        supervisor_heartbeat.beat()  # C-18: пульс и между стадиями, длинный виток не даёт ложной тревоги
+        supervisor_heartbeat.beat()
         try:
             await call()
             supervisor_heartbeat.beat()
@@ -782,13 +724,13 @@ class Observer:
                     row.attempts, row.last_error_at = state["attempts"], now
                 await session.commit()
         except Exception:
-            pass  # history is best effort; the stage state itself is kept in memory
+            pass
 
     async def loop(self):
         loaded = False
         from app.services import supervisor_heartbeat
         while True:
-            supervisor_heartbeat.beat()  # A18: пульс цикла; молчание ловит независимая проверка
+            supervisor_heartbeat.beat()
             if not loaded:
                 await self._run_stage("reload", self.reload)
                 loaded = "reload" not in self._stages
@@ -823,13 +765,12 @@ class Observer:
         await self.cleanup_bodies()
 
     def note_commit_uncertainty(self, execution_id, reason="business_commit_unconfirmed"):
-        """Block now (memory), persist as soon as the event loop allows (database)."""
         self.commit_uncertainty[execution_id] = reason
         self._uncertainty_unsaved[execution_id] = reason
         try:
             task = asyncio.get_running_loop().create_task(self.persist_uncertainty())
         except RuntimeError:
-            return  # no loop yet; maintain() retries
+            return
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -852,7 +793,6 @@ class Observer:
                                    execution_id, type(exc).__name__)
 
     async def restore_commit_uncertainty(self):
-        """Unconfirmed commits survive a restart; they are closed only by a person."""
         async with self.master() as session:
             rows = (await session.scalars(select(CommitUncertaintyMarker).where(
                 CommitUncertaintyMarker.cleared_at.is_(None)))).all()
@@ -866,7 +806,6 @@ class Observer:
             await self.restore_commit_uncertainty()
 
     async def clear_commit_uncertainty(self, execution_id, *, initiator, reason):
-        """Explicit, audited release. Returns False when nothing was open."""
         now = datetime.utcnow()
         async with self.master() as session:
             rows = (await session.scalars(select(CommitUncertaintyMarker).where(
@@ -904,7 +843,6 @@ def get_observer():
 
 
 def emit(kind, payload=None, *, request_id=None, body=None):
-    """Stage a scoped runtime fact; caller's transaction still decides visibility."""
     ctx = _attempt.get()
     if ctx is None or ctx.scope.observer_state == "stopped":
         return
@@ -919,11 +857,6 @@ def emit(kind, payload=None, *, request_id=None, body=None):
 
 
 async def record_fact(kind, payload=None, *, request_id=None, body=None):
-    """External/runtime facts survive project rollback; source is master, explicitly.
-
-    These facts never claim project data was committed. Own journal writes are
-    excluded from the business-row hook.
-    """
     ctx = _attempt.get()
     if ctx is None or ctx.scope.observer_state == "stopped":
         if ctx is None:
@@ -931,8 +864,6 @@ async def record_fact(kind, payload=None, *, request_id=None, body=None):
             await fact(kind, payload, body=body, request_id=request_id)
         return
     if ctx.db_scope == "master":
-        # Fallback execution shares the master business transaction; a second
-        # writer would deadlock. Its events have the same rollback semantics.
         emit(kind, payload, request_id=request_id or _request.get(), body=body)
         return
     try:
@@ -958,7 +889,6 @@ async def hold_uncertain_request(ctx,request_id):
 
 
 async def authorize_model_retrieve(url):
-    """Retrieval GET shares the same durable request limit, never a POST retry."""
     ctx=_attempt.get()
     if ctx is None:
         from app.services.decision_transport import current
@@ -972,11 +902,6 @@ async def authorize_model_retrieve(url):
 
 
 def observe_review(function):
-    """Bind native text reviews to the existing scope, without creating an attempt.
-
-    Unknown/ambiguous review ownership fails closed in managed mode. Unmanaged
-    projects retain the native behavior. This is accounting, not a new executor.
-    """
     import inspect
     signature=inspect.signature(function)
     @functools.wraps(function)
@@ -1014,13 +939,6 @@ def observe_review(function):
 
 
 def _usage_tokens(usage):
-    """Normalize a provider usage dict to (prompt, completion, cached) token
-    counts. Handles both Responses-API naming (input_tokens/output_tokens,
-    the shape this app's Kie endpoint actually returns -- see
-    web/src/lib/observation-view.ts) and Chat-Completions naming
-    (prompt_tokens/completion_tokens), since api_tracker_hook.record_api_call
-    was written against the latter.
-    """
     usage = usage if isinstance(usage, dict) else {}
     prompt = usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0
     completion = usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0
@@ -1029,11 +947,6 @@ def _usage_tokens(usage):
     if isinstance(details, dict):
         cached = details.get("cached_tokens", cached) or cached
     if not prompt:
-        # Kie's /codex/v1/responses reports input_tokens=0 at the top level
-        # (observed on a real call, 2026-10-01) and puts the real per-part
-        # figures under usage.attribution.{request_fields,items}.*; summing
-        # each part's own totals (not their nested "content" breakdowns, which
-        # would double count) recovers the true input and cached counts.
         attribution = usage.get("attribution")
         if isinstance(attribution, dict):
             parts = []
@@ -1049,15 +962,15 @@ def _usage_tokens(usage):
     return int(prompt), int(completion), int(cached)
 
 
-# Errors after which the provider may already have accepted (and billed) the request.
 _UNCERTAIN_ERROR_TYPES = frozenset({"CancelledError", "ReadTimeout", "WriteTimeout", "ReadError",
                                     "RemoteProtocolError", "TimeoutError"})
 
 
-def effective_text_provider() -> str:
-    """Provider the current text request really goes to: node override first, then the
-    header setting. Mirrors gpt_api.is_responses_mode; a profile never changes it."""
+def effective_text_provider(model: str | None = None) -> str:
     try:
+        from app.services.gpt_api import is_anthropic_model
+        if is_anthropic_model(model):
+            return "vibecode"
         from app.services.llm_override import current_override
         ov = current_override()
         if ov is not None and ov.kind == "text" and ov.provider in {"kie", "vibecode"}:
@@ -1070,28 +983,6 @@ def effective_text_provider() -> str:
 
 def _track_api_cost(*, model, usage, duration_sec, project_id=None,
                      status_code=200, error_message="", provider: str = "kie"):
-    """Fire-and-forget cost tracking via the existing api-tracker module --
-    never recomputes pricing here (api_tracker_hook._calc_cost owns that),
-    never blocks the caller (record_api_call spawns its own daemon thread),
-    never raises (api_tracker_hook already fails safe internally, but this
-    call site is additionally guarded since cost tracking must never be
-    able to break a real model request).
-
-    Not gated by a ``synthetic*`` key and not by pytest (A08): such a key used to switch recording off
-    silently. Now a call is skipped only when the provider has no credential at all (nothing could have been
-    billed) or MEDIA_SPEND_RECORDING is false; a ``synthetic*`` key only tags the row (``synthetic_key``
-    in the tracker metadata) so it can be told apart. The local spend ledger is written only when it is the
-    configured database (``media_spend.ledger_target_ok``), so a sandbox never writes into the real one.
-    Cloud sending is separate and off by default (API_TRACKER_CLOUD_ENABLED, A17).
-
-    The gate is the key of the provider that took the request (Kie: GPT_API_KEY,
-    Vibecode: VIBECODE_API_KEY); one provider's key never enables the other's row.
-    Vibecode rows are priced from the catalog snapshot, not Kie's calibrated rates
-    (see api_tracker_hook.VIBECODE_PRICE_SOURCE). Every row carries ``cost_kind=estimated``:
-    the price is computed here, not reported by the provider.
-
-    A failure is never silent: logged with its traceback and traced as a gap (media_spend.note_gap).
-    """
     try:
         if project_id is None:
             project_id = _cost_project.get()
@@ -1116,7 +1007,7 @@ def _track_api_cost(*, model, usage, duration_sec, project_id=None,
         if key.startswith("synthetic"):
             meta["synthetic_key"] = True
         extra["metadata"] = meta
-        if status_code == 200:  # local spend ledger: settle the reservation / record a native call
+        if status_code == 200:
             if media_spend.TEST_FORCE or media_spend.ledger_target_ok():
                 from app.services import spend_guard
                 spend_guard.schedule_actual(project_id=project_id, provider=provider, usd=api_tracker_hook._calc_cost(
@@ -1132,7 +1023,6 @@ def _track_api_cost(*, model, usage, duration_sec, project_id=None,
             project_source=str(project_id) if project_id is not None else "", **extra,
         )
     except Exception as exc:
-        # Cost tracking must never affect the real request, but a lost row must leave a trace.
         try:
             from app.services import media_spend as _ms
             _ms.note_gap(str(provider or ""), "track_api_cost", project_id=project_id, error=exc,
@@ -1142,9 +1032,8 @@ def _track_api_cost(*, model, usage, duration_sec, project_id=None,
 
 
 async def _credit_guard(exc, provider, master=None):
-    """HTTP 402 / credits exhausted -> engage the supervisory kill switch (spend_guard)."""
     try:
-        if master is None:  # unmanaged call: only with a real credential, never from synthetic/test runs
+        if master is None:
             from app.settings import settings
             key = str(settings.vibecode_api_key if provider == "vibecode" else settings.gpt_api_key or "").strip()
             if not key or key.startswith("synthetic"):
@@ -1156,7 +1045,6 @@ async def _credit_guard(exc, provider, master=None):
 
 
 def observe_model(function):
-    """One request identity for each low-level POST, including retry/split calls."""
     @functools.wraps(function)
     async def wrapped(*args, **kwargs):
         ctx = _attempt.get()
@@ -1166,16 +1054,17 @@ def observe_model(function):
             if hook is not None:
                 return await hook.send(function, args, kwargs)
             start = time.monotonic()
-            provider = effective_text_provider()
+            request_model = kwargs.get("model") or kwargs.get("use_model")
+            provider = effective_text_provider(request_model)
             try:
                 result = await function(*args, **kwargs)
             except Exception as exc:
-                _track_api_cost(model=kwargs.get("model"), usage=None,
+                _track_api_cost(model=request_model, usage=None,
                     duration_sec=time.monotonic() - start, provider=provider,
                     status_code=0, error_message=f"{type(exc).__name__}: {exc}")
                 await _credit_guard(exc, provider)
                 raise
-            _track_api_cost(model=getattr(result, "model", kwargs.get("model")),
+            _track_api_cost(model=getattr(result, "model", request_model),
                 usage=getattr(result, "usage", None), duration_sec=time.monotonic() - start,
                 provider=provider)
             return result
@@ -1184,7 +1073,7 @@ def observe_model(function):
         from app.services.profiles_v1 import transform_request
         kwargs = await transform_request(ctx, kwargs)
         body = kwargs.get("body") or {}
-        provider = effective_text_provider()
+        provider = effective_text_provider(body.get("model"))
         if ctx.scope.mode == "managed":
             from app.services.actions_recovery import check_body
             await check_body(ctx, digest(body), body=body)
@@ -1230,7 +1119,6 @@ def observe_model(function):
                 duration_sec=time.monotonic() - start, project_id=getattr(ctx.scope, "project_id", None),
                 provider=provider)
             cost_tracked = True
-            # Responses: a status other than completed; chat/completions (no status): a cut-off finish_reason.
             if ctx.scope.mode=='managed' and (raw.get('sse_salvaged') or raw.get('status') not in {None,'completed'}
                     or response_truncated(raw, finish_reason)):
                 await hold_uncertain_request(ctx,request_id)
@@ -1247,10 +1135,6 @@ def observe_model(function):
                 "status_code":context.get("status_code") if isinstance(context,dict) else None,
                 "uncertain":type(exc).__name__ in _UNCERTAIN_ERROR_TYPES or (isinstance(context,dict) and (
                     context.get("error_kind") in {"timeout","network"} or context.get("stream_error") in _UNCERTAIN_ERROR_TYPES))})
-            # Only track a failed-call cost entry for a request that actually
-            # reached the provider and wasn't already tracked above (the
-            # "uncertain external result" re-raise follows a real, already-
-            # tracked success -- tracking it again would double-count spend).
             if call_attempted and isinstance(exc, Exception):
                 await _credit_guard(exc, provider, ctx.observer.master)
             if call_attempted and not cost_tracked:
@@ -1316,7 +1200,6 @@ def observe_apply(function):
 
 
 def _media_resume_nodes():
-    """Nodes whose attempt records a request-input baseline (paid media resumes and local supervised re-runs)."""
     from app.services.revisions import BASELINE_NODES
     return BASELINE_NODES
 
@@ -1327,9 +1210,6 @@ async def observe_attempt(session, project):
     await observer.ensure_auto_scope(project)
     from app.services.excel_gpt_node import active_excel_gpt_node_key
     node_key = active_excel_gpt_node_key(project)
-    # Native media (and other registry nodes) do not use the excel active key.
-    # Resolve from the immutable run and actual running NodeRun, never a guessed
-    # first node of a repeated type or a stale key left by a previous text step.
     from app.orchestrator.node_registry import RUNNING_TO_NODE_TYPE, spec_for_node
     native_type = RUNNING_TO_NODE_TYPE.get(project.status)
     project_scope = next((s for s in observer.scopes.values() if s.project_id == project.id), None)
@@ -1355,9 +1235,6 @@ async def observe_attempt(session, project):
     scope = next((s for s in observer.scopes.values()
                   if s.project_id == project.id and node_key in s.node_keys), None)
     if scope is None:
-        # Stopping observation must not implicitly remove a managed execution's
-        # request-budget gate. Rehydrate the durable scope for accounting only;
-        # its stopped observer state still prevents new journal writes.
         from app.services.actions_v1 import get_permission
         permission = get_permission(project.id)
         if permission is not None and node_key in permission.node_keys:
@@ -1380,13 +1257,10 @@ async def observe_attempt(session, project):
         attempt_id = claimed_id
         revision = await input_revision(session, project, node_key, parts=revision_parts)
     elif native_type in _media_resume_nodes() and node_key:
-        # Media nodes and the local assemble are observed without a managed scope; the supervised recovery
-        # (media_admission / local_node_recovery) is admitted later, so the input baseline of THIS attempt
-        # (the request inputs of a paid task, or the true inputs of the local work) is recorded now. Never fatal.
         try:
             from app.services.actions_recovery import input_revision
             revision = await input_revision(session, project, node_key, parts=revision_parts)
-        except Exception:  # noqa: BLE001 - a missing baseline only makes the later admission refuse
+        except Exception:
             revision, revision_parts = None, {}
     ctx = AttemptContext(observer, scope, session, source, node_key, attempt_id)
     if scope.mode == "managed":
@@ -1396,8 +1270,6 @@ async def observe_attempt(session, project):
     from app.services.node_capabilities import capability_for
     capability = capability_for("excel_gpt" if not native_type or native_type.startswith("enrich_") else native_type)
     ctx.native_node_type = capability.node_type
-    # A local node (assemble) claimed by a recovery ticket runs inside the resume-only scope: any paid seam refuses
-    # before a byte leaves and is counted (local_recovery_guard fact, read back by the ticket's verification).
     from app.orchestrator.node_spec import capability_spec_for
     node_spec_data = capability_spec_for(capability.node_type)
     local_recovery = bool(recovery_claimed and node_spec_data is not None and node_spec_data.local_recovery)
@@ -1430,8 +1302,6 @@ async def observe_attempt(session, project):
         if overlay:
             await record_fact("profile_effective_context", {k:overlay[k] for k in ("overlay_id","profile_id","candidate_hash","base_version","attempt_id","candidate")})
         yield
-        # Node-type result hooks come from the named verifier registry
-        # (node_spec.verifier_spec_for), not per-type branches.
         from app.orchestrator.node_spec import run_verifier_after_success
         await run_verifier_after_success(ctx, session, project, capability.node_type)
         await observe_only_result_check(ctx, session, project, capability.node_type)
@@ -1449,14 +1319,12 @@ async def observe_attempt(session, project):
         from app.orchestrator.node_spec import run_verifier_after_error
         from app.services.step_cancel import StepCancelledError
         if isinstance(exc, Exception) and not isinstance(exc, StepCancelledError):
-            # The failed attempt's OWN outcome, for the result hook: a file an earlier run left behind is not
-            # the result of this attempt (media_verification types the failure by this, not by that file).
             ctx.attempt_exception = exc
         await run_verifier_after_error(ctx, session, project, capability.node_type, exc)
         if isinstance(exc, Exception):
             try:
                 await record_guard()
-            except Exception:  # noqa: BLE001 - the original failure is what propagates
+            except Exception:
                 pass
         if (isinstance(exc, Exception) and getattr(ctx, 'scene_native_node', None) is not None
                 and not getattr(ctx, 'scene_result_observed', False)):
@@ -1496,12 +1364,6 @@ OBSERVE_ONLY_CHECK_TYPES = frozenset({"plan", "script", "split", "image_prompts"
 
 
 async def observe_only_result_check(ctx, session, project, node_type):
-    """C01/C02: the result check of plan/script/split/image_prompts outside a managed scope.
-
-    The native verifiers hold or fail the run in managed mode only. Here the same pure proofs are journalled with
-    ``observe_only`` and an incident (runtime_check failed) is raised on a broken result, but the run is never held,
-    retried or failed: no raise, no recovery right. Returns the proof dict, or None when nothing was checked.
-    """
     if ctx.scope.mode == "managed" or node_type not in OBSERVE_ONLY_CHECK_TYPES:
         return None
     try:
@@ -1527,23 +1389,17 @@ async def observe_only_result_check(ctx, session, project, node_type):
         proof = {**proof, "observe_only": True, "run_held": False}
         await record_fact("node_result_verification", proof, body=body)
         if proof.get("status") == "failed" and node_type != "image_prompts":
-            # image_prompts already becomes a verification_hold incident from the verification fact itself.
             await record_fact("runtime_check", {
                 "check": "observe_only_" + node_type + "_result", "performed": True, "status": "failed",
                 "observe_only": True, "initiator": "observer", "business_commit_claim": False,
                 "semantic_quality_verified": False, "reason": proof.get("reason")})
         return proof
-    except Exception as exc:  # noqa: BLE001 - an observer check must never change the native outcome
+    except Exception as exc:
         ctx.observer.mark_gap(ctx.scope.execution_id, exc)
         return None
 
 
 async def record_project_event(session, project, kind, payload):
-    """C06: a project-level journal fact (no node), staged in the caller's transaction.
-
-    Starts auto-observation if needed. Returns True when staged; False when the project has no active scope
-    (observation switched off or failed), so the caller can fall back to its own log line.
-    """
     observer = get_observer()
     scope = await observer.ensure_auto_scope(project)
     if scope is None:
@@ -1552,14 +1408,13 @@ async def record_project_event(session, project, kind, payload):
     source = "project" if Path(str(sync_session.bind.url.database)).name == "project.db" else "master"
     try:
         return bool(observer.stage(sync_session, scope, kind, db_scope=source, node_key=None, payload=payload))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         observer.mark_gap(scope.execution_id, exc)
         return False
 
 
 @event.listens_for(Session, "before_flush")
 def _stage_node_changes(session, _flush_context, _instances):
-    # No scopes/default-off: not even a journal query or business-row write.
     observer = _observer
     if observer is None or not observer.scopes:
         return
@@ -1576,7 +1431,7 @@ def _stage_node_changes(session, _flush_context, _instances):
                     "initiator": "project_state_write", "human_identity": None,
                 })
         if not isinstance(row, NodeRun):
-            continue  # In particular, never observe writes to our own journal/cursors.
+            continue
         scope = observer.scopes.get(row.workflow_run_id)
         if scope is None or row.node_key not in scope.node_keys:
             continue
@@ -1624,7 +1479,6 @@ def _shared_commit_failure(session, previous_transaction):
 
 
 def observe_check(name, summarize):
-    """Wrap existing checks only; preserve return value and exception behavior."""
     def decorate(function):
         @functools.wraps(function)
         def wrapped(*args, **kwargs):
@@ -1644,11 +1498,6 @@ def observe_check(name, summarize):
 
 
 def stage_project_fact(session, project, kind, payload):
-    """Known worker decision or project control, sharing its original transaction.
-
-    Suppress unchanged polling facts only after a confirmed commit; a rollback
-    does not suppress the next attempt to record the same fact.
-    """
     observer = _observer
     if observer is None or not observer.scopes:
         return
@@ -1676,7 +1525,6 @@ def stage_project_fact(session, project, kind, payload):
 
 
 def panel_safe(value):
-    """Metadata projection; full input/output bodies remain local only."""
     value = redact(value)
     if isinstance(value, dict):
         hidden = {"text", "raw", "response", "event", "accumulated_text", "ops",
@@ -1691,7 +1539,6 @@ def panel_safe(value):
 
 
 def observation_tables():
-    """Orchestrator-owned tables created by the observation migration (also its schema fingerprint)."""
     from app.services.diagnosis import Incident, DiagnosisState
     from app.services.actions_v1 import ActionExecutionControl, ActionRecord, ManagedRunAllowance
     from app.services.actions_recovery import RecoveryAction
@@ -1714,7 +1561,6 @@ def observation_tables():
 
 
 async def migrate_observation_schema(conn):
-    """Additive migration used by the same startup path as existing schema migrations."""
     tables = observation_tables()
     await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=tables))
 
@@ -1744,11 +1590,6 @@ async def native_approval_evidence(session, scope):
 
 
 async def pending_approval_context(session, scope, events):
-    """Read only committed, scoped HITL creation plus the current native decision.
-
-    Native text nodes can be done while approval is pending. Content/approval
-    state is authoritative in project.db; it is not a master replica mismatch.
-    """
     from app.models import HITLRequest, HITLDecision
     latest_starts = {}
     approvals = {}
@@ -1781,11 +1622,6 @@ async def pending_approval_context(session, scope, events):
 
 
 def confirmed_qc_noop(events, request_id):
-    """Request/attempt-scoped evidence, not a semantic quality verdict.
-
-    Caller supplies one attempt. DB completion and current-attempt checks are
-    separate, so a parsed no-op cannot close another attempt or DB incident.
-    """
     if not request_id:
         return False
     related = [e for e in events if e.get('request_id') == request_id]
@@ -1808,7 +1644,6 @@ def confirmed_qc_noop(events, request_id):
 
 
 def accepted_qc_noop_parse(payload):
-    """Format acceptance only. Checks, attempt completion and quality are separate."""
     return (all(payload.get(k) is True for k in ('syntax_valid','parsed','schema_valid',
         'ops_field_present','ops_type_valid','empty_ops_allowed','empty_ops_accepted'))
         and payload.get('ops_count') == 0 and payload.get('payload_present') is False)

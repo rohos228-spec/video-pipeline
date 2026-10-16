@@ -1,4 +1,3 @@
-/** Последний текст ИИзменение по слоту кадра — показывать при повторном открытии. */
 
 export function montageAiChangeStorageKey(
   projectId: number,

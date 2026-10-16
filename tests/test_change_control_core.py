@@ -1,6 +1,3 @@
-"""Контур изменений: уровни, allow-list, CAS, проверки, применение, откат, авто-откат.
-
-Шлюз проекта в памяти, временная БД и временный PROMPTS_ROOT. Сети и платных вызовов нет."""
 from __future__ import annotations
 
 import pytest
@@ -9,7 +6,7 @@ from sqlalchemy import text
 from app.services.change_control import service, shadow
 from app.services.change_control import store as cs
 from app.services.change_control.errors import ChangeFailed, ChangeRefused, StaleBase
-from tests.change_control_support import (  # noqa: F401
+from tests.change_control_support import (
     GPT_PROMPT, HUMAN, PLAN_PROMPT, FakeGateway, cc, canvas_meta, prompts_root)
 
 PLAN_TARGET = "project:1:n_plan:prompt"
@@ -38,7 +35,6 @@ async def _refused(coro, code):
     return exc.value
 
 
-# --- уровни ----------------------------------------------------------------------------------
 
 async def test_t3_is_only_recorded_for_a_developer_and_never_applied(cc) -> None:
     view = await service.propose(
@@ -54,7 +50,6 @@ async def test_t3_is_only_recorded_for_a_developer_and_never_applied(cc) -> None
     events = [(h.event, h.outcome) for h in await cc.history()]
     assert ("change_proposed", "developer_review") in events
     assert ("change_applied", "refused") in events
-    # секрет в diff для разработчика тоже не принимается
     await _refused(service.propose(
         cc.gw, tier="T3", kind="developer_review", rationale="r", proposer=HUMAN,
         candidate={"summary": "s", "diff": "api_key=sk-abcdefghijkl123456"}), "lint_failed")
@@ -77,16 +72,13 @@ async def test_kind_must_belong_to_tier_and_input_is_strict(cc) -> None:
     await _refused(_propose(cc, candidate={"step": "split"}), "bad_candidate")
 
 
-# --- allow-list ----------------------------------------------------------------------------------
 
 async def test_allow_list_refuses_everything_outside_the_list(cc) -> None:
     await _refused(_propose(cc, node_key="n_hero"), "node_type_not_allowed")
     await _refused(_propose(cc, node_key="n_missing"), "node_not_found")
     await _refused(_propose(cc, node_key="../x"), "bad_node_key")
-    # вид изменения не разрешён для этого типа ноды
     await _refused(_propose(cc, kind="node_options", node_key="n_plan",
                             candidate={"values": {"outputMode": "text"}}), "kind_not_allowed")
-    # поля вне списка: модель/провайдер/вход нельзя
     await _refused(_propose(cc, kind="node_options", node_key="n_gpt",
                             candidate={"values": {"modelId": "gpt-x"}}), "field_not_allowed")
     await _refused(_propose(cc, kind="node_options", node_key="n_gpt",
@@ -94,8 +86,7 @@ async def test_allow_list_refuses_everything_outside_the_list(cc) -> None:
     await _refused(_propose(cc, candidate={"step": "split", "values": {"provider": 1}}),
                    "field_not_allowed")
     await _refused(_propose(cc, candidate={"step": "plan", "values": {"duration_seconds": 80}}),
-                   "field_not_allowed")  # шаг не совпадает с шагом ноды
-    # несуществующий вариант: выбор только среди готовых
+                   "field_not_allowed")
     await _refused(_propose(cc, kind="prompt_variant", node_key="n_plan",
                             candidate={"variant": "no_such"}), "variant_not_found")
 
@@ -114,7 +105,6 @@ async def test_numeric_limits_caps_and_change_factor(cc) -> None:
                    "lint_failed")
     await _refused(_propose(cc, candidate={"step": "split", "values": {"cell_max_chars": 400}}),
                    "lint_failed")
-    # нет текущего значения: откатывать будет не к чему
     err = await _refused(_propose(cc, candidate={"step": "split", "values": {"cell_avg_min": 150}}),
                          "lint_failed")
     assert any("no current value" in e for e in err.errors)
@@ -130,13 +120,11 @@ async def test_node_options_must_take_effect(cc) -> None:
                             candidate={"values": {"emitKinds": []}}), "lint_failed")
     await _refused(_propose(cc, kind="node_options", node_key="n_gpt",
                             candidate={"values": {"checkFix": "yes"}}), "lint_failed")
-    # значение, уже действующее на ноде, не предлагается повторно
     cc.gw.state["meta"]["excel_gpt_nodes"] = {"n_gpt": {"useSnapshot": True}}
     await _refused(_propose(cc, kind="node_options", node_key="n_gpt",
                             candidate={"values": {"useSnapshot": True}}), "lint_failed")
 
 
-# --- применение и откат ----------------------------------------------------------------------------
 
 async def test_step_params_apply_and_rollback_round_trip_with_version_rows(cc) -> None:
     view = await _propose(cc)
@@ -163,11 +151,9 @@ async def test_step_params_apply_and_rollback_round_trip_with_version_rows(cc) -
     assert (await cc.proposal(view["id"])).status == "rolled_back"
     listed = await service.list_versions(SPLIT_TARGET)
     assert listed["current_version"] == 3 and [v["version"] for v in listed["items"]] == [3, 2, 1]
-    # откат отката возвращает применённое значение
     again = await service.rollback(cc.gw, SPLIT_TARGET, 3, approved_by=HUMAN)
     assert again["version"] == 4 and again["restored_from_version"] == 2
     assert cc.gw.state["meta"]["node_step_params"]["split"]["cell_max_chars"] == 600
-    # откат по устаревшему номеру версии (в том числе базовой) не проходит
     await _refused(service.rollback(cc.gw, SPLIT_TARGET, 1, approved_by=HUMAN), "stale_base")
 
 
@@ -190,9 +176,7 @@ async def test_prompt_variant_non_excel_uses_the_node_slot_not_the_global_overri
     assert pl.resolve_project_prompt_with_source(
         {}, "plan", meta=cc.gw.state["meta"]) == ("plan_alt", "slot")
     await service.rollback(cc.gw, PLAN_TARGET, 2, approved_by=HUMAN)
-    # слот нельзя удалить через PATCH проекта: откат закрепляет прежний эффективный вариант
     assert cc.gw.state["meta"]["prompt_slot_variants"]["n_plan"]["main"] == "default"
-    # общие файлы не тронуты; prompt_overrides (он пишет ГЛОБАЛЬНЫЙ active_variants.json) не трогается
     assert cc.master_bytes("01_plan/default.md") == PLAN_PROMPT.encode()
     assert all("prompt_overrides" not in b for b in cc.gw.patches)
     assert cc.gw.state["prompt_overrides"] == {}
@@ -213,7 +197,6 @@ async def test_prompt_variant_excel_node_uses_its_slot(cc) -> None:
     await _apply(cc, view)
     assert cc.gw.state["meta"]["prompt_slot_variants"] == {"n_gpt": {"main": "cc_test_alt"}}
     await service.rollback(cc.gw, GPT_TARGET, 2, approved_by=HUMAN)
-    # слот нельзя удалить через PATCH проекта: откат закрепляет прежний эффективный вариант
     assert cc.gw.state["meta"]["prompt_slot_variants"]["n_gpt"]["main"] == "default"
 
 
@@ -246,7 +229,7 @@ async def test_t2_text_creates_a_project_scoped_variant_and_never_edits_master(c
     assert rows[1].content["text"] == NEW_PLAN and rows[0].content["variant"] == "default"
     await service.rollback(cc.gw, PLAN_TARGET, res["version"], approved_by=HUMAN)
     assert cc.gw.state["meta"]["prompt_slot_variants"]["n_plan"]["main"] == "default"
-    assert (cc.prompts / "01_plan" / f"{name}.md").exists()  # файл остаётся, история цела
+    assert (cc.prompts / "01_plan" / f"{name}.md").exists()
 
 
 async def test_t2_text_on_an_excel_node_writes_a_new_agent_file_and_slot(cc) -> None:
@@ -260,7 +243,6 @@ async def test_t2_text_on_an_excel_node_writes_a_new_agent_file_and_slot(cc) -> 
     assert cc.master_bytes("05_excel_gpt/default.md") == GPT_PROMPT.encode()
 
 
-# --- проверки текста ---------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("node,base,mutate,needle", [
     ("n_plan", PLAN_PROMPT, lambda t: t.replace("{{VAR:PROJECT_TOPIC}}", "tema"), "placeholders lost"),
@@ -290,7 +272,6 @@ async def test_prompt_text_refused_when_the_project_composes_prompts_from_blocks
 async def test_lint_failure_at_apply_is_recorded_as_failed_and_nothing_is_written(cc) -> None:
     view = await _propose(cc, tier="T2", kind="prompt_text", node_key="n_plan",
                           candidate={"text": NEW_PLAN})
-    # состояние изменилось после предложения: кандидат теперь содержит секрет
     bad = dict(view["candidate"], text=NEW_PLAN + " password=hunter2hunter2")
     bad["variant"] = service.targets.PromptHandler.variant_name_for("n_plan", bad["text"])
     async with cc.factory() as s:
@@ -310,7 +291,6 @@ async def test_lint_failure_at_apply_is_recorded_as_failed_and_nothing_is_writte
     assert not list((cc.prompts / "01_plan").glob("cc-*"))
 
 
-# --- CAS и устаревшая база ----------------------------------------------------------------------------
 
 async def test_stale_base_when_another_change_was_applied_first(cc) -> None:
     first = await _propose(cc)
@@ -368,7 +348,6 @@ async def test_applied_proposal_cannot_be_applied_twice_and_duplicates_are_merge
     assert len(await cc.versions(SPLIT_TARGET)) == 2
 
 
-# --- проверка после записи и авто-откат ------------------------------------------------------------------
 
 async def test_failed_verification_restores_the_old_value_and_records_it(cc) -> None:
     view = await _propose(cc)
@@ -422,7 +401,6 @@ async def test_rollback_verification_failure_restores_the_applied_value(cc) -> N
     assert [r.kind for r in await cc.versions(SPLIT_TARGET)][-2:] == ["rollback", "auto_rollback"]
 
 
-# --- человек, занятость, тень ------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("who", ["planner:x", "model:y", "agent:z", "system", ""])
 async def test_only_a_human_can_apply_or_roll_back(cc, who) -> None:
@@ -476,5 +454,4 @@ async def test_audit_rows_for_propose_apply_and_rollback(cc) -> None:
     assert rows[0].actor == HUMAN and rows[1].plan_id == "plan-1"
     assert rows[1].params["proposal_id"] == view["id"] and rows[1].params["version"] == 2
     assert rows[2].params["target"] == SPLIT_TARGET
-    # в журнал не попадает текст промпта
     assert all("text" not in (h.params or {}) for h in rows)

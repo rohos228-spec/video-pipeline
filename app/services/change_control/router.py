@@ -1,9 +1,3 @@
-"""REST под /api/change-control. Чтение, создание и отклонение предложения.
-
-Эндпоинтов одобрения и применения нет намеренно: применить и откатить можно
-только планом слоя действий с подтверждением оператора (change.apply / change.rollback).
-Автор предложения берётся из AuthDep, а не из тела запроса.
-"""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -78,7 +72,6 @@ class RejectIn(BaseModel):
 
 @router.post("/proposals/{proposal_id}/reject", dependencies=[LocalOnlyDep])
 async def reject_proposal(proposal_id: str, body: RejectIn, operator: AuthDep) -> dict:
-    """Только закрывает открытое предложение; применить и изменить значение не может."""
     who = approval.OperatorIdentity.from_token(operator).id
     try:
         return await service.reject(proposal_id, body.reason, actor=who)

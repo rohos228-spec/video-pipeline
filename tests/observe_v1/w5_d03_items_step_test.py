@@ -1,9 +1,3 @@
-"""W5-2 (D03): идемпотентность по ключу запроса в НАСТОЯЩЕМ шаге `generate_items.run`.
-
-Класс доказательства: D на заменителе провайдера (страница Outsee подменена, остальное настоящее: шаг,
-лестница `generate_image_with_retries`, `outsee_guard`, таблица `outsee_idempotency`). Сети и платных вызовов нет.
-Живого доказательства нет.
-"""
 import unittest
 from unittest.mock import patch
 
@@ -32,16 +26,8 @@ class ItemsIdempotency(ref.ItemsDryRun):
         self.assertEqual([a["events"] for a in atts], [["intent", "result", "consumed"]])
         self.assertEqual(atts[0]["state"], "consumed")
 
-    # ОТКРЫТЫЙ ДЕФЕКТ (найден 2026-10-13, когда набор observe впервые вошёл в автоматический прогон): артефакт сохраняется ДО
-    # mark_consumed, поэтому после смерти между ними рестарт видит готовый артефакт, пропускает предмет и НЕ отмечает попытку
-    # consumed: запись остаётся в состоянии result (generate_items.py, блок после session.commit). Повторная генерация того же
-    # предмета может отдать старый файл вместо нового платного запроса. Не платит дважды, но реестр не закрыт.
-    # Тест красный по существу, поэтому expectedFailure: когда шаг начнёт закрывать запись, тест станет «неожиданным успехом»
-    # и сборка потребует убрать эту пометку.
     @unittest.expectedFailure
     async def test_process_dies_after_the_paid_result_restart_takes_the_file_and_pays_nothing(self):
-        """Критерий D03: падение после платного ответа, до сохранения артефакта. Рестарт не шлёт второй запрос,
-        результат берётся из записи, шаг доходит до items_ready."""
         async def dies_after_result(project_id, key):
             raise base.ProcessDied()
 
@@ -62,11 +48,9 @@ class ItemsIdempotency(ref.ItemsDryRun):
         self.assertEqual(len(files_before), 1)
         async with self.business() as session:
             arts = (await session.scalars(select(Artifact).where(Artifact.kind == ArtifactKind.item_reference))).all()
-        # Шаг сохраняет артефакт ДО отметки consumed (безопасный порядок), поэтому к моменту смерти на consumed он может
-        # уже быть. Главное: не больше одного; после рестарта дубля нет (проверка ниже).
         self.assertLessEqual(len(arts), 1)
 
-        await self.worker()  # рестарт
+        await self.worker()
         self.assertEqual(len(self.outsee_calls), 1, "второй платный запрос не должен уйти")
         self.assertEqual(self.last_status_change, (ProjectStatus.generating_items, ProjectStatus.items_ready))
         self.assertEqual(sorted(p.name for p in self.result_files()), files_before)
@@ -93,7 +77,6 @@ class ItemsIdempotency(ref.ItemsDryRun):
         self.assertIn("исход платного запроса в Outsee неизвестен", str(blocked.exception))
         self.assertTrue(is_no_resubmit(blocked.exception.__cause__), type(blocked.exception.__cause__))
         self.assertEqual(len(self.outsee_calls), 1)
-        # решение человека: найденный в истории Outsee файл подставляется, второй платный запрос не нужен
         found = self.data / "items" / "found_in_history.png"
         found.write_bytes(base.media_bytes("image", base.Path(self.tmp.name) / "scratch"))
         self.assertTrue(await idem.adopt_file(base.PID, "predmet1", found))
@@ -105,7 +88,6 @@ class ItemsIdempotency(ref.ItemsDryRun):
         self.assertEqual([a.path for a in arts], [str(found)])
 
 
-# наследованные проверки обычных сценариев уже выполняются в test_media_dry_run_items
 for _name in [n for n, v in vars(ref.ItemsDryRun).items() if n.startswith("test_") and v is not None]:
     setattr(ItemsIdempotency, _name, None)
 del _name

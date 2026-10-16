@@ -99,7 +99,7 @@ async def _guard_one_project(
             await _reset_matching_noderuns_after_rollback(
                 session, project, previous
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug(
                 "[#{}] STARTUP GUARD: NodeRun reset after rollback failed",
                 project.id,
@@ -186,7 +186,7 @@ async def block_pipeline_autorun_on_startup(session: AsyncSession) -> dict[str, 
                         )
                         await push_runtime_to_master(ps, pp)
                         isolated_ok = True
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning(
                 "[#{}] STARTUP GUARD: isolated project.db rollback failed",
                 project.id,

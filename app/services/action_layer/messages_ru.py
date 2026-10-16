@@ -1,8 +1,3 @@
-"""Русские тексты ошибок слоя действий (коды остаются машинными и не меняются).
-
-``validation_ru`` переводит сообщения ``schema.validate`` ("$.frame_number: required") для человека;
-сам валидатор остаётся английским: его тексты идут в проверки и в повтор модели.
-"""
 from __future__ import annotations
 
 import re
@@ -25,7 +20,6 @@ _PATTERNS: tuple[tuple[re.Pattern, str], ...] = tuple((re.compile(p), r) for p, 
 
 
 def validation_ru(message: str) -> str:
-    """Один текст ошибки проверки параметров по-русски; незнакомый возвращается как есть."""
     text = str(message)
     for pattern, repl in _PATTERNS:
         if pattern.match(text):
@@ -39,13 +33,10 @@ def validation_list_ru(messages: list[str]) -> list[str]:
 
 
 def spend_cap_ru(exc) -> str:
-    """SpendCapExceeded по-русски (код остаётся в поле code)."""
     return (f"Локальный потолок расходов исчерпан ({exc.code}): потрачено {exc.spent:.2f} USD, "
             f"оценка {exc.estimate:.2f} USD, потолок {exc.cap:.2f} USD.")
 
 
-# Журнал слоя действий (action_layer_history.event): код события -> фраза для оператора.
-# Коды остаются машинными; этот словарь использует лента проекта (timeline_ru) и история в интерфейсе.
 HISTORY_EVENT_RU: dict[str, str] = {
     "plan_created": "План действий создан",
     "plan_started": "План действий запущен",
@@ -81,6 +72,5 @@ STEP_STATUS_RU: dict[str, str] = {
 
 
 def history_event_ru(code: str | None) -> str:
-    """Фраза для события журнала слоя действий; незнакомый код возвращается как есть (не прячется)."""
     text = str(code or "")
     return HISTORY_EVENT_RU.get(text, text)

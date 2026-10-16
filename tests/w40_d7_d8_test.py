@@ -1,4 +1,3 @@
-"""D7: excel_gpt не отдаёт модели шаблон с {{VAR}}/{{BLOCK}}. D8: GET проекта ничего не пишет, meta пишется слиянием."""
 
 from __future__ import annotations
 
@@ -21,7 +20,6 @@ from app.web.api import create_app
 from app.web.deps import get_session
 
 
-# --- D7 ---------------------------------------------------------------------------------------
 
 def _project(**kw) -> Project:
     return Project(topic="Тема ролика", slug="d7", prompt_overrides=kw.get("prompt_overrides", {}), meta={})
@@ -30,7 +28,7 @@ def _project(**kw) -> Project:
 def test_real_excel_gpt_template_is_fully_substituted():
     _name, _path, text, _src = read_resolved_project_prompt(_project(), "excel_gpt")
     assert "{{" not in text and "<!--" not in text
-    assert "лист «план»" in text  # EXCEL_GPT_SHEET по умолчанию
+    assert "лист «план»" in text
     assert find_unresolved_placeholders(text) == []
 
 
@@ -54,7 +52,6 @@ def test_guard_catches_composer_diagnostics_and_ignores_other_braces():
     assert_prompt_resolved("чистый текст", label="excel_gpt")
 
 
-# --- D8 ---------------------------------------------------------------------------------------
 
 @pytest_asyncio.fixture
 async def stand(tmp_path):
@@ -103,7 +100,7 @@ async def test_get_project_does_not_write(stand):
     for _ in range(3):
         r = await c.get(f"/api/projects/{pid}")
         assert r.status_code == 200
-        assert r.json()["status"] == "script_ready"  # показан пересчёт, но не записан
+        assert r.json()["status"] == "script_ready"
     assert _row(db_path, pid) == before
 
 
@@ -114,7 +111,7 @@ async def test_sync_endpoint_is_the_explicit_writer(stand):
     assert shown == "script_ready" and _row(db_path, pid)[0] == "new"
     r = await c.post(f"/api/projects/{pid}/sync")
     assert r.status_code == 200
-    assert r.json()["status"] == shown  # GET показывает то же, что запишет sync
+    assert r.json()["status"] == shown
     assert _row(db_path, pid)[0] == shown
 
 
@@ -124,12 +121,10 @@ async def test_meta_is_merged_by_keys_not_overwritten(stand):
     async with factory() as stale:
         p = await stale.get(Project, pid)
         before = dict(p.meta)
-        # параллельно воркер/оператор ставит ключ user_stop
         async with factory() as other:
             q = await other.get(Project, pid)
             q.meta = {**q.meta, "user_stop": True}
             await other.commit()
-        # устаревшая сессия меняет только свой ключ
         mine = {**before, "step_failure": {"x": 1}}
         set_keys, del_keys = meta_diff(before, mine)
         assert set_keys == {"step_failure": {"x": 1}} and del_keys == []

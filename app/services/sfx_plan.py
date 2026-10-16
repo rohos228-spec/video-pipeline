@@ -64,14 +64,76 @@ class SfxEvent:
         }
 
 
-def frame_timeline(frames: list[Frame]) -> list[dict[str, float]]:
-    """Старт/конец кадра на таймлайне: R15 из attrs нет — по duration_seconds."""
-    out: list[dict[str, float]] = []
+def frame_timeline(
+    frames: list[Frame],
+    project: Project | None = None,
+) -> list[dict[str, Any]]:
+    """Старт/конец кадра на таймлайне: из words.json (ASR), Frame.start_ts или duration_seconds."""
+    # 1. Точный тайминг и реплики из ASR (words.json)
+    if project is not None:
+        try:
+            audio_dir = project.data_dir / "audio"
+            if audio_dir.is_dir():
+                words_files = sorted(
+                    audio_dir.glob("words_*.json"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                if words_files:
+                    data = json.loads(words_files[0].read_text(encoding="utf-8"))
+                    raw_frames = data.get("frames")
+                    if isinstance(raw_frames, list) and (not frames or len(raw_frames) == len(frames)):
+                        out: list[dict[str, Any]] = []
+                        for it in raw_frames:
+                            st = round(float(it.get("start_ts", 0.0)), 2)
+                            en = round(float(it.get("end_ts", st + 3.0)), 2)
+                            row: dict[str, Any] = {
+                                "frame_number": int(it["frame_number"]),
+                                "start": st,
+                                "end": en,
+                            }
+                            vo = str(it.get("text") or "").strip()
+                            if vo and not vo.lower().startswith("кадр "):
+                                row["voiceover"] = vo[:120]
+                            out.append(row)
+                        if out:
+                            return out
+        except Exception as e:
+            logger.debug("frame_timeline: fallback with words.json failed: {}", e)
+
+    # 2. Тайминг из Frame.start_ts / Frame.end_ts
+    if any(getattr(fr, "start_ts", None) is not None and getattr(fr, "end_ts", None) is not None for fr in frames):
+        out = []
+        cursor = 0.0
+        for fr in frames:
+            fr_start = getattr(fr, "start_ts", None)
+            fr_end = getattr(fr, "end_ts", None)
+            if fr_start is not None and fr_end is not None and fr_end > fr_start:
+                st = round(float(fr_start), 2)
+                en = round(float(fr_end), 2)
+                row = {"frame_number": int(fr.number), "start": st, "end": en}
+                cursor = en
+            else:
+                dur = float(getattr(fr, "duration_seconds", None) or 0.0) or 3.0
+                row = {"frame_number": int(fr.number), "start": cursor, "end": cursor + dur}
+                cursor += dur
+            vo = str(getattr(fr, "voiceover_text", "") or "").strip()
+            if vo and not vo.lower().startswith("кадр "):
+                row["voiceover"] = vo[:120]
+            out.append(row)
+        return out
+
+    # 3. Дефолтный fallback по duration_seconds / 3.0с
+    out = []
     cursor = 0.0
     for fr in frames:
-        dur = float(fr.duration_seconds or 0.0) or 3.0
-        out.append({"frame_number": int(fr.number), "start": cursor, "end": cursor + dur})
+        dur = float(getattr(fr, "duration_seconds", None) or 0.0) or 3.0
+        row = {"frame_number": int(fr.number), "start": cursor, "end": cursor + dur}
         cursor += dur
+        vo = str(getattr(fr, "voiceover_text", "") or "").strip()
+        if vo and not vo.lower().startswith("кадр "):
+            row["voiceover"] = vo[:120]
+        out.append(row)
     return out
 
 
@@ -168,8 +230,7 @@ async def plan_sfx_events(
     *,
     max_attempts: int = 2,
 ) -> list[SfxEvent]:
-    """Спланировать звуковые события по таймлайну (GPT + валидация)."""
-    timeline = frame_timeline(frames)
+    timeline = frame_timeline(frames, project=project)
     if not timeline:
         raise RuntimeError("sfx_plan: нет кадров")
     total = timeline[-1]["end"]
@@ -206,8 +267,6 @@ async def plan_sfx_events(
     )
     await _reset_invalid_checkpoint_for_recovery(project, total_duration=total)
 
-    # The closures only watch what text_job already sees (last reply, last parsed payload);
-    # they change neither parsing nor validation nor the retry loop.
     seen: dict[str, Any] = {"reply": None, "payload": None, "parse_failed": False, "shape_error": None}
 
     def _parse(reply: str) -> dict[str, Any]:
@@ -238,9 +297,6 @@ async def plan_sfx_events(
             max_attempts=max_attempts,
         )
     except TextJobFailed as error:
-        # The model answered, but never with a usable plan. Typed evidence for diagnosis:
-        # a reply that is not a JSON object is invalid_json, a parsed plan that broke the
-        # timeline rules is a rejected contract (no automatic retry for that one).
         events: list[SfxEvent] = []
         if seen["payload"] is not None:
             try:
@@ -268,7 +324,6 @@ async def plan_sfx_events(
             result.payload, [], [], source=source, parse_error=error, reply=reply,
         )
         raise
-    # text_job returns checkpoints unchecked; validate against this timeline.
     problems = validate_events(events, total_duration=total)
     if problems:
         error = RuntimeError(f"sfx_plan: не прошло валидацию: {problems}")
@@ -279,12 +334,22 @@ async def plan_sfx_events(
         raise error
     await record_sfx_parse(result.payload, events, problems, source=source, reply=reply)
 
-    # Артефакт на диск.
+    frame_starts = {int(row["frame_number"]): float(row.get("start", 0.0)) for row in timeline}
     out_path = project.data_dir / "sfx_plan.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(
-            {"total_duration": total, "events": [e.to_dict() for e in events]},
+            {
+                "total_duration": total,
+                "frame_starts": frame_starts,
+                "events": [
+                    {
+                        **e.to_dict(),
+                        "offset_in_frame": round(max(0.0, e.t_start - frame_starts.get(e.frame_number, 0.0)), 3),
+                    }
+                    for e in events
+                ],
+            },
             ensure_ascii=False,
             indent=1,
         ),
@@ -327,9 +392,6 @@ def load_sfx_plan(project: Project) -> list[SfxEvent] | None:
     return None
 
 
-# The following hooks deliberately live beside the original SFX parser.  They
-# only describe values which the native code has already loaded or committed;
-# they never validate again, alter a checkpoint, or advance a project.
 _SFX_FRAME_FIELDS = ("id", "project_id", "uuid", "number", "sort_key",
                      "voiceover_text", "meaning", "duration_seconds", "attrs")
 
@@ -365,7 +427,6 @@ def _sfx_entry(ctx):
 
 
 async def _sfx_fact(ctx, kind, payload, *, body=None, request_id=None):
-    """Save a redacted full body once and associate it with an immutable fact."""
     from app.services.observation import _request, record_fact
     details = dict(payload)
     if body is not None:
@@ -387,7 +448,6 @@ def _frame_snapshot(frame):
 
 
 def _annotate_selected_sfx_plan(project, source, payload):
-    """A transient attempt annotation; it never reaches project metadata."""
     ctx = _sfx_context(project, node_type="sfx_gen")
     if ctx is not None:
         ctx.sfx_selected_plan_source = source
@@ -437,13 +497,6 @@ async def record_sfx_generation_input(project, frames, *, source, payload, event
 
 async def record_sfx_parse(payload, events, problems, *, source, reply=None, parse_error=None,
                            request_id=None, parsed=None):
-    """Journal the native parse/validation outcome of one sfx_plan result.
-
-    payload_required / payload_present follow the same contract as the text nodes: a model
-    reply without a usable plan is a typed invalid_json / missing_payload incident for
-    diagnosis, while a parsed plan that broke the timeline rules stays a rejected contract.
-    `parsed` overrides the legacy rule (parsed = events present or a validation RuntimeError)
-    for the one case the legacy rule gets wrong: a reply that was not a JSON object at all."""
     ctx = _sfx_context()
     if ctx is None or getattr(ctx, "native_node_type", None) != "sfx_plan":
         return
@@ -467,8 +520,6 @@ async def record_sfx_parse(payload, events, problems, *, source, reply=None, par
     detail = {"contract": "native_sfx_plan", "source": source,
               "syntax_valid": syntax_valid, "parsed": parsed,
               "schema_valid": schema_valid, "error_type": type(parse_error).__name__ if parse_error else None,
-              # A payload is "required" only of a model reply; a replayed checkpoint is not a
-              # model answer, so its failure stays a rejected contract, never invalid_json.
               "payload_required": source == "model", "payload_present": payload_present,
               "nonempty_payload_required": source == "model",
               "problems": deepcopy(list(problems or ())), "sha256": digest(normalized)}
@@ -481,10 +532,6 @@ async def record_sfx_parse(payload, events, problems, *, source, reply=None, par
 
 
 async def _reset_invalid_checkpoint_for_recovery(project, *, total_duration):
-    """A supervisor retry must reach the model: drop a persisted checkpoint that fails the
-    current timeline rules (text_job would otherwise replay it with zero requests and fail
-    the same way). Only inside a recovery attempt; an ordinary run keeps the native behaviour
-    (an invalid cache is rejected without a model call). Returns True when it dropped one."""
     ctx = _sfx_context(project, node_type="sfx_plan")
     if ctx is None or ctx.session.info.get("recovery_attempt_id") != ctx.attempt_id:
         return False
@@ -507,12 +554,6 @@ async def _reset_invalid_checkpoint_for_recovery(project, *, total_duration):
 
 
 def record_sfx_plan_applied(project, events):
-    """Stage the honest application fact of a finished plan.
-
-    plan_sfx.run calls this right before its own commit: the checkpoint, sfx_plan.json and
-    meta.sfx_plan are the application of this node. The fact is staged on the business
-    session, so it becomes visible only together with that commit (a rollback drops it).
-    Recovery verification needs it (data_applied + an accepted payload)."""
     ctx = _sfx_context(project, node_type="sfx_plan")
     if ctx is None:
         return
@@ -525,14 +566,12 @@ def record_sfx_plan_applied(project, events):
 
 
 def record_sfx_plan_pass_through(project):
-    """SFX_ENABLED=false: the step reached sfx_plan_ready without planning anything."""
     ctx = _sfx_context(project, node_type="sfx_plan")
     if ctx is not None:
         _sfx_entry(ctx)["step_finished"] = True
 
 
 def _sfx_provider_record(record, by_number, path):
-    """Звук платного провайдера (mp3): независимая проверка ffprobe, без разбора WAV (F10-D10)."""
     from app.services.audio_verification import verify_audio
     verdict = verify_audio(path)
     codes = [c for c in verdict.codes
@@ -564,7 +603,6 @@ def _sfx_wav_record(record, by_number):
         pcm = reader.readframes(count)
     if not count:
         raise ValueError("empty native sfx wav")
-    # Независимый верификатор звука (W4-3): формат, дорожка, длительность и ненулевая амплитуда другим кодом.
     from app.services.audio_verification import verify_audio
     verdict = verify_audio(path, expect_duration=count / 44100, duration_tol=0.25)
     codes = [c for c in verdict.codes
@@ -587,11 +625,6 @@ def _sfx_wav_record(record, by_number):
 
 
 def _type_sfx_gen_as_media(proof: dict, failure: BaseException | None) -> dict:
-    """Give the sfx_gen proof the shared ``native_media`` contract so diagnosis types a failure as ``media_failure``.
-
-    Same shape as the other media nodes (contract, node_type, summary). A failed attempt never passes on files an
-    earlier run left behind: its own error type is recorded and the failure is not repeatable by the node
-    (``retryable_by_node`` False: sfx_gen stays observed, a paid or local repeat is not admitted)."""
     typed = {**proof, "contract": "native_media", "node_type": "sfx_gen", "items_total": len(proof.get("files") or [])}
     if failure is not None:
         error_type = type(failure).__name__
@@ -669,13 +702,6 @@ async def observe_sfx_result(session, project, node_type="sfx_plan"):
 
 
 async def observe_sfx_plan_result(session, project, node_type="sfx_plan"):
-    """observe_sfx_result plus the managed-mode gate for sfx_plan only.
-
-    In an observation scope this is exactly observe_sfx_result (journal only, never raises).
-    In a managed scope, when the native step FINISHED (it staged its application fact or
-    passed through) but the independent re-read does not confirm the plan, the execution is
-    held and the attempt fails, as for split: a pass-through with SFX_ENABLED=false or an
-    unreadable plan never counts as a verified result. A native failure is left alone."""
     ctx = _sfx_context(project, node_type=node_type)
     try:
         proof = await observe_sfx_result(session, project, node_type)
@@ -697,7 +723,6 @@ async def observe_sfx_plan_result(session, project, node_type="sfx_plan"):
 
 
 def sfx_plan_contract():
-    """What the shipped sfx_plan executor requires and what a supervisor retry may and may not do."""
     return {
         "node_type": "sfx_plan",
         "executor": "plan_sfx.run -> sfx_plan.plan_sfx_events -> ai_result_io.text_job",
@@ -731,7 +756,6 @@ def sfx_plan_contract():
 
 
 def sfx_plan_current_output(project, frames):
-    """Read-only description of the plan the project holds now (no write, no model call)."""
     from app.services.ai_result_io import ai_job_checkpoint
     meta = project.meta if isinstance(getattr(project, "meta", None), dict) else {}
     cached = ai_job_checkpoint(project, "sfx_plan")

@@ -29,9 +29,6 @@ def test_settings_db_not_under_web(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     sub = root / "web"
     sub.mkdir(exist_ok=True)
     monkeypatch.chdir(sub)
-    # Новый экземпляр Settings после смены CWD. НЕ importlib.reload(app.settings):
-    # reload подменяет глобальный app.settings.settings и ломает изоляцию
-    # следующих тестов (step_cancel/xlsx preview/scene_space и др.).
     import app.settings as settings_mod
 
     db = settings_mod.Settings().db_url

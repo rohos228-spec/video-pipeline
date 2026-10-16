@@ -1,8 +1,3 @@
-"""W1-8 (A20, A21): числа в документах сверяются с реестром и кодом; чат не правит код механически.
-
-Без сети, без БД, без платных вызовов: читаются только реестр способностей, список миграций,
-markdown-документы и исходный текст роутера.
-"""
 from __future__ import annotations
 
 import ast
@@ -107,7 +102,6 @@ def test_customer_report_states_red_legacy_suite():
     assert "упали 6" not in text and "стало 6 " not in text
 
 
-# --- A21: механический запрет правки кода и git push из чата --------------------------------
 
 _ROUTER = ROOT / "app" / "web" / "routers" / "db_browser.py"
 _DANGEROUS = {"apply_edits", "commit_and_push"}

@@ -1,5 +1,3 @@
-// Panel «Покрытие нод»: types and pure helpers (no imports, so the offline contract test can load it).
-// Data comes from GET /api/projects/{id}/observations/node-coverage (app/services/node_coverage.py).
 
 export type CoverageLevel = "managed" | "observed" | "human_only";
 
@@ -28,7 +26,6 @@ export const COVERAGE_LEVEL_RU: Record<CoverageLevel, string> = {
   human_only: "Только человек",
 };
 
-// Tailwind classes per level: green = the supervisor acts, amber = it only watches, red = a human only.
 export const COVERAGE_LEVEL_CLASS: Record<CoverageLevel, string> = {
   managed: "border-emerald-400/50 text-emerald-200",
   observed: "border-amber-400/50 text-amber-200",
@@ -44,7 +41,6 @@ export function coverageSummaryLine(summary: NodeCoverage["summary"] | null | un
   return `управляется ${summary.managed} из ${summary.total}, наблюдается ${summary.observed}, только человек ${summary.human_only}`;
 }
 
-// Why automatic recovery is forbidden, in Russian. Falls back from the server's own reason to the code meaning.
 export function forbiddenText(row: Pick<NodeCoverageRow, "forbidden" | "recovery">): string {
   if (row.recovery.actions.length > 0) {
     const n = row.recovery.cap_per_node;

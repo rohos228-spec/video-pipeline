@@ -1,12 +1,3 @@
-"""Runs scripts/e2e_test_agentic_loop.py end to end as a real subprocess in
-its default DRY_RUN mode (scripted model replies, isolated disposable SQLite,
-zero network, zero cost) and asserts it reaches PASS for both scenarios:
-
-  1. invalid_json -> recommended repair profile -> verified -> done
-  2. uncertain_request (timeout) -> no retry offered -> REQUIRES_HUMAN_INTERVENTION
-
---live is deliberately never exercised here (it spends real tokens).
-"""
 import subprocess
 import sys
 from pathlib import Path

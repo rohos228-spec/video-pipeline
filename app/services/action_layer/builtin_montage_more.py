@@ -1,18 +1,3 @@
-"""Остальные действия монтажной панели: структура сцен, медиа, генерация, фоновые задачи.
-
-Дополняет ``builtin_montage`` (read и local_safe). Здесь платные и разрушающие
-действия. Все исполнители зовут существующие эндпоинты через ``ctx.call``.
-
-Деньги. Сама панель стоимость не считает, поэтому оценка строится здесь:
-- картинка/видео через Kie: цена из ``kie_catalog.estimate_credits`` по тем же
-  значениям, что уходят в запрос (``bots/kie_http.generate_kie_*``);
-- Outsee и прочие модели без тарифа в репозитории: оценка ``unknown`` (fail-closed), если не задано
-  ``ACTION_LAYER_OUTSEE_SUBMIT_CREDITS`` (явная консервативная цена отправки, по умолчанию выключено);
-- LLM: замеренные ставки из ``docs/KIE_COST_CALIBRATION.md`` на допущенном числе токенов.
-Число операций и модель оплаты заявляются параметрами плана (входят в хэш и
-подтверждение), а предусловия и исполнитель сверяют их с фактом: заявлено меньше
-реального - запуск отклоняется до траты денег.
-"""
 from __future__ import annotations
 
 import copy
@@ -30,15 +15,12 @@ _IMAGE_OPS = frozenset({"image_regen", "image_regen_prompt", "image_regen_correc
                         "image_ai_change"})
 _VIDEO_OPS = frozenset({"video_regen", "video_regen_prompt", "video_ai_change"})
 
-# Допущения оценки. Попытки: execute_image_regen идёт 2 раунда по 3 попытки (+ запасная модель),
-# платным считаем не более 3 на операцию (неуспешные попытки провайдеры обычно не списывают;
-# не проверено). Видео: лестница из 4 основных попыток.
 IMAGE_BILLED_ATTEMPTS = 3
 VIDEO_BILLED_ATTEMPTS = 4
-_LLM_USD_IN, _LLM_USD_OUT = 1.6, 8.4   # usd за 1M токенов, замер docs/KIE_COST_CALIBRATION.md
-_LLM_CALL_MIN = 0.01                   # минимальный замеренный вызов, кредитов
-MAX_IMPROVE_IMAGE_OPS = 25             # 1 still сцены + 12 кадров x (старт + конец), MAX_IMPROVE_SHOTS=12
-_VIDEO_CLIP_SECONDS = 5                # execute_video_regen не передаёт duration: по умолчанию 5
+_LLM_USD_IN, _LLM_USD_OUT = 1.6, 8.4
+_LLM_CALL_MIN = 0.01
+MAX_IMPROVE_IMAGE_OPS = 25
+_VIDEO_CLIP_SECONDS = 5
 
 
 def _llm_credits(tokens_in: int, tokens_out: int) -> float:
@@ -46,9 +28,8 @@ def _llm_credits(tokens_in: int, tokens_out: int) -> float:
     return (tokens_in * _LLM_USD_IN + tokens_out * _LLM_USD_OUT) / 1e6 / CREDIT_USD
 
 
-# Допущенные размеры вызова (не замерены, только ставки замерены).
-LLM_SCENE_CALL_HIGH = _llm_credits(20_000, 4_000)   # шаг сцены с реестром и промтами группы
-LLM_OP_CALL_HIGH = _llm_credits(4_000, 1_000)       # переписывание промта одной операции
+LLM_SCENE_CALL_HIGH = _llm_credits(20_000, 4_000)
+LLM_OP_CALL_HIGH = _llm_credits(4_000, 1_000)
 
 _GEN = {"type": "string", "pattern": "^[a-z0-9_]{1,40}$"}
 _IMG_RES = {"type": "string", "enum": ["1k", "2k", "3k", "4k"]}
@@ -69,7 +50,6 @@ _BASIS_PROPS = {
 }
 
 
-# --- общие проверки ----------------------------------------------------------
 
 def _ops(board: dict) -> list[dict]:
     return [o for o in (((board.get("meta") or {}).get("pending_ops")) or []) if isinstance(o, dict)]
@@ -146,7 +126,6 @@ def _pre_frame_numbers(*keys: str) -> Precondition:
 
 
 def _effective_settings(detail: dict) -> dict[str, str]:
-    """Модель и разрешение, как их берёт монтажная регенерация (montage_board_regen)."""
     from app.generation_options import DEFAULTS
     from app.services.vibecode_catalog import resolve_node_media_settings
 
@@ -163,10 +142,8 @@ def _effective_settings(detail: dict) -> dict[str, str]:
     }
 
 
-# --- цена --------------------------------------------------------------------
 
 def _kie_unit(kind: str, gen_id: str | None, res_id: str | None) -> tuple[float | None, str]:
-    """Кредитов за одну генерацию или (None, причина). Те же значения, что уходят в запрос."""
     from app.generation_options import (
         IMAGE_GENERATORS_BY_ID, IMAGE_RESOLUTIONS_BY_ID, VIDEO_GENERATORS_BY_ID,
         VIDEO_RESOLUTIONS_BY_ID)
@@ -239,7 +216,6 @@ def _llm_only(calls: int, basis: str) -> CostEstimate:
 
 
 def _basis_precondition(needs) -> Precondition:
-    """Заявленные модель/разрешение должны совпасть с настройками проекта."""
     async def check(ctx, params):
         need_img, need_vid = needs(params)
         eff = _effective_settings(await ctx.call("GET", f"/projects/{params['project_id']}"))
@@ -262,7 +238,6 @@ async def _verify_basis(ctx, params, need_img: bool, need_vid: bool) -> None:
         raise RuntimeError(f"оценка стоимости не совпадает с проектом: {reason}")
 
 
-# --- фоновые задачи: общий опрос и стоп --------------------------------------
 
 def _job_state(job: dict, label: str, keys: tuple[str, ...] = ()) -> JobState:
     status = job.get("status")
@@ -283,7 +258,6 @@ def _job_state(job: dict, label: str, keys: tuple[str, ...] = ()) -> JobState:
 
 
 async def _stop_project(ctx: ActionContext, params: dict) -> None:
-    """Единственный стоп монтажных задач: ⏹ проекта (отменяет apply, монтаж, забор Outsee)."""
     await ctx.call("POST", f"/projects/{params['project_id']}/stop")
 
 
@@ -312,7 +286,6 @@ async def _poll_align(ctx, params, started) -> JobState:
 
 async def _start_apply(ctx: ActionContext, pid: int, queue: list[dict],
                        numbers: list[int] | None) -> dict:
-    """POST /apply напрямую: кнопка панели не включается на очереди только из видео."""
     resp = await ctx.call("POST", f"{_base(pid)}/apply",
                           json={"pending_ops": queue, "frame_numbers": numbers or []})
     if resp.get("already_running"):
@@ -322,7 +295,6 @@ async def _start_apply(ctx: ActionContext, pid: int, queue: list[dict],
     return {"apply_started": True, "total_ops": (resp.get("job") or {}).get("total_ops")}
 
 
-# --- действия: очередь и применение ------------------------------------------
 
 async def _cancel_queue_ops(ctx, params):
     def build(board: dict) -> QueueChange:
@@ -381,10 +353,8 @@ def _apply_needs(p):
     return p.get("max_image_ops", 0) > 0, p.get("max_video_ops", 0) > 0
 
 
-# --- улучшение сцены и генерация картинок сцены ------------------------------
 
 def _queue_replacing(existing_media: list[dict], new_ops: list[dict]) -> list[dict]:
-    """Как панель: картинки этих кадров заменяются новыми, остальное остаётся."""
     numbers = {int(o["frame_number"]) for o in new_ops}
     keep = [o for o in existing_media
             if not (o.get("type") in _IMAGE_OPS and int(o.get("frame_number") or 0) in numbers)]
@@ -457,7 +427,6 @@ def _scene_instruction(fr: dict) -> str:
 
 
 def scene_image_ops(frames: list[dict], numbers: list[int], scene_prompt: str = "") -> list[dict]:
-    """Порт sceneImageOpsForFrames панели: still родителя, затем кадры (старт и конец)."""
     wanted = set(numbers)
     live = [f for f in frames if int(f.get("number") or 0) in wanted and not f.get("shot_leftover")]
     by_no = {int(f["number"]): f for f in live}
@@ -499,7 +468,6 @@ def _scene_images_estimate(p: dict) -> CostEstimate:
     return _media_estimate(p, n, 3 * n, 0, note=f"картинки сцены: {n} кадров, до 3 слотов на кадр")
 
 
-# --- LLM-действия сцены ------------------------------------------------------
 
 async def _generate_scene(ctx, params):
     res = await ctx.call("POST", f"{_base(params['project_id'])}/frames/{params['frame_id']}/scene-action-generate",
@@ -558,7 +526,6 @@ async def _delete_child(ctx, params):
     return {"ok": bool(data.get("ok")), "deleted_frame_number": params["frame_number"]}
 
 
-# --- структура сцен ----------------------------------------------------------
 
 async def _insert_frame(ctx, params):
     data = await ctx.call("POST", f"{_base(params['project_id'])}/frames/insert", json={
@@ -601,7 +568,6 @@ async def _delete_frame(ctx, params):
     return {k: data.get(k) for k in ("frame_id", "number", "deleted", "promoted")}
 
 
-# --- медиа и референсы -------------------------------------------------------
 
 async def _swap_slots(ctx, params):
     data = await ctx.call("POST", f"{_base(params['project_id'])}/swap-slots", params={
@@ -675,8 +641,6 @@ async def _delete_ref(ctx, params):
 
 
 async def _unlink_ref(ctx, params):
-    """Только отвязка персонажа/предмета: один эндпоинт с delete_manual_ref, поэтому тип
-    проверяется здесь, чтобы ``manual`` (удаление файла с диска) сюда не попал никогда."""
     if params.get("kind") not in ("character", "item"):
         raise ValueError("unlink_ref: допустимы только kind=character|item; "
                          "удаление загруженного рефа - отдельное действие delete_manual_ref")
@@ -689,7 +653,6 @@ async def _delete_manual_ref(ctx, params):
     return await _delete_ref(ctx, params)
 
 
-# --- фоновые задачи без денег ------------------------------------------------
 
 async def _recover_outsee(ctx, params):
     resp = await ctx.call("POST", f"{_base(params['project_id'])}/recover-outsee")
@@ -757,7 +720,6 @@ async def _get_cost_basis(ctx, params):
     return out
 
 
-# --- сборка каталога ---------------------------------------------------------
 
 def _obj(props: dict, required: list[str]) -> dict:
     return {"type": "object", "properties": {"project_id": _PID, **props},
@@ -771,7 +733,6 @@ def _specs() -> list[ActionSpec]:
     basis_img = {k: _BASIS_PROPS[k] for k in ("image_generator", "image_resolution")}
     stop_note = " Стоп - общий ⏹ проекта: блокирует автопродвижение до ручного ▶."
     return [
-        # --- очередь / применение
         S(id="montage.cancel_queue_ops", title_ru="Убрать правки из очереди",
           description_ru="Удаляет выбранные операции из очереди доски или всю очередь. Файлы не "
                          "трогает; убранную операцию можно поставить заново.",
@@ -853,7 +814,6 @@ def _specs() -> list[ActionSpec]:
           preconditions=(_PRE_PROJECT, _PRE_NO_APPLY, _pre_frame_numbers("frame_numbers"),
                          _basis_precondition(lambda p: (True, False))),
           tags=("montage", "scene", "generate", "paid")),
-        # --- LLM-действия сцены
         S(id="montage.generate_scene", title_ru="Сгенерировать сцены ячейки (LLM)",
           description_ru="Один вызов LLM пишет сцены ячейки по заказу оператора; replace_ns "
                          "пересобирает только выбранные куски цепочки. Могут появиться кадры. "
@@ -881,7 +841,6 @@ def _specs() -> list[ActionSpec]:
           executor=_suggest_variants, risk=RISK_PAID, spends_money=True, idempotent=True,
           estimator=lambda p: _llm_only(1, "один вызов LLM вариантов; замеренные ставки, объём допущен"),
           preconditions=(_PRE_PROJECT, _pre_frame_ids("frame_id")), tags=("montage", "scene", "llm")),
-        # --- покрытие и сцена: записи в БД
         S(id="montage.set_scene_chain", title_ru="Разобрать последовательность на кадры",
           description_ru="Режет цепочку «действие1 → действие2 → ...» на шоты ячейки без LLM. "
                          "Перезаписывает поля шотов ячейки.",
@@ -931,7 +890,6 @@ def _specs() -> list[ActionSpec]:
               "видео переносятся в old/scenes/deleted-*; вернуть кадр программно нельзя."),
           preconditions=(_PRE_PROJECT, _PRE_NO_APPLY, _pre_frame_numbers("frame_number")),
           tags=("montage", "frames")),
-        # --- структура
         S(id="montage.insert_frame", title_ru="Добавить кадр или сцену",
           description_ru="kind=parent: новая ячейка закадра после кадра (или в начало); kind=child: "
                          "шот в ту же сцену. Номера существующих кадров не меняются, новый получает "
@@ -985,7 +943,6 @@ def _specs() -> list[ActionSpec]:
               "переносятся в old/scenes/deleted-*; вернуть кадр программно нельзя."),
           preconditions=(_PRE_PROJECT, _PRE_NO_APPLY, _pre_frame_ids("frame_id")),
           tags=("montage", "frames")),
-        # --- медиа
         S(id="montage.swap_slots", title_ru="Поменять местами два слота медиа",
           description_ru="Обмен слотов картинок или видео между любыми кадрами; слоты помечаются "
                          "устаревшими. Повторный вызов возвращает как было, поэтому повтор после "
@@ -1040,7 +997,6 @@ def _specs() -> list[ActionSpec]:
           preconditions=(_PRE_PROJECT, _PRE_NO_APPLY, _pre_frame_numbers("frame_number"),
                          Precondition("trim_args", "Указан start или clear", _pre_trim_args)),
           tags=("montage", "media")),
-        # --- референсы
         S(id="montage.list_ref_assets", title_ru="Готовые референсы проекта",
           description_ru="Персонажи и предметы проекта, которые можно приложить кадру.",
           params_schema=_obj({}, []), executor=_list_ref_assets, risk=RISK_READ, idempotent=True,
@@ -1075,7 +1031,6 @@ def _specs() -> list[ActionSpec]:
               f"Реф {p['ref_id']} снимается с кадра {p['frame_number']}; если он был загружен "
               "вручную, файл удаляется с диска без корзины."),
           preconditions=(_PRE_PROJECT, _pre_frame_numbers("frame_number")), tags=("montage", "refs")),
-        # --- фоновые задачи без денег
         S(id="montage.recover_outsee", title_ru="Забрать правки из галереи Outsee",
           description_ru="Фоновый скан галереи Outsee (нужен CDP-Chrome) и замена кадров найденными "
                          "карточками. Генерации нет; занятая линия Outsee даёт отказ." + stop_note,

@@ -1,7 +1,3 @@
-"""W51: закрытие остатка аудита W40 (C-10, C-15, C-16, C-18, C-19, C-20, N-11, F02/B10, F09-D2, D6, D7/D8).
-
-Сети и денег нет: исполнители подменены, суммы пишутся только в временные базы.
-"""
 from __future__ import annotations
 
 import ast
@@ -17,28 +13,26 @@ from app.services import spend_guard
 from app.services.action_layer import approval, builtin_montage_more as bmm, executor, planner, service, store
 from app.services.action_layer.plan import Plan, build_preview
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env, fresh_registry, make_spec  # noqa: F401
-from tests.test_w1_5_action_fact_timeout import (  # noqa: F401  (фикстура и помощники, сами тестами не собираются)
+from tests.action_layer_support import env, fresh_registry, make_spec
+from tests.test_w1_5_action_fact_timeout import (
     PROJ_SCHEMA, _Job, _clean_executor_globals, _go, _job_spec, _plan)
 
 OP = approval.OperatorIdentity("web_operator:w51")
 ROOT = Path(__file__).resolve().parents[1]
 
 
-# --- C-10: сирота-задача переживает рестарт процесса ---------------------------------------------
 
 async def test_c10_orphan_survives_restart_via_journal_and_is_released_by_journal(env, monkeypatch) -> None:
     from app.settings import settings
     monkeypatch.setattr(settings, "action_layer_step_timeout_s", 0.3)
     monkeypatch.setenv("ACTION_LAYER_STOP_GRACE_S", "0.3")
     pid = await env.add_project()
-    job = _Job(finish_on_stop=False)          # стоп не помогает: остановка не подтверждена
+    job = _Job(finish_on_stop=False)
     reg = fresh_registry(_job_spec(job))
     plan_id = await _plan(env, reg, {"action_id": "t.job", "params": {"project_id": pid}})
     await _go(env, reg, plan_id, approve=True)
     assert executor.orphan_busy(pid) is not None
 
-    # «Рестарт»: память процесса пуста.
     for info in list(executor._ORPHANS.values()):
         info["task"].cancel()
     executor._ORPHANS.clear()
@@ -51,7 +45,6 @@ async def test_c10_orphan_survives_restart_via_journal_and_is_released_by_journa
         await service.prepare_run(plan2, OP, registry=reg)
     assert e.value.code == "project_busy" and "журнале" in str(e.value)
 
-    # Запись «задача завершилась» снимает удержание.
     await executor._journal_orphan_released(plan_id, "t.job")
     executor._CLAIMS.clear()
     await service.prepare_run(plan2, OP, registry=reg)
@@ -68,14 +61,13 @@ async def test_c10_journal_orphan_expires_with_the_observation_window(env, monke
     await _go(env, reg, plan_id, approve=True)
     async with store.sessions()() as s:
         assert await executor.orphan_busy_db(s, pid, "другой") is not None
-        assert await executor.orphan_busy_db(s, pid, plan_id) is None       # свой план себя не держит
+        assert await executor.orphan_busy_db(s, pid, plan_id) is None
         assert await executor.orphan_busy_db(s, pid + 99, "x") is None
     monkeypatch.setenv("ACTION_LAYER_ORPHAN_MAX_S", "0")
     async with store.sessions()() as s:
-        assert await executor.orphan_busy_db(s, pid, "другой") is None      # окно наблюдения вышло
+        assert await executor.orphan_busy_db(s, pid, "другой") is None
 
 
-# --- C-16: план из нескольких проектов отклоняется на предпросмотре ------------------------------
 
 def _read_spec(action_id: str):
     async def run(ctx, params):
@@ -102,9 +94,7 @@ def test_c16_every_paid_action_names_exactly_one_project() -> None:
             assert "project_id" in spec.params_schema.get("required", []), spec.id
 
 
-# --- C-15: полный перебор реестра: платный эффект local_safe-действий объявлен или проверен ------
 
-# Проверено полным перебором (W51): денег не тратят и цену будущих запусков не меняют.
 REVIEWED_NO_FUTURE_SPEND = frozenset({
     "change.propose", "group.insert", "group.save_from_selection", "group.update",
     "kill_switch.engage", "media.resume_poll", "montage.align_audio", "montage.cancel_queue_ops",
@@ -152,7 +142,6 @@ async def test_c15_preview_shows_future_spend_effect() -> None:
     assert pv["steps"][0]["future_spend_note"]
 
 
-# --- C-19: барьер структурный, а не текстовый ----------------------------------------------------
 
 NEEDS_HUMAN_APPROVAL = frozenset({
     "publish.send", "storage.clear_files", "change.apply", "change.rollback", "history.rollback",
@@ -172,7 +161,6 @@ def test_c19_dangerous_actions_need_human_approval_regardless_of_planner_text() 
     assert "НЕ является барьером" in doc
 
 
-# --- C-20: резерв планировщика при сбое ---------------------------------------------------------
 
 async def _planner_reserved(env) -> float:
     async with env.factory() as s:
@@ -195,9 +183,9 @@ async def test_c20_unknown_outcome_keeps_the_reserve_and_clears_pending(env) -> 
     import httpx
     await planner._spend_gate(None)
     closed = await planner._close_failed_reserve(None, httpx.ReadTimeout("таймаут чтения"))
-    assert closed is False                                    # запрос мог быть оплачен: консервативно
+    assert closed is False
     assert await _planner_reserved(env) == pytest.approx(spend_guard.PLANNER_ESTIMATE_USD)
-    assert spend_guard.take_pending() is None                 # чужой вызов в этом контексте его не закроет
+    assert spend_guard.take_pending() is None
 
 
 def test_c20_classification_of_failures() -> None:
@@ -211,7 +199,6 @@ def test_c20_classification_of_failures() -> None:
     assert not planner.definitely_not_billed(RuntimeError("?"))
 
 
-# --- C-18: сторож доставляет тревогу и пульс не молчит между стадиями ----------------------------
 
 async def test_c18_watchdog_alarm_goes_through_the_notification_point(monkeypatch) -> None:
     from app.services import supervisor_heartbeat
@@ -251,10 +238,9 @@ async def test_c18_heartbeat_is_beaten_between_observer_stages(monkeypatch) -> N
         return None
 
     await Observer._run_stage(fake, "x", stage)
-    assert len(beats) == 2          # до и после стадии: длинный виток из нескольких стадий не молчит
+    assert len(beats) == 2
 
 
-# --- N-11 / F02: цена Suno и реестр калибровки ---------------------------------------------------
 
 def test_n11_suno_estimate_follows_the_measurement_not_the_price_list() -> None:
     from app.services import kie_catalog, media_spend
@@ -277,7 +263,6 @@ def test_f02_price_calibration_table_matches_code_and_labels_the_estimates() -> 
     assert pc.label_ru("PRICE_MARKUP") == "оценка" and pc.label_ru("нет такой") == "оценка"
 
 
-# --- F09-D2: Outsee без тарифа: по умолчанию fail-closed, явная цена отправки включается настройкой -----
 
 def test_f09_outsee_apply_queue_is_fail_closed_unless_owner_sets_a_submit_price(monkeypatch) -> None:
     from app.settings import settings
@@ -287,17 +272,16 @@ def test_f09_outsee_apply_queue_is_fail_closed_unless_owner_sets_a_submit_price(
     spec = registry.get("montage.apply_queue")
     monkeypatch.setattr(settings, "action_layer_outsee_submit_credits", 0.0)
     assert not spec.estimate(params).known
-    monkeypatch.setattr(settings, "action_layer_outsee_submit_credits", 60.0)   # $0,30 = потолок отправки
+    monkeypatch.setattr(settings, "action_layer_outsee_submit_credits", 60.0)
     est = spec.estimate(params)
     assert est.known and est.high >= 2 * bmm.IMAGE_BILLED_ATTEMPTS * 60
     imp = registry.get("montage.improve_scene").estimate({
         "project_id": 1, "frame_id": 1, "prompt": "x", "max_image_ops": 2,
         "image_generator": "gpt_image_2_vip", "image_resolution": "2k"})
     assert imp.known
-    assert spend_guard.MEDIA_SUBMIT_ESTIMATE_USD / 0.005 == pytest.approx(60.0)  # то же число, что потолок отправки
+    assert spend_guard.MEDIA_SUBMIT_ESTIMATE_USD / 0.005 == pytest.approx(60.0)
 
 
-# --- D6: автоодобрение финала защищено проверкой, публикация всегда за человеком ----------------
 
 def test_d6_publication_is_never_auto_approved() -> None:
     from app.models import HITLKind
@@ -322,7 +306,6 @@ def test_d6_auto_approve_of_final_is_guarded_by_final_verified() -> None:
     assert "verification not passed" in body
 
 
-# --- D8: чтение проекта не пишет и не пересчитывает статус --------------------------------------
 
 def test_d8_get_project_and_get_run_do_not_recompute_status() -> None:
     src = (ROOT / "app/web/routers/projects.py").read_text(encoding="utf-8")

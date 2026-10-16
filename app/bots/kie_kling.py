@@ -308,24 +308,20 @@ def _raise_from_kie_payload(
 
 
 def _create_estimate(args: tuple, kwargs: dict) -> float | None:
-    """Catalog price of the Kling submit being prepared (None = unknown: the gate uses its media default)."""
     try:
         from app.services import kie_catalog, media_spend
         body = args[0] if args else kwargs.get("body")
         spec = kie_catalog.get_model(str((body or {}).get("model") or ""))
         usd = float(media_spend.price_kie(spec, body)["usd"])
-    except Exception:  # noqa: BLE001 - an unknown price is the gate's default, never a reason to fail
+    except Exception:
         return None
     return usd if usd > 0 else None
 
 
 def _blocked_as_kling(blocked: spend_guard.PaidCallBlocked) -> "KieKlingError":
-    """The refusal in the provider's own error class; ``context.no_resubmit`` stops the ladders."""
     return KieKlingError(blocked.message_ru, context=dict(blocked.context))
 
 
-# The Kling fallback has its own client (not kie_http.create_task), so the kill switch, the disk guard and
-# the three caps must be applied here: this is the one place that sends the paid createTask.
 @spend_guard.paid_seam("kie", "createTask", estimate=_create_estimate, wrap_error=_blocked_as_kling)
 async def _create_task(body: dict[str, Any]) -> str:
     url = f"{kie_api_base_url()}{_CREATE_PATH}"
@@ -357,7 +353,6 @@ async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:
     net_fail_streak = 0
 
     async def _wait_transient(kind: str, detail: str) -> None:
-        # задача оплачена и жива: тот же task id до конца бюджета, затем KieTaskPending (не burn)
         nonlocal net_fail_streak
         net_fail_streak += 1
         logger.warning("kie_kling: poll transient {} streak={} taskId={}", detail, net_fail_streak, task_id)
@@ -382,7 +377,7 @@ async def _poll_task(task_id: str, *, timeout_s: float) -> dict[str, Any]:
             net_fail_streak = 0
             try:
                 payload = r.json()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 payload = {"msg": (r.text or "")[:300], "code": r.status_code}
             try:
                 if r.status_code >= 400:
@@ -455,26 +450,42 @@ def _result_url_from_task(data: dict[str, Any]) -> str:
 
 async def _download(url: str, out_path: Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
-        r = await client.get(url)
-        if r.status_code >= 400 or len(r.content or b"") < 1024:
-            raise KieKlingError(
-                f"kie Kling download HTTP {r.status_code} size={len(r.content or b'')}",
-                context={"provider_code": r.status_code, "video_url": url, "kind": "download"},
+    last_err: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
+                r = await client.get(url)
+                if r.status_code >= 400 or len(r.content or b"") < 1024:
+                    raise KieKlingError(
+                        f"kie Kling download HTTP {r.status_code} size={len(r.content or b'')}",
+                        context={"provider_code": r.status_code, "video_url": url, "kind": "download"},
+                    )
+                out_path.write_bytes(r.content)
+            return out_path
+        except (httpx.HTTPError, OSError, KieKlingError) as e:
+            last_err = e
+            logger.warning(
+                "kie_kling.download retry {}/3 url={} err={}",
+                attempt,
+                url[:120],
+                e,
             )
-        out_path.write_bytes(r.content)
-    return out_path
+            if attempt < 3:
+                await asyncio.sleep(attempt * 2.0)
+    raise KieKlingError(
+        f"kie Kling download failed after 3 attempts: {last_err}",
+        context={"video_url": url, "kind": "download"},
+    ) from last_err
 
 
 async def _download_keep_task(url: str, out_path: Path, task_id: str) -> Path:
-    """Paid result exists: a failed download must never lead to a new createTask."""
     last: BaseException | None = None
     for i in range(3):
         try:
             return await _download(url, out_path)
         except asyncio.CancelledError:
             raise
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             last = e
             if i < 2:
                 await asyncio.sleep(2.0 * (i + 1))

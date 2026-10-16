@@ -38,11 +38,6 @@ async def claim_hitl_decision(
     actor: str | None = None,
     edited_prompt: str | None = None,
 ) -> bool:
-    """Атомарно занять запрос: ``pending`` -> решение одним условным UPDATE.
-
-    Возвращает False, если кто-то уже принял решение (второе решение не пишется). Автор решения
-    лежит в ``payload["decided_by"]``, чтобы не менять схему обеих баз.
-    """
     from datetime import datetime
 
     payload = dict(req.payload or {})
@@ -114,7 +109,6 @@ REJECTED_BY_HUMAN = "rejected_by_human"
 
 
 def _mark_rejected(frame: Frame, value: bool) -> None:
-    """N-17: кадр, отклонённый человеком, не возвращается в очередь автоматикой (requeue_failed_frames_without_png)."""
     attrs = dict(frame.attrs or {})
     if value:
         attrs[REJECTED_BY_HUMAN] = True
@@ -124,7 +118,6 @@ def _mark_rejected(frame: Frame, value: bool) -> None:
 
 
 async def _charge_manual_regen(session: AsyncSession, project: Project, node: ProjectStatus) -> bool:
-    """N-16: ручная перегенерация - платный перезапуск узла в общей цепочке. False: потолок, проект на паузе."""
     from app.services import restart_chain
 
     ok, n, cap = restart_chain.charge(project, node.value, "manual")
@@ -135,9 +128,6 @@ async def _charge_manual_regen(session: AsyncSession, project: Project, node: Pr
 
 
 async def _return_to_pending(session: AsyncSession, req: HITLRequest) -> None:
-    """Потолок цепочки исчерпан (аудит W56 K7): решение «перегенерировать» не теряется, запрос снова ждёт человека.
-
-    После «Продолжить» (сброс счётчиков) человек увидит тот же запрос и сможет решить ещё раз."""
     payload = dict(req.payload or {})
     payload["blocked_decision"] = getattr(req.decision, "value", str(req.decision))
     payload["blocked_reason"] = "restart_chain_ceiling"
@@ -148,9 +138,6 @@ async def _return_to_pending(session: AsyncSession, req: HITLRequest) -> None:
 
 
 async def request_hero_regen(session: AsyncSession, project: Project) -> bool:
-    """Ручной 🔁 на hero-карточке (Telegram): платный перезапуск generating_hero идёт через общий потолок цепочки.
-
-    True - статус переведён в generating_hero. False - потолок исчерпан, проект на паузе с причиной."""
     if not await _charge_manual_regen(session, project, ProjectStatus.generating_hero):
         return False
     project.status = ProjectStatus.generating_hero
@@ -165,7 +152,6 @@ async def _apply_frame_visual_hitl(
     *,
     advance: bool = True,
 ) -> bool:
-    """Решение по одному кадру — не ставим весь проект на паузу."""
     if req.frame_id is None or req.kind not in _FRAME_VISUAL_KINDS:
         return False
     frame = await session.get(Frame, req.frame_id)
@@ -176,7 +162,7 @@ async def _apply_frame_visual_hitl(
                 else ProjectStatus.generating_videos)
         if not await _charge_manual_regen(session, project, node):
             await _return_to_pending(session, req)
-            return True  # потолок: кадр не возвращается в очередь, проект на паузе с причиной, запрос снова pending
+            return True
     _mark_rejected(frame, decision is HITLDecision.rejected)
     if req.kind is HITLKind.approve_images:
         if decision is HITLDecision.approved:
@@ -205,10 +191,6 @@ async def apply_hitl_side_effects(
     *,
     advance: bool = True,
 ) -> None:
-    """Обновить статус проекта после решения по HITL (если нужно).
-
-    ``advance=False`` (слой действий, C-14): решение записывается, а следующий платный шаг не запускается; его
-    запускают отдельным действием с оценкой цены и потолком."""
     if decision is HITLDecision.pending:
         return
 

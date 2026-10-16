@@ -1,4 +1,3 @@
-"""Уровни изменений и явный allow-list по типам нод. Всё, чего здесь нет, запрещено."""
 from __future__ import annotations
 
 T0, T1, T2, T3 = "T0", "T1", "T2", "T3"
@@ -17,11 +16,8 @@ KINDS_BY_TIER = {
     T2: frozenset({K_PROMPT_TEXT}),
     T3: frozenset({K_DEVELOPER_REVIEW}),
 }
-# Только эти уровни имеют исполнителя. Для T0 и T3 его нет вообще.
 APPLICABLE_TIERS = frozenset({T1, T2})
 
-# Явные границы числовых параметров шага (не выше потолка, не ниже пола).
-# Ключ - код шага из prompt_library.STEP_FOLDERS; шаг обязан совпадать с шагом ноды.
 STEP_PARAM_LIMITS: dict[str, dict[str, dict]] = {
     "plan": {"duration_seconds": {"type": "number", "min": 5, "max": 1800}},
     "script": {"duration_seconds": {"type": "number", "min": 5, "max": 1800}},
@@ -32,13 +28,10 @@ STEP_PARAM_LIMITS: dict[str, dict[str, dict]] = {
         "cell_avg_max": {"type": "integer", "min": 1, "max": 2000},
     },
 }
-# За одно применение значение может измениться не более чем в столько раз.
 MAX_STEP_PARAM_FACTOR = 2.0
 
-# Поля настроек ноды «Работа с GPT», которые уже принимает PATCH /gpt-operator/{node}.
 NODE_OPTION_FIELDS = ("outputMode", "emitKinds", "checkFix", "useSnapshot")
 
-# Тип ноды (как в revisions: excel_gpt для enrich_*) -> что на ней можно менять.
 ALLOW_LIST: dict[str, dict[str, object]] = {
     "plan": {K_PROMPT_VARIANT: True, K_PROMPT_TEXT: True,
              K_STEP_PARAMS: tuple(STEP_PARAM_LIMITS["plan"])},
@@ -50,13 +43,11 @@ ALLOW_LIST: dict[str, dict[str, object]] = {
                   K_NODE_OPTIONS: NODE_OPTION_FIELDS},
 }
 
-# Пределы текста промпта (проверка перед записью).
 PROMPT_MIN_CHARS = 40
 PROMPT_MAX_CHARS = 200_000
 PROMPT_MIN_RATIO = 0.25
 PROMPT_MAX_RATIO = 4.0
 
-# Предложения: не засорять журнал.
 MAX_OPEN_PER_PROJECT = 50
 MAX_RATIONALE = 1000
 MAX_DIFF_CHARS = 100_000
@@ -67,7 +58,6 @@ def allowed_kinds(node_type: str) -> dict[str, object]:
 
 
 def describe_allow_list() -> dict:
-    """Для UI: что именно разрешено, без секретов."""
     return {
         "tiers": {
             T0: {"title_ru": "Только совет (не применяется)", "applicable": False,

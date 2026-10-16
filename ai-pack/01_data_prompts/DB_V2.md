@@ -423,8 +423,8 @@ curl -X POST http://127.0.0.1:8765/api/db/projects/<ID>/apply-ops \
   каталогу, неизвестное отклоняется);
 - «выбери промт horror для плана» — переключает вариант мастер-промта
   шага (`set_prompt`, варианты из библиотеки `prompts/`);
-- «переключи LLM на Kimi» — выбор текстовой LLM (`set_text_llm`:
-  kie/tokenrouter);
+- «переключи LLM на Vibecode» — выбор текстовой LLM (`set_text_llm`:
+  kie/vibecode);
 - «перепиши закадр во 2 кадре на …» — пишет в DB через apply-ops,
   Excel обновляется сам.
 

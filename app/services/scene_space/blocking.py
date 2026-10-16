@@ -1,9 +1,3 @@
-"""Assign frames_space rows: sizes, angles, sides, screen_dir, roles, service shots.
-
-``assign_blocking`` does not write the DB. If a §2 rule cannot hold, a service
-shot is inserted (reestablish WS/EWS, turn, POV bridge, overhead). Axis side is
-never flipped silently.
-"""
 
 from __future__ import annotations
 
@@ -52,7 +46,6 @@ def assign_blocking(
     bits: list[dict],
     frames: list[dict],
 ) -> list[dict]:
-    """Return frames_space rows for a scene. No DB writes."""
     space = _space_of(scene_state)
     scene_id = _scene_id_of(scene_state, space, frames)
     desired = _desired_shots(scene_id, space, bits or [], frames or [])

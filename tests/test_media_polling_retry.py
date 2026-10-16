@@ -54,5 +54,4 @@ async def test_kie_kling_poll_recovers_from_transient_504_streak():
         assert res.get("state") == "success"
         assert call_count == 3
 
-# Env: нужен хотя бы фиктивный ключ провайдера (см. tests/conftest.py::fake_provider_keys).
 pytestmark = pytest.mark.usefixtures("fake_provider_keys")

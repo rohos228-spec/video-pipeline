@@ -1,12 +1,3 @@
-"""Шаги загрузки файлов с вложениями: путь подставляет сервер, модель его не видит и не выдумывает.
-
-Если к запросу приложены файлы (``attachments.AttachmentRef``), шаг загрузки от модели очищается от
-source_path / data_base64 / filename, подбирается подходящее вложение (вид и формат подходят действию,
-размер в пределах лимита, вложение не занято другим шагом этого плана), и в шаг ставится
-``source_path`` вида ``attachments/<проект>/<uuid>_<имя>`` (внутри DATA_DIR). Нет подходящего -
-понятное уточнение на русском. Без вложений действует прежнее уточнение «прикрепите файл»
-(``planner_rules.upload_clarification``).
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -16,7 +7,6 @@ from app.services.action_layer.attachments import KINDS, AttachmentRef, max_byte
 
 MIB = 1024 * 1024
 
-# Какие виды вложений годятся действию, и какая политика загрузки (context.UPLOAD_POLICIES) его проверяет.
 ACTION_KINDS: dict[str, tuple[str, ...]] = {
     "montage.upload_image": ("image",),
     "montage.upload_ref": ("image",),
@@ -65,7 +55,6 @@ def _kind_ru(kind: str) -> str:
 
 
 def misfit(action_id: str, att: AttachmentRef) -> str:
-    """Почему вложение не годится действию (по-русски), пустая строка - годится."""
     want = _WANT_RU.get(action_id, "файл")
     if att.kind not in ACTION_KINDS.get(action_id, ()):
         return f"это {_kind_ru(att.kind)}, а нужен файл: {want}"
@@ -91,7 +80,6 @@ def _wrong(action_id: str, title: str, atts: list[AttachmentRef], used: set[str]
 
 def pick(action_id: str, title: str, atts: list[AttachmentRef], used: set[str],
          request_text: str) -> tuple[AttachmentRef | None, str, list[str]]:
-    """(вложение, вопрос, варианты). Вопрос задаётся, когда подходящего нет или их несколько."""
     fit = [a for a in atts if a.id not in used and not misfit(action_id, a)]
     if len(fit) == 1:
         return fit[0], "", []
@@ -106,8 +94,6 @@ def pick(action_id: str, title: str, atts: list[AttachmentRef], used: set[str],
 
 
 def actions_for_attachments(atts: list[AttachmentRef], registry) -> list[str]:
-    """Действия загрузки, которым подходит вид прикреплённого файла: приложенный файл показывает, что
-    человек говорит о загрузке, даже если глагол в запросе разговорный и предфильтр каталога его не знает."""
     kinds = {a.kind for a in atts}
     return [aid for aid, ok in ACTION_KINDS.items() if kinds & set(ok) and registry.find(aid) is not None]
 
@@ -119,7 +105,6 @@ def request_for(action_id: str, params: dict) -> dict:
 
 def fill_steps(steps: list[dict], atts: list[AttachmentRef], titles: dict[str, str],
                request_text: str = "") -> UploadFill:
-    """Подставляет source_path во все шаги загрузки плана; первая проблема - уточнение вместо плана."""
     used: set[str] = set()
     out: list[dict] = []
     for st in steps:
@@ -138,7 +123,6 @@ def fill_steps(steps: list[dict], atts: list[AttachmentRef], titles: dict[str, s
 
 
 def ask_missing(action_id: str, params: dict, att: AttachmentRef, required: list[str]) -> str:
-    """Вопрос о первом обязательном параметре, которого нет (кадр, нода, имя рефа); пусто - всё есть."""
     for key in required:
         if key in rules.FILE_PARAMS or key == "project_id" or key in params:
             continue

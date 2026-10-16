@@ -1,4 +1,3 @@
-"""Общие фикстуры тестов контура изменений: временная БД, временный PROMPTS_ROOT, шлюз-заглушка."""
 from __future__ import annotations
 
 import copy
@@ -56,15 +55,14 @@ def canvas_meta(**extra: Any) -> dict:
 
 
 class FakeGateway:
-    """Состояние проекта в памяти; PATCH ведёт себя как настоящий (merge защищённых бакетов)."""
 
     def __init__(self, *, meta: dict | None = None, status: str = "new", topic: str = "tema"):
         self.state = {"id": 1, "status": status, "topic": topic,
                       "meta": meta if meta is not None else canvas_meta(),
                       "prompt_overrides": {}, "gpt_text_overrides": {}}
         self.patches: list[dict] = []
-        self.fail_patches = 0          # сколько следующих PATCH упадёт
-        self.corrupt_after_patch = None  # callable(state) выполняется после следующего PATCH
+        self.fail_patches = 0
+        self.corrupt_after_patch = None
 
     async def get(self, project_id: int) -> dict:
         if project_id != 1:
@@ -148,7 +146,6 @@ HUMAN = "web_operator:0123456789abcdef"
 
 @pytest_asyncio.fixture
 async def ccenv(env, prompts_root):
-    """Настоящее приложение (ASGI) на временной БД: проект с холстом и таблицы контура."""
     from app.models import Project, ProjectStatus
     async with env.engine.begin() as conn:
         await cs.ensure_change_control_schema(conn)

@@ -103,8 +103,6 @@ def _is_scene_grammar_prompt(variant: str | None, master: str | None) -> bool:
 
 
 def _is_character_registry_prompt(variant: str | None, master: str | None) -> bool:
-    # Подпись агента часто в конце файла — не режем master[:800],
-    # иначе personajiDB / 07.07 уходят в dense shot-fill и characters[] теряются.
     blob = f"{variant or ''}\n{master or ''}".casefold()
     return any(m in blob for m in _CHARACTER_REGISTRY_PROMPT_MARKERS)
 
@@ -230,7 +228,6 @@ def _is_scenes_to_frames_node(
 def _is_vo_cell_markup_node(
     variant: str | None, master: str | None, node_key: str | None
 ) -> bool:
-    """Биты / главное действие / сцены→кадры / QC полей работают по VO-ячейке."""
     return (
         _is_script_writer_node(variant, master, node_key)
         or _is_main_action_node(variant, master, node_key)
@@ -248,7 +245,6 @@ _SCRIPT_FRAMES_QC_SUFFIXES = (
     "_fw_qc",
     "_fw_report",
 )
-# Ноды, которые на каждом прогоне пишут свой выход заново (не fw_frames).
 _SCRIPT_FRAMES_QC_REWRITE_SUFFIXES = (
     "_fw_script",
     "_fw_action",
@@ -258,7 +254,6 @@ _SCRIPT_FRAMES_QC_REWRITE_SUFFIXES = (
 
 
 def _is_script_frames_qc_rewrite_node(node_key: str | None) -> bool:
-    """Биты / действие / кадры / QC: старый выход не в GPT, apply пишет все ячейки."""
     nk = str(node_key or "")
     return any(nk.endswith(s) for s in _SCRIPT_FRAMES_QC_REWRITE_SUFFIXES)
 
@@ -266,7 +261,6 @@ def _is_script_frames_qc_rewrite_node(node_key: str | None) -> bool:
 def _is_script_frames_qc_group_node(
     variant: str | None, master: str | None, node_key: str | None
 ) -> bool:
-    """Группа script_frames_qc: биты → действие → кадры-шаги → QC → отчёт."""
     nk = str(node_key or "")
     if any(nk.endswith(s) for s in _SCRIPT_FRAMES_QC_SUFFIXES):
         return True
@@ -307,7 +301,6 @@ def _script_frames_qc_footer_kind(
 
 
 def _project_topic_bits(project) -> list[str]:
-    """Тема/план для ноды сценария. Project.title, не .name (его нет)."""
     bits: list[str] = []
     title = str(getattr(project, "title", None) or "").strip()
     if title:
@@ -422,7 +415,6 @@ _WIN_PATH_BAD = frozenset('<>:"/\\|?*')
 
 
 def _safe_upload_node_key(node_key: str) -> str:
-    """Имя папки excel_gpt_uploads: Windows не принимает ':' и др."""
     cleaned = "".join(
         "_" if ch in _WIN_PATH_BAD else ch for ch in str(node_key or "")
     )
@@ -430,7 +422,6 @@ def _safe_upload_node_key(node_key: str) -> str:
 
 
 def _canvas_has_fw_shots(project) -> bool:
-    """На канвасе есть нода T/X (не путать с «группа вставлена»)."""
     graph = (getattr(project, "meta", None) or {})
     if not isinstance(graph, dict):
         return False
@@ -464,7 +455,6 @@ async def _run_four_node_markup_pass(
     apply_kind: str,
     on_progress,
 ) -> None:
-    """Внутренний GPT-проход 4 нод: действие или кадры-шаги (без ноды на канвасе)."""
     import json as _json
 
     from app.services.apply_ops_batches import (
@@ -563,7 +553,6 @@ async def _ensure_four_node_scene_shots(
     ents,
     on_progress,
 ):
-    """4 ноды: внутри fw_frames прогнать действие + кадры-шаги, потом expand."""
     from sqlalchemy import select as _select
 
     from app.services.shot_templates import neighbor_place_hints
@@ -706,7 +695,6 @@ async def _ensure_four_node_scene_shots(
 
 
 def _select_fw_frames_for_gpt(frames_for_map, *, force_full: bool):
-    """Какие кадры слать в GPT на fw_frames. force_full — все uuid, без skip."""
     uuid_frames = [
         fr for fr in (frames_for_map or []) if getattr(fr, "uuid", None)
     ]
@@ -838,7 +826,6 @@ async def _complete_excel_gpt_noderun(
     node_key: str | None,
     slot_idx: int,
 ) -> None:
-    """NodeRun → done после успешного apply-ops, даже если Project.status уже уехал."""
     if not node_key:
         return
     try:
@@ -847,7 +834,7 @@ async def _complete_excel_gpt_noderun(
         await complete_excel_gpt_node_by_key(
             session, project, node_key, enrich_slot=slot_idx
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception(
             "[#{}] enrich_xlsx: complete_excel_gpt_node_by_key failed",
             project.id,
@@ -862,11 +849,6 @@ async def _after_excel_gpt_done(
     slot_idx: int,
     ready_status: ProjectStatus,
 ) -> None:
-    """После готовности excel_gpt: sync storage; excel_gpt→excel_gpt по стрелкам.
-
-    Прыжок на hero/img_pr — только auto_mode, и даже тогда стоп, если
-    следующий work не excel_gpt (ждём ручной ▶).
-    """
     from app.services.actions_recovery import defer_continuation
     if defer_continuation(project.id, node_key):
         from app.services.observation import emit
@@ -927,10 +909,6 @@ async def _after_excel_gpt_done(
                 node_key,
             )
 
-    # excel_gpt→excel_gpt по стрелкам — цепочка группы, не auto_mode.
-    # maybe_auto_advance на img_pr/hero/… — только если auto_mode=True.
-    # force_full не снимаем здесь: хвост группы (action→shots→QC) иначе
-    # ест старые кадры/действие и skip-filled не пишет новые ops.
     if not getattr(project, "auto_mode", False):
         logger.info(
             "[#{}] enrich_xlsx: slot {} → {} — auto_mode выкл, без pipeline auto-advance",
@@ -994,8 +972,6 @@ async def _maybe_auto_chain_excel_gpt(
         if await continue_managed_image(session, project, finished_key, next_key, typ):
             return
         # Стрелка ведёт не в excel_gpt — цепочку не форсим.
-        # auto_mode иначе сразу стартует hero/img_pr («нода отработала →
-        # персонажи → та же нода снова»).
         meta = dict(project.meta or {})
         meta.pop("enrich_auto_chain_to", None)
         meta.pop("excel_gpt_ui_force_full", None)
@@ -1093,7 +1069,7 @@ async def _maybe_auto_chain_excel_gpt(
             strict=False,
             explicit_ui_start=True,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug(
             "[#{}] enrich_xlsx auto-chain: prepare NodeRun {} failed",
             project.id,
@@ -1114,11 +1090,6 @@ async def _maybe_auto_chain_excel_gpt(
 
 
 def _hold_pipeline_after_excel_gpt(project: Project) -> None:
-    """excel_gpt закончился, следующий work не excel_gpt — не прыгать на hero.
-
-    Даже при auto_mode=True: воркер увидит auto_await_manual_start и не
-    стартует персонажей / img_pr, пока оператор не нажмёт ▶ на той ноде.
-    """
     if not getattr(project, "auto_mode", False):
         return
     from app.services.project_control import arm_auto_await_manual_start
@@ -1148,7 +1119,6 @@ async def _run_fw_report_node(
     node_key: str,
     slot_idx: int,
 ) -> None:
-    """Код-нода: HTML-отчёт сцен/кадров + промты/QC. GPT не зовём."""
     from sqlalchemy import select
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1206,7 +1176,7 @@ async def _run_fw_report_node(
         await complete_excel_gpt_node_by_key(
             session, project, node_key, enrich_slot=slot_idx
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception(
             "[#{}] fw_report: complete_excel_gpt_node_by_key failed",
             project.id,
@@ -1873,7 +1843,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
             # Компактный снимок DB (SoT). Excel в GPT не отдаём вообще.
             # scene_grammar: attrs не тащим — пишем с нуля.
-            # character_registry: VO + действие кадра, без старого Entity/ID.
             # excel_gpt else: slim whitelist + короткий VO, без сырого attrs.
             if scene_grammar or character_registry:
                 if character_registry:
@@ -2164,7 +2133,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "Пайплайн сам запишет твой JSON в базу. "
                         "Excel не используется. Отвечай только JSON apply-ops."
                     ).strip()
-        # Отпустить SQLite write-txn на время GPT (иначе UI: database is locked / 30с).
         await session.commit()
         check_streams_n = None
         if check_mode:
@@ -2569,7 +2537,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 db_sot_check=db_sot_check,
             )
         await session.refresh(project)
-        # После project_file / DB-check: apply-ops JSON → DB (SoT).
         if output_mode == "project_file" or (
             check_mode
             and check_fix
@@ -2650,8 +2617,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     )
                     ops_list = kept_ops
             # check/report_only не пишут (или пишут DB-check без стрипа).
-            # Shot-fill и QC полей кадров не пишут промты картинки/видео;
-            # leftover fw_frames / старый prompts_qc — пишут.
             apply_node_kind: str | None = None
             if ops_list and not check_mode:
                 from app.services.node_write_contract import filter_ops_for_node, allows_qc_noop
@@ -2728,7 +2693,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         ops_list,
                         characters=chars_list or None,
                         scenes=scenes_list or None,
-                        export_xlsx=bool(ops_data.get("export_xlsx", False)),
+                        export_xlsx=True,
                         node_kind=apply_node_kind,
                     )
                     await session.commit()
@@ -2823,14 +2788,11 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     "запись через Excel/TSV больше не поддерживается."
                 )
         nk_now = str(node_key or "")
-        # QC already patched fields.кадры (план/раскладка). Full coverage rebuild
-        # after QC was dropping those fields back to pre-QC camera_subdivide.
         if nk_now.endswith("_fw_qc") and _canvas_has_fw_shots(project):
             from sqlalchemy import select as _sel_qc_sync
 
             from app.services.vo_shot_expand import sync_qc_kadry_onto_coverage_frames
 
-            # expire_all сбрасывает project — сначала снимем id, потом refresh
             _pid = int(project.id)
             session.expire_all()
             project = await session.get(type(project), _pid) or project
@@ -2856,7 +2818,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         ):
             from app.services.vo_shot_expand import apply_shot_coverage_to_vo_cells
 
-            # expire_all + async ORM: без refresh project.id → MissingGreenlet
             _pid = int(project.id)
             session.expire_all()
             project = await session.get(type(project), _pid) or project
@@ -2913,6 +2874,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                 api_res.analysis.to_dict() if getattr(api_res, "analysis", None) else None
             ),
         )
+        if getattr(api_res, "reply_text", None):
+            save_gpt_reply_text(project, node_key, api_res.reply_text)
+        await session.flush()
         ready_status = _SLOT_MAP[slot_idx][1]
         running_status = _SLOT_MAP[slot_idx][0]
         # status мог уйти в generating_* пока шёл долгий API-check
@@ -2934,8 +2898,6 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         flag_modified(project, "meta")
         await session.flush()
         await session.refresh(project)
-        # Apply-ops уже в БД: закрыть NodeRun даже если юзер нажал ⏹ /
-        # ▶ другой шаг (иначе heal сотрёт overflow completed_keys).
         await _complete_excel_gpt_noderun(session, project, node_key, slot_idx)
         # Юзер мог ▶ другой шаг (split) пока GPT enrich ещё отвечал.
         if project.status is not running_status:

@@ -1,4 +1,3 @@
-"""Production adapter safety, exercised offline; no real credentials."""
 import copy,importlib,json,unittest
 from unittest.mock import patch,AsyncMock
 from pathlib import Path
@@ -100,7 +99,6 @@ class RuntimeConfig(unittest.TestCase):
 
 class RuntimeAdapter(base_tests.DecisionDurability):
     async def asyncSetUp(self):
-        # Legacy review tests exercise approve_plan, not the Excel JSON contract.
         if self._testMethodName in {
             'test_actual_auto_review_uses_shared_http_budget',
             'test_review_outside_managed_scope_cannot_send',
@@ -341,7 +339,6 @@ class RuntimeAdapter(base_tests.DecisionDurability):
                     await _run_text_review(project,HITLKind.approve_script,'synthetic script')
         sends.assert_not_awaited()
 
-# Inherit fixtures, not historical suites.
 for _name in list(dir(RuntimeAdapter)):
     if _name.startswith('test_') and _name not in RuntimeAdapter.__dict__:setattr(RuntimeAdapter,_name,None)
 

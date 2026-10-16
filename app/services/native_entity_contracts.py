@@ -1,11 +1,3 @@
-"""Read-only evidence for the original Entity/Excel hero executor.
-
-This helper neither executes a node nor records, applies, repairs, or approves
-business data. Supplied provenance must come from the caller's captured native
-requests/results. Matching it does not authenticate an observation journal,
-prove a commit or provider job, or admit outbound hero generation to managed
-execution. Entity/Excel batches and legacy per-variation HITL remain distinct.
-"""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -23,7 +15,6 @@ _SCOPE_FIELDS = ("execution_id", "node_key", "attempt_id")
 
 
 def hero_entity_contract():
-    """Describe the actual route without granting another execution path."""
     from app.services.node_capabilities import READ_ACTIONS
 
     return {
@@ -51,7 +42,6 @@ def hero_entity_contract():
 
 
 def items_entity_contract():
-    """Read-only description of the items executor; grants no execution path."""
     from app.services.node_capabilities import READ_ACTIONS
 
     return {
@@ -101,7 +91,6 @@ def _entity_order(row):
 
 
 def _characters(rows):
-    # Reuse the native field aliases, filtering, ordering and rules parser.
     parsed = characters_from_entities([SimpleNamespace(**row) for row in rows])
     identity = {}
     for row in rows:
@@ -112,11 +101,6 @@ def _characters(rows):
 
 
 def hero_entity_input_snapshot(entities, *, project_id):
-    """Detach raw model fields and native parsed roles in deterministic order.
-
-    Ignored rows remain in the raw capture. Duplicate or foreign identities are
-    retained for the verifier to reject rather than silently fixing the input.
-    """
     rows = [deepcopy({field: _get(row, field) for field in _ENTITY_FIELDS})
             for row in entities or []]
     rows.sort(key=_entity_order)
@@ -174,8 +158,6 @@ def _input_characters(snapshot, project_id, errors, unknowns):
     if any(type(row["project_id"]) is not int or row["project_id"] != project_id for row in rows):
         errors.append("entity_project_outside_scope")
     try:
-        # Projecting known model fields also avoids accepting caller-defined
-        # attributes as another parser or role authority.
         parsed = _characters([{field: row[field] for field in _ENTITY_FIELDS} for row in rows])
     except (TypeError, ValueError, OverflowError):
         unknowns.append("native_entity_parse_unavailable")
@@ -214,7 +196,6 @@ def _latest_artifacts(artifacts, characters, project_id, errors):
             errors.append("missing_or_foreign_artifact_character")
             continue
         history[row["uuid"]] = row
-        # Matches generate_hero._excel_artifact_for_id's descending Artifact.id.
         if code not in latest or row["id"] > latest[code]["id"]:
             latest[code] = row
     return latest, history
@@ -230,7 +211,6 @@ async def _image(path, root):
 
 
 async def _disk_cache(code, root):
-    """Observe the native >=1000-byte cache shortcut without recovering rows."""
     try:
         path = contained_path(Path(root) / "characters" / (code + ".png"), root)
         if path.is_file() and path.stat().st_size >= 1000:
@@ -307,7 +287,6 @@ def _result_provenance(entries, characters, latest, history, images, scope, inpu
             errors.append("provenance_artifact_identity_conflict")
             continue
         if code not in latest or latest[code]["uuid"] != uid:
-            # A prior native result is history, never evidence for a newer row.
             continue
         matched.add(code)
         artifact = latest[code]
@@ -334,8 +313,6 @@ def _result_provenance(entries, characters, latest, history, images, scope, inpu
                       history[uid]["meta"]["excel_id"] != reference_code
                       for uid, reference_code in zip(refs, ch["ref_ids"]))):
                 errors.append("generation_reference_bindings_conflict")
-            # A reference was selected at native generation time. A later
-            # regeneration of its base does not rewrite that captured UUID.
         model = entry.get("model")
         if ch["role"] == "reference_variation":
             if model is not None:
@@ -355,12 +332,6 @@ def _result_provenance(entries, characters, latest, history, images, scope, inpu
 
 
 async def verify_hero_entity_results(artifacts, *, project_id, snapshot, root, scope, provenance=None):
-    """Check supplied native rows and real files without changing any state.
-
-    A passed result proves only this bounded consistency check. Supplied
-    provenance still needs the parent's observer/worker acceptance; managed
-    eligibility, semantic quality and business commit claims stay false.
-    """
     proof = _proof(snapshot)
     errors, unknowns = [], []
     characters = _input_characters(snapshot, project_id, errors, unknowns)

@@ -1,8 +1,3 @@
-"""Автопроверка поставки (scripts/check_delivery.py, G-05): каждое правило ловит своё нарушение, чистое дерево проходит.
-
-Класс доказательства: U. Без сети, денег и git: файлы создаются во временной папке, список файлов передаётся явно.
-Синтетические ключи и личные пути собираются в тесте из частей, чтобы тест не срабатывал на самого себя.
-"""
 from __future__ import annotations
 
 import importlib.util
@@ -15,7 +10,7 @@ _SPEC = importlib.util.spec_from_file_location(
     "vp_check_delivery", Path(__file__).resolve().parent.parent / "scripts" / "check_delivery.py")
 cd = importlib.util.module_from_spec(_SPEC)
 sys.modules["vp_check_delivery"] = cd
-_SPEC.loader.exec_module(cd)  # type: ignore[union-attr]
+_SPEC.loader.exec_module(cd)
 
 FAKE_KEY = "s" + "k-" + "A1b2C3d4" * 3
 OWNER_PATH = "C:" + chr(92) + "Users" + chr(92) + "Ник" + "ита" + chr(92) + "work"
@@ -53,7 +48,6 @@ def test_forbidden_paths_are_errors(tmp_path, rel):
 def test_env_example_is_allowed_but_env_content_never_read(tmp_path):
     rep = _run(tmp_path, {".env": f"TOKEN={FAKE_KEY}\n", ".env.example": "TOKEN=\n"})
     assert any(".env " in e or e.endswith(".env (файл по маске .env не поставляется)") for e in rep["errors"])
-    # содержимое запрещённого файла не сканируется, значения нет ни в одном сообщении
     assert not any("секрет" in e for e in rep["errors"])
     assert FAKE_KEY not in " ".join(rep["errors"] + rep["warnings"])
 
@@ -77,13 +71,12 @@ def test_personal_path_error_foreign_path_warning(tmp_path):
     assert any("личный путь в docs/a.md" in e for e in rep["errors"])
     assert not any("docs/b.md" in e for e in rep["errors"])
     assert any("docs/b.md" in w for w in rep["warnings"])
-    assert not any("docs/c.md" in w for w in rep["warnings"])  # плейсхолдер <user> не считается
+    assert not any("docs/c.md" in w for w in rep["warnings"])
 
 
 def test_customer_data_in_path(tmp_path):
     rep = _run(tmp_path, {"docs/tkach-report.html": "x", "scripts/run_spesivtsev_qc.py": "x"})
     assert any("данные заказчика в пути: docs/tkach-report.html" in e for e in rep["errors"])
-    # код с именем проекта - только предупреждение
     assert not any("run_spesivtsev_qc" in e for e in rep["errors"])
     assert any("run_spesivtsev_qc" in w for w in rep["warnings"])
 
@@ -109,17 +102,16 @@ def test_real_required_docs_exist_in_repo():
 def test_push_url_check_is_exact_not_substring():
     ok = "https://github.com/acme/delivery.git"
     assert cd.check_push_url(ok, ok, ["rohos228-spec"]) == []
-    # URL с нужным именем внутри, но другой цели: подстрока совпала бы, точная сверка - нет
     sneaky = "https://github.com/rohos228-spec/video-pipeline.git?x=acme/delivery.git"
     errs = cd.check_push_url(sneaky, ok, ["rohos228-spec"])
     assert len(errs) == 2
-    assert cd.check_push_url("DISABLED_PUSH_FOR_DIAGNOSTICS", ok, [])  # заглушка не равна ожидаемому
-    assert cd.check_push_url("", ok, [])  # пустой push-URL - ошибка
+    assert cd.check_push_url("DISABLED_PUSH_FOR_DIAGNOSTICS", ok, [])
+    assert cd.check_push_url("", ok, [])
 
 
 def test_main_exit_codes_walk_mode(tmp_path, capsys):
     (tmp_path / "README.md").write_text("x", encoding="utf-8")
-    assert cd.main(["--root", str(tmp_path), "--walk"]) == 1  # нет обязательных документов
+    assert cd.main(["--root", str(tmp_path), "--walk"]) == 1
     out = capsys.readouterr().out
     assert "нет обязательного файла" in out
     for rel in cd.REQUIRED_DOCS:

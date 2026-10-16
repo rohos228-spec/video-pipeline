@@ -1,9 +1,3 @@
-"""Подстановка лимитов запуска ноды из реальных данных проекта (после ответа планировщика).
-
-Лимиты ``node.run_step`` (min/max_llm_requests, max_input/output_tokens) модель выдумать не может:
-сервер берёт их из того же расчёта, что и ``node.get_run_cost_basis`` (верхняя оценка по данным
-проекта). Если расчёт невозможен, параметры остаются пустыми и preview покажет причину.
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -14,11 +8,6 @@ DECL_KEYS = ("min_llm_requests", "max_llm_requests", "max_input_tokens", "max_ou
 
 
 async def fill_node_run_limits(app: Any, operator: str, steps: list[dict]) -> list[str]:
-    """Дополняет лимиты шагов node.run_step; возвращает заметки для explanation_ru.
-
-    Названное человеком значение (например «на вход не больше 50 тысяч токенов») не перезаписывается:
-    сервер добавляет только недостающие лимиты, а если названный меньше расчёта по проекту, проверка
-    перед запуском честно откажет."""
     wanted = [s for s in steps if s.get("action_id") == "node.run_step"
               and not all(k in (s.get("params") or {}) for k in DECL_KEYS)]
     if not wanted:
@@ -36,7 +25,7 @@ async def fill_node_run_limits(app: Any, operator: str, steps: list[dict]) -> li
             continue
         try:
             basis = await w3._load_basis(ctx, params)
-        except Exception as exc:  # noqa: BLE001 - причину покажет preview
+        except Exception as exc:
             logger.debug("planner autofill: no run basis for {}: {}", key, type(exc).__name__)
             continue
         if isinstance(basis, str):

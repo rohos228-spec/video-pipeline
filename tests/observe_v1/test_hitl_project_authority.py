@@ -1,9 +1,3 @@
-"""Read-only HITL project GET authority through real SQLite files and ASGI.
-
-These are explicit pending-request input fixtures, not worker acceptance or
-successful business states. No decision POST, executor, recovery or live app
-is started. Parent alone imports/executes this module in isolated Docker.
-"""
 import asyncio
 from contextlib import ExitStack
 from datetime import datetime
@@ -31,9 +25,6 @@ from app.web.routers import hitl
 
 class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        # Same file-backed SQLite / async_sessionmaker / ASGI pattern as the
-        # existing observe tests. Do not override the routing dependency in
-        # authority cases: it must choose the actual original worker DB.
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -101,7 +92,6 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _project_file(self, project_id, *, owners, requests):
-        """Fixture construction only, before the first read in this case."""
         folder = settings.data_dir / "videos" / f"synthetic-hitl-{project_id}"
         engine = await project_db.get_project_engine(folder)
         async with engine.begin() as connection:
@@ -112,11 +102,9 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
             await session.flush()
             session.add_all([self._request(*args) for args in requests])
             await session.commit()
-        # Use the original directory resolver for normal master-owned projects.
         return folder
 
     def _snapshot(self):
-        """Logical data/schema snapshot; WAL lifecycle is not business data."""
         files = {}
         for path in sorted(self.root.rglob("*.db")):
             with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as connection:
@@ -153,8 +141,6 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
             (74, "worker-project-target-newer"),
             (71, "worker-project-target-older"),
         ])
-        # Master has stale id=71; this project DB also has foreign id=75.
-        # Neither is a substitute for the two original worker-owned requests.
 
     async def test_empty_existing_project_db_does_not_use_stale_master_history(self):
         async with self.sessions() as session:
@@ -184,8 +170,6 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(missing_dir.exists(), "read-only fallback must not initialize or migrate project storage")
 
     async def test_existing_master_project_without_data_directory_can_still_be_read(self):
-        # Legacy resolver input with no usable data_dir, not a substituted
-        # session/router: master project and pending row remain real SQLite.
         with patch.object(Project, "data_dir", property(lambda _project: None)):
             rows = await self._get(17)
         self._assert_pending(rows, 17, [(91, "master-only-pending")])
@@ -195,8 +179,6 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows, [], "legacy GET for a nonexistent project returns 200 []")
 
     async def test_stale_directory_registration_does_not_authorize_missing_master_project(self):
-        # Orphan copied project storage is input to the negative read test;
-        # no project 42 exists in master. Preserve the legacy empty response.
         orphan = await self._project_file(
             42, owners=(42,), requests=((71, 42, "orphan-project-colliding-id"),),
         )
@@ -205,8 +187,6 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows, [], "cached foreign/orphan storage cannot expose pending requests for an unknown master project")
 
     async def test_explicit_master_dependency_override_remains_compatible(self):
-        # Only this compatibility control deliberately overrides get_session;
-        # the authority cases above never collapse master/project routing.
         entered = []
 
         async def master_fixture():
@@ -237,8 +217,6 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
         return project
 
     async def _guard_external_file_fixture(self, folder, project):
-        # Outside DATA_DIR but still inside this test's isolated temporary
-        # root. Fixture construction is allowed; the GET must never open it.
         self.assertTrue(folder.resolve().is_relative_to(self.root.resolve()))
         engine = await project_db.get_project_engine(folder)
         async with engine.begin() as connection:
@@ -254,15 +232,12 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
         return folder / "project.db"
 
     def _guard_snapshot(self, unreadable):
-        # Original eight tests retain their logical snapshot helper. Here
-        # malformed files and dangling links must not be opened by the test.
-        # Record links/bytes/directories plus logical rows of valid databases.
         unreadable = set(unreadable)
         inventory = {}
         logical = {}
         for path in sorted(self.root.rglob("*")):
             if path.name.endswith(("-wal", "-shm")):
-                continue  # operational SQLite caches; logical rows below cover WAL
+                continue
             key = str(path.relative_to(self.root))
             if path.is_symlink():
                 inventory[key] = ("symlink", os.readlink(path))
@@ -319,8 +294,6 @@ class HITLProjectAuthority(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(candidate.resolve(), external.resolve())
 
     async def test_dangling_project_db_is_rejected_without_initialization_or_master_fallback(self):
-        # Master id=17 has a real pending request; the dangling entry must
-        # not be treated as absent legacy storage and return that stale row.
         folder = settings.data_dir / "videos" / "synthetic-hitl-17"
         folder.mkdir(parents=True)
         candidate = folder / "project.db"

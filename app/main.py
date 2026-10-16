@@ -34,7 +34,7 @@ if (settings.asr_backend or "").strip().lower() == "nvidia":
 
 async def _init_db() -> None:
     async with engine.begin() as conn:
-        from app.services.scene_space import models as _scene_space_models  # noqa: F401
+        from app.services.scene_space import models as _scene_space_models
 
         await conn.run_sync(Base.metadata.create_all)
 
@@ -47,10 +47,7 @@ async def _init_db() -> None:
 
         await migrate_orchestrator_schema(conn)
 
-        # Колонки projects, добавленные после первого релиза, добавляет версионная
-        # миграция 0009_projects_columns (schema_migrations), она уже выполнена выше.
 
-        # Миграция со статуса `failed` (его больше не используем): просто
         # сбрасываем в `new`, дальше recompute_all поднимет до правильного
         # уровня по данным.
         try:
@@ -75,7 +72,7 @@ async def _init_db() -> None:
         schema_report = await migrate_existing_project_dbs()
         if schema_report["failed"]:
             logger.error("main init_db: project.db schema migration failed for {}", schema_report["failed"])
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("migrate_existing_project_dbs failed in main (non-fatal)")
 
 
@@ -120,7 +117,9 @@ async def _backfill_from_disk() -> None:
     try:
         async with session_scope() as s:
             projects = (
-                await s.execute(select(Project))
+                await s.execute(
+                    select(Project).where(Project.status != ProjectStatus.assembled)
+                )
             ).scalars().all()
             for p in projects:
                 # p.data_dir автоматически даёт правильный путь:
@@ -193,7 +192,7 @@ async def _recompute_all_projects() -> None:
 
     try:
         async with session_scope() as s:
-            changes = await recompute_all(s)
+            changes = await recompute_all(s, skip_assembled=True)
             if changes:
                 logger.warning(
                     "recompute: {} проект(а/ов) с десинхронизацией статуса "
@@ -322,7 +321,6 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                 raise db_locked_err
             assert result is not None
             if not result.prev_status:
-                # допуск отказал или проекта нет: шаг не выполнялся, историю отказов не стираем
                 return
             async with session_scope() as s:
                 p = await s.get(Project, project_id)
@@ -446,7 +444,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 project_id=p.id,
                             )
                 fail_counts.pop(key, None)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception(
                     "step_failure_policy failed for #{}", project_id
                 )
@@ -469,7 +467,7 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                                 explicit_ui_start=True,
                             )
                             await ps.commit()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception(
                         "fallback unstick after policy fail #{}", project_id
                     )
@@ -542,10 +540,6 @@ async def _run_worker_loop(bot) -> None:  # Bot | NoopBot
                             p.status.value,
                         )
                         continue
-                    # Этот цикл — уже running. Gate очереди / until_node
-                    # только для auto_advance *_ready. Иначе ручной ▶
-                    # (overflow excel_gpt) ставит enriching_1, а воркер
-                    # не берёт — нода так и висит «ожидание».
                     if project_gated_by_gen_queue(p.id):
                         logger.info(
                             "worker: #{} {} — не в gen_queue, но шаг уже running — берём",
@@ -923,6 +917,17 @@ async def main() -> None:
                 with contextlib.suppress(Exception):
                     reconfigure(encoding="utf-8", errors="replace")
 
+        # Windows ProactorEventLoop: подавляет ложные шумы при закрытии сокета браузером (F5/закрытие вкладки)
+        def _windows_proactor_exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+            exception = context.get("exception")
+            if isinstance(exception, ConnectionResetError) and getattr(exception, "winerror", None) == 10054:
+                return
+            if "10054" in str(context):
+                return
+            loop.default_exception_handler(context)
+
+        asyncio.get_running_loop().set_exception_handler(_windows_proactor_exception_handler)
+
     logger.info(
         "starting video-pipeline, owner chat_id={}, db={}",
         settings.telegram_owner_chat_id,
@@ -934,21 +939,21 @@ async def main() -> None:
             "проксируются через VPS-relay. Для прямого подключения к API очистите GPT_RELAY_TOKEN в .env"
         )
     await _init_db()
-    try:  # B10: колбэки баланса провайдеров (только регистрация, сеть не ходит)
+    try:
         from app.services.balance_adapters import register_default_adapters
 
         register_default_adapters()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("balance adapters registration failed (non-fatal)")
 
     from app.db import session_scope
     from app.services.startup_guard import block_pipeline_autorun_on_startup
 
-    try:  # media resume: reattach live Kie tasks of generating_* projects before the guard rolls them back
+    try:
         from app.services.media_resume import reconcile_on_startup as _media_reconcile
 
         await _media_reconcile()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("media resume reconcile failed (non-fatal)")
 
     async with session_scope() as s:
@@ -1018,6 +1023,11 @@ async def main() -> None:
                 "перезапустите Python (Launcher: 4 Stop → 2 Start Studio)",
                 sv.get("backend_attach"),
                 sv.get("attach_expected"),
+            )
+        if sv.get("vps_relay"):
+            logger.warning(
+                "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
+                sv.get("vps_relay_base_url"),
             )
     except Exception as e:  # noqa: BLE001
         logger.warning("studio version log failed: {}", e)

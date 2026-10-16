@@ -1,4 +1,3 @@
-"""Run only synthetic journal tests and record the modules actually imported."""
 from __future__ import annotations
 
 import hashlib
@@ -14,7 +13,6 @@ RESULTS = Path("/results")
 if not Path("/.dockerenv").exists():
     raise SystemExit("This acceptance target must run inside the isolated Docker container")
 
-# No dotenv file is mounted; all credentials are intentionally synthetic/empty.
 os.environ.update({
     "DATA_DIR": "/results/synthetic-data", "SQLITE_PATH": "/results/synthetic-data/state.db",
     "GPT_API_KEY": "synthetic-observe-test-key", "GPT_BASE_URL": "http://127.0.0.1:18766",

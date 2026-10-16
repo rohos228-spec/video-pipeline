@@ -1,7 +1,3 @@
-"""W5-4 D11: история с прежними значениями и откат по журналу.
-
-Эндпоинты настоящие, на временной БД и временных папках; платных вызовов нет.
-"""
 from __future__ import annotations
 
 import base64
@@ -15,7 +11,7 @@ from app.models import Frame
 from app.services.action_layer import builtin_wave5_history as hist
 from app.services.action_layer import executor, store
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 
@@ -85,7 +81,6 @@ def test_wrapped_actions_are_listed_and_keep_their_tier() -> None:
     assert registry.get("montage.set_anchors").risk == "destructive"
 
 
-# --- закадр кадра ----------------------------------------------------------------------------------------
 
 async def test_voiceover_edit_is_snapshotted_and_rolled_back(env, not_managed) -> None:
     pid = await env.add_project(frames=2)
@@ -106,7 +101,6 @@ async def test_voiceover_edit_is_snapshotted_and_rolled_back(env, not_managed) -
     async with env.factory() as s:
         assert (await s.get(Frame, fid)).voiceover_text == "реплика 1"
     assert (await store.get_snapshot(snap.id)).restored_at is not None
-    # повторный откат того же снимка отклоняется
     again = await env.client.post(f"{BASE}/plans/preview",
                                   json={"steps": [step("history.rollback", snapshot_id=snap.id)]})
     assert again.status_code == 422 and "snapshot_restorable" in str(again.json())
@@ -163,7 +157,6 @@ async def test_secret_looking_text_is_recorded_but_not_restorable(env, not_manag
     assert refused.status_code == 422
 
 
-# --- покрытие ------------------------------------------------------------------------------------------------
 
 async def test_coverage_plan_is_snapshotted_and_restored(env, not_managed) -> None:
     pid = await env.add_project(frames=1)
@@ -177,12 +170,10 @@ async def test_coverage_plan_is_snapshotted_and_restored(env, not_managed) -> No
     assert back["status"] == "succeeded", back
     board = (await env.client.get(f"/api/projects/{pid}/montage-board")).json()
     assert board["frames"][0]["shot_plan"] == "КРУПНЫЙ"
-    # первая правка: прежнее значение пустое, откат пустым значением не обещается
     empty = await store.get_snapshot(first["snapshot_id"])
     assert empty.restorable is False and "пуст" in empty.note
 
 
-# --- структурные правки: только запись ---------------------------------------------------------------------
 
 async def test_structural_edit_records_previous_state_without_promising_rollback(
         env, not_managed) -> None:
@@ -199,7 +190,6 @@ async def test_structural_edit_records_previous_state_without_promising_rollback
     assert refused.status_code == 422 and "snapshot_restorable" in str(refused.json())
 
 
-# --- меню съёмки ----------------------------------------------------------------------------------------------
 
 async def _with_uuid(env, pid):
     async with env.factory() as s:
@@ -230,7 +220,6 @@ async def test_shot_cell_voiceover_and_field_rollback(env, not_managed) -> None:
         fr = (await s.execute(select(Frame).where(Frame.project_id == pid))).scalars().first()
         assert fr.image_prompt == "img 1"
 
-    # поле шота в attrs: прежнего значения не было, пустое значение записывается обратно
     act = await _result(env, [step("shot.edit_field", project_id=pid, frame_uuid=uid,
                                    field="action", value="идёт")])
     asnap = await store.get_snapshot(act["snapshot_id"])
@@ -246,7 +235,6 @@ async def test_shot_field_set_is_recorded_but_not_restorable(env, not_managed) -
     assert snap.restorable is False and isinstance(snap.before, dict)
 
 
-# --- мастер-промт ----------------------------------------------------------------------------------------------
 
 async def test_master_prompt_is_snapshotted_and_restored(env, prompts_root) -> None:
     out = await _result(env, [step("prompt.save_master", step_code="plan", name="variant_a",
@@ -263,7 +251,6 @@ async def test_master_prompt_is_snapshotted_and_restored(env, prompts_root) -> N
     assert "ГЛОБАЛЬНО" in effects and "history.rollback" in effects
 
 
-# --- файлы озвучки и музыки --------------------------------------------------------------------------------------
 
 def _wav(tag: bytes) -> bytes:
     return b"RIFF" + (36 + len(tag)).to_bytes(4, "little") + b"WAVEfmt " + tag * 4
@@ -278,7 +265,7 @@ async def test_voice_upload_keeps_a_copy_and_restores_it(env, not_managed) -> No
     one, two = _wav(b"1111"), _wav(b"2222")
     first = await _result(env, [step("montage.upload_voice", project_id=pid,
                                      filename="voice.wav", data_base64=_b64(one))], approve=True)
-    assert first["rollback_possible"] is False  # прежнего файла не было
+    assert first["rollback_possible"] is False
     s1 = await store.get_snapshot(first["snapshot_id"])
     assert s1.before == {"exists": False} and "откат невозможен" in s1.note
 
@@ -298,7 +285,6 @@ async def test_voice_upload_keeps_a_copy_and_restores_it(env, not_managed) -> No
                  if hist.SNAPSHOT_DIR not in p.parts)
     assert voice.read_bytes() == one
 
-    # подмена копии после снимка не проходит: откат того же снимка вторым и сторонним путём
     s3 = await store.get_snapshot(back["steps"][0]["result"]["reverse_snapshot_id"])
     assert s3.before["sha256"] == hashlib.sha256(two).hexdigest()
     (Path(env.tmp_path) / s3.before["backup"]).write_bytes(_wav(b"evil"))
@@ -308,7 +294,6 @@ async def test_voice_upload_keeps_a_copy_and_restores_it(env, not_managed) -> No
 
 
 async def test_stub_context_bypasses_snapshots_and_never_touches_the_database() -> None:
-    """Юнит-тесты исполнителей с заглушкой контекста не должны писать в базу слоя."""
     calls = []
 
     class Stub:

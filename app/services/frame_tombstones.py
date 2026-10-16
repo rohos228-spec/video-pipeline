@@ -1,9 +1,3 @@
-"""Номера кадров, удалённых человеком на доске монтажа.
-
-project.xlsx при удалении не правится, а любая сверка xlsx→БД создаёт отсутствующие кадры заново: удалённый
-кадр возвращался со статусом planned, и сборка падала «кадры [8] с озвучкой без видео-клипа». Здесь хранится список
-удалённых номеров; импорт xlsx их пропускает. Загрузка нового xlsx оператором список очищает.
-"""
 from __future__ import annotations
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -13,7 +7,7 @@ from sqlalchemy.orm.attributes import flag_modified
 def _touch(project) -> None:
     try:
         flag_modified(project, "meta")
-    except (SQLAlchemyError, AttributeError):  # не ORM-объект (тесты)
+    except (SQLAlchemyError, AttributeError):
         pass
 
 
@@ -41,7 +35,6 @@ def remember_deleted(project, number: int) -> None:
 
 
 def forget_deleted(project, number: int | None = None) -> None:
-    """Без номера: очистить весь список (оператор загрузил новый xlsx)."""
     nums = deleted_numbers(project)
     if not nums:
         return

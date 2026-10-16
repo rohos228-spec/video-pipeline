@@ -122,6 +122,8 @@ def read_studio_version() -> dict[str, str | int | bool]:
         "text_llm_label": text_llm_label,
         "text_llm_model": text_llm_model,
         "text_llm_enabled": bool(settings.gpt_api_enabled),
+        "vps_relay": bool(settings.vps_relay_base_url),
+        "vps_relay_base_url": settings.vps_relay_base_url or "",
     }
 
 

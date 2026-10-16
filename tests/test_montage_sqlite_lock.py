@@ -37,7 +37,6 @@ def test_prepare_ai_change_retries_sqlite_transient() -> None:
 
 
 def test_db_busy_timeout_at_least_60s(tmp_path) -> None:
-    """Поведение: настоящее соединение после обработчика connect имеет таймаут ожидания блокировки >= 60 с."""
     import sqlite3
 
     from app import db as db_mod
@@ -47,7 +46,7 @@ def test_db_busy_timeout_at_least_60s(tmp_path) -> None:
         db_mod._configure_sqlite_connection(conn, None)
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 60000
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1  # NORMAL
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     finally:
         conn.close()

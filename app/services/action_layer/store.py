@@ -1,8 +1,3 @@
-"""Таблицы слоя действий (только новые) и доступ к сессиям мастер-БД.
-
-``action_layer_history`` append-only: на SQLite UPDATE/DELETE блокируются
-триггерами, а модуль не предоставляет API изменения записей.
-"""
 from __future__ import annotations
 
 import uuid
@@ -94,7 +89,6 @@ class ActionApproval(Base):
 
 
 class ActionSpend(Base):
-    """Журнал расхода кредитов (append-only): резерв +high, сверка actual-high."""
     __tablename__ = "action_layer_spend"
     id: Mapped[int] = mapped_column(primary_key=True)
     session_key: Mapped[str] = mapped_column(String(80), index=True)
@@ -121,14 +115,12 @@ class ActionHistory(Base):
     cost_estimate_low: Mapped[float | None] = mapped_column(Float, nullable=True)
     cost_estimate_high: Mapped[float | None] = mapped_column(Float, nullable=True)
     cost_recorded: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # B02: корреляция. Для уже существующих БД колонки добавляет ensure_action_layer_schema.
     project_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     execution_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ActionPlanContext(Base):
-    """Версия контекста, с которой построен план (планировщик или макрос)."""
     __tablename__ = "action_layer_plan_context"
     plan_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     source: Mapped[str] = mapped_column(String(16), default="planner")
@@ -141,7 +133,6 @@ class ActionPlanContext(Base):
 
 
 class ActionMacro(Base):
-    """Пользовательский макрос («умная кнопка»). Встроенные живут в коде."""
     __tablename__ = "action_layer_macros"
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
     owner: Mapped[str] = mapped_column(String(120), index=True)
@@ -160,11 +151,6 @@ CALL_FAILED = "failed"
 
 
 class ActionCallRecord(Base):
-    """D12: журнал записывающих вызовов слоя с Idempotency-Key (повтор не дублирует запись).
-
-    Ключ шага + отпечаток запроса (метод, путь, query, тело, файлы) уникальны. Строка ``started``
-    без ``done`` означает, что исход предыдущей попытки неизвестен: повтор запрещён.
-    """
     __tablename__ = "action_layer_calls"
     __table_args__ = (UniqueConstraint("idem_key", "fingerprint", name="uq_action_layer_call"),)
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -183,11 +169,6 @@ class ActionCallRecord(Base):
 
 
 class ActionSnapshot(Base):
-    """D11: прежнее значение, снятое до правки действием слоя (для отката по журналу).
-
-    ``before``/``after`` - значения в том виде, в каком их читает интерфейс. ``restorable=False``
-    означает, что прежнее значение записано для истории, но автоматический откат не гарантирован.
-    """
     __tablename__ = "action_layer_snapshots"
     id: Mapped[int] = mapped_column(primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
@@ -227,7 +208,6 @@ _HISTORY_EXTRA_COLUMNS = (("project_id", "INTEGER"), ("execution_id", "TEXT"), (
 
 
 def _ensure_history_columns(sync_conn) -> None:
-    """Безопасный ALTER ADD COLUMN: только недостающие колонки, повторный вызов ничего не делает."""
     from sqlalchemy import inspect, text
     insp = inspect(sync_conn)
     if "action_layer_history" not in insp.get_table_names():
@@ -239,7 +219,6 @@ def _ensure_history_columns(sync_conn) -> None:
 
 
 async def ensure_action_layer_schema(conn) -> None:
-    """Идемпотентно создаёт таблицы слоя (вызывается из стартового пути)."""
     await conn.run_sync(lambda sync_conn: Base.metadata.create_all(
         sync_conn, tables=_TABLES, checkfirst=True))
     await conn.run_sync(_ensure_history_columns)
@@ -248,13 +227,11 @@ async def ensure_action_layer_schema(conn) -> None:
             await conn.exec_driver_sql(ddl)
 
 
-# --- сессии мастер-БД -------------------------------------------------------
 
 _sessions: Callable[[], Any] | None = None
 
 
 def configure_sessions(factory: Callable[[], Any] | None) -> None:
-    """Подменить фабрику сессий (тесты); None возвращает SessionLocal."""
     global _sessions
     _sessions = factory
 
@@ -273,10 +250,6 @@ def append_history(session, *, event: str, plan_id: str = "", step_index: int | 
                    cost_recorded: float | None = None, project_id: int | None = None,
                    execution_id: str | None = None,
                    request_id: str | None = None) -> ActionHistory:
-    """Добавляет запись в журнал в транзакции вызывающего (commit — его дело).
-
-    Текст, параметры и ошибка проходят redact (A16) до записи.
-    """
     row = ActionHistory(
         event=event, plan_id=plan_id, step_index=step_index, actor=actor[:120],
         request_text=redact_text(request_text)[:2000], action_id=action_id,
@@ -288,9 +261,6 @@ def append_history(session, *, event: str, plan_id: str = "", step_index: int | 
     return row
 
 
-# --- A16: redact на границе записи ---------------------------------------------
-# Любая запись в таблицы слоя (планы, шаги, история, макросы, контекст) проходит
-# через redact независимо от того, кто её создал.
 
 _REDACTED_FIELDS: dict[type, tuple[str, ...]] = {
     ActionPlan: ("request_text", "plan_json", "error", "stop_reason"),
@@ -314,18 +284,16 @@ def _redact_target(_mapper, _connection, target) -> None:
 
 for _model in _REDACTED_FIELDS:
     event.listen(_model, "before_insert", _redact_target)
-    if _model is not ActionHistory:  # история append-only: UPDATE заблокирован триггером
+    if _model is not ActionHistory:
         event.listen(_model, "before_update", _redact_target)
 
 
-# --- D12: идемпотентность записывающих вызовов ---------------------------------------------
 
 _MAX_STORED_RESPONSE = 256 * 1024
 
 
 def call_fingerprint(method: str, path: str, *, params: Any = None, body: Any = None,
                      files: Any = None) -> str:
-    """Отпечаток запроса: тот же ключ с другим запросом - это другой вызов, а не повтор."""
     import hashlib
     import json
 
@@ -336,11 +304,6 @@ def call_fingerprint(method: str, path: str, *, params: Any = None, body: Any = 
 
 async def claim_call(key: str, fingerprint: str, *, method: str, path: str, operator: str,
                      plan_id: str = "") -> tuple[str, "ActionCallRecord | None"]:
-    """Занимает (key, отпечаток). Возвращает ('new', None), ('done', запись) или ('unknown', запись).
-
-    'unknown': предыдущая попытка стартовала и не завершилась записью исхода - нельзя ни повторять,
-    ни считать выполненной. Запись со статусом failed (сервер ответил ошибкой) снова берётся в работу.
-    """
     from sqlalchemy import select, update
     from sqlalchemy.exc import IntegrityError
 
@@ -372,7 +335,6 @@ async def claim_call(key: str, fingerprint: str, *, method: str, path: str, oper
 
 
 async def reclaim_call(call_id: int) -> bool:
-    """Идемпотентный шаг повторяется после обрыва: запись 'started' берётся в работу заново."""
     from sqlalchemy import update
 
     async with sessions()() as s:
@@ -385,7 +347,6 @@ async def reclaim_call(call_id: int) -> bool:
 
 async def finish_call(key: str, fingerprint: str, *, ok: bool, http_status: int | None,
                       response: Any = None) -> None:
-    """Фиксирует исход: done (с ответом для повтора) или failed (повтор разрешён)."""
     import json
 
     from sqlalchemy import update
@@ -407,13 +368,10 @@ async def finish_call(key: str, fingerprint: str, *, ok: bool, http_status: int 
         await s.commit()
 
 
-# --- D11: снимки прежних значений -----------------------------------------------------------
 
 async def save_snapshot(*, plan_id: str, step_index: int | None, action_id: str,
                         project_id: int | None, kind: str, target: dict, before: Any,
                         after: Any, restorable: bool, note: str = "", actor: str = "") -> int:
-    # A16: на границе записи значения проходят redact. Если он изменил прежнее значение (в тексте
-    # нашлось похожее на секрет), восстановить его точно нельзя: откат отключается, запись остаётся.
     if restorable and (redact(before) != before or redact(after) != after):
         restorable = False
         note = (note + " " if note else "") + (
@@ -450,7 +408,6 @@ async def list_snapshots(project_id: int | None = None, *, limit: int = 50) -> l
 
 
 async def mark_snapshot_restored(snapshot_id: int, actor: str, *, plan_id: str = "") -> bool:
-    """Помечает снимок откатанным один раз (атомарно); False, если уже откатан."""
     from sqlalchemy import update
 
     async with sessions()() as s:

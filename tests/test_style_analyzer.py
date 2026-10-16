@@ -1,4 +1,3 @@
-"""style_analyzer: парсинг JSON, батчинг, валидация путей, анализ с моком LLM."""
 
 from __future__ import annotations
 
@@ -54,7 +53,6 @@ def test_collect_image_paths_validation(tmp_path):
 
 @pytest.mark.asyncio
 async def test_analyze_style_images_with_mock(monkeypatch, tmp_path):
-    """Две пачки заметок → одна запись стиля (LLM замокана)."""
     from app.services import style_analyzer
 
     imgs = []
@@ -85,7 +83,6 @@ async def test_analyze_style_images_with_mock(monkeypatch, tmp_path):
     assert entry["name"] == "Тест-полька"
     assert entry["prompt_core"].startswith("Trash polka")
     assert entry["images"] == 10
-    # 10 изображений → 2 пачки заметок + 1 синтез
     assert calls.count("notes") == 2
     assert calls.count("synth") == 1
 
@@ -103,7 +100,6 @@ def test_fit_agent_text_keeps_short_text():
 
 
 def test_fit_agent_text_trims_by_bytes():
-    """Кириллица — 2 байта: агент влезает в знаки, но не в байты."""
     para = "Ядро стиля описывает палитру и линию подробно и по-русски.\n\n"
     text = para * 120
     assert len(text) < AGENT_MAX_CHARS

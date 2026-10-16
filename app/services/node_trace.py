@@ -1,18 +1,3 @@
-"""Дневник нод: что ответил GPT и что после него поменяла программа.
-
-Прогон ноды → ``<data_dir>/node_trace/<node_key>/<время>/``::
-
-    run.json            нода, вид пачек, время, итоги
-    all_frames.json.gz  контекст всех кадров (для повтора без GPT)
-    call_NN_LX/
-        input.json      кадры пачки, что ушли в GPT
-        reply.txt       сырой ответ GPT
-        ops_gpt.json    ops как их вернул GPT
-        ops_final.json  ops после правок программы (это пишется в БД)
-        diary.jsonl     записи дневника: кадр, поле, было → стало, правило
-
-Запись дневника никогда не роняет ноду: ошибки диска только в debug-лог.
-"""
 
 from __future__ import annotations
 
@@ -101,7 +86,6 @@ def _shot_list(fields: dict[str, Any]) -> list[dict[str, Any]] | None:
 def _shot_pairs(
     before: list[dict[str, Any]], after: list[dict[str, Any]]
 ) -> list[tuple[int | None, dict[str, Any] | None, int | None, dict[str, Any] | None]]:
-    """Пары кадров до/после: по id, если он уникален в обоих списках, иначе по номеру."""
     ids_b = [str(s.get("id") or "") for s in before]
     ids_a = [str(s.get("id") or "") for s in after]
     unique = (
@@ -137,7 +121,6 @@ class Change:
 
 
 def diff_ops(before: list[Any], after: list[Any]) -> list[Change]:
-    """Что поменялось в ops: поле кадра, поле внутри dict (1 уровень), кадры[] по шагам."""
     changes: list[Change] = []
     b_by, a_by = _by_uid(before), _by_uid(after)
     for uid, a_op in a_by.items():
@@ -205,7 +188,6 @@ _UUID_IN_TEXT_RE = re.compile(r"\b(?:uuid[:\s]+)?([0-9a-f]{6,64})\b", re.IGNOREC
 
 
 def uuid_in_text(text: str, known: list[str]) -> str:
-    """uuid кадра, упомянутый в тексте предупреждения (по префиксу)."""
     for m in _UUID_IN_TEXT_RE.finditer(text or ""):
         frag = m.group(1).lower()
         for uid in known:
@@ -228,7 +210,6 @@ def _safe_name(text: str) -> str:
 
 @dataclass
 class NodeRunRecorder:
-    """Один прогон ноды. Все методы глотают ошибки диска."""
 
     data_dir: Path
     node_key: str
@@ -260,7 +241,7 @@ class NodeRunRecorder:
             rec.dir = run_dir
             rec._write_run(status="running")
             _prune(run_dir.parent, keep=KEEP_RUNS_PER_NODE)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("node_trace: start failed for {}", node_key, exc_info=True)
             rec.dir = None
         return rec
@@ -317,13 +298,13 @@ class NodeRunRecorder:
                 for e in entries:
                     fh.write(json.dumps(e, ensure_ascii=False) + "\n")
             self._write_run(status="running")
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("node_trace: record_call failed for {}", self.node_key, exc_info=True)
 
     def finish(self, *, ok: bool, error: str = "") -> None:
         try:
             self._write_run(status="ok" if ok else "failed", error=error[:2000])
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("node_trace: finish failed for {}", self.node_key, exc_info=True)
 
 
@@ -334,11 +315,6 @@ def _prune(node_dir: Path, *, keep: int) -> None:
 
 
 def _rmtree_one(path: Path) -> None:
-    """Сначала убрать каталог из списка прогонов, потом удалить.
-
-    Повторный rmtree по тому же пути на Windows попадает в ещё не отпущенный
-    каталог и сносит соседние прогоны.
-    """
     trash = path.with_name(path.name + ".del")
     try:
         if trash.exists():
@@ -352,7 +328,7 @@ def _rmtree_one(path: Path) -> None:
 def read_run(run_dir: Path) -> dict[str, Any]:
     try:
         meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         meta = {}
     meta["dir"] = str(run_dir)
     meta.setdefault("node_key", run_dir.parent.name)
@@ -360,7 +336,6 @@ def read_run(run_dir: Path) -> dict[str, Any]:
 
 
 def list_runs(data_dir: Path | str) -> list[dict[str, Any]]:
-    """Все сохранённые прогоны, старые → новые."""
     root = trace_root(data_dir)
     if not root.is_dir():
         return []
@@ -376,7 +351,6 @@ def list_runs(data_dir: Path | str) -> list[dict[str, Any]]:
 
 
 def latest_run_dirs(data_dir: Path | str) -> dict[str, Path]:
-    """node_key → папка последнего прогона."""
     out: dict[str, Path] = {}
     for run in list_runs(data_dir):
         out[str(run["node_key"])] = Path(run["dir"])
@@ -403,7 +377,6 @@ def read_diary(run_dir: Path) -> list[dict[str, Any]]:
 
 
 def latest_diary(data_dir: Path | str) -> list[dict[str, Any]]:
-    """Дневник последнего прогона каждой ноды, в порядке нод по времени."""
     out: list[dict[str, Any]] = []
     for node_key, run_dir in sorted(
         latest_run_dirs(data_dir).items(), key=lambda kv: kv[1].name

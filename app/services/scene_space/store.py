@@ -1,4 +1,3 @@
-"""DB access for cinematic scene space. State on a shot = plan + deltas, not copies."""
 
 from __future__ import annotations
 
@@ -142,7 +141,6 @@ async def list_frame_spaces(session: AsyncSession, scene_id: str) -> list[dict]:
 
 
 async def state_at(session: AsyncSession, scene_id: str, shot_order: int) -> dict:
-    """space_json with plan = base plan plus deltas for frames with shot_order <= N."""
     space = await get_scene_space(session, scene_id)
     if space is None:
         raise KeyError(scene_id)

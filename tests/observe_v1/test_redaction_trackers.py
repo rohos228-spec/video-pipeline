@@ -1,4 +1,3 @@
-"""error_message проходит через redact до записи в трекер; облачная отправка за флагом."""
 from __future__ import annotations
 
 import sqlite3
@@ -58,11 +57,11 @@ def test_cloud_flag_off_skips_push_and_marks_nothing_pending(tracker, monkeypatc
     hook.record_api_call(provider="kie", model="m", error_message="boom")
     rows = _wait_rows(db)
     assert pushed == []
-    assert rows[0][1] == 1  # synced=1: фоновая досылка не отправит строку позже
+    assert rows[0][1] == 1
 
 
 def test_cloud_flag_default_is_off_and_nothing_is_pushed(tracker):
-    assert settings.api_tracker_cloud_enabled is False  # A17: off by default
+    assert settings.api_tracker_cloud_enabled is False
     db, pushed = tracker
     hook.record_api_call(provider="kie", model="m", error_message="boom")
     _wait_rows(db)

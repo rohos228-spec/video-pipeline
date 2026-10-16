@@ -1,4 +1,3 @@
-"""Decision-v1 policy and durable ownership contracts; synthetic databases only."""
 import asyncio
 import importlib
 import json
@@ -59,8 +58,6 @@ class DecisionSchema(unittest.TestCase):
 
 
 class DecisionDurability(actions_tests.DurableActions):
-    # These cases exercise the Excel/JSON contract (including active_excel_gpt
-    # and mandatory apply-ops), not the separate legacy make_plan executor.
     fixture_node_type = "excel_gpt"
 
     async def asyncSetUp(self):
@@ -479,8 +476,6 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertTrue(contract['contract']['human_approval_preserved'])
         self.assertEqual(contract['current_output']['status'],'passed')
         self.assertEqual(contract['compatible_profiles'],[])
-        # plan is now recovery-ready by capability data: one bounded retry of the same
-        # executor may be offered, never an approval; the HITL contract above is unchanged.
         self.assertIn('retry_same',before['allowed_actions'])
         self.assertEqual(before['node_capability']['recovery_continuation'],'none')
         self.assertIn('Never approves the mandatory HITL',contract['contract']['retry_policy'])
@@ -495,7 +490,6 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertNotIn('jobs',contract)
         self.assertEqual(contract['compatible_profiles'],[])
         self.assertTrue(contract['verification_status'].startswith('not_checked'))
-        # W5 D05: a split with a typed format incident may take ONE retry_same; a profile needs an approved catalog
         self.assertIn('retry_same',before['allowed_actions'])
         self.assertNotIn('retry_profile',before['allowed_actions'])
         self.assertEqual((await self.loop.context(record['decision_id']))['context_version'],before['context_version'])
@@ -518,7 +512,7 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertEqual(first['compatible_profiles'],[])
         self.assertFalse(first['semantic_quality_verified'])
         self.assertTrue(first['verification_status'].startswith('not_checked'))
-        self.assertIn('retry_same',context['allowed_actions'])   # W5 D05: typed format incident only, nothing applied
+        self.assertIn('retry_same',context['allowed_actions'])
         self.assertNotIn('retry_profile',context['allowed_actions'])
         self.assertNotIn('jobs',first)
         async with self.sessions() as s:
@@ -545,8 +539,6 @@ class DecisionDurability(actions_tests.DurableActions):
                 record=await self.native_contract_fixture('excel_gpt',data)
                 context=await self.loop.context(record['decision_id'])
                 self.assertEqual(context['node_capability']['node_type'],typ)
-                # sd_assemble is managed with ONE supervised retry (test_scene_assemble_retry_dry_run.py): its own
-                # capability and scene contract, never the generic Excel text recovery or a profile retry.
                 self.assertTrue(context['node_capability']['managed'])
                 self.assertIn('retry_same',context['allowed_actions'])
                 self.assertNotIn('retry_profile',context['allowed_actions'])
@@ -560,7 +552,6 @@ class DecisionDurability(actions_tests.DurableActions):
                 self.assertNotIn('jobs',contract)
 
     async def test_unsupported_native_contract_does_not_claim_media_verification(self):
-        # scene_design (legacy) stays unsupported; hero became managed for recovery only (D06)
         record=await self.native_contract_fixture('scene_design')
         contract=await self.loop.read_contract(record['decision_id'])
         self.assertFalse(contract['managed'])
@@ -591,8 +582,6 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertEqual((await self.loop.context(record['decision_id']))['context_version'],before['context_version'])
 
     async def test_hero_is_managed_for_recovery_only_and_a_text_style_incident_offers_no_retry(self):
-        """D06: hero has the media contract; recovery is a local resume of a recorded result (media_local_resume),
-        so an invalid_json style incident never offers a restart, a profile or a generation."""
         record=await self.native_contract_fixture('hero',None)
         before=await self.loop.context(record['decision_id'])
         result=await self.loop.read_contract(record['decision_id'])
@@ -607,8 +596,6 @@ class DecisionDurability(actions_tests.DurableActions):
         await self._assert_descriptive_native_contract('scene_design',None,'scene_design')
 
     async def test_items_is_managed_for_recovery_only_and_a_text_style_incident_offers_no_retry(self):
-        """items is managed ONLY for a supervised resume of a known provider task (media_admission): it has
-        the media contract, and an invalid_json style incident still never offers a restart or a profile."""
         record=await self.native_contract_fixture('items',None)
         before=await self.loop.context(record['decision_id'])
         result=await self.loop.read_contract(record['decision_id'])
@@ -618,12 +605,10 @@ class DecisionDurability(actions_tests.DurableActions):
         self.assertNotIn('descriptive_only',result)
         for action in ('retry_same','retry_profile'):
             self.assertNotIn(action,before['allowed_actions'])
-        self.assertIsNone(before['media_recovery'])  # not a media incident: no resume is offered
+        self.assertIsNone(before['media_recovery'])
         self.assertEqual(before['eligible_profiles'],[])
 
     async def test_every_scene_agent_marker_is_described_with_its_slice_contract(self):
-        """sd_agent is managed per TYPE and admitted per AGENT: characters and world may retry once; skeleton,
-        camera and action are refused at enable/launch (node admission), so they never sit in a managed scope."""
         from app.orchestrator.node_spec import node_admission_problem
         for agent,list_key in (('skeleton','scenes'),('characters','characters'),('world','locations'),
                                ('camera','shot_plan'),('action','scenes')):

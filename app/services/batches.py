@@ -345,8 +345,6 @@ async def list_batches(session: AsyncSession) -> list[BatchProject]:
 
 
 def _publish_parked(p: Project) -> bool:
-    """assembled с пометкой «публикация пропущена / ждёт человека»: auto_mode не включаем,
-    иначе проект будет гоняться по кругу и не станет ни published, ни failed."""
     m = p.meta if isinstance(p.meta, dict) else {}
     return p.status is ProjectStatus.assembled and bool(m.get("publish_skipped") or m.get("publish_needs_human"))
 

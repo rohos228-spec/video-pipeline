@@ -1,11 +1,3 @@
-"""Реестр правил группы нод «Каркас → площадка → шоты + QC» и карта полей.
-
-Одно место, где у каждого правила есть ID, название, объяснение простыми
-словами, что оно делает и где живёт (промт или функция кода). Дневник
-кадра (``node_trace``) пишет ID правила в каждую правку, отчёт и
-``docs/NODE_GROUP_RULES.md`` строятся отсюда. ``tests/test_node_rules.py``
-сверяет реестр с кодом: новое правило без записи здесь роняет тест.
-"""
 
 from __future__ import annotations
 
@@ -288,7 +280,6 @@ RULES: tuple[Rule, ...] = (
 
 RULES_BY_ID: dict[str, Rule] = {r.id: r for r in RULES}
 
-# Проход кода после ответа GPT → правило (см. run_code_passes).
 PASS_RULES: dict[str, str] = {
     "uuid": "R-UUID",
     "bits_repair": "R-BITS-REPAIR",
@@ -308,7 +299,6 @@ PASS_RULES: dict[str, str] = {
     "prompts_check": "R-PROMPTS-SHAPE",
 }
 
-# «вид» проблемы площадки (scene_plan._issue) → правило.
 PLAN_ISSUE_RULES: dict[str, str] = {
     "дверь": "R-DOOR-STATE",
     "порог": "R-DOOR-THRESHOLD",
@@ -320,7 +310,6 @@ PLAN_ISSUE_RULES: dict[str, str] = {
     "ось_180": "R-AXIS-180",
 }
 
-# Поле, которое поменял проход площадки → правило (если нет заметки площадки).
 PLAN_FIELD_RULES: dict[str, str] = {
     "раскладка": "R-LAYOUT",
     "точность": "R-FREEZE-PRECISE",
@@ -426,7 +415,6 @@ NODE_FLOW: tuple[NodeFlow, ...] = (
     ),
 )
 
-# Кто по очереди пишет одно поле кадра. Последний — побеждает.
 FIELD_WRITERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("ракурс", ("GPT «Шоты»", "R-SHOT-GRAMMAR", "R-30DEG", "GPT «QC»", "R-SHOT-GRAMMAR", "R-30DEG")),
     ("план", ("GPT «Шоты»", "R-SHOT-GRAMMAR", "R-PLAN-STEP", "GPT «QC»", "R-SHOT-GRAMMAR", "R-PLAN-STEP")),
@@ -441,7 +429,6 @@ FIELD_WRITERS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 def node_local_key(node_key: str) -> str:
-    """``n_excel_gpt_fw_shots`` → ``shots``."""
     nk = str(node_key or "")
     for flow in NODE_FLOW:
         if nk.endswith(f"_fw_{flow.key}") or nk == flow.key:
@@ -476,7 +463,6 @@ def flow_mermaid() -> str:
     return "\n".join(lines)
 
 
-# Раздел о связи дневника правил с журналом оркестратора (попадает в docs/NODE_GROUP_RULES.md).
 _PHASE_E_SECTION: tuple[str, ...] = (
     "## Дневник правил и журнал оркестратора",
     "",
@@ -504,7 +490,6 @@ _PHASE_E_SECTION: tuple[str, ...] = (
 
 
 def rules_markdown() -> str:
-    """``docs/NODE_GROUP_RULES.md`` — генерится ``scripts/node_rules_doc.py``."""
     out = [
         "# Правила группы нод «Каркас → площадка → шоты + QC»",
         "",

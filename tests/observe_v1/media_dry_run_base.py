@@ -1,16 +1,3 @@
-"""Shared harness of the media dry runs (videos, items, music): observation -> diagnosis -> decision ->
-resume-only recovery ticket -> independent verification.
-
-No network, no provider, no paid call. What is REAL: observe_attempt and the journal, the media_result
-verifier (independent read, ffprobe on real files), the Diagnoser, the DecisionSupervisor and its policy,
-ActionSupervisor.enable / recover_node and its gates (kill switch, scope, budget, input revision, graph,
-one ticket per node and execution), media_admission, media_recovery.assess / resume_poll, media_resume
-and kie_http (create / poll / download code paths), the provider_task_ledger and the resume-only guard.
-What is SCRIPTED: the provider HTTP boundary only (createTask POST, status GET, file download), the
-Decision model (canned proposals) and, for videos and items, the node body (the node's own paid seam is
-called with the node's own key names; the Outsee browser ladder is not involved). The native step-failure
-counter (a runtime policy outside observation) is seeded by hand, as in the sfx_plan dry run.
-"""
 import asyncio
 import json
 import shutil
@@ -49,14 +36,13 @@ HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
 
 class ProcessDied(BaseException):
-    """Stands in for a killed process: not caught by any `except Exception`."""
+    pass
 
 
 _CACHE: dict[str, bytes] = {}
 
 
 def media_bytes(kind: str, scratch: Path) -> bytes:
-    """Real, decodable files (ffmpeg / PIL), so the independent probe is the real one."""
     if kind in _CACHE:
         return _CACHE[kind]
     scratch.mkdir(parents=True, exist_ok=True)
@@ -84,7 +70,6 @@ _REAL_SLEEP = asyncio.sleep
 
 
 class FakeClock:
-    """A virtual clock for the poll window: waiting costs no wall time."""
 
     def __init__(self):
         self.t = 0.0
@@ -110,18 +95,16 @@ class FakeGpt:
 
 
 class MediaDryRun(base_tests.DurableActions):
-    """Subclasses set the node and implement ``native_step``."""
 
     fixture_node_type = "videos"
     status = ProjectStatus.generating_videos
     running_key = "generating_videos"
-    api = "jobs"            # Kie task family of the node's paid request
-    media_kind = "video"    # real file kind returned by the fake download
+    api = "jobs"
+    media_kind = "video"
     result_ext = ".mp4"
-    key = "clip_001"        # provider_task_ledger key of the node's task
-    single_submit = False   # videos: run one Kie submit instead of the whole ladder
+    key = "clip_001"
+    single_submit = False
 
-    # ---------------------------------------------------------------- provider boundary (the only fake)
     def poll_body(self, step):
         if self.api == "suno":
             if step == "waiting":
@@ -162,7 +145,6 @@ class MediaDryRun(base_tests.DurableActions):
         return httpx.Response(200, content=media_bytes(self.media_kind, Path(self.tmp.name) / "scratch"),
                               request=request)
 
-    # ---------------------------------------------------------------- set-up
     async def asyncSetUp(self):
         self.creates = self.polls = self.downloads = 0
         self.create_script, self.poll_script, self.poll_in_resume_only = [], [], []
@@ -171,7 +153,6 @@ class MediaDryRun(base_tests.DurableActions):
         self.data = Path(self.tmp.name) / "videos" / "actions-fixture"
         self.data.mkdir(parents=True)
         (self.data / "voiceover.txt").write_text("Закадровый текст ролика о простых вещах.", encoding="utf-8")
-        # the provider task ledger lives in its own database, as in production (app.db.SessionLocal)
         self.ledger_engine = create_async_engine(f"sqlite+aiosqlite:///{Path(self.tmp.name) / 'ledger.db'}")
         async with self.ledger_engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
@@ -260,12 +241,10 @@ class MediaDryRun(base_tests.DurableActions):
             await base_tests.DurableActions.asyncTearDown(self)
 
     async def enable(self):
-        """Opt in AFTER the failure: the failed attempt was observed without a managed scope."""
         await self.supervisor.enable(project_id=PID, execution_id=EXECUTION, group_id="g1", node_keys=["n1"],
             graph_version=self.graph, initiator="dry-run", rationale="media recovery dry run", request_limit=20)
         await self.observer.reload()
 
-    # ---------------------------------------------------------------- runtime bookkeeping
     async def copy_runtime(self, session, project):
         from app.project_db import _apply_runtime_fields, _copy_noderuns_between_sessions
         async with self.sessions() as master:
@@ -309,16 +288,13 @@ class MediaDryRun(base_tests.DurableActions):
     async def task_ids(self):
         return sorted({r.task_id for r in await self.ledger_rows()})
 
-    # ---------------------------------------------------------------- the node
     def out_path(self, suffix="ab12cd34"):
         raise NotImplementedError
 
     async def native_step(self, session, project):
-        """One native attempt of the node body. Subclasses call the node's own paid seam."""
         raise NotImplementedError
 
     async def worker(self, *, start=True):
-        """One native attempt of the original step under observe_attempt (what advance does)."""
         async with self.business() as session:
             project = await session.get(Project, PID)
             node = await session.scalar(select(NodeRun).where(NodeRun.node_key == "n1"))
@@ -331,7 +307,6 @@ class MediaDryRun(base_tests.DurableActions):
                     await self.native_step(session, project)
             except BaseException:
                 await session.rollback()
-                # what the runtime does with every failed (or restarted) attempt
                 node = await session.scalar(select(NodeRun).where(NodeRun.node_key == "n1"))
                 fail_node(node, "attempt failed", project_id=PID, initiator="worker")
                 node.finished_at = datetime.utcnow()
@@ -341,7 +316,6 @@ class MediaDryRun(base_tests.DurableActions):
             await session.commit()
 
     async def exhaust_native_retries(self, error="native step retries exhausted"):
-        """The runtime's step-failure policy after 9 failed native attempts (outside observation)."""
         async with self.business() as session:
             project = await session.get(Project, PID)
             node = await session.scalar(select(NodeRun).where(NodeRun.node_key == "n1"))
@@ -354,7 +328,6 @@ class MediaDryRun(base_tests.DurableActions):
         await self.diagnose()
 
     async def fail_natively(self, error_type=Exception):
-        """An attempt that ends in an Exception (what the runtime counts and diagnoses), then exhaustion."""
         with self.assertRaises(error_type) as caught:
             await self.worker()
         await self.exhaust_native_retries()
@@ -367,7 +340,6 @@ class MediaDryRun(base_tests.DurableActions):
         return sorted(found, key=lambda i: i.type != "media_failure")[0]
 
     def decision_model(self, actions):
-        """The Decision model: canned proposals, validated by the real policy."""
         queue = list(actions)
 
         async def reply(**kwargs):
@@ -389,17 +361,13 @@ class MediaDryRun(base_tests.DurableActions):
         async with self.sessions() as session:
             return (await session.scalars(select(RecoveryAction))).all()
 
-    # ---------------------------------------------------------------- scenario building blocks
     async def killed_then_native_poll_timeout(self):
-        """Attempt 1: the process dies at the first status request (no journal end, nothing counted).
-        Attempt 2 (restart): the node resumes the SAME task id (no second createTask) and its poll window
-        ends: an ordinary native failure with the provider task still open."""
         self.poll_script = [ProcessDied()]
         real_record = observation.record_fact
 
         async def dead_process_writes_nothing(kind, payload, **kw):
             if kind == "node_error" and payload.get("error_type") == "ProcessDied":
-                return None  # a killed process cannot journal its own death
+                return None
             return await real_record(kind, payload, **kw)
 
         with patch.object(observation, "record_fact", dead_process_writes_nothing):
@@ -424,13 +392,9 @@ class MediaDryRun(base_tests.DurableActions):
         return [patch.object(kie_http, "asyncio", self.clock.proxy()),
                 patch.object(kie_kling, "asyncio", self.clock.proxy())]
 
-    # ======================================================================================
-    # the scenarios every promoted media node must pass
-    # ======================================================================================
     async def test_restart_mid_poll_then_supervised_resume_downloads_with_zero_new_requests(self):
         from app.services import decision_v1
         await self.killed_then_native_poll_timeout()
-        # observation + diagnosis: the failure is a typed media incident of THIS node
         proof = (await self.facts("node_result_verification"))[-1].payload
         self.assertEqual((proof["contract"], proof["node_type"], proof["status"]),
                          ("native_media", self.fixture_node_type, "failed"))
@@ -439,11 +403,9 @@ class MediaDryRun(base_tests.DurableActions):
         self.assertIs(incident.details["media"], True)
         ids_before = await self.task_ids()
         self.assertEqual([i for i in ids_before if not i.startswith("intent:")], ["T-1"])
-        # the baseline of the request inputs was recorded by the observed (non-managed) attempt
         start = (await self.facts("node_start"))[-1]
         self.assertTrue(start.payload["recovery_input_revision"])
         await self.enable()
-        # decision: the context tells the model what retry_same would do here
         loop = decision_v1.DecisionSupervisor(self.observer)
         await loop.configure(project_id=PID, execution_id=EXECUTION, enabled=True,
                              initiator="dry-run", rationale="media dry run decision")
@@ -455,12 +417,10 @@ class MediaDryRun(base_tests.DurableActions):
         self.assertEqual(context["media_recovery"]["keys"][0]["task_id"], "T-1")
         self.assertIn("retry_same", context["allowed_actions"])
         self.assertNotIn("retry_profile", context["allowed_actions"])
-        # the same task is now finished at the provider
         self.poll_script = ["success"]
         polls_before, creates_before = self.polls, self.creates
         with self.decision_model(["retry_same"]):
             await loop.step(record["decision_id"])
-        # action: ONE ticket, executed in the supervisor process, final
         ticket = (await self.tickets())[0]
         self.assertEqual(ticket.status, "verified", ticket.verification_result)
         self.assertEqual(ticket.preconditions["media_operation"], "resume_poll")
@@ -473,27 +433,23 @@ class MediaDryRun(base_tests.DurableActions):
         self.assertEqual(verification["files"][0]["status"], "passed")
         self.assertIs(verification["node_started"], False)
         self.assertEqual(verification["assessment_after"]["mode"], "nothing_to_do")
-        # the provider boundary: one status request, one download, no createTask, inside resume_only
         self.assertEqual((self.creates, self.polls - polls_before, self.downloads), (creates_before, 1, 1))
         self.assertEqual(self.poll_in_resume_only[-1], True)
         self.assertEqual(await self.task_ids(), ids_before)
         statuses = [r.status for r in await self.ledger_rows() if r.task_id == "T-1"]
         self.assertEqual(statuses[-1], "downloaded")
         self.assertEqual(len(list(self.result_files())), 1)
-        # the supervisor never starts the node: it is still the failed native attempt
         async with self.sessions() as session:
             node = await session.scalar(select(NodeRun).where(NodeRun.node_key == "n1"))
             self.assertEqual(node.status, NodeRunStatus.failed)
             self.assertFalse((await session.get(base_tests.ActionExecutionControl, EXECUTION)).held)
             row = await session.get(decision_v1.DecisionRecord, record["decision_id"])
             self.assertEqual((row.status, row.action_id), ("waiting_worker", ticket.action_id))
-        # the persisted worker verification completes the decision without another model step
         await loop.tick()
         async with self.sessions() as session:
             row = await session.get(decision_v1.DecisionRecord, record["decision_id"])
             self.assertEqual(row.status, "done")
             self.assertTrue(row.verification["verified"])
-        # cap: a second recovery of the node is refused, and the database refuses a second ticket
         with self.assertRaisesRegex(ValueError, "decision owner"):
             await self.recover(incident, "second-media-0001")
         from sqlalchemy.exc import IntegrityError
@@ -516,7 +472,7 @@ class MediaDryRun(base_tests.DurableActions):
         result = await self.recover(incident)
         self.assertEqual(result["status"], "verified")
         self.assertIs(result["idempotent_replay"], False)
-        again = await self.recover(incident)  # same idempotency key: replay, nothing executed again
+        again = await self.recover(incident)
         self.assertIs(again["idempotent_replay"], True)
         self.assertEqual((self.creates, self.downloads, len(await self.tickets())), (1, 1, 1))
 
@@ -533,7 +489,6 @@ class MediaDryRun(base_tests.DurableActions):
         async with self.sessions() as session:
             self.assertTrue((await session.get(base_tests.ActionExecutionControl, EXECUTION)).held)
         self.assertEqual([i for i in await self.task_ids() if not i.startswith("intent:")], ["T-1"])
-        # the one recovery of the node is spent
         with self.assertRaisesRegex(ValueError, "single recovery already consumed|held"):
             await self.recover(incident, "another-media-0002")
 
@@ -549,7 +504,6 @@ class MediaDryRun(base_tests.DurableActions):
         self.assertIn("unknown_outcome_kie", str(caught.exception))
         self.assertEqual((self.creates, self.polls, self.downloads), (1, 0, 0))
         self.assertEqual(await self.tickets(), [])
-        # the decision context offers no retry_same: only reading, waiting and a human
         from app.services import decision_v1
         loop = decision_v1.DecisionSupervisor(self.observer)
         await loop.configure(project_id=PID, execution_id=EXECUTION, enabled=True,
@@ -567,10 +521,10 @@ class MediaDryRun(base_tests.DurableActions):
         self.assertEqual(self.creates, 1)
         incident = await self.media_incident()
         report = await media_recovery.assess(SimpleNamespace(id=PID, data_dir=self.data), self.fixture_node_type)
-        self.assertEqual(report["verdict"]["mode"], "retry_same")  # the service knows it is retryable ...
+        self.assertEqual(report["verdict"]["mode"], "retry_same")
         await self.enable()
         with self.assertRaises(media_admission.MediaAdmissionDenied) as caught:
-            await self.recover(incident)  # ... and the supervisor still refuses to submit again
+            await self.recover(incident)
         self.assertEqual(caught.exception.code, "retry_same_not_admitted")
         self.assertEqual((self.creates, [i for i in await self.task_ids() if not i.startswith("intent:")],
                           await self.tickets()), (1, ["T-1"], []))
@@ -605,7 +559,6 @@ class MediaDryRun(base_tests.DurableActions):
             result = await self.recover(incident)
         self.assertEqual(result["status"], "verified")
         self.assertEqual(result["verification_result"]["new_paid_requests"], 0)
-        # a paid submit inside the resume scope is refused even with every cap wide open
         with media_spend.resume_only():
             with self.assertRaises(media_spend.ResumeOnlyBlocked):
                 await kie_http.create_task("jobs", "/api/v1/jobs/createTask", {"model": "m", "input": {}})
@@ -637,7 +590,6 @@ class MediaDryRun(base_tests.DurableActions):
         await self.killed_then_native_poll_timeout()
         incident = await self.media_incident()
         await self.enable()
-        # assemble is not here any more: it is admitted as a LOCAL worker node (test_media_dry_run_local_nodes.py)
         for node_type in ("hero", "audio", "sfx_gen", "images", "publish"):
             with self.assertRaises(media_admission.MediaAdmissionDenied) as caught:
                 await media_admission.admit(SimpleNamespace(id=PID, data_dir=self.data), node_type)

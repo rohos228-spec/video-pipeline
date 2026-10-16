@@ -8,9 +8,6 @@ import {describeError, getPlan, listPlans, planFromText, previewFromError, type 
 import {clarifiedRequest} from "@/lib/clarification-view";
 import {readyIds, withoutUsed, type AttachmentItem} from "@/lib/attachment-view";
 
-// Слой действий: команда -> предпросмотр плана -> (подтверждение оператора) -> выполнение -> журнал.
-// Аварийный стоп оркестратора показывает соседняя KillSwitchSection (её состояние наружу не отдаётся,
-// логику не дублируем); при включённом стопе сервер вернёт kill_switch_active, это видно в карточке и выполнении.
 export function ActionLayerSection({projectId, sceneId, frameId}: {projectId: number | null; sceneId?: number | null; frameId?: number | null}) {
   const [plan, setPlan] = useState<PlanPreviewResponse | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -19,11 +16,9 @@ export function ActionLayerSection({projectId, sceneId, frameId}: {projectId: nu
   const [requestText, setRequestText] = useState("");
   const [clarifying, setClarifying] = useState(false);
   const [clarifyError, setClarifyError] = useState("");
-  // Прикреплённые файлы командной строки: уходят и с первым запросом, и с каждым повтором после уточнения.
   const [files, setFiles] = useState<AttachmentItem[]>([]);
   useEffect(() => { setFiles([]); }, [projectId]);
 
-  // Повтор запроса (с вариантом уточнения или с прикреплёнными файлами) снова уходит в /plans/from-text.
   async function resend(text: string) {
     if (projectId == null || !text) return;
     setClarifying(true); setClarifyError("");
@@ -40,11 +35,8 @@ export function ActionLayerSection({projectId, sceneId, frameId}: {projectId: nu
     }
   }
 
-  // Нажатый вариант уточнения: тот же запрос и выбранный ответ.
   const clarify = (option: string) => requestText ? resend(clarifiedRequest(requestText, option)) : Promise.resolve();
 
-  // После перезагрузки страницы возвращаем экран выполнения (с «Остановить»/«Продолжить»)
-  // для идущего или прерванного плана этого проекта (или без проекта).
   useEffect(() => {
     let cancelled = false;
     void (async () => {

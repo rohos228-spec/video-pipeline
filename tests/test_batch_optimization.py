@@ -23,7 +23,6 @@ def test_batch_constants_standardized():
 
 
 def test_fw_frames_108_packs_by_6():
-    """fw_frames: пачки по 6 кадров; параллельный план — 10 кусков."""
     from app.services.apply_ops_batches import (
         FW_FRAMES_PER_BATCH,
         SCRIPT_FRAMES_QC_PARALLEL_BATCHES,

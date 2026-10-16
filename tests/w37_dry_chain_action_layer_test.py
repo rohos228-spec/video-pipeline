@@ -1,11 +1,3 @@
-"""W37: сухой стенд полной цепочки нод через слой действий (поддельные провайдеры, без сети, без денег).
-
-Цепочка берётся из графа по умолчанию (``default_graph``): по одному поддельному действию на рабочую ноду, шаги связаны
-``depends_on`` в порядке графа. Платные ноды «тратят» кредиты у поддельного провайдера, слой действий резервирует и
-сверяет. Проверяется не качество нод, а обвязка: порядок, одно подтверждение, согласованность журналов расходов,
-остановка на сбое без повторных запусков и ограниченность циклов «отклонить - перегенерировать».
-БД свежая, вне репозитория (tmp_path фикстуры ``env``), реальные ключи и .env не читаются.
-"""
 from __future__ import annotations
 
 import pytest
@@ -20,21 +12,19 @@ from app.services.action_layer.spec import ActionSpec, CostEstimate, ensure_buil
 from app.services.kie_catalog import CREDIT_USD
 from app.services.spend_guard import SpendLedger
 from app.settings import settings
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 FRAMES = 3
-# Нода графа -> (цена единицы в кредитах, сколько единиц работы). Ноды без записи не платят.
 PRICE: dict[str, tuple[float, int]] = {
     "plan": (1.0, 1), "split": (0.0, 1), "assemble": (0.0, 1), "script": (2.0, 1), "excel_gpt": (1.5, 1), "hero": (3.0, 1), "items": (2.0, 1),
     "image_prompts": (1.0, 1), "images": (4.0, FRAMES), "animation_prompts": (1.0, 1), "videos": (20.0, FRAMES),
     "audio": (5.0, 1), "music": (12.0, 1), "sfx_plan": (1.0, 1), "sfx_gen": (2.0, FRAMES),
 }
-NOT_IN_DRY_CHAIN = {"topic", "storage", "publish"}      # конфиг-нода и публикация в сеть: сюда не входят
+NOT_IN_DRY_CHAIN = {"topic", "storage", "publish"}
 
 
 class FakeProviders:
-    """Один на тест: журнал вызовов в порядке прихода и общий счёт «в кабинете»."""
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -84,7 +74,7 @@ def build_specs(prov: FakeProviders, nodes: list[dict]) -> list[ActionSpec]:
 
 
 @pytest_asyncio.fixture
-async def chain(env, monkeypatch):  # noqa: F811
+async def chain(env, monkeypatch):
     ensure_builtin_actions()
     monkeypatch.setattr(settings, "spend_project_cap_usd", 1000.0)
     monkeypatch.setattr(settings, "spend_daily_cap_usd", 1000.0)
@@ -134,7 +124,7 @@ async def history(env, plan_id: str) -> list[dict]:
 
 
 def expected_total() -> float:
-    return sum(PRICE[n["type"]][0] * PRICE[n["type"]][1] for n in chain_nodes())    # excel_gpt в графе дважды
+    return sum(PRICE[n["type"]][0] * PRICE[n["type"]][1] for n in chain_nodes())
 
 
 def test_chain_follows_the_default_graph() -> None:
@@ -143,7 +133,7 @@ def test_chain_follows_the_default_graph() -> None:
     assert types.index("images") < types.index("videos") < types.index("audio") < types.index("music") \
         < types.index("sfx_plan") < types.index("sfx_gen")
     assert all(t in PRICE for t in types), [t for t in types if t not in PRICE]
-    assert types[-2:] == ["sfx_gen", "assemble"]                  # сборка локальная: платной оценки у неё нет
+    assert types[-2:] == ["sfx_gen", "assemble"]
     assert not NOT_IN_DRY_CHAIN & set(types)
 
 
@@ -153,8 +143,7 @@ async def test_whole_chain_runs_once_in_graph_order(chain) -> None:
     v = await view(chain, pid)
     assert v["status"] == "succeeded", [(s["action_id"], s["status"], s["error"]) for s in v["steps"]]
     assert [s["action_id"] for s in v["steps"]] == [action_id(n) for n in chain.nodes]
-    assert all(s["status"] == "succeeded" and s["attempts"] == 1 for s in v["steps"])   # ни одного повторного захода
-    # каждая нода вызвана у провайдера ровно один раз и строго по порядку графа
+    assert all(s["status"] == "succeeded" and s["attempts"] == 1 for s in v["steps"])
     assert chain.prov.calls == [n["id"] for n in chain.nodes]
     rows = await history(chain, pid)
     events = [r["event"] for r in rows]
@@ -179,8 +168,8 @@ async def test_spend_ledgers_agree_after_the_chain(chain) -> None:
         led = (await s.execute(select(func.coalesce(func.sum(SpendLedger.credits), 0.0),
                                       func.coalesce(func.sum(SpendLedger.usd), 0.0)).where(
             SpendLedger.run_id == f"plan:{pid}"))).one()
-    assert net == pytest.approx(total)                           # резерв + поправки = факт плана
-    assert led[0] == pytest.approx(total)                        # общий журнал расходов (append-only) сходится с кабинетом
+    assert net == pytest.approx(total)
+    assert led[0] == pytest.approx(total)
     assert led[1] == pytest.approx(total * CREDIT_USD)
     assert chain.prov.cabinet_credits * CREDIT_USD == pytest.approx(led[1])
 
@@ -193,15 +182,13 @@ async def test_failure_stops_the_chain_and_nothing_restarts(chain) -> None:
     assert v["status"] == "failed", v["status"]
     ids = [n["id"] for n in chain.nodes]
     cut = ids.index("n_videos")
-    assert chain.prov.calls == ids[:cut + 1]                     # после сбойной ноды ни одна следующая не вызвана
+    assert chain.prov.calls == ids[:cut + 1]
     by_status = {s["action_id"]: s["status"] for s in v["steps"]}
     assert by_status[action_id(chain.nodes[cut])] == "failed"
     assert all(st == "succeeded" for a, st in list(by_status.items())[:cut])
     assert all(st in ("skipped", "cancelled", "pending") for a, st in list(by_status.items())[cut + 1:])
-    # факт = только то, что реально ушло в кабинет до сбоя; сбойная нода денег не взяла
     done = sum(PRICE[n["type"]][0] * PRICE[n["type"]][1] for n in chain.nodes[:cut])
     assert chain.prov.cabinet_credits == pytest.approx(done)
-    # повторный запуск того же плана отказывает (план закрыт), провайдера не трогает
     before = list(chain.prov.calls)
     again = await chain.client.post(f"{BASE}/plans/{pid}/run")
     assert again.status_code in (403, 409), again.text
@@ -217,12 +204,12 @@ async def test_second_plan_after_a_failure_is_a_new_decision_not_an_automatic_re
     assert (await view(chain, pid))["status"] == "failed"
     calls_after_fail = len(chain.prov.calls)
     await executor.wait(pid)
-    assert len(chain.prov.calls) == calls_after_fail              # сам по себе ничего не перезапускается
+    assert len(chain.prov.calls) == calls_after_fail
     chain.prov.fail_on = None
-    new_id = await make_plan(chain)                               # новый план и новое подтверждение оператора
+    new_id = await make_plan(chain)
     assert new_id != pid
     r = await chain.client.post(f"{BASE}/plans/{new_id}/run")
-    assert r.status_code == 403                                   # без подтверждения не стартует
+    assert r.status_code == 403
     await start(chain, new_id)
     assert (await view(chain, new_id))["status"] == "succeeded"
 
@@ -234,7 +221,7 @@ def _project() -> Project:
 def test_reject_regenerate_loop_is_bounded_per_frame() -> None:
     p = _project()
     allowed_rounds = 0
-    for _ in range(100):                                          # «отклонить -> перегенерировать» без человека
+    for _ in range(100):
         verdict = regen_budget.charge(p, "images", [1])
         if verdict.blocked:
             break
@@ -242,9 +229,9 @@ def test_reject_regenerate_loop_is_bounded_per_frame() -> None:
     per_frame, per_run = regen_budget.limits()
     assert verdict.blocked == ["1"], "цикл не остановился"
     assert allowed_rounds == min(per_frame, per_run) <= 12
-    again = regen_budget.charge(p, "images", [1])                 # после остановки остаётся остановленным
+    again = regen_budget.charge(p, "images", [1])
     assert again.blocked == ["1"]
-    assert regen_budget.reset(p, "images") is True                # снять может только человек (reset)
+    assert regen_budget.reset(p, "images") is True
     assert regen_budget.charge(p, "images", [1]).blocked == []
 
 
@@ -252,7 +239,7 @@ def test_reject_loop_over_many_frames_is_bounded_per_run_and_in_money() -> None:
     p = _project()
     rounds = 0
     for r in range(200):
-        verdict = regen_budget.charge(p, "video", [(r % 12) + 1 + 100 * (r // 12)])   # каждый раз новый кадр
+        verdict = regen_budget.charge(p, "video", [(r % 12) + 1 + 100 * (r // 12)])
         if verdict.blocked:
             break
         rounds += 1

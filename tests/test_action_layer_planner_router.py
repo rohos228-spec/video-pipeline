@@ -1,4 +1,3 @@
-"""POST /plans/from-text через ASGI-клиент. Транспорт модели - заглушка."""
 from __future__ import annotations
 
 import pytest
@@ -9,14 +8,14 @@ from app.models import Frame
 from app.services.action_layer import planner, store
 from app.services.action_layer.spec import ensure_builtin_actions, registry
 from app.settings import settings
-from tests.action_layer_support import env, make_spec  # noqa: F401
+from tests.action_layer_support import env, make_spec
 from tests.test_action_layer_planner import FakeTransport, reply, res, step
 
 BASE = "/api/action-layer"
 
 
 @pytest_asyncio.fixture
-async def ctx(env, monkeypatch):  # noqa: F811
+async def ctx(env, monkeypatch):
     ensure_builtin_actions()
     ran: list = []
 
@@ -36,7 +35,7 @@ async def ctx(env, monkeypatch):  # noqa: F811
         registry.register(s)
     monkeypatch.setattr(settings, "vibecode_api_key", "vk-test-key")
     monkeypatch.setattr(settings, "vibecode_base_url", "https://vibecode.moe/v1")
-    monkeypatch.setattr(settings, "action_layer_planner_max_catalog", 500)  # без предфильтра
+    monkeypatch.setattr(settings, "action_layer_planner_max_catalog", 500)
     env.ran = ran
     yield env
     planner.set_transport(None)
@@ -164,7 +163,7 @@ async def test_stale_plan_is_refused_on_approve_and_run(ctx) -> None:
 async def test_rate_limit_is_429(ctx, monkeypatch) -> None:
     monkeypatch.setattr(settings, "action_layer_planner_calls_per_hour", 1)
     fake = use(res(reply([step()])), res(reply([step()])))
-    assert (await post(ctx, "a")).status_code in (200, 422)  # вызов модели состоялся
+    assert (await post(ctx, "a")).status_code in (200, 422)
     r = await post(ctx, "b")
     assert r.status_code == 429 and r.json()["detail"]["code"] == "rate_limited"
     assert len(fake.calls) == 1

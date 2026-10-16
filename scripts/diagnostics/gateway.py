@@ -1,10 +1,3 @@
-"""Single-destination Unix-socket gateway for the isolated online diagnostic.
-
-The application container has --network none. This separate gateway container
-receives HTTP over a shared Unix socket and only forwards the Kie text route.
-It never receives filesystem credentials or a Docker socket. The bearer token
-arrives only as the already-authorized request header and is never written.
-"""
 from __future__ import annotations
 
 import json
@@ -33,16 +26,13 @@ KIE = "https://api.kie.ai"
 MAX_REQUESTS = 8
 MAX_BYTES = 30000
 MAX_OUTPUT = 15000
-# Conservative reserve if the provider ignores max_output_tokens: 128k model
-# output at the published 1680 credits/MTok, plus 30k input bytes at the sum
-# of published input, cache-write, and cached-input rates (658 credits/MTok).
 MAX_POST_CREDITS_IF_CAP_IGNORED = 235
 MAX_ACCUMULATED_CHARS = 2_000_000
 MAX_SSE_EVENTS = 100_000
 MAX_UPSTREAM_WALL_S = 900
 FIXTURE = os.environ.get("DIAGNOSTIC_GATEWAY_FIXTURE") == "1"
 FIXTURE_COUNTS = Counter()
-EXTERNAL_CALLS_ALLOWED = False  # Explicit online binding only; never inferred from synthetic mode.
+EXTERNAL_CALLS_ALLOWED = False
 AUDIT_FAILURE = Path('/results/gateway-audit-failure.marker')
 BODY_ROOT = Path('/results/gateway-bodies')
 AUDIT_DEGRADED = False
@@ -53,7 +43,6 @@ DRAIN_REQUEST = Path('/results/gateway-drain-requested.marker')
 
 
 def safe_event(value):
-    """Remove credential-bearing fields and URLs before writing provider data."""
     if isinstance(value, dict):
         return {str(k): ('[redacted]' if re.fullmatch(r'authorization|cookie|set-cookie|api.?key|secret|access_token|refresh_token|password', str(k), re.I)
                          else safe_event(v)) for k, v in value.items()}
@@ -105,7 +94,6 @@ def degrade(reason: str, exc: BaseException | None = None, *, operation: str = '
              'connection_id': connection_id or (id(db) if db else None),
              'transaction_open': db.in_transaction if db else None}
     line = json.dumps(entry, ensure_ascii=False, separators=(',', ':')) + '\n'
-    # The fallback must not depend on the failing SQLite database.
     try:
         AUDIT_FAILURE.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(AUDIT_FAILURE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -123,7 +111,6 @@ def degrade(reason: str, exc: BaseException | None = None, *, operation: str = '
 
 
 def completion_credits(event: dict) -> float | None:
-    """Kie places credits on the SSE event; accept the nested form too."""
     response = event.get("response")
     nested = response.get("credits_consumed") if isinstance(response, dict) else None
     for value in (event.get("credits_consumed"), nested):
@@ -293,7 +280,6 @@ def _finish_locked(ordinal, *, status, credits, complete, downstream_complete,
 def save_batch(ordinal: int, batch_index: int, first_event: int, events: list[dict],
                accumulated_text: str, *, terminal: bool = False,
                terminal_at: float | None = None) -> tuple[float, dict | None]:
-    """Persist a bounded batch before forwarding its final upstream chunk."""
     started = time.perf_counter()
     last_event = first_event + len(events) - 1
     ref = durable_body(ordinal, f'events-{batch_index:04d}',
@@ -326,8 +312,6 @@ def save_batch(ordinal: int, batch_index: int, first_event: int, events: list[di
 
 
 def acknowledge(response_id: str, stage: str) -> bool:
-    # A terminal can reach the app before the gateway's final ledger commit.
-    # Wait without holding a transaction; never acknowledge a file alone.
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and not (AUDIT_DEGRADED or AUDIT_FAILURE.exists()):
         with connection() as lookup:
@@ -596,9 +580,9 @@ class Handler(BaseHTTPRequestHandler):
                             delivery_error = delivery_error or 'downstream_disconnected'
                         socket_write_ms += (time.perf_counter() - started) * 1000.0
                     if status in {400, 401, 403, 404, 422, 429} or self.command == "GET":
-                        complete = True  # A definite pre-processing rejection or completed GET.
+                        complete = True
                     elif credits is None:
-                        complete = False  # Without settled credits, stop all later sends.
+                        complete = False
         except BaseException as exc:
             delivery_error = delivery_error or ('upstream_or_gateway_error:' + type(exc).__name__)
             degrade(delivery_error, exc, operation='forward', ordinal=ordinal,

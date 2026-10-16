@@ -1,4 +1,3 @@
-"""Живые номера кадров vs stale shot_id / leftover parent_id / дубль VO-хвоста."""
 
 from __future__ import annotations
 
@@ -242,7 +241,6 @@ def test_leftover_later_duplicate_vo_hides_copy_without_png(tmp_path: Path) -> N
 
 
 def test_leftover_later_keeps_live_cell_children() -> None:
-    """Одинаковый закадр у шотов одной ячейки — не leftover и не отрыв от родителя."""
     from app.services.vo_shot_expand import leftover_later_duplicate_vo_frames
 
     pu = "p" * 24

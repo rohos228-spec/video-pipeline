@@ -75,7 +75,6 @@ def test_message_text_mapping() -> None:
 
 
 def test_enrich_xlsx_step_error_is_not_excel_file() -> None:
-    """Имя шага enrich_xlsx не должно краситься в «Некорректный xlsx»."""
     err = RuntimeError(
         "enrich_xlsx node=n_excel_gpt_fw_frames: L1 call 1 uuid 4f458359: "
         "4 кадров «кабинет следствия» все самостоятельные — "

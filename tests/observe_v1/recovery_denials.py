@@ -1,8 +1,3 @@
-"""Safety faults against a copy of a genuinely exhausted worker checkpoint.
-
-Each container retains the original evidence and appends an explicit test-only
-operator fault. The actual worker stays alive; no successful statuses are set.
-"""
 import asyncio
 import json
 import uuid
@@ -70,7 +65,7 @@ async def run(mode, client, fixtures, observer, root, result):
     expected = {'deny-user-stop':'user_stop','deny-uncertain':'uncertain','deny-graph':'graph revision',
                 'deny-config':'input/config','deny-scope':'outside recovery scope'}[mode]
     assert expected in response.text, response.text
-    await asyncio.sleep(5)  # Actual scheduler/worker has several polling opportunities.
+    await asyncio.sleep(5)
     async with SessionLocal() as session:
         after = await session.scalar(select(func.count()).select_from(ObservationEvent).where(
             ObservationEvent.execution_id == execution_id, ObservationEvent.kind == 'node_start'))

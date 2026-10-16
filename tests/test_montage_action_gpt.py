@@ -1,4 +1,3 @@
-"""Генерация сцен одной VO-ячейки с доски: merge кусков + apply-ops."""
 
 from __future__ import annotations
 
@@ -222,7 +221,7 @@ async def test_generate_cell_applies_chain_without_insert(
     session.add_all([project, parent, child])
     await session.flush()
 
-    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+    async def fake_ask(text: str, **kwargs):
         assert "voiceover_text" not in text
         if "Поставь сцену" in text:
             assert "разложи вход и полку" in text
@@ -290,7 +289,7 @@ async def test_generate_cell_regenerates_piece_only(
     session.add_all([project, parent])
     await session.flush()
 
-    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+    async def fake_ask(text: str, **kwargs):
         assert "ТОЛЬКО сцены с номерами 2" in text
         return json.dumps(
             {
@@ -392,7 +391,7 @@ async def test_generate_with_images_falls_back_when_gpt_empty(
     session.add_all([project, parent])
     await session.flush()
 
-    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+    async def fake_ask(text: str, **kwargs):
         return "нет сцен"
 
     monkeypatch.setattr("app.services.gpt_client.gpt_ask_fresh", fake_ask)
@@ -439,7 +438,7 @@ async def test_improve_fallback_grows_and_images_new_shots(
     session.add_all([project, parent, neighbor])
     await session.flush()
 
-    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+    async def fake_ask(text: str, **kwargs):
         assert "выходит в лес" in text
         assert "Он вышел в лес и скрылся в тени." not in text
         assert "voiceover_text" not in text
@@ -522,7 +521,7 @@ async def test_generate_cell_grows_stubs_without_images(
     session.add_all([project, parent])
     await session.flush()
 
-    async def fake_ask(text: str, **kwargs):  # noqa: ANN003
+    async def fake_ask(text: str, **kwargs):
         return json.dumps(
             {
                 "ops": [

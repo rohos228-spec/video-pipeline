@@ -1,4 +1,3 @@
-"""W5-3: числа и утверждения документов о split / image_prompts / профилях сверяются с реестром способностей."""
 import re
 from pathlib import Path
 
@@ -23,7 +22,7 @@ def test_node_coverage_doc_lists_exactly_the_profile_compatible_nodes():
     sentence = text[start:text.index(".", start + 150)]
     named = set(re.findall(r"`([a-z_]+)`", sentence.split("animation_prompts")[0]))
     specs = registered_capability_specs()
-    named &= set(specs)            # `characters` / `world` are agents of sd_agent, not node types
+    named &= set(specs)
     actual = {t for t, s in specs.items() if s.profile_compatible}
     assert named == actual, (named, actual)
 

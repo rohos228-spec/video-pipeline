@@ -4,8 +4,6 @@ import {http} from "@/lib/api";
 import {Button} from "@/components/ui/button";
 import {cn} from "@/lib/utils";
 
-// Global operator emergency stop for the supervisory layer (server: app/services/kill_switch.py).
-// Not execution-scoped: the project id only routes the request through the observations router.
 interface KillSwitchHistoryEntry {
   revision: number; active: boolean; actor: string; rationale: string; source: string; created_at: string;
 }

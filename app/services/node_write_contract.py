@@ -26,11 +26,8 @@ ANIM_PROMPT_FIELDS = frozenset({"animation_prompt", "animation_prompt_shot2"})
 CHARACTER_FIELDS = frozenset({"characters"})
 # Действие кадра — группа script_frames_qc (fw_frames), не закадр.
 ACTION_FIELDS = frozenset({"shot01_action", "main_action"})
-# Меню съёмки: fw_frames пишет вместе с промтами (footer prompts + добор).
 CAMERA_MENU_FIELDS = frozenset({"крупность", "движение", "набор", "camera_subdivide"})
-# Закадр пишет только split / n_script / человек. excel_gpt не генерирует текст.
 VO_FIELDS = frozenset({"voiceover_text", "meaning"})
-# Сценарист (fw_script): только смысловые биты на seed-ячейке.
 BITS_FIELDS = frozenset({"биты"})
 
 _NODE_KINDS = frozenset(
@@ -200,11 +197,6 @@ def skip_frame_coverage(
 
 
 def allows_qc_noop(project, node_key, *, variant, output_mode, check_mode):
-    """Closed catalog contract, bound to configured group and prompt slot.
-
-    Node names and prompt body are never authority. Only the shipped frame QC
-    contract currently permits no edits; other contracts remain fail-closed.
-    """
     if output_mode != 'project_file' or check_mode or variant != 'shots_qc_ru':
         return False
     meta = project.meta or {}

@@ -78,10 +78,8 @@ import { FrameRefsStrip } from "@/components/canvas/montage-frame-refs";
 
 /** Единая ширина колонок кадров (+30% к v215). */
 const FRAME_COL_REM = 15;
-/** Горизонтальный кадр 16:9 сплющен по высоте — колонке даём больше ширины. */
 const FRAME_COL_REM_WIDE = 21;
 
-/** Пропорция кадра ш/в из слага проекта («9:16», «16:9», «1:1»). */
 function frameAspectRatio(aspect?: string | null): number {
   const m = /^\s*(\d+(?:[.,]\d+)?)\s*[:x/]\s*(\d+(?:[.,]\d+)?)\s*$/.exec(
     aspect ?? "",
@@ -100,10 +98,8 @@ function frameColStyle(rem: number): CSSProperties {
   return { width: w, minWidth: w, maxWidth: w };
 }
 const ROW_LABEL_CLASS = "w-[11rem] min-w-[11rem] max-w-[11rem]";
-/** Шов между сценами — сюда же вставка новой VO-ячейки. */
 const SCENE_GAP_REM = 5.5;
 const SCENE_GAP_CLASS = "w-[5.5rem] min-w-[5.5rem] max-w-[5.5rem] p-0 align-middle";
-/** Между шотами одной сцены — вплотную, только узкий + при наведении. */
 const SHOT_GAP_REM = 0.25;
 const SHOT_GAP_CLASS = "w-1 min-w-[4px] max-w-[4px] p-0 align-middle";
 
@@ -121,7 +117,6 @@ const SCENE_GENERATE_CLEAR_TYPES = new Set<MontagePendingOp["type"]>([
   "coverage_light",
 ]);
 
-/** «Улучшить сцену» переписывает покрытие всех шотов ячейки и берёт якоря с доски. */
 const SCENE_IMPROVE_CLEAR_TYPES = new Set<MontagePendingOp["type"]>([
   ...SCENE_GENERATE_CLEAR_TYPES,
   "coverage_plan",
@@ -154,18 +149,12 @@ const GRID_ROWS: { key: RowKey; label: string }[] = [
   { key: "timestamps", label: "Таймкоды" },
 ];
 
-/**
- * Данные отдельного кадра — под блоком сцены. Крупность / ракурс / движение /
- * стык отдельными строками не показываем: они в меню покрытия под картинкой.
- */
 const SCENE_SHOT_ROWS: { key: RowKey; label: string }[] = [
   { key: "voiceover", label: "Закадр кадра" },
   { key: "action", label: "Действие кадра" },
 ];
 
-/** Эти строки общие для VO-ячейки — одна клетка на всю сцену. */
 const SCENE_SPAN_ROWS = new Set<RowKey>(["scene_info"]);
-/** Эти строки правятся у каждого кадра отдельно (роль — на картинке). */
 const SCENE_FRAME_ROWS = new Set<RowKey>(["action"]);
 
 type MediaPreview = {
@@ -225,7 +214,6 @@ function slotKeyFromOp(
   return trimKey(op.frame_number, op.shot);
 }
 
-/** Один живой тост очереди вместо стопки на каждый клик по чипу. */
 const QUEUE_TOAST_ID = "montage-queue";
 
 function editsWord(n: number): string {
@@ -327,7 +315,6 @@ function startStillUrl(fr: MontageBoardFrame): string {
 
 type EndStillState = "yes" | "no" | "unknown";
 
-/** Конечный still только у СТАРТ/КОНЕЦ. Пустая раскладка — не угадываем. */
 function endStillState(fr: MontageBoardFrame): EndStillState {
   if (fr.has_end_still === true) return "yes";
   if (fr.has_layout === false) return "unknown";
@@ -486,7 +473,6 @@ function coverageCorrection(
     .join(". ");
 }
 
-/** Сначала still сцены, затем кадры: старт и при freeze — конец. leftover пропускаем. */
 function sceneImageOpsForFrames(
   frames: MontageBoardFrame[],
   scenePrompt?: string,
@@ -780,7 +766,6 @@ function isChildOfScene(fr: MontageBoardFrame, sceneKey: number): boolean {
 }
 
 type SceneRange = {
-  /** Уникальный ключ блока = номер первого кадра на пайплайне, не VO-сцена. */
   key: number;
   scene: number;
   start: number;
@@ -789,8 +774,6 @@ type SceneRange = {
 };
 
 function visibleSceneFrames(frames: MontageBoardFrame[]): MontageBoardFrame[] {
-  // leftover-клей прячем. Длина scene_chain — не число шотов: у ячейки
-  // часто 1 N. и 3–8 живых дочерних кадров.
   return frames.filter((fr) => !fr.shot_leftover);
 }
 
@@ -813,7 +796,6 @@ function sceneRanges(frames: MontageBoardFrame[]): SceneRange[] {
   }).filter((range) => range.frames.length > 0);
 }
 
-/** Действия кадров ячейки через « → » — вместо одного главного действия. */
 function sceneShotSequence(
   range: SceneRange,
   pendingOps: MontagePendingOp[],
@@ -884,10 +866,6 @@ function MontageColGroup({
   );
 }
 
-/**
- * Вставка кадра в зазоре между колонками. Плюс не мозолит глаза: появляется
- * только под курсором и только в одной строке сверху.
- */
 function InsertGutter({
   as,
   label,
@@ -915,8 +893,6 @@ function InsertGutter({
         "group/add flex items-center justify-center transition",
         scene
           ? "h-7 w-full text-white/30 hover:text-black"
-          // Зазор между шотами всего 4px — кнопка вылезает за колонку, чтобы в
-          // неё можно было попасть мышью, но саму таблицу не расширяет.
           : "absolute inset-y-0 left-1/2 z-20 w-6 -translate-x-1/2 text-white/20 hover:text-black",
       )}
     >
@@ -958,11 +934,6 @@ function InsertGutter({
   return <td className={cn(cls, scene ? null : "relative")}>{inner}</td>;
 }
 
-/**
- * Тот же зазор между кадрами, но без кнопки: плюсик живёт только в одной
- * строке сверху, а колонки-разделители нужны всем строкам, иначе fixed-таблица
- * разъедется.
- */
 function GapCell({
   as,
   gap = "scene",
@@ -1476,10 +1447,6 @@ function parseImageDrag(e: ReactDragEvent): ImageSlotRef | null {
   return null;
 }
 
-/**
- * Бокс большого кадра под формат проекта: вертикаль 9:16 упирается в три
- * строки, горизонт 16:9 берёт высоту по пропорции — без пустых полей.
- */
 function tallMediaStyle(aspect?: string | null): CSSProperties {
   const m = /^\s*(\d+(?:[.,]\d+)?)\s*[:x/]\s*(\d+(?:[.,]\d+)?)\s*$/.exec(
     aspect ?? "",
@@ -1534,13 +1501,9 @@ const ClickableMedia = memo(function ClickableMedia({
   onSwapPick?: () => void;
   swapSelected?: boolean;
   swapBusy?: boolean;
-  /** Кадр в центре доски — картинка на три строки в высоту. */
   tall?: boolean;
-  /** Формат проекта («9:16» / «16:9») — задаёт высоту большого кадра. */
   tallAspect?: string | null;
-  /** Данные кадра прямо под картинкой (меню покрытия, якорь, рефы). */
   caption?: ReactNode;
-  /** Родитель / дочерний — поверх картинки сверху. */
   overlay?: ReactNode;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -1730,8 +1693,6 @@ const ClickableMedia = memo(function ClickableMedia({
               draggable={false}
               className={cn(
                 "h-full w-full transition group-hover:brightness-110",
-                // Кадр в центре доски показываем целиком: вертикаль 9:16 при
-                // object-cover теряла треть картинки.
                 tall ? "object-contain" : "object-cover group-hover:scale-[1.02]",
               )}
             />
@@ -2046,7 +2007,6 @@ function mergeTrimsFromMeta(
   return merged;
 }
 
-/** Radix Dropdown/Popover после apply часто оставляет body { pointer-events: none }. */
 function restoreDocumentPointerEvents() {
   if (typeof document === "undefined") return;
   document.body.style.removeProperty("pointer-events");
@@ -2082,7 +2042,6 @@ export function AssembleMontageBoard({
   const [swapBusy, setSwapBusy] = useState(false);
   const [moveImageBusy, setMoveImageBusy] = useState(false);
   const [frameEditBusy, setFrameEditBusy] = useState(false);
-  /** Роль, которую только что нажали — до ответа сервера. */
   const [kindOverride, setKindOverride] = useState<
     Record<number, "parent" | "child">
   >({});
@@ -2102,7 +2061,6 @@ export function AssembleMontageBoard({
   const submittedApplyRef = useRef(false);
   const trimsDirtyRef = useRef(false);
   const lastApplyToastKeyRef = useRef("");
-  /** Этот прогон apply наш: принимаем done/idle даже если running не успел прийти. */
   const applySeenRunningRef = useRef(false);
   const applyRunningRef = useRef(false);
   applyRunningRef.current = applyRunning;
@@ -2167,8 +2125,6 @@ export function AssembleMontageBoard({
       queryFn: () => api.getProject(projectId),
       staleTime: 30_000,
     });
-    // После regen staleTime/кэш иначе показывает старые клипы и пустую
-    // подсветку. invalidate, не reset: прошлая доска висит до новых данных.
     void queryClient.invalidateQueries({ queryKey: ["montage-board", projectId] });
   }, [open, projectId, queryClient]);
 
@@ -2192,7 +2148,6 @@ export function AssembleMontageBoard({
   const colRem = coverageOn ? frameColRem(frameAspect) : FRAME_COL_REM;
   const gridRows = useMemo(() => {
     if (!coverageOn) return GRID_ROWS;
-    // Сцена ячейки сверху; под ней кадры: старт и рядом конец, если freeze.
     const frameRow = GRID_ROWS.filter((r) => r.key === "image1");
     const rest = GRID_ROWS.filter(
       (r) =>
@@ -2303,7 +2258,6 @@ export function AssembleMontageBoard({
     const restored = parsePendingOps(meta?.pending_ops);
     // Пока пользователь набирает очередь (dirty) — НИКОГДА не затирать её
     // серверным meta. Иначе: локально 40+, на сервере старые 8 → «стало 8».
-    // То же после удаления чужого кадра: refetch не должен снимать правки.
     if (localQueueDirtyRef.current) {
       return;
     }
@@ -2539,7 +2493,6 @@ export function AssembleMontageBoard({
     [frames, persistQueue, projectId, queryClient],
   );
 
-  /** Настройки пишутся сразу. В очередь — только картинка, если смысл кадра сменился. */
   const queueSceneOps = useCallback(
     (ops: MontagePendingOp[]) => {
       void applyCoverageNow(ops);
@@ -2813,8 +2766,6 @@ export function AssembleMontageBoard({
         else if (status === "error") toast.error(errText || "Генерация не удалась");
         else if (status === "cancelled") toast.message("Генерация остановлена");
       }
-      // Без resetQueries: доска остаётся на экране (скролл, открытые клетки),
-      // данные подменяются, когда придёт ответ.
       void queryClient
         .fetchQuery({
           queryKey: ["montage-board", projectId],
@@ -3093,8 +3044,6 @@ export function AssembleMontageBoard({
           }
           return;
         }
-        // Этот эффект живёт только пока applyRunning: idle/пусто = job уже кончился.
-        // Раньше ждали «видели running» и при быстром coverage кнопки оставались disabled.
         if (!status || status === "idle") {
           handleApplyTerminal("done");
           return;
@@ -3778,13 +3727,11 @@ export function AssembleMontageBoard({
     [frames],
   );
 
-  /** Одна правка = сразу в очередь: строки сцены не открывают отдельное окно. */
   const queueCoverage = useCallback(
     (op: MontagePendingOp) => queueSceneOps([op]),
     [queueSceneOps],
   );
 
-  /** Клетка кадра для строк роль / крупность / ракурс / движение / стык / действие / якорь. */
   const renderSceneFrameCell = (key: RowKey, fr: MontageBoardFrame) => {
     const pending = pendingCoverageForFrame(pendingOps, fr.number);
     const base = { frame_number: fr.number, shot: 1 as const };
@@ -3978,7 +3925,6 @@ export function AssembleMontageBoard({
     [applyMutation, persistQueue, projectId],
   );
 
-  /** Клетка на всю VO-ячейку: последовательность кадров и якоря. */
   const renderSceneSpanCell = (key: RowKey, range: SceneRange) => {
     const head = range.frames[0];
     const tail = range.frames[range.frames.length - 1] ?? head;
@@ -4127,7 +4073,6 @@ export function AssembleMontageBoard({
     );
   };
 
-  /** Свет — свойство сцены: op уходит на головной кадр её VO-ячейки. */
   const sceneLightGroup = (range: SceneRange): CoverageMenuGroup => {
     const head = range.frames[0];
     const pending = pendingCoverageForFrame(pendingOps, head.number);
@@ -4147,11 +4092,6 @@ export function AssembleMontageBoard({
     };
   };
 
-  /**
-   * Крупность / ракурс / движение / стык — свойства кадра; свет — свойство
-   * сцены, но выбирается в том же меню покрытия под картинкой (op на голову
-   * VO-ячейки, пишется всем шотам).
-   */
   const coverageGroups = (fr: MontageBoardFrame): CoverageMenuGroup[] => {
     const pending = pendingCoverageForFrame(pendingOps, fr.number);
     const base = { frame_number: fr.number, shot: 1 as const };
@@ -4762,10 +4702,6 @@ export function AssembleMontageBoard({
                                   : {
                                       ...frameColStyle(pairRem),
                                       contentVisibility: "auto",
-                                      // `auto` = помнить последний размер клетки:
-                                      // иначе отрисовка соседней строки меняла
-                                      // 180px заглушку на реальную высоту и доска
-                                      // дёргалась под курсором.
                                       containIntrinsicSize: "auto 240px auto 180px",
                                     }
                               }

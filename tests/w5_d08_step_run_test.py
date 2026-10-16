@@ -1,8 +1,3 @@
-"""W5-4 D08: запуск шагов конвейера как действие слоя с оценкой и потолком.
-
-Эндпоинт запуска шага подменён заменителем (платных вызовов и воркера нет); чтение идёт по
-настоящим эндпоинтам на временной БД.
-"""
 from __future__ import annotations
 
 import re
@@ -14,7 +9,7 @@ from app.services.action_layer import executor
 from app.services.action_layer import node_run_cost as nrc
 from app.services.action_layer.context import ActionContext
 from app.services.action_layer.spec import ensure_builtin_actions, registry
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 BASE = "/api/action-layer"
 
@@ -33,20 +28,15 @@ def not_managed(monkeypatch):
 
 @pytest.fixture
 def steps_open(monkeypatch):
-    """Статус проекта пересчитывается по данным (пустой проект откатывается назад): условие
-    «шаг доступен» отдельно проверяет test_step_preconditions, остальным оно не мешает."""
     monkeypatch.setattr("app.telegram.menu.is_step_runnable", lambda step, status: True)
 
 
 def _auto(stub, on: bool):
-    """Флаг автопродвижения живёт в project.db, которого у проекта этого стенда нет:
-    чтение проекта подменяется (запись и остальные поля настоящие)."""
     stub["auto_mode"] = on
 
 
 @pytest.fixture
 def stub_writes(monkeypatch):
-    """Заменитель записывающих эндпоинтов: вызов записывается, ответ задан, настоящий не идёт."""
     state = {"patterns": {}, "calls": [], "auto_mode": None}
     original = ActionContext.call
 
@@ -78,7 +68,6 @@ async def _set(env, pid, **fields):
 
 
 def _kie_pair(kind: str):
-    """Модель и разрешение, для которых в репозитории есть тариф Kie (ищется в коде, не задаётся)."""
     from app.generation_options import (
         IMAGE_GENERATORS_BY_ID, IMAGE_RESOLUTIONS_BY_ID, VIDEO_GENERATORS_BY_ID,
         VIDEO_RESOLUTIONS_BY_ID)
@@ -94,7 +83,6 @@ def _kie_pair(kind: str):
     return None
 
 
-# --- чистая оценка (node_run_cost) ------------------------------------------------------------
 
 def test_media_units_counts_second_shot() -> None:
     frames = [{"has_shot2": False}, {"has_shot2": True}, {}]
@@ -143,7 +131,6 @@ def test_video_estimate_names_the_clip_length_assumption() -> None:
     assert "допущен" in est.basis
 
 
-# --- каталог ----------------------------------------------------------------------------------------
 
 def test_step_actions_registered_with_tier_money_and_russian_text() -> None:
     spec = registry.get("step.run_step")
@@ -165,7 +152,6 @@ def test_resume_and_continue_without_ceiling_keep_the_unknown_cost() -> None:
         assert (capped.low, capped.high) == (0.0, 7.0), aid
 
 
-# --- превью / подтверждение / запуск ------------------------------------------------------------------
 
 async def test_cost_basis_reads_declared_values_from_the_project(env, not_managed) -> None:
     pid = await env.add_project(frames=3)
@@ -198,7 +184,6 @@ async def test_unpriced_step_needs_a_ceiling_then_preview_approve_run(env, not_m
     assert pv["cost"]["high"] == 40 and pv["cost"]["unknown_steps"] == 0
     plan = ok.json()["plan_id"]
 
-    # без подтверждения платный шаг не запускается
     denied = await env.client.post(f"{BASE}/plans/{plan}/run")
     assert denied.status_code in (403, 409) and not stub_writes["calls"]
 
@@ -225,7 +210,6 @@ async def test_approval_is_bound_to_the_ceiling(env, not_managed, stub_writes, s
     cheap, dear = await make(10), await make(900)
     assert cheap != dear
     assert (await env.client.post(f"{BASE}/plans/{cheap}/approve")).status_code == 200
-    # подтверждение дешёвого плана не открывает дорогой
     assert (await env.client.post(f"{BASE}/plans/{dear}/run")).status_code in (403, 409)
     assert stub_writes["calls"] == []
 
@@ -237,14 +221,13 @@ async def test_priced_image_step_is_approvable_without_a_ceiling(env, not_manage
     gen, res, unit = pair
     from app.generation_options import clamp_image_resolution_id
     from app.services.action_layer.builtin_montage_more import _kie_unit
-    res = clamp_image_resolution_id(gen, res)  # нода/проект приводят разрешение под модель
+    res = clamp_image_resolution_id(gen, res)
     unit = _kie_unit("image", gen, res)[0]
     pid = await env.add_project(frames=2)
     async with env.factory() as s:
         p = await s.get(Project, pid)
         p.status = ProjectStatus.image_prompts_ready
         p.image_generator, p.image_resolution = gen, res
-        # нода «Картинки» перекрывает настройки проекта (как в test_action_layer_montage_more_real)
         p.meta = {"canvas_graph": {"nodes": [{"id": "n1", "type": "images",
                                               "data": {"modelId": gen.replace("_", "-")}}],
                                    "edges": []}}
@@ -256,14 +239,11 @@ async def test_priced_image_step_is_approvable_without_a_ceiling(env, not_manage
     assert r.status_code == 200, r.text
     cost = r.json()["preview"]["cost"]
     assert cost["high"] == round(2 * nrc.IMAGE_STEP_ATTEMPTS * unit, 2)
-    # потолок ниже расчёта отклоняется условием
     low = await _preview(env, [{"action_id": "step.run_step",
                                 "params": {**params, "ceiling_credits": cost["high"] / 2}}])
     assert low.status_code == 422 and "step_cost_declared" in str(low.json())
-    # заявлено меньше генераций, чем на доске
     less = await _preview(env, [{"action_id": "step.run_step", "params": {**params, "count": 1}}])
     assert less.status_code == 422 and "step_cost_declared" in str(less.json())
-    # заявлена другая модель, чем в проекте
     other = await _preview(env, [{"action_id": "step.run_step",
                                   "params": {**params, "image_resolution": "4k" if res != "4k" else "1k"}}])
     assert other.status_code == 422
@@ -289,7 +269,6 @@ async def test_step_preconditions(env, not_managed, stub_writes, monkeypatch) ->
     pid = await env.add_project(frames=1)
     params = {"project_id": pid, "step_code": "assemble"}
     step = [{"action_id": "step.run_step", "params": params}]
-    # проект новый: сборка недоступна
     r = await _preview(env, step)
     assert r.status_code == 422 and "step_runnable" in str(r.json())
     monkeypatch.setattr("app.telegram.menu.is_step_runnable", lambda step, status: True)
@@ -327,7 +306,7 @@ async def test_resume_with_ceiling_is_approvable_and_without_it_is_not(env, not_
     assert capped.json()["preview"]["cost"]["high"] == 25
     plan = capped.json()["plan_id"]
     assert (await env.client.post(f"{BASE}/plans/{plan}/approve")).status_code == 200
-    assert stub_writes["calls"] == []  # подтверждение ничего не запускает
+    assert stub_writes["calls"] == []
     _auto(stub_writes, True)
     chained = await _preview(env, [{"action_id": "project.resume",
                                     "params": {"project_id": pid, "ceiling_credits": 25}}])

@@ -1,4 +1,3 @@
-"""Durable media gates, tested with real SQLite and the common ActionSupervisor."""
 import asyncio
 import json
 import os
@@ -66,7 +65,6 @@ class MediaJobs(unittest.IsolatedAsyncioTestCase):
         self.scope = self.observer.scopes[1]
         self.session = self.sessions()
         self.project = await self.session.get(Project, 7)
-        # Project.data_dir is derived from settings; use the actual isolated location.
         self.project.data_dir.mkdir(parents=True, exist_ok=True)
         self.output = self.project.data_dir / "images" / "frame_001_12345678.png"
         self.token = observation._attempt.set(AttemptContext(self.observer, self.scope,

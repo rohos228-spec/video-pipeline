@@ -92,7 +92,6 @@ async def test_blocks_later_not_blocked_by_paused_earlier(
 ) -> None:
     await _add(session, 7, status=ProjectStatus.paused, until="script")
     await _add(session, 8, status=ProjectStatus.plan_ready, until="script")
-    # paused-слот пропускается (gen_queue_incomplete_earlier): хвост не блокируется.
     assert await gen_queue_blocks_project(session, 8) is None
 
 
@@ -106,8 +105,6 @@ async def test_user_stop_slot_does_not_block_later_in_queue(
     p7.meta = {**(p7.meta or {}), "user_stop": True}
     await session.flush()
     await _add(session, 8, status=ProjectStatus.plan_ready, until="script")
-    # user_stop-слот пропускается (paused/user_stop не держат окно параллели);
-    # глобальный стоп очереди — is_gen_queue_halted, см. gen_queue_tick.
     assert await gen_queue_blocks_project(session, 8) is None
 
 
@@ -140,7 +137,6 @@ async def test_reconcile_rolls_back_out_of_turn_planning(
         "app.services.gen_queue.get_gen_queue",
         lambda: [2, 3, 4],
     )
-    # #2 runnable и в top-N окне (max_parallel=1) -> #3 вне очереди (out-of-window).
     await _add(session, 2, status=ProjectStatus.planning, until="script")
     p3 = await _add(session, 3, status=ProjectStatus.planning, until="script")
     rolled = await gen_queue_reconcile(session)
@@ -373,8 +369,6 @@ async def test_gen_queue_tick_advances_ready_project(
     p7.general_plan = "x" * 500
     await session.flush()
 
-    # Продвижение идёт через LLM verdict-review (_run_verdict_review_for_step);
-    # здесь проверяем порядок очереди, не LLM -> одобряем без сети.
     from app.models import HITLDecision
     from app.orchestrator.auto_advance import ReviewResult
 
@@ -386,7 +380,6 @@ async def test_gen_queue_tick_advances_ready_project(
     )
 
     async def _not_managed(_pid: int) -> bool:
-        # Observe-v1 managed-execution читает глобальную БД observer (в тесте не поднята).
         return False
 
     monkeypatch.setattr(
@@ -398,5 +391,4 @@ async def test_gen_queue_tick_advances_ready_project(
     assert p7.status is ProjectStatus.scripting
 
 
-# Env: нужен хотя бы фиктивный ключ провайдера (см. tests/conftest.py::fake_provider_keys).
 pytestmark = pytest.mark.usefixtures("fake_provider_keys")

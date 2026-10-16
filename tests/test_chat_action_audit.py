@@ -1,4 +1,3 @@
-"""Чат-оркестратор: append-only аудит действий и флаг CHAT_CODE_ACTIONS_ENABLED (без сети)."""
 from __future__ import annotations
 
 import json
@@ -8,7 +7,7 @@ from sqlalchemy import select
 
 from app.services.action_layer.store import ActionHistory
 from app.settings import Settings, settings
-from tests.action_layer_support import env  # noqa: F401
+from tests.action_layer_support import env
 
 SECRET = "sk-ABCDEFGH1234567890zz"
 
