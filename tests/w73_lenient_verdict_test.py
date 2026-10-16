@@ -91,3 +91,26 @@ def test_script_style_criterion_never_blocks(live, work):
     assert "блокирующими являются ТОЛЬКО два критерия" in soft
     plan = (work / "prompts" / "check_plan" / "stand_lenient.md").read_text(encoding="utf-8")
     assert "блокирующими являются ТОЛЬКО" not in plan
+
+
+def test_local_tts_server_speaks_and_is_loopback(live, tmp_path, monkeypatch):
+    import json
+    import urllib.request
+
+    called = {}
+    monkeypatch.setattr(live.fc, "sapi_mp3", lambda text, work: called.setdefault("t", text) and b"ID3fake")
+    httpd, port = live.start_local_tts(tmp_path)
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/text-to-speech/v", data=json.dumps({"text": "привет"}).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert r.status == 200 and r.read() == b"ID3fake"
+    finally:
+        httpd.shutdown()
+    assert called["t"] == "привет"
+
+
+def test_local_tts_costs_nothing_and_needs_no_eleven_key(live):
+    src = LIVE.read_text(encoding="utf-8")
+    assert '"--local-tts", action="store_true"' in src
+    assert 'if not getattr(args, "local_tts", False):' in src

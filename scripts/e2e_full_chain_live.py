@@ -193,7 +193,8 @@ def required_keys(args) -> dict[str, str]:
     if lvl >= 2:
         need.setdefault("OUTSEE_API_KEY" if args.video_provider == "outsee" else "KIE_API_KEY", f"видео ({args.video_provider})")
     if lvl >= 3:
-        need["ELEVENLABS_API_KEY"] = "озвучка (ElevenLabs напрямую)"
+        if not getattr(args, "local_tts", False):
+            need["ELEVENLABS_API_KEY"] = "озвучка (ElevenLabs напрямую)"
         if args.with_music:
             need.setdefault("KIE_API_KEY", "музыка (Kie Suno)")
     return need
@@ -217,7 +218,7 @@ def estimate(args) -> dict:
     req = {"llm": n_llm, "image": n if lvl >= 1 else 0, "video": n if lvl >= 2 else 0, "tts": 1 if lvl >= 3 else 0,
            "sfx": sfx_events, "music": 1 if (args.with_music and lvl >= 3) else 0}
     media = {"image": round(req["image"] * PRICE["image"], 4), "video": round(req["video"] * PRICE["video"], 4),
-             "tts": round(req["tts"] * n * int(args.tts_chars_per_frame) * PRICE["tts_per_char"], 4),
+             "tts": 0.0 if getattr(args, "local_tts", False) else round(req["tts"] * n * int(args.tts_chars_per_frame) * PRICE["tts_per_char"], 4),
              "sfx": round(sfx_events * PRICE["sfx_seconds"] * PRICE["sfx_per_sec"], 4),
              "music": round(req["music"] * PRICE["music"], 4)}
     text_usd = round(n_llm * PRICE["llm_request"], 4)
@@ -349,7 +350,7 @@ def live_settings_plan(cfg: dict, env: dict) -> dict[str, Any]:
         "gpt_relay_token": env.get("GPT_RELAY_TOKEN", ""), "gpt_proxy_url": env.get("GPT_PROXY_URL") or None,
         "kie_api_key": env.get("KIE_API_KEY", ""), "kie_api_base_url": (env.get("KIE_API_BASE_URL") or DEFAULTS["KIE_API_BASE_URL"]).rstrip("/"),
         "outsee_api_key": env.get("OUTSEE_API_KEY", ""), "outsee_api_base_url": (env.get("OUTSEE_API_BASE_URL") or DEFAULTS["OUTSEE_API_BASE_URL"]).rstrip("/"),
-        "elevenlabs_api_key": env.get("ELEVENLABS_API_KEY", ""), "elevenlabs_proxy_url": None,
+        "elevenlabs_api_key": "stand-local-tts" if cfg.get("local_tts_port") else env.get("ELEVENLABS_API_KEY", ""), "elevenlabs_proxy_url": None,
         "sfx_enabled": bool(cfg["with_sfx"]), "social_publish_enabled": False, "media_spend_recording": True,
         "images_allow_hollow_prompts": bool(cfg.get("allow_hollow")),
         "outsee_allow_public_image_hosts": True,   # синтетический проект стенда без Yandex S3; боевой умолчательный запрет не трогаем
@@ -404,6 +405,39 @@ def install_live_hook(cfg: dict) -> None:
     outsee_http._post_generate_via_curl = no_curl_post
 
 
+def start_local_tts(work: Path):
+    """``--local-tts``: loopback stand-in for api.elevenlabs.io text-to-speech - the text is spoken by Windows SAPI (Irina). Returns (httpd, port)."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a, **k):
+            pass
+
+        def do_POST(self):
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            try:
+                text = str(json.loads(raw.decode("utf-8")).get("text") or "")
+            except ValueError:
+                text = ""
+            mp3 = fc.sapi_mp3(text, work) if text.strip() else None
+            if mp3 is None:
+                self.send_response(500)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Length", str(len(mp3)))
+            self.end_headers()
+            self.wfile.write(mp3)
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd, httpd.server_address[1]
+
+
 def child_live_main() -> int:
     import runpy
     cfg = json.loads(os.environ["FC_LIVE_CFG"])
@@ -416,6 +450,9 @@ def child_live_main() -> int:
             setattr(settings, name, value)
         except Exception:  # noqa: BLE001
             object.__setattr__(settings, name, value)
+    if cfg.get("local_tts_port"):
+        from app.services import elevenlabs_api
+        elevenlabs_api.ELEVENLABS_API_BASE_URL = f"http://127.0.0.1:{int(cfg['local_tts_port'])}/v1"
     install_live_hook(cfg)
     fc.keep_group_report_out_of_repo(Path(cfg["work"]))      # the group's report node would write <repo>/exports/*.html
     runpy.run_module("app.main", run_name="__main__", alter_sys=True)
@@ -645,6 +682,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--allow-hollow-prompts", action="store_true", help="проверка механики: платить за картинки даже с пустыми полями сцены (IMAGES_ALLOW_HOLLOW_PROMPTS); качество не доказывается")
     ap.add_argument("--lenient-verdict", action="store_true", help="ТОЛЬКО СТЕНД: мягкие копии «Вердикта» плана и сценария в work-dir прогона (продуктовые шаблоны не трогаются); "
                     "строгий Вердикт срывал живые прогоны паузами и переделками")
+    ap.add_argument("--local-tts", action="store_true", help="ТОЛЬКО СТЕНД: ElevenLabs недоступен (страна/прокси) - озвучку отдаёт локальный голос Windows SAPI через loopback-подмену адреса ElevenLabs; остальные провайдеры настоящие; ElevenLabs этим прогоном НЕ доказывается")
     ap.add_argument("--no-human-text-gate", action="store_true", help="не одобрять план/сценарий за человека (проверять только встроенный Вердикт)")
     ap.add_argument("--with-music", action="store_true", help="настоящая музыка Kie Suno (≈ $0.6, съедает потолок медиа)")
     ap.add_argument("--with-sfx", action="store_true", help="настоящие звуки ElevenLabs (по умолчанию SFX_ENABLED=false)")
@@ -804,6 +842,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     cfg = {"work": str(work), "port": args.port, "fake_port": 0, "app_cap_usd": float(args.app_cap_usd), "seams": list(fc.SEAMS),
            "text_provider": args.text_provider, "image_provider": args.image_provider, "video_provider": args.video_provider,
            "with_sfx": bool(args.with_sfx), "allow_hollow": bool(args.allow_hollow_prompts), "wire_caps": caps, "allowed_post_hosts": allowed_post_hosts(live_env)}
+    tts_httpd = None
+    if args.local_tts:
+        tts_httpd, tts_port = start_local_tts(work)
+        cfg["local_tts_port"] = tts_port
+        print(f"ГОЛОС: локальный Windows SAPI на 127.0.0.1:{tts_port} вместо ElevenLabs (только стенд; ElevenLabs этим прогоном не доказывается)", flush=True)
     env = fc.server_env(work, args.port, cfg, args.asr_model)
     env.update({"FC_LIVE_CFG": json.dumps(cfg), "TEXT_LLM_PROVIDER": args.text_provider, "IMAGE_PROVIDER": args.image_provider,
                 "VIDEO_PROVIDER": args.video_provider, "GPT_MAX_RETRIES": "2", "SFX_ENABLED": "true" if args.with_sfx else "false",
@@ -823,7 +866,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     repo_data_before = fc.data_fingerprint(ROOT / "data")
     result: dict[str, Any] = {"mode": "live", "until": args.until, "port": args.port, "work_dir": str(work), "nodes": [],
                               "estimate": est, "ceilings": {"text_usd": ceilings[0], "media_usd": ceilings[1]},
-                              "wire_caps": caps, "not_proven": list(NOT_PROVEN) + (list(GROUP_NOT_PROVEN) if args.prompt_group else []),
+                              "wire_caps": caps, "not_proven": list(NOT_PROVEN) + (list(GROUP_NOT_PROVEN) if args.prompt_group else [])
+                              + (["озвучка: локальный голос Windows SAPI вместо ElevenLabs (--local-tts); путь ElevenLabs не доказан"] if args.local_tts else []),
                               "prompt_group": args.prompt_group}
     proc: subprocess.Popen | None = None
     log = None
@@ -931,6 +975,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
                 proc.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        if tts_httpd is not None:
+            tts_httpd.shutdown()
         if log is not None:
             log.close()
         loc.unlink_cached_model(work / "data", args.asr_model)
