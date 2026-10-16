@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+os.environ.setdefault("API_TRACKER_CLOUD_ENABLED", "false")
 os.environ.setdefault("API_TRACKER_DB", str(Path(tempfile.mkdtemp(prefix="vp-tracker-")) / "tracker.db"))
 
 import urllib.request as _urllib_request

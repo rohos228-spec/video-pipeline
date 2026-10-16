@@ -12,7 +12,7 @@
 
 ## Редакция и облачный трекер (B2)
 - `error_message`, `project_source`, `metadata` перед записью в трекер (локальный SQLite и облако) проходят через `redact` (`api_tracker_hook.record_api_call`, `observation._track_api_cost`). Тексты исключений в журнале решений (`escalate`, отказ повтора) и SSE-ошибка также редактируются.
-- `API_TRACKER_CLOUD_ENABLED` (умолчание `true`): `false` отключает отправку строк вызовов в облако; локальная запись остаётся, строка помечается `synced=1`, чтобы фоновая досылка её не отправила. Переключение аварийного рубильника (`toggle_killswitch`) и чтение его облачного состояния флагом не затрагиваются.
+- `API_TRACKER_CLOUD_ENABLED` (умолчание `true`, как в исходном трекере; адрес и ключ Supabase по умолчанию те же, что в `api-tracker/app/config.py`): `false` отключает отправку строк вызовов в облако; локальная запись остаётся, строка помечается `synced=1`, чтобы фоновая досылка её не отправила. Переключение аварийного рубильника (`toggle_killswitch`) и чтение его облачного состояния флагом не затрагиваются.
 
 ## Чат-оркестратор (B3)
 - Каждое выполненное, отказанное и подтверждённое действие чата (`/db/projects/{id}/orchestrator/chat`, `confirm-git-push`, `confirm-delete-projects`) пишется в append-only журнал `action_layer_history` с событием `chat_action`: кто (`web_operator:<хеш токена>` или `local_web_operator`, плюс адрес клиента), когда, имя действия, исход (`ok`, `error`, `refused`, `pending_confirm`), `params_digest` (sha256 от аргументов после редакции, значений нет).

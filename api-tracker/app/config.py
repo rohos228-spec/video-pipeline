@@ -9,8 +9,8 @@ from pathlib import Path
 # Корень api-tracker
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-DEFAULT_SUPABASE_URL = ""
-DEFAULT_SUPABASE_KEY = ""
+DEFAULT_SUPABASE_URL = "https://jubhhajwknvhlntmwpoj.supabase.co"
+DEFAULT_SUPABASE_KEY = "sb_publishable_qxcebL4M8lXRj0s2qF4ZLA_VkHhp3a-"
 
 
 def _load_env_file() -> None:
@@ -38,7 +38,7 @@ _load_env_file()
 
 
 def cloud_enabled() -> bool:
-    return os.environ.get("API_TRACKER_CLOUD_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+    return os.environ.get("API_TRACKER_CLOUD_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 
 
 def get_supabase_url() -> str:

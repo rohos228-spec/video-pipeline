@@ -361,11 +361,12 @@ class Settings(BaseSettings):
     web_port: int = Field(8765, alias="WEB_PORT")
     orchestrator_allow_remote_without_auth: bool = Field(
         False, alias="ORCHESTRATOR_ALLOW_REMOTE_WITHOUT_AUTH")
-    api_tracker_cloud_enabled: bool = Field(False, alias="API_TRACKER_CLOUD_ENABLED")
-    api_tracker_supabase_url: str = Field("", alias="SUPABASE_URL")
+    api_tracker_cloud_enabled: bool = Field(True, alias="API_TRACKER_CLOUD_ENABLED")
+    api_tracker_supabase_url: str = Field(
+        "https://jubhhajwknvhlntmwpoj.supabase.co", alias="SUPABASE_URL")
     api_tracker_supabase_key: str = Field(
-        "", validation_alias=AliasChoices("SUPABASE_KEY", "SUPABASE_ANON_KEY"))
-    api_tracker_cloud_send_identity: bool = Field(False, alias="API_TRACKER_CLOUD_SEND_IDENTITY")
+        "sb_publishable_qxcebL4M8lXRj0s2qF4ZLA_VkHhp3a-", validation_alias=AliasChoices("SUPABASE_KEY", "SUPABASE_ANON_KEY"))
+    api_tracker_cloud_send_identity: bool = Field(True, alias="API_TRACKER_CLOUD_SEND_IDENTITY")
     media_spend_recording: bool = Field(True, alias="MEDIA_SPEND_RECORDING")
     chat_code_actions_enabled: bool = Field(False, alias="CHAT_CODE_ACTIONS_ENABLED")
 

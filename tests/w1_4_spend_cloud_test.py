@@ -295,16 +295,15 @@ def test_track_api_cost_recording_setting_off_skips(monkeypatch):
 
 
 
-def test_cloud_defaults_are_off_and_have_no_embedded_credentials(monkeypatch):
+def test_cloud_defaults_match_the_standalone_tracker(monkeypatch):
     for name in ("API_TRACKER_CLOUD_ENABLED", "SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_ANON_KEY"):
         monkeypatch.delenv(name, raising=False)
     fresh = Settings(_env_file=None)
-    assert fresh.api_tracker_cloud_enabled is False
-    assert fresh.api_tracker_supabase_url == "" and fresh.api_tracker_supabase_key == ""
-    assert fresh.api_tracker_cloud_send_identity is False
-    for rel in ("app/services/api_tracker_hook.py", "api-tracker/app/config.py", "app/settings.py"):
-        text = (ROOT / rel).read_text(encoding="utf-8")
-        assert "jubhhajwknvhlntmwpoj" not in text and "sb_publishable_" not in text, rel
+    ns = _load_tracker_config(monkeypatch, {})
+    assert fresh.api_tracker_cloud_enabled is True
+    assert fresh.api_tracker_supabase_url == ns["DEFAULT_SUPABASE_URL"] != ""
+    assert fresh.api_tracker_supabase_key == ns["DEFAULT_SUPABASE_KEY"] != ""
+    assert fresh.api_tracker_cloud_send_identity is True
 
 
 def test_settings_read_supabase_key_aliases(monkeypatch):
@@ -388,6 +387,7 @@ def test_cloud_row_has_hashed_identity_but_local_row_keeps_names(tracker, monkey
 
 
 def test_hash_is_stable_per_install_and_salted(tracker, monkeypatch):
+    monkeypatch.setattr(settings, "api_tracker_cloud_send_identity", False)
     a = hook._cloud_identity("alice-os-user", "ALICE-PC")
     assert a == hook._cloud_identity("alice-os-user", "ALICE-PC")
     salt_file = tracker.parent / ".cloud_identity_salt"
@@ -397,6 +397,7 @@ def test_hash_is_stable_per_install_and_salted(tracker, monkeypatch):
 
 
 def test_identity_without_salt_is_empty_not_plain(tracker, monkeypatch):
+    monkeypatch.setattr(settings, "api_tracker_cloud_send_identity", False)
     monkeypatch.setattr(hook, "_cloud_salt", lambda: "")
     assert hook._cloud_identity("alice-os-user", "ALICE-PC") == ("", "")
 
@@ -446,14 +447,17 @@ def _load_tracker_config(monkeypatch, env: dict):
     return ns
 
 
-def test_standalone_tracker_config_is_off_without_the_flag(monkeypatch):
+def test_standalone_tracker_config_is_on_by_default_and_off_with_the_flag(monkeypatch):
     ns = _load_tracker_config(monkeypatch, {"SUPABASE_URL": "https://x.invalid", "SUPABASE_KEY": "k"})
-    assert ns["cloud_enabled"]() is False
-    assert ns["get_supabase_url"]() == "" and ns["get_supabase_key"]() == ""
+    assert ns["cloud_enabled"]() is True
+    assert ns["get_supabase_url"]() == "https://x.invalid" and ns["get_supabase_key"]() == "k"
+    off = _load_tracker_config(monkeypatch, {"API_TRACKER_CLOUD_ENABLED": "false"})
+    assert off["cloud_enabled"]() is False
+    assert off["get_supabase_url"]() == "" and off["get_supabase_key"]() == ""
 
 
 def test_standalone_tracker_config_with_flag_and_owner_credentials(monkeypatch):
     ns = _load_tracker_config(monkeypatch, {"API_TRACKER_CLOUD_ENABLED": "true", "SUPABASE_URL": "https://x.invalid",
                                             "SUPABASE_ANON_KEY": "anon"})
     assert ns["get_supabase_url"]() == "https://x.invalid" and ns["get_supabase_key"]() == "anon"
-    assert ns["DEFAULT_SUPABASE_URL"] == "" and ns["DEFAULT_SUPABASE_KEY"] == ""
+    assert ns["DEFAULT_SUPABASE_URL"] != "" and ns["DEFAULT_SUPABASE_KEY"] != ""

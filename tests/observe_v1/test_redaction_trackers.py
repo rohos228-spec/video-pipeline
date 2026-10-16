@@ -60,7 +60,7 @@ def test_cloud_flag_off_skips_push_and_marks_nothing_pending(tracker, monkeypatc
     assert rows[0][1] == 1
 
 
-def test_cloud_flag_default_is_off_and_nothing_is_pushed(tracker):
+def test_cloud_flag_off_in_the_test_environment_and_nothing_is_pushed(tracker):
     assert settings.api_tracker_cloud_enabled is False
     db, pushed = tracker
     hook.record_api_call(provider="kie", model="m", error_message="boom")
