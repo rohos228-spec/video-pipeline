@@ -84,13 +84,58 @@ def _agent_reply(role: str) -> dict[str, Any]:
             "vo_cut_sync": "per_phrase",
             "rhythm_notes": "равномерно",
         }
+    if role == "shots":
+        return {
+            "shots": [
+                {"i": 1, "what": "кот на крыше", "framing": "medium", "camera": "static", "subject_anim": "машет хвостом", "start_state": "сидит", "change": "поворачивает голову", "end_state": "смотрит в камеру", "transition_out": "cut", "transition_note": "по взгляду", "illustrates": "кот", "text_on_screen": None, "vfx": None},
+                {"i": 2, "what": "улица сверху", "framing": "wide", "camera": "push_in", "subject_anim": "машины едут", "start_state": "общий план", "change": "наезд", "end_state": "крупнее", "transition_out": "none", "transition_note": None, "illustrates": None, "text_on_screen": None, "vfx": "motion blur"},
+            ],
+            "false_cuts": [],
+            "camera_vocab": {"static": 0.6, "push_in": 0.4},
+            "subject_motion": "лёгкий параллакс",
+            "transitions": {"cut": 1.0},
+            "subtitles_enabled": True,
+            "subtitles_mode": "line",
+            "subtitles_position": "lower_third",
+            "subtitles_style": "bold white, 3 words",
+            "end_card": False,
+            "vo_cut_sync": "per_phrase",
+            "rhythm_notes": "равномерно",
+            "shot_construction": "состояние → одно изменение → состояние",
+        }
     if role == "narrative":
         return {
             "structure": "hook → body → payoff",
             "hook_type": "question",
-            "segments": ["hook 10%", "body 70%", "payoff 20%"],
+            "segments": [
+                {"name": "hook", "start": 0.0, "end": 3.0, "share": 0.1, "function": "вопрос", "quote": "это короткий"},
+                {"name": "payoff", "start": 3.0, "end": 10.0, "share": 0.9, "function": "вывод", "quote": "а теперь вывод"},
+            ],
+            "beats_per_sec": 0.9,
+            "sentence_templates": ["«Если {условие}, то {последствие}»"],
+            "rhetoric_devices": [{"name": "повтор", "description": "повтор ключевой фразы", "frequency": 2, "examples": ["[0.3] это короткий"]}],
+            "example_hook": "[0.3] это короткий тестовый ролик",
+            "example_payoff": "[2.9] а теперь вывод",
+            "address": "second_person",
             "forbidden_phrases_seed": ["в современном мире", "давайте разберёмся"],
             "tone_notes": "дружелюбно",
+        }
+    if role == "patterns":
+        return {
+            "patterns": [
+                {"name": "jump_zoom", "kind": "camera", "description": "резкий наезд на ключевом слове", "frequency": 3, "examples": ["0:02", "0:05"], "how_to_reproduce": "scale 1.0→1.15 за 2 кадра"},
+            ],
+            "peculiarities": ["субтитры по 3 слова", "каждая фраза = новый план"],
+            "visual_illustrates_noun_ratio": 0.7,
+            "linkage_notes": "картинка следует за существительным",
+            "timing_notes": "склейка через +40 мс после начала фразы",
+        }
+    if role == "blueprint":
+        return {
+            "chain": [{"type": "script", "new": False, "role": "сценарий", "inputs": ["topic"], "outputs": ["script"], "prompt_hint": "3 слова на фразу", "params": {"target_duration_s": 60}}],
+            "prompt_templates": {"script_writer": "Пиши короткими фразами {topic}", "image_prompt": "2D flat vector {shot}"},
+            "new_nodes_needed": ["shot_plan — нарезка на планы"],
+            "notes": ["jump_zoom делать на монтаже"],
         }
     return {
         "label": "Тёплые коты",
@@ -186,12 +231,34 @@ def test_validate_agent_reply_reports_bad_types() -> None:
 
 def test_validate_passport_structure() -> None:
     p = schema.empty_passport("ok_id", "x")
+    assert p["$schema"] == schema.PASSPORT_SCHEMA == "style_passport/v2"
     assert schema.validate_passport(p) == []
     p["visual"]["medium"] = "raw string"
     p["style_id"] = "Bad Id!"
+    p["patterns"] = "not a list"
     problems = schema.validate_passport(p)
     assert any("style_id" in x for x in problems)
     assert any("visual.medium" in x for x in problems)
+    assert any("patterns" in x for x in problems)
+    # паспорт v1 (без новых секций) по-прежнему принимается
+    v1 = schema.empty_passport("old_id", "x")
+    for k in ("videos", "linkage", "script", "patterns", "peculiarities", "blueprint"):
+        v1.pop(k, None)
+    v1["$schema"] = schema.PASSPORT_SCHEMA_V1
+    assert schema.validate_passport(v1) == []
+    v1["$schema"] = "style_passport/v9"
+    assert any("schema" in x for x in schema.validate_passport(v1))
+
+
+def test_validate_agent_reply_v2_objlists() -> None:
+    clean, problems = schema.validate_agent_reply("shots", {**_agent_reply("shots"), "false_cuts": ["1.5", 2, "x"]})
+    assert not problems
+    assert clean["false_cuts"] == [1.5, 2.0]
+    assert clean["shots"][0]["i"] == 1 and clean["shots"][0]["framing"] == "medium"
+    clean, _ = schema.validate_agent_reply("narrative", _agent_reply("narrative"))
+    assert clean["segments"][0]["name"] == "hook" and clean["beats_per_sec"] == pytest.approx(0.9)
+    clean, _ = schema.validate_agent_reply("blueprint", _agent_reply("blueprint"))
+    assert clean["chain"][0]["type"] == "script" and "script_writer" in clean["prompt_templates"]
 
 
 # ── budget ─────────────────────────────────────────────────────────────────
@@ -214,10 +281,15 @@ def test_plan_calls_fits_and_shortfall() -> None:
     assert ok["fits"] is True
     assert ok["videos_covered"] == 2
     assert ok["planned_total"] <= 12
-    short = budget.plan_calls(n_videos=3, sheets_per_video=4, max_calls=5)
+    assert ok["global_agents"] == ["synth", "blueprint"]
+    # 2 ролика × 5 специалистов + synth + blueprint = 12 — лимит по умолчанию покрывает минимум
+    assert ok["minimal_total"] == 12 == budget.DEFAULT_MAX_LLM_CALLS
+    short = budget.plan_calls(n_videos=3, sheets_per_video=4, max_calls=7)
     assert short["fits"] is False
     assert short["videos_covered"] == 1
     assert short["skip_plan"]
+    no_bp = budget.plan_calls(n_videos=1, sheets_per_video=4, max_calls=8, with_blueprint=False)
+    assert no_bp["global_agents"] == ["synth"] and no_bp["minimal_total"] == 6
     none = budget.plan_calls(n_videos=0, sheets_per_video=4, max_calls=5)
     assert none["planned_total"] == 0 and "нет роликов" in none["hint"]
 
@@ -266,14 +338,25 @@ def _video_entry(name: str, *, dur: float, pace: float, medium: str = "2d_flat_v
             "format": {"duration_s": dur, "fps": 25.0, "aspect": "9:16", "resolution": "720p"},
             "speech": {"pace_wpm": pace, "chars_per_sec": 14.0, "speech_ratio": 0.9, "pause_median_s": 0.3, "pause_p90_s": 0.8},
             "music": {"present": True, "loudness_lufs": -30.0, "level_vs_voice_db": -14.0},
-            "motion": {"shot_len_s": 2.5, "shot_len_p10_s": 1.0, "shot_len_p90_s": 4.0, "static_ratio": 0.6, "cuts_per_min": 20.0},
+            "motion": {"shot_len_s": 2.5, "shot_len_p10_s": 1.0, "shot_len_p90_s": 4.0, "static_ratio": 0.6, "cuts_per_min": 20.0, "shots": 2, "transitions_measured": {"cut": 1.0}},
             "palette": {"palette_hex": ["#112233", "#AABBCC"], "saturation": "medium", "contrast": "high"},
+            "linkage": {
+                "lines": [{"i": 1, "start": 0.3, "end": 2.0, "text": "это короткий тестовый", "shot_ids": [1]}],
+                "shots": [{"i": 1, "start": 0.0, "end": 2.0, "line_ids": [1], "text": "это короткий тестовый"}],
+                "stats": {"lines": 1, "shots": 2, "cuts": 1, "cut_on_phrase_ratio": 0.7, "phrase_starts_new_shot_ratio": 0.6, "cut_offset_ms_median": 40, "cut_offset_ms_abs_median": 60, "lines_per_shot_median": 2, "words_per_line_median": 3, "line_len_s_median": 1.1, "pattern": "each_phrase_new_shot"},
+            },
+            "script": {"beats_per_sec": 0.95, "sentences_per_min": 11, "words_per_sentence_median": 8, "words_per_sentence_max": 14, "sentence_len_s_median": 2.8, "hook_text": "это короткий тестовый ролик", "tail_silence_s": 0.4, "speech_starts_at_s": 0.3},
         },
+        "shots_final": [
+            {"i": 1, "start": 0.0, "end": 2.0, "len": 2.0, "transition_in": "start", "what": "кот на крыше", "framing": "medium", "camera": "static", "vo_text": "это короткий тестовый"},
+            {"i": 2, "start": 2.0, "end": dur, "len": dur - 2.0, "transition_in": "hard", "what": "улица сверху", "framing": "wide", "camera": "push_in", "vo_text": "ролик про стиль"},
+        ],
         "agents": {
             "visual": {**_agent_reply("visual"), "medium": medium},
             "voice": _agent_reply("voice"),
-            "motion": _agent_reply("motion"),
+            "shots": _agent_reply("shots"),
             "narrative": _agent_reply("narrative"),
+            "patterns": _agent_reply("patterns"),
         },
     }
 
@@ -291,6 +374,16 @@ def test_build_passport_three_videos_stable() -> None:
     assert schema.passport_value(p, "narrative.forbidden_phrases_seed") == ["в современном мире", "давайте разберёмся"]
     report = aggregate.variance_report(p)
     assert "Устойчиво (high)" in report
+    # v2: связка, сценарий, приёмы, разбор по роликам
+    assert schema.passport_value(p, "linkage.cut_on_phrase_ratio") == pytest.approx(0.7)
+    assert schema.passport_value(p, "linkage.pattern") == "each_phrase_new_shot"
+    assert schema.passport_value(p, "linkage.visual_illustrates_noun_ratio") == pytest.approx(0.7)
+    assert schema.passport_value(p, "script.beats_per_sec") == pytest.approx(0.95)
+    assert schema.passport_value(p, "narrative.beats_per_sec") == pytest.approx(0.9)
+    assert schema.passport_value(p, "narrative.segments")[0]["name"] == "hook"
+    assert len(p["videos"]) == 3 and p["videos"][0]["shots"][0]["what"] == "кот на крыше"
+    assert p["patterns"] and p["patterns"][0]["name"] == "jump_zoom" and p["patterns"][0]["support"] == "3/3"
+    assert "субтитры по 3 слова" in p["peculiarities"]
 
 
 def test_build_passport_single_video_all_low_and_conflict_low() -> None:
@@ -319,17 +412,76 @@ def test_fallback_mapping_without_llm() -> None:
 @pytest.mark.skipif(not _ffmpeg_ok(), reason="ffmpeg/ffprobe не установлены")
 def test_analyze_video_synthetic(tmp_path: Path) -> None:
     video = _make_video(tmp_path / "clip.mp4")
-    profile = extract.analyze_video(video, tmp_path / "an", max_sheets=2, asr_fn=_fake_words)
+    profile = extract.analyze_video(video, tmp_path / "an", max_sheets=2, asr_fn=_fake_words, skip_ocr=True)
     fmt = profile["format"]
     assert fmt["aspect"] == "9:16" and 3.5 <= fmt["duration_s"] <= 4.5
-    assert profile["motion"]["shots"] >= 2  # склейка red→blue найдена
+    assert profile["motion"]["shots"] == 2  # ровно одна склейка red→blue
+    assert 1.8 <= profile["cuts"][0]["t"] <= 2.2 and profile["cuts"][0]["kind"] == "hard"
     assert profile["sheets"]["overview"] and Path(profile["sheets"]["overview"][0]).is_file()
-    assert profile["sheets"]["motion"] and Path(profile["sheets"]["motion"][0]).is_file()
+    assert profile["sheets"]["shots"] and Path(profile["sheets"]["shots"][0]).is_file()
+    assert profile["sheets"]["cuts"] and Path(profile["sheets"]["cuts"][0]).is_file()
+    assert profile["sheets"]["motion"] == profile["sheets"]["shots"]  # совместимость v1
+    tl = profile["timeline"]
+    assert tl["rate_fps"] == pytest.approx(2.0) and tl["frames"] >= 10 and tl["frames_per_min"] == 120
+    tl_dir = tmp_path / "an" / "timeline"
+    assert len(list(tl_dir.glob("tl_*.jpg"))) >= 7  # 4 с × 2 fps
+    assert list(tl_dir.glob("hk_*.jpg"))  # хук плотнее
+    assert len(list(tl_dir.glob("cut_*_before.jpg"))) == 1 and len(list(tl_dir.glob("cut_*_after.jpg"))) == 1
     assert profile["palette"]["palette_hex"]
     assert profile["speech"]["words"] == 9 and profile["speech"]["pace_wpm"] > 0
-    assert (tmp_path / "an" / "metrics.json").is_file()
-    assert (tmp_path / "an" / "words.json").is_file()
-    assert (tmp_path / "an" / "voice.wav").is_file()
+    assert profile["speech"]["transcript_source"] == "asr" and profile["subtitles"] == []
+    assert profile["linkage"]["stats"]["shots"] == 2 and profile["script"]["beats_per_sec"] is None  # субтитров нет
+    for name in ("metrics.json", "words.json", "voice.wav", "cuts.json", "shots.json", "scene_scores.json", "linkage.json", "subtitles.json"):
+        assert (tmp_path / "an" / name).is_file(), name
+
+
+@pytest.mark.skipif(not _ffmpeg_ok(), reason="ffmpeg/ffprobe не установлены")
+def test_analyze_video_with_injected_ocr(tmp_path: Path) -> None:
+    """OCR-заглушка: субтитры становятся источником транскрипта вместо ASR."""
+    video = _make_video(tmp_path / "clip.mp4")
+    asr_calls: list[str] = []
+
+    def _asr(audio: Path, language: str):
+        asr_calls.append(language)
+        return _fake_words(audio, language)
+
+    def _ocr(frame: Path):
+        # Красная половина (0–2 с) → фраза 1, синяя → фраза 2, ещё одна в конце
+        t = _frame_time(frame)
+        if t is None:
+            return []
+        if t < 1.9:
+            return [("the first line", 0.98, 0.9, 0.5)]
+        if t < 3.0:
+            return [("second line here", 0.97, 0.9, 0.5)]
+        return [("and the end", 0.99, 0.9, 0.5)]
+
+    profile = extract.analyze_video(video, tmp_path / "an", max_sheets=1, asr_fn=_asr, ocr_fn=_ocr)
+    assert asr_calls == []  # субтитров ≥ 3 строк → ASR не нужен
+    assert profile["speech"]["transcript_source"] == "subtitles"
+    texts = [s["text"] for s in profile["subtitles"]]
+    assert texts == ["the first line", "second line here", "and the end"]
+    assert profile["subtitles_info"]["backend"] == "injected" and profile["subtitles_info"]["lines"] == 3
+    link = profile["linkage"]
+    assert link["stats"]["lines"] == 3 and link["lines"][0]["shot_ids"] == [1]
+    assert profile["script"]["hook_text"].startswith("the first line")
+    assert (tmp_path / "an" / "ocr_raw.json").is_file()
+
+
+def _frame_time(frame: Path) -> float | None:
+    """Время кадра из имени файла выборки (tl_NNNNN / hk_NNNNN / cut_<ms>_*)."""
+    import re
+
+    m = re.match(r"tl_(\d+)", frame.stem)
+    if m:
+        return (int(m.group(1)) - 1) / extract.DEFAULT_FRAMES_PER_MIN * 60
+    m = re.match(r"hk_(\d+)", frame.stem)
+    if m:
+        return (int(m.group(1)) - 1) / (extract.DEFAULT_FRAMES_PER_MIN * extract.HOOK_DENSITY) * 60
+    m = re.match(r"cut_(\d+)_(before|after)", frame.stem)
+    if m:
+        return int(m.group(1)) / 1000 + (-extract.CUT_PAD_S if m.group(2) == "before" else extract.CUT_PAD_S)
+    return None
 
 
 def test_speech_metrics_and_shot_metrics_pure() -> None:
@@ -343,15 +495,124 @@ def test_speech_metrics_and_shot_metrics_pure() -> None:
     assert extract.resolution_label(1920, 1080) == "1080p"
 
 
-def test_detect_shots_parses_ffmpeg_output(monkeypatch) -> None:
-    class _P:
-        returncode = 0
-        stdout = ""
-        stderr = "[Parsed_showinfo] n:0 pts_time:2.04 ... \n[Parsed_showinfo] n:1 pts_time:5.5\n"
+def _scores(duration: float, fps: float, spikes: dict[float, float], noise: float = 0.004) -> list[tuple[float, float]]:
+    out = []
+    n = int(duration * fps)
+    for i in range(n):
+        t = round(i / fps, 4)
+        s = noise * (1 + (i % 3) * 0.3)
+        for st, sv in spikes.items():
+            if abs(t - st) < 0.5 / fps:
+                s = sv
+        out.append((t, s))
+    return out
 
-    monkeypatch.setattr(extract, "run_cmd", lambda cmd, timeout=0: _P())
-    shots = extract.detect_shots(Path("v.mp4"), 8.0)
-    assert [s["start"] for s in shots] == [0.0, 2.04, 5.5]
+
+def test_detect_cuts_adaptive_and_subtitle_cues() -> None:
+    # жёсткие склейки 2.0 и 5.0, слабый кандидат 7.0 (score 0.03) — принимается только рядом со сменой субтитра
+    sc = _scores(10.0, 30.0, {2.0: 0.4, 5.0: 0.09, 7.0: 0.03})
+    cuts = extract.detect_cuts(sc, 10.0)
+    assert [c["t"] for c in cuts] == [2.0, 5.0]
+    assert all(c["kind"] == "hard" for c in cuts)
+    with_cue = extract.detect_cuts(sc, 10.0, cue_times=[7.1])
+    assert [c["t"] for c in with_cue] == [2.0, 5.0, 7.0]
+    assert with_cue[-1]["kind"] == "cue" and with_cue[-1]["subtitle_cue"] is True
+    far_cue = extract.detect_cuts(sc, 10.0, cue_times=[8.5])
+    assert [c["t"] for c in far_cue] == [2.0, 5.0]
+    # плавный переход: серия высоких значений ≥ 0.25 с → одна склейка kind=gradual
+    grad = {round(4.0 + k / 30.0, 4): 0.08 + 0.01 * (k == 5) for k in range(12)}
+    g = extract.detect_cuts(_scores(10.0, 30.0, grad), 10.0)
+    assert len(g) == 1 and g[0]["kind"] == "gradual" and g[0]["span"] >= 0.25
+    # пустой/короткий вход
+    assert extract.detect_cuts([], 10.0) == []
+    shots = extract.shots_from_cuts(with_cue, 10.0)
+    assert [s["start"] for s in shots] == [0.0, 2.0, 5.0, 7.0] and shots[-1]["end"] == 10.0
+    assert shots[1]["transition_in"] == "hard" and shots[3]["transition_in"] == "cue" and shots[3]["subtitle_cue"] is True
+
+
+def test_parse_scene_scores() -> None:
+    text = (
+        "frame:0 pts:0 pts_time:0\nlavfi.scene_score=0.000000\n"
+        "frame:1 pts:1 pts_time:0.0333\nlavfi.scene_score=0.012000\n"
+        "frame:2 pts:2 pts_time:0.0667\nlavfi.scene_score=0.450000\n"
+    )
+    sc = extract.parse_scene_scores(text)
+    assert sc == [(0.0, 0.0), (0.0333, 0.012), (0.0667, 0.45)]
+
+
+def test_apply_false_cuts_merges_shots() -> None:
+    shots = extract.shots_from_cuts([{"t": 2.0, "kind": "hard"}, {"t": 2.6, "kind": "hard"}, {"t": 6.0, "kind": "hard"}], 10.0)
+    merged = agents.apply_false_cuts(shots, [2.55])
+    assert [s["start"] for s in merged] == [0.0, 2.0, 6.0]
+    assert merged[1]["end"] == 6.0 and merged[1]["len"] == 4.0 and merged[1]["merged_from"] == [2, 3]
+    assert [s["i"] for s in merged] == [1, 2, 3] and merged[2]["orig_i"] == 4
+    desc = agents.merge_shot_descriptions(merged, {"shots": [{"i": 2, "what": "крупно крючок", "framing": "close"}, {"i": 4, "what": "рыба", "camera": "pan"}]})
+    assert desc[1]["what"] == "крупно крючок" and desc[2]["camera"] == "pan"
+    assert agents.apply_false_cuts(shots, None) is shots
+
+
+# ── OCR субтитров и связка с планами (чистые функции) ─────────────────────
+
+
+def _raw_ocr() -> list[dict[str, Any]]:
+    seq = [
+        (0.0, "ZACK D FILMS", 0.3),  # надпись не в полосе субтитров
+        (0.5, "he was alone", 0.9),
+        (1.0, "he was alone", 0.9),
+        (1.5, "he was a1one", 0.9),  # опечатка OCR → та же строка
+        (2.0, "at sea for", 0.9),
+        (2.5, "at sea for", 0.9),
+        (3.0, "", 0.9),
+        (3.5, "133 days", 0.9),
+    ]
+    return [{"t": t, "boxes": ([[txt, 0.97, cy, 0.5]] if txt else [])} for t, txt, cy in seq]
+
+
+def test_ocr_build_lines_and_words() -> None:
+    from app.services.style_agent import ocr
+
+    raw = _raw_ocr()
+    band = ocr.subtitle_band(raw)
+    assert band is not None and band[0] <= 0.9 <= band[1] and band[0] > 0.3
+    lines = ocr.build_lines(raw, band=band, frame_step_s=0.5)
+    assert [ln.text for ln in lines] == ["he was alone", "at sea for", "133 days"]
+    assert lines[0].start == pytest.approx(0.5) and lines[0].end >= 1.5
+    assert lines[1].end <= 3.0 + 0.5
+    words = ocr.lines_to_words(lines)
+    assert [w.word for w in words][:3] == ["he", "was", "alone"] and words[0].start == pytest.approx(0.5)
+    assert ocr.normalize_text("  he  | was  ") == "he I was"
+
+
+def test_linkage_and_script_metrics() -> None:
+    from app.services.style_agent import linkage
+
+    subs = [
+        {"start": 0.3, "end": 1.2, "text": "he was alone", "conf": 0.9},
+        {"start": 1.25, "end": 2.1, "text": "at sea for", "conf": 0.9},
+        {"start": 2.15, "end": 3.0, "text": "133 days.", "conf": 0.9},
+        {"start": 3.4, "end": 4.6, "text": "Then a shark came?", "conf": 0.9},
+    ]
+    shots = extract.shots_from_cuts([{"t": 1.3, "kind": "hard"}, {"t": 2.2, "kind": "hard"}, {"t": 3.45, "kind": "hard"}], 6.0)
+    link = linkage.link_subtitles_to_shots(subs, shots)
+    st = link["stats"]
+    assert st["lines"] == 4 and st["shots"] == 4 and st["cuts"] == 3
+    assert st["phrase_starts_new_shot_ratio"] == pytest.approx(1.0)  # первая фраза — с началом ролика, остальные — со склейкой
+    assert st["cut_on_phrase_ratio"] == pytest.approx(1.0)
+    assert 0 < st["cut_offset_ms_median"] <= 60
+    assert st["pattern"] == "each_phrase_new_shot"
+    assert link["lines"][0]["shot_ids"] == [1] and link["shots"][1]["line_ids"] == [2]
+    assert link["shots"][1]["text"] == "at sea for"
+    sents = linkage.sentences_from_lines(subs)
+    assert [s["text"] for s in sents] == ["he was alone at sea for 133 days.", "Then a shark came?"]
+    sm = linkage.script_metrics(subs, 6.0)
+    assert sm["sentences"] == 2 and sm["words_per_sentence_max"] == 8
+    assert sm["hook_text"].startswith("he was alone") and sm["speech_starts_at_s"] == pytest.approx(0.3)
+    assert sm["tail_silence_s"] == pytest.approx(1.4) and sm["beats_per_sec"] > 0
+    tt = linkage.timed_transcript(subs, link["shots"])
+    assert "(shot 1) he was alone" in tt and "(shot 2) at sea for" in tt
+    assert "2 | 1.30 | 2.20" in linkage.shots_table(shots, link)
+    empty = linkage.link_subtitles_to_shots([], shots)
+    assert empty["stats"]["lines"] == 0 and empty["stats"]["pattern"] == "unknown"
 
 
 # ── agents (LLM замокан) ───────────────────────────────────────────────────
@@ -394,14 +655,39 @@ def _fake_analyze(video: Path, out_dir: Path, **kw: Any) -> dict[str, Any]:
     sheets = out_dir / "sheets"
     sheets.mkdir(exist_ok=True)
     ov = sheets / "overview_01.jpg"
-    mo = sheets / "motion_01.jpg"
-    ov.write_bytes(b"jpg")
-    mo.write_bytes(b"jpg")
-    m = _video_entry(video.name, dur=60, pace=150)["metrics"]
+    sh = sheets / "shot_01.jpg"
+    cu = sheets / "cuts_01.jpg"
+    for fp in (ov, sh, cu):
+        fp.write_bytes(b"jpg")
+    entry = _video_entry(video.name, dur=60, pace=150)
+    m = entry["metrics"]
+    m["video"] = video.name
     m["speech"]["words"] = 9
     m["speech"]["transcript"] = "это тест"
-    m["sheets"] = {"overview": [str(ov)], "motion": [str(mo)], "keyframes": 6}
+    m["speech"]["transcript_source"] = "subtitles"
+    m["shots"] = [{k: v for k, v in s.items() if k in ("i", "start", "end", "len", "transition_in")} for s in entry["shots_final"]]
+    m["cuts"] = [{"t": 2.0, "score": 0.3, "z": 20.0, "kind": "hard", "span": 0.0, "subtitle_cue": True}]
+    m["subtitles"] = [{"start": 0.3, "end": 2.0, "text": "это короткий тестовый", "conf": 0.9}, {"start": 2.1, "end": 4.0, "text": "ролик про стиль", "conf": 0.9}]
+    m["sheets"] = {"overview": [str(ov)], "shots": [str(sh)], "cuts": [str(cu)], "motion": [str(sh)], "keyframes": 6}
     return m
+
+
+def test_sheets_for_role_and_user_text() -> None:
+    entry = _video_entry("a.mp4", dur=60, pace=150)
+    m = entry["metrics"]
+    m["sheets"] = {"overview": ["/x/overview_01.jpg"], "shots": ["/x/shot_01.jpg"], "cuts": ["/x/cuts_01.jpg"], "motion": ["/x/shot_01.jpg"]}
+    assert [p.name for p in agents.sheets_for_role("shots", m)] == ["shot_01.jpg", "cuts_01.jpg"]
+    assert [p.name for p in agents.sheets_for_role("visual", m)] == ["overview_01.jpg"]
+    assert [p.name for p in agents.sheets_for_role("patterns", m)] == ["shot_01.jpg"]
+    assert agents.sheets_for_role("voice", m) == []
+    m["subtitles"] = [{"start": 0.3, "end": 2.0, "text": "это короткий тестовый", "conf": 0.9}]
+    m["shots"] = entry["shots_final"]
+    txt = agents._user_text("shots", m, "a.mp4")
+    assert "(shot 1) это короткий тестовый" in txt and "transition_in" in txt and "анкету роли «shots»" in txt
+    txt = agents._user_text("patterns", m, "a.mp4", shots_reply=_agent_reply("shots"))
+    assert "кот на крыше" in txt
+    m["script"] = {"sentences_list": [{"i": 1, "start": 0.3, "end": 2.0, "text": "Это короткий тестовый."}]}
+    assert "1. [0.3–2.0] Это короткий тестовый." in agents._user_text("narrative", m, "a.mp4")
 
 
 def test_run_style_extract_end_to_end(monkeypatch, tmp_path: Path) -> None:
@@ -413,7 +699,7 @@ def test_run_style_extract_end_to_end(monkeypatch, tmp_path: Path) -> None:
         fp = tmp_path / f"ref{i}.mp4"
         fp.write_bytes(b"mp4")
         videos.append(fp)
-    b = budget.LlmBudget(13)
+    b = budget.LlmBudget(17)
     stages: list[str] = []
     res = asyncio.run(
         job.run_style_extract(
@@ -421,16 +707,29 @@ def test_run_style_extract_end_to_end(monkeypatch, tmp_path: Path) -> None:
         )
     )
     passport = res["passport"]
-    assert b.used == 13  # 4 специалиста × 3 ролика + synth
-    assert passport["llm"] == {"calls_used": 13, "calls_limit": 13, "model": "fake"}
+    assert b.used == 17  # 5 специалистов × 3 ролика + synth + blueprint
+    assert passport["llm"] == {"calls_used": 17, "calls_limit": 17, "model": "fake"}
+    labels = [c["label"].split(":", 1)[0] for c in fake.calls]
+    assert labels[:5] == ["shots", "visual", "voice", "narrative", "patterns"] and labels[-2:] == ["synth", "blueprint"]
+    assert fake.calls[0]["files"] == ["shot_01.jpg", "cuts_01.jpg"]  # shots видит шот-листы и пары склеек
     assert passport["style_id"] == "e2e" and passport["label"] == "Тёплые коты"
     assert passport["mapping"]["visual_core_en"].startswith("2D flat vector")
     assert schema.validate_passport(passport) == []
     assert schema.passport_confidence(passport, "visual.medium") == "high"
-    assert {"extract", "agent", "aggregate", "synth"} <= set(stages)
-    assert (tmp_path / "style" / "style_passport.draft.json").is_file()
-    assert (tmp_path / "style" / "variance_report.md").is_file()
-    assert (tmp_path / "style" / "analysis" / "ref0" / "q_visual.json").is_file()
+    assert {"extract", "agent", "aggregate", "synth", "blueprint", "report"} <= set(stages)
+    # v2-секции
+    assert len(passport["videos"]) == 3 and passport["videos"][0]["shots"][0]["what"] == "кот на крыше"
+    assert passport["videos"][0]["shots"][0]["vo_text"].startswith("это короткий")
+    assert passport["patterns"][0]["name"] == "jump_zoom" and passport["patterns"][0]["support"] == "3/3"
+    assert passport["blueprint"]["chain"] and passport["blueprint"]["prompt_templates"]["script_writer"]
+    assert passport["blueprint"]["source"] == "llm+default"
+    assert schema.passport_value(passport, "linkage.pattern") == "each_phrase_new_shot"
+    out = tmp_path / "style"
+    assert (out / "style_passport.draft.json").is_file()
+    assert (out / "variance_report.md").is_file()
+    report = (out / "style_report.md").read_text(encoding="utf-8")
+    assert res["report"] == report and "## 2. Разбор по роликам" in report and "jump_zoom" in report and "кот на крыше" in report
+    assert (out / "analysis" / "ref0" / "q_visual.json").is_file() and (out / "analysis" / "ref0" / "q_shots.json").is_file()
 
 
 def test_run_style_extract_budget_too_small_degrades(monkeypatch, tmp_path: Path) -> None:
@@ -464,6 +763,43 @@ def test_run_style_extract_skip_llm_makes_no_calls(monkeypatch, tmp_path: Path) 
     assert fake.calls == [] and b.used == 0
     assert res["passport"]["style_id"] == "only"
     assert res["passport"]["mapping"]  # fallback из метрик
+    # без LLM: blueprint и отчёт всё равно строятся из детерминированных метрик
+    bp = res["passport"]["blueprint"]
+    assert bp["source"] == "default" and [n["node_type"] for n in bp["chain"]][:3] == ["topic", "plan", "script"]
+    assert any(n.get("new") for n in bp["chain"]) and bp["new_nodes_needed"]
+    assert "script_writer" in bp["prompt_templates"] and "{topic}" in bp["prompt_templates"]["script_writer"]
+    assert res["passport"]["videos"][0]["shots"][0]["vo_text"]
+    assert "## 7. Blueprint" in res["report"] and "## 3. Связка закадра и картинки" in res["report"]
+
+
+# ── report / blueprint (чистые функции) ───────────────────────────────────
+
+
+def test_render_report_sections_and_blueprint_templates() -> None:
+    from app.services.style_agent import blueprint, report
+
+    p = aggregate.build_passport([_video_entry(f"v{i}.mp4", dur=60, pace=150) for i in range(2)], style_id="rep")
+    aggregate.apply_synth(p, _agent_reply("synth"))
+    p["blueprint"] = blueprint.build_blueprint(p, _agent_reply("blueprint"))
+    md = report.render_report(p)
+    for h in ("## 1. Сводка стиля", "## 2. Разбор по роликам", "## 3. Связка закадра и картинки", "## 4. Сценарий и повествование", "## 5. Повторяющиеся приёмы", "## 6. Особенности", "## 7. Blueprint", "## 8. Разброс"):
+        assert h in md, h
+    assert "v0.mp4" in md and "кот на крыше" in md and "00:00.0" in md
+    assert "jump_zoom" in md and "scale 1.0→1.15" in md
+    assert "«Если {условие}, то {последствие}»" in md and "second_person" in md
+    assert "Пиши короткими фразами {topic}" in md  # шаблон из ответа LLM
+    # blueprint: ответ LLM поверх дефолтной цепочки, шаблоны дополняются дефолтными
+    bp = p["blueprint"]
+    assert bp["source"] == "llm+default" and bp["prompt_templates"]["script_writer"] == "Пиши короткими фразами {topic}"
+    assert bp["prompt_templates"]["vo_tts"] and bp["prompt_templates"]["edit"]
+    assert "shot_plan — нарезка на планы" in bp["new_nodes_needed"]
+    tpl = blueprint.prompt_templates(p)
+    assert "3" in tpl["subtitles"]  # words_per_line_median из паспорта
+    assert "2D flat vector" in tpl["image_prompt"] and "{shot}" in tpl["image_prompt"]
+    assert any(n["node_type"] == "shot_plan" and n["new"] for n in blueprint.default_chain(p))
+    assert {"type", "role"} <= set(blueprint.node_catalog_for_prompt()[0]) and any(n.get("new") for n in blueprint.node_catalog_for_prompt())
+    # отчёт по пустому паспорту не падает
+    assert report.render_report(schema.empty_passport()).startswith("# Паспорт стиля")
 
 
 # ── materialize ────────────────────────────────────────────────────────────
@@ -707,6 +1043,11 @@ def test_style_agent_api_flow(api_client, monkeypatch, tmp_path: Path) -> None:
 
             r = await c.get(f"/api/projects/{pid}/style-agent/report")
             assert r.status_code == 200 and r.json()["apply_report"]["style_id"] == "warm_cats"
+            # style_report.md не записан job'ом → отчёт рендерится из паспорта на лету
+            assert "## 1. Сводка стиля" in r.json()["report"] and "warm_cats" in r.json()["report"]
+            r = await c.get(f"/api/projects/{pid}/style-agent/report?fmt=md")
+            assert r.status_code == 200 and r.headers["content-type"].startswith("text/markdown")
+            assert r.text.startswith("# Паспорт стиля")
 
             async with factory() as s:
                 p = await s.get(Project, pid)

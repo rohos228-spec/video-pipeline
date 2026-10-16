@@ -163,9 +163,25 @@ async def approve_style_passport(project_id: int, session: ProjectSession, paylo
 
 
 @router.get("/{project_id}/style-agent/report")
-async def get_style_report(project_id: int, session: ProjectSession) -> dict[str, Any]:
+async def get_style_report(project_id: int, session: ProjectSession, fmt: str = Query("json")) -> Any:
+    """Полный отчёт (Markdown): сводка, планы с таймкодами, связка VO↔картинка, сценарий, приёмы, blueprint.
+
+    ``?fmt=md`` — отдать как text/markdown (скачать/открыть в редакторе).
+    """
     project = _project_or_404(await session.get(Project, project_id))
     rp = sa_job.report_path(project)
+    report_md = rp.read_text(encoding="utf-8") if rp.is_file() else ""
+    if not report_md:
+        passport = sa_job.read_passport(project)
+        if passport:
+            from app.services.style_agent import report as sa_report
+
+            report_md = sa_report.render_report(passport)
+    if fmt == "md":
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse(report_md, media_type="text/markdown; charset=utf-8")
+    vp = sa_job.style_dir(project) / "variance_report.md"
     ap = sa_job.style_dir(project) / "apply_report.json"
     apply_report: Any = None
     if ap.is_file():
@@ -175,7 +191,11 @@ async def get_style_report(project_id: int, session: ProjectSession) -> dict[str
             apply_report = json.loads(ap.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             apply_report = None
-    return {"variance_report": rp.read_text(encoding="utf-8") if rp.is_file() else "", "apply_report": apply_report}
+    return {
+        "report": report_md,
+        "variance_report": vp.read_text(encoding="utf-8") if vp.is_file() else "",
+        "apply_report": apply_report,
+    }
 
 
 @router.get("/{project_id}/style-agent/sheet")

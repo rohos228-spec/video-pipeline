@@ -21,6 +21,8 @@ from loguru import logger
 
 from app.services.style_agent import META_KEY, STYLE_DIR_NAME, STYLE_EXTRACT_NODE_TYPE
 from app.services.style_agent import aggregate, agents, extract, schema
+from app.services.style_agent import blueprint as blueprint_mod
+from app.services.style_agent import report as report_mod
 from app.services.style_agent.budget import (
     DEFAULT_MAX_LLM_CALLS,
     PER_VIDEO_AGENTS,
@@ -40,11 +42,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "min_support": aggregate.DEFAULT_MIN_SUPPORT,
     "iqr_threshold": aggregate.DEFAULT_IQR_THRESHOLD,
     "max_sheets_per_video": extract.DEFAULT_MAX_SHEETS,
+    "frames_per_min": extract.DEFAULT_FRAMES_PER_MIN,
     "language": "ru",
     "style_id": "",
     "label": "",
     "skip_llm": False,
     "skip_asr": False,
+    "skip_ocr": False,
     "agents": list(PER_VIDEO_AGENTS),
 }
 
@@ -77,7 +81,7 @@ def approved_path(project: Any) -> Path:
 
 
 def report_path(project: Any) -> Path:
-    return style_dir(project) / "variance_report.md"
+    return style_dir(project) / "style_report.md"
 
 
 def llm_log_path(project: Any) -> Path:
@@ -173,10 +177,15 @@ def normalize_settings(patch: dict[str, Any]) -> dict[str, Any]:
                 continue
         elif key == "max_sheets_per_video":
             try:
-                out[key] = max(1, min(8, int(val)))
+                out[key] = max(1, min(12, int(val)))
             except (TypeError, ValueError):
                 continue
-        elif key in ("skip_llm", "skip_asr"):
+        elif key == "frames_per_min":
+            try:
+                out[key] = max(30, min(600, int(val)))
+            except (TypeError, ValueError):
+                continue
+        elif key in ("skip_llm", "skip_asr", "skip_ocr"):
             out[key] = bool(val)
         elif key == "agents":
             if isinstance(val, list):
@@ -241,6 +250,7 @@ def estimate(project: Any, node_key: str | None = None, overrides: dict[str, Any
         max_calls=int(st["max_llm_calls"]),
         agents=tuple(st["agents"]),
         with_synth=True,
+        with_blueprint=True,
     )
     if st.get("skip_llm"):
         plan = {
@@ -248,7 +258,9 @@ def estimate(project: Any, node_key: str | None = None, overrides: dict[str, Any
             "per_video": {k: 0 for k in (plan.get("per_video") or {})},
             "planned_total": 0,
             "with_synth": False,
-            "hint": "LLM отключён — только метрики",
+            "with_blueprint": False,
+            "global_agents": [],
+            "hint": "LLM отключён — только метрики, детерминированный blueprint",
         }
     model = resolve_model(project, node_key)
     cost = estimate_cost(plan, model=model, model_id=(model or {}).get("id"))
@@ -335,11 +347,18 @@ async def run_style_extract(
     project_id: int | None = None,
     model_id: str = "",
     asr_fn: extract.AsrFn | None = None,
+    ocr_fn: Any = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     prompts_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Ролики → паспорт-черновик. Возвращает {passport, per_video, report, budget}."""
+    """Ролики → паспорт-черновик v2 + отчёт. Возвращает {passport, per_video, report, budget, plan}.
+
+    Порядок по ролику: детерминированное извлечение → ``shots`` (vision:
+    планы + подтверждение склеек → слияние ложных) → ``visual`` → ``voice`` →
+    ``narrative`` → ``patterns`` (видит разбор shots). Затем агрегация →
+    ``synth`` (блоки промптов) → ``blueprint`` (цепочка нод) → отчёт.
+    """
 
     def _p(**kw: Any) -> None:
         if progress:
@@ -358,6 +377,7 @@ async def run_style_extract(
         max_calls=budget.max_calls,
         agents=enabled_agents,
         with_synth=True,
+        with_blueprint=True,
     )
     videos_covered = int(plan.get("videos_covered") or 0) if not skip_llm else 0
     per_video_alloc = plan.get("per_video") or {}
@@ -377,29 +397,27 @@ async def run_style_extract(
                 language=str(settings.get("language") or "ru"),
                 asr_fn=asr_fn,
                 skip_asr=bool(settings.get("skip_asr")),
+                ocr_fn=ocr_fn,
+                skip_ocr=bool(settings.get("skip_ocr")),
+                frames_per_min=int(settings.get("frames_per_min") or extract.DEFAULT_FRAMES_PER_MIN),
+                progress=lambda st, _v=video: _p(stage=f"extract:{st}", video=_v.name, index=idx, total=len(videos)),
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("style_extract: ролик {} не разобран", video.name)
             per_video.append({"video": video.name, "error": str(exc)[:400], "metrics": {}, "agents": {}})
             continue
         entry: dict[str, Any] = {"video": video.name, "metrics": profile, "agents": {}, "problems": {}}
+        shots_final = [dict(s) for s in profile.get("shots") or []]
         if not skip_llm and idx < videos_covered:
-            sheets_ov = [Path(p) for p in (profile.get("sheets") or {}).get("overview") or []]
-            sheets_mo = [Path(p) for p in (profile.get("sheets") or {}).get("motion") or []]
+            shots_reply: dict[str, Any] | None = None
             for role in enabled_agents:
                 if _stopped():
                     break
-                files: list[Path] | None
-                if role == "visual":
-                    files = sheets_ov or sheets_mo or None
-                elif role == "motion":
-                    files = sheets_mo or sheets_ov or None
-                else:
-                    files = None
-                    if not (profile.get("speech") or {}).get("words"):
-                        entry["problems"][role] = ["нет транскрипта — специалист пропущен"]
-                        continue
-                if role in ("visual", "motion") and not files:
+                files = agents.sheets_for_role(role, profile) or None
+                if role in ("voice", "narrative") and not (profile.get("speech") or {}).get("words"):
+                    entry["problems"][role] = ["нет транскрипта (ни субтитров, ни ASR) — специалист пропущен"]
+                    continue
+                if role in ("shots", "visual", "patterns") and not files:
                     entry["problems"][role] = ["нет листов кадров — специалист пропущен"]
                     continue
                 _p(stage="agent", video=video.name, agent=role, llm=budget.snapshot())
@@ -414,6 +432,7 @@ async def run_style_extract(
                         log_path=log_path,
                         prompts_dir=prompts_dir,
                         max_batches=int(per_video_alloc.get(role) or 1),
+                        shots_reply=shots_reply,
                     )
                 except BudgetExceeded as exc:
                     entry["problems"][role] = [str(exc)]
@@ -425,8 +444,24 @@ async def run_style_extract(
                 if res.get("reply"):
                     entry["agents"][role] = res["reply"]
                     (vdir / f"q_{role}.json").write_text(json.dumps(res["reply"], ensure_ascii=False, indent=2), encoding="utf-8")
+                    if role == "shots":
+                        shots_reply = res["reply"]
+                        shots_final = agents.apply_false_cuts(shots_final, shots_reply.get("false_cuts"))
+                        shots_final = agents.merge_shot_descriptions(shots_final, shots_reply)
                 if res.get("problems"):
                     entry["problems"][role] = res["problems"]
+        # закадр по планам (после возможного слияния ложных склеек)
+        from app.services.style_agent import linkage as linkage_mod
+
+        link2 = linkage_mod.link_subtitles_to_shots(profile.get("subtitles") or [], shots_final)
+        for s, ls in zip(shots_final, link2.get("shots") or []):
+            s["vo_text"] = ls.get("text") or ""
+            s["line_ids"] = ls.get("line_ids") or []
+        if shots_final != profile.get("shots"):
+            profile["linkage"] = link2
+            profile["motion"] = {**(profile.get("motion") or {}), **extract.shot_metrics(shots_final, float((profile.get("format") or {}).get("duration_s") or 0))}
+        entry["shots_final"] = shots_final
+        (vdir / "shots_final.json").write_text(json.dumps(shots_final, ensure_ascii=False, indent=1), encoding="utf-8")
         (vdir / "video_profile.json").write_text(
             json.dumps({k: v for k, v in entry.items() if k != "metrics"}, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -460,15 +495,34 @@ async def run_style_extract(
         passport["style_id"] = schema.slugify_style_id(passport.get("label") or (videos[0].stem if videos else "style"))
     if not passport.get("label"):
         passport["label"] = passport["style_id"]
+
+    bp_reply: dict[str, Any] | None = None
+    bp_problems: list[str] = []
+    if not skip_llm and good and budget.can_reserve() and not _stopped():
+        _p(stage="blueprint", llm=budget.snapshot())
+        try:
+            res = await agents.run_blueprint(passport, good, budget=budget, project_id=project_id, log_path=log_path, prompts_dir=prompts_dir)
+            bp_reply = res.get("reply")
+            bp_problems = list(res.get("problems") or [])
+        except BudgetExceeded as exc:
+            bp_problems = [str(exc)]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("style_extract: blueprint упал: {}", exc)
+            bp_problems = [str(exc)[:300]]
+    passport["blueprint"] = blueprint_mod.build_blueprint(passport, bp_reply)
+
     passport["llm"] = {"calls_used": budget.used, "calls_limit": budget.max_calls, "model": model_id}
     passport["errors"] = {
         "videos": [{"video": v["video"], "error": v["error"]} for v in per_video if v.get("error")],
         "synth": synth_problems,
+        "blueprint": bp_problems,
         "stopped": _stopped(),
     }
-    report = aggregate.variance_report(passport)
+    _p(stage="report", llm=budget.snapshot())
+    report = report_mod.render_report(passport)
     (out_root / "style_passport.draft.json").write_text(json.dumps(passport, ensure_ascii=False, indent=2), encoding="utf-8")
-    (out_root / "variance_report.md").write_text(report, encoding="utf-8")
+    (out_root / "style_report.md").write_text(report, encoding="utf-8")
+    (out_root / "variance_report.md").write_text(aggregate.variance_report(passport), encoding="utf-8")
     return {"passport": passport, "per_video": per_video, "report": report, "budget": budget.snapshot(), "plan": plan}
 
 
