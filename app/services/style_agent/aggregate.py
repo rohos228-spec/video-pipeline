@@ -44,8 +44,37 @@ _METRIC_SOURCES: dict[str, str] = {
     "motion.shot_len_p90_s": "metrics.motion.shot_len_p90_s",
     "motion.static_ratio": "metrics.motion.static_ratio",
     "motion.cuts_per_min": "metrics.motion.cuts_per_min",
+    "motion.shot_len_min_s": "metrics.motion.shot_len_min_s",
+    "motion.shot_len_max_s": "metrics.motion.shot_len_max_s",
+    "motion.hook_shots_first_5s": "metrics.motion.hook_shots_first_5s",
+    # v2: связка закадра и планов (детерминированно)
+    "linkage.cut_on_phrase_ratio": "metrics.linkage.stats.cut_on_phrase_ratio",
+    "linkage.phrase_starts_new_shot_ratio": "metrics.linkage.stats.phrase_starts_new_shot_ratio",
+    "linkage.cut_offset_ms_median": "metrics.linkage.stats.cut_offset_ms_median",
+    "linkage.cut_offset_ms_abs_median": "metrics.linkage.stats.cut_offset_ms_abs_median",
+    "linkage.lines_per_shot_median": "metrics.linkage.stats.lines_per_shot_median",
+    "linkage.words_per_line_median": "metrics.linkage.stats.words_per_line_median",
+    "linkage.line_len_s_median": "metrics.linkage.stats.line_len_s_median",
+    "linkage.pattern": "metrics.linkage.stats.pattern",
+    "linkage.visual_illustrates_noun_ratio": "agents.patterns.visual_illustrates_noun_ratio",
+    # v2: метрики сценария (детерминированно)
+    "script.beats_per_sec": "metrics.script.beats_per_sec",
+    "script.sentences_per_min": "metrics.script.sentences_per_min",
+    "script.words_per_sentence_median": "metrics.script.words_per_sentence_median",
+    "script.words_per_sentence_max": "metrics.script.words_per_sentence_max",
+    "script.sentence_len_s_median": "metrics.script.sentence_len_s_median",
+    "script.tail_silence_s": "metrics.script.tail_silence_s",
+    "script.speech_starts_at_s": "metrics.script.speech_starts_at_s",
+    "script.hook_text": "metrics.script.hook_text",
+    "script.transcript_source": "metrics.speech.transcript_source",
 }
-_AGENT_AXIS = {"visual": "visual", "voice": "voice", "motion": "motion", "narrative": "narrative"}
+V2_NUMERIC_PATHS: tuple[str, ...] = tuple(
+    p for p in _METRIC_SOURCES if p.startswith(("linkage.", "script.")) and p not in ("linkage.pattern", "script.hook_text", "script.transcript_source")
+) + ("motion.shot_len_min_s", "motion.shot_len_max_s", "motion.hook_shots_first_5s")
+V2_CATEGORICAL_PATHS: tuple[str, ...] = ("linkage.pattern", "script.transcript_source")
+V2_TEXT_PATHS: tuple[str, ...] = ("script.hook_text",)
+# Поля оси motion берём у агента shots (v2), fallback — старый агент motion.
+_AGENT_AXIS = {"visual": "visual", "voice": "voice", "shots": "motion", "motion": "motion", "narrative": "narrative"}
 # Поля специалиста voice, которые живут в оси music/sfx паспорта.
 _VOICE_REMAP = {
     "music_genre": "music.genre",
@@ -267,19 +296,62 @@ def _percentile(values: list[float], pct: float) -> float:
 # ── главный вход ──────────────────────────────────────────────────────────
 
 
-def _agent_sources(path: str) -> str | None:
+def _agent_sources(path: str) -> list[str]:
     axis, key = path.split(".", 1)
-    for agent, ax in _AGENT_AXIS.items():
-        if ax == axis:
-            return f"agents.{agent}.{key}"
+    out = [f"agents.{agent}.{key}" for agent, ax in _AGENT_AXIS.items() if ax == axis]
     for vkey, ppath in _VOICE_REMAP.items():
         if ppath == path:
-            return f"agents.voice.{vkey}"
-    return None
+            out.append(f"agents.voice.{vkey}")
+    return out
 
 
 def _source_for(path: str) -> str | None:
-    return _METRIC_SOURCES.get(path) or _agent_sources(path)
+    """Первый источник (совместимость); полный список — ``_sources_for``."""
+    srcs = _sources_for(path)
+    return srcs[0] if srcs else None
+
+
+def _sources_for(path: str) -> list[str]:
+    m = _METRIC_SOURCES.get(path)
+    return ([m] if m else []) + _agent_sources(path)
+
+
+def _values_multi(videos: list[dict[str, Any]], sources: list[str]) -> list[Any]:
+    """По одному значению на ролик: первый непустой источник из списка."""
+    out = []
+    for v in videos:
+        for src in sources:
+            val = get_path(v, src)
+            if val not in (None, "", [], {}):
+                out.append(val)
+                break
+    return out
+
+
+def aggregate_objlist(values: list[list[dict[str, Any]]], n_total: int, *, key: str = "name") -> dict[str, Any] | None:
+    """Списки объектов → объединение по ключу (``name``) с подсчётом роликов."""
+    lists = [[x for x in v if isinstance(x, dict)] for v in values if isinstance(v, list)]
+    lists = [lst for lst in lists if lst]
+    if not lists:
+        return None
+    merged: dict[str, dict[str, Any]] = {}
+    for lst in lists:
+        seen: set[str] = set()
+        for item in lst:
+            k = str(item.get(key) or item.get("i") or "").strip().lower()
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            cur = merged.get(k)
+            if cur is None:
+                merged[k] = {**item, "videos": 1}
+            else:
+                cur["videos"] = int(cur.get("videos", 1)) + 1
+                for kk, vv in item.items():
+                    if kk not in cur or cur[kk] in (None, "", []):
+                        cur[kk] = vv
+    items = sorted(merged.values(), key=lambda x: -int(x.get("videos", 1)))
+    return field(items[:30], confidence="medium" if len(lists) >= 2 else "low", support=_support(len(lists), n_total))
 
 
 def build_passport(
@@ -300,28 +372,39 @@ def build_passport(
         "min_support_for_stable": min_support,
         "numeric_iqr_threshold": iqr_threshold,
     }
-    for path in schema.NUMERIC_PATHS:
-        src = _source_for(path)
-        if src:
-            agg = aggregate_numeric(_values(videos, src), n, iqr_threshold=iqr_threshold)
+    for path in (*schema.NUMERIC_PATHS, *V2_NUMERIC_PATHS):
+        srcs = _sources_for(path)
+        if srcs:
+            agg = aggregate_numeric(_values_multi(videos, srcs), n, iqr_threshold=iqr_threshold)
             if agg:
                 set_path(passport, path, agg)
-    for path in schema.CATEGORICAL_PATHS:
-        src = _source_for(path)
-        if src:
-            agg = aggregate_categorical(_values(videos, src), n, min_support=min_support)
+    for path in (*schema.CATEGORICAL_PATHS, *V2_CATEGORICAL_PATHS):
+        srcs = _sources_for(path)
+        if srcs:
+            agg = aggregate_categorical(_values_multi(videos, srcs), n, min_support=min_support)
             if agg:
                 set_path(passport, path, agg)
     for path in schema.DIST_PATHS:
-        src = _source_for(path)
-        if src:
-            agg = aggregate_dist(_values(videos, src), n)
+        srcs = _sources_for(path)
+        if srcs:
+            agg = aggregate_dist(_values_multi(videos, srcs), n)
             if agg:
                 set_path(passport, path, agg)
+    if get_path(passport, "motion.transitions") is None:
+        agg = aggregate_dist(_values(videos, "metrics.motion.transitions_measured"), n)
+        if agg:
+            agg["note"] = "измерено детектором (cut/gradual), агент не уточнил"
+            set_path(passport, "motion.transitions", agg)
     for path in schema.LIST_PATHS:
-        src = _source_for(path)
-        if src:
-            agg = aggregate_list(_values(videos, src), n)
+        srcs = _sources_for(path)
+        if srcs:
+            agg = aggregate_list(_values_multi(videos, srcs), n)
+            if agg:
+                set_path(passport, path, agg)
+    for path in schema.OBJLIST_PATHS:
+        srcs = _sources_for(path)
+        if srcs:
+            agg = aggregate_objlist(_values_multi(videos, srcs), n)
             if agg:
                 set_path(passport, path, agg)
     for path in ("music.genre", "music.role", "sfx.density"):
@@ -333,10 +416,10 @@ def build_passport(
     agg = aggregate_list(_values(videos, "agents.voice.sfx_kinds"), n)
     if agg:
         set_path(passport, "sfx.kinds", agg)
-    for path in schema.TEXT_PATHS:
-        src = _source_for(path)
-        if src:
-            agg = aggregate_text(_values(videos, src), n)
+    for path in (*schema.TEXT_PATHS, *V2_TEXT_PATHS):
+        srcs = _sources_for(path)
+        if srcs:
+            agg = aggregate_text(_values_multi(videos, srcs), n)
             if agg:
                 set_path(passport, path, agg)
     pal = aggregate_palette(videos, n)
@@ -348,7 +431,113 @@ def build_passport(
             agg = aggregate_categorical(_values(videos, f"metrics.palette.{key}"), n, min_support=min_support)
             if agg:
                 set_path(passport, f"visual.{key}", agg)
+    passport["videos"] = [video_section(v) for v in videos]
+    passport["patterns"] = aggregate_patterns(videos)
+    passport["peculiarities"] = aggregate_peculiarities(videos, passport)
     return passport
+
+
+# ── v2: по-роликовые секции, приёмы, особенности ──────────────────────────
+
+
+def video_section(v: dict[str, Any]) -> dict[str, Any]:
+    """Секция ``videos[]`` паспорта: планы с описаниями, субтитры, связка, сценарий, ответы агентов."""
+    m = v.get("metrics") or {}
+    ag = v.get("agents") or {}
+    shots = v.get("shots_final") or m.get("shots") or []
+    script = dict(m.get("script") or {})
+    sents = script.pop("sentences_list", None)
+    return {
+        "video": v.get("video"),
+        "duration_s": (m.get("format") or {}).get("duration_s"),
+        "transcript_source": (m.get("speech") or {}).get("transcript_source"),
+        "shots": shots,
+        "subtitles": m.get("subtitles") or [],
+        "sentences": sents or [],
+        "linkage": (m.get("linkage") or {}).get("stats") or {},
+        "linkage_lines": (m.get("linkage") or {}).get("lines") or [],
+        "script": script,
+        "motion": m.get("motion") or {},
+        "narrative": ag.get("narrative"),
+        "patterns": ag.get("patterns"),
+        "shots_summary": {k: (ag.get("shots") or {}).get(k) for k in ("camera_vocab", "transitions", "subject_motion", "vo_cut_sync", "rhythm_notes", "shot_construction", "subtitles_style", "subtitles_mode", "subtitles_position")},
+        "sheets": m.get("sheets") or {},
+        "problems": v.get("problems") or {},
+    }
+
+
+def aggregate_patterns(videos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Приёмы из агентов patterns по роликам → объединение по имени; frequency/examples с указанием ролика."""
+    merged: dict[str, dict[str, Any]] = {}
+    for v in videos:
+        rep = (v.get("agents") or {}).get("patterns") or {}
+        vid = str(v.get("video") or "")
+        for p in rep.get("patterns") or []:
+            if not isinstance(p, dict) or not p.get("name"):
+                continue
+            k = str(p["name"]).strip().lower()
+            ex = p.get("examples") or []
+            ex_rows = [{"video": vid, "tc": str(e)} for e in (ex if isinstance(ex, list) else [ex])][:8]
+            cur = merged.get(k)
+            if cur is None:
+                merged[k] = {
+                    "name": str(p["name"]).strip(),
+                    "kind": str(p.get("kind") or "animation"),
+                    "description": str(p.get("description") or ""),
+                    "how_to_reproduce": str(p.get("how_to_reproduce") or ""),
+                    "signature": bool(p.get("signature")),
+                    "frequency": {vid: str(p.get("frequency") or "")},
+                    "examples": ex_rows,
+                    "videos": [vid],
+                }
+            else:
+                cur["videos"].append(vid)
+                cur["frequency"][vid] = str(p.get("frequency") or "")
+                cur["examples"].extend(ex_rows)
+                if not cur["description"] and p.get("description"):
+                    cur["description"] = str(p["description"])
+                if not cur["how_to_reproduce"] and p.get("how_to_reproduce"):
+                    cur["how_to_reproduce"] = str(p["how_to_reproduce"])
+                cur["signature"] = cur["signature"] or bool(p.get("signature"))
+    n = max(1, len(videos))
+    out = []
+    for p in merged.values():
+        k = len(set(p["videos"]))
+        p["support"] = f"{k}/{n}"
+        p["confidence"] = "high" if k >= 3 else ("medium" if k == 2 else "low")
+        p["examples"] = p["examples"][:12]
+        out.append(p)
+    out.sort(key=lambda p: (-len(set(p["videos"])), not p["signature"], p["name"]))
+    return out
+
+
+def aggregate_peculiarities(videos: list[dict[str, Any]], passport: dict[str, Any]) -> list[str]:
+    """Особенности стиля: от агентов + детерминированные находки."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in videos:
+        rep = (v.get("agents") or {}).get("patterns") or {}
+        for s in rep.get("peculiarities") or []:
+            key = str(s).strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                out.append(str(s).strip())
+    pv = lambda p, d=None: schema.passport_value(passport, p, d)  # noqa: E731
+    r = pv("linkage.phrase_starts_new_shot_ratio")
+    if r is not None and r >= 0.6:
+        out.append(f"Монтаж по фразам: {int(round(r * 100))} % фраз начинаются с новой склейки.")
+    off = pv("linkage.cut_offset_ms_median")
+    if off is not None:
+        out.append(f"Склейка относительно начала фразы: медиана {off:+.0f} мс.")
+    bps = pv("script.beats_per_sec")
+    if bps:
+        out.append(f"Темп фраз (битов) ≈ {bps} в секунду, по {pv('linkage.words_per_line_median') or '—'} слова в субтитре.")
+    sl = pv("motion.shot_len_s")
+    if sl:
+        out.append(f"Медианная длина плана {sl} с (p10 {pv('motion.shot_len_p10_s')}, p90 {pv('motion.shot_len_p90_s')}).")
+    if pv("script.transcript_source") == "subtitles":
+        out.append("Вшитые субтитры — одна строка в нижней трети; транскрипт снят с них (OCR).")
+    return out[:30]
 
 
 def apply_synth(passport: dict[str, Any], synth: dict[str, Any] | None) -> dict[str, Any]:
@@ -420,11 +609,15 @@ def fallback_mapping(passport: dict[str, Any]) -> dict[str, Any]:
     if any(voice_bits):
         mapping.setdefault("voice_tone_ru", "Тон: " + "; ".join(str(b) for b in voice_bits if b) + ".")
     if pv("narrative.structure"):
-        segs = pv("narrative.segments") or []
-        mapping.setdefault(
-            "narrative_ru",
-            f"Структура: {pv('narrative.structure')}." + (f" Сегменты: {', '.join(segs)}." if segs else "") + (f" Хук: {pv('narrative.hook_type')}." if pv("narrative.hook_type") else ""),
-        )
+            segs = pv("narrative.segments") or []
+            seg_names = [
+                (f"{g.get('name')} {int(round(float(g.get('share')) * 100))}%" if isinstance(g, dict) and g.get("share") not in (None, "") else str(g.get("name") if isinstance(g, dict) else g))
+                for g in segs
+            ]
+            mapping.setdefault(
+                "narrative_ru",
+                f"Структура: {pv('narrative.structure')}." + (f" Сегменты: {', '.join(seg_names)}." if seg_names else "") + (f" Хук: {pv('narrative.hook_type')}." if pv("narrative.hook_type") else ""),
+            )
     if pv("narrative.forbidden_phrases_seed"):
         mapping.setdefault("forbidden_phrases_ru", list(pv("narrative.forbidden_phrases_seed")))
     if pv("music.present") and pv("music.genre"):

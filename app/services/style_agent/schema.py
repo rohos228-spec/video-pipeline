@@ -11,7 +11,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-PASSPORT_SCHEMA = "style_passport/v1"
+PASSPORT_SCHEMA = "style_passport/v2"
+PASSPORT_SCHEMA_V1 = "style_passport/v1"
+ACCEPTED_SCHEMAS = (PASSPORT_SCHEMA, PASSPORT_SCHEMA_V1)
 
 CONFIDENCE_LEVELS = ("high", "medium", "low")
 
@@ -72,9 +74,62 @@ MOTION_FIELDS: dict[str, str] = {
 NARRATIVE_FIELDS: dict[str, str] = {
     "structure": "str",
     "hook_type": "str",
-    "segments": "list",
+    "segments": "objlist",  # [{name: hook|setup|escalation|turn|payoff|cta, start, end, summary, quote}]
+    "beats_per_sec": "num",
+    "sentence_templates": "list",  # «X did Y, which Z-ed» — шаблоны предложений с примерами
+    "rhetoric_devices": "objlist",  # [{name, example, timecode}]
+    "example_hook": "str",
+    "example_payoff": "str",
+    "address": "str",
     "forbidden_phrases_seed": "list",
     "tone_notes": "str",
+}
+
+# Поля одного плана в ответе агента shots (все — строки, кроме i).
+SHOT_ENTRY_FIELDS: tuple[str, ...] = (
+    "what",
+    "framing",  # close | medium | full | wide | insert | pov
+    "camera",  # static | push_in | pull_out | pan | tilt | orbit | handheld | whip | crane | follow
+    "subject_anim",
+    "start_state",
+    "end_state",
+    "change",
+    "transition_out",  # cut | match_cut | dissolve | whip | zoom_jump | morph | none
+    "transition_note",
+    "illustrates",  # что из фразы закадра показано буквально (существительное/действие)
+    "text_on_screen",
+    "vfx",
+)
+
+SHOTS_FIELDS: dict[str, str] = {
+    "shots": "objlist",  # [{i, <SHOT_ENTRY_FIELDS>}] — i соответствует таблице планов
+    "false_cuts": "numlist",  # таймкоды (с) склеек, которых на самом деле нет (вспышка/рывок)
+    "camera_vocab": "dist",
+    "transitions": "dist",
+    "subject_motion": "str",
+    "subtitles_enabled": "bool",
+    "subtitles_mode": "str",
+    "subtitles_position": "str",
+    "subtitles_style": "str",
+    "end_card": "bool",
+    "vo_cut_sync": "str",
+    "rhythm_notes": "str",
+    "shot_construction": "str",  # общий принцип построения плана (начало → изменение → конец)
+}
+
+PATTERNS_FIELDS: dict[str, str] = {
+    "patterns": "objlist",  # [{name, kind, description, frequency, examples:[tc], how_to_reproduce, signature}]
+    "peculiarities": "list",
+    "visual_illustrates_noun_ratio": "num",
+    "linkage_notes": "str",
+    "timing_notes": "str",
+}
+
+BLUEPRINT_FIELDS: dict[str, str] = {
+    "chain": "objlist",  # [{node_type, label, new, inputs, outputs, params, prompt_template}]
+    "prompt_templates": "obj",  # {script_writer, storyboard, image_prompt, video_prompt, vo_tts, subtitles, edit, music_sfx}
+    "new_nodes_needed": "list",
+    "notes": "list",
 }
 
 SYNTH_FIELDS: dict[str, str] = {
@@ -99,8 +154,11 @@ AGENT_FIELDS: dict[str, dict[str, str]] = {
     "visual": VISUAL_FIELDS,
     "voice": VOICE_FIELDS,
     "motion": MOTION_FIELDS,
+    "shots": SHOTS_FIELDS,
     "narrative": NARRATIVE_FIELDS,
+    "patterns": PATTERNS_FIELDS,
     "synth": SYNTH_FIELDS,
+    "blueprint": BLUEPRINT_FIELDS,
 }
 
 # Какие поля паспорта — числовые (агрегация медиана/IQR), какие
@@ -158,9 +216,19 @@ LIST_PATHS: tuple[str, ...] = (
     "visual.forbidden",
     "voice.delivery_markers",
     "voice.sfx_kinds",
-    "narrative.segments",
+    "narrative.sentence_templates",
     "narrative.forbidden_phrases_seed",
 )
+
+# Списки объектов: объединяются по роликам (без голосования), см. aggregate_objlist.
+OBJLIST_PATHS: tuple[str, ...] = (
+    "narrative.segments",
+    "narrative.rhetoric_devices",
+)
+
+# Числовые поля, которые даёт только агент narrative (нет в metrics).
+NUMERIC_PATHS = NUMERIC_PATHS + ("narrative.beats_per_sec",)
+CATEGORICAL_PATHS = CATEGORICAL_PATHS + ("narrative.address",)
 
 TEXT_PATHS: tuple[str, ...] = (
     "visual.line",
@@ -178,12 +246,15 @@ TEXT_PATHS: tuple[str, ...] = (
     "motion.rhythm_notes",
     "narrative.structure",
     "narrative.tone_notes",
+    "narrative.example_hook",
+    "narrative.example_payoff",
+    "motion.shot_construction",
 )
 
 PALETTE_PATH = "visual.palette_hex"
 
 # Куда ложится ось: нужно UI (группировка полей) и materialize.
-AXES: tuple[str, ...] = ("format", "visual", "voice", "music", "motion", "narrative")
+AXES: tuple[str, ...] = ("format", "visual", "voice", "music", "sfx", "motion", "narrative", "linkage", "script")
 
 
 def field(
@@ -275,6 +346,38 @@ def _normalize_dist(raw: Any) -> dict[str, float] | None:
     return {k: round(v / total, 3) for k, v in out.items()}
 
 
+def normalize_obj(raw: dict[str, Any]) -> dict[str, Any]:
+    """Объект из ответа модели: ключи → snake_case, строки обрезаны, None выброшены."""
+    out: dict[str, Any] = {}
+    for k, v in raw.items():
+        key = re.sub(r"[^a-z0-9_]+", "_", str(k).strip().lower()).strip("_")
+        if not key or v is None or v == "" or v == [] or v == {}:
+            continue
+        if isinstance(v, str):
+            out[key] = v.strip()[:1200]
+        elif isinstance(v, list):
+            out[key] = [(x.strip()[:400] if isinstance(x, str) else x) for x in v if x not in (None, "")][:40]
+        else:
+            out[key] = v
+    return out
+
+
+def normalize_shot_entry(raw: dict[str, Any]) -> dict[str, Any]:
+    """Запись плана от агента shots: i → int, остальные известные поля → str."""
+    out: dict[str, Any] = {}
+    i_raw = raw.get("i", raw.get("shot", raw.get("id")))
+    try:
+        out["i"] = int(str(i_raw).lstrip("#")) if i_raw is not None else None
+    except (TypeError, ValueError):
+        out["i"] = None
+    for key in SHOT_ENTRY_FIELDS:
+        v = raw.get(key)
+        if v in (None, "", [], {}):
+            continue
+        out[key] = ", ".join(str(x) for x in v) if isinstance(v, list) else str(v).strip()[:600]
+    return out
+
+
 def validate_agent_reply(agent: str, payload: Any) -> tuple[dict[str, Any], list[str]]:
     """Нормализовать ответ специалиста по анкете → (clean, problems).
 
@@ -333,6 +436,34 @@ def validate_agent_reply(agent: str, payload: Any) -> tuple[dict[str, Any], list
             if dist is None:
                 problems.append(f"{key}: ожидался объект {{категория: доля}}")
             clean[key] = dist
+        elif kind == "objlist":
+            if isinstance(raw, dict):
+                raw = [raw]
+            if not isinstance(raw, list):
+                problems.append(f"{key}: ожидался список объектов")
+                clean[key] = None
+            else:
+                items_o = [normalize_obj(x) for x in raw if isinstance(x, dict)]
+                if key == "shots":
+                    items_o = [normalize_shot_entry(x) for x in items_o]
+                    items_o = [x for x in items_o if x.get("i") is not None]
+                if not items_o:
+                    problems.append(f"{key}: пустой список объектов")
+                clean[key] = items_o or None
+        elif kind == "obj":
+            if not isinstance(raw, dict):
+                problems.append(f"{key}: ожидался объект")
+                clean[key] = None
+            else:
+                clean[key] = normalize_obj(raw)
+        elif kind == "numlist":
+            items_n: list[float] = []
+            for x in raw if isinstance(raw, list) else re.split(r"[;,\s]+", str(raw)):
+                try:
+                    items_n.append(float(str(x).replace(",", ".")))
+                except (TypeError, ValueError):
+                    continue
+            clean[key] = items_n or None
         else:
             clean[key] = raw
     required_any = [k for k, v in clean.items() if v is not None]
@@ -356,17 +487,27 @@ def empty_passport(style_id: str = "", label: str = "") -> dict[str, Any]:
         "motion": {},
         "narrative": {},
         "mapping": {},
+        # v2
+        "videos": [],
+        "linkage": {},
+        "script": {},
+        "patterns": [],
+        "peculiarities": [],
+        "blueprint": {},
         "llm": {"calls_used": 0, "calls_limit": 0, "model": ""},
     }
 
 
 def validate_passport(passport: Any) -> list[str]:
-    """Структурная проверка паспорта перед approve/materialize."""
+    """Структурная проверка паспорта перед approve/materialize (v1 и v2)."""
     problems: list[str] = []
     if not isinstance(passport, dict):
         return ["паспорт не объект"]
-    if passport.get("$schema") != PASSPORT_SCHEMA:
-        problems.append(f"$schema должен быть {PASSPORT_SCHEMA}")
+    if passport.get("$schema") not in ACCEPTED_SCHEMAS:
+        problems.append(f"$schema должен быть {PASSPORT_SCHEMA} (или {PASSPORT_SCHEMA_V1})")
+    for key, typ in (("videos", list), ("patterns", list), ("peculiarities", list), ("blueprint", dict), ("linkage", dict), ("script", dict)):
+        if key in passport and passport.get(key) is not None and not isinstance(passport.get(key), typ):
+            problems.append(f"{key}: ожидался {'список' if typ is list else 'объект'}")
     sid = str(passport.get("style_id") or "").strip()
     if not re.match(r"^[a-z0-9_\-]{2,64}$", sid):
         problems.append("style_id: латиница/цифры/_/- (2–64 символа)")

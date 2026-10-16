@@ -17,17 +17,22 @@ MIN_LLM_CALLS = 1
 MAX_LLM_CALLS_HARD = 200
 
 # Специалисты, которые работают по каждому ролику (vision = пачки листов).
-PER_VIDEO_AGENTS: tuple[str, ...] = ("visual", "motion", "voice", "narrative")
-VISION_AGENTS: tuple[str, ...] = ("visual", "motion")
+# shots — покадровый разбор планов + подтверждение склеек (шот-листы + листы склеек);
+# visual — рисовка (overview); patterns — повторяющиеся приёмы (шот-листы);
+# voice / narrative — текстовые (транскрипт с таймкодами + метрики).
+PER_VIDEO_AGENTS: tuple[str, ...] = ("shots", "visual", "voice", "narrative", "patterns")
+VISION_AGENTS: tuple[str, ...] = ("shots", "visual", "patterns")
+# Глобальные (по всем роликам сразу): synth → блоки промптов, blueprint → цепочка нод.
+GLOBAL_AGENTS: tuple[str, ...] = ("synth", "blueprint")
 SYNTH_AGENT = "synth"
 
 # Лимит vision-входа gpt_api (см. style_analyzer.BATCH_SIZE): ≤ 8 картинок/запрос.
 IMAGES_PER_CALL = 8
 
 # Приближённые токены на вызов — для оценки цены (не биллинг).
-_TOKENS_IN_TEXT = 3500
+_TOKENS_IN_TEXT = 4500
 _TOKENS_OUT_TEXT = 900
-_TOKENS_IN_PER_IMAGE = 1100  # лист 3×2 ≈ 1 картинка ≈ 1k токенов
+_TOKENS_IN_PER_IMAGE = 1500  # шот-лист 3×4 с таймкодами ≈ 1.5k токенов
 _TOKENS_OUT_VISION = 700
 _TOKENS_IN_SYNTH = 6000
 _TOKENS_OUT_SYNTH = 1800
@@ -110,34 +115,39 @@ def plan_calls(
     max_calls: int,
     agents: tuple[str, ...] | list[str] = PER_VIDEO_AGENTS,
     with_synth: bool = True,
+    with_blueprint: bool = True,
 ) -> dict[str, Any]:
     """Разложить лимит по специалистам.
 
     Минимум: по 1 вызову на каждого включённого специалиста на каждый ролик
-    (vision — минимум 1 пачка ≤ 8 листов) + 1 synth. Если лимита не хватает —
-    ``fits=False`` и подсказка; запуск при этом всё равно возможен, но часть
-    роликов/агентов будет пропущена (``skip_plan``).
+    (vision — минимум 1 пачка ≤ 8 листов) + глобальные (synth, blueprint — по 1).
+    Если лимита не хватает — ``fits=False`` и подсказка; запуск при этом всё
+    равно возможен, но часть роликов/агентов будет пропущена (``skip_plan``).
+    Шот-листы (sheets_per_video) + 1 overview + листы склеек делятся на пачки ≤ 8.
     """
     n_videos = max(0, int(n_videos))
     sheets_per_video = max(0, int(sheets_per_video))
     max_calls = clamp_max_calls(max_calls)
     enabled = [a for a in PER_VIDEO_AGENTS if a in set(agents)]
+    global_agents = [a for a, on in (("synth", with_synth), ("blueprint", with_blueprint)) if on] if n_videos else []
+    n_global = len(global_agents)
 
     per_video: dict[str, int] = {}
     for agent in enabled:
         if agent in VISION_AGENTS:
-            per_video[agent] = max(1, _vision_sheet_batches(sheets_per_video)) if n_videos else 0
+            # shots видит шот-листы + листы склеек (≈ +50 %), visual — 1 overview, patterns — шот-листы
+            n_sheets = sheets_per_video + (sheets_per_video // 2 + 1) if agent == "shots" else (1 if agent == "visual" else sheets_per_video)
+            per_video[agent] = max(1, _vision_sheet_batches(n_sheets)) if n_videos else 0
         else:
             per_video[agent] = 1 if n_videos else 0
 
     minimal_per_video = {a: (1 if n_videos else 0) for a in enabled}
-    minimal_total = sum(minimal_per_video.values()) * n_videos + (1 if with_synth and n_videos else 0)
-    ideal_total = sum(per_video.values()) * n_videos + (1 if with_synth and n_videos else 0)
+    minimal_total = sum(minimal_per_video.values()) * n_videos + n_global
+    ideal_total = sum(per_video.values()) * n_videos + n_global
 
-    budget_for_videos = max_calls - (1 if with_synth and n_videos else 0)
+    budget_for_videos = max_calls - n_global
     fits_minimal = minimal_total <= max_calls
 
-    # Распределяем: сначала минимум всем, потом добавляем vision-пачки, пока есть лимит.
     alloc_per_video = dict(minimal_per_video)
     if n_videos and fits_minimal:
         spare = budget_for_videos - sum(alloc_per_video.values()) * n_videos
@@ -161,7 +171,7 @@ def plan_calls(
                 f"(нужно ≥ {minimal_total}); остальные будут разобраны только детерминированно"
             )
 
-    planned_total = sum(alloc_per_video.values()) * videos_covered + (1 if with_synth and videos_covered else 0)
+    planned_total = sum(alloc_per_video.values()) * videos_covered + (n_global if videos_covered else 0)
     hint = ""
     if n_videos == 0:
         hint = "нет роликов — загрузите mp4 в ноду или подключите «Файлы»"
@@ -170,7 +180,7 @@ def plan_calls(
     elif planned_total < ideal_total:
         hint = (
             f"при лимите {ideal_total} vision-специалисты увидят все листы "
-            f"({sheets_per_video} на ролик); сейчас часть листов пропускается"
+            f"({sheets_per_video} шот-листов на ролик); сейчас часть листов пропускается"
         )
 
     return {
@@ -178,7 +188,9 @@ def plan_calls(
         "sheets_per_video": sheets_per_video,
         "max_calls": max_calls,
         "agents": enabled,
+        "global_agents": global_agents,
         "with_synth": bool(with_synth and n_videos),
+        "with_blueprint": bool(with_blueprint and n_videos),
         "per_video": alloc_per_video,
         "videos_covered": videos_covered,
         "minimal_total": minimal_total,
@@ -207,7 +219,7 @@ def estimate_cost(plan: dict[str, Any], *, model: dict[str, Any] | None, model_i
         else:
             tok_in += calls * _TOKENS_IN_TEXT
             tok_out += calls * _TOKENS_OUT_TEXT
-    if plan.get("with_synth"):
+    for _g in plan.get("global_agents") or (["synth"] if plan.get("with_synth") else []):
         tok_in += _TOKENS_IN_SYNTH
         tok_out += _TOKENS_OUT_SYNTH
     usd = tok_in / 1_000_000 * pin + tok_out / 1_000_000 * pout
