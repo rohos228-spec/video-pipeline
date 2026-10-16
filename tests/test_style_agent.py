@@ -584,6 +584,144 @@ def test_approve_materializes_and_marks_meta(tmp_path: Path, monkeypatch) -> Non
     assert snap["passport"]["hasApproved"] is True
 
 
+# ── REST: /projects/{id}/style-agent (job и LLM замоканы) ─────────────────
+
+
+@pytest.fixture
+def api_client(tmp_path, monkeypatch):
+    return _make_api_client(tmp_path, monkeypatch)
+
+
+def _make_api_client(tmp_path: Path, monkeypatch):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models import Base
+    from app.settings import settings
+    from app.web.api import create_app
+    from app.web.deps import get_session
+
+    app = create_app()
+    db_file = tmp_path / "style-api.db"
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "sqlite_path", db_file)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _gen():
+        async with factory() as s:
+            yield s
+
+    app.dependency_overrides[get_session] = _gen
+
+    async def _prepare() -> int:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            p = Project(topic="style", slug="style-api", status=ProjectStatus.new, meta={})
+            session.add(p)
+            await session.commit()
+            await session.refresh(p)
+            p.data_dir.mkdir(parents=True, exist_ok=True)
+            return p.id
+
+    return app, factory, engine, _prepare
+
+
+def test_style_agent_api_flow(api_client, monkeypatch, tmp_path: Path) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    app, factory, engine, prepare = api_client
+    spawned: list[dict[str, Any]] = []
+
+    def _fake_spawn(project_id: int, *, node_key, overrides=None):
+        spawned.append({"project_id": project_id, "node_key": node_key, "overrides": overrides})
+
+        class _T:
+            def done(self) -> bool:
+                return True
+
+        return _T()
+
+    monkeypatch.setattr(job, "spawn_style_extract_job", _fake_spawn)
+
+    async def _run() -> None:
+        pid = await prepare()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get(f"/api/projects/{pid}/style-agent")
+            assert r.status_code == 200 and r.json()["job"]["status"] == "idle"
+
+            r = await c.patch(f"/api/projects/{pid}/style-agent", json={"max_llm_calls": 3, "junk": 1})
+            assert r.status_code == 200 and r.json()["settings"]["max_llm_calls"] == 3
+            r = await c.patch(f"/api/projects/{pid}/style-agent", json={"junk": 1})
+            assert r.status_code == 400
+
+            r = await c.post(f"/api/projects/{pid}/style-agent/run")
+            assert r.status_code == 400  # нет роликов
+
+            r = await c.post(f"/api/projects/{pid}/style-agent/upload", files={"file": ("a.mp4", b"mp4data", "video/mp4")})
+            assert r.status_code == 200 and r.json()["videos"] == ["a.mp4"]
+            r = await c.post(f"/api/projects/{pid}/style-agent/upload", files={"file": ("x.txt", b"txt", "text/plain")})
+            assert r.status_code == 400
+
+            r = await c.post(f"/api/projects/{pid}/style-agent/estimate", json={"max_llm_calls": 5})
+            assert r.status_code == 200
+            est = r.json()
+            assert est["plan"]["n_videos"] == 1 and est["plan"]["max_calls"] == 5 and est["cost"]["usd"] >= 0
+
+            r = await c.post(f"/api/projects/{pid}/style-agent/run?node_key=n_style_1", json={"max_llm_calls": 4})
+            assert r.status_code == 200 and r.json()["started"] is True
+            assert spawned and spawned[0]["node_key"] == "n_style_1" and spawned[0]["overrides"] == {"max_llm_calls": 4}
+
+            r = await c.get(f"/api/projects/{pid}/style-agent/passport")
+            assert r.status_code == 404
+
+            # Черновик кладём напрямую (как это сделал бы job) и утверждаем через API
+            async with factory() as s:
+                p = await s.get(Project, pid)
+                job.write_passport(p, _approved_passport())
+            roots = apply.MaterializeRoots(prompts=tmp_path / "p", frame_styles=tmp_path / "f")
+            monkeypatch.setattr(apply.MaterializeRoots, "default", classmethod(lambda cls: roots))
+
+            r = await c.get(f"/api/projects/{pid}/style-agent/passport")
+            assert r.status_code == 200 and r.json()["passport"]["style_id"] == "warm_cats"
+
+            bad = dict(_approved_passport())
+            bad["style_id"] = "Bad!"
+            r = await c.put(f"/api/projects/{pid}/style-agent/passport", json={"passport": bad})
+            assert r.status_code == 400
+
+            edited = _approved_passport()
+            edited["label"] = "Коты (правка)"
+            r = await c.put(f"/api/projects/{pid}/style-agent/passport", json={"passport": edited})
+            assert r.status_code == 200
+
+            r = await c.post(f"/api/projects/{pid}/style-agent/approve", json={})
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["report"]["materialized"] is True and "visual_style" in body["report"]["blocks"]
+            assert body["snapshot"]["passport"]["hasApproved"] is True
+            assert (tmp_path / "p" / "styles" / "warm_cats.json").is_file()
+
+            r = await c.get(f"/api/projects/{pid}/style-agent/report")
+            assert r.status_code == 200 and r.json()["apply_report"]["style_id"] == "warm_cats"
+
+            async with factory() as s:
+                p = await s.get(Project, pid)
+                assert p.prompt_overrides["style_profile"] == "warm_cats"
+                assert p.meta["style_agent"]["passport"]["approvedAt"]
+                assert p.meta["node_step_params"]["plan"]["duration_seconds"] == 60
+
+            r = await c.delete(f"/api/projects/{pid}/style-agent/refs/a.mp4")
+            assert r.status_code == 200 and r.json()["videos"] == []
+
+    try:
+        asyncio.run(_run())
+    finally:
+        app.dependency_overrides.clear()
+        asyncio.run(engine.dispose())
+
+
 # ── планировщик: статусы нод и прозрачность ───────────────────────────────
 
 
