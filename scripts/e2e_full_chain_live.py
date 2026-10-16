@@ -391,7 +391,7 @@ def install_live_hook(cfg: dict) -> None:
             fc.wire_append(wire, {"event": "refused", "host": host, "method": request.method, "path": request.url.path,
                                   "bucket": bucket, "reason": reason})
             raise RuntimeError(f"stand: request refused ({reason}, {bucket})")
-        if bucket not in ("download", "outsee_free", "kie_free", "other"):
+        if bucket not in ("download", "outsee_free", "kie_free", "other") and not (bucket == "tts" and loc.is_loopback_host(host)):   # --local-tts: not a paid request
             fc.wire_append(wire, {"event": "request", "bucket": bucket, "method": request.method, "host": host,
                                   "path": request.url.path, "model": model_of(body) if bucket in PAID_BUCKETS else ""})
         return await original_send(client, request, **kwargs)
