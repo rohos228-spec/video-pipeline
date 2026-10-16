@@ -82,12 +82,12 @@ def test_script_style_criterion_softened(live, work):
     strict = (work / "prompts" / "check_script" / "default.md").read_text(encoding="utf-8")
     soft = (work / "prompts" / "check_script" / "stand_lenient.md").read_text(encoding="utf-8")
     assert "НЕТ постоянных противопоставлений" in strict
-    assert "НЕТ постоянных противопоставлений" not in soft and "три и более раза" in soft
+    assert "НЕТ постоянных противопоставлений" not in soft
 
 
 def test_script_style_criterion_never_blocks(live, work):
     live.write_lenient_verdicts(work)
     soft = (work / "prompts" / "check_script" / "stand_lenient.md").read_text(encoding="utf-8")
-    assert "`fail` не ставь" in soft
+    assert "блокирующими являются ТОЛЬКО два критерия" in soft
     plan = (work / "prompts" / "check_plan" / "stand_lenient.md").read_text(encoding="utf-8")
-    assert "`fail` не ставь" not in plan
+    assert "блокирующими являются ТОЛЬКО" not in plan

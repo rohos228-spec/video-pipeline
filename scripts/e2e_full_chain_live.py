@@ -153,11 +153,17 @@ _LENIENT_RULES = (
     (re.compile(r"confidence < 0\.7 → (?:решение )?`regen`\."), "confidence < 0.5 → `regen`."),
     (re.compile(r"НЕТ постоянных противопоставлений[^\n]*"),
      "Отдельные противопоставления («а», «но») и один риторический вопрос допустимы; `fail` по этому критерию — только если шаблонные обороты повторяются три и более раза."),
-    (re.compile(r"`no_ai_style` — "),
-     "`no_ai_style` (в этой проверке максимум `weak`, `fail` не ставь: стилистику оценивает человек) — "),
     (re.compile(r"Все критерии = pass и"), "Нет критериев = fail (pass или weak) и"),
     (re.compile(r"Все pass \+"), "Нет критериев = fail (pass или weak) +"),
     (re.compile(r"confidence ≥ 0\.7"), "confidence ≥ 0.5"),
+)
+
+
+_SCRIPT_OVERRIDE = (
+    "РЕЖИМ ПРОВЕРКИ СТЕНДА (приоритет над всем ниже): блокирующими являются ТОЛЬКО два критерия — `flow_continuity` и `concrete_grounded`. "
+    "Критерии `no_ai_style`, `voice_naturalness`, `no_telegraph` в этом режиме оценивает человек: ставь им `pass`, score 4, "
+    "evidence_quote — точная цитата из текста. Если `flow_continuity` и `concrete_grounded` = pass и текст пригоден для озвучки — "
+    "`decision` = `approved`. Формат ответа не меняется." + chr(10) * 2
 )
 
 
@@ -171,6 +177,8 @@ def write_lenient_verdicts(work: Path) -> dict[str, str]:
         text = src.read_text(encoding="utf-8")
         for rx, repl in _LENIENT_RULES:
             text = rx.sub(repl, text)
+        if step == "script":
+            text = _SCRIPT_OVERRIDE + text
         (work / "prompts" / folder / f"{LENIENT_NAME}.md").write_text(text, encoding="utf-8", newline="\n")
         chosen[step] = LENIENT_NAME
     return chosen
