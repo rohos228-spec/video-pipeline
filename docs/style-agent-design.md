@@ -737,3 +737,26 @@ music+sfx 0.1`, веса — в паспорте, правит оператор)
    split, bgm_level, субтитры, TTS-параметры).
 4. На ноде «Стиль кадров» (script_frames_qc) выбрать `style_<style_id>`,
    на «Озвучка» — голос по подсказке `voice_hint`; дальше обычный пайплайн.
+
+### 7.4. Версия 2: покадровый разбор, связка с закадром, blueprint
+
+После теста на двух референсах (см. [`style-analysis-example.md`](style-analysis-example.md))
+паспорт переведён на схему `style_passport/v2` (v1 читается по-прежнему).
+Что изменилось:
+
+| Область | v1 | v2 |
+|---|---|---|
+| Склейки | `select=gt(scene,0.3)` (пропускал 3D-cut'ы, медиана плана 20 с) | per-frame scene-score → адаптивный z-score к локальному фону + слабые кандидаты у смены субтитра + серии «gradual»; пары кадров ±0.2 с у каждой склейки; `uncertain` по гистограмме; vision-агент `shots` подтверждает/снимает (`false_cuts` → `apply_false_cuts`) |
+| Кадры | 1 fps, листы 4 на ролик | таймлайн **120/мин** (`frames_per_min`), хук 5 с ×2, кадры у склеек; листы `overview`, `shot_NN` (start/mid/end на план), `cuts_NN` (пары −0.2/+0.2 с) с таймкодами |
+| Транскрипт | только ASR | **OCR вшитых субтитров** (`rapidocr_onnxruntime` → tesseract → нет) — полоса субтитров, строки с таймкодами; ASR — только если строк < 3 (`skip_ocr`, `skip_asr`) |
+| Связка | — | `linkage.py`: строка ↔ план, доля склеек на старте фразы, смещение (мс), строк/слов на план, паттерн (`each_phrase_new_shot` / `shot_spans_phrases` / …) |
+| Сценарий | hook/структура одной строкой | `script_metrics`: биты/с, предложения, хук, хвост; агент `narrative` — сегменты с таймкодами, шаблоны предложений, риторика, примеры |
+| Агенты | visual, voice, motion, narrative + synth | `shots` (vision: планы + склейки), `visual`, `voice`, `narrative`, `patterns` (vision: приёмы с таймкодами и «как воспроизвести», особенности) + `synth` + **`blueprint`** |
+| Лимит | 4×N+1 | 5×N+2; по умолчанию 12 = 2 ролика минимально (`plan_calls`, `estimate_cost`) |
+| Выход | паспорт + variance_report | паспорт v2 (`videos[]`, `linkage`, `script`, `patterns`, `peculiarities`, `blueprint`) + **`style_report.md`** (`report.py`: 8 секций) — `GET /style-agent/report?fmt=md`, вкладка «Отчёт» в `hitl_style` |
+| Blueprint | §3 этого документа | `blueprint.py`: цепочка нод с параметрами из паспорта + 8 шаблонов промптов; новые ноды помечены `new` (`shot_plan`, `vo_sync_edit`, `style_check`); см. [`style-blueprint.md`](style-blueprint.md) |
+
+Новые файлы анализа: `style/analysis/<vid>/{scene_scores,cuts,subtitles,ocr_raw,linkage}.json`,
+`timeline/tl_*.jpg|hk_*.jpg|cut_*_before|after.jpg`, `sheets/shot_NN.jpg`,
+`sheets/cuts_NN.jpg`, `shots_final.json`, `q_shots.json`, `q_patterns.json`;
+в корне `style/style_report.md`.
