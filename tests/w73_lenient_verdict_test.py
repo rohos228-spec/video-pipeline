@@ -75,3 +75,11 @@ def test_selected_name_resolves_to_soft_file(live, work, monkeypatch):
     assert g.verdict_template_path("plan", "stand_lenient") == work / "prompts" / "check_plan" / "stand_lenient.md"
     text = g.load_verdict_check_prompt("script", template="stand_lenient")
     assert "Не одобряй автоматически" not in text
+
+
+def test_script_style_criterion_softened(live, work):
+    live.write_lenient_verdicts(work)
+    strict = (work / "prompts" / "check_script" / "default.md").read_text(encoding="utf-8")
+    soft = (work / "prompts" / "check_script" / "stand_lenient.md").read_text(encoding="utf-8")
+    assert "НЕТ постоянных противопоставлений" in strict
+    assert "НЕТ постоянных противопоставлений" not in soft and "три и более раза" in soft
