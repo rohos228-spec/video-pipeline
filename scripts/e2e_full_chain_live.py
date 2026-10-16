@@ -153,6 +153,8 @@ _LENIENT_RULES = (
     (re.compile(r"confidence < 0\.7 → (?:решение )?`regen`\."), "confidence < 0.5 → `regen`."),
     (re.compile(r"НЕТ постоянных противопоставлений[^\n]*"),
      "Отдельные противопоставления («а», «но») и один риторический вопрос допустимы; `fail` по этому критерию — только если шаблонные обороты повторяются три и более раза."),
+    (re.compile(r"`no_ai_style` — "),
+     "`no_ai_style` (в этой проверке максимум `weak`, `fail` не ставь: стилистику оценивает человек) — "),
     (re.compile(r"Все критерии = pass и"), "Нет критериев = fail (pass или weak) и"),
     (re.compile(r"Все pass \+"), "Нет критериев = fail (pass или weak) +"),
     (re.compile(r"confidence ≥ 0\.7"), "confidence ≥ 0.5"),
