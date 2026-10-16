@@ -167,9 +167,7 @@ export const observations = {
           try{
             const payload=JSON.parse(trimmed.slice(5).trim());
             if(payload.type==="telemetry")onUpdate(payload.data as TelemetrySummary);
-            // payload.type==="error" is surfaced by the next regular poll naturally timing out/erroring too;
-            // the stream keeps retrying on its own (see app/web/routers/observations.py::_telemetry_stream_events).
-          }catch{/* ignore one malformed line, next tick corrects it */}
+          }catch{}
         }
       }
     }catch(e:any){

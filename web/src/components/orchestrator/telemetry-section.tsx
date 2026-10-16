@@ -84,11 +84,7 @@ export function TelemetrySection({projectId}: {projectId: number | null}) {
         setError("");
         setBusy(false);
       }, controller.signal)
-      .catch(() => {
-        // Stream itself failed (not an aborted cleanup) -- the one-shot GET
-        // above already rendered something; no further action needed here,
-        // live updates just won't arrive until the next window/project change.
-      });
+      .catch(() => {});
 
     return () => {
       cancelled = true;
