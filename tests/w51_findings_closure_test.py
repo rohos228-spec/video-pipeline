@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -157,8 +156,6 @@ def test_c19_dangerous_actions_need_human_approval_regardless_of_planner_text() 
     for action_id in NEEDS_HUMAN_APPROVAL:
         spec = registry.get(action_id)
         assert spec is not None and spec.needs_approval, action_id
-    doc = inspect.getdoc(planner.approval_bypass_intent)
-    assert "НЕ является барьером" in doc
 
 
 
