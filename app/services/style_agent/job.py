@@ -243,7 +243,13 @@ def estimate(project: Any, node_key: str | None = None, overrides: dict[str, Any
         with_synth=True,
     )
     if st.get("skip_llm"):
-        plan = {**plan, "planned_total": 0, "with_synth": False, "hint": "LLM отключён — только метрики"}
+        plan = {
+            **plan,
+            "per_video": {k: 0 for k in (plan.get("per_video") or {})},
+            "planned_total": 0,
+            "with_synth": False,
+            "hint": "LLM отключён — только метрики",
+        }
     model = resolve_model(project, node_key)
     cost = estimate_cost(plan, model=model, model_id=(model or {}).get("id"))
     return {
@@ -284,7 +290,11 @@ def snapshot(project: Any, node_key: str | None = None) -> dict[str, Any]:
     vids = []
     for p in videos:
         sheets_dir = analysis_dir(project) / p.stem / "sheets"
-        sheets = sorted(q.name for q in sheets_dir.glob("*.jpg")) if sheets_dir.is_dir() else []
+        sheets = (
+            sorted(q.name for q in sheets_dir.iterdir() if q.is_file() and q.suffix.lower() in (".png", ".jpg", ".jpeg"))
+            if sheets_dir.is_dir()
+            else []
+        )
         metrics_fp = analysis_dir(project) / p.stem / "metrics.json"
         vids.append(
             {

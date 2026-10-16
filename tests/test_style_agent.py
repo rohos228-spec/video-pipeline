@@ -565,6 +565,8 @@ def test_estimate_without_llm(tmp_path: Path, monkeypatch) -> None:
     est = job.estimate(project, None, {"max_llm_calls": 4})
     assert est["plan"]["n_videos"] == 2 and est["plan"]["fits"] is False
     assert est["cost"]["usd"] >= 0 and est["cost"]["calls"] == est["plan"]["planned_total"]
+    off = job.estimate(project, None, {"max_llm_calls": 4, "skip_llm": True})
+    assert off["plan"]["planned_total"] == 0 and off["cost"]["calls"] == 0 and off["cost"]["usd"] == 0
 
 
 def test_approve_materializes_and_marks_meta(tmp_path: Path, monkeypatch) -> None:
