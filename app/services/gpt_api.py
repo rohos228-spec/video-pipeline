@@ -1650,18 +1650,24 @@ def _check_provider_envelope(payload: dict[str, Any]) -> None:
             code = payload.get("code")
         retryable = _openai_error_retryable(msg, code)
         hint = ""
+        credits = False
         low = msg.lower()
         code_s = str(code or "").lower()
         if "credit" in low or "balance" in low or code_s in {"402", "insufficient_quota"}:
-            hint = " — на счёте GPT кончились кредиты, пополни баланс у провайдера"
+            hint = _credits_hint()
             retryable = False
+            credits = True
         elif "not authorized" in low or "apikey" in low or "invalid api" in low:
             hint = " — ключ не авторизован на эту модель"
             retryable = False
-        raise GptApiError(
-            f"GPT провайдер error: {msg}{hint}",
-            context={"provider_code": code, "retryable": retryable, "error_kind": "provider_envelope"},
-        )
+        ctx: dict[str, Any] = {
+            "provider_code": code,
+            "retryable": retryable,
+            "error_kind": "provider_envelope",
+        }
+        if credits:
+            ctx.update(status_code=402, credits_exhausted=True, llm_provider=_llm_provider_name())
+        raise GptApiError(f"GPT провайдер error: {msg}{hint}", context=ctx)
     code = payload.get("code")
     if code is None:
         return
