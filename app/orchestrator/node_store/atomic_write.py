@@ -80,7 +80,13 @@ def atomic_write_text(dest: Path, text: str, *, expected_version: int) -> None:
         if target.is_file():
             backup_dir = target.parent / "old"
             backup_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(target, backup_dir / f"{target.name}.v{current}")
+            backup = backup_dir / f"{target.name}.v{current}"
+            if backup.exists():
+                suffix = 2
+                while (backup_dir / f"{target.name}.v{current}.{suffix}").exists():
+                    suffix += 1
+                backup = backup_dir / f"{target.name}.v{current}.{suffix}"
+            shutil.copy2(target, backup)
         fd, tmp_name = tempfile.mkstemp(
             prefix=f"{target.name}.",
             suffix=".tmp",
