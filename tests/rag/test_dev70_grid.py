@@ -101,6 +101,22 @@ def test_focus_diagnosis_is_dev70_and_names_the_displacing_chunks() -> None:
     assert "prompt_pool" in note
 
 
+def test_extended_grid_lists_weights_k_and_expand_tail() -> None:
+    from evals.orchestrator.dev70_grid import FUSION_WEIGHTS, RRF_KS, extended_grid
+
+    specs = extended_grid()
+    assert len(specs) == len(FUSION_WEIGHTS) * len(RRF_KS) * 2 - 1
+    keys = {spec["key"] for spec in specs}
+    assert "expand-tail-rrf-0.5-1.5-k20" in keys
+    assert "none-rrf-0.75-1.5-k20" in keys
+    assert "none-rrf-0.5-2.0-k40" in keys
+    assert "expand-tail-rrf-0.25-1.5-k60" in keys
+    assert "none-rrf-0.5-1.5" not in keys
+    assert all(spec["rrf_k"] in RRF_KS for spec in specs)
+    assert all(spec["rerank"] is True for spec in specs)
+    assert {spec["aggregate"] for spec in specs} == {"none", "expand_tail"}
+
+
 def test_committed_dev70_grid_keeps_the_only_hit_pass() -> None:
     from evals.orchestrator.dev70_grid import GRID_PATH, grid_runs_for_choice
 

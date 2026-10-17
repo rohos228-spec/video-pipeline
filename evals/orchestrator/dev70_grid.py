@@ -18,6 +18,35 @@ FOCUS = ("camera", "action", "script")
 GRID_PATH = Path(__file__).resolve().parent / "datasets" / "precision_live_dev70_grid.json"
 DIAGNOSIS_PATH = Path(__file__).resolve().parent / "datasets" / "precision_live_dev70_diagnosis.json"
 
+# Веса — слияние BM25 и реранкера. k — RRF и для лексики/вектора, и для слияния.
+FUSION_WEIGHTS: tuple[tuple[float, float], ...] = ((0.5, 1.5), (0.75, 1.5), (0.5, 2.0), (0.25, 1.5))
+RRF_KS: tuple[int, ...] = (20, 40, 60)
+
+
+def _spec(key: str, aggregate: str, bm25: float, rerank_weight: float, rrf_k: int, *, rerank: bool = True) -> dict[str, Any]:
+    return {
+        "key": key,
+        "aggregate": aggregate,
+        "rerank": rerank,
+        "fusion_bm25": bm25,
+        "fusion_rerank": rerank_weight,
+        "rrf_k": rrf_k,
+    }
+
+
+def extended_grid() -> tuple[dict[str, Any], ...]:
+    """Новые строки: 4 веса × 3 k × none/expand_tail. Уже посчитанный none 0.5/1.5 k=20 не дублируется."""
+    specs: list[dict[str, Any]] = []
+    for rrf_k in RRF_KS:
+        for bm25, rerank_weight in FUSION_WEIGHTS:
+            for aggregate in ("none", "expand_tail"):
+                if aggregate == "none" and bm25 == 0.5 and rerank_weight == 1.5 and rrf_k == 20:
+                    continue
+                tag = "expand-tail" if aggregate == "expand_tail" else "none"
+                specs.append(_spec(f"{tag}-rrf-{bm25}-{rerank_weight}-k{rrf_k}", aggregate, bm25, rerank_weight, rrf_k))
+    return tuple(specs)
+
+
 # Пул реранкера зафиксирован. Веса — слияние BM25 и реранкера, не лексика/вектор RRF.
 GRID: tuple[dict[str, Any], ...] = (
     {
@@ -47,8 +76,9 @@ GRID: tuple[dict[str, Any], ...] = (
         "rerank": False,
         "fusion_bm25": 0.5,
         "fusion_rerank": 1.5,
+        "rrf_k": 20,
     },
-)
+) + extended_grid()
 
 
 def load_dev70() -> list[dict[str, Any]]:
@@ -153,6 +183,22 @@ def grid_runs_for_choice(
     return runs
 
 
+class _CachingReranker:
+    """Один и тот же пул реранкера не считается заново для другого веса или expand_tail."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.cache: dict[tuple[str, tuple[str, ...]], list[float]] = {}
+
+    def score(self, query: str, passages: list[str]) -> list[float]:
+        key = (query, tuple(passages))
+        cached = self.cache.get(key)
+        if cached is None:
+            cached = [float(score) for score in self.inner.score(query, passages)]
+            self.cache[key] = cached
+        return list(cached)
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -193,12 +239,18 @@ def run_dev70_grid(out: Path | None = None, diagnosis_out: Path | None = None) -
 
     assert_grid_pool()
     queries = load_dev70()
+    destination = out or GRID_PATH
+    existing: list[dict[str, Any]] = []
+    if destination.is_file():
+        existing = list(json.loads(destination.read_text(encoding="utf-8")).get("configs") or [])
+    done = {str(row["key"]) for row in existing}
+    pending = [spec for spec in GRID if spec["key"] not in done]
     temp_dir = FsPath(tempfile.mkdtemp(prefix="orch-rag-dev70-"))
     db_path = temp_dir / "orch_rag.db"
     embedder = build_embedder("e5-large", eval_mode=True)
-    reranker = build_reranker("bge-m3", max_length=256, eval_mode=True)
+    reranker = _CachingReranker(build_reranker("bge-m3", max_length=256, eval_mode=True))
     engine = _engine(db_path, embedder, reranker)
-    configs: list[dict[str, Any]] = []
+    configs: list[dict[str, Any]] = list(existing)
     diagnosis: list[dict[str, Any]] = []
     try:
         print("dev70 reindex", os.getpid(), flush=True)
@@ -212,10 +264,11 @@ def run_dev70_grid(out: Path | None = None, diagnosis_out: Path | None = None) -
         relevant_counts = [
             sum(1 for chunk in indexed if _is_relevant_transferred(chunk, query)) for query in queries
         ]
-        for spec in GRID:
+        print("dev70 pending", len(pending), flush=True)
+        for spec in pending:
             kwargs = {
                 "rerank": bool(spec["rerank"]),
-                "rrf_k": 20,
+                "rrf_k": int(spec.get("rrf_k", 20)),
                 "rrf_weights": (0.5, 1.5),
                 "bm25_scope": "full",
                 "rerank_pool": RERANK_POOL,
@@ -285,7 +338,11 @@ def run_dev70_grid(out: Path | None = None, diagnosis_out: Path | None = None) -
                 round(summary["p95_s"], 3),
                 flush=True,
             )
-            write_json(out or GRID_PATH, {"set": "dev-70", "rerank_pool": RERANK_POOL, "configs": configs})
+            carried = {}
+            if destination.is_file():
+                carried = json.loads(destination.read_text(encoding="utf-8"))
+            carried.update({"set": "dev-70", "rerank_pool": RERANK_POOL, "configs": configs})
+            write_json(destination, carried)
             if diagnosis:
                 write_json(
                     diagnosis_out or DIAGNOSIS_PATH,
@@ -294,12 +351,17 @@ def run_dev70_grid(out: Path | None = None, diagnosis_out: Path | None = None) -
     finally:
         engine.close()
         shutil.rmtree(temp_dir, ignore_errors=True)
-    payload = {"set": "dev-70", "rerank_pool": RERANK_POOL, "configs": configs}
-    write_json(out or GRID_PATH, payload)
-    write_json(
-        diagnosis_out or DIAGNOSIS_PATH,
-        {"set": "dev-70", "config": "none-rrf-0.5-1.5", "queries": diagnosis},
-    )
+    carried = {}
+    if destination.is_file():
+        carried = json.loads(destination.read_text(encoding="utf-8"))
+    carried.update({"set": "dev-70", "rerank_pool": RERANK_POOL, "configs": configs})
+    payload = carried
+    write_json(destination, payload)
+    if diagnosis:
+        write_json(
+            diagnosis_out or DIAGNOSIS_PATH,
+            {"set": "dev-70", "config": "none-rrf-0.5-1.5", "queries": diagnosis},
+        )
     return payload
 
 
