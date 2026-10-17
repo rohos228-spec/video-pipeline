@@ -264,6 +264,7 @@ class MessageQueue:
         if decided.mode is MessageMode.task:
             await self.supervisor.submit_task(session_id, text, project_id=project_id)
             return
+        self.supervisor.note_context(session_id, text)
         await self._stream_fast(session_id, text, decided.tier or "fast")
 
     async def _stream_fast(self, session_id: str, text: str, tier: str) -> None:

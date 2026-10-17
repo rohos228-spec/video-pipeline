@@ -541,6 +541,18 @@ class Supervisor:
         if task_id is not None:
             self.tasks.set_flag(task_id, steer_text=text)
 
+    def note_context(self, session_id: str, text: str) -> None:
+        """Реплика ``append`` остаётся в контексте, план сама не меняет.
+
+        Следующий planner (steer) читает этот текст. Без активной задачи
+        писать некуда.
+        """
+        task_id = self.active_task(session_id)
+        note = (text or "").strip()
+        if task_id is None or not note:
+            return
+        self._context[task_id] = (self._context.get(task_id, "") + "\n" + note).strip()
+
     def request_approval(self, session_id: str, reason: str) -> None:
         """Попросить человека. Статус сменится на границе шага, не mid-flight.
 
