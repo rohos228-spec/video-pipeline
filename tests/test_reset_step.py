@@ -289,9 +289,9 @@ async def test_reset_split_deletes_all_frames(session, tmp_path: Path):
     # файл. Кадр при этом не стирается. Копия картинки остаётся.
     backups = list((p.data_dir / "old").rglob("*im1.png"))
     assert backups
-    # plan + script есть, живых кадров нет — тот же откат статуса, что раньше
-    # давало физическое удаление.
-    assert p.status is ProjectStatus.script_ready
+    # Строка кадра на месте, картинка шага img снята в old/. Статус — frames_ready,
+    # не script_ready: fr_total считает и помеченный кадр.
+    assert p.status is ProjectStatus.frames_ready
     assert art.id is not None
 
 

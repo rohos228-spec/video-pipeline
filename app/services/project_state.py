@@ -354,22 +354,11 @@ async def compute_actual_status(session, project: Project) -> ProjectStatus:
     has_script = bool((project.script_text or "").strip())
     has_hero_descr = bool(project.hero_description)
 
-    # Помеченные кадры остаются в БД, но для статуса их нет: иначе сброс
-    # split не откатывает проект (раньше строки стирал session.delete).
-    from types import SimpleNamespace
-
-    from app.services.frame_tombstones import frame_is_active
-
-    attr_rows = (
-        await session.execute(select(Frame.attrs).where(Frame.project_id == pid))
-    ).all()
-    fr_total = sum(
-        1
-        for (attrs,) in attr_rows
-        if frame_is_active(
-            SimpleNamespace(attrs=attrs if isinstance(attrs, dict) else {})
+    fr_total = (
+        await session.execute(
+            select(func.count(Frame.id)).where(Frame.project_id == pid)
         )
-    )
+    ).scalar_one()
     (
         fr_primary_total,
         fr_primary_with_img_prompt,
