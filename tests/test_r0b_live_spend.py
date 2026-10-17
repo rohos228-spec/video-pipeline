@@ -223,3 +223,17 @@ async def test_apply_ops_batches_parallel_through_gate(
     assert len(res.apply_ops["ops"]) == 3
 
 
+def test_e2e_text_nodes_port_is_ephemeral() -> None:
+    import socket
+
+    import scripts.e2e_vibecode_text_nodes as stand
+
+    held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    held.bind(("127.0.0.1", 18767))
+    held.listen(1)
+    try:
+        picked = stand.free_port()
+    finally:
+        held.close()
+    assert picked != 18767
+    assert stand.PORT != 18767
