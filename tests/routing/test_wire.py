@@ -122,6 +122,25 @@ def test_pay52_base_url_reads_settings(monkeypatch):
     assert "api.52pay.com" not in pay52_base_url()
 
 
+def test_settings_attribute_error_is_not_swallowed(monkeypatch):
+    import app.settings as settings_mod
+
+    class Boom:
+        @property
+        def pay52_base_url(self):
+            raise RuntimeError("bad config")
+
+        @property
+        def gpt_model(self):
+            raise RuntimeError("bad config")
+
+    monkeypatch.setattr(settings_mod, "settings", Boom())
+    with pytest.raises(RuntimeError, match="bad config"):
+        pay52_base_url()
+    with pytest.raises(RuntimeError, match="bad config"):
+        kie_model_slug()
+
+
 def test_kie_slug_reads_gpt_model(monkeypatch):
     import app.settings as settings_mod
 
@@ -221,6 +240,37 @@ async def test_pay52_route_miss_does_not_post(config):
     assert client.posts == []
 
 
+async def test_stream_on_delta_accepts_async_callback(config, monkeypatch):
+    import app.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "settings", SimpleNamespace(gpt_model="gpt-5-6-sol"))
+    lines = [
+        ": keep-alive",
+        "data: {broken",
+        'data: {"type":"response.output_text.delta","delta":"а"}',
+        'data: {"type":"response.output_text.delta","delta":"б"}',
+        'data: {"type":"response.completed","response":{"model":"gpt-5-6-sol","status":"completed","usage":{"input_tokens":2,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":4}}}}',
+    ]
+    seen: list[str] = []
+
+    async def on_delta(delta: str) -> None:
+        seen.append(delta)
+
+    client = _StreamClient(lines)
+    transport = HttpxTransport(
+        config.providers,
+        env={"GPT_API_KEY": "kie-key", "GPT_BASE_URL": "https://api.kie.ai"},
+        client_factory=lambda timeout: client,
+    )
+    request = _request("kie", "gpt-5.6-sol", stream=True)
+    request.on_delta = on_delta
+    result = await transport.complete(request)
+    assert seen == ["а", "б"]
+    assert result.text == "аб"
+    assert result.prompt_tokens == 2
+    assert result.reasoning_tokens == 4
+
+
 async def test_kie_http_is_stream_and_uses_gpt_model(config, monkeypatch):
     import app.settings as settings_mod
 
@@ -267,6 +317,7 @@ async def test_router_kie_fallback_streams_even_if_caller_does_not(config, sleep
         "strong",
         [{"role": "user", "content": "длинный план"}],
         stream=False,
+        run_id="run-kie",
     )
     kie = transport.calls[-1]
     assert kie.provider == "kie"

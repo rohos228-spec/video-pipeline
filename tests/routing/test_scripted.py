@@ -28,7 +28,7 @@ async def test_scripted_matches_user_text(config, sink):
     )
     assert plan.text == "PLAN-1"
     assert plan.model == "gpt-5.6-sol"
-    ack = await router.call("fast", [{"role": "user", "content": "да"}])
+    ack = await router.call("fast", [{"role": "user", "content": "да"}], run_id="s2")
     assert ack.text == "ACK"
     assert ack.tier == "strong"
     assert transport.calls == []
@@ -44,7 +44,7 @@ async def test_scripted_miss_is_not_a_live_call(config):
         transport=transport,
     )
     with pytest.raises(RouterError):
-        await router.call("strong", [{"role": "user", "content": "просто так"}])
+        await router.call("strong", [{"role": "user", "content": "просто так"}], run_id="s-miss")
     assert transport.calls == []
 
 

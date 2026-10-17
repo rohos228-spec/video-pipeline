@@ -41,17 +41,25 @@ class SpendLedger:
         self._lock = threading.RLock()
 
     @staticmethod
-    def _key(run_id: str | None) -> str:
-        return run_id or "_anonymous"
+    def _named_run(run_id: str | None) -> str | None:
+        """Ключ прогона. Пустой ``run_id`` не складывается в общий бакет."""
+        if run_id is None:
+            return None
+        text = str(run_id).strip()
+        return text or None
 
     def spent(self, run_id: str | None) -> float:
         """Internal по ``run_id``. Так читает ``spend_guard`` в #351.
 
-        ``None`` — анонимный бакет роутера, не «неизвестный запуск».
+        Пустой ``run_id`` — 0. Общего бакета ``_anonymous`` нет: иначе
+        любой ход без ``run_id`` после $10 блокировался бы навсегда.
         Pipeline сюда не входит.
         """
+        key = self._named_run(run_id)
+        if key is None:
+            return 0.0
         with self._lock:
-            return self._internal.get(self._key(run_id), 0.0)
+            return float(self._internal.get(key, 0.0))
 
     def pipeline_spent(self, run_id: str | None) -> float:
         """Pipeline-scope по ``run_id``. В лимит $10 не входит.
@@ -82,13 +90,31 @@ class SpendLedger:
             return float(self._pipeline.get(key, 0.0))
 
     def exhausted(self, run_id: str | None) -> bool:
+        key = self._named_run(run_id)
+        if key is None:
+            return False
         with self._lock:
-            spent = self._internal.get(self._key(run_id), 0.0)
+            spent = self._internal.get(key, 0.0)
             return spent >= self.internal_budget_usd
 
-    def hydrate(self, run_id: str | None, internal_spent_usd: float) -> None:
+    def hydrate(
+        self,
+        run_id: str | None,
+        internal_spent_usd: float,
+        pipeline_spent_usd: float = 0.0,
+    ) -> None:
+        """Восстановить суммы после рестарта.
+
+        ``internal_spent_usd`` — ``SUM(cost_usd)`` по ``budget_scope='internal'``.
+        ``pipeline_spent_usd`` — ``SUM(cost_usd)`` по ``budget_scope='pipeline'``.
+        Оба только ``status='ok'`` и этот ``run_id``. Без ``run_id`` ошибка.
+        """
+        key = self._named_run(run_id)
+        if key is None:
+            raise ValueError("hydrate requires run_id")
         with self._lock:
-            self._internal[self._key(run_id)] = float(internal_spent_usd)
+            self._internal[key] = float(internal_spent_usd)
+            self._pipeline[key] = float(pipeline_spent_usd)
 
     def totals(self, run_id: str | None = None) -> dict[str, float | bool]:
         """Снимок только для чтения.
@@ -119,7 +145,11 @@ class SpendLedger:
         *,
         scope: str = "internal",
     ) -> ChargeResult:
-        key = self._key(run_id)
+        key = self._named_run(run_id)
+        if key is None:
+            if scope == "internal":
+                raise ValueError("internal budget requires run_id")
+            raise ValueError("pipeline budget requires run_id")
         amount = max(0.0, float(cost_usd))
         with self._lock:
             if scope == "pipeline":

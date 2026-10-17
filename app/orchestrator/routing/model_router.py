@@ -112,6 +112,15 @@ def primary_key_fields(
     }
 
 
+def _require_run_id(run_id: str | None, *, scope: str) -> str:
+    """Internal (и pipeline) без ``run_id`` не пишутся в общий бакет."""
+    if run_id is None or str(run_id).strip() == "":
+        if scope == "internal":
+            raise ValueError("internal budget requires run_id")
+        raise ValueError("pipeline budget requires run_id")
+    return str(run_id).strip()
+
+
 def _role(value: str | None) -> str | None:
     if value is None or str(value).strip() == "":
         return None
@@ -133,7 +142,7 @@ def _latency_ms(started: float) -> int:
 
 
 class ModelRouter:
-    """Общая политика: классификация, бюджет, ретраи, stagger, лог попыток."""
+    """Общая политика: классификация, бюджет, ретраи, лог попыток."""
 
     impl_name = "live"
 
@@ -183,6 +192,7 @@ class ModelRouter:
         scope = "internal" if budget_scope is None else budget_scope
         if scope not in _SCOPES:
             raise ValueError("budget_scope must be internal|pipeline")
+        run_id = _require_run_id(run_id, scope=scope)
         requested = (tier or "auto").strip().lower()
         role = _role(agent_role)
         if requested == "auto":
@@ -256,6 +266,9 @@ class ModelRouter:
                 effective_tier=effective_tier(self.config, hit.tier),
                 kill_switch=hit.kill_switch,
             )
+        run_id = _require_run_id(run_id, scope="internal")
+        if self.ledger.exhausted(run_id):
+            return self._budget_classification(hit, run_id, task_id)
         response = await self.call(
             "fast",
             classifier_messages(message or ""),
@@ -271,32 +284,79 @@ class ModelRouter:
         if parsed.confidence < self.config.classifier_threshold:
             chosen = "strong"
         mode = hit.mode if hit.mode_locked else parsed.mode
+        blocked = response.task_status is not None and response.approval is not None
         return Classification(
             tier=chosen,
             mode=coerce_mode(mode, kill_switch=hit.kill_switch),
             deterministic=False,
             confidence=parsed.confidence,
-            reason="classifier",
+            reason="budget_exhausted" if blocked else "classifier",
             effective_tier=effective_tier(self.config, chosen),
             kill_switch=hit.kill_switch,
+            task_status=response.task_status,
+            approval=response.approval,
         )
 
-    async def call_batch(self, items: Sequence[dict]) -> list[LLMResponse]:
-        """Параллельный батч. Старт i-го запроса сдвинут на i * gap, gap ∈ [2, 5]."""
+    async def call_batch(
+        self,
+        items: Sequence[dict],
+        *,
+        gap: float | None = None,
+    ) -> list[LLMResponse]:
+        """Параллельный батч через ``gather``. Сдвиг по умолчанию 0.
+
+        ``gap`` опционален (секунды, ``i * gap`` от общего t0). Диапазон
+        [2, 5] не требуется. Семафоров и очередей нет.
+
+        ``tier="auto"`` классифицируется здесь, по одному элементу, до
+        ``gather``. Внутри задачи классификаторного хода нет.
+        """
         if not items:
             return []
-        gap = float(self._rng.uniform(self.config.stagger_min_s, self.config.stagger_max_s))
+        delay = 0.0 if gap is None else float(gap)
+        prepared = [await self._prepare_batch_item(spec) for spec in items]
 
         async def _one(index: int, spec: dict) -> LLMResponse:
-            if index:
-                await self._sleep(index * gap)
+            if delay and index:
+                await self._sleep(index * delay)
             payload = dict(spec)
-            tier = payload.pop("tier", "auto")
+            tier = payload.pop("tier", "strong")
             messages = payload.pop("messages")
             stream = payload.pop("stream", False)
             return await self.call(tier, messages, stream, **payload)
 
-        return list(await asyncio.gather(*[_one(i, spec) for i, spec in enumerate(items)]))
+        return list(await asyncio.gather(*[_one(i, spec) for i, spec in enumerate(prepared)]))
+
+    async def _prepare_batch_item(self, spec: dict) -> dict:
+        payload = dict(spec)
+        tier = str(payload.get("tier", "auto") or "auto").strip().lower()
+        if tier != "auto":
+            payload["tier"] = tier
+            return payload
+        decision = await self.classify(
+            _last_user_text(normalize_messages(payload.get("messages"))),
+            agent_role=payload.get("agent_role"),
+            risk=payload.get("risk"),
+            mutating=payload.get("mutating"),
+            run_id=payload.get("run_id"),
+            task_id=payload.get("task_id"),
+        )
+        payload["tier"] = decision.tier
+        return payload
+
+    def _budget_classification(self, hit: Any, run_id: str, task_id: str | None) -> Classification:
+        """Спорный ход при уже исчерпанном суб-бюджете. Модель не зовём."""
+        return Classification(
+            tier="strong",
+            mode=coerce_mode(hit.mode, kill_switch=hit.kill_switch),
+            deterministic=False,
+            confidence=0.0,
+            reason="budget_exhausted",
+            effective_tier=effective_tier(self.config, "strong"),
+            kill_switch=hit.kill_switch,
+            task_status=waiting_approval_status(),
+            approval=self._approval_for(run_id, task_id, self.ledger.spent(run_id)),
+        )
 
     async def _dispatch(self, ctx: CallContext) -> LLMResponse:
         return await self._run_chain(ctx)
@@ -476,7 +536,15 @@ class ModelRouter:
         return self._approval(ctx, result.spent_usd)
 
     def _approval(self, ctx: CallContext, spent: float) -> ApprovalEvent:
-        raw = ctx.task_id
+        return self._approval_for(ctx.run_id, ctx.task_id, spent)
+
+    def _approval_for(
+        self,
+        run_id: str | None,
+        raw_task_id: str | int | None,
+        spent: float,
+    ) -> ApprovalEvent:
+        raw = raw_task_id
         task_id: int | None
         task_ref: str | None = None
         if isinstance(raw, int) and not isinstance(raw, bool):
@@ -491,7 +559,7 @@ class ModelRouter:
             task_id=task_id,
             spent_usd=spent,
             budget_usd=self.ledger.internal_budget_usd,
-            run_id=ctx.run_id,
+            run_id=run_id,
             task_ref=task_ref,
         )
 

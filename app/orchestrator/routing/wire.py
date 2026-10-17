@@ -23,16 +23,22 @@ class Pay52ModuleMissing:
 PAY52_MODULE_MISSING = Pay52ModuleMissing()
 
 
-def pay52_base_url() -> str:
-    """База 52pay. Сначала settings, затем env, затем дефолт поля Settings."""
+def _load_settings() -> Any:
+    """settings или None, если модуля нет. Прочие ошибки импорта не глотаем."""
     try:
         from app.settings import settings
+    except ImportError:
+        return None
+    return settings
 
+
+def pay52_base_url() -> str:
+    """База 52pay. Сначала settings, затем env, затем дефолт поля Settings."""
+    settings = _load_settings()
+    if settings is not None:
         base = str(getattr(settings, "pay52_base_url", "") or "").strip()
         if base:
             return base.rstrip("/")
-    except Exception:
-        pass
     base = (os.environ.get("PAY52_BASE_URL") or "").strip()
     if base:
         return base.rstrip("/")
@@ -41,14 +47,11 @@ def pay52_base_url() -> str:
 
 def kie_model_slug() -> str:
     """Wire-слаг Kie: ``settings.gpt_model`` / ``GPT_MODEL``."""
-    try:
-        from app.settings import settings
-
+    settings = _load_settings()
+    if settings is not None:
         slug = str(getattr(settings, "gpt_model", "") or "").strip()
         if slug:
             return slug
-    except Exception:
-        pass
     slug = (os.environ.get("GPT_MODEL") or "").strip()
     return slug or KIE_MODEL_DEFAULT
 

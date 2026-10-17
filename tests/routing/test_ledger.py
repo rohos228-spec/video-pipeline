@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from app.orchestrator.routing.config import Price
+from app.orchestrator.routing.ledger import SpendLedger
 from app.orchestrator.routing.model_router import LiveRouter
+from app.orchestrator.routing.types import waiting_approval_status
 from tests.routing.fakes import FakeTransport, ok
 
 
@@ -24,8 +28,6 @@ async def test_cost_charges_ledger_and_escalates(config, sink):
             ok("third-should-not-run", prompt_tokens=1),
         ]
     )
-    from app.orchestrator.routing.ledger import SpendLedger
-
     ledger = SpendLedger(internal_budget_usd=10)
     router = LiveRouter(priced, transport=transport, ledger=ledger, sink=sink)
     messages = [{"role": "user", "content": "суммируй"}]
@@ -96,3 +98,46 @@ async def test_pipeline_scope_does_not_eat_internal_budget(config):
     )
     assert internal.text == "i"
     assert internal.approval is None
+
+
+def test_missing_run_id_is_not_an_anonymous_bucket():
+    ledger = SpendLedger(internal_budget_usd=10)
+    assert ledger.spent(None) == 0.0
+    assert ledger.exhausted(None) is False
+    with pytest.raises(ValueError, match="internal budget requires run_id"):
+        ledger.charge(None, 10, scope="internal")
+    assert ledger.spent(None) == 0.0
+    assert ledger.exhausted("later") is False
+
+
+def test_hydrate_restores_pipeline_sum():
+    ledger = SpendLedger(internal_budget_usd=10)
+    ledger.hydrate("run-h", 4, 12)
+    assert ledger.spent("run-h") == 4
+    assert ledger.pipeline_spent("run-h") == 12
+    view = ledger.totals("run-h")
+    assert view["internal_spent_usd"] == 4
+    assert view["pipeline_spent_usd"] == 12
+    assert view["budget_exhausted"] is False
+    with pytest.raises(ValueError, match="hydrate requires run_id"):
+        ledger.hydrate(None, 1, 1)
+
+
+async def test_classify_blocked_budget_is_explicit(config):
+    ledger = SpendLedger(internal_budget_usd=10)
+    ledger.hydrate("run-a", 10, 3)
+    transport = FakeTransport([ok("no")])
+    router = LiveRouter(config, transport=transport, ledger=ledger)
+    decision = await router.classify("что думаешь?", run_id="run-a", task_id="13")
+    assert decision.reason == "budget_exhausted"
+    assert decision.task_status == waiting_approval_status()
+    assert decision.approval is not None
+    assert decision.approval.reason == "budget_exhausted"
+    assert decision.approval.task_id == 13
+    assert transport.calls == []
+
+
+async def test_call_without_run_id_raises(config):
+    router = LiveRouter(config, transport=FakeTransport([ok("x")]))
+    with pytest.raises(ValueError, match="internal budget requires run_id"):
+        await router.call("strong", [{"role": "user", "content": "да"}])

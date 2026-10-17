@@ -46,9 +46,11 @@ from tests.routing.fakes import FakeTransport, ok
 async def test_deterministic_rules(config, text, kwargs, tier, mode):
     transport = FakeTransport([ok("should-not-run")])
     router = LiveRouter(config, transport=transport)
-    decision = await router.classify(text, **kwargs)
+    extra = dict(kwargs)
+    if tier is None:
+        extra["run_id"] = "cls"
+    decision = await router.classify(text, **extra)
     assert decision.mode == mode
-    assert decision["mode"] == mode
     if tier is None:
         assert decision.deterministic is False
         assert decision.tier == "strong"
@@ -56,7 +58,6 @@ async def test_deterministic_rules(config, text, kwargs, tier, mode):
     else:
         assert decision.deterministic is True
         assert decision.tier == tier
-        assert decision["tier"] == tier
         assert decision.confidence == 1.0
         assert transport.calls == []
 
@@ -111,7 +112,7 @@ async def test_classifier_does_not_set_kill_switch(config):
         [ok('{"tier":"fast","mode":"task","confidence":0.95,"kill_switch":true}')]
     )
     router = LiveRouter(config, transport=transport)
-    decision = await router.classify("продолжи")
+    decision = await router.classify("продолжи", run_id="cls")
     assert decision.deterministic is False
     assert decision.kill_switch is False
     assert transport.calls
@@ -120,7 +121,7 @@ async def test_classifier_does_not_set_kill_switch(config):
 async def test_length_boundary_is_800(config):
     transport = FakeTransport([ok('{"tier":"fast","mode":"task","confidence":0.99}')])
     router = LiveRouter(config, transport=transport)
-    short = await router.classify("а" * 800)
+    short = await router.classify("а" * 800, run_id="cls")
     assert short.deterministic is False
     assert short.tier == "fast"
     long = await router.classify("б" * 801)
@@ -132,14 +133,14 @@ async def test_length_boundary_is_800(config):
 async def test_classifier_threshold(config):
     low = FakeTransport([ok('{"tier":"fast","mode":"task","confidence":0.79}')])
     router = LiveRouter(config, transport=low)
-    decision = await router.classify("продолжи")
+    decision = await router.classify("продолжи", run_id="cls")
     assert decision.deterministic is False
     assert decision.tier == "strong"
     assert decision.confidence == pytest.approx(0.79)
 
     high = FakeTransport([ok('{"tier":"fast","mode":"steer","confidence":0.8}')])
     router = LiveRouter(config, transport=high)
-    decision = await router.classify("продолжи")
+    decision = await router.classify("продолжи", run_id="cls")
     assert decision.tier == "fast"
     assert decision.mode == "steer"
     assert decision.confidence == pytest.approx(0.8)
@@ -150,7 +151,7 @@ async def test_question_without_task_keeps_append_mode(config):
         [ok('{"tier":"fast","mode":"task","confidence":0.95}')]
     )
     router = LiveRouter(config, transport=transport)
-    decision = await router.classify("что думаешь?")
+    decision = await router.classify("что думаешь?", run_id="cls")
     assert decision.mode == "append"
     assert decision.tier == "fast"
     assert decision.deterministic is False
@@ -165,6 +166,7 @@ async def test_auto_call_uses_last_user_message_not_system(config):
             {"role": "system", "content": "составь план и отчёт " + ("х" * 900)},
             {"role": "user", "content": "да"},
         ],
+        run_id="auto-1",
     )
     assert response.tier == "strong"
     assert response.deterministic is True
@@ -175,7 +177,7 @@ async def test_auto_call_uses_last_user_message_not_system(config):
 async def test_garbage_classifier_falls_back_to_strong(config):
     transport = FakeTransport([ok("не json")])
     router = LiveRouter(config, transport=transport)
-    decision = await router.classify("ещё раз")
+    decision = await router.classify("ещё раз", run_id="cls")
     assert decision.tier == "strong"
     assert decision.deterministic is False
     assert decision.confidence == 0.0
@@ -187,4 +189,4 @@ async def test_classifier_timeout_does_not_escape_as_success_tier(config, sleepe
     )
     router = LiveRouter(config, transport=transport, sleeper=sleeper)
     with pytest.raises(RouterExhausted):
-        await router.classify("продолжи")
+        await router.classify("продолжи", run_id="cls")

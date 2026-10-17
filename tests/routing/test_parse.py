@@ -72,6 +72,35 @@ def test_parse_chat_sse_concatenates_deltas():
     assert result.model == "gpt-5.6-sol"
 
 
+def test_parse_chat_sse_skips_broken_and_keepalive():
+    raw = "\n".join(
+        [
+            ": keep-alive",
+            "",
+            "data: {not-json",
+            'data: {"choices":[{"delta":{"content":"ок"},"finish_reason":"stop"}]}',
+            "data: [DONE]",
+        ]
+    )
+    result = parse_chat_sse(raw)
+    assert result.text == "ок"
+    assert result.finish_reason == "stop"
+
+
+def test_parse_responses_sse_skips_broken_lines():
+    raw = "\n".join(
+        [
+            ": ping",
+            "data: {",
+            'data: {"type":"response.output_text.delta","delta":"ок"}',
+            'data: {"type":"response.completed","response":{"model":"gpt-5-6-sol","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0}}}}',
+        ]
+    )
+    result = parse_responses_sse(raw)
+    assert result.text == "ок"
+    assert result.model == "gpt-5-6-sol"
+
+
 def test_parse_responses_sse_reads_deltas():
     raw = "\n".join(
         [

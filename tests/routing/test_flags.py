@@ -16,8 +16,6 @@ def test_yaml_defaults_are_unconfirmed():
     assert config.fast_timeout_s == 60
     assert config.strong_timeout_s == 300
     assert config.retries == 2
-    assert config.stagger_min_s == 2
-    assert config.stagger_max_s == 5
     assert config.internal_budget_usd == 10
     assert config.classifier_threshold == 0.8
 
@@ -25,7 +23,7 @@ def test_yaml_defaults_are_unconfirmed():
 async def test_default_fast_request_goes_strong_high(config):
     transport = FakeTransport([ok("s")])
     router = LiveRouter(config, transport=transport)
-    response = await router.call("fast", [{"role": "user", "content": "да"}])
+    response = await router.call("fast", [{"role": "user", "content": "да"}], run_id="run-fast")
     assert response.tier == "strong"
     assert response.model == "gpt-5.6-sol"
     assert response.provider == "52pay"
@@ -39,7 +37,7 @@ async def test_default_fast_request_goes_strong_high(config):
 async def test_d6_enables_glm_without_high(config):
     transport = FakeTransport([ok("f", model="glm-5.3-flash")])
     router = LiveRouter(replace(config, d6_confirmed=True), transport=transport)
-    response = await router.call("fast", [{"role": "user", "content": "да"}])
+    response = await router.call("fast", [{"role": "user", "content": "да"}], run_id="run-d6")
     assert response.tier == "fast"
     assert response.model == "glm-5.3-flash"
     hop = transport.calls[0]
@@ -50,13 +48,13 @@ async def test_d6_enables_glm_without_high(config):
 async def test_d1_switches_strong_primary(config):
     off = FakeTransport([ok("sol")])
     router = LiveRouter(config, transport=off)
-    await router.call("strong", [{"role": "user", "content": "план"}])
+    await router.call("strong", [{"role": "user", "content": "план"}], run_id="run-d1-off")
     assert off.calls[0].model == "gpt-5.6-sol"
     assert off.calls[0].provider == "52pay"
 
     on = FakeTransport([ok("fable", model="claude-fable-5")])
     router = LiveRouter(replace(config, d1_confirmed=True), transport=on)
-    response = await router.call("strong", [{"role": "user", "content": "план"}])
+    response = await router.call("strong", [{"role": "user", "content": "план"}], run_id="run-d1-on")
     assert response.model == "claude-fable-5"
     assert on.calls[0].reasoning_effort == "high"
     assert on.calls[0].provider == "52pay"

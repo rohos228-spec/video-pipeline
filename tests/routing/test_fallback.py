@@ -62,7 +62,7 @@ async def test_fast_timeout_uses_60s_and_haiku(config, sleeper):
         [ProviderTimeout("glm")] * 3 + [ok("haiku", model="claude-haiku-4-5")]
     )
     router = LiveRouter(flagged, transport=transport, sleeper=sleeper)
-    response = await router.call("fast", [{"role": "user", "content": "да"}])
+    response = await router.call("fast", [{"role": "user", "content": "да"}], run_id="run-fast")
     assert response.model == "claude-haiku-4-5"
     assert response.provider == "52pay"
     assert response.fallback_index == 1
@@ -82,7 +82,7 @@ async def test_fatal_status_skips_retries(config, sleeper):
         ]
     )
     router = LiveRouter(config, transport=transport, sleeper=sleeper)
-    response = await router.call("strong", [{"role": "user", "content": "hi"}])
+    response = await router.call("strong", [{"role": "user", "content": "hi"}], run_id="run-fatal")
     assert response.provider == "kie"
     assert len(transport.calls) == 2
     assert sleeper.calls == []
@@ -92,4 +92,4 @@ async def test_exhausted_chain_raises(config, sleeper):
     transport = FakeTransport([ProviderTimeout("x")] * 6)
     router = LiveRouter(config, transport=transport, sleeper=sleeper)
     with pytest.raises(RouterExhausted):
-        await router.call("strong", [{"role": "user", "content": "hi"}])
+        await router.call("strong", [{"role": "user", "content": "hi"}], run_id="run-ex")

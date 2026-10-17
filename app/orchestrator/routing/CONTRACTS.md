@@ -88,9 +88,12 @@ interrupt с `kill_switch=false`. Классификатор для аварий
 `RouterError` при исчерпании не бросаются.
 
 1. Каждый успешный `router.call` с `budget_scope=internal` прибавляет
-   `cost_usd` в ledger прогона (`run_id`, иначе `"_anonymous"`). Лимит —
-   `internal_sub_budget_usd` (дефолт 10). `budget_scope=pipeline` в этот
-   счётчик не входит.
+   `cost_usd` в ledger прогона. `run_id` обязателен: без него
+   `ValueError("internal budget requires run_id")`. Общего бакета
+   `"_anonymous"` нет — иначе все ходы без id делили бы один лимит $10
+   и после исчерпания блокировались бы навсегда. `spent(None)` для #351
+   возвращает `0.0` и ничего не блокирует. `budget_scope=pipeline` в
+   счётчик $10 не входит и тоже требует `run_id`.
 2. Ход, после которого `spent >= 10`, всё равно возвращает текст модели.
    На том же объекте `LLMResponse`:
    - `task_status == "waiting_approval"` (`TaskStatus.waiting_approval`);
@@ -139,9 +142,8 @@ same = ledger.read_pipeline_spent(           # то же число, project_id 
 `pipeline_spent(run_id)` — позиционный вызов, как в адаптере после
 `TypeError` на лишнем `project_id`. `read_pipeline_spent` — keyword-only,
 адаптер пробует его первым. Оба имени возвращают pipeline-scope этого
-`run_id`. Пустой или неизвестный `run_id` даёт `0.0` (анонимный бакет
-не отдаётся). `spent(None)` по-прежнему анонимный internal: так зовёт
-роутер и #351, когда `run_id` нет.
+`run_id`. Пустой или неизвестный `run_id` даёт `0.0`. `spent(None)` тоже `0.0`:
+#351 зовёт так, когда `run_id` нет, и это не общий процессный бакет.
 
 Стабильный снимок:
 
@@ -304,9 +306,17 @@ CREATE INDEX ix_orch_llm_calls_fixture ON orch_llm_calls (fixture_key);
 `InMemoryLlmCallSink` / `NullLlmCallSink`. WS3 ставит свою реализацию,
 которая делает INSERT. Роутер БД не открывает.
 
-Сток in-memory ledger тоже в процессе. `SpendLedger.hydrate(run_id, spent)`
-нужен после рестарта, сумма — `SUM(cost_usd)` по `run_id` и
-`budget_scope='internal'` и `status='ok'`.
+Сток in-memory ledger тоже в процессе. После рестарта WS3 вызывает
+
+```python
+ledger.hydrate(
+    run_id,
+    internal_spent_usd,   # SUM(cost_usd) WHERE budget_scope='internal' AND status='ok'
+    pipeline_spent_usd,   # SUM(cost_usd) WHERE budget_scope='pipeline' AND status='ok'
+)
+```
+
+Без `run_id` `hydrate` бросает `ValueError`. Pipeline в лимит $10 не входит.
 
 ## Цепочки (pay52_routes.yaml)
 
@@ -322,8 +332,17 @@ Env `ORCH_D1_CONFIRMED` / `ORCH_D6_CONFIRMED` перекрывают файл.
 `backoff_base_s * 2^(attempt-1)` (1 с, затем 2 с), потом следующий хоп.
 Таймаут, 429 и 5xx ретраятся. 401/400 на хопе ретраи не жгут — сразу фолбэк.
 
-Батч всегда параллельный. Зазор между стартами — одно число из [2, 5] секунд
-на весь батч (`i * gap` от общего t0).
+Батч всегда параллельный: `asyncio.gather`, без семафоров и очередей.
+Сдвиг по умолчанию 0. Необязательный `call_batch(..., gap=секунды)`
+сдвигает старт i-го элемента на `i * gap` от общего t0. Диапазон [2, 5]
+не требуется и в main не переносится. `tier="auto"` классифицируется
+до сборки батча, по одному вызову на элемент; внутри задачи
+классификаторного хода нет.
+
+`classify` при уже исчерпанном internal-бюджете модель не зовёт.
+`Classification.task_status=waiting_approval` и
+`Classification.approval.reason="budget_exhausted"`. Тот же сигнал
+копируется, если сам ход классификатора пересёк лимит.
 
 Live, 52pay: URL, ключ и wire-модель берёт `app.services.pay52_routes.resolve_text`
 (карту не копируем). База — `settings.pay52_base_url` / `PAY52_BASE_URL`,

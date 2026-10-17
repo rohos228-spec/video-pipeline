@@ -53,7 +53,7 @@ async def test_fixture_miss_raises_and_does_not_call_transport(config, tmp_path,
         config, fixture_dir=tmp_path, transport=transport, sink=sink
     )
     with pytest.raises(FixtureMiss) as exc:
-        await router.call("strong", [{"role": "user", "content": "нет фикстуры"}])
+        await router.call("strong", [{"role": "user", "content": "нет фикстуры"}], run_id="miss")
     assert exc.value.label == "fixture-miss"
     assert "fixture-miss" in str(exc.value)
     assert transport.calls == []

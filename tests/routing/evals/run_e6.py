@@ -13,10 +13,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.orchestrator.routing.classifier import classifier_messages
 from app.orchestrator.routing.config import load_config
-from app.orchestrator.routing.hashing import fixture_key, messages_sha256
-from app.orchestrator.routing.model_router import primary_key_fields
 from app.orchestrator.routing.replay import ReplayRouter
 
 DATASET = Path(__file__).with_name("e6_dataset.jsonl")
@@ -49,8 +46,26 @@ class E6Report:
         return sum(1 for row in self.rows if row.ok)
 
     @property
-    def accuracy(self) -> float:
-        return self.correct / self.n if self.n else 0.0
+    def deterministic_rows(self) -> list[E6RowResult]:
+        return [row for row in self.rows if row.expect_deterministic]
+
+    @property
+    def classifier_rows(self) -> list[E6RowResult]:
+        return [row for row in self.rows if not row.expect_deterministic]
+
+    @staticmethod
+    def _ratio(rows: list[E6RowResult]) -> float:
+        if not rows:
+            return 0.0
+        return sum(1 for row in rows if row.ok) / len(rows)
+
+    @property
+    def deterministic_accuracy(self) -> float:
+        return self._ratio(self.deterministic_rows)
+
+    @property
+    def classifier_accuracy(self) -> float:
+        return self._ratio(self.classifier_rows)
 
     @property
     def simple_on_fast(self) -> float:
@@ -73,18 +88,25 @@ class E6Report:
         return sum(1 for row in self.rows if row.deterministic) / self.n
 
     def markdown(self) -> str:
+        det = self.deterministic_rows
+        clf = self.classifier_rows
+        det_ok = sum(1 for row in det if row.ok)
+        clf_ok = sum(1 for row in clf if row.ok)
         lines = [
             "# E6 — маршрутизация",
             "",
             f"- запросов: {self.n}",
-            f"- accuracy: {self.accuracy:.3f} ({self.correct}/{self.n}), порог 0.90",
+            f"- детерминированные: {self.deterministic_accuracy:.3f} "
+            f"({det_ok}/{len(det)}), порог 0.90",
+            f"- классификаторные replay: {self.classifier_accuracy:.3f} "
+            f"({clf_ok}/{len(clf)}). Это не измерение модели и в общую цифру не сводится",
             f"- простых на fast: {self.simple_on_fast:.3f}, порог 0.90",
             f"- планов на strong: {self.plans_on_strong:.3f}, порог 1.00",
             f"- доля детерминированных классификаций: {self.deterministic_share:.3f} "
             "(гипотеза ~0.80, порога нет)",
             "",
-            "Спорные строки закрыты replay-фикстурами классификатора (контур A), "
-            "не живой моделью.",
+            "Фикстуры классификатора не генерируются из expected_tier. "
+            "Промах файла — ошибка fixture-miss.",
             "",
             "| id | expected | predicted | det | kill | ok |",
             "|---|---|---|---|---|---|",
@@ -106,63 +128,10 @@ def load_dataset(path: Path = DATASET) -> list[dict]:
     return rows
 
 
-def _write_classifier_fixture(fixture_dir: Path, config, message: str, tier: str) -> None:
-    messages = classifier_messages(message)
-    fields = primary_key_fields(
-        config,
-        tier="fast",
-        messages=messages,
-        temperature=config.classifier_temperature,
-        max_tokens=config.classifier_max_tokens,
-    )
-    key = fixture_key(**fields)
-    body = {
-        "key": key,
-        "request_meta": {
-            "tier": fields["tier"],
-            "temperature": fields["temperature"],
-            "max_tokens": fields["max_tokens"],
-            "reasoning_effort": fields["reasoning_effort"],
-            "messages_sha256": messages_sha256(messages),
-        },
-        "response": {
-            "text": json.dumps(
-                {"tier": tier, "mode": "task", "confidence": 0.92},
-                ensure_ascii=False,
-            ),
-            "call_id": "e6-recorded",
-            "model": "gpt-5.6-sol",
-            "provider": "52pay",
-            "tier": fields["tier"],
-            "finish_reason": "stop",
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 8,
-                "reasoning_tokens": 0,
-            },
-            "cost_usd": 0.0,
-            "latency_ms": 5,
-            "fallback_index": 0,
-            "deterministic": False,
-            "fixture_key": key,
-        },
-        "recorded_at": "2026-10-17T00:00:00Z",
-        "recorded_model": "gpt-5.6-sol",
-    }
-    fixture_dir.mkdir(parents=True, exist_ok=True)
-    (fixture_dir / f"{key}.json").write_text(
-        json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-
 async def evaluate(fixture_dir: Path, dataset: Path = DATASET) -> E6Report:
+    """Читает готовые фикстуры. Промах — ``FixtureMiss`` (``fixture-miss``)."""
     config = load_config(apply_env=False)
     rows = load_dataset(dataset)
-    for row in rows:
-        if not row["expect_deterministic"]:
-            _write_classifier_fixture(
-                fixture_dir, config, row["message"], row["expected_tier"]
-            )
     router = ReplayRouter(config, fixture_dir=fixture_dir)
     report = E6Report()
     for row in rows:
@@ -171,6 +140,7 @@ async def evaluate(fixture_dir: Path, dataset: Path = DATASET) -> E6Report:
             agent_role=row.get("agent_role"),
             risk=row.get("risk"),
             mutating=bool(row.get("mutating")),
+            run_id=row["id"],
         )
         expect_kill = bool(row.get("expect_kill_switch", False))
         ok = (
@@ -202,11 +172,18 @@ def write_report(report: E6Report, path: Path = REPORT) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="E6 routing accuracy")
     parser.add_argument("--fixture-dir", type=Path, default=Path(__file__).with_name("fixtures"))
+    parser.add_argument(
+        "--write-report",
+        type=Path,
+        default=REPORT,
+        help="куда записать committed-отчёт; тест этот путь не трогает",
+    )
     args = parser.parse_args()
     report = asyncio.run(evaluate(args.fixture_dir))
-    write_report(report)
+    write_report(report, args.write_report)
     print(report.markdown())
-    if report.accuracy < 0.90 or report.simple_on_fast < 0.90 or report.plans_on_strong < 1:
+    det_ok = report.deterministic_accuracy >= 0.90
+    if not det_ok or report.simple_on_fast < 0.90 or report.plans_on_strong < 1:
         raise SystemExit(1)
 
 

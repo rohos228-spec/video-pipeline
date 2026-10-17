@@ -167,9 +167,8 @@ class Classification:
     reason: str = ""
     effective_tier: str = ""
     kill_switch: bool = False
-
-    def __getitem__(self, key: str):
-        return getattr(self, key)
+    task_status: TaskStatus | None = None
+    approval: ApprovalEvent | None = None
 
 
 @dataclass
