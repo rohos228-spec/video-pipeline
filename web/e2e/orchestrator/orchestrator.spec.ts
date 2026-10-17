@@ -339,6 +339,18 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toHaveText("нет задачи");
   });
 
+  test("kill без открытого платного шага не рисует фантом", async ({ page }) => {
+    await openWithToken(page, "idle", "kill-nophantom");
+    await page.getByTestId("orch-composer").fill("просто текст");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-ack")).toContainText("принял");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    await expect(page.getByTestId("orch-kill-status")).toBeVisible();
+    await expect(page.getByTestId("orch-task-panel")).not.toContainText("run_node images");
+    await expect(page.getByTestId("orch-task-panel")).not.toContainText("s-paid");
+  });
+
   test("мусорный task_status не попадает в бейдж", async ({ page }) => {
     await openWithToken(page, "badstatus", "bad-status");
     await page.getByTestId("orch-composer").fill("статус");
