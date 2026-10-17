@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parents[1]
 
 
 def _ignored(path: str) -> bool:
     proc = subprocess.run(
         ["git", "check-ignore", "-q", "--", path],
-        cwd="/workspace",
+        cwd=_REPO,
         check=False,
     )
     return proc.returncode == 0
