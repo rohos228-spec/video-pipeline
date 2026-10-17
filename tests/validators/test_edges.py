@@ -336,8 +336,8 @@ def test_response_without_approval_is_not_exhaustion() -> None:
         task_status = "waiting_approval"
         approval = None
 
-    assert run("spend_guard", 1, {"response": None}).details["reason"] == "no_spend_snapshot"
-    assert run("spend_guard", 1, {"response": Bare()}).details["reason"] == "no_spend_snapshot"
+    assert run("spend_guard", 1, {"response": None, "run_id": "edge"}).details["reason"] == "no_spend_snapshot"
+    assert run("spend_guard", 1, {"response": Bare(), "run_id": "edge"}).details["reason"] == "no_spend_snapshot"
 
 
 def test_contracts_predicate_error_uses_local_check(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -357,7 +357,7 @@ def test_contracts_predicate_error_uses_local_check(monkeypatch: pytest.MonkeyPa
         task_status = "waiting_approval"
         approval = Approval()
 
-    result = run("spend_guard", 1, {"response": Response()})
+    result = run("spend_guard", 1, {"response": Response(), "run_id": "edge"})
     assert result.passed is False
     assert result.blocking is True
     assert result.details["response"]["payload"] == {}

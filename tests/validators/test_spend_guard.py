@@ -12,7 +12,7 @@ from app.orchestrator.validators.result import (
     budget_exhausted_fallback,
     validator_budget_exhausted,
 )
-from app.orchestrator.validators.spend_guard import get_spend_reader, set_spend_reader
+from app.orchestrator.validators.spend_guard import check, get_spend_reader, set_spend_reader
 
 
 def _totals(**overrides: float) -> dict[str, float]:
@@ -55,7 +55,8 @@ def test_budget_exhausted_blocks_with_reason() -> None:
             "response": {
                 "task_status": "waiting_approval",
                 "approval": {"reason": "budget_exhausted"},
-            }
+            },
+            "run_id": "run-1",
         },
     )
     assert signaled.passed is False
@@ -67,7 +68,7 @@ def test_forecast_exhausts_internal_sub_budget() -> None:
     result = run(
         "spend_guard",
         3,
-        {"spend": _totals(internal_spent_usd=9.0), "forecast_usd": {"internal": 1.0}},
+        {"spend": _totals(internal_spent_usd=9.0), "forecast_usd": {"internal": 1.0}, "run_id": "run-1"},
     )
     assert result.passed is False
     assert result.details["reason"] == "budget_exhausted"
@@ -75,14 +76,14 @@ def test_forecast_exhausts_internal_sub_budget() -> None:
 
 
 def test_hard_caps_block() -> None:
-    daily = run("spend_guard", 1, {"spend": _totals(daily_spent_usd=200.01)})
+    daily = run("spend_guard", 1, {"spend": _totals(daily_spent_usd=200.01), "run_id": "run-1"})
     assert daily.blocking is True
     assert daily.details["reason"] == "spend_cap_daily"
-    project = run("spend_guard", 1, {"spend": _totals(project_spent_usd=100.01)})
+    project = run("spend_guard", 1, {"spend": _totals(project_spent_usd=100.01), "run_id": "run-1"})
     assert project.details["reason"] == "spend_cap_project"
-    run_cap = run("spend_guard", 1, {"spend": _totals(run_spent_usd=50.01)})
+    run_cap = run("spend_guard", 1, {"spend": _totals(run_spent_usd=50.01), "run_id": "run-1"})
     assert run_cap.details["reason"] == "spend_cap_run"
-    actions = run("spend_guard", 1, {"spend": _totals(actions_spent_usd=40.01)})
+    actions = run("spend_guard", 1, {"spend": _totals(actions_spent_usd=40.01), "run_id": "run-1"})
     assert actions.details["reason"] == "actions_sub_budget"
 
 
@@ -90,10 +91,13 @@ def test_exact_hard_cap_still_passes_and_internal_does_not() -> None:
     ok = run(
         "spend_guard",
         1,
-        {"spend": _totals(daily_spent_usd=200, project_spent_usd=100, run_spent_usd=50, actions_spent_usd=40)},
+        {
+            "spend": _totals(daily_spent_usd=200, project_spent_usd=100, run_spent_usd=50, actions_spent_usd=40),
+            "run_id": "run-1",
+        },
     )
     assert ok.passed is True
-    exhausted = run("spend_guard", 1, {"spend": _totals(internal_spent_usd=10)})
+    exhausted = run("spend_guard", 1, {"spend": _totals(internal_spent_usd=10), "run_id": "run-1"})
     assert exhausted.passed is False
     assert exhausted.blocking is True
     assert exhausted.details["reason"] == "budget_exhausted"
@@ -103,7 +107,10 @@ def test_disabled_cap_zero_does_not_fire() -> None:
     result = run(
         "spend_guard",
         1,
-        {"spend": {**_totals(internal_spent_usd=50, daily_spent_usd=999), "internal_cap_usd": 0, "daily_cap_usd": 0}},
+        {
+            "spend": {**_totals(internal_spent_usd=50, daily_spent_usd=999), "internal_cap_usd": 0, "daily_cap_usd": 0},
+            "run_id": "run-1",
+        },
     )
     assert result.passed is True
 
@@ -125,19 +132,19 @@ def test_reader_is_mocked_and_dry_run_does_not_charge() -> None:
 def test_callable_reader_and_injected_reader() -> None:
     def read(*, project_id: int, run_id: str | None = None) -> dict[str, float]:
         assert project_id == 2
-        assert run_id is None
+        assert run_id == "run-2"
         return _totals(run_spent_usd=51)
 
-    via_context = run("spend_guard", 2, {"spend_reader": read})
+    via_context = run("spend_guard", 2, {"spend_reader": read, "run_id": "run-2"})
     assert via_context.details["reason"] == "spend_cap_run"
     reader = _Reader(_totals(project_spent_usd=101))
     set_spend_reader(reader)
     try:
-        via_global = run("spend_guard", 5, {})
+        via_global = run("spend_guard", 5, {"run_id": "run-5"})
     finally:
         set_spend_reader(None)
     assert via_global.blocking is True
-    assert reader.reads == [(5, None)]
+    assert reader.reads == [(5, "run-5")]
 
 
 def test_missing_snapshot_does_not_invent_spend() -> None:
@@ -151,7 +158,11 @@ def test_internal_and_hard_cap_keep_budget_exhausted_reason() -> None:
     result = run(
         "spend_guard",
         1,
-        {"spend": _totals(internal_spent_usd=10, daily_spent_usd=201), "forecast_usd": {"daily": 1}},
+        {
+            "spend": _totals(internal_spent_usd=10, daily_spent_usd=201),
+            "forecast_usd": {"daily": 1},
+            "run_id": "run-1",
+        },
     )
     assert result.details["reason"] == "budget_exhausted"
     assert "spend_cap_daily" in result.details["reasons"]
@@ -275,7 +286,7 @@ def test_router_response_blocks_even_when_ledger_still_has_room() -> None:
 
 def test_other_approval_reason_is_not_budget_exhausted() -> None:
     response = {"task_status": "waiting_approval", "approval": {"reason": "risk"}}
-    result = run("spend_guard", 1, {"response": response})
+    result = run("spend_guard", 1, {"response": response, "run_id": "run-1"})
     assert result.passed is True
     assert result.details["reason"] == "no_spend_snapshot"
 
@@ -291,7 +302,7 @@ def test_contracts_predicate_accepts_router_response(monkeypatch: pytest.MonkeyP
     module.budget_exhausted_response = budget_exhausted_response
     monkeypatch.setitem(sys.modules, "app.orchestrator.contracts", module)
     response = _Response("waiting_approval", _Approval("budget_exhausted"))
-    result = run("spend_guard", 1, {"response": response})
+    result = run("spend_guard", 1, {"response": response, "run_id": "run-1"})
     assert result.blocking is True
     assert result.passed is False
 
@@ -307,7 +318,8 @@ def test_garbage_spend_numbers_do_not_count() -> None:
                 "run_spent_usd": float("nan"),
                 "internal_spent_usd": -3,
                 "actions_spent_usd": float("inf"),
-            }
+            },
+            "run_id": "run-1",
         },
     )
     assert result.passed is True
@@ -318,9 +330,9 @@ def test_unreadable_sources_are_ignored() -> None:
     class Opaque:
         pass
 
-    assert run("spend_guard", 1, {"spend": "нет"}).details["reason"] == "no_spend_snapshot"
-    assert run("spend_guard", 1, {"spend_reader": Opaque()}).details["reason"] == "no_spend_snapshot"
-    assert run("spend_guard", 1, {"spend_ledger": Opaque()}).details["reason"] == "no_spend_snapshot"
+    assert run("spend_guard", 1, {"spend": "нет", "run_id": "run-1"}).details["reason"] == "no_spend_snapshot"
+    assert run("spend_guard", 1, {"spend_reader": Opaque(), "run_id": "run-1"}).details["reason"] == "no_spend_snapshot"
+    assert run("spend_guard", 1, {"spend_ledger": Opaque(), "run_id": "run-1"}).details["reason"] == "no_spend_snapshot"
 
     class NoArg:
         internal_budget_usd = None
@@ -328,7 +340,7 @@ def test_unreadable_sources_are_ignored() -> None:
         def spent(self) -> float:
             return 10.0
 
-    numeric = run("spend_guard", 1, {"ledger": NoArg()})
+    numeric = run("spend_guard", 1, {"ledger": NoArg(), "run_id": "run-1"})
     assert numeric.details["reason"] == "budget_exhausted"
     assert numeric.blocking is True
 
@@ -336,7 +348,7 @@ def test_unreadable_sources_are_ignored() -> None:
         def read_totals(self, *, project_id: int, run_id: str | None = None) -> str:
             return "нет"
 
-    assert run("spend_guard", 1, {"spend_reader": BadReader()}).details["reason"] == "no_spend_snapshot"
+    assert run("spend_guard", 1, {"spend_reader": BadReader(), "run_id": "run-1"}).details["reason"] == "no_spend_snapshot"
 
 
 def test_private_pipeline_field_is_not_read() -> None:
@@ -406,12 +418,13 @@ def test_budget_exhausted_passes_ws3_helper_fallback(monkeypatch: pytest.MonkeyP
             "response": {
                 "task_status": "waiting_approval",
                 "approval": {"reason": "budget_exhausted", "payload": {"spent_usd": 10}},
-            }
+            },
+            "run_id": "run-1",
         },
     )
     assert validator_budget_exhausted(signaled) is True
 
-    hard = run("spend_guard", 1, {"spend": _totals(daily_spent_usd=200.01)})
+    hard = run("spend_guard", 1, {"spend": _totals(daily_spent_usd=200.01), "run_id": "run-1"})
     assert hard.blocking is True
     assert hard.details["reason"] != "budget_exhausted"
     assert validator_budget_exhausted(hard) is False
@@ -442,8 +455,16 @@ def test_budget_exhausted_passes_ws3_helper_fallback(monkeypatch: pytest.MonkeyP
     assert budget_exhausted_fallback(numeric) is True
 
 
+def _blank_run(run_id: str | None) -> bool:
+    return run_id is None or str(run_id).strip() == ""
+
+
 class _ContractLedger:
-    """Форма SpendLedger #345 ``6d4d34cc``. Приватное поле и charge недоступны."""
+    """Форма SpendLedger #345 ``eefc08b4``.
+
+    ``spent(None)`` — 0. Внутренний вызов без ``run_id`` (``charge``) —
+    ``ValueError``. ``totals(None)`` — нулевой снимок, не исключение.
+    """
 
     def __init__(self, *, internal: float, pipeline: float, exhausted: bool) -> None:
         self.internal_budget_usd = 10.0
@@ -458,9 +479,13 @@ class _ContractLedger:
         raise AssertionError("приватное поле")
 
     def spent(self, run_id: str | None) -> float:
+        if _blank_run(run_id):
+            return 0.0
         return self._internal
 
     def pipeline_spent(self, run_id: str | None) -> float:
+        if _blank_run(run_id):
+            return 0.0
         return self._pipe
 
     def read_pipeline_spent(
@@ -469,11 +494,22 @@ class _ContractLedger:
         project_id: int | None = None,
         run_id: str | None = None,
     ) -> float:
-        del project_id, run_id
+        del project_id
+        if _blank_run(run_id):
+            return 0.0
         return self._pipe
 
     def totals(self, run_id: str | None = None) -> dict[str, float | bool]:
         self.totals_runs.append(run_id)
+        if _blank_run(run_id):
+            limit = self.internal_budget_usd
+            return {
+                "internal_spent_usd": 0.0,
+                "pipeline_spent_usd": 0.0,
+                "internal_limit_usd": limit,
+                "internal_remaining_usd": limit,
+                "budget_exhausted": False,
+            }
         remaining = self.internal_budget_usd - self._internal
         return {
             "internal_spent_usd": self._internal,
@@ -483,8 +519,30 @@ class _ContractLedger:
             "budget_exhausted": self._exhausted,
         }
 
-    def charge(self, *_args: object, **_kwargs: object) -> None:
+    def charge(self, run_id: str | None = None, cost: float = 0.0, *, scope: str = "internal") -> None:
+        del cost
+        if _blank_run(run_id):
+            if scope == "pipeline":
+                raise ValueError("pipeline budget requires run_id")
+            raise ValueError("internal budget requires run_id")
         self.charge_calls += 1
+
+
+def test_contract_ledger_empty_run_matches_eefc08b4() -> None:
+    ledger = _ContractLedger(internal=4.0, pipeline=80.0, exhausted=True)
+    assert ledger.spent(None) == 0.0
+    assert ledger.spent("") == 0.0
+    assert ledger.spent("  ") == 0.0
+    assert ledger.spent("run-x") == 4.0
+    empty = ledger.totals(None)
+    assert empty["internal_spent_usd"] == 0.0
+    assert empty["pipeline_spent_usd"] == 0.0
+    assert empty["budget_exhausted"] is False
+    with pytest.raises(ValueError, match="run_id"):
+        ledger.charge(None, 1.0)
+    with pytest.raises(ValueError, match="run_id"):
+        ledger.charge("   ", 1.0, scope="pipeline")
+    assert ledger.charge_calls == 0
 
 
 def test_contract_ledger_budget_exhausted_flag_blocks() -> None:
@@ -565,3 +623,128 @@ def test_context_pipeline_reader_without_snapshot() -> None:
     assert result.passed is True
     assert result.details["totals"]["actions_spent_usd"] == 10.0
     assert result.details["pipeline_scope_spent_usd"] == 10.0
+
+
+class _CallSpy:
+    def __init__(self, *, internal: float = 10.0, exhausted: bool = True) -> None:
+        self.calls = 0
+        self._internal = internal
+        self._exhausted = exhausted
+
+    def totals(self, run_id: str | None = None) -> dict[str, float | bool]:
+        self.calls += 1
+        limit = 10.0
+        return {
+            "internal_spent_usd": self._internal,
+            "pipeline_spent_usd": 0.0,
+            "internal_limit_usd": limit,
+            "internal_remaining_usd": limit - self._internal,
+            "budget_exhausted": self._exhausted,
+        }
+
+    def spent(self, run_id: str | None) -> float:
+        self.calls += 1
+        return self._internal
+
+    def pipeline_spent(self, run_id: str | None) -> float:
+        self.calls += 1
+        return 0.0
+
+
+def test_missing_run_id_blocks_without_calling_ledger() -> None:
+    contexts: list[dict] = [
+        {},
+        {"run_id": None},
+        {"run_id": ""},
+        {"run_id": "   "},
+    ]
+    for extra in contexts:
+        ledger = _CallSpy()
+        reader = _Reader(_totals(internal_spent_usd=10.0, run_spent_usd=51))
+        result = run(
+            "spend_guard",
+            9,
+            {"spend_ledger": ledger, "spend_reader": reader, "spend": _totals(internal_spent_usd=10.0), **extra},
+        )
+        assert result.passed is False
+        assert result.blocking is True
+        assert result.details == {"reason": "missing_run_id"}
+        assert ledger.calls == 0
+        assert reader.reads == []
+
+
+def test_dry_run_without_run_id_keeps_previous_behavior() -> None:
+    empty = run("spend_guard", 1, {VALIDATOR_CONTEXT_DRY_RUN: True})
+    assert empty.passed is True
+    assert empty.blocking is False
+    assert empty.details["reason"] == "no_spend_snapshot"
+
+    def read(*, project_id: int, run_id: str | None = None) -> dict[str, float]:
+        assert project_id == 2
+        assert run_id is None
+        return _totals(run_spent_usd=51)
+
+    via_reader = run("spend_guard", 2, {"spend_reader": read, VALIDATOR_CONTEXT_DRY_RUN: True})
+    assert via_reader.passed is False
+    assert via_reader.blocking is True
+    assert via_reader.details["reason"] == "spend_cap_run"
+
+    ledger = _CallSpy()
+    exhausted = run("spend_guard", 1, {"spend_ledger": ledger, VALIDATOR_CONTEXT_DRY_RUN: True})
+    assert ledger.calls == 1
+    assert exhausted.passed is False
+    assert exhausted.blocking is True
+    assert exhausted.details["reason"] == "budget_exhausted"
+
+    zeros = _ContractLedger(internal=10.0, pipeline=80.0, exhausted=True)
+    quiet = run("spend_guard", 1, {"spend_ledger": zeros, VALIDATOR_CONTEXT_DRY_RUN: True})
+    assert zeros.totals_runs == [None]
+    assert zeros.spent(None) == 0.0
+    assert quiet.passed is True
+    assert quiet.details["reason"] == "ok"
+    assert quiet.details["reason"] != "missing_run_id"
+
+
+def test_with_run_id_keeps_previous_behavior() -> None:
+    under = run("spend_guard", 1, {"spend": _totals(internal_spent_usd=1.0), "run_id": "keep"})
+    assert under.passed is True
+    assert under.blocking is False
+    assert under.details["reason"] == "ok"
+    assert under.details["internal"]["spent_usd"] == 1.0
+
+    over = run("spend_guard", 1, {"spend": _totals(internal_spent_usd=10.0), "run_id": "keep"})
+    assert over.passed is False
+    assert over.blocking is True
+    assert over.details["reason"] == "budget_exhausted"
+
+    ledger = _CallSpy(internal=10.0, exhausted=True)
+    from_ledger = run("spend_guard", 3, {"spend_ledger": ledger, "run_id": "keep"})
+    assert ledger.calls == 1
+    assert from_ledger.details["reason"] == "budget_exhausted"
+    assert from_ledger.blocking is True
+
+
+def test_ledger_run_id_value_error_blocks_instead_of_raising() -> None:
+    class Refuses:
+        def totals(self, run_id: str | None = None) -> dict[str, float]:
+            raise ValueError("internal budget requires run_id")
+
+        def spent(self, run_id: str | None) -> float:
+            raise ValueError("internal budget requires run_id")
+
+    result = run("spend_guard", 1, {"spend_ledger": Refuses(), "run_id": "run-x"})
+    assert result.passed is False
+    assert result.blocking is True
+    assert result.details == {"reason": "missing_run_id"}
+
+    dry = run("spend_guard", 1, {"spend_ledger": Refuses(), VALIDATOR_CONTEXT_DRY_RUN: True})
+    assert dry.passed is False
+    assert dry.blocking is True
+    assert dry.details == {"reason": "missing_run_id"}
+
+    class Other:
+        def totals(self, run_id: str | None = None) -> dict[str, float]:
+            raise ValueError("disk full")
+
+    with pytest.raises(ValueError, match="disk full"):
+        check(1, {"spend_ledger": Other(), "run_id": "run-x"})

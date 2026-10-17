@@ -2,7 +2,7 @@
 
 Суммы уже посчитаны снаружи. Валидатор только читает:
 
-- ``SpendLedger`` роутера (#345, ``6d4d34cc``): ``spent(run_id)`` — только
+- ``SpendLedger`` роутера (#345, ``eefc08b4``): ``spent(run_id)`` — только
   internal, ``internal_budget_usd``, ``pipeline_spent(run_id)``,
   ``read_pipeline_spent(*, project_id=None, run_id=None)``,
   ``totals(run_id=None)`` с ключами ``internal_spent_usd``,
@@ -12,6 +12,12 @@
   ``app.orchestrator.routing.ledger`` импортируется, берём
   ``get_spend_ledger()``; явный ledger в context его перекрывает. Пока модуля
   нет, остаётся чтение переданного объекта (``spent`` / ``totals``).
+  С ``eefc08b4`` пустой ``run_id`` у ``spent`` / ``totals`` даёт 0 и не
+  блокирует, а внутренний вызов без ``run_id`` бросает ``ValueError``.
+  Вне ``dry_run`` такой контекст закрывается здесь: ledger не зовётся,
+  результат ``blocking`` с ``reason=missing_run_id``. Тот же ответ, если
+  ledger сам бросил ``ValueError`` про ``run_id``. В ``dry_run`` чтение
+  как раньше.
 - spend action layer (#342) через ``SpendReader.read_totals`` или снимок
   ``context["spend"]``. WS2 принимает ключи ``*_spent_usd`` как есть.
   ``actions_spent_usd`` — лимит $40 пайплайна на run, не кредиты сессии.
@@ -39,7 +45,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol
 
-from app.orchestrator.validators.result import make_result
+from app.orchestrator.validators.result import is_dry_run, make_result
 
 _NAME = "spend_guard"
 
@@ -93,7 +99,7 @@ class SpendReader(Protocol):
 
 
 class RouterLedgerReader(Protocol):
-    """Публичный срез ``SpendLedger`` (#345 ``6d4d34cc``). Без ``charge``."""
+    """Публичный срез ``SpendLedger`` (#345 ``eefc08b4``). Без ``charge``."""
 
     internal_budget_usd: float
 
@@ -127,6 +133,19 @@ def get_spend_reader() -> SpendReader | None:
 
 
 def check(project_id: int, context: dict[str, Any]) -> Any:
+    """Чтение бюджета. Без ``run_id`` вне dry-run ledger не вызывается."""
+
+    if not is_dry_run(context) and not _context_has_run_id(context):
+        return _missing_run_id()
+    try:
+        return _checked(project_id, context)
+    except ValueError as exc:
+        if "run_id" in str(exc):
+            return _missing_run_id()
+        raise
+
+
+def _checked(project_id: int, context: dict[str, Any]) -> Any:
     signal = _budget_signal(context)
     view = _load_view(project_id, context)
     view = _apply_pipeline_scope(project_id, context, view)
@@ -512,7 +531,7 @@ def _ledger_totals(context: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _read_ledger_totals(ledger: Any, run_id: str | None) -> dict[str, Any] | None:
-    """Снимок ``SpendLedger.totals`` (#345 ``6d4d34cc``). Pipeline в $10 не входит."""
+    """Снимок ``SpendLedger.totals`` (#345 ``eefc08b4``). Pipeline в $10 не входит."""
 
     totals_fn = getattr(ledger, "totals", None)
     if not callable(totals_fn):
@@ -618,6 +637,31 @@ def _run_id(context: dict[str, Any]) -> str | None:
     if raw is None:
         return None
     return raw if isinstance(raw, str) else str(raw)
+
+
+def _context_has_run_id(context: dict[str, Any]) -> bool:
+    """Ключ, который #345@eefc08b4 не считает пустым.
+
+    Нет ключа, ``None`` и строка из пробелов для леджера — тот же ноль,
+    что и ``spent(None)``. Такой контекст бюджет не закрывает.
+    """
+
+    if "run_id" not in context:
+        return False
+    raw = context.get("run_id")
+    if raw is None:
+        return False
+    text = raw if isinstance(raw, str) else str(raw)
+    return bool(text.strip())
+
+
+def _missing_run_id() -> Any:
+    return make_result(
+        name=_NAME,
+        passed=False,
+        blocking=True,
+        details={"reason": "missing_run_id"},
+    )
 
 
 def _forecast(raw: Any) -> dict[str, float]:
