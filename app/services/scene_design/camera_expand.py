@@ -919,6 +919,87 @@ def _group_frames_into_scenes(
     return groups
 
 
+_KADRY_ID_KEYS = ("id", "uuid", "frame_id", "shot_id", "id_shot")
+
+
+def _kadry_identity(item: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for key in _KADRY_ID_KEYS:
+        val = str(item.get(key) or "").strip()
+        if val and val not in found:
+            found.append(val)
+    return found
+
+
+def _scene_key(scene: dict[str, Any]) -> str:
+    return str(scene.get("id_scene") or scene.get("id") or scene.get("uuid") or "").strip()
+
+
+def _retain_missing_scenes(
+    scenes: list[dict[str, Any]],
+    previous: Any,
+) -> None:
+    """Сцены и шоты, которых нет в новой сборке, остаются с активен: False."""
+    if not isinstance(previous, list):
+        return
+    present_scenes = {_scene_key(scene) for scene in scenes if _scene_key(scene)}
+    present_ids: set[str] = set()
+    for scene in scenes:
+        for kid in scene.get("кадры") or []:
+            if isinstance(kid, dict):
+                present_ids.update(_kadry_identity(kid))
+    for old in previous:
+        if not isinstance(old, dict):
+            continue
+        sid = _scene_key(old)
+        if sid and sid not in present_scenes:
+            marked = copy.deepcopy(old)
+            marked["активен"] = False
+            kadry = marked.get("кадры")
+            if isinstance(kadry, list):
+                marked_kids: list[Any] = []
+                for kid in kadry:
+                    if isinstance(kid, dict):
+                        item = dict(kid)
+                        item["активен"] = False
+                        marked_kids.append(item)
+                        present_ids.update(_kadry_identity(item))
+                    else:
+                        marked_kids.append(kid)
+                marked["кадры"] = marked_kids
+            if "кадров" not in marked:
+                marked["кадров"] = len(marked.get("кадры") or [])
+            scenes.append(marked)
+            present_scenes.add(sid)
+            continue
+        missing: list[dict[str, Any]] = []
+        for kid in old.get("кадры") or []:
+            if not isinstance(kid, dict):
+                continue
+            ident = _kadry_identity(kid)
+            if not ident or all(token in present_ids for token in ident):
+                continue
+            item = copy.deepcopy(kid)
+            item["активен"] = False
+            missing.append(item)
+            present_ids.update(ident)
+        if not missing:
+            continue
+        target = next((scene for scene in scenes if sid and _scene_key(scene) == sid), None)
+        if target is None:
+            tail = copy.deepcopy(old)
+            tail["активен"] = False
+            tail["кадры"] = missing
+            tail["кадров"] = len(missing)
+            scenes.append(tail)
+            continue
+        target_kids = target.get("кадры")
+        if not isinstance(target_kids, list):
+            target_kids = []
+            target["кадры"] = target_kids
+        target_kids.extend(missing)
+
+
 def rebuild_scenes_from_camera(
     frames: list[Frame],
     assembly_input: dict[str, Any],
@@ -1031,6 +1112,8 @@ def rebuild_scenes_from_camera(
                     "смысл_сцены": str(beat.get("мотив") or "")[:200],
                 }
             )
+
+    _retain_missing_scenes(scenes, assembly_input.get("scenes_chrono"))
 
     out = copy.deepcopy(assembly_input)
     out["scenes_chrono"] = scenes

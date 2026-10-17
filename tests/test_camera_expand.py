@@ -161,6 +161,86 @@ def _fr(num: int, uuid: str, text: str, sec: float = 5.0, **attrs):
     )
 
 
+def test_rebuild_keeps_scene_ids_and_frame_rows():
+    """Новые сцены не стирают старый id_scene и id шотов. Кадры-объекты на месте."""
+    vo = "Альфа один тут. Бета два тут."
+    frames = [
+        _fr(1, "u1", "Альфа один тут."),
+        _fr(2, "u2", "Бета два тут."),
+    ]
+    assembly = {
+        "characters": [{"id": "c01", "имя": "Ира"}],
+        "locations": [{"id": "loc01"}],
+        "scenes_chrono": [
+            {
+                "id_scene": "scene_kept",
+                "start_words": "Альфа один",
+                "end_words": "тут",
+                "кадры": [
+                    {
+                        "id": "old-shot",
+                        "uuid": "u1",
+                        "закадр": "Альфа один тут.",
+                    },
+                    {"id": "gone-shot", "uuid": "missing-frame"},
+                ],
+            }
+        ],
+        "shot_plan_chrono": [
+            {
+                "id": "plan-1",
+                "цитата": "Альфа один",
+                "крупность": "MS",
+                "id_scene": "scene_01",
+            },
+            {
+                "id": "plan-2",
+                "цитата": "Бета два",
+                "крупность": "CU",
+                "id_scene": "scene_02",
+            },
+        ],
+    }
+    before_ids = [f.uuid for f in frames]
+    out = rebuild_scenes_from_camera(frames, assembly, vo, set_counts={})
+    assert [f.uuid for f in frames] == before_ids
+    assert [f.voiceover_text for f in frames] == [
+        "Альфа один тут.",
+        "Бета два тут.",
+    ]
+    scenes = out["scenes_chrono"]
+    by_scene = {s.get("id_scene"): s for s in scenes}
+    assert "scene_kept" in by_scene
+    assert by_scene["scene_kept"].get("активен") is False
+    shot_ids = [
+        k.get("id")
+        for s in scenes
+        for k in (s.get("кадры") or [])
+        if isinstance(k, dict) and k.get("id")
+    ]
+    assert "old-shot" in shot_ids
+    assert "gone-shot" in shot_ids
+    kept_shots = {
+        k["id"]: k
+        for k in by_scene["scene_kept"].get("кадры") or []
+        if isinstance(k, dict) and k.get("id")
+    }
+    assert kept_shots["old-shot"]["активен"] is False
+    assert kept_shots["gone-shot"]["активен"] is False
+    uuids = [
+        k.get("uuid")
+        for s in scenes
+        for k in (s.get("кадры") or [])
+        if isinstance(k, dict)
+    ]
+    assert "u1" in uuids and "u2" in uuids
+    plan_ids = [s.get("id") for s in out["shot_plan_chrono"] if isinstance(s, dict)]
+    assert "plan-1" in plan_ids and "plan-2" in plan_ids
+    assert out["characters"] == [{"id": "c01", "имя": "Ира"}]
+    assert assembly["scenes_chrono"][0].get("активен") is not False
+    assert assembly["scenes_chrono"][0]["кадры"][0].get("активен") is not False
+
+
 def test_rebuild_one_scene_per_vo_parent_after_subdivide():
     """После дроби: 2 VO-родителя → 2 сцены, внутри по несколько кадров."""
     vo = "Альфа один тут слово. Бета два тут слово. Гамма три тут слово. Дельта четыре тут слово."
