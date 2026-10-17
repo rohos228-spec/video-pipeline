@@ -117,6 +117,17 @@ def _apply_ops_has_payload(data: dict | None) -> bool:
     )
 
 
+def _accepted_empty_ops(result, data, *, allowed=False) -> bool:
+    if not allowed or data != {"ops": []}:
+        return False
+    if not _qc_response_complete(result):
+        return False
+    try:
+        return json.loads(result.text) == {"ops": []}
+    except (ValueError, TypeError):
+        return False
+
+
 _TRUNCATED_STREAM_FINISH = frozenset(
     {"stream_partial", "stream_salvaged", "stream_continued"}
 )

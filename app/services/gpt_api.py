@@ -519,6 +519,19 @@ def _node_kie_override() -> bool:
     return bool(ov and ov.kind == "text" and ov.provider == "kie")
 
 
+def _llm_provider_name() -> str:
+    if _node_vibecode_override():
+        return "vibecode"
+    if _node_kie_override():
+        return "kie"
+    return "vibecode" if settings.text_llm_is_vibecode else "kie"
+
+
+def _credits_hint() -> str:
+    name = "Vibecode" if _llm_provider_name() == "vibecode" else "Kie"
+    return f" — на счёте {name} кончились кредиты, пополни баланс у провайдера"
+
+
 def _override_vibecode_base_url() -> str:
     """Нода/шапка vibecode: VPS /v1/* если relay задан, иначе vibecode.moe."""
     vps = _vps_relay_base()

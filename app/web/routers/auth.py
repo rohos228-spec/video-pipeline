@@ -4,15 +4,19 @@ Enforcement stays OFF unless WEB_AUTH_USER+WEB_AUTH_PASSWORD are set (settings.w
 
 from __future__ import annotations
 
+import asyncio
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.services import access_guard
 from app.settings import settings
+from app.web import auth_sessions
 from app.web import user_accounts as ua
-from app.web.auth_sessions import AuthDep, _extract_bearer, issue_session_token
+from app.web.auth_sessions import AuthDep, _extract_bearer, issue_session_token, require_web_user
+
+FAILED_LOGIN_DELAY_S = 0.4
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -97,15 +101,44 @@ async def register(body: RegisterBody, request: Request) -> dict:
     return {"ok": True, "token": token, "user": u, **_send_verify(request, u)}
 
 
+def _throttle_keys(request: Request, username: str) -> list[str]:
+    host = request.client.host if request.client else "-"
+    return [f"ip:{host}", f"user:{username.strip().lower()}"]
+
+
+def _session_cookie(response: Response, request: Request, token: str) -> None:
+    response.set_cookie(
+        "vp_session", token, max_age=auth_sessions._TOKEN_TTL_SEC, httponly=True,
+        samesite="strict", secure=request.url.scheme == "https", path="/",
+    )
+
+
 @router.post("/login")
-async def login(body: LoginBody, request: Request) -> dict:
+async def login(body: LoginBody, request: Request, response: Response) -> dict:
+    if not settings.web_auth_enabled:
+        return {"ok": True, "token": None, "auth_required": False}
+    keys = _throttle_keys(request, body.username)
+    wait = auth_sessions.login_throttle.retry_after(keys)
+    if wait:
+        raise HTTPException(
+            status_code=429, headers={"Retry-After": str(wait)},
+            detail={"code": "too_many_attempts",
+                    "message": f"Слишком много неудачных попыток входа. Повторите через {wait} с."},
+        )
     u = ua.get_by_login(body.username.strip())
     if u and ua.verify_password(body.password, u["password_hash"]):
+        auth_sessions.login_throttle.record_success(keys)
         token = ua.new_session(u["id"], request.headers.get("user-agent", ""))
-        return {"ok": True, "token": token, "auth_required": settings.web_auth_enabled, "user": ua.public(u)}
-    # legacy single env user from main
-    if settings.web_auth_enabled and body.username == settings.web_auth_user.strip() and body.password == settings.web_auth_password:
-        return {"ok": True, "token": issue_session_token(body.username), "auth_required": True, "user": None}
+        _session_cookie(response, request, token)
+        return {"ok": True, "token": token, "auth_required": True, "user": ua.public(u)}
+    if auth_sessions.verify_credentials(body.username, body.password):
+        auth_sessions.login_throttle.record_success(keys)
+        token = issue_session_token(body.username)
+        _session_cookie(response, request, token)
+        return {"ok": True, "token": token, "auth_required": True, "user": None}
+    auth_sessions.login_throttle.record_failure(keys)
+    if FAILED_LOGIN_DELAY_S > 0:
+        await asyncio.sleep(FAILED_LOGIN_DELAY_S)
     raise HTTPException(401, "Неверный логин или пароль")
 
 
@@ -115,14 +148,16 @@ async def me(request: Request) -> dict:
 
 
 @router.post("/logout")
-async def logout(request: Request) -> dict:
+async def logout(request: Request, response: Response) -> dict:
     tok = _extract_bearer(request)
     if tok:
         ua.drop_session(tok)
+        auth_sessions.revoke_session_token(tok)
+    response.delete_cookie("vp_session", path="/")
     return {"ok": True}
 
 
-@router.post("/verify")
+@router.post("/verify", dependencies=[Depends(require_web_user)])
 async def verify(body: VerifyBody, request: Request) -> dict:
     u = _me(request)
     if not ua.consume_verify(u["id"], body.code.strip()):
@@ -130,7 +165,7 @@ async def verify(body: VerifyBody, request: Request) -> dict:
     return {"ok": True}
 
 
-@router.post("/verify/resend")
+@router.post("/verify/resend", dependencies=[Depends(require_web_user)])
 async def verify_resend(request: Request) -> dict:
     return {"ok": True, **_send_verify(request, _me(request))}
 
@@ -166,7 +201,7 @@ async def reset(body: ResetBody) -> dict:
     return {"ok": True}
 
 
-@router.post("/delete")
+@router.post("/delete", dependencies=[Depends(require_web_user)])
 async def delete_account(body: DeleteBody, request: Request) -> dict:
     u = _me(request)
     if not ua.verify_password(body.password, u["password_hash"]):

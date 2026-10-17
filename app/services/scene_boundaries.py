@@ -135,41 +135,48 @@ async def _stream_once(
     parts: list[str] = []
     meta: dict[str, Any] = {"finish_reason": None, "usage": None, "model": None, "sse_lines": 0}
     t0 = time.time()
+    from app.services import spend_guard
+
     timeout = httpx.Timeout(connect=30.0, read=read_timeout, write=120.0, pool=30.0)
     try:
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as c:
-            async with c.stream("POST", url, headers=headers, json=payload) as r:
-                if r.status_code >= 400:
-                    body = (await r.aread()).decode("utf-8", "replace")
-                    raise RuntimeError(f"HTTP {r.status_code}: {body[:600]}")
-                async for line in r.aiter_lines():
-                    if line:
-                        meta["sse_lines"] += 1
-                    if not line.startswith("data:"):
-                        continue
-                    d = line[5:].strip()
-                    if not d or d == "[DONE]":
-                        continue
-                    try:
-                        ev = json.loads(d)
-                    except Exception:  # noqa: BLE001
-                        continue
-                    t = ev.get("type")
-                    if t == "message_start":
-                        m = ev.get("message") or {}
-                        meta["model"] = m.get("model") or meta["model"]
-                        if m.get("usage"):
-                            meta["usage"] = dict(m["usage"])
-                    elif t == "content_block_delta":
-                        dl = ev.get("delta") or {}
-                        if dl.get("type") == "text_delta":
-                            parts.append(dl.get("text") or "")
-                    elif t == "message_delta":
-                        meta["finish_reason"] = (ev.get("delta") or {}).get("stop_reason") or meta["finish_reason"]
-                        if ev.get("usage"):
-                            meta["usage"] = {**(meta["usage"] or {}), **ev["usage"]}
-                    elif t == "error":
-                        raise RuntimeError("stream error event: " + json.dumps(ev, ensure_ascii=False)[:500])
+        async with spend_guard.paid_call(
+            "vibecode",
+            "anthropic messages stream",
+            estimate_usd=spend_guard.DEFAULT_REQUEST_ESTIMATE_USD,
+        ):
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False) as c:
+                async with c.stream("POST", url, headers=headers, json=payload) as r:
+                    if r.status_code >= 400:
+                        body = (await r.aread()).decode("utf-8", "replace")
+                        raise RuntimeError(f"HTTP {r.status_code}: {body[:600]}")
+                    async for line in r.aiter_lines():
+                        if line:
+                            meta["sse_lines"] += 1
+                        if not line.startswith("data:"):
+                            continue
+                        d = line[5:].strip()
+                        if not d or d == "[DONE]":
+                            continue
+                        try:
+                            ev = json.loads(d)
+                        except Exception:  # noqa: BLE001
+                            continue
+                        t = ev.get("type")
+                        if t == "message_start":
+                            m = ev.get("message") or {}
+                            meta["model"] = m.get("model") or meta["model"]
+                            if m.get("usage"):
+                                meta["usage"] = dict(m["usage"])
+                        elif t == "content_block_delta":
+                            dl = ev.get("delta") or {}
+                            if dl.get("type") == "text_delta":
+                                parts.append(dl.get("text") or "")
+                        elif t == "message_delta":
+                            meta["finish_reason"] = (ev.get("delta") or {}).get("stop_reason") or meta["finish_reason"]
+                            if ev.get("usage"):
+                                meta["usage"] = {**(meta["usage"] or {}), **ev["usage"]}
+                        elif t == "error":
+                            raise RuntimeError("stream error event: " + json.dumps(ev, ensure_ascii=False)[:500])
     except (httpx.HTTPError, OSError) as e:
         txt = "".join(parts)
         dt = round(time.time() - t0, 1)

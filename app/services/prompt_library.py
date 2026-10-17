@@ -1077,3 +1077,24 @@ def make_template_for_new(step_code: str, name: str) -> str:
         "\n"
         "Опиши задачу для модели здесь...\n"
     )
+
+
+APPROVED_PROFILE_PROMPTS = {
+    "original-contract-v1": "",
+    "repair-json-only-v1": (
+        "\n\n[Approved profile: repair-json-only-v1] Repair formatting only. "
+        "Return one JSON value conforming to the ORIGINAL node schema. "
+        "Preserve source facts and identifiers; do not invent missing information or bypass validation."
+    ),
+    "require-apply-ops-v1": (
+        "\n\n[Approved synthetic profile: require-apply-ops-v1] "
+        "Return the mandatory apply-ops JSON specified by the original node contract."
+    ),
+}
+
+
+def apply_approved_profile_prompt(resolved: str, variant: str) -> str:
+    if variant not in APPROVED_PROFILE_PROMPTS:
+        raise ValueError("unknown approved profile prompt variant")
+    suffix = APPROVED_PROFILE_PROMPTS[variant]
+    return resolved if not suffix or resolved.endswith(suffix) else resolved + suffix

@@ -1607,18 +1607,6 @@ async def generate_video_with_retries(
                     project_id=project_id,
                 ),
                 send_prompt,
-                out_path,
-                model_slug=slug,
-                aspect_ratio=str(ar).replace("_", ":"),
-                resolution=str(res),
-                duration=int(dur) if dur else None,
-                generate_audio=False,
-                reference_image=attempt_kwargs.get("start_frame"),
-                last_frame_image=attempt_kwargs.get("last_frame_image"),
-                prompt_id_prefix=attempt_kwargs.get("prompt_id_prefix"),
-                timeout=float(attempt_kwargs.get("timeout") or 900),
-                gen_id=attempt_kwargs.get("gen_id"),
-                project_id=project_id,
             )
             try:
                 from app.services.generation_storage import write_sidecar

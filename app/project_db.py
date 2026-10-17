@@ -722,6 +722,7 @@ async def pull_master_runtime_into_project(
     живую ноду в «ошибка», пока воркер всё ещё пишет.
     """
     from app.db import session_scope
+    from app.orchestrator.node_registry import READY_TO_NODE_TYPE, RUNNING_TO_NODE_TYPE
     from app.services.project_state import is_running_status
 
     changed = False

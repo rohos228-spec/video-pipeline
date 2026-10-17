@@ -396,7 +396,7 @@ def split_into_fixed_units(
     packs: list[list[dict[str, Any]]] = []
     for i in range(0, len(units), unit_size):
         pack: list[dict[str, Any]] = []
-        for unit in light_units[i : i + unit_size]:
+        for unit in units[i : i + unit_size]:
             pack.extend(unit)
         if pack:
             packs.append(pack)

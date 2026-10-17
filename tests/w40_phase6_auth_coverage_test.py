@@ -18,6 +18,10 @@ PUBLIC: dict[tuple[str, str], str] = {
     ("POST", "/api/auth/login"): "сама ручка входа",
     ("POST", "/api/auth/logout"): "выход: без сессии ничего не делает",
     ("GET", "/api/auth/status"): "странице нужно узнать, требуется ли вход",
+    ("POST", "/api/auth/register"): "регистрация VIA: аккаунта ещё нет, сессии нет",
+    ("POST", "/api/auth/forgot"): "запрос сброса пароля, одинаковый ответ без сессии",
+    ("GET", "/api/auth/reset/check"): "проверка токена сброса из письма, сессии нет",
+    ("POST", "/api/auth/reset"): "смена пароля по токену из письма, сессии нет",
     ("GET", "/api/openapi.json"): "схема FastAPI без данных (модель поставки: loopback)",
     ("GET", "/api/docs"): "Swagger UI, статичная страница без данных",
     ("*", "/api/{rest:path}"): "ловушка неизвестных POST/PUT/PATCH/DELETE: всегда 404, ничего не делает",
@@ -88,7 +92,7 @@ def test_whitelist_entries_exist_and_are_few(client):
             assert any(p == path for _, p in existing), path
         else:
             assert (method, path) in existing, f"белый список устарел: {method} {path}"
-    assert len(PUBLIC) <= 10
+    assert len(PUBLIC) <= 12
 
 
 def test_login_flow_opens_a_route(client):
