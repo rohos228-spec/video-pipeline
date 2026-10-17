@@ -816,21 +816,22 @@ async def pull_master_runtime_into_project(
 async def push_runtime_to_master(
     session: AsyncSession,
     project: Project,
-) -> None:
+) -> bool:
     """После работы в project.db: статус + runtime meta + NodeRuns → state.db.
 
     UI и воркер выбирают проекты по master; без этого копии нода остаётся
     running на канвасе после успешного шага / рестарта.
+    Сессия не из project.db — пушить нечего, это успех.
     """
     from app.db import commit_with_retry, session_scope
 
     if "project.db" not in _bind_url(session):
-        return
+        return True
     try:
         async with session_scope() as master:
             existing = await master.get(Project, int(project.id))
             if existing is None:
-                return
+                return True
             _apply_runtime_fields(project, existing)
             try:
                 await _copy_noderuns_between_sessions(
