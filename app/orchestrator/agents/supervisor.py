@@ -88,6 +88,10 @@ from app.orchestrator.events import EventBus
 _DRY_RUN = ("plan_sanity", "no_deletions", "spend_guard")
 
 
+_APPROVED_MARK = "\n\x1eorchfp:"
+_PAID_OUTCOME_REASONS = frozenset({"paid_outcome_unknown", "paid_unknown_outcome"})
+
+
 class InvalidTransition(RuntimeError):
     pass
 
@@ -175,7 +179,20 @@ class Supervisor:
         rows = self.tasks.list_open()
         recovered: list[int] = []
         for row in rows:
-            if str(row.get("status")) != TaskStatus.executing.value:
+            status = str(row.get("status"))
+            if status == TaskStatus.waiting_approval.value:
+                task_id = int(row["id"])
+                if task_id in self._runs and not self._runs[task_id].done():
+                    continue
+                session_id = str(row["session_id"])
+                data = self.checkpoints.load_latest(task_id)
+                if data is not None:
+                    self._arm_resume(session_id, task_id, data)
+                else:
+                    self._session_task[session_id] = task_id
+                recovered.append(task_id)
+                continue
+            if status != TaskStatus.executing.value:
                 continue
             task_id = int(row["id"])
             if task_id in self._runs and not self._runs[task_id].done():
@@ -266,11 +283,12 @@ class Supervisor:
             return
         if await self._screen_plan(task_id, session_id, plan):
             return
-        if not self._plan_was_approved(task_id, plan):
+        paid_outcome = self._block_reason.get(task_id) in _PAID_OUTCOME_REASONS
+        if not paid_outcome and not self._plan_was_approved(task_id, plan):
             await self._replan_from_grant(task_id, session_id)
             return
         position = int(data.position)
-        if position < len(plan):
+        if not paid_outcome and position < len(plan):
             self._risk_granted.add(self._risk_grant_key(task_id, position, plan[position]))
         goal = str((self.tasks.get(task_id) or {}).get("goal") or "")
         self._runs[task_id] = asyncio.create_task(
@@ -303,7 +321,10 @@ class Supervisor:
         self._approval.pop(session_id, None)
         self._session_task[session_id] = task_id
         self._change_ids[task_id] = list(data.change_ids)
-        self._context[task_id] = data.context
+        visible, mark = _unpack_approved(data.context or "")
+        self._context[task_id] = visible
+        if mark:
+            self._approved[task_id] = mark
         self._remember_paid(task_id)
 
     def request_cancel(self, session_id: str) -> None:
@@ -1348,20 +1369,17 @@ class Supervisor:
         return max(int(row["position"]) for row in rows) + 1
 
     def _running_paid_row(self, task_id: int, step: PlanStep) -> dict[str, Any] | None:
-        """Платная строка ``running`` с тем же действием и публичными params."""
+        """Открытая платная строка ``running`` того же действия.
+
+        Совпадение params не требуется: другой набор параметров не должен
+        оплатить действие, пока прежняя сдача ещё ``running``.
+        """
         if not step.paid:
             return None
-        ident = _public_params(step.params)
         for row in self.tasks.list_steps(task_id):
             if str(row.get("status")) != "running" or not row.get("paid"):
                 continue
-            if str(row.get("action_name") or "") != step.action:
-                continue
-            try:
-                stored = json.loads(row.get("params_json") or "{}")
-            except json.JSONDecodeError:
-                stored = {}
-            if isinstance(stored, dict) and _public_params(stored) == ident:
+            if str(row.get("action_name") or "") == step.action:
                 return row
         return None
 
@@ -1445,7 +1463,7 @@ class Supervisor:
             position=position,
             change_ids=list(self._change_ids.get(task_id, [])),
             spend=self._spend(task_id),
-            context=self._context.get(task_id, ""),
+            context=_pack_approved(self._context.get(task_id, ""), self._approved.get(task_id)),
         )
         self.tasks.mirror_progress(task_id, plan, position, data.spend)
         self.checkpoints.save(task_id, session_id, data)
@@ -1561,6 +1579,22 @@ class Supervisor:
 def _plan_fingerprint(plan: list[PlanStep]) -> str:
     payload = [step.model_dump() for step in plan]
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _pack_approved(visible: str, fingerprint: str | None) -> str:
+    """Отпечаток approve лежит в JSON чекпоинта, в поле ``context``."""
+    base = (visible or "").split(_APPROVED_MARK, 1)[0]
+    if not fingerprint:
+        return base
+    return f"{base}{_APPROVED_MARK}{fingerprint}"
+
+
+def _unpack_approved(raw: str) -> tuple[str, str | None]:
+    if _APPROVED_MARK not in (raw or ""):
+        return raw or "", None
+    visible, mark = raw.split(_APPROVED_MARK, 1)
+    mark = mark.strip()
+    return visible, mark or None
 
 
 def _step_requires_project(step: PlanStep, actions: Any) -> bool:
