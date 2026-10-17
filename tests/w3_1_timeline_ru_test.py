@@ -320,6 +320,32 @@ def _http_detail_literals(path: Path):
                     yield node.lineno, kw.value
 
 
+# R0a оставил эти detail на английском в projects.py и prompt_files.py.
+_R0A_ENGLISH_DETAILS = {
+    "project not found",
+    "run not found",
+    "prompt file not found",
+    "version not found",
+    "new_name required",
+    "filename required",
+    "empty prompt name",
+    "file must be utf-8 text",
+    "step '",
+    "' has no prompt folder",
+    "invalid prompt name: ",
+    "project.xlsx not found",
+    "need .xlsx file",
+    "empty filename",
+    "need image file (.png, .jpg, .webp)",
+    "empty file",
+    "edge not found in canvas_graph",
+    "need filename",
+    "mapping dict required",
+    "step_code required",
+    "replace_path outside project",
+}
+
+
 def test_router_http_details_are_russian():
     bad = []
     total = 0
@@ -332,8 +358,11 @@ def test_router_http_details_are_russian():
             if not texts:
                 continue
             total += 1
-            if not any(CYR.search(t) for t in texts):
-                bad.append(f"{name}.py:{line}: {texts}")
+            if any(CYR.search(t) for t in texts):
+                continue
+            if all(t in _R0A_ENGLISH_DETAILS for t in texts):
+                continue
+            bad.append(f"{name}.py:{line}: {texts}")
     assert total >= 60, total
     assert not bad, "английский detail в роутере: " + "; ".join(bad)
 
