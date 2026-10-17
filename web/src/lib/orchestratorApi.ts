@@ -252,6 +252,30 @@ export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signa
   return postJson(cfg, "/api/orchestrator/kill", body, signal);
 }
 
+/** Ответ POST /api/orchestrator/chat/{session}/resume. Тела у ручки нет. */
+export interface OrchResumeResult {
+  ok: boolean;
+  session: string;
+  task_id: number;
+  status: string;
+}
+
+/**
+ * Продолжить с чекпоинта. Тело пустое: у `post_resume` нет модели.
+ * 404 `not found` — нет задачи или чекпоинта. 409 `invalid transition` — живой прогон
+ * или переход, которого нет в FSM (в том числе `cancelled` → `executing`).
+ */
+export async function postOrchResume(cfg: OrchClientConfig, signal?: AbortSignal): Promise<OrchResumeResult> {
+  assertBearerTarget(cfg.apiBase);
+  const res = await fetch(
+    apiUrl(cfg.apiBase, `/api/orchestrator/chat/${encodeURIComponent(cfg.session)}/resume`),
+    { method: "POST", headers: orchAuthHeaders(cfg), signal },
+  );
+  if (res.status === 401) throw new OrchApiError(401, "401 — токен не принят");
+  if (!res.ok) throw new OrchApiError(res.status, await readError(res));
+  return (await res.json()) as OrchResumeResult;
+}
+
 /** Проверка Bearer до записи в localStorage. Тело стрима закрывается сразу после статуса. */
 export async function probeOrchAuth(cfg: OrchClientConfig): Promise<void> {
   assertBearerTarget(cfg.apiBase);

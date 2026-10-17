@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ActionResultCard } from "@/components/orchestrator/action-result-card";
 import {
   AGENT_LABEL,
+  canResumeTask,
   groupPlanSteps,
   isNodeResultAction,
   isTerminalBlock,
@@ -229,6 +230,32 @@ export function OrchestratorWorkspace() {
               Повторить
             </Button>
           ) : null}
+        </div>
+      ) : null}
+
+      {!chat.needsToken && canResumeTask(task) ? (
+        <div
+          data-testid="orch-resume-bar"
+          className="flex shrink-0 items-center gap-3 border-b border-warning/30 bg-warning/10 px-4 py-2 text-xs text-warning"
+        >
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 text-[11px]"
+            data-testid="orch-resume"
+            disabled={chat.resumePending || chat.resumeLocked}
+            onClick={() => void chat.resume()}
+          >
+            Продолжить
+          </Button>
+          {chat.resumeError ? (
+            <p data-testid="orch-resume-error" className="text-destructive">
+              {chat.resumeError}
+            </p>
+          ) : (
+            <span>Продолжить с последнего чекпоинта.</span>
+          )}
         </div>
       ) : null}
 

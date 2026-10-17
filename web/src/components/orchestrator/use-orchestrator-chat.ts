@@ -10,6 +10,7 @@ import {
   postOrchKill,
   postOrchActionMessage,
   postOrchMessage,
+  postOrchResume,
   readOrchProjectId,
   postOrchReject,
   probeOrchAuth,
@@ -25,6 +26,7 @@ import {
   reduceOrchScreen,
   type OrchScreenState,
 } from "@/lib/orchestratorSession";
+import { TASK_STATUSES, type TaskStatus } from "@/lib/orchestratorTypes";
 
 export type ConnPhase = "idle" | "live" | "reconnecting" | "restored";
 
@@ -336,6 +338,48 @@ export function useOrchestratorChat() {
     return () => window.clearTimeout(timer);
   }, [killPhase, killSessionId, killTaskId]);
 
+  const [resumePending, setResumePending] = useState(false);
+  const [resumeLocked, setResumeLocked] = useState(false);
+  const [resumeError, setResumeError] = useState("");
+  const resumeLock = useRef(false);
+  const latestTask = state.tasks.at(-1) ?? null;
+  const resumeWatch = `${latestTask?.id ?? ""}:${latestTask?.status ?? ""}:${latestTask?.checkpoints.length ?? 0}`;
+  const resumeWatchRef = useRef(resumeWatch);
+  useEffect(() => {
+    if (resumeWatchRef.current === resumeWatch) return;
+    resumeWatchRef.current = resumeWatch;
+    resumeLock.current = false;
+    setResumeLocked(false);
+    setResumeError("");
+  }, [resumeWatch]);
+
+  const resume = useCallback(async () => {
+    if (resumeLock.current) return;
+    resumeLock.current = true;
+    setResumePending(true);
+    setResumeLocked(true);
+    setResumeError("");
+    try {
+      const result = await postOrchResume(cfg);
+      const status = typeof result.status === "string" && (TASK_STATUSES as readonly string[]).includes(result.status)
+        ? (result.status as TaskStatus)
+        : null;
+      const taskId = result.task_id != null ? String(result.task_id) : latestTask?.id ?? "";
+      if (status && taskId) dispatch({ type: "task-status", taskId, status });
+      setSendError("");
+    } catch (error) {
+      if (error instanceof OrchApiError && error.status === 404) {
+        setResumeError("Продолжить нельзя: нет задачи или чекпоинта (not found)");
+      } else if (error instanceof OrchApiError && error.status === 409) {
+        setResumeError("Продолжить нельзя: недопустимый переход (invalid transition)");
+      } else if (!noteAuth(error)) {
+        setResumeError(error instanceof Error ? error.message : "resume не прошёл");
+      }
+    } finally {
+      setResumePending(false);
+    }
+  }, [cfg, latestTask?.id, noteAuth]);
+
   const kill = useCallback(async () => {
     const taskId = state.tasks.at(-1)?.id ?? null;
     const sessionId = boot.session;
@@ -400,5 +444,9 @@ export function useOrchestratorChat() {
     decide,
     dismissBlock,
     kill,
+    resume,
+    resumePending,
+    resumeLocked,
+    resumeError,
   };
 }

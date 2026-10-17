@@ -1147,6 +1147,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "resume") {
+    const session = sessionOf(decodeURIComponent(parts[3]));
+    const taskId = session.currentTaskId || session.activeTaskId || 1;
+    sendJson(res, 200, {
+      ok: true,
+      session: session.id,
+      task_id: taskId,
+      status: "executing",
+    });
+    return;
+  }
+
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "chat" && parts[4] === "message") {
     const body = await readBody(req);
     const text = String(body.text || "").trim();

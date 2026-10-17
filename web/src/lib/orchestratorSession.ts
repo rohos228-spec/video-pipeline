@@ -235,6 +235,7 @@ export type OrchScreenAction =
       sessionId?: string | null;
     }
   | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
+  | { type: "task-status"; taskId: string; status: TaskStatus }
   | { type: "reset" };
 
 const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
@@ -254,6 +255,20 @@ export function initialOrchScreen(): OrchScreenState {
     classification: null,
     killNotice: null,
   };
+}
+
+/**
+ * Статусы, из которых FSM пускает в `executing`.
+ * Флага `resume_allowed` в контракте нет: кнопка опирается на статус и на событие `checkpoint`.
+ * `cancelled` терминальный (kill в planning → 404, чекпоинта нет; с чекпоинтом resume даёт 409).
+ * `executing` не показываем: живой прогон — 409, а признака «прогон мёртв» в событиях нет.
+ */
+const RESUME_STATUSES = new Set<TaskStatus>(["paused", "waiting_approval", "critic_review"]);
+
+export function canResumeTask(task: TaskView | null): boolean {
+  if (!task) return false;
+  if (!RESUME_STATUSES.has(task.status)) return false;
+  return task.checkpoints.length > 0;
 }
 
 export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
@@ -490,6 +505,20 @@ function rememberActionResult(state: OrchScreenState, payload: Record<string, un
 
 export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenAction): OrchScreenState {
   if (action.type === "reset") return initialOrchScreen();
+  if (action.type === "task-status") {
+    const status = asTaskStatus(action.status);
+    if (!status) return state;
+    const tasks = state.tasks.map((task) => ({
+      ...task,
+      steps: task.steps.map((step) => ({ ...step, node: step.node ? { ...step.node } : null })),
+      checkpoints: task.checkpoints.map((checkpoint) => ({ ...checkpoint })),
+      validators: [...task.validators],
+      plan: task.plan.map((step) => ({ ...step })),
+    }));
+    const task = tasks.find((item) => item.id === action.taskId) ?? ensureTask(tasks, action.taskId);
+    task.status = status;
+    return { ...state, tasks };
+  }
   if (action.type === "user-message") {
     return {
       ...state,
@@ -605,11 +634,13 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
       found.status = str(payload.status, found.status);
       found.detail = str(payload.detail);
     }
-    const taskStatusRaw = str(payload.task_status);
+    // Мок пишет task_status. Супервизор WS3 шлёт только {status, agent:"supervisor"}.
+    const taskStatusRaw =
+      str(payload.task_status) || (agent === "supervisor" ? str(payload.status) : "");
     if (isTerminalKillStatus(taskStatusRaw)) noteTaskCancelled(next, event);
     if (!taskId) return next;
     const task = ensureTask(next.tasks, taskId, str(payload.title) || undefined);
-    const taskStatus = asTaskStatus(taskStatusRaw);
+    const taskStatus = asTaskStatus(str(payload.task_status)) ?? (agent === "supervisor" ? asTaskStatus(str(payload.status)) : null);
     if (taskStatus) task.status = taskStatus;
     return next;
   }
