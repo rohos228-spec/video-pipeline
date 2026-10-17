@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import ast
+import enum
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,11 @@ _CORE = (
 
 def _allowed() -> set[str]:
     return {item.value for item in NodeRunStatus}
+
+
+def _statuses_fit(statuses: list[str]) -> bool:
+    """Сырые статусы входят в текущий enum. Список нигде не зашит."""
+    return set(statuses) <= _allowed()
 
 
 def _foreign_task_statuses() -> set[str]:
@@ -192,11 +199,27 @@ async def test_contour_a_node_run_statuses_belong_to_node_run_status(token: str)
     """
     await contour_http.test_contour_a_http_reaches_done_and_keeps_inactive_shot(token)
     statuses, table_missing = _distinct_statuses()
-    allowed = _allowed()
-    assert allowed
-    assert "waiting_approval" not in allowed
+    assert _allowed()
     if table_missing or not statuses:
         _walker_sees_node_run_assignment()
         assert _core_hits() == []
         return
-    assert set(statuses) <= allowed
+    assert _statuses_fit(statuses)
+
+
+def test_guard_accepts_status_added_to_node_run_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Лишний член enum проходит тот же предикат, что и контур A.
+
+    R0b добавит ``waiting_approval`` в ``NodeRunStatus``. Гард читает enum
+    в момент проверки, поэтому новое значение не нужно дописывать в список.
+    """
+    original = {item.value for item in NodeRunStatus}
+    extra = "future_status_r0b"
+    assert extra not in original
+    members = [(item.name, item.value) for item in NodeRunStatus]
+    members.append((extra, extra))
+    patched = enum.Enum("NodeRunStatus", members, type=str)
+    monkeypatch.setattr(sys.modules[__name__], "NodeRunStatus", patched)
+    assert extra in _allowed()
+    assert _statuses_fit([*sorted(original), extra])
+    assert _statuses_fit(["not-a-node-status"]) is False
