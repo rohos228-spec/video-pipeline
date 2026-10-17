@@ -1235,11 +1235,10 @@ def _fold_string(node: ast.AST | None, env: dict[str, str]):
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left = _fold_string(node.left, env)
         right = _fold_string(node.right, env)
-        if left is _UNPROVEN or right is _UNPROVEN:
-            return _UNPROVEN
         if isinstance(left, str) and isinstance(right, str):
             return left + right
-        return None
+        # Атрибут, подстановка и любая несвёрнутая сторона — не доказано.
+        return _UNPROVEN
     if isinstance(node, ast.Call) and _call_name(node.func) == "text":
         return _fold_string(_sql_expr(node), env)
     return None
@@ -1265,9 +1264,13 @@ def _classify_sql_text(text: str) -> str:
 def _sql_kind(call: ast.Call, env: dict[str, str]) -> str | None:
     if _call_name(call.func) not in _SQL_NAMES:
         return None
-    folded = _fold_string(_sql_expr(call), env)
+    expr = _sql_expr(call)
+    folded = _fold_string(expr, env)
+    # None — только когда SQL-аргумента нет. Иначе недоказанное выражение отклоняется.
     if folded is None:
-        return None
+        if expr is None:
+            return None
+        return "sql.unknown"
     if folded is _UNPROVEN:
         return "sql.unknown"
     status = _classify_sql_text(folded)
@@ -2811,6 +2814,20 @@ def test_getattr_call_and_shutil_values_are_denied() -> None:
         "shutil.copytree",
         "os.open",
     ]
+    assert all(hit.allowed is False for hit in hits)
+
+
+def test_unproven_sql_expressions_are_denied() -> None:
+    """Несвёрнутый SQL — sql.unknown, а не тихий пропуск."""
+    source = (
+        "def save(conn, t):\n"
+        "    conn.execute(self.sql)\n"
+        "    conn.execute(QUERIES['wipe'])\n"
+        "    conn.execute('DELETE FROM %s' % t)\n"
+        "    conn.execute('DELETE FROM ' + self.table)\n"
+    )
+    hits = analyze_module_source(source, "group.delete")
+    assert [hit.kind for hit in hits] == ["sql.unknown", "sql.unknown", "sql.unknown", "sql.unknown"]
     assert all(hit.allowed is False for hit in hits)
 
 
