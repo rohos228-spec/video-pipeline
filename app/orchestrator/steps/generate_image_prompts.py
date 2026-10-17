@@ -9,7 +9,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Frame, FrameStatus, Project, ProjectStatus
 from app.services.step_cancel import StepCancelledError, raise_if_cancelled
+from app.services.vo_shot_expand import is_shot_child
 from app.storage import for_project as _sheet_for_project
+
+
+def is_parent_grid_frame(fr: Frame) -> bool:
+    """True для базового родительского кадра сетки (не дочерний шот покрытия)."""
+    if is_shot_child(fr):
+        return False
+    attrs = fr.attrs if isinstance(fr.attrs, dict) else {}
+    if attrs.get("is_shot") is True or attrs.get("shot_child") is True:
+        return False
+    if str(attrs.get("role") or "").lower() == "shot":
+        return False
+    return True
 
 
 def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
@@ -18,7 +31,11 @@ def _frames_needing_image_prompt(frames: list[Frame]) -> list[Frame]:
     return [
         fr
         for fr in frames
-        if is_img_pr_vo_parent(fr) and not (fr.image_prompt or "").strip()
+        if (
+            is_img_pr_vo_parent(fr)
+            and is_parent_grid_frame(fr)
+            and not (fr.image_prompt or "").strip()
+        )
     ]
 
 
@@ -28,7 +45,11 @@ def _frames_with_image_prompt(frames: list[Frame]) -> list[Frame]:
     return [
         fr
         for fr in frames
-        if is_img_pr_vo_parent(fr) and (fr.image_prompt or "").strip()
+        if (
+            is_img_pr_vo_parent(fr)
+            and is_parent_grid_frame(fr)
+            and (fr.image_prompt or "").strip()
+        )
     ]
 
 
@@ -112,6 +133,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         raise RuntimeError("нет кадров — нечего составлять промты")
 
     need = _frames_needing_image_prompt(frames)
+    if len(need) > 30:
+        logger.warning(
+            "[#{}] generate_image_prompts: parent frames count {} > 30, clamping to 30",
+            project.id,
+            len(need),
+        )
+        need = need[:30]
     if not need:
         # Уже всё в DB (прошлый apply успел, а шаг упал на snapshot/greenlet).
         if _frames_with_image_prompt(frames):

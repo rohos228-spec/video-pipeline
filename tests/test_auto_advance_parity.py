@@ -27,16 +27,27 @@ from app.orchestrator.auto_advance import (
 
 
 class _StubAsyncSession:
-    """Минимальный stub: `flush()` — no-op. `execute()` зовётся только
-    в excel-hero ветке, которую тут не проверяем."""
+    """Минимальный stub: `flush()` — no-op."""
 
     async def flush(self) -> None:
         return None
 
-    async def execute(self, *_args, **_kwargs):  # pragma: no cover
-        raise AssertionError(
-            "execute() should not be called in these test cases"
-        )
+    async def refresh(self, obj) -> None:
+        return None
+
+    async def execute(self, *_args, **_kwargs):
+        class _Result:
+            def scalars(self):
+                return self
+            def all(self):
+                return []
+            def first(self):
+                return None
+            def scalar_one_or_none(self):
+                return None
+            def scalar_one(self):
+                return 1
+        return _Result()
 
 
 def _make_project(

@@ -27,6 +27,7 @@ from app.services.run_sync import (
 from app.services.chatgpt_xlsx import sync_project_xlsx
 from app.settings import settings
 from app.storage import ProjectSheet
+from app.project_db import sync_project_row_to_master_db
 from app.web.deps import get_project_session, get_session
 from app.web.project_dto import project_to_detail
 from app.web.schemas import ProjectDetail
@@ -299,6 +300,18 @@ async def reset_project_step(
     p = _project_or_404(await session.get(Project, project_id))
     try:
         summary = await reset_step(session, p, step_code)
+        if p.data_dir:
+            from app.project_db import resolve_project_db_path, project_session_scope
+            db_path = resolve_project_db_path(p.data_dir)
+            if db_path.exists():
+                try:
+                    async with project_session_scope(p.data_dir) as p_sess:
+                        p_in_proj = await p_sess.get(Project, project_id)
+                        if p_in_proj:
+                            await reset_step(p_sess, p_in_proj, step_code)
+                            await p_sess.commit()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("reset_project_step #{}: reset project.db failed: {}", project_id, exc)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if summary.get("error"):
@@ -740,7 +753,7 @@ async def montage_board(
 
     try:
         board = await build_montage_board(session, p)
-        # get_session не коммитит сам — без commit кэш R15/meta откатывается,
+        # get_project_session не коммитит сам — без commit кэш R15/meta откатывается,
         # и каждый GET снова пишет сотни кадров → database is locked + Failed to fetch.
         await session.commit()
         return board
@@ -1238,6 +1251,10 @@ async def montage_board_save_queue(
         board["video_trims"] = body["video_trims"]
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": True, "pending_ops": cleaned, "meta": public_board_meta(board)}
 
 
@@ -1292,6 +1309,10 @@ async def montage_board_apply(
         }
         set_montage_meta(p, board)
         await session.commit()
+        try:
+            await sync_project_row_to_master_db(p)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sync_project_row_to_master_db failed: {}", exc)
         spawn_apply_job(
             project_id, video_trims=trims, pending_ops=ops, keep_ops=keep_ops
         )
@@ -1310,6 +1331,10 @@ async def montage_board_apply(
         keep_ops=keep_ops,
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     await publish_project_event(
         project_id,
         event_type="project_updated",
@@ -1438,6 +1463,10 @@ async def montage_board_swap_shots(
         session, p, frame_number, kind=kind  # type: ignore[arg-type]
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -1470,6 +1499,10 @@ async def montage_board_swap_slots(
         b_shot=b_shot,
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -1504,6 +1537,10 @@ async def montage_board_move_image(
         to_slot=to_slot,
     )
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     if not result.get("ok"):
         raise HTTPException(
             status_code=400,
@@ -1529,6 +1566,10 @@ async def montage_board_delete_image(
     mark_stale_videos(board, frame_number, shot=shot)
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": deleted, "frame_number": frame_number, "shot": shot}
 
 
@@ -1544,6 +1585,10 @@ async def montage_board_delete_video(
     p = _project_or_404(await session.get(Project, project_id))
     deleted = await delete_scene_video(session, p, frame_number, shot=shot)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": deleted, "frame_number": frame_number, "shot": shot}
 
 
@@ -1745,6 +1790,10 @@ async def montage_board_upload_image(
     mark_stale_videos(board, frame_number, shot=shot)
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {
         "ok": True,
         "path": str(path),
@@ -1777,6 +1826,10 @@ async def montage_board_upload_video(
     clear_stale_video(board, frame_number, shot)
     set_montage_meta(p, board)
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {
         "ok": True,
         "path": str(path),
@@ -1812,6 +1865,10 @@ async def montage_board_upload_voice(
     p.meta = meta
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": True, "path": str(dest), "filename": dest.name}
 
 
@@ -1840,6 +1897,10 @@ async def montage_board_upload_music(
     p.meta = meta
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", exc)
     return {"ok": True, "path": str(dest), "filename": dest.name}
 
 
@@ -2163,8 +2224,8 @@ async def gpt_operator_patch(
         from app.project_db import push_runtime_to_master
 
         await push_runtime_to_master(session, p)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] gpt_operator_patch sync to master: {}", project_id, exc)
     return {"ok": True, "resolve": resolved}
 
 
@@ -2353,6 +2414,10 @@ async def upload_check_agent_file(
         raise HTTPException(status_code=400, detail=str(e)) from e
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] upload_check_agent_file sync to master: {}", project_id, exc)
     return result
 
 
@@ -2371,6 +2436,10 @@ async def delete_check_agent_file(
     result = clear_check_agent_file(p, node_key)
     flag_modified(p, "meta")
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] delete_check_agent_file sync to master: {}", project_id, exc)
     return result
 
 

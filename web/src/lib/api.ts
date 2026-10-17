@@ -1506,6 +1506,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  regenerateFrameVideo: (projectId: number, frameId: number) =>
+    http<{ ok: boolean; frame_id: number; frame_number: number }>(
+      `/api/projects/${projectId}/frames/${frameId}/regenerate-video`,
+      { method: "POST" },
+    ),
 
   getMontageBoard: (projectId: number) =>
     http<MontageBoardDTO>(
@@ -3079,6 +3084,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  assistProject: (body: {
+    topic_draft?: string;
+    title_draft?: string;
+    tone?: string | null;
+    voiceover_style?: string | null;
+    mode?: "expand" | "generate";
+  }) =>
+    http<{
+      ok: boolean;
+      title: string;
+      topic: string;
+      suggested_hero_mode: "hero" | "no_hero" | "auto";
+      tone?: string | null;
+      voiceover_style?: string | null;
+    }>(
+      "/api/meta-agent/assist-project",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      90_000,
+    ),
 };
 
 export type GptWorkspaceSessionSummary = {

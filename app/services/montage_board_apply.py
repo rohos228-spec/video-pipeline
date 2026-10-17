@@ -25,7 +25,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Entity, Frame, Project
-from app.project_db import project_db_session_scope as _isolated_project_scope
+from app.project_db import (
+    project_db_session_scope as _isolated_project_scope,
+    sync_project_row_to_master_db,
+)
 from app.services.img_streams import acquire_image_slot, get_img_streams
 from app.services.montage_ai_change import (
     character_ids_from_prompt,
@@ -708,6 +711,10 @@ async def _run_ops_phase(
                 if project is not None:
                     set_montage_meta(project, board)
                     await session.commit()
+                    try:
+                        await sync_project_row_to_master_db(project)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug("sync_project_row_to_master_db failed: {}", e)
             if on_progress is not None:
                 await on_progress(len(results), max(total, 1), result)
 
@@ -822,6 +829,10 @@ async def apply_montage_board(
     set_montage_meta(project, board)
     await session.flush()
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(project)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", e)
 
     op_status: list[str | None] = [None] * len(ops)
 
@@ -889,6 +900,10 @@ async def apply_montage_board(
     set_montage_meta(project, board)
     await session.flush()
     await session.commit()
+    try:
+        await sync_project_row_to_master_db(project)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("sync_project_row_to_master_db failed: {}", e)
 
     return {
         "ok": not errors,

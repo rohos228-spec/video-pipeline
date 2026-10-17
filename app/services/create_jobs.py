@@ -392,6 +392,9 @@ async def _run_job(
             max_parallel(job.provider),
         )
         try:
+            from app.services.api_tracker_hook import check_api_allowed
+            check_api_allowed(provider=job.provider, model=job.model)
+
             result = await run(job.path)
             final_path = Path(getattr(result, "file_path", job.path))
             if not final_path.is_file() or final_path.stat().st_size < 32:
@@ -458,6 +461,28 @@ async def _run_job(
                 job.path.stat().st_size,
                 format_elapsed_min_sec(job.elapsed_sec),
             )
+            # Запись в API Tracker
+            try:
+                from app.services.api_tracker_hook import record_api_call
+                cost_usd = None
+                if quote and isinstance(quote, dict) and "usd" in quote:
+                    try:
+                        cost_usd = float(quote["usd"])
+                    except (ValueError, TypeError):
+                        pass
+                record_api_call(
+                    provider=job.provider,
+                    model=job.model,
+                    call_type=job.media,
+                    media_count=1,
+                    duration_sec=float(job.elapsed_sec or 0),
+                    cost_usd=cost_usd,
+                    status_code=200,
+                    project_source="create_workspace",
+                    metadata={"prompt": (job.prompt or "")[:500], "job_id": job.id},
+                )
+            except Exception as e:
+                logger.debug("api_tracker record failed: {}", e)
         except asyncio.CancelledError:
             job.status = "failed"
             job.error = "Генерация отменена пользователем"
@@ -491,5 +516,21 @@ async def _run_job(
                 elapsed_sec=job.elapsed_sec,
             )
             logger.exception("create_job.failed id={}", job.id)
+            # Запись ошибки в API Tracker
+            try:
+                from app.services.api_tracker_hook import record_api_call
+                record_api_call(
+                    provider=job.provider,
+                    model=job.model,
+                    call_type=job.media,
+                    media_count=1,
+                    duration_sec=float(job.elapsed_sec or 0),
+                    status_code=500,
+                    error_message=str(job.error or "")[:300],
+                    project_source="create_workspace",
+                    metadata={"prompt": (job.prompt or "")[:500], "job_id": job.id},
+                )
+            except Exception:
+                pass
         finally:
             _refresh_queue_positions()

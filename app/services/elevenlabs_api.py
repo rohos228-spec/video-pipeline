@@ -151,6 +151,9 @@ async def synthesize_speech(
         or "eleven_multilingual_v2"
     ).strip()
 
+    from app.services.api_tracker_hook import check_api_allowed
+    check_api_allowed(provider="ElevenLabs", model=effective_model)
+
     url = f"{ELEVENLABS_API_BASE_URL}/text-to-speech/{effective_voice_id}"
     headers = {
         "xi-api-key": api_key,
@@ -177,8 +180,9 @@ async def synthesize_speech(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     async def _do_post(active_proxy: str | None) -> httpx.Response:
+        req_timeout = httpx.Timeout(10.0, connect=5.0) if active_proxy else httpx.Timeout(timeout)
         client_kwargs: dict[str, Any] = {
-            "timeout": timeout,
+            "timeout": req_timeout,
             "follow_redirects": True,
         }
         if active_proxy:
@@ -250,6 +254,23 @@ async def synthesize_speech(
         except Exception:  # noqa: BLE001
             err_msg = f"HTTP {resp.status_code}: {resp.text[:300]}"
 
+        try:
+            from app.services.api_tracker_hook import record_api_call
+            record_api_call(
+                provider="ElevenLabs",
+                model=effective_model,
+                call_type="audio",
+                prompt_tokens=len(clean_text),
+                duration_sec=0.0,
+                cost_usd=0.0,
+                status_code=resp.status_code,
+                error_message=err_msg[:300],
+                project_source="elevenlabs_tts",
+                metadata={"voice_id": effective_voice_id},
+            )
+        except Exception:
+            pass
+
         if resp.status_code == 401:
             raise ElevenLabsApiError(
                 f"11Labs API: неверный API-ключ (401 Unauthorized) — {err_msg}"
@@ -277,4 +298,22 @@ async def synthesize_speech(
         out_path.name,
         len(audio_bytes),
     )
+    try:
+        from app.services.api_tracker_hook import record_api_call
+        char_count = len(clean_text)
+        cost_est = round(char_count * 0.00015, 6)
+        record_api_call(
+            provider="ElevenLabs",
+            model=effective_model,
+            call_type="audio",
+            prompt_tokens=char_count,
+            duration_sec=0.0,
+            cost_usd=cost_est,
+            media_count=1,
+            status_code=200,
+            project_source="elevenlabs_tts",
+            metadata={"voice_id": effective_voice_id, "chars": char_count},
+        )
+    except Exception:
+        pass
     return out_path

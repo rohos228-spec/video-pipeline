@@ -18,6 +18,7 @@ import json
 import re
 import socket
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -538,8 +539,6 @@ def _hitting_vps_relay() -> bool:
     vps = _vps_relay_base()
     if not vps:
         return False
-    if settings.text_llm_is_tokenrouter:
-        return False
     if _node_kie_override():
         return True
     if _node_vibecode_override() or settings.text_llm_is_vibecode:
@@ -547,11 +546,16 @@ def _hitting_vps_relay() -> bool:
     return True
 
 
-def _headers() -> dict[str, str]:
-    vibe_ov = _node_vibecode_override()
+def is_anthropic_model(model_name: str | None) -> bool:
+    return bool(model_name and str(model_name).strip().lower().startswith("claude"))
+
+
+def _headers(model: str | None = None) -> dict[str, str]:
+    is_anthropic = is_anthropic_model(model)
+    vibe_ov = _node_vibecode_override() or is_anthropic
     kie_ov = _node_kie_override()
     if vibe_ov:
-        # Не подставлять kie GPT_API_KEY: иначе 401 на vibecode /v1/chat/completions.
+        # Не подставлять kie GPT_API_KEY: иначе 401 на vibecode /v1/chat/completions или /v1/messages.
         key = (settings.vibecode_api_key or "").strip()
     elif kie_ov:
         # Не брать vibecode-ключ шапки: группа script_frames_qc идёт на kie.
@@ -569,11 +573,6 @@ def _headers() -> dict[str, str]:
                 "VIBECODE_API_KEY пуст — задай ключ vibecode.moe (vk-…) в .env",
                 context={"error_kind": "no_key", "provider": "vibecode"},
             )
-        if settings.text_llm_is_tokenrouter:
-            raise GptApiError(
-                "TOKENROUTER_API_KEY пуст — задай ключ TokenRouter (Kimi K3) в .env",
-                context={"error_kind": "no_key", "provider": "tokenrouter"},
-            )
         raise GptApiError(
             "GPT_API_KEY пуст — задай ключ в .env",
             context={"error_kind": "no_key", "provider": "kie"},
@@ -582,6 +581,9 @@ def _headers() -> dict[str, str]:
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
+    if is_anthropic:
+        headers["x-api-key"] = key
+        headers["anthropic-version"] = "2023-06-01"
     if _hitting_vps_relay():
         relay = (getattr(settings, "gpt_relay_token", None) or "").strip()
         if relay:
@@ -591,20 +593,21 @@ def _headers() -> dict[str, str]:
 
 def _chat_url(model: str) -> str:
     global _RELAY_BASE_LOGGED
-    if _node_kie_override():
+    is_anthropic = is_anthropic_model(model)
+    if _node_kie_override() and not is_anthropic:
         base = _override_kie_base_url()
-    elif _node_vibecode_override():
+    elif _node_vibecode_override() or is_anthropic:
         base = _override_vibecode_base_url()
     else:
         base = settings.gpt_api_effective_base_url
     if not base:
         raise GptApiError(
-            "База текстового LLM пуста — задай TOKENROUTER_BASE_URL, VIBECODE_BASE_URL или GPT_BASE_URL",
+            "База текстового LLM пуста — задай VIBECODE_BASE_URL или GPT_BASE_URL",
             context={"error_kind": "no_base"},
         )
     if not _RELAY_BASE_LOGGED:
         vps = _vps_relay_base()
-        if vps:
+        if vps and not is_anthropic:
             logger.warning(
                 "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
                 vps,
@@ -612,7 +615,9 @@ def _chat_url(model: str) -> str:
         elif "kie.ai" not in base.lower():
             logger.info("GPT API: base_url={} (non-kie host, no VPS-relay)", base)
         _RELAY_BASE_LOGGED = True
-    if _node_kie_override():
+    if is_anthropic:
+        path = "/messages" if base.lower().endswith("/v1") else "/v1/messages"
+    elif _node_kie_override():
         path = (settings.gpt_chat_path or "/codex/v1/responses").strip()
     elif _node_vibecode_override():
         path = "/chat/completions" if base.lower().endswith("/v1") else "/v1/chat/completions"
@@ -1493,6 +1498,90 @@ def build_messages(
     return messages
 
 
+def build_anthropic_payload(
+    *,
+    model: str,
+    prompt: str,
+    accompanying: str = "",
+    input_paths: list[Path] | None = None,
+    system: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+    xlsx_write_contract: str = "tsv",
+    temperature: float | None = None,
+    max_tokens: int = 8192,
+) -> dict[str, Any]:
+    """Собрать payload для Anthropic Messages API (/v1/messages)."""
+    import base64
+    import mimetypes
+
+    messages: list[dict[str, Any]] = []
+    for m in normalize_history(history):
+        r = m.get("role")
+        if r in ("user", "assistant"):
+            c = m.get("content") or ""
+            if isinstance(c, str) and c.strip():
+                messages.append({"role": r, "content": c})
+
+    others, images = split_input_paths(input_paths)
+    text = _compose_user_text(
+        prompt=prompt,
+        accompanying=accompanying,
+        text_paths=others,
+        image_names=[p.name for p in images],
+        xlsx_write_contract=xlsx_write_contract,
+    )
+
+    if not images:
+        messages.append({"role": "user", "content": text})
+    else:
+        content: list[dict[str, Any]] = []
+        for img in images:
+            try:
+                data = base64.b64encode(img.read_bytes()).decode("utf-8")
+                media_type = mimetypes.guess_type(img.name)[0] or "image/jpeg"
+                content.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": data,
+                        },
+                    }
+                )
+            except Exception as e:
+                logger.warning("Anthropic vision skip {}: {}", img.name, e)
+        content.append({"type": "text", "text": text})
+        messages.append({"role": "user", "content": content})
+
+    # Anthropic Messages API: чередование ролей user / assistant
+    merged_messages: list[dict[str, Any]] = []
+    for m in messages:
+        if merged_messages and merged_messages[-1]["role"] == m["role"]:
+            prev = merged_messages[-1]["content"]
+            curr = m["content"]
+            if isinstance(prev, str) and isinstance(curr, str):
+                merged_messages[-1]["content"] = f"{prev}\n\n{curr}"
+            else:
+                p_list = prev if isinstance(prev, list) else [{"type": "text", "text": str(prev)}]
+                c_list = curr if isinstance(curr, list) else [{"type": "text", "text": str(curr)}]
+                merged_messages[-1]["content"] = p_list + c_list
+        else:
+            merged_messages.append(m)
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": merged_messages,
+        "stream": True,
+    }
+    if system and system.strip():
+        payload["system"] = system.strip()
+    if temperature is not None:
+        payload["temperature"] = temperature
+    return payload
+
+
 # ─────────────────────────── HTTP вызов ───────────────────────────
 
 
@@ -1826,7 +1915,52 @@ def _log_chat_finished(
     attempt: int,
     result: "GptChatResult",
     include_task_id: bool = True,
+    prompt_text: str = "",
 ) -> None:
+    # 1. Запись в локальный API Tracker (fail-safe, без задержек)
+    try:
+        from app.services.api_tracker_hook import record_api_call
+
+        u = result.usage or {}
+        p_tok = int(u.get("prompt_tokens") or 0)
+        c_tok = int(u.get("completion_tokens") or 0)
+        if c_tok == 0 and result.text:
+            c_tok = max(1, len(result.text) // 4)
+        if p_tok == 0:
+            if prompt_text:
+                p_tok = max(10, len(prompt_text) // 4)
+            else:
+                p_tok = 50
+        cached_tok = int((u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+        dur = float((result.raw or {}).get("duration_sec") or 0.0)
+
+        # Нормализация имени провайдера
+        prov = (provider_label or "").split()[0].lower().replace(":", "").replace(",", "")
+        model_name = result.model or use_model
+        if "vibecode" in provider_label.lower():
+            prov = "vibecode"
+        elif "gemini" in model_name.lower():
+            prov = "google"
+        elif "deepseek" in model_name.lower():
+            prov = "deepseek"
+        elif "kie" in provider_label.lower() or "kie" in prov:
+            prov = "kie"
+        elif not prov:
+            prov = "openai"
+
+        record_api_call(
+            provider=prov,
+            model=model_name,
+            prompt_tokens=p_tok,
+            completion_tokens=c_tok,
+            cached_tokens=cached_tok,
+            duration_sec=dur,
+            status_code=200,
+            project_source="chat/pipeline",
+        )
+    except Exception as e:
+        logger.debug(f"api_tracker_hook error: {e}")
+
     task_id = ""
     if include_task_id:
         task_id = result.response_id or (result.raw or {}).get("id") or "-"
@@ -2504,26 +2638,32 @@ async def _chat_completions_stream(
                             resp.status_code, err_txt, use_model=use_model
                         )
                     async for raw in resp.aiter_lines():
-                        if raw:
-                            lines.append(raw)
-                            if on_delta and raw.startswith("data:"):
-                                piece = raw[5:].strip()
-                                if piece and piece != "[DONE]":
-                                    try:
-                                        chunk_obj = json.loads(piece)
-                                        choices = chunk_obj.get("choices") or []
-                                        if choices and isinstance(choices, list):
-                                            delta_obj = choices[0].get("delta") or {}
-                                            content = delta_obj.get("content")
-                                            if content:
-                                                if asyncio.iscoroutinefunction(on_delta):
-                                                    await on_delta(content)
-                                                else:
-                                                    res = on_delta(content)
-                                                    if asyncio.iscoroutine(res):
-                                                        await res
-                                    except Exception:
-                                        pass
+                        if not raw:
+                            continue
+                        lines.append(raw)
+                        clean_line = raw.strip()
+                        if clean_line in ("data: [DONE]", "data:[DONE]"):
+                            break
+                        if clean_line.startswith("data:"):
+                            piece = clean_line[5:].strip()
+                            if piece == "[DONE]":
+                                break
+                            if on_delta and piece:
+                                try:
+                                    chunk_obj = json.loads(piece)
+                                    choices = chunk_obj.get("choices") or []
+                                    if choices and isinstance(choices, list):
+                                        delta_obj = choices[0].get("delta") or {}
+                                        content = delta_obj.get("content")
+                                        if content:
+                                            if asyncio.iscoroutinefunction(on_delta):
+                                                await on_delta(content)
+                                            else:
+                                                res = on_delta(content)
+                                                if asyncio.iscoroutine(res):
+                                                    await res
+                                except Exception:
+                                    pass
         except GptApiError as e:
             if e.retryable:
                 logger.warning("GPT(chat/stream) {} → nostream salvage", e)
@@ -2536,7 +2676,7 @@ async def _chat_completions_stream(
                         use_model=use_model,
                     )
                 except GptApiError:
-                    raise e
+                    raise
             raise
         except BaseException as e:
             if isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
@@ -2627,6 +2767,162 @@ async def _chat_completions_stream(
         usage=usage,
         raw=raw,
         response_id=str(last.get("id") or ""),
+    )
+
+
+async def _chat_anthropic_stream(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    timeout: float,
+    use_model: str,
+    on_delta: Any | None = None,
+) -> GptChatResult:
+    """POST /v1/messages с stream=true (Anthropic Messages API)."""
+    sto = _stream_timeout(timeout)
+    deadline = _sse_deadline_s(timeout)
+    lines: list[str] = []
+    text_chunks: list[str] = []
+    response_id = ""
+    finish_reason = "stop"
+    usage: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    stream_err: BaseException | None = None
+
+    req_headers = dict(headers)
+    req_headers.setdefault("anthropic-version", "2023-06-01")
+    req_headers.setdefault("content-type", "application/json")
+    if "Authorization" in req_headers and "Bearer " in req_headers["Authorization"]:
+        token = req_headers["Authorization"].split("Bearer ", 1)[1].strip()
+        req_headers.setdefault("x-api-key", token)
+
+    async with _async_client(timeout=sto) as client:
+        try:
+            async with asyncio.timeout(deadline):
+                async with client.stream(
+                    "POST", url, headers=req_headers, json=body
+                ) as resp:
+                    if resp.status_code >= 400:
+                        err_txt = (await resp.aread()).decode("utf-8", errors="replace")
+                        _raise_http_status(
+                            resp.status_code, err_txt, use_model=use_model
+                        )
+                    async for raw in resp.aiter_lines():
+                        if not raw:
+                            continue
+                        clean_line = raw.strip()
+                        lines.append(clean_line)
+                        if clean_line in ("data: [DONE]", "data:[DONE]"):
+                            break
+                        if clean_line.startswith("data:"):
+                            piece = clean_line[5:].strip()
+                            if not piece or piece == "[DONE]":
+                                break
+                            try:
+                                event_data = json.loads(piece)
+                                etype = event_data.get("type")
+                                if etype == "message_start":
+                                    msg = event_data.get("message") or {}
+                                    response_id = msg.get("id") or response_id
+                                    u = msg.get("usage") or {}
+                                    if u.get("input_tokens"):
+                                        usage["prompt_tokens"] = int(u["input_tokens"])
+                                elif etype == "content_block_delta":
+                                    delta = event_data.get("delta") or {}
+                                    if delta.get("type") == "text_delta":
+                                        content = delta.get("text") or ""
+                                        if content:
+                                            text_chunks.append(content)
+                                            if on_delta:
+                                                if asyncio.iscoroutinefunction(on_delta):
+                                                    await on_delta(content)
+                                                else:
+                                                    res = on_delta(content)
+                                                    if asyncio.iscoroutine(res):
+                                                        await res
+                                elif etype == "message_delta":
+                                    delta = event_data.get("delta") or {}
+                                    finish_reason = delta.get("stop_reason") or finish_reason
+                                    u = event_data.get("usage") or {}
+                                    if u.get("output_tokens"):
+                                        usage["completion_tokens"] = int(u["output_tokens"])
+                                    if u.get("input_tokens"):
+                                        usage["prompt_tokens"] = int(u["input_tokens"])
+                                    if u.get("cache_read_input_tokens"):
+                                        usage["cached_tokens"] = int(u["cache_read_input_tokens"])
+                                elif etype == "message_stop":
+                                    break
+                            except Exception:
+                                pass
+        except GptApiError:
+            raise
+        except BaseException as e:
+            stream_err = e
+            logger.warning(
+                "Anthropic(chat/stream) interrupt after {} lines: {}: {}",
+                len(lines),
+                type(e).__name__,
+                e,
+            )
+
+    text = "".join(text_chunks)
+    if not text.strip():
+        for raw in lines[:3]:
+            s = (raw or "").strip()
+            if s.startswith("data:"):
+                s = s[5:].strip()
+            if not s.startswith("{"):
+                continue
+            try:
+                payload = json.loads(s)
+                if isinstance(payload, dict) and payload.get("content"):
+                    text = "".join(
+                        p.get("text", "")
+                        for p in payload["content"]
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    )
+                    response_id = payload.get("id") or response_id
+                    u = payload.get("usage") or {}
+                    usage["prompt_tokens"] = u.get("input_tokens") or usage["prompt_tokens"]
+                    usage["completion_tokens"] = u.get("output_tokens") or usage["completion_tokens"]
+                    break
+            except Exception:
+                pass
+
+    usage["total_tokens"] = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+
+    if not text.strip():
+        if stream_err is not None:
+            raise GptApiError(
+                f"Anthropic(chat/stream) пустой output после {type(stream_err).__name__}: {stream_err}",
+                context={
+                    "retryable": True,
+                    "error_kind": "empty_stream",
+                    "sse_lines": len(lines),
+                },
+            ) from stream_err
+        raise GptApiError(
+            "Anthropic(chat/stream) пустой output от модели",
+            context={
+                "error_kind": "empty_stream",
+                "retryable": True,
+                "model": use_model,
+                "lines_received": len(lines),
+            },
+        )
+
+    raw = {"stream_lines": len(lines)}
+    if stream_err is not None:
+        raw["sse_salvaged"] = True
+        raw["sse_interrupt"] = type(stream_err).__name__
+
+    return GptChatResult(
+        text=text,
+        model=use_model,
+        finish_reason=finish_reason,
+        usage=usage,
+        raw=raw,
+        response_id=response_id,
     )
 
 
@@ -2948,7 +3244,7 @@ async def chat(
     pack_kind: str | None = None,
     on_delta: Any | None = None,
 ) -> GptChatResult:
-    """Вызвать текстовый LLM (kie GPT / TokenRouter Kimi) с ретраями.
+    """Вызвать текстовый LLM (kie GPT / Vibecode) с ретраями.
 
     ``volume_complete``: True — после частичного apply-ops добрать остаток.
     По умолчанию выключено (None/False), чтобы не плодить десятки вызовов.
@@ -2984,13 +3280,16 @@ async def chat(
         headers = routed.headers()
         url = routed.url
     else:
-        headers = _headers()
+        headers = _headers(use_model)
         url = _chat_url(use_model)
     use_timeout = float(timeout if timeout is not None else settings.gpt_timeout_s)
     retries = int(max_retries if max_retries is not None else settings.gpt_max_retries)
     ov_model = current_text_model_id()
+    is_anthropic = False if routed is not None else is_anthropic_model(use_model)
     if routed is not None:
         provider_label = f"52pay ({use_model})"
+    elif is_anthropic:
+        provider_label = f"vibecode ({use_model})"
     elif _node_vibecode_override():
         provider_label = f"vibecode ({ov_model})"
     elif _node_kie_override():
@@ -3001,10 +3300,14 @@ async def chat(
     via = (
         "direct"
         if routed is not None
-        else ("vps-relay" if _vps_relay_base() else ("proxy" if proxy else "direct"))
+        else (
+            "vps-relay"
+            if _vps_relay_base() and not is_anthropic
+            else ("proxy" if proxy else "direct")
+        )
     )
     effort_log = ""
-    if _node_vibecode_override():
+    if routed is None and _node_vibecode_override():
         effort_log = _node_reasoning_effort() or ""
     logger.info(
         "text_llm.chat → {} model={} url={} via={}{}",
@@ -3015,8 +3318,23 @@ async def chat(
         f" reasoning_effort={effort_log}" if effort_log else "",
     )
 
+    from app.services.api_tracker_hook import check_api_allowed
+
+    check_api_allowed(provider=provider_label, model=use_model)
+
     responses_mode = False if routed is not None else is_responses_mode()
-    if responses_mode:
+    if is_anthropic and routed is None:
+        body = build_anthropic_payload(
+            model=use_model,
+            prompt=prompt,
+            accompanying=accompanying,
+            input_paths=input_paths,
+            system=system,
+            history=history,
+            xlsx_write_contract=xlsx_write_contract,
+            temperature=temperature,
+        )
+    elif responses_mode:
         # stream=true: иначе Cloudflare рвёт длинный non-stream JSON, а у kie
         # задача уже success (см. kie.ai/logs Task ID = resp_…).
         body: dict[str, Any] = {
@@ -3049,11 +3367,11 @@ async def chat(
             ),
         }
         # vibecode chat: степень мышления — поле reasoning_effort, не суффикс модели.
-        if routed is None and _node_vibecode_override():
+        if routed is None and not is_anthropic and _node_vibecode_override():
             effort = _node_reasoning_effort()
             if effort:
                 body["reasoning_effort"] = effort
-    if temperature is not None:
+    if not is_anthropic and temperature is not None:
         body["temperature"] = temperature
     anth_body: dict[str, Any] | None = None
     if routed is None and _is_anthropic_messages_model(use_model):
@@ -3073,18 +3391,89 @@ async def chat(
     last_exc: Exception | None = None
     while attempt <= retries:
         attempt += 1
+        t0 = time.perf_counter()
         try:
             await _ensure_url_host_resolves(url)
-            if anth_body is not None:
-                result = await _anthropic_messages_stream(
-                    body=anth_body, use_model=use_model, timeout=use_timeout
+            if is_anthropic:
+                result = await _chat_anthropic_stream(
+                    url=url,
+                    headers=headers,
+                    body=body,
+                    timeout=use_timeout,
+                    use_model=use_model,
+                    on_delta=on_delta,
                 )
+                cont_round = 0
+                while cont_round < 2 and looks_truncated_llm_text(result.text):
+                    cont_round += 1
+                    tail = (result.text or "")[-4000:]
+                    cont_prompt = (
+                        "Предыдущий ответ оборван сетью. Продолжи СТРОГО с места "
+                        "обрыва: не повторяй уже написанное, без пояснений — "
+                        "только продолжение текста.\n\n"
+                        f"--- хвост уже полученного ---\n{tail}\n"
+                        "--- конец хвоста ---"
+                    )
+                    cont_body = build_anthropic_payload(
+                        model=use_model,
+                        prompt=cont_prompt,
+                        temperature=temperature,
+                    )
+                    try:
+                        cont = await _chat_anthropic_stream(
+                            url=url,
+                            headers=headers,
+                            body=cont_body,
+                            timeout=min(use_timeout, 180.0),
+                            use_model=use_model,
+                        )
+                    except GptApiError as e:
+                        if (result.text or "").strip() and (
+                            e.context.get("error_kind") == "empty_stream"
+                            or "пустой output" in str(e)
+                        ):
+                            break
+                        raise
+                    merged = stitch_llm_continuation(result.text, cont.text)
+                    if len(merged) <= len(result.text or ""):
+                        break
+                    result = GptChatResult(
+                        text=merged,
+                        model=use_model,
+                        finish_reason="stream_continued",
+                        usage=result.usage,
+                        raw={
+                            **(result.raw or {}),
+                            "cf_continued": True,
+                            "cf_continue_rounds": cont_round,
+                            "continue_task_id": cont.response_id or "",
+                        },
+                        response_id=result.response_id or cont.response_id,
+                    )
+                result = await _maybe_volume_complete_chat_result(
+                    result,
+                    prompt=prompt,
+                    accompanying=accompanying,
+                    input_paths=input_paths,
+                    system=system,
+                    history=history,
+                    model=use_model,
+                    temperature=temperature,
+                    timeout=use_timeout,
+                    xlsx_write_contract=xlsx_write_contract,
+                    volume_complete=volume_complete,
+                )
+                if not (result.raw or {}).get("duration_sec"):
+                    if result.raw is None:
+                        result.raw = {}
+                    result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
                 _log_chat_finished(
                     provider_label=provider_label,
                     use_model=use_model,
                     attempt=attempt,
                     result=result,
                     include_task_id=False,
+                    prompt_text=prompt,
                 )
                 return result
             if responses_mode:
@@ -3189,11 +3578,16 @@ async def chat(
                     xlsx_write_contract=xlsx_write_contract,
                     volume_complete=volume_complete,
                 )
+                if not (result.raw or {}).get("duration_sec"):
+                    if result.raw is None:
+                        result.raw = {}
+                    result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
                 _log_chat_finished(
                     provider_label=provider_label,
                     use_model=use_model,
                     attempt=attempt,
                     result=result,
+                    prompt_text=prompt,
                 )
                 return result
 
@@ -3276,11 +3670,16 @@ async def chat(
                     xlsx_write_contract=xlsx_write_contract,
                     volume_complete=volume_complete,
                 )
+                if not (result.raw or {}).get("duration_sec"):
+                    if result.raw is None:
+                        result.raw = {}
+                    result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
                 _log_chat_finished(
                     provider_label=provider_label,
                     use_model=use_model,
                     attempt=attempt,
                     result=result,
+                    prompt_text=prompt,
                 )
                 return result
 
@@ -3313,24 +3712,23 @@ async def chat(
                 xlsx_write_contract=xlsx_write_contract,
                 volume_complete=volume_complete,
             )
+            if not (result.raw or {}).get("duration_sec"):
+                if result.raw is None:
+                    result.raw = {}
+                result.raw["duration_sec"] = round(time.perf_counter() - t0, 2)
             _log_chat_finished(
                 provider_label=provider_label,
                 use_model=use_model,
                 attempt=attempt,
                 result=result,
                 include_task_id=False,
+                prompt_text=prompt,
             )
             return result
         except httpx.TimeoutException:
-            hint = ""
-            if settings.text_llm_is_tokenrouter:
-                hint = (
-                    " — Kimi free на TokenRouter часто тормозит/висит; "
-                    "подожди или переключи бейдж модели на GPT (kie)"
-                )
             last_exc = GptApiError(
                 f"{provider_label} timeout {use_timeout:.0f}s "
-                f"(попытка {attempt}/{retries + 1}){hint}",
+                f"(попытка {attempt}/{retries + 1})",
                 context={
                     "error_kind": "timeout",
                     "retryable": True,
@@ -3347,6 +3745,22 @@ async def chat(
             logger.warning(str(last_exc))
         except GptApiError as e:
             if not e.retryable:
+                try:
+                    from app.services.api_tracker_hook import record_api_call
+                    _st = int(e.context.get("status_code") or e.context.get("provider_code") or 500)
+                    record_api_call(
+                        provider=provider_label.split()[0].lower() if provider_label else "llm",
+                        model=use_model,
+                        prompt_tokens=max(10, len(prompt or "") // 4),
+                        completion_tokens=0,
+                        duration_sec=0.0,
+                        cost_usd=0.0,
+                        status_code=_st,
+                        error_message=str(e)[:300],
+                        project_source="chat/pipeline",
+                    )
+                except Exception:
+                    pass
                 raise
             # kie иногда падает на PDF input_file → code=500; оставляем только текст.
             # Не сжигаем попытку: attempt -= 1, чтобы text-only точно ушёл.
@@ -3372,7 +3786,26 @@ async def chat(
             backoff = _gpt_retry_backoff_s(attempt, last_exc)
             await asyncio.sleep(backoff)
 
-    raise last_exc or GptApiError("GPT: неизвестная ошибка", context={"model": use_model})
+    final_err = last_exc or GptApiError("GPT: неизвестная ошибка", context={"model": use_model})
+    try:
+        from app.services.api_tracker_hook import record_api_call
+        _st = 500
+        if isinstance(final_err, GptApiError):
+            _st = int(final_err.context.get("status_code") or final_err.context.get("provider_code") or 500)
+        record_api_call(
+            provider=provider_label.split()[0].lower() if provider_label else "llm",
+            model=use_model,
+            prompt_tokens=max(10, len(prompt or "") // 4),
+            completion_tokens=0,
+            duration_sec=0.0,
+            cost_usd=0.0,
+            status_code=_st,
+            error_message=str(final_err)[:300],
+            project_source="chat/pipeline",
+        )
+    except Exception:
+        pass
+    raise final_err
 
 
 def is_pdf_provider_failure(exc: BaseException) -> bool:

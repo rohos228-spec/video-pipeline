@@ -154,7 +154,7 @@ def _get_master_or_fallback(project: Project, step_code: str, fallback: str) -> 
         return fallback
 
 
-# Footer для plan: DB/текст SoT (не xlsx/TSV). См. docs/PROMPT_CONTRACT.md.
+# Footer для plan: DB SoT (apply-ops JSON). См. docs/PROMPT_CONTRACT.md.
 PLAN_XLSX_OUTPUT_FOOTER = (
     "\n\n---\n"
     "ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ВЫВОДА (план проекта):\n"

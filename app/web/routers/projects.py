@@ -215,8 +215,9 @@ async def get_project(
         raise HTTPException(status_code=404, detail="project not found")
     # Свежий meta (user_stop) — иначе stale recompute затирает ⏹ и снова крутит ноду.
     await session.refresh(p)
-    # GET не пишет canvas_graph. Poll #60 каждые ~2с делал upgrade
+    # GET не пишет canvas_graph. Poll каждые ~2с делал upgrade
     # 20↔18 нод, commit stale snapshot и выжигал сокеты (GPT errno=8).
+    # commit_with_retry — #313 (database is locked). Upgrade на GET не возвращаем.
     pulled = False
     try:
         pulled = await _heal_get_runtime_from_master(session, p)
@@ -230,7 +231,7 @@ async def get_project(
         session, p, log_prefix="recompute(web_get)"
     )
     if recomputed or pulled:
-        await session.commit()
+        await commit_with_retry(session)
         await session.refresh(p)
     else:
         # Poll GET не должен commit'ить stale snapshot: иначе ▶
@@ -298,7 +299,7 @@ async def create_project(
         await init_project_db(p.data_dir, project=p)
     except Exception as exc:
         logger.warning("create_project: init_project_db failed: {}", exc)
-    await session.commit()
+    await commit_with_retry(session)
     await session.refresh(p)
     await publish_project_event(p.id, event_type="project_created", payload={
         "slug": p.slug,
@@ -313,7 +314,7 @@ async def create_project(
         except Exception:
             pass
     await recompute_status(session, p, log_prefix="recompute(create)")
-    await session.commit()
+    await commit_with_retry(session)
     await session.refresh(p)
     try:
         register_project_data_dir(p.id, p.data_dir)
@@ -345,7 +346,7 @@ async def create_child_project(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     # Сначала короткий commit — не держим write-lock на время copytree.
-    await session.commit()
+    await commit_with_retry(session)
     await session.refresh(child)
     try:
         await finalize_child_data_dir(parent, child)
@@ -379,7 +380,7 @@ async def ensure_project_run(
     if wf_id is None:
         raise HTTPException(status_code=404, detail="default workflow not found")
     run_id = await ensure_run_for_project(project_id, wf_id, session=session)
-    await session.commit()
+    await commit_with_retry(session)
     return {"run_id": run_id}
 
 
@@ -441,7 +442,7 @@ async def delete_project(
     data_dir = p.data_dir
     remove_project_from_layout(project_id)
     await session.delete(p)
-    await session.commit()
+    await commit_with_retry(session)
     # Закрываем кэшированный engine для project.db
     from app.project_db import _ENGINES, _SESSION_MAKERS, _LOCK, resolve_project_db_path
     db_file = resolve_project_db_path(data_dir)
@@ -537,6 +538,28 @@ async def patch_project(
     if "auto_mode" in payload:
         on_auto_mode_changed(p, was_auto=was_auto, now_auto=bool(p.auto_mode))
         flag_modified(p, "meta")
+    if "general_plan" in payload:
+        plan_text = (payload.get("general_plan") or "").strip()
+        lock_ui_field(p, "general_plan")
+        flag_modified(p, "meta")
+        xlsx = p.data_dir / "project.xlsx"
+        if xlsx.is_file():
+            try:
+                from app.storage.project_sheet import ProjectSheet
+
+                ProjectSheet(file_path=xlsx).write_general(
+                    topic=p.topic,
+                    slug=p.slug,
+                    hero_mode=p.hero_mode,
+                    status=p.status.value,
+                    general_plan=plan_text,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "patch_project #{}: write_general plan failed: {}",
+                    project_id,
+                    exc,
+                )
     if "script_text" in payload:
         text = (payload.get("script_text") or "").strip()
         save_voiceover_text(p, p.data_dir / "voiceover.txt", text)
@@ -604,8 +627,12 @@ async def patch_project(
         from app.project_db import sync_runtime_both_ways
 
         await sync_runtime_both_ways(session, p)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "patch_project #{}: runtime sync master↔project.db failed: {}",
+            project_id,
+            exc,
+        )
     await publish_project_event(project_id, event_type="project_updated")
     return p
 
@@ -693,7 +720,7 @@ async def run_project_step(
         _meta["excel_gpt_stop_after_key"] = node_key
         p.meta = _meta
         _fm(p, "meta")
-        await session.commit()
+        await commit_with_retry(session)
         await session.refresh(p)
     try:
         await start_step(
@@ -707,22 +734,29 @@ async def run_project_step(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    if only_node and node_key:
-        from sqlalchemy.orm.attributes import flag_modified
-
-        meta = dict(p.meta or {})
-        meta["excel_gpt_stop_after_key"] = node_key
-        p.meta = meta
-        flag_modified(p, "meta")
-    await session.commit()
+    await commit_with_retry(session)
     await session.refresh(p)
     await sync_run_for_project(project_id, session=session)
     try:
         from app.project_db import push_runtime_to_master
 
         await push_runtime_to_master(session, p)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "run_project_step #{}: push runtime to master failed: {}",
+            project_id,
+            exc,
+        )
+    try:
+        from app.project_db import sync_project_row_to_project_db
+
+        await sync_project_row_to_project_db(p)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "run_project_step #{}: sync to project.db failed: {}",
+            project_id,
+            exc,
+        )
     await publish_project_event(
         project_id,
         event_type="project_updated",

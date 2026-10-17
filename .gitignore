@@ -24,9 +24,15 @@ env/
 .env.local
 .env.bak
 .env.bak-*
+.env.fleet.example
 Data_video_pipeline.env
 STUDIO-LOCAL.cmd
 *.pem
+
+# Локальные бэкапы правок (не коммитить)
+*.bak
+*.bak*
+*.with_spacing*
 
 # MCP / local tools
 .ai-orchestra-mcp/node_modules/

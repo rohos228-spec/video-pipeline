@@ -452,15 +452,32 @@ def _result_url_from_task(data: dict[str, Any]) -> str:
 
 async def _download(url: str, out_path: Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
-        r = await client.get(url)
-        if r.status_code >= 400 or len(r.content or b"") < 1024:
-            raise KieKlingError(
-                f"kie Kling download HTTP {r.status_code} size={len(r.content or b'')}",
-                context={"provider_code": r.status_code, "video_url": url, "kind": "download"},
+    last_err: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
+                r = await client.get(url)
+                if r.status_code >= 400 or len(r.content or b"") < 1024:
+                    raise KieKlingError(
+                        f"kie Kling download HTTP {r.status_code} size={len(r.content or b'')}",
+                        context={"provider_code": r.status_code, "video_url": url, "kind": "download"},
+                    )
+                out_path.write_bytes(r.content)
+            return out_path
+        except (httpx.HTTPError, OSError, KieKlingError) as e:
+            last_err = e
+            logger.warning(
+                "kie_kling.download retry {}/3 url={} err={}",
+                attempt,
+                url[:120],
+                e,
             )
-        out_path.write_bytes(r.content)
-    return out_path
+            if attempt < 3:
+                await asyncio.sleep(attempt * 2.0)
+    raise KieKlingError(
+        f"kie Kling download failed after 3 attempts: {last_err}",
+        context={"video_url": url, "kind": "download"},
+    ) from last_err
 
 
 async def _frame_to_public_url(start_frame: Path | str | None) -> str | None:

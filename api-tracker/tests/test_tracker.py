@@ -160,6 +160,9 @@ def test_db_get_stats_aggregation(tmp_path: Path):
 def test_api_endpoints(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     db_file = tmp_path / "server_test.db"
     monkeypatch.setattr("app.db.DEFAULT_DB_PATH", db_file)
+    monkeypatch.setattr("app.cloud_sync.push_call_to_supabase", lambda *a, **k: False)
+    monkeypatch.setattr("app.cloud_sync.get_cloud_logs", lambda **k: ([], 0))
+    monkeypatch.setattr("app.cloud_sync.get_cloud_stats", lambda **k: {})
     init_db(db_file)
 
     client = TestClient(app)
@@ -291,7 +294,8 @@ def test_api_profile_and_users(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr("app.identity.BASE_DIR", tmp_path)
     init_db(db_file)
 
-    insert_call(provider="OpenAI", model="gpt-4o", cost_usd=0.01, user_name="Владелец", db_path=db_file)
+    monkeypatch.setattr("app.cloud_sync.get_cloud_distinct_users", lambda: ["Тестировщик-1"])
+    insert_call(provider="OpenAI", model="gpt-4o", cost_usd=0.01, user_name="Тестировщик-1", db_path=db_file)
 
     client = TestClient(app)
 
@@ -309,7 +313,7 @@ def test_api_profile_and_users(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     users_res = client.get("/api/users")
     assert users_res.status_code == 200
     users = users_res.json()["users"]
-    assert "Владелец" in users or len(users) > 0
+    assert "Тестировщик-1" in users
 
 
 def test_killswitch_api_toggle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

@@ -21,6 +21,7 @@ from app.generation_options import build_gen_id_prefix
 from app.models import Frame, FrameStatus, Project
 from app.services import gpt_text_builder as gtb
 from app.services.plan_shot2 import (
+    _IMG_EXTENSIONS,
     MIN_SHOT2_VIDEO_PROMPT_LEN,
     SHOT2_VIDEO_PROMPT_ATTR,
     find_shot2_image,
@@ -113,7 +114,9 @@ def index_scene_image_paths(project: Project) -> dict[int, Path]:
     if not scenes_dir.is_dir():
         return {}
     best: dict[int, tuple[float, Path]] = {}
-    for path in scenes_dir.glob("frame_*_*.png"):
+    for path in scenes_dir.iterdir():
+        if not path.is_file() or path.suffix.lower() not in _IMG_EXTENSIONS:
+            continue
         # frame_003_abcd.png / frame_003_s2_abcd.png — shot1 = без _s2_
         parts = path.stem.split("_")
         if len(parts) < 3:

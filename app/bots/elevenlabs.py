@@ -217,8 +217,8 @@ async def _is_model_v3_active(page: Page) -> bool:
 
 
 async def _first_visible(page: Page, selectors: list[str], *, timeout_ms: int = 20_000) -> str | None:
-    deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+    while asyncio.get_running_loop().time() < deadline:
         for sel in selectors:
             try:
                 loc = page.locator(sel).first
@@ -761,9 +761,9 @@ class ElevenLabsBot:
             raise RuntimeError("11Labs: не найдена кнопка Generate / Regenerate speech")
         await page.locator(gen_sel).first.click()
 
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        while asyncio.get_event_loop().time() < deadline:
+        while asyncio.get_running_loop().time() < deadline:
             await _check_elevenlabs_session(page)
             err_snip = await _detect_elevenlabs_failure(page)
             if err_snip:

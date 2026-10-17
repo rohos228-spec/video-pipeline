@@ -616,8 +616,8 @@ NO_AUTH_DISMISS_SELECTORS = [
 
 async def _first_matching(page: Page, selectors: list[str], *, timeout: float = 10) -> str | None:
     """Находит первый селектор, по которому есть элемент."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
         for sel in selectors:
             try:
                 if await page.locator(sel).count() > 0:
@@ -840,11 +840,11 @@ class ChatGPTBot:
         guard_file_paths: list[Path] | None = None,
     ) -> str:
         """Ждём активную кнопку Send (после ввода текста / загрузки файлов)."""
-        deadline = asyncio.get_event_loop().time() + timeout
-        started = asyncio.get_event_loop().time()
+        deadline = asyncio.get_running_loop().time() + timeout
+        started = asyncio.get_running_loop().time()
         last_log = 0.0
         repairs_during_wait = 0
-        while asyncio.get_event_loop().time() < deadline:
+        while asyncio.get_running_loop().time() < deadline:
             if guard_file_paths:
                 health = await self._composer_attachment_health(guard_file_paths)
                 if not attachment_health_is_ok(health):
@@ -874,7 +874,7 @@ class ChatGPTBot:
             sel, ok = await self._is_send_button_enabled(page)
             if ok and sel:
                 return sel
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             if now - last_log >= ATTACH_UPLOAD_POLL_SEC:
                 att_note = ""
                 if guard_file_paths:
@@ -907,8 +907,8 @@ class ChatGPTBot:
         timeout: float = 20,
     ) -> None:
         """Проверяем, что сообщение реально ушло (не зависло в черновике)."""
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
             for sel in STOP_BUTTON_SELECTORS:
                 try:
                     if await page.locator(sel).count() > 0:
@@ -1290,8 +1290,8 @@ class ChatGPTBot:
         from app.services.step_cancel import abort_if_cancelled, sleep_cancellable
 
         page = await self._page_ready()
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
             abort_if_cancelled(project_id)
             for sel in STOP_BUTTON_SELECTORS:
                 try:
@@ -1316,9 +1316,9 @@ class ChatGPTBot:
             project_id=project_id,
         )
         page = await self._page_ready()
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         await sleep_cancellable(0.8, project_id)
-        while asyncio.get_event_loop().time() < deadline:
+        while asyncio.get_running_loop().time() < deadline:
             abort_if_cancelled(project_id)
             await self._check_chatgpt_rate_limit(page)
             await self._check_chatgpt_session(page)
@@ -1400,8 +1400,8 @@ class ChatGPTBot:
         last_text = ""
         stable_for = 0.0
         stabilized = False
-        deadline = asyncio.get_event_loop().time() + 120.0
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + 120.0
+        while asyncio.get_running_loop().time() < deadline:
             abort_if_cancelled(project_id)
             await sleep_cancellable(1.0, project_id)
             text = await self._read_last_reply()
@@ -1632,17 +1632,17 @@ class ChatGPTBot:
         settle_sec: float = ATTACH_SETTLE_SEC,
     ) -> None:
         """Ждём, что вложения не «отвалятся» после первичного ok (xlsx часто позже)."""
-        deadline = asyncio.get_event_loop().time() + settle_sec
-        started = asyncio.get_event_loop().time()
+        deadline = asyncio.get_running_loop().time() + settle_sec
+        started = asyncio.get_running_loop().time()
         last_log = 0.0
-        while asyncio.get_event_loop().time() < deadline:
+        while asyncio.get_running_loop().time() < deadline:
             health = await self._composer_attachment_health(file_paths)
             if not attachment_health_is_ok(health):
                 raise RuntimeError(
                     "ChatGPT: вложения нестабильны — "
                     f"{format_attachment_health_error(health)}"
                 )
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             if now - last_log >= ATTACH_UPLOAD_POLL_SEC:
                 logger.info(
                     "ChatGPT: settle check {:.0f}/{:.0f}с — ok {}/{}",
@@ -1701,17 +1701,17 @@ class ChatGPTBot:
     ) -> None:
         """Ждём имена файлов в композере и исчезновение спиннеров на вложениях."""
         expected = len(file_paths)
-        deadline = asyncio.get_event_loop().time() + timeout
-        started = asyncio.get_event_loop().time()
+        deadline = asyncio.get_running_loop().time() + timeout
+        started = asyncio.get_running_loop().time()
         last_log_at = 0.0
-        while asyncio.get_event_loop().time() < deadline:
+        while asyncio.get_running_loop().time() < deadline:
             names_ok = await self._files_visible_in_composer(file_paths)
             state = await self._attachments_upload_state(expected)
             count = int(state.get("count") or 0)
             loading = int(state.get("loading") or 0)
             reason = state.get("reason", "?")
             count_ok = count >= expected
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             if now - last_log_at >= ATTACH_UPLOAD_POLL_SEC:
                 logger.info(
                     "ChatGPT: upload check {:.0f}/{:.0f}с — names_ok={} "
@@ -2114,17 +2114,17 @@ class ChatGPTBot:
             "form svg.animate-spin",
             "form .animate-spin",
         ]
-        deadline = asyncio.get_event_loop().time() + timeout
-        started = asyncio.get_event_loop().time()
+        deadline = asyncio.get_running_loop().time() + timeout
+        started = asyncio.get_running_loop().time()
         last_log_at = 0.0
-        while asyncio.get_event_loop().time() < deadline:
+        while asyncio.get_running_loop().time() < deadline:
             total = 0
             for sel in spinner_sels:
                 try:
                     total += await page.locator(sel).count()
                 except Exception:  # noqa: BLE001
                     continue
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             if now - last_log_at >= ATTACH_UPLOAD_POLL_SEC:
                 logger.info(
                     "ChatGPT: upload-spinner check {:.0f}/{:.0f}с — count={}",
@@ -2219,8 +2219,8 @@ class ChatGPTBot:
 
         last_text = ""
         stable_for = 0.0
-        deadline = asyncio.get_event_loop().time() + min(120.0, timeout * 0.25)
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + min(120.0, timeout * 0.25)
+        while asyncio.get_running_loop().time() < deadline:
             abort_if_cancelled(project_id)
             await sleep_cancellable(0.5, project_id)
             text = await self._read_last_reply()
@@ -2762,8 +2762,8 @@ class ChatGPTBot:
             ):
                 return True
 
-        deadline = asyncio.get_event_loop().time() + PLAIN_FILE_DOWNLOAD_POLL_SEC
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + PLAIN_FILE_DOWNLOAD_POLL_SEC
+        while asyncio.get_running_loop().time() < deadline:
             if await self._download_plain_file_preview(page, target_path):
                 return True
             await asyncio.sleep(0.35)
@@ -2807,8 +2807,8 @@ class ChatGPTBot:
                 return False
             await asyncio.sleep(FILE_PREVIEW_OPEN_WAIT_SEC)
 
-        deadline = asyncio.get_event_loop().time() + FILE_PREVIEW_DOWNLOAD_POLL_SEC
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + FILE_PREVIEW_DOWNLOAD_POLL_SEC
+        while asyncio.get_running_loop().time() < deadline:
             if await self._preview_toolbar_visible(page):
                 if await self._download_from_side_preview_panel(page, target_path):
                     return True
@@ -2988,8 +2988,8 @@ class ChatGPTBot:
         timeout: float = DOWNLOAD_PHASE_TIMEOUT_SEC,
     ) -> Download | None:
         """Перебирает селекторы и жмёт с expect_download (popover / assistant)."""
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
             for sel in selectors:
                 try:
                     loc = page.locator(sel).first

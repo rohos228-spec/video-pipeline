@@ -182,6 +182,8 @@ LINEAR_NODE_TYPES: list[str] = [
     "videos",
     "audio",
     "music",
+    "sfx_plan",
+    "sfx_gen",
     "assemble",
     "publish",
 ]

@@ -44,14 +44,24 @@ _EMPTY_OPS_BACKOFF_S = (5.0, 10.0, 15.0)
 def img_pr_live_streams(project: Project | None) -> int:
     """Параллель GPT для img_pr.
 
-    check_streams справа — верхняя граница; низ 8, иначе 102 кадра
-    при 2 потоках висят полчаса (волна gather ждёт всех).
+    Явный meta.img_pr_streams (1..8) побеждает (контракт main).
+    Иначе check_streams, но не ниже 8: два потока вешают волну gather.
+    Без явного override последовательный прогон не используется.
     """
+    if project is not None and isinstance(getattr(project, "meta", None), dict):
+        raw = project.meta.get("img_pr_streams")
+        if raw is not None:
+            try:
+                n = int(raw)
+                if n >= 1:
+                    return min(8, n)
+            except (TypeError, ValueError):
+                pass
     from app.services.check_streams import get_check_streams
 
     n = get_check_streams(project)
     if n <= 0:
-        return 1
+        return 4
     return max(8, n)
 
 
@@ -256,10 +266,15 @@ _PLAN_DB_HINT = (
 
 
 def extract_general_plan_from_gpt_reply(reply: str) -> str:
-    """Достать общий_план из apply-ops JSON ответа модели."""
-    from app.services import db_apply
+    """Достать общий_план из любого ответа модели: apply-ops JSON, простой JSON или связный текст."""
+    if not reply or not reply.strip():
+        return ""
 
-    data = db_apply.extract_apply_ops_json(reply or "")
+    from app.services import db_apply
+    from app.services.plan_validation import MIN_GENERAL_PLAN_CHARS
+
+    # 1. Проверяем стандартный apply-ops JSON
+    data = db_apply.extract_apply_ops_json(reply)
     if isinstance(data, dict):
         for op in data.get("ops") or []:
             if not isinstance(op, dict):
@@ -267,7 +282,7 @@ def extract_general_plan_from_gpt_reply(reply: str) -> str:
             fields = op.get("fields") or {}
             if not isinstance(fields, dict):
                 continue
-            for key in ("общий_план", "general_plan", "план", "сценарий"):
+            for key in ("общий_план", "general_plan", "план", "сценарий", "plan", "script"):
                 val = fields.get(key)
                 if isinstance(val, str) and val.strip():
                     return val.strip()
@@ -275,6 +290,52 @@ def extract_general_plan_from_gpt_reply(reply: str) -> str:
                 for val in fields.values():
                     if isinstance(val, str) and len(val.strip()) >= 80:
                         return val.strip()
+
+    # 2. Проверяем JSON без обёртки ops (например {"general_plan": "..."} или {"общий_план": "..."})
+    import json
+    import re
+
+    json_candidates: list[str] = []
+    for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", reply, re.DOTALL):
+        json_candidates.append(m.group(1))
+
+    first_brace = reply.find("{")
+    last_brace = reply.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        json_candidates.append(reply[first_brace : last_brace + 1])
+
+    for raw_json in json_candidates:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                for key in (
+                    "общий_план",
+                    "general_plan",
+                    "план",
+                    "сценарий",
+                    "plan",
+                    "script",
+                    "content",
+                    "text",
+                ):
+                    val = parsed.get(key)
+                    if isinstance(val, str) and len(val.strip()) >= MIN_GENERAL_PLAN_CHARS:
+                        return val.strip()
+        except Exception:
+            continue
+
+    # 3. Fallback: если модель вернула связный текст сценария/плана напрямую
+    cleaned = reply.strip()
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+    if len(cleaned) >= MIN_GENERAL_PLAN_CHARS:
+        lower = cleaned.lower()
+        plan_keywords = ("план", "кадр", "сцена", "акт", "герой", "диктор", "voiceover", "shot", "act")
+        if any(kw in lower for kw in plan_keywords):
+            return cleaned
+
     return ""
 
 
@@ -1105,13 +1166,48 @@ def _voiceover_from_script_reply(reply: str) -> str:
             if voiceover_text:
                 break
     if not voiceover_text:
-        voiceover_text = (extract_voiceover_block(reply or "") or "").strip()
+        # Проверяем plain JSON без ops (например {"закадровый_текст": "..."} или {"voiceover": "..."})
+        import json
+        import re
+
+        json_candidates: list[str] = []
+        for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", reply or "", re.DOTALL):
+            json_candidates.append(m.group(1))
+        first_b = (reply or "").find("{")
+        last_b = (reply or "").rfind("}")
+        if first_b != -1 and last_b > first_b:
+            json_candidates.append((reply or "")[first_b : last_b + 1])
+
+        for raw_json in json_candidates:
+            try:
+                pj = json.loads(raw_json)
+                if isinstance(pj, dict):
+                    for k in (
+                        "закадровый_текст",
+                        "script_text",
+                        "voiceover",
+                        "текст",
+                        "text",
+                        "диктор",
+                    ):
+                        v = pj.get(k)
+                        if isinstance(v, str) and len(v.strip()) >= 80:
+                            voiceover_text = v.strip()
+                            break
+            except Exception:
+                continue
+            if voiceover_text:
+                break
+
+    if not voiceover_text:
+        voiceover_text = (extract_voiceover_block(reply) or "").strip()
     if not voiceover_text:
         raw = (reply or "").strip()
         if (
             raw
             and '"ops"' not in raw[:40]
             and "<<<SCENARIO>>>" not in raw
+            and not raw.startswith("{")
             and len(raw) >= 200
         ):
             voiceover_text = raw
@@ -1685,16 +1781,101 @@ async def run_script_xlsx(
     )
 
 
-_SPLIT_DB_HINT = (
-    "\n\n# РАЗБИВКА — ИСТОЧНИК ПРАВДЫ БАЗА (НЕ Excel)\n"
-    "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
-    "без скачивания .xlsx:\n"
-    '{"ops":[{"target":"replace_frames","frames":['
-    '{"закадр":"текст кадра 1","длительность":3},'
-    '{"закадр":"текст кадра 2"}'
-    "]}]}\n"
-    "Нужно ≥2 кадра. Каждый кадр — отдельный объект с полем закадр.\n"
-)
+def target_frames_from_project(project: Project | None) -> int:
+    """Извлекает ориентировочное число кадров из общего плана или параметров проекта (дефолт 30)."""
+    if project is None:
+        return 30
+    plan = str(getattr(project, "general_plan", "") or "")
+    if not plan and isinstance(project.meta, dict):
+        plan = str(project.meta.get("general_plan") or "")
+    nums = [int(m) for m in re.findall(r"(?:Кадр|кадр)\s*(\d+)", plan)]
+    if nums:
+        return max(nums)
+    m = re.search(r"(\d+)\s*(?:кадр|кадров|кадра)", plan)
+    if m:
+        return int(m.group(1))
+    return 30
+
+
+def build_split_db_hint(project: Project | None = None) -> str:
+    target_n = target_frames_from_project(project)
+    if target_n and target_n > 0:
+        fmt_text = f"ФОРМАТ: ориентируйся на структуру плана (~{target_n} кадров, по 2–4 сек озвучки на кадр)."
+    else:
+        fmt_text = "ФОРМАТ SHORTS: для ролика 60–75 сек делай 15–30 кадров (по 2–4 сек озвучки на кадр)."
+    return (
+        "\n\n# РАЗБИВКА — ИСТОЧНИК ПРАВДЫ БАЗА (НЕ Excel)\n"
+        "Верни ТОЛЬКО JSON apply-ops. Без TSV, без `# Лист:`, без `@row=`, "
+        "без скачивания .xlsx:\n"
+        '{"ops":[{"target":"replace_frames","frames":['
+        '{"закадр":"текст кадра 1","длительность":3},'
+        '{"закадр":"текст кадра 2"}'
+        "]}]}\n"
+        f"{fmt_text} "
+        "Запрещено дробить на микро-фразы по 1-2 слова. Один кадр = законченная мысль / клауза. "
+        "Каждый кадр — отдельный объект с полем закадр.\n"
+    )
+
+
+_SPLIT_DB_HINT = build_split_db_hint()
+
+
+def clamp_parent_frames(frames_spec: list[dict], max_frames: int = 30) -> list[dict]:
+    """Мягко объединяет соседние короткие кадры, если GPT вернул > max_frames (для Shorts).
+
+    Сохраняет 100% текста закадра слово в слово в строгом хронологическом порядке.
+    """
+    if not frames_spec or len(frames_spec) <= max_frames:
+        return frames_spec
+
+    items: list[dict] = []
+    for item in frames_spec:
+        if isinstance(item, dict):
+            items.append(dict(item))
+        elif isinstance(item, str):
+            items.append({"закадр": item.strip()})
+
+    while len(items) > max_frames:
+        # Ищем пару соседних кадров с минимальной суммарной длиной текста
+        best_idx = 0
+        min_len = float("inf")
+        for i in range(len(items) - 1):
+            vo1 = str(items[i].get("закадр") or items[i].get("voiceover") or "").strip()
+            vo2 = str(items[i + 1].get("закадр") or items[i + 1].get("voiceover") or "").strip()
+            combined_len = len(vo1) + len(vo2)
+            if combined_len < min_len:
+                min_len = combined_len
+                best_idx = i
+
+        f1 = items[best_idx]
+        f2 = items[best_idx + 1]
+
+        vo1 = str(f1.get("закадр") or f1.get("voiceover") or "").strip()
+        vo2 = str(f2.get("закадр") or f2.get("voiceover") or "").strip()
+        combined_vo = f"{vo1} {vo2}".strip()
+
+        merged = dict(f1)
+        if "закадр" in f1 or "закадр" in f2:
+            merged["закадр"] = combined_vo
+        else:
+            merged["voiceover"] = combined_vo
+
+        dur1 = f1.get("длительность") or f1.get("duration")
+        dur2 = f2.get("длительность") or f2.get("duration")
+        if dur1 is not None or dur2 is not None:
+            try:
+                d1 = float(dur1) if dur1 is not None else 0.0
+                d2 = float(dur2) if dur2 is not None else 0.0
+                dur_key = "длительность" if ("длительность" in f1 or "длительность" in f2) else "duration"
+                merged[dur_key] = round(d1 + d2, 2)
+            except (ValueError, TypeError):
+                pass
+
+        items[best_idx : best_idx + 2] = [merged]
+
+    logger.info("clamp_parent_frames: clamped {} -> {} frames", len(frames_spec), len(items))
+    return items
+
 
 
 def extract_frames_spec_from_gpt_reply(reply: str, *, voiceover_path: Path | None) -> list[dict]:
@@ -1746,7 +1927,7 @@ async def run_split_xlsx(
     prompt_file = cx.write_split_prompt_file(project, tmp_dir, ts=ts)
     chat_msg = (
         cx.chat_message(project, "split", prompt_file_name=prompt_file.name)
-        + _SPLIT_DB_HINT
+        + build_split_db_hint(project)
     )
 
     logger.info(
@@ -1772,8 +1953,11 @@ async def run_split_xlsx(
             '{"ops":[{"target":"replace_frames","frames":[...]}]}'
         )
 
+    target_n = target_frames_from_project(project)
+    max_frames_limit = max(35, target_n + 2)
+    frames_spec = clamp_parent_frames(frames_spec, max_frames=max_frames_limit)
     # GPT as-is → DB (≥2 кадров). Лимиты символов — только в prompt settings.
-    logger.info("split_db: кадров из GPT/fallback={}", len(frames_spec))
+    logger.info("split_db: кадров из GPT/fallback={} (target_n={}, max_limit={})", len(frames_spec), target_n, max_frames_limit)
     return XlsxRoundtripResult(
         reply_text=reply,
         downloaded_path=proj_xlsx,
@@ -1855,6 +2039,7 @@ async def _load_img_pr_context(
 ) -> tuple[list[Frame], list[dict], str, list[Frame]]:
     """Кадры + Entity cards + general_plan для img_pr."""
     from app.models import Entity
+    from app.project_db import project_db_session_scope
     from app.services import db_v2
     from app.services.excel_characters import entity_cards_for_gpt
     from app.services.vo_shot_expand import is_shot_child

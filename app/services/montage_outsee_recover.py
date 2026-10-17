@@ -33,6 +33,8 @@ from app.generation_options import (
 from app.models import Project
 from app.services.montage_board_assets import finalize_scene_image
 from app.services.montage_board_meta import add_highlight, montage_meta, set_montage_meta
+
+_IMG_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 from app.services.outsee_lane import outsee_lane, outsee_lane_busy
 from app.services.plan_shot2 import find_shot1_image, find_shot2_image
 from app.settings import settings
@@ -81,12 +83,14 @@ def _hits_from_disk(project: Project) -> list[GalleryHit]:
     if not scenes.is_dir():
         return []
     out: list[GalleryHit] = []
-    for p in scenes.glob("frame_*.png"):
+    for p in scenes.iterdir():
+        if not p.is_file() or p.suffix.lower() not in _IMG_EXTENSIONS:
+            continue
         prefix = rebuild_prefix_from_filename(project.id, p)
         if not prefix:
             continue
         m = re.match(
-            r"frame_(\d{3})_(?:s2_)?([a-f0-9]{8})\.png$",
+            r"frame_(\d{3})_(?:s2_)?([a-f0-9]{8})\.(?:png|jpe?g|webp)$",
             p.name,
             re.I,
         )
@@ -413,7 +417,7 @@ async def recover_before_regen_ops(
 
 def rebuild_prefix_from_filename(project_id: int, path: Path) -> str | None:
     m = re.match(
-        r"frame_(\d{3})_(?:s2_)?([a-f0-9]{8})\.png$",
+        r"frame_(\d{3})_(?:s2_)?([a-f0-9]{8})\.(?:png|jpe?g|webp)$",
         path.name,
         re.I,
     )
@@ -432,7 +436,9 @@ def collect_stub_prefixes(project: Project) -> list[tuple[int, int, str, Path]]:
     if not scenes.is_dir():
         return []
     out: list[tuple[int, int, str, Path]] = []
-    for p in scenes.glob("frame_*.png"):
+    for p in scenes.iterdir():
+        if not p.is_file() or p.suffix.lower() not in _IMG_EXTENSIONS:
+            continue
         try:
             size = p.stat().st_size
         except OSError:

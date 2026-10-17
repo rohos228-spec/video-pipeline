@@ -59,14 +59,76 @@ class SfxEvent:
         }
 
 
-def frame_timeline(frames: list[Frame]) -> list[dict[str, float]]:
-    """Старт/конец кадра на таймлайне: R15 из attrs нет — по duration_seconds."""
-    out: list[dict[str, float]] = []
+def frame_timeline(
+    frames: list[Frame],
+    project: Project | None = None,
+) -> list[dict[str, Any]]:
+    """Старт/конец кадра на таймлайне: из words.json (ASR), Frame.start_ts или duration_seconds."""
+    # 1. Точный тайминг и реплики из ASR (words.json)
+    if project is not None:
+        try:
+            audio_dir = project.data_dir / "audio"
+            if audio_dir.is_dir():
+                words_files = sorted(
+                    audio_dir.glob("words_*.json"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                if words_files:
+                    data = json.loads(words_files[0].read_text(encoding="utf-8"))
+                    raw_frames = data.get("frames")
+                    if isinstance(raw_frames, list) and (not frames or len(raw_frames) == len(frames)):
+                        out: list[dict[str, Any]] = []
+                        for it in raw_frames:
+                            st = round(float(it.get("start_ts", 0.0)), 2)
+                            en = round(float(it.get("end_ts", st + 3.0)), 2)
+                            row: dict[str, Any] = {
+                                "frame_number": int(it["frame_number"]),
+                                "start": st,
+                                "end": en,
+                            }
+                            vo = str(it.get("text") or "").strip()
+                            if vo and not vo.lower().startswith("кадр "):
+                                row["voiceover"] = vo[:120]
+                            out.append(row)
+                        if out:
+                            return out
+        except Exception as e:
+            logger.debug("frame_timeline: fallback with words.json failed: {}", e)
+
+    # 2. Тайминг из Frame.start_ts / Frame.end_ts
+    if any(getattr(fr, "start_ts", None) is not None and getattr(fr, "end_ts", None) is not None for fr in frames):
+        out = []
+        cursor = 0.0
+        for fr in frames:
+            fr_start = getattr(fr, "start_ts", None)
+            fr_end = getattr(fr, "end_ts", None)
+            if fr_start is not None and fr_end is not None and fr_end > fr_start:
+                st = round(float(fr_start), 2)
+                en = round(float(fr_end), 2)
+                row = {"frame_number": int(fr.number), "start": st, "end": en}
+                cursor = en
+            else:
+                dur = float(getattr(fr, "duration_seconds", None) or 0.0) or 3.0
+                row = {"frame_number": int(fr.number), "start": cursor, "end": cursor + dur}
+                cursor += dur
+            vo = str(getattr(fr, "voiceover_text", "") or "").strip()
+            if vo and not vo.lower().startswith("кадр "):
+                row["voiceover"] = vo[:120]
+            out.append(row)
+        return out
+
+    # 3. Дефолтный fallback по duration_seconds / 3.0с
+    out = []
     cursor = 0.0
     for fr in frames:
-        dur = float(fr.duration_seconds or 0.0) or 3.0
-        out.append({"frame_number": int(fr.number), "start": cursor, "end": cursor + dur})
+        dur = float(getattr(fr, "duration_seconds", None) or 0.0) or 3.0
+        row = {"frame_number": int(fr.number), "start": cursor, "end": cursor + dur}
         cursor += dur
+        vo = str(getattr(fr, "voiceover_text", "") or "").strip()
+        if vo and not vo.lower().startswith("кадр "):
+            row["voiceover"] = vo[:120]
+        out.append(row)
     return out
 
 
@@ -163,8 +225,7 @@ async def plan_sfx_events(
     *,
     max_attempts: int = 2,
 ) -> list[SfxEvent]:
-    """Спланировать звуковые события по таймлайну (GPT + валидация)."""
-    timeline = frame_timeline(frames)
+    timeline = frame_timeline(frames, project=project)
     if not timeline:
         raise RuntimeError("sfx_plan: нет кадров")
     total = timeline[-1]["end"]
@@ -207,12 +268,23 @@ async def plan_sfx_events(
     )
     events = _parse_events(result.payload)
 
+    frame_starts = {int(row["frame_number"]): float(row.get("start", 0.0)) for row in timeline}
     # Артефакт на диск.
     out_path = project.data_dir / "sfx_plan.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         json.dumps(
-            {"total_duration": total, "events": [e.to_dict() for e in events]},
+            {
+                "total_duration": total,
+                "frame_starts": frame_starts,
+                "events": [
+                    {
+                        **e.to_dict(),
+                        "offset_in_frame": round(max(0.0, e.t_start - frame_starts.get(e.frame_number, 0.0)), 3),
+                    }
+                    for e in events
+                ],
+            },
             ensure_ascii=False,
             indent=1,
         ),

@@ -84,28 +84,28 @@ export function ItemsConfigPanel({
 
   return (
     <div
-      className="nodrag nopan nowheel border-t border-cyan-400/20 bg-cyan-500/[0.04]"
+      className="nodrag nopan nowheel border-t border-white/10 bg-transparent"
       onMouseDown={(e) => e.stopPropagation()}
       onWheel={(e) => e.stopPropagation()}
     >
       <button
         type="button"
-        className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-[10px] text-cyan-200/90 transition hover:bg-cyan-500/[0.08]"
+        className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-[10px] text-foreground/80 transition hover:bg-white/[0.04]"
         onClick={() => setOpen((v) => !v)}
       >
         <span className="flex items-center gap-1.5">
-          <Package className="h-3 w-3" />
+          <Package className="h-3 w-3 text-muted-foreground" />
           Предметы
           {savedCount > 0 ? (
-            <span className="ml-1 text-cyan-300/90">
+            <span className="ml-1 text-muted-foreground font-mono">
               ({savedCount})
             </span>
           ) : null}
         </span>
         {open ? (
-          <ChevronDown className="h-3 w-3" />
+          <ChevronDown className="h-3 w-3 text-muted-foreground" />
         ) : (
-          <ChevronRight className="h-3 w-3" />
+          <ChevronRight className="h-3 w-3 text-muted-foreground" />
         )}
       </button>
 
@@ -113,7 +113,7 @@ export function ItemsConfigPanel({
         <div className="flex flex-col gap-2 px-3 pb-2.5">
           <button
             type="button"
-            className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-cyan-300"
+            className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
             onClick={() => setShowManual((v) => !v)}
           >
             {showManual ? (
@@ -123,12 +123,12 @@ export function ItemsConfigPanel({
             )}
             Ввести описание
             {savedCount > 0 ? (
-              <span className="text-cyan-300/90">· {savedCount}</span>
+              <span className="text-muted-foreground">· {savedCount}</span>
             ) : null}
           </button>
 
           {showManual && (
-            <div className="flex flex-col gap-2 rounded-md border border-cyan-400/15 bg-cyan-500/[0.03] p-2">
+            <div className="flex flex-col gap-2 rounded-md border border-white/10 bg-black/20 p-2">
               <label className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
                 <span>Сколько предметов</span>
                 <Input
@@ -147,7 +147,7 @@ export function ItemsConfigPanel({
                   className="flex flex-col gap-1 rounded-md border border-white/10 bg-black/20 p-1.5"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] uppercase tracking-wider text-cyan-300/80">
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
                       Предмет {i + 1}
                     </span>
                   </div>
@@ -170,19 +170,20 @@ export function ItemsConfigPanel({
               <Button
                 type="button"
                 size="sm"
-                variant="outline"
-                className="h-6 w-28 self-center text-[10px]"
+                className="h-7 w-32 self-center text-xs font-semibold bg-cyan-500 hover:bg-cyan-400 text-slate-950 shadow-md shadow-cyan-500/20 border-none transition-colors"
                 disabled={!canSaveManual || saveManual.isPending}
                 onClick={() => saveManual.mutate()}
               >
                 {saveManual.isPending ? (
-                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                ) : null}
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin text-slate-950" />
+                ) : (
+                  <Save className="mr-1.5 h-3.5 w-3.5 text-slate-950" />
+                )}
                 Сохранить
               </Button>
 
               {!canSaveManual && (
-                <p className="text-[9px] text-cyan-400/80">
+                <p className="text-center text-[9px] text-muted-foreground">
                   заполните описание хотя бы одного предмета
                 </p>
               )}

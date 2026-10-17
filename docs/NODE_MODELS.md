@@ -86,8 +86,7 @@
 |---|---|---:|---:|
 | Kimi K3 | `kimi-k3` | 0.49 | 1.77 |
 
-Kimi с ноды ≠ Kimi в шапке. Нода: vibecode `kimi-k3` + `VIBECODE_API_KEY`.
-Шапка «Kimi K3 (TokenRouter)»: `TOKENROUTER_API_KEY`, модель `moonshotai/kimi-k3-free`.
+Нода: vibecode `kimi-k3` + `VIBECODE_API_KEY`. (Провайдер TokenRouter удалён).
 
 ---
 
@@ -125,10 +124,9 @@ Kimi с ноды ≠ Kimi в шапке. Нода: vibecode `kimi-k3` + `VIBECOD
 | GPT 5.6 Sol | vibecode | `VIBECODE_API_KEY` | VPS `/v1/chat/completions` |
 | GPT 5.5 | vibecode | `VIBECODE_API_KEY` | то же |
 | GPT (kie.ai) | kie | `GPT_API_KEY` | VPS `/codex/v1/responses` → api.kie.ai |
-| Kimi K3 (TokenRouter) | tokenrouter | `TOKENROUTER_API_KEY` | api.tokenrouter.com (не VPS-vibecode) |
 
 Пока на текстовой ноде висит модель из каталога (хотя бы дефолтный Sol) —
-шапка kie/Kimi этот шаг не перебивает.
+шапка kie/vibecode этот шаг не перебивает.
 
 ---
 

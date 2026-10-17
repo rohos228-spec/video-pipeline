@@ -26,6 +26,25 @@ class AdvanceJobResult:
 async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
     """Один такт advance_project в своей сессии изолированной проектной БД."""
     try:
+        # 1. Проверяем состояние в master (state.db): статус, meta и текстовые поля
+        master_status = None
+        master_meta = None
+        master_general_plan = None
+        master_script_text = None
+        master_hero_desc = None
+        try:
+            async with session_scope() as master_sess:
+                m_proj = await master_sess.get(Project, project_id)
+                if m_proj:
+                    master_status = m_proj.status
+                    if isinstance(m_proj.meta, dict):
+                        master_meta = dict(m_proj.meta)
+                    master_general_plan = m_proj.general_plan
+                    master_script_text = m_proj.script_text
+                    master_hero_desc = m_proj.hero_description
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("advance_project_job: check master state error: {}", exc)
+
         async with project_db_session_scope(project_id) as session:
             project = await session.get(Project, project_id)
             if project is None:
@@ -52,6 +71,7 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
             await advance_project(session, project, bot)
             new = project.status.value
             if new != prev:
+                # Завершаем ноду в изолированной базе проекта
                 await complete_active_node_for_step(
                     session,
                     project,

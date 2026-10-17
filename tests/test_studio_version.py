@@ -38,3 +38,16 @@ def test_ui_stale_when_out_old(tmp_path: Path, monkeypatch) -> None:
     assert data["build"] == 99
     assert data["ui_baked_build"] == 102
     assert data["ui_stale"] is True
+
+
+def test_vps_relay_detection(monkeypatch) -> None:
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "gpt_relay_token", "secret-token")
+    monkeypatch.setattr(settings, "gpt_base_url", "https://relay.custom-vps.com/v1")
+    monkeypatch.setattr(settings, "text_llm_provider", "kie")
+
+    data = read_studio_version()
+    assert data["vps_relay"] is True
+    assert data["vps_relay_base_url"] == "https://relay.custom-vps.com/v1"
+

@@ -48,9 +48,10 @@ export function TextLlmPicker() {
       if (r.ok) {
         const data = (await r.json()) as TextLlmStatus;
         setStatus(data);
+        const cleanId = modelId.replace(/-vibecode$/, "");
         window.dispatchEvent(
           new CustomEvent("canvas-patch-global-model", {
-            detail: { modelId },
+            detail: { modelId: cleanId },
           }),
         );
       }

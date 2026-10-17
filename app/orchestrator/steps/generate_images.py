@@ -90,6 +90,36 @@ from app.services.step_cancel import (
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
+def is_transient_network_error(exc: BaseException) -> bool:
+    """Проверяет, является ли ошибка временным сетевым/DNS сбоем."""
+    msg = str(exc).lower()
+    transient_markers = (
+        "gaierror",
+        "getaddrinfo failed",
+        "clientconnectorerror",
+        "connecterror",
+        "readtimeout",
+        "connecttimeouterror",
+        "network unreachable",
+        "temporary failure in name resolution",
+        "connection reset",
+        "connection refused",
+        "timed out",
+        "timeout",
+        "502 bad gateway",
+        "503 service unavailable",
+        "504 gateway time-out",
+        "econnreset",
+        "enetunreach",
+    )
+    if any(m in msg for m in transient_markers):
+        return True
+    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    if cause and cause is not exc:
+        return is_transient_network_error(cause)
+    return False
+
+
 def _img_http_primary() -> bool:
     """Outsee HTTP — без Chrome CDP (как excel_hero)."""
     from app.bots.outsee_http import outsee_api_configured, outsee_api_enabled_for_image
@@ -318,7 +348,11 @@ def _hero_legacy_ref(project_data_dir: Path, persons_id: str) -> Path | None:
     if not chars_dir.is_dir():
         return None
     candidates = sorted(
-        chars_dir.glob(f"hero_{idx}_v1_*.png"),
+        [
+            p
+            for p in chars_dir.glob(f"hero_{idx}_v1_*")
+            if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+        ],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -1273,12 +1307,17 @@ async def _generate_frame_job(
     bot: Bot,
     outsee: OutseeBot | None,
     gpt: Any,
+    session_maker: Any = None,
 ) -> None:
     """Один кадр в отдельной DB-сессии + слот провайдера (для streams>1)."""
-    from app.project_db import project_db_session_scope
+    if session_maker is None:
+        from app.project_db import get_project_sessionmaker
+
+        p_dir = out_dir.parent
+        session_maker = await get_project_sessionmaker(p_dir)
 
     async with acquire_image_slot():
-        async with project_db_session_scope(project_id) as session:
+        async with session_maker() as session:
             project = await session.get(Project, project_id)
             frame = await session.get(Frame, frame_id)
             if project is None or frame is None:
@@ -1373,6 +1412,11 @@ async def _run_claimed_batch(
         return
 
     await session.commit()
+    from app.project_db import get_project_sessionmaker
+
+    p_dir = getattr(project, "data_dir", None) or out_dir.parent
+    sm = await get_project_sessionmaker(p_dir)
+
     jobs = []
     for fr in claimed:
         ref = (
@@ -1383,9 +1427,7 @@ async def _run_claimed_batch(
             else None
         )
         if shot == 2 and ref is None:
-            from app.project_db import project_db_session_scope
-
-            async with project_db_session_scope(project.id) as s:
+            async with sm() as s:
                 f2 = await s.get(Frame, fr.id)
                 if f2 is not None:
                     attrs = dict(f2.attrs or {})
@@ -1404,6 +1446,7 @@ async def _run_claimed_batch(
                 bot=bot,
                 outsee=outsee,
                 gpt=gpt,
+                session_maker=sm,
             )
         )
     if jobs:
@@ -1913,6 +1956,22 @@ async def _generate_and_send(
     except StepCancelledError:
         raise
     except OutseeImageError as e:
+        attrs = dict(frame.attrs or {})
+        t_count = int(attrs.get("transient_net_retries") or 0)
+        if is_transient_network_error(e) and t_count < 2:
+            attrs["transient_net_retries"] = t_count + 1
+            frame.attrs = attrs
+            logger.warning(
+                "[#{}] frame {}: временный сетевой/DNS сбой ({}) — рекью кадра (попытка {}/2)",
+                project.id,
+                frame.number,
+                type(e).__name__,
+                t_count + 1,
+            )
+            frame.status = FrameStatus.image_prompt_ready
+            await session.flush()
+            return
+
         # Не «возьму последнюю картинку», не silent retry: помечаем кадр
         # failed и шлём в TG понятное описание ошибки (с gen_id, baseline-ом
         # и тем что нашли). Пайплайн пойдёт к следующему кадру; общая логика
@@ -2020,6 +2079,16 @@ async def _generate_and_send(
     )
     # Коммитим сразу, чтобы callback-хендлер в другом таске видел HITL.
     await session.commit()
+    try:
+        from app.services.event_bus import publish_project_event
+
+        await publish_project_event(
+            project.id,
+            event_type="image_generated",
+            data={"frame_id": frame.id, "image_path": str(result.file_path)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[#{}] publish image_generated event failed: {}", project.id, exc)
 
 
 def _html_escape(s: str) -> str:

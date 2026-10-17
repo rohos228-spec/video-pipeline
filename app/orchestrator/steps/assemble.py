@@ -505,7 +505,13 @@ async def _assemble_body(
         tail_seconds = post_voiceover_tail_seconds_for_project(project)
         from app.services.sfx_mix import collect_sfx_inputs
 
-        sfx_inputs = collect_sfx_inputs(project)
+        video_frame_starts: dict[int, float] = {}
+        cum_t = 0.0
+        for fr in frames:
+            video_frame_starts[fr.number] = round(cum_t, 3)
+            cum_t += duration_by_frame.get(fr.number, 0.0)
+
+        sfx_inputs = collect_sfx_inputs(project, video_frame_starts=video_frame_starts)
         if sfx_inputs:
             logger.info("[#{}] assemble: {} SFX из sfx_gen идут в микс", project.id, len(sfx_inputs))
         await assemble(
@@ -519,12 +525,19 @@ async def _assemble_body(
             sfx=sfx_inputs,
         )
     else:
+        from app.services.sfx_mix import collect_sfx_inputs
+
+        v_starts_m = {m.frame_number: m.start_s for m in markers} if "markers" in locals() else None
+        sfx_inputs = collect_sfx_inputs(project, video_frame_starts=v_starts_m)
+        if sfx_inputs:
+            logger.info("[#{}] assemble (variant3): {} SFX из sfx_gen идут в микс", project.id, len(sfx_inputs))
         await run_variant2(
             project,
             frame_numbers,
             audio_path,
             out_path,
             bgm=bgm,
+            sfx=sfx_inputs,
         )
         # ASS ещё нет на диске: путь зарезервирован выше, файл пишем здесь.
         # Старый `subs_path.is_file()` пропускал весь burn на montage-v3.
@@ -545,7 +558,16 @@ async def _assemble_body(
                     str(burned),
                     cwd=str(tmp),
                 )
-                await proc.communicate()
+                try:
+                    await asyncio.wait_for(proc.communicate(), timeout=300.0)
+                except asyncio.TimeoutError:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    await proc.communicate()
+                    logger.error("[#{}] assemble: ffmpeg subtitle burn timed out after 300s", project.id)
+                    raise TimeoutError("ffmpeg subtitle burn timed out after 300s") from None
                 if proc.returncode != 0:
                     raise RuntimeError("ffmpeg subtitle burn failed")
                 shutil.copy2(burned, out_path)

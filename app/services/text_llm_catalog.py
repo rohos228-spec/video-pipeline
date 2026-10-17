@@ -1,4 +1,4 @@
-"""Каталог текстовых LLM: GPT (kie) + GPT 5.5/5.6 Sol (vibecode) + Kimi.
+"""Каталог текстовых LLM: GPT (kie) + GPT 5.5/5.6 Sol (vibecode).
 
 Выбор активной модели: data/text_llm_choice.json (Studio UI).
 GPT_* / VIBECODE_* в .env не затираются.
@@ -24,7 +24,7 @@ CATALOG: list[dict[str, str]] = [
         "group": "OpenAI",
         "label": "GPT 5.5",
         "site": "vibecode.moe",
-        "api_model": "gpt-5.5",
+        "api_model": "gpt-5.6-sol",
     },
     {
         "id": "gpt-5.6-sol-vibecode",
@@ -50,7 +50,23 @@ CATALOG: list[dict[str, str]] = [
         "site": "vibecode.moe",
         "api_model": "gpt-5.6-luna",
     },
+    {
+        "id": "gpt-6-astra-vibecode",
+        "provider": "vibecode",
+        "group": "OpenAI",
+        "label": "GPT 6 Astra",
+        "site": "vibecode.moe",
+        "api_model": "gpt-6-astra",
+    },
     # Google
+    {
+        "id": "gemini-3.8-flash-vibecode",
+        "provider": "vibecode",
+        "group": "Google",
+        "label": "Gemini 3.8 Flash",
+        "site": "vibecode.moe",
+        "api_model": "gemini-3.8-flash",
+    },
     {
         "id": "gemini-3.7-flash-vibecode",
         "provider": "vibecode",
@@ -74,6 +90,56 @@ CATALOG: list[dict[str, str]] = [
         "label": "Gemini 3 Flash",
         "site": "vibecode.moe",
         "api_model": "gemini-3-flash-preview",
+    },
+    # Anthropic
+    {
+        "id": "claude-sonnet-5-vibecode",
+        "provider": "vibecode",
+        "group": "Anthropic",
+        "label": "Claude Sonnet 5",
+        "site": "vibecode.moe",
+        "api_model": "claude-sonnet-5",
+    },
+    {
+        "id": "claude-opus-5-vibecode",
+        "provider": "vibecode",
+        "group": "Anthropic",
+        "label": "Claude Opus 5",
+        "site": "vibecode.moe",
+        "api_model": "claude-opus-5",
+    },
+    {
+        "id": "claude-opus-4-8-vibecode",
+        "provider": "vibecode",
+        "group": "Anthropic",
+        "label": "Claude Opus 4.8",
+        "site": "vibecode.moe",
+        "api_model": "claude-opus-4-8",
+    },
+    {
+        "id": "claude-fable-5-1-vibecode",
+        "provider": "vibecode",
+        "group": "Anthropic",
+        "label": "Claude Fable 5.1",
+        "site": "vibecode.moe",
+        "api_model": "claude-fable-5-1",
+    },
+    {
+        "id": "claude-fable-5-vibecode",
+        "provider": "vibecode",
+        "group": "Anthropic",
+        "label": "Claude Fable 5",
+        "site": "vibecode.moe",
+        "api_model": "claude-fable-5",
+    },
+    # xAI
+    {
+        "id": "grok-4-6-vibecode",
+        "provider": "vibecode",
+        "group": "xAI",
+        "label": "Grok 4.6",
+        "site": "vibecode.moe",
+        "api_model": "grok-4-6",
     },
     # DeepSeek
     {
@@ -104,13 +170,19 @@ CATALOG: list[dict[str, str]] = [
 
 _PROVIDERS = frozenset({"kie", "vibecode"})
 _MODEL_ALIASES = {
+    "gpt-5.5": "gpt-5.6-sol-vibecode",
+    "gpt-5-5": "gpt-5.6-sol-vibecode",
+    "gpt-5.5-vibecode": "gpt-5.6-sol-vibecode",
     "gpt-5.6-sol": "gpt-5.6-sol-vibecode",
-    "gpt-5-6-sol": "gpt-5.6-sol-vibecode",
     "gpt-5.6-sol-vibecode": "gpt-5.6-sol-vibecode",
     "gpt-5.6-terra": "gpt-5.6-terra-vibecode",
     "gpt-5.6-terra-vibecode": "gpt-5.6-terra-vibecode",
     "gpt-5.6-luna": "gpt-5.6-luna-vibecode",
     "gpt-5.6-luna-vibecode": "gpt-5.6-luna-vibecode",
+    "gpt-6-astra": "gpt-6-astra-vibecode",
+    "gpt-6-astra-vibecode": "gpt-6-astra-vibecode",
+    "gemini-3.8-flash": "gemini-3.8-flash-vibecode",
+    "gemini-3.8-flash-vibecode": "gemini-3.8-flash-vibecode",
     "gemini-3.7-flash": "gemini-3.7-flash-vibecode",
     "gemini-3.7-flash-vibecode": "gemini-3.7-flash-vibecode",
     "gemini-3.1-pro": "gemini-3.1-pro-vibecode",
@@ -119,6 +191,19 @@ _MODEL_ALIASES = {
     "gemini-3-flash": "gemini-3-flash-vibecode",
     "gemini-3-flash-preview": "gemini-3-flash-vibecode",
     "gemini-3-flash-vibecode": "gemini-3-flash-vibecode",
+    "claude-sonnet-5": "claude-sonnet-5-vibecode",
+    "claude-sonnet-5-vibecode": "claude-sonnet-5-vibecode",
+    "claude-opus-5": "claude-opus-5-vibecode",
+    "claude-opus-5-vibecode": "claude-opus-5-vibecode",
+    "claude-opus-4-8": "claude-opus-4-8-vibecode",
+    "claude-opus-4-8-vibecode": "claude-opus-4-8-vibecode",
+    "claude-fable-5-1": "claude-fable-5-1-vibecode",
+    "claude-fable-5-1-vibecode": "claude-fable-5-1-vibecode",
+    "claude-fable-5.1": "claude-fable-5-1-vibecode",
+    "claude-fable-5": "claude-fable-5-vibecode",
+    "claude-fable-5-vibecode": "claude-fable-5-vibecode",
+    "grok-4-6": "grok-4-6-vibecode",
+    "grok-4-6-vibecode": "grok-4-6-vibecode",
     "deepseek-v4-pro": "deepseek-v4-pro-vibecode",
     "deepseek-v4-pro-vibecode": "deepseek-v4-pro-vibecode",
     "deepseek-v4-flash": "deepseek-v4-flash-vibecode",
@@ -169,8 +254,6 @@ def write_choice(
 ) -> dict[str, Any]:
     s = cfg or settings
     provider = (provider or "kie").strip().lower()
-    if provider in {"kimi", "kimi-k3", "moonshot"}:
-        provider = "tokenrouter"
     if provider in {"vibe", "vibecode.moe"}:
         provider = "vibecode"
     aliased = catalog_item(model_id)
@@ -179,9 +262,7 @@ def write_choice(
         model_id = aliased["id"]
     if provider not in _PROVIDERS:
         raise ValueError(f"unknown text LLM provider: {provider!r}")
-    if provider == "tokenrouter":
-        model_id = model_id or "kimi-k3-tokenrouter"
-    elif provider == "vibecode":
+    if provider == "vibecode":
         model_id = model_id or "gpt-5.6-sol-vibecode"
     else:
         model_id = model_id or "gpt-kie"
@@ -198,11 +279,9 @@ def write_choice(
 
 
 def resolve_active_provider(cfg: Settings | None = None) -> str:
-    """kie по умолчанию; vibecode/tokenrouter — по явному выбору."""
+    """kie по умолчанию; vibecode — по явному выбору."""
     s = cfg or settings
     raw_choice = str(read_choice(s).get("provider") or "").strip().lower()
-    if raw_choice in {"tokenrouter", "kimi", "kimi-k3"}:
-        return "tokenrouter"
     if raw_choice in {"vibecode", "vibe"}:
         return "vibecode"
     if raw_choice in {"kie", "gpt", "openai"}:
@@ -232,11 +311,7 @@ def catalog_status(cfg: Settings | None = None) -> dict[str, Any]:
     models: list[dict[str, Any]] = []
     for item in CATALOG:
         prov = item["provider"]
-        if prov == "tokenrouter":
-            model = s.tokenrouter_model
-            key_ok = bool((s.tokenrouter_api_key or "").strip())
-            base = s.tokenrouter_base_url
-        elif prov == "vibecode":
+        if prov == "vibecode":
             model = item.get("api_model") or "gpt-5.5"
             key_ok = bool((s.vibecode_api_key or "").strip())
             base = s.vibecode_base_url
@@ -253,10 +328,7 @@ def catalog_status(cfg: Settings | None = None) -> dict[str, Any]:
                 "active": item["id"] == active_id,
             }
         )
-    if active == "tokenrouter":
-        label = "Kimi K3"
-        active_model = s.tokenrouter_model
-    elif active == "vibecode":
+    if active == "vibecode":
         item = catalog_item(active_id)
         label = (item or {}).get("label") or "GPT 5.6 Sol"
         active_model = (item or {}).get("api_model") or "gpt-5.6-sol"

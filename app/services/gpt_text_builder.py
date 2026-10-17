@@ -343,6 +343,12 @@ def render_hero_text(
     )
     out = template.replace(HERO_PLACEHOLDER_STYLE, style)
     out = out.replace(HERO_PLACEHOLDER_BRIEF, (brief or "").strip())
+    # Если в пользовательском шаблоне не было плейсхолдера {{HERO_STYLE}},
+    # гарантированно добавляем блок Visual style в конец, чтобы стиль не терялся.
+    if HERO_PLACEHOLDER_STYLE not in template and style:
+        out = out + f"\n\n---\n\nVisual style (применять обязательно):\n{style}"
+    if HERO_PLACEHOLDER_BRIEF not in template and brief:
+        out = out + f"\n\n---\n\nОписание персонажа:\n{brief.strip()}"
     return out
 
 
@@ -411,7 +417,9 @@ def _build_music_default(project: Project, **_ctx) -> str:  # noqa: ARG001
         f"Тема ролика: {topic}\n\n"
         "На основе приложенного voiceover.txt составь один промт для генерации "
         "фоновой инструментальной музыки в Suno (без вокала).\n"
-        "Верни ТОЛЬКО текст промта для Suno, без пояснений и кавычек."
+        "Промпт составь на английском языке (жанры, инструменты, темп, атмосфера — "
+        "например: cinematic dark gothic orchestral, pipe organ, deep brass, battle drums, choir, grimdark, instrumental).\n"
+        "Верни ТОЛЬКО текст промта для Suno на английском, без вводных слов, пояснений и кавычек."
     )
 
 

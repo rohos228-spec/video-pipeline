@@ -154,7 +154,9 @@ async def _backfill_from_disk() -> None:
     try:
         async with session_scope() as s:
             projects = (
-                await s.execute(select(Project))
+                await s.execute(
+                    select(Project).where(Project.status != ProjectStatus.assembled)
+                )
             ).scalars().all()
             for p in projects:
                 # p.data_dir автоматически даёт правильный путь:
@@ -227,7 +229,7 @@ async def _recompute_all_projects() -> None:
 
     try:
         async with session_scope() as s:
-            changes = await recompute_all(s)
+            changes = await recompute_all(s, skip_assembled=True)
             if changes:
                 logger.warning(
                     "recompute: {} проект(а/ов) с десинхронизацией статуса "
@@ -935,6 +937,17 @@ async def main() -> None:
                 with contextlib.suppress(Exception):
                     reconfigure(encoding="utf-8", errors="replace")
 
+        # Windows ProactorEventLoop: подавляет ложные шумы при закрытии сокета браузером (F5/закрытие вкладки)
+        def _windows_proactor_exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+            exception = context.get("exception")
+            if isinstance(exception, ConnectionResetError) and getattr(exception, "winerror", None) == 10054:
+                return
+            if "10054" in str(context):
+                return
+            loop.default_exception_handler(context)
+
+        asyncio.get_running_loop().set_exception_handler(_windows_proactor_exception_handler)
+
     logger.info(
         "starting video-pipeline, owner chat_id={}, db={}",
         settings.telegram_owner_chat_id,
@@ -1017,6 +1030,11 @@ async def main() -> None:
                 "перезапустите Python (Launcher: 4 Stop → 2 Start Studio)",
                 sv.get("backend_attach"),
                 sv.get("attach_expected"),
+            )
+        if sv.get("vps_relay"):
+            logger.warning(
+                "🔒 SECURITY NOTICE: GPT API направлен через VPS-relay {} (трафик текстовых LLM проксируется через внешний VPS). Для прямого подключения очистите GPT_RELAY_TOKEN в .env",
+                sv.get("vps_relay_base_url"),
             )
     except Exception as e:  # noqa: BLE001
         logger.warning("studio version log failed: {}", e)

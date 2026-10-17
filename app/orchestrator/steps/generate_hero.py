@@ -269,14 +269,17 @@ async def _excel_ids_with_artifact(
             continue
         if a.path and Path(a.path).is_file():
             out.add(xid)
-    chars_dir = project.data_dir / "characters"
-    if chars_dir.is_dir():
-        for png in chars_dir.glob("*.png"):
-            try:
-                if png.is_file() and png.stat().st_size >= 1000:
-                    out.add(png.stem.strip().lower())
-            except OSError:
-                continue
+
+    # Защитный fallback: если файл уже на диске в characters/<xid>.png
+    pdir = getattr(project, "data_dir", None)
+    if pdir:
+        chars_dir = Path(pdir) / "characters"
+        if chars_dir.is_dir():
+            for p in chars_dir.glob("*.png"):
+                stem = p.stem.lower()
+                if stem.startswith("c") and p.is_file() and p.stat().st_size > 1000:
+                    out.add(stem)
+
     return out
 
 
@@ -429,35 +432,67 @@ async def _load_excel_hero_from_xlsx(
     if project.hero_mode == "no_hero":
         return None
 
-    has_manual_hero = bool(
-        (project.hero_description or "").strip()
-        or (project.hero_count and project.hero_count > 0)
-        or any((d or "").strip() for d in (project.hero_descriptions or []))
+    from app.services.excel_characters import (
+        is_polluted_character_field,
+        parse_persons_sheet,
     )
-    if has_manual_hero and not meta.get("excel_hero_enabled"):
-        return None
-
-    from app.services.excel_characters import parse_persons_sheet
 
     chars = await _load_entity_characters(session, project)
     source = "entity"
     if not chars:
         xlsx = project.data_dir / "project.xlsx"
-        if not xlsx.exists():
-            return None
-        try:
-            chars = parse_persons_sheet(xlsx)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("[#{}] excel_hero load: parse failed: {}", project.id, e)
-            return None
-        source = "xlsx"
+        if xlsx.exists():
+            try:
+                chars = parse_persons_sheet(xlsx)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[#{}] excel_hero load: parse failed: {}", project.id, e)
+                chars = []
+            if chars:
+                source = "xlsx"
 
+    # Если в Entity или xlsx ничего нет — проверяем, задан ли ручной hero
     if not chars:
         return None
 
+    # Если пользователь ЯВНО отключил excel_hero_enabled в meta (meta["excel_hero_enabled"] is False)
+    if meta.get("excel_hero_enabled") is False:
+        has_manual_hero = bool(
+            (project.hero_description or "").strip()
+            or (project.hero_count and project.hero_count > 0)
+            or any((d or "").strip() for d in (project.hero_descriptions or []))
+        )
+        if has_manual_hero:
+            return None
+
+    # Авто-исцеление загрязненных имен персонажей (например, c02 'оставь формат неизменным')
+    id_to_name = {c.id: c.name for c in chars if not is_polluted_character_field(c.name)}
+    for c in chars:
+        if is_polluted_character_field(c.name):
+            parent_name = ""
+            for rid in getattr(c, "ref_ids", []):
+                if rid in id_to_name:
+                    parent_name = id_to_name[rid]
+                    break
+            old_name = c.name
+            if parent_name:
+                c.name = f"{parent_name} (вариация {c.id})"
+            else:
+                c.name = f"Персонаж {c.id}"
+            logger.warning(
+                "[#{}] excel_hero {}: авто-исправление служебного имени {!r} -> {!r}",
+                project.id,
+                c.id,
+                old_name,
+                c.name,
+            )
+
     cfg = {"characters": [c.to_dict() for c in chars], "source": source}
     meta["excel_hero"] = cfg
+    meta["excel_hero_enabled"] = True
     project.meta = meta
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(project, "meta")
     await session.flush()
     logger.info(
         "[#{}] excel_hero load: {} персонаж(ей) из {} ",
@@ -1107,8 +1142,16 @@ async def _run_excel(
         # Отпустить write-txn на время параллельной генерации.
         await session.commit()
 
+        from app.project_db import get_project_sessionmaker
+
+        p_dir = getattr(project, "data_dir", None)
+        if p_dir:
+            sm = await get_project_sessionmaker(p_dir)
+        else:
+            sm = SessionLocal
+
         async def _one(ch: ExcelCharacter) -> str:
-            async with SessionLocal() as s:
+            async with sm() as s:
                 p = (
                     await s.execute(select(Project).where(Project.id == project_id))
                 ).scalar_one()
@@ -1148,6 +1191,7 @@ async def _run_excel(
                 f"excel_hero: волна упала без успехов: {errors[0]!r}"
             )
 
+        await session.commit()
         await session.refresh(project)
         project.status = ProjectStatus.generating_hero
 
@@ -1243,13 +1287,34 @@ async def _generate_one_excel_character(
             )
 
         # Сборка промта.
+        from app.services.excel_characters import is_polluted_character_field
+
+        if is_polluted_character_field(ch.name):
+            parent_name = ""
+            for p in chars:
+                if p.id in ch.ref_ids and not is_polluted_character_field(p.name):
+                    parent_name = p.name
+                    break
+            old_name = ch.name
+            if parent_name:
+                ch.name = f"{parent_name} (вариация {ch.id})"
+            else:
+                ch.name = f"Персонаж {ch.id}"
+            logger.warning(
+                "[#{}] excel_hero {}: авто-исцеление служебного имени {!r} -> {!r}",
+                project.id,
+                ch.id,
+                old_name,
+                ch.name,
+            )
+
         if used_refs:
-            # Реф = картинка (CDP attach) + короткий текст. Без длинного style:
-            # иначе Outsee/модель игнорит reference. Changes — по-английски,
-            # без кириллических подписей (иначе текст рисуется на листе).
+            # Реф = картинка (CDP attach) + короткий текст. Style передаём компактно (до 300 симв),
+            # чтобы сохранить визуальную эстетику и не сбить reference.
             from app.services.excel_characters import build_ref_variation_sheet_prompt
 
-            prompt_text = build_ref_variation_sheet_prompt(ch, style="")
+            style_for_ref = (hero_style_content or "").strip()[:300]
+            prompt_text = build_ref_variation_sheet_prompt(ch, style=style_for_ref)
             # Дополнительно усиливаем identity lock.
             prompt_text = (
                 "CRITICAL: The attached reference image is the SAME person. "
@@ -1403,6 +1468,23 @@ async def _generate_one_excel_character(
         meta=art_meta,
     )
     session.add(art)
+    # Синхронизируем Artifact в master state.db для веб-UI студии
+    try:
+        from app.db import SessionLocal
+
+        async with SessionLocal() as master_sess:
+            m_art = Artifact(
+                project_id=project.id,
+                kind=ArtifactKind.hero_reference,
+                uuid=art.uuid,
+                path=str(file_path),
+                meta=art_meta,
+            )
+            master_sess.add(m_art)
+            await master_sess.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[#{}] master artifact sync: {}", project.id, exc)
+
     # Без HITL: всегда продолжаем batch/wave в _run_excel.
     project.status = ProjectStatus.generating_hero
     await session.flush()

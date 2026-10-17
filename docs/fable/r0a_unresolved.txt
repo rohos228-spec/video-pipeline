@@ -22,3 +22,5 @@ app/web/routers/project_ops.py
 app/web/routers/projects.py
 tests/test_gpt_workspace.py
 tests/test_text_llm_provider.py
+
+Resolved by WS1 in the merge onto main c53a238 (security #313/#315 kept, web/out from main, .env.fleet.example removed).

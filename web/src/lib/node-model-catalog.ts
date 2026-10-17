@@ -20,6 +20,7 @@ export type RawVibecodePricing = {
   cache_read_usd_per_m?: number | null;
   cache_create_usd_per_m?: number | null;
   usd_per_image?: number | null;
+  usd_per_video?: number | null;
 };
 
 export type DisplayPricing = {
@@ -30,6 +31,7 @@ export type DisplayPricing = {
   cache_read_usd_per_m?: number;
   cache_create_usd_per_m?: number;
   usd_per_image?: number;
+  usd_per_video?: number;
 };
 
 export type CatalogModel = {
@@ -162,6 +164,7 @@ export function applyMarkup(
     "cache_read_usd_per_m",
     "cache_create_usd_per_m",
     "usd_per_image",
+    "usd_per_video",
   ] as const;
   for (const key of keys) {
     const raw = pricing?.[key];
@@ -279,7 +282,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.18 },
     api_model: "seedance-2-5",
     provider: "kie",
     video_generator: "seedance_2_5",
@@ -292,7 +295,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.21 },
     api_model: "seedance-1-5-pro",
     provider: "kie",
     video_generator: "seedance_1_5_pro",
@@ -305,7 +308,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.36 },
     api_model: "kling-3-0",
     provider: "kie",
     video_generator: "kling_3_0",
@@ -318,7 +321,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.24 },
     api_model: "kling-v3-turbo-t2v",
     provider: "kie",
     video_generator: "kling_v3_turbo_t2v",
@@ -331,7 +334,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.24 },
     api_model: "kling-v3-turbo-i2v",
     provider: "kie",
     video_generator: "kling_v3_turbo_i2v",
@@ -344,7 +347,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.42 },
     api_model: "kling-3-0-omni-t2v",
     provider: "kie",
     video_generator: "kling_3_0_omni_t2v",
@@ -357,7 +360,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.27 },
     api_model: "hailuo-2-3-i2v",
     provider: "kie",
     video_generator: "hailuo_2_3_i2v",
@@ -370,7 +373,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.15 },
     api_model: "wan-2-7-t2v",
     provider: "kie",
     video_generator: "wan_2_7_t2v",
@@ -383,7 +386,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.21 },
     api_model: "pixverse-v6-t2v",
     provider: "kie",
     video_generator: "pixverse_v6_t2v",
@@ -396,7 +399,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.15 },
     api_model: "topaz-video-upscale",
     provider: "kie",
     video_generator: "topaz_video_upscale",
@@ -409,7 +412,7 @@ const VIDEO_EXTRA: CatalogModel[] = [
     kind: "video",
     online: true,
     is_top: true,
-    pricing: { currency: "usd", markup: PRICE_MARKUP },
+    pricing: { currency: "usd", markup: PRICE_MARKUP, usd_per_video: 0.45 },
     api_model: "veo-3-1-lite",
     provider: "outsee",
     video_generator: "veo_3_1_lite",
@@ -483,8 +486,11 @@ export function findCatalogModel(
   modelId: string | null | undefined,
 ): CatalogModel | undefined {
   if (!catalog || !modelId) return undefined;
-  const want = IMAGE_MODEL_ALIASES[modelId] || modelId;
-  return catalog.models.find((m) => m.id === want);
+  let want = IMAGE_MODEL_ALIASES[modelId] || modelId;
+  if (want.endsWith("-vibecode")) {
+    want = want.slice(0, -9);
+  }
+  return catalog.models.find((m) => m.id === want || m.id === modelId || m.api_model === want);
 }
 
 export function vendorForModel(model: CatalogModel | undefined): ModelVendorId {

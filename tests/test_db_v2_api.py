@@ -583,7 +583,7 @@ async def test_orchestrator_chat_settings_actions(api_client, monkeypatch, tmp_p
         '{"set_option":{"key":"hero_mode","value":"no_hero"}},'
         '{"set_option":{"key":"auto_mode","value":"вкл"}},'
         '{"set_prompt":{"step":"plan","variant":"horror"}},'
-        '{"set_text_llm":{"provider":"tokenrouter"}},'
+        '{"set_text_llm":{"provider":"vibecode"}},'
         '{"stop_step":true}'
         "]}"
     )
