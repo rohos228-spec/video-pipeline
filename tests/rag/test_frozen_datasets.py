@@ -21,6 +21,7 @@ def test_pins_match_files_and_cite_the_freeze_commits() -> None:
     assert FROZEN_SHA256["precision_live_labels_transferred.json"]["commit"] == "1396ea43"
     assert FROZEN_SHA256["precision_live_label_ambiguous.json"]["commit"] == "1396ea43"
     assert FROZEN_SHA256["precision_live_labels_s0_s7.json"]["commit"] == "19d050c2"
+    assert FROZEN_SHA256["precision_live_holdout.json"]["commit"] == "5d1fa048"
     assert FROZEN_SHA256["precision_live_holdout.json"]["sha256"] == file_sha256(
         DATA / "precision_live_holdout.json"
     )

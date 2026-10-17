@@ -33,7 +33,7 @@ FROZEN_SHA256: dict[str, dict[str, str]] = {
     },
     "precision_live_holdout.json": {
         "sha256": "e75380daf69bccd0b524cdb4759c14ca8b6756a78919cb536a1fb8b36c099de5",
-        "commit": "holdout-freeze",
+        "commit": "5d1fa048",
     },
 }
 
