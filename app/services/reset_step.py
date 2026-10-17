@@ -201,10 +201,13 @@ async def _wipe_script(session: AsyncSession, project: Project) -> dict[str, Any
 
 
 async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]:
-    """Удалить все Frame проекта. Артефакты с frame_id каскадно удаляются
-    через ondelete=CASCADE. Файлы соответствующих артефактов чистим
-    отдельно ДО удаления frame'ов."""
-    # сначала собираем пути файлов кадровых артефактов
+    """Пометить все Frame проекта. Строки кадров и артефакты не стираются.
+
+    Было: ``await session.delete(fr)`` после ``p.unlink()`` файлов кадровых
+    артефактов — сброс шага стирал кадры, cascade забирал артефакты.
+    """
+    from app.services.frame_tombstones import mark_frame_deleted
+
     frame_arts = (
         await session.execute(
             select(Artifact).where(
@@ -213,26 +216,22 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
             )
         )
     ).scalars().all()
-    files_deleted = 0
     for a in frame_arts:
         if a.path:
             p = Path(a.path)
-            if p.exists():
-                try:
-                    if a.kind in _BACKUP_ON_WIPE_KINDS:
-                        _backup_artifact_file_before_wipe(project, p)
-                    p.unlink()
-                    files_deleted += 1
-                except Exception:  # noqa: BLE001
-                    pass
-    # теперь сами frame'ы (cascade-каскад удалит остальное)
+            if p.is_file() and a.kind in _BACKUP_ON_WIPE_KINDS:
+                _backup_artifact_file_before_wipe(project, p)
     frames = (
         await session.execute(
             select(Frame).where(Frame.project_id == project.id)
         )
     ).scalars().all()
     for fr in frames:
-        await session.delete(fr)
+        mark_frame_deleted(
+            fr,
+            project,
+            "reset_step split: сброс шага помечает кадр, строка сохранена",
+        )
     meta = dict(project.meta or {})
     meta_cleared: list[str] = []
     for key in (
@@ -250,8 +249,9 @@ async def _wipe_split(session: AsyncSession, project: Project) -> dict[str, Any]
     if meta_cleared:
         project.meta = meta
     return {
-        "frames_deleted": len(frames),
-        "frame_artifact_files": files_deleted,
+        "frames_deleted": 0,
+        "frames_marked": len(frames),
+        "frame_artifact_files": 0,
         "meta_cleared": meta_cleared,
     }
 

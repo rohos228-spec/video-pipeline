@@ -365,6 +365,7 @@ async def test_clear_step_outputs_split_soft_preserves_frames(session) -> None:
 
 @pytest.mark.asyncio
 async def test_clear_step_outputs_split_force_wipe_deletes_frames(session) -> None:
+    """Было: ``await session.delete(fr)`` в ``_wipe_split``. Строки остаются."""
     p = await _mkproject(session)
     p.meta = {"split_completed": True}
     await _mkframe(session, p, 1)
@@ -378,8 +379,11 @@ async def test_clear_step_outputs_split_force_wipe_deletes_frames(session) -> No
     frames = (
         await session.execute(select(Frame).where(Frame.project_id == p.id))
     ).scalars().all()
-    assert len(frames) == 0
-    assert summary["split"]["frames_deleted"] == 2
+    assert len(frames) == 2
+    assert summary["split"]["frames_deleted"] == 0
+    assert summary["split"]["frames_marked"] == 2
+    assert all((fr.attrs or {}).get("удалён") is True for fr in frames)
+    assert all((fr.attrs or {}).get("активен") is False for fr in frames)
 
 
 @pytest.mark.asyncio
