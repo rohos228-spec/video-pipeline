@@ -332,3 +332,59 @@ async def test_kadry_middle_insert_and_delete_with_id(session: AsyncSession) -> 
     assert by_id["K3"]["описание"] == "описание гаммы"
     assert shot_is_active(by_id["K3"]) is True
     assert by_id["K1"]["закадр"] == "альфа"
+
+
+@pytest.mark.asyncio
+async def test_incoming_inactive_shot_stays_inactive(session: AsyncSession) -> None:
+    """``активен: False`` во входящем списке не снимается, пропущенный тоже не оживает."""
+    project = Project(slug="ws1-stay-off", topic="t", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    fr = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="stay-off",
+        voiceover_text="ячейка",
+        attrs={
+            "кадры": [
+                {"id": "a", "закадр": "альфа"},
+                {"id": "b", "закадр": "бета", "активен": False},
+                {"id": "d", "закадр": "дельта", "активен": False},
+                {"id": "e", "закадр": "эпсилон"},
+            ]
+        },
+    )
+    session.add(fr)
+    await session.commit()
+
+    await apply_ops(
+        session,
+        project,
+        [
+            {
+                "frame_uuid": fr.uuid,
+                "fields": {
+                    "кадры": [
+                        {"id": "a", "закадр": "альфа помечена", "активен": False},
+                        {"id": "d", "закадр": "дельта новая"},
+                        {"id": "e", "закадр": "эпсилон обновлён"},
+                    ]
+                },
+            }
+        ],
+        export_xlsx=False,
+    )
+    await session.refresh(fr)
+    by_id = {shot["id"]: shot for shot in fr.attrs["кадры"]}
+    assert set(by_id) == {"a", "b", "d", "e"}
+    assert by_id["a"]["закадр"] == "альфа помечена"
+    assert by_id["a"]["активен"] is False
+    assert shot_is_active(by_id["a"]) is False
+    assert by_id["b"]["закадр"] == "бета"
+    assert by_id["b"]["активен"] is False
+    assert shot_is_active(by_id["b"]) is False
+    assert by_id["d"]["закадр"] == "дельта новая"
+    assert by_id["d"]["активен"] is False
+    assert shot_is_active(by_id["d"]) is False
+    assert by_id["e"]["закадр"] == "эпсилон обновлён"
+    assert shot_is_active(by_id["e"]) is True

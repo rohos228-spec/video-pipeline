@@ -360,27 +360,31 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
     и чужой шот получил бы ложное совпадение. Запасное совпадение без id —
     уникальный текст (закадр/описание и соседние поля) среди шотов тоже без id.
     Иначе старый шот остаётся в хвосте с ``активен: False``.
+    Входящий ``активен: False`` не снимается. Старый неактивный шот не
+    оживает: ни если его нет в новом списке, ни если новый пришёл без флага.
     """
     if not isinstance(new, list):
         return new
     incoming: list[Any] = []
     seen_ids: set[str] = set()
+    incoming_by_id: dict[str, dict[str, Any]] = {}
     new_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
+    incoming_by_content: dict[tuple[tuple[str, str], ...], list[dict[str, Any]]] = {}
     for shot in new:
         if not isinstance(shot, dict):
             incoming.append(shot)
             continue
         item = dict(shot)
-        if item.get("активен") is False:
-            item.pop("активен", None)
         incoming.append(item)
         sid = _shot_id(item)
         if sid:
             seen_ids.add(sid)
+            incoming_by_id[sid] = item
             continue
         ident = _shot_content_identity(item)
         if ident is not None:
             new_content_counts[ident] = new_content_counts.get(ident, 0) + 1
+            incoming_by_content.setdefault(ident, []).append(item)
     if not isinstance(old, list):
         return incoming
     old_content_counts: dict[tuple[tuple[str, str], ...], int] = {}
@@ -398,6 +402,8 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
         sid = _shot_id(shot)
         if sid:
             if sid in seen_ids:
+                if shot.get("активен") is False:
+                    incoming_by_id[sid]["активен"] = False
                 continue
         else:
             ident = _shot_content_identity(shot)
@@ -406,6 +412,10 @@ def _merge_kadry_keep_missing(old: Any, new: Any) -> Any:
                 and old_content_counts.get(ident) == 1
                 and new_content_counts.get(ident) == 1
             ):
+                if shot.get("активен") is False:
+                    matched = incoming_by_content.get(ident) or []
+                    if len(matched) == 1:
+                        matched[0]["активен"] = False
                 continue
             if ident is None and any(
                 isinstance(item, dict) and _shot_id(item) is None and item == shot
