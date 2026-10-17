@@ -5,7 +5,7 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget | boundary | boundaryreplay
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
  *   | paid404 | paid404foreign | paid404nostep | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
@@ -152,7 +152,7 @@ function noteDecided(session, changeId) {
   if (typeof changeId === "string" && changeId) session.decided.add(changeId);
 }
 
-function emit(session, type, taskId, payload, sessionId = session.id) {
+function emit(session, type, taskId, payload, sessionId = session.id, options = {}) {
   touchSession(session);
   if (type === "approval_required" && payload && typeof payload.change_id === "string") {
     noteIssued(session, payload.change_id);
@@ -164,7 +164,8 @@ function emit(session, type, taskId, payload, sessionId = session.id) {
     seq: ++session.seq,
     session_id: sessionId,
   };
-  session.events.push(event);
+  // token r3.4 эфемерный: живым клиентам уходит, в журнал replay не пишется.
+  if (options.persist !== false) session.events.push(event);
   for (const client of session.clients) {
     try {
       writeEvent(client, event);
@@ -498,6 +499,50 @@ async function runKillScenario(session, taskId) {
   }
 }
 
+function splitReply(text) {
+  const mid = Math.max(1, Math.ceil(text.length / 2));
+  return [text.slice(0, mid), text.slice(mid)];
+}
+
+/**
+ * r3.4: message_start → token{message_id} (не в журнал) → message_end → message.
+ * dropBeforeTokens: клиент успевает увидеть start, токены уходят в пустоту,
+ * replay по Last-Event-ID отдаёт start/end/message без token.
+ */
+async function emitBoundedReply(session, taskId, messageId, text, dropBeforeTokens = false) {
+  emit(session, "message_start", taskId, { message_id: messageId, role: "assistant" });
+  if (dropBeforeTokens) {
+    await sleep(80);
+    if (!session.boundaryDropped) {
+      session.boundaryDropped = true;
+      dropClients(session);
+    }
+  }
+  const chunks = dropBeforeTokens ? ["СКРЫТЫЙ-", "ТОКЕН"] : splitReply(text);
+  for (const part of chunks) {
+    emit(session, "token", taskId, { text: part, message_id: messageId }, session.id, { persist: false });
+  }
+  emit(session, "message_end", taskId, { message_id: messageId, role: "assistant" });
+  emit(session, "message", taskId, { role: "assistant", text });
+}
+
+async function runBoundary(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "две реплики"));
+  await emitBoundedReply(session, taskId, 41, "Альфа один");
+  await sleep(30);
+  await emitBoundedReply(session, taskId, 42, "Бета два");
+}
+
+async function runBoundaryReplay(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "replay границ"));
+  await emitBoundedReply(session, taskId, 41, "Итог replay", true);
+  await emitBoundedReply(session, taskId, 42, "Второй replay");
+}
+
 async function runReconnect(session, taskId) {
   emit(session, "ack", taskId, ackPayload(session));
   await sleep(40);
@@ -789,6 +834,14 @@ function startScenario(session, scenario, text, mode) {
   }
   if (scenario === "reconnect") {
     void runReconnect(session, id);
+    return;
+  }
+  if (scenario === "boundary") {
+    void runBoundary(session, id);
+    return;
+  }
+  if (scenario === "boundaryreplay") {
+    void runBoundaryReplay(session, id);
     return;
   }
   if (scenario === "plan") {

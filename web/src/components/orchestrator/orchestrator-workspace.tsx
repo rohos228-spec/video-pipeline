@@ -273,6 +273,7 @@ export function OrchestratorWorkspace() {
                   <span
                     className="whitespace-pre-wrap text-white/90"
                     data-testid={message.role === "assistant" ? "orch-assistant" : undefined}
+                    data-message-id={message.messageId != null ? String(message.messageId) : undefined}
                   >
                     {message.text}
                   </span>

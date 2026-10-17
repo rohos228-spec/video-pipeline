@@ -115,6 +115,65 @@ test("подтверждение перезапуска требует retry_arm
   expect(paidOutcomeRetryReady({ retry_armed: true })).toBe(false);
 });
 
+function screenFrom(events: { type: string; seq: number; payload: Record<string, unknown> }[]) {
+  return events.reduce(
+    (state, event) =>
+      reduceOrchScreen(state, {
+        type: "event",
+        event: { ...event, task_id: 1, session_id: "boundary" },
+      }),
+    initialOrchScreen(),
+  );
+}
+
+test("токены с message_id не склеивают две реплики, без id клеятся по-старому", () => {
+  const bounded = screenFrom([
+    { type: "message_start", seq: 1, payload: { message_id: 41, role: "assistant" } },
+    { type: "token", seq: 2, payload: { text: "Альфа ", message_id: 41 } },
+    { type: "token", seq: 3, payload: { text: "один", message_id: 41 } },
+    { type: "message_end", seq: 4, payload: { message_id: 41, role: "assistant" } },
+    { type: "message", seq: 5, payload: { role: "assistant", text: "Альфа один" } },
+    { type: "message_start", seq: 6, payload: { message_id: 42, role: "assistant" } },
+    { type: "token", seq: 7, payload: { text: "Бета ", message_id: 42 } },
+    { type: "token", seq: 8, payload: { text: "два", message_id: 42 } },
+    { type: "message_end", seq: 9, payload: { message_id: 42, role: "assistant" } },
+    { type: "message", seq: 10, payload: { role: "assistant", text: "Бета два" } },
+  ]);
+  expect(bounded.messages.map((item) => item.text)).toEqual(["Альфа один", "Бета два"]);
+  expect(bounded.messages.map((item) => item.messageId)).toEqual([41, 42]);
+  expect(bounded.messages.every((item) => item.finalized)).toBe(true);
+
+  const legacy = screenFrom([
+    { type: "token", seq: 1, payload: { text: "до обрыва " } },
+    { type: "token", seq: 2, payload: { text: "REPLAY_OK" } },
+  ]);
+  expect(legacy.messages).toHaveLength(1);
+  expect(legacy.messages[0]?.text).toBe("до обрыва REPLAY_OK");
+  expect(legacy.messages[0]?.messageId ?? null).toBeNull();
+});
+
+test("replay без токенов собирает пузырь из message и не дублирует текст", () => {
+  const replayed = screenFrom([
+    { type: "message_start", seq: 1, payload: { message_id: 41, role: "assistant" } },
+    { type: "message_end", seq: 4, payload: { message_id: 41, role: "assistant" } },
+    { type: "message", seq: 5, payload: { role: "assistant", text: "Итог replay" } },
+    { type: "message_start", seq: 6, payload: { message_id: 42, role: "assistant" } },
+    { type: "message_end", seq: 7, payload: { message_id: 42, role: "assistant" } },
+    { type: "message", seq: 8, payload: { role: "assistant", text: "Второй replay" } },
+  ]);
+  expect(replayed.messages.map((item) => item.text)).toEqual(["Итог replay", "Второй replay"]);
+
+  const live = screenFrom([
+    { type: "message_start", seq: 1, payload: { message_id: 41, role: "assistant" } },
+    { type: "token", seq: 2, payload: { text: "Альфа ", message_id: 41 } },
+    { type: "token", seq: 3, payload: { text: "один", message_id: 41 } },
+    { type: "message_end", seq: 4, payload: { message_id: 41, role: "assistant" } },
+    { type: "message", seq: 5, payload: { role: "assistant", text: "Альфа один" } },
+  ]);
+  expect(live.messages).toHaveLength(1);
+  expect(live.messages[0]?.text).toBe("Альфа один");
+});
+
 test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_TEST;
   const cfg = {
@@ -343,6 +402,32 @@ test.describe("orchestrator chat", () => {
     await saveShot(page, "orch-streaming");
     await expect(page.getByTestId("orch-agent-supervisor")).toContainText("done");
     await expect(page.getByTestId("orch-task-status")).toContainText("готово");
+  });
+
+  test("два ответа подряд не склеиваются по message_id", async ({ page }) => {
+    await openWithToken(page, "boundary", "boundary-1");
+    await page.getByTestId("orch-composer").fill("две реплики");
+    await page.getByTestId("orch-send").click();
+    const bubbles = page.getByTestId("orch-assistant");
+    await expect(bubbles).toHaveCount(2);
+    await expect(bubbles.nth(0)).toHaveText("Альфа один");
+    await expect(bubbles.nth(1)).toHaveText("Бета два");
+    await expect(bubbles.nth(0)).toHaveAttribute("data-message-id", "41");
+    await expect(bubbles.nth(1)).toHaveAttribute("data-message-id", "42");
+    await expect(page.getByTestId("orch-transcript")).not.toContainText("Альфа одинБета");
+  });
+
+  test("replay Last-Event-ID собирает пузырь из message без токенов", async ({ page }) => {
+    await openWithToken(page, "boundaryreplay", "boundary-replay-1");
+    await page.getByTestId("orch-composer").fill("replay границ");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-reconnect")).toContainText("восстановлено");
+    const bubbles = page.getByTestId("orch-assistant");
+    await expect(bubbles).toHaveCount(2);
+    await expect(bubbles.nth(0)).toHaveText("Итог replay");
+    await expect(bubbles.nth(1)).toHaveText("Второй replay");
+    await expect(page.getByTestId("orch-transcript")).not.toContainText("СКРЫТЫЙ");
+    await expect(page.getByTestId("orch-transcript")).not.toContainText("Итог replayИтог");
   });
 
   test("обрыв SSE и replay по Last-Event-ID", async ({ page }) => {
