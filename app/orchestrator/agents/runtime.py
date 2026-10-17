@@ -85,16 +85,15 @@ def get_runtime() -> Runtime:
 
 def build_production_runtime() -> Runtime:
     """Прод: planner/critic ходят в ``router.call``/``classify``, если пакет есть."""
-    from app.orchestrator.agents.wiring import load_router
+    from app.orchestrator.agents.wiring import load_rag, load_router
 
-    router, missing = load_router()
-    degraded: list[str] = []
-    if missing:
-        degraded.append(missing)
+    router, missing_router = load_router()
+    rag, missing_rag = load_rag()
+    degraded = [name for name in (missing_router, missing_rag) if name]
     runtime = build_runtime(
         router=router,
-        planner=RouterPlanner(router),
-        critic=RouterCritic(router),
+        planner=RouterPlanner(router, rag),
+        critic=RouterCritic(router, rag),
     )
     runtime.runtime_degraded = tuple(degraded)
     return runtime

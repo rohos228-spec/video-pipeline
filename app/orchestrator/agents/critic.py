@@ -15,7 +15,8 @@ from typing import Any
 from loguru import logger
 
 from app.orchestrator.agents.llm_call import router_call
-from app.orchestrator.agents.retrieve import retrieve
+from app.orchestrator.agents.planner import NullRetriever
+from app.orchestrator.agents.retrieve import retrieve, rules_block
 from app.orchestrator.contracts import (
     AgentRole,
     BudgetScope,
@@ -33,7 +34,7 @@ from app.orchestrator.contracts import (
 class PlanCritic:
     def __init__(self, router: Any, rag: Any | None = None) -> None:
         self.router = router
-        self.rag = rag
+        self.rag = rag if rag is not None else NullRetriever()
         self.last_response: Any = None
 
     async def review(
@@ -48,9 +49,8 @@ class PlanCritic:
         reasoning_effort: str | None = None,
     ) -> str:
         self.last_response = None
-        rules: list[Chunk] = []
-        if self.rag is not None:
-            rules = await retrieve(self.rag, context or "critic", ["rules"], 8)
+        block = rules_block(self.rag)
+        rules = await retrieve(self.rag, context or "critic", ["rules"], 8)
         if plan_deletions(plan):
             return "reject"
         if plan_missing_verify(plan):
@@ -66,7 +66,7 @@ class PlanCritic:
             self.router,
             "strong",
             [
-                {"role": "system", "content": _critic_system(rules)},
+                {"role": "system", "content": _critic_system(rules, block)},
                 {
                     "role": "user",
                     "content": _json_plan(plan) + ("\n" + context if context else ""),
@@ -83,14 +83,17 @@ class PlanCritic:
         return _parse_verdict(getattr(response, "text", "") or "")
 
 
-def _critic_system(rules: list[Chunk]) -> str:
+def _critic_system(rules: list[Chunk], block: str = "") -> str:
     lines = [
         "Вердикт одним словом: approve, revise или reject.",
         "reject — удаление кадров или сцен, либо нарушение правила пользователя.",
         "revise — нет verify_code_state перед run_node или прогноз spend выше лимита.",
         "Правила:",
     ]
-    if not rules:
+    text = (block or "").strip()
+    if text:
+        lines.append(text)
+    if not rules and not text:
         lines.append("(нет)")
     for chunk in rules:
         lines.append(chunk.text)

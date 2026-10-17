@@ -9,7 +9,7 @@ import json
 from typing import Any
 
 from app.orchestrator.agents.llm_call import router_call
-from app.orchestrator.agents.retrieve import retrieve
+from app.orchestrator.agents.retrieve import retrieve, rules_block
 from app.orchestrator.contracts import AgentRole, BudgetScope, Chunk, PlanStep
 
 
@@ -43,8 +43,9 @@ class RouterPlanner:
         budget_scope: str | None = None,
         reasoning_effort: str | None = None,
     ) -> list[PlanStep]:
+        block = rules_block(self.rag)
         rules = await retrieve(self.rag, goal or context or "plan", ["rules"], 8)
-        system = _system_prompt(rules)
+        system = _system_prompt(rules, block)
         user = goal if not context else f"{goal}\n\n{context}"
         response = await router_call(
             self.router,
@@ -82,7 +83,7 @@ def parse_plan(text: str) -> list[PlanStep]:
     return [PlanStep.model_validate(item) for item in data]
 
 
-def _system_prompt(rules: list[Chunk]) -> str:
+def _system_prompt(rules: list[Chunk], block: str = "") -> str:
     lines = [
         "Составь план как JSON {\"steps\": [...]} .",
         "Каждый шаг: action, params, expected, paid, mutating, risk, parallel_group, estimated_cost.",
@@ -90,7 +91,10 @@ def _system_prompt(rules: list[Chunk]) -> str:
         "Не планируй удаление кадров и сцен.",
         "Правила пользователя:",
     ]
-    if not rules:
+    text = (block or "").strip()
+    if text:
+        lines.append(text)
+    if not rules and not text:
         lines.append("(нет)")
     for chunk in rules:
         lines.append(chunk.text)

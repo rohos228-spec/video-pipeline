@@ -11,10 +11,12 @@ import importlib.util
 import sys
 from typing import Any
 
+from app.orchestrator.agents.planner import NullRetriever
 from app.orchestrator.agents.stubs import FallbackRouter
 from app.orchestrator.contracts import ClassifyResult, MessageMode
 
 _ROUTING = "app.orchestrator.routing"
+_RAG = "app.orchestrator.rag"
 
 
 def load_module(name: str) -> Any | None:
@@ -51,6 +53,43 @@ def load_router() -> tuple[Any, str | None]:
     if not callable(getattr(router, "classify", None)):
         return FallbackRouter(), "routing"
     return RoutingAdapter(router), None
+
+
+def load_rag() -> tuple[Any, str | None]:
+    """``retrieve`` и ``rules_system_block`` из WS6 (#363). Профиль не задаём."""
+    module = load_module(_RAG)
+    retrieve = getattr(module, "retrieve", None) if module is not None else None
+    if not callable(retrieve):
+        return NullRetriever(), "rag"
+    return ModuleRag(module), None
+
+
+class ModuleRag:
+    """Объектный retrieve поверх функции модуля. Сигнатура #363 ``6ea0b058``."""
+
+    def __init__(self, module: Any) -> None:
+        self._module = module
+
+    async def retrieve(
+        self,
+        query: str,
+        corpora: list[str] | tuple[str, ...] | None = None,
+        top_k: int = 8,
+    ) -> Any:
+        result = self._module.retrieve(query, corpora, top_k)
+        return result
+
+    def rules_system_block(self) -> str:
+        fn = getattr(self._module, "rules_system_block", None)
+        if not callable(fn):
+            return ""
+        value = fn()
+        return "" if value is None else str(value)
+
+    def reset_engine(self) -> None:
+        fn = getattr(self._module, "reset_engine", None)
+        if callable(fn):
+            fn()
 
 
 class RoutingAdapter:

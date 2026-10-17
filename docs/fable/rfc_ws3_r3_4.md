@@ -330,9 +330,10 @@ r3.4 помечает один ответ тремя вещами: старт, �
 кортеж имён модулей, которых нет в дереве или которые упали при импорте.
 Пустой кортеж — пакет импортировался. События `runtime_degraded` нет.
 
-Сейчас в список может попасть `routing` (`app.orchestrator.routing`,
-`build_router()`). Пока имени нет, planner и critic сидят на `FallbackRouter`
-и в сеть не ходят.
+В список могут попасть `routing` (`app.orchestrator.routing`, `build_router()`)
+и `rag` (`app.orchestrator.rag`, `retrieve` / `rules_system_block`). Пока
+роутера нет, planner и critic сидят на `FallbackRouter` и в сеть не ходят.
+`ORCH_RAG_PROFILE` прод-сборка не ставит: без неё WS6 остаётся на hashing.
 
 ## Что r3.4 сознательно не делает
 

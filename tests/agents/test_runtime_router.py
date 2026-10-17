@@ -143,7 +143,7 @@ def test_routing_import_error_is_degraded(monkeypatch: pytest.MonkeyPatch) -> No
     try:
         runtime = get_runtime()
         assert isinstance(runtime.router, FallbackRouter)
-        assert runtime.runtime_degraded == ("routing",)
+        assert "routing" in runtime.runtime_degraded
     finally:
         set_runtime(None)
 
@@ -178,7 +178,7 @@ async def test_production_planner_uses_routing_call_and_classify(monkeypatch: py
         runtime = get_runtime()
         assert built == ["live"]
         assert isinstance(runtime.router, RoutingAdapter)
-        assert runtime.runtime_degraded == ()
+        assert "routing" not in runtime.runtime_degraded
         await runtime.supervisor.planner.make_plan("цель", run_id="run-1", task_id=1)
         verdict = await runtime.supervisor.critic.review(
             [PlanStep(action="noop")],
