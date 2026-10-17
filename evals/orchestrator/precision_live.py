@@ -1578,6 +1578,11 @@ def run_remeasure(out: Path | None = None, artifact: Path | None = None) -> dict
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=REPORT_PATH)
+    parser.add_argument(
+        "--write-queries",
+        action="store_true",
+        help="перезаписать precision_live_queries.json; без флага файл только сверяется",
+    )
     parser.add_argument("--pair", action="store_true", help="только дефолт bge-m3 и гибрид без реранкера")
     parser.add_argument("--abc", action="store_true", help="варианты A и C на 8 частях, B из прошлого прогона")
     parser.add_argument("--tune", action="store_true", help="подбор на dev, затем один замер test")
@@ -1609,9 +1614,15 @@ def main() -> None:
     if args.pair:
         run_profile_pair(args.out)
         return
-    queries = build_queries()
-    QUERY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    QUERY_PATH.write_text(json.dumps(queries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    from evals.orchestrator.frozen_datasets import assert_frozen
+
+    if args.write_queries:
+        queries = build_queries()
+        QUERY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        QUERY_PATH.write_text(json.dumps(queries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    else:
+        assert_frozen(QUERY_PATH)
+        queries = json.loads(QUERY_PATH.read_text(encoding="utf-8"))
     prefixes_ok = _prefix_ok()
     print("e5 prefixes", prefixes_ok, flush=True)
     # Не data/orch_rag.db рантайма: временный каталог вне data/. Имя файла то же,

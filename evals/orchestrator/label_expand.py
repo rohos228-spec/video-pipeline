@@ -182,20 +182,23 @@ def _store(
 
 
 def write_expanded_file(repo_root: Path | None = None) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Не переписывает замороженные файлы.
+
+    Новые неоднозначные строки идут в ``precision_live_label_ambiguous_new.json``.
+    """
+    from evals.orchestrator.frozen_datasets import assert_frozen
+
     document, fresh = expand_labels(repo_root=repo_root)
-    EXPANDED_PATH.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if EXPANDED_PATH.exists():
+        assert_frozen(EXPANDED_PATH)
+    else:
+        EXPANDED_PATH.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if fresh:
-        current = json.loads(AMBIGUOUS_PATH.read_text(encoding="utf-8"))
-        known = {
-            (item["query_id"], item["old_chunk_id"], item["reason"]) for item in current["items"]
-        }
-        for item in fresh:
-            identity = (item["query_id"], item["old_chunk_id"], item["reason"])
-            if identity not in known:
-                current["items"].append(item)
-                known.add(identity)
-        current["count"] = len(current["items"])
-        AMBIGUOUS_PATH.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        new_path = AMBIGUOUS_PATH.with_name("precision_live_label_ambiguous_new.json")
+        new_path.write_text(
+            json.dumps({"count": len(fresh), "items": fresh}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     return document, fresh
 
 
