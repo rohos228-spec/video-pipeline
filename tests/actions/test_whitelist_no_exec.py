@@ -1029,19 +1029,6 @@ def _norm_sketch(sketch: str | None) -> str | None:
     return _resolve_path(sketch)
 
 
-def _is_tmp_sketch(sketch: str) -> bool:
-    name = sketch.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    return name.endswith(".tmp")
-
-
-def _same_sketch_dir(left: str, right: str) -> bool:
-    norm_left = _norm_sketch(left)
-    norm_right = _norm_sketch(right)
-    if not norm_left or not norm_right or "/" not in norm_left or "/" not in norm_right:
-        return False
-    return norm_left.rsplit("/", 1)[0] == norm_right.rsplit("/", 1)[0]
-
-
 def _resolved_is_allow(sketch: str | None) -> bool:
     resolved = _norm_sketch(sketch)
     return bool(resolved) and _is_allow_path(resolved)
@@ -1099,45 +1086,45 @@ def _compares_version(fn_node: ast.AST) -> bool:
     return found
 
 
-def _atomic_tmp_map(
-    fn_node: ast.AST,
-    env: dict[str, str],
-    os_modules: set[str],
-    os_funcs: dict[str, str],
-    path_names: set[str],
-) -> dict[str, str]:
-    """tmp → назначение для os.replace/rename из того же каталога."""
+def _is_atomic_helper(func: ast.AST) -> bool:
+    if isinstance(func, ast.Name):
+        return func.id == "atomic_write_text"
+    if isinstance(func, ast.Attribute):
+        return func.attr == "atomic_write_text"
+    return False
+
+
+def _is_mkstemp_call(func: ast.AST) -> bool:
+    if isinstance(func, ast.Name):
+        return func.id == "mkstemp"
+    if isinstance(func, ast.Attribute):
+        return func.attr == "mkstemp"
+    return False
+
+
+def _mkstemp_names(fn_node: ast.AST, env: dict[str, str]) -> dict[str, str]:
+    """Имя временного пути из mkstemp(dir=allowlist) → каталог."""
     found: dict[str, str] = {}
     for node in ast.walk(fn_node):
-        if not isinstance(node, ast.Call):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
-        src_node: ast.AST | None = None
-        dst_node: ast.AST | None = None
-        func = node.func
-        if isinstance(func, ast.Attribute) and func.attr in {"replace", "rename"}:
-            if isinstance(func.value, ast.Name) and func.value.id in os_modules:
-                src_node = _call_arg(node, 0, "src")
-                dst_node = _call_arg(node, 1, "dst")
-            elif func.attr == "replace" and _is_path_replace(node, func, path_names):
-                src_node = func.value
-                dst_node = _call_arg(node, 0, "target")
-        elif (
-            isinstance(func, ast.Name)
-            and func.id in os_funcs
-            and os_funcs[func.id] in {"replace", "rename"}
-        ):
-            src_node = _call_arg(node, 0, "src")
-            dst_node = _call_arg(node, 1, "dst")
-        if src_node is None or dst_node is None:
+        target = node.targets[0]
+        if not isinstance(node.value, ast.Call) or not _is_mkstemp_call(node.value.func):
             continue
-        src = _sketch(src_node, env)
-        dst = _sketch(dst_node, env)
-        if not src or not dst or not _is_tmp_sketch(src) or not _same_sketch_dir(src, dst):
+        if not isinstance(target, ast.Tuple) or len(target.elts) < 2:
             continue
-        norm_src = _norm_sketch(src)
-        norm_dst = _norm_sketch(dst)
-        if norm_src and norm_dst:
-            found[norm_src] = norm_dst
+        name = target.elts[1]
+        if not isinstance(name, ast.Name):
+            continue
+        dir_node = None
+        for keyword in node.value.keywords:
+            if keyword.arg == "dir":
+                dir_node = keyword.value
+        if dir_node is None and len(node.value.args) >= 3:
+            dir_node = node.value.args[2]
+        sketch = _sketch(dir_node, env) if dir_node is not None else None
+        if sketch and _resolved_is_allow(sketch):
+            found[name.id] = sketch
     return found
 
 
@@ -1526,15 +1513,15 @@ def _write_hit(
     path_names: set[str] | None = None,
     os_flags: dict[str, str] | None = None,
     os_open_names: set[str] | None = None,
-    atomic_tmp: dict[str, str] | None = None,
     versioned: bool = False,
+    mkstemp_names: dict[str, str] | None = None,
 ) -> WriteHit | None:
     func = call.func
     tainted = tainted or {}
     path_names = path_names or {"Path"}
     os_flags = os_flags or {}
     os_open_names = os_open_names or set()
-    atomic_tmp = atomic_tmp or {}
+    mkstemp_names = mkstemp_names or {}
     kind: str | None = None
     dest: ast.AST | None = None
     src: ast.AST | None = None
@@ -1548,6 +1535,17 @@ def _write_hit(
         kind = sql_kind
     elif (http_kind := _http_kind(call, env)) is not None:
         kind = http_kind
+    elif _is_atomic_helper(func):
+        kind = "atomic_write_text"
+        dest = _call_arg(call, 0, "dest")
+    elif _is_mkstemp_call(func):
+        kind = "mkstemp"
+        dest = None
+        for keyword in call.keywords:
+            if keyword.arg == "dir":
+                dest = keyword.value
+        if dest is None and len(call.args) >= 3:
+            dest = call.args[2]
     elif isinstance(func, ast.Name) and func.id == "open" and func.id not in os_open_names:
         if _mode_is_write(_mode_from_call(call, 1, "r" if call.args else None)):
             kind = "open"
@@ -1638,18 +1636,34 @@ def _write_hit(
     source = _sketch(src, env) if src is not None else None
     norm_sketch = _norm_sketch(sketch)
     norm_source = _norm_sketch(source)
-    atomic_dest = atomic_tmp.get(norm_source or "")
-    atomic_ok = bool(
-        versioned
-        and kind in {"os.replace", "Path.replace"}
-        and norm_source
+    if kind == "atomic_write_text":
+        return WriteHit(
+            kind,
+            sketch,
+            function,
+            source=None,
+            allowed=bool(sketch) and _resolved_is_allow(sketch),
+            snapshot_delete=False,
+        )
+    if kind == "mkstemp":
+        return WriteHit(
+            kind,
+            sketch,
+            function,
+            source=None,
+            allowed=bool(sketch) and _resolved_is_allow(sketch),
+            snapshot_delete=False,
+        )
+    mkstemp_publish = bool(
+        kind in {"os.replace", "Path.replace"}
+        and isinstance(src, ast.Name)
+        and src.id in mkstemp_names
+        and versioned
         and norm_sketch
-        and atomic_dest == norm_sketch
         and _resolved_is_allow(norm_sketch)
-        and _resolved_is_allow(norm_source)
     )
     denied = kind in _DELETE_KINDS or kind.startswith("alias:")
-    if atomic_ok:
+    if mkstemp_publish:
         return WriteHit(
             kind,
             sketch,
@@ -1682,17 +1696,8 @@ def _write_hit(
             snapshot_delete=source is None or _under_snapshot(source),
         )
     path_ok = bool(sketch) and _path_permitted(sketch, action_id)
-    if (
-        kind in _CONTENT_OVERWRITE
-        and path_ok
-        and _resolved_is_allow(sketch)
-    ):
-        published = atomic_tmp.get(norm_sketch or "")
-        path_ok = bool(
-            versioned
-            and published
-            and _resolved_is_allow(published)
-        )
+    if kind in _CONTENT_OVERWRITE and path_ok and _resolved_is_allow(sketch):
+        path_ok = False
     return WriteHit(
         kind,
         sketch,
@@ -1767,7 +1772,7 @@ def _scan_writes(
     hits: list[WriteHit] = []
     calls: list[ast.Call] = []
     function = fn_node.name if isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "<fn>"
-    atomic_tmp = _atomic_tmp_map(fn_node, env, os_modules, os_funcs, path_names)
+    mkstemp_names = _mkstemp_names(fn_node, env)
     versioned = _compares_version(fn_node)
 
     def walk(node: ast.AST, *, root: bool, call_func: bool) -> None:
@@ -1803,8 +1808,8 @@ def _scan_writes(
                 path_names,
                 os_flags,
                 os_open_names,
-                atomic_tmp,
                 versioned,
+                mkstemp_names,
             )
             if hit is not None:
                 hits.append(hit)
@@ -2371,7 +2376,7 @@ def test_fs_allowlist_reports_and_node_overrides() -> None:
 
 
 def test_node_overrides_write_requires_atomic_replace(tmp_path: Path) -> None:
-    """Прямой open('w') в allowlist — отказ. tmp + os.replace и версия — разрешение."""
+    """Прямой open('w') и фиксированный tmp в allowlist — отказ."""
     bare = (
         "def save(version):\n"
         "    open('data/node_overrides/x.json', 'w')\n"
@@ -2392,7 +2397,7 @@ def test_node_overrides_write_requires_atomic_replace(tmp_path: Path) -> None:
     )
     hits = analyze_module_source(atomic, "node.set_config")
     assert [hit.kind for hit in hits] == ["open", "os.replace", "open", "os.replace"]
-    assert [hit.allowed for hit in hits] == [True, True, True, True]
+    assert [hit.allowed for hit in hits] == [False, False, False, False]
 
     no_version = (
         "import os\n"
@@ -2442,7 +2447,7 @@ def test_versioned_requires_version_compare(tmp_path: Path) -> None:
     )
     compared_hits = analyze_module_source(compared, "node.set_config")
     assert [hit.kind for hit in compared_hits] == ["open", "os.replace"]
-    assert [hit.allowed for hit in compared_hits] == [True, True]
+    assert [hit.allowed for hit in compared_hits] == [False, False]
 
     import inspect
 
@@ -2472,6 +2477,50 @@ def test_versioned_requires_version_compare(tmp_path: Path) -> None:
     dest.unlink(missing_ok=True)
     dest.with_name(dest.name + ".lock").unlink(missing_ok=True)
     previous.unlink(missing_ok=True)
+
+
+def test_fixed_tmp_denied_helper_and_mkstemp_allowed() -> None:
+    """Фиксированный tmp запрещён. Разрешены helper и mkstemp в allowlist."""
+    fixed = (
+        "import os\n"
+        "def save(version, current):\n"
+        "    if version != current:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    open('data/node_overrides/x.json.tmp', 'w')\n"
+        "    os.replace('data/node_overrides/x.json.tmp', 'data/node_overrides/x.json')\n"
+    )
+    fixed_hits = analyze_module_source(fixed, "node.set_config")
+    assert fixed_hits
+    assert all(hit.allowed is False for hit in fixed_hits)
+
+    helper = (
+        "def save(store):\n"
+        "    atomic_write_text('data/node_overrides/x.json', 'a', expected_version=0)\n"
+        "    store.atomic_write_text('templates/node_groups/x.md', 'b', expected_version=0)\n"
+        "    store.atomic_write_text('data/reports/a.txt', 'c', expected_version=1)\n"
+    )
+    helper_hits = analyze_module_source(helper, "prompt.save_master")
+    assert [hit.kind for hit in helper_hits] == [
+        "atomic_write_text",
+        "atomic_write_text",
+        "atomic_write_text",
+    ]
+    assert [hit.allowed for hit in helper_hits] == [True, False, True]
+
+    mkstemp = (
+        "import os, tempfile\n"
+        "def save(version):\n"
+        "    current = open('data/node_overrides/x.json').read()\n"
+        "    if version != current:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    fd, name = tempfile.mkstemp(dir='data/node_overrides', suffix='.tmp')\n"
+        "    os.replace(name, 'data/node_overrides/x.json')\n"
+        "    fd, other = tempfile.mkstemp(dir='templates', suffix='.tmp')\n"
+        "    os.replace(other, 'templates/x.md')\n"
+    )
+    mk_hits = analyze_module_source(mkstemp, "node.set_config")
+    assert [hit.kind for hit in mk_hits] == ["mkstemp", "os.replace", "mkstemp", "os.replace"]
+    assert [hit.allowed for hit in mk_hits] == [True, True, False, False]
 
 
 def test_fs_rejects_templates_and_foreign_snapshots() -> None:
