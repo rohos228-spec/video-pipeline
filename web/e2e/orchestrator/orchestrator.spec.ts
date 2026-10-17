@@ -69,6 +69,7 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-reconnect")).toContainText("восстановлено");
     await expect(page.getByTestId("orch-transcript")).toContainText("REPLAY_OK");
     await expect(page.getByTestId("orch-transcript")).toContainText("до обрыва");
+    await expect(page.getByTestId("orch-reconnect")).toHaveCount(0);
   });
 
   test("сообщение посреди задачи: поле живо, ack ≤ 2 с, затем interrupt", async ({ page }) => {
@@ -325,6 +326,39 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-approve")).toBeVisible();
     await expect(page.getByTestId("orch-reject")).toBeVisible();
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+  });
+
+  test("agent_status без task_id обновляет агента и не создаёт задачу", async ({ page }) => {
+    await openWithToken(page, "looseagent", "loose-agent");
+    await page.getByTestId("orch-composer").fill("разбери вне задачи");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-agent-classifier")).toContainText("running");
+    await expect(page.getByTestId("orch-agent-classifier")).toContainText("вне задачи");
+    await expect(page.getByTestId("orch-agent-summarizer")).toContainText("done");
+    await expect(page.getByTestId("orch-agent-summarizer")).toContainText("сводка вне задачи");
+    await expect(page.getByTestId("orch-task-status")).toHaveText("нет задачи");
+  });
+
+  test("kill без открытого платного шага не рисует фантом", async ({ page }) => {
+    await openWithToken(page, "idle", "kill-nophantom");
+    await page.getByTestId("orch-composer").fill("просто текст");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-ack")).toContainText("принял");
+    await page.getByTestId("orch-kill").click();
+    await page.getByTestId("orch-kill-confirm").click();
+    await expect(page.getByTestId("orch-kill-status")).toBeVisible();
+    await expect(page.getByTestId("orch-task-panel")).not.toContainText("run_node images");
+    await expect(page.getByTestId("orch-task-panel")).not.toContainText("s-paid");
+  });
+
+  test("мусорный task_status не попадает в бейдж", async ({ page }) => {
+    await openWithToken(page, "badstatus", "bad-status");
+    await page.getByTestId("orch-composer").fill("статус");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-agent-supervisor")).toContainText("мусор отброшен");
+    await expect(page.getByTestId("orch-task-status").first()).toContainText("выполнение");
+    await expect(page.getByTestId("orch-task-status").first()).not.toContainText("not-a-status");
+    await expect(page.getByTestId("orch-task-panel")).not.toContainText("not-a-status");
   });
 
   test("неизвестная причина: нейтральная карточка с кнопками", async ({ page }) => {
