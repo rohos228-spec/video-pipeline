@@ -1,0 +1,31 @@
+{
+  "allowed_tags": [
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "p",
+    "ul",
+    "ol",
+    "li",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "td",
+    "th",
+    "b",
+    "i",
+    "code",
+    "pre",
+    "a",
+    "img",
+    "br"
+  ],
+  "allowed_attributes": {
+    "a": ["href"],
+    "img": ["src"],
+    "*": []
+  },
+  "allowed_protocols": ["http", "https"]
+}

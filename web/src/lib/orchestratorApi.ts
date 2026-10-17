@@ -17,6 +17,8 @@ import type {
   OrchKillResult,
   OrchMessageAckHttp,
   OrchOutboundMessage,
+  OrchReportsRow,
+  OrchReportVersionsRow,
 } from "./orchestratorTypes";
 
 export const ORCH_TOKEN_STORAGE_KEY = "vp-orch-api-token";
@@ -136,6 +138,91 @@ export function postOrchReject(cfg: OrchClientConfig, body: OrchApprovalDecision
 
 export function postOrchKill(cfg: OrchClientConfig, body: OrchKillRequest, signal?: AbortSignal): Promise<OrchKillResult> {
   return postJson(cfg, "/api/orchestrator/kill", body, signal);
+}
+
+/**
+ * Секция отчёта. Форма как в create_report (план §6.3). В таблице это sections_json.
+ * Пути ниже — предложение для WS2, мок их уже отвечает.
+ */
+export interface ReportSection {
+  heading: string;
+  html: string;
+  data_table?: Record<string, unknown> | null;
+}
+
+export interface ReportDetail {
+  report: OrchReportsRow;
+  sections: ReportSection[];
+  versions: OrchReportVersionsRow[];
+}
+
+export interface ReportMutation {
+  ok: boolean;
+  report_id: number;
+  version: number;
+  change_id: string;
+}
+
+async function getJson<T>(cfg: OrchClientConfig, path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(apiUrl(cfg.apiBase, path), {
+    method: "GET",
+    headers: authHeaders(cfg, { Accept: "application/json" }),
+    signal,
+  });
+  if (res.status === 401) throw new OrchApiError(401, "401 — токен не принят");
+  if (!res.ok) throw new OrchApiError(res.status, await readError(res));
+  return (await res.json()) as T;
+}
+
+export function listOrchReports(cfg: OrchClientConfig, projectId: number, signal?: AbortSignal): Promise<{ reports: OrchReportsRow[] }> {
+  return getJson(cfg, `/api/orchestrator/projects/${projectId}/reports`, signal);
+}
+
+export function getOrchReport(cfg: OrchClientConfig, reportId: number, signal?: AbortSignal): Promise<ReportDetail> {
+  return getJson(cfg, `/api/orchestrator/reports/${reportId}`, signal);
+}
+
+export async function fetchOrchReportHtml(
+  cfg: OrchClientConfig,
+  reportId: number,
+  signal?: AbortSignal,
+): Promise<{ html: string; csp: string }> {
+  const res = await fetch(apiUrl(cfg.apiBase, `/api/orchestrator/reports/${reportId}/html`), {
+    method: "GET",
+    headers: authHeaders(cfg, { Accept: "text/html" }),
+    signal,
+  });
+  if (res.status === 401) throw new OrchApiError(401, "401 — токен не принят");
+  if (!res.ok) throw new OrchApiError(res.status, await readError(res));
+  return {
+    html: await res.text(),
+    csp: res.headers.get("content-security-policy") ?? "",
+  };
+}
+
+export function postCreateReport(
+  cfg: OrchClientConfig,
+  body: { title: string; project_id: number; sections: ReportSection[]; editable?: boolean },
+  signal?: AbortSignal,
+): Promise<ReportMutation> {
+  return postJson(cfg, "/api/orchestrator/actions/create_report", body, signal);
+}
+
+export function postUpdateReport(
+  cfg: OrchClientConfig,
+  body: { report_id: number; sections_patch: ReportSection[]; reason?: string },
+  signal?: AbortSignal,
+): Promise<ReportMutation> {
+  return postJson(cfg, "/api/orchestrator/actions/update_report", body, signal);
+}
+
+export function postRollbackReport(
+  cfg: OrchClientConfig,
+  reportId: number,
+  version: number,
+  signal?: AbortSignal,
+): Promise<ReportMutation> {
+  return postJson(cfg, `/api/orchestrator/reports/${reportId}/rollback`, { version }, signal);
 }
 
 export interface ParsedSse {

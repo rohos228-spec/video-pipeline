@@ -114,3 +114,17 @@ test("11 страница оркестратора", async ({ page }) => {
   await expect(page.getByTestId("orch-agent-supervisor")).toBeVisible();
   await shot(page, "11-orchestrator");
 });
+
+test("12 редактор отчётов", async ({ page }) => {
+  await page.addInitScript(
+    ([token]) => {
+      localStorage.setItem("vp-orch-api-token", token);
+    },
+    [TOKEN],
+  );
+  const q = new URLSearchParams({ orchApi: MOCK, scenario: "idle", session: "visual", project: "13" });
+  await page.goto(`/orchestrator/reports?${q.toString()}`);
+  await expect(page.getByTestId("orch-report-title")).toHaveText("Разбор сцен");
+  await expect(page.getByTestId("orch-report-preview")).toHaveAttribute("srcdoc", /молчит/);
+  await shot(page, "12-report-editor");
+});

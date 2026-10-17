@@ -17,7 +17,10 @@
  * События копятся в памяти сессии и отдаются повторно по Last-Event-ID.
  */
 
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.ORCH_MOCK_PORT || 8799);
 const HOST = process.env.ORCH_MOCK_HOST || "127.0.0.1";
@@ -49,7 +52,7 @@ function cors(res) {
     "Authorization, Content-Type, Last-Event-ID, X-Orch-Scenario, Accept",
   );
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Expose-Headers", "Content-Type");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Type, Content-Security-Policy, X-Content-Type-Options");
 }
 
 function sendJson(res, status, body) {
@@ -562,6 +565,172 @@ function handleStream(req, res, sessionId) {
   res.on("close", detach);
 }
 
+const ALLOWLIST = JSON.parse(
+  fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../../src/lib/orchestratorSanitizeAllowlist.json"),
+    "utf8",
+  ),
+);
+const REPORT_TAGS = new Set(ALLOWLIST.allowed_tags);
+const REPORT_PROTOCOLS = new Set(ALLOWLIST.allowed_protocols.map((item) => String(item).toLowerCase()));
+const REPORT_IMG_SRC_PREFIX = "/api/orchestrator/reports/";
+const xssHits = [];
+const reports = new Map();
+let reportSeq = 1;
+let versionSeq = 1;
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => {
+    if (char === "&") return "&amp;";
+    if (char === "<") return "&lt;";
+    if (char === ">") return "&gt;";
+    if (char === '"') return "&quot;";
+    return "&#39;";
+  });
+}
+
+function sanitizeHtml(raw) {
+  let html = String(raw ?? "");
+  html = html.replace(/<!--[\s\S]*?-->/g, "");
+  html = html.replace(/<(script|style|iframe|svg|math|object|embed|link|meta|base|form)\b[^>]*>[\s\S]*?<\/\1>/gi, "");
+  html = html.replace(/<(script|style|iframe|svg|math|object|embed|link|meta|base|form)\b[^>]*\/?>/gi, "");
+  html = html.replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+  html = html.replace(/\s(?:href|src)\s*=\s*("|\')\s*javascript:[\s\S]*?\1/gi, "");
+  html = html.replace(/\s(?:href|src)\s*=\s*javascript:[^\s>]+/gi, "");
+  return html.replace(/<\/?([a-zA-Z0-9]+)([^>]*)>/g, (full, name, attrs) => {
+    const tag = name.toLowerCase();
+    if (!REPORT_TAGS.has(tag)) return "";
+    if (full.startsWith("</")) return `</${tag}>`;
+    let clean = "";
+    const allowedAttr = new Set([...(ALLOWLIST.allowed_attributes[tag] || []), ...(ALLOWLIST.allowed_attributes["*"] || [])]);
+    if (tag === "a" && allowedAttr.has("href")) {
+      const href = /\shref\s*=\s*("|\')([^"']+)\1/i.exec(` ${attrs}`);
+      const scheme = href ? /^([a-z][a-z0-9+.-]*):/i.exec(href[2].trim()) : null;
+      if (href && scheme && REPORT_PROTOCOLS.has(scheme[1].toLowerCase())) clean += ` href="${href[2]}"`;
+    }
+    if (tag === "img" && allowedAttr.has("src")) {
+      const src = /\ssrc\s*=\s*("|\')([^"']+)\1/i.exec(` ${attrs}`);
+      if (src && src[2].startsWith(REPORT_IMG_SRC_PREFIX)) clean += ` src="${src[2]}"`;
+    }
+    return `<${tag}${clean}>`;
+  });
+}
+
+function cleanSections(list) {
+  const source = Array.isArray(list) ? list : [];
+  return source.map((item) => ({
+    heading: String(item?.heading || "").slice(0, 200),
+    html: sanitizeHtml(item?.html || ""),
+    data_table: item?.data_table && typeof item.data_table === "object" ? item.data_table : null,
+  }));
+}
+
+function reportRow(report) {
+  return {
+    id: report.id,
+    project_id: report.project_id,
+    slug: report.slug,
+    title: report.title,
+    file_path: report.file_path,
+    editable: report.editable,
+    version: report.version,
+    kind: report.kind,
+    created_change_id: report.created_change_id,
+    updated_change_id: report.updated_change_id,
+    created_at: report.created_at,
+    updated_at: report.updated_at,
+  };
+}
+
+function pushVersion(report, sections, changeId) {
+  report.versions.push({
+    id: versionSeq++,
+    report_id: report.id,
+    version: report.version,
+    sections_json: JSON.stringify(sections),
+    html_sha256: `v${report.version}`,
+    change_id: changeId,
+    created_at: report.updated_at,
+  });
+}
+
+function applySections(report, sections, changeId) {
+  const clean = cleanSections(sections);
+  report.version += 1;
+  report.sections = clean;
+  report.updated_at = "2026-10-15T09:00:00.000Z";
+  report.updated_change_id = changeId;
+  pushVersion(report, clean, changeId);
+  return { ok: true, report_id: report.id, version: report.version, change_id: changeId };
+}
+
+function createReport(body) {
+  const title = String(body.title || "").trim();
+  if (!title) return null;
+  const id = reportSeq++;
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "report";
+  const report = {
+    id,
+    project_id: Number(body.project_id) || 0,
+    slug,
+    title,
+    file_path: `data/reports/${Number(body.project_id) || 0}/${slug}.html`,
+    editable: body.editable === false ? 0 : 1,
+    version: 0,
+    kind: "report",
+    created_change_id: `chg-${id}-1`,
+    updated_change_id: null,
+    created_at: "2026-10-15T09:00:00.000Z",
+    updated_at: "2026-10-15T09:00:00.000Z",
+    sections: [],
+    versions: [],
+  };
+  reports.set(id, report);
+  return applySections(report, body.sections, `chg-${id}-1`);
+}
+
+function renderReportHtml(report) {
+  const body = report.sections
+    .map((section) => `<h2>${escapeHtml(section.heading)}</h2>${sanitizeHtml(section.html)}`)
+    .join("");
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>${body}</body></html>`;
+}
+
+function sendHtml(res, html) {
+  cors(res);
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "no-store",
+  });
+  res.end(html);
+}
+
+function seedReports() {
+  const sections = [{ heading: "Сцена 3", html: "<p>Он смотрит в окно и молчит.</p>", data_table: null }];
+  const report = {
+    id: reportSeq++,
+    project_id: 13,
+    slug: "scenes",
+    title: "Разбор сцен",
+    file_path: "data/reports/13/scenes.html",
+    editable: 1,
+    version: 1,
+    kind: "report",
+    created_change_id: "chg-seed",
+    updated_change_id: "chg-seed",
+    created_at: "2026-10-15T09:00:00.000Z",
+    updated_at: "2026-10-15T09:00:00.000Z",
+    sections,
+    versions: [],
+  };
+  pushVersion(report, sections, "chg-seed");
+  reports.set(report.id, report);
+}
+
+seedReports();
+
 const server = http.createServer(async (req, res) => {
   if (!req.url || !req.method) {
     sendJson(res, 400, { detail: "bad request" });
@@ -575,6 +744,12 @@ const server = http.createServer(async (req, res) => {
   }
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   const parts = url.pathname.split("/").filter(Boolean);
+
+  if (url.pathname === "/xss-beacon") {
+    xssHits.push(url.search);
+    sendJson(res, 204, {});
+    return;
+  }
 
   if (!authorized(req)) {
     sendJson(res, 401, { detail: "unauthorized" });
@@ -618,6 +793,82 @@ const server = http.createServer(async (req, res) => {
       }
     }
     sendJson(res, 200, { ok: true, approval_id: approvalId, decision, matched });
+    return;
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "projects" && parts[4] === "reports") {
+    const projectId = Number(parts[3]);
+    const list = [...reports.values()].filter((report) => report.project_id === projectId).map(reportRow);
+    sendJson(res, 200, { reports: list });
+    return;
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "reports" && parts.length === 4) {
+    const report = reports.get(Number(parts[3]));
+    if (!report) {
+      sendJson(res, 404, { detail: "not found" });
+      return;
+    }
+    sendJson(res, 200, { report: reportRow(report), sections: report.sections, versions: report.versions });
+    return;
+  }
+
+  if (req.method === "GET" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "reports" && parts[4] === "html") {
+    const report = reports.get(Number(parts[3]));
+    if (!report) {
+      sendJson(res, 404, { detail: "not found" });
+      return;
+    }
+    sendHtml(res, renderReportHtml(report));
+    return;
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "actions" && parts[3] === "create_report") {
+    const body = await readBody(req);
+    const created = createReport(body);
+    if (!created) {
+      sendJson(res, 400, { detail: "title required" });
+      return;
+    }
+    sendJson(res, 200, created);
+    return;
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "actions" && parts[3] === "update_report") {
+    const body = await readBody(req);
+    const report = reports.get(Number(body.report_id));
+    if (!report) {
+      sendJson(res, 404, { detail: "not found" });
+      return;
+    }
+    const changeId = `chg-${report.id}-${report.version + 1}`;
+    sendJson(res, 200, applySections(report, body.sections_patch, changeId));
+    return;
+  }
+
+  if (req.method === "PUT" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "reports" && parts.length === 4) {
+    const body = await readBody(req);
+    const report = reports.get(Number(parts[3]));
+    if (!report) {
+      sendJson(res, 404, { detail: "not found" });
+      return;
+    }
+    const changeId = `chg-${report.id}-${report.version + 1}`;
+    sendJson(res, 200, applySections(report, body.sections_patch, changeId));
+    return;
+  }
+
+  if (req.method === "POST" && parts[0] === "api" && parts[1] === "orchestrator" && parts[2] === "reports" && parts[4] === "rollback") {
+    const body = await readBody(req);
+    const report = reports.get(Number(parts[3]));
+    const version = report?.versions.find((item) => item.version === Number(body.version));
+    if (!report || !version) {
+      sendJson(res, 404, { detail: "not found" });
+      return;
+    }
+    const sections = JSON.parse(version.sections_json || "[]");
+    const changeId = `chg-${report.id}-rollback-${version.version}`;
+    sendJson(res, 200, applySections(report, sections, changeId));
     return;
   }
 

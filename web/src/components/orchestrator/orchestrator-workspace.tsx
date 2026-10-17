@@ -81,6 +81,20 @@ export function OrchestratorWorkspace() {
             type="button"
             variant="outline"
             size="sm"
+            className="text-xs"
+            data-testid="orch-reports-link"
+            onClick={() => {
+              const params = new URLSearchParams(window.location.search);
+              if (!params.get("project")) params.set("project", "13");
+              window.location.assign(`/orchestrator/reports?${params.toString()}`);
+            }}
+          >
+            Отчёты
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
             className="gap-1.5 text-xs"
             onClick={() => {
               setTokenDraft(chat.token);
