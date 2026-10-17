@@ -227,6 +227,15 @@ async def _lifespan(app: FastAPI):
         )
 
     try:
+        from app.orchestrator.agents.runtime import get_runtime
+
+        recovered = await get_runtime().supervisor.recover_after_restart()
+        if recovered:
+            logger.info("orchestrator recovered tasks {}", recovered)
+    except Exception:  # noqa: BLE001
+        logger.exception("orchestrator restart recovery failed (non-fatal)")
+
+    try:
         yield
     finally:
         logger.remove(live_log_sink)

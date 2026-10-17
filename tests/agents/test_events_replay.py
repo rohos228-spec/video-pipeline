@@ -12,8 +12,23 @@ from sse_starlette.sse import AppStatus
 from app.orchestrator.auth import OrchestratorAuthMiddleware
 from app.orchestrator.contracts import TOKEN_RING_SIZE
 from app.orchestrator.events import persisted_types
-from app.web.routers.orchestrator_chat import router
+from app.web.routers.orchestrator_chat import remember_seq, router
 from tests.agents.conftest import TEST_TOKEN
+
+
+def test_stream_cursor_keeps_only_the_max_seq() -> None:
+    cursor, fresh = remember_seq(0, 1)
+    assert fresh is True
+    assert cursor == 1
+    cursor, fresh = remember_seq(cursor, 1)
+    assert fresh is False
+    assert cursor == 1
+    cursor, fresh = remember_seq(cursor, 4)
+    assert fresh is True
+    assert cursor == 4
+    cursor, fresh = remember_seq(cursor, 3)
+    assert fresh is False
+    assert cursor == 4
 
 
 def _chat_app() -> FastAPI:

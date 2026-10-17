@@ -5,6 +5,11 @@
 (``SEQ_RESERVE``): в ``orch_event_seq`` уходит верхняя отметка резерва,
 не каждый токен. Укрупнённые события пишутся в ``orch_events`` через
 одно долгоживущее соединение на файл БД (WAL). Компакция — отдельно.
+
+``publish`` отдаёт запись sqlite в рабочий поток (``asyncio.to_thread``).
+Цикл на время commit не останавливается: кольцо и подписчики обновляются
+уже после возврата из потока. Соединения в ``_CONNS`` живут до конца
+процесса — одно на файл.
 """
 
 from __future__ import annotations
@@ -55,7 +60,8 @@ class EventBus:
         created_at: str | None = None,
     ) -> OrchEvent:
         ephemeral = event_type in EPHEMERAL_EVENT_TYPES
-        seq, stored_at = _insert_event(
+        seq, _stored_at = await asyncio.to_thread(
+            _insert_event,
             session_id,
             event_type,
             payload or {},
@@ -79,7 +85,14 @@ class EventBus:
 
     def replay(self, session_id: str, last_seq: int) -> list[OrchEvent]:
         """События с ``seq > last_seq``: БД (укрупнённые) + кольцо token."""
-        events = _load_persisted(session_id, last_seq)
+        return self._merge_replay(session_id, last_seq, _load_persisted(session_id, last_seq))
+
+    async def replay_from(self, session_id: str, last_seq: int) -> list[OrchEvent]:
+        """То же, что ``replay``, но чтение ``orch_events`` не занимает цикл."""
+        persisted = await asyncio.to_thread(_load_persisted, session_id, last_seq)
+        return self._merge_replay(session_id, last_seq, persisted)
+
+    def _merge_replay(self, session_id: str, last_seq: int, events: list[OrchEvent]) -> list[OrchEvent]:
         for event in self._rings.get(session_id, ()):
             if event.seq > last_seq:
                 events.append(event)

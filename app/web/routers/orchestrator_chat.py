@@ -40,6 +40,13 @@ def _check_session(session: str) -> str:
     return session
 
 
+def remember_seq(cursor: int, seq: int) -> tuple[int, bool]:
+    """Отдать seq один раз. Курсор — последнее число, не растущее множество."""
+    if seq <= cursor:
+        return cursor, False
+    return seq, True
+
+
 def _sse(event: OrchEvent) -> dict[str, str]:
     return {
         "event": event.type,
@@ -69,11 +76,12 @@ async def stream_session(session: str, request: Request) -> EventSourceResponse:
 
     async def _gen():
         runtime = get_runtime()
-        seen: set[int] = set()
+        cursor = last_seq
         async with runtime.bus.subscription(session) as queue:
-            for event in runtime.bus.replay(session, last_seq):
-                seen.add(event.seq)
-                yield _sse(event)
+            for event in await runtime.bus.replay_from(session, last_seq):
+                cursor, fresh = remember_seq(cursor, event.seq)
+                if fresh:
+                    yield _sse(event)
             while True:
                 if await request.is_disconnected():
                     break
@@ -81,9 +89,9 @@ async def stream_session(session: str, request: Request) -> EventSourceResponse:
                     event = await asyncio.wait_for(queue.get(), timeout=_STREAM_POLL_SEC)
                 except TimeoutError:
                     continue
-                if event.seq <= last_seq or event.seq in seen:
+                cursor, fresh = remember_seq(cursor, event.seq)
+                if not fresh:
                     continue
-                seen.add(event.seq)
                 yield _sse(event)
 
     return EventSourceResponse(_gen(), ping=15)

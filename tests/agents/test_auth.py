@@ -81,21 +81,6 @@ async def test_valid_token_accepts_message(monkeypatch: pytest.MonkeyPatch, runt
     assert TEST_TOKEN not in response.text
 
 
-def _included_paths(app: FastAPI) -> set[str]:
-    paths: set[str] = set()
-    for route in app.routes:
-        ctx = getattr(route, "include_context", None)
-        if ctx is None:
-            path = getattr(route, "path", None)
-            if path:
-                paths.add(path)
-            continue
-        prefix = ctx.prefix or ""
-        for inner in ctx.included_router.routes:
-            paths.add(prefix + getattr(inner, "path", ""))
-    return paths
-
-
 @pytest.mark.asyncio
 async def test_options_preflight_does_not_open_the_chat(monkeypatch: pytest.MonkeyPatch, runtime) -> None:
     del runtime
@@ -134,9 +119,51 @@ async def test_orchestrator_path_without_slash_requires_token(
     assert ok.json()["ok"] is True
 
 
-def test_create_app_mounts_chat_and_middleware() -> None:
+@pytest.mark.asyncio
+async def test_orchestrator_websocket_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ORCH_API_TOKEN", TEST_TOKEN)
+    app = _app()
+    sent: list[dict] = []
+
+    async def receive() -> dict[str, object]:
+        return {"type": "websocket.connect"}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await app(
+        {
+            "type": "websocket",
+            "asgi": {"version": "3.0"},
+            "path": "/api/orchestrator/chat/s1/stream",
+            "raw_path": b"/api/orchestrator/chat/s1/stream",
+            "query_string": b"",
+            "headers": [],
+            "scheme": "ws",
+            "client": ("127.0.0.1", 1),
+            "server": ("test", 80),
+            "subprotocols": [],
+        },
+        receive,
+        send,
+    )
+    assert sent[0]["type"] == "websocket.http.response.start"
+    assert sent[0]["status"] == 401
+    assert TEST_TOKEN not in sent[1]["body"].decode()
+
+
+@pytest.mark.asyncio
+async def test_create_app_chat_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ORCH_API_TOKEN", TEST_TOKEN)
     app = create_app()
-    paths = _included_paths(app)
-    assert "/api/orchestrator/chat/{session}/message" in paths
-    assert "/api/orchestrator/chat/{session}/stream" in paths
     assert OrchestratorAuthMiddleware in [item.cls for item in app.user_middleware]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        message = await client.post(
+            "/api/orchestrator/chat/s1/message",
+            json={"text": "привет"},
+        )
+        stream = await client.get("/api/orchestrator/chat/s1/stream")
+    assert message.status_code == 401
+    assert stream.status_code == 401
+    assert TEST_TOKEN not in message.text
