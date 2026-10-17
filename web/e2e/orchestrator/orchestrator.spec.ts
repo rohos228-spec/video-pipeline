@@ -235,7 +235,10 @@ test.describe("orchestrator chat", () => {
   test("401: пустой токен, отказ, затем верный токен", async ({ page }) => {
     await page.goto(orchUrl("stream", "auth-1"));
     await expect(page.getByTestId("orch-token-gate")).toBeVisible();
-    await page.getByTestId("orch-token-input").fill("wrong-token");
+    await expect(async () => {
+      await page.getByTestId("orch-token-input").fill("wrong-token");
+      await expect(page.getByTestId("orch-token-submit")).toBeEnabled({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
     await page.getByTestId("orch-token-submit").click();
     await expect(page.getByTestId("orch-token-error")).toContainText("401");
     await expect.poll(async () => page.evaluate(() => localStorage.getItem("vp-orch-api-token"))).toBeNull();
