@@ -301,12 +301,16 @@ async def _entity_name_maps(
         )
     except Exception:  # noqa: BLE001
         return chars, items
+    from app.services.db_v2 import entity_is_archived
+
     for ent in ents:
         code = str(getattr(ent, "code", "") or "").strip()
         name = str(getattr(ent, "name", "") or "").strip()
         if not code:
             continue
         kind = str(getattr(ent, "type", "") or "")
+        if kind == "character" and entity_is_archived(ent):
+            continue
         bucket = (
             chars
             if kind == "character"
