@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.orchestrator.actions.contracts import (
+from app.orchestrator.action_contracts.contracts import (
     CONTRACT_VERSION,
     ActionResult,
     ApprovalRequired,
@@ -27,7 +27,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.2": "26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013",
+    "ws2-r2.3": "d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10",
 }
 
 
@@ -55,7 +55,7 @@ def test_schema_export_sha256_is_pinned_to_version() -> None:
     text = _MD.read_text(encoding="utf-8")
     assert f"Версия: `{CONTRACT_VERSION}`" in text
     assert digest in text
-    assert "Изменения r2.1 → r2.2" in text
+    assert "Изменения r2.2 → r2.3" in text
 
 
 def test_unknown_name_is_paid_and_destructive() -> None:
@@ -154,7 +154,7 @@ def test_soft_delete_result_requires_snapshot_ref() -> None:
 
 
 def test_restore_action_supports_deleted_kind() -> None:
-    from app.orchestrator.actions.contracts import SOFT_DELETE_RESTORE
+    from app.orchestrator.action_contracts.contracts import SOFT_DELETE_RESTORE
 
     for action, restore in SOFT_DELETE_RESTORE.items():
         result = SoftDeleteResult(
@@ -256,7 +256,7 @@ def test_approval_required_has_no_change_id() -> None:
 
 
 def test_diff_distinguishes_removed_key() -> None:
-    from app.orchestrator.actions.contracts import Diff, FieldChange
+    from app.orchestrator.action_contracts.contracts import Diff, FieldChange
 
     removed = FieldChange(op="removed", before=4)
     nulled = FieldChange(op="set", before=4, after=None)
@@ -311,7 +311,25 @@ def test_partial_edit_lists_skipped_items() -> None:
 
 
 def test_skipped_implies_partial() -> None:
-    edited = EditResult.model_validate(_edit_payload(before={"a": 1}, skipped=["shot-2"]))
+    with pytest.raises(ValidationError):
+        EditResult.model_validate(_edit_payload(before={"a": 1}, skipped=["shot-2"]))
+    with pytest.raises(ValidationError):
+        EditResult.model_validate(
+            _edit_payload(before={"a": 1}, skipped=["shot-2"], partial=False)
+        )
+    with pytest.raises(ValidationError):
+        SoftDeleteResult(
+            change_id="orch-appr-1-1",
+            action="montage.delete_frame",
+            marked=True,
+            restore_action="frame.restore",
+            snapshot_id="snap-1",
+            skipped=["frame-9"],
+            partial=False,
+        )
+    edited = EditResult.model_validate(
+        _edit_payload(before={"a": 1}, skipped=["shot-2"], partial=True)
+    )
     deleted = SoftDeleteResult(
         change_id="orch-appr-1-1",
         action="montage.delete_frame",
@@ -319,6 +337,7 @@ def test_skipped_implies_partial() -> None:
         restore_action="frame.restore",
         snapshot_id="snap-1",
         skipped=["frame-9"],
+        partial=True,
     )
     assert edited.partial is True
     assert deleted.partial is True
@@ -392,13 +411,14 @@ def test_edit_result_has_required_version() -> None:
 
 
 def test_edit_stale_version_returns_409() -> None:
-    from app.orchestrator.actions.contracts import EDIT_CONFLICT_HTTP, reject_stale_edit
+    from app.orchestrator.action_contracts.contracts import EDIT_CONFLICT_HTTP, reject_stale_edit
 
     assert EDIT_CONFLICT_HTTP == 409
     failed = reject_stale_edit(base_version=1, current_version=3)
-    assert failed.status == "failed"
-    assert failed.error == "conflict"
-    assert failed.result is None
+    future = reject_stale_edit(base_version=5, current_version=3)
+    assert failed.status == "failed" and future.status == "failed"
+    assert failed.error == "conflict" and future.error == "conflict"
+    assert failed.result is None and future.result is None
     with pytest.raises(ValueError):
         reject_stale_edit(base_version=3, current_version=3)
 
@@ -419,39 +439,6 @@ def test_suggest_scene_variants_tier_is_paid() -> None:
     assert meta.paid is True
     assert meta.destructive is False
     assert meta.risk == "high"
-
-
-def _flags_from_doc_tier(name: str, tier: str) -> tuple[bool, bool, bool]:
-    """Те же правила, что текст контракта: read / destructive / paid и две особые строки."""
-
-    parts = set(tier.split("+"))
-    if name == "montage.suggest_scene_variants" and tier == "paid+paid":
-        parts = {"paid"}
-    read_only = tier == "read"
-    paid = "paid" in parts
-    destructive = "destructive" in parts
-    if name == "prompt.create_master":
-        destructive = True
-        read_only = False
-    return read_only, destructive, paid
-
-
-def _audit_flag_rows(text: str) -> list[tuple[str, str, str]]:
-    rows: list[tuple[str, str, str]] = []
-    in_table = False
-    for line in text.splitlines():
-        if line.startswith("## Таблица действий"):
-            in_table = True
-            continue
-        if in_table and line.startswith("## "):
-            break
-        if not in_table or not line.startswith("|"):
-            continue
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if not cells or not cells[0].isdigit():
-            continue
-        rows.append((cells[1].strip("`").strip(), cells[4], cells[5]))
-    return rows
 
 
 def _audit_headings(text: str) -> list[tuple[str, str, str]]:
@@ -495,19 +482,19 @@ def test_md_approval_card_comes_from_core_events() -> None:
 
 
 def test_doc_flags_match_contract_metadata() -> None:
-    from app.orchestrator.actions.contracts import metadata_registry
+    from app.orchestrator.action_contracts import contracts as contract_mod
 
     audit = (_REPO / "docs" / "fable" / "actions_audit.md").read_text(encoding="utf-8")
     contract = _MD.read_text(encoding="utf-8")
-    registry = metadata_registry()
+    registry = contract_mod.metadata_registry()
     covered: set[str] = set()
 
-    table = _audit_flag_rows(audit)
+    table = contract_mod._audit_rows(audit)
     assert len(table) == 102
     for name, risk, tier in table:
         meta = registry[name]
         assert meta.risk == risk, name
-        assert (meta.read_only, meta.destructive, meta.paid) == _flags_from_doc_tier(name, tier), name
+        assert (meta.read_only, meta.destructive, meta.paid) == contract_mod._flags(name, tier), name
         covered.add(name)
 
     headings = _audit_headings(audit)
@@ -515,7 +502,7 @@ def test_doc_flags_match_contract_metadata() -> None:
     for name, risk, tier in headings:
         meta = metadata_of(name)
         assert meta.risk == risk, name
-        assert (meta.read_only, meta.destructive, meta.paid) == _flags_from_doc_tier(name, tier), name
+        assert (meta.read_only, meta.destructive, meta.paid) == contract_mod._flags(name, tier), name
         covered.add(name)
     revert = metadata_of("revert_node_to_git")
     assert revert.destructive is True
@@ -532,3 +519,57 @@ def test_doc_flags_match_contract_metadata() -> None:
         covered.add(name)
 
     assert set(registry) == covered
+
+
+def test_audit_ids_are_not_a_live_registry_name() -> None:
+    import app.orchestrator.action_contracts as pkg
+    from app.orchestrator.action_contracts import contracts as contract_mod
+
+    assert not hasattr(pkg, "ACTION_IDS")
+    assert not hasattr(contract_mod, "ACTION_IDS")
+    assert len(contract_mod.AUDIT_ACTION_IDS) == 102
+    assert "actions_audit.md" not in Path(contract_mod.__file__).read_text(encoding="utf-8")
+
+
+def test_create_node_new_group_raises_risk() -> None:
+    base = metadata_of("create_node")
+    raised = metadata_of("create_node@new_group")
+    assert base.risk == "medium" and base.needs_approval is False
+    assert raised.risk == "high" and raised.destructive is True and raised.needs_approval is True
+    ApprovalRequired.model_validate(
+        {
+            "action": "create_node@new_group",
+            "metadata": raised.model_dump(),
+            "reason": "новой группы ещё нет",
+            "preview": {"change": "создать группу и ноду", "estimate": 0},
+        }
+    )
+    tighter = base.model_dump()
+    tighter["risk"] = "high"
+    tighter["destructive"] = True
+    ApprovalRequired.model_validate(
+        {
+            "action": "create_node",
+            "metadata": tighter,
+            "reason": "ужесточение допустимо",
+            "preview": {"change": "нода", "estimate": 0},
+        }
+    )
+    weaker = base.model_dump()
+    weaker["risk"] = "low"
+    with pytest.raises(ValidationError):
+        ApprovalRequired.model_validate(
+            {
+                "action": "create_node",
+                "metadata": weaker,
+                "reason": "ослабление",
+                "preview": {"change": "нода", "estimate": 0},
+            }
+        )
+
+
+def test_script_detector_is_not_a_sanitizer() -> None:
+    with pytest.raises(ValidationError, match="не санитайзер"):
+        ReportResult(report_id=1, html="<p>ok</p><script>alert(1)</script>", version=1)
+    for html in ("<svg/onload=alert(1)>", "<img/onerror=alert(1)>", "&#106;avascript:alert(1)"):
+        ReportResult(report_id=1, html=html, version=1)

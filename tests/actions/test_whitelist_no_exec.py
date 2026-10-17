@@ -411,12 +411,6 @@ def _load_registry_module():
             )
         if _module_exposes_registry(module):
             return module
-        # Контракт WS2 (схемы результатов) живёт в этом пакете раньше реестра.
-        # Это не пустой реестр и не повод красить приёмку.
-        version = getattr(module, "CONTRACT_VERSION", None)
-        if isinstance(version, str) and version.startswith("ws2-r2"):
-            errors.append(f"{name}: схемы {version}, реестра исполнителей нет")
-            continue
         pytest.fail(
             f"{name} импортирован, но не отдаёт реестр "
             "(ensure_builtin_actions+registry.list, registry() или ACTION_IDS)"
@@ -2261,6 +2255,22 @@ def test_missing_registry_module_skips(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(importlib, "import_module", missing)
     with pytest.raises(pytest.skip.Exception, match="Реестр Action Layer в этом дереве отсутствует"):
+        _load_registry_module()
+
+
+def test_schema_version_does_not_skip_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пакет схем без реестра — отказ, а не skip по CONTRACT_VERSION."""
+
+    class SchemaOnly:
+        CONTRACT_VERSION = "ws2-r2"
+
+    def load(name: str):
+        if name == "app.orchestrator.actions":
+            return SchemaOnly()
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    monkeypatch.setattr(importlib, "import_module", load)
+    with pytest.raises(pytest.fail.Exception, match="не отдаёт реестр"):
         _load_registry_module()
 
 

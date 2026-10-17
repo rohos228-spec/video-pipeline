@@ -1,7 +1,16 @@
 # Контракт результатов действий R2 (моки WS4)
 
-Версия: `ws2-r2.2` (`CONTRACT_VERSION` в `app/orchestrator/actions/contracts.py`).
-sha256 схемы: `26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc5043013`.
+Версия: `ws2-r2.3` (`CONTRACT_VERSION` в `app/orchestrator/action_contracts/contracts.py`).
+sha256 схемы: `d341d5b286af170c43b122fa0c5f57b1c3ce43040305443113622b7c13fd7d10`.
+
+## Изменения r2.2 → r2.3
+
+- Схемы живут в `app/orchestrator/action_contracts`, не в пакете реестра. Приёмка больше не пропускает реестр по `CONTRACT_VERSION`.
+- Флаги 102 зафиксированы в `audit_metadata.json`. Markdown при импорте не читается.
+- `partial=false` вместе с непустым `skipped` — ошибка, а не тихий `partial=true`.
+- `reject_stale_edit`: и `base_version` из будущего, и устаревшая база дают `failed` / `conflict`.
+- `create_node@new_group` — риск `high` и `destructive`. Метаданные можно только ужесточить.
+- Проверка html — детектор `_SCRIPT_DETECTOR`, не санитайзер.
 
 ## Изменения r2.1 → r2.2
 
@@ -14,9 +23,10 @@ sha256 схемы: `26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc504
 К ним добавлены только восстановление мягкого удаления: `frame.restore`,
 `group.restore`, `prompt.restore_master`.
 
-Живой реестр аудита — 102 действия. Пакет `app.orchestrator.actions` их не
-регистрирует как исполнителей. `metadata_of` знает эти 102 и имена R2 из
-плана, чтобы имя вне обоих списков не выглядело безопасным.
+Живой реестр аудита — 102 действия. Их флаги лежат в
+`app/orchestrator/action_contracts/audit_metadata.json`, не читаются из
+markdown при импорте. Пакет схем не регистрирует исполнителей.
+`metadata_of` знает эти 102 и имена R2, чтобы имя вне списков не выглядело безопасным.
 
 ## Поля
 
@@ -59,15 +69,16 @@ sha256 схемы: `26373fb9681e0996acb28388208d0903a8e48ef8449320ed5bd44e4fc504
 | `base_version` | версия, которую читал писатель, целое ≥ 1 |
 
 `update_report` — тот же `EditResult`, поэтому версия и база обязательны и у отчёта.
-Если `base_version` меньше текущей, данные не меняются: конверт `failed`,
-`error` равен `conflict`, HTTP 409. Это не повтор `change_id`.
+Если `base_version` не равна текущей (и прошлое, и будущее), данные не меняются:
+конверт `failed`, `error` равен `conflict`, HTTP 409. Это не повтор `change_id`.
 | `diff` | ровно одна форма: `unified` (текст) или `fields` (ключ → `{op, before, after}`). `op=removed` — ключ исчез, `op=set` и `after=null` — значение стало null |
 | `open_url` | куда чат открывает результат |
 | `reversible` | откат тем же change_control возможен |
 
 ### `ReportResult`
 
-HTML, который сервер уже отдал санитайзеру. Скрипт в `html` модель не принимает.
+`html` проходит только детектор явного script / `javascript:` / `on*=`.
+Это не санитайзер: `<svg/onload=…>`, `<img/onerror=…>` и `&#106;avascript:` он не видит.
 
 | Поле | Смысл |
 |---|---|
@@ -100,7 +111,8 @@ DOM отчёта на месте не правится.
 | `preview.estimate` | `null` — оценки нет, `0` — бесплатно. У платного действия либо число > 0, либо `null` |
 
 Риск `medium` сам по себе этот статус не включает.
-`create_node` и `create_report` не платные и не деструктивные: конверт сразу `ok`.
+`create_node` в уже существующую группу и `create_report` не платные и не деструктивные: конверт сразу `ok`.
+`create_node@new_group` — риск `high`, `destructive`: сначала подтверждение.
 `edit_node_prompt`, `edit_node_params`, `update_report`, `revert_node_to_git`
 деструктивные: сначала `approval_required`.
 
@@ -142,7 +154,7 @@ DOM отчёта на месте не правится.
 | `warnings` | список строк, по умолчанию пустой. Частичный успех не молчит |
 
 У `EditResult` и `SoftDeleteResult` есть `skipped` (список id) и `partial`.
-Непустой `skipped` даёт `partial: true`. `partial: true` без `skipped` невалиден.
+Непустой `skipped` при `partial: false` — ошибка. `partial: true` без `skipped` тоже.
 
 `change_id` клиент не придумывает. Повтор того же id даёт 409,
 чужой id (другая задача или сессия) и выдуманный id дают 404.
@@ -165,6 +177,7 @@ DOM отчёта на месте не правится.
 | `stop_node` | medium | false | false | false |
 | `resume_node` | high | false | true | true |
 | `create_node` | medium | false | false | false |
+| `create_node@new_group` | high | false | true | false |
 | `edit_node_prompt` | medium | false | true | false |
 | `edit_node_params` | medium | false | true | false |
 | `create_report` | low | false | false | false |
