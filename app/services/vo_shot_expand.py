@@ -1914,8 +1914,24 @@ def _ladder_cell_key(frame: Any) -> str:
     return ""
 
 
+def _ladder_vo_text(items: list[tuple[int, list[Any]]]) -> str:
+    parts: list[str] = []
+    for _idx, members in items:
+        for fr in members:
+            vo = _norm_vo_key(str(getattr(fr, "voiceover_text", "") or ""))
+            if vo and vo not in parts:
+                parts.append(vo)
+    return " ".join(parts)
+
+
 def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
-    """Вторые лестницы той же сцены (``1-K7`` рядом с ``1-S3-K*``)."""
+    """Вторая лестница той же ячейки и той же сцены (``1-K7`` рядом с ``1-S3-K*``).
+
+    Ключ — префикс ячейки плюс номер сцены. Тот же локальный номер сцены
+    в другой ячейке leftover не становится. Безымянная K-лестница снимается
+    только если её закадр уже есть у S-лестницы этой сцены (старый хвост
+    после renumber, префикс уже другой).
+    """
     groups = _group_by_parent(frames)
     seen: set[int] = set()
     ladders: dict[tuple[str, int], list[tuple[int, list[Any]]]] = {}
@@ -1962,9 +1978,9 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
             if item is keep:
                 continue
             _take(item[1])
-    # Старый ``1-K7`` после renumber живёт рядом с ``3-S2-K*``: префикс
-    # уже не совпадает, но это вторая лестница той же сцены. S-лестницу
-    # оставляем, безымянную K-лестницу снимаем.
+    # Префикс после renumber расходится (``1-K7`` рядом с ``3-S2-K*``).
+    # Снимаем только повтор того же закадра, не другую ячейку с тем же
+    # локальным номером сцены.
     by_scene: dict[int, list[list[tuple[int, list[Any]]]]] = {}
     for (_cell, sc), items in ladders.items():
         by_scene.setdefault(int(sc), []).append(items)
@@ -1980,7 +1996,13 @@ def duplicate_scene_ladder_frames(frames: list[Any]) -> list[Any]:
             (s_groups if has_s else plain).append(items)
         if not s_groups or not plain:
             continue
+        s_vos = [_ladder_vo_text(items) for items in s_groups]
         for items in plain:
+            plain_vo = _ladder_vo_text(items)
+            if len(plain_vo) < 24:
+                continue
+            if not any(s_vo and (plain_vo == s_vo or plain_vo in s_vo) for s_vo in s_vos):
+                continue
             for _idx, members in items:
                 _take(members)
     return extra
