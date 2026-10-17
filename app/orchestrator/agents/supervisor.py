@@ -13,7 +13,11 @@ Paid-retry guard не даёт
 Очередь ``MessageMode.task``: вторая задача не стартует, пока в сессии
 есть нетерминальная, включая ``paused`` и ``waiting_approval``.
 ``resume`` и ``grant_approval`` продолжают ту же задачу. Дренаж —
-только из терминального статуса.
+только из терминального статуса. После рестарта ``recover_after_restart``
+снова поднимает строки ``queued`` и продолжает оборванное выполнение
+с последнего чекпоинта. Платный шаг со строкой ``running`` (исход
+неизвестен) повторно не исполняется: ``waiting_approval`` /
+``paid_outcome_unknown``, без записи в ``_paid_done``.
 
 Dry-run валидаторов (``dry_run=True``) идёт до критика и только читает.
 Live — до и после мутации и может остановить задачу. ``project_id``
@@ -82,6 +86,8 @@ from app.orchestrator.contracts import (
 from app.orchestrator.events import EventBus
 
 _DRY_RUN = ("plan_sanity", "no_deletions", "spend_guard")
+_RESUME_STATUSES = frozenset({TaskStatus.planning, TaskStatus.critic_review, TaskStatus.executing})
+_HOLD_STATUSES = frozenset({TaskStatus.paused, TaskStatus.waiting_approval})
 
 
 class InvalidTransition(RuntimeError):
@@ -311,6 +317,175 @@ class Supervisor:
             self._queued.setdefault(session_id, []).append((task_id, goal))
             return task_id
         return await self.start_task(session_id, goal, project_id=bound)
+
+    async def recover_after_restart(self) -> list[int]:
+        """Поднять незавершённые задачи после рестарта процесса.
+
+        ``queued`` возвращаются в память очереди. Если сессия свободна,
+        стартует самая старая. ``planning`` / ``critic_review`` / ``executing``
+        продолжаются с последнего чекпоинта. ``paused`` и ``waiting_approval``
+        сами не стартуют и не отпускают очередь сессии.
+
+        Платный шаг с ``orch_steps.status=running`` доходит до ``_execute_plan``
+        и там останавливается: ``waiting_approval`` / ``paid_outcome_unknown``.
+        ``execute`` не вызывается. В ``_paid_done`` шаг не пишется — неизвестное
+        списание нельзя провести как успех и пойти дальше.
+        """
+        rows = await asyncio.to_thread(self.tasks.list_open)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["session_id"]), []).append(row)
+        started: list[int] = []
+        for session_id, group in grouped.items():
+            started.extend(await self._recover_session(session_id, group))
+        return started
+
+    async def _recover_session(self, session_id: str, rows: list[dict[str, Any]]) -> list[int]:
+        tracked = self._tracked_ids(session_id)
+        fresh = [row for row in rows if int(row["id"]) not in tracked]
+        if not fresh:
+            return []
+        queued = [row for row in fresh if str(row["status"]) == TaskStatus.queued.value]
+        held = [row for row in fresh if TaskStatus(str(row["status"])) in _HOLD_STATUSES]
+        interrupted = [row for row in fresh if TaskStatus(str(row["status"])) in _RESUME_STATUSES]
+        queued_pairs = [(int(row["id"]), str(row.get("goal") or "")) for row in queued]
+        if interrupted:
+            primary = interrupted[0]
+            task_id = int(primary["id"])
+            self._queued[session_id] = self._merge_queued(session_id, queued_pairs)
+            if await self._spawn_from_checkpoint(task_id, primary):
+                return [task_id]
+            self._session_task[session_id] = task_id
+            return []
+        if held:
+            self._session_task[session_id] = int(held[0]["id"])
+            self._queued[session_id] = self._merge_queued(session_id, queued_pairs)
+            return []
+        if not queued:
+            return []
+        first, *rest = queued
+        rest_pairs = [(int(row["id"]), str(row.get("goal") or "")) for row in rest]
+        self._queued[session_id] = self._merge_queued(session_id, rest_pairs)
+        task_id = int(first["id"])
+        self._spawn_drive(task_id, session_id, str(first.get("goal") or ""))
+        return [task_id]
+
+    async def _spawn_from_checkpoint(self, task_id: int, row: dict[str, Any]) -> bool:
+        running = self._runs.get(task_id)
+        if running is not None and not running.done():
+            return True
+        data = await asyncio.to_thread(self.checkpoints.load_latest, task_id)
+        if data is None:
+            data = self._checkpoint_from_row(row)
+        if data is None:
+            logger.warning(
+                "orch recover {}: нет чекпоинта, статус {} оставлен",
+                task_id,
+                row.get("status"),
+            )
+            return False
+        session_id = str(row["session_id"])
+        self._arm_resume(session_id, task_id, data)
+        self._runs[task_id] = asyncio.create_task(
+            self._continue_after_restart(task_id, session_id, data, str(row.get("goal") or "")),
+            name=f"orch-recover-{task_id}",
+        )
+        return True
+
+    async def _continue_after_restart(
+        self,
+        task_id: int,
+        session_id: str,
+        data: CheckpointData,
+        goal: str,
+    ) -> None:
+        current = self._status(task_id)
+        if current is TaskStatus.planning:
+            await self._set_status(task_id, TaskStatus.critic_review, session_id=session_id)
+            current = self._status(task_id)
+        if current is TaskStatus.critic_review:
+            await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
+            current = self._status(task_id)
+        if current is not TaskStatus.executing:
+            return
+        if not data.plan:
+            await self._apply_block(task_id, session_id, "empty_plan")
+            return
+        await self._execute_plan(task_id, session_id, list(data.plan), int(data.position), goal)
+
+    def _spawn_drive(self, task_id: int, session_id: str, goal: str) -> None:
+        self._cancel.discard(session_id)
+        self._pause.discard(session_id)
+        self._kill.discard(session_id)
+        self._steer.pop(session_id, None)
+        self._approval.pop(session_id, None)
+        self._session_task[session_id] = task_id
+        self._change_ids.setdefault(task_id, [])
+        self._context.setdefault(task_id, "")
+        self._paid_done.setdefault(task_id, set())
+        self._runs[task_id] = asyncio.create_task(
+            self._drive(task_id, session_id, goal),
+            name=f"orch-recover-{task_id}",
+        )
+
+    def _checkpoint_from_row(self, row: dict[str, Any]) -> CheckpointData | None:
+        raw = row.get("plan_json")
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, list) or not payload:
+            return None
+        return CheckpointData(
+            plan=[PlanStep.model_validate(item) for item in payload],
+            position=int(row.get("position") or 0),
+            spend=SpendSnapshot(
+                internal=float(row.get("spend_internal") or 0),
+                actions=float(row.get("spend_actions") or 0),
+            ),
+        )
+
+    def _tracked_ids(self, session_id: str) -> set[int]:
+        tracked = {task_id for task_id, _goal in self._queued.get(session_id, [])}
+        tracked.update(task_id for task_id, job in self._runs.items() if not job.done())
+        active = self._session_task.get(session_id)
+        if active is not None:
+            tracked.add(active)
+        return tracked
+
+    def _merge_queued(
+        self,
+        session_id: str,
+        pairs: list[tuple[int, str]],
+    ) -> list[tuple[int, str]]:
+        merged = list(self._queued.get(session_id, []))
+        seen = {task_id for task_id, _goal in merged}
+        for task_id, goal in pairs:
+            if task_id in seen or task_id in self._runs:
+                continue
+            merged.append((task_id, goal))
+            seen.add(task_id)
+        return merged
+
+    def _paid_outcome_unknown(self, task_id: int, step: PlanStep) -> bool:
+        """Платная строка ``running``: шаг уже стартовал, результат не записан."""
+        if not step.paid:
+            return False
+        ident = _public_params(step.params)
+        for row in self.tasks.list_steps(task_id):
+            if str(row.get("status")) != "running" or not row.get("paid"):
+                continue
+            if str(row.get("action_name") or "") != step.action:
+                continue
+            try:
+                stored = json.loads(row.get("params_json") or "{}")
+            except json.JSONDecodeError:
+                stored = {}
+            if isinstance(stored, dict) and _public_params(stored) == ident:
+                return True
+        return False
 
     def _llm_kwargs(self, task_id: int, role: str) -> dict[str, Any]:
         return {
@@ -664,6 +839,18 @@ class Supervisor:
                 )
                 index += 1
                 continue
+
+            if any(item.paid and self._paid_outcome_unknown(task_id, item) for item in batch):
+                # Строка running уже есть: шаг стартовал до рестарта, исход не записан.
+                # Не исполнять снова и не считать успехом через _paid_done.
+                self._block_reason[task_id] = "paid_outcome_unknown"
+                await self._escalate(
+                    task_id,
+                    session_id,
+                    "paid_outcome_unknown",
+                    extra={"action": step.action, "position": index},
+                )
+                return
 
             if any(item.paid for item in batch):
                 if await self._stop_if_budget(task_id, session_id, plan, index):
@@ -1306,11 +1493,10 @@ class Supervisor:
     async def _start_queued(self, session_id: str, finished_id: int) -> None:
         """Дренаж только после терминального статуса.
 
-        Очередь живёт в памяти процесса. Строки ``queued`` в БД после рестарта
-        сами не поднимаются.
-
-        ``paused`` и ``waiting_approval`` очередь не отпускают: ``resume`` и
-        ``grant_approval`` продолжают ту же задачу, вторая рядом не стартует.
+        Память очереди заполняет ``submit_task`` и ``recover_after_restart``
+        (строки ``queued`` из БД). ``paused`` и ``waiting_approval`` очередь
+        не отпускают: ``resume`` и ``grant_approval`` продолжают ту же задачу,
+        вторая рядом не стартует.
         """
         if self._session_task.get(session_id) not in {None, finished_id}:
             return
