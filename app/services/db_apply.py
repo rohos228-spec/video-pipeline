@@ -1106,7 +1106,8 @@ async def upsert_characters(
 ) -> int:
     """Записать/обновить сущности type=character по code (c01…).
 
-    replace=True: коды, которых нет в новом списке, удаляются (Каркас)."""
+    replace=True: коды, которых нет в новом списке, помечаются archived
+    (карточка и hero_reference остаются)."""
     from app.models import Entity
 
     if not isinstance(characters, list):
@@ -1153,12 +1154,17 @@ async def upsert_characters(
         n += 1
     if replace and seen:
         from loguru import logger
+        from sqlalchemy.orm.attributes import flag_modified
 
         for code, en in list(by_code.items()):
             if code not in seen:
-                await session.delete(en)
+                attrs = dict(en.attrs or {})
+                attrs["archived"] = True
+                attrs["inactive"] = True
+                en.attrs = attrs
+                flag_modified(en, "attrs")
                 logger.info(
-                    "[#{}] upsert_characters replace: удалён {} ({})",
+                    "[#{}] upsert_characters replace: помечен archived {} ({})",
                     project.id,
                     code,
                     en.name,
