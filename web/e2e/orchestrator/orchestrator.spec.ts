@@ -148,10 +148,11 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-task-status")).toContainText("готово");
   });
 
-  test("approve 404 и 409 оставляют карточку", async ({ page }) => {
+  test("approve 404, 409 и 422 оставляют карточку", async ({ page }) => {
     const cases = [
       ["approve404", "approval not found"],
       ["approve409", "approval conflict"],
+      ["approve422", "approval unprocessable"],
     ] as const;
     for (const [scenario, detail] of cases) {
       await openWithToken(page, scenario, scenario);
@@ -706,10 +707,11 @@ test.describe("orchestrator chat", () => {
     expect(posts.filter((item) => item.url.includes("/execute"))).toEqual([]);
   });
 
-  test("paid_outcome_unknown: 404 и 409 оставляют карточку", async ({ page }) => {
+  test("paid_outcome_unknown: 404, 409 и 422 оставляют карточку", async ({ page }) => {
     const cases = [
       ["paid404", "approval not found"],
       ["paid409", "approval conflict"],
+      ["paid422", "approval unprocessable"],
     ] as const;
     for (const [scenario, detail] of cases) {
       await openWithToken(page, scenario, scenario);

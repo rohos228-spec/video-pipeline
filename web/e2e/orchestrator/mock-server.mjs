@@ -5,9 +5,9 @@
  *
  * Токен: orch-dev-token (или ORCH_MOCK_TOKEN).
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
- *   stream | interrupt | approval | approvefail | approve404 | approve409 | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
+ *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
- *   | paid404 | paid409 | paidgrant409
+ *   | paid404 | paid409 | paid422 | paidgrant409
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
@@ -738,7 +738,7 @@ function startScenario(session, scenario, text, mode) {
     void runInterruptStart(session, id);
     return;
   }
-  if (scenario === "approval" || scenario === "approvefail" || scenario === "approve404" || scenario === "approve409") {
+  if (scenario === "approval" || scenario === "approvefail" || scenario === "approve404" || scenario === "approve409" || scenario === "approve422") {
     void runApproval(session, id);
     return;
   }
@@ -802,6 +802,7 @@ function startScenario(session, scenario, text, mode) {
     scenario === "paidoutcome" ||
     scenario === "paid404" ||
     scenario === "paid409" ||
+    scenario === "paid422" ||
     scenario === "paidgrant409" ||
     scenario === "paidzero" ||
     scenario.startsWith("paidbad-")
@@ -1325,6 +1326,10 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { detail: "approval conflict" });
         return;
       }
+      if (scenario === "paid422") {
+        sendJson(res, 422, { detail: "approval unprocessable" });
+        return;
+      }
       consumePaidRetryGrant(res, approvalId);
       return;
     }
@@ -1341,6 +1346,10 @@ const server = http.createServer(async (req, res) => {
     }
     if ((scenario === "approve409" && decision === "approve") || scenario === "paid409") {
       sendJson(res, 409, { detail: "approval conflict" });
+      return;
+    }
+    if ((scenario === "approve422" && decision === "approve") || scenario === "paid422") {
+      sendJson(res, 422, { detail: "approval unprocessable" });
       return;
     }
     let matched = false;
