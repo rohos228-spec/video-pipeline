@@ -15,6 +15,7 @@ import {
   EXAMPLE_NODE_CREATE,
   EXAMPLE_NODE_EDIT,
   EXAMPLE_PARAMS_EDIT,
+  EXAMPLE_PARTIAL_EDIT,
   EXAMPLE_PAID_APPROVAL,
   EXAMPLE_PROMPT_EDIT,
   EXAMPLE_R21_CONFLICT,
@@ -312,6 +313,20 @@ test("восстановление мягкого удаления идёт по
   });
   expect(JSON.stringify(posts)).not.toContain("history.rollback");
   expect(JSON.stringify(posts)).not.toContain("change_id");
+});
+
+test("предупреждения и пропущенное на частичной правке", async ({ page }) => {
+  const broken = structuredClone(EXAMPLE_PARTIAL_EDIT);
+  (broken.result as { skipped?: string[] }).skipped = [];
+  expect(readActionEnvelope(broken, 1)).toBeNull();
+
+  await openWithToken(page, "act-partial");
+  await emit(page, "act-partial", "step_finished", EXAMPLE_PARTIAL_EDIT);
+  const card = page.getByTestId("orch-action-card").filter({ hasText: "Параметры" }).last();
+  await expect(card.getByTestId("orch-action-warnings")).toContainText("shot 2 пропущен");
+  await expect(card.getByTestId("orch-action-partial")).toContainText("Частично");
+  await expect(card.getByTestId("orch-action-partial")).toContainText("пропущено");
+  await expect(card.getByTestId("orch-action-skipped")).toContainText("shot-2");
 });
 
 test("поля r2.1: предупреждения, пропуск, конфликт и снимок", async ({ page }) => {

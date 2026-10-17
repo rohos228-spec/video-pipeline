@@ -118,11 +118,11 @@ function Extras({ result }: { result: ActionResultView }) {
       ) : null}
       {result.partial || result.skipped.length ? (
         <div className="mt-2" data-testid="orch-action-partial">
-          {result.partial ? <p className="text-[11px] text-white/55">Частично</p> : null}
+          {result.partial ? <p className="text-[11px] text-white/55">Частично · пропущено</p> : null}
           {result.skipped.length ? (
             <ul className="mt-1 space-y-1 text-[11px] text-white/55" data-testid="orch-action-skipped">
               {result.skipped.map((item) => (
-                <li key={item}>{item}</li>
+                <li key={item}>{`пропущено ${item}`}</li>
               ))}
             </ul>
           ) : null}

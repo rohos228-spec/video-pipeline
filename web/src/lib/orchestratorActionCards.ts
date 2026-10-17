@@ -637,6 +637,26 @@ export const EXAMPLE_CORE_APPROVAL = {
   action: "montage.suggest_scene_variants",
 };
 
+export const EXAMPLE_PARTIAL_EDIT = stepPayload("s-partial", "частичная правка", {
+  status: "ok",
+  warnings: ["shot 2 пропущен"],
+  result: {
+    action: "edit_node_params",
+    change_id: "orch-appr-13-10",
+    node_ref: { project_id: 13, node_id: "n_scene_writer", kind: "params" },
+    before: { temperature: 0.2 },
+    version: 4,
+    base_version: 3,
+    after: { temperature: 0.4 },
+    diff: { fields: { temperature: { before: 0.2, after: 0.4 } } },
+    open_url: "/api/projects/13",
+    reversible: true,
+    partial: true,
+    skipped: ["shot-2"],
+  },
+  error: null,
+});
+
 /** Конверт reject_stale_edit: failed, result пустой, error=conflict, HTTP 409. */
 export const EXAMPLE_VERSION_CONFLICT = stepPayload("s-409", "конфликт версий", {
   status: "failed",
