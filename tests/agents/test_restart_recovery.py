@@ -9,6 +9,7 @@ from app.orchestrator.agents.task_store import TaskStore
 from app.orchestrator.checkpoints import CheckpointStore
 from app.orchestrator.contracts import (
     CONTRACT_VERSION,
+    VALIDATOR_CONTEXT_DRY_RUN,
     ApprovalDecision,
     CheckpointData,
     PlanStep,
@@ -18,7 +19,7 @@ from app.orchestrator.contracts import (
     forecast_cost,
     paid_step_identity,
 )
-from tests.agents.mocks import MockActions, MockValidators, ScriptedRouter
+from tests.agents.mocks import MockActions, MockValidators, ScriptedCritic, ScriptedRouter
 
 
 def _runtime(actions: MockActions):
@@ -306,5 +307,66 @@ async def test_paid_outcome_unknown_deny_fails_task(token: str) -> None:
         assert runtime.tasks.list_steps(task_id)[0]["status"] == "failed"
         assert runtime.tasks.get(task_id)["status"] == TaskStatus.failed.value
         assert runtime.tasks.get(task_id)["error"] == "paid_outcome_unknown"
+    finally:
+        set_runtime(None)
+
+
+def _draft(session: str, status: TaskStatus) -> int:
+    step = PlanStep(action="look", expected="ok", paid=False, mutating=True)
+    tasks = TaskStore()
+    task_id = tasks.insert(session, "черновик", status.value, project_id=13)
+    tasks.save_plan(task_id, [step], position=0)
+    CheckpointStore().save(task_id, session, CheckpointData(plan=[step], position=0))
+    return task_id
+
+
+@pytest.mark.asyncio
+async def test_restart_planning_does_not_execute_until_critic_approves(token: str) -> None:
+    """planning и critic_review после рестарта ждут approve. Dry-run идёт до execute."""
+    del token
+    rejected = _draft("restart-plan-reject", TaskStatus.planning)
+    actions = MockActions()
+    validators = MockValidators()
+    runtime = build_runtime(
+        actions=actions,
+        validators=validators,
+        router=ScriptedRouter(),
+        critic=ScriptedCritic(["reject"]),
+    )
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(rejected, timeout=5)
+        assert actions.calls == []
+        assert any(
+            call["name"] == "plan_sanity" and call["context"].get(VALIDATOR_CONTEXT_DRY_RUN) is True
+            for call in validators.calls
+        )
+        assert runtime.tasks.get(rejected)["status"] == TaskStatus.waiting_approval.value
+        held = [event for event in runtime.bus.replay("restart-plan-reject", 0) if event.type == "approval_required"]
+        assert held[-1].payload["reason"] == "critic_reject"
+    finally:
+        set_runtime(None)
+
+    approved = _draft("restart-plan-approve", TaskStatus.critic_review)
+    actions = MockActions()
+    validators = MockValidators()
+    runtime = build_runtime(
+        actions=actions,
+        validators=validators,
+        router=ScriptedRouter(),
+        critic=ScriptedCritic(["approve"]),
+    )
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(approved, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["look"]
+        assert any(
+            call["name"] == "plan_sanity" and call["context"].get(VALIDATOR_CONTEXT_DRY_RUN) is True
+            for call in validators.calls
+        )
+        assert runtime.tasks.get(approved)["status"] == TaskStatus.done.value
+        assert runtime.tasks.get(rejected)["status"] == TaskStatus.waiting_approval.value
     finally:
         set_runtime(None)

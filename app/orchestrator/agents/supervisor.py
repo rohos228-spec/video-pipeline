@@ -457,8 +457,9 @@ class Supervisor:
         """Поднять незавершённые задачи после рестарта процесса.
 
         ``queued`` возвращаются в память очереди. Если сессия свободна,
-        стартует самая старая. ``planning`` / ``critic_review`` / ``executing``
-        продолжаются с последнего чекпоинта. ``paused`` и ``waiting_approval``
+        стартует самая старая. ``executing`` продолжается с чекпоинта.
+        ``planning`` и ``critic_review`` заново проходят dry-run и критика:
+        ``execute`` только после ``approve``. ``paused`` и ``waiting_approval``
         сами не стартуют и не отпускают очередь сессии.
 
         Платный шаг с ``orch_steps.status=running`` доходит до ``_execute_plan``
@@ -534,18 +535,53 @@ class Supervisor:
         goal: str,
     ) -> None:
         current = self._status(task_id)
-        if current is TaskStatus.planning:
-            await self._set_status(task_id, TaskStatus.critic_review, session_id=session_id)
-            current = self._status(task_id)
-        if current is TaskStatus.critic_review:
-            await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
-            current = self._status(task_id)
+        if current in {TaskStatus.planning, TaskStatus.critic_review}:
+            await self._review_saved_plan(task_id, session_id, data, goal)
+            return
         if current is not TaskStatus.executing:
             return
         if not data.plan:
             await self._apply_block(task_id, session_id, "empty_plan")
             return
         await self._execute_plan(task_id, session_id, list(data.plan), int(data.position), goal)
+
+    async def _review_saved_plan(
+        self,
+        task_id: int,
+        session_id: str,
+        data: CheckpointData,
+        goal: str,
+    ) -> None:
+        """Черновик после рестарта не исполняется, пока dry-run и критик не approve."""
+        plan = list(data.plan)
+        context = data.context or self._context.get(task_id, "")
+        revises = 0
+        while True:
+            if await self._screen_plan(task_id, session_id, plan):
+                return
+            if self._status(task_id) is TaskStatus.planning:
+                await self._set_status(task_id, TaskStatus.critic_review, session_id=session_id)
+            verdict = await self._review_plan(task_id, session_id, plan, context)
+            if verdict is None:
+                return
+            if verdict == "approve":
+                self._approved[task_id] = _plan_fingerprint(plan)
+                await self._set_status(task_id, TaskStatus.executing, session_id=session_id)
+                await self._execute_plan(task_id, session_id, plan, 0, goal)
+                return
+            if verdict == "reject":
+                await self._checkpoint(task_id, session_id, plan, 0)
+                await self._apply_block(task_id, session_id, "critic_reject")
+                return
+            revises += 1
+            if revises > 2:
+                await self._apply_block(task_id, session_id, ApprovalReason.critic_escalation.value)
+                return
+            context = (context + "\n" + f"critic: {verdict}").strip()
+            self._context[task_id] = context
+            plan = await self._make_plan(task_id, session_id, goal, context)
+            if plan is None:
+                return
 
     def _spawn_drive(self, task_id: int, session_id: str, goal: str) -> None:
         self._cancel.discard(session_id)
