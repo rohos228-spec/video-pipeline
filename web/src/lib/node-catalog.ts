@@ -70,6 +70,15 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     accent: "200 55% 55%",
     iconKey: "package",
   },
+  style_extract: {
+    type: "style_extract",
+    label: "Разбор стиля",
+    description:
+      "Агент разбора референсных роликов: рисовка, озвучка, монтаж, повествование → паспорт стиля. Лимит LLM-вызовов и оценка цены до запуска.",
+    category: "planning",
+    accent: "285 60% 62%",
+    iconKey: "sparkles",
+  },
   shot_menu: {
     type: "shot_menu",
     label: "Меню съёмки",
@@ -275,6 +284,15 @@ export const NODE_CATALOG: Record<string, NodeSpec> = {
     description: "Одобрение финального ролика.",
     category: "hitl",
     accent: "0 0% 58%",
+    iconKey: "check-square",
+  },
+  hitl_style: {
+    type: "hitl_style",
+    label: "Проверка стиля",
+    description:
+      "Утверждение паспорта стиля: правка полей, подтверждение → блоки промптов, пресет и style lock записываются в Studio.",
+    category: "hitl",
+    accent: "285 45% 58%",
     iconKey: "check-square",
   },
 };

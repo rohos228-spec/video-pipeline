@@ -165,7 +165,13 @@ export function ensureSpaciousNodePositions(nodes: WorkflowNode[]): WorkflowNode
     });
     const maxColWidth = Math.max(
       ...col.map((n) =>
-        n.type === "excel_gpt" || n.type === "storage" || n.type === "shot_menu" ? 320 : 280,
+        n.type === "excel_gpt" ||
+        n.type === "storage" ||
+        n.type === "shot_menu" ||
+        n.type === "style_extract" ||
+        n.type === "hitl_style"
+          ? 320
+          : 280,
       ),
     );
     currentX += Math.max(STEP_X, maxColWidth + 70);
