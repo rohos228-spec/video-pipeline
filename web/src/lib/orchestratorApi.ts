@@ -137,20 +137,26 @@ function normalizeBase(value: string): string {
   return value.trim().replace(/\/$/, "");
 }
 
-/** Same-origin `/api` или `/api/...`. `//host` — чужой origin, не путь. */
+/** Same-origin `/api` или `/api/...`. `//host`, userinfo и не-http(s) — чужой адрес. */
 export function isSameOriginApiBase(value: string, pageOrigin: string): boolean {
   const raw = normalizeBase(value);
   if (!raw || !pageOrigin) return false;
-  if (raw.startsWith("/") && !raw.startsWith("//")) {
+  if (raw.startsWith("//")) return false;
+  if (raw.startsWith("/")) {
     return raw === "/api" || raw.startsWith("/api/");
   }
+  let url: URL;
+  let page: URL;
   try {
-    const url = new URL(raw);
-    if (url.origin !== new URL(pageOrigin).origin) return false;
-    return url.pathname === "/api" || url.pathname.startsWith("/api/");
+    url = new URL(raw);
+    page = new URL(pageOrigin);
   } catch {
     return false;
   }
+  if (url.username || url.password) return false;
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.origin !== page.origin) return false;
+  return url.pathname === "/api" || url.pathname.startsWith("/api/");
 }
 
 /**

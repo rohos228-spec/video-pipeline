@@ -5,6 +5,7 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   bearerTargetAllowed,
   envOrchApiBase,
+  isSameOriginApiBase,
   orchAuthHeaders,
   orchTestModeEnabled,
   resolveOrchApiBase,
@@ -50,6 +51,21 @@ test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
     if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_TEST;
     else process.env.NEXT_PUBLIC_ORCH_TEST = previous;
   }
+});
+
+test("isSameOriginApiBase отвергает //evil, userinfo и javascript", () => {
+  const pageOrigin = "https://host";
+  expect(isSameOriginApiBase("//evil.com", "https://evil.com")).toBe(false);
+  expect(isSameOriginApiBase("//evil.com/api", "https://evil.com")).toBe(false);
+  expect(isSameOriginApiBase("https://user@host", pageOrigin)).toBe(false);
+  expect(isSameOriginApiBase("https://user@host/api", pageOrigin)).toBe(false);
+  expect(isSameOriginApiBase("http://localhost@evil.com", "http://evil.com")).toBe(false);
+  expect(isSameOriginApiBase("http://localhost@evil.com/api", "http://evil.com")).toBe(false);
+  expect(isSameOriginApiBase("javascript:", "http://localhost")).toBe(false);
+  expect(isSameOriginApiBase("javascript:alert(1)", "http://localhost")).toBe(false);
+  expect(isSameOriginApiBase("javascript:/api", "http://localhost")).toBe(false);
+  expect(isSameOriginApiBase("/api", pageOrigin)).toBe(true);
+  expect(isSameOriginApiBase("https://host/api", pageOrigin)).toBe(true);
 });
 
 test("NEXT_PUBLIC_ORCH_API только https или http на loopback", () => {
