@@ -1,0 +1,500 @@
+"""Ревью R3 и стыки WS4/WS5: бюджет, run_id, mode, удаления."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+from loguru import logger
+
+from app.orchestrator.agents.critic import _parse_verdict
+from app.orchestrator.agents.runtime import build_runtime, set_runtime
+from app.orchestrator.agents.stubs import FallbackRouter
+from app.orchestrator.auth import OrchestratorAuthMiddleware
+from app.orchestrator.contracts import (
+    ActionMetadata,
+    ApprovalEvent,
+    LLMResponse,
+    PlanStep,
+    TaskStatus,
+    orch_run_id,
+)
+from app.orchestrator.db.migrations import connect
+from app.web.routers.orchestrator_chat import router as chat_router
+from tests.agents.conftest import TEST_TOKEN
+from tests.agents.mocks import FixedPlanner, MockActions, MockValidators, ScriptedRouter
+
+
+def _budget_response(text: str = "бюджет кончился") -> LLMResponse:
+    return LLMResponse(
+        text=text,
+        call_id="budget-call",
+        model="scripted",
+        provider="52pay",
+        tier="strong",
+        finish_reason="stop",
+        task_status=TaskStatus.waiting_approval,
+        approval=ApprovalEvent(reason="budget_exhausted", payload={"spent_usd": 10}),
+    )
+
+
+class _BudgetPlanner:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.last_response: Any = None
+
+    async def make_plan(self, goal: str, context: str = "", **_call: Any) -> list[PlanStep]:
+        del goal, context
+        self.calls += 1
+        if self.calls == 1:
+            self.last_response = _budget_response()
+            return [
+                PlanStep(action="hold", params={"_wait": True}, paid=False),
+                PlanStep(action="tail", paid=False),
+            ]
+        self.last_response = None
+        return [PlanStep(action="after", paid=False)]
+
+
+class _PayThenBudget:
+    def __init__(self, actions: MockActions) -> None:
+        self.actions = actions
+        self.last_response: Any = None
+
+    async def run(self, step: PlanStep, ctx: dict[str, Any]) -> Any:
+        result = await self.actions.execute(step.action, dict(step.params), dict(ctx))
+        self.last_response = _budget_response("оплачено, дальше нельзя")
+        return result
+
+
+class _BoomActions(MockActions):
+    async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> Any:
+        self.calls.append({"name": name, "params": dict(params), "ctx": dict(task_ctx)})
+        if name == "bad":
+            raise RuntimeError("boom")
+        from app.orchestrator.contracts import ActionResult
+
+        return ActionResult(ok=True, data={"name": name}, change_id=f"chg-{name}", cost=0.0)
+
+
+class _MetaActions(MockActions):
+    def __init__(self) -> None:
+        super().__init__()
+        self.meta: dict[str, ActionMetadata] = {}
+
+    def metadata_of(self, action_name: str) -> ActionMetadata | None:
+        return self.meta.get(action_name)
+
+
+def _http_app() -> FastAPI:
+    app = FastAPI()
+    app.add_middleware(OrchestratorAuthMiddleware)
+    app.include_router(chat_router, prefix="/api")
+    return app
+
+
+@pytest.mark.asyncio
+async def test_internal_call_without_run_id_raises() -> None:
+    router = ScriptedRouter()
+    with pytest.raises(ValueError, match="run_id"):
+        await router.call("strong", [{"role": "user", "content": "x"}])
+    with pytest.raises(ValueError, match="run_id"):
+        await router.call(
+            "strong",
+            [{"role": "user", "content": "x"}],
+            budget_scope="internal",
+            run_id="   ",
+        )
+    with pytest.raises(ValueError, match="run_id"):
+        await FallbackRouter().call("strong", [{"role": "user", "content": "x"}])
+    done = await router.call(
+        "strong",
+        [{"role": "user", "content": "x"}],
+        run_id="orch-session-s",
+        budget_scope="internal",
+    )
+    assert done.call_id
+    # pipeline — другой бакет. Пустой internal id — ошибка, а не нулевой spent(None).
+    piped = await router.call(
+        "strong",
+        [{"role": "user", "content": "x"}],
+        budget_scope="pipeline",
+        run_id=None,
+    )
+    assert piped.call_id
+
+
+@pytest.mark.asyncio
+async def test_classify_reserves_session_run_before_the_model(runtime) -> None:
+    await runtime.queue.accept("pre-run", "сделай что-нибудь")
+    pending = list(runtime.queue._pending)
+    if pending:
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+    assert runtime.router.last_classify["run_id"] == orch_run_id(session_id="pre-run")
+    assert runtime.router.last_call["run_id"] == orch_run_id(session_id="pre-run")
+    assert runtime.router.classify_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_paid_step_is_kept_when_budget_trips(token: str) -> None:
+    del token
+    actions = MockActions()
+    step = PlanStep(
+        action="charge",
+        params={"_change_id": "chg-paid", "_cost": 4.0},
+        paid=True,
+        mutating=True,
+    )
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([step]),
+        executor=_PayThenBudget(actions),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-pay", "оплатить")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        row = rt.tasks.list_steps(task_id)[0]
+        assert row["status"] == "done"
+        assert row["change_id"] == "chg-paid"
+        assert row["cost"] == pytest.approx(4.0)
+        checkpoint = rt.checkpoints.load_latest(task_id)
+        assert checkpoint is not None
+        assert checkpoint.position == 1
+
+        restarted = build_runtime(
+            actions=actions,
+            validators=MockValidators(),
+            router=ScriptedRouter(),
+            planner=FixedPlanner([step]),
+            executor=_PayThenBudget(actions),
+        )
+        set_runtime(restarted)
+        before = len(actions.calls)
+        await restarted.supervisor.resume(task_id)
+        await restarted.supervisor.wait(task_id, timeout=5)
+        assert len(actions.calls) == before
+        assert restarted.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_grant_clears_budget_stop_and_steer_replans(token: str) -> None:
+    del token
+    actions = MockActions()
+    planner = _BudgetPlanner()
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=planner,
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-grant", "план")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        assert task_id in rt.supervisor._budget_stop
+        await rt.supervisor.grant_approval("r3-grant")
+        assert task_id not in rt.supervisor._budget_stop
+        await actions.started.wait()
+        rt.supervisor.request_steer("r3-grant", "учти что дальше")
+        actions.release.set()
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert planner.calls >= 2
+        assert "after" in [call["name"] for call in actions.calls]
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_queued_task_waits_out_a_paused_one(token: str) -> None:
+    del token
+    actions = MockActions()
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(action="keep", mutating=True),
+                PlanStep(action="next", mutating=True),
+            ]
+        ),
+    )
+
+    async def _pause(name: str, params: dict[str, Any], ctx: dict[str, Any]) -> None:
+        del params, ctx
+        if name == "keep":
+            rt.supervisor.request_pause("r3-q")
+
+    actions.on_execute = _pause
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-q", "первая")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.paused.value
+        queued_id = await rt.supervisor.submit_task("r3-q", "вторая")
+        assert rt.tasks.get(queued_id)["status"] == TaskStatus.queued.value
+        assert rt.supervisor.active_task("r3-q") == task_id
+        assert [call["name"] for call in actions.calls] == ["keep"]
+        actions.on_execute = None
+        await rt.supervisor.resume(task_id)
+        await rt.supervisor.wait(task_id, timeout=5)
+        await rt.supervisor.wait(queued_id, timeout=5)
+        assert rt.tasks.get(queued_id)["status"] == TaskStatus.done.value
+        assert [call["name"] for call in actions.calls] == ["keep", "next", "keep", "next"]
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_parallel_failure_keeps_sibling_done(token: str) -> None:
+    del token
+    actions = _BoomActions()
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner(
+            [
+                PlanStep(action="good", parallel_group="g"),
+                PlanStep(action="bad", parallel_group="g"),
+            ]
+        ),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-gather", "группа")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        rows = {row["action_name"]: row["status"] for row in rt.tasks.list_steps(task_id)}
+        assert rows["good"] == "done"
+        assert rows["bad"] == "failed"
+        assert next(row["change_id"] for row in rt.tasks.list_steps(task_id) if row["action_name"] == "good") == "chg-good"
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["montage.remove_frame", "shots.purge", "scene.drop"])
+async def test_remove_purge_drop_are_blocked_by_name(token: str, action: str) -> None:
+    del token
+    actions = MockActions()
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action=action, mutating=True)]),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task(f"r3-{action}", "удалить")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        reason = next(
+            event.payload["reason"]
+            for event in rt.bus.replay(f"r3-{action}", 0)
+            if event.type == "approval_required"
+        )
+        assert reason == "deletion_blocked"
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_destructive_metadata_fails_without_approval(token: str) -> None:
+    del token
+    actions = _MetaActions()
+    actions.meta["scene.drop"] = ActionMetadata(risk="high", read_only=False, destructive=True)
+    actions.meta["mystery"] = ActionMetadata(risk="high", read_only=None, destructive=False)
+    actions.meta["look"] = ActionMetadata(risk="none", read_only=True, destructive=False)
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="scene.drop", mutating=True)]),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-hard", "запрет")
+        await rt.supervisor.wait(task_id, timeout=5)
+        assert actions.calls == []
+        assert rt.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        assert not [event for event in rt.bus.replay("r3-hard", 0) if event.type == "approval_required"]
+    finally:
+        set_runtime(None)
+
+    unknown = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="unlisted", mutating=True)]),
+    )
+    set_runtime(unknown)
+    try:
+        task_id = await unknown.supervisor.start_task("r3-unknown", "нет в реестре")
+        await unknown.supervisor.wait(task_id, timeout=5)
+        assert unknown.tasks.get(task_id)["status"] == TaskStatus.failed.value
+        assert actions.calls == []
+    finally:
+        set_runtime(None)
+
+    allowed = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([PlanStep(action="look")]),
+    )
+    set_runtime(allowed)
+    try:
+        task_id = await allowed.supervisor.start_task("r3-look", "читать")
+        await allowed.supervisor.wait(task_id, timeout=5)
+        assert allowed.tasks.get(task_id)["status"] == TaskStatus.done.value
+        assert [call["name"] for call in actions.calls] == ["look"]
+    finally:
+        set_runtime(None)
+
+
+@pytest.mark.asyncio
+async def test_skip_uses_stored_change_id_not_param(token: str) -> None:
+    del token
+    actions = MockActions()
+    step = PlanStep(action="keep", params={"frame": 1}, mutating=True)
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=ScriptedRouter(),
+        planner=FixedPlanner([step]),
+    )
+    set_runtime(rt)
+    try:
+        task_id = await rt.supervisor.start_task("r3-chg", "сдать")
+        await rt.supervisor.wait(task_id, timeout=5)
+        stored = rt.tasks.list_steps(task_id)[0]["change_id"]
+        assert stored
+        assert "_change_id" not in step.params
+        conn = connect()
+        try:
+            conn.execute("UPDATE orch_tasks SET status = 'paused' WHERE id = ?", (task_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        data = rt.checkpoints.load_latest(task_id)
+        assert data is not None
+        data.position = 0
+        rt.checkpoints.save(task_id, "r3-chg", data)
+        restarted = build_runtime(
+            actions=actions,
+            validators=MockValidators(),
+            router=ScriptedRouter(),
+            planner=FixedPlanner([step]),
+        )
+        set_runtime(restarted)
+        before = len(actions.calls)
+        await restarted.supervisor.resume(task_id)
+        await restarted.supervisor.wait(task_id, timeout=5)
+        assert len(actions.calls) == before
+        skipped = [
+            event
+            for event in restarted.bus.replay("r3-chg", 0)
+            if event.type == "step_skipped" and event.payload.get("reason") == "change_already_applied"
+        ]
+        assert skipped
+    finally:
+        set_runtime(None)
+
+
+def test_unrecognized_critic_verdict_logs_raw_text() -> None:
+    lines: list[str] = []
+    handle = logger.add(lambda message: lines.append(str(message)))
+    try:
+        assert _parse_verdict("пожалуй approve позже") == "revise"
+    finally:
+        logger.remove(handle)
+    assert any("пожалуй approve позже" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_message_mode_task_steer_interrupt_append_and_garbage(token: str) -> None:
+    del token
+    actions = MockActions()
+    router = ScriptedRouter()
+    router.answer = "ответ"
+    rt = build_runtime(
+        actions=actions,
+        validators=MockValidators(),
+        router=router,
+        planner=FixedPlanner([PlanStep(action="hold", params={"_wait": True}, paid=False)]),
+    )
+    set_runtime(rt)
+    transport = ASGITransport(app=_http_app())
+    headers = {"Authorization": f"Bearer {TEST_TOKEN}"}
+    try:
+        async def _flush() -> None:
+            pending = list(rt.queue._pending)
+            if pending:
+                await asyncio.wait_for(asyncio.gather(*pending), timeout=2)
+
+        task_id = await rt.supervisor.start_task("mode-s", "держи")
+        await actions.started.wait()
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            garbage = await client.post(
+                "/api/orchestrator/chat/mode-s/message",
+                json={"text": "мусор", "mode": "nope"},
+                headers=headers,
+            )
+            assert garbage.status_code == 422
+            steer = await client.post(
+                "/api/orchestrator/chat/mode-s/message",
+                json={"text": "новый курс", "mode": "steer"},
+                headers=headers,
+            )
+            await _flush()
+            interrupt = await client.post(
+                "/api/orchestrator/chat/mode-s/message",
+                json={"text": "хватит", "mode": "interrupt"},
+                headers=headers,
+            )
+            await _flush()
+            appended = await client.post(
+                "/api/orchestrator/chat/mode-s/message",
+                json={"text": "просто реплика", "mode": "append"},
+                headers=headers,
+            )
+            await _flush()
+            created = await client.post(
+                "/api/orchestrator/chat/mode-fresh/message",
+                json={"text": "отдельная задача", "mode": "task"},
+                headers=headers,
+            )
+            await _flush()
+        assert steer.status_code == 200
+        assert interrupt.status_code == 200
+        assert appended.status_code == 200
+        assert created.status_code == 200
+        assert rt.tasks.get(task_id)["steer_text"] == "новый курс"
+        assert "mode-s" in rt.supervisor._cancel
+        assert router.classify_calls == 0
+        tokens = "".join(
+            event.payload.get("text", "")
+            for event in rt.bus.replay("mode-s", 0)
+            if event.type == "token"
+        )
+        assert "ответ" in tokens
+        goals = [row["goal"] for row in (rt.tasks.get(item) for item in rt.supervisor._runs) if row]
+        assert "отдельная задача" in goals
+        actions.release.set()
+        for run in list(rt.supervisor._runs.values()):
+            await asyncio.wait_for(run, timeout=5)
+    finally:
+        set_runtime(None)

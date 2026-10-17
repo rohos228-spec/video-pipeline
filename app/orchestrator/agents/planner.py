@@ -48,6 +48,7 @@ class RouterPlanner:
             task_id=call.get("task_id"),
             agent_role=call.get("agent_role") or AgentRole.planner.value,
             budget_scope=call.get("budget_scope") or BudgetScope.internal.value,
+            reasoning_effort=call.get("reasoning_effort"),
         )
         self.last_response = response
         return parse_plan(getattr(response, "text", "") or "")

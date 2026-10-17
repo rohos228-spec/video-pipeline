@@ -14,6 +14,7 @@ from typing import Any
 from loguru import logger
 
 from app.orchestrator.contracts import (
+    ORCH_DEFAULT_TIER,
     ORCH_REASONING_EFFORT,
     AgentRole,
     BudgetScope,
@@ -21,6 +22,7 @@ from app.orchestrator.contracts import (
     MessageMode,
     budget_exhausted_response,
     orch_call_tier,
+    orch_run_id,
 )
 from app.orchestrator.db.migrations import connect, utc_now
 from app.orchestrator.events import EventBus
@@ -119,12 +121,20 @@ class MessageQueue:
         self.supervisor = supervisor
         self._pending: set[asyncio.Task[Any]] = set()
 
-    async def accept(self, session_id: str, text: str) -> int:
-        """Записать реплику, опубликовать ack и поставить классификацию в фон.
+    async def accept(
+        self,
+        session_id: str,
+        text: str,
+        mode: MessageMode | None = None,
+    ) -> int:
+        """Записать реплику, опубликовать ack и поставить разбор в фон.
 
-        Возвращает seq события ack. Не ждёт классификацию.
+        ``run_id`` резервируется здесь, до ``classify`` и ``call``.
+        Явный ``mode`` не классифицируется: неизвестное значение отсекает HTTP.
+        Возвращает seq события ack. Не ждёт разбор.
         """
         task_id = self.supervisor.active_task(session_id)
+        run_id = orch_run_id(task_id=task_id, session_id=session_id)
         _insert_message(session_id, "user", text, task_id=task_id, mode=None)
         ack = await self.bus.publish(
             session_id,
@@ -132,17 +142,39 @@ class MessageQueue:
             {"text": text, "accepted": True},
             task_id=task_id,
         )
-        job = asyncio.create_task(self._classify(session_id, text), name=f"orch-classify-{session_id}")
+        job = asyncio.create_task(
+            self._classify(session_id, text, run_id, mode),
+            name=f"orch-classify-{session_id}",
+        )
         self._pending.add(job)
         job.add_done_callback(self._pending.discard)
         return ack.seq
 
-    async def _classify(self, session_id: str, text: str) -> None:
+    async def _classify(
+        self,
+        session_id: str,
+        text: str,
+        run_id: str,
+        mode: MessageMode | None,
+    ) -> None:
         try:
-            decided = classify_deterministic(text)
-            if decided is None:
-                decided = await self.router.classify(text)
-                decided = decided.model_copy(update={"deterministic": False})
+            if mode is not None:
+                decided = ClassifyResult(
+                    tier=ORCH_DEFAULT_TIER,
+                    mode=mode,
+                    deterministic=True,
+                    confidence=1.0,
+                )
+            else:
+                decided = classify_deterministic(text)
+                if decided is None:
+                    task_id = self.supervisor.active_task(session_id)
+                    decided = await self.router.classify(
+                        text,
+                        run_id=run_id,
+                        task_id=None if task_id is None else str(task_id),
+                    )
+                    decided = decided.model_copy(update={"deterministic": False})
             await self.bus.publish(
                 session_id,
                 "classification",
@@ -196,7 +228,7 @@ class MessageQueue:
             orch_call_tier(tier),
             [{"role": "user", "content": text}],
             True,
-            run_id=f"orch-task-{task_id}" if task_id is not None else f"orch-session-{session_id}",
+            run_id=orch_run_id(task_id=task_id, session_id=session_id),
             task_id=None if task_id is None else str(task_id),
             agent_role=AgentRole.classifier.value,
             budget_scope=BudgetScope.internal.value,
@@ -208,7 +240,7 @@ class MessageQueue:
             await self.bus.publish(session_id, "token", {"text": part})
         _insert_message(session_id, "assistant", response.text, task_id=task_id, mode=MessageMode.append.value)
         if budget_exhausted_response(response) and task_id is not None:
-            await self.supervisor._absorb_budget(task_id, session_id, response)
+            await self.supervisor.absorb_budget(task_id, session_id, response)
         await self.bus.publish(
             session_id,
             "message",

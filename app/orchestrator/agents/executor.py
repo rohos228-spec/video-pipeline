@@ -33,4 +33,6 @@ async def run_many(executor: Any, steps: list[PlanStep], ctx: dict[str, Any]) ->
 
     if len(steps) == 1:
         return [await _one(steps[0])]
-    return list(await asyncio.gather(*(_one(step) for step in steps)))
+    # Исключение шага остаётся его результатом: сосед по группе не помечается
+    # проваленным, если сам завершился. Сдвигов и семафора у группы нет.
+    return list(await asyncio.gather(*(_one(step) for step in steps), return_exceptions=True))

@@ -20,7 +20,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "ws3-r1.1"
+CONTRACT_VERSION = "ws3-r3.1"
 
 # История версии контракта. WS4 смотрит ``version`` и этот список.
 CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
@@ -32,6 +32,19 @@ CONTRACT_CHANGELOG: tuple[tuple[str, str], ...] = (
         "reasoning_effort, on_delta. До D6 ходы оркестратора — strong и "
         "reasoning_effort=high. orch_steps.position — монотонный номер попытки, "
         "не индекс плана. CHECK node_key без REGEXP (GLOB).",
+    ),
+    (
+        "ws3-r3",
+        "Цикл planner → dry-run → critic → executor. MessageMode.task. "
+        "Суб-бюджет budget_exhausted. Риск шага — max(реестр, план).",
+    ),
+    (
+        "ws3-r3.1",
+        "internal-вызов без непустого run_id — ValueError; run резервируется до модели. "
+        "MessageIn.mode. metadata_of: destructive без approval. "
+        "project_id задачи, не 0. Очередь task не стартует рядом с paused. "
+        "Исполнитель не зовёт LLM перед действием. "
+        "run_validator кладёт run_id и task_id в context. missing_run_id — failed.",
     ),
 )
 
@@ -89,6 +102,9 @@ class MessageMode(StrEnum):
 
     ``task`` — новая задача, не interrupt/steer/append. Если в сессии уже
     есть активная задача, новая остаётся ``queued`` и не вливается в текущую.
+    ``paused`` и ``waiting_approval`` не свободны: вторая задача не стартует
+    рядом с ними. Дренаж очереди — только когда активная дошла до терминального
+    статуса. ``resume`` / ``grant_approval`` продолжают ту же задачу.
     ``kill_switch`` приходит вместе с ``interrupt`` и обрабатывается как
     аварийный стоп, с приоритетом над обычным interrupt.
     """
@@ -267,6 +283,33 @@ def orch_call_tier(requested: str | None) -> str:
     if not D6_FAST_TIER_ENABLED:
         return ORCH_DEFAULT_TIER
     return requested or ORCH_DEFAULT_TIER
+
+
+def orch_run_id(*, task_id: int | None = None, session_id: str | None = None) -> str:
+    """Непустой id бакета до вызова модели.
+
+    Задача уже создана — ``orch-task-{id}``. Сообщения до задачи —
+    ``orch-session-{session}``, его резервируют в ``accept`` до classify.
+    """
+    if task_id is not None:
+        return f"orch-task-{int(task_id)}"
+    session = (session_id or "").strip()
+    if not session:
+        raise ValueError("internal budget requires run_id")
+    return f"orch-session-{session}"
+
+
+def require_internal_run_id(run_id: str | None, budget_scope: str | None = None) -> None:
+    """``budget_scope=internal`` (и пропуск scope) требует непустой ``run_id``.
+
+    ``spent(None)`` нулём не считается и бакет не подменяет: пустой id — ошибка,
+    а не нулевой расход.
+    """
+    scope = budget_scope or BudgetScope.internal.value
+    if scope != BudgetScope.internal.value:
+        return
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("internal budget requires run_id")
 
 
 def can_transition(src: TaskStatus, dst: TaskStatus) -> bool:
@@ -472,6 +515,19 @@ class CheckpointData(BaseModel):
     context: str = ""
 
 
+class ActionMetadata(BaseModel):
+    """Метаданные действия из реестра WS2.
+
+    ``read_only=True`` — явное разрешение. Нет метаданных или нет явного
+    ``read_only`` — действие потенциально разрушительное.
+    ``destructive=True`` — жёсткий запрет, approval его не снимает.
+    """
+
+    risk: str = "high"
+    read_only: bool | None = None
+    destructive: bool = False
+
+
 class ActionExecutor(Protocol):
     async def execute(self, name: str, params: dict[str, Any], task_ctx: dict[str, Any]) -> ActionResult:
         """WS2: ``actions.execute``.
@@ -487,6 +543,13 @@ class ActionExecutor(Protocol):
 
         Неизвестное имя → ``Risk.high`` (``registry_risk``). План не может
         понизить этот риск.
+        """
+
+    def metadata_of(self, action_name: str) -> ActionMetadata | None:
+        """Метаданные реестра. ``None`` — имя неизвестно.
+
+        Неизвестное имя или отсутствие явного ``read_only=True`` —
+        потенциально разрушительное. ``destructive=True`` — запрет без approval.
         """
 
 
@@ -505,12 +568,21 @@ class ValidatorRunner(Protocol):
         Перед критиком супервизор передаёт dry-run:
         ``context[VALIDATOR_CONTEXT_DRY_RUN] is True`` (ключ ``dry_run``).
         В этом режиме валидатор только читает и ничего не меняет.
+        Live-проверка — до и после мутирующего шага, она может блокировать.
+        ``project_id`` берётся из ``orch_tasks.project_id``. Ноль и пустое
+        значение не подставляются: нет id проекта — вызова нет.
         Сигнатура и поля результата те же: ``name``, ``pass`` / ``passed``,
         ``details``, ``blocking``.
+
+        ``run_validator`` перед вызовом кладёт в context непустые ``run_id``
+        и ``task_id``. Без них вызова нет.
 
         ``blocking=True`` и ``details.reason == "budget_exhausted"``
         (``details`` может быть dict) — не ``failed``, а ``waiting_approval``
         с ``ApprovalEvent.reason=budget_exhausted`` и чекпоинтом.
+        ``blocking`` и ``details.reason == "missing_run_id"`` (live spend_guard,
+        когда в context не было run_id и это не dry-run) — ``failed``,
+        не ``waiting_approval``.
         Остальной blocking прежний: live-проверка → ``failed``,
         dry-run → ``validator_blocked``.
         """
@@ -552,8 +624,18 @@ class ModelRouter(Protocol):
         Текст ответа этого хода сохраняется.
         """
 
-    async def classify(self, message: str) -> ClassifyResult:
-        """WS5: ``router.classify``. До D6 дефолт заглушки — tier ``strong``."""
+    async def classify(
+        self,
+        message: str,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+    ) -> ClassifyResult:
+        """WS5: ``router.classify``. До D6 дефолт заглушки — tier ``strong``.
+
+        Спорный (LLM) путь — internal-бюджет, поэтому ``run_id`` уже
+        зарезервирован. Детерминированные правила роутер не вызывают.
+        """
 
 
 class Retriever(Protocol):
@@ -623,6 +705,15 @@ def max_risk(*values: Any) -> Risk:
     return max((coerce_risk(item) for item in values), key=lambda item: _RISK_RANK[item])
 
 
+def validator_details_reason(result: Any) -> str | None:
+    """``details.reason``, если details — dict или объект с полем reason."""
+    details = getattr(result, "details", None)
+    reason = details.get("reason") if isinstance(details, dict) else getattr(details, "reason", None)
+    if reason is None:
+        return None
+    return str(reason)
+
+
 def validator_budget_exhausted(result: Any) -> bool:
     """Блокирующий ответ валидатора из-за суб-бюджета, не обычный fail.
 
@@ -631,9 +722,17 @@ def validator_budget_exhausted(result: Any) -> bool:
     """
     if not bool(getattr(result, "blocking", False)):
         return False
-    details = getattr(result, "details", None)
-    reason = details.get("reason") if isinstance(details, dict) else getattr(details, "reason", None)
-    return reason == ApprovalReason.budget_exhausted.value
+    return validator_details_reason(result) == ApprovalReason.budget_exhausted.value
+
+
+def validator_missing_run_id(result: Any) -> bool:
+    """Блокирующий spend_guard: в live-context не было run_id.
+
+    Это ``failed``, не ``waiting_approval``. Dry-run WS1 эту причину не ставит.
+    """
+    if not bool(getattr(result, "blocking", False)):
+        return False
+    return validator_details_reason(result) == "missing_run_id"
 
 
 def budget_exhausted_response(response: Any) -> bool:
@@ -651,13 +750,43 @@ def budget_exhausted_response(response: Any) -> bool:
     )
 
 
+_DELETION_MARKERS = ("delete_frame", "delete_scene", "remove", "purge", "drop")
+
+
 def is_deletion_action(action: str) -> bool:
-    """Удаление кадра или сцены. Синтетический delete_frame обязан блокироваться."""
+    """Удаление кадра или сцены по имени.
+
+    Точные имена реестра плюс подстроки delete_frame, delete_scene, remove,
+    purge, drop. ``montage.remove_frame``, ``shots.purge``, ``scene.drop``
+    попадают сюда даже без метаданных.
+    """
     name = (action or "").strip()
     if name in DELETION_ACTIONS:
         return True
     lowered = name.lower()
-    return "delete_frame" in lowered or "delete_scene" in lowered
+    return any(marker in lowered for marker in _DELETION_MARKERS)
+
+
+def action_guard(action: str, registry: Any | None = None) -> str | None:
+    """``hard`` — destructive или неизвестное без явного read_only.
+
+    ``name`` — запрет по имени (approval ``deletion_blocked``).
+    ``None`` — действие можно планировать.
+
+    Реестр без ``metadata_of`` проверяется только по имени: старые моки
+    не становятся разрушительными целиком.
+    """
+    metadata_of = getattr(registry, "metadata_of", None) if registry is not None else None
+    meta = metadata_of(action) if metadata_of is not None else None
+    if meta is not None and bool(getattr(meta, "destructive", False)):
+        return "hard"
+    if is_deletion_action(action):
+        return "name"
+    if metadata_of is None:
+        return None
+    if meta is None or getattr(meta, "read_only", None) is not True:
+        return "hard"
+    return None
 
 
 def plan_deletions(plan: list[PlanStep]) -> list[str]:
@@ -900,6 +1029,7 @@ ORCH_TASKS = TableSpec(
         ColumnSpec("error", "TEXT", nullable=True),
         ColumnSpec("created_at", "TEXT", nullable=False, note="ISO UTC"),
         ColumnSpec("updated_at", "TEXT", nullable=False, note="ISO UTC"),
+        ColumnSpec("project_id", "INTEGER", nullable=True, note="проект WS1, не 0"),
     ),
     indexes=(IndexSpec("ix_orch_tasks_session", ("session_id",)),),
 )
@@ -990,7 +1120,7 @@ ORCH_MESSAGES = TableSpec(
         ColumnSpec("task_id", "INTEGER", nullable=True),
         ColumnSpec("role", "TEXT", nullable=False),
         ColumnSpec("content", "TEXT", nullable=False),
-        ColumnSpec("mode", "TEXT", nullable=True, note="interrupt|steer|append после классификации"),
+        ColumnSpec("mode", "TEXT", nullable=True, note="interrupt|steer|append|task"),
         ColumnSpec("created_at", "TEXT", nullable=False, note="ISO UTC"),
     ),
     indexes=(IndexSpec("ix_orch_messages_session", ("session_id", "id")),),

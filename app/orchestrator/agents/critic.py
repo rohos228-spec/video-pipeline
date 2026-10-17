@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from loguru import logger
+
 from app.orchestrator.agents.llm_call import router_call
 from app.orchestrator.agents.planner import _retrieve
 from app.orchestrator.contracts import (
@@ -58,6 +60,7 @@ class PlanCritic:
             task_id=call.get("task_id"),
             agent_role=call.get("agent_role") or AgentRole.critic.value,
             budget_scope=call.get("budget_scope") or BudgetScope.internal.value,
+            reasoning_effort=call.get("reasoning_effort"),
         )
         self.last_response = response
         return _parse_verdict(getattr(response, "text", "") or "")
@@ -78,10 +81,12 @@ def _critic_system(rules: list[Chunk]) -> str:
 
 
 def _parse_verdict(text: str) -> str:
-    word = (text or "").strip().lower().split()[0] if (text or "").strip() else ""
+    raw = text or ""
+    word = raw.strip().lower().split()[0] if raw.strip() else ""
     word = word.strip(".,:;")
     if word in {"approve", "revise", "reject"}:
         return word
+    logger.warning("critic: нераспознанный вердикт, сырой текст: {}", raw)
     return "revise"
 
 

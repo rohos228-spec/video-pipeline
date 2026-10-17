@@ -15,6 +15,7 @@ from app.orchestrator.contracts import (
     Risk,
     ValidatorResult,
     registry_risk,
+    require_internal_run_id,
 )
 
 
@@ -40,9 +41,17 @@ class ScriptedRouter:
         self.responses: list[LLMResponse] = []
         self.seen_calls: list[dict[str, Any]] = []
         self.kill_switch = False
+        self.last_classify: dict[str, Any] = {}
 
-    async def classify(self, message: str) -> ClassifyResult:
+    async def classify(
+        self,
+        message: str,
+        *,
+        run_id: str | None = None,
+        task_id: str | None = None,
+    ) -> ClassifyResult:
         del message
+        self.last_classify = {"run_id": run_id, "task_id": task_id}
         self.classify_calls += 1
         self.started.set()
         if self.fail_if_called:
@@ -72,6 +81,7 @@ class ScriptedRouter:
         reasoning_effort: str | None = None,
         on_delta: Any = None,
     ) -> LLMResponse:
+        require_internal_run_id(run_id, budget_scope)
         self.seen_messages.append([dict(item) for item in messages])
         self.seen_calls.append(
             {

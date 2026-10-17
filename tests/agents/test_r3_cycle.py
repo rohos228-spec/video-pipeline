@@ -600,11 +600,12 @@ async def test_dry_run_before_critic_sets_read_only_flag(token: str) -> None:
     )
     set_runtime(rt)
     try:
-        task_id = await rt.supervisor.start_task("r3-dry", "проверка")
+        task_id = await rt.supervisor.start_task("r3-dry", "проверка", project_id=13)
         await rt.supervisor.wait(task_id, timeout=5)
         assert rt.tasks.get(task_id)["status"] == TaskStatus.done.value
         dry = [call for call in validators.calls if call["context"].get(VALIDATOR_CONTEXT_DRY_RUN) is True]
         assert [call["name"] for call in dry] == ["plan_sanity", "no_deletions", "spend_guard"]
+        assert {call["project_id"] for call in validators.calls} == {13}
         assert all(call["context"][VALIDATOR_CONTEXT_DRY_RUN] is True for call in dry)
         live = [call for call in validators.calls if call not in dry]
         assert live
@@ -794,12 +795,12 @@ async def test_router_call_passes_run_task_role_and_budget(token: str) -> None:
         assert [call["agent_role"] for call in router.seen_calls] == [
             AgentRole.planner.value,
             AgentRole.critic.value,
-            AgentRole.executor.value,
         ]
         for call in router.seen_calls:
-            assert call["run_id"] == f"run-{task_id}"
+            assert call["run_id"] == f"orch-task-{task_id}"
             assert call["task_id"] == str(task_id)
             assert call["budget_scope"] == BudgetScope.internal.value
+        assert AgentRole.executor.value not in [call["agent_role"] for call in router.seen_calls]
         assert [call["name"] for call in actions.calls] == ["noop"]
     finally:
         set_runtime(None)

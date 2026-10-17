@@ -10,7 +10,13 @@ from app.orchestrator.db.migrations import connect, utc_now
 
 
 class TaskStore:
-    def insert(self, session_id: str, goal: str, status: str) -> int:
+    def insert(
+        self,
+        session_id: str,
+        goal: str,
+        status: str,
+        project_id: int | None = None,
+    ) -> int:
         stamp = utc_now()
         conn = connect()
         try:
@@ -20,11 +26,11 @@ class TaskStore:
                     session_id, status, goal, position,
                     spend_internal, spend_actions,
                     cancel_requested, pause_requested,
-                    created_at, updated_at
+                    project_id, created_at, updated_at
                 )
-                VALUES (?, ?, ?, 0, 0, 0, 0, 0, ?, ?)
+                VALUES (?, ?, ?, 0, 0, 0, 0, 0, ?, ?, ?)
                 """,
-                (session_id, status, goal, stamp, stamp),
+                (session_id, status, goal, project_id, stamp, stamp),
             )
             conn.commit()
             return int(cur.lastrowid or 0)
