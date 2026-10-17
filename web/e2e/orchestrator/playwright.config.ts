@@ -41,6 +41,7 @@ export default defineConfig({
       env: {
         ...process.env,
         NEXT_PUBLIC_ORCH_TASK_MODE: "1",
+        NEXT_PUBLIC_ORCH_TEST: "1",
         NEXT_PUBLIC_ORCH_API: process.env.ORCH_MOCK_URL ?? `http://127.0.0.1:${mockPort}`,
       },
     },

@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
+import { orchAuthHeaders, orchTestModeEnabled } from "../../src/lib/orchestratorApi";
 
 const SHOTS =
   process.env.ORCH_E2E_SHOTS_DIR ??
@@ -11,6 +12,39 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
+  const previous = process.env.NEXT_PUBLIC_ORCH_TEST;
+  const cfg = {
+    apiBase: "",
+    session: "studio",
+    token: "tok",
+    scenario: "kill",
+  };
+  try {
+    delete process.env.NEXT_PUBLIC_ORCH_TEST;
+    expect(orchTestModeEnabled()).toBe(false);
+    const fromQuery = orchAuthHeaders(cfg);
+    expect(fromQuery.get("X-Orch-Scenario")).toBeNull();
+    expect(fromQuery.get("Authorization")).toBe("Bearer tok");
+    const fromStorage = orchAuthHeaders({ ...cfg, scenario: "budget" });
+    expect(fromStorage.has("X-Orch-Scenario")).toBe(false);
+
+    process.env.NEXT_PUBLIC_ORCH_TEST = "0";
+    expect(orchTestModeEnabled()).toBe(false);
+    expect(orchAuthHeaders(cfg).has("X-Orch-Scenario")).toBe(false);
+
+    process.env.NEXT_PUBLIC_ORCH_TEST = "1";
+    expect(orchTestModeEnabled()).toBe(true);
+    expect(orchAuthHeaders(cfg).get("X-Orch-Scenario")).toBe("kill");
+
+    process.env.NEXT_PUBLIC_ORCH_TEST = "true";
+    expect(orchAuthHeaders({ ...cfg, scenario: "budget" }).get("X-Orch-Scenario")).toBe("budget");
+  } finally {
+    if (previous == null) delete process.env.NEXT_PUBLIC_ORCH_TEST;
+    else process.env.NEXT_PUBLIC_ORCH_TEST = previous;
+  }
+});
 
 const TOKEN = "orch-dev-token";
 const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
