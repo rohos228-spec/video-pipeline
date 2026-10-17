@@ -236,9 +236,9 @@ def _load_registry_module():
                 f"внутренний импорт реестра сломан ({name}), "
                 f"это не отсутствие модуля (exc.name={exc.name!r}): {exc}"
             )
-        except Exception as exc:
+        except ImportError as exc:
             pytest.fail(
-                f"реестр {name} не импортируется: {type(exc).__name__}: {exc}"
+                f"ошибка импорта реестра {name}: {type(exc).__name__}: {exc}"
             )
     pytest.skip(
         "Реестр Action Layer в этом дереве отсутствует "
@@ -1022,6 +1022,35 @@ def test_skip_only_when_registry_module_itself_is_missing() -> None:
         spec,
     )
     assert not _registry_module_absent(ModuleNotFoundError(), spec)
+
+
+def test_missing_registry_module_skips(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing(name: str):
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    monkeypatch.setattr(importlib, "import_module", missing)
+    with pytest.raises(pytest.skip.Exception, match="Реестр Action Layer в этом дереве отсутствует"):
+        _load_registry_module()
+
+
+def test_other_import_error_fails_not_skips(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(name: str):
+        if name == "app.orchestrator.actions":
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        raise ImportError(f"cannot import {name}")
+
+    monkeypatch.setattr(importlib, "import_module", broken)
+    with pytest.raises(pytest.fail.Exception, match="ошибка импорта реестра"):
+        _load_registry_module()
+
+
+def test_inner_missing_dependency_fails_not_skips(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(name: str):
+        raise ModuleNotFoundError("No module named 'sqlalchemy'", name="sqlalchemy")
+
+    monkeypatch.setattr(importlib, "import_module", broken)
+    with pytest.raises(pytest.fail.Exception, match="exc.name='sqlalchemy'"):
+        _load_registry_module()
 
 
 def test_exec_detector_flags_specific_calls() -> None:
