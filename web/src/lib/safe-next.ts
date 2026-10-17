@@ -34,5 +34,8 @@ export function safeAuthNext(raw: string | null | undefined, fallback = "/profil
     return fallback;
   }
   if (url.origin !== origin) return fallback;
-  return `${url.pathname}${url.search}${url.hash}`;
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  // Точки и %2e уже схлопнуты: `/.//host` становится `//host` (чужой хост).
+  if (next.startsWith("//") || next.startsWith("/\\")) return fallback;
+  return next;
 }
