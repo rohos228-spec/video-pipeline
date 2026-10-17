@@ -136,6 +136,8 @@ class EditResult(BaseModel):
     diff: Diff
     open_url: str = Field(min_length=1)
     reversible: bool
+    skipped: list[str] = Field(default_factory=list)
+    partial: bool = False
 
     @field_validator("change_id")
     @classmethod
@@ -153,6 +155,8 @@ class EditResult(BaseModel):
     def _before_or_snapshot(self) -> EditResult:
         if self.before is None and not self.snapshot_id:
             raise ValueError("нужен before или snapshot_id")
+        if self.partial and not self.skipped:
+            raise ValueError("partial требует список skipped")
         return self
 
 
@@ -205,6 +209,8 @@ class SoftDeleteResult(BaseModel):
     restore_action: str = Field(min_length=1)
     snapshot_id: str | None = None
     archive_ref: str | None = None
+    skipped: list[str] = Field(default_factory=list)
+    partial: bool = False
 
     @field_validator("change_id")
     @classmethod
@@ -224,6 +230,8 @@ class SoftDeleteResult(BaseModel):
             raise ValueError("restore_action не восстанавливает этот kind")
         if self.restore_action not in metadata_registry():
             raise ValueError("restore_action вне реестра")
+        if self.partial and not self.skipped:
+            raise ValueError("partial требует список skipped")
         return self
 
 
@@ -235,6 +243,7 @@ class ActionResult(BaseModel):
     status: ActionStatusName
     result: EditResult | ReportResult | ApprovalRequired | SoftDeleteResult | None = None
     error: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _pair(self) -> ActionResult:

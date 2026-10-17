@@ -26,7 +26,7 @@ _SCHEMA = _REPO / "docs" / "fable" / "action_results_contract.schema.json"
 
 # sha256 канонического экспорта закреплён за CONTRACT_VERSION.
 _SCHEMA_SHA256 = {
-    "ws2-r2.0": "7973fdea41ecdb4b4a04bc8c094e3d79e288f45be2590d8829ef298e66ee7bd8",
+    "ws2-r2.0": "2bded3e1eb0447d8a05840209273dd2d1476265438270d3bc7cc2e59b639a3ab",
 }
 
 
@@ -159,6 +159,47 @@ def _edit_payload(**extra: object) -> dict:
     }
     payload.update(extra)
     return payload
+
+
+def test_action_result_has_warnings_list() -> None:
+    quiet = ActionResult(status="failed", result=None, error="сбой")
+    assert quiet.warnings == []
+    loud = ActionResult(
+        status="failed",
+        result=None,
+        error="сбой",
+        warnings=["shot 2 пропущен"],
+    )
+    assert loud.warnings == ["shot 2 пропущен"]
+
+
+def test_partial_edit_lists_skipped_items() -> None:
+    edited = EditResult.model_validate(
+        _edit_payload(before={"a": 1}, partial=True, skipped=["shot-2"])
+    )
+    assert edited.partial is True
+    assert edited.skipped == ["shot-2"]
+    with pytest.raises(ValidationError):
+        EditResult.model_validate(_edit_payload(before={"a": 1}, partial=True, skipped=[]))
+    deleted = SoftDeleteResult(
+        change_id="orch-appr-1-1",
+        action="montage.delete_frame",
+        marked=True,
+        restore_action="frame.restore",
+        snapshot_id="snap-1",
+        partial=True,
+        skipped=["frame-9"],
+    )
+    assert deleted.skipped == ["frame-9"]
+    with pytest.raises(ValidationError):
+        SoftDeleteResult(
+            change_id="orch-appr-1-1",
+            action="montage.delete_frame",
+            marked=True,
+            restore_action="frame.restore",
+            snapshot_id="snap-1",
+            partial=True,
+        )
 
 
 def test_edit_result_has_required_version() -> None:
