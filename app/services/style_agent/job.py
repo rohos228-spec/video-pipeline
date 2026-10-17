@@ -598,7 +598,7 @@ def _pipeline_text_override(model: dict[str, Any] | None) -> Any:
 async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str, Any]) -> None:
     from app.models import Project
     from app.project_db import project_db_session_scope
-    from app.services.llm_override import NodeLlmOverride, use_override
+    from app.services.llm_override import use_override
     from app.services.step_cancel import clear_stop, is_stop_requested
 
     async with project_db_session_scope(project_id) as session:
@@ -652,14 +652,8 @@ async def _run_job(project_id: int, *, node_key: str | None, overrides: dict[str
             logger.debug("style_agent: progress not saved: {}", exc)
 
     ov = _pipeline_text_override(model)
-    if ov is None and model and model.get("kind") == "text":
-        ov = NodeLlmOverride(
-            model_id=str(model["id"]),
-            channel=str(model.get("channel") or "stable"),
-            kind="text",
-            provider=str(model.get("provider") or "vibecode"),
-            label=str(model.get("label") or model["id"]),
-        )
+    if ov is None:
+        raise RuntimeError("нет маршрута 52pay для разбора стиля")
     try:
         if not videos:
             raise RuntimeError("нет роликов: загрузите mp4 в ноду или подключите «Файлы»")
