@@ -19,6 +19,7 @@ import {
   AGENT_LABEL,
   groupPlanSteps,
   isNodeResultAction,
+  isTerminalBlock,
   TASK_STATUS_LABEL,
   type ApprovalView,
   type PlanStepView,
@@ -38,6 +39,45 @@ const KILL_HONEST =
 
 /** Старое имя причины, пока WS3 дописывает замену на critic_escalation. */
 const REVISE_LIMIT = "revise_limit";
+const MISSING_PROJECT = "missing_project_id" satisfies ApprovalReason;
+
+const BLOCK_COPY: Record<string, { title: string; body: string; testId?: string }> = {
+  [BUDGET_EXHAUSTED]: {
+    title: "Бюджет исчерпан",
+    body: "Лимит прогона выбран. Задача ждёт подтверждения, новые платные шаги не стартуют.",
+    testId: "orch-budget",
+  },
+  [CRITIC_ESCALATION]: {
+    title: "Критик не одобрил план после 2 правок",
+    body: "Две правки не помогли. Задача ждёт решения, план сам не продолжится.",
+    testId: "orch-critic",
+  },
+  [REVISE_LIMIT]: {
+    title: "Критик не одобрил план после 2 правок",
+    body: "Две правки не помогли. Задача ждёт решения, план сам не продолжится.",
+    testId: "orch-critic",
+  },
+  [MISSING_PROJECT]: {
+    title: "Не выбран проект: план содержит платный или изменяющий шаг",
+    body: "Задача ждёт подтверждения. Платный или изменяющий шаг без проекта не стартует.",
+    testId: "orch-missing-project",
+  },
+  deletion_blocked: {
+    title: "Удаление запрещено",
+    body: "Шаг удаляет кадр или сцену. Одобрить нельзя, задача остановлена.",
+    testId: "orch-deletion",
+  },
+  missing_run_id: {
+    title: "Нет идентификатора прогона",
+    body: "Платный шаг нельзя начать без run_id. Задача остановлена.",
+    testId: "orch-missing-run",
+  },
+  empty_plan: {
+    title: "План пустой",
+    body: "В чекпоинте нет шагов. Продолжать нечего, задача остановлена.",
+    testId: "orch-empty-plan",
+  },
+};
 
 function killBannerText(notice: { text: string; paidBoundary: boolean }): string {
   if (!notice.paidBoundary) return notice.text;
@@ -205,6 +245,7 @@ export function OrchestratorWorkspace() {
                   error={chat.decisionError?.id === approval.id ? chat.decisionError.message : ""}
                   onApprove={() => void chat.decide(approval.id, approval.taskId, "approved")}
                   onReject={() => void chat.decide(approval.id, approval.taskId, "rejected")}
+                  onClose={() => chat.dismissBlock(approval.id)}
                 />
               ))}
             </div>
@@ -540,45 +581,51 @@ function ApprovalCard({
   error,
   onApprove,
   onReject,
+  onClose,
 }: {
   approval: ApprovalView;
   pending: boolean;
   error: string;
   onApprove: () => void;
   onReject: () => void;
+  onClose: () => void;
 }) {
-  const budget = approval.reason === BUDGET_EXHAUSTED;
-  const critic = approval.reason === CRITIC_ESCALATION || approval.reason === REVISE_LIMIT;
+  const copy = BLOCK_COPY[approval.reason];
+  const terminal = isTerminalBlock(approval.reason);
+  const title = copy?.title || approval.title || "Нужно подтверждение";
+  const body = copy?.body || approval.reason || approval.title;
   return (
     <div
       data-testid="orch-approval"
-      className="mb-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-3"
+      data-terminal={terminal ? "true" : "false"}
+      className={`mb-3 rounded-xl border px-3 py-3 ${
+        terminal ? "border-destructive/40 bg-destructive/10" : "border-warning/40 bg-warning/10"
+      }`}
     >
-      <div
-        className="text-xs font-semibold text-white"
-        data-testid={budget ? "orch-budget" : critic ? "orch-critic" : undefined}
-      >
-        {critic ? "Критик не одобрил план после 2 правок" : budget ? "Бюджет исчерпан" : approval.title}
+      <div className="text-xs font-semibold text-white" data-testid={copy?.testId}>
+        {title}
       </div>
-      <p className="mt-1 text-[11px] leading-relaxed text-white/70">
-        {critic
-          ? "Две правки не помогли. Задача ждёт решения, план сам не продолжится."
-          : budget
-            ? "Лимит прогона выбран. Задача ждёт подтверждения, новые платные шаги не стартуют."
-            : approval.reason}
-      </p>
+      {body ? <p className="mt-1 text-[11px] leading-relaxed text-white/70">{body}</p> : null}
       <div className="mt-1 text-[10px] uppercase tracking-wide text-white/40">
         {approval.action}
         {approval.risk ? ` · ${approval.risk}` : ""}
         {approval.costEstimate != null ? ` · ~$${approval.costEstimate}` : ""}
       </div>
       <div className="mt-2 flex gap-2">
-        <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
-          Approve
-        </Button>
-        <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
-          Reject
-        </Button>
+        {terminal ? (
+          <Button type="button" size="sm" variant="outline" data-testid="orch-block-close" onClick={onClose}>
+            Закрыть
+          </Button>
+        ) : (
+          <>
+            <Button type="button" size="sm" data-testid="orch-approve" disabled={pending} onClick={onApprove}>
+              Approve
+            </Button>
+            <Button type="button" size="sm" variant="outline" data-testid="orch-reject" disabled={pending} onClick={onReject}>
+              Reject
+            </Button>
+          </>
+        )}
       </div>
       {error ? (
         <p data-testid="orch-approval-error" className="mt-2 text-[11px] text-destructive">

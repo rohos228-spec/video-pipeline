@@ -739,7 +739,76 @@ function startScenario(session, scenario, text, mode) {
     emit(session, "ack", id, ackPayload(session));
     return;
   }
+  if (scenario === "missingproject") {
+    void runMissingProject(session, id);
+    return;
+  }
+  if (scenario === "deletion") {
+    void runTerminalBlock(session, id, "deletion_blocked");
+    return;
+  }
+  if (scenario === "emptyplan") {
+    void runTerminalBlock(session, id, "empty_plan");
+    return;
+  }
+  if (scenario === "unknownreason") {
+    void runUnknownReason(session, id);
+    return;
+  }
   void runStream(session, id);
+}
+
+async function runMissingProject(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", "нет проекта"));
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "waiting_approval",
+    task_status: "waiting_approval",
+    title: "Платный шаг",
+    detail: "missing_project_id",
+  });
+  emit(session, "approval_required", taskId, {
+    approval_id: "ap-missing-project",
+    title: "Запустить run_node",
+    reason: "missing_project_id",
+    risk: "high",
+    action: "run_node",
+  });
+}
+
+async function runTerminalBlock(session, taskId, reason) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "classification", taskId, classPayload("append", reason));
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "failed",
+    task_status: "failed",
+    title: reason,
+    detail: reason,
+  });
+  emit(session, "task_failed", taskId, { error: reason });
+}
+
+async function runUnknownReason(session, taskId) {
+  emit(session, "ack", taskId, ackPayload(session));
+  await sleep(20);
+  emit(session, "agent_status", taskId, {
+    agent: "supervisor",
+    status: "waiting_approval",
+    task_status: "waiting_approval",
+    title: "Чужая причина",
+    detail: "plan_sanity",
+  });
+  emit(session, "approval_required", taskId, {
+    approval_id: "ap-unknown",
+    title: "Проверьте план",
+    reason: "plan_sanity",
+    risk: "low",
+    action: "note",
+  });
 }
 
 function handleKill(session) {

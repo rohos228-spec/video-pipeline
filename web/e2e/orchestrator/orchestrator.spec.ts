@@ -15,23 +15,24 @@ async function saveShot(page: Page, name: string) {
 const TOKEN = "orch-dev-token";
 const MOCK = process.env.ORCH_MOCK_URL ?? "http://127.0.0.1:8799";
 
-function orchUrl(scenario: string, session = "studio"): string {
+function orchUrl(scenario: string, session = "studio", project?: number): string {
   const q = new URLSearchParams({
     orchApi: MOCK,
     scenario,
     session,
   });
+  if (project != null) q.set("project", String(project));
   return `/orchestrator?${q.toString()}`;
 }
 
-async function openWithToken(page: Page, scenario: string, session = "studio") {
+async function openWithToken(page: Page, scenario: string, session = "studio", project?: number) {
   await page.addInitScript(
     ([token]) => {
       localStorage.setItem("vp-orch-api-token", token);
     },
     [TOKEN],
   );
-  await page.goto(orchUrl(scenario, session));
+  await page.goto(orchUrl(scenario, session, project));
   await expect(page.getByTestId("orch-composer")).toBeVisible();
 }
 
@@ -243,5 +244,78 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-token-submit").click();
     await expect(page.getByTestId("orch-composer")).toBeVisible();
     await expect(page.getByTestId("orch-token-gate")).toHaveCount(0);
+  });
+
+  test("project_id уходит в MessageIn, если проект выбран", async ({ page }) => {
+    await openWithToken(page, "idle", "project-id", 13);
+    const posted = page.waitForRequest(
+      (req) => req.method() === "POST" && req.url().includes("/message"),
+    );
+    await page.getByTestId("orch-composer").fill("кадр в проекте");
+    await page.getByTestId("orch-send").click();
+    const body = (await posted).postDataJSON() as { text?: string; project_id?: number };
+    expect(body.text).toBe("кадр в проекте");
+    expect(body.project_id).toBe(13);
+  });
+
+  test("без проекта поле project_id не уходит", async ({ page }) => {
+    await openWithToken(page, "idle", "no-project");
+    const posted = page.waitForRequest(
+      (req) => req.method() === "POST" && req.url().includes("/message"),
+    );
+    await page.getByTestId("orch-composer").fill("кадр без проекта");
+    await page.getByTestId("orch-send").click();
+    const body = (await posted).postDataJSON() as Record<string, unknown>;
+    expect(body).not.toHaveProperty("project_id");
+  });
+
+  test("missing_project_id: карточка и кнопки approval", async ({ page }) => {
+    await openWithToken(page, "missingproject", "missing-project");
+    await page.getByTestId("orch-composer").fill("платный шаг");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-missing-project")).toContainText(
+      "Не выбран проект: план содержит платный или изменяющий шаг",
+    );
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await expect(page.getByTestId("orch-reject")).toBeVisible();
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+  });
+
+  test("deletion_blocked: нет кнопки одобрить и grant не уходит", async ({ page }) => {
+    const grants: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && /\/approvals\/.+\/(approve|reject)/.test(req.url())) {
+        grants.push(req.url());
+      }
+    });
+    await openWithToken(page, "deletion", "deletion-1");
+    await page.getByTestId("orch-composer").fill("удали кадр");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-deletion")).toContainText("Удаление запрещено");
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+    await page.getByTestId("orch-block-close").click();
+    await expect(page.getByTestId("orch-approval")).toHaveCount(0);
+    expect(grants).toEqual([]);
+  });
+
+  test("empty_plan: задача failed и понятный текст", async ({ page }) => {
+    await openWithToken(page, "emptyplan", "empty-plan");
+    await page.getByTestId("orch-composer").fill("продолжи");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-empty-plan")).toContainText("План пустой");
+    await expect(page.getByTestId("orch-approval")).toContainText("В чекпоинте нет шагов");
+    await expect(page.getByTestId("orch-approve")).toHaveCount(0);
+    await expect(page.getByTestId("orch-task-status")).toContainText("ошибка");
+  });
+
+  test("неизвестная причина: нейтральная карточка с кнопками", async ({ page }) => {
+    await openWithToken(page, "unknownreason", "unknown-1");
+    await page.getByTestId("orch-composer").fill("проверь");
+    await page.getByTestId("orch-send").click();
+    await expect(page.getByTestId("orch-approval")).toContainText("Проверьте план");
+    await expect(page.getByTestId("orch-approval")).toContainText("plan_sanity");
+    await expect(page.getByTestId("orch-approve")).toBeVisible();
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
   });
 });

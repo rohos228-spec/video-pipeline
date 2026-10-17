@@ -5,6 +5,7 @@
 
 import {
   AGENT_ROLES,
+  BLOCK_OUTCOMES,
   type AgentRole,
   type AgentStatusPayload,
   type ApprovalPayload,
@@ -166,7 +167,7 @@ export interface ApprovalView {
   risk: string;
   action: string;
   costEstimate: number | null;
-  resolved: "approved" | "rejected" | null;
+  resolved: "approved" | "rejected" | "closed" | null;
 }
 
 export interface TaskView {
@@ -215,7 +216,7 @@ export type OrchScreenAction =
   | { type: "event"; event: OrchEvent }
   | { type: "user-message"; id: string; text: string; taskId: string | null }
   | { type: "kill-notice"; detail: string; paidBoundary: boolean }
-  | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" }
+  | { type: "approval-resolved"; id: string; decision: "approved" | "rejected" | "closed" }
   | { type: "reset" };
 
 const IDLE_AGENTS: AgentView[] = AGENT_ROLES.map((role) => ({
@@ -271,6 +272,21 @@ function asTaskStatus(value: string): TaskStatus | null {
   return (TASK_STATUSES as readonly string[]).includes(value) ? (value as TaskStatus) : null;
 }
 
+const TERMINAL_TASK = new Set<TaskStatus>(["done", "failed", "cancelled"]);
+
+/** Исход из BLOCK_OUTCOMES. Причины нет в таблице — null, UI не падает и не ставит failed сам. */
+export function blockOutcome(reason: string): TaskStatus | null {
+  if (Object.prototype.hasOwnProperty.call(BLOCK_OUTCOMES, reason)) {
+    return BLOCK_OUTCOMES[reason as keyof typeof BLOCK_OUTCOMES];
+  }
+  return null;
+}
+
+export function isTerminalBlock(reason: string): boolean {
+  const outcome = blockOutcome(reason);
+  return outcome != null && TERMINAL_TASK.has(outcome);
+}
+
 function taskKey(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "string" && value) return value;
@@ -300,7 +316,11 @@ function absorbLlmSignal(state: OrchScreenState, taskId: string | null, payload:
       resolved: null,
     });
   }
-  if (taskId && (status === "waiting_approval" || reason === "budget_exhausted")) {
+  if (taskId && isTerminalBlock(reason)) {
+    const task = ensureTask(state.tasks, taskId);
+    task.status = blockOutcome(reason) ?? "failed";
+    task.error = reason;
+  } else if (taskId && (status === "waiting_approval" || blockOutcome(reason) === "waiting_approval" || reason === "budget_exhausted")) {
     ensureTask(state.tasks, taskId).status = "waiting_approval";
   }
 }
@@ -522,7 +542,13 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
     }
     if (taskId) {
       const task = ensureTask(next.tasks, taskId);
-      task.status = "waiting_approval";
+      const reason = str(body.reason);
+      if (isTerminalBlock(reason)) {
+        task.status = blockOutcome(reason) ?? "failed";
+        task.error = reason;
+      } else {
+        task.status = "waiting_approval";
+      }
     }
     return next;
   }
@@ -537,7 +563,20 @@ export function reduceOrchScreen(state: OrchScreenState, action: OrchScreenActio
   if (event.type === "task_failed" && taskId) {
     const task = ensureTask(next.tasks, taskId);
     task.status = "failed";
-    task.error = str(payload.error, str(payload.summary, "задача упала"));
+    const error = str(payload.error, str(payload.summary, "задача упала"));
+    task.error = error;
+    if (isTerminalBlock(error) && !next.approvals.some((item) => item.id === `block-${event.seq}`)) {
+      next.approvals.push({
+        id: `block-${event.seq}`,
+        taskId,
+        title: "",
+        reason: error,
+        risk: "",
+        action: "",
+        costEstimate: null,
+        resolved: null,
+      });
+    }
     return next;
   }
 

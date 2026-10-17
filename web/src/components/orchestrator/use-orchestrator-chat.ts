@@ -9,6 +9,7 @@ import {
   postOrchApprove,
   postOrchKill,
   postOrchMessage,
+  readOrchProjectId,
   postOrchReject,
   probeOrchAuth,
   readOrchBoot,
@@ -169,8 +170,14 @@ export function useOrchestratorChat() {
       setAckMs(null);
       setPending(true);
       const asTask = orchTaskModeEnabled() && mode === "task";
+      const projectId = readOrchProjectId();
+      const body = {
+        text: trimmed,
+        ...(asTask ? { mode: "task" as const } : {}),
+        ...(projectId != null ? { project_id: projectId } : {}),
+      };
       try {
-        await postOrchMessage(cfg, asTask ? { text: trimmed, mode: "task" } : { text: trimmed });
+        await postOrchMessage(cfg, body);
         setSendError("");
       } catch (error) {
         if (!noteAuth(error)) {
@@ -210,6 +217,10 @@ export function useOrchestratorChat() {
     [cfg, noteAuth],
   );
 
+  const dismissBlock = useCallback((approvalId: string) => {
+    dispatch({ type: "approval-resolved", id: approvalId, decision: "closed" });
+  }, []);
+
   const kill = useCallback(async () => {
     try {
       const result = await postOrchKill(cfg, {
@@ -245,6 +256,7 @@ export function useOrchestratorChat() {
     submitToken,
     sendMessage,
     decide,
+    dismissBlock,
     kill,
   };
 }

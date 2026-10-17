@@ -8,13 +8,13 @@
 Источник — ``export_contract_schemas()`` (WS3). Файл контракта в эту ветку
 не копируется. ``--ref`` — только ``origin/*``, SHA (7–40 hex) или
 существующий тег. Голое имя ветки отклоняется. По умолчанию, если
-локального файла нет, берётся SHA ``19e803df575bd05e88fa4ca3b8475352428e8708``
-(#350, контракт ws3-r3.1), не имя ветки.
+локального файла нет, берётся SHA ``288d23111058f753fc4d70a711ee9c3d2fe27dcc``
+(#350, контракт ws3-r3.2), не имя ветки.
 Локальный ``contracts.py`` используется, только когда ``--ref`` не передан.
 
 Запуск из корня репо:
   python web/scripts/gen_orch_types.py
-  python web/scripts/gen_orch_types.py --ref 19e803df575bd05e88fa4ca3b8475352428e8708
+  python web/scripts/gen_orch_types.py --ref 288d23111058f753fc4d70a711ee9c3d2fe27dcc
   python web/scripts/gen_orch_types.py --stdout
   python web/scripts/gen_orch_types.py --self-test
 """
@@ -34,7 +34,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 LOCAL_CONTRACTS = ROOT / "app" / "orchestrator" / "contracts.py"
 OUT = ROOT / "web" / "src" / "lib" / "orchestratorTypes.ts"
-DEFAULT_CONTRACT_REF = "19e803df575bd05e88fa4ca3b8475352428e8708"
+DEFAULT_CONTRACT_REF = "288d23111058f753fc4d70a711ee9c3d2fe27dcc"
 CONTRACT_GIT_PATH = "app/orchestrator/contracts.py"
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
@@ -161,16 +161,19 @@ export interface ClassificationPayload {
 
 /**
  * POST /api/orchestrator/chat/{session}/message.
- * MessageIn (#350 @ 19e803df): ``text`` и ``mode: MessageMode | None``.
+ * MessageIn (#350 @ 288d2311): ``text``, ``mode: MessageMode | None``,
+ * ``project_id: int | None``.
  * Допустимые mode: interrupt | steer | append | task. Иное значение — 422.
  * Клиент шлёт ``mode`` только при включённом NEXT_PUBLIC_ORCH_TASK_MODE
- * и только строкой из MessageMode (сейчас ``"task"``). Иначе поле не уходит,
- * сервер читает его как None.
+ * и только строкой из MessageMode (сейчас ``"task"``). Иначе поле не уходит.
+ * ``project_id`` уходит только если выбран проект (> 0). Иначе поля нет.
  */
 export interface OrchOutboundMessage {
   text: string;
   /** MessageMode | None. Нет поля — то же, что null. */
   mode?: MessageMode;
+  /** Проект студии. Нет поля — то же, что null. Ноль не шлём. */
+  project_id?: number;
 }
 
 /** Ответ post_message: ack уходит в шину, HTTP его не ждёт. */
@@ -308,6 +311,26 @@ def _render_fsm(fsm: dict[str, list[str]]) -> list[str]:
     return lines
 
 
+def _render_rules(rules: dict[str, Any]) -> list[str]:
+    outcomes = rules.get("block_outcomes")
+    if not isinstance(outcomes, dict) or not outcomes:
+        return []
+    lines = [
+        "/** Причина блокировки → статус задачи. Нет ключа — не исход UI, карточка нейтральная. */",
+        "export const BLOCK_OUTCOMES = {",
+    ]
+    for reason, status in outcomes.items():
+        lines.append(f"  {json.dumps(str(reason), ensure_ascii=False)}: {json.dumps(str(status), ensure_ascii=False)},")
+    lines.append("} as const;")
+    lines.append("")
+    lines.append("export type BlockReason = keyof typeof BLOCK_OUTCOMES;")
+    lines.append("")
+    default = str(rules.get("default_block_outcome") or "failed")
+    lines.append(f"export const DEFAULT_BLOCK_OUTCOME = {json.dumps(default, ensure_ascii=False)} as const;")
+    lines.append("")
+    return lines
+
+
 def render_schema(schema: dict[str, Any], source_label: str) -> str:
     version = str(schema.get("version") or "")
     lines = [
@@ -326,6 +349,7 @@ def render_schema(schema: dict[str, Any], source_label: str) -> str:
     lines.extend(_render_models(schema.get("models") or {}))
     lines.extend(_render_tables(schema.get("tables") or []))
     lines.extend(_render_fsm(schema.get("fsm") or {}))
+    lines.extend(_render_rules(schema.get("rules") or {}))
     lines.append(UI_TAIL.strip())
     lines.append("")
     return "\n".join(lines)
@@ -450,7 +474,13 @@ def _self_test() -> int:
         "reason?: string;",
         "export interface OrchEvent",
         "session_id?: string;",
-        "export const ORCH_CONTRACT_VERSION = \"ws3-r3.1\"",
+        "export const ORCH_CONTRACT_VERSION = \"ws3-r3.2\"",
+        '"missing_project_id"',
+        "export const BLOCK_OUTCOMES",
+        '"deletion_blocked"',
+        '"empty_plan"',
+        '"missing_run_id"',
+        "project_id?: number;",
         "kill_switch?: boolean;",
         "parallel_group?: string | null;",
         "estimated_cost?: number;",
@@ -497,7 +527,7 @@ def main() -> int:
     parser.add_argument(
         "--ref",
         default=None,
-        help="git ref: origin/*, SHA или тег. Без флага — локальный файл или SHA 19e803df575bd05e88fa4ca3b8475352428e8708",
+        help="git ref: origin/*, SHA или тег. Без флага — локальный файл или SHA 288d23111058f753fc4d70a711ee9c3d2fe27dcc",
     )
     args = parser.parse_args()
     if args.self_test:
