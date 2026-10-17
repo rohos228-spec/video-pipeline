@@ -47,25 +47,36 @@ router.call_batch([{"tier", "messages", ...}, ...]) -> [LLMResponse]
 | `model` | str |
 | `provider` | `52pay` \| `kie` |
 | `tier` | фактический fast\|strong (после D6) |
-| `finish_reason` | str. `escalation`, если вызов не делали из‑за бюджета |
+| `finish_reason` | str, как вернула модель. Пустой, если модель не звали |
 | `usage` | `{prompt_tokens, completion_tokens, reasoning_tokens}` |
 | `cost_usd` | float |
 | `latency_ms` | int |
 | `fallback_index` | int, 0 = основная модель |
 | `deterministic` | bool, tier выбрали правила |
 | `fixture_key` | str \| None |
-| `escalation` | **расширение** \| None. См. ниже |
+| `task_status` | `waiting_approval` или None. Имя из `TaskStatus` (WS3) |
+| `approval` | `ApprovalEvent` или None. См. ниже |
 
-`escalation`: `{reason, spent_usd, budget_usd, run_id, approval_needed}`.
-В согласованном черновике поля нет. Оно нужно, чтобы WS3 увидел D4
-(исчерпание $10 → approval), не разбирая текст. Просьба к WS3: добавить
-в `contracts.py` как optional, не ломая остальные поля.
+Исчерпание суб-бюджета $10 **не бросает** исключение и **не** заводит
+отдельный статус задачи. Супервизор WS3 переводит задачу в
+`TaskStatus.waiting_approval` (`"waiting_approval"`). Причина лежит на
+`ApprovalEvent`, поля как в `contracts.py` WS3:
 
-Исчерпание бюджета **не бросает** исключение. Ответ с уже посчитанной
-стоимостью возвращается вместе с `escalation`. Следующий internal-вызов
-того же `run_id` не идёт в модель: `finish_reason=escalation`, `text=""`.
-В стоке у такого отказа `status=error`, `error=internal_budget_exhausted`
-— в согласованном enum нет `escalated`. Это не fail задачи.
+| поле | значение при бюджете |
+|---|---|
+| `task_id` | int или None (нечисловой id уходит в `payload.task_ref`) |
+| `action` | `""` |
+| `reason` | `"budget_exhausted"` |
+| `risk` | `""` |
+| `change_id` | None |
+| `payload` | `spent_usd`, `budget_usd`, `run_id` |
+
+Ход, который пересёк лимит, возвращает текст модели и `finish_reason`
+модели, плюс `task_status="waiting_approval"` и этот `ApprovalEvent`.
+В `orch_llm_calls` у него `status=ok`. Следующий internal-вызов того же
+`run_id` в модель не идёт: `text=""`, тот же `task_status` и
+`ApprovalEvent`. Строку вызова не пишем — попытки провайдера не было,
+а в `LLMCallStatus` нет отдельного значения (`ok|timeout|error|fixture_miss`).
 
 `budget_scope=pipeline` в суб-бюджет $10 не входит.
 
@@ -194,7 +205,7 @@ CREATE INDEX ix_orch_llm_calls_fixture ON orch_llm_calls (fixture_key);
 | `fallback_index` | 0 = основная модель цепочки |
 | `attempt` | 1..3 (первый вызов + 2 ретрая) |
 | `status` | `ok`, `timeout`, `error`, `fixture_miss` |
-| `error` | NULL при ok. Бюджет: `internal_budget_exhausted`. Промах: `fixture-miss` |
+| `error` | NULL при ok. Промах фикстуры: `fixture-miss`. Бюджет сюда не пишется |
 | `deterministic_flag` | 1, если tier выбрали правила, а не классификатор |
 | `classifier_confidence` | NULL, если классификатор не участвовал |
 | `latency_ms` | длительность попытки |
@@ -221,8 +232,8 @@ Env `ORCH_D1_CONFIRMED` / `ORCH_D6_CONFIRMED` перекрывают файл.
 
 | | D выключен (дефолт) | D включен |
 |---|---|---|
-| strong | `gpt-5.6-sol` 52pay high → `gpt-5.6-sol` kie high | `claude-fable-5` 52pay high → `gpt-5.6-sol` 52pay high → kie |
-| fast | не используется, запрос уходит в strong | `glm-5.3-flash` → `claude-haiku` → strong. effort пустой |
+| strong | `gpt-5.6-sol` 52pay high → Kie `gpt-5-6-sol` high, stream | `claude-fable-5` 52pay high → `gpt-5.6-sol` 52pay high → Kie stream |
+| fast | не используется, запрос уходит в strong | `glm-5.3-flash` → `claude-haiku-4-5` → strong. effort пустой |
 
 Таймаут 60 с на fast-хоп, 300 с на strong-хоп. 2 ретрая, пауза
 `backoff_base_s * 2^(attempt-1)` (1 с, затем 2 с), потом следующий хоп.
@@ -231,8 +242,17 @@ Env `ORCH_D1_CONFIRMED` / `ORCH_D6_CONFIRMED` перекрывают файл.
 Батч всегда параллельный. Зазор между стартами — одно число из [2, 5] секунд
 на весь батч (`i * gap` от общего t0).
 
-Live: 52pay `PAY52_GPT_API_KEY` + `PAY52_BASE_URL`, `POST /v1/chat/completions`.
-Kie: `GPT_API_KEY` (иначе `KIE_API_KEY`), `GPT_BASE_URL` или `https://api.kie.ai`,
+Live, 52pay: URL, ключ и wire-модель берёт `app.services.pay52_routes.resolve_text`
+(карту не копируем). База — `settings.pay52_base_url` / `PAY52_BASE_URL`,
+дефолт `https://api.52pay.com/v1`. `gpt-5-6-sol` → `gpt-5.6-sol`, ключ
+`pay52_gpt_api_key`. Пока модуля нет в дереве, хоп не падает: база из settings
+или env, ключ `PAY52_GPT_API_KEY`. `resolve_text` вернул None (пустой ключ
+или неизвестная модель) — хоп пропускается, POST нет.
+
+Kie — последний резерв. Слаг только `settings.gpt_model` / `GPT_MODEL`
+(дефолт `gpt-5-6-sol`), не каталожный id с точками. Хоп всегда со
+`stream=true`: длинный нестриминговый reasoning на Kie часто отвечает 524.
+`GPT_API_KEY` (иначе `KIE_API_KEY`), `GPT_BASE_URL` или `https://api.kie.ai`,
 `POST /codex/v1/responses`, заголовок `X-VP-Relay-Token` если задан `GPT_RELAY_TOKEN`.
 
 Цены в yaml — оценки USD/1M, не прайс 52pay. `cost = (prompt*p + completion*c + reasoning*r) / 1e6`.

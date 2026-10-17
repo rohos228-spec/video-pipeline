@@ -6,6 +6,7 @@ from app.orchestrator.routing.transport import (
     parse_chat_payload,
     parse_chat_sse,
     parse_responses_payload,
+    parse_responses_sse,
 )
 
 
@@ -69,3 +70,18 @@ def test_parse_chat_sse_concatenates_deltas():
     assert result.text == "часть"
     assert result.finish_reason == "stop"
     assert result.model == "gpt-5.6-sol"
+
+
+def test_parse_responses_sse_reads_deltas():
+    raw = "\n".join(
+        [
+            'data: {"type":"response.output_text.delta","delta":"ки"}',
+            'data: {"type":"response.output_text.delta","delta":"е"}',
+            'data: {"type":"response.completed","response":{"model":"gpt-5-6-sol","status":"completed","usage":{"input_tokens":2,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":3}}}}',
+        ]
+    )
+    result = parse_responses_sse(raw)
+    assert result.text == "кие"
+    assert result.model == "gpt-5-6-sol"
+    assert result.prompt_tokens == 2
+    assert result.reasoning_tokens == 3

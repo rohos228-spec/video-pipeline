@@ -18,7 +18,8 @@ stagger_s:
   max: 5
 
 spend:
-  # D4: суб-бюджет внутренних ходов внутри $50/run. Исчерпание → эскалация.
+  # D4: суб-бюджет внутренних ходов. Исчерпание → TaskStatus.waiting_approval,
+  # ApprovalEvent.reason = budget_exhausted. Задачу это не валит.
   internal_sub_budget_usd: 10.0
 
 classifier:
@@ -27,6 +28,9 @@ classifier:
   max_tokens: 120
 
 providers:
+  # База и ключ 52pay на живом хопе берутся из pay52_routes.resolve_text
+  # и settings.pay52_base_url (PAY52_BASE_URL, дефолт https://api.52pay.com/v1).
+  # Поля ниже — запас, пока модуля pay52_routes нет в дереве.
   52pay:
     api_key_env: PAY52_GPT_API_KEY
     base_url_env: PAY52_BASE_URL
@@ -43,13 +47,15 @@ providers:
 
 # До D1: primary gpt-5.6-sol high (52pay), затем Kie.
 # После D1: claude-fable-5 → gpt-5.6-sol high → Kie.
-# Fast (только после D6): glm-5.3-flash → claude-haiku → strong. Без reasoning_effort=high.
+# Fast (только после D6): glm-5.3-flash → claude-haiku-4-5 → strong. Без reasoning_effort=high.
+# Wire-id 52pay режет resolve_text (gpt-5-6-sol → gpt-5.6-sol, ключ pay52_gpt_api_key).
+# Kie — последний резерв, всегда stream. Слаг: settings.gpt_model (дефолт gpt-5-6-sol).
 chains:
   fast:
     - model: glm-5.3-flash
       provider: 52pay
       reasoning_effort: null
-    - model: claude-haiku
+    - model: claude-haiku-4-5
       provider: 52pay
       reasoning_effort: null
     - delegate: strong
@@ -57,7 +63,7 @@ chains:
     - model: gpt-5.6-sol
       provider: 52pay
       reasoning_effort: high
-    - model: gpt-5.6-sol
+    - model: gpt-5-6-sol
       provider: kie
       reasoning_effort: high
   strong_confirmed:
@@ -67,7 +73,7 @@ chains:
     - model: gpt-5.6-sol
       provider: 52pay
       reasoning_effort: high
-    - model: gpt-5.6-sol
+    - model: gpt-5-6-sol
       provider: kie
       reasoning_effort: high
 

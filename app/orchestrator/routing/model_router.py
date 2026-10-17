@@ -43,16 +43,19 @@ from app.orchestrator.routing.transport import (
     ProviderTimeout,
 )
 from app.orchestrator.routing.types import (
+    ApprovalEvent,
     CallContext,
     Classification,
-    Escalation,
     FixtureMiss,
     LlmCallRecord,
     LLMResponse,
     LLMUsage,
     RouterError,
     RouterExhausted,
+    budget_approval,
+    waiting_approval_status,
 )
+from app.orchestrator.routing.wire import kie_model_slug
 
 _ROLES = {"supervisor", "planner", "critic", "executor", "classifier", "summarizer"}
 _SCOPES = {"internal", "pipeline"}
@@ -68,8 +71,15 @@ __all__ = [
 ]
 
 
+_PRICE_ALIAS = {
+    "gpt-5-6-sol": "gpt-5.6-sol",
+    "claude-haiku-4-5": "claude-haiku",
+    "claude-haiku-4-5-20251001": "claude-haiku",
+}
+
+
 def compute_cost(model: str, usage: LLMUsage, prices: dict) -> float:
-    price = prices.get(model) or prices.get("default")
+    price = prices.get(model) or prices.get(_PRICE_ALIAS.get(model, "")) or prices.get("default")
     if price is None:
         return 0.0
     return (
@@ -295,7 +305,7 @@ class ModelRouter:
     async def _run_chain(self, ctx: CallContext) -> LLMResponse:
         hops = self._hops(ctx)
         if self._blocked(ctx):
-            return self._escalation(ctx, hops[0], 0)
+            return self._waiting_approval(ctx, hops[0], 0)
         last_error = "chain exhausted"
         for fallback_index, hop in enumerate(hops):
             timeout_s = (
@@ -303,7 +313,7 @@ class ModelRouter:
             )
             for attempt in range(1, self.config.retries + 2):
                 if self._blocked(ctx):
-                    return self._escalation(ctx, hop, fallback_index)
+                    return self._waiting_approval(ctx, hop, fallback_index)
                 call_id = str(uuid.uuid4())
                 started = time.perf_counter()
                 try:
@@ -373,15 +383,21 @@ class ModelRouter:
     ) -> CompletionResult:
         if self.transport is None:
             self.transport = HttpxTransport(self.config.providers)
+        model = hop.model
+        stream = bool(ctx.stream)
+        if hop.provider == "kie":
+            # Последний резерв. Нестриминговый reasoning на Kie часто отвечает 524.
+            model = kie_model_slug()
+            stream = True
         request = ProviderRequest(
-            model=hop.model,
+            model=model,
             provider=hop.provider,
             messages=ctx.messages,
             temperature=ctx.temperature,
             max_tokens=ctx.max_tokens,
             reasoning_effort=hop.reasoning_effort,
             timeout_s=timeout_s,
-            stream=ctx.stream,
+            stream=stream,
             on_delta=ctx.on_delta,
         )
         return await self.transport.complete(request)
@@ -411,7 +427,7 @@ class ModelRouter:
             if cost_override is not None
             else compute_cost(model, usage, self.config.prices)
         )
-        escalation = self._charge(ctx, cost)
+        approval = self._charge(ctx, cost)
         latency = _latency_ms(started) if latency_override is None else int(latency_override)
         response = LLMResponse(
             text=result.text,
@@ -426,7 +442,8 @@ class ModelRouter:
             fallback_index=fallback_index,
             deterministic=ctx.deterministic,
             fixture_key=fixture_key_value,
-            escalation=escalation,
+            task_status=waiting_approval_status() if approval is not None else None,
+            approval=approval,
         )
         self._log(
             ctx,
@@ -444,53 +461,55 @@ class ModelRouter:
         )
         return response
 
-    def _charge(self, ctx: CallContext, cost: float) -> Escalation | None:
+    def _charge(self, ctx: CallContext, cost: float) -> ApprovalEvent | None:
         result = self.ledger.charge(ctx.run_id, cost, scope=ctx.budget_scope)
         if ctx.budget_scope != "internal" or not result.over_budget:
             return None
-        return Escalation(
-            reason="internal_budget_exhausted",
-            spent_usd=result.spent_usd,
+        return self._approval(ctx, result.spent_usd)
+
+    def _approval(self, ctx: CallContext, spent: float) -> ApprovalEvent:
+        raw = ctx.task_id
+        task_id: int | None
+        task_ref: str | None = None
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            task_id = raw
+        elif raw is not None and str(raw).strip().isdigit():
+            task_id = int(str(raw).strip())
+        else:
+            task_id = None
+            if raw is not None and str(raw).strip() != "":
+                task_ref = str(raw)
+        return budget_approval(
+            task_id=task_id,
+            spent_usd=spent,
             budget_usd=self.ledger.internal_budget_usd,
             run_id=ctx.run_id,
-            approval_needed=True,
+            task_ref=task_ref,
         )
 
-    def _escalation(self, ctx: CallContext, hop: Hop, fallback_index: int) -> LLMResponse:
-        call_id = str(uuid.uuid4())
-        escalation = Escalation(
-            reason="internal_budget_exhausted",
-            spent_usd=self.ledger.spent(ctx.run_id),
-            budget_usd=self.ledger.internal_budget_usd,
-            run_id=ctx.run_id,
-            approval_needed=True,
-        )
-        response = LLMResponse(
+    def _waiting_approval(self, ctx: CallContext, hop: Hop, fallback_index: int) -> LLMResponse:
+        """Бюджет уже исчерпан: модель не зовём, задачу не валим.
+
+        Строку ``orch_llm_calls`` не пишем — попытки провайдера не было,
+        а в enum статуса вызова нет отдельного значения. Сигнал супервизору:
+        ``task_status=waiting_approval`` и ``ApprovalEvent.reason=budget_exhausted``.
+        """
+        return LLMResponse(
             text="",
-            call_id=call_id,
+            call_id=str(uuid.uuid4()),
             model=hop.model,
             provider=hop.provider,
             tier=ctx.effective_tier,
-            finish_reason="escalation",
+            finish_reason="",
             usage=LLMUsage(),
             cost_usd=0.0,
             latency_ms=0,
             fallback_index=fallback_index,
             deterministic=ctx.deterministic,
             fixture_key=None,
-            escalation=escalation,
+            task_status=waiting_approval_status(),
+            approval=self._approval(ctx, self.ledger.spent(ctx.run_id)),
         )
-        self._log(
-            ctx,
-            hop,
-            call_id=call_id,
-            attempt=1,
-            fallback_index=fallback_index,
-            status="error",
-            error="internal_budget_exhausted",
-            latency_ms=0,
-        )
-        return response
 
     def _log(
         self,

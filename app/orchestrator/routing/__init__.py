@@ -9,8 +9,8 @@ from app.orchestrator.routing.model_router import (
 from app.orchestrator.routing.replay import ReplayRouter
 from app.orchestrator.routing.scripted import ScriptedRouter
 from app.orchestrator.routing.types import (
+    ApprovalEvent,
     Classification,
-    Escalation,
     FixtureMiss,
     LLMResponse,
     LLMUsage,
@@ -19,8 +19,8 @@ from app.orchestrator.routing.types import (
 )
 
 __all__ = [
+    "ApprovalEvent",
     "Classification",
-    "Escalation",
     "FixtureMiss",
     "LLMResponse",
     "LLMUsage",

@@ -9,6 +9,7 @@ import pytest
 
 from app.orchestrator.routing.model_router import LiveRouter, RouterExhausted
 from app.orchestrator.routing.transport import ProviderError, ProviderTimeout
+from app.orchestrator.routing.wire import kie_model_slug
 from tests.routing.fakes import FakeTransport, ok
 
 
@@ -31,7 +32,10 @@ async def test_timeout_falls_through_to_next_model(config, sleeper, sink, ledger
     assert response.provider == "kie"
     assert response.model == "gpt-5.6-sol"
     assert [c.provider for c in transport.calls] == ["52pay", "52pay", "52pay", "kie"]
-    assert [c.model for c in transport.calls] == ["gpt-5.6-sol"] * 4
+    assert [c.model for c in transport.calls[:3]] == ["gpt-5.6-sol"] * 3
+    assert transport.calls[-1].model == kie_model_slug()
+    assert transport.calls[-1].stream is True
+    assert all(c.stream is False for c in transport.calls[:-1])
     assert all(c.timeout_s == 300 for c in transport.calls)
     assert all(c.reasoning_effort == "high" for c in transport.calls)
     assert sleeper.calls == [1.0, 2.0]
@@ -55,17 +59,17 @@ async def test_timeout_falls_through_to_next_model(config, sleeper, sink, ledger
 async def test_fast_timeout_uses_60s_and_haiku(config, sleeper):
     flagged = replace(config, d6_confirmed=True)
     transport = FakeTransport(
-        [ProviderTimeout("glm")] * 3 + [ok("haiku", model="claude-haiku")]
+        [ProviderTimeout("glm")] * 3 + [ok("haiku", model="claude-haiku-4-5")]
     )
     router = LiveRouter(flagged, transport=transport, sleeper=sleeper)
     response = await router.call("fast", [{"role": "user", "content": "да"}])
-    assert response.model == "claude-haiku"
+    assert response.model == "claude-haiku-4-5"
     assert response.provider == "52pay"
     assert response.fallback_index == 1
     assert transport.calls[0].model == "glm-5.3-flash"
     assert transport.calls[0].timeout_s == 60
     assert transport.calls[0].reasoning_effort is None
-    assert transport.calls[-1].model == "claude-haiku"
+    assert transport.calls[-1].model == "claude-haiku-4-5"
     assert transport.calls[-1].timeout_s == 60
     assert sleeper.calls == [1.0, 2.0]
 

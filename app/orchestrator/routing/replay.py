@@ -37,7 +37,7 @@ class ReplayRouter(ModelRouter):
     async def _dispatch(self, ctx: CallContext):
         hop = self._hops(ctx)[0]
         if self._blocked(ctx):
-            return self._escalation(ctx, hop, 0)
+            return self._waiting_approval(ctx, hop, 0)
         fields = primary_key_fields(
             self.config,
             tier=ctx.effective_tier,

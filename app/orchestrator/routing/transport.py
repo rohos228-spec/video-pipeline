@@ -10,6 +10,12 @@ from typing import Any
 import httpx
 
 from app.orchestrator.routing.config import ProviderConfig
+from app.orchestrator.routing.wire import (
+    PAY52_MODULE_MISSING,
+    kie_model_slug,
+    pay52_base_url,
+    resolve_pay52,
+)
 
 
 class ProviderTimeout(Exception):
@@ -40,6 +46,8 @@ class ProviderRequest:
     timeout_s: float
     stream: bool = False
     on_delta: Any = None
+    url: str | None = None
+    api_key: str | None = None
 
 
 @dataclass
@@ -159,6 +167,71 @@ def parse_chat_sse(raw: str) -> CompletionResult:
     )
 
 
+def parse_responses_sse(raw: str) -> CompletionResult:
+    """Собрать текст из SSE Responses API (``response.output_text.delta``)."""
+    parts: list[str] = []
+    done_text = ""
+    model = ""
+    finish = ""
+    usage: dict[str, Any] = {}
+    completed: dict[str, Any] | None = None
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("data:"):
+            continue
+        data = stripped[len("data:") :].strip()
+        if not data or data == "[DONE]":
+            continue
+        payload = json.loads(data)
+        if not isinstance(payload, dict):
+            continue
+        etype = str(payload.get("type") or "")
+        if etype == "response.output_text.delta" and payload.get("delta"):
+            parts.append(str(payload["delta"]))
+        elif etype == "response.output_text.done":
+            text = payload.get("text")
+            if isinstance(text, str) and text.strip():
+                done_text = text
+        elif etype == "response.completed" and isinstance(payload.get("response"), dict):
+            completed = payload["response"]
+            model = str(completed.get("model") or model)
+            finish = str(completed.get("status") or "completed")
+            if isinstance(completed.get("usage"), dict):
+                usage = completed["usage"]
+    text = "".join(parts)
+    if len(done_text) > len(text):
+        text = done_text
+    parsed: CompletionResult | None = None
+    if completed is not None:
+        try:
+            parsed = parse_responses_payload(completed)
+        except ProviderError:
+            parsed = None
+    if parsed is not None and len(parsed.text) > len(text):
+        text = parsed.text
+    if parsed is not None:
+        model = parsed.model or model
+        finish = parsed.finish_reason or finish
+        if parsed.prompt_tokens or parsed.completion_tokens or parsed.reasoning_tokens:
+            usage = usage or {}
+    if not text:
+        raise ProviderError("empty responses stream", retryable=True)
+    details = usage.get("output_tokens_details") or {}
+    reasoning = parsed.reasoning_tokens if parsed is not None else _int(details.get("reasoning_tokens"))
+    prompt = parsed.prompt_tokens if parsed is not None else _int(usage.get("input_tokens"))
+    completion = (
+        parsed.completion_tokens if parsed is not None else _int(usage.get("output_tokens"))
+    )
+    return CompletionResult(
+        text=text,
+        finish_reason=finish or "completed",
+        model=model,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        reasoning_tokens=reasoning,
+    )
+
+
 def parse_responses_payload(payload: dict[str, Any]) -> CompletionResult:
     parts: list[str] = []
     for item in payload.get("output") or []:
@@ -188,7 +261,7 @@ def parse_responses_payload(payload: dict[str, Any]) -> CompletionResult:
     )
 
 
-_RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+_RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 524}
 
 
 class HttpxTransport:
@@ -200,10 +273,12 @@ class HttpxTransport:
         *,
         env: Mapping[str, str] | None = None,
         client_factory: Any = None,
+        pay52_resolver: Any = None,
     ) -> None:
         self.providers = providers
         self.env = env if env is not None else __import__("os").environ
         self._client_factory = client_factory
+        self._pay52_resolver = pay52_resolver or resolve_pay52
 
     def _client(self, timeout_s: float) -> httpx.AsyncClient:
         timeout = httpx.Timeout(timeout_s, connect=min(10.0, timeout_s))
@@ -211,25 +286,51 @@ class HttpxTransport:
             return self._client_factory(timeout)
         return httpx.AsyncClient(timeout=timeout)
 
+    def _endpoint(self, request: ProviderRequest, cfg: ProviderConfig) -> tuple[str, str]:
+        """(url, api_key). 52pay — из ``resolve_text``, иначе settings/env."""
+        if request.provider == "kie":
+            request.stream = True
+            request.model = kie_model_slug()
+        if request.provider == "52pay" and not request.url:
+            route = self._pay52_resolver(request.model)
+            if route is PAY52_MODULE_MISSING:
+                pass
+            elif route is None:
+                raise ProviderError("pay52 route unavailable", retryable=False)
+            else:
+                request.model = str(route.api_model)
+                request.url = str(route.url)
+                request.api_key = str(route.api_key)
+        if request.api_key:
+            key = request.api_key.strip()
+        else:
+            key = (self.env.get(cfg.api_key_env) or "").strip()
+            if not key and cfg.alt_api_key_env:
+                key = (self.env.get(cfg.alt_api_key_env) or "").strip()
+        if not key:
+            raise ProviderError(
+                f"missing api key ({cfg.api_key_env})", retryable=False
+            )
+        if request.url:
+            return request.url, key
+        base = (self.env.get(cfg.base_url_env) or "").strip()
+        if not base and request.provider == "52pay":
+            base = pay52_base_url()
+        if not base:
+            base = (cfg.default_base_url or "").strip()
+        if not base:
+            raise ProviderError(
+                f"missing base url ({cfg.base_url_env})", retryable=False
+            )
+        return join_url(base, cfg.chat_path), key
+
     async def complete(self, request: ProviderRequest) -> CompletionResult:
         cfg = self.providers.get(request.provider)
         if cfg is None:
             raise ProviderError(
                 f"unknown provider {request.provider}", retryable=False
             )
-        key = (self.env.get(cfg.api_key_env) or "").strip()
-        if not key and cfg.alt_api_key_env:
-            key = (self.env.get(cfg.alt_api_key_env) or "").strip()
-        if not key:
-            raise ProviderError(
-                f"missing api key ({cfg.api_key_env})", retryable=False
-            )
-        base = (self.env.get(cfg.base_url_env) or cfg.default_base_url or "").strip()
-        if not base:
-            raise ProviderError(
-                f"missing base url ({cfg.base_url_env})", retryable=False
-            )
-        url = join_url(base, cfg.chat_path)
+        url, key = self._endpoint(request, cfg)
         headers = {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
@@ -241,7 +342,9 @@ class HttpxTransport:
         body = build_body(request, cfg.api)
         try:
             async with self._client(request.timeout_s) as client:
-                if request.stream and cfg.api != "openai-responses":
+                if request.stream and cfg.api == "openai-responses":
+                    return await self._stream_responses(client, url, headers, body, request)
+                if request.stream:
                     return await self._stream_chat(client, url, headers, body, request)
                 response = await client.post(url, headers=headers, json=body)
         except httpx.TimeoutException as exc:
@@ -312,3 +415,44 @@ class HttpxTransport:
                 usage.get("reasoning_tokens", details.get("reasoning_tokens"))
             ),
         )
+
+    async def _stream_responses(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        request: ProviderRequest,
+    ) -> CompletionResult:
+        """Kie: только stream. Нестриминговый reasoning часто отвечает 524."""
+        lines: list[str] = []
+        async with client.stream("POST", url, headers=headers, json=body) as response:
+            if response.status_code >= 400:
+                raise ProviderError(
+                    f"http {response.status_code}",
+                    retryable=response.status_code in _RETRY_STATUS,
+                    status_code=response.status_code,
+                )
+            async for line in response.aiter_lines():
+                lines.append(line)
+                stripped = line.strip()
+                if not stripped.startswith("data:"):
+                    continue
+                data = stripped[len("data:") :].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    payload = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("type") == "response.output_text.delta"
+                    and payload.get("delta")
+                    and request.on_delta is not None
+                ):
+                    request.on_delta(str(payload["delta"]))
+        result = parse_responses_sse("\n".join(lines))
+        if not result.model:
+            result.model = request.model
+        return result

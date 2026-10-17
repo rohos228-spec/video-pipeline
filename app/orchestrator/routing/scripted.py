@@ -51,7 +51,7 @@ class ScriptedRouter(ModelRouter):
     async def _dispatch(self, ctx: CallContext):
         hop = self._hops(ctx)[0]
         if self._blocked(ctx):
-            return self._escalation(ctx, hop, 0)
+            return self._waiting_approval(ctx, hop, 0)
         script = self._match(ctx.messages)
         if script is None:
             raise RouterError("scripted-miss")
