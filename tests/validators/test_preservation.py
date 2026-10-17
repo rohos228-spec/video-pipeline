@@ -91,7 +91,13 @@ def test_warn_does_not_block_the_registry() -> None:
             "severity": "warn",
             "path": "scenes/s1/кадры",
             "id": "s1",
-        }
+        },
+        {
+            "code": "kadry_invalid",
+            "severity": "warn",
+            "path": "scenes/s1/кадры",
+            "id": "s1",
+        },
     ]
 
 

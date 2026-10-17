@@ -14,12 +14,35 @@ from app.orchestrator.validators.entities import (
     scene_number,
     text_of,
 )
-from app.orchestrator.validators.grammar import shot_counts_as_active, shots_of
+from app.orchestrator.validators.grammar import is_kadry_invalid, shot_counts_as_active, shots_of
 from app.orchestrator.validators.violations import Violation, sorted_violations
 
 _QC_VERBS = {"qc", "render", "рендер", "qc_shot", "render_shot"}
 _ACTIVATE_VERBS = {"activate", "set_active"}
 _DEACTIVATE_VERBS = {"deactivate", "set_inactive"}
+
+
+def check_kadry_invalid(before: Any, after: Any, ops: Any = None) -> list[Violation]:
+    """Несписковое ``кадры`` — warn, а не тихий пустой список."""
+
+    del ops
+    violations: list[Violation] = []
+    seen: set[tuple[str, str, str]] = set()
+    for side in (before, after):
+        for scene in collect_scenes(side):
+            if "кадры" not in scene:
+                continue
+            if not is_kadry_invalid(shots_of({"shots": scene.get("кадры")})):
+                continue
+            entity = scene_id(scene) or scene_number(scene) or ""
+            _add_warn(
+                violations,
+                seen,
+                "kadry_invalid",
+                f"scenes/{entity}/кадры" if entity else "кадры",
+                entity,
+            )
+    return sorted_violations(violations)
 
 
 def check_active_shots(before: Any, after: Any, ops: Any = None) -> list[Violation]:
@@ -179,6 +202,20 @@ def _ops_target(ops: list[dict[str, Any]], fid: str) -> bool:
         if _verb(op) in _QC_VERBS and _op_id(op) == fid:
             return True
     return False
+
+
+def _add_warn(
+    violations: list[Violation],
+    seen: set[tuple[str, str, str]],
+    code: str,
+    path: str,
+    entity_id: str,
+) -> None:
+    key = (code, path, entity_id)
+    if key in seen:
+        return
+    seen.add(key)
+    violations.append(Violation(code=code, severity="warn", path=path, id=entity_id))
 
 
 def _add(

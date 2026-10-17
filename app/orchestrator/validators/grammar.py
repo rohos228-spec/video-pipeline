@@ -43,11 +43,39 @@ def shot_counts_as_active(shot: Any) -> bool:
     return shot.get("активен") is not False
 
 
+class KadryInvalid:
+    """Ключ кадров есть, но значение не список. Это не ``None`` и не ``[]``."""
+
+    invalid = True
+
+    def __repr__(self) -> str:
+        return "KadryInvalid()"
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, KadryInvalid)
+
+    def __hash__(self) -> int:
+        return 0
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __iter__(self) -> Any:
+        return iter(())
+
+
+KADRY_INVALID = KadryInvalid()
+
+
+def is_kadry_invalid(value: Any) -> bool:
+    return isinstance(value, KadryInvalid)
+
+
 def active_shots(shots: list[Any] | None) -> list[Any] | None:
     """Оставить живые шоты. None — списка не было. Сами объекты не меняются."""
 
-    if shots is None:
-        return None
+    if shots is None or is_kadry_invalid(shots):
+        return None if shots is None else shots  # type: ignore[return-value]
     return [shot for shot in shots if shot_counts_as_active(shot)]
 
 
@@ -317,27 +345,40 @@ def wide_notes(shots: Any) -> list[str]:
     return _apply(fn, shots)
 
 
-def shots_of(context: dict[str, Any]) -> list[Any] | None:
-    """Кадры из context. None — проверять нечего.
+def shots_of(context: dict[str, Any]) -> list[Any] | None | KadryInvalid:
+    """Кадры из context. None — ключа не было.
 
+    Несписок (строка, dict, null) — ``KadryInvalid``, не ``[]``.
     Неактивные (``активен is False``) в проверку не входят и из context не
     выкидываются: наружу уходит новый список.
     """
 
     if "shots" in context:
         value = context.get("shots")
-        raw = value if isinstance(value, list) else []
+        if not isinstance(value, list):
+            return KADRY_INVALID
+        raw: list[Any] | None = value
     else:
         raw = None
+        invalid = False
         after = context.get("after")
         if isinstance(after, dict):
             for key in ("shots", "frames", "кадры"):
-                if key in after and isinstance(after[key], list):
+                if key not in after:
+                    continue
+                if isinstance(after[key], list):
                     raw = after[key]
                     break
+                invalid = True
         if raw is None:
             for key in ("frames", "кадры"):
-                if key in context and isinstance(context[key], list):
+                if key not in context:
+                    continue
+                if isinstance(context[key], list):
                     raw = context[key]
+                    invalid = False
                     break
+                invalid = True
+        if raw is None and invalid:
+            return KADRY_INVALID
     return active_shots(raw)

@@ -141,7 +141,8 @@ def test_upstream_grammar_is_preferred_when_importable(monkeypatch: pytest.Monke
     assert merge_notes([{"id": "a"}]) == ["from-upstream"]
     assert wide_notes([{"id": "a"}]) == []
     assert merge_notes("не список") == []
-    assert shots_of({"shots": "нет"}) == []
+    invalid = shots_of({"shots": "нет"})
+    assert invalid is not None and invalid != [] and invalid.invalid
     assert shots_of({"кадры": [{"id": "k"}]}) == [{"id": "k"}]
 
     bare = types.ModuleType("app.services.scene_shot_grammar")
