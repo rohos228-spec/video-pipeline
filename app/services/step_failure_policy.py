@@ -523,7 +523,7 @@ async def record_step_failure(
                     replica,
                     step_code,
                     node_key=r_meta.get("active_excel_gpt_node_key"),
-                    explicit_ui_start=True,
+                    explicit_ui_start=False,
                 )
             except Exception:  # noqa: BLE001
                 logger.debug(
