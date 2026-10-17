@@ -132,7 +132,8 @@ def filter_ops_for_node(
         if isinstance(fields, dict):
             kept = {k: v for k, v in fields.items() if _keep_field(str(k), kind)}
             new_op["fields"] = kept
-            if str(new_op.get("target") or "frame") == "frame" and not kept:
+            # Пустые fields роняют весь батч в db_apply (любой target).
+            if not kept:
                 continue
         out.append(new_op)
     return out
