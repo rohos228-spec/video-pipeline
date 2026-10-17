@@ -2118,8 +2118,6 @@ export function AssembleMontageBoard({
   const lastApplyToastKeyRef = useRef("");
   /** Этот прогон apply наш: принимаем done/idle даже если running не успел прийти. */
   const applySeenRunningRef = useRef(false);
-  const applyRunningRef = useRef(false);
-  applyRunningRef.current = applyRunning;
   const lastPatchedPathRef = useRef("");
   const lastMontageToastKeyRef = useRef("");
   const lastRecoverToastKeyRef = useRef("");
