@@ -49,6 +49,15 @@ class EventBus:
     def __init__(self) -> None:
         self._rings: dict[str, deque[OrchEvent]] = {}
         self._subs: dict[str, set[asyncio.Queue[OrchEvent]]] = {}
+        # Один lock на сессию: insert и рассылка не обгоняют друг друга.
+        self._order: dict[str, asyncio.Lock] = {}
+
+    def _session_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self._order.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._order[session_id] = lock
+        return lock
 
     async def publish(
         self,
@@ -59,38 +68,50 @@ class EventBus:
         task_id: int | None = None,
         created_at: str | None = None,
     ) -> OrchEvent:
-        ephemeral = event_type in EPHEMERAL_EVENT_TYPES
-        seq, _stored_at = await asyncio.to_thread(
-            _insert_event,
-            session_id,
-            event_type,
-            payload or {},
-            task_id=task_id,
-            created_at=created_at,
-            persist=not ephemeral,
-        )
-        event = OrchEvent(
-            type=event_type,
-            task_id=task_id,
-            payload=dict(payload or {}),
-            seq=seq,
-            session_id=session_id,
-        )
-        if ephemeral:
-            ring = self._rings.setdefault(session_id, deque(maxlen=TOKEN_RING_SIZE))
-            ring.append(event)
-        for queue in list(self._subs.get(session_id, ())):
-            queue.put_nowait(event)
-        return event
+        """Запись и рассылка одной сессии идут строго по seq.
+
+        ``asyncio.to_thread`` сам по себе может вернуть более поздний commit
+        раньше. Курсор SSE хранит только максимум, поэтому меньший seq,
+        пришедший позже, потерялся бы до переподключения.
+        """
+        async with self._session_lock(session_id):
+            ephemeral = event_type in EPHEMERAL_EVENT_TYPES
+            seq, _stored_at = await asyncio.to_thread(
+                _insert_event,
+                session_id,
+                event_type,
+                payload or {},
+                task_id=task_id,
+                created_at=created_at,
+                persist=not ephemeral,
+            )
+            event = OrchEvent(
+                type=event_type,
+                task_id=task_id,
+                payload=dict(payload or {}),
+                seq=seq,
+                session_id=session_id,
+            )
+            if ephemeral:
+                ring = self._rings.setdefault(session_id, deque(maxlen=TOKEN_RING_SIZE))
+                ring.append(event)
+            for queue in list(self._subs.get(session_id, ())):
+                queue.put_nowait(event)
+            return event
 
     def replay(self, session_id: str, last_seq: int) -> list[OrchEvent]:
         """События с ``seq > last_seq``: БД (укрупнённые) + кольцо token."""
         return self._merge_replay(session_id, last_seq, _load_persisted(session_id, last_seq))
 
     async def replay_from(self, session_id: str, last_seq: int) -> list[OrchEvent]:
-        """То же, что ``replay``, но чтение ``orch_events`` не занимает цикл."""
-        persisted = await asyncio.to_thread(_load_persisted, session_id, last_seq)
-        return self._merge_replay(session_id, last_seq, persisted)
+        """То же, что ``replay``, но чтение ``orch_events`` не занимает цикл.
+
+        Тот же lock, что у ``publish``: replay не видит N+1, пока N не записан
+        и не попал в живую очередь.
+        """
+        async with self._session_lock(session_id):
+            persisted = await asyncio.to_thread(_load_persisted, session_id, last_seq)
+            return self._merge_replay(session_id, last_seq, persisted)
 
     def _merge_replay(self, session_id: str, last_seq: int, events: list[OrchEvent]) -> list[OrchEvent]:
         for event in self._rings.get(session_id, ()):
@@ -255,6 +276,11 @@ def _insert_event(
     created_at: str | None,
     persist: bool,
 ) -> tuple[int, str]:
+    """Резерв seq, insert и commit под одним ``threading.RLock``.
+
+    ``_CONNS`` открыты из пула потоков. Без этого лока два ``publish``
+    делят одно соединение.
+    """
     path = resolve_db_path()
     with _LOCK:
         conn = _event_conn(path)
