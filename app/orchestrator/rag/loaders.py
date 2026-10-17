@@ -112,11 +112,22 @@ def _role_phrase(node: ResolvedNode) -> str:
     return f"{place}: {duty}."
 
 
+RULES_SOURCE_ID = "docs/fable/user_rules.md"
+
+
+def rules_source_id(path: Path) -> str:
+    """Путь правил относительно корня репо, без абсолютного префикса машины."""
+    parts = Path(path).as_posix().split("/")
+    if parts[-3:] == ["docs", "fable", "user_rules.md"]:
+        return RULES_SOURCE_ID
+    return Path(path).as_posix()
+
+
 def load_rules(path: Path) -> list[SourceDoc]:
     if not path.is_file():
         return []
     text = path.read_text(encoding="utf-8")
-    return split_rules(text, source_id=str(path.as_posix()))
+    return split_rules(text, source_id=rules_source_id(path))
 
 
 def load_history(

@@ -20,7 +20,7 @@ FROZEN_SHA256: dict[str, dict[str, str]] = {
         "commit": "a79f70a9",
     },
     "precision_live_labels_transferred.json": {
-        "sha256": "f3b72c16e24368e92e47f4919a6cede156d35004ec21dd811000885899986098",
+        "sha256": "7420c4d794dc8c4257a64280c8d1602daed813cb0c28bfa7c4b948513a7991c6",
         "commit": "1396ea43",
     },
     "precision_live_label_ambiguous.json": {
@@ -28,7 +28,7 @@ FROZEN_SHA256: dict[str, dict[str, str]] = {
         "commit": "1396ea43",
     },
     "precision_live_labels_s0_s7.json": {
-        "sha256": "12bdb1ee6e785593783fe7fb60f25073d9b445d36563e5d5da5e1938132ca0ea",
+        "sha256": "2ef72c4cee8d9a1269b0aa49e9fbaf5c8edacfddb63408bf8ef1648dfa46c7fd",
         "commit": "19d050c2",
     },
 }

@@ -2357,12 +2357,12 @@
       "relevant": [
         {
           "corpus": "rules",
-          "source_id": "/workspace/docs/fable/user_rules.md",
+          "source_id": "docs/fable/user_rules.md",
           "part_key": "rule-1",
-          "chunk_id": "497d497f01815a9b7909f0d394d124f8ee8345baac012af014a6a99897ef64a1",
+          "chunk_id": "767a8208ec5bbfc21cb050c4f37503d870be760059a572a9c2a66660e639e69e",
           "grade": 1,
           "from": [
-            "497d497f01815a9b7909f0d394d124f8ee8345baac012af014a6a99897ef64a1"
+            "767a8208ec5bbfc21cb050c4f37503d870be760059a572a9c2a66660e639e69e"
           ]
         }
       ]
@@ -2374,12 +2374,12 @@
       "relevant": [
         {
           "corpus": "rules",
-          "source_id": "/workspace/docs/fable/user_rules.md",
+          "source_id": "docs/fable/user_rules.md",
           "part_key": "rule-2",
-          "chunk_id": "96849d17de38b887c73d333b59ccedc9ee0d0c676c2b61f06333da866bfa8338",
+          "chunk_id": "54564ed0e358796efe5e3c201be3deb56ce3fd62b887300e6780d711381d912a",
           "grade": 1,
           "from": [
-            "96849d17de38b887c73d333b59ccedc9ee0d0c676c2b61f06333da866bfa8338"
+            "54564ed0e358796efe5e3c201be3deb56ce3fd62b887300e6780d711381d912a"
           ]
         }
       ]
@@ -2391,12 +2391,12 @@
       "relevant": [
         {
           "corpus": "rules",
-          "source_id": "/workspace/docs/fable/user_rules.md",
+          "source_id": "docs/fable/user_rules.md",
           "part_key": "rule-3",
-          "chunk_id": "92b85675de560e217c68be3203a9aa86992de03b10a201cb29b890e5b749fb67",
+          "chunk_id": "44be3b1049488b961dda929dcc75fbbc5e7fe82ba9df774f1223562e99224c19",
           "grade": 1,
           "from": [
-            "92b85675de560e217c68be3203a9aa86992de03b10a201cb29b890e5b749fb67"
+            "44be3b1049488b961dda929dcc75fbbc5e7fe82ba9df774f1223562e99224c19"
           ]
         }
       ]
@@ -2408,12 +2408,12 @@
       "relevant": [
         {
           "corpus": "rules",
-          "source_id": "/workspace/docs/fable/user_rules.md",
+          "source_id": "docs/fable/user_rules.md",
           "part_key": "rule-4",
-          "chunk_id": "9ce21e54fcef1ad273a891e1bc45128d132d88fc7beb98a99611173e8fb80c8a",
+          "chunk_id": "8a9add36c1dc44c492ea7151898af8e5434da8dfbe9318e634e1b6a73f1043a7",
           "grade": 1,
           "from": [
-            "9ce21e54fcef1ad273a891e1bc45128d132d88fc7beb98a99611173e8fb80c8a"
+            "8a9add36c1dc44c492ea7151898af8e5434da8dfbe9318e634e1b6a73f1043a7"
           ]
         }
       ]
@@ -2425,12 +2425,12 @@
       "relevant": [
         {
           "corpus": "rules",
-          "source_id": "/workspace/docs/fable/user_rules.md",
+          "source_id": "docs/fable/user_rules.md",
           "part_key": "rule-5",
-          "chunk_id": "f1dcbd6bfd5b6641bf3570caf1458119c85171c6f28a88152c7bc88dbc7a298b",
+          "chunk_id": "dc6b81950085a67a3fafe8e6a3644d296fde92f0c8f18e623038e1426f00679b",
           "grade": 1,
           "from": [
-            "f1dcbd6bfd5b6641bf3570caf1458119c85171c6f28a88152c7bc88dbc7a298b"
+            "dc6b81950085a67a3fafe8e6a3644d296fde92f0c8f18e623038e1426f00679b"
           ]
         }
       ]
@@ -2442,12 +2442,12 @@
       "relevant": [
         {
           "corpus": "rules",
-          "source_id": "/workspace/docs/fable/user_rules.md",
+          "source_id": "docs/fable/user_rules.md",
           "part_key": "rule-6",
-          "chunk_id": "bb91028bcc2edf29da44103ed21b7e5f1f2cac023665b6f5c186121a00ea4a99",
+          "chunk_id": "ff0c2871317a0ade027afc917cecc769028ee463df1b9ea3cfc041ac8c85b6e9",
           "grade": 1,
           "from": [
-            "bb91028bcc2edf29da44103ed21b7e5f1f2cac023665b6f5c186121a00ea4a99"
+            "ff0c2871317a0ade027afc917cecc769028ee463df1b9ea3cfc041ac8c85b6e9"
           ]
         }
       ]
@@ -2459,12 +2459,12 @@
       "relevant": [
         {
           "corpus": "rules",
-          "source_id": "/workspace/docs/fable/user_rules.md",
+          "source_id": "docs/fable/user_rules.md",
           "part_key": "rule-7",
-          "chunk_id": "6420ef4558f2e041998bb11dfd3a7b52b967780fdce909892ccebf9264f62ee9",
+          "chunk_id": "bc3b84306613b91d063a1bfeb1d1ef24aa8f3200b01256fc9dc81d8dd770a242",
           "grade": 1,
           "from": [
-            "6420ef4558f2e041998bb11dfd3a7b52b967780fdce909892ccebf9264f62ee9"
+            "bc3b84306613b91d063a1bfeb1d1ef24aa8f3200b01256fc9dc81d8dd770a242"
           ]
         }
       ]
@@ -2476,12 +2476,12 @@
       "relevant": [
         {
           "corpus": "rules",
-          "source_id": "/workspace/docs/fable/user_rules.md",
+          "source_id": "docs/fable/user_rules.md",
           "part_key": "rule-8",
-          "chunk_id": "c22034f6c1ec3dc0fd14345f0ec6bc45e4f7d473f24db5d17d3a707d61ef6078",
+          "chunk_id": "b7a9c794a2ad33308bfbc27b84bc8db12f28bb43a3393263a19b9d5ac5f942c1",
           "grade": 1,
           "from": [
-            "c22034f6c1ec3dc0fd14345f0ec6bc45e4f7d473f24db5d17d3a707d61ef6078"
+            "b7a9c794a2ad33308bfbc27b84bc8db12f28bb43a3393263a19b9d5ac5f942c1"
           ]
         }
       ]
