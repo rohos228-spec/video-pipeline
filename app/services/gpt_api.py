@@ -2578,10 +2578,8 @@ def parse_chat_completions_sse_lines(lines: list[str]) -> tuple[str, str, dict[s
     text = "".join(chunks)
     if envelope_err and not text.strip():
         raise envelope_err
-    if not finish and saw_done:
+    if not finish:
         finish = "stop"
-    elif not finish:
-        finish = "stream_partial"
     out = dict(last) if last else {}
     out["_sse_done"] = saw_done
     return text, finish, out
