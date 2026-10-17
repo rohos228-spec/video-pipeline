@@ -1089,10 +1089,12 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-paid-retry").click();
     await expect(page.getByTestId("orch-paid-forecast")).toContainText("Прогноз расхода: ~$2.4");
     await page.getByTestId("orch-paid-retry-confirm").click();
-    await expect(page.getByTestId("orch-approval-error")).toContainText("retry_grant_spent");
+    await expect(page.getByTestId("orch-approval-error")).toContainText("Одноразовый перезапуск уже использован");
+    await expect(page.getByTestId("orch-approval-error")).not.toContainText("retry_grant_spent");
     await expect(page.getByTestId("orch-approval")).toBeVisible();
     await expect(page.getByTestId("orch-paid-forecast")).toBeVisible();
-    await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toHaveCount(0);
+    await expect(page.getByTestId("orch-paid-retry")).toBeDisabled();
     await expect(page.getByTestId("orch-step").filter({ hasText: "повтор после grant" })).toHaveCount(0);
     await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
 
@@ -1111,6 +1113,30 @@ test.describe("orchestrator chat", () => {
     await expect(page.getByTestId("orch-token-gate")).toBeVisible();
     await expect(page.getByTestId("orch-token-error")).toContainText("401");
     await expect(page.getByTestId("orch-approval-error")).toHaveCount(0);
+  });
+
+  test("paid_outcome_unknown: retry_grant_required оставляет карточку и возвращает перезапуск", async ({ page }) => {
+    const posts: { body: unknown }[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST" || !req.url().includes("/approve")) return;
+      posts.push({ body: req.postDataJSON() });
+    });
+    await openWithToken(page, "paidrequired", "paid-required");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-paid-retry").click();
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
+    await page.getByTestId("orch-paid-retry-confirm").click();
+    await expect(page.getByTestId("orch-approval-error")).toContainText("Сервер ещё не подтвердил перезапуск");
+    await expect(page.getByTestId("orch-approval-error")).not.toContainText("retry_grant_required");
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toHaveCount(0);
+    await expect(page.getByTestId("orch-paid-retry")).toBeEnabled();
+    await expect(page.getByTestId("orch-task-status")).toContainText("подтверждения");
+    await page.getByTestId("orch-paid-retry").click();
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
+    const decisions = posts.map((item) => (item.body as { decision?: string }).decision);
+    expect(decisions.filter((item) => item === "retry_step")).toHaveLength(2);
   });
 
   test("paid_outcome_unknown: без retry_armed подтверждение перезапуска неактивно", async ({ page }) => {

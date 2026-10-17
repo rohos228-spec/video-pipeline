@@ -646,11 +646,12 @@ function ApprovalCard({
   onReject: () => void;
   onClose: () => void;
   onPaidDecision: (decision: PaidOutcomeDecision) => Promise<PaidOutcomeDecisionResult>;
-  onPaidGrant: () => Promise<void>;
+  onPaidGrant: () => Promise<PaidOutcomeDecisionResult | null>;
 }) {
   const [retryReady, setRetryReady] = useState(false);
   const [retryForecast, setRetryForecast] = useState<number | null>(null);
   const [retryOpen, setRetryOpen] = useState(false);
+  const [confirmHidden, setConfirmHidden] = useState(false);
   const copy = BLOCK_COPY[approval.reason];
   const paidOutcome = approval.reason === PAID_OUTCOME_UNKNOWN_REASON;
   const terminal = isTerminalBlock(approval.reason);
@@ -697,6 +698,7 @@ function ApprovalCard({
             retryOpen={retryOpen}
             forecast={retryForecast}
             retryReady={retryReady}
+            confirmHidden={confirmHidden}
             onDone={() => {
               void onPaidDecision(PAID_OUTCOME_DECISION.approve).catch(() => {
                 /* ошибка уже на карточке */
@@ -710,9 +712,19 @@ function ApprovalCard({
             }}
             onConfirm={() => {
               if (!retryReady) return;
-              void onPaidGrant().catch(() => {
-                /* ошибка уже на карточке */
-              });
+              void onPaidGrant()
+                .then((result) => {
+                  if (!result || result.retryArmed) return;
+                  setRetryReady(false);
+                  setConfirmHidden(true);
+                  if (result.reason === "retry_grant_required") {
+                    setRetryOpen(false);
+                    setConfirmHidden(false);
+                  }
+                })
+                .catch(() => {
+                  /* ошибка уже на карточке */
+                });
             }}
           />
         ) : (
@@ -776,6 +788,7 @@ function PaidOutcomeActions({
   retryOpen,
   forecast,
   retryReady,
+  confirmHidden,
   onDone,
   onRetry,
   onDeny,
@@ -786,6 +799,7 @@ function PaidOutcomeActions({
   retryOpen: boolean;
   forecast: number | null;
   retryReady: boolean;
+  confirmHidden: boolean;
   onDone: () => void;
   onRetry: () => void;
   onDeny: () => void;
@@ -829,18 +843,20 @@ function PaidOutcomeActions({
           <p className="text-[11px] text-white/80">
             {forecast != null ? formatPaidOutcomeForecast(forecast) : PAID_OUTCOME_COPY.forecastMissing}
           </p>
-          <Button
-            type="button"
-            size="sm"
-            className="mt-2"
-            data-testid="orch-paid-retry-confirm"
-            disabled={pending || !retryReady}
-            title={retryReady ? undefined : forecast == null ? PAID_OUTCOME_COPY.forecastMissing : PAID_OUTCOME_COPY.grantMissing}
-            onClick={onConfirm}
-          >
-            {PAID_OUTCOME_COPY.confirmRetry}
-          </Button>
-          {!retryReady && forecast != null ? (
+          {!confirmHidden ? (
+            <Button
+              type="button"
+              size="sm"
+              className="mt-2"
+              data-testid="orch-paid-retry-confirm"
+              disabled={pending || !retryReady}
+              title={retryReady ? undefined : forecast == null ? PAID_OUTCOME_COPY.forecastMissing : PAID_OUTCOME_COPY.grantMissing}
+              onClick={onConfirm}
+            >
+              {PAID_OUTCOME_COPY.confirmRetry}
+            </Button>
+          ) : null}
+          {!confirmHidden && !retryReady && forecast != null ? (
             <p data-testid="orch-paid-grant-hint" className="mt-1 text-[11px] text-white/55">
               {PAID_OUTCOME_COPY.grantMissing}
             </p>

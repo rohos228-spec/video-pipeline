@@ -7,7 +7,7 @@
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
  *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
- *   | paid404 | paid404foreign | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed | paidspent
+ *   | paid404 | paid404foreign | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed | paidspent | paidrequired
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
@@ -829,6 +829,7 @@ function startScenario(session, scenario, text, mode) {
     scenario === "paidgrant409" ||
     scenario === "paidnoarmed" ||
     scenario === "paidspent" ||
+    scenario === "paidrequired" ||
     scenario === "paidzero" ||
     scenario.startsWith("paidbad-")
   ) {
@@ -1055,7 +1056,18 @@ async function handleChatApprove(req, res, url, sessionId) {
       sendJson(res, 200, paidWire({
         executed: false,
         reason: "retry_grant_spent",
-        forecast: PAID_FORECAST_USD,
+        forecast: null,
+        retryArmed: false,
+        changeId,
+        decision: null,
+      }));
+      return;
+    }
+    if (scenario === "paidrequired") {
+      sendJson(res, 200, paidWire({
+        executed: false,
+        reason: "retry_grant_required",
+        forecast: null,
         retryArmed: false,
         changeId,
         decision: null,
@@ -1074,6 +1086,19 @@ async function handleChatApprove(req, res, url, sessionId) {
       retryArmed: false,
       changeId,
       decision: null,
+    }));
+    return;
+  }
+
+  if (scenario === "paidrequired" && decision === "retry_step" && !session.requiredArmed) {
+    session.requiredArmed = true;
+    sendJson(res, 200, paidWire({
+      executed: false,
+      reason: null,
+      forecast: PAID_FORECAST_USD,
+      retryArmed: true,
+      changeId,
+      decision,
     }));
     return;
   }

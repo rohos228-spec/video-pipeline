@@ -140,7 +140,18 @@ export const PAID_OUTCOME_COPY = {
   retryUnsupported: "Сервер не поддерживает перезапуск этого шага.",
   forecastMissing: "Прогноз расхода недоступен",
   grantMissing: "Сервер не выдал одноразовое подтверждение перезапуска.",
+  grantSpent: "Одноразовый перезапуск уже использован. Шаг второй раз не выполняется.",
+  grantRequired: "Сервер ещё не подтвердил перезапуск. Нажмите «Перезапустить шаг».",
+  grantBudget: "Бюджет исчерпан, перезапуск не выполняется.",
 } as const;
+
+/** 200 с reason — не HTTP-ошибка. Текст для карточки, сырой код не показываем. */
+export function paidOutcomeGrantNotice(reason: string | null): string | null {
+  if (reason === "retry_grant_spent") return PAID_OUTCOME_COPY.grantSpent;
+  if (reason === "retry_grant_required") return PAID_OUTCOME_COPY.grantRequired;
+  if (reason === "budget_exhausted") return PAID_OUTCOME_COPY.grantBudget;
+  return null;
+}
 
 export function formatPaidOutcomeForecast(value: number): string {
   return `Прогноз расхода: ~$${value}`;

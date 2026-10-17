@@ -25,6 +25,7 @@ import {
   PAID_OUTCOME_DECISION,
   paidOutcomeDecisionBody,
   paidOutcomeGrantBody,
+  paidOutcomeGrantNotice,
   type PaidOutcomeDecision,
 } from "@/lib/orchestratorPaidOutcome";
 import {
@@ -287,7 +288,7 @@ export function useOrchestratorChat() {
         if (!paidPostAccepted(result, card.changeId)) {
           setDecisionError({
             id: approvalId,
-            message: result.reason || "сервер не подтвердил это решение",
+            message: paidOutcomeGrantNotice(result.reason) || result.reason || "сервер не подтвердил это решение",
           });
           return { ...result, ok: false, retryReady: false };
         }
@@ -317,12 +318,12 @@ export function useOrchestratorChat() {
   );
 
   const confirmPaidRestart = useCallback(
-    async (approvalId: string) => {
-      if (decisionLock.current) return;
+    async (approvalId: string): Promise<PaidOutcomeDecisionResult | null> => {
+      if (decisionLock.current) return null;
       const card = state.approvals.find((item) => item.id === approvalId);
       if (!card?.changeId) {
         setDecisionError({ id: approvalId, message: "Решение недоступно: сервер не передал id" });
-        return;
+        return null;
       }
       decisionLock.current = true;
       setDecisionPendingId(approvalId);
@@ -332,12 +333,13 @@ export function useOrchestratorChat() {
         if (!paidPostAccepted(result, card.changeId)) {
           setDecisionError({
             id: approvalId,
-            message: result.reason || "сервер не подтвердил это решение",
+            message: paidOutcomeGrantNotice(result.reason) || result.reason || "сервер не подтвердил это решение",
           });
-          return;
+          return { ...result, ok: false, retryReady: false, retryArmed: false };
         }
         dispatch({ type: "approval-resolved", id: approvalId, decision: "approved" });
         setSendError("");
+        return result;
       } catch (error) {
         if (!noteAuth(error)) {
           setDecisionError({
