@@ -698,6 +698,14 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
         or isinstance(closed.get("characters"), list)
         or isinstance(closed.get("scenes"), list)
     ):
+        # Дописанные скобки не делают обрезанный кадр целым: skip_if_field
+        # иначе пропустит дозаполнение.
+        ops = closed.get("ops")
+        if isinstance(ops, list) and any(
+            isinstance(op, dict) and str(op.get("frame_uuid") or "").strip()
+            for op in ops
+        ):
+            return None
         closed["_salvaged_partial"] = True
         return closed
     return None
