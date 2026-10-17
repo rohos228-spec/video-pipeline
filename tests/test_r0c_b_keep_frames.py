@@ -1099,3 +1099,83 @@ def test_assembly_clips_skip_marked_frame(tmp_path: Path) -> None:
     assert len(source) == 2
     assert source[1] is marked
     assert shot_marked.is_file()
+
+
+@pytest.mark.asyncio
+async def test_marked_shot_gets_no_voiceover_and_no_active_frame(warn_log, monkeypatch) -> None:
+    """Помеченный шот не получает закадр и не порождает активный Frame."""
+    from types import SimpleNamespace
+
+    from app.services.frame_tombstones import shot_is_active
+    from app.services.scene_shot_grammar import _mark_shot_kept, spread_vo_sentences
+    from app.services import vo_shot_expand as vse
+
+    shots = [
+        {"id": "k1", "закадр": "Первое предложение."},
+        {"id": "k2", "закадр": "", "действие": "лишний шаг"},
+        {"id": "k3", "закадр": ""},
+    ]
+    _mark_shot_kept(shots[1], "сверх лимита — кадр сохранён", where="test")
+    assert shot_is_active(shots[1]) is False
+    assert shots[1]["активен"] is False
+    spread_vo_sentences(shots)
+    assert shots[1]["закадр"] == ""
+    assert "Первое" in shots[0]["закадр"] or "предложение" in shots[2]["закадр"]
+    assert _ids(shots) == ["k1", "k2", "k3"]
+
+    parent = SimpleNamespace(
+        id=1,
+        uuid="parent",
+        voiceover_text="Первое предложение. Второе предложение целиком.",
+        attrs={"кадры": [dict(s) for s in shots]},
+        sort_key=1.0,
+        number=1,
+        start_ts=0.0,
+        end_ts=4.0,
+        duration_seconds=4.0,
+    )
+    inserted: list[object] = []
+
+    async def _insert(*_a, **_k):
+        child = SimpleNamespace(
+            id=2,
+            uuid="child",
+            voiceover_text="",
+            attrs={},
+            sort_key=2.0,
+            number=2,
+            start_ts=None,
+            end_ts=None,
+            duration_seconds=None,
+        )
+        inserted.append(child)
+        return child
+
+    async def _renumber(*_a, **_k):
+        return [parent, *inserted]
+
+    class _Session:
+        async def flush(self) -> None:
+            return None
+
+    monkeypatch.setattr(vse, "already_subdivided", lambda frames: False)
+    monkeypatch.setattr(vse, "insert_frame_after", _insert)
+    monkeypatch.setattr(vse, "renumber_frames_by_sort_key", _renumber)
+    monkeypatch.setattr(vse, "apply_vo_shot_cuts", lambda frames: 0)
+
+    # Один живой шот и один помеченный: новый Frame не создаётся.
+    parent.attrs["кадры"] = [
+        {"id": "k1", "закадр": "Первое предложение."},
+        {"id": "k2", "закадр": "", "карантин": True, "активен": False, "пометка": "лишний"},
+    ]
+    ordered, _report = await vse._expand_vo_cells_into_shots_default(
+        _Session(),
+        SimpleNamespace(id=3),
+        [parent],
+    )
+    assert inserted == []
+    assert all(getattr(fr, "voiceover_text", None) != "лишний" for fr in ordered)
+    marked = next(s for s in parent.attrs["кадры"] if s["id"] == "k2")
+    assert marked["закадр"] == ""
+    assert shot_is_active(marked) is False
+    assert any("помеченных шотов" in line for line in warn_log)

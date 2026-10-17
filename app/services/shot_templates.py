@@ -22,6 +22,7 @@ from app.project_root import find_project_root
 def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
     shot["карантин"] = True
     shot["пометка"] = reason
+    shot["активен"] = False
     logger.warning(
         "WARN {}: кадр {} помечен, не удалён: {}",
         where,
@@ -857,6 +858,8 @@ def _assign_scene_vo(
         ):
             shots[0].pop("карантин", None)
             shots[0].pop("пометка", None)
+            shots[0].pop("активен", None)
+            shots[0].pop("удалён", None)
             logger.warning(
                 "WARN _assign_scene_vo: кадр {} получил весь закадр, карантин снят",
                 shots[0].get("id"),

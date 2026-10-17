@@ -93,6 +93,17 @@ def frame_is_active(frame: Any) -> bool:
     return True
 
 
+def shot_is_active(shot: Any) -> bool:
+    """Живой элемент ``кадры[]``. Помеченный не получает закадр, кадр и генерацию."""
+    if not isinstance(shot, dict):
+        return False
+    if shot.get(DELETED_MARK) or shot.get("карантин"):
+        return False
+    if shot.get(ACTIVE_MARK) is False:
+        return False
+    return True
+
+
 class PaidFrameSkipped(RuntimeError):
     """Помеченный кадр не отправляется в платную генерацию."""
 

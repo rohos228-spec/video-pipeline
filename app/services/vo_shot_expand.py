@@ -2866,7 +2866,15 @@ async def _expand_vo_cells_into_shots_default(
     inserted = 0
     for parent in reversed(parents):
         original_vo = parent.voiceover_text or ""
-        planned = planned_shots_from_attrs(parent)
+        planned_all = planned_shots_from_attrs(parent)
+        from app.services.frame_tombstones import shot_is_active
+
+        planned = [s for s in planned_all if shot_is_active(s)]
+        if len(planned) < len(planned_all):
+            logger.warning(
+                "WARN vo_shot_expand: {} помеченных шотов не становятся кадром и не получают закадр",
+                len(planned_all) - len(planned),
+            )
         need, vo_parts = resolve_shot_plan(
             original_vo, planned, action=main_action_text(parent)
         )
@@ -2977,9 +2985,17 @@ async def _expand_vo_cells_into_shots_group(
         if parent not in members:
             members = [parent, *[m for m in members if m is not parent]]
         members.sort(key=lambda m: int(_cs(m).get("shot_index") or 0) or (m.number or 0))
-        planned = planned_for_parent_expand(
+        planned_all = planned_for_parent_expand(
             parent, planned_shots_from_attrs(parent)
         )
+        from app.services.frame_tombstones import frame_is_active, shot_is_active
+
+        planned = [s for s in planned_all if shot_is_active(s)]
+        if len(planned) < len(planned_all):
+            logger.warning(
+                "WARN vo_shot_expand: {} помеченных шотов не становятся кадром и не получают закадр",
+                len(planned_all) - len(planned),
+            )
         original_vo = _cell_full_text(parent, members)
         if _cs(parent).get("scene_split"):
             joined = " ".join(
@@ -3005,7 +3021,9 @@ async def _expand_vo_cells_into_shots_group(
             need, vo_parts = resolve_shot_plan(
                 original_vo, planned, action=main_action_text(parent)
             )
-        children = [m for m in members if m is not parent]
+        children = [
+            m for m in members if m is not parent and frame_is_active(m)
+        ]
         have = 1 + len(children)
         parent_uuid = parent.uuid
         total_sec = vo_duration_sec(original_vo, shots=need)

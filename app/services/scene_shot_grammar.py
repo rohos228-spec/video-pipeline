@@ -20,6 +20,7 @@ def _mark_shot_kept(shot: dict[str, Any], reason: str, *, where: str) -> None:
     """Кадр остаётся в списке. Пометка и WARN вместо удаления."""
     shot["карантин"] = True
     shot["пометка"] = reason
+    shot["активен"] = False
     logger.warning(
         "WARN {}: кадр {} помечен, не удалён: {}",
         where,
@@ -1120,6 +1121,8 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
 
     if not isinstance(shots, list) or not shots:
         return []
+    from app.services.frame_tombstones import shot_is_active
+
     warnings: list[str] = []
     norm_vo = " ".join((vo or "").split())
 
@@ -1151,6 +1154,9 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
             if _vo(shots[j]):
                 break
             if _reply(shots[j]):
+                j += 1
+                continue
+            if not shot_is_active(shots[j]):
                 j += 1
                 continue
             empties.append(j)
@@ -1196,8 +1202,11 @@ def repair_shot_vo_lengths(shots: list[Any], vo: str) -> list[str]:
         if not chunk or n >= SHOT_VO_MIN or is_cutaway_shot(shot):
             i += 1
             continue
-        nxt = next((j for j in range(i + 1, len(shots)) if _vo(shots[j])), None)
-        prv = next((j for j in range(i - 1, -1, -1) if _vo(shots[j])), None)
+        def _live_vo(j: int) -> bool:
+            return _vo(shots[j]) and shot_is_active(shots[j])
+
+        nxt = next((j for j in range(i + 1, len(shots)) if _live_vo(j)), None)
+        prv = next((j for j in range(i - 1, -1, -1) if _live_vo(j)), None)
         if nxt is not None and _reply(shots[nxt]):
             nxt = None
         if prv is not None and _reply(shots[prv]):
@@ -1778,6 +1787,8 @@ def merge_trivial_shots(shots):
     реплики, POV после «заметил», установочный перед диалогом. Закадр не теряется."""
     if not isinstance(shots, list) or len(shots) < 2:
         return []
+    from app.services.frame_tombstones import shot_is_active
+
     notes = []
     out = [shots[0]]
     merged_into = {}
@@ -1785,6 +1796,10 @@ def merge_trivial_shots(shots):
     for i in range(1, len(shots)):
         a, b = out[-1], shots[i]
         nxt = shots[i + 1] if i + 1 < len(shots) else None
+        if not shot_is_active(a) or not shot_is_active(b):
+            out.append(b)
+            chain = 1
+            continue
         if chain < 2 and _can_merge_trivial(a, b, nxt):
             act = _shot_s(a, "действие").rstrip(".")
             a["действие"] = (act + "; " + _shot_s(b, "действие")).strip()
@@ -1827,31 +1842,36 @@ def spread_vo_sentences(shots):
     rows = [s for s in shots if isinstance(s, dict)] if isinstance(shots, list) else []
     if len(rows) < 2:
         return []
-    pieces = [_shot_s(s, "закадр") for s in rows]
+    from app.services.frame_tombstones import shot_is_active
+
+    live = [i for i, s in enumerate(rows) if shot_is_active(s)]
+    if len(live) < 2:
+        return []
+    pieces = [_shot_s(rows[i], "закадр") for i in live]
     full = " ".join(p for p in pieces if p)
     sents = split_vo_sentences(full)
-    nonempty = [i for i, p in enumerate(pieces) if p]
+    nonempty = [k for k, p in enumerate(pieces) if p]
     if len(sents) <= len(nonempty):
         return []
-    free = [i for i, s in enumerate(rows) if not _is_reply(s)]
+    free = [k for k, i in enumerate(live) if not _is_reply(rows[i])]
     if len(free) < 2:
         return []
     start = nonempty[0] if nonempty else free[0]
-    free = [i for i in free if i >= start] or free
+    free = [k for k in free if k >= start] or free
     n, m = len(sents), len(free)
     owner = []
     for k in range(n):
         owner.append(free[min(m - 1, (k * m) // n)])
-    new = {i: "" for i in range(len(rows))}
+    new = {k: "" for k in range(len(live))}
     for k, sent in enumerate(sents):
         new[owner[k]] = (new[owner[k]] + " " + sent).strip()
-    if " ".join(new[i] for i in range(len(rows)) if new[i]) != full:
+    if " ".join(new[k] for k in range(len(live)) if new[k]) != full:
         return []
     notes = []
-    for i, s in enumerate(rows):
-        if pieces[i] != new[i]:
-            s["закадр"] = new[i]
-            notes.append(f"{s.get('id')}: закадр разнесён по предложениям")
+    for k, i in enumerate(live):
+        if pieces[k] != new[k]:
+            rows[i]["закадр"] = new[k]
+            notes.append(f"{rows[i].get('id')}: закадр разнесён по предложениям")
     return notes
 
 
@@ -1867,11 +1887,16 @@ def ensure_wide_before_dialogue(shots):
 
     if not isinstance(shots, list) or not shots:
         return []
+    from app.services.frame_tombstones import shot_is_active
+
     notes = []
     i = 0
     while i < len(shots):
         s = shots[i]
-        if not (isinstance(s, dict) and _is_reply(s)) or (i > 0 and isinstance(shots[i - 1], dict) and _is_reply(shots[i - 1])):
+        if isinstance(s, dict) and not shot_is_active(s):
+            i += 1
+            continue
+        if not (isinstance(s, dict) and _is_reply(s)) or (i > 0 and isinstance(shots[i - 1], dict) and _is_reply(shots[i - 1]) and shot_is_active(shots[i - 1])):
             i += 1
             continue
         j = i
