@@ -100,7 +100,18 @@ def atomic_write_text(dest: Path, text: str, *, expected_version: int) -> None:
                     ensure_ascii=False,
                 )
                 handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            previous_mode = 0o644
+            if target.is_file():
+                previous_mode = target.stat().st_mode & 0o777
+            os.chmod(tmp_path, previous_mode)
             os.replace(tmp_path, target)
+            dir_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
         except Exception:
             if tmp_path.exists():
                 tmp_path.unlink()
