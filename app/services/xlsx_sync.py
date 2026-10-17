@@ -123,8 +123,19 @@ async def reload_from_xlsx(
         # ещё нет, а xlsx уже содержит их (колонки B,C,D,…). Без этого
         # `compute_actual_status` видит fr_total=0 → откатывает статус.
         summary.setdefault("frames_created", [])
+        # FIX 2026-10-15: если в БД уже есть кадры (DB SoT), лист «Кадры»
+        # устаревшего xlsx не создаёт новых строк — только обновляет
+        # существующие. Плюс никогда не создаём строку с закадром, который
+        # уже есть в проекте (дубли хвоста сценария).
+        _has_rows = bool(rows)
+        _known_vo = {" ".join((f.voiceover_text or "").split()) for f in rows}
         for col, fnum in col_to_frame.items():
             if fnum in by_number:
+                continue
+            if _has_rows:
+                summary.setdefault("frames_create_skipped", []).append(fnum)
+                continue
+            if " ".join(str(ws_f.cell(row=ROW_VOICEOVER, column=col).value or "").split()) in _known_vo:
                 continue
             voice = _to_str(ws_f.cell(row=ROW_VOICEOVER, column=col).value)
             if not voice:

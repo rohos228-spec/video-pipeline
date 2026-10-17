@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -188,14 +189,16 @@ def load_checkpoint(project: Project, name: str) -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
-    list_key = ag.LIST_KEY[name]
-    if (
-        not isinstance(data, dict)
-        or not isinstance(data.get(list_key), list)
-        or not data[list_key]
-    ):
-        return None
-    return data
+    list_key = ag.LIST_KEY.get(name)
+    if list_key:
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get(list_key), list)
+            or not data[list_key]
+        ):
+            return None
+        return data
+    return data if isinstance(data, dict) else None
 
 
 def save_checkpoint(project: Project, name: str, data: dict[str, Any]) -> None:
@@ -349,6 +352,90 @@ def _finalize_agent_slice(
     return data
 
 
+def _scene_journal_gap(ctx, error) -> None:
+    if ctx is not None:
+        try:
+            ctx.observer.mark_gap(ctx.scope.execution_id, error)
+        except Exception:
+            pass
+
+
+def _scene_journal_open(attempt) -> bool:
+    if attempt is None:
+        return False
+    ctx, node, key = attempt
+    observation = sys.modules.get("app.services.observation")
+    return bool(
+        observation is not None and observation._attempt.get() is ctx
+        and not getattr(ctx, "native_attempt_closed", False)
+        and ctx.scope.observer_state in {"active", "degraded"}
+        and ctx.node_key in ctx.scope.node_keys
+        and node.get("id") == ctx.node_key
+        and key == (ctx.scope.execution_id, ctx.scope.workflow_run_id,
+                    ctx.scope.project_id, ctx.node_key, ctx.attempt_id,
+                    ctx.scope.graph_version)
+    )
+
+
+async def _scene_journal_attempt(project: Project, marker: str):
+    if marker not in {*ag.ALL_AGENTS, ag.ASSEMBLER, "agent"}:
+        return None
+    observation = sys.modules.get("app.services.observation")
+    if observation is None:
+        return None
+    ctx = None
+    try:
+        ctx = observation._attempt.get()
+        if (ctx is None or getattr(ctx, "native_attempt_closed", False)
+                or ctx.scope.observer_state not in {"active", "degraded"}
+                or ctx.node_key not in ctx.scope.node_keys or not ctx.attempt_id):
+            return None
+        from app.services import scene_contracts
+
+        resolved = await scene_contracts._scene_context(None, project=project)
+        if resolved is None or resolved[0] is not ctx:
+            return None
+        node_agent = resolved[2]["agent"]
+        if node_agent != scene_contracts.LEGACY_AGENT:
+            wanted = node_agent in scene_contracts.SLICE_AGENTS if marker == "agent" else node_agent == marker
+            if not wanted:
+                return None
+        attempt = (ctx, resolved[1], resolved[3])
+        return attempt if _scene_journal_open(attempt) else None
+    except Exception as error:
+        _scene_journal_gap(ctx, error)
+        return None
+
+
+async def _record_scene_parse(attempt, reply, parsed, *, validation_performed,
+                            problems=(), error=None, origin="model",
+                            link_model_request=True, agent=None) -> None:
+    if attempt is None:
+        return
+    ctx, node, _ = attempt
+    try:
+        if not _scene_journal_open(attempt):
+            return
+        from app.services import scene_contracts
+        from app.services.observation import _completed_model_request, _request
+
+        completed_token = request_token = None
+        if not link_model_request:
+            completed_token = _completed_model_request.set(None)
+            request_token = _request.set(None)
+        try:
+            await scene_contracts.record_scene_parse(
+                reply, parsed, node=node, validation_performed=validation_performed,
+                problems=problems, error=error, origin=origin, agent=agent,
+            )
+        finally:
+            if not link_model_request:
+                _request.reset(request_token)
+                _completed_model_request.reset(completed_token)
+    except Exception as diagnostic_error:
+        _scene_journal_gap(ctx, diagnostic_error)
+
+
 async def _run_one_agent(
     project: Project,
     name: str,
@@ -361,6 +448,7 @@ async def _run_one_agent(
 ) -> dict[str, Any]:
     from app.services import gpt_client
 
+    scene_attempt = await _scene_journal_attempt(project, name)
     prompt = ag.load_prompt(name, project)
     text = f"{prompt}\n\n---\n\n{context}"
     reply = await gpt_client.gpt_ask_fresh(
@@ -370,16 +458,25 @@ async def _run_one_agent(
         max_retries=max_retries,
     )
     try:
-        data = ag.parse_agent_slice(
-            name,
-            reply,
-            validate=validate,
-            expected_frame_numbers=expected_frame_numbers,
+        try:
+            data = ag.parse_agent_slice(
+                name,
+                reply,
+                validate=validate,
+                expected_frame_numbers=expected_frame_numbers,
+            )
+        except Exception as parse_error:
+            await _record_scene_parse(
+                scene_attempt, reply, None, validation_performed=validate,
+                error=parse_error, agent=name,
+            )
+            raise
+        await _record_scene_parse(
+            scene_attempt, reply, data, validation_performed=validate, agent=name,
         )
         return _finalize_agent_slice(project, name, data)
     except ag.SceneDesignAgentError as e:
         dump = _dump_agent_fail(project, name, reply, e)
-        # Скелет: один repair-pass — модель часто копирует stub scenes: [].
         if name != ag.SKELETON:
             if dump is not None:
                 raise ag.SceneDesignAgentError(f"{e} | dump={dump}") from e
@@ -455,9 +552,10 @@ async def _run_one_agent_adaptive(
     async def _run_parts(
         batches: list[list[Any]], *, child_depth: int, prefix: str
     ) -> dict[str, Any]:
-        sem = asyncio.Semaphore(parallel)
+        sem = asyncio.Semaphore(max(1, len(batches)))  # 2026-10-11: all parallel
 
         async def _one(i: int, batch: list[Any]) -> dict[str, Any]:
+            await asyncio.sleep((i - 1) * 5.0)  # 2026-10-11: 5s stagger
             part_label = f"{prefix}{i}"
             # Proactive-чанки: переживают soft-retry / 500 / рестарт.
             if prefix == "p":
@@ -656,7 +754,7 @@ async def run_category_agents(
     """
     from app.services.scene_design import agent_chunks as ach
 
-    sem = asyncio.Semaphore(max(1, int(settings.scene_design_max_parallel)))
+    sem = asyncio.Semaphore(64)  # 2026-10-11: no cap, agents in a wave run in parallel
     results: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
     waves = ag.agent_waves(project)
@@ -848,6 +946,7 @@ async def run_assembler(
     """
     from app.services import gpt_client
 
+    scene_attempt = await _scene_journal_attempt(project, ag.ASSEMBLER)
     prompt = ag.load_prompt(ag.ASSEMBLER, project)
     cells_json = json.dumps(assembly_input, ensure_ascii=False, indent=1)
     parts = [
@@ -864,7 +963,18 @@ async def run_assembler(
         project_id=project.id,
         max_retries=max_retries,
     )
-    return ag.parse_assembler_payload(reply)
+    try:
+        payload = ag.parse_assembler_payload(reply)
+    except Exception as parse_error:
+        await _record_scene_parse(
+            scene_attempt, reply, None, validation_performed=False,
+            error=parse_error,
+        )
+        raise
+    await _record_scene_parse(
+        scene_attempt, reply, payload, validation_performed=False,
+    )
+    return payload
 
 
 async def run_assembler_chunked(
@@ -990,7 +1100,8 @@ async def run_assembler_chunked(
                 ) from e
             raise
 
-    for i, batch in enumerate(batches, start=1):
+    async def _asm_one(i: int, batch: Any) -> Any:
+        await asyncio.sleep((i - 1) * 5.0)  # 2026-10-11: parallel, 5s stagger
         label = f"p{i}"
         cached = load_chunk_checkpoint(project, ag.ASSEMBLER, label)
         if cached is not None:
@@ -1001,8 +1112,7 @@ async def run_assembler_chunked(
                 total,
                 [f.number for f in batch],
             )
-            parts.append(cached)
-            continue
+            return cached
         logger.info(
             "[#{}] scene_design assemble chunk {}/{} frames={}",
             project.id,
@@ -1025,7 +1135,8 @@ async def run_assembler_chunked(
             len(part.get("scenes") or []),
             len(part.get("ops") or []),
         )
-        parts.append(part)
+        return part
+    parts.extend(await asyncio.gather(*[_asm_one(i, b) for i, b in enumerate(batches, start=1)]))
 
     merged = chunks.merge_assembler_payloads(parts)
     logger.info(

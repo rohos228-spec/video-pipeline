@@ -6,8 +6,11 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
+
+from app.models import Frame, Project
 
 from app.services.elevenlabs_api import synthesize_speech, elevenlabs_api_configured
 from app.services.elevenlabs_voices import resolve_elevenlabs_voice_id

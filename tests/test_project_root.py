@@ -29,12 +29,18 @@ def test_settings_db_not_under_web(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     sub = root / "web"
     sub.mkdir(exist_ok=True)
     monkeypatch.chdir(sub)
-    # Перезагрузка settings после смены CWD
+    # Перезагрузка settings после смены CWD. Объект settings возвращаем:
+    # reload подменяет синглтон, и следующие тесты видят не тот sqlite_path,
+    # который изолирует conftest.
     import importlib
 
     import app.settings as settings_mod
 
-    importlib.reload(settings_mod)
-    db = settings_mod.settings.db_url
-    assert "/web/data/" not in db.replace("\\", "/")
-    assert "state.db" in db
+    previous = settings_mod.settings
+    try:
+        importlib.reload(settings_mod)
+        db = settings_mod.settings.db_url
+        assert "/web/data/" not in db.replace("\\", "/")
+        assert "state.db" in db
+    finally:
+        settings_mod.settings = previous

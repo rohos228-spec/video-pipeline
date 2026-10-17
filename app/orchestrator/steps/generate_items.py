@@ -259,7 +259,7 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model_slug = img_gen.outsee_slug if img_gen else None
-    need_cdp = _need_browser_session(model_slug)
+    need_cdp = _need_browser_session(model_slug) or image_provider_for(model_slug) == "kie"
 
     # Идём по предметам последовательно, пропускаем уже сгенерированные.
     for idx, desc_text in enumerate(descriptions, start=1):
@@ -311,8 +311,22 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         reference_image=None,
                         timeout=600,
                         project_id=project.id,
+                        idempotent=True,
                     )
         except OutseeImageError as e:
+            from app.services.video_error_policy import is_no_resubmit
+            if is_no_resubmit(e):
+                logger.error(
+                    "[#{}] items: predmet{} исход платного запроса неизвестен, новый не отправляю: {}",
+                    project.id, idx, getattr(e, "reason", None) or str(e),
+                )
+                project.status = ProjectStatus.hero_ready
+                await session.flush()
+                raise RuntimeError(
+                    f"items: predmet{idx} не удалось сгенерить: исход платного запроса в Outsee неизвестен, "
+                    f"новый запрос не отправляю (запрос мог быть оплачен). Проверьте историю генераций и баланс "
+                    f"Outsee, затем снимите блокировку или подставьте найденный файл. Статус откатил на hero_ready."
+                ) from e
             is_moderation = isinstance(e, OutseeContentRejectedError)
             logger.error(
                 "[#{}] items: predmet{} 6 попыток провалились "
@@ -348,8 +362,10 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         )
         session.add(a)
         await session.flush()
+        await session.commit()
+        from app.services import outsee_idempotency
+        await outsee_idempotency.mark_consumed(project.id, f"predmet{idx}")
 
-        # Синхронизируем Artifact в master state.db для веб-UI студии
         try:
             async with SessionLocal() as master_sess:
                 m_art = Artifact(

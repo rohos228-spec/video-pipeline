@@ -154,8 +154,12 @@ async def ready_status_confirmed_by_data(
         if project.status is ready_status:
             return True
 
-    # Ручная озвучка voice_full.wav: compute_actual_status может быть ниже
-    # (нет всех scene_image), но audio_ready уже законно — не откатывать.
+    if ready_status in (ProjectStatus.sfx_plan_ready, ProjectStatus.sfx_ready) and project.status is ready_status:
+        from app.settings import settings as _settings
+
+        if not _settings.sfx_enabled:
+            return True
+
     if ready_status in (ProjectStatus.audio_ready, ProjectStatus.music_ready):
         await recover_audio_from_disk(session, project)
         from app.services.frame_audio import find_voice_full_on_disk

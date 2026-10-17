@@ -1,0 +1,7 @@
+table inet decision_gateway_egress {
+    chain output {
+        type filter hook output priority 0; policy drop;
+        ip daddr @PINNED_IPV4@ tcp dport 443 counter accept
+        counter drop
+    }
+}

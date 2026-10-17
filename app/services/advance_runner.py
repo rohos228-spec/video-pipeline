@@ -23,28 +23,43 @@ class AdvanceJobResult:
     new_status: str | None  # None если статус не изменился
 
 
+async def _mirror_content_to_master(project: Project) -> None:
+    async with session_scope() as master_sess:
+        m_proj = await master_sess.get(Project, project.id)
+        if m_proj is None:
+            return
+        for name in ("general_plan", "script_text", "hero_description"):
+            value = getattr(project, name)
+            if value:
+                setattr(m_proj, name, value)
+
+
+def _tick_run_id(project_id: int) -> str:
+    from app.services import request_context
+    try:
+        from app.services.actions_v1 import get_permission
+        permission = get_permission(project_id)
+        execution_id = str(getattr(permission, "execution_id", "") or "") if permission is not None else ""
+        if execution_id:
+            return execution_id
+    except Exception:
+        pass
+    return request_context.native_run_id(project_id)
+
+
 async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
     """Один такт advance_project в своей сессии изолированной проектной БД."""
+    from app.services.actions_v1 import worker_entry_admission
+    admission=await worker_entry_admission(project_id)
+    if not admission.allowed:
+        return AdvanceJobResult(project_id,'',None)
+    from app.services import request_context
+    from app.services.observation import _cost_project
+    cost_token = _cost_project.set(project_id)
+    corr_scope = request_context.ensure_request_scope(
+        "tick-", run_id=_tick_run_id(project_id), project_id=project_id)
+    corr_scope.__enter__()
     try:
-        # 1. Проверяем состояние в master (state.db): статус, meta и текстовые поля
-        master_status = None
-        master_meta = None
-        master_general_plan = None
-        master_script_text = None
-        master_hero_desc = None
-        try:
-            async with session_scope() as master_sess:
-                m_proj = await master_sess.get(Project, project_id)
-                if m_proj:
-                    master_status = m_proj.status
-                    if isinstance(m_proj.meta, dict):
-                        master_meta = dict(m_proj.meta)
-                    master_general_plan = m_proj.general_plan
-                    master_script_text = m_proj.script_text
-                    master_hero_desc = m_proj.hero_description
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("advance_project_job: check master state error: {}", exc)
-
         async with project_db_session_scope(project_id) as session:
             project = await session.get(Project, project_id)
             if project is None:
@@ -62,60 +77,38 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
                     logger.warning("advance_project_job: повторное открытие #{} не удалось", project_id)
                     return AdvanceJobResult(project_id, "", None)
 
-            # Синхронизируем статус и мета из master, если мастер был переведён в running (например, через веб-UI)
-            if master_status is not None and project.status != master_status:
-                logger.info(
-                    "advance_project_job: синхронизация статуса #{} project.db {} -> master {}",
-                    project_id,
-                    project.status.value,
-                    master_status.value,
-                )
-                project.status = master_status
-                if master_meta:
-                    project.meta = master_meta
-                if master_general_plan:
-                    project.general_plan = master_general_plan
-                if master_script_text:
-                    project.script_text = master_script_text
-                if master_hero_desc:
-                    project.hero_description = master_hero_desc
-                await session.flush()
+            from app.project_db import pull_master_runtime_into_project
+
+            await pull_master_runtime_into_project(session, project)
 
             prev = project.status.value
             prev_status = project.status
-            await advance_project(session, project, bot)
+            from app.services.observation import observe_attempt
+
+            async with observe_attempt(session, project):
+                await advance_project(session, project, bot)
             new = project.status.value
             if new != prev:
-                # Завершаем ноду в изолированной базе проекта
                 await complete_active_node_for_step(
                     session,
                     project,
                     prev_status=prev_status,
                     new_status=project.status,
                 )
-                # Синхронизируем статус, данные и NodeRun в master state.db
-                try:
-                    async with session_scope() as master_sess:
-                        m_proj = await master_sess.get(Project, project_id)
-                        if m_proj:
-                            m_proj.status = project.status
-                            if project.general_plan:
-                                m_proj.general_plan = project.general_plan
-                            if project.script_text:
-                                m_proj.script_text = project.script_text
-                            if project.hero_description:
-                                m_proj.hero_description = project.hero_description
-                            if isinstance(project.meta, dict):
-                                m_proj.meta = dict(project.meta)
-                        await complete_active_node_for_step(
-                            master_sess,
-                            m_proj or project,
-                            prev_status=prev_status,
-                            new_status=project.status,
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("advance_project_job: sync status to master failed: {}", exc)
+            from app.db import commit_with_retry
 
+            await commit_with_retry(session)
+            try:
+                from app.project_db import push_runtime_to_master_recorded
+
+                await push_runtime_to_master_recorded(session, project)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("advance_project_job: sync runtime to master failed: {}", exc)
+            if new != prev:
+                try:
+                    await _mirror_content_to_master(project)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("advance_project_job: sync content to master failed: {}", exc)
                 logger.debug(
                     "advance_project_job: #{} {} -> {}", project_id, prev, new
                 )
@@ -131,3 +124,14 @@ async def advance_project_job(project_id: int, bot: Bot) -> AdvanceJobResult:
         except Exception:  # noqa: BLE001
             logger.warning("advance_project_job: refresh #{} after cancel failed", project_id)
         raise
+    finally:
+        try:
+            corr_scope.__exit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            _cost_project.reset(cost_token)
+        except Exception:
+            pass
+        from app.services.actions_recovery import finish_job_tracking
+        finish_job_tracking(project_id)

@@ -123,6 +123,7 @@ class HITLKind(str, enum.Enum):
     approve_images = "approve_images"
     approve_videos = "approve_videos"
     approve_final = "approve_final"
+    approve_publish = "approve_publish"
 
 
 class HITLDecision(str, enum.Enum):

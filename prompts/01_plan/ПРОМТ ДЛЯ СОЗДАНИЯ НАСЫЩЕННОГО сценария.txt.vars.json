@@ -1,0 +1,25 @@
+[
+  {
+    "key": "language_level",
+    "label": "Уровень языка",
+    "value": "буквальный",
+    "type": "select",
+    "options": [
+      "буквальный",
+      "простой разговорный",
+      "литературный"
+    ]
+  },
+  {
+    "key": "hook_window",
+    "label": "Окно для хука",
+    "value": "20–40 секунд",
+    "type": "text"
+  },
+  {
+    "key": "event_interval",
+    "label": "Новое событие каждые",
+    "value": "40–60 секунд",
+    "type": "text"
+  }
+]

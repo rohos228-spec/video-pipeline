@@ -85,3 +85,8 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+
+
+def is_sqlite_locked(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database is busy" in msg

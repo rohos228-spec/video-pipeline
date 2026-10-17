@@ -452,6 +452,9 @@ async def finalize_or_retry(
     running_status,
 ) -> bool:
     """True если шаг можно перевести в ready, False если остались на running."""
+    if step == "images":
+        from app.services.media_jobs import require_verified_images
+        await require_verified_images(session, project)
     validators = {
         "video": validate_after_videos,
         "images": validate_after_images,
@@ -463,6 +466,9 @@ async def finalize_or_retry(
         return True
     result = await validate(session, project)
     if result.ok:
+        from app.services import regen_budget
+
+        regen_budget.clear(project, step)
         return True
     logger.warning(
         "[#{}] post_validate {} fail: {}",
@@ -470,6 +476,12 @@ async def finalize_or_retry(
         step,
         "; ".join(result.messages) or "unknown",
     )
+    from app.services import regen_budget
+
+    verdict = regen_budget.charge(project, step, result.missing_frame_numbers)
+    if not verdict.ok:
+        await regen_budget.stop(session, project, verdict)
+        return False
     if step == "video":
         await mark_frames_for_video_regen(
             session, project, result.missing_frame_numbers

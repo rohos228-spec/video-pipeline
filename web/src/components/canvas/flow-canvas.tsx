@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   ReactFlow,
   Background,
@@ -80,6 +81,10 @@ import {
   readCanvasGraph,
 } from "@/lib/canvas-graph-storage";
 import { mergeGraphNodesWithRuntime } from "@/lib/canvas-node-merge";
+import {
+  readPipelineViewport,
+  writePipelineViewport,
+} from "@/lib/pipeline-viewport";
 import { defaultModelIdForNodeType, isTextNodeType } from "@/lib/node-model-catalog";
 import { EdgeKindControls } from "./edge-kind-controls";
 import { SoftThreadEdge } from "./soft-thread-edge";
@@ -108,8 +113,9 @@ const edgeTypes = {
 };
 
 const THREAD_EDGE_STYLE = {
-  stroke: "hsl(210 18% 62% / 0.55)",
-  strokeWidth: 1.35,
+  stroke: "rgba(255, 255, 255, 0.5)",
+  strokeWidth: 2,
+  strokeDasharray: "5 6",
 } as const;
 
 export function FlowCanvas({
@@ -160,10 +166,11 @@ export function FlowCanvas({
     queryKey: ["project-run", projectId],
     queryFn: async () => {
       if (!projectId) return null;
-      const runs = await api.listRuns();
-      const found = runs.find((r) => r.project_id === projectId);
-      if (!found) return null;
-      return api.getRun(found.id);
+      try {
+        return await api.getProjectRun(projectId);
+      } catch {
+        return null;
+      }
     },
     enabled: projectId != null,
     refetchInterval: 4000,
@@ -237,10 +244,15 @@ export function FlowCanvas({
   /** Подавить onSelectionChange после программного setNodes(selected). */
   const ignoreSelectionChangeRef = useRef(0);
   const saveTimerRef = useRef<number | null>(null);
+  const inlineClickTimerRef = useRef<number | null>(null);
   const persistInFlightRef = useRef(false);
   const persistQueuedRef = useRef(false);
   const reactFlowRef = useRef<ReactFlowInstance<Node<PipelineNodeData>, Edge> | null>(null);
+  const persistProjectIdRef = useRef(projectId);
+  persistProjectIdRef.current = projectId;
+  const lastGraphProjectRef = useRef<number | null>(projectId);
   const paneRef = useRef<HTMLDivElement | null>(null);
+  const savedViewport = projectId != null ? readPipelineViewport(projectId) : null;
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -252,7 +264,9 @@ export function FlowCanvas({
   // Смена проекта — не тащим позиции/версию соседа с теми же node_key.
   useEffect(() => {
     setGraphVersion("");
-  }, [projectId]);
+    setNodes([]);
+    setEdges([]);
+  }, [projectId, setNodes, setEdges]);
 
   useEffect(() => {
     if (!graphSource) return;
@@ -261,10 +275,12 @@ export function FlowCanvas({
     const ver = `${projectId ?? "none"}|${workflowStructureKey(graphSource)}`;
     if (ver === graphVersion && nodes.length > 0) return;
     setGraphVersion(ver);
+    const switched = lastGraphProjectRef.current !== projectId;
+    lastGraphProjectRef.current = projectId;
     setNodes((prev) =>
       mergeGraphNodesWithRuntime(
         baseNodes as Node<PipelineNodeData>[],
-        prev,
+        switched ? [] : prev,
       ) as Node<PipelineNodeData>[],
     );
     setEdges(baseEdges);
@@ -324,6 +340,14 @@ export function FlowCanvas({
     // Не сбрасываем в pending при кратковременном отсутствии run.data (refetch/invalidate).
     if (!run.data) return;
     const projectStatus = project.data?.status;
+    const meta = (project.data?.meta ?? {}) as Record<string, unknown>;
+    const activeExcelGptKey =
+      typeof meta.active_excel_gpt_node_key === "string"
+        ? meta.active_excel_gpt_node_key
+        : undefined;
+    const completedExcelGptKeys = Array.isArray(meta.excel_gpt_completed_keys)
+      ? meta.excel_gpt_completed_keys.map(String)
+      : [];
     const nodeRunByKey = new Map(run.data.node_runs.map((nr) => [nr.node_key, nr]));
     setNodes((prev) =>
       prev.map((n) => {
@@ -345,6 +369,11 @@ export function FlowCanvas({
           n.data.type,
           nr.status as PipelineNodeData["status"],
           projectStatus,
+          {
+            nodeKey: n.id,
+            activeExcelGptKey,
+            completedExcelGptKeys,
+          },
         );
         const progress = status === "running" ? (nr.progress ?? 0) : 0;
         const progressText = status === "running" ? (nr.progress_text ?? null) : null;
@@ -363,7 +392,7 @@ export function FlowCanvas({
         };
       }),
     );
-  }, [run.data, project.data?.status, setNodes, nodes.length, projectId]);
+  }, [run.data, project.data?.status, project.data?.meta, setNodes, nodes.length, projectId]);
 
   // Выделение на канвасе ← selectedNodeKey (кнопка V без клика по телу ноды).
   useEffect(() => {
@@ -393,10 +422,21 @@ export function FlowCanvas({
       setNodes((prev) =>
         prev.map((n) => {
           if (n.id !== e.node_key) return n;
+          const meta = (project.data?.meta ?? {}) as Record<string, unknown>;
           const to = reconcileNodeRunStatus(
             n.data.type,
             e.to as PipelineNodeData["status"],
             project.data?.status,
+            {
+              nodeKey: n.id,
+              activeExcelGptKey:
+                typeof meta.active_excel_gpt_node_key === "string"
+                  ? meta.active_excel_gpt_node_key
+                  : undefined,
+              completedExcelGptKeys: Array.isArray(meta.excel_gpt_completed_keys)
+                ? meta.excel_gpt_completed_keys.map(String)
+                : [],
+            },
           );
           return {
             ...n,
@@ -562,6 +602,7 @@ export function FlowCanvas({
         else toast.message(check.warnings[0]);
       }
       if (projectId) {
+        if (persistProjectIdRef.current !== projectId) return;
         // Только дельта: НЕ слать весь meta из кэша — иначе stale
         // gpt_operator_results/storage_nodes затирают результаты всех нод.
         const projectData = project.data ?? (await api.getProject(projectId));
@@ -577,6 +618,7 @@ export function FlowCanvas({
         if (bindings.length) {
           meta.excel_lane_bindings = bindings;
         }
+        if (persistProjectIdRef.current !== projectId) return;
         await api.patchProject(projectId, { meta });
         await qc.invalidateQueries({ queryKey: ["project", projectId] });
       } else {
@@ -652,7 +694,11 @@ export function FlowCanvas({
         detail.patch.modelChannel != null ||
         detail.patch.imageResolution != null ||
         detail.patch.imageQuality != null ||
-        detail.patch.aspectRatio != null
+        detail.patch.aspectRatio != null ||
+        detail.patch.label != null ||
+        detail.patch.description != null ||
+        detail.patch.customBg != null ||
+        detail.patch.reasoningEffort != null
       ) {
         scheduleSaveWorkflow();
       }
@@ -1069,16 +1115,25 @@ export function FlowCanvas({
     <>
       <div ref={paneRef} className="relative h-full w-full">
       <ReactFlow
+        key={projectId ?? "none"}
         className="neural-flow"
         nodes={nodes}
         edges={edges}
         onInit={(inst) => {
           reactFlowRef.current = inst;
+          if (projectId != null) {
+            const vp = readPipelineViewport(projectId);
+            if (vp) inst.setViewport(vp, { duration: 0 });
+          }
         }}
+        onMoveEnd={(_event, vp) => {
+          if (projectId != null) writePipelineViewport(projectId, vp);
+        }}
+        defaultViewport={savedViewport ?? undefined}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
-        fitView={!canvasGraph?.saved_at}
+        fitView={!savedViewport && !canvasGraph?.saved_at}
         fitViewOptions={{ padding: 0.12, maxZoom: 0.85, minZoom: 0.2 }}
         minZoom={0.15}
         maxZoom={1.5}
@@ -1086,7 +1141,7 @@ export function FlowCanvas({
         nodesDraggable
         nodesConnectable
         edgesReconnectable
-        nodeDragThreshold={6}
+        nodeDragThreshold={4}
         selectNodesOnDrag={false}
         selectionOnDrag={false}
         panOnDrag={[0, 1]}
@@ -1096,15 +1151,25 @@ export function FlowCanvas({
         onConnect={onConnect}
         connectionLineType={ConnectionLineType.Bezier}
         connectionLineStyle={{
-          strokeDasharray: "2 7",
-          stroke: "hsl(210 18% 62% / 0.7)",
-          strokeWidth: 1.35,
+          strokeDasharray: "5 6",
+          stroke: "rgba(255, 255, 255, 0.6)",
+          strokeWidth: 2,
           strokeLinecap: "round",
         }}
         edgeTypes={edgeTypes}
         elementsSelectable
         deleteKeyCode={["Backspace", "Delete"]}
         onNodesDelete={onNodesDelete}
+        onNodeDoubleClick={(ev, node) => {
+          if (inlineClickTimerRef.current) {
+            window.clearTimeout(inlineClickTimerRef.current);
+            inlineClickTimerRef.current = null;
+          }
+          const t = ev.target as HTMLElement;
+          if (t.closest(".node-v-trigger") || t.closest(".node-v-menu") || t.closest("button") || t.closest("[data-inline-studio]")) return;
+          const d = node.data as PipelineNodeData;
+          void d; // double-click: old studio detached; single click opens the inline menu
+        }}
         onNodeClick={(ev, node) => {
           const t = ev.target as HTMLElement;
           if (
@@ -1117,6 +1182,19 @@ export function FlowCanvas({
           const d = node.data as PipelineNodeData;
           onSelectNode(d.nodeKey);
           onNodeActivate?.(d.nodeKey, d.type);
+          // Single click (no drag, RF threshold 4px) expands the node into the inline menu.
+          // Delayed so a double-click can still open the full studio.
+          if (
+            ev.detail > 1 ||
+            t.closest("button, input, textarea, select, a, label, [role=switch], .react-flow__handle, [data-inline-studio], .node-ai-review-trigger")
+          ) {
+            return;
+          }
+          if (inlineClickTimerRef.current) window.clearTimeout(inlineClickTimerRef.current);
+          inlineClickTimerRef.current = window.setTimeout(() => {
+            inlineClickTimerRef.current = null;
+            window.dispatchEvent(new CustomEvent("vp-node-inline-open", { detail: { nodeKey: d.nodeKey } }));
+          }, 0);
         }}
         onSelectionChange={(sel) => {
           selectedNodesRef.current = sel.nodes as Node<PipelineNodeData>[];
@@ -1152,7 +1230,7 @@ export function FlowCanvas({
         />
         {onCanvasZoom ? <ViewportZoomReporter onZoom={onCanvasZoom} /> : null}
         <GroupFrames />
-        <EdgeKindControls edges={edges} onEdgesLocal={setEdges} />
+        {/* edge kind labels removed */}
         <MiniMap
           pannable
           zoomable
@@ -1333,7 +1411,7 @@ function WorkflowToolbar({
   };
 
   return (
-    <div className="pointer-events-none absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
+    <div className="pointer-events-none absolute left-1/2 top-4 z-10 flex max-w-[calc(100%-2rem)] -translate-x-1/2 flex-wrap gap-2">
       <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 rounded-lg border border-white/10 bg-card/90 p-1 backdrop-blur-md shadow-md">
         <NodePalette
           projectId={projectId ?? null}
@@ -1344,23 +1422,12 @@ function WorkflowToolbar({
         <Button
           size="sm"
           variant="ghost"
-          className="h-8 gap-1 text-xs hover:bg-white/5"
-          onClick={onCopy}
-          title="Копировать выделенные ноды (Ctrl+C)"
-        >
-          <Copy className="h-3.5 w-3.5" />
-          Копировать
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-8 gap-1 text-xs hover:bg-white/5"
+          className="h-8 px-2 text-xs hover:bg-white/5"
           onClick={onPaste}
           disabled={!canPaste}
           title="Вставить скопированные ноды (Ctrl+V) — работает и в другом проекте"
         >
           <ClipboardPaste className="h-3.5 w-3.5" />
-          Вставить
         </Button>
         <div className="h-4 w-px bg-white/10" />
         <Button
@@ -1372,27 +1439,6 @@ function WorkflowToolbar({
         >
           <Copy className="h-3.5 w-3.5 text-muted-foreground" />
         </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-8 px-2 text-xs hover:bg-white/5"
-          onClick={onAddExcelFeed}
-          title="Источник Excel для массовой генерации"
-        >
-          <FileSpreadsheet className="h-3.5 w-3.5 text-muted-foreground" />
-        </Button>
-        {workflowId != null && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-8 gap-1 px-2 text-xs hover:bg-white/5"
-            onClick={() => void duplicateWf()}
-            title="Сохранить копию workflow на сервере"
-          >
-            <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-[10px] text-muted-foreground">WF</span>
-          </Button>
-        )}
         <Button
           size="sm"
           variant="ghost"
@@ -1497,25 +1543,25 @@ function RunOverlay({
     }
   };
 
-  return (
-    <>
-      {/* Тумблер Автопродвижения */}
+  const controls = (
+    <div className="flex flex-col gap-2.5 border-b border-white/10 pb-3">
+      <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Run:</span>
+          <span className="font-medium">
+            {run ? `#${run.id} · ${formatRunStatus(run.status)}` : "не запущен"}
+          </span>
+        </div>
       {project ? (
-        <div className="pointer-events-none absolute right-4 top-3 z-40">
-          <div className="pointer-events-auto min-w-[200px] max-w-[260px] shadow-sm">
+        <div>
+          <div>
             <AutoAdvanceToggle project={project} />
           </div>
         </div>
       ) : null}
 
       {/* Верхняя компактная панель управления процессом */}
-      <div className="pointer-events-none absolute right-4 top-[5.5rem] z-30 flex max-w-[min(100%,640px)] flex-wrap items-center justify-end gap-2">
-        <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs shadow-sm backdrop-blur-sm">
-          <span className="text-muted-foreground">Run:</span>
-          <span className="font-medium">
-            {run ? `#${run.id} · ${formatRunStatus(run.status)}` : "не запущен"}
-          </span>
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        
 
         {isRunning ? (
           <>
@@ -1547,7 +1593,7 @@ function RunOverlay({
               size="sm"
               onClick={handleResume}
               disabled={pausing}
-              className="pointer-events-auto transition-all duration-200 gap-2 h-9 px-4 font-semibold text-xs text-white bg-gradient-to-r from-emerald-500 via-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 active:scale-[0.98] shadow-lg shadow-emerald-500/35 border border-emerald-300/40 rounded-xl backdrop-blur-md"
+              className="pointer-events-auto transition-all duration-200 gap-2 h-9 px-4 font-semibold text-xs bg-[#2bb8a0]/20 hover:bg-[#2bb8a0]/30 text-[#bff3e8] active:scale-[0.98] border border-[#2bb8a0]/35 rounded-xl backdrop-blur-md"
               title="Продолжить выполнение пайплайна (переход к следующему шагу)"
             >
               {pausing ? <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-200" /> : <Play className="h-3.5 w-3.5 fill-current" />}
@@ -1569,8 +1615,23 @@ function RunOverlay({
           </div>
         )}
       </div>
-    </>
+    </div>
   );
+  return <PortalTo id="vp-right-controls">{controls}</PortalTo>;
+}
+
+function PortalTo({ id, children }: { id: string; children: React.ReactNode }) {
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    const pick = () => {
+      const e = document.getElementById(id);
+      setEl((prev) => (prev === e ? prev : e));
+    };
+    pick();
+    const t = window.setInterval(pick, 400);
+    return () => window.clearInterval(t);
+  }, [id]);
+  return el ? createPortal(children, el) : null;
 }
 
 function workflowToReactFlowNodes(
@@ -1607,6 +1668,7 @@ function workflowToReactFlowNodes(
         sdAgent: (data.sd_agent ?? data.agent) as string | undefined,
         groupId: data.groupId as string | undefined,
         groupTitle: data.groupTitle as string | undefined,
+        customBg: typeof data.customBg === "string" && data.customBg.trim() ? data.customBg.trim() : undefined,
         modelId: (typeof data.modelId === "string" && data.modelId.trim())
           ? data.modelId.trim()
           : defaultModelIdForNodeType(n.type),
@@ -1622,6 +1684,10 @@ function workflowToReactFlowNodes(
         aspectRatio:
           typeof data.aspectRatio === "string" && data.aspectRatio.trim()
             ? data.aspectRatio.trim()
+            : undefined,
+        reasoningEffort:
+          typeof data.reasoningEffort === "string" && data.reasoningEffort.trim()
+            ? data.reasoningEffort.trim()
             : undefined,
         status: (nr?.status ?? "pending") as PipelineNodeData["status"],
         progress: nr?.progress ?? 0,

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.models import NodeRun, Project, ProjectStatus, Workflow, WorkflowRun, WorkflowRunStatus
+from app.services.project_slug import slug_taken_on_disk
 from app.storage import ProjectSheet
 
 COPY_PROJECT_FIELDS = (
@@ -149,7 +150,7 @@ async def _unique_slug(session: AsyncSession, base: str, slugify) -> str:
     suffix = 2
     while (
         await session.execute(select(Project).where(Project.slug == candidate))
-    ).scalar_one_or_none():
+    ).scalar_one_or_none() or slug_taken_on_disk(candidate):
         candidate = f"{slug}-{suffix}"
         suffix += 1
     return candidate

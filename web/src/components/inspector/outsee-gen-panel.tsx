@@ -22,7 +22,7 @@ export function OutseeGenPanel({ project }: { project: ProjectDetail }) {
           <Wand2 className="h-3.5 w-3.5 text-cyan-400" />
           <div>
             <div className="text-[11px] font-semibold tracking-wide text-white/90">
-              Outsee · Create
+              VIA · Create
             </div>
             <div className="text-[10px] text-white/40">глобально · Фото / Видео / Аудио</div>
           </div>

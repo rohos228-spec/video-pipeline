@@ -8,11 +8,57 @@ pass-through.
 
 from __future__ import annotations
 
+import sys
+
 from aiogram import Bot  # noqa: F401
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, ProjectStatus
+
+
+async def _record_generation_input(session, project, plan):
+    observation = sys.modules.get("app.services.observation")
+    ctx = observation._attempt.get() if observation is not None else None
+    if (ctx is None or ctx.scope.observer_state not in {"active", "degraded"}
+            or getattr(ctx, "native_attempt_closed", False)
+            or getattr(ctx, "native_node_type", "sfx_gen") != "sfx_gen"):
+        return
+    try:
+        if ctx.scope.project_id != project.id or ctx.session is not session:
+            return
+        from sqlalchemy import select
+        from app.models import Frame
+        from app.services.sfx_plan import record_sfx_generation_input
+        from app.settings import settings
+
+        with session.no_autoflush:
+            frames = list((await session.scalars(select(Frame).where(
+                Frame.project_id == ctx.scope.project_id).order_by(Frame.number))).all())
+        await record_sfx_generation_input(project, frames,
+            source=getattr(ctx, "sfx_selected_plan_source", "unknown"),
+            payload=getattr(ctx, "sfx_selected_plan_payload", None), events=plan,
+            provider="elevenlabs" if settings.elevenlabs_api_key else "local_synth")
+    except Exception as error:
+        ctx.observer.mark_gap(ctx.scope.execution_id, error)
+
+
+def _emit(kind: str, payload: dict) -> None:
+    try:
+        from app.services.observation import emit
+
+        emit(kind, payload)
+    except Exception:
+        pass
+
+
+def degradation_summary(files: list[dict]) -> dict:
+    synthetic = [f for f in files if f.get("provider") == "local_synth" or f.get("synthetic")]
+    no_key = [f for f in synthetic
+              if isinstance(f.get("provider_fallback"), dict) and f["provider_fallback"].get("reason") == "no_api_key"]
+    provider = ("local_synth" if len(synthetic) == len(files) else "mixed") if synthetic else "elevenlabs"
+    return {"total": len(files), "synthetic": len(synthetic), "no_api_key": len(no_key), "provider": provider,
+            "degraded": bool(synthetic)}
 
 
 async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -> None:
@@ -26,6 +72,13 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
 
     if not settings.sfx_enabled:
         logger.info("[#{}] sfx_gen disabled — pass-through", project.id)
+        meta = dict(project.meta or {})
+        meta["sfx_skipped"] = True
+        meta["sfx_skipped_reason"] = "SFX_ENABLED=false"
+        meta["sfx_degraded"] = False
+        project.meta = meta
+        _emit("sfx_skipped", {"reason": "SFX_ENABLED=false",
+                              "text_ru": "Звуки сопровождения пропущены: SFX_ENABLED=false. Это не генерация."})
         project.status = ProjectStatus.sfx_ready
         await session.flush()
         await session.commit()
@@ -35,12 +88,31 @@ async def run(session: AsyncSession, project: Project, bot: Bot | None = None) -
     if not plan:
         raise RuntimeError("sfx_gen: нет плана звуков — сначала шаг «План звуков»")
 
-    files = await generate_sfx_files(session, project, plan)
+    await _record_generation_input(session, project, plan)
+    files = await generate_sfx_files(session, project, plan, retry_degraded=True)
     meta = dict(project.meta or {})
+    summary = degradation_summary(files)
     meta["sfx_ready"] = True
-    meta["sfx_generated"] = True
+    meta["sfx_generated"] = not summary["degraded"]
+    meta["sfx_degraded"] = summary["degraded"]
+    meta["sfx_synthetic_count"] = summary["synthetic"]
+    meta["sfx_provider"] = summary["provider"]
+    meta["sfx_skipped"] = False
+    meta["sfx_provider_fallbacks"] = sum(1 for f in files if f.get("provider_fallback"))
+    if summary["degraded"]:
+        reason = ("нет ключа ElevenLabs" if summary["no_api_key"] else "сбой или отказ провайдера")
+        meta["sfx_degraded_reason"] = reason
+        _emit("sfx_node_degraded", {
+            "node": "sfx_gen", "provider": "elevenlabs",
+            "reason": "no_api_key" if summary["no_api_key"] else "provider_failure", "synthetic": True,
+            "synthetic_count": summary["synthetic"], "total": summary["total"],
+            "text_ru": f"Звуки подменены процедурным синтезом ({summary['synthetic']} из {summary['total']}): "
+                       f"{reason}. Нода не считается готовой нормально."})
+    else:
+        meta.pop("sfx_degraded_reason", None)
     project.meta = meta
     project.status = ProjectStatus.sfx_ready
     await session.flush()
     await session.commit()
-    logger.info("[#{}] sfx_gen done: {} файлов", project.id, len(files))
+    logger.info("[#{}] sfx_gen done: {} файлов, откатов провайдера {}",
+                project.id, len(files), meta["sfx_provider_fallbacks"])

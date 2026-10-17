@@ -344,6 +344,7 @@ def list_generation_files(
         return [dict(x) for x in cached[1]]
 
     items = _scan_generation_files(kind=kind, limit=limit)
+    sig = _list_cache_signature(kind=kind)
     _LIST_CACHE[cache_key] = (sig, [dict(x) for x in items])
     return items
 

@@ -1163,7 +1163,8 @@ MODELS: list[dict[str, Any]] = [
             _f("duration", "Длительность, сек (только V5_5)", "number",
                min=10, max=360, step=1, show_if={"model": "V5_5"}),
         ],
-        "pricing": {"unit": "gen", "rules": [], "default": 12, "note": "12 кр/трек (~$0.06)"},
+        "pricing": {"unit": "gen", "rules": [], "default": 122,
+                    "note": "122 кр/трек (~$0.61): замер по балансу 2026-10-12 (LIVE_RUNS), прайс-лист 12 кр не подтвердился; оценка консервативная, до сверки в кабинете Kie"},
     },
     {
         "id": "suno-extend",

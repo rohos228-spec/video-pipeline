@@ -1,0 +1,36 @@
+[
+    {
+        "key":  "style_name",
+        "label":  "Базовый стиль",
+        "value":  "serious premium cinematic micro pixel art",
+        "type":  "text"
+    },
+    {
+        "key":  "character_type",
+        "label":  "Тип персонажей",
+        "value":  "anthropomorphic cat",
+        "type":  "text"
+    },
+    {
+        "key":  "text_language",
+        "label":  "Язык текста на картинке",
+        "value":  "ТОЛЬКО НА РУССКОМ ЯЗЫКЕ",
+        "type":  "select",
+        "options":  [
+                        "ТОЛЬКО НА РУССКОМ ЯЗЫКЕ",
+                        "ТОЛЬКО НА АНГЛИЙСКОМ ЯЗЫКЕ"
+                    ]
+    },
+    {
+        "key":  "color_grading",
+        "label":  "Цветокоррекция и палитра",
+        "value":  "stylized filmic color grading, pixel-art tone mapping, rich but restrained palette, controlled saturation, много оттенков, плавные stylized shadow gradients, высокий микроконтраст, цветовые рефлексы между объектами, единая стилистика {{STYLE:style_name}} без скачков в другие визуальные режимы.",
+        "type":  "textarea"
+    },
+    {
+        "key":  "prompt_limit",
+        "label":  "Лимит символов (PROMPT+NEGATIVE)",
+        "value":  "до 5000 символов",
+        "type":  "text"
+    }
+]

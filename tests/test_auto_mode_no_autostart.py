@@ -111,6 +111,114 @@ async def test_start_step_clears_gate_then_auto_can_continue(
     await start_step(session, p, "hero", explicit_ui_start=True, skip_queue_guard=True)
     assert auto_awaits_manual_start(p) is False
     assert p.status is ProjectStatus.generating_hero
+    assert p.auto_mode is True
+
+
+@pytest.mark.asyncio
+async def test_start_step_does_not_enable_auto_mode(
+    session: AsyncSession, tmp_path, monkeypatch
+) -> None:
+    """Ручной ▶ не включает автопродвижение пайплайна."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    from app import settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+
+    p = Project(
+        slug="aa-keep-off",
+        topic="t",
+        status=ProjectStatus.frames_ready,
+        auto_mode=False,
+        general_plan="x" * 200,
+        script_text="y" * 200,
+        meta={"split_completed": True},
+    )
+    session.add(p)
+    await session.flush()
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+
+    await start_step(session, p, "hero", explicit_ui_start=True, skip_queue_guard=True)
+    assert p.auto_mode is False
+    assert p.status is ProjectStatus.generating_hero
+
+
+@pytest.mark.asyncio
+async def test_excel_gpt_to_hero_holds_pipeline_when_auto_mode_on(
+    session: AsyncSession,
+) -> None:
+    """После GPT со стрелкой на hero не стартуем персонажей сами."""
+    from app.orchestrator.steps.enrich_xlsx import _maybe_auto_chain_excel_gpt
+
+    nodes = [
+        {
+            "id": "n_excel_gpt_1",
+            "type": "excel_gpt",
+            "position": {"x": 0, "y": 0},
+            "data": {"slotIndex": 1, "label": "Персонажи GPT"},
+        },
+        {"id": "n_hero", "type": "hero", "position": {"x": 120, "y": 0}, "data": {}},
+    ]
+    edges = [{"id": "e1", "source": "n_excel_gpt_1", "target": "n_hero"}]
+    p = Project(
+        slug="gpt-hold-hero",
+        topic="t",
+        status=ProjectStatus.enrich_1_ready,
+        auto_mode=True,
+        meta={"canvas_graph": {"nodes": nodes, "edges": edges}},
+    )
+    session.add(p)
+    await session.flush()
+
+    await _maybe_auto_chain_excel_gpt(
+        session,
+        p,
+        1,
+        ProjectStatus.enrich_1_ready,
+        finished_key="n_excel_gpt_1",
+    )
+    assert p.status is ProjectStatus.enrich_1_ready
+    assert auto_awaits_manual_start(p) is True
+
+    advanced = await maybe_auto_advance(session, p, bot=None, force=True)
+    assert advanced is False
+    assert p.status is ProjectStatus.enrich_1_ready
+
+
+@pytest.mark.asyncio
+async def test_excel_gpt_to_hero_no_hold_when_auto_mode_off(
+    session: AsyncSession,
+) -> None:
+    from app.orchestrator.steps.enrich_xlsx import _maybe_auto_chain_excel_gpt
+
+    nodes = [
+        {
+            "id": "n_excel_gpt_1",
+            "type": "excel_gpt",
+            "position": {"x": 0, "y": 0},
+            "data": {"slotIndex": 1},
+        },
+        {"id": "n_hero", "type": "hero", "position": {"x": 120, "y": 0}, "data": {}},
+    ]
+    edges = [{"id": "e1", "source": "n_excel_gpt_1", "target": "n_hero"}]
+    p = Project(
+        slug="gpt-hold-off",
+        topic="t",
+        status=ProjectStatus.enrich_1_ready,
+        auto_mode=False,
+        meta={"canvas_graph": {"nodes": nodes, "edges": edges}},
+    )
+    session.add(p)
+    await session.flush()
+
+    await _maybe_auto_chain_excel_gpt(
+        session,
+        p,
+        1,
+        ProjectStatus.enrich_1_ready,
+        finished_key="n_excel_gpt_1",
+    )
+    assert p.status is ProjectStatus.enrich_1_ready
+    assert auto_awaits_manual_start(p) is False
 
 
 def test_arm_idempotent() -> None:

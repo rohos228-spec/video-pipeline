@@ -416,14 +416,24 @@ async def store_cells(
     cells: list[SceneDesignCell],
     *,
     chunk_size: int = _CHUNK,
+    transactional: bool = False,
 ) -> dict[str, int]:
-    """Перезаписать ячейки агента частями (короткие транзакции, коммит на чанк)."""
     await session.execute(
         delete(SceneDesignCell).where(
             SceneDesignCell.project_id == project.id,
             SceneDesignCell.agent == agent,
         )
     )
+    if transactional:
+        session.add_all(cells)
+        await session.flush()
+        rejected = sum(1 for c in cells if c.status == "rejected")
+        if rejected:
+            logger.warning(
+                "[#{}] scene_design/{}: {} ячеек отклонено из {}",
+                project.id, agent, rejected, len(cells),
+            )
+        return {"stored": len(cells), "rejected": rejected}
     await session.commit()
     stored = rejected = 0
     for i in range(0, len(cells), chunk_size):

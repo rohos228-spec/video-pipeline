@@ -135,10 +135,10 @@ async def recover_scene_videos_from_disk(
                         fr.status = FrameStatus.video_generated
                     continue
                 for a in shot_arts:
-                    session.delete(a)
+                    await session.delete(a)
             elif shot_arts:
                 for a in shot_arts:
-                    session.delete(a)
+                    await session.delete(a)
 
             session.add(
                 Artifact(
@@ -173,6 +173,14 @@ async def recover_scene_images_from_disk(
     """Привязать frame_NNN_*.png / frame_NNN_s2_*.png; newer-on-disk заменяет stale Artifact."""
     from app.services.plan_shot2 import find_shot1_image, find_shot2_image
     from app.services.scan_frames import is_valid_scene_image
+    from app.services.actions_v1 import get_permission
+    from app.services.observation import _attempt
+    from app.services.media_jobs import assert_entry, persist_artifact, MediaPolicyError
+
+    ctx = _attempt.get()
+    managed = get_permission(project.id) is not None or bool(ctx and ctx.scope.mode == "managed")
+    if managed:
+        await assert_entry(project_id=project.id, provider="kie")
 
     scenes_dir = project.data_dir / "scenes"
     if not scenes_dir.is_dir():
@@ -212,6 +220,21 @@ async def recover_scene_images_from_disk(
                 meta_shot = (a.meta or {}).get("shot", 1)
                 if (shot == 2 and meta_shot == 2) or (shot == 1 and meta_shot != 2):
                     shot_arts.append(a)
+            if managed:
+                for existing in shot_arts:
+                    if existing.path and Path(existing.path).resolve() == path.resolve():
+                        binding = (existing.meta or {}).get("orchestrator") or {}
+                        if (binding.get("execution_id") != ctx.scope.execution_id
+                                or binding.get("node_key") != ctx.node_key):
+                            raise MediaPolicyError("artifact recovery provenance conflict")
+                actual = await persist_artifact(session, Artifact(
+                    project_id=project.id, frame_id=fr.id, kind=ArtifactKind.scene_image,
+                    uuid=uuid.uuid4().hex, path=str(path.resolve()), meta={"shot": shot}))
+                if shot == 1 and fr.status in (FrameStatus.image_prompt_ready, FrameStatus.planned):
+                    fr.status = FrameStatus.image_generated
+                if not any(a.uuid == actual.uuid for a in shot_arts):
+                    recovered.append(fr.number)
+                continue
             current = next(
                 (a for a in shot_arts if a.path and Path(a.path).is_file()),
                 None,
@@ -229,10 +252,10 @@ async def recover_scene_images_from_disk(
                         fr.status = FrameStatus.image_generated
                     continue
                 for a in shot_arts:
-                    session.delete(a)
+                    await session.delete(a)
             elif shot_arts:
                 for a in shot_arts:
-                    session.delete(a)
+                    await session.delete(a)
 
             session.add(
                 Artifact(
@@ -640,11 +663,76 @@ def _restore_hero_png_from_path(
     return dest
 
 
+async def recover_hero_references_from_disk(
+    session: AsyncSession, project: Project
+) -> list[str]:
+    """Зарегистрировать уже лежащие ``characters/*.png`` как hero_reference.
+
+    Не копирует ``old/characters`` обратно: иначе soft ▶ после wipe
+    откатит удаление и Outsee не догенерит недостающие id.
+    """
+    chars_dir = project.data_dir / "characters"
+    if not chars_dir.is_dir():
+        return []
+    rows = (
+        await session.execute(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project.id,
+                Artifact.kind == ArtifactKind.hero_reference,
+            )
+            .order_by(desc(Artifact.id))
+        )
+    ).scalars().all()
+    by_id: dict[str, Artifact] = {}
+    for a in rows:
+        xid = (a.meta or {}).get("excel_id")
+        if not isinstance(xid, str) or not xid:
+            continue
+        key = xid.strip().lower()
+        if key and key not in by_id:
+            by_id[key] = a
+    registered: list[str] = []
+    for path in sorted(chars_dir.glob("*.png")):
+        try:
+            if not path.is_file() or path.stat().st_size < 1000:
+                continue
+        except OSError:
+            continue
+        cid = path.stem.strip().lower()
+        if not cid:
+            continue
+        art = by_id.get(cid)
+        if art is not None:
+            if art.path and Path(art.path).is_file():
+                continue
+            art.path = str(path.resolve())
+            registered.append(cid)
+            continue
+        session.add(
+            Artifact(
+                project_id=project.id,
+                kind=ArtifactKind.hero_reference,
+                uuid=uuid.uuid4().hex,
+                path=str(path.resolve()),
+                meta={"excel_id": cid, "recovered_from_disk": True},
+            )
+        )
+        registered.append(cid)
+    if registered:
+        await session.flush()
+        logger.info(
+            "[#{}] artifact_recovery: heroes с диска: {}",
+            project.id,
+            registered,
+        )
+    return registered
+
+
 async def recover_hero_references_from_old_dir(
     session: AsyncSession,
     project: Project,
 ) -> list[str]:
-    """Восстановить cNN.* из data/.../old/characters/ (после wipe)."""
     old_dir = project.data_dir / "old" / "characters"
     if not old_dir.is_dir():
         return []

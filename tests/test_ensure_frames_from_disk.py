@@ -82,6 +82,29 @@ async def test_ensure_frames_creates_missing_from_disk(
 
 
 @pytest.mark.asyncio
+async def test_ensure_frames_does_not_fill_gaps_when_project_has_frames(
+    session: AsyncSession,
+    project: Project,
+) -> None:
+    session.add(project)
+    session.add(
+        Frame(
+            project_id=project.id,
+            number=1,
+            voiceover_text="жив",
+            status="planned",
+        )
+    )
+    await session.flush()
+    scenes = project.data_dir / "scenes"
+    scenes.mkdir()
+    (scenes / "frame_019_ghost.png").write_bytes(b"png")
+    assert await ensure_frames_from_disk_media(session, project) == []
+    created = await ensure_frames_from_disk_media(session, project, fill_gaps=True)
+    assert created == [19]
+
+
+@pytest.mark.asyncio
 async def test_build_montage_board_bootstraps_from_disk_folders(
     session: AsyncSession,
     project: Project,

@@ -53,3 +53,5 @@ async def test_kie_kling_poll_recovers_from_transient_504_streak():
         res = await _poll_task("task_kling_999", timeout_s=30.0)
         assert res.get("state") == "success"
         assert call_count == 3
+
+pytestmark = pytest.mark.usefixtures("fake_provider_keys")

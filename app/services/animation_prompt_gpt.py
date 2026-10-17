@@ -319,6 +319,10 @@ def has_animation_prompt_for_frame(project: Project, frame: Frame) -> bool:
     # Целый JSON-ответ GPT ≠ готовый промт кадра (баг старого парсера).
     if is_apply_ops_blob(text):
         return False
+    from app.generation_options import is_skippable_empty_prompt
+
+    if is_skippable_empty_prompt(text):
+        return False
     return True
 
 

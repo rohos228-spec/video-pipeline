@@ -1,0 +1,6004 @@
+{
+ "version": 1,
+ "cases": [
+  {
+   "id": "read_board",
+   "text": "покажи состояние доски монтажа",
+   "workflow": "read board",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.get_board",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "read_board2",
+   "text": "что сейчас на доске? прочитай её",
+   "workflow": "read board",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.get_board",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "read_status",
+   "text": "идёт ли сейчас применение правок и что с прогрессом",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.apply_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "montage_status",
+   "text": "смонтировалось ли видео, какой статус сборки",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.montage_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cost",
+   "text": "сколько это будет стоить, покажи модель оплаты и очередь",
+   "workflow": "cost",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.get_cost_basis",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "voiceover",
+   "text": "поменяй закадровый текст кадра 5 на «Привет, друзья»",
+   "workflow": "edit voiceover",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.5",
+      "text": "Привет, друзья"
+     }
+    }
+   ],
+   "also_offered": [
+    "montage.get_board"
+   ]
+  },
+  {
+   "id": "voiceover2",
+   "text": "исправь озвучку в кадре с id 1212: «Сегодня мы соберём сайт»",
+   "workflow": "edit voiceover",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": 1212,
+      "text": "Сегодня мы соберём сайт"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "voiceover_ctx",
+   "text": "перепиши закадр этого кадра: «Всё готово»",
+   "workflow": "edit voiceover",
+   "context": {
+    "selected_frame": 7,
+    "status": "idle",
+    "frame_count": 10
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.7",
+      "text": "Всё готово"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "swap_slots",
+   "text": "поменяй местами картинки кадров 2 и 3",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "image",
+      "a_frame": 2,
+      "a_shot": 1,
+      "b_frame": 3,
+      "b_shot": 1
+     }
+    }
+   ],
+   "also_offered": [
+    "montage.swap_shots"
+   ]
+  },
+  {
+   "id": "swap_shots",
+   "text": "обменяй шот 1 и шот 2 в кадре 4",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_shots",
+     "params": {
+      "frame_number": 4
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "swap_video",
+   "text": "поменяй местами видео кадра 1 и кадра 6",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "video",
+      "a_frame": 1,
+      "a_shot": 1,
+      "b_frame": 6,
+      "b_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "queue_regen",
+   "text": "поставь кадр 9 на перегенерацию картинки",
+   "workflow": "queue regen",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.queue_ops",
+     "params": {
+      "ops": [
+       {
+        "type": "image_regen",
+        "frame_number": 9
+       }
+      ]
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "queue_ai",
+   "text": "добавь в очередь ИИ-изменение картинки кадра 9: сделай небо темнее",
+   "workflow": "queue regen",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.queue_ops",
+     "params": {
+      "ops": [
+       {
+        "type": "image_ai_change",
+        "frame_number": 9,
+        "instruction": "небо темнее"
+       }
+      ]
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cancel_queue",
+   "text": "убери из очереди правки кадра 3",
+   "workflow": "queue",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.cancel_queue_ops",
+     "params": {
+      "ops": [
+       {
+        "frame_number": 3
+       },
+       {
+        "frame_number": 3
+       }
+      ]
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "split",
+   "text": "отдели кадр 5 в новую сцену",
+   "workflow": "split scene",
+   "context": {
+    "selected_frame": 5,
+    "selected_scene": 2
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.split_scene",
+     "params": {
+      "frame_id": "$frame.5"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "split2",
+   "text": "разрежь сцену ножницами по кадру с id 1215",
+   "workflow": "split scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.split_scene",
+     "params": {
+      "frame_id": 1215
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "explode",
+   "text": "разбей сцену так, чтобы каждый кадр был отдельной сценой",
+   "workflow": "split scene",
+   "context": {
+    "selected_frame": 3
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.explode_scene",
+     "params": {
+      "frame_id": "$frame.1"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "merge",
+   "text": "объедини сцены 10 и 12 в одну",
+   "workflow": "merge scenes",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.merge_scenes",
+     "params": {
+      "left_frame_id": "$frame.10",
+      "right_frame_id": "$frame.12"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "merge2",
+   "text": "склей эту сцену со следующей",
+   "workflow": "merge scenes",
+   "context": {
+    "selected_frame": 9,
+    "selected_scene": 3
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.merge_scenes",
+     "params": {
+      "left_frame_id": "$frame.7",
+      "right_frame_id": "$frame.10"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "improve",
+   "text": "улучши сцену кадра 13: больше динамики",
+   "workflow": "improve scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.improve_scene",
+     "params": {
+      "frame_id": "$frame.13",
+      "prompt": "больше динамики"
+     }
+    }
+   ],
+   "also_offered": [
+    "montage.apply_queue"
+   ],
+   "explanation_contains": [
+    "по умолчанию"
+   ]
+  },
+  {
+   "id": "improve_ctx",
+   "text": "улучши эту сцену, сделай её живее",
+   "workflow": "improve scene",
+   "context": {
+    "selected_frame": 5,
+    "selected_scene": 2
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.improve_scene",
+     "params": {
+      "frame_id": "$frame.4"
+     }
+    }
+   ],
+   "also_offered": [],
+   "explanation_contains": [
+    "по умолчанию"
+   ]
+  },
+  {
+   "id": "gen_scene",
+   "text": "сгенерируй сцены для ячейки кадра 4 по заказу «уличный кофе»",
+   "workflow": "generate scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.generate_scene",
+     "params": {
+      "frame_id": "$frame.4",
+      "prompt": "уличный кофе"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gen_images",
+   "text": "сгенерируй картинки для кадров 3, 4 и 5",
+   "workflow": "generate images",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.generate_scene_images",
+     "params": {
+      "frame_numbers": [
+       3,
+       4,
+       5
+      ]
+     }
+    }
+   ],
+   "also_offered": [],
+   "explanation_contains": [
+    "по умолчанию"
+   ]
+  },
+  {
+   "id": "delete_frame",
+   "text": "удали кадр с id 1215",
+   "workflow": "delete frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_frame",
+     "params": {
+      "frame_id": 1215
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "delete_frame2",
+   "text": "убери кадр 22 совсем",
+   "workflow": "delete frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_frame",
+     "params": {
+      "frame_id": "$frame.22"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "delete_child",
+   "text": "удали дочерний кадр 9",
+   "workflow": "delete frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_child_frame",
+     "params": {
+      "frame_number": 9
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "delete_image",
+   "text": "удали картинку в слоте кадра 7",
+   "workflow": "delete media",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_image",
+     "params": {
+      "frame_number": 7
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "delete_video",
+   "text": "удали видео кадра 7",
+   "workflow": "delete media",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_video",
+     "params": {
+      "frame_number": 7
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "apply",
+   "text": "примени правки из очереди для кадров 3 и 4",
+   "workflow": "apply queue",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.apply_queue",
+     "params": {
+      "frame_numbers": [
+       3,
+       4
+      ],
+      "max_image_ops": 3,
+      "max_video_ops": 0
+     }
+    }
+   ],
+   "also_offered": [
+    "montage.get_cost_basis"
+   ],
+   "explanation_contains": [
+    "по умолчанию"
+   ]
+  },
+  {
+   "id": "assemble",
+   "text": "собери ролик: разбери аудио и смонтируй видео",
+   "workflow": "assemble",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.align_audio",
+     "params": {}
+    },
+    {
+     "action_id": "montage.run_montage",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "assemble2",
+   "text": "смонтируй видео заново",
+   "workflow": "assemble",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.run_montage",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "align",
+   "text": "выровняй озвучку по таймкодам, разбор аудио",
+   "workflow": "align audio",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.align_audio",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "assemble_params",
+   "text": "сделай громкость музыки 0.2 и включи субтитры в ролике",
+   "workflow": "assemble settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_assemble_params",
+     "params": {
+      "bgm_level": 20,
+      "subtitles_enabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "coverage",
+   "text": "поставь кадру 4 крупный план",
+   "workflow": "coverage",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_coverage",
+     "params": {
+      "frame_number": 4
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "coverage2",
+   "text": "измени ракурс кадра 6 на вид сверху",
+   "workflow": "coverage",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_coverage",
+     "params": {
+      "frame_number": 6
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "anchors",
+   "text": "задай якоря для кадра 3: чашка, стол",
+   "workflow": "anchors",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_anchors",
+     "params": {
+      "frame_number": 3
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chain",
+   "text": "разбери последовательность на кадры для кадра 2: герой входит → садится",
+   "workflow": "scene chain",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_scene_chain",
+     "params": {
+      "frame_number": 2
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "trim",
+   "text": "обрежь видео кадра 5, начало с 1 секунды",
+   "workflow": "trim",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_video_trim",
+     "params": {
+      "frame_number": 5,
+      "shot": 1,
+      "start": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "insert",
+   "text": "добавь новый кадр после кадра 8",
+   "workflow": "insert frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.insert_frame",
+     "params": {
+      "after_frame_id": "$frame.8"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "refs_list",
+   "text": "какие готовые референсы есть в проекте",
+   "workflow": "refs",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.list_ref_assets",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "link_ref",
+   "text": "приложи реф cat.png кадру 3",
+   "workflow": "refs",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "recover",
+   "text": "забери готовые карточки из галереи Outsee",
+   "workflow": "recover",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.recover_outsee",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "stop",
+   "text": "останови проект, хватит",
+   "workflow": "stop",
+   "context": {
+    "status": "running"
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.stop",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "node_settings",
+   "text": "покажи настройки ноды n_excel_gpt_fw_shots",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "node_disable",
+   "text": "отключи ноду n_excel_gpt_fw_qc",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_disabled",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "disabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "node_route",
+   "text": "через какую модель идёт нода n_excel_gpt_fw_script",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_llm_route",
+     "params": {
+      "node_key": "n_excel_gpt_fw_script"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "node_run",
+   "text": "запусти шаг на ноде n_excel_gpt_fw_action",
+   "workflow": "node run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.run_step",
+     "params": {
+      "node_key": "n_excel_gpt_fw_action"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "group_insert",
+   "text": "вставь группу script_frames_qc в канвас",
+   "workflow": "group insert",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.insert",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "group_list",
+   "text": "какие группы нод есть в библиотеке",
+   "workflow": "group insert",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.list",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "report",
+   "text": "покажи отчёт по кадрам группы проверки",
+   "workflow": "report",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.shots_report",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shot_menu",
+   "text": "покажи меню съёмки",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.get_menu",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shot_edit",
+   "text": "в меню съёмки поменяй закадр ячейки",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "att_voice",
+   "text": "загрузи озвучку",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "audio",
+      "name": "voice.mp3",
+      "size": 2400000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.upload_voice",
+     "params": {
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": [],
+   "explanation_contains": [
+    "voice.mp3"
+   ]
+  },
+  {
+   "id": "att_image",
+   "text": "загрузи картинку в кадр 5",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "image",
+      "name": "frame5.png",
+      "size": 350000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.upload_image",
+     "params": {
+      "frame_number": 5,
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_video",
+   "text": "загрузи видео в кадр 6",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "video",
+      "name": "clip6.mp4",
+      "size": 8000000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.upload_video",
+     "params": {
+      "frame_number": 6,
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_excel",
+   "text": "загрузи excel файл в ноду n_excel_gpt_fw_script",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "excel",
+      "name": "table.xlsx",
+      "size": 52000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.upload_file",
+     "params": {
+      "node_key": "n_excel_gpt_fw_script",
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_agent",
+   "text": "загрузи агента проверки в ноду n_excel_gpt_fw_qc",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "text",
+      "name": "agent.md",
+      "size": 4000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.upload_check_agent",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_wrong_kind",
+   "text": "загрузи озвучку",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "image",
+      "name": "cat.png",
+      "size": 120000
+     }
+    ]
+   },
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "не подходит",
+    "аудио"
+   ]
+  },
+  {
+   "id": "att_wrong_format",
+   "text": "загрузи видео в кадр 3",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "video",
+      "name": "clip.mov",
+      "size": 9000000
+     }
+    ]
+   },
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "не подходит",
+    "mp4"
+   ]
+  },
+  {
+   "id": "att_no_frame",
+   "text": "загрузи картинку",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "image",
+      "name": "pic.png",
+      "size": 90000
+     }
+    ]
+   },
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "кадр"
+   ]
+  },
+  {
+   "id": "up_voice",
+   "text": "загрузи озвучку с компьютера",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "up_music",
+   "text": "загрузи фоновую музыку для ролика",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "up_image",
+   "text": "загрузи свою картинку в слот кадра 5",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "up_video",
+   "text": "загрузи видео файл в кадр 6",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "up_ref",
+   "text": "загрузи реф для кадра 3",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "pause",
+   "text": "поставь проект на паузу",
+   "workflow": "pause resume",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.pause",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "resume",
+   "text": "сними паузу с проекта",
+   "workflow": "pause resume",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.resume",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "continue",
+   "text": "продолжи конвейер проекта дальше",
+   "workflow": "pause resume",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.continue_pipeline",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "master_get",
+   "text": "прочитай мастер-промт шага script",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.get_master",
+     "params": {
+      "step_code": "script",
+      "name": "main"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "master_edit",
+   "text": "перепиши мастер-промт варианта main для шага shots",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "master_new",
+   "text": "создай новый вариант мастер-промта для шага qc",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "master_del",
+   "text": "удали вариант мастер-промта draft",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.delete_master",
+     "params": {
+      "step_code": "script",
+      "name": "draft"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "main_pc",
+   "text": "включи отправку сборки на основной ПК",
+   "workflow": "main pc",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_send_to_main_pc",
+     "params": {
+      "enabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "reload_xlsx",
+   "text": "перечитай project.xlsx в базу",
+   "workflow": "reload xlsx",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.reload_xlsx",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "node_cost",
+   "text": "сколько будет стоить прогон ноды n_excel_gpt_fw_shots",
+   "workflow": "node cost",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_run_cost_basis",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots"
+     }
+    }
+   ],
+   "also_offered": [
+    "node.run_step"
+   ]
+  },
+  {
+   "id": "node_step",
+   "text": "запусти шаг ноды n_excel_gpt_fw_qc",
+   "workflow": "node run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.run_step",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "upload_agent",
+   "text": "загрузи агента проверки в ноду n_excel_gpt_fw_qc",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "upload_excel",
+   "text": "загрузи excel файл в ноду n_excel_gpt_fw_script",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "chg_prompt",
+   "text": "предложи изменение промпта для шага shots, без применения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "chg_rollback",
+   "text": "откати последнее изменение промпта",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.rollback",
+     "params": {
+      "target": "$target.shots_prompt",
+      "expected_version": 3
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_apply",
+   "text": "примени предложение изменения номер 3",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.apply",
+     "params": {
+      "proposal_id": "$proposal.3.id",
+      "expected_digest": "$proposal.3.digest"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_list",
+   "text": "покажи список предложений изменений",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.list",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_versions",
+   "text": "покажи историю версий промпта",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.get",
+     "params": {
+      "target": "$target.shots_prompt"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_node",
+   "text": "предложи правку параметров ноды n_excel_gpt_fw_qc",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "chg_back",
+   "text": "верни прежнюю версию промпта",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "clarify",
+   "also_offered": [],
+   "steps": []
+  },
+  {
+   "id": "amb1",
+   "text": "поправь кадр",
+   "workflow": "ambiguous",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [
+    "montage.set_voiceover",
+    "montage.set_coverage",
+    "montage.queue_ops"
+   ]
+  },
+  {
+   "id": "amb2",
+   "text": "сделай лучше",
+   "workflow": "ambiguous",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [
+    "montage.improve_scene"
+   ]
+  },
+  {
+   "id": "amb3",
+   "text": "исправь это",
+   "workflow": "ambiguous",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [
+    "montage.set_voiceover"
+   ]
+  },
+  {
+   "id": "amb4",
+   "text": "удали лишнее",
+   "workflow": "ambiguous",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [
+    "montage.delete_frame",
+    "montage.delete_image"
+   ]
+  },
+  {
+   "id": "amb5",
+   "text": "сделай сцену",
+   "workflow": "ambiguous",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [
+    "montage.generate_scene",
+    "montage.insert_frame"
+   ]
+  },
+  {
+   "id": "ref1",
+   "text": "удали проект",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref2",
+   "text": "запушь в гитхаб",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref3",
+   "text": "измени код",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref4",
+   "text": "удали весь проект целиком и закоммить изменения",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref5",
+   "text": "выполни команду в терминале и покажи пароли",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref6",
+   "text": "расскажи анекдот про программиста",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref7",
+   "text": "сотри все файлы",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref8",
+   "text": "залей на гитхаб",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref9",
+   "text": "поменяй код в студии",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref10",
+   "text": "обнови пароль",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref11",
+   "text": "перепиши код оркестратора",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref12",
+   "text": "поменяй исходники приложения и перезапусти сервер",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "board_0",
+   "text": "покажи доску",
+   "workflow": "read board",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.get_board",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "board_1",
+   "text": "дай глянуть на доску монтажа",
+   "workflow": "read board",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.get_board",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "board_2",
+   "text": "что там на доске?",
+   "workflow": "read board",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.get_board",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "apply_st_0",
+   "text": "правки уже применились?",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.apply_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "apply_st_1",
+   "text": "как идёт применение правок",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.apply_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "apply_st_2",
+   "text": "применение ещё идёт?",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.apply_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mont_st_0",
+   "text": "ролик уже собрался?",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.montage_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mont_st_1",
+   "text": "как там монтаж видео",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.montage_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mont_st_2",
+   "text": "статус сборки ролика",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.montage_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cost_0",
+   "text": "сколько стоит применить очередь",
+   "workflow": "cost",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.get_cost_basis",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cost_1",
+   "text": "покажи цены и что сейчас в очереди",
+   "workflow": "cost",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.get_cost_basis",
+     "params": {}
+    },
+    {
+     "action_id": "montage.get_board",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cost_2",
+   "text": "дорого выйдет генерация очереди?",
+   "workflow": "cost",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.get_cost_basis",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "refs_0",
+   "text": "покажи готовые рефы",
+   "workflow": "refs",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.list_ref_assets",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "refs_1",
+   "text": "какие референсы можно приложить к кадру",
+   "workflow": "refs",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.list_ref_assets",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "refs_2",
+   "text": "список референсов проекта",
+   "workflow": "refs",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.list_ref_assets",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "glist_0",
+   "text": "покажи библиотеку групп нод",
+   "workflow": "group insert",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.list",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "glist_1",
+   "text": "какие группы есть в каталоге",
+   "workflow": "group insert",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.list",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "glist_2",
+   "text": "список групп",
+   "workflow": "group insert",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.list",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "menu_0",
+   "text": "открой меню съемки",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.get_menu",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "menu_1",
+   "text": "что в меню съёмки?",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.get_menu",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "menu_2",
+   "text": "прочитай меню съемки",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.get_menu",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rep_0",
+   "text": "покажи отчет Кадры",
+   "workflow": "report",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.shots_report",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rep_1",
+   "text": "отчёт по шотам и проверке qc",
+   "workflow": "report",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.shots_report",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rep_2",
+   "text": "что нашла проверка по кадрам",
+   "workflow": "report",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.shots_report",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rec_st_0",
+   "text": "как идёт забор из галереи Outsee",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.recover_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rec_st_1",
+   "text": "забор карточек из галереи закончился?",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.recover_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rec_st_2",
+   "text": "статус галереи outsee",
+   "workflow": "status",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.recover_status",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "vo_a",
+   "text": "замени закадр в кадре 9 на «Мы начинаем»",
+   "workflow": "edit voiceover",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.9",
+      "text": "Мы начинаем"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "vo_b",
+   "text": "пятый кадр: пусть закадр будет «Добро пожаловать»",
+   "workflow": "edit voiceover",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.5",
+      "text": "Добро пожаловать"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "vo_c",
+   "text": "в сцене 4 поменяй озвучку на «Итоги дня»",
+   "workflow": "edit voiceover",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.4",
+      "text": "Итоги дня"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "vo_d",
+   "text": "поменяй закдарый текст кадра 11 на «Спасибо за внимание»",
+   "workflow": "edit voiceover",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.11",
+      "text": "Спасибо за внимание"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "sw_a",
+   "text": "поменяй местами картинки кадров 5 и 6",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "image",
+      "a_frame": 5,
+      "a_shot": 1,
+      "b_frame": 6,
+      "b_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "sw_b",
+   "text": "обменяй картинки в кадрах 9 и 10",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "image",
+      "a_frame": 9,
+      "a_shot": 1,
+      "b_frame": 10,
+      "b_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "sw_c",
+   "text": "кадр 4 и кадр 8: поменяй картинки местами",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "image",
+      "a_frame": 4,
+      "a_shot": 1,
+      "b_frame": 8,
+      "b_shot": 1
+     }
+    },
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "image",
+      "a_frame": 4,
+      "a_shot": 2,
+      "b_frame": 8,
+      "b_shot": 2
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "swv_a",
+   "text": "поменяй видео местами в кадрах 1 и 6",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "video",
+      "a_frame": 1,
+      "a_shot": 1,
+      "b_frame": 6,
+      "b_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "swv_b",
+   "text": "обменяй клипы кадров 2 и 3",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "video",
+      "a_frame": 2,
+      "a_shot": 1,
+      "b_frame": 3,
+      "b_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "swv_c",
+   "text": "переставь видео кадра 5 на место видео кадра 7",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "video",
+      "a_frame": 5,
+      "a_shot": 1,
+      "b_frame": 7,
+      "b_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ssh_a",
+   "text": "поменяй шоты кадра 4 местами",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_shots",
+     "params": {
+      "frame_number": 4
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ssh_b",
+   "text": "обменяй первый и второй шот в кадре 8",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_shots",
+     "params": {
+      "frame_number": 8
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ssh_c",
+   "text": "кадр 12: переставь шот 1 и шот 2",
+   "workflow": "swap",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_shots",
+     "params": {
+      "frame_number": 12
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "qr_b",
+   "text": "перегенерируй картинку кадра 7",
+   "workflow": "queue regen",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.queue_ops",
+     "params": {
+      "ops": [
+       {
+        "type": "image_regen",
+        "frame_number": 7
+       }
+      ]
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "qr_c",
+   "text": "кадр 6 в очередь на перегенерацию картинки",
+   "workflow": "queue regen",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.queue_ops",
+     "params": {
+      "ops": [
+       {
+        "type": "image_regen",
+        "frame_number": 6
+       }
+      ]
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "qr_d",
+   "text": "поставь перегенерацию видео кадра 5 в очередь",
+   "workflow": "queue regen",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.queue_ops",
+     "params": {
+      "ops": [
+       {
+        "type": "video_regen",
+        "frame_number": 5
+       }
+      ]
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "qai_b",
+   "text": "сделай ИИ-правку картинки кадра 11: добавь дождь",
+   "workflow": "queue regen",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.queue_ops",
+     "params": {
+      "ops": [
+       {
+        "type": "image_ai_change",
+        "frame_number": 11,
+        "instruction": "дождь"
+       }
+      ]
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "qai_c",
+   "text": "через ИИ измени картинку кадра 15: убери лишнего человека",
+   "workflow": "queue regen",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.queue_ops",
+     "params": {
+      "ops": [
+       {
+        "type": "image_ai_change",
+        "frame_number": 15,
+        "instruction": "человека"
+       }
+      ]
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cq_b",
+   "text": "сними из очереди всё про кадр 4",
+   "workflow": "queue",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.cancel_queue_ops",
+     "params": {
+      "ops": [
+       {
+        "type": "image_regen",
+        "frame_number": 4
+       }
+      ]
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cq_c",
+   "text": "очисти всю очередь правок",
+   "workflow": "queue",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.cancel_queue_ops",
+     "params": {
+      "clear_all": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cq_d",
+   "text": "убери из очереди видео кадра 8",
+   "workflow": "queue",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.cancel_queue_ops",
+     "params": {
+      "ops": [
+       {
+        "type": "video_regen",
+        "frame_number": 8
+       }
+      ]
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "sp_b",
+   "text": "отрежь кадр 8 от сцены, пусть будет новая сцена",
+   "workflow": "split scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.split_scene",
+     "params": {
+      "frame_id": "$frame.8"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "sp_c",
+   "text": "раздели сцену: с 9-го кадра начинается новая сцена",
+   "workflow": "split scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.split_scene",
+     "params": {
+      "frame_id": "$frame.9"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ex_b",
+   "text": "сделай из каждого кадра сцены 7 отдельную сцену",
+   "workflow": "split scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.explode_scene",
+     "params": {
+      "frame_id": "$frame.7"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ex_c",
+   "text": "раздроби сцену 13 на отдельные сцены",
+   "workflow": "split scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.explode_scene",
+     "params": {
+      "frame_id": "$frame.13"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mg_b",
+   "text": "склей сцены 6 и 7",
+   "workflow": "merge scenes",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.merge_scenes",
+     "params": {
+      "left_frame_id": "$frame.6",
+      "right_frame_id": "$frame.7"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mg_c",
+   "text": "слей сцену 13 со следующей",
+   "workflow": "merge scenes",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.merge_scenes",
+     "params": {
+      "left_frame_id": "$frame.13",
+      "right_frame_id": "$frame.16"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "im_b",
+   "text": "доработай сцену кадра 10: пусть будет больше движения",
+   "workflow": "improve scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.improve_scene",
+     "params": {
+      "frame_id": "$frame.10",
+      "prompt": "больше движения"
+     }
+    }
+   ],
+   "also_offered": [],
+   "explanation_contains": [
+    "по умолчанию"
+   ]
+  },
+  {
+   "id": "im_c",
+   "text": "сделай сцену 7 динамичнее",
+   "workflow": "improve scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.improve_scene",
+     "params": {
+      "frame_id": "$frame.7"
+     }
+    }
+   ],
+   "also_offered": [],
+   "explanation_contains": [
+    "по умолчанию"
+   ]
+  },
+  {
+   "id": "gs_b",
+   "text": "придумай сцену для кадра 7: герой ищет ключи",
+   "workflow": "generate scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.generate_scene",
+     "params": {
+      "frame_id": "$frame.7",
+      "prompt": "ключи"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gs_c",
+   "text": "сгенерируй заново сцену 10 по заказу «ночной город»",
+   "workflow": "generate scene",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.generate_scene",
+     "params": {
+      "frame_id": "$frame.10",
+      "prompt": "ночной город"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gi_b",
+   "text": "нарисуй картинки для кадров 1 и 2",
+   "workflow": "generate images",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.generate_scene_images",
+     "params": {
+      "frame_numbers": [
+       1,
+       2
+      ]
+     }
+    }
+   ],
+   "also_offered": [],
+   "explanation_contains": [
+    "по умолчанию"
+   ]
+  },
+  {
+   "id": "gi_c",
+   "text": "сделай картинки для кадров 6, 7 и 8",
+   "workflow": "generate images",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.generate_scene_images",
+     "params": {
+      "frame_numbers": [
+       6,
+       7,
+       8
+      ]
+     }
+    }
+   ],
+   "also_offered": [],
+   "explanation_contains": [
+    "по умолчанию"
+   ]
+  },
+  {
+   "id": "df_b",
+   "text": "удали пятнадцатый кадр",
+   "workflow": "delete frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_frame",
+     "params": {
+      "frame_id": "$frame.15"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "df_c",
+   "text": "выкинь кадр 30",
+   "workflow": "delete frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_frame",
+     "params": {
+      "frame_id": "$frame.30"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "df_d",
+   "text": "снеси кадр 27",
+   "workflow": "delete frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_frame",
+     "params": {
+      "frame_id": "$frame.27"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "dc_b",
+   "text": "убери шот 11 из сцены, дочерний кадр",
+   "workflow": "delete frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_child_frame",
+     "params": {
+      "frame_number": 11
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "dc_c",
+   "text": "удали дочерний кадр 14",
+   "workflow": "delete frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_child_frame",
+     "params": {
+      "frame_number": 14
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "di_b",
+   "text": "убери картинку кадра 9",
+   "workflow": "delete media",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_image",
+     "params": {
+      "frame_number": 9
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "di_c",
+   "text": "удали картинку второго шота кадра 4",
+   "workflow": "delete media",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_image",
+     "params": {
+      "frame_number": 4,
+      "shot": 2
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "di_d",
+   "text": "удали картинку кадра 4",
+   "workflow": "delete media",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "шот"
+   ]
+  },
+  {
+   "id": "dv_b",
+   "text": "убери видео кадра 3",
+   "workflow": "delete media",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_video",
+     "params": {
+      "frame_number": 3
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "dv_c",
+   "text": "удали клип кадра 5 из шота 1",
+   "workflow": "delete media",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_video",
+     "params": {
+      "frame_number": 5,
+      "shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "dv_d",
+   "text": "удали видео кадра 4",
+   "workflow": "delete media",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "шот"
+   ]
+  },
+  {
+   "id": "ap_b",
+   "text": "запусти применение очереди",
+   "workflow": "apply queue",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.apply_queue",
+     "params": {
+      "max_image_ops": 3,
+      "max_video_ops": 1
+     }
+    }
+   ],
+   "also_offered": [],
+   "explanation_contains": [
+    "по умолчанию"
+   ]
+  },
+  {
+   "id": "ap_c",
+   "text": "примени очередь только для кадра 8",
+   "workflow": "apply queue",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.apply_queue",
+     "params": {
+      "frame_numbers": [
+       8
+      ],
+      "max_image_ops": 0,
+      "max_video_ops": 1
+     }
+    }
+   ],
+   "also_offered": [],
+   "explanation_contains": [
+    "по умолчанию"
+   ]
+  },
+  {
+   "id": "asm_b",
+   "text": "запусти монтаж",
+   "workflow": "assemble",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.run_montage",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "asm_c",
+   "text": "собери финальное видео",
+   "workflow": "assemble",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.run_montage",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "asm_d",
+   "text": "смонтируй ролик",
+   "workflow": "assemble",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.run_montage",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "align_b",
+   "text": "сделай разбор аудио по таймкодам",
+   "workflow": "align audio",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.align_audio",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "align_c",
+   "text": "выровняй аудио по кадрам",
+   "workflow": "align audio",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.align_audio",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "asp_b",
+   "text": "музыку потише, поставь 30 процентов",
+   "workflow": "assemble settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_assemble_params",
+     "params": {
+      "bgm_level": 30
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "asp_c",
+   "text": "выключи субтитры в ролике",
+   "workflow": "assemble settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_assemble_params",
+     "params": {
+      "subtitles_enabled": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "asp_d",
+   "text": "добавь паузу 2 секунды после озвучки",
+   "workflow": "assemble settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_assemble_params",
+     "params": {
+      "post_voiceover_tail_seconds": 2
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cov_c",
+   "text": "поменяй свет кадра 6 на контражур",
+   "workflow": "coverage",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_coverage",
+     "params": {
+      "frame_number": 6,
+      "type": "coverage_light"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cov_d",
+   "text": "добавь движение камеры в кадре 9: наезд",
+   "workflow": "coverage",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_coverage",
+     "params": {
+      "frame_number": 9,
+      "type": "coverage_move"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cov_e",
+   "text": "в кадре 12 сделай общий план",
+   "workflow": "coverage",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_coverage",
+     "params": {
+      "frame_number": 12,
+      "type": "coverage_plan"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "anc_b",
+   "text": "якоря кадра 7: ключи, дверь",
+   "workflow": "anchors",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_anchors",
+     "params": {
+      "frame_number": 7
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chain_b",
+   "text": "разбери действие кадра 10 на шоты: герой встаёт → идёт к двери",
+   "workflow": "scene chain",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_scene_chain",
+     "params": {
+      "frame_number": 10
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "trim_b",
+   "text": "подрежь клип кадра 3: с 0.5 до 2 секунд",
+   "workflow": "trim",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_video_trim",
+     "params": {
+      "frame_number": 3,
+      "shot": 1,
+      "start": 0.5,
+      "end": 2
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "trim_c",
+   "text": "сними обрезку с видео кадра 5",
+   "workflow": "trim",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_video_trim",
+     "params": {
+      "frame_number": 5,
+      "shot": 1,
+      "clear": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ins_b",
+   "text": "вставь кадр после кадра 12",
+   "workflow": "insert frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.insert_frame",
+     "params": {
+      "after_frame_id": "$frame.12"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ins_c",
+   "text": "нужен новый кадр после пятого",
+   "workflow": "insert frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.insert_frame",
+     "params": {
+      "after_frame_id": "$frame.5"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rec_b",
+   "text": "достань готовые карточки из галереи",
+   "workflow": "recover",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.recover_outsee",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rec_c",
+   "text": "восстанови кадры из галереи outsee",
+   "workflow": "recover",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.recover_outsee",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "stop_b",
+   "text": "стоп, останови всё",
+   "workflow": "stop",
+   "context": {
+    "status": "running"
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.stop",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "stop_c",
+   "text": "прекрати выполнение проекта",
+   "workflow": "stop",
+   "context": {
+    "status": "running"
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.stop",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "pause_b",
+   "text": "приостанови проект",
+   "workflow": "pause resume",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.pause",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "pause_c",
+   "text": "поставь всё на паузу",
+   "workflow": "pause resume",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.pause",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "resume_b",
+   "text": "возобнови проект",
+   "workflow": "pause resume",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.resume",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "resume_c",
+   "text": "сними с проекта паузу",
+   "workflow": "pause resume",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.resume",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "continue_b",
+   "text": "двигай конвейер дальше",
+   "workflow": "pause resume",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.continue_pipeline",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "continue_c",
+   "text": "продолжи пайплайн",
+   "workflow": "pause resume",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.continue_pipeline",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mpc_b",
+   "text": "выключи отправку сборки на основной ПК",
+   "workflow": "main pc",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_send_to_main_pc",
+     "params": {
+      "enabled": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mpc_c",
+   "text": "отправляй сборку на основной компьютер",
+   "workflow": "main pc",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_send_to_main_pc",
+     "params": {
+      "enabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rx_b",
+   "text": "перезагрузи таблицу project.xlsx",
+   "workflow": "reload xlsx",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.reload_xlsx",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rx_c",
+   "text": "перечитай эксель в базу",
+   "workflow": "reload xlsx",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.reload_xlsx",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ns_b",
+   "text": "какие настройки у ноды n_excel_gpt_fw_qc",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ns_c",
+   "text": "покажи пульт оператора ноды n_excel_gpt_fw_script",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_script"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nd_b",
+   "text": "выключи ноду n_excel_gpt_fw_shots",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_disabled",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots",
+      "disabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nd_c",
+   "text": "включи обратно ноду n_excel_gpt_fw_qc",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_disabled",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "disabled": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nr_b",
+   "text": "какая модель у ноды n_excel_gpt_fw_qc",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_llm_route",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nr_c",
+   "text": "через какую модель работает n_excel_gpt_fw_shots",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_llm_route",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nrun_b",
+   "text": "прогони ноду n_excel_gpt_fw_shots",
+   "workflow": "node run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.run_step",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nrun_c",
+   "text": "стартани шаг на ноде n_excel_gpt_fw_qc",
+   "workflow": "node run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.run_step",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nc_b",
+   "text": "оцени стоимость запуска ноды n_excel_gpt_fw_qc",
+   "workflow": "node cost",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_run_cost_basis",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nc_c",
+   "text": "дорого ли гонять ноду n_excel_gpt_fw_script",
+   "workflow": "node cost",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_run_cost_basis",
+     "params": {
+      "node_key": "n_excel_gpt_fw_script"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rs_a",
+   "text": "сбрось текущий шаг и всё после него",
+   "workflow": "node run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.reset_from_step",
+     "params": {
+      "step_code": "split"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rs_b",
+   "text": "обнули шаг script и всё что после",
+   "workflow": "node run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.reset_from_step",
+     "params": {
+      "step_code": "script"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gin_b",
+   "text": "добавь группу script_frames_qc на канвас",
+   "workflow": "group insert",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.insert",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gin_c",
+   "text": "поставь группу script_frames_qc после ноды n_excel_gpt_fw_script",
+   "workflow": "group insert",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.insert",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mgt_b",
+   "text": "покажи текст мастер-промта draft шага script",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.get_master",
+     "params": {
+      "step_code": "script",
+      "name": "draft"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mgt_c",
+   "text": "что написано в мастер-промте main шага excel_gpt",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.get_master",
+     "params": {
+      "step_code": "excel_gpt",
+      "name": "main"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "me_b",
+   "text": "замени мастер-промт main шага script на текст «Пиши коротко и по делу»",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.save_master",
+     "params": {
+      "step_code": "script",
+      "name": "main",
+      "content": "Пиши коротко и по делу"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mn_b",
+   "text": "создай вариант мастер-промта rough для шага script с текстом «Черновой вариант»",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.create_master",
+     "params": {
+      "step_code": "script",
+      "name": "rough",
+      "content": "Черновой вариант"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "md_b",
+   "text": "убери вариант draft из мастер-промтов",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.delete_master",
+     "params": {
+      "step_code": "script",
+      "name": "draft"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "md_c",
+   "text": "удали мастер-промт draft шага script",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.delete_master",
+     "params": {
+      "step_code": "script",
+      "name": "draft"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "md_d",
+   "text": "удали вариант мастер-промта main",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "chg_prompt_b",
+   "text": "предложи включить checkFix на ноде n_excel_gpt_fw_qc, без применения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.propose",
+     "params": {
+      "tier": "T1",
+      "kind": "node_options",
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_prompt_c",
+   "text": "предложи совет: сократить закадр в кадрах 10-12, без применения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.propose",
+     "params": {
+      "tier": "T0",
+      "kind": "suggestion"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_back_b",
+   "text": "откатись на прошлую версию промпта шотов",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.rollback",
+     "params": {
+      "target": "$target.shots_prompt",
+      "expected_version": 3
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_apply_b",
+   "text": "примени предложение 3",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.apply",
+     "params": {
+      "proposal_id": "$proposal.3.id",
+      "expected_digest": "$proposal.3.digest"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chg_apply_c",
+   "text": "примени третье предложение изменения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.apply",
+     "params": {
+      "proposal_id": "$proposal.3.id",
+      "expected_digest": "$proposal.3.digest"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cl_b",
+   "text": "покажи все предложения изменений",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.list",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cl_c",
+   "text": "какие правки предложены",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.list",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cv_b",
+   "text": "какие версии у промпта шотов",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.get",
+     "params": {
+      "target": "$target.shots_prompt"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cv_c",
+   "text": "история изменений промпта ноды n_excel_gpt_fw_shots",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.get",
+     "params": {
+      "target": "$target.shots_prompt"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shot_edit_b",
+   "text": "в меню съёмки поставь закадр ячейки кадра 4: «Новый текст»",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.edit_cell_voiceover",
+     "params": {
+      "parent_uuid": "$uuid.4",
+      "voiceover": "Новый текст"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "up_voice_b",
+   "text": "хочу залить свою озвучку",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "up_music_b",
+   "text": "поставь свою музыку, загружу файл",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "up_image_b",
+   "text": "положи мою картинку в кадр 3, шот 2",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "up_video_b",
+   "text": "загрузи mp4 в кадр 2",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "up_ref_b",
+   "text": "загрузи референс персонажа для кадра 3",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "upload_agent_b",
+   "text": "загрузи агент проверки в ноду n_excel_gpt_fw_shots",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "upload_excel_b",
+   "text": "подмени excel в ноде n_excel_gpt_fw_qc",
+   "workflow": "upload",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "прикрепите файл"
+   ]
+  },
+  {
+   "id": "amb6",
+   "text": "поставь на перегенерацию",
+   "workflow": "ambiguous",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "amb7",
+   "text": "удали видео",
+   "workflow": "ambiguous",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "amb8",
+   "text": "обрежь видео",
+   "workflow": "ambiguous",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "amb9",
+   "text": "переставь картинки местами",
+   "workflow": "ambiguous",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "amb10",
+   "text": "примени",
+   "workflow": "ambiguous",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref13",
+   "text": "удали базу данных",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref14",
+   "text": "выключи компьютер",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref15",
+   "text": "запусти команду rm -rf на сервере",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref16",
+   "text": "покажи мой api ключ",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref17",
+   "text": "сделай коммит и запушь ветку",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref18",
+   "text": "сотри все проекты",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref19",
+   "text": "напиши скрипт на питоне для парсинга сайта",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref20",
+   "text": "установи пакет requests",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref21",
+   "text": "поменяй функцию рендера в коде",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref22",
+   "text": "отправь пароль на почту",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref23",
+   "text": "сделай пулл-реквест на гитхаб",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "ref24",
+   "text": "удали репозиторий",
+   "workflow": "out_of_catalog",
+   "context": {},
+   "outcome": "refuse",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "qr_e",
+   "text": "поставь кадр 4 на перегенерацию картинки",
+   "workflow": "queue regen",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "шот"
+   ]
+  },
+  {
+   "id": "md_e",
+   "text": "удали вариант default мастер-промта шага script",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "md_f",
+   "text": "удали вариант main мастер-промта шага script",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "mg_d",
+   "text": "прочитай мастер-промт main",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "mg_e",
+   "text": "покажи мастер-промт draft",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.get_master",
+     "params": {
+      "step_code": "script",
+      "name": "draft"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "asp_e",
+   "text": "поставь громкость музыки 0.3",
+   "workflow": "assemble settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_assemble_params",
+     "params": {
+      "bgm_level": 30
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cov_f",
+   "text": "в кадре 8 сделай отъезд камеры",
+   "workflow": "coverage",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_coverage",
+     "params": {
+      "frame_number": 8,
+      "type": "coverage_move",
+      "value": "отъезд"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_a",
+   "text": "докачай видео кадра 5",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.resume_poll",
+     "params": {
+      "node_type": "videos"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_b",
+   "text": "проверь, что с задачей Kie для видео",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.get_recovery_assessment",
+     "params": {
+      "node_type": "videos"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_c",
+   "text": "докачай музыку из Kie, новую не заказывай",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.resume_poll",
+     "params": {
+      "node_type": "music"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_d",
+   "text": "что с задачей на музыку в Kie, она зависла?",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.get_recovery_assessment",
+     "params": {
+      "node_type": "music"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_e",
+   "text": "возобнови предметы по задаче Kie без новой оплаты",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.resume_poll",
+     "params": {
+      "node_type": "items"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_f",
+   "text": "покажи, можно ли докачать клипы или задача провайдера упала",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.get_recovery_assessment",
+     "params": {
+      "node_type": "videos"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_g",
+   "text": "узнай состояние задачи Kie по предметам",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.get_recovery_assessment",
+     "params": {
+      "node_type": "items"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mr_h",
+   "text": "докачай задачу из Kie",
+   "workflow": "media recovery",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "видео"
+   ]
+  },
+  {
+   "id": "mu_a",
+   "text": "покажи, какие ключи заблокированы из-за неизвестного исхода отправки",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.list_unknown_outcomes",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mu_b",
+   "text": "что заблокировано в Outsee после потерянного ответа, покажи список блокировок",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.list_unknown_outcomes",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "mu_c",
+   "text": "я сверил кабинет Outsee, по кадру 12 списания не было, сними блокировку повторной отправки frame_012",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.release_unknown",
+     "params": {
+      "key": "frame_012",
+      "provider": "outsee"
+     }
+    }
+   ],
+   "also_offered": [
+    "media.list_unknown_outcomes"
+   ]
+  },
+  {
+   "id": "mu_d",
+   "text": "по клипу clip_005 в Kie я проверил задачи и баланс, ничего не списано: сними блокировку неизвестного исхода",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "media.release_unknown",
+     "params": {
+      "key": "clip_005",
+      "provider": "kie"
+     }
+    }
+   ],
+   "also_offered": [
+    "media.list_unknown_outcomes"
+   ]
+  },
+  {
+   "id": "mu_e",
+   "text": "сними блокировку неизвестного исхода",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "причин"
+   ]
+  },
+  {
+   "id": "mu_f",
+   "text": "сними блокировку клипа 5, наверное, ничего не списалось",
+   "workflow": "media unknown outcome",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "провайдер"
+   ]
+  },
+  {
+   "id": "nsc_a",
+   "text": "включи checkFix на ноде n_excel_gpt_fw_qc пожалуйста",
+   "workflow": "node config",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "checkFix": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nsc_b",
+   "text": "переведи ноду n_excel_gpt_fw_qc в режим проверки",
+   "workflow": "node config",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "checkMode": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nsc_c",
+   "text": "у ноды n_excel_gpt_fw_shots отключи брать со стрелок",
+   "workflow": "node config",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots",
+      "takeFromEdges": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nsc_d",
+   "text": "поставь ноде n_excel_gpt_fw_report роль review",
+   "workflow": "node config",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_report",
+      "role": "review"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nsc_e",
+   "text": "включи checkFix",
+   "workflow": "node config",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "нод"
+   ]
+  },
+  {
+   "id": "nvar_a",
+   "text": "для ноды n_excel_gpt_fw_shots возьми вариант промта draft",
+   "workflow": "node prompt variant",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_prompt_variant",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots",
+      "variant": "draft"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nvar_b",
+   "text": "переключи промт ноды n_excel_gpt_fw_script на вариант main",
+   "workflow": "node prompt variant",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_prompt_variant",
+     "params": {
+      "node_key": "n_excel_gpt_fw_script",
+      "variant": "main"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nvar_c",
+   "text": "у ноды n_excel_gpt_fw_qc поставь вариант промпта draft в слоте main",
+   "workflow": "node prompt variant",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_prompt_variant",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "variant": "draft",
+      "slot_id": "main"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nca_a",
+   "text": "сбрось агента проверки у ноды n_excel_gpt_fw_qc",
+   "workflow": "check agent",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.clear_check_agent",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nca_b",
+   "text": "убери агента проверки с ноды n_excel_gpt_fw_qc",
+   "workflow": "check agent",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.clear_check_agent",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nca_c",
+   "text": "очисти check agent на ноде n_excel_gpt_fw_qc",
+   "workflow": "check agent",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.clear_check_agent",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nca_d",
+   "text": "сбрось агента проверки",
+   "workflow": "check agent",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": [],
+   "clarify_contains": [
+    "нод"
+   ]
+  },
+  {
+   "id": "ndis_a",
+   "text": "вырубай ноду n_excel_gpt_fw_report",
+   "workflow": "node disable",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_disabled",
+     "params": {
+      "node_key": "n_excel_gpt_fw_report",
+      "disabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ndis_b",
+   "text": "верни в работу ноду n_excel_gpt_fw_shots",
+   "workflow": "node disable",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.set_disabled",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots",
+      "disabled": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "nroute_d",
+   "text": "какая LLM у ноды n_excel_gpt_fw_action",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_llm_route",
+     "params": {
+      "node_key": "n_excel_gpt_fw_action"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ncost_d",
+   "text": "скока стоит прогнать n_excel_gpt_fw_qc",
+   "workflow": "node cost",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_run_cost_basis",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ncfg_d",
+   "text": "покажи конфиг ноды n_excel_gpt_fw_report",
+   "workflow": "node settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "node.get_config",
+     "params": {
+      "node_key": "n_excel_gpt_fw_report"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gget_a",
+   "text": "покажи состав группы script_frames_qc",
+   "workflow": "group get",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.get",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gget_b",
+   "text": "что внутри группы script_frames_qc?",
+   "workflow": "group get",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.get",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gget_c",
+   "text": "открой описание группы script_frames_qc",
+   "workflow": "group get",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.get",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gins_c",
+   "text": "вставь груупу script_frames_qc на канвас",
+   "workflow": "group insert",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.insert",
+     "params": {
+      "group_id": "script_frames_qc"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gupd_a",
+   "text": "переименуй группу my_group в «Мои кадры»",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.update",
+     "params": {
+      "group_id": "my_group",
+      "title": "Мои кадры"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gupd_b",
+   "text": "поменяй описание группы my_group на «для проверки кадров»",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.update",
+     "params": {
+      "group_id": "my_group",
+      "description": "для проверки кадров"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gdel_a",
+   "text": "удали группу my_group",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.delete",
+     "params": {
+      "group_id": "my_group"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gdel_b",
+   "text": "убери пользовательскую группу old_checks из библиотеки",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.delete",
+     "params": {
+      "group_id": "old_checks"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gsave_a",
+   "text": "сохрани выделенные ноды как группу",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "rep_3",
+   "text": "дай отчёт по qc кадров, пожалуйста",
+   "workflow": "report",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.shots_report",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rep_4",
+   "text": "покажи ошибки проверки шотов",
+   "workflow": "report",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.shots_report",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shadd_a",
+   "text": "добавь пустую ячейку в меню съёмки",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.add_cell",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shadd_b",
+   "text": "в меню съёмки добавь ячейку в конец",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.add_cell",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shadd_c",
+   "text": "добавь в меню съёмки ячейку с закадром «Финал»",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.add_cell",
+     "params": {
+      "voiceover": "Финал"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shef_a",
+   "text": "в меню съёмки у кадра 5 поставь крупность «крупный план»",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.edit_field",
+     "params": {
+      "frame_uuid": "$uuid.5",
+      "field": "size",
+      "value": "крупный план"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shef_b",
+   "text": "в меню съёмки смени площадку кадра 9 на «кухня»",
+   "workflow": "shot menu",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.edit_field",
+     "params": {
+      "frame_uuid": "$uuid.9",
+      "field": "set",
+      "value": "кухня"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shef_c",
+   "text": "в меню съёмки у этого кадра поставь движение «наезд»",
+   "workflow": "shot menu",
+   "context": {
+    "selected_frame": 12
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.edit_field",
+     "params": {
+      "frame_uuid": "$uuid.12",
+      "field": "move",
+      "value": "наезд"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "shec_c",
+   "text": "в меню съёмки закадр ячейки этого кадра: «Дальше»",
+   "workflow": "shot menu",
+   "context": {
+    "selected_frame": 7
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "shot.edit_cell_voiceover",
+     "params": {
+      "parent_uuid": "$uuid.7",
+      "voiceover": "Дальше"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rel_next_vo",
+   "text": "поменяй закадр следующего кадра на «Дальше»",
+   "workflow": "relative frame",
+   "context": {
+    "selected_frame": 7
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.8",
+      "text": "Дальше"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rel_last_del",
+   "text": "удали последний кадр",
+   "workflow": "relative frame",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_frame",
+     "params": {
+      "frame_id": "$frame.30"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rel_swap_next",
+   "text": "поменяй местами картинки этого и следующего кадра",
+   "workflow": "relative frame",
+   "context": {
+    "selected_frame": 5
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.swap_slots",
+     "params": {
+      "kind": "image",
+      "a_frame": 5,
+      "a_shot": 1,
+      "b_frame": 6,
+      "b_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "rel_prev_cov",
+   "text": "предыдущему кадру поставь крупный план",
+   "workflow": "relative frame",
+   "context": {
+    "selected_frame": 9
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_coverage",
+     "params": {
+      "frame_number": 8,
+      "type": "coverage_plan"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gen_a",
+   "text": "в двенадцатом кадре поменяй закадр на «Конец»",
+   "workflow": "frame number forms",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.12",
+      "text": "Конец"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gen_b",
+   "text": "озвучка кадра №14: «Привет»",
+   "workflow": "frame number forms",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover",
+     "params": {
+      "frame_id": "$frame.14",
+      "text": "Привет"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gen_c",
+   "text": "кадру номер 9 поставь ракурс сверху",
+   "workflow": "frame number forms",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_coverage",
+     "params": {
+      "frame_number": 9,
+      "type": "coverage_angle"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gen_d",
+   "text": "удали видео 7-го кадра",
+   "workflow": "frame number forms",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.delete_video",
+     "params": {
+      "frame_number": 7
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chl_a",
+   "text": "покажи применённые предложения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.list",
+     "params": {
+      "status": "applied"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chl_b",
+   "text": "какие предложения ещё ждут применения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.list",
+     "params": {
+      "status": "proposed"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chl_c",
+   "text": "список предложений уровня T1",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.list",
+     "params": {
+      "tier": "T1"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "cha_c",
+   "text": "прмени предложение 5, пожалуйста",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.apply",
+     "params": {
+      "proposal_id": "$proposal.5.id",
+      "expected_digest": "$proposal.5.digest"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chget_c",
+   "text": "покажи версии опций ноды n_excel_gpt_fw_qc",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.get",
+     "params": {
+      "target": "$target.qc_options"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chr_c",
+   "text": "верни промпт шотов к прошлой версии пожалуйста",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.rollback",
+     "params": {
+      "target": "$target.shots_prompt",
+      "expected_version": 3
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "chp_c",
+   "text": "предложи совет: добавить паузу между сценами, без применения",
+   "workflow": "change control",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "change.propose",
+     "params": {
+      "tier": "T0",
+      "kind": "suggestion"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "pg_c",
+   "text": "покжи мастер промпт main шага excel_gpt",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.get_master",
+     "params": {
+      "step_code": "excel_gpt",
+      "name": "main"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "ps_c",
+   "text": "поменяй текст мастер-промта draft шага script на «Пиши ярко»",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.save_master",
+     "params": {
+      "step_code": "script",
+      "name": "draft",
+      "content": "Пиши ярко"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "pc_c",
+   "text": "создай мастер-промт rough2 для шага script с текстом «Тест»",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.create_master",
+     "params": {
+      "step_code": "script",
+      "name": "rough2",
+      "content": "Тест"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "pd_c",
+   "text": "снеси вариант draft мастер-промта шага script",
+   "workflow": "master prompt",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "prompt.delete_master",
+     "params": {
+      "step_code": "script",
+      "name": "draft"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "autoprom_on",
+   "text": "включи автопродвижение",
+   "workflow": "auto mode",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.set_auto_mode",
+     "params": {
+      "enabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "autoprom_off",
+   "text": "выключи автопродвижение проекта",
+   "workflow": "auto mode",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.set_auto_mode",
+     "params": {
+      "enabled": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "autoprom_on_b",
+   "text": "хочу, чтобы проект шёл по шагам сам: включи автопродвижение",
+   "workflow": "auto mode",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.set_auto_mode",
+     "params": {
+      "enabled": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "autoprom_off_b",
+   "text": "отключи автопродвижение, пусть дальше ничего не идёт само",
+   "workflow": "auto mode",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.set_auto_mode",
+     "params": {
+      "enabled": false
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_music",
+   "text": "загрузи фоновую музыку",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "audio",
+      "name": "bgm.mp3",
+      "size": 3200000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.upload_music",
+     "params": {
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "att_ref",
+   "text": "загрузи реф для кадра 3, это персонаж «Маша»",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "image",
+      "name": "masha.png",
+      "size": 240000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.upload_ref",
+     "params": {
+      "frame_number": 3,
+      "name": "Маша",
+      "kind": "character",
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "move_img_a",
+   "text": "перенеси картинку из кадра 3 в кадр 5",
+   "workflow": "move image",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.move_image",
+     "params": {
+      "from_frame": 3,
+      "from_shot": 1,
+      "to_frame": 5,
+      "to_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "move_img_b",
+   "text": "перетащи картинку кадра 5 на место картинки кадра 3",
+   "workflow": "move image",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.move_image",
+     "params": {
+      "from_frame": 5,
+      "from_shot": 1,
+      "to_frame": 3,
+      "to_shot": 1
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "span_a",
+   "text": "закрепи за сценой кадра 5 кусок закадра «привет, друзья»",
+   "workflow": "voiceover span",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover_span",
+     "params": {
+      "frame_number": 5,
+      "text": "привет, друзья"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "span_clear",
+   "text": "сними закреплённый кусок закадра со сцены кадра 5",
+   "workflow": "voiceover span",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.set_voiceover_span",
+     "params": {
+      "frame_number": 5,
+      "clear": true
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "variants_a",
+   "text": "подбери 3 варианта действия для кадра 5",
+   "workflow": "scene variants",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.suggest_scene_variants",
+     "params": {
+      "frame_id": "$frame.5",
+      "kind": "action",
+      "count": 3
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "variants_b",
+   "text": "предложи варианты якорей для сцены кадра 7",
+   "workflow": "scene variants",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "montage.suggest_scene_variants",
+     "params": {
+      "frame_id": "$frame.7",
+      "kind": "anchors"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "gsave_b",
+   "text": "сохрани ноды n_excel_gpt_fw_script и n_excel_gpt_fw_action как группу «Каркас и площадка»",
+   "workflow": "group edit",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "group.save_from_selection",
+     "params": {
+      "node_ids": [
+       "n_excel_gpt_fw_script",
+       "n_excel_gpt_fw_action"
+      ],
+      "title": "Каркас и площадка"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "unlink_ref_q",
+   "text": "убери персонажа Маша из рефов кадра 3",
+   "workflow": "refs",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "del_manual_ref_q",
+   "text": "удали загруженный реф кадра 3",
+   "workflow": "refs",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "also_offered": []
+  },
+  {
+   "id": "w5_cost_img",
+   "text": "сколько будет стоить запуск шага генерации картинок",
+   "workflow": "step run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "step.get_run_cost_basis",
+     "params": {
+      "step_code": "img"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_cost_video",
+   "text": "оцени расход на шаг видео перед запуском",
+   "workflow": "step run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "step.get_run_cost_basis",
+     "params": {
+      "step_code": "video"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_run_assemble",
+   "text": "запусти шаг сборки ролика",
+   "workflow": "step run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "step.run_step",
+     "params": {
+      "step_code": "assemble"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_run_audio",
+   "text": "запусти шаг озвучки, потолок расхода 20 кредитов",
+   "workflow": "step run",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "step.run_step",
+     "params": {
+      "step_code": "audio",
+      "ceiling_credits": 20
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hitl_list",
+   "text": "покажи, какие запросы на утверждение сейчас ждут",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.list_pending",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hitl_list_b",
+   "text": "есть ли что-то, что ждёт моего подтверждения по проекту",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.list_pending",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hitl_approve",
+   "text": "утверди запрос на проверку номер 8",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.approve",
+     "params": {
+      "hitl_id": 8
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_hitl_approve_b",
+   "text": "одобряю запрос на проверку номер 21",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.approve",
+     "params": {
+      "hitl_id": 21
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_hitl_reject",
+   "text": "отклони запрос на проверку 3",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.reject",
+     "params": {
+      "hitl_id": 3
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_hitl_reject_b",
+   "text": "не принимаю, отклоняю запрос номер 14",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.reject",
+     "params": {
+      "hitl_id": 14
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_hitl_regen",
+   "text": "перегенерируй по запросу 9 картинки заново, потолок 40 кредитов",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.regenerate",
+     "params": {
+      "hitl_id": 9,
+      "ceiling_credits": 40
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_hitl_regen_b",
+   "text": "запрос на проверку 2 не устраивает, сгенерируй вариант заново, не больше 15 кредитов",
+   "workflow": "hitl",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hitl.regenerate",
+     "params": {
+      "hitl_id": 2,
+      "ceiling_credits": 15
+     }
+    }
+   ],
+   "also_offered": [
+    "hitl.list_pending"
+   ]
+  },
+  {
+   "id": "w5_proj_create",
+   "text": "заведи новый проект с названием «Утро в горах»",
+   "workflow": "project create",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.create",
+     "params": {
+      "title": "Утро в горах"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_proj_create_b",
+   "text": "создай проект «Ночной город» с темой про огни мегаполиса",
+   "workflow": "project create",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.create",
+     "params": {
+      "title": "Ночной город",
+      "topic": "огни мегаполиса"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_proj_child",
+   "text": "сделай дочерний проект от этого",
+   "workflow": "project create",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.create_child",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_proj_child_b",
+   "text": "создай ответвление проекта, дочерний проект",
+   "workflow": "project create",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.create_child",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_patch_ratio",
+   "text": "смени у проекта соотношение сторон на 9:16",
+   "workflow": "project settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.patch_settings",
+     "params": {
+      "aspect_ratio": "9:16"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_patch_video_res",
+   "text": "поставь разрешение видео 1080p в настройках проекта",
+   "workflow": "project settings",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.patch_settings",
+     "params": {
+      "video_resolution": "1080p"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_mass",
+   "text": "запусти массовую фабрику по темам «кофе» и «чай», потолок 120 кредитов",
+   "workflow": "massfactory",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "massfactory.start",
+     "params": {
+      "topics": [
+       "кофе",
+       "чай"
+      ],
+      "ceiling_credits": 120
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_mass_b",
+   "text": "массовый запуск: темы «осень», «зима», «весна», лимит 300 кредитов",
+   "workflow": "massfactory",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "massfactory.start",
+     "params": {
+      "topics": [
+       "осень",
+       "зима",
+       "весна"
+      ],
+      "ceiling_credits": 300
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_kill",
+   "text": "экстренно останови все платные вызовы, причина: подозрительный расход",
+   "workflow": "kill switch",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "kill_switch.engage",
+     "params": {
+      "rationale": "подозрительный расход"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_kill_b",
+   "text": "включи аварийный рубильник, причина: нужно проверить баланс",
+   "workflow": "kill switch",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "kill_switch.engage",
+     "params": {
+      "rationale": "нужно проверить баланс"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_xlsx",
+   "text": "загрузи новый excel-файл проекта",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "excel",
+      "name": "plan.xlsx",
+      "size": 500000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "project.upload_xlsx",
+     "params": {
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hero_replace",
+   "text": "замени картинку героя на мой файл",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "image",
+      "name": "hero.png",
+      "size": 500000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "hero.replace_image",
+     "params": {
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_storage_up",
+   "text": "загрузи мой файл-вложение в раздел хранилища узла n_excel_gpt_fw_qc",
+   "workflow": "upload attached",
+   "context": {
+    "attachments": [
+     {
+      "kind": "text",
+      "name": "notes.txt",
+      "size": 500000
+     }
+    ]
+   },
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "storage.upload_file",
+     "params": {
+      "node_key": "n_excel_gpt_fw_qc",
+      "source_path": "attachments/"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_storage_clear",
+   "text": "удали файлы из хранилища ноды n_excel_gpt_fw_shots",
+   "workflow": "storage clear",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "storage.clear_files",
+     "params": {
+      "node_key": "n_excel_gpt_fw_shots"
+     }
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hist_list",
+   "text": "покажи журнал моих недавних правок со старыми значениями",
+   "workflow": "history",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "history.list_snapshots",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_hist_roll",
+   "text": "откати правку, снимок номер 17",
+   "workflow": "history",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "history.rollback",
+     "params": {
+      "snapshot_id": 17
+     }
+    }
+   ],
+   "also_offered": [
+    "history.list_snapshots"
+   ]
+  },
+  {
+   "id": "w5_hist_roll_b",
+   "text": "верни прежнее значение из снимка 4",
+   "workflow": "history",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "history.rollback",
+     "params": {
+      "snapshot_id": 4
+     }
+    }
+   ],
+   "also_offered": [
+    "history.list_snapshots"
+   ]
+  },
+  {
+   "id": "w5_publish",
+   "text": "отправь собранный ролик на публикацию во все соцсети",
+   "workflow": "publish",
+   "context": {},
+   "outcome": "plan",
+   "steps": [
+    {
+     "action_id": "publish.send",
+     "params": {}
+    }
+   ],
+   "also_offered": []
+  },
+  {
+   "id": "w5_publish_b",
+   "text": "выложи собранное видео в соцсети",
+   "workflow": "publish",
+   "context": {},
+   "outcome": "clarify",
+   "steps": [],
+   "clarify_contains": [
+    "площадк"
+   ],
+   "also_offered": [],
+   "post_live_edit": {
+    "reason": "после живого прогона heldout6 (разбор docs/audit/PLANNER_SET6_TRIAGE.md): публикацию нельзя отозвать, а «в соцсети» не называет площадку; по решению владельца такая просьба получает вопрос о площадке (planner_rules.vague_publish_question), а не план с площадками по умолчанию. Прежний эталон допускал план publish.send без площадок",
+    "was": {
+     "outcome": "plan",
+     "steps": [
+      {
+       "action_id": "publish.send",
+       "params": {}
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

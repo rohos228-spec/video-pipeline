@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { GroupPreview } from "./group-preview";
+import { LibraryBrowser, LibrarySwitch, RUBIK, type LibrarySource } from "./library-nodes-tab";
 
 // sd_agent/sd_assemble — legacy-типы старых канвасов; scene-агенты теперь
 // создаются группой «Сцены: веер агентов» как ноды «Работа с GPT».
@@ -64,7 +65,7 @@ export function NodePalette({
 }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<"nodes" | "groups">("nodes");
+  const [tab, setTab] = useState<LibrarySource>("builtin");
   const [search, setSearch] = useState("");
   const [selectedNodeType, setSelectedNodeType] = useState<string | null>(null);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -78,7 +79,7 @@ export function NodePalette({
   const addable = useMemo(
     () =>
       Object.keys(NODE_CATALOG).filter(
-        (t) => !t.startsWith("hitl_") && !HIDDEN_NODE_TYPES.has(t),
+        (t) => (!t.startsWith("hitl_") || t === "hitl_style") && !HIDDEN_NODE_TYPES.has(t),
       ),
     [],
   );
@@ -142,70 +143,51 @@ export function NodePalette({
       }}
     >
       <DialogTrigger asChild>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-8 gap-1.5 border-white/15 bg-zinc-800/80 px-2.5 text-xs text-foreground hover:bg-zinc-700 hover:text-white"
-          title="Библиотека: добавить ноду или готовую группу нод на канвас"
+        <button
+          type="button"
+          className="inline-flex h-8 w-[34px] items-center justify-center rounded-lg border border-transparent bg-transparent text-muted-foreground transition-all duration-150 hover:border-white/8 hover:bg-white/5 hover:text-foreground [&_svg]:size-4"
+          title="Добавить"
+          aria-label="Добавить"
         >
-          <Plus className="h-3.5 w-3.5 text-emerald-400" />
-          <span>Добавить</span>
-        </Button>
+          <Plus className="h-4 w-4" />
+        </button>
       </DialogTrigger>
-      <DialogContent className="flex h-[640px] max-h-[88vh] w-[960px] max-w-[94vw] flex-col gap-0 overflow-hidden p-0">
-        <div className="flex shrink-0 items-center gap-2 border-b border-white/10 px-4 py-3">
-          <DialogTitle className="flex items-center gap-2 text-sm">
-            <Boxes className="h-4 w-4 text-primary" />
-            Библиотека
-          </DialogTitle>
-          <div className="ml-2 flex items-center gap-1">
-            <button
-              type="button"
-              className={cn(
-                "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                tab === "nodes"
-                  ? "bg-primary/15 text-primary"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => setTab("nodes")}
-            >
-              Ноды
-            </button>
-            <button
-              type="button"
-              className={cn(
-                "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                tab === "groups"
-                  ? "bg-primary/15 text-primary"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => setTab("groups")}
-            >
-              Группы
-              {(nodeGroups.data ?? []).length > 0 && (
-                <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[9px]">
-                  {(nodeGroups.data ?? []).length}
-                </span>
-              )}
-            </button>
-          </div>
-          <div className="relative ml-auto w-[220px]">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+      <DialogContent className="flex h-[640px] max-h-[88vh] w-[960px] max-w-[94vw] flex-col gap-0 overflow-hidden rounded-[14px] border-white/[0.08] bg-[rgba(24,24,28,0.96)] p-0 text-white" style={{ fontFamily: RUBIK }}>
+        <div className="flex shrink-0 items-center gap-4 border-b border-white/10 px-4 py-3 pr-12">
+          <DialogTitle className="text-[15px] font-medium">Библиотека</DialogTitle>
+          <LibrarySwitch value={tab} onChange={setTab} />
+          <div className="relative ml-auto w-[240px]">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/45" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Поиск по названию и описанию…"
-              className="h-7 pl-7 text-xs"
+              className="h-9 rounded-none border-white/10 bg-black/30 pl-8 text-[13px]"
             />
           </div>
         </div>
 
-        {tab === "nodes" ? (
+        {tab === "builtin" ? (
           <NodesTab
             addable={addable}
             matchNode={matchNode}
             selectedNodeType={selectedNodeType}
             onSelectNodeType={setSelectedNodeType}
+            onAddNode={addNode}
+          />
+        ) : tab !== "groups" ? (
+          <LibraryBrowser
+            key={tab}
+            source={tab}
+            query={query}
+            addable={addable}
+            matchNode={matchNode}
+            myGroups={(nodeGroups.data ?? []).filter((g) => !g.builtin)}
+            matchGroup={matchGroup}
+            onOpenGroup={(id) => {
+              setSelectedGroupId(id);
+              setTab("groups");
+            }}
             onAddNode={addNode}
           />
         ) : (
@@ -457,7 +439,7 @@ function GroupsTab({
           ) : (
             <button
               type="button"
-              className="flex items-center gap-2 rounded-xl border border-dashed border-primary/40 bg-primary/5 px-2.5 py-2 text-left text-xs text-primary transition-colors hover:bg-primary/10"
+              className="flex items-center gap-2 rounded-xl border border-dashed border-teal-400/40 bg-teal-400/5 px-2.5 py-2 text-left text-xs text-teal-300 transition-colors hover:bg-teal-400/10"
               onClick={() => setCreating(true)}
             >
               <PackagePlus className="h-4 w-4 shrink-0" />
@@ -493,7 +475,7 @@ function GroupsTab({
                 className={cn(
                   "rounded-xl border px-2.5 py-2 text-left transition-colors",
                   active
-                    ? "border-primary/50 bg-primary/10"
+                    ? "border-teal-400/50 bg-teal-400/10"
                     : "border-white/10 bg-white/[0.02] hover:border-white/25",
                 )}
                 style={{ borderLeftWidth: 3, borderLeftColor: `hsl(${hue} 70% 55% / 0.8)` }}
@@ -506,7 +488,7 @@ function GroupsTab({
                       "shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-medium",
                       g.builtin
                         ? "border-sky-400/30 bg-sky-500/10 text-sky-300"
-                        : "border-emerald-400/30 bg-emerald-500/10 text-emerald-300",
+                        : "border-teal-400/30 bg-teal-500/10 text-teal-300",
                     )}
                   >
                     {g.builtin ? "встроенная" : "своя"}
@@ -612,7 +594,7 @@ function GroupDetailPane({
                   "rounded-full border px-1.5 py-0.5 text-[9px] font-medium",
                   g.builtin
                     ? "border-sky-400/30 bg-sky-500/10 text-sky-300"
-                    : "border-emerald-400/30 bg-emerald-500/10 text-emerald-300",
+                    : "border-teal-400/30 bg-teal-500/10 text-teal-300",
                 )}
               >
                 {g.builtin ? "встроенная" : "своя"}
@@ -674,10 +656,10 @@ function GroupDetailPane({
               </div>
               <GroupPreview detail={g} />
               <div className="mt-1 text-[9px] text-muted-foreground">
-                <span className="text-emerald-400">вход</span> — ноды, принимающие
+                <span className="text-teal-400">вход</span> — ноды, принимающие
                 связь от канваса · <span className="text-sky-400">выход</span> —
                 нода, от которой уходит дальше ·{" "}
-                <span className="text-emerald-400">Ок</span>/
+                <span className="text-teal-400">Ок</span>/
                 <span className="text-red-400">Не ок</span> — ветки проверок
               </div>
             </div>
@@ -802,8 +784,8 @@ function EditGroupForm({
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-xl border border-primary/30 bg-primary/5 p-3">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+    <div className="flex flex-col gap-2 rounded-xl border border-teal-400/30 bg-teal-400/5 p-3">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-teal-300">
         Редактирование группы
       </div>
       <Input
@@ -894,8 +876,8 @@ function CreateGroupForm({
   };
 
   return (
-    <div className="flex flex-col gap-1.5 rounded-xl border border-primary/30 bg-primary/5 p-2.5">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+    <div className="flex flex-col gap-1.5 rounded-xl border border-teal-400/30 bg-teal-400/5 p-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-teal-300">
         Новая группа из выделения
       </div>
       <Input
@@ -974,7 +956,7 @@ function CategoryPicker({
               className={cn(
                 "rounded px-1.5 py-1 text-left text-[10px] transition-colors",
                 c === value
-                  ? "bg-primary/15 text-primary"
+                  ? "bg-teal-400/15 text-teal-300"
                   : "text-muted-foreground hover:bg-white/5 hover:text-foreground",
               )}
               onClick={() => {

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.project_root import find_project_root, resolve_project_path
@@ -94,6 +94,15 @@ class Settings(BaseSettings):
         "https://vibecode.moe/v1", alias="VIBECODE_BASE_URL"
     )
 
+    # 52pay: отдельный ключ на группу моделей. Пустой ключ — модель остаётся на vibecode/kie.
+    pay52_base_url: str = Field("https://api.52pay.com/v1", alias="PAY52_BASE_URL")
+    pay52_glm_api_key: str = Field("", alias="PAY52_GLM_API_KEY")
+    pay52_claude_low_api_key: str = Field("", alias="PAY52_CLAUDE_LOW_API_KEY")
+    pay52_claude_high_api_key: str = Field("", alias="PAY52_CLAUDE_HIGH_API_KEY")
+    pay52_gpt_api_key: str = Field("", alias="PAY52_GPT_API_KEY")
+    pay52_seedance_mini_api_key: str = Field("", alias="PAY52_SEEDANCE_MINI_API_KEY")
+    pay52_seedance_faces_api_key: str = Field("", alias="PAY52_SEEDANCE_FACES_API_KEY")
+
     # GPT / kie.ai — основной текстовый стек
     gpt_api_key: str = Field("", alias="GPT_API_KEY")
     gpt_base_url: str = Field("", alias="GPT_BASE_URL")
@@ -122,7 +131,7 @@ class Settings(BaseSettings):
     # Формат API: chat (messages/choices) | responses (input/output) | auto.
     # auto → responses, если в пути есть "responses" (kie.ai gpt-5.6/5.5/5.4 codex).
     gpt_api_mode: str = Field("auto", alias="GPT_API_MODE")
-    gpt_timeout_s: float = Field(600.0, alias="GPT_TIMEOUT_S")
+    gpt_timeout_s: float = Field(1200.0, alias="GPT_TIMEOUT_S")
     gpt_max_retries: int = Field(4, alias="GPT_MAX_RETRIES")
     # 0 = ждать EOF SSE (не рвать по GPT_TIMEOUT). >0 = httpx read timeout.
     gpt_stream_read_timeout_s: float = Field(0.0, alias="GPT_STREAM_READ_TIMEOUT_S")
@@ -182,10 +191,13 @@ class Settings(BaseSettings):
     def gpt_api_effective_base_url(self) -> str:
         """База активного текстового LLM.
 
-        kie — через VPS-relay, если задан. vibecode — всегда прямиком на
-        vibecode.moe (VPS часто ещё только на api.kie.ai; иначе 401-envelope).
+        kie и vibecode — через VPS-relay, если задан (Caddy: /v1/* → vibecode.moe,
+        остальное → api.kie.ai). Без relay vibecode идёт прямиком на vibecode.moe.
         """
         if self.text_llm_is_vibecode:
+            vps = self.vps_relay_base_url
+            if vps:
+                return vps
             return (self.vibecode_base_url or "https://vibecode.moe/v1").strip().rstrip("/")
         vps = self.vps_relay_base_url
         if vps:
@@ -228,7 +240,6 @@ class Settings(BaseSettings):
     elevenlabs_web_url: str = Field(
         "https://elevenlabs.io/app/speech-synthesis", alias="ELEVENLABS_WEB_URL"
     )
-    # API-ключ ElevenLabs — синтез речи TTS и SFX (POST /v1/text-to-speech, POST /v1/sound-effects).
     elevenlabs_api_key: str = Field("", alias="ELEVENLABS_API_KEY")
     elevenlabs_proxy_url: str | None = Field(None, alias="ELEVENLABS_PROXY_URL")
     elevenlabs_model_id: str = Field("eleven_multilingual_v2", alias="ELEVENLABS_MODEL_ID")
@@ -263,12 +274,18 @@ class Settings(BaseSettings):
     audio_use_elevenlabs_fallback: bool = Field(
         False, alias="AUDIO_USE_ELEVENLABS_FALLBACK"
     )
+    audio_max_tts_posts_per_run: int = Field(60, alias="AUDIO_MAX_TTS_POSTS_PER_RUN")
 
-    # Ветка для commit/push оркестратора с этого ПК (housepc|tompc|strangepc|workpc).
     # Пусто = main. На каждом ПК своё значение в локальном .env.
     orchestrator_git_branch: str = Field("main", alias="ORCHESTRATOR_GIT_BRANCH")
 
-    # Fleet — сеть рабочих станций (hub = этот ПК, agent = удалённый)
+    watchdog_enabled: bool = Field(True, alias="WATCHDOG_ENABLED")
+    watchdog_interval_s: float = Field(30.0, alias="WATCHDOG_INTERVAL_S")
+    watchdog_model_request_timeout_s: float = Field(900.0, alias="WATCHDOG_MODEL_REQUEST_TIMEOUT_S")
+    watchdog_execution_idle_s: float = Field(1800.0, alias="WATCHDOG_EXECUTION_IDLE_S")
+    watchdog_kill_switch_on_stall: bool = Field(False, alias="WATCHDOG_KILL_SWITCH_ON_STALL")
+    decision_task_timeout_margin_s: float = Field(30.0, alias="DECISION_TASK_TIMEOUT_MARGIN_S")
+
     fleet_enabled: bool = Field(True, alias="FLEET_ENABLED")
     fleet_role: str = Field("hub", alias="FLEET_ROLE")
     fleet_hub_url: str = Field("http://127.0.0.1:8765", alias="FLEET_HUB_URL")
@@ -351,6 +368,56 @@ class Settings(BaseSettings):
     web_enabled: bool = Field(True, alias="WEB_ENABLED")
     web_host: str = Field("127.0.0.1", alias="WEB_HOST")
     web_port: int = Field(8765, alias="WEB_PORT")
+    orchestrator_allow_remote_without_auth: bool = Field(
+        False, alias="ORCHESTRATOR_ALLOW_REMOTE_WITHOUT_AUTH")
+    api_tracker_cloud_enabled: bool = Field(True, alias="API_TRACKER_CLOUD_ENABLED")
+    api_tracker_supabase_url: str = Field(
+        "https://jubhhajwknvhlntmwpoj.supabase.co", alias="SUPABASE_URL")
+    api_tracker_supabase_key: str = Field(
+        "sb_publishable_qxcebL4M8lXRj0s2qF4ZLA_VkHhp3a-", validation_alias=AliasChoices("SUPABASE_KEY", "SUPABASE_ANON_KEY"))
+    api_tracker_cloud_send_identity: bool = Field(True, alias="API_TRACKER_CLOUD_SEND_IDENTITY")
+    media_spend_recording: bool = Field(True, alias="MEDIA_SPEND_RECORDING")
+    chat_code_actions_enabled: bool = Field(False, alias="CHAT_CODE_ACTIONS_ENABLED")
+
+    observer_body_quota_bytes: int = Field(32 * 1024 * 1024, ge=0, alias="OBSERVER_BODY_QUOTA_BYTES")
+    observer_body_retention_seconds: int = Field(7 * 24 * 3600, ge=0, alias="OBSERVER_BODY_RETENTION_SECONDS")
+
+    action_layer_session_cap_credits: float = Field(
+        10000.0, ge=0, alias="ACTION_LAYER_SESSION_CAP_CREDITS"
+    )
+    spend_daily_cap_usd: float = Field(200.0, ge=0, alias="SPEND_DAILY_CAP_USD")
+    spend_project_cap_usd: float = Field(100.0, ge=0, alias="SPEND_PROJECT_CAP_USD")
+    spend_run_cap_usd: float = Field(50.0, ge=0, alias="SPEND_RUN_CAP_USD")
+    spend_reconcile_auto: bool | None = Field(None, alias="SPEND_RECONCILE_AUTO")
+    spend_auto_kill_on_402: bool = Field(True, alias="SPEND_AUTO_KILL_ON_402")
+    media_resume_window_s: int = Field(3600, ge=0, alias="MEDIA_RESUME_WINDOW_S")
+    regen_max_per_frame: int = Field(3, ge=0, alias="REGEN_MAX_PER_FRAME")
+    regen_max_per_run: int = Field(12, ge=0, alias="REGEN_MAX_PER_RUN")
+    regen_max_usd_per_run: float = Field(25.0, ge=0, alias="REGEN_MAX_USD_PER_RUN")
+    assemble_allow_missing_clips: bool = Field(False, alias="ASSEMBLE_ALLOW_MISSING_CLIPS")
+    images_allow_hollow_prompts: bool = Field(False, alias="IMAGES_ALLOW_HOLLOW_PROMPTS")
+    outsee_allow_public_image_hosts: bool = Field(False, alias="OUTSEE_ALLOW_PUBLIC_IMAGE_HOSTS")
+    worker_use_project_db: bool = Field(False, alias="WORKER_USE_PROJECT_DB")
+    regen_estimate_usd_per_item: float = Field(0.0, ge=0, alias="REGEN_ESTIMATE_USD_PER_ITEM")
+    restart_chain_max_per_node: int = Field(60, ge=0, alias="RESTART_CHAIN_MAX_PER_NODE")
+    action_layer_approval_ttl_s: int = Field(600, ge=1, alias="ACTION_LAYER_APPROVAL_TTL_S")
+    action_layer_max_steps: int = Field(20, ge=1, le=100, alias="ACTION_LAYER_MAX_STEPS")
+    action_layer_step_timeout_s: float = Field(900.0, gt=0, alias="ACTION_LAYER_STEP_TIMEOUT_S")
+    action_layer_outsee_submit_credits: float = Field(
+        0.0, ge=0, alias="ACTION_LAYER_OUTSEE_SUBMIT_CREDITS"
+    )
+    action_layer_reserve_stale_s: float = Field(3600.0, gt=0, alias="ACTION_LAYER_RESERVE_STALE_S")
+    action_layer_resume_window_s: int = Field(3600, ge=1, alias="ACTION_LAYER_RESUME_WINDOW_S")
+    action_layer_planner_calls_per_hour: int = Field(
+        30, ge=1, le=10000, alias="ACTION_LAYER_PLANNER_CALLS_PER_HOUR"
+    )
+    action_layer_planner_max_catalog: int = Field(
+        24, ge=1, le=500, alias="ACTION_LAYER_PLANNER_MAX_CATALOG"
+    )
+    action_layer_attachment_max_mb: int = Field(200, ge=1, le=2048, alias="ACTION_LAYER_ATTACHMENT_MAX_MB")
+    action_layer_attachment_retention_days: int = Field(
+        7, ge=0, le=3650, alias="ACTION_LAYER_ATTACHMENT_RETENTION_DAYS"
+    )
 
     @model_validator(mode="after")
     def _resolve_paths_from_repo_root(self) -> "Settings":
@@ -374,7 +441,6 @@ class Settings(BaseSettings):
 
     @property
     def fleet_local_web_url(self) -> str:
-        """Локальный URL API (heartbeat hub+worker на этом же ПК)."""
         host = self.web_host
         if host in ("0.0.0.0", "::"):
             host = "127.0.0.1"
@@ -382,14 +448,12 @@ class Settings(BaseSettings):
 
     @property
     def fleet_agent_base_url(self) -> str:
-        """URL, который agent сообщает hub (Tailscale или локальный)."""
         if self.fleet_public_url.strip():
             return self.fleet_public_url.strip().rstrip("/")
         return self.fleet_local_web_url
 
     @property
     def fleet_heartbeat_hub_url(self) -> str:
-        """Куда слать heartbeat: hub на этой машине → localhost, иначе FLEET_HUB_URL."""
         role = (self.fleet_role or "hub").strip().lower()
         if role == "hub":
             return self.fleet_local_web_url
@@ -402,7 +466,6 @@ class Settings(BaseSettings):
 
     @property
     def telegram_active(self) -> bool:
-        """Нужен ли живой Telegram-бот (поллинг + уведомления)."""
         if not self.telegram_enabled:
             return False
         return bool((self.telegram_bot_token or "").strip())

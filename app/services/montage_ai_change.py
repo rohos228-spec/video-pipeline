@@ -19,10 +19,28 @@ AiChangeKind = Literal["image", "video"]
 
 _SYSTEM_IMAGE = """\
 Ты — агент из вложенного файла. Пиши промт картинки по его правилам.
-Один кадр, не батч. Старого промта кадра нет — пиши с нуля по агенту и закадру.
+Один кадр, не батч. Старого промта кадра нет — пиши с нуля по агенту и карточке.
 
-Верни ОДИН полный промт: сцена + STYLE / Final style lock + Negative.
-Не JSON apply-ops. Не копируй закадр.
+Если в карточке есть coverage_parent — первый абзац = A0 Preserve/Change:
+тот же сет, те же люди, те же экземпляры предметов, тот же свет.
+Меняются только камера и фаза действия ЭТОГО кадра. Не новая комната.
+
+Затем персонаж: Image N / cNN, где стоит, что делает.
+Референс = только identity (лицо/тело/одежда). Не копируй сетку листа
+и не клонируй людей с приложенной картинки, если промт описывает другой каст.
+
+Крупность и ракурс из карточки обязательны в строке:
+Scene feature / shot scale: [план] · [ракурс] · [движение]
+Не подменяй чипы. ДЕТАЛЬ = punch-in на предмет действия, не вся локация.
+ОБЩИЙ = фигуры и то, что видно из действия ЭТОГО кадра. Не тащи
+место/фон/дверь из чужого шота и не выдумывай паспорт сцены.
+
+Accent — только этого шота.
+
+STYLE / Final style lock / Negative — максимум 6 коротких строк.
+Не копируй словарь стиля / §5–§6 из агента.
+
+Верни ОДИН полный промт. Не JSON apply-ops. Не копируй закадр.
 Ответ: только текст промта, без пояснений.
 """
 
@@ -33,15 +51,64 @@ _SYSTEM_VIDEO = """\
 """
 
 
-def build_ai_change_user_message(*, voiceover_text: str) -> str:
+def build_ai_change_user_message(
+    *,
+    voiceover_text: str,
+    instruction: str = "",
+    action: str = "",
+    camera: dict[str, str] | None = None,
+    coverage_role: str = "",
+) -> str:
     vo = (voiceover_text or "").strip() or "(пусто)"
-    return (
-        f"VOICEOVER:\n{vo}\n\n"
-        "Карточка кадра — во вложенном db_frames.json (База: место, действие, "
-        "персонажи, камера, свет). Старого промта нет.\n"
+    note = (instruction or "").strip()
+    act = (action or "").strip()
+    parts = [f"VOICEOVER:\n{vo}\n"]
+    if act:
+        parts.append(
+            f"\nACTION:\n{act}\n"
+            "\nЭто действие ЭТОГО кадра, не цепи всей сцены.\n"
+        )
+    chips = camera if isinstance(camera, dict) else {}
+    plan = str(chips.get("план") or chips.get("крупность") or "").strip()
+    angle = str(chips.get("ракурс") or "").strip()
+    move = str(chips.get("движение") or "").strip()
+    if plan or angle or move:
+        parts.append("\nCAMERA:\n")
+        if plan:
+            parts.append(f"план: {plan}\n")
+        if angle:
+            parts.append(f"ракурс: {angle}\n")
+        if move:
+            parts.append(f"движение: {move}\n")
+        parts.append(
+            "Эти значения обязательны в строке Scene feature / shot scale. "
+            "Не подменяй план и ракурс.\n"
+        )
+    role = str(coverage_role or "").strip().lower()
+    if role == "child":
+        parts.append(
+            "\nCOVERAGE: дочерний кадр. В карточке coverage_parent — "
+            "начни с A0 Preserve/Change. Тот же сет и те же предметы, "
+            "другая камера и фаза.\n"
+        )
+    if note:
+        parts.append(
+            f"\nOPERATOR_CHANGE:\n{note}\n\n"
+            "Это то, что оператор написал для промта. "
+            "Если там новое действие или правка действия — изобрази именно его: "
+            "OPERATOR_CHANGE важнее ACTION, если они расходятся. "
+            "Не копируй заметку дословно — переведи в визуальный промт по правилам агента."
+        )
+    parts.append(
+        "\nКарточка кадра — во вложенном db_frames.json (действие, персонажи, "
+        "камера, coverage_parent). Паспорта сцены нет — не бери место/фон/"
+        "свет/предметы ячейки. Старого промта нет.\n"
         "Напиши полный промт по вложенному агенту. "
-        "STYLE / Final style lock / Negative пишешь ты. Не JSON. Только промт."
+        "Дочерний кадр — A0 первым, иначе блок персонажа первым. "
+        "STYLE / Final style lock / Negative — коротко, не словарь из агента. "
+        "Не JSON. Только промт."
     )
+    return "".join(parts)
 
 
 def write_ai_change_db_card(
@@ -50,11 +117,13 @@ def write_ai_change_db_card(
     dest_dir: Path,
     *,
     characters: list | None = None,
+    all_frames: list | None = None,
 ) -> Path:
     """Один кадр из Базы — тот же снимок, что img_pr кладёт в db_frames.json."""
     from app.services.db_frames_context import build_img_pr_db_context
 
     dest_dir.mkdir(parents=True, exist_ok=True)
+    universe = list(all_frames) if all_frames is not None else [frame]
     ctx = build_img_pr_db_context(
         project_id=int(getattr(project, "id", 0) or 0),
         slug=str(getattr(project, "slug", "") or ""),
@@ -63,7 +132,9 @@ def write_ai_change_db_card(
         general_plan=str(getattr(project, "general_plan", "") or ""),
         include_characters=True,
         include_field_map=True,
+        all_frames=universe,
     )
+    _pin_ai_change_shot_action(ctx, frame)
     path = dest_dir / "db_frames.json"
     path.write_text(
         json.dumps(ctx, ensure_ascii=False, separators=(",", ":")),
@@ -76,6 +147,89 @@ def write_ai_change_db_card(
         len(ctx.get("characters") or []),
     )
     return path
+
+
+_SCENE_PASSPORT_KEYS = frozenset(
+    {
+        "place",
+        "место",
+        "shot01_bg",
+        "фон",
+        "lighting",
+        "scene_lighting",
+        "освещение",
+        "освещение_сцены",
+        "shot01_props",
+        "предметы",
+        "accent",
+        "акцент",
+        "scene_sense",
+        "смысл",
+        "смысл_сцены",
+        "scene_feature",
+        "особенность",
+        "особенность_сцены",
+        "visual_type",
+        "тип_сцены",
+        "набор",
+        "set",
+        "scene_set",
+    }
+)
+
+
+def _strip_scene_passport_fields(row: dict) -> None:
+    """Паспорт ячейки не участвует в ИИзменении — только шот."""
+    for key in _SCENE_PASSPORT_KEYS:
+        row.pop(key, None)
+    parent = row.get("coverage_parent")
+    if isinstance(parent, dict):
+        for key in _SCENE_PASSPORT_KEYS:
+            parent.pop(key, None)
+
+
+def _pin_ai_change_shot_action(ctx: dict, frame: object) -> None:
+    """В карточке ИИзменения — действие этого шота, без цепи сцены и чужих K."""
+    from app.services.db_frames_context import apply_camera_chips_to_row
+    from app.services.montage_board import _action_for_frame
+    from app.services.vo_shot_expand import _cs, coverage_shot_id
+
+    action = _action_for_frame(frame)
+    sid = str(_cs(frame).get("shot_id") or "").strip() or coverage_shot_id(frame)
+    for row in ctx.get("frames") or []:
+        if not isinstance(row, dict):
+            continue
+        _strip_scene_passport_fields(row)
+        apply_camera_chips_to_row(row, frame)
+        if action:
+            row["shot01_action"] = action
+            row["действие"] = action
+        row.pop("main_action", None)
+        row.pop("главное_действие", None)
+        kadry = row.get("кадры")
+        if not isinstance(kadry, list) or not kadry:
+            continue
+        match = [
+            item
+            for item in kadry
+            if isinstance(item, dict) and str(item.get("id") or "").strip() == sid
+        ]
+        if match:
+            row["кадры"] = match
+            continue
+        if action:
+            same = [
+                item
+                for item in kadry
+                if isinstance(item, dict)
+                and str(item.get("действие") or item.get("action") or "").strip()
+                == action
+            ]
+            if same:
+                row["кадры"] = same
+                continue
+        if len(kadry) > 1:
+            row["кадры"] = [kadry[0]] if isinstance(kadry[0], dict) else kadry[:1]
 
 
 def load_img_pr_master(project: object | None) -> tuple[Path | None, str]:
@@ -118,6 +272,34 @@ def character_ids_from_prompt(text: str) -> list[str]:
         if rid not in seen:
             seen.append(rid)
     return seen
+
+
+_STYLE_LINE_RE = re.compile(
+    r"(?im)^(?:\*\*)?(?:STYLE|Final style lock|Negative)\b"
+)
+_MAX_AI_CHANGE_STYLE = 900
+
+
+def trim_style_encyclopedia(text: str, max_style: int = _MAX_AI_CHANGE_STYLE) -> str:
+    """Агент часто копирует §5–§6 целиком — тогда Outsee сжимает персонажа."""
+    raw = (text or "").strip()
+    match = _STYLE_LINE_RE.search(raw)
+    start = match.start() if match else raw.find("STYLE:")
+    if start < 0:
+        return raw
+    scene, style = raw[:start].rstrip(), raw[start:].strip()
+    if len(style) <= max_style:
+        return raw
+    cut = style[:max_style]
+    sp = cut.rfind(" ")
+    if sp > int(max_style * 0.85):
+        cut = cut[:sp]
+    logger.info(
+        "montage_ai_change: STYLE {} → {} симв (блок персонажа не трогаем)",
+        len(style),
+        len(cut),
+    )
+    return f"{scene}\n\n{cut}" if scene else cut
 
 
 def strip_ai_change_reply(raw: str) -> str:
@@ -177,12 +359,22 @@ async def rewrite_prompt_via_gpt(
     img_pr_variant: str = "",
     image_prompt: str = "",
     db_card_path: Path | None = None,
+    instruction: str = "",
+    action: str = "",
+    camera: dict[str, str] | None = None,
+    coverage_role: str = "",
 ) -> str:
     """Агент + карточка Базы + закадр → vibecode LLM → промт как есть."""
     del img_pr_rules, img_pr_variant, image_prompt
     from app.services.llm_override import bind_generation_llm
 
-    user = build_ai_change_user_message(voiceover_text=voiceover_text)
+    user = build_ai_change_user_message(
+        voiceover_text=voiceover_text,
+        instruction=instruction,
+        action=action,
+        camera=camera,
+        coverage_role=coverage_role,
+    )
     system = system_for_kind(kind)
     files: list[Path] = []
     if img_pr_path is not None and img_pr_path.is_file():
@@ -200,7 +392,7 @@ async def rewrite_prompt_via_gpt(
             system=system,
             auto_pack=False,
         )
-    cleaned = strip_ai_change_reply(raw)
+    cleaned = trim_style_encyclopedia(strip_ai_change_reply(raw))
     if not cleaned:
         raise RuntimeError("ИИзменение: GPT вернул пустой промт")
     logger.info(

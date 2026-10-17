@@ -90,6 +90,29 @@ def _backup_artifact_file_before_wipe(project: Project, path: Path) -> Path | No
         return None
 
 
+async def _drop_master_artifact_rows(
+    session: AsyncSession,
+    project: Project,
+    kinds: tuple[ArtifactKind, ...],
+) -> int:
+    from sqlalchemy import delete
+
+    from app.db import engine as master_engine
+    from app.db import session_scope
+
+    try:
+        if str(session.get_bind().url) == str(master_engine.url):
+            return 0
+        async with session_scope() as master:
+            res = await master.execute(
+                delete(Artifact).where(Artifact.project_id == project.id, Artifact.kind.in_(kinds))
+            )
+            return int(res.rowcount or 0)
+    except Exception as e:
+        logger.warning("[#{}] reset_step: не убрал записи артефактов из master: {}", project.id, e)
+        return 0
+
+
 async def _wipe_artifacts_db_only(
     session: AsyncSession,
     project: Project,
@@ -106,6 +129,7 @@ async def _wipe_artifacts_db_only(
     ).scalars().all()
     for a in arts:
         await session.delete(a)
+    await _drop_master_artifact_rows(session, project, kinds)
     return {"artifacts": len(arts), "files": 0}
 
 
@@ -148,6 +172,7 @@ async def _wipe_artifacts_by_kind(
                             project.id, p, e,
                         )
         await session.delete(a)
+    await _drop_master_artifact_rows(session, project, kinds)
     return {"artifacts": len(arts), "files": files_deleted}
 
 
@@ -415,6 +440,23 @@ def _sd_agent_wiper(step_code: str):
     return _wipe
 
 
+async def _resume_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
+    """Soft ▶ hero: НЕ wipe characters/*.png — догнать только missing.
+
+    Регистрирует уже лежащие PNG. Не копирует ``old/characters`` обратно:
+    иначе reset hero + ▶ сразу откатывает wipe. Полный wipe — ``reset_step``
+    / force_wipe.
+    """
+    from app.services.artifact_recovery import recover_hero_references_from_disk
+
+    recovered = await recover_hero_references_from_disk(session, project)
+    return {
+        "mode": "soft_resume",
+        "artifacts_registered": len(recovered),
+        "excel_ids": recovered,
+    }
+
+
 async def _wipe_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Сброс шага 4a «Персонажи»: удалить hero_reference артефакты.
 
@@ -442,6 +484,26 @@ async def _wipe_hero(session: AsyncSession, project: Project) -> dict[str, Any]:
             r.decision = HITLDecision.pending
             cleared += 1
     details["hitl_hero_reset"] = cleared
+    # PNG мог остаться без Artifact в project.db (запись ушла только в state.db).
+    # Тогда wipe 0 файлов → recover_hero сразу hero_ready без перегенерации.
+    chars_dir = project.data_dir / "characters"
+    orphan = 0
+    if chars_dir.is_dir():
+        for p in chars_dir.iterdir():
+            if not p.is_file() or p.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                continue
+            try:
+                _backup_artifact_file_before_wipe(project, p)
+                p.unlink()
+                orphan += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[#{}] wipe_hero: не смог удалить orphan {}: {}",
+                    project.id,
+                    p.name,
+                    e,
+                )
+    details["orphan_character_files"] = orphan
     return details
 
 
@@ -611,14 +673,22 @@ async def _resume_img_pr(session: AsyncSession, project: Project) -> dict[str, A
 async def _resume_images(session: AsyncSession, project: Project) -> dict[str, Any]:
     """Soft ▶ img: НЕ wipe scenes/*.png — догнать только missing.
 
-    Восстанавливает PNG из ``old/scenes/`` (если scenes пуст после аварии /
-    ошибочного wipe) и регистрирует ``scene_image`` артефакты с диска.
-    Полный wipe — только через force_wipe / reset_step.
+    Регистрирует уже лежащие в ``scenes/`` PNG. Не копирует ``old/scenes``
+    обратно: иначе reset img + ▶ сразу откатывает wipe и Outsee не стартует.
+    Полный wipe — ``reset_step`` / force_wipe.
     """
-    from app.services.artifact_recovery import recover_scene_images_full
+    from app.services.artifact_recovery import recover_scene_images_from_disk
+    from app.services.scan_frames import sync_frames_with_disk_images
 
-    stats = await recover_scene_images_full(session, project)
-    return {"mode": "soft_resume", **stats}
+    recovered = await recover_scene_images_from_disk(session, project)
+    synced = await sync_frames_with_disk_images(session, project)
+    return {
+        "mode": "soft_resume",
+        "restored": 0,
+        "artifacts_registered": len(recovered),
+        "frames_synced": synced,
+        "frame_numbers": recovered,
+    }
 
 
 def _backup_scenes_before_wipe(project: Project, scenes_dir: Path) -> int:
@@ -1000,6 +1070,7 @@ _STEP_WIPE_BY_CODE: dict[str, Any] = dict(_PIPELINE_RESET_LEVELS)
 _STEP_RERUN_BY_CODE: dict[str, Any] = {
     "script": _preserve_script_source_on_rerun,
     "split": _preserve_split_on_rerun,
+    "hero": _resume_hero,
     "img_pr": _resume_img_pr,
     "img": _resume_images,
     "anim_pr": _resume_anim_pr_from_xlsx,

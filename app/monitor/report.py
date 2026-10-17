@@ -101,7 +101,7 @@ def analyze(events: list[dict]) -> dict:
     }
 
 
-def print_report(analysis: dict, *, as_json: bool = False) -> None:
+def _print_report_raw(analysis: dict, *, as_json: bool = False) -> None:
     if as_json:
         print(json.dumps(analysis, ensure_ascii=False, indent=2, default=str))
         return
@@ -391,3 +391,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def print_report(analysis: dict, *, as_json: bool = False) -> None:
+    import contextlib, io, sys
+    from app.brand import scrub
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _print_report_raw(analysis, as_json=as_json)
+    sys.stdout.write(scrub(buf.getvalue()))

@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "mode": "production",
+  "online_enabled": false,
+  "endpoint": "https://vibecode.moe/v1/chat/completions",
+  "model_transport": "real",
+  "external_calls_enabled": true,
+  "retrieval_allowed": false,
+  "continuation_allowed": false,
+  "decision": {
+    "catalog_id": "gpt-5.6-sol-vibecode",
+    "model_id": "gpt-5.6-sol",
+    "reasoning_effort": null,
+    "max_output_tokens": 2048,
+    "timeout_s": 60
+  },
+  "profiles": {
+    "vibecode-json-repair-v1": {
+      "model_id": "gpt-5.6-sol",
+      "provider": "vibecode",
+      "kind": "text",
+      "channel": "stable",
+      "reasoning_effort": null,
+      "max_output_tokens": null,
+      "prompt_variant": "repair-json-only-v1",
+      "synthetic_only": false
+    }
+  },
+  "allowed_actions": [
+    "read_events",
+    "read_contract",
+    "human_review",
+    "wait",
+    "finish",
+    "retry_same",
+    "retry_profile"
+  ]
+}

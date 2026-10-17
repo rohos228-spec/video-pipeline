@@ -1,0 +1,14 @@
+[
+  {
+    "key": "frames_range",
+    "label": "Количество кадров",
+    "value": "10–20",
+    "type": "text"
+  },
+  {
+    "key": "max_chars",
+    "label": "Макс. символов в кадре",
+    "value": "60",
+    "type": "text"
+  }
+]

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "model": "gpt-5-6-sol",
+  "endpoint": "https://api.kie.ai/codex/v1/responses",
+  "max_requests": 3,
+  "max_request_bytes": 30000,
+  "max_output_tokens": 1024,
+  "allowed_actions": ["read_events", "read_contract", "wait", "human_review"],
+  "business_writes": false,
+  "automatic_retries": 0
+}

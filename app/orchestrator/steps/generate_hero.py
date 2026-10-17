@@ -62,11 +62,10 @@ from app.models import (
 from app.services import gpt_text_builder as gtb
 from app.services.excel_characters import ExcelCharacter
 from app.services.hitl import send_hitl_photo
+from app.services import outsee_idempotency
 from app.services.outsee_retry import generate_image_with_retries
-from app.services.prompt_library import (
-    prompt_path,
-    resolve_project_prompt_name,
-)
+from app.services.video_error_policy import is_no_resubmit
+from app.services.notification_log import notify
 from app.settings import settings
 from app.storage import for_project as _sheet_for_project
 
@@ -96,23 +95,48 @@ async def _optional_browser_session(
         yield bs
 
 
-def _read_hero_style(project: Project) -> str | None:
-    """Возвращает содержимое выбранного для проекта пресета стиля
-    из prompts/04_hero_style/. Если стиль не задан или файл отсутствует
-    — возвращает None (вызывающий должен решить, как фоллбэчить)."""
-    overrides = getattr(project, "prompt_overrides", None) or {}
-    meta = getattr(project, "meta", None) or {}
-    name = resolve_project_prompt_name(overrides, "hero_style", meta=meta)
-    p = prompt_path("hero_style", name)
-    if not p.exists():
-        return None
+def _hero_canvas_node_key(project: Project) -> str | None:
     try:
-        return p.read_text(encoding="utf-8")
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "[#{}] hero_style read failed ({}): {}", project.id, p, e
+        from app.services.canvas_graph import canvas_graph_from_meta
+
+        cg = canvas_graph_from_meta(
+            project.meta if isinstance(project.meta, dict) else {}
         )
-        return None
+        for n in (cg or {}).get("nodes") or []:
+            if str(n.get("type") or "").strip().lower() == "hero":
+                key = str(n.get("id") or "").strip()
+                if key:
+                    return key
+    except Exception:  # noqa: BLE001
+        logger.debug("[#{}] hero node_key from canvas failed", project.id, exc_info=True)
+    return "n_hero"
+
+
+def _read_hero_style(project: Project) -> tuple[str, str]:
+    """(текст лока стиля, имя варианта). Пустой текст — стиля нет."""
+    from app.services.prompt_library import read_resolved_project_prompt
+
+    node_key = _hero_canvas_node_key(project)
+    try:
+        name, path, text, source = read_resolved_project_prompt(
+            project, "hero_style", node_key=node_key, slot_id="style"
+        )
+    except FileNotFoundError:
+        logger.warning("[#{}] hero_style файл не найден", project.id)
+        return "", "default"
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[#{}] hero_style read failed: {}", project.id, e)
+        return "", "default"
+    clean = (text or "").strip()
+    logger.info(
+        "[#{}] hero_style variant={!r} source={} path={} chars={}",
+        project.id,
+        name,
+        source,
+        path,
+        len(clean),
+    )
+    return clean, name
 
 
 def _hero_target_pairs(
@@ -212,10 +236,24 @@ async def _approved_excel_ids(
     return out
 
 
+def _excel_disk_png(project: Project, excel_id: str) -> Path | None:
+    """characters/<id>.png, если файл на диске уже есть."""
+    cid = (excel_id or "").strip()
+    if not cid:
+        return None
+    path = project.data_dir / "characters" / f"{cid}.png"
+    try:
+        if path.is_file() and path.stat().st_size >= 1000:
+            return path
+    except OSError:
+        return None
+    return None
+
+
 async def _excel_ids_with_artifact(
     session: AsyncSession, project: Project
 ) -> set[str]:
-    """ID персонажей, для которых уже есть hero_reference с файлом на диске."""
+    """ID персонажей, для которых уже есть PNG (артефакт или файл на диске)."""
     rows = (
         await session.execute(
             select(Artifact)
@@ -234,18 +272,27 @@ async def _excel_ids_with_artifact(
             continue
         if a.path and Path(a.path).is_file():
             out.add(xid)
-
-    # Защитный fallback: если файл уже на диске в characters/<xid>.png
-    pdir = getattr(project, "data_dir", None)
-    if pdir:
-        chars_dir = Path(pdir) / "characters"
-        if chars_dir.is_dir():
-            for p in chars_dir.glob("*.png"):
-                stem = p.stem.lower()
-                if stem.startswith("c") and p.is_file() and p.stat().st_size > 1000:
-                    out.add(stem)
-
+    chars_dir = project.data_dir / "characters"
+    if chars_dir.is_dir():
+        for png in chars_dir.glob("*.png"):
+            try:
+                if png.is_file() and png.stat().st_size >= 1000:
+                    out.add(png.stem.strip().lower())
+            except OSError:
+                continue
     return out
+
+
+async def _excel_png_for_id(
+    session: AsyncSession, project: Project, excel_id: str
+) -> Path | None:
+    """Путь к PNG рефа: артефакт, иначе characters/<id>.png."""
+    art = await _excel_artifact_for_id(session, project, excel_id)
+    if art is not None and art.path:
+        path = Path(art.path)
+        if path.is_file():
+            return path
+    return _excel_disk_png(project, excel_id)
 
 
 def _excel_batch_auto(project: Project) -> bool:
@@ -460,12 +507,30 @@ async def _load_excel_hero_from_xlsx(
 _bootstrap_excel_hero_from_xlsx = _load_excel_hero_from_xlsx
 
 
+def _saved_hero_prompt_path(project: Project, hero_idx: int, v_idx: int) -> Path:
+    return project.data_dir / "characters" / f".hero_prompt_{hero_idx}_v{v_idx}.txt"
+
+
+def _read_saved_hero_prompt(path: Path) -> str:
+    try:
+        saved = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return saved if len(saved) >= 100 else ""
+
+
+def _save_hero_prompt(path: Path, prompt: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(prompt, encoding="utf-8")
+    except OSError:
+        logger.warning("hero: prompt cache not written: {}", path)
+
+
 async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     if project.status is not ProjectStatus.generating_hero:
         return
 
-    # Excel-режим: если юзер запустил генерацию из листа «Персонажи»
-    # (кнопка «🧾 Из EXCEL»), в project.meta['excel_hero'] лежит список
     # персонажей. Идём по отдельной ветке — hero_descriptions/hero_count
     # в этом режиме не используются.
     meta = dict(project.meta or {})
@@ -594,17 +659,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
     # Стиль персонажа (мастер-промт из prompts/04_hero_style/) —
     # обязательно подмешивается к ChatGPT-промту, чтобы итоговое
     # изображение было в нужном визуале (фото-реализм / аниме / 3D / etc).
-    hero_style_content = _read_hero_style(project)
-    style_chosen = (
-        getattr(project, "prompt_overrides", None) or {}
-    ).get("hero_style") or "default"
+    hero_style_content, style_chosen = _read_hero_style(project)
     if not hero_style_content:
-        # Hard fallback: текст-плейсхолдер. Не падаем — но логируем.
         logger.warning(
-            "[#{}] hero_style '{}' не найден на диске — продолжаю без стиля",
+            "[#{}] hero_style {!r} пуст — продолжаю без стиля",
             project.id, style_chosen,
         )
-        hero_style_content = ""
 
     # Загружаем уже готовый hero_prompt из meta артефакта v=1 (если есть и
     # это не его собственная регенерация).
@@ -629,13 +689,24 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
         #     переписать промт без триггеров модерации).
         gpt = get_gpt_client()
 
-        # 1) ChatGPT — нужен только для v=1 (или если кеш не нашёлся).
+        prompt_cache = _saved_hero_prompt_path(project, hero_idx, v_idx)
+        if not hero_prompt and v_idx == 1:
+            from app.services import media_resume
+
+            hero_key = f"hero_{hero_idx}_v{v_idx}"
+            resume_same_request = await media_resume.pending_for_key(project.id, hero_key)
+            if not resume_same_request:
+                resume_same_request = (await outsee_idempotency.assess(project.id, hero_key)).get("mode") == "adopt"
+            if resume_same_request:
+                hero_prompt = _read_saved_hero_prompt(prompt_cache)
+                if hero_prompt:
+                    logger.info(
+                        "[#{}] hero pair=({}, v{}): есть незавершённая платная задача — беру сохранённый промт "
+                        "({} симв), GPT не вызываю",
+                        project.id, hero_idx, v_idx, len(hero_prompt),
+                    )
+
         if not hero_prompt:
-            # Текст «сопр. сообщения» берём из gpt_text_builder — там же
-            # лежит выбор между юзерским override и дефолтом. Обязательно
-            # прогоняем через `render_hero_text` — в шаблоне живут литеральные
-            # плейсхолдеры `{{BRIEF}}` и `{{HERO_STYLE}}`, заполняем их
-            # отдельно для этого героя.
             hero_template = gtb.get_effective_text(project, "hero")
             hero_ask = gtb.render_hero_text(
                 hero_template, brief=user_brief, hero_style=hero_style_content,
@@ -694,6 +765,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     "отправляю как есть, outsee может не принять",
                     project.id, len(hero_prompt), OUTSEE_PROMPT_MAX_CHARS,
                 )
+            if v_idx == 1:
+                _save_hero_prompt(prompt_cache, hero_prompt)
 
         # 2) Сборка финального prompt_text.
         # v=1: полный hero_prompt от ChatGPT (без референса).
@@ -809,6 +882,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     prompt_id_prefix=prompt_id_prefix,
                     reference_image=ref_path,
                     timeout=600,
+                    project_id=project.id,
+                    idempotent=True,
                 )
             except OutseeImageError as e:
                 # Отличаем модерационный reject от прочего
@@ -820,14 +895,20 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                     e.reason if hasattr(e, "reason") else str(e),
                 )
                 # Откатываем статус ровно туда, откуда юзер тыкнул
-                # «4. Hero» — это `frames_ready`. Все остальные шаги
-                # тогда не блокируются 🔒 (как при `failed`), и юзер
                 # может просто исправить описание героя и снова нажать
                 # «4. Hero». Никакого «вытащить проект из failed».
                 project.status = ProjectStatus.frames_ready
                 await session.flush()
                 project_label = (project.topic or project.slug or "")[:60]
-                if is_moderation:
+                if is_no_resubmit(e):
+                    msg = (
+                        f"Проект #{project.id} «{project_label}» — hero {hero_idx}/{n_total} v{v_idx}/{n_variations}: "
+                        f"исход прошлой платной отправки в Outsee неизвестен (запрос мог быть оплачен). "
+                        f"Новый платный запрос не отправляю. Проверьте историю генераций и баланс Outsee и решите: "
+                        f"снять блокировку или подставить найденный файл.\n"
+                        f"Статус откатил в <b>frames_ready</b>."
+                    )
+                elif is_moderation:
                     msg = (
                         f"🚫 Проект #{project.id} «{project_label}» — hero {hero_idx}/{n_total} v{v_idx}/{n_variations}:\n"
                         f"6 попыток в outsee подряд отклонены модерацией (3 оригинал + 3 после GPT-rewrite).\n\n"
@@ -847,9 +928,12 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         f"Статус откатил в <b>frames_ready</b>. Проверь Chrome/outsee и нажми «4. Hero» снова."
                     )
                 try:
-                    await bot.send_message(
+                    await notify(
+                        bot, "send_message",
                         settings.telegram_owner_chat_id,
                         msg[:3800],
+                        kind="hero_failed",
+                        project_id=project.id,
                         parse_mode="HTML",
                     )
                 except Exception:  # noqa: BLE001
@@ -857,12 +941,9 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
                         "[#{}] не удалось отправить TG-ошибку пользователю",
                         project.id,
                     )
-                # Выходим ЧИСТО — без raise. worker loop увидит
-                # status=frames_ready (не «active» в его списке) и проект
                 # больше не будет автоматически брать на этой итерации.
                 return
 
-    # 5) Сохраняем артефакт ОДНОЙ вариации.
     file_path = Path(result.file_path)
     art_meta: dict = {
         "hero_index": hero_idx,
@@ -936,6 +1017,8 @@ async def run(session: AsyncSession, project: Project, bot: Bot) -> None:
             "hero_style": style_chosen,
         },
     )
+    await session.commit()
+    await outsee_idempotency.mark_consumed(project.id, f"hero_{hero_idx}_v{v_idx}")
 
 
 # ---------------------------------------------------------------------------
@@ -973,6 +1056,7 @@ async def _run_excel(
     Реф-вариации ждут файл родителя, затем идут следующей волной.
     """
     from app.db import SessionLocal
+    from app.services.artifact_recovery import recover_hero_references_from_disk
     from app.services.hero_check_regen import META_IDS, get_hero_check_regen_ids
     from app.services.img_streams import get_img_streams
     from app.services.step_cancel import raise_if_cancelled
@@ -987,6 +1071,8 @@ async def _run_excel(
         project.id,
         streams,
     )
+    await recover_hero_references_from_disk(session, project)
+
     if streams == 0:
         chars0 = _excel_characters_from_meta(cfg)
         generated0 = await _excel_ids_with_artifact(session, project)
@@ -1078,8 +1164,10 @@ async def _run_excel(
             project.status = ProjectStatus.frames_ready
             await session.flush()
             try:
-                await bot.send_message(
-                    settings.telegram_owner_chat_id, msg, parse_mode="HTML"
+                await notify(
+                    bot, "send_message",
+                    settings.telegram_owner_chat_id, msg, parse_mode="HTML",
+                    kind="excel_hero_deadlock", project_id=project.id,
                 )
             except Exception:  # noqa: BLE001
                 logger.warning("[#{}] не удалось отправить TG-deadlock", project.id)
@@ -1094,19 +1182,10 @@ async def _run_excel(
             streams,
         )
 
-        # Отпустить write-txn на время параллельной генерации.
         await session.commit()
 
-        from app.project_db import get_project_sessionmaker
-
-        p_dir = getattr(project, "data_dir", None)
-        if p_dir:
-            sm = await get_project_sessionmaker(p_dir)
-        else:
-            sm = SessionLocal
-
         async def _one(ch: ExcelCharacter) -> str:
-            async with sm() as s:
+            async with _sibling_session(session) as s:
                 p = (
                     await s.execute(select(Project).where(Project.id == project_id))
                 ).scalar_one()
@@ -1148,6 +1227,8 @@ async def _run_excel(
 
         await session.commit()
         await session.refresh(project)
+        if project.status is ProjectStatus.frames_ready:
+            return
         project.status = ProjectStatus.generating_hero
 
         if regen_ids and ok_ids:
@@ -1174,6 +1255,17 @@ async def _run_excel(
             return
 
 
+def _sibling_session(session: AsyncSession) -> AsyncSession:
+    from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+
+    from app import db as app_db
+
+    bind = getattr(session, "bind", None)
+    if not isinstance(bind, AsyncEngine) or bind is app_db.engine:
+        return app_db.SessionLocal()
+    return async_sessionmaker(bind, expire_on_commit=False, class_=AsyncSession)()
+
+
 async def _generate_one_excel_character(
     session: AsyncSession,
     project: Project,
@@ -1184,26 +1276,18 @@ async def _generate_one_excel_character(
     approved: set[str],
     batch_auto: bool = False,
 ) -> None:
-    """Генерирует одну картинку для excel-персонажа `ch` и шлёт HITL."""
     is_regen = await _is_regen_for_excel_id(session, project, ch.id)
     used_refs = bool(ch.ref_ids)
 
-    # Reference image(s): берём пути к одобренным артефактам каждого ref.
+    # Reference image(s): артефакт или characters/<id>.png на диске.
     ref_paths: list[Path] = []
     if used_refs:
         for rid in ch.ref_ids:
-            art = await _excel_artifact_for_id(session, project, rid)
-            if art is None or not art.path:
+            p = await _excel_png_for_id(session, project, rid)
+            if p is None:
                 logger.warning(
-                    "[#{}] excel_hero {}: ref {} артефакт не найден",
+                    "[#{}] excel_hero {}: ref {} файл не найден",
                     project.id, ch.id, rid,
-                )
-                continue
-            p = Path(art.path)
-            if not p.exists():
-                logger.warning(
-                    "[#{}] excel_hero {}: ref {} файл {} не существует",
-                    project.id, ch.id, rid, p,
                 )
                 continue
             ref_paths.append(p)
@@ -1218,22 +1302,21 @@ async def _generate_one_excel_character(
             project.status = ProjectStatus.frames_ready
             await session.flush()
             try:
-                await bot.send_message(
+                await notify(
+                    bot, "send_message",
                     settings.telegram_owner_chat_id,
                     f"🚫 Проект #{project.id} excel-hero {ch.id}: "
                     f"референс-файлы для {ch.ref_ids} пропали с диска. "
                     "Перегенери референсы.",
+                    kind="excel_hero_refs_missing",
+                    project_id=project.id,
                 )
             except Exception:  # noqa: BLE001
                 logger.warning("[#{}] не удалось отправить TG", project.id)
             return
 
     # Стиль (общий для проекта — выбирается в обычном hero-flow).
-    hero_style_content = _read_hero_style(project) or ""
-    style_chosen = (
-        (getattr(project, "prompt_overrides", None) or {}).get("hero_style")
-        or "default"
-    )
+    hero_style_content, style_chosen = _read_hero_style(project)
 
     out_dir = project.data_dir / "characters"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1380,6 +1463,7 @@ async def _generate_one_excel_character(
                         reference_image=(ref_paths or None) if used_refs else None,
                         timeout=600,
                         project_id=project.id,
+                        idempotent=True,
                     )
             except OutseeImageError as e:
                 is_moderation = isinstance(e, OutseeContentRejectedError)
@@ -1406,9 +1490,12 @@ async def _generate_one_excel_character(
                         f"Статус откатил в <b>frames_ready</b>."
                     )
                 try:
-                    await bot.send_message(
+                    await notify(
+                        bot, "send_message",
                         settings.telegram_owner_chat_id,
                         msg[:3800],
+                        kind="excel_hero_failed",
+                        project_id=project.id,
                         parse_mode="HTML",
                     )
                 except Exception:  # noqa: BLE001

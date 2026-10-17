@@ -117,8 +117,6 @@ FIELD_ALIASES: dict[str, str] = {
     "voiceover": "voiceover_text",
     "закадр": "voiceover_text",
     "закадровый_текст": "voiceover_text",
-    "закадровый": "voiceover_text",
-    "закадровый_text": "voiceover_text",
     "реплика": "voiceover_text",
     "image_prompt": "image_prompt",
     "img_prompt": "image_prompt",
@@ -137,13 +135,6 @@ FIELD_ALIASES: dict[str, str] = {
     "meaning": "meaning",
     "смысл": "meaning",
     "описание_кадра": "meaning",
-    # Биты сценария (смысловые части «было → стало») → Frame.attrs["биты"].
-    "биты": "биты",
-    "смысловые_части": "биты",
-    "beats": "биты",
-    "кадры": "кадры",
-    "shots": "кадры",
-    "разбивка_кадров": "кадры",
     "duration_seconds": "duration_seconds",
     "длительность": "duration_seconds",
     "время": "duration_seconds",
@@ -152,8 +143,6 @@ FIELD_ALIASES: dict[str, str] = {
     "img_prompt_2": "image_prompt_shot2",
     "промт_картинки_2": "image_prompt_shot2",
     "промпт_картинки_2": "image_prompt_shot2",
-    "child_prompts": "child_prompts",
-    "промты_детей": "child_prompts",
     "animation_prompt_shot2": "animation_prompt_shot2",
     "video_prompt_2": "animation_prompt_shot2",
     "промт_видео_2": "animation_prompt_shot2",
@@ -215,17 +204,6 @@ FIELD_ALIASES: dict[str, str] = {
     "предметы": "shot01_props",
     "shot01_action": "shot01_action",
     "действие": "shot01_action",
-    # Меню съёмки (группа script_frames_qc): крупность / движение / SET.
-    "shot_size": "shot_size",
-    "крупность": "shot_size",
-    "size": "shot_size",
-    "shot_move": "shot_move",
-    "движение": "shot_move",
-    "движение_камеры": "shot_move",
-    "move": "shot_move",
-    "shot_set": "shot_set",
-    "набор": "shot_set",
-    "set": "shot_set",
     "shot01_description": "shot01_description",
     "описание_shot01": "shot01_description",
     "shot01_transition": "shot01_transition",
@@ -250,15 +228,79 @@ FIELD_ALIASES: dict[str, str] = {
     "логика_перехода_shot02": "shot02_transition",
     "shot02_notes": "shot02_notes",
     "shot02_status": "shot02_status",
+    # script_frames_qc: биты / кадры живут в Frame.attrs (не строки Excel).
+    "биты": "биты",
+    "bits": "биты",
+    "кадры": "кадры",
+    "shots": "кадры",
+    # План площадки ячейки (fw_action / fw_shots): зоны, проходы, двери.
+    "площадка": "площадка",
+    "план_площадки": "площадка",
+    "space_plan": "площадка",
+    "scene_plan": "площадка",
+    # Площадка (fw_action): что меняется в сцене — attrs.меняет.
+    "меняет": "меняет",
+    # Меню съёмки → attrs.camera_subdivide (fw_frames / добор).
+    "крупность": "крупность",
+    "size": "крупность",
+    "shot_size": "крупность",
+    "krupnost": "крупность",
+    "движение": "движение",
+    "движение_камеры": "движение",
+    "move": "движение",
+    "shot_move": "движение",
+    "набор": "набор",
+    "set": "набор",
+    "shot_set": "набор",
+    "camera_subdivide": "camera_subdivide",
 }
 
-# Поля, которые живут в Frame.attrs (не колонки Frame.*).
 _ATTR_FIELD_KEYS = frozenset(_ATTR_EXCEL_ROWS) | {
     "characters",
     "image_prompt_shot2",
     "animation_prompt_shot2",
     "child_prompts",
+    "биты",
+    "кадры",
+    "площадка",
+    "меняет",
+    "крупность",
+    "движение",
+    "набор",
+    "camera_subdivide",
 }
+_STRUCTURED_ATTR_KEYS = frozenset({"биты", "кадры", "площадка", "меняет"})
+_CAMERA_MENU_ATTR_KEYS = ("крупность", "движение", "набор")
+
+
+def _merge_camera_subdivide(attrs: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    """Крупность/движение/набор → attrs.camera_subdivide, не затирая role/parent."""
+    raw_cs = attrs.get("camera_subdivide")
+    cs = dict(raw_cs) if isinstance(raw_cs, dict) else {}
+    nested = fields.get("camera_subdivide")
+    if isinstance(nested, dict):
+        for key in _CAMERA_MENU_ATTR_KEYS:
+            val = nested.get(key)
+            if val is None:
+                val = nested.get(
+                    {"крупность": "size", "движение": "move", "набор": "set"}[key]
+                )
+            text = str(val or "").strip()
+            if text:
+                cs[key] = text
+    elif isinstance(nested, str) and nested.strip():
+        parsed = _coerce_structured_attr(nested)
+        if isinstance(parsed, dict):
+            return _merge_camera_subdivide(attrs, {**fields, "camera_subdivide": parsed})
+    for key in _CAMERA_MENU_ATTR_KEYS:
+        if key not in fields:
+            continue
+        text = str(fields[key] or "").strip()
+        if text:
+            cs[key] = text
+    if cs:
+        attrs["camera_subdivide"] = cs
+    return attrs
 
 PROJECT_FIELD_ALIASES: dict[str, str] = {
     "general_plan": "general_plan",
@@ -282,10 +324,35 @@ def _canon_key(raw: str, aliases: dict[str, str]) -> str | None:
     return aliases.get(key)
 
 
+def _coerce_structured_attr(value: Any) -> Any:
+    """Биты/кадры — JSON-массив или объект, не строка Excel."""
+    if value is None:
+        return []
+    if isinstance(value, (list, dict)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text[0] in "[{":
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return text
+            if isinstance(parsed, (list, dict)):
+                return parsed
+        return text
+    return value
+
+
 def normalize_fields(raw: dict, aliases: dict[str, str], *, scope: str) -> dict:
     out: dict = {}
     unknown: list[str] = []
     for k, v in (raw or {}).items():
+        # внутренние маркеры pipeline (не в схеме кадра) — молча отбрасываем
+        ks = str(k)
+        if ks.startswith("_shots_") or ks in {"_shots_under_warn", "_shots_incomplete"}:
+            continue
         canon = _canon_key(k, aliases)
         if canon is None:
             unknown.append(str(k))
@@ -310,6 +377,10 @@ def _hamming_distance(a: str, b: str) -> int:
     return sum(1 for x, y in zip(a, b, strict=True) if x != y)
 
 
+from app.services.observation import observe_check
+
+
+@observe_check("frame_uuid_repair", lambda args, kw, result: {"status": "performed", "changed": bool(result), "repairs": len(result)})
 def repair_near_miss_frame_uuids(
     ops: list[dict[str, Any]],
     known_uuids: list[str] | set[str],
@@ -387,10 +458,126 @@ def remap_frame_number_uuids(
     return remaps
 
 
+_DOUBLE_KEY_QUOTE_RE = re.compile(
+    r'\{\s*""([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)"'
+)
+
+
+def _strip_json_trailing_commas(text: str) -> str:
+    """Убрать запятые перед ``]`` и ``}`` вне строк.
+
+    Модель часто закрывает объект так: ``},],``. Стандартный JSON это
+    отвергает целиком, хотя все кадры в ответе уже есть.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_str = False
+    esc = False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "]}":
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+@observe_check(
+    "json_text_repair",
+    lambda args, kw, result: {"status": "performed", "changed": result != args[0]},
+)
+def repair_apply_ops_json_text(text: str) -> str:
+    """Починить частые опечатки модели до json.loads.
+
+    ``{""порядок":27`` → ``{"порядок":27``.
+    Запятая перед ``]`` / ``}`` вне строки выкидывается.
+    """
+    if not text:
+        return text
+    text = _DOUBLE_KEY_QUOTE_RE.sub(r'{"\1"', text)
+    return _strip_json_trailing_commas(text)
+
+
+def close_truncated_json(text: str) -> dict[str, Any] | None:
+    """Дописать незакрытые ``]}`` у обрезанного apply-ops JSON.
+
+    Один большой op с ``биты:[…]`` часто рвётся сетью: последний объект
+    бита цел, а корневые скобки нет. salvage_ops тогда пустой — нода
+    падает с «модель не вернула apply-ops», хотя JSON почти готов.
+    """
+    if not text:
+        return None
+    t = repair_apply_ops_json_text(text.strip())
+    t = re.sub(r"```+\s*$", "", t).rstrip()
+    start = t.find("{")
+    if start < 0:
+        return None
+    s = t[start:]
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("]" if ch == "[" else "}")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+    if in_str:
+        s += '"'
+    s = s.rstrip()
+    if s.endswith(","):
+        s = s[:-1]
+    if s.endswith(":"):
+        s += "null"
+    if not stack:
+        try:
+            data = json.loads(s)
+        except Exception:  # noqa: BLE001
+            return None
+        return data if isinstance(data, dict) else None
+    s += "".join(reversed(stack))
+    try:
+        data = json.loads(s)
+    except Exception:  # noqa: BLE001
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def salvage_ops_from_partial_json(text: str) -> list[dict[str, Any]]:
-    """Достать целые объекты из обрезанного ``{"ops":[…`` (без закрытия)."""
     if not text:
         return []
+    text = repair_apply_ops_json_text(text)
     m = re.search(r'"ops"\s*:\s*\[', text)
     if not m:
         m = re.search(r'"actions"\s*:\s*\[', text)
@@ -453,6 +640,7 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
     """
     if not text:
         return None
+    text = repair_apply_ops_json_text(text)
     candidates: list[str] = [m.group(1) for m in _JSON_FENCE_RE.finditer(text)]
     idxs = [
         i
@@ -506,11 +694,19 @@ def extract_apply_ops_json(text: str) -> dict[str, Any] | None:
     partial_ops = salvage_ops_from_partial_json(text)
     if partial_ops:
         return {"ops": partial_ops, "_salvaged_partial": True}
+    closed = close_truncated_json(text)
+    if isinstance(closed, dict) and (
+        isinstance(closed.get("ops"), list)
+        or isinstance(closed.get("actions"), list)
+        or isinstance(closed.get("characters"), list)
+        or isinstance(closed.get("scenes"), list)
+    ):
+        closed["_salvaged_partial"] = True
+        return closed
     return None
 
 
 def _normalize_scene_card(raw: dict[str, Any]) -> dict[str, Any]:
-    """Сцена из ответа агента → реестр (границы по словам, не по столбцу)."""
     if not isinstance(raw, dict):
         raise ApplyOpsError("scenes: каждый элемент — объект")
     sid = str(
@@ -643,6 +839,8 @@ def _scene_span_in_text(
 def expand_scene_registry_onto_frames(
     frames: list[Frame],
     registry: list[Any] | None,
+    *,
+    overwrite: bool = False,
 ) -> int:
     """Сцена → кадры: привязка по словам + scene-level + 1 shot → 1 кадр.
 
@@ -760,7 +958,7 @@ def expand_scene_registry_onto_frames(
                 ("scene_end_words", sc.get("end_words") or sc.get("scene_end_words")),
                 ("scene_time_sec", sc.get("время_сек")),
             ):
-                if _set(attrs, key, src, overwrite=True):
+                if _set(attrs, key, src, overwrite=overwrite):
                     changed = True
             # Один shot → один кадр (по порядку внутри сцены).
             # accent — с ШОТА, не клон сцены на все колонки.
@@ -897,8 +1095,12 @@ async def upsert_characters(
     session: AsyncSession,
     project: Project,
     characters: list[Any],
+    *,
+    replace: bool = False,
 ) -> int:
-    """Записать/обновить сущности type=character по code (c01…)."""
+    """Записать/обновить сущности type=character по code (c01…).
+
+    replace=True: коды, которых нет в новом списке, удаляются (Каркас)."""
     from app.models import Entity
 
     if not isinstance(characters, list):
@@ -920,9 +1122,11 @@ async def upsert_characters(
     }
     max_key = max((float(e.sort_key or 0) for e in existing), default=0.0)
     n = 0
+    seen: set[str] = set()
     for raw in characters:
         card = _normalize_character_card(raw)
         code = card["code"]
+        seen.add(code)
         en = by_code.get(code)
         if en is None:
             max_key += 10.0
@@ -941,6 +1145,18 @@ async def upsert_characters(
             en.attrs = card["attrs"]
             en.type = "character"
         n += 1
+    if replace and seen:
+        from loguru import logger
+
+        for code, en in list(by_code.items()):
+            if code not in seen:
+                await session.delete(en)
+                logger.info(
+                    "[#{}] upsert_characters replace: удалён {} ({})",
+                    project.id,
+                    code,
+                    en.name,
+                )
     await session.flush()
     return n
 
@@ -1125,6 +1341,10 @@ def export_project_xlsx(
     }
 
 
+from app.services.observation import observe_apply
+
+
+@observe_apply
 async def apply_ops(
     session: AsyncSession,
     project: Project,
@@ -1326,46 +1546,20 @@ async def apply_ops(
 
         if "animation_prompt_shot2" in fields:
             attrs[SHOT2_VIDEO_PROMPT_ATTR] = str(fields["animation_prompt_shot2"] or "")
-        if "child_prompts" in fields:
-            raw_kids = fields["child_prompts"]
-            attrs["промты_детей"] = (
-                raw_kids if isinstance(raw_kids, list) else []
-            )
         if "characters" in fields:
             persons = str(fields["characters"] or "").strip()
             attrs["characters"] = persons
             attrs["persons"] = persons
             attrs["персонажи"] = persons
-        if "биты" in fields:
-            # Список битов храним как есть (JSON), не str().
-            bits_raw = fields["биты"]
-            attrs["биты"] = bits_raw if isinstance(bits_raw, list) else str(
-                bits_raw or ""
-            )
-        if "кадры" in fields:
-            shots_raw = fields["кадры"]
-            attrs["кадры"] = shots_raw if isinstance(shots_raw, list) else str(
-                shots_raw or ""
-            )
+        if any(k in fields for k in (*_CAMERA_MENU_ATTR_KEYS, "camera_subdivide")):
+            attrs = _merge_camera_subdivide(attrs, fields)
+        for attr_key in _STRUCTURED_ATTR_KEYS:
+            if attr_key not in fields:
+                continue
+            attrs[attr_key] = _coerce_structured_attr(fields[attr_key])
         for attr_key in _ATTR_EXCEL_ROWS:
             if attr_key in fields:
                 attrs[attr_key] = str(fields[attr_key] or "")
-        cs_raw = attrs.get("camera_subdivide")
-        cs = dict(cs_raw) if isinstance(cs_raw, dict) else {}
-        _cs_map = (
-            ("shot_size", "крупность"),
-            ("shot_move", "движение"),
-            ("shot_set", "набор"),
-        )
-        wrote_cs = False
-        for canon, cs_key in _cs_map:
-            if canon in fields and str(fields[canon] or "").strip():
-                cs[cs_key] = str(fields[canon]).strip()
-                wrote_cs = True
-        if wrote_cs:
-            attrs["camera_subdivide"] = cs
-            if cs.get("набор"):
-                attrs["place"] = cs["набор"]
         fr.attrs = attrs
         updated += 1
 
@@ -1395,9 +1589,7 @@ async def apply_ops(
 
     await session.flush()
 
-    # Детали из scenes[].shots[] → Frame.attrs только если ЭТОТ apply
-    # реально обновил scenes. Иначе старый scene_registry затирает
-    # свежие frame ops (место/смысл после повторного ▶ excel_gpt).
+    # Детали из scenes[].shots[] → Frame.attrs (place/действие/описание…).
     all_frames = list(
         (
             await session.execute(
@@ -1408,13 +1600,13 @@ async def apply_ops(
         ).scalars()
     )
     meta_now = project.meta if isinstance(project.meta, dict) else {}
-    expanded = 0
-    if scenes_n > 0:
-        expanded = expand_scene_registry_onto_frames(
-            all_frames, meta_now.get("scene_registry")
-        )
-        if expanded:
-            await session.flush()
+    expanded = expand_scene_registry_onto_frames(
+        all_frames,
+        meta_now.get("scene_registry"),
+        overwrite=bool(scenes_n),
+    )
+    if expanded:
+        await session.flush()
 
     exported = None
     if export_xlsx:

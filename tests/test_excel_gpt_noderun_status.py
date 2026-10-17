@@ -302,6 +302,88 @@ async def test_complete_recovers_pending_when_prepare_missed(
 
 
 @pytest.mark.asyncio
+async def test_complete_overflow_does_not_recover_slot1_sibling(
+    mem_db, monkeypatch
+) -> None:
+    """fw_report (slotOverflow) закрыт: pending персонажи slotIndex=1 не done."""
+    overflow = "n_excel_gpt_fw_report"
+    slot1 = "n_excel_gpt_1787849035232"
+    slug = f"excel-nr-{uuid.uuid4().hex[:8]}"
+    async with mem_db() as session:
+        nodes = [
+            {
+                "id": slot1,
+                "type": "excel_gpt",
+                "position": {"x": 0, "y": 0},
+                "data": {"slotIndex": 1, "label": "Персонажи"},
+            },
+            {
+                "id": overflow,
+                "type": "excel_gpt",
+                "position": {"x": 400, "y": 0},
+                "data": {
+                    "label": "Отчёт",
+                    "slotOverflow": True,
+                    "groupId": "scenariy_prompty_kadrov_qc",
+                },
+            },
+        ]
+        wf = Workflow(
+            name=f"wf-{uuid.uuid4().hex[:8]}",
+            is_default=True,
+            nodes=nodes,
+            edges=[],
+        )
+        session.add(wf)
+        await session.flush()
+        project = Project(
+            slug=slug,
+            topic="t",
+            status=ProjectStatus.enrich_1_ready,
+            meta={
+                "canvas_graph": {"nodes": nodes, "edges": []},
+                "excel_gpt_completed_keys": [overflow],
+            },
+        )
+        session.add(project)
+        await session.flush()
+        run = WorkflowRun(
+            project_id=project.id,
+            workflow_id=wf.id,
+            status=WorkflowRunStatus.new,
+            nodes_snapshot=nodes,
+            edges_snapshot=[],
+        )
+        session.add(run)
+        await session.flush()
+        nr_ids: dict[str, int] = {}
+        for n, st in (
+            (slot1, NodeRunStatus.pending),
+            (overflow, NodeRunStatus.done),
+        ):
+            nr = NodeRun(
+                workflow_run_id=run.id,
+                node_key=n,
+                node_type="excel_gpt",
+                status=st,
+            )
+            session.add(nr)
+            await session.flush()
+            nr_ids[n] = nr.id
+        _patch_default_workflow(monkeypatch, wf.id)
+        await complete_active_node_for_step(
+            session,
+            project,
+            prev_status=ProjectStatus.enriching_1,
+            new_status=ProjectStatus.enrich_1_ready,
+        )
+
+    async with mem_db() as session:
+        assert (await session.get(NodeRun, nr_ids[overflow])).status == NodeRunStatus.done
+        assert (await session.get(NodeRun, nr_ids[slot1])).status == NodeRunStatus.pending
+
+
+@pytest.mark.asyncio
 async def test_sync_heals_pending_from_completed_keys(mem_db, monkeypatch) -> None:
     """Stale completed_keys + pending NodeRun — meta чистим, в done не прыгаем."""
     keys = ["n_excel_gpt_1", "n_excel_gpt_2", "n_excel_gpt_3"]
@@ -463,3 +545,92 @@ async def test_sync_heals_stale_running_from_completed_keys(mem_db, monkeypatch)
         assert keys[1] not in (project.meta or {}).get("excel_gpt_completed_keys", [])
         # Активный слот 3 не трогаем heal'ом
         assert (await session.get(NodeRun, nr_ids[keys[2]])).status == NodeRunStatus.running
+
+
+@pytest.mark.asyncio
+async def test_sync_heals_overflow_pending_completed_to_done(
+    mem_db, monkeypatch
+) -> None:
+    """fw_* slotOverflow: pending + completed_keys → done, ключ не стираем.
+
+    Лог #34: apply-ops записан, STOP → script_ready, complete_excel_gpt
+    пропущен, heal снимал n_excel_gpt_fw_script и нода оставалась серой.
+    """
+    overflow = "n_excel_gpt_fw_script"
+    nxt = "n_excel_gpt_fw_check_script"
+    slug = f"excel-nr-{uuid.uuid4().hex[:8]}"
+    async with mem_db() as session:
+        nodes = [
+            {
+                "id": overflow,
+                "type": "excel_gpt",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "label": "GPT: сценарист",
+                    "slotOverflow": True,
+                    "groupId": "scenariy_prompty_kadrov_qc",
+                },
+            },
+            {
+                "id": nxt,
+                "type": "excel_gpt",
+                "position": {"x": 290, "y": 0},
+                "data": {
+                    "label": "Проверка: сценарий",
+                    "slotOverflow": True,
+                    "groupId": "scenariy_prompty_kadrov_qc",
+                },
+            },
+        ]
+        wf = Workflow(
+            name=f"wf-{uuid.uuid4().hex[:8]}",
+            is_default=True,
+            nodes=nodes,
+            edges=[],
+        )
+        session.add(wf)
+        await session.flush()
+        project = Project(
+            slug=slug,
+            topic="t",
+            status=ProjectStatus.script_ready,
+            meta={
+                "canvas_graph": {"nodes": nodes, "edges": []},
+                "excel_gpt_completed_keys": [overflow],
+                "active_excel_gpt_node_key": nxt,
+            },
+        )
+        session.add(project)
+        await session.flush()
+        run = WorkflowRun(
+            project_id=project.id,
+            workflow_id=wf.id,
+            status=WorkflowRunStatus.new,
+            nodes_snapshot=nodes,
+            edges_snapshot=[],
+        )
+        session.add(run)
+        await session.flush()
+        nr_ids: dict[str, int] = {}
+        for n in nodes:
+            nr = NodeRun(
+                workflow_run_id=run.id,
+                node_key=n["id"],
+                node_type="excel_gpt",
+                status=NodeRunStatus.pending,
+            )
+            session.add(nr)
+            await session.flush()
+            nr_ids[n["id"]] = nr.id
+        project_id = project.id
+        _patch_default_workflow(monkeypatch, wf.id)
+
+    await sync_run_for_project(project_id)
+
+    async with mem_db() as session:
+        assert (await session.get(NodeRun, nr_ids[overflow])).status == NodeRunStatus.done
+        assert (await session.get(NodeRun, nr_ids[nxt])).status == NodeRunStatus.pending
+        project = await session.get(Project, project_id)
+        assert project is not None
+        keys = (project.meta or {}).get("excel_gpt_completed_keys") or []
+        assert overflow in keys

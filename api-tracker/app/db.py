@@ -55,60 +55,13 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path | str | None = None) -> None:
-    """Создать таблицы и необходимые индексы."""
-    with get_connection(db_path) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS api_calls (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                user_name TEXT NOT NULL DEFAULT 'unknown',
-                device_name TEXT DEFAULT '',
-                provider TEXT NOT NULL,
-                key_alias TEXT DEFAULT '',
-                model TEXT NOT NULL,
-                call_type TEXT DEFAULT 'text',
-                prompt_tokens INTEGER DEFAULT 0,
-                completion_tokens INTEGER DEFAULT 0,
-                cached_tokens INTEGER DEFAULT 0,
-                total_tokens INTEGER DEFAULT 0,
-                media_count INTEGER DEFAULT 0,
-                duration_sec REAL DEFAULT 0.0,
-                cost_usd REAL DEFAULT 0.0,
-                status_code INTEGER DEFAULT 200,
-                error_message TEXT DEFAULT '',
-                project_source TEXT DEFAULT '',
-                metadata_json TEXT DEFAULT '{}',
-                synced INTEGER DEFAULT 1
-            );
-        """)
-        # Автомиграция существующих баз данных
-        cols = [c["name"] for c in conn.execute("PRAGMA table_info(api_calls);").fetchall()]
-        if "user_name" not in cols:
-            conn.execute("ALTER TABLE api_calls ADD COLUMN user_name TEXT DEFAULT 'unknown';")
-        if "device_name" not in cols:
-            conn.execute("ALTER TABLE api_calls ADD COLUMN device_name TEXT DEFAULT '';")
-        if "synced" not in cols:
-            conn.execute("ALTER TABLE api_calls ADD COLUMN synced INTEGER DEFAULT 1;")
+    from app.db_schema import migrate_tracker_db
 
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_api_calls_ts
-            ON api_calls(timestamp DESC);
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_api_calls_user
-            ON api_calls(user_name);
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_api_calls_provider_model
-            ON api_calls(provider, model);
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS custom_pricing (
-                model TEXT PRIMARY KEY,
-                pricing_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-        """)
+    conn = get_connection(db_path)
+    try:
+        migrate_tracker_db(conn)
+    finally:
+        conn.close()
 
 
 def insert_call(

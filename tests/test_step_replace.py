@@ -54,3 +54,64 @@ async def test_enter_img_pr_wipes_old_prompts(session):
     )
     await session.refresh(fr)
     assert not (fr.image_prompt or "").strip()
+
+
+ANIM = "Camera slowly pushes in on the subject while light shifts across the scene, subtle motion."
+
+
+async def _anim_project(session, n=2):
+    from app.services import anim_pr_sidecar
+
+    anim_pr_sidecar._RESULTS.clear()
+    p = Project(slug="pa", topic="t", hero_mode="full_auto", status=ProjectStatus.images_ready)
+    session.add(p)
+    await session.flush()
+    frs = []
+    for i in range(1, n + 1):
+        fr = Frame(project_id=p.id, number=i, voiceover_text=f"vo{i}",
+                   image_prompt=f"A detailed image prompt number {i} for the scene",
+                   animation_prompt=ANIM, status=FrameStatus.animation_prompt_ready)
+        session.add(fr)
+        frs.append(fr)
+    await session.flush()
+    return p, frs
+
+
+@pytest.mark.asyncio
+async def test_enter_anim_pr_keeps_fresh_sidecar_result(session):
+    from app.services.anim_pr_sidecar import stamp_sidecar_results
+
+    p, frs = await _anim_project(session)
+    assert stamp_sidecar_results(p.id, frs) == 2
+    out = await replace_step_outputs_on_enter(session, p, ProjectStatus.generating_animation_prompts)
+    assert out["anim_pr"]["kept_from_sidecar"] == 2
+    for fr in frs:
+        await session.refresh(fr)
+        assert fr.animation_prompt == ANIM
+    await replace_step_outputs_on_enter(session, p, ProjectStatus.generating_animation_prompts)
+    for fr in frs:
+        await session.refresh(fr)
+        assert not (fr.animation_prompt or "").strip()
+
+
+@pytest.mark.asyncio
+async def test_enter_anim_pr_without_stamp_or_stale_input_still_wipes(session):
+    from app.services.anim_pr_sidecar import stamp_sidecar_results
+
+    p, frs = await _anim_project(session)
+    await replace_step_outputs_on_enter(session, p, ProjectStatus.generating_animation_prompts)
+    for fr in frs:
+        await session.refresh(fr)
+        assert not (fr.animation_prompt or "").strip()
+
+    for fr in frs:
+        fr.animation_prompt = ANIM
+    stamp_sidecar_results(p.id, frs)
+    frs[1].image_prompt = "A completely different image prompt after the sidecar ran"
+    await session.flush()
+    out = await replace_step_outputs_on_enter(session, p, ProjectStatus.generating_animation_prompts)
+    assert out["anim_pr"] == {"kept_from_sidecar": 1, "frames_cleared": 1}
+    await session.refresh(frs[0])
+    await session.refresh(frs[1])
+    assert frs[0].animation_prompt == ANIM
+    assert not (frs[1].animation_prompt or "").strip()

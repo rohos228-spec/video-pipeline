@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-Light.ttf") format("truetype"); font-weight: 300; font-style: normal; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-LightItalic.ttf") format("truetype"); font-weight: 300; font-style: italic; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-Italic.ttf") format("truetype"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-Medium.ttf") format("truetype"); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-MediumItalic.ttf") format("truetype"); font-weight: 500; font-style: italic; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-Bold.ttf") format("truetype"); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-BoldItalic.ttf") format("truetype"); font-weight: 700; font-style: italic; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-Black.ttf") format("truetype"); font-weight: 900; font-style: normal; font-display: swap; }
+@font-face { font-family: "Rubik"; src: url("/fonts/Rubik-BlackItalic.ttf") format("truetype"); font-weight: 900; font-style: italic; font-display: swap; }
+html body, html body.font-sans { font-family: "Rubik", var(--font-inter), system-ui, "Segoe UI", Roboto, sans-serif; }
+
 /*
  * video-pipeline — Canon C (airy black)
  *  - Преобладающий чёрный, воздух, hairline 1px
@@ -9,7 +21,7 @@
  */
 
 @theme {
-  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+  --font-sans: "Rubik", var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
   --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", Consolas, "SF Mono", Menlo, Monaco, monospace;
 
   --radius-xs: 4px;
@@ -25,6 +37,7 @@
     font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
     letter-spacing: -0.01em;
     -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
   }
@@ -183,7 +196,7 @@ body {
 }
 .react-flow__edge-path,
 .react-flow__edge .soft-thread-edge-path {
-  stroke: hsl(210 18% 62% / 0.55);
+  stroke: rgba(255, 255, 255, 0.5);
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -310,8 +323,8 @@ body {
 
 .react-flow.neural-flow .react-flow__edge-path,
 .react-flow.neural-flow .soft-thread-edge-path {
-  stroke: hsl(210 18% 62% / 0.55);
-  stroke-width: 1.35;
+  stroke: rgba(255, 255, 255, 0.5);
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
   filter: none;
@@ -320,7 +333,7 @@ body {
 /* Пунктир-нити: короткие точки, скруглённые концы, без ломаных углов path */
 .react-flow.neural-flow .react-flow__edge.animated path,
 .react-flow .react-flow__edge.animated path {
-  stroke-dasharray: 1.5 9;
+  stroke-dasharray: 5 6;
   animation: soft-thread-flow 2.8s linear infinite;
 }
 
@@ -332,16 +345,16 @@ body {
 
 .react-flow.neural-flow .react-flow__connection-path,
 .react-flow__connection-path {
-  stroke: hsl(210 18% 62% / 0.7);
-  stroke-width: 1.35;
+  stroke: rgba(255, 255, 255, 0.6);
+  stroke-width: 2;
   stroke-linecap: round;
-  stroke-dasharray: 1.5 9;
+  stroke-dasharray: 5 6;
 }
 
 .react-flow__edge.excel-lane-edge .react-flow__edge-path,
 .react-flow__edge.excel-lane-edge .soft-thread-edge-path {
-  stroke: hsl(210 18% 62% / 0.55);
-  stroke-width: 1.35;
+  stroke: rgba(255, 255, 255, 0.5);
+  stroke-width: 2;
 }
 
 .btn-airy {
@@ -366,6 +379,25 @@ select.studio-select option:checked,
 select.studio-select option:hover {
   background-color: hsl(240 5% 92%);
   color: hsl(240 10% 6%);
+}
+
+/* Доска монтажа: refetch без пустого экрана — бегущая полоска под шапкой */
+@keyframes montage-sweep {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(300%);
+    opacity: 0.35;
+  }
+}
+
+.animate-montage-sweep {
+  animation: montage-sweep 1.1s ease-in-out infinite;
 }
 
 @keyframes node-model-card-in {
@@ -405,3 +437,104 @@ input[type="text"]:focus-visible {
 }
 
 
+
+/* Expanded inline node menu (and its prompt detail overlay) above other nodes */
+.react-flow__node:has([data-inline-studio]) {
+  z-index: 2000 !important;
+}
+
+
+/* ---- Inline node menu: unified dark design for all legacy controls ---- */
+.vp-menu, .vp-menu * { font-family: Rubik, ui-sans-serif, system-ui, sans-serif; }
+.vp-menu .font-mono, .vp-menu .font-mono * { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.vp-menu input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]),
+.vp-menu select,
+.vp-menu textarea {
+  background: rgba(0, 0, 0, 0.35) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 8px !important;
+  color: rgba(255, 255, 255, 0.92) !important;
+  box-shadow: none !important;
+}
+.vp-menu input:focus, .vp-menu select:focus, .vp-menu textarea:focus {
+  border-color: rgba(255, 255, 255, 0.32) !important;
+  outline: none !important;
+}
+.vp-menu button { border-radius: 8px; }
+.vp-menu section, .vp-menu fieldset,
+.vp-menu [class*="bg-amber-"], .vp-menu [class*="bg-cyan-"], .vp-menu [class*="bg-teal-"],
+.vp-menu [class*="bg-sky-"], .vp-menu [class*="bg-violet-"], .vp-menu [class*="bg-emerald-"] {
+  background-color: rgba(0, 0, 0, 0.28) !important;
+  border-radius: 10px !important;
+}
+.vp-menu section, .vp-menu fieldset,
+.vp-menu [class*="border-amber-"], .vp-menu [class*="border-cyan-"], .vp-menu [class*="border-teal-"],
+.vp-menu [class*="border-sky-"], .vp-menu [class*="border-violet-"], .vp-menu [class*="border-emerald-"] {
+  border-color: rgba(255, 255, 255, 0.07) !important;
+}
+.vp-menu [class*="text-amber-"], .vp-menu [class*="text-cyan-"], .vp-menu [class*="text-teal-"],
+.vp-menu [class*="text-sky-"], .vp-menu [class*="text-violet-"] { color: rgba(255, 255, 255, 0.82) !important; }
+.vp-menu [class*="shadow-"] { box-shadow: none !important; }
+.vp-menu .rounded-xl, .vp-menu .rounded-2xl, .vp-menu .rounded-md, .vp-menu .rounded-lg { border-radius: 10px !important; }
+/* primary (colored) action buttons -> neutral light buttons */
+.vp-menu button[class*="bg-cyan-6"], .vp-menu button[class*="bg-sky-6"], .vp-menu button[class*="bg-teal-6"],
+.vp-menu button[class*="bg-emerald-6"], .vp-menu button[class*="bg-amber-6"], .vp-menu button[class*="bg-primary"] {
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: #0b0b0d !important;
+  border: 1px solid transparent !important;
+}
+.vp-menu button[class*="bg-cyan-6"]:hover, .vp-menu button[class*="bg-sky-6"]:hover, .vp-menu button[class*="bg-teal-6"]:hover,
+.vp-menu button[class*="bg-emerald-6"]:hover, .vp-menu button[class*="bg-amber-6"]:hover, .vp-menu button[class*="bg-primary"]:hover {
+  background: #ffffff !important;
+}
+/* catalog + results containers follow the translucent card look */
+.vp-menu .bg-\[\#26262b\] { background-color: rgba(18, 18, 22, 0.55) !important; border-color: rgba(255, 255, 255, 0.07) !important; }
+.vp-menu .bg-\[\#141417\] { background-color: rgba(0, 0, 0, 0.35) !important; }
+.vp-menu .bg-white\/5 { background-color: rgba(0, 0, 0, 0.3) !important; }
+
+.vp-menu .vp-detail { background-color: #17171b !important; }
+.vp-menu .vp-detail .bg-\[\#141417\] { background-color: #202026 !important; }
+.vp-menu .vp-detail .bg-\[\#1d1d22\] { background-color: #26262c !important; }
+.vp-menu .vp-head-img { background-color: #141417; }
+
+/* expanded node menu: dim dark controls; white only for explicit active states */
+[data-inline-studio] :is(button, select, input:not([type=checkbox]):not([type=radio]):not([type=range]), textarea, [role=tab], [role=combobox]):not(.bg-white):not([data-state=active]):not([aria-selected=true]):not([aria-checked=true]):not([data-state=checked]) {
+  background-color: rgba(0, 0, 0, 0.62) !important;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+[data-inline-studio] :is(button, [role=tab]):not(.bg-white):not([data-state=active]):not([aria-selected=true]):not([aria-checked=true]):not([data-state=checked]):hover {
+  background-color: rgba(0, 0, 0, 0.5) !important;
+}
+
+/* edges: readable dashed lines */
+.react-flow .react-flow__edge .react-flow__edge-path,
+.react-flow .react-flow__edge .soft-thread-edge-path { stroke-dasharray: 5 6; }
+
+/* tight dark backdrop directly under text on pictures */
+.vp-hl { background: rgba(0,0,0,0.42); padding: 2px 6px; border-radius: 10px; box-shadow: 0 0 10px 7px rgba(0,0,0,0.42); -webkit-box-decoration-break: clone; box-decoration-break: clone; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+
+/* expanded node menu: one solid black body below the header (no grey layered panels) */
+[data-inline-studio] aside *:not(.bg-white):not([data-state=active]):not([data-state=checked]):not([aria-checked=true]):not([aria-selected=true]):not([role=switch]):not([class*="bg-red"]):not([class*="bg-emerald"]):not([class*="bg-sky"]):not([class*="bg-amber"]):not([class*="bg-yellow"]):not(svg):not(svg *):not(img):not(video):not([data-keep-bg]) {
+  background-color: transparent !important;
+  border-color: rgba(255, 255, 255, 0.07) !important;
+}
+[data-inline-studio] aside :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), textarea, select) {
+  background-color: #0a0a0a !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+[data-inline-studio] aside :is(button, [role=tab]):not(.bg-white):not([data-state=active]):not([aria-selected=true]):hover {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* node settings tab: studio typography & grouping */
+[data-vp-settings] { font-family: Rubik, sans-serif; font-size: 14px; }
+[data-vp-settings] section { border: 1px solid rgba(255,255,255,0.07) !important; border-radius: 10px !important; padding: 14px !important; box-shadow: none !important; }
+[data-vp-settings] section > h3, [data-vp-settings] section > div > h3, [data-vp-settings] h3 { font-size: 11px !important; font-weight: 500 !important; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255,255,255,0.55) !important; }
+[data-vp-settings] .text-sm { font-size: 14px !important; }
+[data-vp-settings] .text-xs, [data-vp-settings] .text-\[10px\], [data-vp-settings] .text-\[11px\] { font-size: 12.5px !important; color: rgba(255,255,255,0.5); }
+[data-vp-settings] [class*="ring-2"] { --tw-ring-color: rgba(255,255,255,0.55) !important; }
+
+/* settings tab: flat list, no box-in-box */
+[data-vp-settings] *:not(input):not(textarea):not(select):not(button):not([data-keep-bg]) { border-width: 0 !important; box-shadow: none !important; }
+[data-vp-settings] :is(section, div[class*="rounded"]):not(button):not([data-keep-bg]) { padding-left: 0 !important; padding-right: 0 !important; }
+[data-vp-settings] section + section, [data-vp-settings] [data-vp-prompt-block] { border-top: 1px solid rgba(255,255,255,0.07) !important; padding-top: 14px !important; }

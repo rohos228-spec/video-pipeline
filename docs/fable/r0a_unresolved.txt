@@ -1,0 +1,26 @@
+R0a merge (r0a-pipeline-base + upstream/main c53a238): files NOT yet resolved (52pay balance ran out).
+web/out/** build artifacts also skipped (take main's or rebuild).
+
+api-tracker/app/cloud_sync.py
+api-tracker/app/server.py
+api-tracker/app/static/index.html
+api-tracker/tests/test_tracker.py
+app/orchestrator/steps/generate_hero.py
+app/orchestrator/steps/generate_image_prompts.py
+app/orchestrator/steps/generate_images.py
+app/project_db.py
+app/services/advance_runner.py
+app/services/agent_harness.py
+app/services/api_tracker_hook.py
+app/services/chatgpt_xlsx.py
+app/services/gpt_api.py
+app/services/montage_board_apply.py
+app/services/montage_board_assets.py
+app/services/xlsx_step_runners.py
+app/settings.py
+app/web/routers/project_ops.py
+app/web/routers/projects.py
+tests/test_gpt_workspace.py
+tests/test_text_llm_provider.py
+
+Resolved by WS1 in the merge onto main c53a238 (security #313/#315 kept, web/out from main, .env.fleet.example removed).

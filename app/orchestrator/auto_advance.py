@@ -690,14 +690,32 @@ async def _prepare_node_run_for_status(
         meta = dict(project.meta) if isinstance(project.meta, dict) else {}
         node_key = str(meta.get("active_excel_gpt_node_key") or "").strip() or None
         # Stale active: уже done → иначе снова крутим ноду ДО hero.
+        # НО: ▶ overflow (slot 0) живёт в enriching_1. Если шаг уже running
+        # с этим active_key, re-resolve(slot=1) стартует чужую линейную ноду
+        # параллельно, а выбранная через секунду heal'ится в done (#63).
+        already_running = project.status is running_status
         if node_key and node_key in completed_node_keys(project):
-            logger.warning(
-                "auto_advance: #{} stale active_excel_gpt_node_key={} "
-                "(already completed) — re-resolve",
-                project.id,
-                node_key,
-            )
-            node_key = None
+            if already_running:
+                # Leftover worker tick после успеха: ключ уже в
+                # completed_keys, статус ещё enriching_N. Раньше pop
+                # completed_keys + allow_restart заново гнал GPT.
+                # Явный ▶ снимает ключ в start_step до воркера.
+                logger.info(
+                    "auto_advance: #{} keep active_excel_gpt_node_key={} "
+                    "(already {}, still in completed_keys — no restart)",
+                    project.id,
+                    node_key,
+                    running_status.value,
+                )
+                return False
+            else:
+                logger.warning(
+                    "auto_advance: #{} stale active_excel_gpt_node_key={} "
+                    "(already completed) — re-resolve",
+                    project.id,
+                    node_key,
+                )
+                node_key = None
         # auto_mode: active key часто пуст (multi excel_gpt) — резолвим по слоту
         # (incomplete-first, см. resolve_excel_gpt_node_key_for_slot).
         if not node_key:
@@ -783,6 +801,18 @@ async def _commit_running_after_prepare(
     allow_restart: bool = True,
 ) -> bool:
     """Pin excel_gpt → prepare NodeRun → только потом Project.status."""
+    from app.services.actions_v1 import managed_project_enabled,check_managed_start
+    if await managed_project_enabled(project.id):
+        from app.orchestrator.graph.planner import load_graph_for_project
+        graph=await load_graph_for_project(session,project)
+        key=graph.next_work_node_key_after_ready(project,ready_status)
+        gate=check_managed_start(project_id=project.id,node_key=key or '')
+        if gate is None or not gate.allowed:
+            from app.services.observation import stage_project_fact
+            stage_project_fact(session,project,'runtime_wait',{
+                'reason':gate.reason if gate else 'managed_permission_unavailable',
+                'node_key':key,'initiator':'auto_advance'})
+            return False
     await _pin_excel_gpt_key_after_ready(session, project, ready_status, nxt)
     prepared = await _prepare_node_run_for_status(
         session, project, nxt, allow_restart=allow_restart
@@ -796,6 +826,78 @@ async def _commit_running_after_prepare(
     return True
 
 
+async def _final_verified(session: AsyncSession, project: Project) -> bool:
+    from app.models import Artifact, ArtifactKind
+    from app.services.artifact_verifier import verify_artifact
+
+    art = (await session.execute(
+        select(Artifact).where(
+            Artifact.project_id == project.id, Artifact.kind == ArtifactKind.final_video
+        ).order_by(Artifact.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    if art is None or not art.path:
+        return False
+    try:
+        res = await verify_artifact(art.path, root=project.data_dir, kind="assembly")
+    except Exception:
+        return False
+    if res.get("status") != "passed":
+        return False
+    if isinstance(project.meta, dict) and project.meta.get("sfx_degraded") is True:
+        return False
+    recorded = (art.meta or {}).get("sha256")
+    if recorded is not None and recorded != res.get("sha256"):
+        return False
+    try:
+        from app.services.media_soft_checks import final_soft_issues
+        from pathlib import Path as _Path
+        issues = await final_soft_issues(session, project, _Path(art.path), res)
+    except Exception:
+        issues = []
+    if issues:
+        logger.warning("auto_advance: #{} финал не автоодобрен, мягкая проверка: {}", project.id, ",".join(issues))
+        return False
+    return True
+
+
+UNCHECKED_AUTO_APPROVE_CHECK = "auto_approve_without_review"
+_UNCHECKED_REASONS_RU = {
+    "visual_review_off": "визуальная проверка выключена (AUTO_REVIEW_VISUAL / auto_review_kinds)",
+    "visual_review_not_implemented": "визуальная проверка включена, но для этого шага она не подключена",
+}
+
+
+async def _record_unchecked_auto_approve(
+    session: AsyncSession,
+    project: Project,
+    transition: StepTransition,
+    status: ProjectStatus,
+    reason: str,
+) -> None:
+    reason_ru = _UNCHECKED_REASONS_RU.get(reason, reason)
+    summary = (f"Автоодобрение без проверки: шаг {transition.kind.value} ({status.value}) принят автоматически, "
+               f"качество результата не проверялось: {reason_ru}.")
+    payload = {
+        "check": UNCHECKED_AUTO_APPROVE_CHECK,
+        "performed": False,
+        "status": "unchecked",
+        "hitl_kind": transition.kind.value,
+        "ready_status": status.value,
+        "reason": reason,
+        "summary": summary,
+        "initiator": "auto_advance",
+        "semantic_quality_verified": False,
+        "business_commit_claim": False,
+    }
+    logger.warning("auto_advance: #{} {} -> {}", project.id, status.value, summary)
+    try:
+        from app.services.observation import record_project_event
+
+        await record_project_event(session, project, "runtime_check", payload)
+    except Exception:
+        logger.exception("auto_advance: #{} unchecked auto-approve event failed", project.id)
+
+
 async def _apply_approve(
     session: AsyncSession,
     project: Project,
@@ -805,11 +907,9 @@ async def _apply_approve(
     bot: Bot | None = None,
     badge: str | None = None,
 ) -> None:
-    """Эмулируем клик `approve` пользователем в TG."""
     from app.services.gen_queue_run import is_user_stopped, should_hold_queue_auto_advance
     from app.services.project_control import auto_awaits_manual_start
 
-    # Свежий meta: ⏹ мог только что выставить user_stop / await_manual.
     try:
         await session.refresh(project)
     except Exception:  # noqa: BLE001
@@ -836,16 +936,25 @@ async def _apply_approve(
         )
         return
 
+    if (
+        transition.kind is HITLKind.approve_final
+        and (hitl is None or hitl.decision is HITLDecision.pending)
+        and not await _final_verified(session, project)
+    ):
+        logger.warning(
+            "auto_advance: #{} auto-approve final blocked (verification not passed)",
+            project.id,
+        )
+        return
+
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.approved
 
     # Hero-ready: внутри шага 4 может быть несколько героев / вариаций,
     # одна HITL-карточка ≠ переход к следующему шагу. Зеркалим логику
-    # из bot.py callback (parity #1 + #2 — multi-hero / excel-hero).
     if transition.ready_status is ProjectStatus.hero_ready:
         nxt = await _next_status_after_hero_approve(session, project, hitl)
         if nxt is not ProjectStatus.generating_hero:
-            # Цикл check(hero)→regen→check: не идём «дальше», а обратно в check.
             try:
                 from app.services.vision_check_loop import (
                     maybe_return_to_check_after_vision_ready,
@@ -1084,6 +1193,10 @@ async def _apply_approve(
         ):
             return
     _reset_retry_count(project, transition.ready_status)
+    _node = _running_for_ready(transition.ready_status)
+    if _node is not None:
+        from app.services import restart_chain
+        restart_chain.clear_node(project, _node.value)
     await session.flush()
     logger.info(
         "auto_advance: #{} {} → approved → {}",
@@ -1104,15 +1217,17 @@ async def _apply_regen(
     result: ReviewResult,
     *,
     bot: Bot | None = None,
+    manual: bool = False,
 ) -> None:
-    """Эмулируем клик `regen` + кладём fix_hints для следующей генерации."""
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.regenerate
 
-    count = _bump_retry_count(project, transition.ready_status)
+    count = 0 if manual else _bump_retry_count(project, transition.ready_status)
 
-    if count > MAX_AUTO_REGEN_PER_STEP:
+    if not manual and count > MAX_AUTO_REGEN_PER_STEP:
         # Превышен лимит — pause проекта.
+        from app.services import restart_chain as _rc_pause
+        _rc_pause.remember_pause_origin(project)
         project.status = ProjectStatus.paused
         meta = dict(project.meta or {})
         meta["auto_paused_reason"] = (
@@ -1128,13 +1243,23 @@ async def _apply_regen(
         )
         return
 
-    # Откатываемся к running-статусу шага.
     back_to = _running_for_ready(transition.ready_status)
+
+    from app.services import restart_chain
+    _node = back_to.value if back_to is not None else transition.ready_status.value
+    _src = "manual" if manual else "auto_review"
+    _ok, _n, _cap = restart_chain.charge(project, _node, _src)
+    if not _ok:
+        await restart_chain.stop(session, project, _node, _n, _cap, _src)
+        return
+
     if back_to is None:
         logger.warning(
             "auto_advance: не знаю как откатить {} → running",
             transition.ready_status.value,
         )
+        from app.services import restart_chain as _rc_pause
+        _rc_pause.remember_pause_origin(project)
         project.status = ProjectStatus.paused
     else:
         await _prepare_node_run_for_status(
@@ -1142,8 +1267,6 @@ async def _apply_regen(
         )
         project.status = back_to
 
-    # Передаём fix_hints в gpt_text_override, чтобы шаг увидел их и
-    # передал в промт.
     meta = dict(project.meta or {})
     if result.fix_hints:
         meta["auto_fix_hints"] = result.fix_hints
@@ -1170,6 +1293,8 @@ async def _apply_reject(
 ) -> None:
     if hitl is not None and hitl.decision is HITLDecision.pending:
         hitl.decision = HITLDecision.rejected
+    from app.services import restart_chain as _rc_pause
+    _rc_pause.remember_pause_origin(project)
     project.status = ProjectStatus.paused
     meta = dict(project.meta or {})
     meta["auto_paused_reason"] = (
@@ -1242,7 +1367,12 @@ async def continue_project_pipeline(
     session: AsyncSession, project: Project, *, bot: Bot | None = None
 ) -> dict[str, object]:
     """Продолжить пайплайн: снять stop/паузу и продвинуть *_ready → running."""
-    from app.services.project_control import resume_project as resume_project_svc
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.project_control import (
+        clear_auto_await_manual_start,
+        resume_project as resume_project_svc,
+    )
     from app.services.step_cancel import clear_stop
 
     clear_stop(project.id)
@@ -1253,6 +1383,11 @@ async def continue_project_pipeline(
             cleared.append(key)
     if cleared:
         project.meta = meta
+        flag_modified(project, "meta")
+    clear_auto_await_manual_start(project)
+    from app.services import restart_chain
+    await restart_chain.release_for_human_everywhere(session, project)
+    await session.flush()
 
     if project.status is ProjectStatus.paused:
         new_status = await resume_project_svc(session, project)
@@ -1276,7 +1411,6 @@ _HARNESS_GATE_OBSERVABILITY = frozenset(
     {
         "project_log_clean",
         "node_runs_failed",
-        # Не блокировать HITL-цепочку c01→c02 из-за мягких проверок картинки.
         "hero_sheet_png",
         "excel_hero_fields_sane",
     }
@@ -1318,6 +1452,8 @@ async def _harness_gate(
     project.meta = meta
     await session.flush()
     if fails[key] >= 3:
+        from app.services import restart_chain as _rc_pause
+        _rc_pause.remember_pause_origin(project)
         project.status = ProjectStatus.paused
         meta2 = dict(project.meta or {})
         meta2["auto_paused_reason"] = f"harness gate: {status.value} — {names}"
@@ -1349,6 +1485,12 @@ async def maybe_auto_advance(
     Вызывается ИЗ worker-loop'а ПОСЛЕ обхода running-статусов. Только
     для проектов с `auto_mode=True` в *_ready состоянии.
     """
+    from app.services.actions_recovery import restricted_node
+    if restricted_node(project.id) is not None:
+        from app.services.observation import stage_project_fact
+        stage_project_fact(session, project, 'runtime_wait',
+            {'reason':'recovery_verification_pending','initiator':'supervisor'})
+        return False
     if (
         not force
         and not getattr(project, "auto_mode", False)
@@ -1544,6 +1686,12 @@ async def maybe_auto_advance(
         _nxt = await _graph_next_running(session, project, status)
         if _nxt is None:
             return False
+        from app.orchestrator.steps.publish import publish_hold_reason
+
+        _hold = await publish_hold_reason(session, project)
+        if _hold is not None:
+            logger.info("auto_advance: #{} assembled -> publishing не запускаем: {}", project.id, _hold)
+            return False
 
     hitl = await get_latest_hitl(session, project.id, transition.kind)
 
@@ -1568,7 +1716,6 @@ async def maybe_auto_advance(
     if hitl is not None and hitl.decision is HITLDecision.rejected:
         return False
 
-    # Контроль только ИИ (ручной режим / «Контроль пайплайна» убраны).
     meta = dict(project.meta or {})
     meta["ai_control"] = True
 
@@ -1591,6 +1738,9 @@ async def maybe_auto_advance(
         logger.info(
             "auto_advance: #{} {} → auto-approve (visual, no GPT check)",
             project.id, status.value,
+        )
+        await _record_unchecked_auto_approve(
+            session, project, transition, status, "visual_review_off"
         )
         await _apply_approve(session, project, hitl, transition, bot=bot)
         return True
@@ -1642,8 +1792,9 @@ async def maybe_auto_advance(
             session, project, hitl, transition, result, bot=bot
         )
 
-    # Все остальные случаи (visual + AUTO_REVIEW_VISUAL=1) — TODO.
-    # Пока — auto-approve.
+    await _record_unchecked_auto_approve(
+        session, project, transition, status, "visual_review_not_implemented"
+    )
     await _apply_approve(session, project, hitl, transition, bot=bot)
     return True
 
@@ -1669,7 +1820,6 @@ def _should_vision_check(project: Project, kind: HITLKind) -> bool:
 
 
 def _artifact_for_kind(project: Project, kind: HITLKind) -> str | None:
-    """Берёт текст артефакта из проекта по типу HITL."""
     if kind is HITLKind.approve_plan:
         return project.general_plan or None
     if kind is HITLKind.approve_script:
@@ -1677,6 +1827,10 @@ def _artifact_for_kind(project: Project, kind: HITLKind) -> str | None:
     return None
 
 
+from app.services.observation import observe_review
+
+
+@observe_review
 async def _run_verdict_review_for_step(
     session: AsyncSession,
     project: Project,
@@ -1702,13 +1856,22 @@ async def _run_verdict_review_for_step(
 
     gpt = get_gpt_client()
     await gpt.new_conversation()
-    verdict = await run_verdict_review(
-        session,
-        project,
-        step_code,
-        gpt,
-        user_prompt=check_prompt,
-    )
+    from app.services import request_context
+    from app.services.observation import _cost_project
+    cost_token = _cost_project.set(int(project.id))
+    try:
+        with request_context.project_scope(
+                int(project.id), run_id=request_context.native_run_id(int(project.id), f"verdict-{step_code}"),
+                prefix="verdict-"):
+            verdict = await run_verdict_review(
+                session,
+                project,
+                step_code,
+                gpt,
+                user_prompt=check_prompt,
+            )
+    finally:
+        _cost_project.reset(cost_token)
 
     if verdict.approved or verdict.fix_applied:
         return ReviewResult(
@@ -1726,10 +1889,10 @@ async def _run_verdict_review_for_step(
     )
 
 
+@observe_review
 async def _run_text_review(
     project: Project, kind: HITLKind, artifact: str
 ) -> ReviewResult:
-    """Запускает GPT-ревью текста через HTTP API."""
     from app.services import auto_review
     from app.services.gpt_client import get_gpt_client
 
@@ -2050,3 +2213,27 @@ async def serial_tick_mass_lanes(session: AsyncSession) -> int:
             (next_p.meta or {}).get("mass_lane_position"),
         )
     return started
+
+
+
+async def maybe_auto_advance_for_worker(
+    session: AsyncSession, project: Project, bot: Bot, *, force: bool = False
+) -> bool:
+    if not settings.worker_use_project_db:
+        return await maybe_auto_advance(session, project, bot, force=force)
+    from app.project_db import project_db_session_scope, pull_master_runtime_into_project, push_runtime_to_master
+
+    pid = int(project.id)
+    async with project_db_session_scope(pid) as ps:
+        p = await ps.get(Project, pid)
+        if p is None:
+            return await maybe_auto_advance(session, project, bot, force=force)
+        await pull_master_runtime_into_project(ps, p)
+        advanced = await maybe_auto_advance(ps, p, bot, force=force)
+        await ps.commit()
+        await push_runtime_to_master(ps, p)
+    try:
+        await session.refresh(project)
+    except Exception:
+        logger.debug("auto_advance: refresh проекта #{} после тика на project.db не удался", pid)
+    return advanced
