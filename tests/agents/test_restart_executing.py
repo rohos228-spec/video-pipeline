@@ -42,7 +42,7 @@ async def test_restart_mid_paid_step_waits_instead_of_rerunning(token: str) -> N
         assert actions.calls == []
         assert fresh.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
         approvals = [event for event in fresh.bus.replay("restart-paid", 0) if event.type == "approval_required"]
-        assert approvals[-1].payload["reason"] == "paid_unknown_outcome"
+        assert approvals[-1].payload["reason"] == "paid_outcome_unknown"
         row = fresh.tasks.list_steps(task_id)[0]
         assert row["status"] == "running"
     finally:

@@ -311,6 +311,54 @@ async def test_paid_outcome_unknown_deny_fails_task(token: str) -> None:
         set_runtime(None)
 
 
+@pytest.mark.asyncio
+async def test_restart_verify_then_run_node_approves_the_paid_step(token: str) -> None:
+    """Чекпоинт на verify_code_state не подменяет платный run_node."""
+    del token
+    session = "restart-verify-node"
+    verify = PlanStep(action="verify_code_state", expected="ok", paid=False, mutating=False)
+    paid = PlanStep(
+        action="run_node",
+        params={"node_key": "n_qc"},
+        expected="ran",
+        paid=True,
+        mutating=True,
+        estimated_cost=6.5,
+    )
+    tasks = TaskStore()
+    task_id = tasks.insert(session, "нода", TaskStatus.executing.value, project_id=13)
+    tasks.save_plan(task_id, [verify, paid], position=0)
+    tasks.insert_step(task_id, 1, paid)
+    CheckpointStore().save(task_id, session, CheckpointData(plan=[verify, paid], position=0))
+    actions = MockActions()
+    runtime = _runtime(actions)
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        assert [call["name"] for call in actions.calls] == ["verify_code_state"]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.waiting_approval.value
+        pinned = runtime.checkpoints.load_latest(task_id)
+        assert pinned is not None
+        assert pinned.position == 1
+        assert pinned.plan[pinned.position].action == "run_node"
+        opened = [event for event in runtime.bus.replay(session, 0) if event.type == "approval_required"]
+        assert opened[-1].payload["action"] == "run_node"
+        assert opened[-1].payload["position"] == 1
+        assert opened[-1].payload["forecast_usd"] == forecast_cost([paid]) == 6.5
+        node = next(row for row in runtime.tasks.list_steps(task_id) if row["action_name"] == "run_node")
+        assert node["status"] == "running"
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.approve)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        node = next(row for row in runtime.tasks.list_steps(task_id) if row["action_name"] == "run_node")
+        assert node["status"] == "done"
+        assert paid_step_identity(paid.action, paid.params) in runtime.supervisor._paid_done[task_id]
+        assert [call["name"] for call in actions.calls] == ["verify_code_state"]
+        assert runtime.tasks.get(task_id)["status"] == TaskStatus.done.value
+    finally:
+        set_runtime(None)
+
+
 def _draft(session: str, status: TaskStatus) -> int:
     step = PlanStep(action="look", expected="ok", paid=False, mutating=True)
     tasks = TaskStore()

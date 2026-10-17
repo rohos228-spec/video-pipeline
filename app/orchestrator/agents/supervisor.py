@@ -187,42 +187,6 @@ class Supervisor:
         )
         return task_id
 
-    async def recover_after_restart(self) -> list[int]:
-        """Продолжить задачи, которые остались ``executing`` после падения процесса.
-
-        Платная строка ``running`` не исполняется снова: ``waiting_approval``
-        с причиной ``paid_unknown_outcome``.
-        """
-        rows = self.tasks.list_open()
-        recovered: list[int] = []
-        for row in rows:
-            if str(row.get("status")) != TaskStatus.executing.value:
-                continue
-            task_id = int(row["id"])
-            if task_id in self._runs and not self._runs[task_id].done():
-                continue
-            session_id = str(row["session_id"])
-            data = self.checkpoints.load_latest(task_id)
-            if data is None or not data.plan:
-                self._session_task[session_id] = task_id
-                await self._fail_closed(task_id, session_id, "empty_plan")
-                recovered.append(task_id)
-                continue
-            self._arm_resume(session_id, task_id, data)
-            self._session_task[session_id] = task_id
-            self._runs[task_id] = asyncio.create_task(
-                self._execute_plan(
-                    task_id,
-                    session_id,
-                    list(data.plan),
-                    int(data.position),
-                    str(row.get("goal") or ""),
-                ),
-                name=f"orch-recover-{task_id}",
-            )
-            recovered.append(task_id)
-        return recovered
-
     async def wait(self, task_id: int, timeout: float | None = None) -> None:
         await asyncio.wait_for(self._runs[task_id], timeout)
 
@@ -286,6 +250,8 @@ class Supervisor:
         reason = self._block_reason.get(task_id)
         if retry_grant:
             return await self._consume_paid_retry_grant(task_id, session_id)
+        if reason == "paid_outcome_unknown" and decided is None:
+            return {"executed": False}
         if reason == "paid_outcome_unknown" and decided is not None:
             if decided is ApprovalDecision.approve:
                 await self._approve_paid_unknown(task_id, session_id)
@@ -1136,10 +1102,6 @@ class Supervisor:
                 )
                 return
 
-            if len(batch) == 1 and step.paid and self._running_paid_row(task_id, step) is not None:
-                await self._hold_paid_unknown(task_id, session_id, step)
-                return
-
             skip = self._skip_reason(task_id, step, plan, index) if len(batch) == 1 else None
             if skip:
                 await self.bus.publish(
@@ -1151,18 +1113,24 @@ class Supervisor:
                 index += 1
                 continue
 
-            if any(item.paid and self._paid_outcome_unknown(task_id, item) for item in batch):
+            unknown = next(
+                (item for item in batch if item.paid and self._paid_outcome_unknown(task_id, item)),
+                None,
+            )
+            if unknown is not None:
                 # Строка running уже есть: шаг стартовал до рестарта, исход не записан.
-                # Сам шаг не исполняется. Кнопки решают approve / retry / deny.
+                # Чекпоинт пишется на этот индекс, иначе approve возьмёт предыдущий
+                # шаг (например verify_code_state перед run_node).
                 self._block_reason[task_id] = "paid_outcome_unknown"
+                await self._checkpoint(task_id, session_id, plan, index)
                 await self._escalate(
                     task_id,
                     session_id,
                     "paid_outcome_unknown",
                     extra={
-                        "action": step.action,
+                        "action": unknown.action,
                         "position": index,
-                        "forecast_usd": forecast_cost([step]),
+                        "forecast_usd": forecast_cost([unknown]),
                         "decisions": approval_decision_choices(),
                     },
                 )
@@ -1767,14 +1735,6 @@ class Supervisor:
             session_id,
             "paid_outcome_unknown",
             extra={"action": action} if action else None,
-        )
-
-    async def _hold_paid_unknown(self, task_id: int, session_id: str, step: PlanStep) -> None:
-        await self._apply_block(
-            task_id,
-            session_id,
-            "paid_unknown_outcome",
-            extra={"action": step.action},
         )
 
     def _remember_paid(self, task_id: int) -> None:
