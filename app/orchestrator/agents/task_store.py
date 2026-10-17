@@ -51,7 +51,11 @@ class TaskStore:
         conn = connect()
         try:
             conn.execute(
-                "UPDATE orch_tasks SET project_id = ?, updated_at = ? WHERE id = ?",
+                """
+                UPDATE orch_tasks
+                SET project_id = ?, updated_at = ?
+                WHERE id = ? AND project_id IS NULL
+                """,
                 (int(project_id), utc_now(), task_id),
             )
             conn.commit()
