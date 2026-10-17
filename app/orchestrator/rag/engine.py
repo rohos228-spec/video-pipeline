@@ -5,7 +5,6 @@ from __future__ import annotations
 import concurrent.futures
 import math
 import queue
-import re
 import threading
 from collections.abc import Callable
 from dataclasses import replace
@@ -15,6 +14,7 @@ from typing import Any
 
 from app.orchestrator.rag.canon import sha256_payload
 from app.orchestrator.rag.embedder import E5PrefixEmbedder, HashingEmbedder
+from app.orchestrator.rag.lexical import LEXICAL_ANALYZER, fts_or_query
 from app.orchestrator.rag.loaders import load_history, load_nodes_and_prompts, load_rules
 from app.orchestrator.rag.node_store import NodeStore
 from app.orchestrator.rag.rerank import Reranker
@@ -22,31 +22,13 @@ from app.orchestrator.rag.rrf import rrf_merge
 from app.orchestrator.rag.store import RagStore, chunk_id_for
 from app.orchestrator.rag.types import CORPORA, Chunk, ReindexResult, SourceDoc
 
-_TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
 _RRF_K = 60
 _AGGREGATES = ("none", "prompt_pool", "prompt_expand")
 
 
 def fts_match_query(text: str) -> str:
-    tokens = _TOKEN_RE.findall(text)
-    if not tokens:
-        return ""
-    min_len = 3 if any(len(token) >= 3 for token in tokens) else 1
-    seen: list[str] = []
-    lowered: set[str] = set()
-    for token in tokens:
-        if len(token) < min_len:
-            continue
-        key = token.lower()
-        if key in lowered:
-            continue
-        lowered.add(key)
-        seen.append(token.replace('"', '""'))
-        if len(seen) >= 32:
-            break
-    if not seen:
-        return ""
-    return " OR ".join(f'"{token}"' for token in seen)
+    """FTS-запрос в тех же формах, что лежат в индексе BM25."""
+    return fts_or_query(text)
 
 
 def cosine(left: list[float], right: list[float]) -> float:
@@ -444,6 +426,7 @@ def _group_docs(docs: list[SourceDoc], embedder_id: str) -> dict[str, tuple[str,
         revision = sha256_payload(
             {
                 "embedder": embedder_id,
+                "lexical": LEXICAL_ANALYZER,
                 "parts": [
                     {
                         "metadata": doc.metadata,
