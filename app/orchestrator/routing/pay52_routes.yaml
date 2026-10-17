@@ -1,0 +1,87 @@
+# Маршруты внутренних ходов оркестратора (WS5).
+# D1/D6 по умолчанию НЕ подтверждены: fast-tier выключен, всё идёт strong high.
+# Переопределение: ORCH_D1_CONFIRMED / ORCH_D6_CONFIRMED = 1|true|yes|on.
+
+flags:
+  d1_confirmed: false
+  d6_confirmed: false
+
+timeouts_s:
+  fast: 60
+  strong: 300
+
+retries: 2
+backoff_base_s: 1.0
+
+# call_batch не читает зазор из файла: старт параллельный, gap по умолчанию 0.
+stagger_s:
+  min: 0
+  max: 0
+
+spend:
+  # D4: суб-бюджет внутренних ходов. Исчерпание → TaskStatus.waiting_approval,
+  # ApprovalEvent.reason = budget_exhausted. Задачу это не валит.
+  internal_sub_budget_usd: 10.0
+
+classifier:
+  confidence_threshold: 0.8
+  temperature: 0
+  max_tokens: 120
+
+providers:
+  # База и ключ 52pay на живом хопе берутся из pay52_routes.resolve_text
+  # и settings.pay52_base_url (PAY52_BASE_URL, дефолт https://api.52pay.com/v1).
+  # Поля ниже — запас, пока модуля pay52_routes нет в дереве.
+  52pay:
+    api_key_env: PAY52_GPT_API_KEY
+    base_url_env: PAY52_BASE_URL
+    chat_path: /v1/chat/completions
+    api: openai-chat
+  kie:
+    api_key_env: GPT_API_KEY
+    alt_api_key_env: KIE_API_KEY
+    base_url_env: GPT_BASE_URL
+    default_base_url: https://api.kie.ai
+    chat_path: /codex/v1/responses
+    api: openai-responses
+    relay_token_env: GPT_RELAY_TOKEN
+
+# До D1: primary gpt-5.6-sol high (52pay), затем Kie.
+# После D1: claude-fable-5 → gpt-5.6-sol high → Kie.
+# Fast (только после D6): glm-5.3-flash → claude-haiku-4-5 → strong. Без reasoning_effort=high.
+# Wire-id 52pay режет resolve_text (gpt-5-6-sol → gpt-5.6-sol, ключ pay52_gpt_api_key).
+# Kie — последний резерв, всегда stream. Слаг: settings.gpt_model (дефолт gpt-5-6-sol).
+chains:
+  fast:
+    - model: glm-5.3-flash
+      provider: 52pay
+      reasoning_effort: null
+    - model: claude-haiku-4-5
+      provider: 52pay
+      reasoning_effort: null
+    - delegate: strong
+  strong_unconfirmed:
+    - model: gpt-5.6-sol
+      provider: 52pay
+      reasoning_effort: high
+    - model: gpt-5-6-sol
+      provider: kie
+      reasoning_effort: high
+  strong_confirmed:
+    - model: claude-fable-5
+      provider: 52pay
+      reasoning_effort: high
+    - model: gpt-5.6-sol
+      provider: 52pay
+      reasoning_effort: high
+    - model: gpt-5-6-sol
+      provider: kie
+      reasoning_effort: high
+
+# Оценки USD / 1M токенов (сырые, без наценки ×3 UI). Уточнить по прайсу 52pay.
+prices_usd_per_million:
+  glm-5.3-flash: {prompt: 0.10, completion: 0.40, reasoning: 0.40}
+  claude-haiku: {prompt: 0.47, completion: 2.35, reasoning: 2.35}
+  claude-fable-5: {prompt: 4.71, completion: 23.53, reasoning: 23.53}
+  gpt-5.6-sol: {prompt: 0.43, completion: 2.56, reasoning: 2.56}
+  default: {prompt: 1.0, completion: 4.0, reasoning: 4.0}

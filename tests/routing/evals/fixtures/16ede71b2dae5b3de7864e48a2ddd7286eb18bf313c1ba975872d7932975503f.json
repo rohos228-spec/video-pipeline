@@ -1,0 +1,30 @@
+{
+  "key": "16ede71b2dae5b3de7864e48a2ddd7286eb18bf313c1ba975872d7932975503f",
+  "request_meta": {
+    "tier": "strong",
+    "temperature": 0.0,
+    "max_tokens": 120,
+    "reasoning_effort": "high",
+    "messages_sha256": "c094a6dc6a0a052122c5b3839a9fe58ccfe2483bf0641175680a47eb6eded2e0"
+  },
+  "response": {
+    "text": "{\"tier\": \"fast\", \"mode\": \"task\", \"confidence\": 0.92}",
+    "call_id": "e6-recorded",
+    "model": "gpt-5.6-sol",
+    "provider": "52pay",
+    "tier": "strong",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 8,
+      "reasoning_tokens": 0
+    },
+    "cost_usd": 0.0,
+    "latency_ms": 5,
+    "fallback_index": 0,
+    "deterministic": false,
+    "fixture_key": "16ede71b2dae5b3de7864e48a2ddd7286eb18bf313c1ba975872d7932975503f"
+  },
+  "recorded_at": "2026-10-17T00:00:00Z",
+  "recorded_model": "gpt-5.6-sol"
+}
