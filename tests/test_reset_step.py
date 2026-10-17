@@ -841,3 +841,126 @@ async def test_soft_resume_anim_pr_does_not_deactivate_prompt_versions(session):
     await session.refresh(pv)
     assert fr.animation_prompt == "keep anim"
     assert pv.is_active is True
+
+
+def _bind_data_dir(monkeypatch, tmp_path: Path):
+    import app.settings as app_settings
+
+    monkeypatch.setattr(app_settings.settings, "data_dir", tmp_path / "data")
+
+
+def _warn_lines():
+    from loguru import logger
+
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
+    return lines, sink, logger
+
+
+@pytest.mark.asyncio
+async def test_wipe_keeps_file_when_old_copy_fails(session, tmp_path: Path, monkeypatch):
+    """Сбой копии в old/ — файл и строка Artifact остаются, в логе WARN."""
+    from app.services.reset_step import _wipe_artifacts_by_kind
+
+    _bind_data_dir(monkeypatch, tmp_path)
+    p = await _mkproject(session, slug="copy-fail")
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    src = p.data_dir / "scene.png"
+    payload = b"scene-bytes"
+    src.write_bytes(payload)
+    art = await _mkart(
+        session, p, ArtifactKind.scene_image, path=str(src),
+    )
+
+    def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("app.services.reset_step.shutil.copy2", _boom)
+    lines, sink, logger = _warn_lines()
+    try:
+        await _wipe_artifacts_by_kind(session, p, ArtifactKind.scene_image)
+    finally:
+        logger.remove(sink)
+
+    assert src.read_bytes() == payload
+    row = await session.get(Artifact, art.id)
+    assert row is not None
+    assert row.path == str(src)
+    assert any("без копии" in line or "файл не удаляем" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_wipe_assemble_archives_final_and_subtitles(
+    session, tmp_path: Path, monkeypatch
+):
+    """final_video и субтитры уходят в old/ с тем же размером, исходники снимаются."""
+    from app.services.reset_step import _wipe_assemble
+
+    _bind_data_dir(monkeypatch, tmp_path)
+    p = await _mkproject(session, slug="assemble-arc")
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    final = p.data_dir / "movie.mp4"
+    subs = p.data_dir / "movie.srt"
+    final.write_bytes(b"final-video-bytes")
+    subs.write_bytes(b"1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    await _mkart(session, p, ArtifactKind.final_video, path=str(final))
+    await _mkart(session, p, ArtifactKind.subtitle, path=str(subs))
+
+    await _wipe_assemble(session, p)
+
+    assert not final.exists()
+    assert not subs.exists()
+    final_copies = list((p.data_dir / "old" / "final").rglob("*.mp4"))
+    sub_copies = list((p.data_dir / "old" / "subtitles").rglob("*.srt"))
+    assert len(final_copies) == 1
+    assert len(sub_copies) == 1
+    assert final_copies[0].stat().st_size == len(b"final-video-bytes")
+    assert sub_copies[0].read_bytes() == b"1\n00:00:00,000 --> 00:00:01,000\nhi\n"
+    left = (
+        await session.execute(
+            select(Artifact).where(Artifact.project_id == p.id)
+        )
+    ).scalars().all()
+    assert left == []
+
+
+@pytest.mark.asyncio
+async def test_wipe_sfx_moves_dir_and_keeps_it_when_copy_fails(
+    session, tmp_path: Path, monkeypatch
+):
+    """sfx/ переносится в old/sfx. Если копия не подтверждена — каталог на месте."""
+    from app.services.reset_step import _wipe_sfx_gen
+
+    _bind_data_dir(monkeypatch, tmp_path)
+    p = await _mkproject(session, slug="sfx-arc")
+    p.data_dir.mkdir(parents=True, exist_ok=True)
+    sfx = p.data_dir / "sfx"
+    (sfx / "nested").mkdir(parents=True)
+    payload = b"RIFFxxxxWAVEfmt "
+    (sfx / "nested" / "hit.wav").write_bytes(payload)
+
+    summary = await _wipe_sfx_gen(session, p)
+
+    assert not sfx.exists()
+    archived = Path(summary["archived_to"])
+    copied = archived / "nested" / "hit.wav"
+    assert copied.is_file()
+    assert copied.stat().st_size == len(payload)
+
+    sfx.mkdir()
+    (sfx / "keep.wav").write_bytes(b"keep-me-please")
+
+    def _bad_tree(src, dest):
+        dest.mkdir(parents=True)
+        (dest / "keep.wav").write_bytes(b"x")
+
+    monkeypatch.setattr("app.services.reset_step.shutil.copytree", _bad_tree)
+    lines, sink, logger = _warn_lines()
+    try:
+        failed = await _wipe_sfx_gen(session, p)
+    finally:
+        logger.remove(sink)
+
+    assert (sfx / "keep.wav").read_bytes() == b"keep-me-please"
+    assert failed["archived_to"] is None
+    assert any("каталог сохранён" in line for line in lines)
