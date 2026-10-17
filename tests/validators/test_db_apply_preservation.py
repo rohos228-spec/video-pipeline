@@ -354,3 +354,100 @@ async def test_db_apply_preservation_covers_all_mutating_ops(
     assert text.text == "привет"
     assert edge.type == "next"
     assert person.code == "c01"
+
+
+@pytest.mark.asyncio
+async def test_rejected_apply_ops_leaves_session_clean(session: AsyncSession) -> None:
+    """ApplyOpsError, затем commit: кадры, тексты, связи и персонажи как были."""
+    project = Project(slug="clean", topic="тест", status=None)  # type: ignore[arg-type]
+    session.add(project)
+    await session.flush()
+    left = Frame(
+        project_id=project.id,
+        number=1,
+        uuid="aaaaaaaaaaaaaaaaaaaaaaaa",
+        voiceover_text="один два",
+        attrs={"кадры": [{"id": "1-K1", "текст": "один"}, {"id": "1-K2", "текст": "два"}]},
+    )
+    right = Frame(
+        project_id=project.id,
+        number=2,
+        uuid="bbbbbbbbbbbbbbbbbbbbbbbb",
+        voiceover_text="ещё",
+        attrs={},
+    )
+    session.add_all([left, right])
+    await session.flush()
+    session.add_all(
+        [
+            FrameText(project_id=project.id, frame_id=left.id, kind="voiceover", text="привет"),
+            FrameEdge(
+                project_id=project.id,
+                from_frame_id=left.id,
+                to_frame_id=right.id,
+                type="next",
+            ),
+        ]
+    )
+    await db_apply.upsert_characters(
+        session, project, [{"id": "c01", "имя": "Анна", "внешность": "рост"}]
+    )
+    await session.commit()
+    project_id = project.id
+    left_id = left.id
+
+    real_upsert = db_apply.upsert_characters
+
+    async def _also_drop_links(sess, proj, characters, *, replace=False):
+        count = await real_upsert(sess, proj, characters, replace=replace)
+        for row in (
+            await sess.execute(select(FrameText).where(FrameText.project_id == proj.id))
+        ).scalars():
+            await sess.delete(row)
+        for row in (
+            await sess.execute(select(FrameEdge).where(FrameEdge.project_id == proj.id))
+        ).scalars():
+            await sess.delete(row)
+        await sess.flush()
+        return count
+
+    db_apply.upsert_characters = _also_drop_links  # type: ignore[method-assign]
+    try:
+        with pytest.raises(db_apply.ApplyOpsError):
+            await db_apply.apply_ops(
+                session,
+                project,
+                [
+                    {
+                        "target": "frame",
+                        "frame_uuid": left.uuid,
+                        "fields": {"кадры": [{"id": "1-K1", "текст": "один"}]},
+                    }
+                ],
+                characters=[{"id": "c01", "имя": "Борис", "внешность": "рост"}],
+            )
+        await session.commit()
+    finally:
+        db_apply.upsert_characters = real_upsert
+
+    session.expire_all()
+    kept = await session.get(Frame, left_id)
+    person = (
+        await session.execute(
+            select(Entity).where(Entity.project_id == project_id, Entity.type == "character")
+        )
+    ).scalar_one()
+    texts = list(
+        (
+            await session.execute(select(FrameText).where(FrameText.project_id == project_id))
+        ).scalars()
+    )
+    edges = list(
+        (
+            await session.execute(select(FrameEdge).where(FrameEdge.project_id == project_id))
+        ).scalars()
+    )
+    assert [shot["id"] for shot in (kept.attrs or {}).get("кадры") or []] == ["1-K1", "1-K2"]
+    assert [item.text for item in texts] == ["привет"]
+    assert [item.type for item in edges] == ["next"]
+    assert person.name == "Анна"
