@@ -155,6 +155,35 @@ def test_scene_and_character_still_reject_in_soft_mode() -> None:
     assert any(item.code == "character_deleted" and item.id == "c1" for item in char_exc.value.violations)
 
 
+def test_qc_candidate_keeps_dropped_shot_and_inactive_vo() -> None:
+    from types import SimpleNamespace
+
+    from app.services.montage_scene_improve import _keep_qc_kadry
+
+    parent = SimpleNamespace(uuid="qc-1", number=3)
+    shots = [
+        {"id": "a", "закадр": "первый"},
+        {"id": "b", "закадр": "фраза на месте"},
+    ]
+    candidate = [{"id": "a", "закадр": "первый"}]
+    kept = _keep_qc_kadry(parent, shots, candidate)
+    assert [row["id"] for row in kept] == ["a", "b"]
+    assert kept[1]["активен"] is False
+    assert kept[1]["закадр"] == "фраза на месте"
+    soft = _keep_qc_kadry(
+        parent,
+        shots,
+        [
+            {"id": "a", "закадр": "первый"},
+            {"id": "b", "закадр": "фраза на месте", "активен": False},
+        ],
+    )
+    assert [row["id"] for row in soft] == ["a", "b"]
+    assert soft[1]["активен"] is False
+    assert soft[1]["закадр"] == "фраза на месте"
+    assert "закадр_архив" not in soft[1]
+
+
 def test_grammar_soft_keeps_dropped_shot_and_inactive_vo(monkeypatch) -> None:
     from app.services.scene_shot_grammar import align_shots_to_action_chain, apply_grammar_to_ops
 
