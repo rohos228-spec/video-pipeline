@@ -127,6 +127,23 @@ def log_paid_frame_skip(frame: Any, *, where: str) -> str | None:
     return reason
 
 
+def park_marked_frame_numbers(frames: list, project=None) -> int:
+    """Увести помеченные кадры на номера 900000+, чтобы живые остались 1..K.
+
+    Вызывать после перенумерации. Оба номера (старый, уже в tombstone, и
+    новый) остаются запрещёнными для импорта.
+    """
+    parked = 0
+    for frame in frames:
+        if not frame_marked_deleted(frame):
+            continue
+        frame.number = 900_000 + parked
+        if project is not None:
+            remember_deleted(project, int(frame.number))
+        parked += 1
+    return parked
+
+
 def mark_frame_deleted(frame, project, reason: str) -> None:
     """Пометить кадр удалённым, не стирая строку. Номер попадает в tombstone."""
     attrs = dict(getattr(frame, "attrs", None) or {})
