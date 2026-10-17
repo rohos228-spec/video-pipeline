@@ -117,6 +117,8 @@ class RagEngine:
         self.store = RagStore(self.db_path)
         self._worker = ReindexWorker()
         self._node_cache: tuple[list[SourceDoc], list[SourceDoc], int] | None = None
+        self._cache_lock = threading.Lock()
+        self._index_generation = 0
         self._query_vectors: dict[str, list[float]] = {}
         self._corpus_cache: dict[tuple[str, ...], tuple[list[Chunk], dict[str, list[float]]]] = {}
 
@@ -298,19 +300,28 @@ class RagEngine:
         return result
 
     def _clear_retrieval_cache(self) -> None:
-        self._query_vectors.clear()
-        self._corpus_cache.clear()
+        with self._cache_lock:
+            self._query_vectors.clear()
+            self._corpus_cache.clear()
+            self._index_generation += 1
 
     def _cached_query_vector(self, query: str) -> list[float]:
-        cached = self._query_vectors.get(query)
-        if cached is None:
-            cached = self.embedder.embed_query(query)
-            self._query_vectors[query] = cached
-        return cached
+        with self._cache_lock:
+            generation = self._index_generation
+            cached = self._query_vectors.get(query)
+        if cached is not None:
+            return cached
+        vector = self.embedder.embed_query(query)
+        with self._cache_lock:
+            if self._index_generation == generation:
+                self._query_vectors[query] = vector
+        return vector
 
     def _cached_corpus(self, selected: list[str]) -> tuple[list[Chunk], dict[str, list[float]]]:
         key = tuple(selected)
-        cached = self._corpus_cache.get(key)
+        with self._cache_lock:
+            generation = self._index_generation
+            cached = self._corpus_cache.get(key)
         if cached is not None:
             return cached
         stored = self.store.fetch_chunks(selected)
@@ -320,7 +331,9 @@ class RagEngine:
             if embedding:
                 vectors[chunk.chunk_id] = embedding
         snapshot = (stored, vectors)
-        self._corpus_cache[key] = snapshot
+        with self._cache_lock:
+            if self._index_generation == generation:
+                self._corpus_cache[key] = snapshot
         return snapshot
 
     def _reindex_many(self, corpora: list[str]) -> ReindexResult | dict[str, ReindexResult]:
@@ -329,11 +342,14 @@ class RagEngine:
         invalidate_group_role_cache()
         self._node_cache = None
         self._clear_retrieval_cache()
-        results = {corpus: self._reindex_one(corpus) for corpus in corpora}
-        self._node_cache = None
-        if len(corpora) == 1:
-            return results[corpora[0]]
-        return results
+        try:
+            results = {corpus: self._reindex_one(corpus) for corpus in corpora}
+            if len(corpora) == 1:
+                return results[corpora[0]]
+            return results
+        finally:
+            self._node_cache = None
+            self._clear_retrieval_cache()
 
     def _reindex_one(self, corpus: str) -> ReindexResult:
         docs, skipped = self._load(corpus)
