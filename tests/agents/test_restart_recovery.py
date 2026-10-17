@@ -359,6 +359,42 @@ async def test_restart_verify_then_run_node_approves_the_paid_step(token: str) -
         set_runtime(None)
 
 
+@pytest.mark.asyncio
+async def test_approve_unknown_outcome_counts_estimated_spend(token: str) -> None:
+    del token
+    session = "paid-estimate"
+    paid = PlanStep(
+        action="charge",
+        params={"_change_id": "chg-paid"},
+        expected="paid",
+        paid=True,
+        mutating=True,
+        estimated_cost=4.25,
+    )
+    nxt = PlanStep(action="next", expected="second", paid=False, mutating=True)
+    task_id = _paid_unknown(session, [paid, nxt])
+    actions = MockActions()
+    runtime = _runtime(actions)
+    set_runtime(runtime)
+    try:
+        await runtime.supervisor.recover_after_restart()
+        await runtime.supervisor.wait(task_id, timeout=5)
+        before = float(runtime.tasks.get(task_id)["spend_actions"] or 0)
+        await runtime.supervisor.grant_approval(session, ApprovalDecision.approve)
+        await runtime.supervisor.wait(task_id, timeout=5)
+        row = runtime.tasks.list_steps(task_id)[0]
+        assert row["status"] == "done"
+        assert row["cost"] == pytest.approx(4.25)
+        assert float(runtime.tasks.get(task_id)["spend_actions"] or 0) == pytest.approx(before + 4.25)
+        latest = runtime.checkpoints.load_latest(task_id)
+        assert latest is not None
+        assert latest.spend.actions == pytest.approx(4.25)
+        assert "estimate charge 4.25" in latest.context
+        assert [call["name"] for call in actions.calls] == ["next"]
+    finally:
+        set_runtime(None)
+
+
 def _draft(session: str, status: TaskStatus) -> int:
     step = PlanStep(action="look", expected="ok", paid=False, mutating=True)
     tasks = TaskStore()

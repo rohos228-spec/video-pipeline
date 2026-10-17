@@ -647,22 +647,58 @@ class Supervisor:
             name=f"orch-paid-unknown-{task_id}",
         )
 
+    def _count_unknown_attempt(
+        self,
+        task_id: int,
+        step: PlanStep,
+        row: dict[str, Any],
+        status: str,
+    ) -> float:
+        """Исход неизвестен: в строку и spend пишется прогноз, с пометкой оценки."""
+        cost = forecast_cost([step])
+        self.tasks.finish_step(int(row["id"]), status, None, cost)
+        if cost:
+            self.tasks.add_spend(task_id, actions=cost)
+        note = f"estimate {step.action} {cost}"
+        prev = self._context.get(task_id, "")
+        if note not in prev:
+            self._context[task_id] = (prev + "\n" + note).strip()
+        return cost
+
+    async def _stamp_estimate(
+        self,
+        task_id: int,
+        session_id: str,
+        data: CheckpointData,
+    ) -> CheckpointData:
+        stamped = data.model_copy(
+            update={
+                "spend": self._spend(task_id),
+                "context": self._context.get(task_id, data.context),
+            }
+        )
+        self.tasks.mirror_progress(task_id, list(stamped.plan), int(stamped.position), stamped.spend)
+        await asyncio.to_thread(self.checkpoints.save, task_id, session_id, stamped)
+        return stamped
+
     async def _approve_paid_unknown(self, task_id: int, session_id: str) -> None:
         """«Шаг выполнен, продолжить»: done и _paid_done, execute этого шага нет."""
         data, step = await self._checkpoint_step(task_id)
         row = self._running_paid_row(task_id, step)
         if row is not None:
-            self.tasks.finish_step(int(row["id"]), "done", None, 0.0)
+            self._count_unknown_attempt(task_id, step, row, "done")
         self._paid_done.setdefault(task_id, set()).add(paid_step_identity(step.action, step.params))
         self._block_reason.pop(task_id, None)
+        data = await self._stamp_estimate(task_id, session_id, data)
         await self._continue_from_checkpoint(task_id, session_id, data)
 
     async def _deny_paid_unknown(self, task_id: int, session_id: str) -> None:
         """«Остановить задачу»: шаг и задача failed, execute не вызывается."""
-        _data, step = await self._checkpoint_step(task_id)
+        data, step = await self._checkpoint_step(task_id)
         row = self._running_paid_row(task_id, step)
         if row is not None:
-            self.tasks.finish_step(int(row["id"]), "failed", None, 0.0)
+            self._count_unknown_attempt(task_id, step, row, "failed")
+        await self._stamp_estimate(task_id, session_id, data)
         self._block_reason.pop(task_id, None)
         await self._set_status(task_id, TaskStatus.failed, session_id=session_id, error="paid_outcome_unknown")
         await self.bus.publish(
@@ -735,8 +771,9 @@ class Supervisor:
         self._retry_armed.pop(task_id, None)
         row = self._running_paid_row(task_id, step)
         if row is not None:
-            self.tasks.finish_step(int(row["id"]), "cancelled", None, 0.0)
+            self._count_unknown_attempt(task_id, step, row, "cancelled")
         self._block_reason.pop(task_id, None)
+        data = await self._stamp_estimate(task_id, session_id, data)
         await self._continue_from_checkpoint(task_id, session_id, data)
         return {"executed": True, "decision": ApprovalDecision.retry_step.value, "forecast_usd": forecast}
 
