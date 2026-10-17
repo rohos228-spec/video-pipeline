@@ -1025,18 +1025,56 @@ def _resolved_is_allow(sketch: str | None) -> bool:
     return bool(resolved) and _is_allow_path(resolved)
 
 
-def _mentions_version(fn_node: ast.AST) -> bool:
-    """Атомарная запись без версии не сохраняет прежнее значение."""
-    for node in ast.walk(fn_node):
-        if isinstance(node, ast.Name) and node.id == "version":
-            return True
-        if isinstance(node, ast.arg) and node.arg == "version":
-            return True
-        if isinstance(node, ast.keyword) and node.arg == "version":
-            return True
-        if isinstance(node, ast.Constant) and node.value == "version":
+def _is_version_operand(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "version" or node.id.endswith("_version")
+    if isinstance(node, ast.Attribute):
+        return node.attr == "version" or node.attr.endswith("_version")
+    if isinstance(node, ast.Subscript):
+        slice_node = node.slice
+        if isinstance(slice_node, ast.Constant) and slice_node.value in {
+            "version",
+            "expected_version",
+        }:
             return True
     return False
+
+
+def _compares_version(fn_node: ast.AST) -> bool:
+    """Разрешение на запись: сравнение версии с текущим значением, не упоминание имени."""
+    found = False
+
+    def walk(node: ast.AST, *, nested: bool) -> None:
+        nonlocal found
+        if found:
+            return
+        if nested and isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+        ):
+            return
+        if (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE))
+        ):
+            operands = [node.left, *node.comparators]
+            version_ops = [item for item in operands if _is_version_operand(item)]
+            others = [item for item in operands if item not in version_ops]
+            dynamic = all(not isinstance(item, ast.Constant) for item in operands)
+            distinct = not (
+                len(operands) == 2
+                and isinstance(operands[0], ast.Name)
+                and isinstance(operands[1], ast.Name)
+                and operands[0].id == operands[1].id
+            )
+            if version_ops and dynamic and distinct and (others or len(version_ops) >= 2):
+                found = True
+                return
+        for child in ast.iter_child_nodes(node):
+            walk(child, nested=True)
+
+    walk(fn_node, nested=False)
+    return found
 
 
 def _atomic_tmp_map(
@@ -1708,7 +1746,7 @@ def _scan_writes(
     calls: list[ast.Call] = []
     function = fn_node.name if isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "<fn>"
     atomic_tmp = _atomic_tmp_map(fn_node, env, os_modules, os_funcs, path_names)
-    versioned = _mentions_version(fn_node)
+    versioned = _compares_version(fn_node)
 
     def walk(node: ast.AST, *, root: bool, call_func: bool) -> None:
         if (
@@ -2278,7 +2316,9 @@ def test_node_overrides_write_requires_atomic_replace(tmp_path: Path) -> None:
 
     atomic = (
         "import os\n"
-        "def save(version):\n"
+        "def save(version, current):\n"
+        "    if version != current:\n"
+        "        raise RuntimeError('conflict')\n"
         "    open('data/node_overrides/x.json.tmp', 'w')\n"
         "    os.replace('data/node_overrides/x.json.tmp', 'data/node_overrides/x.json')\n"
         "    open('data/reports/a.txt.tmp', 'w')\n"
@@ -2299,14 +2339,67 @@ def test_node_overrides_write_requires_atomic_replace(tmp_path: Path) -> None:
         for hit in analyze_module_source(no_version, "node.set_config")
     )
 
-    from app.orchestrator.node_store.atomic_write import atomic_write_text
+def test_versioned_requires_version_compare(tmp_path: Path) -> None:
+    """Параметр version без сравнения с текущей версией запись не разрешает."""
+    unused = (
+        "import os\n"
+        "def save(version):\n"
+        "    payload = {'version': version}\n"
+        "    open('data/node_overrides/x.json.tmp', 'w')\n"
+        "    os.replace('data/node_overrides/x.json.tmp', 'data/node_overrides/x.json')\n"
+        "    return payload\n"
+    )
+    unused_hits = analyze_module_source(unused, "node.set_config")
+    assert unused_hits
+    assert all(hit.allowed is False for hit in unused_hits)
+
+    literal = (
+        "import os\n"
+        "def save(version):\n"
+        "    if version != 0:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    open('data/reports/a.txt.tmp', 'w')\n"
+        "    os.replace('data/reports/a.txt.tmp', 'data/reports/a.txt')\n"
+    )
+    assert all(
+        hit.allowed is False
+        for hit in analyze_module_source(literal, "node.set_config")
+    )
+
+    compared = (
+        "import os\n"
+        "def save(expected_version, current_version):\n"
+        "    if expected_version != current_version:\n"
+        "        raise RuntimeError('conflict')\n"
+        "    open('data/node_overrides/x.json.tmp', 'w')\n"
+        "    os.replace('data/node_overrides/x.json.tmp', 'data/node_overrides/x.json')\n"
+    )
+    compared_hits = analyze_module_source(compared, "node.set_config")
+    assert [hit.kind for hit in compared_hits] == ["open", "os.replace"]
+    assert [hit.allowed for hit in compared_hits] == [True, True]
+
+    import inspect
+
+    from app.orchestrator.node_store.atomic_write import VersionConflict, atomic_write_text
+
+    source = inspect.getsource(atomic_write_text)
+    assert "mkstemp" in source
+    assert 'name + ".tmp"' not in source
 
     dest = tmp_path / "node_overrides" / "x.json"
-    atomic_write_text(dest, "hello", version=3)
-    assert not dest.with_name(dest.name + ".tmp").exists()
+    atomic_write_text(dest, "hello", expected_version=0)
+    atomic_write_text(dest, "next", expected_version=1)
+    previous = dest.parent / "old" / "x.json.v1"
+    assert previous.is_file()
+    assert "hello" in previous.read_text(encoding="utf-8")
+    with pytest.raises(VersionConflict) as exc:
+        atomic_write_text(dest, "race", expected_version=0)
+    assert exc.value.status_code == 409
     body = dest.read_text(encoding="utf-8")
-    assert '"version": 3' in body
-    assert "hello" in body
+    assert "next" in body
+    assert "race" not in body
+    assert "hello" in previous.read_text(encoding="utf-8")
+    assert not list(dest.parent.glob("*.tmp"))
 
 
 def test_fs_rejects_templates_and_foreign_snapshots() -> None:
