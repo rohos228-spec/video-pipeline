@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from app.orchestrator.validators import run
-from app.orchestrator.validators.preservation import collect_violations
+from app.orchestrator.validators.preservation import (
+    PreservationRejected,
+    collect_violations,
+    run_preservation_validators,
+)
 
 
 def _before() -> dict:
@@ -59,6 +65,34 @@ def test_collect_reports_stable_codes() -> None:
         assert item.severity in {"error", "warn"}
         assert item.path
         assert isinstance(item.id, str)
+
+
+def test_preservation_entry_reports_frame_text_and_character_loss() -> None:
+    """Точка входа, не прямые check_*: пропажа текста и персонажа — отказ."""
+
+    before = {
+        "frame_texts": [{"id": 1, "frame_id": 10, "kind": "voiceover", "text": "привет"}],
+        "frame_edges": [{"id": 7, "from_frame_id": 10, "to_frame_id": 11, "type": "next"}],
+        "characters": [{"id": "c01", "имя": "Анна"}],
+        "сцены": [
+            {
+                "id": "s1",
+                "номер": 1,
+                "кадры": [{"id": "k-off", "активен": False, "закадр": "хвост"}],
+            }
+        ],
+    }
+    after = {
+        "frame_texts": [],
+        "frame_edges": [{"id": 7, "from_frame_id": 10, "to_frame_id": 11, "type": "next"}],
+        "characters": [],
+        "сцены": copy.deepcopy(before["сцены"]),
+    }
+    with pytest.raises(PreservationRejected) as raised:
+        run_preservation_validators(before, after, mode="reject")
+    codes = {(item.code, item.id) for item in raised.value.violations}
+    assert ("frame_text_deleted", "1") in codes
+    assert ("character_deleted", "c01") in codes
 
 
 def test_clean_project_and_inactive_shot_pass() -> None:
