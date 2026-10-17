@@ -120,9 +120,14 @@ export function readPaidOutcomeFailureReason(body: unknown): string | null {
   return (PAID_OUTCOME_GRANT_FAILURES as readonly string[]).includes(reason) ? reason : null;
 }
 
-/** Прогноз пришёл, grant ещё не исполнял шаг и не отказал. */
+export function readPaidOutcomeRetryArmed(body: unknown): boolean {
+  const record = asRecord(body);
+  return record?.[PAID_OUTCOME_RETRY_ARMED_FIELD] === true;
+}
+
+/** «Подтвердить перезапуск» только при retry_armed и конечном прогнозе >= 0. */
 export function paidOutcomeRetryReady(body: unknown): boolean {
-  return readPaidOutcomeFailureReason(body) == null && readPaidOutcomeForecast(body) != null && readPaidOutcomeExecuted(body) === false;
+  return readPaidOutcomeRetryArmed(body) && readPaidOutcomeForecast(body) != null;
 }
 
 export const PAID_OUTCOME_COPY = {

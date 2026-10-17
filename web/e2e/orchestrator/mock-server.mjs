@@ -7,7 +7,7 @@
  * Сценарий: заголовок X-Orch-Scenario или ?scenario=
  *   stream | interrupt | approval | approvefail | approve404 | approve409 | approve422 | budget | budgetnoid | kill | reconnect | idle | plan | critic | killmsg | task | llmbudget
  *   | missingproject | deletion | emptyplan | unknownreason | risk | paidoutcome | paidoutcomeoff
- *   | paid404 | paid404foreign | paid409 | paid409stale | paid422 | paidgrant409
+ *   | paid404 | paid404foreign | paid409 | paid409stale | paid422 | paidgrant409 | paidnoarmed
  *   | paidbad-nan | paidbad-inf | paidbad-ninf | paidbad-neg | paidbad-str | paidbad-miss | paidzero
  *
  * paid_outcome_unknown: имена скопированы из web/src/lib/orchestratorPaidOutcome.ts.
@@ -827,6 +827,7 @@ function startScenario(session, scenario, text, mode) {
     scenario === "paid409stale" ||
     scenario === "paid422" ||
     scenario === "paidgrant409" ||
+    scenario === "paidnoarmed" ||
     scenario === "paidzero" ||
     scenario.startsWith("paidbad-")
   ) {
@@ -1087,7 +1088,7 @@ async function handleChatApprove(req, res, url, sessionId) {
     executed: false,
     reason: null,
     forecast: decision === "retry_step" ? PAID_FORECAST_USD : null,
-    retryArmed: decision === "retry_step",
+    retryArmed: decision === "retry_step" && scenario !== "paidnoarmed",
     changeId,
     decision,
   }));

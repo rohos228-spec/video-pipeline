@@ -10,6 +10,7 @@ import {
   orchTestModeEnabled,
   resolveOrchApiBase,
 } from "../../src/lib/orchestratorApi";
+import { paidOutcomeRetryReady } from "../../src/lib/orchestratorPaidOutcome";
 
 const SHOTS =
   process.env.ORCH_E2E_SHOTS_DIR ??
@@ -19,6 +20,16 @@ async function saveShot(page: Page, name: string) {
   await mkdir(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 }
+
+test("подтверждение перезапуска требует retry_armed и конечный forecast_usd", () => {
+  expect(paidOutcomeRetryReady({ retry_armed: true, forecast_usd: 2.4, executed: false })).toBe(true);
+  expect(paidOutcomeRetryReady({ retry_armed: true, forecast_usd: 0 })).toBe(true);
+  expect(paidOutcomeRetryReady({ retry_armed: false, forecast_usd: 2.4 })).toBe(false);
+  expect(paidOutcomeRetryReady({ forecast_usd: 2.4 })).toBe(false);
+  expect(paidOutcomeRetryReady({ retry_armed: true, forecast_usd: Number.NaN })).toBe(false);
+  expect(paidOutcomeRetryReady({ retry_armed: true, forecast_usd: -1 })).toBe(false);
+  expect(paidOutcomeRetryReady({ retry_armed: true })).toBe(false);
+});
 
 test("X-Orch-Scenario только при NEXT_PUBLIC_ORCH_TEST", () => {
   const previous = process.env.NEXT_PUBLIC_ORCH_TEST;
@@ -1060,6 +1071,25 @@ test.describe("orchestrator chat", () => {
     await page.getByTestId("orch-paid-retry").click();
     await expect(page.getByTestId("orch-paid-forecast")).toContainText("Прогноз расхода: ~$0");
     await expect(page.getByTestId("orch-paid-retry-confirm")).toBeEnabled();
+  });
+
+  test("paid_outcome_unknown: без retry_armed подтверждение перезапуска неактивно", async ({ page }) => {
+    const grants: unknown[] = [];
+    page.on("request", (req) => {
+      if (req.method() !== "POST" || !req.url().includes("/approve")) return;
+      const body = req.postDataJSON() as { retry_grant?: boolean };
+      if (body?.retry_grant === true) grants.push(body);
+    });
+    await openWithToken(page, "paidnoarmed", "paid-no-armed");
+    await page.getByTestId("orch-composer").fill("платный шаг оборвался");
+    await page.getByTestId("orch-send").click();
+    await page.getByTestId("orch-paid-retry").click();
+    await expect(page.getByTestId("orch-paid-forecast")).toContainText("Прогноз расхода: ~$2.4");
+    await expect(page.getByTestId("orch-paid-retry-confirm")).toBeDisabled();
+    await expect(page.getByTestId("orch-paid-grant-hint")).toContainText("Сервер не выдал одноразовое подтверждение");
+    await page.getByTestId("orch-paid-retry-confirm").click({ force: true });
+    expect(grants).toEqual([]);
+    await expect(page.getByTestId("orch-approval")).toBeVisible();
   });
 
   test("paid_outcome_unknown: без поддержки перезапуска кнопка неактивна", async ({ page }) => {
