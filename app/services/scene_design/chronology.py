@@ -99,6 +99,46 @@ def _scene_spans(scenes: list[dict[str, Any]], full_vo: str) -> list[dict[str, A
     return spans
 
 
+_KADRY_ID_KEYS = ("id", "uuid", "frame_id", "shot_id", "id_shot")
+
+
+def _kadry_identity(item: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for key in _KADRY_ID_KEYS:
+        val = str(item.get(key) or "").strip()
+        if val and val not in found:
+            found.append(val)
+    return found
+
+
+def _append_missing_kadry(previous: list[Any], current: list[Any]) -> None:
+    """Шоты, которых нет в новой раскладке, остаются в хвосте с активен: False."""
+    present: set[str] = set()
+    for item in current:
+        if isinstance(item, dict):
+            present.update(_kadry_identity(item))
+    for item in previous:
+        if not isinstance(item, dict):
+            if item not in current:
+                current.append(item)
+            continue
+        ident = _kadry_identity(item)
+        if ident and all(token in present for token in ident):
+            if item.get("активен") is False:
+                for kid in current:
+                    if isinstance(kid, dict) and set(_kadry_identity(kid)) & set(ident):
+                        kid["активен"] = False
+            continue
+        if not ident and any(
+            isinstance(kid, dict) and kid == item for kid in current
+        ):
+            continue
+        marked = dict(item)
+        marked["активен"] = False
+        current.append(marked)
+        present.update(ident)
+
+
 def assign_frames_to_scenes(
     scenes: list[dict[str, Any]],
     frames: list[Frame],
@@ -111,8 +151,12 @@ def assign_frames_to_scenes(
     сцен нет вовсе) — сборщик обязан покрыть и их.
     """
     spans = _scene_spans(scenes, full_vo)
+    previous_kadry: dict[int, list[Any]] = {}
     for sp in spans:
-        sp["row"]["кадры"] = []
+        row = sp["row"]
+        raw = row.get("кадры")
+        previous_kadry[id(row)] = list(raw) if isinstance(raw, list) else []
+        row["кадры"] = []
     unassigned: list[dict[str, Any]] = []
     for fr in frames:
         if not fr.uuid:
@@ -145,13 +189,19 @@ def assign_frames_to_scenes(
     for sp in spans:
         row = sp["row"]
         scene_frames = row["кадры"]
-        if scene_frames:
+        _append_missing_kadry(previous_kadry.get(id(row), []), scene_frames)
+        live_frames = [
+            f
+            for f in scene_frames
+            if not (isinstance(f, dict) and f.get("активен") is False)
+        ]
+        if live_frames:
             # Хронометраж сцены = сумма времён её кадров (из БД или оценка);
             # точнее декларации агента action, поэтому перезаписывает её.
             row["время_сек"] = round(
-                sum(float(f.get("время_сек") or 0.0) for f in scene_frames), 1
+                sum(float(f.get("время_сек") or 0.0) for f in live_frames), 1
             )
-        row["кадров"] = len(scene_frames)
+        row["кадров"] = len(live_frames)
     return unassigned
 
 

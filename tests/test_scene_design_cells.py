@@ -321,6 +321,40 @@ def test_shared_context_has_frame_times_and_total() -> None:
     assert "ИТОГО: 3.5 сек" in ctx
 
 
+def test_assign_frames_keeps_preexisting_shot_id() -> None:
+    """Обнуление кадры[] не выкидывает уже лежащий шот: id остаётся, активен: False."""
+    vo = "Альфа начало истории. Бета середина пути."
+    frames = [
+        _frame("u1", 1, "Альфа начало истории."),
+        _frame("u2", 2, "Бета середина пути."),
+    ]
+    scenes = [
+        {
+            "id_scene": "scene_01",
+            "start_words": "Альфа начало",
+            "end_words": "середина пути",
+            "кадры": [
+                {
+                    "id": "old-shot",
+                    "закадр": "уже был",
+                    "действие": "старый шаг",
+                }
+            ],
+        }
+    ]
+    offsets = sd_chronology.frame_offsets(frames, vo)
+    unassigned = sd_chronology.assign_frames_to_scenes(scenes, frames, offsets, vo)
+    kids = scenes[0]["кадры"]
+    uuids = [k.get("uuid") for k in kids if k.get("uuid")]
+    assert uuids == ["u1", "u2"]
+    assert unassigned == []
+    kept = next(k for k in kids if k.get("id") == "old-shot")
+    assert kept["активен"] is False
+    assert kept["действие"] == "старый шаг"
+    assert kept["id"] == "old-shot"
+    assert all(k.get("активен") is not False for k in kids if k.get("uuid"))
+
+
 def test_build_assembly_input_unassigned_frames_kept() -> None:
     p = _project()
     frames = [_frame("u1", 1, "Альфа начало истории.")]
