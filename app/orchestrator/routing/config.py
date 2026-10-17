@@ -22,11 +22,12 @@ def _as_bool(value: Any) -> bool:
 def _finite_usd(raw: Any, *, name: str) -> float:
     """Конечное число долларов, не меньше нуля.
 
-    ``ORCH_PIPELINE_BUDGET_USD`` перекрывает ``pipeline_sub_budget_usd``.
-    Пока переменная не задана, потолок — 40. Нечисло, NaN, inf и
-    отрицательное значение — ``ValueError``, дефолт на их место не
-    подставляется.
+    Нечисло, bool, NaN, inf и отрицательное значение — ``ValueError``.
+    Дефолт на их место не подставляется. Ноль здесь допустим: pipeline
+    отвергает его отдельно.
     """
+    if isinstance(raw, bool):
+        raise ValueError(f"{name} must be a finite number >= 0, got {raw!r}")
     try:
         value = float(raw)
     except (TypeError, ValueError) as exc:
@@ -187,14 +188,30 @@ def load_config(path: Path | None = None, *, apply_env: bool = True) -> RouteCon
 
 
 def _pipeline_budget_usd(spend: dict[str, Any], *, apply_env: bool) -> float:
-    """Потолок pipeline. Env ``ORCH_PIPELINE_BUDGET_USD``, иначе файл, иначе 40."""
-    budget = _finite_usd(spend.get("pipeline_sub_budget_usd", 40), name="pipeline_sub_budget_usd")
+    """Потолок pipeline.
+
+    ``ORCH_PIPELINE_BUDGET_USD`` перекрывает файл. Ключа нет — 40.
+    Ноль, ``true`` и прочий мусор — ``ValueError``, без подстановки 40.
+    Пустая строка тоже ошибка: это не ``ORCH_D1_CONFIRMED``, где ``""`` ложь.
+    Очень большое конечное число принимается как есть, тихого потолка нет.
+    """
+    budget = _positive_usd(
+        spend.get("pipeline_sub_budget_usd", 40),
+        name="pipeline_sub_budget_usd",
+    )
     if apply_env and "ORCH_PIPELINE_BUDGET_USD" in os.environ:
-        budget = _finite_usd(
+        budget = _positive_usd(
             os.environ.get("ORCH_PIPELINE_BUDGET_USD"),
             name="ORCH_PIPELINE_BUDGET_USD",
         )
     return budget
+
+
+def _positive_usd(raw: Any, *, name: str) -> float:
+    value = _finite_usd(raw, name=name)
+    if value == 0:
+        raise ValueError(f"{name} must be a finite number > 0, got {raw!r}")
+    return value
 
 
 def effective_tier(config: RouteConfig, requested: str) -> str:

@@ -26,3 +26,19 @@ def test_pipeline_budget_env_rejects_invalid(monkeypatch, raw):
     monkeypatch.setenv("ORCH_PIPELINE_BUDGET_USD", raw)
     with pytest.raises(ValueError, match="ORCH_PIPELINE_BUDGET_USD"):
         load_config(apply_env=True)
+
+
+@pytest.mark.parametrize("raw", ["0", "0.0", "-0", "-0.0", "true", "True"])
+def test_pipeline_budget_rejects_zero_and_true(monkeypatch, raw):
+    monkeypatch.setenv("ORCH_PIPELINE_BUDGET_USD", raw)
+    with pytest.raises(ValueError, match="ORCH_PIPELINE_BUDGET_USD"):
+        load_config(apply_env=True)
+
+
+def test_pipeline_yaml_bool_and_missing_key(monkeypatch):
+    from app.orchestrator.routing.config import _pipeline_budget_usd
+
+    monkeypatch.delenv("ORCH_PIPELINE_BUDGET_USD", raising=False)
+    with pytest.raises(ValueError, match="pipeline_sub_budget_usd"):
+        _pipeline_budget_usd({"pipeline_sub_budget_usd": True}, apply_env=False)
+    assert _pipeline_budget_usd({}, apply_env=False) == 40
