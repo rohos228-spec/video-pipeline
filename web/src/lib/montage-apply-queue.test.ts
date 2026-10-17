@@ -5,6 +5,7 @@ import {
   montageOpsToApply,
   pendingApplyFrameNumbers,
   queueAfterApply,
+  queueAfterCoverageApply,
 } from "./montage-apply-queue.ts";
 
 test("apply queue counts video and other non-coverage ops", () => {
@@ -45,4 +46,18 @@ test("apply all keeps every coverage op", () => {
     (op) => op.type,
   );
   assert.deepEqual(left.map((op) => op.type), ["coverage_plan"]);
+});
+
+test("coverage apply drops only the applied frame and type", () => {
+  const prev = [
+    { type: "coverage_plan", frame_number: 2 },
+    { type: "coverage_place", frame_number: 2 },
+    { type: "coverage_plan", frame_number: 5 },
+    { type: "image_ai_change", frame_number: 2 },
+  ];
+  const left = queueAfterCoverageApply(prev, [2], new Set(["coverage_plan"]));
+  assert.deepEqual(
+    left.map((op) => `${op.type}:${op.frame_number}`),
+    ["coverage_place:2", "coverage_plan:5", "image_ai_change:2"],
+  );
 });

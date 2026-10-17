@@ -24,6 +24,14 @@ export function pendingApplyFrameNumbers(
   return nums;
 }
 
+export function queueAfterCoverageApply<
+  T extends { frame_number: number; type: string },
+>(prev: readonly T[], numbers: readonly number[], changedTypes: ReadonlySet<string>): T[] {
+  return prev.filter(
+    (x) => !(numbers.includes(x.frame_number) && changedTypes.has(String(x.type))),
+  );
+}
+
 export function queueAfterApply<T>(
   all: readonly T[],
   sentKeys: ReadonlySet<string>,

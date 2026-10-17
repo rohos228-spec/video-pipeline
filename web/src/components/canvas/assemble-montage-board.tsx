@@ -46,6 +46,7 @@ import {
   montageOpsToApply,
   pendingApplyFrameNumbers,
   queueAfterApply,
+  queueAfterCoverageApply,
 } from "@/lib/montage-apply-queue";
 import {
   readMontageAiChangeText,
@@ -2492,12 +2493,7 @@ export function AssembleMontageBoard({
         }
         localQueueDirtyRef.current = true;
         setPendingOps((prev) => {
-          let next = prev.filter(
-            (x) =>
-              !(
-                numbers.includes(x.frame_number) && changedTypes.has(String(x.type))
-              ) && !String(x.type).startsWith("coverage_"),
-          );
+          let next = queueAfterCoverageApply(prev, numbers, changedTypes);
           if (needsImage) {
             for (const frameNumber of numbers) {
               next = next.filter(
