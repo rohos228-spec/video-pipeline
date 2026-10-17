@@ -1241,8 +1241,9 @@ async def apply_coverage_scene_action(
             len(group),
         )
 
-    used = min(len(kadry), len(group))
-    if used and len(kadry) > used:
+    shot_total = len(kadry)
+    used = min(shot_total, len(group))
+    if used and shot_total > used:
         kadry = fold_excess_shot_voiceover(kadry, used)
     parent_sid = str(kadry[0].get("id") or f"{int(parent.number)}-K1")
     for i, member in enumerate(group[:used]):
@@ -1324,7 +1325,7 @@ async def apply_coverage_scene_action(
         "shots": used,
         "frames": len(group),
         "inserted_frames": len(inserted),
-        "skipped_shots": max(0, len(kadry) - used),
+        "skipped_shots": max(0, shot_total - used),
         "renumber": remap,
         "chain": chain_text,
     }
