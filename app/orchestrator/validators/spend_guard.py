@@ -1,0 +1,420 @@
+"""Чтение лимитов D4. Своего журнала расходов здесь нет.
+
+Суммы уже посчитаны снаружи. Валидатор только читает:
+
+- ``SpendLedger`` роутера (#345, ``a8450918``): ``spent(run_id)`` и
+  ``internal_budget_usd``. Остаток = бюджет − потраченное. Списание
+  (``charge``) не вызывается. В счётчик $10 попадают только ходы с
+  ``budget_scope=internal``; scope ``pipeline`` у ledger без публичного
+  чтения и здесь не учитывается. Контракт ответа — ``routing/CONTRACTS.md``.
+- spend action layer (#342) через ``SpendReader.read_totals`` или снимок
+  ``context["spend"]``. Доллары, не кредиты: ``budget.spent`` в #342 —
+  кредиты сессии, конверсию ``CREDIT_USD`` делает WS2.
+
+Потолки плана, если источник их не передал: $200 сутки / $100 проект /
+$50 запуск / $10 internal / $40 действия. Потолок ``<= 0`` выключен
+(как ``caps()`` в #342). Прогноз ``context["forecast_usd"]`` прибавляется
+к прочитанному и никуда не записывается.
+
+Исчерпание internal по числам (потраченное + прогноз >= $10) даёт
+``reason=budget_exhausted`` и ``blocking=False``: в ``waiting_approval``
+задачу переводит WS3. Жёсткие потолки — ``blocking=True``.
+
+Если в ответе роутера (``context["response"]`` или ``context["llm_response"]``)
+``task_status=waiting_approval`` и ``approval.reason=budget_exhausted``,
+результат ``passed=False`` и ``blocking=True``. Предикат совпадает с
+``contracts.budget_exhausted_response`` (#350, ``04a5506a``); пока
+contracts нет в main, то же условие считается локально.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any, Protocol
+
+from app.orchestrator.validators.result import make_result
+
+_NAME = "spend_guard"
+
+CAP_DAILY_USD = 200.0
+CAP_PROJECT_USD = 100.0
+CAP_RUN_USD = 50.0
+CAP_INTERNAL_USD = 10.0
+CAP_ACTIONS_USD = 40.0
+
+_WAITING = "waiting_approval"
+_BUDGET_EXHAUSTED = "budget_exhausted"
+
+_SPENT_KEYS = (
+    "daily_spent_usd",
+    "project_spent_usd",
+    "run_spent_usd",
+    "internal_spent_usd",
+    "actions_spent_usd",
+)
+_CAP_DEFAULTS = {
+    "daily_cap_usd": CAP_DAILY_USD,
+    "project_cap_usd": CAP_PROJECT_USD,
+    "run_cap_usd": CAP_RUN_USD,
+    "internal_cap_usd": CAP_INTERNAL_USD,
+    "actions_cap_usd": CAP_ACTIONS_USD,
+}
+_HARD = (
+    ("actions_spent_usd", "actions_cap_usd", "actions", "actions_sub_budget"),
+    ("run_spent_usd", "run_cap_usd", "run", "spend_cap_run"),
+    ("project_spent_usd", "project_cap_usd", "project", "spend_cap_project"),
+    ("daily_spent_usd", "daily_cap_usd", "daily", "spend_cap_daily"),
+)
+
+_reader: SpendReader | None = None
+
+
+class SpendReader(Protocol):
+    """Чтение spend action layer (#342). Реализацию подставит WS2."""
+
+    def read_totals(
+        self,
+        *,
+        project_id: int,
+        run_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        """USD: daily/project/run/internal/actions. Потолки — если известны."""
+
+
+class RouterLedgerReader(Protocol):
+    """Узкий срез ``SpendLedger`` (#345). Только чтение, без ``charge``."""
+
+    internal_budget_usd: float
+
+    def spent(self, run_id: str | None) -> float:
+        """Потраченное internal по ``run_id``. Pipeline scope сюда не входит."""
+
+
+def set_spend_reader(reader: SpendReader | None) -> None:
+    """Инъекция читателя action layer. Context перекрывает это значение."""
+
+    global _reader
+    _reader = reader
+
+
+def get_spend_reader() -> SpendReader | None:
+    return _reader
+
+
+def check(project_id: int, context: dict[str, Any]) -> Any:
+    signal = _budget_signal(context)
+    view = _load_view(project_id, context)
+    if view is None and signal is None:
+        return make_result(
+            name=_NAME,
+            passed=True,
+            blocking=False,
+            details={"checked": False, "reason": "no_spend_snapshot"},
+        )
+    forecast = _forecast(context.get("forecast_usd"))
+    violations: list[dict[str, Any]] = []
+    if signal is not None:
+        violations.append(_signal_violation(signal, view))
+    if view is not None and "internal_spent_usd" in view["known"]:
+        internal_cap = view["caps"]["internal_cap_usd"]
+        internal_spent = view["spent"]["internal_spent_usd"]
+        internal_forecast = forecast["internal"]
+        if internal_cap > 0 and internal_spent + internal_forecast >= internal_cap - 1e-9:
+            violations.append(
+                _violation(
+                    _BUDGET_EXHAUSTED,
+                    spent=internal_spent,
+                    cap=internal_cap,
+                    forecast=internal_forecast,
+                    scope="internal",
+                    source=view["internal_source"],
+                )
+            )
+    if view is not None:
+        for spent_key, cap_key, forecast_key, reason in _HARD:
+            if spent_key not in view["known"]:
+                continue
+            cap = view["caps"][cap_key]
+            spent = view["spent"][spent_key]
+            extra = forecast[forecast_key]
+            if cap > 0 and spent + extra > cap + 1e-9:
+                violations.append(
+                    _violation(
+                        reason,
+                        spent=spent,
+                        cap=cap,
+                        forecast=extra,
+                        scope=forecast_key,
+                        source=view["action_source"],
+                    )
+                )
+    public = _public(view)
+    if not violations:
+        return make_result(
+            name=_NAME,
+            passed=True,
+            blocking=False,
+            details={
+                "reason": "ok",
+                "totals": public["totals"],
+                "internal": public["internal"],
+                "forecast_usd": forecast,
+                "sources": public["sources"],
+            },
+        )
+    reasons = list(dict.fromkeys(item["reason"] for item in violations))
+    hard = [item for item in violations if item["reason"] != _BUDGET_EXHAUSTED]
+    reason = _BUDGET_EXHAUSTED if _BUDGET_EXHAUSTED in reasons else hard[0]["reason"]
+    blocking = bool(hard) or signal is not None
+    details: dict[str, Any] = {
+        "reason": reason,
+        "reasons": reasons,
+        "violations": violations,
+        "totals": public["totals"],
+        "internal": public["internal"],
+        "forecast_usd": forecast,
+        "sources": public["sources"],
+    }
+    if signal is not None:
+        details["response"] = signal
+    return make_result(name=_NAME, passed=False, blocking=blocking, details=details)
+
+
+def _signal_violation(signal: dict[str, Any], view: dict[str, Any] | None) -> dict[str, Any]:
+    spent = None
+    cap = None
+    if view is not None and "internal_spent_usd" in view["known"]:
+        spent = view["spent"]["internal_spent_usd"]
+        cap = view["caps"]["internal_cap_usd"]
+    payload = signal.get("payload") if isinstance(signal.get("payload"), Mapping) else {}
+    if spent is None:
+        spent = _num(payload.get("spent_usd"))
+    if cap is None:
+        raw_budget = payload.get("budget_usd")
+        cap = _num(raw_budget) if raw_budget is not None else CAP_INTERNAL_USD
+    return _violation(
+        _BUDGET_EXHAUSTED,
+        spent=spent,
+        cap=cap,
+        forecast=0.0,
+        scope="internal",
+        source="llm_response",
+    )
+
+
+def _violation(
+    reason: str,
+    *,
+    spent: float,
+    cap: float,
+    forecast: float,
+    scope: str,
+    source: str,
+) -> dict[str, Any]:
+    remaining = None if cap <= 0 else cap - spent
+    return {
+        "reason": reason,
+        "scope": scope,
+        "source": source,
+        "spent_usd": spent,
+        "remaining_usd": remaining,
+        "cap_usd": cap,
+        "forecast_usd": forecast,
+    }
+
+
+def _public(view: dict[str, Any] | None) -> dict[str, Any]:
+    if view is None:
+        return {"totals": {}, "internal": None, "sources": []}
+    totals = {key: view["spent"][key] for key in _SPENT_KEYS if key in view["known"]}
+    internal = None
+    if "internal_spent_usd" in view["known"]:
+        cap = view["caps"]["internal_cap_usd"]
+        spent = view["spent"]["internal_spent_usd"]
+        internal = {
+            "run_id": view["run_id"],
+            "spent_usd": spent,
+            "budget_usd": cap,
+            "remaining_usd": None if cap <= 0 else cap - spent,
+            "source": view["internal_source"],
+        }
+    return {"totals": totals, "internal": internal, "sources": list(view["sources"])}
+
+
+def _load_view(project_id: int, context: dict[str, Any]) -> dict[str, Any] | None:
+    action = _action_totals(project_id, context)
+    ledger = _ledger_totals(context)
+    if action is None and ledger is None:
+        return None
+    spent: dict[str, float] = {}
+    caps = dict(_CAP_DEFAULTS)
+    known: set[str] = set()
+    sources: list[str] = []
+    action_source = ""
+    internal_source = ""
+    if action is not None:
+        raw, action_source = action
+        for key in _SPENT_KEYS:
+            spent[key] = _num(raw.get(key))
+            known.add(key)
+        for key, default in _CAP_DEFAULTS.items():
+            if key in raw and raw.get(key) is not None:
+                caps[key] = _num(raw.get(key))
+            else:
+                caps[key] = default
+        sources.append(action_source)
+        internal_source = action_source
+    if ledger is not None:
+        spent["internal_spent_usd"] = ledger["spent_usd"]
+        caps["internal_cap_usd"] = ledger["budget_usd"]
+        known.add("internal_spent_usd")
+        sources.append("spend_ledger")
+        internal_source = "spend_ledger"
+    return {
+        "spent": spent,
+        "caps": caps,
+        "known": known,
+        "sources": sources,
+        "action_source": action_source,
+        "internal_source": internal_source,
+        "run_id": _run_id(context),
+    }
+
+
+def _action_totals(
+    project_id: int,
+    context: dict[str, Any],
+) -> tuple[Mapping[str, Any], str] | None:
+    if "spend" in context:
+        raw = context.get("spend")
+        if isinstance(raw, Mapping):
+            return raw, "spend_snapshot"
+        return None
+    raw = _call_reader(project_id, context)
+    if isinstance(raw, Mapping):
+        return raw, "action_layer"
+    return None
+
+
+def _call_reader(project_id: int, context: dict[str, Any]) -> Mapping[str, Any] | None:
+    reader = context.get("spend_reader")
+    if reader is None:
+        reader = _reader
+    if reader is None:
+        return None
+    run_value = _run_id(context)
+    read_totals = getattr(reader, "read_totals", None)
+    if callable(read_totals):
+        found = read_totals(project_id=int(project_id), run_id=run_value)
+    elif callable(reader):
+        found = reader(project_id=int(project_id), run_id=run_value)
+    else:
+        return None
+    return found if isinstance(found, Mapping) else None
+
+
+def _ledger_totals(context: dict[str, Any]) -> dict[str, float] | None:
+    ledger = context.get("spend_ledger")
+    if ledger is None and "ledger" in context:
+        ledger = context.get("ledger")
+    spent_fn = getattr(ledger, "spent", None)
+    if not callable(spent_fn):
+        return None
+    try:
+        spent = _num(spent_fn(_run_id(context)))
+    except TypeError:
+        spent = _num(spent_fn())
+    budget_raw = getattr(ledger, "internal_budget_usd", CAP_INTERNAL_USD)
+    budget = CAP_INTERNAL_USD if budget_raw is None else _num(budget_raw)
+    return {"spent_usd": spent, "budget_usd": budget}
+
+
+def _budget_signal(context: dict[str, Any]) -> dict[str, Any] | None:
+    if "response" in context:
+        raw = context.get("response")
+    elif "llm_response" in context:
+        raw = context.get("llm_response")
+    else:
+        return None
+    if raw is None:
+        return None
+    if not _is_budget_exhausted(raw):
+        return None
+    status, reason, payload = _response_parts(raw)
+    return {
+        "task_status": status,
+        "approval_reason": reason,
+        "payload": dict(payload) if isinstance(payload, Mapping) else {},
+    }
+
+
+def _is_budget_exhausted(response: Any) -> bool:
+    if not isinstance(response, Mapping):
+        predicate = _contracts_budget_predicate()
+        if predicate is not None:
+            try:
+                if predicate(response):
+                    return True
+            except Exception:  # noqa: BLE001 — локальный предикат остаётся запасным
+                pass
+    status, reason, _payload = _response_parts(response)
+    return status == _WAITING and reason == _BUDGET_EXHAUSTED
+
+
+def _contracts_budget_predicate() -> Any:
+    try:
+        from app.orchestrator import contracts as contracts
+    except Exception:  # noqa: BLE001 — #350 ещё не в main
+        return None
+    predicate = getattr(contracts, "budget_exhausted_response", None)
+    return predicate if callable(predicate) else None
+
+
+def _response_parts(response: Any) -> tuple[Any, str, Any]:
+    if isinstance(response, Mapping):
+        status = response.get("task_status")
+        approval = response.get("approval")
+    else:
+        status = getattr(response, "task_status", None)
+        approval = getattr(response, "approval", None)
+    status_value = getattr(status, "value", status)
+    if isinstance(approval, Mapping):
+        reason = approval.get("reason") or ""
+        payload = approval.get("payload") or {}
+    elif approval is None:
+        reason = ""
+        payload = {}
+    else:
+        reason = getattr(approval, "reason", "") or ""
+        payload = getattr(approval, "payload", None) or {}
+    return status_value, str(reason), payload
+
+
+def _run_id(context: dict[str, Any]) -> str | None:
+    raw = context.get("run_id")
+    if raw is None:
+        return None
+    return raw if isinstance(raw, str) else str(raw)
+
+
+def _forecast(raw: Any) -> dict[str, float]:
+    src = raw if isinstance(raw, Mapping) else {}
+    return {
+        "internal": _num(src.get("internal")),
+        "actions": _num(src.get("actions")),
+        "run": _num(src.get("run")),
+        "project": _num(src.get("project")),
+        "daily": _num(src.get("daily")),
+    }
+
+
+def _num(value: Any) -> float:
+    if value is None or isinstance(value, bool):
+        return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if number < 0 or number != number or number in (float("inf"), float("-inf")):
+        return 0.0
+    return number
