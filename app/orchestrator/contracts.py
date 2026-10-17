@@ -13,12 +13,13 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CONTRACT_VERSION = "ws3-r3.3"
 
@@ -512,6 +513,8 @@ class PlanStep(BaseModel):
     реестр. ``parallel_group`` — независимые read-only шаги с одним
     именем группы можно выполнять параллельно.
     ``estimated_cost`` — прогноз spend для критика, не фактическая оплата.
+    ``inf`` / ``NaN``, bool и строка-число сюда не кладутся как сумма: это
+    неизвестный расход (``params['_cost_unknown']``), вызов блокируется.
     """
 
     action: str
@@ -523,9 +526,39 @@ class PlanStep(BaseModel):
     parallel_group: str | None = None
     estimated_cost: float = Field(default=0.0, ge=0)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _keep_unknown_cost(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        raw_params = data.get("params")
+        if raw_params is None:
+            params: dict[str, Any] = {}
+        elif isinstance(raw_params, dict):
+            params = dict(raw_params)
+        else:
+            return data
+        data = dict(data)
+        unknown = False
+        if "estimated_cost" in data and cost_is_unknown(data.get("estimated_cost")):
+            unknown = True
+            raw = _json_safe_unknown(data.get("estimated_cost"))
+            if "estimated_cost" not in params:
+                params["estimated_cost"] = raw
+            data["estimated_cost"] = 0
+        if "estimated_cost" in params and cost_is_unknown(params.get("estimated_cost")):
+            unknown = True
+            params["estimated_cost"] = _json_safe_unknown(params.get("estimated_cost"))
+        if unknown:
+            params["_cost_unknown"] = True
+            data["params"] = params
+        return data
+
     @field_validator("estimated_cost", mode="before")
     @classmethod
     def _clamp_estimated_cost(cls, value: Any) -> float:
+        if cost_is_unknown(value):
+            raise UnknownForecast("unknown spend")
         return nonneg_cost(value)
 
 
@@ -796,9 +829,10 @@ def validator_missing_run_id(result: Any) -> bool:
 
 # Причина → исход. Супервизор ставит статус блокировки только через block_status.
 # Строки revise_limit нет: лимит revise — critic_escalation.
-# plan_sanity, critic_reject и steer_not_approved — waiting_approval.
+# plan_sanity, critic_reject, steer_not_approved и unknown_cost — waiting_approval.
 # Грант до approve критика не исполняет чекпоинт, а возвращает задачу в planning.
 # empty_plan — пустой план чекпоинта на grant/resume: failed, без replan.
+# unknown_cost — inf/NaN, bool или строка-число в прогнозе: не 0 и не исполнение.
 BLOCK_OUTCOMES: dict[str, TaskStatus] = {
     ApprovalReason.budget_exhausted.value: TaskStatus.waiting_approval,
     ApprovalReason.critic_escalation.value: TaskStatus.waiting_approval,
@@ -807,6 +841,7 @@ BLOCK_OUTCOMES: dict[str, TaskStatus] = {
     "plan_sanity": TaskStatus.waiting_approval,
     "critic_reject": TaskStatus.waiting_approval,
     "steer_not_approved": TaskStatus.waiting_approval,
+    "unknown_cost": TaskStatus.waiting_approval,
     "deletion_blocked": TaskStatus.failed,
     "missing_run_id": TaskStatus.failed,
     "empty_plan": TaskStatus.failed,
@@ -1032,9 +1067,45 @@ def plan_missing_verify(plan: list[PlanStep]) -> bool:
     return False
 
 
+class UnknownForecast(ValueError):
+    """Прогноз шага — неизвестный расход. В 0 не превращается, вызов блокируется."""
+
+
+def cost_is_unknown(value: Any) -> bool:
+    """``inf`` / ``NaN``, bool и строка-число. Это не 0 и не сумма."""
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return not math.isfinite(float(value))
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return False
+        try:
+            float(text)
+        except ValueError:
+            return False
+        return True
+    return False
+
+
+def _json_safe_unknown(value: Any) -> Any:
+    """Нефинитный float нельзя класть в JSON чекпоинта. Смысл «не число» сохраняется."""
+    if isinstance(value, float) and not math.isfinite(value):
+        if math.isnan(value):
+            return "nan"
+        return "inf" if value > 0 else "-inf"
+    return value
+
+
 def nonneg_cost(value: Any) -> float:
-    """Нечисловое и пустое → 0. Отрицательное зажимается в 0."""
-    if isinstance(value, bool) or value is None:
+    """Нечисловое и пустое → 0. Отрицательное зажимается в 0.
+
+    ``inf`` / ``NaN``, bool и строка-число — ``UnknownForecast``, не 0.
+    """
+    if cost_is_unknown(value):
+        raise UnknownForecast("unknown spend")
+    if value is None:
         return 0.0
     if isinstance(value, (int, float)):
         number = float(value)
@@ -1048,17 +1119,33 @@ def nonneg_cost(value: Any) -> float:
             return 0.0
     else:
         return 0.0
-    if number != number or number < 0:
+    if number < 0:
         return 0.0
     return number
+
+
+def forecast_unknown(plan: list[PlanStep]) -> bool:
+    """В плане есть неизвестный расход: прогноз нельзя подменить нулём."""
+    return any(_step_cost_unknown(step) for step in plan)
+
+
+def _step_cost_unknown(step: PlanStep) -> bool:
+    if step.params.get("_cost_unknown"):
+        return True
+    if isinstance(step.estimated_cost, float) and not math.isfinite(step.estimated_cost):
+        return True
+    return "estimated_cost" in step.params and cost_is_unknown(step.params.get("estimated_cost"))
 
 
 def forecast_cost(plan: list[PlanStep]) -> float:
     """Прогноз spend. Поле шага и ``params.estimated_cost`` не суммируются дважды.
 
     Отрицательные оценки зажимаются в 0, нечисловые отбрасываются: ими нельзя
-    увести сумму ниже порога.
+    увести сумму ниже порога. ``inf`` / ``NaN``, bool и строка-число — ошибка,
+    не 0: ``UnknownForecast``, супервизор ставит ``unknown_cost``.
     """
+    if forecast_unknown(plan):
+        raise UnknownForecast("unknown spend")
     total = 0.0
     for step in plan:
         if step.estimated_cost:

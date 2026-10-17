@@ -70,6 +70,7 @@ from app.orchestrator.contracts import (
     block_status,
     budget_exhausted_response,
     can_transition,
+    forecast_unknown,
     grant_forbidden,
     orch_run_id,
     paid_step_identity,
@@ -626,6 +627,9 @@ class Supervisor:
         if not plan:
             await self._apply_block(task_id, session_id, "plan_sanity")
             return True
+        if forecast_unknown(plan):
+            await self._apply_block(task_id, session_id, "unknown_cost")
+            return True
         for step in plan:
             kind = action_guard(step.action, self.actions)
             if kind == "hard":
@@ -699,6 +703,9 @@ class Supervisor:
         goal: str,
     ) -> None:
         self._remember_paid(task_id)
+        if forecast_unknown(plan):
+            await self._apply_block(task_id, session_id, "unknown_cost")
+            return
         index = start
         while index < len(plan):
             if await self._stop_if_budget(task_id, session_id, plan, index):

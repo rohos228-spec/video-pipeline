@@ -23,6 +23,7 @@ from app.orchestrator.contracts import (
     Chunk,
     PlanStep,
     forecast_cost,
+    forecast_unknown,
     plan_deletions,
     plan_missing_verify,
 )
@@ -53,6 +54,8 @@ class PlanCritic:
             return "reject"
         if plan_missing_verify(plan):
             return "revise"
+        if forecast_unknown(plan):
+            return "reject"
         if forecast_cost(plan) > PIPELINE_FORECAST_LIMIT_USD:
             return "revise"
         if self.router is None:
