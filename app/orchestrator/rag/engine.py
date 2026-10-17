@@ -1,0 +1,289 @@
+"""Движок RAG: один reindex-воркер, гибридный retrieve, четыре корпуса."""
+
+from __future__ import annotations
+
+import concurrent.futures
+import math
+import queue
+import re
+import threading
+from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from app.orchestrator.rag.canon import sha256_payload
+from app.orchestrator.rag.embedder import E5PrefixEmbedder, HashingEmbedder
+from app.orchestrator.rag.loaders import load_history, load_nodes_and_prompts, load_rules
+from app.orchestrator.rag.node_store import NodeStore
+from app.orchestrator.rag.rrf import rrf_merge
+from app.orchestrator.rag.store import RagStore, chunk_id_for
+from app.orchestrator.rag.types import CORPORA, Chunk, ReindexResult, SourceDoc
+
+_TOKEN_RE = re.compile(r"\w+", flags=re.UNICODE)
+_RRF_K = 60
+
+
+def fts_match_query(text: str) -> str:
+    tokens = _TOKEN_RE.findall(text)
+    if not tokens:
+        return ""
+    min_len = 3 if any(len(token) >= 3 for token in tokens) else 1
+    seen: list[str] = []
+    lowered: set[str] = set()
+    for token in tokens:
+        if len(token) < min_len:
+            continue
+        key = token.lower()
+        if key in lowered:
+            continue
+        lowered.add(key)
+        seen.append(token.replace('"', '""'))
+        if len(seen) >= 32:
+            break
+    if not seen:
+        return ""
+    return " OR ".join(f'"{token}"' for token in seen)
+
+
+def cosine(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right) or not left:
+        return 0.0
+    dot = 0.0
+    norm_l = 0.0
+    norm_r = 0.0
+    for a, b in zip(left, right, strict=True):
+        dot += a * b
+        norm_l += a * a
+        norm_r += b * b
+    if norm_l == 0.0 or norm_r == 0.0:
+        return 0.0
+    return dot / (math.sqrt(norm_l) * math.sqrt(norm_r))
+
+
+class ReindexWorker:
+    """Один фоновый поток на базу. Повторный ``reindex`` ждёт очередь, не пишет параллельно."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[Any] = queue.Queue()
+        self._thread = threading.Thread(target=self._loop, name="orch-rag-reindex", daemon=True)
+        self._closed = False
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            fn, future = item
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(fn())
+            except Exception as exc:
+                future.set_exception(exc)
+
+    def submit(self, fn: Callable[[], Any], *, timeout: float = 120) -> Any:
+        if self._closed:
+            raise RuntimeError("reindex-воркер остановлен")
+        future: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        self._queue.put((fn, future))
+        return future.result(timeout=timeout)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._queue.put(None)
+
+
+class RagEngine:
+    def __init__(
+        self,
+        *,
+        db_path: Path,
+        embedder: E5PrefixEmbedder | None = None,
+        rules_path: Path | None = None,
+        repo_root: Path | None = None,
+        project_db: Path | None = None,
+        node_store: NodeStore | None = None,
+        history_documents: list[dict[str, Any]] | None = None,
+        scan_git: bool = True,
+        static_docs: dict[str, list[SourceDoc]] | None = None,
+    ) -> None:
+        self.db_path = Path(db_path)
+        self.embedder = embedder or E5PrefixEmbedder(HashingEmbedder())
+        self.rules_path = rules_path
+        self.repo_root = repo_root
+        self.project_db = project_db
+        self.node_store = node_store
+        self.history_documents = history_documents if history_documents is not None else []
+        self.scan_git = scan_git
+        self.static_docs = static_docs
+        self.store = RagStore(self.db_path)
+        self._worker = ReindexWorker()
+        self._node_cache: tuple[list[SourceDoc], list[SourceDoc], int] | None = None
+
+    def close(self) -> None:
+        self._worker.close()
+
+    def rules_system_block(self) -> str:
+        """Полный текст правил для system planner/critic, не top-k retrieval."""
+        path = self._rules_path()
+        if path is None or not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8")
+
+    def reindex(self, corpus: str | None = None) -> ReindexResult | dict[str, ReindexResult]:
+        corpora = self._corpora_arg(corpus)
+        return self._worker.submit(lambda: self._reindex_many(corpora))
+
+    def retrieve(
+        self,
+        query: str,
+        corpora: list[str] | tuple[str, ...] | None = None,
+        top_k: int = 8,
+    ) -> list[Chunk]:
+        selected = self._corpora_arg(None if corpora is None else list(corpora))
+        if top_k <= 0 or not str(query).strip():
+            return []
+        if not self.db_path.is_file():
+            return []
+        pool = max(top_k * 4, 20)
+        lexical = self.store.bm25(fts_match_query(query), selected, limit=pool)
+        lexical_ids = [chunk_id for chunk_id, _score in lexical]
+        lexical_scores = dict(lexical)
+        stored = self.store.fetch_chunks(selected)
+        query_vector = self.embedder.embed_query(query)
+        vector_scored: list[tuple[float, Chunk]] = []
+        for chunk in stored:
+            embedding = chunk.metadata.pop("_embedding", None)
+            score = cosine(query_vector, embedding or [])
+            vector_scored.append((score, chunk))
+        vector_scored.sort(key=lambda item: (-item[0], item[1].chunk_id))
+        vector_ids = [chunk.chunk_id for _score, chunk in vector_scored[:pool]]
+        vector_scores = {chunk.chunk_id: score for score, chunk in vector_scored}
+        fused = rrf_merge([lexical_ids, vector_ids], k=_RRF_K)
+        by_id = {chunk.chunk_id: chunk for _score, chunk in vector_scored}
+        ordered = [
+            chunk_id
+            for chunk_id in sorted(fused, key=lambda chunk_id: (-fused[chunk_id], chunk_id))
+            if chunk_id in by_id
+        ][:top_k]
+        result: list[Chunk] = []
+        for rank, chunk_id in enumerate(ordered, start=1):
+            chunk = by_id[chunk_id]
+            chunk.score = fused[chunk_id]
+            chunk.score_bm25 = float(lexical_scores.get(chunk_id, 0.0))
+            chunk.score_vec = float(vector_scores.get(chunk_id, 0.0))
+            chunk.rank = rank
+            result.append(chunk)
+        return result
+
+    def _reindex_many(self, corpora: list[str]) -> ReindexResult | dict[str, ReindexResult]:
+        self._node_cache = None
+        results = {corpus: self._reindex_one(corpus) for corpus in corpora}
+        self._node_cache = None
+        if len(corpora) == 1:
+            return results[corpora[0]]
+        return results
+
+    def _reindex_one(self, corpus: str) -> ReindexResult:
+        docs, skipped = self._load(corpus)
+        grouped = _group_docs(docs, self.embedder.embedder_id)
+        existing = self.store.existing_revisions(corpus)
+        to_embed: list[SourceDoc] = []
+        for source_id, (revision, parts) in grouped.items():
+            if existing.get(source_id) != revision:
+                to_embed.extend(parts)
+        embeddings: dict[str, list[float]] = {}
+        if to_embed:
+            vectors = self.embedder.embed_passages([doc.text for doc in to_embed])
+            for doc, vector in zip(to_embed, vectors, strict=True):
+                embeddings[chunk_id_for(doc.corpus, doc.source_id, doc.part_key)] = vector
+        written, unchanged, deleted = self.store.sync(
+            corpus,
+            grouped,
+            embeddings,
+            indexed_at=_now(),
+        )
+        return ReindexResult(
+            corpus=corpus,
+            sources=len(grouped),
+            written=written,
+            unchanged=unchanged,
+            deleted=deleted,
+            skipped_invalid_keys=skipped,
+        )
+
+    def _load(self, corpus: str) -> tuple[list[SourceDoc], int]:
+        if self.static_docs is not None and corpus in self.static_docs:
+            return list(self.static_docs[corpus]), 0
+        if corpus == "rules":
+            path = self._rules_path()
+            return (load_rules(path) if path is not None else []), 0
+        if corpus == "history":
+            return load_history(project_db=self.project_db, documents=self.history_documents), 0
+        nodes, prompts, skipped = self._load_nodes()
+        if corpus == "nodes":
+            return nodes, skipped
+        return prompts, skipped
+
+    def _load_nodes(self) -> tuple[list[SourceDoc], list[SourceDoc], int]:
+        if self._node_cache is None:
+            root = self.repo_root or _default_repo_root()
+            self._node_cache = load_nodes_and_prompts(
+                repo_root=root,
+                node_store=self.node_store,
+                scan_git=self.scan_git,
+            )
+        return self._node_cache
+
+    def _rules_path(self) -> Path | None:
+        if self.rules_path is not None:
+            return self.rules_path
+        return _default_repo_root() / "docs" / "fable" / "user_rules.md"
+
+    def _corpora_arg(self, corpus: str | list[str] | None) -> list[str]:
+        if corpus is None:
+            return list(CORPORA)
+        selected = [corpus] if isinstance(corpus, str) else list(corpus)
+        unknown = [name for name in selected if name not in CORPORA]
+        if unknown:
+            raise ValueError(f"неизвестный корпус: {', '.join(unknown)}; допустимо: {', '.join(CORPORA)}")
+        return selected
+
+
+def _group_docs(docs: list[SourceDoc], embedder_id: str) -> dict[str, tuple[str, list[SourceDoc]]]:
+    by_source: dict[str, list[SourceDoc]] = {}
+    for doc in docs:
+        by_source.setdefault(doc.source_id, []).append(doc)
+    grouped: dict[str, tuple[str, list[SourceDoc]]] = {}
+    for source_id, parts in by_source.items():
+        ordered = sorted(parts, key=lambda doc: doc.part_key)
+        revision = sha256_payload(
+            {
+                "embedder": embedder_id,
+                "parts": [
+                    {
+                        "metadata": doc.metadata,
+                        "part_key": doc.part_key,
+                        "text": doc.text,
+                        "title": doc.title,
+                    }
+                    for doc in ordered
+                ],
+            }
+        )
+        grouped[source_id] = (revision, ordered)
+    return grouped
+
+
+def _now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _default_repo_root() -> Path:
+    from app.project_root import find_project_root
+
+    return find_project_root()

@@ -1,0 +1,63 @@
+{
+  "dataset": "65-seeded",
+  "stub": true,
+  "stub_reason": "WS1 ещё не выложил данные проекта 65 (tkach-finalochka). Это заглушка WS6: длины и удаления заданы явно, id стабильны, эталон и канарейка не смешиваются.",
+  "registry": [
+    {
+      "id": "vo-65-long-01",
+      "kind": "vo_too_long"
+    },
+    {
+      "id": "vo-65-long-02",
+      "kind": "vo_too_long"
+    },
+    {
+      "id": "vo-65-long-03",
+      "kind": "vo_too_long"
+    },
+    {
+      "id": "vo-65-long-04",
+      "kind": "vo_too_long"
+    },
+    {
+      "id": "vo-65-long-05",
+      "kind": "vo_too_long"
+    },
+    {
+      "id": "vo-65-long-06",
+      "kind": "vo_too_long"
+    },
+    {
+      "id": "vo-65-short-01",
+      "kind": "vo_too_short"
+    },
+    {
+      "id": "vo-65-short-02",
+      "kind": "vo_too_short"
+    },
+    {
+      "id": "vo-65-short-03",
+      "kind": "vo_too_short"
+    },
+    {
+      "id": "vo-65-short-04",
+      "kind": "vo_too_short"
+    },
+    {
+      "id": "vo-65-short-05",
+      "kind": "vo_too_short"
+    },
+    {
+      "id": "vo-65-short-06",
+      "kind": "vo_too_short"
+    },
+    {
+      "id": "fr-65-del-01",
+      "kind": "frame_deleted"
+    },
+    {
+      "id": "fr-65-del-02",
+      "kind": "frame_deleted"
+    }
+  ]
+}

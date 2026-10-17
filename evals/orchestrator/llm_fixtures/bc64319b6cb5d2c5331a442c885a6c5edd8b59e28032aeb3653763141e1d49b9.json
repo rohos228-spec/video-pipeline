@@ -1,0 +1,30 @@
+{
+  "key": "bc64319b6cb5d2c5331a442c885a6c5edd8b59e28032aeb3653763141e1d49b9",
+  "request_meta": {
+    "tier": "strong",
+    "temperature": null,
+    "max_tokens": null,
+    "reasoning_effort": "high",
+    "messages_sha256": "51b5c09d44798049243d6259fc95a0b1ed2fd7f4e324544e20cc79b027ac98c0"
+  },
+  "response": {
+    "text": "{\"steps\": [{\"action\": \"read_pipeline_code\", \"params\": {\"path\": \"app/services/node_groups.py\"}}, {\"action\": \"get_node\", \"params\": {\"node_key\": \"n_excel_gpt_fw_shots\"}}, {\"action\": \"run_node\", \"params\": {\"project_id\": 65, \"node_key\": \"n_excel_gpt_fw_shots\", \"scenes\": [3, 4, 5]}}, {\"action\": \"run_validators\", \"params\": {\"project_id\": 65, \"validators\": [\"vo_length\", \"no_deletions\"]}}]}",
+    "call_id": "script-e1",
+    "model": "gpt-5.6-sol",
+    "provider": "scripted",
+    "tier": "strong",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 32,
+      "completion_tokens": 64,
+      "reasoning_tokens": 0
+    },
+    "cost_usd": 0.0,
+    "latency_ms": 1,
+    "fallback_index": 0,
+    "deterministic": true,
+    "fixture_key": "bc64319b6cb5d2c5331a442c885a6c5edd8b59e28032aeb3653763141e1d49b9"
+  },
+  "recorded_at": "2026-10-17T00:00:00Z",
+  "recorded_model": "gpt-5.6-sol"
+}

@@ -1,0 +1,30 @@
+{
+  "key": "ee364cd00bd57ef9c6a7eea876013a5d1d9ef557b4958818f69e7cba1ca05965",
+  "request_meta": {
+    "tier": "strong",
+    "temperature": null,
+    "max_tokens": null,
+    "reasoning_effort": "high",
+    "messages_sha256": "bb8c3a58afd7cda170485090c9d47db4695b7984ac2b588c9ed0746b580988fb"
+  },
+  "response": {
+    "text": "{\"steps\": [{\"action\": \"create_node\", \"params\": {\"node_key\": \"n_qc_vo_length\", \"group\": \"script_frames_qc\", \"title\": \"QC длин закадра\", \"prompt_template\": \"Проверь, что закадр сцены 200–300 символов. Якорь qcvolengthnode. Ничего не удаляй.\", \"params\": {\"model\": \"gpt-5.6-sol\", \"reasoning_effort\": \"high\"}}}]}",
+    "call_id": "script-e2",
+    "model": "gpt-5.6-sol",
+    "provider": "scripted",
+    "tier": "strong",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 32,
+      "completion_tokens": 64,
+      "reasoning_tokens": 0
+    },
+    "cost_usd": 0.0,
+    "latency_ms": 1,
+    "fallback_index": 0,
+    "deterministic": true,
+    "fixture_key": "ee364cd00bd57ef9c6a7eea876013a5d1d9ef557b4958818f69e7cba1ca05965"
+  },
+  "recorded_at": "2026-10-17T00:00:00Z",
+  "recorded_model": "gpt-5.6-sol"
+}
